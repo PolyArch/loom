@@ -701,3 +701,28 @@ context, FU-input, or arbitration cross product.
   `spec-fabric-boundary.md`.
 * Shared state, atomic-use, requester-order, and grant-policy atoms:
   `spec-fabric-resource-contract.md`.
+
+## Ordered Queue Pairing
+
+Temporal operand matching has three distinct derived domains. A physical
+`MatchKey` is `(transport ingress, Physical Tag)`. A logical `QueueKey` is
+`(InstructionContextRef, concrete FU occurrence, FU input ordinal)`. A
+qualified pairing key is `(InstructionContextRef, concrete FU occurrence,
+Physical Tag)`. Context and tag are orthogonal; a numeric tag is not a global
+context identifier. The same MatchKey may fan out to several QueueKeys only
+when the existing atomic enqueue and allocation-unit contract admits the whole
+set.
+
+Each logical queue preserves FIFO head order. Pair arbitration may inspect only
+the head of every required input role and may prefer a complete qualified tuple
+or a near-full complementary queue, but it may not bypass a head or reorder
+tokens. Distinct ingresses remain a proof-guided preference, not a universal
+legality rule. Any admission refinement is a field of this operand-buffer
+contract and is consumed by Fabric, Mapping, simulator, and RTL through the
+same derived projection; it is not a new resource family or persistent key.
+
+The three mode capacity/service projections remain exact: `per_instruction`
+has one unit per QueueKey, `per_input_port` has one unit per concrete FU input,
+and `all_fu_share` has one unit for the PE. A full allocation unit cannot borrow
+capacity released by a same-cycle dequeue unless the declared contract adds
+that capability. Unknown rate or pairing evidence is not a liveness proof.

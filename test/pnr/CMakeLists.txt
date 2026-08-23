@@ -11,6 +11,7 @@ add_executable(loom-system-pnr-service-domain-test
 )
 
 add_executable(loom-system-candidate-state-test
+  ResourceTimeSpectrumTestSupport.cpp
   SystemCandidateStateTest.cpp
   SystemCandidateStateTestSupport.cpp
   SystemNegotiatedRoutingWorkflowTestSupport.cpp
@@ -51,6 +52,7 @@ target_link_libraries(loom-system-pnr-service-domain-test PRIVATE
 
 target_link_libraries(loom-system-candidate-state-test PRIVATE
   LoomADGBuilder
+  LoomDSE
   LoomDSEHardwareGenerator
   LoomPnR
   LoomPnRGenerator

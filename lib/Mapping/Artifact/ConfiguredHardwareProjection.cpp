@@ -7,6 +7,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <map>
 #include <tuple>
@@ -202,8 +203,20 @@ deriveConfiguredHardwareProjection(
             templateField, *actorProjection, *indexBitWidth,
             actorBinding.operandPorts, actorBinding.resultPorts,
             *pointerLayout ? &**pointerLayout : nullptr);
-        if (!value)
-          return value.takeError();
+        if (!value) {
+          std::string actorType;
+          llvm::raw_string_ostream typeStream(actorType);
+          typeStream << actorProjection->type;
+          return invalid(
+              "configured compute actor semantic encoding failed: actor=" +
+              llvm::Twine(actorBinding.actor.entity.value()) +
+              ", schema=" +
+              ::dataflow::operationSchemaSpelling(actorProjection->schema) +
+              ", realization=" + llvm::Twine(realization.entityId) +
+              ", field=" + llvm::Twine(templateField.ordinal) +
+              ", type=" + typeStream.str() + ": " +
+              llvm::toString(value.takeError()));
+        }
         const ::loom::fabric::FabricSemanticConfigFieldRef occurrenceField{
             ::loom::fabric::FabricConfigurationOwnerRef(
                 ::loom::fabric::FabricInventoryOwnerRef::of(

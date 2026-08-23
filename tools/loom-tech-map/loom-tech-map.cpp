@@ -139,6 +139,28 @@ accounting(const loom::mapping::TechMappingGenerationAccounting &value) {
   return result;
 }
 
+void appendFeedback(
+    llvm::json::Object &result,
+    const loom::mapping::TechMappingGenerationFeedback &feedback) {
+  if (!feedback.computeContextHall) {
+    result["compute_context_hall"] = nullptr;
+    return;
+  }
+  const auto &hall = *feedback.computeContextHall;
+  llvm::json::Array groups;
+  for (const auto &group : hall.groups())
+    groups.push_back(llvm::json::Object{
+        {"demand_count", group.demandCount},
+        {"compatible_context_count", group.compatibleContexts.size()}});
+  result["compute_context_hall"] = llvm::json::Object{
+      {"cover_demand_count", hall.coverDemandCount()},
+      {"cover_maximum_matching", hall.coverMaximumMatching()},
+      {"hall_demand_count", hall.hallDemandCount()},
+      {"hall_context_value_count", hall.hallContextValueCount()},
+      {"deficit", hall.deficit()},
+      {"groups", std::move(groups)}};
+}
+
 llvm::json::Object
 generatedReport(const loom::mapping::GeneratedTechMappings &generated,
                 const loom::ArtifactStore &store,
@@ -152,6 +174,7 @@ generatedReport(const loom::mapping::GeneratedTechMappings &generated,
           ? "search-exhausted"
           : "semantic-limit-reached";
   result["accounting"] = accounting(generated.accounting);
+  appendFeedback(result, generated.feedback);
   result["candidate_count"] = generated.candidates.size();
   llvm::json::Array candidates;
   for (const loom::ArtifactRootReference &candidate : generated.candidates)
@@ -200,6 +223,7 @@ outcomeReport(const loom::mapping::TechMappingGenerationOutcome &outcome,
     result["classification"] = "capability-rejected";
     result["reason"] = "no-complete-exact-cover";
     result["accounting"] = accounting(infeasible->accounting);
+    appendFeedback(result, infeasible->feedback);
     return result;
   }
   if (const auto *incomplete =
@@ -210,6 +234,21 @@ outcomeReport(const loom::mapping::TechMappingGenerationOutcome &outcome,
     result["classification"] = "incomplete";
     result["reason"] = "proof-not-established";
     result["accounting"] = accounting(incomplete->accounting);
+    appendFeedback(result, incomplete->feedback);
+    return result;
+  }
+  if (const auto *interrupted =
+          std::get_if<loom::mapping::InterruptedTechMappingGeneration>(
+              &outcome)) {
+    llvm::json::Object result;
+    result["status"] = "incomplete";
+    result["classification"] = "incomplete";
+    result["reason"] = "cancelled-or-timeout";
+    result["interruption_stage"] =
+        loom::mapping::techMappingInterruptionStageSpelling(
+            interrupted->snapshot.stage);
+    result["accounting"] = accounting(interrupted->accounting);
+    appendFeedback(result, interrupted->feedback);
     return result;
   }
   if (const auto *invalid =
@@ -219,6 +258,7 @@ outcomeReport(const loom::mapping::TechMappingGenerationOutcome &outcome,
     result["classification"] = "invalid";
     result["diagnostic"] = invalid->diagnostic;
     result["accounting"] = accounting(invalid->accounting);
+    appendFeedback(result, invalid->feedback);
     return result;
   }
   const auto &internal =
@@ -228,6 +268,7 @@ outcomeReport(const loom::mapping::TechMappingGenerationOutcome &outcome,
   result["classification"] = "internal";
   result["diagnostic"] = internal.diagnostic;
   result["accounting"] = accounting(internal.accounting);
+  appendFeedback(result, internal.feedback);
   return result;
 }
 

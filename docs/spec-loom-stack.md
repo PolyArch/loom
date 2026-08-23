@@ -719,7 +719,7 @@ second workload authority:
 2. the ten source-backed workflows in
    [End-To-End Conformance Anchors](spec-end-to-end-demonstrators.md) supply
    bounded vertical-stack anchors;
-3. the five complete programs in
+3. the six complete programs in
    [Real Application Portfolio](spec-application-portfolio.md) supply sustained
    multi-stage and heterogeneous-system use; and
 4. exact selected subsets of those owned workloads supply reproducible
@@ -905,3 +905,10 @@ Subsystem specs own their exact conformance anchors. Tool availability,
 timeouts, host resources, and license limits are execution controls. Exhausting
 them yields a typed incomplete execution outcome; it does not change the
 semantic plan, prove infeasibility, or authorize best-so-far publication.
+
+Temporal ordered-input liveness crosses the existing ownership boundary: the
+Dataflow owner supplies ordered event/rate facts, Fabric defines queue and
+reservation semantics, Mapping selects and verifies ingress/context/FU/tag
+relations, simulator replays the same derived projection, and DSE only
+chooses bounded alternatives or exact hardware children. No fifth deadlock
+legality owner or persistent pairing-key entity is introduced.

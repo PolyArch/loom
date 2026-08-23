@@ -410,10 +410,16 @@ void recursiveGeneratorPublishesOnlyCompleteLeaves() {
          llvm::Twine(completed->outputBindings.front().artifacts.size()) +
          " outputs and " + llvm::Twine(completed->lineageEdges.size()) +
          " lineage edges");
-  if (result.workSummary.size() != 1 ||
-      result.workSummary.front().consumed != 4 ||
-      result.workSummary.front().planned != 4)
-    fail("special-math lineage and work accounting differ");
+  if (result.workSummary.size() != 2 ||
+      result.workSummary[0].consumed != 4 ||
+      result.workSummary[0].planned != 4 ||
+      result.workSummary[1].consumed != 4 ||
+      result.workSummary[1].planned != 4)
+    fail(llvm::Twine("special-math lineage and work accounting differ: ") +
+         llvm::Twine(result.workSummary[0].planned) + "/" +
+         llvm::Twine(result.workSummary[0].consumed) + ", " +
+         llvm::Twine(result.workSummary[1].planned) + "/" +
+         llvm::Twine(result.workSummary[1].consumed));
 
   std::map<loom::ArtifactRootReference, loom::ArtifactRootReference,
            decltype(&loom::artifactRootReferenceLess)>
@@ -474,9 +480,11 @@ void recursiveGeneratorPublishesOnlyCompleteLeaves() {
   if (!pairCompleted || pairCompleted->outputBindings.size() != 1 ||
       pairCompleted->outputBindings.front().artifacts.size() != 16 ||
       pairCompleted->lineageEdges.size() != 20 ||
-      pairResult.workSummary.size() != 1 ||
+      pairResult.workSummary.size() != 2 ||
       pairResult.workSummary.front().planned != 20 ||
-      pairResult.workSummary.front().consumed != 20)
+      pairResult.workSummary.front().consumed != 20 ||
+      pairResult.workSummary[1].planned != 0 ||
+      pairResult.workSummary[1].consumed != 0)
     fail("two afn operations did not produce the complete finite domain");
   std::map<std::pair<std::string, std::string>, unsigned> combinations;
   for (const loom::ArtifactRootReference &reference :
@@ -571,12 +579,14 @@ void exactFabricPruningRetainsOnlyReachableLineage() {
   auto *completed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
       &partial.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
-      partial.workSummary.size() != 1)
+      partial.workSummary.size() != 2)
     fail("partial Fabric admission returned a malformed result");
   if (completed->outputBindings.front().artifacts.size() != 2 ||
       completed->lineageEdges.size() != 2 ||
       partial.workSummary.front().planned != 4 ||
-      partial.workSummary.front().consumed != 4)
+      partial.workSummary.front().consumed != 4 ||
+      partial.workSummary[1].planned != 0 ||
+      partial.workSummary[1].consumed != 0)
     fail(llvm::Twine("partial Fabric admission returned ") +
          llvm::Twine(completed->outputBindings.front().artifacts.size()) +
          " outputs, " + llvm::Twine(completed->lineageEdges.size()) +
@@ -620,9 +630,11 @@ void exactFabricPruningRetainsOnlyReachableLineage() {
       &rejected.outcome);
   if (!empty || empty->outputBindings.size() != 1 ||
       !empty->outputBindings.front().artifacts.empty() ||
-      !empty->lineageEdges.empty() || rejected.workSummary.size() != 1 ||
+      !empty->lineageEdges.empty() || rejected.workSummary.size() != 2 ||
       rejected.workSummary.front().planned != 4 ||
-      rejected.workSummary.front().consumed != 4)
+      rejected.workSummary.front().consumed != 4 ||
+      rejected.workSummary[1].planned != 0 ||
+      rejected.workSummary[1].consumed != 0)
     fail("complete Fabric rejection did not produce an empty finite set");
 
   if (std::error_code cleanup = llvm::sys::fs::remove_directories(directory))
@@ -661,9 +673,11 @@ void strictClosureIsMechanical() {
       &result.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 1 ||
-      completed->lineageEdges.size() != 1 || result.workSummary.size() != 1 ||
+      completed->lineageEdges.size() != 1 || result.workSummary.size() != 2 ||
       result.workSummary.front().planned != 0 ||
-      result.workSummary.front().consumed != 0)
+      result.workSummary.front().consumed != 0 ||
+      result.workSummary[1].planned != 1 ||
+      result.workSummary[1].consumed != 1)
     fail("strict special math created an accuracy choice");
   const auto &edge = completed->lineageEdges.front();
   if (edge.kind !=

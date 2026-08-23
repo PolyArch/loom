@@ -13,16 +13,26 @@ namespace loom {
 class ExecutionControlView final {
 public:
   using StopQuery = bool (*)(const void *context);
+  using RemainingTimeQuery =
+      std::optional<std::chrono::steady_clock::duration> (*)(
+          const void *context);
 
   constexpr ExecutionControlView() = default;
-  constexpr ExecutionControlView(const void *context, StopQuery query)
-      : context_(context), query_(query) {}
+  constexpr ExecutionControlView(
+      const void *context, StopQuery query,
+      RemainingTimeQuery remainingTimeQuery = nullptr)
+      : context_(context), query_(query),
+        remainingTimeQuery_(remainingTimeQuery) {}
 
   bool stopRequested() const { return query_ && query_(context_); }
+  std::optional<std::chrono::steady_clock::duration> remainingTime() const {
+    return remainingTimeQuery_ ? remainingTimeQuery_(context_) : std::nullopt;
+  }
 
 private:
   const void *context_ = nullptr;
   StopQuery query_ = nullptr;
+  RemainingTimeQuery remainingTimeQuery_ = nullptr;
 };
 
 /// Process observations attached to an interrupted provider result. These

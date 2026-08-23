@@ -1089,6 +1089,11 @@ private:
         dealloc.erase();
         continue;
       }
+      if (::llvm::isa<::mlir::LLVM::LifetimeStartOp,
+                      ::mlir::LLVM::LifetimeEndOp>(op)) {
+        op->erase();
+        continue;
+      }
       if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(op)) {
         lowerDataflowLoad(load, execution, memory);
         continue;

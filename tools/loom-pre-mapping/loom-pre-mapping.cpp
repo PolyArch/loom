@@ -30,6 +30,7 @@
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/PreMappingEvidence.h"
 #include "DSE/PreMappingExploration.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
@@ -48,7 +49,9 @@
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
@@ -154,8 +157,26 @@ namespace {
                            SemanticConformance,
                        "semantic-conformance",
                        "rank a bounded chain of equivalent protocol closures")),
-        ::llvm::cl::init(
-            loom::dse::StructuredOwnershipSelectionMode::BenefitQualified));
+            ::llvm::cl::init(
+            loom::dse::StructuredOwnershipSelectionMode::SemanticConformance));
+
+::llvm::cl::opt<loom::dse::PreMappingSpectrumEndpoint> spectrumEndpoint(
+    "pre-mapping-spectrum-endpoint",
+    ::llvm::cl::desc("bounded spectrum endpoint selected by the central "
+                     "frontier policy"),
+    ::llvm::cl::values(
+        clEnumValN(loom::dse::PreMappingSpectrumEndpoint::Automatic,
+                   "automatic", "objective and diversity selection"),
+        clEnumValN(loom::dse::PreMappingSpectrumEndpoint::MaxTemporal,
+                   "max-temporal",
+                   "require a verified SystemMapping temporal endpoint"),
+        clEnumValN(loom::dse::PreMappingSpectrumEndpoint::MaxSpatial,
+                   "max-spatial",
+                   "require a verified SystemMapping spatial endpoint"),
+        clEnumValN(loom::dse::PreMappingSpectrumEndpoint::Intermediate,
+                   "intermediate",
+                   "require a verified SystemMapping intermediate schedule")),
+    ::llvm::cl::init(loom::dse::PreMappingSpectrumEndpoint::Automatic));
 
 ::llvm::cl::opt<unsigned> canonicalIndexWidth(
     "canonical-index-width",
@@ -185,6 +206,34 @@ int reportError(::llvm::Error error) {
   ::llvm::errs() << "loom-pre-mapping: " << ::llvm::toString(std::move(error))
                  << "\n";
   return 1;
+}
+
+::llvm::Error writeJsonEvidenceFile(::llvm::StringRef filename,
+                                    ::llvm::json::Object object) {
+  std::string message;
+  auto output = ::mlir::openOutputFile(filename, &message);
+  if (!output)
+    return ::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "cannot open evidence output '%s': %s", filename.str().c_str(),
+        message.c_str());
+  output->os() << ::llvm::formatv(
+                      "{0:2}", ::llvm::json::Value(std::move(object)))
+               << "\n";
+  output->keep();
+  return ::llvm::Error::success();
+}
+
+void addGenerateSummary(
+    ::llvm::json::Object &object,
+    const loom::dse::DsePlanGenerateInvocationSummary &summary) {
+  object["central_generate_invocations"] = summary.completedInvocations;
+  object["central_incomplete_generate_invocations"] =
+      summary.incompleteInvocations;
+  object["central_generate_input_artifacts"] = summary.inputArtifacts;
+  object["central_generate_lineage_edges"] = summary.lineageEdges;
+  object["central_generate_output_artifacts"] = summary.outputArtifacts;
+  object["central_plan_executions"] = summary.planExecutions;
 }
 
 ::llvm::Expected<loom::frontend::StructuredEntityRef>
@@ -415,6 +464,7 @@ int main(int argc, char **argv) {
       planGenerateInvocations;
   loom::dse::DsePlanGenerateInvocationSummary planGenerateSummary;
   bool planSearchComplete = true;
+  std::optional<::llvm::json::Object> centralPlanningEvidence;
   std::optional<loom::frontend::StructuredCompilation> explicitInput;
   std::optional<loom::frontend::MaterializedOwnershipCandidate> selected;
   if (!hasExplicitSelection) {
@@ -436,6 +486,7 @@ int main(int argc, char **argv) {
           loom::ResolvedObjectiveDirection::Minimize, 1},
          candidateJobs}};
     exploration.ownership.selectionMode = ownershipSelectionMode;
+    exploration.frontier.spectrumEndpoint = spectrumEndpoint;
     exploration.ownership.protocolCallableRoots = std::move(*protocolRoots);
     auto outcome = loom::dse::exploreStructuredCompilationToPreMapping(
         std::move(*source), inputs->workload, inputs->runtimeInput,
@@ -453,6 +504,17 @@ int main(int argc, char **argv) {
     if (const auto *incomplete =
             std::get_if<loom::dse::IncompletePreMappingExploration>(
                 &*outcome)) {
+      ::llvm::json::Object evidence;
+      evidence["schema"] = "loom.pre_mapping.cli_evidence.1";
+      evidence["status"] = "incomplete";
+      evidence["actors"] = nullptr;
+      evidence["graphs"] = nullptr;
+      addGenerateSummary(evidence, *generateSummary);
+      evidence["planning"] =
+          loom::dse::serializePreMappingIncompleteEvidence(*incomplete);
+      if (::llvm::Error error =
+              writeJsonEvidenceFile(countsFilename, std::move(evidence)))
+        return reportError(std::move(error));
       const std::string location =
           incomplete->planNodeOrdinal
               ? " at plan node " + std::to_string(*incomplete->planNodeOrdinal)
@@ -467,12 +529,23 @@ int main(int argc, char **argv) {
           generateSummary->incompleteInvocations));
     }
     if (std::holds_alternative<
-            loom::dse::CompletedPreMappingNoFeasibleCandidate>(*outcome))
+            loom::dse::CompletedPreMappingNoFeasibleCandidate>(*outcome)) {
+      ::llvm::json::Object evidence;
+      evidence["schema"] = "loom.pre_mapping.cli_evidence.1";
+      evidence["status"] = "completed_no_feasible_candidate";
+      evidence["actors"] = nullptr;
+      evidence["graphs"] = nullptr;
+      addGenerateSummary(evidence, *generateSummary);
+      evidence["planning"] = nullptr;
+      if (::llvm::Error error =
+              writeJsonEvidenceFile(countsFilename, std::move(evidence)))
+        return reportError(std::move(error));
       return reportError(::llvm::createStringError(
           ::llvm::inconvertibleErrorCode(),
           "central DSE completed without a feasible candidate after %" PRIu64
           " Generate invocations",
           generateSummary->completedInvocations));
+    }
     auto &completion =
         std::get<loom::dse::CompletedPreMappingSelection>(*outcome);
     if (completion.selected.size() != 1)
@@ -485,6 +558,8 @@ int main(int argc, char **argv) {
       return reportError(::llvm::createStringError(
           ::llvm::inconvertibleErrorCode(),
           "exhaustive central DSE retained incomplete Generate work"));
+    centralPlanningEvidence.emplace(
+        loom::dse::serializePreMappingSelectionEvidence(completion));
     compiled.emplace(std::move(completion.selected.front().compilation));
     planGenerateInvocations = std::move(completion.planGenerateInvocations);
     planGenerateSummary = *generateSummary;
@@ -627,35 +702,27 @@ int main(int argc, char **argv) {
   outputFile->os() << "\n";
   outputFile->keep();
 
-  // Emit the structured counts.
-  auto countsFile = ::mlir::openOutputFile(countsFilename, &errMsg);
-  if (!countsFile) {
-    ::llvm::errs() << "loom-pre-mapping: cannot open counts output: " << errMsg
-                   << "\n";
-    return 1;
-  }
+  // Emit the structured counts and the exact planning evidence from which the
+  // selected Canonical Dataflow was derived.
   if (!hasExplicitSelection && planGenerateSummary.completedInvocations == 0 &&
       planGenerateSummary.incompleteInvocations == 0)
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
         "completed DSE retained no Generate provenance"));
-  countsFile->os() << "{\"actors\": " << view->actors().size()
-                   << ", \"central_generate_invocations\": "
-                   << planGenerateSummary.completedInvocations
-                   << ", \"central_incomplete_generate_invocations\": "
-                   << planGenerateSummary.incompleteInvocations
-                   << ", \"central_generate_input_artifacts\": "
-                   << planGenerateSummary.inputArtifacts
-                   << ", \"central_generate_lineage_edges\": "
-                   << planGenerateSummary.lineageEdges
-                   << ", \"central_generate_output_artifacts\": "
-                   << planGenerateSummary.outputArtifacts
-                   << ", \"central_plan_executions\": "
-                   << planGenerateSummary.planExecutions
-                   << ", \"graphs\": " << view->graphs().size()
-                   << ", \"search_complete\": "
-                   << (planSearchComplete ? "true" : "false") << "}\n";
-  countsFile->keep();
+  ::llvm::json::Object counts;
+  counts["schema"] = "loom.pre_mapping.cli_evidence.1";
+  counts["status"] = "completed_selection";
+  counts["actors"] = static_cast<std::uint64_t>(view->actors().size());
+  counts["graphs"] = static_cast<std::uint64_t>(view->graphs().size());
+  counts["search_complete"] = planSearchComplete;
+  addGenerateSummary(counts, planGenerateSummary);
+  if (centralPlanningEvidence)
+    counts["planning"] = std::move(*centralPlanningEvidence);
+  else
+    counts["planning"] = nullptr;
+  if (::llvm::Error error =
+          writeJsonEvidenceFile(countsFilename, std::move(counts)))
+    return reportError(std::move(error));
 
   std::optional<loom::ArtifactRootReference> dataflowReference;
   if (!rootReferenceFilename.empty() ||

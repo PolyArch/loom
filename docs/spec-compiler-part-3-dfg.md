@@ -1672,6 +1672,16 @@ tokens for an unselected branch can remain buffered inside branch-local
 ops and be consumed by a later selected invocation at the wrong dynamic
 position.
 
+The capture owner may encounter an exceptional scalar placeholder introduced
+by CFG structuring at a graph boundary. It may project that lane to a defined
+zero wire value only when the corresponding graph entry argument has no SSA
+uses in the complete graph body, the lane is non-pointer and scalar, and the
+capture record retains an `unusedByGraph` provenance fact. This preserves the
+graph ABI while proving that the substituted bits cannot affect graph
+semantics. A value with any graph use, a pointer lane, or an unproven
+correspondence remains `Undef`/`Poison` and is rejected by the ordinary wire
+legality owner; no blanket exceptional-value replacement is permitted.
+
 #### If Boundary Translation
 
 This translation uses the recursive graph owner. The condition

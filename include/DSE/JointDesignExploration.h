@@ -6,11 +6,15 @@
 #include "DSE/PlanExecutor.h"
 #include "DSE/Promotion.h"
 #include "Fabric/Identity/FabricRefs.h"
+#include "PnR/PnrConfig.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <functional>
+#include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -18,7 +22,7 @@
 namespace loom {
 class ArtifactStore;
 class BlobStore;
-}
+} // namespace loom
 
 namespace loom::dse {
 
@@ -26,13 +30,24 @@ struct JointDesignPlanPair final {
   JointDesignPair pair;
   std::vector<PlanOutputRef> techMappings;
   std::vector<PlanOutputRef> spatialMappings;
+  std::vector<ArtifactRootReference> immutableTechMappings;
+  std::vector<ArtifactRootReference> immutableSpatialMappings;
   PlanOutputRef systemMappings;
+};
+
+/// Exact child-owned Mapping roots retained across one hardware derivation.
+/// The ordinary plan builder validates their Dataflow and Module ownership;
+/// unmatched target Modules continue through the canonical Generate path.
+struct JointDesignMappingSeed final {
+  std::vector<ArtifactRootReference> techMappings;
+  std::vector<ArtifactRootReference> spatialMappings;
 };
 
 struct JointDesignExplorationPlan final {
   ResolvedConfig resolvedConfig;
   BoundedJointFrontier frontier;
   std::vector<JointDesignPlanPair> pairOutputs;
+  std::vector<pnr::SystemBindingPartitionIntent> systemBindingPartitions;
 };
 
 /// Builds one ordinary finite Generate plan. Each explicit application/System
@@ -41,8 +56,11 @@ struct JointDesignExplorationPlan final {
 llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     JointDesignInputs inputs,
     llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
-    const JointDesignPolicy &policy,
-    const ResolvedConfig &baseConfig, const ArtifactStore &artifactStore);
+    const JointDesignPolicy &policy, const ResolvedConfig &baseConfig,
+    const ArtifactStore &artifactStore,
+    const JointDesignMappingSeed *mappingSeed = nullptr,
+    llvm::ArrayRef<pnr::SystemBindingPartitionIntent> systemBindingPartitions =
+        {});
 
 /// Projects the canonical unique Module roots selected by every AccCore in one
 /// exact System. Mapping-plan construction and bounded hardware reopen share
@@ -62,9 +80,167 @@ struct JointMappedPair final {
   std::vector<ArtifactRootReference> systemMappings;
 };
 
+enum class JointDesignQualityDisposition : std::uint8_t {
+  NotRequested,
+  Complete,
+  Unsupported,
+  ProofNotEstablished,
+  ExecutionFailed,
+  CancelledOrTimeout,
+};
+
+enum class JointDesignAttemptDisposition : std::uint8_t {
+  Verified,
+  ProvenNoFeasibleCandidate,
+  Incomplete,
+};
+
+enum class JointDesignQualityIncompleteReason : std::uint8_t {
+  Unsupported,
+  ProofNotEstablished,
+  ExecutionFailed,
+  CancelledOrTimeout,
+};
+
+/// Invocation-local QoR observation for one concrete SystemMapping. A
+/// missing objective is explicit typed evidence; it is never represented by a
+/// sentinel score.
+struct JointDesignQualityObservation final {
+  ArtifactRootReference candidate;
+  std::vector<std::uint64_t> objectiveCodes;
+  std::optional<JointDesignQualityIncompleteReason> incompleteReason;
+};
+
+/// One exact software-plan outcome retained independently of the final
+/// stopping-policy winner. The plan ordinal joins mechanically to the
+/// caller's bounded software frontier.
+struct JointDesignAttemptRecord final {
+  std::uint64_t planOrdinal = 0;
+  ArtifactRootReference system;
+  JointDesignAttemptDisposition disposition =
+      JointDesignAttemptDisposition::Incomplete;
+  std::optional<std::uint64_t> incompleteNodeOrdinal;
+  std::optional<DsePlanIncompleteReason> incompleteReason;
+  std::vector<ArtifactRootReference> systemMappings;
+};
+
+/// The bounded analytic observations for retained pairs. These observations
+/// are ranking provenance only; the pair still requires the ordinary Mapping
+/// providers and independent verifier before it can be selected.
+struct JointPairAnalyticObservation final {
+  ArtifactRootReference dataflow;
+  ArtifactRootReference system;
+  JointPairAnalyticProjection projection;
+};
+
+struct JointDesignExecutionSummary final {
+  JointDesignStoppingPolicy stoppingPolicy =
+      JointDesignStoppingPolicy::FirstVerified;
+  /// Frontier accounting is kept separate from Mapping outcomes. Deferred
+  /// pairs have not been verified and must not be reported as infeasible.
+  std::uint64_t eligibleJointPairCount = 0;
+  std::uint64_t analyticEvaluatedJointPairCount = 0;
+  std::uint64_t analyticDeferredJointPairCount = 0;
+  std::uint64_t retainedJointPairCount = 0;
+  bool jointFrontierTruncated = false;
+  std::vector<JointPairAnalyticObservation> retainedJointPairAnalytics;
+  std::uint64_t attemptedSoftwarePlans = 0;
+  std::uint64_t hardwareReopenSearches = 0;
+  std::uint64_t hardwareParentPromotions = 0;
+  std::uint64_t hardwareReopensDeferredByQuality = 0;
+  std::uint64_t hardwareReopensWithheldWithoutExactFeedback = 0;
+  std::uint64_t hardwareRepairProbeLimit = 0;
+  std::uint64_t hardwareRepairProbesPlanned = 0;
+  std::uint64_t hardwareRepairProbesReserved = 0;
+  std::uint64_t hardwareRepairProbesConsumed = 0;
+  std::uint64_t hardwareRepairProbesRejected = 0;
+  std::uint64_t hardwareRepairProbesCancelled = 0;
+  /// Count of System-PNR provider boundaries actually dispatched during this
+  /// execution. Terminal journal/cache replays are deliberately excluded.
+  std::uint64_t techMappingDispatchCount = 0;
+  std::uint64_t spatialPnrDispatchCount = 0;
+  std::uint64_t systemPnrDispatchCount = 0;
+  std::uint64_t coldReopenWallTimeNanoseconds = 0;
+  std::uint64_t incrementalReopenWallTimeNanoseconds = 0;
+  std::optional<std::uint64_t> timeToFirstFeasibleWallTimeNanoseconds;
+  std::optional<std::uint64_t> timeToBestWallTimeNanoseconds;
+  std::uint64_t preservedTechMappings = 0;
+  std::uint64_t preservedSpatialMappings = 0;
+  std::uint64_t repairedTechMappings = 0;
+  std::uint64_t repairedSpatialMappings = 0;
+  std::uint64_t invalidatedTechMappings = 0;
+  std::uint64_t invalidatedSpatialMappings = 0;
+  std::uint64_t parentTechDecisions = 0;
+  std::uint64_t parentSpatialDecisions = 0;
+  std::uint64_t preservedTechDecisions = 0;
+  std::uint64_t preservedSpatialDecisions = 0;
+  std::uint64_t reopenedTechDecisions = 0;
+  std::uint64_t reopenedSpatialDecisions = 0;
+  std::uint64_t repairedTechDecisions = 0;
+  std::uint64_t repairedSpatialDecisions = 0;
+  std::uint64_t invalidationRootCount = 0;
+  std::uint64_t invalidationConeDecisionCount = 0;
+  std::uint64_t parentRouteNodeCount = 0;
+  std::uint64_t preservedRouteNodeCount = 0;
+  std::uint64_t reopenedRouteNodeCount = 0;
+  std::uint64_t repairedRouteNodeCount = 0;
+  std::uint64_t parentServiceLegCount = 0;
+  std::uint64_t preservedServiceLegCount = 0;
+  std::uint64_t reopenedServiceLegCount = 0;
+  std::uint64_t verifiedAlternatives = 0;
+  std::optional<std::uint64_t> selectedPlanOrdinal;
+  std::optional<ArtifactRootReference> selectedMapping;
+  JointDesignQualityDisposition qualityDisposition =
+      JointDesignQualityDisposition::NotRequested;
+  std::optional<ArtifactRootReference> qualityIncompleteCandidate;
+  std::vector<std::string> qualityObjectiveDimensionLabels;
+  std::vector<JointDesignQualityObservation> qualityObservations;
+  bool declaredWorkExhausted = false;
+  std::vector<JointDesignAttemptRecord> attempts;
+};
+
 struct JointDesignExecution final {
   DsePlanExecutionResult planExecution;
   std::vector<JointMappedPair> mappedPairs;
+  JointDesignExecutionSummary summary;
+};
+
+struct IncompleteJointDesignQuality final {
+  JointDesignQualityIncompleteReason reason =
+      JointDesignQualityIncompleteReason::ProofNotEstablished;
+  std::optional<ArtifactRootReference> candidate;
+};
+
+using JointDesignQualityAcquisition =
+    std::variant<std::vector<CandidateObjectiveVector>,
+                 IncompleteJointDesignQuality>;
+
+using JointDesignQualityAcquirer =
+    std::function<llvm::Expected<JointDesignQualityAcquisition>(
+        const JointDesignExecution &, std::uint64_t planOrdinal)>;
+
+/// Invocation-local adapter to the shared Objective/Pareto owner. The
+/// The acquirer is invoked once per selected SystemMapping (the invocation
+/// summary temporarily names that mapping) and must return exactly one
+/// complete application ObjectiveVector for it. It may not substitute
+/// pre-PnR feasibility scores for completed application QoR.
+struct JointBoundedQualityPolicy final {
+  std::shared_ptr<const ObjectiveProgram> objectiveProgram;
+  /// Invocation-local labels for the objective vector. They are provenance,
+  /// not a second objective definition; the ObjectiveProgram remains the
+  /// ordering authority.
+  std::vector<std::string> objectiveDimensionLabels;
+  std::vector<std::uint32_t> paretoDimensions;
+  std::uint32_t finalTotalOrdering = 0;
+  JointDesignQualityAcquirer acquire;
+  /// Maximum verified base mappings promoted to hardware-spectrum expansion
+  /// after the bounded software frontier has completed. Base application QoR
+  /// and final selection remain owned by this policy; zero is invalid.
+  std::uint64_t maximumHardwareSpectrumParents = 1;
+  /// Maximum monotonic child probes within one promoted hardware parent.
+  /// These probes close typed feedback and are not additional parent
+  /// alternatives. Zero is invalid.
+  std::uint64_t maximumHardwareRepairProbes = 16;
 };
 
 /// Executes or resumes the exact plan through the shared Journal and

@@ -383,6 +383,10 @@ private:
       initializeSystemCandidateWithReleasedChoices(FrozenSystemPnrProblemHandle,
                                                    llvm::ArrayRef<PnrIndex>,
                                                    llvm::ArrayRef<PnrIndex>);
+  friend llvm::Expected<InitializedSystemCandidate>
+  initializeSystemCandidateWithReleasedChoicesAndImportedCapacityClosure(
+      FrozenSystemPnrProblemHandle, llvm::ArrayRef<PnrIndex>,
+      llvm::ArrayRef<PnrIndex>);
   friend llvm::Expected<SystemCandidateStateHandle>
   initializeSystemCandidate(FrozenSystemPnrProblemHandle,
                             llvm::ArrayRef<PnrIndex>, llvm::ArrayRef<PnrIndex>,

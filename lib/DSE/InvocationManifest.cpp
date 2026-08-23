@@ -29,6 +29,7 @@ namespace {
 constexpr char runKeyDomain[] = "loom.dse.run_key.1.0\0";
 constexpr SchemaVersion legacyInvocationManifestSchemaVersion{1, 0};
 constexpr SchemaVersion operationalInvocationManifestSchemaVersion{1, 1};
+constexpr SchemaVersion typedRunClosureManifestSchemaVersion{1, 2};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -331,7 +332,7 @@ llvm::Error validateIncompleteReason(const DsePlanIncompleteReason &reason) {
                                  T, PromotionAcquisitionIncompleteReason>) {
           if (static_cast<std::uint32_t>(value) >
               static_cast<std::uint32_t>(
-                  PromotionAcquisitionIncompleteReason::Unsupported))
+                  PromotionAcquisitionIncompleteReason::CancelledOrTimeout))
             return invalid("unknown acquisition incomplete reason");
         } else {
           if (static_cast<std::uint32_t>(value) >
@@ -533,7 +534,7 @@ decodeIncompleteReason(Decoder &decoder) {
         static_cast<CandidateGeneratorIncompleteReason>(*ordinal)};
   case 1:
     if (*ordinal > static_cast<std::uint32_t>(
-                       PromotionAcquisitionIncompleteReason::Unsupported))
+                       PromotionAcquisitionIncompleteReason::CancelledOrTimeout))
       return invalid("unknown acquisition incomplete reason");
     return DsePlanIncompleteReason{
         static_cast<PromotionAcquisitionIncompleteReason>(*ordinal)};
@@ -1122,6 +1123,7 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
   if (*schema != InvocationManifest::schemaIdentity ||
       (sourceSchemaVersion != legacyInvocationManifestSchemaVersion &&
        sourceSchemaVersion != operationalInvocationManifestSchemaVersion &&
+       sourceSchemaVersion != typedRunClosureManifestSchemaVersion &&
        sourceSchemaVersion != InvocationManifest::schemaVersion))
     return invalid("unsupported InvocationManifest schema");
 

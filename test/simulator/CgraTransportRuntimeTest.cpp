@@ -181,6 +181,18 @@ void localRealizationEdgePublishesThroughExactConsumer() {
   require(!runtime.hasPendingEvents(),
           "rejected actor emission batch changed transport state");
 
+  const CgraActorLifecycleEvent committed{
+      CgraActorLifecycleKind::Committed, 0, 0, 0, 1, coordinate(3)};
+  if (llvm::Error error = runtime.acceptActorCommits({committed}))
+    fail(llvm::toString(std::move(error)));
+  require(!runtime.actorSourcesAvailable(0),
+          "actor commit did not reserve its transport source");
+  llvm::Error repeatedCommit = runtime.acceptActorCommits(
+      {{CgraActorLifecycleKind::Committed, 0, 1, 0, 1, coordinate(3)}});
+  require(static_cast<bool>(repeatedCommit),
+          "a second actor firing reused a reserved transport source");
+  llvm::consumeError(std::move(repeatedCommit));
+
   emissions.clear();
   emissions.push_back(
       {0, 0, 0, 0,
@@ -203,6 +215,8 @@ void localRealizationEdgePublishesThroughExactConsumer() {
               channelQueue(state, sync->op->getOpOperand(1)).front(),
               mlir::IntegerType::get(&context(), 32))) == llvm::APInt(32, 16),
       "FU-local transfer did not publish one exact consumer token");
+  require(runtime.actorSourcesAvailable(0),
+          "transport release did not clear the actor source reservation");
   channelQueue(state, sync->op->getOpOperand(1)).pop_front();
 
   CgraFrozenExecutionPlan physicalPlan = plan;
@@ -811,8 +825,18 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
   plan.transport.consumedUses.push_back({rightSink, 0, 0});
   plan.transport.operandQueueConsumers.push_back({leftSink});
   plan.transport.operandQueueConsumers.push_back({rightSink});
-  plan.transport.operandQueueMatches.push_back({leftQueue, 0, 2, 0, 1});
-  plan.transport.operandQueueMatches.push_back({rightQueue, 1, 2, 1, 1});
+  plan.transport.operandQueueMatches.push_back(
+      {leftQueue, loom::fabric::FabricFuOccurrenceRef(0), 0, 2, 0, 1});
+  plan.transport.operandQueueMatches.push_back(
+      {rightQueue, loom::fabric::FabricFuOccurrenceRef(0), 1, 2, 1, 1});
+  plan.transport.operandQueueProgress.groupCount = 1;
+  plan.transport.operandQueueProgress.pairingKeyCount = 2;
+  plan.transport.operandQueueProgress.distinctPairingKeyCount = 2;
+  plan.transport.operandQueueProgress.distinctIngressCount = 1;
+  plan.transport.operandQueueProgress.status =
+      loom::mapping::SpatialPeOperandProgressStatus::Safe;
+  plan.transport.operandQueueProgress.support =
+      loom::mapping::SpatialPeOperandProgressSupport::Exact;
   plan.transport.operandQueueActivations.push_back(
       {producer,
        {loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 0},

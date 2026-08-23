@@ -1,10 +1,12 @@
 #pragma once
 
 #include "Common/Artifact.h"
+#include "DSE/HardwareDecision.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
-#include "Mapping/Artifact/SystemMappingHardwareDemand.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingHardwareDemand.h"
 #include "Mapping/IR/MappingOps.h"
 #include "PnR/System/SystemCandidateState.h"
 #include "PnR/System/SystemMappingMigration.h"
@@ -22,6 +24,7 @@ class MLIRContext;
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 struct ResolvedConfig;
 
 namespace adg {
@@ -33,6 +36,17 @@ class FinalizedFabricRoot;
 }
 
 namespace pnr::test {
+
+struct AppliedSystemCompositionDecision final {
+  ArtifactRootReference child;
+  dse::SystemCompositionCandidateDecision lineage;
+};
+
+AppliedSystemCompositionDecision
+applySystemCompositionDecision(ArtifactStore &store, const BlobStore &blobs,
+                               const ArtifactRootReference &parent,
+                               llvm::ArrayRef<ArtifactRootReference> modules,
+                               dse::SystemCompositionDecisionDomain domain);
 
 mlir::DenseI8ArrayAttr bytesAttr(mlir::MLIRContext *context,
                                  llvm::ArrayRef<std::uint8_t> bytes);
@@ -106,6 +120,12 @@ void verifySystemNegotiatedRoutingWorkflow(
 void verifySystemImportedCapacityWorkflow(
     const SystemCandidateState &candidate);
 
+void verifyResourceTimeSpectrumWorkflow(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::FinalizedSystemMapping &mapping,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
+    ArtifactStore &store);
+
 mapping::SystemAccCoreCapacityPressure verifySystemCapacityPressureRoundTrip(
     ArtifactStore &store, const fabric::FinalizedFabricRoot &parentSystemRoot,
     const fabric::FabricSystemRootView &parentSystem,
@@ -119,7 +139,9 @@ SystemExecutionBindingCorrespondence verifySystemAccCoreCorrespondence(
     ArtifactStore &store, const fabric::FinalizedFabricRoot &parentSystemRoot,
     const fabric::FabricSystemRootView &parentSystem,
     const fabric::FinalizedFabricRoot &childSystemRoot,
-    std::vector<SystemAccCoreCorrespondence> correspondence);
+    std::vector<fabric::FabricSystemEntityCorrespondence> entities,
+    std::vector<fabric::FabricSystemTransferPatternCorrespondence>
+        transferPatterns);
 
 } // namespace pnr::test
 } // namespace loom

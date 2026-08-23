@@ -6,6 +6,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -69,6 +70,20 @@ projectResolvedTechMappingConfigView(const ResolvedConfig &config) {
       config.dse.techMapping.partialCoverExpansionLimit,
       config.dse.techMapping.candidateEvaluationLimit,
       config.dse.techMapping.candidatePublicationLimit};
+  if (llvm::Error error = validateLimits(limits))
+    return std::move(error);
+  return ResolvedTechMappingConfigView(limits);
+}
+
+llvm::Expected<ResolvedTechMappingConfigView>
+deriveTechMappingConfigWithPublicationLimit(
+    const ResolvedTechMappingConfigView &config,
+    std::uint64_t candidatePublicationLimit) {
+  const std::array<std::uint64_t, 4> limits = {
+      config.matchRowAttemptLimit(), config.partialCoverExpansionLimit(),
+      config.candidateEvaluationLimit(),
+      std::min(config.candidatePublicationLimit(),
+               candidatePublicationLimit)};
   if (llvm::Error error = validateLimits(limits))
     return std::move(error);
   return ResolvedTechMappingConfigView(limits);

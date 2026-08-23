@@ -1063,9 +1063,10 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
         InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
         "candidate worker count must be positive"};
 
+  const FrozenSpatialPnrProblemHandle frozenProblem = *problem;
   std::vector<SpatialRestartResult> restartResults;
   const auto runRestart = [&](std::uint32_t attempt) {
-    return runSpatialRestart(*problem, attempt, inputs.executionControl);
+    return runSpatialRestart(frozenProblem, attempt, inputs.executionControl);
   };
   const bool firstVerifiedCandidate =
       inputs.config.policy().search.completionGoal ==

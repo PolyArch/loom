@@ -2,6 +2,7 @@
 
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
+#include "Fabric/Artifact/FabricSystemReferenceRemapper.h"
 #include "Fabric/IR/FabricCanonicalEntity.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/MemoryServiceContract.h"
@@ -26,11 +27,6 @@ using namespace mlir;
 
 namespace loom::fabric::detail {
 namespace {
-
-struct CanonicalEntity {
-  FabricEntityKind kind;
-  FabricEntityId id;
-};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -59,7 +55,8 @@ public:
   static llvm::Expected<SystemReferenceRemapper>
   create(::fabric::SystemOp root,
          const FabricSystemCanonicalLabeling &labeling) {
-    SystemReferenceRemapper remapper(labeling.sourceDependencyToCanonical);
+    std::vector<FabricSystemEntityCorrespondence> entities;
+    entities.reserve(labeling.carriers.size());
     for (const FabricSystemEntityCarrier &carrier : labeling.carriers) {
       if (!carrier.op)
         return invalid("System canonical entity has no operation carrier");
@@ -67,13 +64,11 @@ public:
           carrier.op->getAttrOfType<::fabric::EntityIdAttr>("entity_id");
       if (!authored)
         continue;
-      if (!remapper.entities_
-               .try_emplace(authored.getId(),
-                            CanonicalEntity{carrier.kind, carrier.id})
-               .second)
-        return invalid("System materialization repeats a provisional EntityId");
+      entities.push_back({{carrier.kind, authored.getId()},
+                          {carrier.kind, carrier.id}});
     }
 
+    std::vector<FabricSystemTransferPatternCorrespondence> patterns;
     for (Operation &operation : root.getBody().front()) {
       auto pattern = dyn_cast<::fabric::SystemTransferPatternOp>(&operation);
       if (!pattern)
@@ -86,200 +81,30 @@ public:
           pattern.getOperation());
       if (ordinal == labeling.transferPatternOrdinalByOperation.end())
         return invalid("System transfer pattern has no canonical ordinal");
-      auto resource = remapper.entity(record->pattern().resource);
-      if (!resource)
-        return resource.takeError();
-      const std::vector<std::uint8_t> oldKey =
-          canonicalFabricBytes(record->pattern());
-      const FabricTransferPatternRef replacement{*resource, ordinal->second};
-      if (!remapper.patterns_.emplace(oldKey, replacement).second)
-        return invalid("System materialization repeats a transfer-pattern ref");
+      auto resource = llvm::find_if(entities, [&](const auto &entry) {
+        return entry.source.kind ==
+                   FabricEntityKind::SystemTransportResource &&
+               entry.source.id == record->pattern().resource.id();
+      });
+      if (resource == entities.end())
+        return invalid(
+            "System transfer pattern has no resource correspondence");
+      patterns.push_back(
+          {record->pattern(),
+           FabricTransferPatternRef{
+               SystemTransportResourceRef(resource->target.id),
+               ordinal->second}});
     }
-    return remapper;
+    auto references = FabricSystemReferenceRemapper::get(entities, patterns);
+    if (!references)
+      return references.takeError();
+    return SystemReferenceRemapper(
+        std::move(*references), labeling.sourceDependencyToCanonical);
   }
 
-  template <FabricEntityKind Kind>
-  llvm::Expected<FabricTypedEntityRef<Kind>>
-  entity(const FabricTypedEntityRef<Kind> &reference) const {
-    auto found = entities_.find(reference.id());
-    if (found == entities_.end())
-      return invalid("System reference names an unknown provisional entity");
-    if (found->second.kind != Kind)
-      return invalid(
-          "System reference names the wrong provisional entity kind");
-    return FabricTypedEntityRef<Kind>(found->second.id);
-  }
-
-  llvm::Expected<SpatialCoreOccurrenceRef>
-  remap(const SpatialCoreOccurrenceRef &reference) const {
-    auto core = entity(reference.core);
-    if (!core)
-      return core.takeError();
-    return SpatialCoreOccurrenceRef{*core};
-  }
-
-  llvm::Expected<InstructionCoreContextRef>
-  remap(const InstructionCoreContextRef &reference) const {
-    auto core = entity(reference.core);
-    if (!core)
-      return core.takeError();
-    return InstructionCoreContextRef{*core};
-  }
-
-  llvm::Expected<InstructionContextRef>
-  remap(const InstructionContextRef &reference) const {
-    auto pe = entity(reference.pe);
-    if (!pe)
-      return pe.takeError();
-    return InstructionContextRef{*pe, reference.ordinal};
-  }
-
-  llvm::Expected<FabricFuTemplateNodeRef>
-  remap(const FabricFuTemplateNodeRef &reference) const {
-    auto fu = entity(reference.fu);
-    if (!fu)
-      return fu.takeError();
-    return FabricFuTemplateNodeRef{reference.node, *fu, reference.ordinal};
-  }
-
-  llvm::Expected<FabricFuOccurrenceNodeRef>
-  remap(const FabricFuOccurrenceNodeRef &reference) const {
-    auto fu = entity(reference.fu);
-    if (!fu)
-      return fu.takeError();
-    return FabricFuOccurrenceNodeRef{reference.node, *fu, reference.ordinal};
-  }
-
-  llvm::Expected<FabricMemoryOperationPortRef>
-  remap(const FabricMemoryOperationPortRef &reference) const {
-    auto memory = entity(reference.memory);
-    if (!memory)
-      return memory.takeError();
-    return FabricMemoryOperationPortRef{*memory, reference.ordinal};
-  }
-
-  llvm::Expected<FabricTransferPatternRef>
-  remap(const FabricTransferPatternRef &reference) const {
-    auto found = patterns_.find(canonicalFabricBytes(reference));
-    if (found == patterns_.end())
-      return invalid("System reference names an unknown transfer pattern");
-    return found->second;
-  }
-
-  template <FabricEntityKind Kind>
-  llvm::Expected<FabricTypedEntityRef<Kind>>
-  remap(const FabricTypedEntityRef<Kind> &reference) const {
-    return entity(reference);
-  }
-
-  llvm::Expected<FabricMemoryServiceRef>
-  remap(const FabricMemoryServiceRef &reference) const {
-    return std::visit(
-        [&](const auto &payload) -> llvm::Expected<FabricMemoryServiceRef> {
-          auto mapped = remap(payload);
-          if (!mapped)
-            return mapped.takeError();
-          using T = std::decay_t<decltype(payload)>;
-          if constexpr (std::is_same_v<T, FabricMemoryOccurrenceRef>)
-            return FabricMemoryServiceRef::local(*mapped);
-          else
-            return FabricMemoryServiceRef::system(*mapped);
-        },
-        reference.payload);
-  }
-
-  llvm::Expected<FabricTransportEndpointOwnerRef>
-  remap(const FabricTransportEndpointOwnerRef &reference) const {
-    return std::visit(
-        [&](const auto &payload)
-            -> llvm::Expected<FabricTransportEndpointOwnerRef> {
-          auto mapped = remap(payload);
-          if (!mapped)
-            return mapped.takeError();
-          return FabricTransportEndpointOwnerRef::of(*mapped);
-        },
-        reference.payload);
-  }
-
-  llvm::Expected<FabricMemoryEndpointOwnerRef>
-  remap(const FabricMemoryEndpointOwnerRef &reference) const {
-    return std::visit(
-        [&](const auto &payload)
-            -> llvm::Expected<FabricMemoryEndpointOwnerRef> {
-          auto mapped = remap(payload);
-          if (!mapped)
-            return mapped.takeError();
-          return FabricMemoryEndpointOwnerRef::of(*mapped);
-        },
-        reference.payload);
-  }
-
-  llvm::Expected<FabricInventoryOwnerRef>
-  remap(const FabricInventoryOwnerRef &reference) const {
-    return std::visit(
-        [&](const auto &payload) -> llvm::Expected<FabricInventoryOwnerRef> {
-          auto mapped = remap(payload);
-          if (!mapped)
-            return mapped.takeError();
-          return FabricInventoryOwnerRef::of(*mapped);
-        },
-        reference.payload);
-  }
-
-  llvm::Expected<FabricTransportEndpointRef>
-  remap(const FabricTransportEndpointRef &reference) const {
-    auto owner = remap(reference.owner);
-    if (!owner)
-      return owner.takeError();
-    return FabricTransportEndpointRef{*owner, reference.ordinal};
-  }
-
-  llvm::Expected<FabricMemoryEndpointRef>
-  remap(const FabricMemoryEndpointRef &reference) const {
-    auto owner = remap(reference.owner);
-    if (!owner)
-      return owner.takeError();
-    return FabricMemoryEndpointRef{*owner, reference.ordinal};
-  }
-
-  llvm::Expected<FabricUsePatternRef>
-  remap(const FabricUsePatternRef &reference) const {
-    auto owner = remap(reference.owner.catalog());
-    if (!owner)
-      return owner.takeError();
-    return FabricUsePatternRef{FabricUsePatternOwnerRef(*owner),
-                               reference.ordinal};
-  }
-
-  llvm::Expected<FabricMemoryServiceRegionRef>
-  remap(const FabricMemoryServiceRegionRef &reference) const {
-    auto service = remap(reference.service);
-    if (!service)
-      return service.takeError();
-    return FabricMemoryServiceRegionRef{*service, reference.ordinal};
-  }
-
-  llvm::Expected<ClockDomainRef> remap(const ClockDomainRef &reference) const {
-    auto domain = entity(reference.underlying());
-    if (!domain)
-      return domain.takeError();
-    return ClockDomainRef(*domain);
-  }
-
-  llvm::Expected<MemoryConsistencyDomainRef>
-  remap(const MemoryConsistencyDomainRef &reference) const {
-    auto domain = entity(reference.underlying());
-    if (!domain)
-      return domain.takeError();
-    return MemoryConsistencyDomainRef(*domain);
-  }
-
-  llvm::Expected<SubordinateEndpointRef>
-  remap(const SubordinateEndpointRef &reference) const {
-    auto endpoint = remap(reference.underlying());
-    if (!endpoint)
-      return endpoint.takeError();
-    return SubordinateEndpointRef(*endpoint);
+  template <typename Ref>
+  llvm::Expected<Ref> remap(const Ref &reference) const {
+    return references_.remap(reference);
   }
 
   llvm::Expected<FabricImportedModuleTargetRef>
@@ -301,8 +126,10 @@ public:
 
 private:
   explicit SystemReferenceRemapper(
+      FabricSystemReferenceRemapper references,
       llvm::ArrayRef<std::uint64_t> sourceDependencyToCanonical)
-      : sourceDependencyToCanonical_(sourceDependencyToCanonical.begin(),
+      : references_(std::move(references)),
+        sourceDependencyToCanonical_(sourceDependencyToCanonical.begin(),
                                      sourceDependencyToCanonical.end()) {}
 
   llvm::Expected<std::uint64_t>
@@ -312,8 +139,7 @@ private:
     return sourceDependencyToCanonical_[sourceOrdinal];
   }
 
-  llvm::DenseMap<FabricEntityId, CanonicalEntity> entities_;
-  std::map<std::vector<std::uint8_t>, FabricTransferPatternRef> patterns_;
+  FabricSystemReferenceRemapper references_;
   std::vector<std::uint64_t> sourceDependencyToCanonical_;
 };
 

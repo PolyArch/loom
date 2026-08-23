@@ -60,12 +60,16 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
       plan, dataflow, graph, execution, state, *physical);
   if (!transportRuntime)
     return transportRuntime.takeError();
+  auto compute =
+      std::make_unique<CgraComputeRuntime>(std::move(*computeRuntime));
+  auto memory = std::make_unique<CgraMemoryRuntime>(std::move(*memoryRuntime));
+  auto transport =
+      std::make_unique<CgraTransportRuntime>(std::move(*transportRuntime));
+  compute->bindTransport(*transport);
+  memory->bindTransport(*transport);
   return CgraGraphActivationRuntime(
-      plan, state, std::move(physical),
-      std::make_unique<CgraComputeRuntime>(std::move(*computeRuntime)),
-      std::make_unique<CgraMemoryRuntime>(std::move(*memoryRuntime)),
-      std::make_unique<CgraTransportRuntime>(std::move(*transportRuntime)),
-      captureMicroarchitecture);
+      plan, state, std::move(physical), std::move(compute), std::move(memory),
+      std::move(transport), captureMicroarchitecture);
 }
 
 llvm::Error CgraGraphActivationRuntime::start(
@@ -123,6 +127,11 @@ std::uint64_t CgraGraphActivationRuntime::pendingPhysicalActionCount() const {
   return physical_->pendingActionCount();
 }
 
+const ::loom::mapping::SpatialPeOperandProgressFeedback &
+CgraGraphActivationRuntime::operandQueueProgress() const {
+  return transport_->operandQueueProgress();
+}
+
 std::vector<CgraPendingActorFiringDiagnostic>
 CgraGraphActivationRuntime::pendingActorFiringDiagnostics() const {
   std::vector<CgraPendingActorFiringDiagnostic> result;
@@ -147,6 +156,11 @@ CgraGraphActivationRuntime::pendingTransferDiagnostics() const {
   return transport_->pendingTransferDiagnostics();
 }
 
+std::vector<CgraOperandQueueHeadDiagnostic>
+CgraGraphActivationRuntime::pendingOperandQueueHeadDiagnostics() const {
+  return transport_->pendingOperandQueueHeadDiagnostics();
+}
+
 std::vector<CgraPendingGraphPhysicalActionDiagnostic>
 CgraGraphActivationRuntime::pendingPhysicalActionDiagnostics() const {
   std::vector<CgraPendingGraphPhysicalActionDiagnostic> result;
@@ -156,7 +170,14 @@ CgraGraphActivationRuntime::pendingPhysicalActionDiagnostics() const {
       continue;
     const CgraPhysicalUseClientKind client =
         plan_->physicalUseClients[action.actionOrdinal];
-    result.push_back({std::move(action), client});
+    std::optional<std::uint64_t> semanticActor;
+    if (client == CgraPhysicalUseClientKind::ComputeTransition)
+      semanticActor = compute_->physicalActionSemanticActor(
+          action.actionOrdinal, action.occurrenceOrdinal);
+    else if (client == CgraPhysicalUseClientKind::MemoryTransition)
+      semanticActor = memory_->physicalActionSemanticActor(
+          action.actionOrdinal, action.occurrenceOrdinal);
+    result.push_back({std::move(action), client, semanticActor});
   }
   return result;
 }

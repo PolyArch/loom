@@ -18,6 +18,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <variant>
 
@@ -770,7 +771,14 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemExecutionBindingView &execution,
-    const SpatialMappingImportContext &spatialMappings) {
+    const SpatialMappingImportContext &spatialMappings,
+    ExecutionControlView executionControl) {
+  const auto interrupted = [&]() -> llvm::Error {
+    return llvm::createStringError(std::errc::timed_out,
+                                   "System closure import was interrupted");
+  };
+  if (executionControl.stopRequested())
+    return interrupted();
   auto projected =
       projectSystemServiceObligations(dataflow, execution.rootThreadLaunches());
   if (!projected)
@@ -791,6 +799,8 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
   std::set<std::string> seenServices;
   std::set<std::string> expectedResourceUses;
   for (const auto &thread : execution.threadBindings()) {
+    if (executionControl.stopRequested())
+      return interrupted();
     std::vector<::loom::fabric::AccCoreOccurrenceRef> cores;
     for (const auto &clause : thread.clauses)
       cores.push_back(clause.target);
@@ -833,6 +843,8 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
 
   for (auto service :
        root.getBody().front().getOps<::mapping::ServiceRealizationOp>()) {
+    if (executionControl.stopRequested())
+      return interrupted();
     const std::vector<std::uint8_t> rawKey =
         unsignedBytes(service.getKey().getRecord());
     auto obligation =

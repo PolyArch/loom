@@ -1,0 +1,1 @@
+# RUN: %loom-dse-resource-time-frontier-test

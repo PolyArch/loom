@@ -11,6 +11,7 @@
 #include <map>
 #include <optional>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -320,11 +321,22 @@ projectWholeDomainPresburgerPartitionPlan(
   return plan;
 }
 
-llvm::Expected<SystemBindingPartitionPlan>
-projectCyclicPresburgerPartitionPlan(
+llvm::Expected<SystemBindingPartitionPlan> projectCyclicPresburgerPartitionPlan(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
     std::size_t partitionCount) {
+  return projectScheduledPresburgerPartitionPlan(dataflow, rootThreadLaunches,
+                                                 {}, partitionCount);
+}
+
+llvm::Expected<SystemBindingPartitionPlan>
+projectScheduledPresburgerPartitionPlan(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
+    llvm::ArrayRef<SystemBindingPartitionIntent> partitions,
+    std::size_t fallbackPartitionCount) {
+  if (fallbackPartitionCount == 0)
+    return invalid("fallback partition count is zero");
   auto roots =
       detail::canonicalRootThreadLaunchSet(dataflow, rootThreadLaunches);
   if (!roots)
@@ -332,24 +344,51 @@ projectCyclicPresburgerPartitionPlan(
   auto expected = collectExpectedBindings(dataflow, *roots);
   if (!expected)
     return expected.takeError();
+  std::map<std::uint64_t, std::size_t> partitionCountByRoot;
+  for (const SystemBindingPartitionIntent &partition : partitions) {
+    if (partition.root.artifact != dataflow.identity())
+      return invalid("partition intent has a foreign Dataflow root");
+    if (!llvm::is_contained(*roots, partition.root))
+      return invalid("partition intent names a root outside Mapping scope");
+    if (partition.partitionCount == 0 ||
+        partition.partitionCount >
+            static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+      return invalid("partition intent count exceeds native range");
+    if (!partitionCountByRoot
+             .emplace(partition.root.entity.value(),
+                      static_cast<std::size_t>(partition.partitionCount))
+             .second)
+      return invalid("partition intent repeats a Dataflow root");
+  }
   SystemBindingPartitionPlan plan;
   plan.bindings.reserve(expected->size());
   for (ExpectedBinding &binding : *expected) {
+    const ::dataflow::RootThreadLaunchRef root = std::visit(
+        [](const auto &key) -> ::dataflow::RootThreadLaunchRef {
+          using Key = std::decay_t<decltype(key)>;
+          if constexpr (std::is_same_v<Key, ::dataflow::RootThreadLaunchRef>)
+            return key;
+          else
+            return key.rootThreadLaunch;
+        },
+        binding.key);
+    const auto selected = partitionCountByRoot.find(root.entity.value());
+    const std::size_t partitionCount = selected == partitionCountByRoot.end()
+                                           ? fallbackPartitionCount
+                                           : selected->second;
     auto cells = cyclicCells(binding.legalDomain, partitionCount);
     if (!cells)
       return cells.takeError();
-    plan.bindings.push_back(
-        {std::move(binding.key), std::move(*cells)});
+    plan.bindings.push_back({std::move(binding.key), std::move(*cells)});
   }
-  auto canonical = detail::canonicalizeAndValidateSystemPartition(
-      dataflow, *roots, plan);
+  auto canonical =
+      detail::canonicalizeAndValidateSystemPartition(dataflow, *roots, plan);
   if (!canonical)
     return canonical.takeError();
   plan.bindings.clear();
   plan.bindings.reserve(canonical->size());
   for (detail::CanonicalSystemPartitionBinding &binding : *canonical)
-    plan.bindings.push_back(
-        {std::move(binding.key), std::move(binding.cells)});
+    plan.bindings.push_back({std::move(binding.key), std::move(binding.cells)});
   return plan;
 }
 

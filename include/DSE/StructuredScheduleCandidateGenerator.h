@@ -19,9 +19,18 @@ namespace loom::dse {
 inline constexpr CandidateGeneratorKind
     structuredScheduleCandidateGeneratorKind(2);
 
+enum class StructuredScheduleGenerationIntent : std::uint8_t {
+  Balanced = 0,
+  RequireLogicalThreadDomain = 1,
+  ForbidLogicalThreadDomain = 2,
+};
+
 class ResolvedStructuredScheduleGeneratorConfigView final {
 public:
   std::uint64_t scopeExpansionLimit() const { return scopeExpansionLimit_; }
+  StructuredScheduleGenerationIntent generationIntent() const {
+    return generationIntent_;
+  }
   llvm::ArrayRef<std::uint8_t> canonicalViewBytes() const {
     return canonicalBytes_;
   }
@@ -30,16 +39,20 @@ public:
 private:
   ResolvedStructuredScheduleGeneratorConfigView(
       std::uint64_t scopeExpansionLimit,
+      StructuredScheduleGenerationIntent generationIntent,
       std::vector<std::uint8_t> canonicalBytes, ComponentViewDigest digest)
       : scopeExpansionLimit_(scopeExpansionLimit),
+        generationIntent_(generationIntent),
         canonicalBytes_(std::move(canonicalBytes)), digest_(digest) {}
 
   std::uint64_t scopeExpansionLimit_;
+  StructuredScheduleGenerationIntent generationIntent_;
   std::vector<std::uint8_t> canonicalBytes_;
   ComponentViewDigest digest_;
 
   friend llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
-  projectResolvedStructuredScheduleGeneratorConfigView(const ResolvedConfig &);
+  projectResolvedStructuredScheduleGeneratorConfigView(
+      const ResolvedConfig &, StructuredScheduleGenerationIntent);
   friend llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
   adoptResolvedStructuredScheduleGeneratorConfigView(
       llvm::ArrayRef<std::uint8_t>, llvm::ArrayRef<std::uint8_t>,
@@ -51,7 +64,9 @@ resolvedStructuredScheduleGeneratorConfigSchemaBytes();
 
 llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
 projectResolvedStructuredScheduleGeneratorConfigView(
-    const ResolvedConfig &config);
+    const ResolvedConfig &config,
+    StructuredScheduleGenerationIntent intent =
+        StructuredScheduleGenerationIntent::Balanced);
 
 llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
 adoptResolvedStructuredScheduleGeneratorConfigView(

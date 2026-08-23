@@ -6,13 +6,18 @@
 #include "Simulator/SimulationExecution.h"
 #include "Simulator/SpatialExecutionSession.h"
 #include "Simulator/SpatialTrace.h"
+#include "Common/ComponentViewDigest.h"
+#include "Fabric/IR/TemporalOperandBuffer.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace loom::sim {
@@ -37,6 +42,29 @@ struct CgraSimulationCounters final {
 /// progress. Persistent Halted witnesses remain unavailable until the exact
 /// FindingKind owner registers its terminal-witness schema.
 struct CgraClosedWaitSetDiagnostic final {
+  /// Exact immutable execution owners used to produce this witness. The
+  /// witness is not a new artifact identity; these references let an
+  /// independent Mapping/DSE verifier re-import the same owners.
+  std::optional<CgraExecutionOwnerReferences> ownerReferences;
+
+  struct OperandQueueHead final {
+    ::fabric::LogicalOperandQueueKey queue;
+    ::loom::fabric::FabricFuOccurrenceRef fu;
+    std::uint32_t allocationUnit = 0;
+    std::uint32_t capacity = 0;
+    std::uint32_t occupancy = 0;
+    std::uint32_t reservations = 0;
+    std::uint64_t headBindingOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t headOccurrenceOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t headProducerSequenceOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    llvm::APInt headTag = llvm::APInt(1, 0);
+    bool exactHead = false;
+    std::vector<std::pair<std::uint64_t, unsigned>> consumers;
+  };
+
   struct ActorFiring final {
     std::uint64_t semanticActorOrdinal = 0;
     std::uint64_t occurrenceOrdinal = 0;
@@ -50,6 +78,7 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint64_t actionOrdinal = 0;
     std::uint64_t occurrenceOrdinal = 0;
     std::uint8_t clientKind = 0;
+    std::optional<std::uint64_t> semanticActorOrdinal;
     bool granted = false;
     bool hasCommit = false;
     bool requiresCausalRelease = false;
@@ -57,8 +86,23 @@ struct CgraClosedWaitSetDiagnostic final {
     bool causalReleaseReached = false;
   };
   struct Transfer final {
+    struct OperandQueueWait final {
+      ::fabric::LogicalOperandQueueKey queue;
+      ::loom::fabric::FabricFuOccurrenceRef fu;
+      ::loom::fabric::FabricTransportEndpointRef ingress;
+      llvm::APInt tag = llvm::APInt(1, 0);
+      std::uint32_t allocationUnit = 0;
+      std::uint32_t occupancy = 0;
+      std::uint32_t reservations = 0;
+      std::uint32_t capacity = 0;
+    };
+
     std::uint64_t bindingOrdinal = 0;
     std::uint64_t occurrenceOrdinal = 0;
+    std::uint64_t producerActorOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint32_t producerResultOrdinal =
+        std::numeric_limits<std::uint32_t>::max();
     bool blocked = false;
     bool arrivalScheduled = false;
     bool publicationReady = false;
@@ -84,6 +128,8 @@ struct CgraClosedWaitSetDiagnostic final {
     std::vector<std::uint64_t> unpublishedReadyTokenCounts;
     std::uint64_t blockingTraversalNodeOrdinal = 0;
     std::uint64_t blockingStorageOrdinal = 0;
+    std::optional<::loom::fabric::FabricFifoOccurrenceRef>
+        blockingFifoOccurrence;
     std::uint32_t blockingStorageOccupancy = 0;
     std::uint32_t blockingStorageReservations = 0;
     std::uint32_t blockingStorageCapacity = 0;
@@ -100,6 +146,23 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint64_t blockingQueueOccupancy = 0;
     std::uint64_t blockingQueueReservations = 0;
     std::uint64_t blockingQueueCapacity = 0;
+    std::vector<OperandQueueWait> operandQueueWaits;
+  };
+  struct TransferWaitCycleEdge final {
+    std::uint64_t waitingBindingOrdinal = 0;
+    std::uint64_t waitingOccurrenceOrdinal = 0;
+    std::uint64_t blockingActorOrdinal = 0;
+    std::uint64_t blockingBindingOrdinal = 0;
+    std::uint64_t blockingOccurrenceOrdinal = 0;
+  };
+  enum class ActorWaitKind : std::uint8_t {
+    OutputBackpressure,
+    MissingInput,
+  };
+  struct ActorWaitCycleEdge final {
+    std::uint64_t waitingActorOrdinal = 0;
+    std::uint64_t blockingActorOrdinal = 0;
+    ActorWaitKind kind = ActorWaitKind::MissingInput;
   };
   std::uint64_t pendingActorFirings = 0;
   std::uint64_t pendingTransfers = 0;
@@ -108,6 +171,29 @@ struct CgraClosedWaitSetDiagnostic final {
   std::vector<ActorFiring> actorFirings;
   std::vector<Transfer> transfers;
   std::vector<PhysicalAction> physicalActions;
+  /// Canonical cycle in the actual quiescent transfer wait-for graph. An edge
+  /// says that one blocked transfer needs a consumer actor whose active
+  /// firing cannot retire before another pending transfer completes. Empty
+  /// means this narrower finite-buffer cycle was not established; it does not
+  /// turn a quiescent execution into a successful one.
+  std::vector<TransferWaitCycleEdge> transferWaitCycle;
+  /// Canonical cycle in the actor-level wait closure. Output-backpressure
+  /// edges are reconstructed from blocked physical transfers. Missing-input
+  /// edges are admitted only when every registered handshake case remains
+  /// blocked by an internal producer in the same greatest closed set.
+  std::vector<ActorWaitCycleEdge> actorWaitCycle;
+  /// Shared derived Mapping/Simulator queue projection summary. These fields
+  /// carry no new runtime identity and are absent when no operand queues are
+  /// selected.
+  std::uint64_t operandQueueGroupCount = 0;
+  std::uint64_t operandQueuePotentiallyBlockingGroupCount = 0;
+  std::uint64_t operandQueueUnknownPairingGroupCount = 0;
+  std::uint64_t operandQueueDistinctIngressCount = 0;
+  std::uint64_t operandQueuePairingKeyCount = 0;
+  std::uint8_t operandQueueProgressStatus = 0;
+  std::uint8_t operandQueueProgressSupport = 0;
+  std::optional<::loom::ComponentViewDigest> operandQueueProjectionDigest;
+  std::vector<OperandQueueHead> operandQueueHeads;
 };
 
 struct RetiredCgraSimulation final {

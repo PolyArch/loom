@@ -3,12 +3,15 @@
 
 #include "CgraComputeRuntime.h"
 #include "CgraTransportStorageRuntime.h"
+#include "Fabric/IR/TemporalOperandBuffer.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallBitVector.h"
 
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -37,8 +40,22 @@ struct CgraTransportFrame final {
 };
 
 struct CgraPendingTransferDiagnostic final {
+  struct OperandQueueWait final {
+    ::fabric::LogicalOperandQueueKey queue;
+    ::loom::fabric::FabricFuOccurrenceRef fu;
+    ::loom::fabric::FabricTransportEndpointRef ingress;
+    llvm::APInt tag = llvm::APInt(1, 0);
+    std::uint32_t allocationUnit = 0;
+    std::uint32_t occupancy = 0;
+    std::uint32_t reservations = 0;
+    std::uint32_t capacity = 0;
+  };
+
   std::uint64_t bindingOrdinal = 0;
   std::uint64_t occurrenceOrdinal = 0;
+  std::uint64_t producerActorOrdinal = invalidCgraTransportOrdinal;
+  std::uint32_t producerResultOrdinal =
+      std::numeric_limits<std::uint32_t>::max();
   bool blocked = false;
   bool arrivalScheduled = false;
   bool publicationReady = false;
@@ -64,6 +81,8 @@ struct CgraPendingTransferDiagnostic final {
   std::vector<std::uint64_t> unpublishedReadyTokenCounts;
   std::uint64_t blockingTraversalNodeOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t blockingStorageOrdinal = invalidCgraTransportOrdinal;
+  std::optional<::loom::fabric::FabricFifoOccurrenceRef>
+      blockingFifoOccurrence;
   std::uint32_t blockingStorageOccupancy = 0;
   std::uint32_t blockingStorageReservations = 0;
   std::uint32_t blockingStorageCapacity = 0;
@@ -80,6 +99,26 @@ struct CgraPendingTransferDiagnostic final {
   std::uint64_t blockingQueueOccupancy = 0;
   std::uint64_t blockingQueueReservations = 0;
   std::uint64_t blockingQueueCapacity = 0;
+  std::vector<OperandQueueWait> operandQueueWaits;
+};
+
+/// Exact runtime witness for one selected Temporal PE operand queue. The
+/// queue head is tracked as a producer binding/occurrence/sequence tuple, so
+/// a closed wait can be joined to the Mapping-owned qualified pairing domain
+/// without inferring progress from aggregate occupancy alone.
+struct CgraOperandQueueHeadDiagnostic final {
+  ::fabric::LogicalOperandQueueKey queue;
+  ::loom::fabric::FabricFuOccurrenceRef fu;
+  std::uint32_t allocationUnit = 0;
+  std::uint32_t capacity = 0;
+  std::uint32_t occupancy = 0;
+  std::uint32_t reservations = 0;
+  std::uint64_t headBindingOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t headOccurrenceOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t headProducerSequenceOrdinal = invalidCgraTransportOrdinal;
+  llvm::APInt headTag = llvm::APInt(1, 0);
+  bool exactHead = false;
+  std::vector<std::pair<std::uint64_t, unsigned>> consumers;
 };
 
 /// Execution-local token transport for one mapped graph activation. It binds
@@ -130,7 +169,11 @@ public:
   }
   bool hasBlockedTransfers() const { return blocked_.any(); }
   std::uint64_t activeTransferCount() const { return activeTransferCount_; }
+  const ::loom::mapping::SpatialPeOperandProgressFeedback &
+  operandQueueProgress() const;
   std::vector<CgraPendingTransferDiagnostic> pendingTransferDiagnostics() const;
+  std::vector<CgraOperandQueueHeadDiagnostic>
+  pendingOperandQueueHeadDiagnostics() const;
 
 private:
   enum class SinkKind : std::uint8_t { Channel, Observation };
@@ -171,6 +214,7 @@ private:
     std::optional<std::uint64_t> semanticActorOrdinal;
     std::uint64_t nextProducerSequenceOrdinal = 0;
     bool discard = false;
+    bool sourceReserved = false;
     bool active = false;
   };
 
@@ -341,9 +385,17 @@ private:
     };
 
     ::fabric::LogicalOperandQueueKey queue;
+    ::loom::fabric::FabricFuOccurrenceRef fu;
     std::uint64_t unitBinding = invalidCgraTransportOrdinal;
     std::uint32_t occupancy = 0;
     std::vector<Consumer> consumers;
+    struct Entry final {
+      std::uint64_t bindingOrdinal = invalidCgraTransportOrdinal;
+      std::uint64_t occurrenceOrdinal = invalidCgraTransportOrdinal;
+      std::uint64_t producerSequenceOrdinal = invalidCgraTransportOrdinal;
+      llvm::APInt tag = llvm::APInt(1, 0);
+    };
+    std::deque<Entry> entries;
   };
 
   CgraTransportRuntime(

@@ -15,6 +15,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -228,7 +229,15 @@ verifySystemMappingCapacity(
     llvm::ArrayRef<SystemServiceRealizationView> services,
     llvm::ArrayRef<SystemResourceUseView> resourceUses,
     llvm::ArrayRef<std::string> resourceUseActivationKeys,
-    const SpatialMappingImportContext &spatialMappings) {
+    const SpatialMappingImportContext &spatialMappings,
+    ExecutionControlView executionControl) {
+  const auto interrupted = [&]() -> llvm::Error {
+    return llvm::createStringError(std::errc::timed_out,
+                                   "System capacity verification was "
+                                   "interrupted");
+  };
+  if (executionControl.stopRequested())
+    return interrupted();
   if (resourceUses.size() != resourceUseActivationKeys.size())
     return invalid("System ResourceUse activation projection is incomplete");
 
@@ -240,6 +249,8 @@ verifySystemMappingCapacity(
   std::vector<ResourceCapacityUseProjection> uses;
   uses.reserve(resourceUses.size());
   for (const auto &[ordinal, use] : llvm::enumerate(resourceUses)) {
+    if (executionControl.stopRequested())
+      return interrupted();
     if (llvm::Error error = validateDirectOwner(use.useSite.owner.catalog()))
       return error;
     uses.push_back(ResourceCapacityUseProjection{
@@ -250,6 +261,8 @@ verifySystemMappingCapacity(
   for (const auto &service : services)
     for (const auto &plan : service.plans)
       for (const auto &leg : plan.transferLegs) {
+        if (executionControl.stopRequested())
+          return interrupted();
         ResourceCapacityRouteProjection route;
         route.namespaceOrdinal = 0;
         for (const auto &node : leg.nodes)
@@ -268,6 +281,8 @@ verifySystemMappingCapacity(
   std::map<std::string, std::size_t> namespaceByOccurrence;
   std::set<std::string> routedMappings;
   for (const auto &context : contexts->spatialDomains) {
+    if (executionControl.stopRequested())
+      return interrupted();
     const std::string mappingKey =
         byteKey(encodeArtifactRootReference(context.spatialMapping));
     auto foundMapping = mappings.find(mappingKey);

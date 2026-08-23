@@ -1,6 +1,7 @@
 #include "DSE/StructuredOwnershipCandidateGenerator.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/MappingDebugLog.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/StructuredOwnership.h"
 #include "DSE/StructuredOwnershipInvocationInternal.h"
@@ -25,7 +26,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.structured_ownership_generator.config.1.0";
+    "loom.structured_ownership_generator.config.3.0";
 
 enum InputSlot : std::uint32_t {
   StructuredProgramInput,
@@ -124,13 +125,17 @@ canonicalRoots(llvm::ArrayRef<frontend::StructuredEntityRef> roots) {
 
 std::vector<std::uint8_t>
 encodeConfig(std::uint64_t scopeExpansionLimit,
-             llvm::ArrayRef<frontend::StructuredEntityRef> roots) {
+             std::optional<std::uint64_t> maximumMaterializationAttempts,
+             llvm::ArrayRef<frontend::StructuredEntityRef> roots,
+             StructuredOwnershipGenerationIntent generationIntent) {
   std::vector<std::uint8_t> bytes;
   const std::size_t rootBytes =
       roots.size() * frontend::structuredEntityRefWireSize;
-  bytes.reserve(16 + rootBytes);
+  bytes.reserve(25 + rootBytes);
   appendU64(bytes, scopeExpansionLimit);
+  appendU64(bytes, maximumMaterializationAttempts.value_or(0));
   appendU64(bytes, roots.size());
+  bytes.push_back(static_cast<std::uint8_t>(generationIntent));
   for (const frontend::StructuredEntityRef &root : roots) {
     std::vector<std::uint8_t> encoded =
         frontend::encodeStructuredEntityRef(root);
@@ -141,19 +146,31 @@ encodeConfig(std::uint64_t scopeExpansionLimit,
 
 struct DecodedConfig final {
   std::uint64_t scopeExpansionLimit;
+  std::optional<std::uint64_t> maximumMaterializationAttempts;
   std::vector<frontend::StructuredEntityRef> roots;
+  StructuredOwnershipGenerationIntent generationIntent;
 };
 
 llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   std::size_t offset = 0;
   auto scopeLimit = readU64(bytes, offset);
+  auto materializationLimit = readU64(bytes, offset);
   auto rootCount = readU64(bytes, offset);
   if (!scopeLimit)
     return scopeLimit.takeError();
+  if (!materializationLimit)
+    return materializationLimit.takeError();
   if (!rootCount)
     return rootCount.takeError();
   if (*scopeLimit == 0)
     return invalid("scope expansion limit must be positive");
+  if (offset == bytes.size())
+    return invalid("truncated generation intent");
+  const auto generationIntent =
+      static_cast<StructuredOwnershipGenerationIntent>(bytes[offset++]);
+  if (generationIntent >
+      StructuredOwnershipGenerationIntent::ForbidLogicalThreadDomain)
+    return invalid("unknown generation intent");
   if (*rootCount >
       (bytes.size() - offset) / frontend::structuredEntityRefWireSize)
     return invalid("protocol root count exceeds remaining bytes");
@@ -177,7 +194,12 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     return canonical.takeError();
   if (*canonical != roots)
     return invalid("protocol roots are not in canonical order");
-  return DecodedConfig{*scopeLimit, std::move(roots)};
+  return DecodedConfig{
+      *scopeLimit,
+      *materializationLimit == 0
+          ? std::nullopt
+          : std::optional<std::uint64_t>(*materializationLimit),
+      std::move(roots), generationIntent};
 }
 
 llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
@@ -220,7 +242,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredOwnershipCandidateGeneratorKind,
     "compiler.structured_ownership",
-    "loom.compiler.structured_ownership.generator.v1",
+    "loom.compiler.structured_ownership.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -240,7 +262,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
-    const CandidateGeneratorInvocationView &) {
+    const CandidateGeneratorInvocationView &invocationView) {
   auto config = adoptResolvedStructuredOwnershipGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -282,9 +304,14 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
 
   StructuredOwnershipGenerationOptions options;
   options.scopeExpansionLimit = config->scopeExpansionLimit();
+  options.maximumMaterializationAttempts =
+      config->maximumMaterializationAttempts();
+  options.maximumPublishedCandidates =
+      invocationView.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(1));
   options.candidateWorkerCount = defaultCandidateWorkerCount();
   options.protocolCallableRoots.assign(config->protocolCallableRoots().begin(),
                                        config->protocolCallableRoots().end());
+  options.generationIntent = config->generationIntent();
   auto generated = generateStructuredOwnershipCandidates(
       *generationParent, simulationInputs->structuredProgram,
       simulationInputs->workload, simulationInputs->runtimeInput, *exactFabric,
@@ -299,7 +326,37 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
   for (const ArtifactRootReference &candidate : allCandidates)
     if (candidate != structured)
       acceleratorCandidates.push_back(candidate);
-  if (acceleratorCandidates.size() + 1 != allCandidates.size())
+  bool preservedLogicalParent = false;
+  // A prior schedule provider may already have materialized the logical
+  // thread domain on this exact parent. Preserve that parent in the
+  // accelerator candidate slot so later providers compose the existing
+  // domain instead of requiring a second ownership transform.
+  if (config->generationIntent() ==
+          StructuredOwnershipGenerationIntent::RequireLogicalThreadDomain &&
+      invocation) {
+    auto hasLogicalDomain =
+        invocation->selectedCandidateHasLogicalThreadDomain(structured);
+    if (!hasLogicalDomain)
+      return hasLogicalDomain.takeError();
+    if (*hasLogicalDomain &&
+        !llvm::is_contained(acceleratorCandidates, structured)) {
+      acceleratorCandidates.push_back(structured);
+      preservedLogicalParent = true;
+    }
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+          fields["context_kind"] = "structured_ownership_logical_parent";
+          fields["generation_intent"] = "require_logical_thread_domain";
+          fields["parent_has_logical_thread_domain"] = *hasLogicalDomain;
+          fields["preserved_parent"] = preservedLogicalParent;
+        });
+  }
+  llvm::sort(acceleratorCandidates, artifactRootReferenceLess);
+  if ((!preservedLogicalParent && acceleratorCandidates.size() + 1 !=
+       allCandidates.size()) ||
+      (preservedLogicalParent && acceleratorCandidates.size() !=
+       allCandidates.size()))
     return invalid("generated candidate set lost its exact source input");
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
   for (const StructuredOwnershipCandidateDisposition &disposition :
@@ -312,7 +369,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
     if (!std::binary_search(acceleratorCandidates.begin(),
                             acceleratorCandidates.end(), *child,
                             artifactRootReferenceLess))
-      return invalid("ownership lineage target is absent from candidate set");
+      continue;
     auto payload = frontend::encodeSpatialOwnershipDecision(
         frontend::SpatialOwnershipDecision{disposition.coordinate.scope,
                                            *disposition.coordinate.decision});
@@ -331,16 +388,25 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
         {structured},
         std::move(*payload)});
   }
+  std::vector<CandidateGeneratorOutputBinding> outputs = {
+      {CandidateGeneratorOutputSlotRef(0), std::move(allCandidates)},
+      {CandidateGeneratorOutputSlotRef(1),
+       std::move(acceleratorCandidates)}};
+  CandidateGeneratorProviderOutcome outcome =
+      generated->candidateDomainTruncated
+          ? CandidateGeneratorProviderOutcome{
+                IncompleteCandidateGeneratorResult{
+                    CandidateGeneratorIncompleteReason::SemanticLimitReached,
+                    std::move(outputs), std::move(lineageEdges)}}
+          : CandidateGeneratorProviderOutcome{
+                CompletedCandidateGeneratorResult{
+                    std::move(outputs), std::move(lineageEdges)}};
   return CandidateGeneratorProviderResult{
-      CompletedCandidateGeneratorResult{
-          {{CandidateGeneratorOutputSlotRef(0), std::move(allCandidates)},
-           {CandidateGeneratorOutputSlotRef(1),
-            std::move(acceleratorCandidates)}},
-          std::move(lineageEdges)},
+      std::move(outcome),
       {{CandidateGeneratorWorkUnitRef(0), generated->plannedScopeCount,
         generated->plannedScopeCount},
        {CandidateGeneratorWorkUnitRef(1), generated->decisionAttemptCount,
-        generated->decisionAttemptCount}}};
+        generated->consumedDecisionAttemptCount}}};
 }
 
 const CandidateGeneratorProvider provider{
@@ -357,19 +423,29 @@ resolvedStructuredOwnershipGeneratorConfigSchemaBytes() {
 llvm::Expected<ResolvedStructuredOwnershipGeneratorConfigView>
 projectResolvedStructuredOwnershipGeneratorConfigView(
     const ResolvedConfig &config,
-    llvm::ArrayRef<frontend::StructuredEntityRef> protocolCallableRoots) {
+    llvm::ArrayRef<frontend::StructuredEntityRef> protocolCallableRoots,
+    StructuredOwnershipGenerationIntent generationIntent,
+    std::optional<std::uint64_t> maximumMaterializationAttempts) {
   if (config.dse.structuredOwnership.scopeExpansionLimit == 0)
     return invalid("scope expansion limit must be positive");
   auto roots = canonicalRoots(protocolCallableRoots);
   if (!roots)
     return roots.takeError();
+  if (generationIntent >
+      StructuredOwnershipGenerationIntent::ForbidLogicalThreadDomain)
+    return invalid("unknown generation intent");
+  if (maximumMaterializationAttempts &&
+      *maximumMaterializationAttempts == 0)
+    return invalid("materialization attempt limit must be positive");
   std::vector<std::uint8_t> bytes =
-      encodeConfig(config.dse.structuredOwnership.scopeExpansionLimit, *roots);
+      encodeConfig(config.dse.structuredOwnership.scopeExpansionLimit,
+                   maximumMaterializationAttempts, *roots, generationIntent);
   auto digest = computeComponentViewDigest(descriptorBytes(), bytes);
   if (!digest)
     return digest.takeError();
   return ResolvedStructuredOwnershipGeneratorConfigView(
-      config.dse.structuredOwnership.scopeExpansionLimit, std::move(*roots),
+      config.dse.structuredOwnership.scopeExpansionLimit,
+      maximumMaterializationAttempts, std::move(*roots), generationIntent,
       std::move(bytes), std::move(*digest));
 }
 
@@ -387,11 +463,14 @@ adoptResolvedStructuredOwnershipGeneratorConfigView(
   if (!decoded)
     return decoded.takeError();
   std::vector<std::uint8_t> reencoded =
-      encodeConfig(decoded->scopeExpansionLimit, decoded->roots);
+      encodeConfig(decoded->scopeExpansionLimit,
+                   decoded->maximumMaterializationAttempts, decoded->roots,
+                   decoded->generationIntent);
   if (llvm::ArrayRef<std::uint8_t>(reencoded) != canonicalViewBytes)
     return invalid("decoded config does not re-encode to the source bytes");
   return ResolvedStructuredOwnershipGeneratorConfigView(
-      decoded->scopeExpansionLimit, std::move(decoded->roots),
+      decoded->scopeExpansionLimit, decoded->maximumMaterializationAttempts,
+      std::move(decoded->roots), decoded->generationIntent,
       std::move(reencoded), digest);
 }
 

@@ -210,8 +210,22 @@ opIntrinsic(Operation *op, llvm::SmallVectorImpl<SymbolRefAttr> &symbols) {
       std::string operationText;
       llvm::raw_string_ostream stream(operationText);
       op->print(stream);
+      std::string parentText;
+      llvm::raw_string_ostream parentStream(parentText);
+      for (Operation *parent = op->getParentOp(); parent;
+           parent = parent->getParentOp()) {
+        if (parentStream.tell() != 0)
+          parentStream << " <- ";
+        parentStream << parent->getName().getStringRef();
+      }
+      const bool hasSpecialMathAccuracy =
+          op->getDiscardableAttr(loom::kSpecialMathAccuracyAttrName) !=
+          nullptr;
       return relationError("canonical dataflow: actor projection failed for " +
-                           operationText + ": " +
+                           operationText + " (parents=" + parentText +
+                           ", has_special_math_accuracy=" +
+                           (hasSpecialMathAccuracy ? "true" : "false") +
+                           "): " +
                            llvm::toString(projection.takeError()));
     }
     llvm::ArrayRef<std::uint8_t> bytes = projection->bytes();

@@ -26,6 +26,7 @@ enum class MappingProgressClosureReason : std::uint8_t {
   ActivationCapacityExceeded,
   FixedPriorityStarvation,
   PossibleWaitCycle,
+  FiniteBufferRecurrenceNotEstablished,
 };
 
 enum class MappingProgressWaitNodeKind : std::uint8_t {

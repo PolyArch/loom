@@ -125,16 +125,13 @@ systemBoundarySignals(const ::loom::fabric::FabricSystemRootView &fabric,
   return result;
 }
 
-llvm::Expected<std::vector<::loom::fabric::HandshakeDependencyArc>>
-projectOccurrenceBoundaryArcs(
-    const ::loom::fabric::FabricSystemRootView &fabric,
-    ::loom::fabric::AccCoreOccurrenceRef core,
-    const ::loom::fabric::FabricArtifactView &module,
-    const SpatialMappingView &mapping) {
-  auto systemSignals = systemBoundarySignals(fabric, core, module);
-  if (!systemSignals)
-    return systemSignals.takeError();
+using BoundaryHandshakeArc = std::pair<std::string, std::string>;
 
+llvm::Expected<std::vector<BoundaryHandshakeArc>> deriveModuleBoundaryArcs(
+    const ::loom::fabric::FabricArtifactView &module,
+    const SpatialMappingView &mapping,
+    const ::loom::fabric::FabricHandshakeContext &handshakeContext,
+    ExecutionControlView executionControl) {
   std::vector<::loom::fabric::HandshakeSignalRef> localTerminals;
   std::map<std::string, std::string> boundaryByLocalSignal;
   for (const auto &attachment : module.moduleBoundaryTransportAttachments()) {
@@ -151,11 +148,12 @@ projectOccurrenceBoundaryArcs(
     }
   }
   auto localReachability = ::loom::fabric::deriveSelectedHandshakeReachability(
-      module, mapping.handshakeSelection(), localTerminals);
+      module, mapping.handshakeSelection(), localTerminals, handshakeContext,
+      executionControl);
   if (!localReachability)
     return localReachability.takeError();
 
-  std::vector<std::pair<std::string, std::string>> boundaryArcs;
+  std::vector<BoundaryHandshakeArc> boundaryArcs;
   boundaryArcs.reserve(localReachability->size() +
                        module.moduleBoundaryTransportPassthroughs().size() * 2);
   for (const auto &arc : *localReachability) {
@@ -179,6 +177,18 @@ projectOccurrenceBoundaryArcs(
         boundarySignalKey(passthrough.input,
                           ::loom::fabric::HandshakeSignalKind::Ready));
   }
+  return boundaryArcs;
+}
+
+llvm::Expected<std::vector<::loom::fabric::HandshakeDependencyArc>>
+projectOccurrenceBoundaryArcs(
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    ::loom::fabric::AccCoreOccurrenceRef core,
+    const ::loom::fabric::FabricArtifactView &module,
+    llvm::ArrayRef<BoundaryHandshakeArc> boundaryArcs) {
+  auto systemSignals = systemBoundarySignals(fabric, core, module);
+  if (!systemSignals)
+    return systemSignals.takeError();
 
   std::vector<::loom::fabric::HandshakeDependencyArc> result;
   result.reserve(boundaryArcs.size());
@@ -402,7 +412,10 @@ llvm::Error verifySystemMappingHandshakeClosure(
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemExecutionBindingView &execution,
     llvm::ArrayRef<SystemServiceRealizationView> services,
-    const SpatialMappingImportContext &spatialMappings) {
+    const SpatialMappingImportContext &spatialMappings,
+    ExecutionControlView executionControl) {
+  if (executionControl.stopRequested())
+    return invalid("System handshake verification was interrupted");
   ::loom::fabric::FabricHandshakeSelection systemSelection;
   if (llvm::Error error = appendSystemHandshakeSelection(
           fabric.artifact(), services, systemSelection))
@@ -422,7 +435,7 @@ llvm::Error verifySystemMappingHandshakeClosure(
     }
   }
   auto combined = ::loom::fabric::deriveSelectedHandshakeReachability(
-      fabric.artifact(), systemSelection, systemTerminals);
+      fabric.artifact(), systemSelection, systemTerminals, executionControl);
   if (!combined)
     return combined.takeError();
 
@@ -430,8 +443,14 @@ llvm::Error verifySystemMappingHandshakeClosure(
   if (!contexts)
     return contexts.takeError();
   std::map<std::string, SpatialMappingView> mappings;
+  std::map<ArtifactIdentity::Storage, ::loom::fabric::FabricHandshakeContext>
+      handshakeContexts;
+  std::map<std::string, std::vector<BoundaryHandshakeArc>>
+      boundaryArcsByMapping;
   std::set<std::string> projected;
   for (const auto &context : contexts->spatialDomains) {
+    if (executionControl.stopRequested())
+      return invalid("System handshake verification was interrupted");
     const std::string mappingKey =
         byteKey(encodeArtifactRootReference(context.spatialMapping));
     auto found = mappings.find(mappingKey);
@@ -449,8 +468,28 @@ llvm::Error verifySystemMappingHandshakeClosure(
     const auto *module = resolveOccurrenceModule(fabric, core, found->second);
     if (!module)
       return invalid("imported SpatialMapping does not match its AccCore");
-    auto occurrence =
-        projectOccurrenceBoundaryArcs(fabric, core, *module, found->second);
+    auto boundaryArcs = boundaryArcsByMapping.find(mappingKey);
+    if (boundaryArcs == boundaryArcsByMapping.end()) {
+      auto handshakeContext =
+          handshakeContexts.find(module->identity().bytes());
+      if (handshakeContext == handshakeContexts.end()) {
+        auto built = ::loom::fabric::buildFabricHandshakeContext(*module);
+        if (!built)
+          return built.takeError();
+        handshakeContext =
+            handshakeContexts
+                .emplace(module->identity().bytes(), std::move(*built))
+                .first;
+      }
+      auto derived = deriveModuleBoundaryArcs(
+          *module, found->second, handshakeContext->second, executionControl);
+      if (!derived)
+        return derived.takeError();
+      boundaryArcs =
+          boundaryArcsByMapping.emplace(mappingKey, std::move(*derived)).first;
+    }
+    auto occurrence = projectOccurrenceBoundaryArcs(fabric, core, *module,
+                                                    boundaryArcs->second);
     if (!occurrence)
       return occurrence.takeError();
     combined->insert(combined->end(),

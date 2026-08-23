@@ -37,6 +37,10 @@ private:
   friend llvm::Expected<ResolvedTechMappingConfigView>
   projectResolvedTechMappingConfigView(const ResolvedConfig &config);
   friend llvm::Expected<ResolvedTechMappingConfigView>
+  deriveTechMappingConfigWithPublicationLimit(
+      const ResolvedTechMappingConfigView &config,
+      std::uint64_t candidatePublicationLimit);
+  friend llvm::Expected<ResolvedTechMappingConfigView>
   adoptResolvedTechMappingConfigView(
       llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
       llvm::ArrayRef<std::uint8_t> canonicalViewBytes,
@@ -45,6 +49,14 @@ private:
 
 llvm::Expected<ResolvedTechMappingConfigView>
 projectResolvedTechMappingConfigView(const ResolvedConfig &config);
+
+/// Derives an invocation-local publication cap without changing any search
+/// limit that precedes publication. The smaller cap is represented in the
+/// returned canonical view; zero is rejected.
+llvm::Expected<ResolvedTechMappingConfigView>
+deriveTechMappingConfigWithPublicationLimit(
+    const ResolvedTechMappingConfigView &config,
+    std::uint64_t candidatePublicationLimit);
 
 llvm::Expected<ResolvedTechMappingConfigView>
 adoptResolvedTechMappingConfigView(

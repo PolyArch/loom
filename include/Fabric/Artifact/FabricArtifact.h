@@ -29,6 +29,10 @@ struct FinalizedFabricSystemProjection;
 
 namespace detail {
 class FabricArtifactImportSessionState;
+llvm::Expected<FinalizedFabricSystemProjection> finalizeFabricSystem(
+    ::fabric::SystemOp source,
+    llvm::ArrayRef<ArtifactRootReference> importedModules,
+    const ArtifactStore &store, bool captureCorrespondence);
 }
 
 enum class FabricArtifactImportSessionMode : std::uint8_t {
@@ -147,24 +151,63 @@ private:
                      llvm::ArrayRef<ArtifactRootReference> importedModules,
                      const ArtifactStore &store);
   friend llvm::Expected<FinalizedFabricSystemProjection>
-  finalizeFabricSystemWithTrackedAccCores(
+  finalizeFabricSystemWithCorrespondence(
       ::fabric::SystemOp source,
       llvm::ArrayRef<ArtifactRootReference> importedModules,
-      llvm::ArrayRef<AccCoreOccurrenceRef> trackedAccCores,
       const ArtifactStore &store);
+  friend llvm::Expected<FinalizedFabricSystemProjection>
+  detail::finalizeFabricSystem(
+      ::fabric::SystemOp source,
+      llvm::ArrayRef<ArtifactRootReference> importedModules,
+      const ArtifactStore &store, bool captureCorrespondence);
   friend llvm::Expected<FinalizedFabricRoot>
   importEntireFabricRoot(const ArtifactRootReference &reference,
                          const ArtifactStore &store);
 };
 
-/// Finalizer-owned ephemeral correspondence for caller-selected AccCore
-/// occurrences in one System authoring root. The references belong to `root`;
-/// the correspondence is not serialized and exists only to let the authoring
-/// transaction publish exact transformation lineage across canonical
-/// relabeling.
+struct FabricSystemEntityReference final {
+  FabricEntityKind kind = FabricEntityKind::FabricModuleTemplate;
+  FabricEntityId id = 0;
+
+  friend bool operator==(const FabricSystemEntityReference &lhs,
+                         const FabricSystemEntityReference &rhs) {
+    return lhs.kind == rhs.kind && lhs.id == rhs.id;
+  }
+  friend bool operator!=(const FabricSystemEntityReference &lhs,
+                         const FabricSystemEntityReference &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+struct FabricSystemEntityCorrespondence final {
+  FabricSystemEntityReference source;
+  FabricSystemEntityReference target;
+
+  friend bool operator==(const FabricSystemEntityCorrespondence &lhs,
+                         const FabricSystemEntityCorrespondence &rhs) {
+    return lhs.source == rhs.source && lhs.target == rhs.target;
+  }
+};
+
+struct FabricSystemTransferPatternCorrespondence final {
+  FabricTransferPatternRef source;
+  FabricTransferPatternRef target;
+
+  friend bool operator==(
+      const FabricSystemTransferPatternCorrespondence &lhs,
+      const FabricSystemTransferPatternCorrespondence &rhs) {
+    return lhs.source == rhs.source && lhs.target == rhs.target;
+  }
+};
+
+/// Finalizer-owned ephemeral correspondence for every entity and transfer
+/// pattern in one System authoring root. Source references belong to the
+/// authoring root and targets belong to `root`. Fabric does not serialize this
+/// transformation lineage.
 struct FinalizedFabricSystemProjection final {
   FinalizedFabricRoot root;
-  std::vector<AccCoreOccurrenceRef> trackedAccCores;
+  std::vector<FabricSystemEntityCorrespondence> entities;
+  std::vector<FabricSystemTransferPatternCorrespondence> transferPatterns;
 };
 
 /// Finalizes one complete Module authoring root and publishes its single
@@ -186,14 +229,12 @@ finalizeFabricRoot(::fabric::SystemOp source,
                    llvm::ArrayRef<ArtifactRootReference> importedModules,
                    const ArtifactStore &store);
 
-/// Finalizes one System while carrying an ordered set of live authoring
-/// AccCore occurrences through the private clone and canonical-labeling
-/// transaction. Each result preserves the order of its source reference.
+/// Finalizes one System and publishes the complete transient correspondence
+/// produced by the same canonical-labeling transaction.
 llvm::Expected<FinalizedFabricSystemProjection>
-finalizeFabricSystemWithTrackedAccCores(
+finalizeFabricSystemWithCorrespondence(
     ::fabric::SystemOp source,
     llvm::ArrayRef<ArtifactRootReference> importedModules,
-    llvm::ArrayRef<AccCoreOccurrenceRef> trackedAccCores,
     const ArtifactStore &store);
 
 /// Resolves and strictly imports one exact published loom.fabric root.

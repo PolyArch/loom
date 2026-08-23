@@ -300,6 +300,7 @@ std::uint64_t saturatingMultiply(std::uint64_t lhs, std::uint64_t rhs) {
 struct ConstructiveCoverFrontier final {
   std::vector<std::vector<const TechMatchRow *>> covers;
   bool interrupted = false;
+  bool exhausted = false;
 };
 
 class ConstructiveCoverSearch final {
@@ -332,6 +333,7 @@ public:
 
   ConstructiveCoverFrontier run() {
     explore(0);
+    result_.exhausted = !searchLimited_ && !result_.interrupted;
     llvm::sort(result_.covers, [](const auto &lhs, const auto &rhs) {
       if (lhs.size() != rhs.size())
         return lhs.size() < rhs.size();
@@ -388,17 +390,23 @@ private:
   }
 
   bool consumeExpansion() {
-    if (accounting_.partialCoverExpansions >= expansionLimit_)
+    if (accounting_.partialCoverExpansions >= expansionLimit_) {
+      searchLimited_ = true;
       return false;
+    }
     ++accounting_.partialCoverExpansions;
     return true;
   }
 
   void explore(std::size_t coveredCount) {
-    if (result_.interrupted || result_.covers.size() >= coverLimit_ ||
-        completedChecks_ >= config_.candidateEvaluationLimit() ||
-        accounting_.partialCoverExpansions >= expansionLimit_)
+    if (result_.interrupted)
       return;
+    if (result_.covers.size() >= coverLimit_ ||
+        completedChecks_ >= config_.candidateEvaluationLimit() ||
+        accounting_.partialCoverExpansions >= expansionLimit_) {
+      searchLimited_ = true;
+      return;
+    }
     if (executionControl_.stopRequested()) {
       result_.interrupted = true;
       return;
@@ -437,7 +445,9 @@ private:
       for (const std::size_t actor : candidate.actorSlots)
         covered_[actor] = true;
       selected_.push_back(&candidate);
-      explore(coveredCount + candidate.actorSlots.size());
+      if (detail::rootSupplyAdmissible(selected_, domain_, accounting_,
+                                       feedback_))
+        explore(coveredCount + candidate.actorSlots.size());
       selected_.pop_back();
       for (const std::size_t actor : candidate.actorSlots)
         covered_[actor] = false;
@@ -457,6 +467,7 @@ private:
   std::vector<const TechMatchRow *> selected_;
   std::uint64_t expansionLimit_ = 0;
   std::uint64_t completedChecks_ = 0;
+  bool searchLimited_ = false;
   ConstructiveCoverFrontier result_;
 };
 
@@ -998,15 +1009,7 @@ TechCoverSearchResult searchTechMatchCovers(
         rectangularSearchWork,
         saturatingMultiply(component.rows.size(), component.actors.size()));
   constexpr std::uint64_t minimumConstructiveSearchSurface = 4096;
-  constexpr std::size_t minimumConstructiveComponentActorCount = 128;
-  const bool hasLargeComponent =
-      llvm::any_of(incidence, [&](const IncidenceComponent &component) {
-        return component.actors.size() >=
-               minimumConstructiveComponentActorCount;
-      });
-  if (hasLargeComponent &&
-      rectangularSearchWork > minimumConstructiveSearchSurface &&
-      rectangularSearchWork > config.partialCoverExpansionLimit()) {
+  if (rectangularSearchWork > minimumConstructiveSearchSurface) {
     ++accounting.constructiveCoverSearchInvocations;
     ConstructiveCoverSearch constructive(domain, rowsByActor, config,
                                          accounting, result.feedback,
@@ -1024,8 +1027,10 @@ TechCoverSearchResult searchTechMatchCovers(
       result.exhausted = false;
       return result;
     }
-    result.exhausted = false;
-    return result;
+    if (frontier.exhausted) {
+      result.exhausted = domain.exhausted;
+      return result;
+    }
   }
 
   std::vector<LazyComponentCovers> components;

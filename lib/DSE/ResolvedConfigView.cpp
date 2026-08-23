@@ -20,7 +20,7 @@
 namespace loom::dse {
 namespace {
 
-constexpr char schemaDescriptor[] = "loom.dse.config.1.1";
+constexpr char schemaDescriptor[] = "loom.dse.config.1.2";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -496,13 +496,25 @@ void encodePlanInput(Encoder &encoder, const PlanInputBinding &input) {
     return;
   }
   const auto &join = std::get<BoundedPlanOutputJoin>(input);
-  encoder.u32(2);
+  const bool hasDistinctProducerBound =
+      join.maximumProducerArtifacts != 0 &&
+      join.maximumProducerArtifacts != join.maximumArtifacts;
+  const bool hasExactArtifacts = !join.exactArtifacts.empty();
+  encoder.u32(hasExactArtifacts ? (hasDistinctProducerBound ? 5 : 4)
+                                : (hasDistinctProducerBound ? 3 : 2));
   encoder.u64(join.outputs.size());
   for (PlanOutputRef output : join.outputs) {
     encoder.u64(output.producerNodeOrdinal);
     encoder.u32(output.outputSlotOrdinal);
   }
   encoder.u64(join.maximumArtifacts);
+  if (hasDistinctProducerBound)
+    encoder.u64(join.maximumProducerArtifacts);
+  if (hasExactArtifacts) {
+    encoder.u64(join.exactArtifacts.size());
+    for (const ArtifactRootReference &artifact : join.exactArtifacts)
+      encoder.root(artifact);
+  }
 }
 
 llvm::Expected<PlanInputBinding> decodePlanInput(Decoder &decoder) {
@@ -532,7 +544,7 @@ llvm::Expected<PlanInputBinding> decodePlanInput(Decoder &decoder) {
       return slot.takeError();
     return PlanInputBinding{PlanOutputRef{*producer, *slot}};
   }
-  if (*tag == 2) {
+  if (*tag >= 2 && *tag <= 5) {
     auto count = decoder.count(12);
     if (!count)
       return count.takeError();
@@ -551,6 +563,24 @@ llvm::Expected<PlanInputBinding> decodePlanInput(Decoder &decoder) {
     if (!maximum)
       return maximum.takeError();
     join.maximumArtifacts = *maximum;
+    if (*tag == 3 || *tag == 5) {
+      auto producerMaximum = decoder.u64();
+      if (!producerMaximum)
+        return producerMaximum.takeError();
+      join.maximumProducerArtifacts = *producerMaximum;
+    }
+    if (*tag == 4 || *tag == 5) {
+      auto exactCount = decoder.count(48);
+      if (!exactCount)
+        return exactCount.takeError();
+      join.exactArtifacts.reserve(*exactCount);
+      for (std::size_t index = 0; index != *exactCount; ++index) {
+        auto artifact = decoder.root();
+        if (!artifact)
+          return artifact.takeError();
+        join.exactArtifacts.push_back(std::move(*artifact));
+      }
+    }
     return PlanInputBinding{std::move(join)};
   }
   return invalid("plan input has an unknown tag");
@@ -897,10 +927,16 @@ llvm::Error validateCanonicalInputs(const ViewParts &parts) {
       const auto *join = std::get_if<BoundedPlanOutputJoin>(&input);
       if (!join)
         continue;
-      if (join->maximumArtifacts == 0 || join->outputs.empty() ||
+      if (join->maximumArtifacts == 0 ||
+          (join->outputs.empty() && join->exactArtifacts.empty()) ||
+          join->producerArtifactLimit() < join->maximumArtifacts ||
           !llvm::is_sorted(join->outputs) ||
           std::adjacent_find(join->outputs.begin(), join->outputs.end()) !=
-              join->outputs.end())
+              join->outputs.end() ||
+          !llvm::is_sorted(join->exactArtifacts, artifactRootReferenceLess) ||
+          std::adjacent_find(join->exactArtifacts.begin(),
+                             join->exactArtifacts.end()) !=
+              join->exactArtifacts.end())
         return invalid("bounded output join is not canonical and bounded");
     }
   }

@@ -1,4 +1,5 @@
 #include "CgraComputeRuntime.h"
+#include "CgraTransportRuntime.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -238,7 +239,9 @@ CgraComputeRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
   for (int candidate = readyCandidates_.find_first(); candidate >= 0;
        candidate = readyCandidates_.find_next(candidate)) {
     ActorBinding &binding = bindings_[candidate];
-    if (binding.retirementPending)
+    if (binding.retirementPending ||
+        (transport_ &&
+         !transport_->actorSourcesAvailable(binding.semanticActorOrdinal)))
       continue;
     readyCandidates_.reset(candidate);
     auto selected = probeActorTransition(*binding.semantic, *state_);
@@ -322,6 +325,19 @@ CgraComputeRuntime::physicalTraceBinding(
               firing.actorOccurrenceOrdinal}},
           index.localActionOrdinal},
       std::move(*target)};
+}
+
+std::optional<std::uint64_t>
+CgraComputeRuntime::physicalActionSemanticActor(
+    std::uint64_t actionOrdinal, std::uint64_t occurrenceOrdinal) const {
+  const auto indexed = actionToFiring_.find({actionOrdinal, occurrenceOrdinal});
+  if (indexed == actionToFiring_.end() ||
+      indexed->second.firingSlot >= firings_.size())
+    return std::nullopt;
+  const Firing &firing = firings_[indexed->second.firingSlot];
+  if (!firing.active || firing.bindingOrdinal >= bindings_.size())
+    return std::nullopt;
+  return bindings_[firing.bindingOrdinal].semanticActorOrdinal;
 }
 
 llvm::Error CgraComputeRuntime::acceptReadyCandidates(

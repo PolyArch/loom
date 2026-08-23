@@ -403,6 +403,53 @@ void transformationsAreTypedCapacityBoundAndDependenceChecked() {
       store, loom::adg::BuiltinTargetPreset::Small));
   const loom::fabric::FinalizedFabricRoot &fabric = design.roots().front();
 
+  auto scoped = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+module attributes {dlti.dl_spec = #layout} {
+  func.func @earlier(%out: memref<4xi32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %i = %c0 to %c4 step %c1 {
+      %value = arith.index_cast %i : index to i32
+      memref.store %value, %out[%i] : memref<4xi32>
+    }
+    return
+  }
+  func.func @selected(%out: memref<8xi32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    scf.for %i = %c0 to %c8 step %c1 {
+      %value = arith.index_cast %i : index to i32
+      memref.store %value, %out[%i] : memref<8xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto scopedView = take(scoped.view());
+  std::optional<loom::frontend::StructuredEntityRef> selectedFunction;
+  for (const loom::frontend::StructuredEntity &entity :
+       scopedView.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto function = llvm::dyn_cast_or_null<mlir::func::FuncOp>(entity.operation);
+    if (function && function.getSymName() == "selected") {
+      selectedFunction = entity.reference;
+      break;
+    }
+  }
+  if (!selectedFunction)
+    fail("scoped schedule fixture lost its selected function");
+  auto scopedDomain = take(
+      loom::frontend::enumerateStructuredScheduleDecisions(
+          scoped, fabric, 1, *selectedFunction));
+  if (scopedDomain.inspectedLoopScopes != 1 ||
+      !llvm::any_of(scopedDomain.decisions, [](const auto &decision) {
+        return decision.kind ==
+               loom::frontend::StructuredScheduleDecisionKind::Parallelize;
+      }))
+    fail("loops outside an exact schedule scope consumed its bound");
+
   auto safe = parseProgram(R"mlir(
 #layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
 module attributes {dlti.dl_spec = #layout} {

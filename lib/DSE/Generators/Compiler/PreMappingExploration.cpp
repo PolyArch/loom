@@ -1,6 +1,7 @@
 #include "DSE/PreMappingExploration.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactLocalReference.h"
 #include "Common/MappingDebugLog.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/DataflowEvaluationAcquisition.h"
@@ -19,6 +20,7 @@
 #include "Evaluation/StandardFindings.h"
 #include "Frontend/Analysis/StructuredProtocolDependencies.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
+#include "Frontend/Compilation/StructuredSchedule.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
@@ -30,9 +32,11 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -47,6 +51,148 @@ namespace {
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "pre_mapping_exploration_invalid: " + message);
+}
+
+class WorkTimer final {
+public:
+  explicit WorkTimer(PreMappingWorkCounter &counter)
+      : counter_(counter), start_(std::chrono::steady_clock::now()) {}
+
+  ~WorkTimer() {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             std::chrono::steady_clock::now() - start_)
+                             .count();
+    if (elapsed <= 0)
+      return;
+    const auto delta = static_cast<std::uint64_t>(elapsed);
+    if (counter_.elapsedNanoseconds >
+        std::numeric_limits<std::uint64_t>::max() - delta)
+      counter_.elapsedNanoseconds = std::numeric_limits<std::uint64_t>::max();
+    else
+      counter_.elapsedNanoseconds += delta;
+  }
+
+private:
+  PreMappingWorkCounter &counter_;
+  std::chrono::steady_clock::time_point start_;
+};
+
+void addElapsedNanoseconds(PreMappingWorkCounter &counter,
+                           std::uint64_t elapsed) {
+  if (counter.elapsedNanoseconds >
+      std::numeric_limits<std::uint64_t>::max() - elapsed)
+    counter.elapsedNanoseconds = std::numeric_limits<std::uint64_t>::max();
+  else
+    counter.elapsedNanoseconds += elapsed;
+}
+
+void accountEvaluationTiming(
+    PreMappingWorkAccounting &accounting,
+    const StructuredOwnershipEvaluationTiming &timing) {
+  addElapsedNanoseconds(accounting.analyticEvaluations,
+                        timing.analyticElapsedNanoseconds);
+  addElapsedNanoseconds(accounting.functionalReplays,
+                        timing.functionalReplayElapsedNanoseconds);
+}
+
+void accumulateEvaluationTiming(StructuredOwnershipEvaluationTiming &total,
+                                const StructuredOwnershipEvaluationTiming &part) {
+  auto add = [](std::uint64_t &destination, std::uint64_t value) {
+    if (destination > std::numeric_limits<std::uint64_t>::max() - value)
+      destination = std::numeric_limits<std::uint64_t>::max();
+    else
+      destination += value;
+  };
+  add(total.analyticCalls, part.analyticCalls);
+  add(total.analyticElapsedNanoseconds, part.analyticElapsedNanoseconds);
+  add(total.functionalReplayCalls, part.functionalReplayCalls);
+  add(total.functionalReplayElapsedNanoseconds,
+      part.functionalReplayElapsedNanoseconds);
+}
+
+constexpr llvm::StringLiteral candidateIdentityDescriptor{
+    "loom.dse.pre_mapping_candidate_identity.2"};
+
+void appendIdentityU64(std::vector<std::uint8_t> &bytes,
+                       std::uint64_t value) {
+  for (unsigned index = 0; index != 8; ++index)
+    bytes.push_back(static_cast<std::uint8_t>(value >> (index * 8)));
+}
+
+void appendIdentityBytes(std::vector<std::uint8_t> &bytes,
+                         llvm::ArrayRef<std::uint8_t> value) {
+  appendIdentityU64(bytes, value.size());
+  bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
+void appendIdentityRoot(std::vector<std::uint8_t> &bytes,
+                        const ArtifactRootReference &reference) {
+  appendIdentityBytes(bytes, encodeArtifactRootReference(reference));
+}
+
+void appendIdentityOptionalRoot(
+    std::vector<std::uint8_t> &bytes,
+    const std::optional<ArtifactRootReference> &reference) {
+  bytes.push_back(reference ? 1 : 0);
+  if (reference)
+    appendIdentityRoot(bytes, *reference);
+}
+
+bool isCancellationReason(const DsePlanIncompleteReason &reason) {
+  return std::visit(
+      [](const auto &value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, CandidateGeneratorIncompleteReason>)
+          return value == CandidateGeneratorIncompleteReason::CancelledOrTimeout;
+        else if constexpr (std::is_same_v<
+                               T, PromotionAcquisitionIncompleteReason>)
+          return value ==
+                 PromotionAcquisitionIncompleteReason::CancelledOrTimeout;
+        else
+          return value == IncompleteSelectionReason::CancelledOrTimeoutEvidence;
+      },
+      reason);
+}
+
+PreMappingCandidatePlanningDisposition planningDispositionForIncomplete(
+    const DsePlanIncompleteReason &reason) {
+  return std::visit(
+      [](const auto &value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, CandidateGeneratorIncompleteReason>) {
+          switch (value) {
+          case CandidateGeneratorIncompleteReason::SemanticLimitReached:
+            return PreMappingCandidatePlanningDisposition::DataflowPromotionBudget;
+          case CandidateGeneratorIncompleteReason::CancelledOrTimeout:
+            return PreMappingCandidatePlanningDisposition::CancelledOrTimeout;
+          case CandidateGeneratorIncompleteReason::Unsupported:
+          case CandidateGeneratorIncompleteReason::ProviderUnavailable:
+            return PreMappingCandidatePlanningDisposition::Unsupported;
+          case CandidateGeneratorIncompleteReason::ProofNotEstablished:
+          case CandidateGeneratorIncompleteReason::ExecutionFailed:
+            return PreMappingCandidatePlanningDisposition::Unknown;
+          }
+        } else if constexpr (std::is_same_v<
+                                 T, PromotionAcquisitionIncompleteReason>) {
+          switch (value) {
+          case PromotionAcquisitionIncompleteReason::SemanticWorkLimit:
+            return PreMappingCandidatePlanningDisposition::DataflowPromotionBudget;
+          case PromotionAcquisitionIncompleteReason::ProviderUnavailable:
+          case PromotionAcquisitionIncompleteReason::Unsupported:
+            return PreMappingCandidatePlanningDisposition::Unsupported;
+          case PromotionAcquisitionIncompleteReason::CancelledOrTimeout:
+            return PreMappingCandidatePlanningDisposition::CancelledOrTimeout;
+          case PromotionAcquisitionIncompleteReason::ObjectiveUnavailable:
+            return PreMappingCandidatePlanningDisposition::Unknown;
+          }
+        } else {
+          return value == IncompleteSelectionReason::CancelledOrTimeoutEvidence
+                     ? PreMappingCandidatePlanningDisposition::CancelledOrTimeout
+                     : PreMappingCandidatePlanningDisposition::Unknown;
+        }
+        llvm_unreachable("unknown pre-mapping incompleteness reason");
+      },
+      reason);
 }
 
 enum class CompilerObligationKind : std::uint8_t { Analytic, Functional };
@@ -124,6 +270,26 @@ void emitOwnershipRejections(
           fields["diagnostic"] = rejection->message;
           fields["scope_ordinal"] =
               disposition.coordinate.scope.selection.ordinal;
+          if (disposition.coordinate.decision) {
+            const auto &decision = *disposition.coordinate.decision;
+            if (decision.addressProjection) {
+              if (const auto *rootRelative =
+                      std::get_if<frontend::RootRelativeAddressProjection>(
+                          &*decision.addressProjection)) {
+                fields["address_projection"] = "root_relative";
+                fields["canonical_index_width"] =
+                    rootRelative->canonicalIndexWidth;
+              } else {
+                fields["address_projection"] = "pointer_addressed";
+              }
+            }
+            if (decision.forallOwnershipShape)
+              fields["forall_ownership_shape"] =
+                  *decision.forallOwnershipShape ==
+                          frontend::ForallOwnershipShape::LogicalThreadDomain
+                      ? "logical_thread_domain"
+                      : "graph_parallel";
+          }
         });
   }
 }
@@ -316,6 +482,25 @@ ownershipQualityGate(const CompilerObligations &obligations,
   return QualityGatePolicy::get(std::move(clauses));
 }
 
+llvm::Expected<QualityGatePolicy> ownershipAnalyticQualityGate(
+    const CompilerObligations &obligations,
+    const StructuredOwnershipExplorationOptions &options,
+    const std::optional<BaselineMetric> &baseline) {
+  std::vector<QualityGateClause> clauses;
+  if (options.selectionMode ==
+      StructuredOwnershipSelectionMode::BenefitQualified) {
+    if (!baseline)
+      return invalid("benefit-qualified selection has no baseline metric");
+    clauses.push_back({{MetricGate{
+        obligations.analytic.ordinal(), options.selection.metricRequest,
+        options.selection.direction == ResolvedObjectiveDirection::Minimize
+            ? MetricGateComparator::LT
+            : MetricGateComparator::GT,
+        baseline->value}}});
+  }
+  return QualityGatePolicy::get(std::move(clauses));
+}
+
 llvm::Expected<QualityGatePolicy>
 dataflowQualityGate(const CompilerObligations &obligations) {
   auto mismatch = functionalMismatchOrdinal(
@@ -386,111 +571,65 @@ struct CompletedOwnershipSelection final {
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   DsePlanGenerateInvocationRecords generateInvocations;
   std::optional<RetainedDsePlanIncompleteness> retainedIncompleteness;
+  std::uint64_t programMaterializations = 0;
+  std::uint64_t analyticEvaluations = 0;
+  std::uint64_t functionalReplays = 0;
+  StructuredOwnershipEvaluationTiming evaluationTiming;
 };
+
+llvm::StringRef
+spelling(StructuredScheduleGenerationIntent intent) {
+  switch (intent) {
+  case StructuredScheduleGenerationIntent::Balanced:
+    return "balanced";
+  case StructuredScheduleGenerationIntent::RequireLogicalThreadDomain:
+    return "require_logical_thread_domain";
+  case StructuredScheduleGenerationIntent::ForbidLogicalThreadDomain:
+    return "forbid_logical_thread_domain";
+  }
+  llvm_unreachable("unknown Structured Schedule generation intent");
+}
 
 using OwnershipSelectionOutcome =
     std::variant<CompletedOwnershipSelection, IncompletePreMappingExploration>;
 
-struct ProtocolTraversalPlan final {
-  std::vector<std::vector<std::size_t>> paths;
-  std::vector<std::vector<std::uint64_t>> dependencyWeights;
-};
-
-llvm::Expected<ProtocolTraversalPlan> buildProtocolTraversalPlan(
-    llvm::ArrayRef<frontend::StructuredEntityRef> roots,
-    llvm::ArrayRef<frontend::analysis::StructuredProtocolDependency>
-        dependencies) {
-  ProtocolTraversalPlan plan;
-  plan.dependencyWeights.assign(roots.size(),
-                                std::vector<std::uint64_t>(roots.size(), 0));
-  const auto rootOrdinal = [&](const frontend::StructuredEntityRef &root)
-      -> std::optional<std::size_t> {
-    for (auto item : llvm::enumerate(roots))
-      if (item.value() == root)
-        return item.index();
-    return std::nullopt;
-  };
-  for (const auto &dependency : dependencies) {
-    std::optional<std::size_t> producer = rootOrdinal(dependency.producer);
-    std::optional<std::size_t> consumer = rootOrdinal(dependency.consumer);
-    if (!producer || !consumer || *producer == *consumer ||
-        dependency.sharedMemoryObjectCount == 0)
-      return invalid("protocol dependency is outside its exact root set");
-    std::uint64_t &weight = plan.dependencyWeights[*producer][*consumer];
-    if (std::numeric_limits<std::uint64_t>::max() - weight <
-        dependency.sharedMemoryObjectCount)
-      return invalid("protocol dependency weight overflows");
-    weight += dependency.sharedMemoryObjectCount;
-  }
-  if (roots.empty()) {
-    plan.paths.push_back({});
-    return plan;
-  }
-
-  const auto addPath = [&](std::vector<std::size_t> path) {
-    if (!llvm::is_contained(plan.paths, path))
-      plan.paths.push_back(std::move(path));
-  };
-  std::vector<std::size_t> canonical;
-  canonical.reserve(roots.size());
-  for (std::size_t ordinal = 0; ordinal != roots.size(); ++ordinal)
-    canonical.push_back(ordinal);
-  addPath(std::move(canonical));
-
-  for (std::size_t seed = 0; seed != roots.size(); ++seed) {
-    std::vector<bool> selected(roots.size(), false);
-    std::vector<std::size_t> path;
-    selected[seed] = true;
-    path.push_back(seed);
-    while (path.size() != roots.size()) {
-      std::optional<std::size_t> best;
-      std::uint64_t bestWeight = 0;
-      for (std::size_t candidate = 0; candidate != roots.size(); ++candidate) {
-        if (selected[candidate])
-          continue;
-        std::uint64_t weight = 0;
-        for (std::size_t member : path) {
-          const std::uint64_t forward =
-              plan.dependencyWeights[member][candidate];
-          const std::uint64_t reverse =
-              plan.dependencyWeights[candidate][member];
-          if (std::numeric_limits<std::uint64_t>::max() - weight < forward ||
-              std::numeric_limits<std::uint64_t>::max() - weight - forward <
-                  reverse)
-            return invalid("protocol cut weight overflows");
-          weight += forward + reverse;
-        }
-        if (weight > bestWeight) {
-          best = candidate;
-          bestWeight = weight;
-        }
-      }
-      if (!best || bestWeight == 0)
-        break;
-      selected[*best] = true;
-      path.push_back(*best);
+llvm::Expected<std::uint64_t> consumedCompilerMaterializations(
+    const CompletedDsePlanExecution &execution) {
+  if (execution.generateInvocations().size() !=
+      execution.generateWorkSummaries().size())
+    return invalid("Generate invocation and work accounting widths differ");
+  std::uint64_t total = 0;
+  for (auto indexed : llvm::enumerate(execution.generateInvocations())) {
+    const GenerateInvocationRecord &invocation = indexed.value();
+    const GenerateInvocationWorkSummary &summary =
+        execution.generateWorkSummaries()[indexed.index()];
+    if (summary.planNodeOrdinal != invocation.planNodeOrdinal)
+      return invalid("Generate invocation and work accounting order differs");
+    const CandidateGeneratorKind kind =
+        invocation.generatorBinding.descriptorRef().kind();
+    std::uint32_t decisionUnit = 0;
+    if (kind == structuredOwnershipCandidateGeneratorKind ||
+        kind == structuredScheduleCandidateGeneratorKind ||
+        kind == structuredMemoryCommunicationCandidateGeneratorKind)
+      decisionUnit = 1;
+    else if (kind != structuredExecutionShapeCandidateGeneratorKind &&
+             kind != structuredSpecialMathAccuracyCandidateGeneratorKind)
+      continue;
+    const std::uint32_t endUnit =
+        kind == structuredSpecialMathAccuracyCandidateGeneratorKind
+            ? static_cast<std::uint32_t>(summary.units.size())
+            : decisionUnit + 1;
+    for (std::uint32_t unit = decisionUnit; unit != endUnit; ++unit) {
+      if (unit >= summary.units.size() ||
+          summary.units[unit].unit.ordinal() != unit)
+        return invalid("compiler materialization work unit is not canonical");
+      if (summary.units[unit].consumed >
+          std::numeric_limits<std::uint64_t>::max() - total)
+        return invalid("compiler materialization accounting overflows");
+      total += summary.units[unit].consumed;
     }
-    addPath(std::move(path));
   }
-  return plan;
-}
-
-std::pair<std::uint64_t, std::uint64_t> protocolDependencyPartition(
-    llvm::ArrayRef<std::size_t> selected,
-    llvm::ArrayRef<std::vector<std::uint64_t>> weights) {
-  std::vector<bool> owned(weights.size(), false);
-  for (std::size_t ordinal : selected)
-    owned[ordinal] = true;
-  std::uint64_t internal = 0;
-  std::uint64_t cut = 0;
-  for (std::size_t producer = 0; producer != weights.size(); ++producer)
-    for (std::size_t consumer = 0; consumer != weights.size(); ++consumer) {
-      if (owned[producer] && owned[consumer])
-        internal += weights[producer][consumer];
-      else if (owned[producer] != owned[consumer])
-        cut += weights[producer][consumer];
-    }
-  return {internal, cut};
+  return total;
 }
 
 llvm::Expected<std::vector<std::string>>
@@ -530,6 +669,26 @@ protocolCallableSymbols(const frontend::StructuredProgramCandidate &source,
   return symbols;
 }
 
+llvm::Expected<std::string> structuredWorkloadEntrySymbol(
+    const frontend::StructuredProgramCandidate &source,
+    const sim::CanonicalSimulationWorkload &workload) {
+  const sim::StructuredProgramSimulationWorkload *structured =
+      workload.structuredProgram();
+  if (!structured)
+    return invalid("pre-Mapping workload is not Structured");
+  auto view = source.view();
+  if (!view)
+    return view.takeError();
+  auto entity = view->resolve(structured->entryRef);
+  if (!entity)
+    return entity.takeError();
+  auto function =
+      llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity->operation);
+  if (!function || function.isExternal())
+    return invalid("Structured workload entry is not a defined LLVM callable");
+  return function.getSymName().str();
+}
+
 llvm::Expected<std::vector<frontend::StructuredEntityRef>>
 resolveProtocolCallableRoots(const frontend::StructuredProgramCandidate &parent,
                              llvm::ArrayRef<std::string> symbols) {
@@ -551,13 +710,31 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
     const ArtifactRootReference &runtimeInputReference,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const StructuredOwnershipExplorationOptions &options,
+    StructuredOwnershipGenerationIntent ownershipIntent,
+    StructuredScheduleGenerationIntent scheduleIntent,
+    std::uint64_t ownershipMaterializationAttemptLimit,
+    std::uint64_t specialMathMaterializationAttemptLimit,
+    std::uint64_t expansionLimit, bool generationParentFunctionallyVerified,
+    bool requireFunctionalReplay,
+    ExecutionControlView executionControl,
     const ArtifactStore &artifactStore, const BlobStore &blobStore,
     const StructuredOwnershipSharedEvaluation *sharedEvaluation) {
+  if (ownershipMaterializationAttemptLimit == 0 ||
+      specialMathMaterializationAttemptLimit == 0 || expansionLimit == 0 ||
+      options.selection.k == 0 ||
+      options.selection.k > expansionLimit)
+    return invalid("ownership beam and expansion bounds are inconsistent");
+  // Keep the producer frontier bounded by the admitted expansion, while the
+  // Promote node's TopK remains the smaller survivor width in semantic mode.
+  // This is what makes analytic ranking a real pre-Mapping funnel instead of
+  // replaying every generated candidate.
+  const std::uint64_t layerWidth = expansionLimit;
   auto invocation = std::make_unique<StructuredOwnershipInvocation>(
       generationParent.structuredProgram, sourceProgram, workload, runtimeInput,
       fabric, config, options.lowering, options.candidateWorkerCount,
       options.functionalReplayLimits, generationParent.sourceProvenance,
-      sharedEvaluation);
+      sharedEvaluation, executionControl,
+      generationParentFunctionallyVerified);
 
   StructuredOwnershipInvocationScope invocationScope(*invocation);
   if (llvm::Error error = invocation->prepareInputs(
@@ -607,16 +784,26 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
   auto gate = ownershipQualityGate(*obligations, options, baseline);
   if (!gate)
     return gate.takeError();
+  auto analyticGate =
+      ownershipAnalyticQualityGate(*obligations, options, baseline);
+  if (!analyticGate)
+    return analyticGate.takeError();
   auto generatorConfig = projectResolvedStructuredOwnershipGeneratorConfigView(
-      config, options.protocolCallableRoots);
+      config, options.protocolCallableRoots, ownershipIntent,
+      ownershipMaterializationAttemptLimit);
   if (!generatorConfig)
     return generatorConfig.takeError();
-  auto acquisitionConfig = projectResolvedEvidenceObligationSetConfigView(
+  auto finalAcquisitionConfig = projectResolvedEvidenceObligationSetConfigView(
       {obligations->analytic, obligations->functional});
-  if (!acquisitionConfig)
-    return acquisitionConfig.takeError();
+  if (!finalAcquisitionConfig)
+    return finalAcquisitionConfig.takeError();
+  auto analyticAcquisitionConfig =
+      projectResolvedEvidenceObligationSetConfigView({obligations->analytic});
+  if (!analyticAcquisitionConfig)
+    return analyticAcquisitionConfig.takeError();
   auto scheduleConfig =
-      projectResolvedStructuredScheduleGeneratorConfigView(config);
+      projectResolvedStructuredScheduleGeneratorConfigView(config,
+                                                           scheduleIntent);
   if (!scheduleConfig)
     return scheduleConfig.takeError();
   auto executionShapeConfig =
@@ -624,7 +811,8 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
   if (!executionShapeConfig)
     return executionShapeConfig.takeError();
   auto specialMathAccuracyConfig =
-      projectResolvedStructuredSpecialMathAccuracyGeneratorConfigView();
+      projectResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
+          specialMathMaterializationAttemptLimit);
   if (!specialMathAccuracyConfig)
     return specialMathAccuracyConfig.takeError();
   auto memoryCommunicationConfig =
@@ -636,7 +824,7 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
   planConfig.dse.modelAuthorizations = modelAuthorizations(*obligations);
   planConfig.dse.evidenceObligationTemplates = obligations->templates;
   planConfig.dse.objectiveCatalogs = std::move(*objectives);
-  planConfig.dse.qualityGatePolicies = {*gate};
+  planConfig.dse.qualityGatePolicies = {*analyticGate, *gate};
   planConfig.dse.planNodes = {
       GeneratePlanNodeDefinition{
           structuredOwnershipCandidateGeneratorDescriptor().reference(),
@@ -648,40 +836,64 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
           generatorConfig->digest()},
       GeneratePlanNodeDefinition{
           structuredExecutionShapeCandidateGeneratorDescriptor().reference(),
-          {PlanOutputRef{0, 1}},
+          {BoundedPlanOutputJoin{{PlanOutputRef{0, 1}}, layerWidth,
+                                 expansionLimit}},
           executionShapeConfig->canonicalViewBytes().vec(),
           executionShapeConfig->digest()},
       GeneratePlanNodeDefinition{
           structuredScheduleCandidateGeneratorDescriptor().reference(),
-          {PlanOutputRef{1, 0}, ExactPlanArtifacts{{fabric.reference()}}},
+          {BoundedPlanOutputJoin{{PlanOutputRef{1, 0}}, layerWidth,
+                                 expansionLimit},
+           ExactPlanArtifacts{{fabric.reference()}}},
           scheduleConfig->canonicalViewBytes().vec(),
           scheduleConfig->digest()},
       GeneratePlanNodeDefinition{
           structuredMemoryCommunicationCandidateGeneratorDescriptor()
               .reference(),
-          {PlanOutputRef{2, 0}},
+          {BoundedPlanOutputJoin{{PlanOutputRef{2, 0}}, layerWidth,
+                                 expansionLimit}},
           memoryCommunicationConfig->canonicalViewBytes().vec(),
           memoryCommunicationConfig->digest()},
       GeneratePlanNodeDefinition{
           structuredSpecialMathAccuracyCandidateGeneratorDescriptor()
               .reference(),
-          {PlanOutputRef{3, 0}, ExactPlanArtifacts{{fabric.reference()}}},
+          {BoundedPlanOutputJoin{{PlanOutputRef{3, 0}}, layerWidth,
+                                 expansionLimit},
+           ExactPlanArtifacts{{fabric.reference()}}},
           specialMathAccuracyConfig->canonicalViewBytes().vec(),
           specialMathAccuracyConfig->digest()},
       PromotePlanNodeDefinition{
           structuredEvaluationPromotionAcquisitionDescriptor().reference(),
-          {PlanOutputRef{4, 0}, ExactPlanArtifacts{{fabric.reference()}},
+          {BoundedPlanOutputJoin{{PlanOutputRef{4, 0}}, layerWidth,
+                                 expansionLimit},
+           ExactPlanArtifacts{{fabric.reference()}},
            ExactPlanArtifacts{{workloadReference}},
            ExactPlanArtifacts{{runtimeInputReference}}},
-          acquisitionConfig->canonicalViewBytes().vec(),
-          acquisitionConfig->digest(),
-          QualityGatePolicyRef(0),
+          analyticAcquisitionConfig->canonicalViewBytes().vec(),
+          analyticAcquisitionConfig->digest(), QualityGatePolicyRef(0),
+          TopKSelection{0, options.selection.k},
+          PromotePurpose::CandidateSelection},
+      PromotePlanNodeDefinition{
+          structuredEvaluationPromotionAcquisitionDescriptor().reference(),
+          {BoundedPlanOutputJoin{{PlanOutputRef{5, 0}}, options.selection.k,
+                                 options.selection.k},
+           ExactPlanArtifacts{{fabric.reference()}},
+           ExactPlanArtifacts{{workloadReference}},
+           ExactPlanArtifacts{{runtimeInputReference}}},
+          finalAcquisitionConfig->canonicalViewBytes().vec(),
+          finalAcquisitionConfig->digest(), QualityGatePolicyRef(1),
           TopKSelection{0, options.selection.k},
           PromotePurpose::CandidateSelection}};
+  const std::uint64_t selectionNode = requireFunctionalReplay ? 6 : 5;
+  if (!requireFunctionalReplay) {
+    planConfig.dse.qualityGatePolicies = {*analyticGate};
+    planConfig.dse.planNodes.pop_back();
+  }
   auto view = projectResolvedDseConfigView(planConfig);
   if (!view)
     return view.takeError();
-  auto executed = executeDsePlan(*view, artifactStore, blobStore);
+  auto executed =
+      executeDsePlan(*view, artifactStore, blobStore, executionControl);
   if (!executed)
     return executed.takeError();
   const CompletedDsePlanExecution *selectionExecution =
@@ -690,16 +902,57 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
   if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed)) {
     selectionExecution = &incomplete->availableExecution();
     if (incomplete->executionStopped() ||
-        selectionExecution->resolve({5, 0}).empty()) {
+        !selectionExecution->hasOutput({selectionNode, 0}) ||
+        selectionExecution->resolve({selectionNode, 0}).empty()) {
       const std::uint64_t nodeOrdinal = incomplete->nodeOrdinal();
       const DsePlanIncompleteReason reason = incomplete->reason();
+      auto programMaterializations =
+          consumedCompilerMaterializations(*selectionExecution);
+      if (!programMaterializations)
+        return programMaterializations.takeError();
+      const std::uint64_t evaluationCandidateCount =
+          selectionExecution->hasOutput({4, 0})
+              ? std::min<std::uint64_t>(
+                    selectionExecution->resolve({4, 0}).size(), layerWidth)
+              : 0;
+      mapping_debug::emit(
+          mapping_debug::Level::Detail,
+          mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Event::DerivedContext,
+          [&](llvm::json::Object &fields) {
+            const auto count = [&](std::uint64_t node,
+                                   std::uint32_t slot) {
+              const PlanOutputRef output{node, slot};
+              return selectionExecution->hasOutput(output)
+                         ? selectionExecution->resolve(output).size()
+                         : 0;
+            };
+            fields["context_kind"] = "structured_schedule_intent";
+            fields["generation_intent"] = spelling(scheduleIntent);
+            fields["incomplete_node_ordinal"] = nodeOrdinal;
+            fields["incomplete_reason"] = dse::toString(reason);
+            fields["ownership_count"] = count(0, 1);
+            fields["execution_shape_count"] = count(1, 0);
+            fields["schedule_count"] = count(2, 0);
+            fields["memory_communication_count"] = count(3, 0);
+            fields["special_math_count"] = count(4, 0);
+            fields["analytic_selected_count"] = count(5, 0);
+            fields["selected_count"] = count(selectionNode, 0);
+            fields["logical_thread_domain_count"] = 0;
+          });
       auto evidence = retainedEvidence(*incomplete, baselineEvidence);
+      const StructuredOwnershipEvaluationTiming evaluationTiming =
+          invocation->evaluationTiming();
       std::vector<DsePlanGenerateInvocationRecords> generateInvocations;
       generateInvocations.push_back(
           takeDsePlanGenerateInvocationRecords(std::move(*executed)));
-      return OwnershipSelectionOutcome{IncompletePreMappingExploration{
+      IncompletePreMappingExploration result{
           nodeOrdinal, reason, std::move(evidence),
-          std::move(generateInvocations)}};
+          std::move(generateInvocations), *programMaterializations,
+          (baseline ? 1 : 0) + evaluationCandidateCount,
+          evaluationTiming.functionalReplayCalls, evaluationTiming};
+      result.resolvedDseConfigViewDigest = view->digest();
+      return OwnershipSelectionOutcome{std::move(result)};
     }
     retainedIncompleteness.emplace(RetainedDsePlanIncompleteness{
         selectionExecution->resolvedDseConfigViewDigest(),
@@ -723,24 +976,60 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
         fields["schedule_count"] = count(2, 0);
         fields["memory_communication_count"] = count(3, 0);
         fields["special_math_count"] = count(4, 0);
-        fields["selected_count"] = count(5, 0);
-        fields["evidence_count"] = count(5, 1);
+        fields["analytic_selected_count"] = count(5, 0);
+        fields["selected_count"] = count(selectionNode, 0);
+        fields["evidence_count"] = count(selectionNode, 1);
       });
   std::vector<ArtifactRootReference> selected(
-      selectionExecution->resolve({5, 0}).begin(),
-      selectionExecution->resolve({5, 0}).end());
-  auto preferenceOrder = selectedPreferenceOrder(*selectionExecution, {5, 0});
+      selectionExecution->resolve({selectionNode, 0}).begin(),
+      selectionExecution->resolve({selectionNode, 0}).end());
+  auto preferenceOrder =
+      selectedPreferenceOrder(*selectionExecution, {selectionNode, 0});
   if (!preferenceOrder)
     return preferenceOrder.takeError();
+  if (requireFunctionalReplay)
+    for (const ArtifactRootReference &reference : *preferenceOrder)
+      if (llvm::Error error =
+              invocation->ensureSelectedCandidateFunctionalReplay(
+                  reference, artifactStore))
+        return std::move(error);
+  std::uint64_t logicalThreadDomainCount = 0;
+  for (const ArtifactRootReference &reference : *preferenceOrder) {
+    auto hasLogicalThreadDomain =
+        invocation->selectedCandidateHasLogicalThreadDomain(reference);
+    if (!hasLogicalThreadDomain)
+      return hasLogicalThreadDomain.takeError();
+    logicalThreadDomainCount += *hasLogicalThreadDomain ? 1 : 0;
+  }
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "structured_schedule_intent";
+        fields["generation_intent"] = spelling(scheduleIntent);
+        fields["selected_count"] = preferenceOrder->size();
+        fields["logical_thread_domain_count"] = logicalThreadDomainCount;
+      });
   std::vector<ArtifactRootReference> evidence = std::move(baselineEvidence);
-  mergeReferences(evidence, selectionExecution->resolve({5, 1}));
+  mergeReferences(evidence,
+                  selectionExecution->resolve({selectionNode, 1}));
   std::vector<StructuredOwnershipCandidateDisposition> dispositions(
       invocation->dispositions().begin(), invocation->dispositions().end());
+  auto programMaterializations =
+      consumedCompilerMaterializations(*selectionExecution);
+  if (!programMaterializations)
+    return programMaterializations.takeError();
+  const std::uint64_t evaluationCandidateCount =
+      std::min<std::uint64_t>(selectionExecution->resolve({4, 0}).size(),
+                              layerWidth);
+  const StructuredOwnershipEvaluationTiming evaluationTiming =
+      invocation->evaluationTiming();
   return OwnershipSelectionOutcome{CompletedOwnershipSelection{
       std::move(invocation), std::move(selected), std::move(*preferenceOrder),
       std::move(evidence), std::move(dispositions),
       takeDsePlanGenerateInvocationRecords(std::move(*executed)),
-      std::move(retainedIncompleteness)}};
+      std::move(retainedIncompleteness), *programMaterializations,
+      (baseline ? 1 : 0) + evaluationCandidateCount,
+      evaluationTiming.functionalReplayCalls, evaluationTiming}};
 }
 
 struct CompletedDataflowSelection final {
@@ -763,9 +1052,12 @@ exploreDataflowCandidates(const ArtifactRootReference &d0,
                           const ResolvedConfig &config,
                           const StructuredOwnershipTopKSelection &selection,
                           StructuredOwnershipSelectionMode selectionMode,
+                          bool allowRewriteExploration,
+                          ExecutionControlView executionControl,
                           const ArtifactStore &store, const BlobStore &blobs) {
-  bool requiresRewriteExploration = true;
-  if (selectionMode == StructuredOwnershipSelectionMode::SemanticConformance) {
+  bool requiresRewriteExploration = allowRewriteExploration;
+  if (!allowRewriteExploration &&
+      selectionMode == StructuredOwnershipSelectionMode::SemanticConformance) {
     auto initial = dataflow::importCanonicalDataflow(d0, store);
     if (!initial)
       return initial.takeError();
@@ -823,7 +1115,8 @@ exploreDataflowCandidates(const ArtifactRootReference &d0,
             generatorConfig->digest()},
         PromotePlanNodeDefinition{
             dataflowEvaluationPromotionAcquisitionDescriptor().reference(),
-            {PlanOutputRef{0, 0}, ExactPlanArtifacts{{structuredParent}},
+            {BoundedPlanOutputJoin{{PlanOutputRef{0, 0}}, selection.k},
+             ExactPlanArtifacts{{structuredParent}},
              ExactPlanArtifacts{{fabric.reference()}},
              ExactPlanArtifacts{{workload}},
              ExactPlanArtifacts{{runtimeInput}}},
@@ -848,7 +1141,7 @@ exploreDataflowCandidates(const ArtifactRootReference &d0,
   auto view = projectResolvedDseConfigView(planConfig);
   if (!view)
     return view.takeError();
-  auto executed = executeDsePlan(*view, store, blobs);
+  auto executed = executeDsePlan(*view, store, blobs, executionControl);
   if (!executed)
     return executed.takeError();
   const CompletedDsePlanExecution *selectionExecution =
@@ -864,9 +1157,11 @@ exploreDataflowCandidates(const ArtifactRootReference &d0,
       std::vector<DsePlanGenerateInvocationRecords> generateInvocations;
       generateInvocations.push_back(
           takeDsePlanGenerateInvocationRecords(std::move(*executed)));
-      return DataflowSelectionOutcome{IncompletePreMappingExploration{
+      IncompletePreMappingExploration result{
           nodeOrdinal, reason, std::move(evidence),
-          std::move(generateInvocations)}};
+          std::move(generateInvocations)};
+      result.resolvedDseConfigViewDigest = view->digest();
+      return DataflowSelectionOutcome{std::move(result)};
     }
     retainedIncompleteness.emplace(RetainedDsePlanIncompleteness{
         selectionExecution->resolvedDseConfigViewDigest(),
@@ -890,6 +1185,75 @@ exploreDataflowCandidates(const ArtifactRootReference &d0,
 
 } // namespace
 
+llvm::StringRef toString(PreMappingCandidatePlanningDisposition value) {
+  switch (value) {
+  case PreMappingCandidatePlanningDisposition::Retained:
+    return "retained";
+  case PreMappingCandidatePlanningDisposition::HeuristicPruned:
+    return "heuristic_pruned";
+  case PreMappingCandidatePlanningDisposition::CoordinateBudget:
+    return "coordinate_budget";
+  case PreMappingCandidatePlanningDisposition::ProgramMaterializationBudget:
+    return "program_materialization_budget";
+  case PreMappingCandidatePlanningDisposition::AnalyticEvaluationBudget:
+    return "analytic_evaluation_budget";
+  case PreMappingCandidatePlanningDisposition::FunctionalReplayBudget:
+    return "functional_replay_budget";
+  case PreMappingCandidatePlanningDisposition::DataflowPromotionBudget:
+    return "dataflow_promotion_budget";
+  case PreMappingCandidatePlanningDisposition::MappingPairBudget:
+    return "mapping_pair_budget";
+  case PreMappingCandidatePlanningDisposition::ExactGateRejected:
+    return "exact_gate_rejected";
+  case PreMappingCandidatePlanningDisposition::Unsupported:
+    return "unsupported";
+  case PreMappingCandidatePlanningDisposition::Unknown:
+    return "unknown";
+  case PreMappingCandidatePlanningDisposition::CancelledOrTimeout:
+    return "cancelled_or_timeout";
+  }
+  llvm_unreachable("unknown pre-Mapping candidate disposition");
+}
+
+llvm::Expected<ComponentViewDigest> computePreMappingCandidateIdentity(
+    const PreMappingCandidatePlanningRecord &record,
+    const ArtifactRootReference &sourceProgram,
+    const ArtifactRootReference &fabric,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput,
+    const ComponentViewDigest &frontierPolicyDigest) {
+  // Invocation roots and policy are provenance context, not candidate
+  // identity. Keep the parameters at this API boundary so callers can still
+  // validate the exact invocation tuple around the semantic join.
+  (void)sourceProgram;
+  (void)fabric;
+  (void)workload;
+  (void)runtimeInput;
+  (void)frontierPolicyDigest;
+  std::vector<std::uint8_t> bytes;
+  appendIdentityOptionalRoot(bytes, record.structuredProgram);
+  appendIdentityOptionalRoot(bytes, record.canonicalDataflow);
+
+  std::vector<std::vector<std::uint8_t>> roots;
+  roots.reserve(record.ownedProtocolRoots.size());
+  for (const frontend::StructuredEntityRef &root : record.ownedProtocolRoots)
+    roots.push_back(frontend::encodeStructuredEntityRef(root));
+  llvm::sort(roots);
+  appendIdentityU64(bytes, roots.size());
+  for (const std::vector<std::uint8_t> &root : roots)
+    appendIdentityBytes(bytes, root);
+
+  bytes.push_back(record.projection ? 1 : 0);
+  if (record.projection)
+    appendIdentityBytes(bytes, record.projection->identity.bytes());
+  // Logical-domain facts and verified spectrum classifications are evaluation
+  // evidence. They deliberately do not alter the stable candidate identity.
+  return computeComponentViewDigest(
+      {reinterpret_cast<const std::uint8_t *>(candidateIdentityDescriptor.data()),
+       candidateIdentityDescriptor.size()},
+      bytes);
+}
+
 llvm::Expected<PreMappingExplorationOutcome>
 exploreStructuredCompilationToPreMapping(
     frontend::StructuredCompilation compilation,
@@ -902,6 +1266,16 @@ exploreStructuredCompilationToPreMapping(
     return invalid("Structured compilation and Fabric references differ");
   if (options.ownership.selection.k == 0)
     return invalid("ownership TopK requires positive k");
+  if (llvm::Error error = validatePreMappingFrontierPolicy(options.frontier))
+    return std::move(error);
+  const StructuredOwnershipSelectionMode requestedPlannerMode =
+      options.ownership.selectionMode;
+  // BenefitQualified is retained as a compatibility spelling at the API
+  // boundary, but it must not select the legacy unbounded planner. All
+  // callers therefore share the same bounded semantic frontier and its
+  // evidence contract.
+  const StructuredOwnershipSelectionMode plannerMode =
+      StructuredOwnershipSelectionMode::SemanticConformance;
   if (llvm::Error error = registerStructuredOwnershipCandidateGenerator())
     return std::move(error);
   if (llvm::Error error = registerStructuredExecutionShapeCandidateGenerator())
@@ -925,6 +1299,13 @@ exploreStructuredCompilationToPreMapping(
       compilation.structuredProgram, artifactStore);
   if (!sourceReference)
     return sourceReference.takeError();
+  auto entrySymbol =
+      structuredWorkloadEntrySymbol(compilation.structuredProgram, workload);
+  if (!entrySymbol)
+    return entrySymbol.takeError();
+  auto systemView = fabric::requireSystemRoot(fabric.view());
+  if (!systemView)
+    return systemView.takeError();
   auto workloadReference =
       sim::publishSimulationWorkload(workload, artifactStore);
   if (!workloadReference)
@@ -934,27 +1315,77 @@ exploreStructuredCompilationToPreMapping(
   if (!runtimeInputReference)
     return runtimeInputReference.takeError();
 
-  auto sourceObservations = sim::executeNativeStructuredProgram(
-      compilation.structuredProgram, workload, runtimeInput);
+  auto frontierPolicyDigest = options.frontier.digest();
+  if (!frontierPolicyDigest)
+    return frontierPolicyDigest.takeError();
+  PreMappingWorkAccounting frontierAccounting =
+      makePreMappingWorkAccounting(options.frontier.budget);
+  const auto cancelledBeforePlanning = [&]() -> PreMappingExplorationOutcome {
+    IncompletePreMappingExploration result;
+    result.reason = DsePlanIncompleteReason{
+        CandidateGeneratorIncompleteReason::CancelledOrTimeout};
+    result.checkpoint = PreMappingCheckpoint{
+        PreMappingCheckpointBoundary::CoordinatePlanning,
+        result.reason,
+        *sourceReference,
+        fabric.reference(),
+        *workloadReference,
+        *runtimeInputReference,
+        *frontierPolicyDigest,
+        frontierAccounting,
+        {},
+        0,
+        false,
+        {},
+        {},
+    };
+    return result;
+  };
+  if (options.executionControl.stopRequested())
+    return cancelledBeforePlanning();
+
+  ++frontierAccounting.sourceObservations.planned;
+  ++frontierAccounting.sourceObservations.reserved;
+  auto sourceObservations = [&]() {
+    WorkTimer timer(frontierAccounting.sourceObservations);
+    return sim::executeNativeStructuredProgram(compilation.structuredProgram,
+                                                workload, runtimeInput);
+  }();
   if (!sourceObservations)
     return sourceObservations.takeError();
+  ++frontierAccounting.sourceObservations.consumed;
+  if (options.executionControl.stopRequested())
+    return cancelledBeforePlanning();
   evaluation::models::StructuredEvaluationInvocationCache evaluationCache;
   StructuredOwnershipSharedEvaluation sharedEvaluation(*sourceObservations,
                                                        evaluationCache);
 
+  std::vector<frontend::StructuredEntityRef> protocolRootSelection(
+      options.ownership.protocolCallableRoots.begin(),
+      options.ownership.protocolCallableRoots.end());
+  if (protocolRootSelection.empty()) {
+    llvm::SmallVector<llvm::StringRef> workloadEntry{*entrySymbol};
+    auto resolved = frontend::resolveDefinedLlvmCallables(
+        compilation.structuredProgram, workloadEntry);
+    if (!resolved)
+      return resolved.takeError();
+    protocolRootSelection = std::move(*resolved);
+  }
   auto callableSymbols = protocolCallableSymbols(
-      compilation.structuredProgram, options.ownership.protocolCallableRoots);
+      compilation.structuredProgram, protocolRootSelection);
   if (!callableSymbols)
     return callableSymbols.takeError();
   auto sourceProtocolRoots = resolveProtocolCallableRoots(
       compilation.structuredProgram, *callableSymbols);
   if (!sourceProtocolRoots)
     return sourceProtocolRoots.takeError();
-  auto protocolDependencies =
-      frontend::analysis::projectStructuredProtocolDependencies(
+  auto protocolDependencyProjection =
+      frontend::analysis::projectStructuredProtocolDependencyProjection(
           compilation.structuredProgram, *sourceProtocolRoots);
-  if (!protocolDependencies)
-    return protocolDependencies.takeError();
+  if (!protocolDependencyProjection)
+    return protocolDependencyProjection.takeError();
+  std::vector<frontend::analysis::StructuredProtocolDependency>
+      protocolDependencies = protocolDependencyProjection->presentDependencies();
   auto projectedRootActivity =
       evaluation::models::projectStructuredScopeActivity(
           compilation.structuredProgram, *sourceObservations,
@@ -962,15 +1393,80 @@ exploreStructuredCompilationToPreMapping(
   if (!projectedRootActivity)
     return projectedRootActivity.takeError();
   std::vector<PreMappingProtocolRootActivity> protocolRootActivity;
+  std::vector<PreMappingRootActivity> frontierRootActivity;
   protocolRootActivity.reserve(projectedRootActivity->size());
-  for (const auto &activity : *projectedRootActivity)
+  frontierRootActivity.reserve(projectedRootActivity->size());
+  for (const auto &activity : *projectedRootActivity) {
     protocolRootActivity.push_back({activity.scope, activity.dynamicActivations,
                                     activity.dynamicLeafExecutions});
-  auto traversalPlan =
-      buildProtocolTraversalPlan(*sourceProtocolRoots, *protocolDependencies);
-  if (!traversalPlan)
-    return traversalPlan.takeError();
-
+    frontierRootActivity.push_back({activity.scope,
+                                    activity.dynamicActivations,
+                                    activity.dynamicLeafExecutions});
+  }
+  llvm::Expected<PreMappingCoordinatePlan> coordinatePlan = [&]() {
+    WorkTimer timer(frontierAccounting.coordinates);
+    return buildPreMappingCoordinatePlan(
+        *sourceProtocolRoots, *protocolDependencyProjection,
+        frontierRootActivity, options.frontier, frontierAccounting);
+  }();
+  if (!coordinatePlan)
+    return coordinatePlan.takeError();
+  std::vector<PreMappingCandidatePlanningRecord> candidateInventory;
+  const auto incompleteAt =
+      [&](PreMappingCheckpointBoundary boundary,
+          DsePlanIncompleteReason reason,
+          llvm::ArrayRef<ArtifactRootReference> retained,
+          std::vector<ArtifactRootReference> evidence,
+          std::vector<DsePlanGenerateInvocationRecords> invocations)
+      -> PreMappingExplorationOutcome {
+    IncompletePreMappingExploration result;
+    result.reason = std::move(reason);
+    result.completeness.domainComplete =
+        !coordinatePlan->truncated && sourceProtocolRoots->size() <= 4;
+    result.completeness.budgetComplete = false;
+    result.completeness.providerComplete = false;
+    result.completeness.evidenceComplete = false;
+    result.completeness.selectionComplete = false;
+    result.retainedEvidence = std::move(evidence);
+    result.planGenerateInvocations = std::move(invocations);
+    const bool cancellation = isCancellationReason(result.reason);
+    for (PreMappingWorkCounter *counter : {
+             &frontierAccounting.sourceObservations,
+             &frontierAccounting.coordinates,
+             &frontierAccounting.programMaterializations,
+             &frontierAccounting.analyticEvaluations,
+             &frontierAccounting.functionalReplays,
+             &frontierAccounting.dataflowPromotions,
+             &frontierAccounting.mappingPairs}) {
+      if (counter->planned < counter->consumed)
+        counter->planned = counter->consumed;
+      counter->reserved = counter->planned;
+      const std::uint64_t available = counter->reserved - counter->consumed;
+      const std::uint64_t settledRejected =
+          std::min(available, counter->rejected);
+      const std::uint64_t remainingAfterRejected =
+          available - settledRejected;
+      const std::uint64_t settledCancelled =
+          std::min(remainingAfterRejected, counter->cancelled);
+      const std::uint64_t previouslySettled =
+          settledRejected + settledCancelled;
+      const std::uint64_t unsettled = available - previouslySettled;
+      counter->rejected = settledRejected;
+      counter->cancelled = settledCancelled;
+      if (cancellation)
+        counter->cancelled += unsettled;
+      else
+        counter->rejected += unsettled;
+    }
+    result.checkpoint = PreMappingCheckpoint{
+        boundary, result.reason, *sourceReference, fabric.reference(),
+        *workloadReference, *runtimeInputReference, *frontierPolicyDigest,
+        frontierAccounting, result.completeness,
+        coordinatePlan->eligibleCoordinateCount, coordinatePlan->truncated,
+        std::vector<ArtifactRootReference>(retained.begin(), retained.end()),
+        candidateInventory};
+    return result;
+  };
   std::vector<std::unique_ptr<frontend::StructuredCompilation>> parentStorage;
   parentStorage.push_back(std::make_unique<frontend::StructuredCompilation>(
       std::move(compilation)));
@@ -994,356 +1490,753 @@ exploreStructuredCompilationToPreMapping(
     std::uint64_t internalDependencyWeight = 0;
     std::uint64_t cutDependencyWeight = 0;
     std::optional<std::uint64_t> estimatedRuntimePicoseconds;
+    std::optional<PreMappingCandidateProjection> projection;
+    std::optional<PreMappingTemporalWitness> temporalWitness;
+    std::vector<PreMappingSpectrumSeedKind> seedKinds;
+    std::optional<PreMappingScheduleIntent> scheduleIntent;
+    std::optional<std::size_t> planningRecordIndex;
     bool derivationsIncluded = false;
   };
   std::vector<RetainedOwnershipSelection> generations;
   std::vector<RetainedOwnershipAlternative> semanticAlternatives;
-  std::vector<PreMappingCandidatePlanningRecord> candidateInventory;
   std::vector<ArtifactRootReference> satisfiedEvidence;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
   std::vector<RetainedDsePlanIncompleteness> retainedPlanIncompleteness;
-  std::optional<std::size_t> finalGeneration;
-  std::vector<ArtifactRootReference> finalReferences;
-  std::vector<StructuredOwnershipDerivation> finalOwnershipPrefix;
-  std::vector<StructuredExecutionShapeDerivation> finalExecutionShapePrefix;
-  std::vector<StructuredSpecialMathAccuracyDerivation> finalSpecialMathPrefix;
-  std::vector<StructuredScheduleDerivation> finalSchedulePrefix;
-  std::vector<StructuredMemoryCommunicationDerivation> finalMemoryPrefix;
-  bool finalDerivationsIncluded = false;
-  std::vector<std::vector<std::size_t>> paths;
-  if (options.ownership.selectionMode ==
-      StructuredOwnershipSelectionMode::SemanticConformance)
-    paths = traversalPlan->paths;
-  else
-    paths.push_back({});
+  StructuredOwnershipEvaluationTiming evaluationTiming;
+  bool ownershipProviderIncomplete = false;
+  std::optional<DsePlanIncompleteReason> ownershipIncompleteReason;
+  bool dataflowProviderIncomplete = false;
+  std::optional<DsePlanIncompleteReason> dataflowIncompleteReason;
+  const auto retainedSemanticCandidates = [&]() {
+    std::vector<ArtifactRootReference> retained;
+    for (const RetainedOwnershipAlternative &alternative :
+         semanticAlternatives)
+      retained.insert(retained.end(), alternative.references.begin(),
+                      alternative.references.end());
+    llvm::sort(retained, artifactRootReferenceLess);
+    retained.erase(std::unique(retained.begin(), retained.end()),
+                   retained.end());
+    return retained;
+  };
+  const auto cancelledAt =
+      [&](PreMappingCheckpointBoundary boundary,
+          llvm::ArrayRef<ArtifactRootReference> retained)
+      -> PreMappingExplorationOutcome {
+    return incompleteAt(
+        boundary,
+        DsePlanIncompleteReason{
+            CandidateGeneratorIncompleteReason::CancelledOrTimeout},
+        retained, std::move(satisfiedEvidence),
+        std::move(planGenerateInvocations));
+  };
 
-  for (const std::vector<std::size_t> &path : paths) {
-    auto parentProgram = frontend::importStructuredProgram(
-        sourceCompilation.structuredProgram.identity(),
-        sourceCompilation.structuredProgram.canonicalBytes());
-    if (!parentProgram)
-      return parentProgram.takeError();
-    parentStorage.push_back(std::make_unique<frontend::StructuredCompilation>(
-        frontend::StructuredCompilation{
-            sourceCompilation.fabric, sourceCompilation.staticGlobalMemory,
-            std::move(*parentProgram), sourceCompilation.sourceProvenance}));
-    frontend::StructuredCompilation *parent = parentStorage.back().get();
+  const auto ownedRootsFor = [&](llvm::ArrayRef<std::size_t> ordinals) {
+    std::vector<frontend::StructuredEntityRef> roots;
+    roots.reserve(ordinals.size());
+    for (std::size_t ordinal : ordinals)
+      roots.push_back((*sourceProtocolRoots)[ordinal]);
+    return roots;
+  };
+  const auto addBudgetRecord =
+      [&](const PreMappingCoordinate &coordinate,
+        PreMappingCandidatePlanningDisposition disposition) {
+        PreMappingCandidatePlanningRecord record{
+            std::nullopt, std::nullopt,
+            ownedRootsFor(coordinate.ownedProtocolOrdinals),
+            coordinate.seedKinds, coordinate.projection, std::nullopt,
+            disposition, std::nullopt, std::nullopt, std::nullopt,
+            std::nullopt, std::nullopt, std::nullopt, std::nullopt};
+        record.scheduleIntent = coordinate.scheduleIntent;
+        candidateInventory.push_back(std::move(record));
+      };
 
-    std::vector<StructuredOwnershipDerivation> ownershipPrefix;
-    std::vector<StructuredExecutionShapeDerivation> executionShapePrefix;
-    std::vector<StructuredSpecialMathAccuracyDerivation> specialMathPrefix;
-    std::vector<StructuredScheduleDerivation> schedulePrefix;
-    std::vector<StructuredMemoryCommunicationDerivation> memoryPrefix;
-    std::vector<std::size_t> ownedOrdinals;
-    std::optional<std::size_t> priorSelectedGeneration;
-    std::optional<ArtifactRootReference> priorSelectedReference;
-    bool priorDerivationsIncluded = false;
+  if (coordinatePlan->truncated)
+    candidateInventory.push_back(PreMappingCandidatePlanningRecord{
+        std::nullopt, std::nullopt, {}, {}, std::nullopt, std::nullopt,
+        PreMappingCandidatePlanningDisposition::CoordinateBudget,
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+        std::nullopt, std::nullopt});
 
-    const std::size_t generationCount =
-        options.ownership.selectionMode ==
-                StructuredOwnershipSelectionMode::SemanticConformance
-            ? std::max<std::size_t>(1, path.size())
-            : 1;
-    for (std::size_t transformationOrdinal = 0;
-         transformationOrdinal != generationCount; ++transformationOrdinal) {
-      auto parentReference = frontend::publishStructuredProgram(
-          parent->structuredProgram, artifactStore);
-      if (!parentReference)
-        return parentReference.takeError();
-      llvm::ArrayRef<std::string> generationSymbols = *callableSymbols;
-      if (options.ownership.selectionMode ==
-          StructuredOwnershipSelectionMode::SemanticConformance) {
-        if (path.empty())
-          generationSymbols = {};
-        else
-          generationSymbols = llvm::ArrayRef<std::string>(*callableSymbols)
-                                  .slice(path[transformationOrdinal], 1);
-      }
-      auto protocolRoots = resolveProtocolCallableRoots(
-          parent->structuredProgram, generationSymbols);
-      if (!protocolRoots)
-        return protocolRoots.takeError();
-      StructuredOwnershipExplorationOptions generationOptions =
-          options.ownership;
-      generationOptions.protocolCallableRoots = std::move(*protocolRoots);
-      if (options.ownership.selectionMode ==
-          StructuredOwnershipSelectionMode::SemanticConformance)
-        generationOptions.selection.k = 1;
-      auto explored = exploreOwnershipCandidates(
-          *parent, *parentReference, sourceCompilation.structuredProgram,
-          *sourceReference, workload, *workloadReference, runtimeInput,
-          *runtimeInputReference, fabric, config, generationOptions,
-          artifactStore, blobStore, &sharedEvaluation);
-      if (!explored)
-        return explored.takeError();
-      if (auto *incomplete =
-              std::get_if<IncompletePreMappingExploration>(&*explored)) {
-        mergeReferences(incomplete->retainedEvidence, satisfiedEvidence);
-        incomplete->planGenerateInvocations.insert(
-            incomplete->planGenerateInvocations.begin(),
-            std::make_move_iterator(planGenerateInvocations.begin()),
-            std::make_move_iterator(planGenerateInvocations.end()));
-        return PreMappingExplorationOutcome{std::move(*incomplete)};
-      }
+  if (plannerMode ==
+      StructuredOwnershipSelectionMode::SemanticConformance) {
+    struct SemanticBeamState final {
+      frontend::StructuredCompilation *parent = nullptr;
+      bool parentFunctionallyVerified = true;
+      ArtifactRootReference rankReference;
+      std::optional<std::uint64_t> estimatedRuntimePicoseconds;
+      bool usesLogicalThreadDomain = false;
+      bool hasPreOwnershipParallelDomain = false;
+      std::vector<StructuredOwnershipDerivation> ownershipPrefix;
+      std::vector<StructuredExecutionShapeDerivation> executionShapePrefix;
+      std::vector<StructuredSpecialMathAccuracyDerivation> specialMathPrefix;
+      std::vector<StructuredScheduleDerivation> schedulePrefix;
+      std::vector<StructuredMemoryCommunicationDerivation> memoryPrefix;
+    };
 
-      auto completed =
-          std::get<CompletedOwnershipSelection>(std::move(*explored));
-      mergeReferences(satisfiedEvidence, completed.evidence);
-      dispositions.insert(
-          dispositions.end(),
-          std::make_move_iterator(completed.dispositions.begin()),
-          std::make_move_iterator(completed.dispositions.end()));
-      planGenerateInvocations.push_back(
-          std::move(completed.generateInvocations));
-      if (completed.retainedIncompleteness)
-        retainedPlanIncompleteness.push_back(
-            std::move(*completed.retainedIncompleteness));
-      generations.push_back(RetainedOwnershipSelection{
-          std::move(completed.invocation), std::move(completed.selected),
-          std::move(completed.preferenceOrder)});
-      const std::size_t generationIndex = generations.size() - 1;
-      RetainedOwnershipSelection &generation = generations.back();
-
-      if (generation.selected.empty()) {
-        if (options.ownership.selectionMode !=
-            StructuredOwnershipSelectionMode::SemanticConformance) {
-          finalGeneration = priorSelectedGeneration.value_or(generationIndex);
-          finalReferences =
-              priorSelectedReference
-                  ? std::vector<ArtifactRootReference>{*priorSelectedReference}
-                  : std::vector<ArtifactRootReference>{*sourceReference};
-          finalOwnershipPrefix = ownershipPrefix;
-          finalExecutionShapePrefix = executionShapePrefix;
-          finalSpecialMathPrefix = specialMathPrefix;
-          finalSchedulePrefix = schedulePrefix;
-          finalMemoryPrefix = memoryPrefix;
-          finalDerivationsIncluded = priorDerivationsIncluded;
-        }
-        break;
+    const auto remaining = [](const PreMappingWorkCounter &counter) {
+      return counter.planned >= counter.limit ? 0
+                                               : counter.limit - counter.planned;
+    };
+    const auto settleReservation = [](PreMappingWorkCounter &counter,
+                                      std::uint64_t grant,
+                                      std::uint64_t consumedBefore,
+                                      llvm::StringRef boundary) -> llvm::Error {
+      if (counter.consumed < consumedBefore)
+        return invalid(boundary + " consumption regressed");
+      const std::uint64_t consumed = counter.consumed - consumedBefore;
+      if (consumed > grant)
+        return invalid(boundary + " exceeded its admitted work grant");
+      const std::uint64_t unused = grant - consumed;
+      if (unused > std::numeric_limits<std::uint64_t>::max() -
+                       counter.rejected)
+        return invalid(boundary + " rejected-work ledger overflows");
+      // The grant was reserved before dispatch. Work that the provider did
+      // not consume is a rejected unit, not an erased reservation; retaining
+      // it makes the parent ledger auditable and prevents cheap gates from
+      // disappearing from the accounting.
+      counter.rejected += unused;
+      return llvm::Error::success();
+    };
+    for (const auto indexedCoordinate :
+         llvm::enumerate(coordinatePlan->coordinates)) {
+      const PreMappingCoordinate &coordinate = indexedCoordinate.value();
+      if (options.executionControl.stopRequested())
+        return cancelledAt(PreMappingCheckpointBoundary::OwnershipGeneration,
+                           retainedSemanticCandidates());
+      if (coordinate.projection.exactGate ==
+          PreMappingExactGateDisposition::Rejected) {
+        addBudgetRecord(coordinate,
+                        PreMappingCandidatePlanningDisposition::ExactGateRejected);
+        continue;
       }
 
-      priorSelectedGeneration = generationIndex;
-      priorSelectedReference = generation.preferenceOrder.front();
-      priorDerivationsIncluded = false;
-      if (options.ownership.selectionMode ==
-          StructuredOwnershipSelectionMode::SemanticConformance) {
-        if (!path.empty())
-          ownedOrdinals.push_back(path[transformationOrdinal]);
-        auto estimate =
-            evaluation::models::lookupStructuredFabricAnalyticRuntimeEstimate(
-                generation.preferenceOrder.front(), fabric.reference(),
-                *workloadReference, *runtimeInputReference, config,
-                evaluationCache);
-        if (!estimate)
-          return estimate.takeError();
-        auto [internalWeight, cutWeight] = protocolDependencyPartition(
-            ownedOrdinals, traversalPlan->dependencyWeights);
-        semanticAlternatives.push_back(
-            RetainedOwnershipAlternative{generationIndex,
-                                         {generation.preferenceOrder.front()},
-                                         ownershipPrefix,
-                                         executionShapePrefix,
-                                         specialMathPrefix,
-                                         schedulePrefix,
-                                         memoryPrefix,
-                                         ownedOrdinals,
-                                         internalWeight,
-                                         cutWeight,
-                                         *estimate,
-                                         false});
-      }
-      if (transformationOrdinal + 1 == generationCount) {
-        if (options.ownership.selectionMode !=
-            StructuredOwnershipSelectionMode::SemanticConformance) {
-          finalGeneration = generationIndex;
-          finalReferences = generation.preferenceOrder;
-          finalOwnershipPrefix = ownershipPrefix;
-          finalExecutionShapePrefix = executionShapePrefix;
-          finalSpecialMathPrefix = specialMathPrefix;
-          finalSchedulePrefix = schedulePrefix;
-          finalMemoryPrefix = memoryPrefix;
-        }
-        break;
-      }
+      const std::uint64_t remainingCoordinates =
+          coordinatePlan->coordinates.size() - indexedCoordinate.index();
+      const std::uint64_t depthCount = std::max<std::uint64_t>(
+          1, coordinate.ownedProtocolOrdinals.size());
+      const auto fairGrant = [&](const PreMappingWorkCounter &counter,
+                                 std::uint64_t minimum) {
+        const std::uint64_t available = remaining(counter);
+        if (available == 0)
+          return std::uint64_t{0};
+        return std::min(
+            available,
+            std::max(minimum, available / remainingCoordinates));
+      };
+      std::uint64_t coordinateProgramAllowance =
+          fairGrant(frontierAccounting.programMaterializations,
+                    1 + depthCount * 6);
+      std::uint64_t coordinateAnalyticAllowance =
+          fairGrant(frontierAccounting.analyticEvaluations, depthCount * 3);
+      std::uint64_t coordinateFunctionalAllowance =
+          fairGrant(frontierAccounting.functionalReplays, depthCount);
 
-      StructuredOwnershipInvocationScope generationScope(
-          *generation.invocation);
-      auto selected = generation.invocation->materializeSelectedCandidate(
-          generation.preferenceOrder.front(), artifactStore);
-      if (!selected)
-        return selected.takeError();
-      ownershipPrefix.insert(
-          ownershipPrefix.end(),
-          std::make_move_iterator(selected->derivations.begin()),
-          std::make_move_iterator(selected->derivations.end()));
-      executionShapePrefix.insert(
-          executionShapePrefix.end(),
-          std::make_move_iterator(selected->executionShapeDerivations.begin()),
-          std::make_move_iterator(selected->executionShapeDerivations.end()));
-      specialMathPrefix.insert(
-          specialMathPrefix.end(),
-          std::make_move_iterator(
-              selected->specialMathAccuracyDerivations.begin()),
-          std::make_move_iterator(
-              selected->specialMathAccuracyDerivations.end()));
-      schedulePrefix.insert(
-          schedulePrefix.end(),
-          std::make_move_iterator(selected->scheduleDerivations.begin()),
-          std::make_move_iterator(selected->scheduleDerivations.end()));
-      memoryPrefix.insert(memoryPrefix.end(),
-                          std::make_move_iterator(
-                              selected->memoryCommunicationDerivations.begin()),
-                          std::make_move_iterator(
-                              selected->memoryCommunicationDerivations.end()));
+      // Importing a fresh parent is the first candidate-specific materialization
+      // boundary. Reserve it before cloning the MLIR program so the coordinate
+      // planner cannot consume an unbounded number of parents before any
+      // provider-level grant is checked.
+      if (coordinateProgramAllowance == 0 ||
+          frontierAccounting.programMaterializations.planned >=
+              frontierAccounting.programMaterializations.limit) {
+        addBudgetRecord(
+            coordinate,
+            PreMappingCandidatePlanningDisposition::ProgramMaterializationBudget);
+        continue;
+      }
+      ++frontierAccounting.programMaterializations.planned;
+      ++frontierAccounting.programMaterializations.reserved;
+      --coordinateProgramAllowance;
+
+      llvm::Expected<frontend::StructuredProgramCandidate> parentProgram =
+          [&]() {
+            WorkTimer timer(frontierAccounting.programMaterializations);
+            return frontend::importStructuredProgram(
+                sourceCompilation.structuredProgram.identity(),
+                sourceCompilation.structuredProgram.canonicalBytes());
+          }();
+      if (!parentProgram)
+        return parentProgram.takeError();
+      ++frontierAccounting.programMaterializations.consumed;
       parentStorage.push_back(std::make_unique<frontend::StructuredCompilation>(
           frontend::StructuredCompilation{
               sourceCompilation.fabric, sourceCompilation.staticGlobalMemory,
-              std::move(selected->candidate.structuredProgram),
-              std::move(selected->candidate.sourceProvenance)}));
-      parent = parentStorage.back().get();
-      priorDerivationsIncluded = true;
+              std::move(*parentProgram), sourceCompilation.sourceProvenance}));
+      frontend::StructuredCompilation *coordinateParent =
+          parentStorage.back().get();
+      std::vector<SemanticBeamState> beam;
+      if (beam.empty())
+        beam.push_back(SemanticBeamState{coordinateParent,
+                                         true,
+                                         *sourceReference,
+                                         std::nullopt,
+                                         false,
+                                         false,
+                                         {},
+                                         {},
+                                         {},
+                                         {},
+                                         {}});
+      bool coordinateCompleted = false;
+      for (std::size_t depth = 0; depth != depthCount && !beam.empty();
+           ++depth) {
+        if (options.executionControl.stopRequested())
+          return cancelledAt(PreMappingCheckpointBoundary::OwnershipGeneration,
+                             retainedSemanticCandidates());
+        std::vector<SemanticBeamState> nextBeam;
+        std::vector<RetainedOwnershipAlternative> terminal;
+        for (SemanticBeamState &state : beam) {
+          const std::uint64_t requestedBeam = options.frontier.beamWidth(depth);
+          const std::uint64_t desiredExpansion =
+              requestedBeam > std::numeric_limits<std::uint64_t>::max() / 2
+                  ? std::numeric_limits<std::uint64_t>::max()
+                  : requestedBeam * 2;
+          const bool hasChildMaterialization = depth + 1 != depthCount;
+          const bool requireFunctionalReplay = !hasChildMaterialization;
+          const std::uint64_t materializationUnitsPerExpansion =
+              hasChildMaterialization ? 6 : 5;
+          // Candidate generation and survivor promotion are separate
+          // boundaries.  The analytic frontier may inspect a bounded
+          // expansion, while functional replay is reserved only for the
+          // smaller beam that can reach the next transformation layer.
+          const std::uint64_t expansionLimit = std::min(
+              {desiredExpansion,
+               remaining(frontierAccounting.programMaterializations) /
+                   materializationUnitsPerExpansion,
+               remaining(frontierAccounting.analyticEvaluations) / 2,
+               coordinateProgramAllowance /
+                   materializationUnitsPerExpansion,
+               coordinateAnalyticAllowance / 2});
+          std::uint64_t beamWidth =
+              std::min(requestedBeam, expansionLimit);
+          if (requireFunctionalReplay)
+            beamWidth = std::min(
+                {beamWidth,
+                 remaining(frontierAccounting.functionalReplays),
+                 coordinateFunctionalAllowance});
+          if (expansionLimit == 0 || beamWidth == 0) {
+            PreMappingCandidatePlanningDisposition disposition =
+                PreMappingCandidatePlanningDisposition::FunctionalReplayBudget;
+            if (remaining(frontierAccounting.programMaterializations) < 5)
+              disposition = PreMappingCandidatePlanningDisposition::
+                  ProgramMaterializationBudget;
+            else if (remaining(frontierAccounting.analyticEvaluations) == 0)
+              disposition = PreMappingCandidatePlanningDisposition::
+                  AnalyticEvaluationBudget;
+            addBudgetRecord(coordinate, disposition);
+            break;
+          }
+          // Ownership decision screening is cheaper than analytic evaluation
+          // and functional replay, but exact rejection must not consume a
+          // downstream publication slot. Give it a distinct, fairly bounded
+          // grant. Special-math closure has the same distinction, while the
+          // remaining three transform layers retain the published expansion
+          // width. A non-terminal survivor also consumes one child clone.
+          const std::uint64_t childMaterializationGrant =
+              hasChildMaterialization ? expansionLimit : 0;
+          if (expansionLimit >
+              (std::numeric_limits<std::uint64_t>::max() -
+               childMaterializationGrant) /
+                  3)
+            return invalid("compiler frontier materialization grant overflows");
+          const std::uint64_t fixedProgramGrant =
+              expansionLimit * 3 + childMaterializationGrant;
+          if (coordinateProgramAllowance < fixedProgramGrant ||
+              coordinateProgramAllowance - fixedProgramGrant <
+                  expansionLimit * 2)
+            return invalid("compiler frontier lost its bounded screening "
+                           "grants");
+          const std::uint64_t diversityWidth =
+              std::max<std::uint64_t>(
+                  1, options.frontier.diversityCandidateCount);
+          const std::uint64_t screeningAttemptTarget =
+              expansionLimit > std::numeric_limits<std::uint64_t>::max() /
+                                   diversityWidth
+                  ? std::numeric_limits<std::uint64_t>::max()
+                  : expansionLimit * diversityWidth;
+          const std::uint64_t screeningAllowance =
+              coordinateProgramAllowance - fixedProgramGrant;
+          const std::uint64_t ownershipAttemptLimit = std::min(
+              screeningAttemptTarget, screeningAllowance / 2);
+          const std::uint64_t specialMathAttemptLimit = std::min(
+              screeningAttemptTarget,
+              screeningAllowance - ownershipAttemptLimit);
+          if (ownershipAttemptLimit < expansionLimit ||
+              specialMathAttemptLimit < expansionLimit)
+            return invalid("compiler frontier screening grant is smaller "
+                           "than its publication width");
+          const std::uint64_t programGrant = fixedProgramGrant +
+                                             ownershipAttemptLimit +
+                                             specialMathAttemptLimit;
+          if (expansionLimit >
+              std::numeric_limits<std::uint64_t>::max() / 2)
+            return invalid("compiler frontier analytic grant overflows");
+          const std::uint64_t analyticGrant = expansionLimit * 2;
+          coordinateProgramAllowance -= programGrant;
+          coordinateAnalyticAllowance -= analyticGrant;
+          const std::uint64_t functionalGrant =
+              requireFunctionalReplay ? beamWidth : 0;
+          coordinateFunctionalAllowance -= functionalGrant;
+          const std::uint64_t programConsumedBefore =
+              frontierAccounting.programMaterializations.consumed;
+          const std::uint64_t analyticConsumedBefore =
+              frontierAccounting.analyticEvaluations.consumed;
+          const std::uint64_t functionalConsumedBefore =
+              frontierAccounting.functionalReplays.consumed;
+          frontierAccounting.programMaterializations.planned += programGrant;
+          frontierAccounting.programMaterializations.reserved += programGrant;
+          // Reserve one provider acquisition and one cached planner lookup for
+          // every exposed survivor before either boundary begins.
+          frontierAccounting.analyticEvaluations.planned += analyticGrant;
+          frontierAccounting.analyticEvaluations.reserved += analyticGrant;
+          frontierAccounting.functionalReplays.planned += functionalGrant;
+          frontierAccounting.functionalReplays.reserved += functionalGrant;
+
+          auto parentReference = frontend::publishStructuredProgram(
+              state.parent->structuredProgram, artifactStore);
+          if (!parentReference)
+            return parentReference.takeError();
+          llvm::ArrayRef<std::string> generationSymbols;
+          if (!coordinate.ownedProtocolOrdinals.empty()) {
+            const std::size_t rootDepth =
+                depth % coordinate.ownedProtocolOrdinals.size();
+            generationSymbols = llvm::ArrayRef<std::string>(*callableSymbols)
+                                    .slice(
+                                        coordinate.ownedProtocolOrdinals[rootDepth],
+                                        1);
+          }
+          auto protocolRoots = resolveProtocolCallableRoots(
+              state.parent->structuredProgram, generationSymbols);
+          if (!protocolRoots)
+            return protocolRoots.takeError();
+          StructuredOwnershipExplorationOptions generationOptions =
+              options.ownership;
+          generationOptions.selectionMode = plannerMode;
+          generationOptions.protocolCallableRoots = std::move(*protocolRoots);
+          generationOptions.selection.k = beamWidth;
+          const StructuredScheduleGenerationIntent scheduleIntent =
+              coordinate.scheduleIntent ==
+                          PreMappingScheduleIntent::TemporalReuse &&
+                      state.hasPreOwnershipParallelDomain
+                  ? StructuredScheduleGenerationIntent::
+                        ForbidLogicalThreadDomain
+                  : coordinate.scheduleIntent ==
+                        PreMappingScheduleIntent::TemporalReuse
+                  ? StructuredScheduleGenerationIntent::
+                        RequireLogicalThreadDomain
+                  : StructuredScheduleGenerationIntent::Balanced;
+          const StructuredOwnershipGenerationIntent ownershipIntent =
+              state.hasPreOwnershipParallelDomain
+                  ? StructuredOwnershipGenerationIntent::
+                        RequireLogicalThreadDomain
+                  : StructuredOwnershipGenerationIntent::Balanced;
+          llvm::Expected<OwnershipSelectionOutcome> explored =
+              exploreOwnershipCandidates(
+                  *state.parent, *parentReference,
+                  sourceCompilation.structuredProgram, *sourceReference,
+                  workload, *workloadReference, runtimeInput,
+                  *runtimeInputReference, fabric, config, generationOptions,
+                  ownershipIntent, scheduleIntent, ownershipAttemptLimit,
+                  specialMathAttemptLimit, expansionLimit,
+                  state.parentFunctionallyVerified,
+                  requireFunctionalReplay,
+                  options.executionControl, artifactStore, blobStore,
+                  &sharedEvaluation);
+          if (!explored)
+            return explored.takeError();
+          if (auto *incomplete =
+                  std::get_if<IncompletePreMappingExploration>(&*explored)) {
+            accountEvaluationTiming(frontierAccounting,
+                                    incomplete->evaluationTiming);
+            accumulateEvaluationTiming(evaluationTiming,
+                                       incomplete->evaluationTiming);
+            mergeReferences(incomplete->retainedEvidence, satisfiedEvidence);
+            planGenerateInvocations.insert(
+                planGenerateInvocations.end(),
+                std::make_move_iterator(
+                    incomplete->planGenerateInvocations.begin()),
+                std::make_move_iterator(
+                    incomplete->planGenerateInvocations.end()));
+            ownershipProviderIncomplete = true;
+            if (!ownershipIncompleteReason)
+              ownershipIncompleteReason = incomplete->reason;
+            if (incomplete->resolvedDseConfigViewDigest &&
+                incomplete->planNodeOrdinal)
+              retainedPlanIncompleteness.push_back(
+                  RetainedDsePlanIncompleteness{
+                      *incomplete->resolvedDseConfigViewDigest,
+                      *incomplete->planNodeOrdinal, incomplete->reason});
+            frontierAccounting.programMaterializations.consumed +=
+                incomplete->programMaterializations;
+            frontierAccounting.analyticEvaluations.consumed +=
+                incomplete->analyticEvaluations;
+            frontierAccounting.functionalReplays.consumed +=
+                incomplete->functionalReplays;
+            if (llvm::Error error = settleReservation(
+                    frontierAccounting.programMaterializations, programGrant,
+                    programConsumedBefore, "compiler materialization"))
+              return std::move(error);
+            if (llvm::Error error = settleReservation(
+                    frontierAccounting.analyticEvaluations, analyticGrant,
+                    analyticConsumedBefore, "compiler analytic evaluation"))
+              return std::move(error);
+            if (llvm::Error error = settleReservation(
+                    frontierAccounting.functionalReplays, functionalGrant,
+                    functionalConsumedBefore, "compiler functional replay"))
+              return std::move(error);
+            addBudgetRecord(
+                coordinate, planningDispositionForIncomplete(
+                                incomplete->reason));
+            continue;
+          }
+
+          auto completed =
+              std::get<CompletedOwnershipSelection>(std::move(*explored));
+          accountEvaluationTiming(frontierAccounting,
+                                  completed.evaluationTiming);
+          accumulateEvaluationTiming(evaluationTiming,
+                                     completed.evaluationTiming);
+          if (ownershipIntent == StructuredOwnershipGenerationIntent::
+                                     RequireLogicalThreadDomain)
+            emitOwnershipRejections(completed.dispositions);
+          if (completed.programMaterializations > programGrant ||
+              completed.analyticEvaluations > analyticGrant ||
+              completed.functionalReplays > functionalGrant)
+            return invalid("compiler provider exceeded its admitted work grant: " +
+                           llvm::Twine(completed.programMaterializations) + "/" +
+                           llvm::Twine(programGrant) + ", analytic=" +
+                           llvm::Twine(completed.analyticEvaluations) + "/" +
+                           llvm::Twine(analyticGrant) + ", functional=" +
+                           llvm::Twine(completed.functionalReplays) + "/" +
+                           llvm::Twine(functionalGrant));
+          frontierAccounting.programMaterializations.consumed +=
+              completed.programMaterializations;
+          frontierAccounting.analyticEvaluations.consumed +=
+              completed.analyticEvaluations;
+          frontierAccounting.functionalReplays.consumed +=
+              completed.functionalReplays;
+          mergeReferences(satisfiedEvidence, completed.evidence);
+          dispositions.insert(
+              dispositions.end(),
+              std::make_move_iterator(completed.dispositions.begin()),
+              std::make_move_iterator(completed.dispositions.end()));
+          planGenerateInvocations.push_back(
+              std::move(completed.generateInvocations));
+          if (completed.retainedIncompleteness)
+            retainedPlanIncompleteness.push_back(
+                std::move(*completed.retainedIncompleteness));
+          generations.push_back(RetainedOwnershipSelection{
+              std::move(completed.invocation), std::move(completed.selected),
+              std::move(completed.preferenceOrder)});
+          const std::size_t generationIndex = generations.size() - 1;
+          RetainedOwnershipSelection &generation = generations.back();
+
+          for (const ArtifactRootReference &reference :
+               generation.preferenceOrder) {
+            auto logicalThreadDomain = generation.invocation
+                                           ->selectedCandidateHasLogicalThreadDomain(
+                                               reference);
+            if (!logicalThreadDomain)
+              return logicalThreadDomain.takeError();
+            const bool usesLogicalThreadDomain = *logicalThreadDomain;
+            const bool cumulativeLogicalThreadDomain =
+                state.usesLogicalThreadDomain || usesLogicalThreadDomain ||
+                state.hasPreOwnershipParallelDomain;
+            if (coordinate.scheduleIntent ==
+                    PreMappingScheduleIntent::TemporalReuse &&
+                depth + 1 == depthCount && !cumulativeLogicalThreadDomain)
+              continue;
+            if (frontierAccounting.analyticEvaluations.consumed >=
+                frontierAccounting.analyticEvaluations.limit)
+              return invalid("compiler frontier analytic budget was exceeded");
+            ++frontierAccounting.analyticEvaluations.consumed;
+            auto estimate = evaluation::models::
+                lookupStructuredFabricAnalyticRuntimeEstimate(
+                    reference, fabric.reference(), *workloadReference,
+                    *runtimeInputReference, config, evaluationCache);
+            if (!estimate)
+              return estimate.takeError();
+            RetainedOwnershipAlternative alternative{
+                generationIndex,
+                {reference},
+                state.ownershipPrefix,
+                state.executionShapePrefix,
+                state.specialMathPrefix,
+                state.schedulePrefix,
+                state.memoryPrefix,
+                coordinate.ownedProtocolOrdinals,
+                coordinate.projection.internalDependencyCount,
+                coordinate.projection.cutDependencyCount,
+                *estimate,
+                coordinate.projection,
+                coordinate.temporalWitness,
+                coordinate.seedKinds,
+                std::nullopt,
+                false};
+            if (depth + 1 == depthCount) {
+              terminal.push_back(std::move(alternative));
+              continue;
+            }
+
+            StructuredOwnershipInvocationScope generationScope(
+                *generation.invocation);
+            if (frontierAccounting.programMaterializations.consumed >=
+                frontierAccounting.programMaterializations.limit)
+              return invalid("compiler frontier materialization budget was exceeded");
+            ++frontierAccounting.programMaterializations.consumed;
+            llvm::Expected<SelectedStructuredOwnershipCandidate> selected =
+                [&]() {
+                  WorkTimer timer(
+                      frontierAccounting.programMaterializations);
+                  return generation.invocation
+                      ->materializeAnalyticContinuationCandidate(
+                          reference, artifactStore);
+                }();
+            if (!selected)
+              return selected.takeError();
+            SemanticBeamState child{
+                nullptr,
+                false,
+                reference,
+                *estimate,
+                cumulativeLogicalThreadDomain,
+                state.hasPreOwnershipParallelDomain,
+                state.ownershipPrefix,
+                state.executionShapePrefix,
+                state.specialMathPrefix,
+                state.schedulePrefix,
+                state.memoryPrefix};
+            child.ownershipPrefix.insert(
+                child.ownershipPrefix.end(), selected->derivations.begin(),
+                selected->derivations.end());
+            child.executionShapePrefix.insert(
+                child.executionShapePrefix.end(),
+                selected->executionShapeDerivations.begin(),
+                selected->executionShapeDerivations.end());
+            child.specialMathPrefix.insert(
+                child.specialMathPrefix.end(),
+                selected->specialMathAccuracyDerivations.begin(),
+                selected->specialMathAccuracyDerivations.end());
+            child.schedulePrefix.insert(
+                child.schedulePrefix.end(),
+                selected->scheduleDerivations.begin(),
+                selected->scheduleDerivations.end());
+            child.memoryPrefix.insert(
+                child.memoryPrefix.end(),
+                selected->memoryCommunicationDerivations.begin(),
+                selected->memoryCommunicationDerivations.end());
+            parentStorage.push_back(
+                std::make_unique<frontend::StructuredCompilation>(
+                    frontend::StructuredCompilation{
+                        sourceCompilation.fabric,
+                        sourceCompilation.staticGlobalMemory,
+                        std::move(selected->candidate.structuredProgram),
+                        std::move(selected->candidate.sourceProvenance)}));
+            child.parent = parentStorage.back().get();
+            nextBeam.push_back(std::move(child));
+          }
+          if (llvm::Error error = settleReservation(
+                  frontierAccounting.programMaterializations, programGrant,
+                  programConsumedBefore, "compiler materialization"))
+            return std::move(error);
+          if (llvm::Error error = settleReservation(
+                  frontierAccounting.analyticEvaluations, analyticGrant,
+                  analyticConsumedBefore, "compiler analytic evaluation"))
+            return std::move(error);
+          if (llvm::Error error = settleReservation(
+                  frontierAccounting.functionalReplays, functionalGrant,
+                  functionalConsumedBefore, "compiler functional replay"))
+            return std::move(error);
+        }
+        if (depth + 1 == depthCount) {
+          for (RetainedOwnershipAlternative &alternative : terminal) {
+            PreMappingCandidateProjection projection =
+                *alternative.projection;
+            if (alternative.estimatedRuntimePicoseconds &&
+                projection.estimatedCutTrafficBytes &&
+                projection.unknownCutPairCount == 0 &&
+                projection.cutUnknownObjectCount == 0) {
+              projection.estimateSupport = PreMappingEstimateSupport::Supported;
+              projection.estimateConfidence =
+                  PreMappingEstimateConfidence::Low;
+            } else {
+              projection.estimateSupport =
+                  PreMappingEstimateSupport::Unsupported;
+              projection.estimateConfidence =
+                  PreMappingEstimateConfidence::None;
+            }
+            alternative.projection = projection;
+            alternative.scheduleIntent = coordinate.scheduleIntent;
+            candidateInventory.push_back(PreMappingCandidatePlanningRecord{
+                alternative.references.front(), std::nullopt,
+                ownedRootsFor(alternative.ownedProtocolOrdinals),
+                alternative.seedKinds, projection,
+                alternative.estimatedRuntimePicoseconds,
+                PreMappingCandidatePlanningDisposition::HeuristicPruned,
+                std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+                std::nullopt, std::nullopt, std::nullopt});
+            candidateInventory.back().scheduleIntent =
+                coordinate.scheduleIntent;
+            alternative.planningRecordIndex = candidateInventory.size() - 1;
+            semanticAlternatives.push_back(std::move(alternative));
+          }
+          coordinateCompleted = !terminal.empty();
+          break;
+        }
+        llvm::sort(nextBeam, [](const SemanticBeamState &lhs,
+                               const SemanticBeamState &rhs) {
+          return artifactRootReferenceLess(lhs.rankReference,
+                                           rhs.rankReference);
+        });
+        nextBeam.erase(
+            std::unique(nextBeam.begin(), nextBeam.end(),
+                        [](const SemanticBeamState &lhs,
+                           const SemanticBeamState &rhs) {
+                          return lhs.rankReference == rhs.rankReference;
+                        }),
+            nextBeam.end());
+        const std::uint64_t beamLimit = options.frontier.beamWidth(depth);
+        std::vector<PreMappingFrontierCandidate> rankedInputs;
+        rankedInputs.reserve(nextBeam.size());
+        for (const SemanticBeamState &state : nextBeam)
+          rankedInputs.push_back({state.rankReference, coordinate.projection,
+                                  state.estimatedRuntimePicoseconds,
+                                  coordinate.scheduleIntent,
+                                  coordinate.seedKinds, std::nullopt});
+        auto ranked = selectPreMappingFrontier(
+            rankedInputs, beamLimit, options.frontier.diversityCandidateCount);
+        if (!ranked)
+          return ranked.takeError();
+        beam.clear();
+        beam.reserve(ranked->preferenceOrder.size());
+        for (const ArtifactRootReference &reference :
+             ranked->preferenceOrder) {
+          auto found = llvm::find_if(nextBeam, [&](const auto &state) {
+            return state.rankReference == reference;
+          });
+          if (found == nextBeam.end())
+            return invalid("central frontier selection returned a foreign "
+                           "beam candidate");
+          beam.push_back(std::move(*found));
+        }
+      }
+      if (!coordinateCompleted)
+        addBudgetRecord(coordinate,
+                        PreMappingCandidatePlanningDisposition::Unsupported);
     }
   }
-
   std::vector<RetainedOwnershipAlternative> alternatives;
-  if (options.ownership.selectionMode ==
-      StructuredOwnershipSelectionMode::SemanticConformance) {
-    if (semanticAlternatives.empty()) {
-      emitOwnershipRejections(dispositions);
-      return PreMappingExplorationOutcome{
-          CompletedPreMappingNoFeasibleCandidate{
-              std::move(satisfiedEvidence),
-              std::move(planGenerateInvocations)}};
+  if (semanticAlternatives.empty()) {
+    emitOwnershipRejections(dispositions);
+    if (!retainedPlanIncompleteness.empty()) {
+      const RetainedDsePlanIncompleteness &first =
+          retainedPlanIncompleteness.front();
+      return incompleteAt(PreMappingCheckpointBoundary::OwnershipGeneration,
+                          first.reason, retainedSemanticCandidates(),
+                          std::move(satisfiedEvidence),
+                          std::move(planGenerateInvocations));
     }
-    const auto scoreLess = [](const RetainedOwnershipAlternative &lhs,
-                              const RetainedOwnershipAlternative &rhs) {
-      if (lhs.estimatedRuntimePicoseconds.has_value() !=
-          rhs.estimatedRuntimePicoseconds.has_value())
-        return lhs.estimatedRuntimePicoseconds.has_value();
-      if (lhs.estimatedRuntimePicoseconds != rhs.estimatedRuntimePicoseconds)
-        return lhs.estimatedRuntimePicoseconds <
-               rhs.estimatedRuntimePicoseconds;
-      if (lhs.cutDependencyWeight != rhs.cutDependencyWeight)
-        return lhs.cutDependencyWeight < rhs.cutDependencyWeight;
-      if (lhs.internalDependencyWeight != rhs.internalDependencyWeight)
-        return lhs.internalDependencyWeight > rhs.internalDependencyWeight;
-      if (lhs.ownedProtocolOrdinals != rhs.ownedProtocolOrdinals)
-        return lhs.ownedProtocolOrdinals < rhs.ownedProtocolOrdinals;
-      return artifactRootReferenceLess(lhs.references.front(),
-                                       rhs.references.front());
-    };
-    llvm::sort(semanticAlternatives, scoreLess);
-    std::vector<RetainedOwnershipAlternative> unique;
+    if (ownershipIncompleteReason)
+      return incompleteAt(PreMappingCheckpointBoundary::OwnershipGeneration,
+                          *ownershipIncompleteReason,
+                          retainedSemanticCandidates(),
+                          std::move(satisfiedEvidence),
+                          std::move(planGenerateInvocations));
+    return PreMappingExplorationOutcome{
+        CompletedPreMappingNoFeasibleCandidate{
+            std::move(satisfiedEvidence),
+            std::move(planGenerateInvocations)}};
+  }
+    std::vector<PreMappingFrontierCandidate> rankedInputs;
+    rankedInputs.reserve(semanticAlternatives.size());
+    for (const RetainedOwnershipAlternative &alternative :
+         semanticAlternatives) {
+      if (alternative.references.size() != 1 || !alternative.projection)
+        return invalid("semantic candidate has no exact frontier projection");
+      rankedInputs.push_back({alternative.references.front(),
+                              *alternative.projection,
+                              alternative.estimatedRuntimePicoseconds,
+                              alternative.scheduleIntent.value_or(
+                                  PreMappingScheduleIntent::Unconstrained),
+                              alternative.seedKinds,
+                              std::nullopt});
+    }
+    auto ranked = selectPreMappingFrontier(
+        rankedInputs, options.ownership.selection.k,
+        options.frontier.diversityCandidateCount,
+        options.frontier.spectrumEndpoint);
+    if (!ranked)
+      return ranked.takeError();
+    if (ranked->preferenceOrder.size() !=
+        ranked->preferenceProjectionIdentities.size())
+      return invalid("central frontier selection lost coordinate identity");
+    const std::size_t retainedCount = ranked->preferenceOrder.size();
+    std::vector<std::pair<ArtifactRootReference, ComponentViewDigest>>
+        retainedRepresentatives;
     for (RetainedOwnershipAlternative &alternative : semanticAlternatives) {
-      auto duplicate = llvm::find_if(unique, [&](const auto &retained) {
-        return retained.references.front() == alternative.references.front();
-      });
-      if (duplicate == unique.end())
-        unique.push_back(std::move(alternative));
-    }
-
-    std::vector<std::size_t> diverseOrder;
-    const auto retainIndex = [&](std::size_t index) {
-      if (!llvm::is_contained(diverseOrder, index))
-        diverseOrder.push_back(index);
-    };
-    retainIndex(0);
-    const auto maximal = std::max_element(
-        unique.begin(), unique.end(), [](const auto &lhs, const auto &rhs) {
-          return lhs.ownedProtocolOrdinals.size() <
-                 rhs.ownedProtocolOrdinals.size();
-        });
-    if (maximal != unique.end())
-      retainIndex(std::distance(unique.begin(), maximal));
-    const auto minimal = std::min_element(
-        unique.begin(), unique.end(), [](const auto &lhs, const auto &rhs) {
-          return lhs.ownedProtocolOrdinals.size() <
-                 rhs.ownedProtocolOrdinals.size();
-        });
-    if (minimal != unique.end())
-      retainIndex(std::distance(unique.begin(), minimal));
-    for (std::size_t index = 0; index != unique.size(); ++index)
-      retainIndex(index);
-
-    const std::size_t retainedCount =
-        static_cast<std::size_t>(std::min<std::uint64_t>(
-            options.ownership.selection.k, diverseOrder.size()));
-    candidateInventory.reserve(unique.size());
-    for (std::size_t uniqueIndex = 0; uniqueIndex != unique.size();
-         ++uniqueIndex) {
       std::optional<std::uint64_t> preferenceRank;
       for (std::size_t rank = 0; rank != retainedCount; ++rank)
-        if (diverseOrder[rank] == uniqueIndex) {
+        if (ranked->preferenceOrder[rank] ==
+                alternative.references.front() &&
+            ranked->preferenceProjectionIdentities[rank] ==
+                alternative.projection->identity &&
+            llvm::find_if(
+                retainedRepresentatives, [&](const auto &representative) {
+                  return representative.first == alternative.references.front() &&
+                         representative.second == alternative.projection->identity;
+                }) == retainedRepresentatives.end()) {
+          retainedRepresentatives.push_back(
+              {alternative.references.front(), alternative.projection->identity});
           preferenceRank = rank;
           break;
         }
-      std::vector<frontend::StructuredEntityRef> ownedRoots;
-      ownedRoots.reserve(unique[uniqueIndex].ownedProtocolOrdinals.size());
-      for (std::size_t ordinal : unique[uniqueIndex].ownedProtocolOrdinals) {
-        if (ordinal >= sourceProtocolRoots->size())
-          return invalid("candidate inventory owns a foreign protocol root");
-        ownedRoots.push_back((*sourceProtocolRoots)[ordinal]);
-      }
-      candidateInventory.push_back(PreMappingCandidatePlanningRecord{
-          unique[uniqueIndex].references.front(), std::move(ownedRoots),
-          unique[uniqueIndex].estimatedRuntimePicoseconds,
-          preferenceRank
-              ? PreMappingCandidatePlanningDisposition::Retained
-              : PreMappingCandidatePlanningDisposition::BoundedFrontierBudget,
-          preferenceRank});
+      if (!alternative.planningRecordIndex ||
+          *alternative.planningRecordIndex >= candidateInventory.size())
+        return invalid("semantic candidate lost its planning record");
+      PreMappingCandidatePlanningRecord &record =
+          candidateInventory[*alternative.planningRecordIndex];
+      record.disposition =
+          preferenceRank ? PreMappingCandidatePlanningDisposition::Retained
+                         : PreMappingCandidatePlanningDisposition::HeuristicPruned;
+      record.preferenceRank = preferenceRank;
     }
 
     alternatives.reserve(retainedCount);
     for (std::size_t rank = 0; rank != retainedCount; ++rank) {
-      const std::size_t index = diverseOrder[rank];
+      auto found = llvm::find_if(
+          semanticAlternatives, [&](const auto &alternative) {
+            return alternative.references.size() == 1 &&
+                   alternative.references.front() ==
+                       ranked->preferenceOrder[rank] &&
+                   alternative.projection &&
+                   alternative.projection->identity ==
+                       ranked->preferenceProjectionIdentities[rank];
+          });
+      if (found == semanticAlternatives.end())
+        return invalid("central frontier selection returned a foreign "
+                       "semantic candidate");
       mapping_debug::emit(
           mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
           mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
             fields["operation"] = "retain_dependency_aware_candidate";
             fields["preference_rank"] = rank;
             fields["owned_region_count"] =
-                unique[index].ownedProtocolOrdinals.size();
+                found->ownedProtocolOrdinals.size();
             fields["internal_dependency_weight"] =
-                unique[index].internalDependencyWeight;
-            fields["cut_dependency_weight"] = unique[index].cutDependencyWeight;
+                found->internalDependencyWeight;
+            fields["cut_dependency_weight"] = found->cutDependencyWeight;
             fields["analytic_runtime_supported"] =
-                unique[index].estimatedRuntimePicoseconds.has_value();
-            if (unique[index].estimatedRuntimePicoseconds)
+                found->estimatedRuntimePicoseconds.has_value();
+            if (found->estimatedRuntimePicoseconds)
               fields["estimated_runtime_ps"] =
-                  *unique[index].estimatedRuntimePicoseconds;
+                  *found->estimatedRuntimePicoseconds;
           });
-      alternatives.push_back(std::move(unique[index]));
+      alternatives.push_back(std::move(*found));
     }
-  } else {
-    if (!finalGeneration || finalReferences.empty())
-      return invalid(
-          "ownership exploration did not choose a terminal candidate");
-    alternatives.push_back(
-        RetainedOwnershipAlternative{*finalGeneration,
-                                     std::move(finalReferences),
-                                     std::move(finalOwnershipPrefix),
-                                     std::move(finalExecutionShapePrefix),
-                                     std::move(finalSpecialMathPrefix),
-                                     std::move(finalSchedulePrefix),
-                                     std::move(finalMemoryPrefix),
-                                     {},
-                                     0,
-                                     0,
-                                     std::nullopt,
-                                     finalDerivationsIncluded});
-    for (std::size_t rank = 0; rank != alternatives.front().references.size();
-         ++rank)
-      candidateInventory.push_back(PreMappingCandidatePlanningRecord{
-          alternatives.front().references[rank],
-          {},
-          std::nullopt,
-          PreMappingCandidatePlanningDisposition::Retained,
-          rank});
-  }
 
   auto assemble = [&](SelectedStructuredOwnershipCandidate candidate,
-                      const RetainedOwnershipAlternative &alternative) {
+                      const RetainedOwnershipAlternative &alternative,
+                      std::optional<std::size_t> planningRecordOrdinal) {
     std::vector<StructuredOwnershipDerivation> ownership =
         alternative.ownershipPrefix;
     std::vector<StructuredExecutionShapeDerivation> executionShape =
@@ -1379,6 +2272,7 @@ exploreStructuredCompilationToPreMapping(
     }
     return SelectedPreMappingCompilation{
         0,
+        planningRecordOrdinal,
         frontend::PreMappingCompilation{
             sourceCompilation.fabric, sourceCompilation.staticGlobalMemory,
             std::move(candidate.candidate.structuredProgram),
@@ -1394,44 +2288,191 @@ exploreStructuredCompilationToPreMapping(
   };
 
   std::vector<SelectedPreMappingCompilation> selected;
+  std::vector<std::optional<std::size_t>> selectedPlanningRecords;
   selected.reserve(static_cast<std::size_t>(options.ownership.selection.k));
   StructuredOwnershipTopKSelection dataflowSelectionPolicy =
       options.ownership.selection;
-  if (options.ownership.selectionMode ==
-      StructuredOwnershipSelectionMode::SemanticConformance)
-    dataflowSelectionPolicy.k = 1;
+  std::map<ArtifactRootReference, PreMappingMaterializedProjection,
+           decltype(&artifactRootReferenceLess)>
+      materializedProjections(&artifactRootReferenceLess);
+  const auto planningRecordFor =
+      [&](const ArtifactRootReference &structuredProgram,
+          const ArtifactRootReference &canonicalDataflow,
+          std::optional<std::size_t> preferred,
+          std::optional<PreMappingScheduleIntent> scheduleIntent)
+      -> llvm::Expected<std::size_t> {
+    std::optional<std::size_t> found = preferred;
+    if (!found) {
+      for (auto indexed : llvm::enumerate(candidateInventory)) {
+        if (indexed.value().structuredProgram == structuredProgram &&
+            (!scheduleIntent ||
+             indexed.value().scheduleIntent == scheduleIntent) &&
+            (!indexed.value().canonicalDataflow ||
+             indexed.value().canonicalDataflow == canonicalDataflow)) {
+          found = indexed.index();
+          break;
+        }
+      }
+    }
+    if (!found || *found >= candidateInventory.size())
+      return invalid("selected candidate has no exact planning record");
+    if (candidateInventory[*found].structuredProgram != structuredProgram)
+      return invalid("selected candidate and planning record disagree");
+    if (candidateInventory[*found].canonicalDataflow &&
+        candidateInventory[*found].canonicalDataflow != canonicalDataflow) {
+      PreMappingCandidatePlanningRecord split = candidateInventory[*found];
+      split.canonicalDataflow = canonicalDataflow;
+      split.preferenceRank = std::nullopt;
+      split.materializedProjection = std::nullopt;
+      split.disposition =
+          PreMappingCandidatePlanningDisposition::HeuristicPruned;
+      split.scheduleIntent = scheduleIntent;
+      candidateInventory.push_back(std::move(split));
+      found = candidateInventory.size() - 1;
+    }
+    auto &record = candidateInventory[*found];
+    record.canonicalDataflow = canonicalDataflow;
+    auto projection = materializedProjections.find(canonicalDataflow);
+    if (projection == materializedProjections.end()) {
+      llvm::Expected<dataflow::CanonicalDataflowArtifact> imported = [&]() {
+        WorkTimer timer(frontierAccounting.programMaterializations);
+        return dataflow::importCanonicalDataflow(canonicalDataflow,
+                                                 artifactStore);
+      }();
+      if (!imported)
+        return imported.takeError();
+      auto view = imported->view();
+      if (!view)
+        return view.takeError();
+      llvm::Expected<PreMappingMaterializedProjection> derived = [&]() {
+        WorkTimer timer(frontierAccounting.programMaterializations);
+        return projectPreMappingMaterializedCandidate(*view, *systemView,
+                                                      *entrySymbol);
+      }();
+      if (!derived)
+        return derived.takeError();
+      projection = materializedProjections
+                       .emplace(canonicalDataflow, std::move(*derived))
+                       .first;
+    }
+    record.materializedProjection = projection->second;
+    // Retain the materialized logical-domain fact for diagnostics, but never
+    // infer an endpoint from it. Only a verified SystemMapping schedule may
+    // populate record.verifiedSpectrum.
+    record.temporalWitness = projection->second.temporalWitness;
+    return *found;
+  };
+  const auto reserveMappingAndProgramMaterialization =
+      [&](std::optional<std::size_t> planningRecord) -> bool {
+        if (frontierAccounting.mappingPairs.planned >=
+            frontierAccounting.mappingPairs.limit) {
+          if (planningRecord)
+            candidateInventory[*planningRecord].disposition =
+                PreMappingCandidatePlanningDisposition::MappingPairBudget;
+          return false;
+        }
+        if (frontierAccounting.programMaterializations.planned >=
+            frontierAccounting.programMaterializations.limit) {
+          if (planningRecord)
+            candidateInventory[*planningRecord].disposition =
+                PreMappingCandidatePlanningDisposition::ProgramMaterializationBudget;
+          return false;
+        }
+        ++frontierAccounting.mappingPairs.planned;
+        ++frontierAccounting.mappingPairs.reserved;
+        ++frontierAccounting.programMaterializations.planned;
+        ++frontierAccounting.programMaterializations.reserved;
+        return true;
+      };
   for (const RetainedOwnershipAlternative &alternative : alternatives) {
+    if (options.executionControl.stopRequested())
+      return cancelledAt(PreMappingCheckpointBoundary::DataflowPromotion,
+                         retainedSemanticCandidates());
     RetainedOwnershipSelection &generation =
         generations[alternative.generationIndex];
     StructuredOwnershipInvocationScope generationScope(*generation.invocation);
     for (const ArtifactRootReference &reference : alternative.references) {
       if (reference == *sourceReference) {
-        auto candidate = generation.invocation->materializeSelectedCandidate(
-            reference, artifactStore);
+        if (!reserveMappingAndProgramMaterialization(
+                alternative.planningRecordIndex))
+          continue;
+        llvm::Expected<SelectedStructuredOwnershipCandidate> candidate =
+            [&]() {
+              WorkTimer timer(frontierAccounting.programMaterializations);
+              return generation.invocation->materializeSelectedCandidate(
+                  reference, artifactStore);
+            }();
         if (!candidate)
           return candidate.takeError();
-        selected.push_back(assemble(std::move(*candidate), alternative));
+        ++frontierAccounting.programMaterializations.consumed;
+        auto dataflowReference = dataflow::publishCanonicalDataflow(
+            candidate->candidate.canonicalDataflow, artifactStore);
+        if (!dataflowReference)
+          return dataflowReference.takeError();
+        auto planningRecord = planningRecordFor(
+            reference, *dataflowReference, alternative.planningRecordIndex,
+            alternative.scheduleIntent);
+        if (!planningRecord)
+          return planningRecord.takeError();
+        selected.push_back(assemble(std::move(*candidate), alternative,
+                                    *planningRecord));
+        selectedPlanningRecords.push_back(*planningRecord);
         continue;
       }
 
+      if (frontierAccounting.mappingPairs.planned >=
+          frontierAccounting.mappingPairs.limit) {
+        if (alternative.planningRecordIndex)
+          candidateInventory[*alternative.planningRecordIndex].disposition =
+              PreMappingCandidatePlanningDisposition::MappingPairBudget;
+        continue;
+      }
+      if (frontierAccounting.dataflowPromotions.planned ==
+          frontierAccounting.dataflowPromotions.limit) {
+        if (alternative.planningRecordIndex)
+          candidateInventory[*alternative.planningRecordIndex].disposition =
+              PreMappingCandidatePlanningDisposition::DataflowPromotionBudget;
+        continue;
+      }
+      ++frontierAccounting.dataflowPromotions.planned;
+      ++frontierAccounting.dataflowPromotions.reserved;
       auto d0 = generation.invocation->prepareDataflowGeneration(reference,
                                                                  artifactStore);
       if (!d0)
         return d0.takeError();
-      auto dataflowSelection = exploreDataflowCandidates(
-          *d0, reference, fabric, *workloadReference, *runtimeInputReference,
-          config, dataflowSelectionPolicy, options.ownership.selectionMode,
-          artifactStore, blobStore);
+      llvm::Expected<DataflowSelectionOutcome> dataflowSelection = [&]() {
+        WorkTimer timer(frontierAccounting.dataflowPromotions);
+        return exploreDataflowCandidates(
+            *d0, reference, fabric, *workloadReference, *runtimeInputReference,
+            config, dataflowSelectionPolicy, plannerMode, false,
+            options.executionControl, artifactStore, blobStore);
+      }();
       if (!dataflowSelection)
         return dataflowSelection.takeError();
+      ++frontierAccounting.dataflowPromotions.consumed;
       if (auto *incomplete = std::get_if<IncompletePreMappingExploration>(
               &*dataflowSelection)) {
+        const DsePlanIncompleteReason reason = incomplete->reason;
         mergeReferences(incomplete->retainedEvidence, satisfiedEvidence);
-        incomplete->planGenerateInvocations.insert(
-            incomplete->planGenerateInvocations.begin(),
-            std::make_move_iterator(planGenerateInvocations.begin()),
-            std::make_move_iterator(planGenerateInvocations.end()));
-        return PreMappingExplorationOutcome{std::move(*incomplete)};
+        planGenerateInvocations.insert(
+            planGenerateInvocations.end(),
+            std::make_move_iterator(
+                incomplete->planGenerateInvocations.begin()),
+            std::make_move_iterator(incomplete->planGenerateInvocations.end()));
+        if (alternative.planningRecordIndex) {
+          auto &record = candidateInventory[*alternative.planningRecordIndex];
+          record.disposition = planningDispositionForIncomplete(reason);
+          record.incompleteReason = reason;
+        }
+        if (isCancellationReason(reason))
+          return incompleteAt(
+              PreMappingCheckpointBoundary::DataflowPromotion, reason,
+              retainedSemanticCandidates(), std::move(satisfiedEvidence),
+              std::move(planGenerateInvocations));
+        dataflowProviderIncomplete = true;
+        if (!dataflowIncompleteReason)
+          dataflowIncompleteReason = reason;
+        continue;
       }
       auto &dataflowCompleted =
           std::get<CompletedDataflowSelection>(*dataflowSelection);
@@ -1443,12 +2484,27 @@ exploreStructuredCompilationToPreMapping(
             std::move(*dataflowCompleted.retainedIncompleteness));
       for (const ArtifactRootReference &dataflowReference :
            dataflowCompleted.preferenceOrder) {
-        auto candidate =
-            generation.invocation->materializeSelectedDataflowCandidate(
-                reference, dataflowReference, artifactStore);
+        if (!reserveMappingAndProgramMaterialization(
+                alternative.planningRecordIndex))
+          continue;
+        auto planningRecord = planningRecordFor(
+            reference, dataflowReference, alternative.planningRecordIndex,
+            alternative.scheduleIntent);
+        if (!planningRecord)
+          return planningRecord.takeError();
+        llvm::Expected<SelectedStructuredOwnershipCandidate> candidate =
+            [&]() {
+              WorkTimer timer(frontierAccounting.programMaterializations);
+              return generation.invocation
+                  ->materializeSelectedDataflowCandidate(
+                      reference, dataflowReference, artifactStore);
+            }();
         if (!candidate)
           return candidate.takeError();
-        selected.push_back(assemble(std::move(*candidate), alternative));
+        ++frontierAccounting.programMaterializations.consumed;
+        selected.push_back(assemble(std::move(*candidate), alternative,
+                                    *planningRecord));
+        selectedPlanningRecords.push_back(*planningRecord);
       }
     }
   }
@@ -1457,34 +2513,240 @@ exploreStructuredCompilationToPreMapping(
       std::min<std::uint64_t>(options.ownership.selection.k, selected.size())));
   std::vector<ArtifactIdentity> retainedDataflows;
   retainedDataflows.reserve(bounded.capacity());
-  for (SelectedPreMappingCompilation &candidate : selected) {
+  for (auto indexed : llvm::enumerate(selected)) {
+    SelectedPreMappingCompilation &candidate = indexed.value();
     const ArtifactIdentity identity =
         candidate.compilation.canonicalDataflow.identity();
     if (llvm::is_contained(retainedDataflows, identity))
       continue;
+    if (frontierAccounting.mappingPairs.consumed >=
+        frontierAccounting.mappingPairs.limit)
+      return invalid("compiler frontier retained more Mapping pairs than its "
+                     "admitted bound");
+    ++frontierAccounting.mappingPairs.consumed;
     candidate.preferenceRank = bounded.size();
+    if (selectedPlanningRecords[indexed.index()]) {
+      auto &record =
+          candidateInventory[*selectedPlanningRecords[indexed.index()]];
+      record.disposition = PreMappingCandidatePlanningDisposition::Retained;
+      record.preferenceRank = candidate.preferenceRank;
+    }
     retainedDataflows.push_back(identity);
     bounded.push_back(std::move(candidate));
     if (bounded.size() == options.ownership.selection.k)
       break;
   }
   selected = std::move(bounded);
+  const auto hasBudgetDisposition = llvm::any_of(
+      candidateInventory, [](const PreMappingCandidatePlanningRecord &record) {
+        switch (record.disposition) {
+        case PreMappingCandidatePlanningDisposition::CoordinateBudget:
+        case PreMappingCandidatePlanningDisposition::ProgramMaterializationBudget:
+        case PreMappingCandidatePlanningDisposition::AnalyticEvaluationBudget:
+        case PreMappingCandidatePlanningDisposition::FunctionalReplayBudget:
+        case PreMappingCandidatePlanningDisposition::DataflowPromotionBudget:
+        case PreMappingCandidatePlanningDisposition::MappingPairBudget:
+          return true;
+        case PreMappingCandidatePlanningDisposition::Retained:
+        case PreMappingCandidatePlanningDisposition::HeuristicPruned:
+        case PreMappingCandidatePlanningDisposition::ExactGateRejected:
+        case PreMappingCandidatePlanningDisposition::Unsupported:
+        case PreMappingCandidatePlanningDisposition::Unknown:
+        case PreMappingCandidatePlanningDisposition::CancelledOrTimeout:
+          return false;
+        }
+        return false;
+      });
   if (selected.empty() && !retainedPlanIncompleteness.empty()) {
     const RetainedDsePlanIncompleteness &first =
         retainedPlanIncompleteness.front();
-    return PreMappingExplorationOutcome{IncompletePreMappingExploration{
-        first.nodeOrdinal, first.reason, std::move(satisfiedEvidence),
-        std::move(planGenerateInvocations)}};
+    return incompleteAt(PreMappingCheckpointBoundary::EvidencePromotion,
+                        first.reason, retainedSemanticCandidates(),
+                        std::move(satisfiedEvidence),
+                        std::move(planGenerateInvocations));
   }
+  if (selected.empty() && dataflowIncompleteReason)
+    return incompleteAt(PreMappingCheckpointBoundary::DataflowPromotion,
+                        *dataflowIncompleteReason,
+                        retainedSemanticCandidates(),
+                        std::move(satisfiedEvidence),
+                        std::move(planGenerateInvocations));
+  if (selected.empty() && hasBudgetDisposition)
+    return incompleteAt(
+        PreMappingCheckpointBoundary::MappingAdmission,
+        DsePlanIncompleteReason{
+            CandidateGeneratorIncompleteReason::SemanticLimitReached},
+        retainedSemanticCandidates(), std::move(satisfiedEvidence),
+        std::move(planGenerateInvocations));
   if (selected.empty())
     return PreMappingExplorationOutcome{CompletedPreMappingNoFeasibleCandidate{
         std::move(satisfiedEvidence), std::move(planGenerateInvocations)}};
+  const StructuredOwnershipSharedEvaluationStatistics sharedStatistics =
+      sharedEvaluation.statistics();
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "structured_profile_cache";
+        fields["cache_hits"] = sharedStatistics.profileCacheHits;
+        fields["cache_misses"] = sharedStatistics.profileCacheMisses;
+        fields["single_flight_waits"] =
+            sharedStatistics.profileSingleFlightWaits;
+        fields["analytic_requests"] = evaluationTiming.analyticCalls;
+        fields["analytic_elapsed_nanoseconds"] =
+            evaluationTiming.analyticElapsedNanoseconds;
+        fields["functional_replay_requests"] =
+            evaluationTiming.functionalReplayCalls;
+        fields["functional_replay_elapsed_nanoseconds"] =
+            evaluationTiming.functionalReplayElapsedNanoseconds;
+      });
+  std::optional<PreMappingShadowRecall> shadowRecall;
+  if (sourceProtocolRoots->size() <= 4) {
+    auto recall = evaluatePreMappingShadowRecall(
+        sourceProtocolRoots->size(), *coordinatePlan);
+    if (!recall)
+      return recall.takeError();
+    shadowRecall = std::move(*recall);
+  }
+  PreMappingSearchCompleteness completeness;
+  completeness.budgetComplete = !hasBudgetDisposition;
+  completeness.providerComplete = retainedPlanIncompleteness.empty() &&
+                                  !ownershipProviderIncomplete &&
+                                  !dataflowProviderIncomplete;
+  completeness.evidenceComplete = llvm::all_of(
+      selected, [](const SelectedPreMappingCompilation &candidate) {
+        return candidate.functionalReplay &&
+               candidate.functionalReplay->status ==
+                   sim::SourceBackedDfgValidationStatus::Equivalent;
+      });
+  completeness.selectionComplete = !selected.empty();
+  const bool planningFrontierComplete = llvm::all_of(
+      candidateInventory, [](const PreMappingCandidatePlanningRecord &record) {
+        switch (record.disposition) {
+        case PreMappingCandidatePlanningDisposition::Retained:
+        case PreMappingCandidatePlanningDisposition::ExactGateRejected:
+          return true;
+        case PreMappingCandidatePlanningDisposition::HeuristicPruned:
+        case PreMappingCandidatePlanningDisposition::CoordinateBudget:
+        case PreMappingCandidatePlanningDisposition::ProgramMaterializationBudget:
+        case PreMappingCandidatePlanningDisposition::AnalyticEvaluationBudget:
+        case PreMappingCandidatePlanningDisposition::FunctionalReplayBudget:
+        case PreMappingCandidatePlanningDisposition::DataflowPromotionBudget:
+        case PreMappingCandidatePlanningDisposition::MappingPairBudget:
+        case PreMappingCandidatePlanningDisposition::Unsupported:
+        case PreMappingCandidatePlanningDisposition::Unknown:
+        case PreMappingCandidatePlanningDisposition::CancelledOrTimeout:
+          return false;
+        }
+        return false;
+      });
+  completeness.domainComplete =
+      !coordinatePlan->truncated && sourceProtocolRoots->size() <= 4 &&
+      shadowRecall && shadowRecall->missingSubsets.empty() &&
+      planningFrontierComplete &&
+      llvm::none_of(
+          protocolDependencyProjection->relations,
+          [](const auto &relation) {
+            return relation.knowledge ==
+                   frontend::analysis::
+                       StructuredProtocolDependencyKnowledge::Unknown;
+          });
+  for (auto &counter : {&frontierAccounting.sourceObservations,
+                        &frontierAccounting.coordinates,
+                        &frontierAccounting.programMaterializations,
+                        &frontierAccounting.analyticEvaluations,
+                        &frontierAccounting.functionalReplays,
+                        &frontierAccounting.dataflowPromotions,
+                        &frontierAccounting.mappingPairs})
+    {
+      if (counter->reserved != counter->planned)
+        return invalid("compiler frontier reservation ledger diverged from "
+                       "planned work");
+      if (counter->consumed > counter->reserved)
+        return invalid("compiler frontier consumed work exceeds reservation");
+      if (counter->consumed >
+          std::numeric_limits<std::uint64_t>::max() - counter->rejected)
+        return invalid("compiler frontier settled-work ledger overflows");
+      const std::uint64_t consumedAndRejected =
+          counter->consumed + counter->rejected;
+      if (consumedAndRejected >
+          std::numeric_limits<std::uint64_t>::max() - counter->cancelled)
+        return invalid("compiler frontier settled-work ledger overflows");
+      const std::uint64_t settled =
+          consumedAndRejected + counter->cancelled;
+      if (settled > counter->reserved)
+        return invalid("compiler frontier settled work exceeds reservation");
+      counter->rejected += counter->reserved - settled;
+    }
+  if (llvm::Error error =
+          validatePreMappingWorkAccounting(frontierAccounting))
+    return std::move(error);
+  for (PreMappingCandidatePlanningRecord &record : candidateInventory) {
+    if (!record.structuredProgram || !record.canonicalDataflow)
+      continue;
+    auto identity = computePreMappingCandidateIdentity(
+        record, *sourceReference, fabric.reference(), *workloadReference,
+        *runtimeInputReference, *frontierPolicyDigest);
+    if (!identity)
+      return identity.takeError();
+    if (record.candidateIdentity && *record.candidateIdentity != *identity)
+      return invalid("pre-Mapping candidate identity changed after planning");
+    record.candidateIdentity = *identity;
+  }
+  std::uint64_t temporalHintRecordCount = 0;
+  std::uint64_t spatialHintRecordCount = 0;
+  std::uint64_t intermediateHintRecordCount = 0;
+  std::uint64_t verifiedTemporalRecordCount = 0;
+  std::uint64_t verifiedSpatialRecordCount = 0;
+  std::uint64_t verifiedIntermediateRecordCount = 0;
+  for (const PreMappingCandidatePlanningRecord &record : candidateInventory) {
+    switch (record.scheduleIntent.value_or(
+        PreMappingScheduleIntent::Unconstrained)) {
+    case PreMappingScheduleIntent::TemporalReuse:
+      ++temporalHintRecordCount;
+      break;
+    case PreMappingScheduleIntent::SpatialParallel:
+      ++spatialHintRecordCount;
+      break;
+    case PreMappingScheduleIntent::Unconstrained:
+      ++intermediateHintRecordCount;
+      break;
+    }
+    verifiedTemporalRecordCount +=
+        record.verifiedSpectrum == PreMappingSpectrumClass::MaxTemporal;
+    verifiedSpatialRecordCount +=
+        record.verifiedSpectrum == PreMappingSpectrumClass::MaxSpatial;
+    verifiedIntermediateRecordCount +=
+        record.verifiedSpectrum == PreMappingSpectrumClass::Intermediate;
+  }
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "pre_mapping_spectrum_summary";
+        fields["temporal_schedule_hint_count"] = temporalHintRecordCount;
+        fields["spatial_schedule_hint_count"] = spatialHintRecordCount;
+        fields["intermediate_schedule_hint_count"] =
+            intermediateHintRecordCount;
+        fields["verified_max_temporal_count"] = verifiedTemporalRecordCount;
+        fields["verified_max_spatial_count"] = verifiedSpatialRecordCount;
+        fields["verified_intermediate_count"] =
+            verifiedIntermediateRecordCount;
+      });
   return PreMappingExplorationOutcome{CompletedPreMappingSelection{
       std::move(selected), std::move(satisfiedEvidence),
       std::move(dispositions), std::move(protocolRootActivity),
-      std::move(*protocolDependencies), std::move(candidateInventory),
+      std::move(protocolDependencies), std::move(*protocolDependencyProjection),
+      std::move(candidateInventory), options.frontier,
+      coordinatePlan->eligibleCoordinateCount, coordinatePlan->truncated,
+      std::move(frontierAccounting),
+      sharedStatistics,
+      evaluationTiming,
+      evaluationCache.statistics(),
       std::move(planGenerateInvocations),
-      std::move(retainedPlanIncompleteness)}};
+      std::move(retainedPlanIncompleteness), *sourceReference,
+      fabric.reference(), *workloadReference, *runtimeInputReference,
+      *frontierPolicyDigest,
+      requestedPlannerMode, plannerMode,
+      completeness, std::move(shadowRecall)}};
 }
 
 } // namespace loom::dse

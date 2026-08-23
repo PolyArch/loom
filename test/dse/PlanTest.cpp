@@ -368,7 +368,8 @@ void exerciseOrderedTypedUseDef() {
   if (!llvm::equal(generated, expected) || !llvm::equal(selected, expected) ||
       !completed->resolve(PlanOutputRef{1, 1}).empty())
     fail("mixed execution did not canonicalize and select its candidates");
-  if (completed->generateInvocations().size() != 1)
+  if (completed->generateInvocations().size() != 1 ||
+      !completed->generateInvocationWasDispatched(0))
     fail("completed plan lost its Generate invocation record");
   if (completed->generateWorkSummaries().size() != 1 ||
       completed->generateWorkSummaries().front().planNodeOrdinal != 0 ||
@@ -453,6 +454,8 @@ void exerciseOrderedTypedUseDef() {
       incomplete->availableExecution().resolve(PlanOutputRef{0, 0}).size() !=
           2 ||
       incomplete->availableExecution().generateInvocations().size() != 2 ||
+      !incomplete->availableExecution().generateInvocationWasDispatched(0) ||
+      incomplete->availableExecution().generateInvocationWasDispatched(1) ||
       !incomplete->incompleteGenerateInvocation() ||
       !incomplete->incompleteGenerateWorkSummary() ||
       !incomplete->incompleteGenerateWorkSummary()->units.empty() ||
@@ -539,7 +542,7 @@ void exerciseOrderedTypedUseDef() {
                {ExactPlanArtifacts{{executionSource}}}, digest),
       makeNode(unavailableGenerator.reference(),
                {BoundedPlanOutputJoin{
-                   {PlanOutputRef{0, 0}, PlanOutputRef{1, 0}}, 1}},
+                   {PlanOutputRef{0, 0}, PlanOutputRef{1, 0}}, 1, 2}},
                digest),
   };
   const std::vector<std::uint8_t> encodedJoin =
@@ -549,7 +552,8 @@ void exerciseOrderedTypedUseDef() {
       std::get<GeneratePlanNodeDefinition>(adoptedJoin).inputBindings[0]);
   if (adoptedJoinBinding.outputs !=
           std::vector<PlanOutputRef>{{0, 0}, {1, 0}} ||
-      adoptedJoinBinding.maximumArtifacts != 1)
+      adoptedJoinBinding.maximumArtifacts != 1 ||
+      adoptedJoinBinding.maximumProducerArtifacts != 2)
     fail("bounded output join codec changed its sources or bound");
   ResolvedDseConfigView joinedView =
       resolveView(joinedNodes, objectiveCatalogs, qualityGates);
@@ -564,7 +568,7 @@ void exerciseOrderedTypedUseDef() {
       !joinedInvocation || joinedInvocation->inputBindings.size() != 1 ||
       joinedInvocation->inputBindings.front().artifacts !=
           std::vector<ArtifactRootReference>{generated.front()} ||
-      sourceObservedOutputMaximum != std::optional<std::uint64_t>(1))
+      sourceObservedOutputMaximum != std::optional<std::uint64_t>(2))
     fail("bounded output join did not canonicalize, deduplicate, and truncate");
 
   std::vector<DsePlanNodeDefinition> duplicateJoin = {
@@ -593,6 +597,18 @@ void exerciseOrderedTypedUseDef() {
   if (rejectedZeroBound)
     fail("plan accepted a zero-bound output join");
   requireErrorContains(rejectedZeroBound.takeError(), "positive artifact");
+
+  std::vector<DsePlanNodeDefinition> invertedBoundJoin = {
+      makeNode(sourceGenerator.reference(),
+               {ExactPlanArtifacts{{executionSource}}}, digest),
+      makeNode(unavailableGenerator.reference(),
+               {BoundedPlanOutputJoin{{PlanOutputRef{0, 0}}, 2, 1}}, digest),
+  };
+  auto rejectedInvertedBound = ResolvedDsePlan::get(
+      invertedBoundJoin, {}, objectiveCatalogs, qualityGates);
+  if (rejectedInvertedBound)
+    fail("plan accepted a producer bound below its retained beam");
+  requireErrorContains(rejectedInvertedBound.takeError(), "producer bound");
   llvm::sys::fs::remove_directories(storePath);
 
   std::vector<DsePlanNodeDefinition> forward;

@@ -178,6 +178,17 @@ replayCacheKey(const ArtifactRootReference &candidate,
   return {candidate, structuredParent, workload, runtimeInput};
 }
 
+bool cachedReplayMeetsLimits(
+    const CachedReplayResult &cached,
+    const sim::SourceBackedDfgValidationLimits &limits) {
+  if (!cached.replay ||
+      cached.kind == ReplayResultKind::CancelledOrTimeout)
+    return false;
+  return cached.replay->wavefrontSteps <= limits.maxWavefrontSteps &&
+         cached.replay->eventCount <= limits.maxEventCount &&
+         cached.replay->memoryBytesCompared <= limits.maxRetainedCaptureBytes;
+}
+
 llvm::Expected<CachedReplayResult> classifyReplayResult(
     llvm::Expected<sim::SourceBackedDfgValidationResult> replay) {
   if (replay) {
@@ -207,6 +218,9 @@ llvm::Expected<CachedReplayResult> classifyReplayResult(
   stream.flush();
   if (code == std::make_error_code(std::errc::not_supported))
     return CachedReplayResult{ReplayResultKind::Unsupported, std::nullopt};
+  if (code == std::make_error_code(std::errc::timed_out))
+    return CachedReplayResult{ReplayResultKind::CancelledOrTimeout,
+                              std::nullopt};
   return llvm::createStringError(code ? code : llvm::inconvertibleErrorCode(),
                                  "%s", message.c_str());
 }
@@ -226,16 +240,26 @@ cachedReplay(const ArtifactRootReference &candidate,
   auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
   const auto key =
       replayCacheKey(candidate, structuredParent, workload, runtimeInput);
-  std::lock_guard<std::mutex> lock(impl.mutex);
-  auto found = impl.dataflowFunctionalResults.find(key);
-  if (found == impl.dataflowFunctionalResults.end()) {
-    impl.functionalMissCount.fetch_add(1, std::memory_order_relaxed);
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "canonical_dataflow_functional_model_invalid: replay was not primed");
+  std::unique_lock<std::mutex> lock(impl.mutex);
+  while (true) {
+    auto found = impl.dataflowFunctionalResults.find(key);
+    if (found != impl.dataflowFunctionalResults.end()) {
+      impl.functionalHitCount.fetch_add(1, std::memory_order_relaxed);
+      return found->second;
+    }
+    auto flight = impl.dataflowFunctionalFlights.find(key);
+    if (flight == impl.dataflowFunctionalFlights.end()) {
+      impl.functionalMissCount.fetch_add(1, std::memory_order_relaxed);
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "canonical_dataflow_functional_model_invalid: replay was not "
+          "primed");
+    }
+    auto entry = flight->second;
+    impl.dataflowFunctionalSingleFlightWaitCount.fetch_add(
+        1, std::memory_order_relaxed);
+    impl.flightChanged.wait(lock, [&] { return entry->complete; });
   }
-  impl.functionalHitCount.fetch_add(1, std::memory_order_relaxed);
-  return found->second;
 }
 
 llvm::Error storeReplay(const ArtifactRootReference &candidate,
@@ -255,6 +279,23 @@ llvm::Error storeReplay(const ArtifactRootReference &candidate,
   auto value = std::make_shared<const CachedReplayResult>(std::move(replay));
   auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
   std::lock_guard<std::mutex> lock(impl.mutex);
+  if (auto existing = impl.dataflowFunctionalResults.find(key);
+      existing != impl.dataflowFunctionalResults.end()) {
+    if (!(*existing->second == *value))
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "canonical_dataflow_functional_model_invalid: nondeterministic "
+          "replay");
+    return llvm::Error::success();
+  }
+  if (impl.dataflowFunctionalResults.size() >=
+      impl.limits.maximumDataflowFunctionalEntries) {
+    impl.capacityBypassCount.fetch_add(1, std::memory_order_relaxed);
+    return llvm::createStringError(
+        std::make_error_code(std::errc::no_buffer_space),
+        "canonical_dataflow_functional_model_incomplete: replay cache "
+        "capacity exhausted");
+  }
   auto [found, inserted] =
       impl.dataflowFunctionalResults.try_emplace(key, value);
   if (!inserted && !(*found->second == *value))
@@ -299,6 +340,9 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
   if ((*replay)->kind == ReplayResultKind::Unsupported)
     return EvaluationModelResult{
         {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+  if ((*replay)->kind == ReplayResultKind::CancelledOrTimeout)
+    return EvaluationModelResult{
+        {}, CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached}};
 
   std::vector<FindingResult> findings;
   findings.reserve(request.findingRequests().size());
@@ -321,6 +365,8 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       break;
     case ReplayResultKind::Unsupported:
       llvm_unreachable("unsupported replay returned above");
+    case ReplayResultKind::CancelledOrTimeout:
+      llvm_unreachable("cancelled replay returned above");
     }
   }
   return EvaluationModelResult{{}, CompletedEvidence{{}, std::move(findings)}};
@@ -406,6 +452,40 @@ llvm::Error primeCanonicalDataflowFunctionalReplay(
         "canonical_dataflow_functional_model_invalid: replay invocation "
         "mismatch");
 
+  const detail::CanonicalDataflowFunctionalCacheKey key = replayCacheKey(
+      candidateReference, structuredParent, invocation.workload,
+      invocation.runtimeInput);
+  auto &cacheImpl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+  using DataflowFlightMap = decltype(cacheImpl.dataflowFunctionalFlights);
+  std::unique_ptr<detail::CacheFlightGuard<
+      detail::CanonicalDataflowFunctionalCacheKey, DataflowFlightMap>>
+      dataflowFlight;
+  {
+    std::unique_lock<std::mutex> lock(cacheImpl.mutex);
+    while (true) {
+      if (auto found = cacheImpl.dataflowFunctionalResults.find(key);
+          found != cacheImpl.dataflowFunctionalResults.end()) {
+        if (cachedReplayMeetsLimits(*found->second, invocation.limits))
+          return llvm::Error::success();
+        cacheImpl.dataflowFunctionalResults.erase(found);
+      }
+      auto flight = cacheImpl.dataflowFunctionalFlights.find(key);
+      if (flight == cacheImpl.dataflowFunctionalFlights.end()) {
+        auto entry = std::make_shared<detail::CacheFlightEntry>();
+        cacheImpl.dataflowFunctionalFlights.emplace(key, entry);
+        dataflowFlight = std::make_unique<detail::CacheFlightGuard<
+            detail::CanonicalDataflowFunctionalCacheKey, DataflowFlightMap>>(
+            cacheImpl.dataflowFunctionalFlights, cacheImpl.mutex,
+            cacheImpl.flightChanged, key, std::move(entry));
+        break;
+      }
+      auto entry = flight->second;
+      cacheImpl.dataflowFunctionalSingleFlightWaitCount.fetch_add(
+          1, std::memory_order_relaxed);
+      cacheImpl.flightChanged.wait(lock, [&] { return entry->complete; });
+    }
+  }
+
   const ArtifactRootReference sourceReference{
       frontend::structuredProgramArtifactSchema.identity.str(),
       frontend::structuredProgramArtifactSchema.version,
@@ -415,10 +495,25 @@ llvm::Error primeCanonicalDataflowFunctionalReplay(
           invocation.sourceObservations))
     return error;
 
+  const auto publishReplayCase =
+      [&](const sim::CanonicalSimulationWorkload &replayWorkload,
+          const sim::CanonicalSimulationRuntimeInput &replayInput)
+      -> llvm::Expected<sim::SourceBackedDfgReplayCaseReference> {
+    auto workloadReference =
+        sim::publishSimulationWorkload(replayWorkload, artifactStore);
+    if (!workloadReference)
+      return workloadReference.takeError();
+    auto runtimeInputReference =
+        sim::publishSimulationRuntimeInput(replayInput, artifactStore);
+    if (!runtimeInputReference)
+      return runtimeInputReference.takeError();
+    return sim::SourceBackedDfgReplayCaseReference{
+        std::move(*workloadReference), std::move(*runtimeInputReference)};
+  };
   auto classified = classifyReplayResult(sim::validateSourceBackedDfgReplay(
       invocation.sourceProgram, invocation.candidate,
       invocation.simulationWorkload, invocation.simulationRuntimeInput,
-      invocation.limits, &invocation.sourceObservations));
+      invocation.limits, &invocation.sourceObservations, publishReplayCase));
   if (!classified)
     return classified.takeError();
 
@@ -477,9 +572,14 @@ getPrimedCanonicalDataflowFunctionalReplay(
     return replay.takeError();
   if (!(*replay)->replay)
     return llvm::createStringError(
-        std::make_error_code(std::errc::not_supported),
-        "canonical_dataflow_functional_model_unsupported: replay provider "
-        "unavailable");
+        (*replay)->kind == ReplayResultKind::CancelledOrTimeout
+            ? std::make_error_code(std::errc::timed_out)
+            : std::make_error_code(std::errc::not_supported),
+        (*replay)->kind == ReplayResultKind::CancelledOrTimeout
+            ? "canonical_dataflow_functional_model_incomplete: replay timed "
+              "out"
+            : "canonical_dataflow_functional_model_unsupported: replay "
+              "provider unavailable");
   return *(*replay)->replay;
 }
 

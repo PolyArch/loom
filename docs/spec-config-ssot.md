@@ -13,6 +13,34 @@ The only public semantic profile selector is:
 --loom-accel-profile=<builtin-preset-or-config-path>
 ```
 
+Product invocations may also set the positive invocation-local
+`--loom-mapping-tech-candidate-limit`. It is a finite-work admission bound, not
+a profile selector or a Mapping legality rule. The driver forwards it to the
+joint-plan owner, which records it in the bounded Tech-to-Spatial plan edge;
+the resulting resolved plan identity and typed incompleteness therefore expose
+its effect. Omitting it uses the product owner's declared finite default.
+
+`--loom-mapping-wall-time-limit-ms` is a distinct operational limit. The
+driver converts its positive duration once to an absolute deadline shared by
+pre-Mapping, Evidence acquisition, and Tech/Spatial/System Mapping. Providers
+observe that deadline only at their atomic owner boundaries and return typed
+`CancelledOrTimeout` or incomplete best-so-far state. The duration, deadline,
+and observed wall time are invocation diagnostics; none enters ResolvedConfig,
+candidate identity, Artifact bytes, or an objective. Omitting the option means
+the product owner's declared positive 120-second default; an unbounded product
+Mapping invocation is not supported. An external process timeout may remain a
+final containment mechanism, but it is not the semantic cancellation owner.
+
+`--loom-mapping-stopping-policy=first_verified|bounded_quality` selects the
+application Mapping stopping contract. `first_verified` is the product
+default and reports the first runtime-qualified SystemMapping. The explicit
+`bounded_quality` mode invokes the application QoR owner for every verified
+candidate in the bounded joint frontier; it compares only completed DFG/CGRA
+cycle evidence and imported Fabric resource counts. Missing runtime evidence,
+unsupported models, execution failure, and cancellation remain typed outcomes,
+never fallback scores. The stopping policy is invocation provenance and is
+not part of a candidate Artifact identity.
+
 The initial EDA-style builtin presets are:
 
 ```text
@@ -101,7 +129,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 9.0`. Version 2.0 was an
+The current schema is `loom.config.resolved 10.0`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -490,8 +518,8 @@ The InvocationManifest records the exact ResolvedConfig identity and only the
 component-view descriptors and digests actually consumed by the invocation.
 It also owns profile-source provenance, input and output bindings, source and
 hardware paths, output directories, `--loom-viz-export`,
-`--loom-deploy-output`, tool/runtime provenance, and retained execution
-records.
+`--loom-deploy-output`, the requested Mapping execution deadline,
+tool/runtime provenance, and retained execution records.
 
 Machine-local tool, runtime, and external-file configuration is
 supplied only through the explicit `--loom-local-config=<path>` option defined by

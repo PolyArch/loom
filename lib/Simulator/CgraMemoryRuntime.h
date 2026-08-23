@@ -41,6 +41,10 @@ public:
          CgraPhysicalActionRuntime &physical,
          CgraExternalMemoryProvider *externalMemoryProvider);
 
+  void bindTransport(CgraTransportRuntime &transport) {
+    transport_ = &transport;
+  }
+
   llvm::Error start(SpatialEventCoordinate coordinate);
 
   llvm::Error
@@ -52,6 +56,10 @@ public:
 
   llvm::Expected<CgraPhysicalTraceBinding>
   physicalTraceBinding(const CgraPhysicalLifecycleEvent &event) const;
+
+  std::optional<std::uint64_t>
+  physicalActionSemanticActor(std::uint64_t actionOrdinal,
+                              std::uint64_t occurrenceOrdinal) const;
 
   llvm::Error retireActor(std::uint64_t semanticActorOrdinal,
                           std::uint64_t occurrenceOrdinal,
@@ -143,6 +151,7 @@ private:
   std::vector<ActorBinding> bindings_;
   std::vector<std::uint64_t> bindingBySemanticActor_;
   CgraPhysicalActionRuntime *physical_ = nullptr;
+  CgraTransportRuntime *transport_ = nullptr;
   CgraExternalMemoryProvider *externalMemoryProvider_ = nullptr;
   CgraEventQueue requestedEvents_{"CGRA memory request"};
   std::vector<std::uint64_t> nextActionOccurrence_;

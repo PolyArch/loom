@@ -1336,6 +1336,11 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
         return input.pointerTarget.has_value();
       }) != 3)
     fail(test, "constant call operand or pointer inputs were misclassified");
+  for (const auto &input : slicePlan.input.valueInputs)
+    if (input.fixedValue &&
+        (input.boundaryOperandOrdinal || input.denseCoordinateDimension ||
+         input.byteCount != 0))
+      fail(test, "fixed call operand retained a runtime source");
   const auto &sliceA =
       captureBinding(test, slicePlan.input, memoryRoot(test, view, 0));
   const auto &sliceB =

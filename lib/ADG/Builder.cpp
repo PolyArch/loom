@@ -1785,26 +1785,25 @@ llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
 }
 
 llvm::Expected<loom::fabric::FinalizedFabricSystemProjection>
-DesignBuilder::finalizeDerivedSystemWithTrackedAccCores(
-    llvm::ArrayRef<loom::fabric::AccCoreOccurrenceRef> trackedAccCores) && {
+DesignBuilder::finalizeDerivedSystemWithCorrespondence() && {
   if (!state_ || state_->consumed)
     return invalid("DesignBuilder is already consumed");
   if (!state_->spatialRoots.empty() || state_->systemRoots.size() != 1)
     return invalid(
-        "tracked AccCore finalization requires one sole derived System");
+        "correspondence finalization requires one sole derived System");
   const detail::SystemRootState &root = state_->systemRoots.front();
   if (!root.closed)
     return invalid("derived System is not closed");
   if (!root.derivedParent)
-    return invalid("tracked AccCore finalization requires a derived System");
+    return invalid("correspondence finalization requires a derived System");
 
   llvm::SmallVector<ArtifactRootReference, 4> importedModules;
   importedModules.reserve(root.importedModules.size());
   for (const detail::ImportedModuleState &module : root.importedModules)
     importedModules.push_back(module.reference);
   state_->consumed = true;
-  return loom::fabric::finalizeFabricSystemWithTrackedAccCores(
-      root.operation, importedModules, trackedAccCores, state_->store);
+  return loom::fabric::finalizeFabricSystemWithCorrespondence(
+      root.operation, importedModules, state_->store);
 }
 
 } // namespace loom::adg

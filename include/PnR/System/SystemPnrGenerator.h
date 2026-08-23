@@ -31,9 +31,14 @@ struct SystemPnrGenerationAccounting final {
   std::uint64_t migrationSeedFallbacks = 0;
   std::uint64_t migrationPreservedThreadBindings = 0;
   std::uint64_t migrationPreservedGraphBindings = 0;
+  std::uint64_t migrationPreservedServiceLegs = 0;
+  std::uint64_t migrationPreservedResourceUses = 0;
   std::uint64_t migrationReopenedThreadBindings = 0;
   std::uint64_t migrationReopenedGraphBindings = 0;
   std::uint64_t migrationReopenedServiceLegs = 0;
+  std::uint64_t migrationReopenedResourceUses = 0;
+  std::uint64_t migrationNewServiceLegs = 0;
+  std::uint64_t migrationNewResourceUses = 0;
   std::uint64_t seedAttemptSlots = 0;
   std::uint64_t preparedSeeds = 0;
   std::uint64_t initializerAssignmentAttempts = 0;
@@ -61,12 +66,20 @@ struct SystemPnrGenerationAccounting final {
                rhs.migrationPreservedThreadBindings &&
            lhs.migrationPreservedGraphBindings ==
                rhs.migrationPreservedGraphBindings &&
+           lhs.migrationPreservedServiceLegs ==
+               rhs.migrationPreservedServiceLegs &&
+           lhs.migrationPreservedResourceUses ==
+               rhs.migrationPreservedResourceUses &&
            lhs.migrationReopenedThreadBindings ==
                rhs.migrationReopenedThreadBindings &&
            lhs.migrationReopenedGraphBindings ==
                rhs.migrationReopenedGraphBindings &&
            lhs.migrationReopenedServiceLegs ==
                rhs.migrationReopenedServiceLegs &&
+           lhs.migrationReopenedResourceUses ==
+               rhs.migrationReopenedResourceUses &&
+           lhs.migrationNewServiceLegs == rhs.migrationNewServiceLegs &&
+           lhs.migrationNewResourceUses == rhs.migrationNewResourceUses &&
            lhs.seedAttemptSlots == rhs.seedAttemptSlots &&
            lhs.preparedSeeds == rhs.preparedSeeds &&
            lhs.initializerAssignmentAttempts ==
@@ -134,9 +147,14 @@ struct SystemPnrSearchFrontier final {
   std::uint64_t migrationSeedFallbacks = 0;
   std::uint64_t migrationPreservedThreadBindings = 0;
   std::uint64_t migrationPreservedGraphBindings = 0;
+  std::uint64_t migrationPreservedServiceLegs = 0;
+  std::uint64_t migrationPreservedResourceUses = 0;
   std::uint64_t migrationReopenedThreadBindings = 0;
   std::uint64_t migrationReopenedGraphBindings = 0;
   std::uint64_t migrationReopenedServiceLegs = 0;
+  std::uint64_t migrationReopenedResourceUses = 0;
+  std::uint64_t migrationNewServiceLegs = 0;
+  std::uint64_t migrationNewResourceUses = 0;
   std::uint64_t seedAttemptSlots = 0;
   std::uint64_t preparedSeeds = 0;
   std::uint64_t initializerAssignmentAttempts = 0;

@@ -3,6 +3,7 @@
 
 #include "Evaluation/Evidence.h"
 #include "Simulator/CGRAAdmission.h"
+#include "Simulator/CGRASimulator.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include <chrono>
@@ -36,6 +37,11 @@ struct CgraSimulationAttemptLimits final {
   std::optional<std::chrono::steady_clock::time_point> executionDeadline;
 };
 
+struct CgraSimulationEvaluation final {
+  EvaluationEvidence evidence;
+  std::optional<sim::CgraClosedWaitSetDiagnostic> closedWait;
+};
+
 llvm::Error registerCgraSimulationModel();
 
 EvaluationModelDescriptorRef cgraSimulationModelDescriptorRef();
@@ -67,6 +73,16 @@ evaluateCgraSimulation(const PreparedCgraSimulationEvaluation &prepared,
                        CgraSimulationAttemptLimits limits,
                        const ArtifactStore &artifactStore,
                        const BlobStore &blobStore);
+
+/// Same ordinary Evaluation request/evidence transaction with the exact
+/// in-process halt diagnostic retained for a caller that owns a typed hardware
+/// feedback loop. The diagnostic is ephemeral and cannot replace Evidence or
+/// Mapping verification.
+llvm::Expected<CgraSimulationEvaluation>
+evaluateCgraSimulationWithDiagnostics(
+    const PreparedCgraSimulationEvaluation &prepared,
+    CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore);
 
 } // namespace loom::evaluation::models
 

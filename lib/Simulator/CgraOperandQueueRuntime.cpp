@@ -172,6 +172,29 @@ llvm::Error CgraTransportRuntime::commitOperandQueueEnqueue(
     --unit.reservations;
     ++unit.occupancy;
     ++queue.occupancy;
+    std::optional<llvm::APInt> tag;
+    for (std::uint32_t localSink :
+         llvm::ArrayRef(publicationSinks_)
+             .slice(publication.sinkOffset, publication.sinkCount)) {
+      const SinkBinding &sink = sinks_[binding.sinkOffset + localSink];
+      if (sink.operandQueueBinding != queueOrdinal)
+        continue;
+      if (sink.operandActivationOrdinal >=
+          plan_->transport.operandQueueActivations.size())
+        return invalid("CGRA PE operand enqueue has no activation tag");
+      const llvm::APInt &candidateTag =
+          plan_->transport
+              .operandQueueActivations[sink.operandActivationOrdinal]
+              .tag;
+      if (tag && *tag != candidateTag)
+        return invalid("CGRA PE operand enqueue has conflicting queue tags");
+      tag = candidateTag;
+    }
+    if (!tag)
+      return invalid("CGRA PE operand enqueue has no queue tag witness");
+    queue.entries.push_back(
+        {slot, inFlight.occurrenceOrdinal, inFlight.producerSequenceOrdinal,
+         *tag});
   }
   state.capacityReserved = false;
   return llvm::Error::success();
@@ -187,6 +210,8 @@ llvm::Error CgraTransportRuntime::acceptActorCommits(
   llvm::SmallDenseSet<std::pair<std::uint64_t, unsigned>, 8> consumedInputs;
   llvm::SmallDenseSet<std::uint64_t, 8> touchedQueues;
   llvm::SmallDenseSet<std::uint64_t, 8> frameUnits;
+  llvm::SmallVector<std::uint64_t, 8> sourceReservations;
+  llvm::SmallDenseSet<std::uint64_t, 8> touchedSourceBindings;
   if (!events.empty()) {
     const auto &cycle = events.front().coordinate.referenceCycle;
     for (const CgraActorLifecycleEvent &event : events)
@@ -207,6 +232,25 @@ llvm::Error CgraTransportRuntime::acceptActorCommits(
         });
     if (transition == actor.handshakeCases.end())
       return invalid("CGRA PE operand dequeue names an unknown transition");
+    for (std::uint32_t result : transition->activeResults) {
+      const auto binding =
+          actorSourceBindings_.find({event.semanticActorOrdinal, result});
+      if (binding == actorSourceBindings_.end())
+        continue;
+      if (binding->second >= bindings_.size())
+        return invalid("CGRA actor commit has an invalid transport source");
+      if (bindings_[binding->second].sourceReserved ||
+          bindings_[binding->second].active)
+        return invalid(llvm::Twine("CGRA actor ") +
+                       llvm::Twine(event.semanticActorOrdinal) +
+                       " occurrence " + llvm::Twine(event.occurrenceOrdinal) +
+                       " result " + llvm::Twine(result) +
+                       " commits through a busy transport binding " +
+                       llvm::Twine(binding->second));
+      if (!touchedSourceBindings.insert(binding->second).second)
+        return invalid("CGRA actor commit batch repeats a transport source");
+      sourceReservations.push_back(binding->second);
+    }
     for (std::uint32_t input : transition->consumedInputs) {
       auto found =
           actorInputQueueBindings_.find({event.semanticActorOrdinal, input});
@@ -261,9 +305,16 @@ llvm::Error CgraTransportRuntime::acceptActorCommits(
     dequeues.push_back({queueOrdinal, queue.unitBinding});
   }
   for (const Dequeue &dequeue : dequeues) {
-    --operandQueues_[dequeue.queue].occupancy;
+    OperandQueueBinding &queue = operandQueues_[dequeue.queue];
+    if (queue.entries.size() != queue.occupancy || queue.entries.empty())
+      return invalid("CGRA PE operand queue head witness diverged from "
+                     "occupancy");
+    queue.entries.pop_front();
+    --queue.occupancy;
     --operandQueueUnits_[dequeue.unit].occupancy;
   }
+  for (std::uint64_t binding : sourceReservations)
+    bindings_[binding].sourceReserved = true;
   return llvm::Error::success();
 }
 

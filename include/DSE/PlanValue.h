@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -97,12 +98,29 @@ struct ExactPlanArtifacts final {
   std::vector<ArtifactRootReference> artifacts;
 };
 
-/// Explicit finite union of prior plan outputs. The bound is semantic work
-/// policy: runtime resolution canonicalizes and deduplicates the union before
-/// retaining its first `maximumArtifacts` roots.
+/// Explicit finite union of prior plan outputs. Runtime resolution
+/// canonicalizes and deduplicates the union before retaining its first
+/// `maximumArtifacts` roots. A distinct producer bound permits bounded
+/// expansion before that contraction; zero preserves the retained bound.
 struct BoundedPlanOutputJoin final {
+  BoundedPlanOutputJoin() = default;
+  BoundedPlanOutputJoin(
+      std::vector<PlanOutputRef> outputs, std::uint64_t maximumArtifacts,
+      std::uint64_t maximumProducerArtifacts = 0,
+      std::vector<ArtifactRootReference> exactArtifacts = {})
+      : outputs(std::move(outputs)), maximumArtifacts(maximumArtifacts),
+        maximumProducerArtifacts(maximumProducerArtifacts),
+        exactArtifacts(std::move(exactArtifacts)) {}
+
   std::vector<PlanOutputRef> outputs;
   std::uint64_t maximumArtifacts = 0;
+  std::uint64_t maximumProducerArtifacts = 0;
+  std::vector<ArtifactRootReference> exactArtifacts;
+
+  std::uint64_t producerArtifactLimit() const {
+    return maximumProducerArtifacts == 0 ? maximumArtifacts
+                                         : maximumProducerArtifacts;
+  }
 };
 
 using PlanInputBinding =

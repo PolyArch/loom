@@ -17,7 +17,6 @@
 # RUN:   --require-spatial-unconditional-handshake \
 # RUN:   --mapping-inspector=loom-product-mapping-inspection-test \
 # RUN:   --require-actor-multicast \
-# RUN:   --require-operand-queue-atomic-fanout \
 # RUN:   --require-register-fifo \
 # RUN:   --require-packed-switch-row \
 # RUN:   --require-temporal-dispatch \

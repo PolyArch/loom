@@ -267,6 +267,21 @@ bool activeDemandRankLess(const PreparedTechCandidate &lhs,
     if (lhsRank != rhsRank)
       return lhsRank < rhsRank;
   }
+  assert(lhs.activeProblem && rhs.activeProblem);
+  const auto &lhsStatistics = lhs.activeProblem->statistics();
+  const auto &rhsStatistics = rhs.activeProblem->statistics();
+  const auto lhsDemand = std::tie(
+      lhsStatistics.logicalSinkCount, lhsStatistics.logicalNetCount,
+      lhsStatistics.handshakePotentialContributionCount,
+      lhsStatistics.attachmentOptionCount, lhsStatistics.computePlacementCount,
+      lhsStatistics.context.deterministicWork);
+  const auto rhsDemand = std::tie(
+      rhsStatistics.logicalSinkCount, rhsStatistics.logicalNetCount,
+      rhsStatistics.handshakePotentialContributionCount,
+      rhsStatistics.attachmentOptionCount, rhsStatistics.computePlacementCount,
+      rhsStatistics.context.deterministicWork);
+  if (lhsDemand != rhsDemand)
+    return lhsDemand < rhsDemand;
   return artifactRootReferenceLess(lhs.reference, rhs.reference);
 }
 
@@ -509,6 +524,61 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   std::vector<::dataflow::GraphRef> candidateGraphs;
   preparedCandidates.reserve(
       inputBindings[TechMappingCandidatesInput].artifacts.size());
+  const auto freezeActiveProblem =
+      [&](PreparedTechCandidate &candidate) -> llvm::Expected<bool> {
+    ++activeProblemCacheStatistics.requests;
+    ++activeProblemCacheStatistics.misses;
+    const auto activeProblemBegin = std::chrono::steady_clock::now();
+    auto activeProblem = ::loom::pnr::freezeSpatialPnrProblem(
+        candidate.dataflow->view, candidate.tech.view(), fabric->view(),
+        *physicalTiming, *config, candidate.constraints.view(),
+        &*derivedContexts);
+    saturatingAdd(activeProblemCacheStatistics.constructionNanoseconds,
+                  static_cast<std::uint64_t>(
+                      std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now() - activeProblemBegin)
+                          .count()));
+    if (!activeProblem) {
+      bool typedFailure = false;
+      ::loom::pnr::SpatialPnrFreezeFailureKind failureKind =
+          ::loom::pnr::SpatialPnrFreezeFailureKind::Invalid;
+      std::string diagnostic;
+      llvm::Error unhandled = llvm::handleErrors(
+          activeProblem.takeError(),
+          [&](const ::loom::pnr::SpatialPnrFreezeFailure &failure) {
+            typedFailure = true;
+            failureKind = failure.kind();
+            diagnostic = errorMessage(failure);
+          });
+      if (unhandled)
+        return std::move(unhandled);
+      if (!typedFailure ||
+          failureKind == ::loom::pnr::SpatialPnrFreezeFailureKind::Invalid)
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "root_complete_spatial_pnr_generator_invalid: " + diagnostic);
+      ::loom::mapping_debug::emit(
+          ::loom::mapping_debug::Level::Summary,
+          ::loom::mapping_debug::Stage::SpatialPnr,
+          ::loom::mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["failure_scope"] = "active_problem_preparation";
+            fields["closure_status"] = "proven_infeasible";
+            fields["tech_mapping_input_ordinal"] =
+                static_cast<std::uint64_t>(candidate.inputOrdinal);
+            fields["tech_mapping"] =
+                formatArtifactIdentityHex(candidate.reference.artifact);
+            fields["diagnostic"] = diagnostic;
+          });
+      return false;
+    }
+    saturatingAdd(activeProblemCacheStatistics.retainedBytes,
+                  (*activeProblem)->statistics().context.retainedBytes);
+    saturatingAdd(activeProblemCacheStatistics.deterministicWork,
+                  (*activeProblem)->statistics().context.deterministicWork);
+    candidate.activeProblem = std::move(*activeProblem);
+    return true;
+  };
   for (const auto indexedTech :
        llvm::enumerate(inputBindings[TechMappingCandidatesInput].artifacts)) {
     if (invocation.executionControl().stopRequested()) {
@@ -575,64 +645,27 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     if (!constraints)
       return constraints.takeError();
 
-    ++activeProblemCacheStatistics.requests;
-    ++activeProblemCacheStatistics.misses;
-    const auto activeProblemBegin = std::chrono::steady_clock::now();
-    auto activeProblem = ::loom::pnr::freezeSpatialPnrProblem(
-        dataflow, tech->view(), fabric->view(), *physicalTiming, *config,
-        constraints->view(), &*derivedContexts);
-    saturatingAdd(activeProblemCacheStatistics.constructionNanoseconds,
-                  static_cast<std::uint64_t>(
-                      std::chrono::duration_cast<std::chrono::nanoseconds>(
-                          std::chrono::steady_clock::now() - activeProblemBegin)
-                          .count()));
-    if (!activeProblem) {
-      bool typedFailure = false;
-      ::loom::pnr::SpatialPnrFreezeFailureKind failureKind =
-          ::loom::pnr::SpatialPnrFreezeFailureKind::Invalid;
-      std::string diagnostic;
-      llvm::Error unhandled = llvm::handleErrors(
-          activeProblem.takeError(),
-          [&](const ::loom::pnr::SpatialPnrFreezeFailure &failure) {
-            typedFailure = true;
-            failureKind = failure.kind();
-            diagnostic = errorMessage(failure);
-          });
-      if (unhandled)
-        return std::move(unhandled);
-      if (!typedFailure ||
-          failureKind == ::loom::pnr::SpatialPnrFreezeFailureKind::Invalid)
-        return llvm::createStringError(
-            llvm::inconvertibleErrorCode(),
-            "root_complete_spatial_pnr_generator_invalid: " + diagnostic);
-      ::loom::mapping_debug::emit(
-          ::loom::mapping_debug::Level::Summary,
-          ::loom::mapping_debug::Stage::SpatialPnr,
-          ::loom::mapping_debug::Event::MappingFailure,
-          [&](llvm::json::Object &fields) {
-            fields["failure_scope"] = "active_problem_preparation";
-            fields["closure_status"] = "proven_infeasible";
-            fields["tech_mapping_input_ordinal"] =
-                static_cast<std::uint64_t>(inputOrdinal);
-            fields["tech_mapping"] =
-                formatArtifactIdentityHex(techReference.artifact);
-            fields["diagnostic"] = diagnostic;
-          });
-      continue;
-    }
-    saturatingAdd(activeProblemCacheStatistics.retainedBytes,
-                  (*activeProblem)->statistics().context.retainedBytes);
-    saturatingAdd(activeProblemCacheStatistics.deterministicWork,
-                  (*activeProblem)->statistics().context.deterministicWork);
-
+    PreparedTechCandidate candidate{inputOrdinal,
+                                    techReference,
+                                    std::move(*tech),
+                                    cached->second.get(),
+                                    std::move(*constraints),
+                                    {},
+                                    std::nullopt,
+                                    std::nullopt};
     std::optional<::loom::pnr::SpatialCandidateInitializerPreference>
         preference;
     std::optional<ActiveRouteRank> routeRank;
     if (!firstVerifiedCandidate) {
+      auto frozen = freezeActiveProblem(candidate);
+      if (!frozen)
+        return frozen.takeError();
+      if (!*frozen)
+        continue;
       ::loom::pnr::SpatialPathFinderSeedWorkSummary rankWork;
       const auto rankBegin = std::chrono::steady_clock::now();
-      auto seed =
-          ::loom::pnr::createPathFinderSpatialSeed(*activeProblem, 0, rankWork);
+      auto seed = ::loom::pnr::createPathFinderSpatialSeed(
+          candidate.activeProblem, 0, rankWork);
       saturatingAdd(activeProblemCacheStatistics.rankProjectionNanoseconds,
                     static_cast<std::uint64_t>(
                         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -678,8 +711,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                 fields["diagnostic"] = diagnostic;
               });
         } else {
-          auto objective =
-              (*activeProblem)->objectiveProgram().evaluate(*seed->candidate);
+          auto objective = candidate.activeProblem->objectiveProgram().evaluate(
+              *seed->candidate);
           if (!objective)
             return objective.takeError();
           routeRank.emplace(ActiveRouteRank{std::move(*objective), violations,
@@ -703,10 +736,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
             });
       }
     }
-    preparedCandidates.push_back(PreparedTechCandidate{
-        inputOrdinal, techReference, std::move(*tech), cached->second.get(),
-        std::move(*constraints), std::move(*activeProblem), preference,
-        std::move(routeRank)});
+    candidate.preference = preference;
+    candidate.routeRank = std::move(routeRank);
+    preparedCandidates.push_back(std::move(candidate));
   }
 
   ::loom::pnr::SpatialPnrGenerationAccounting rankAccounting;
@@ -747,6 +779,15 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                           /*LowerCase=*/true);
           fields["rank_available"] = candidate.preference.has_value();
           fields["route_rank_available"] = candidate.routeRank.has_value();
+          const auto &statistics = candidate.activeProblem->statistics();
+          fields["active_compute_placement_count"] =
+              statistics.computePlacementCount;
+          fields["active_logical_net_count"] = statistics.logicalNetCount;
+          fields["active_logical_sink_count"] = statistics.logicalSinkCount;
+          fields["active_attachment_option_count"] =
+              statistics.attachmentOptionCount;
+          fields["active_handshake_potential_contribution_count"] =
+              statistics.handshakePotentialContributionCount;
           if (candidate.routeRank) {
             llvm::json::Array violations;
             for (const std::uint64_t value : candidate.routeRank->violations)
@@ -798,7 +839,6 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       if (selected != techOrdinal)
         std::swap(preparedCandidates[techOrdinal],
                   preparedCandidates[selected]);
-      emitCandidateOrder(preparedCandidates[techOrdinal], techOrdinal);
     }
     PreparedTechCandidate &prepared = preparedCandidates[techOrdinal];
     const ArtifactRootReference &techReference = prepared.reference;
@@ -808,6 +848,15 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       ++skippedCoveredTechMappings;
       continue;
     }
+    if (!prepared.activeProblem) {
+      auto frozen = freezeActiveProblem(prepared);
+      if (!frozen)
+        return frozen.takeError();
+      if (!*frozen)
+        continue;
+    }
+    if (firstVerifiedCandidate)
+      emitCandidateOrder(prepared, techOrdinal);
     if (maximumOutputs && outputs.size() >= *maximumOutputs) {
       rememberIncomplete(
           CandidateGeneratorIncompleteReason::SemanticLimitReached);

@@ -17,6 +17,60 @@
 #include <vector>
 
 namespace loom::dse {
+
+llvm::StringRef
+hardwareMappingImpactKindSpelling(HardwareMappingImpactKind kind) {
+  switch (kind) {
+  case HardwareMappingImpactKind::Unchanged:
+    return "unchanged";
+  case HardwareMappingImpactKind::Rebase:
+    return "rebase";
+  case HardwareMappingImpactKind::Reopen:
+    return "reopen";
+  }
+  llvm_unreachable("unknown hardware Mapping impact kind");
+}
+
+llvm::StringRef hardwareMutationFamilySpelling(
+    HardwareMutationFamily family) {
+  switch (family) {
+  case HardwareMutationFamily::SpatialTopology:
+    return "spatial_topology";
+  case HardwareMutationFamily::InstructionCapacity:
+    return "instruction_capacity";
+  case HardwareMutationFamily::FuCapability:
+    return "fu_capability";
+  case HardwareMutationFamily::SpatialMemory:
+    return "spatial_memory";
+  case HardwareMutationFamily::SpatialFifo:
+    return "spatial_fifo";
+  case HardwareMutationFamily::SpatialSwitch:
+    return "spatial_switch";
+  case HardwareMutationFamily::SystemAccCore:
+    return "system_acc_core";
+  case HardwareMutationFamily::SystemInstructionContext:
+    return "system_instruction_context";
+  case HardwareMutationFamily::SystemTransport:
+    return "system_transport";
+  case HardwareMutationFamily::SystemMemoryService:
+    return "system_memory_service";
+  }
+  llvm_unreachable("unknown hardware mutation family");
+}
+
+llvm::StringRef
+hardwareMutationLocalitySpelling(HardwareMutationLocality locality) {
+  switch (locality) {
+  case HardwareMutationLocality::Unchanged:
+    return "unchanged";
+  case HardwareMutationLocality::LocalCone:
+    return "local_cone";
+  case HardwareMutationLocality::GlobalReopen:
+    return "global_reopen";
+  }
+  llvm_unreachable("unknown hardware mutation locality");
+}
+
 namespace {
 
 constexpr llvm::StringLiteral topologySchema =
@@ -24,7 +78,7 @@ constexpr llvm::StringLiteral topologySchema =
 constexpr llvm::StringLiteral microarchitectureSchema =
     "loom.spatial_microarchitecture_candidate_decision.2.0";
 constexpr llvm::StringLiteral systemSchema =
-    "loom.system_composition_candidate_decision.2.0";
+    "loom.system_composition_candidate_decision.3.0";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -573,55 +627,128 @@ llvm::Expected<SystemCompositionDecision> readSystemBody(Reader &reader) {
   }
 }
 
-llvm::Error validateAccCoreCorrespondence(
-    llvm::ArrayRef<SystemCompositionAccCoreCorrespondence> correspondence) {
-  std::vector<std::uint8_t> previousParent;
-  std::set<std::vector<std::uint8_t>> childKeys;
-  bool first = true;
+llvm::Error validateEntityCorrespondence(
+    llvm::ArrayRef<loom::fabric::FabricSystemEntityCorrespondence>
+        correspondence) {
+  std::optional<std::pair<loom::fabric::FabricEntityKind,
+                          loom::fabric::FabricEntityId>>
+      previousSource;
+  std::set<std::pair<loom::fabric::FabricEntityKind,
+                     loom::fabric::FabricEntityId>>
+      targetKeys;
   for (const auto &entry : correspondence) {
-    std::vector<std::uint8_t> parentKey =
-        loom::fabric::canonicalFabricBytes(entry.parent);
-    if (!first && !(previousParent < parentKey))
-      return invalid(
-          "System AccCore lineage parents are not canonical and unique");
-    first = false;
-    previousParent = std::move(parentKey);
-    if (!childKeys.insert(loom::fabric::canonicalFabricBytes(entry.child))
-             .second)
-      return invalid("System AccCore lineage maps two parents to one child");
+    const auto source = std::make_pair(entry.source.kind, entry.source.id);
+    const auto target = std::make_pair(entry.target.kind, entry.target.id);
+    if (entry.source.kind != entry.target.kind)
+      return invalid("System entity lineage changes an entity kind");
+    if (previousSource && !(*previousSource < source))
+      return invalid("System entity lineage sources are not canonical");
+    previousSource = source;
+    if (!targetKeys.insert(target).second)
+      return invalid("System entity lineage maps two sources to one target");
   }
   return llvm::Error::success();
 }
 
-void writeAccCoreCorrespondence(
+void writeEntityCorrespondence(
     Writer &writer,
-    llvm::ArrayRef<SystemCompositionAccCoreCorrespondence> correspondence) {
+    llvm::ArrayRef<loom::fabric::FabricSystemEntityCorrespondence>
+        correspondence) {
   writer.u64(correspondence.size());
   for (const auto &entry : correspondence) {
-    writer.ref(entry.parent);
-    writer.ref(entry.child);
+    writer.u32(static_cast<std::uint32_t>(entry.source.kind));
+    writer.u64(entry.source.id);
+    writer.u64(entry.target.id);
   }
 }
 
-llvm::Expected<std::vector<SystemCompositionAccCoreCorrespondence>>
-readAccCoreCorrespondence(Reader &reader) {
+llvm::Expected<
+    std::vector<loom::fabric::FabricSystemEntityCorrespondence>>
+readEntityCorrespondence(Reader &reader) {
   auto count = reader.u64();
   if (!count)
     return count.takeError();
   if (*count > reader.remaining())
-    return invalid("System AccCore lineage count exceeds its payload");
-  std::vector<SystemCompositionAccCoreCorrespondence> result;
+    return invalid("System entity lineage count exceeds its payload");
+  std::vector<loom::fabric::FabricSystemEntityCorrespondence> result;
+  result.reserve(*count);
+  const std::uint32_t kindCount = loom::fabric::fabricClosedBound(
+      loom::fabric::FabricEntityKind());
+  for (std::uint64_t ordinal = 0; ordinal != *count; ++ordinal) {
+    auto rawKind = reader.u32();
+    if (!rawKind)
+      return rawKind.takeError();
+    if (*rawKind >= kindCount)
+      return invalid("System entity lineage has an unknown entity kind");
+    auto source = reader.u64();
+    if (!source)
+      return source.takeError();
+    auto target = reader.u64();
+    if (!target)
+      return target.takeError();
+    const auto kind =
+        static_cast<loom::fabric::FabricEntityKind>(*rawKind);
+    result.push_back({{kind, *source}, {kind, *target}});
+  }
+  if (llvm::Error error = validateEntityCorrespondence(result))
+    return std::move(error);
+  return result;
+}
+
+llvm::Error validateTransferPatternCorrespondence(
+    llvm::ArrayRef<loom::fabric::FabricSystemTransferPatternCorrespondence>
+        correspondence) {
+  std::vector<std::uint8_t> previousSource;
+  std::set<std::vector<std::uint8_t>> targetKeys;
+  bool first = true;
+  for (const auto &entry : correspondence) {
+    std::vector<std::uint8_t> source =
+        loom::fabric::canonicalFabricBytes(entry.source);
+    if (!first && !(previousSource < source))
+      return invalid("System transfer-pattern lineage is not canonical");
+    first = false;
+    previousSource = std::move(source);
+    if (!targetKeys.insert(
+                       loom::fabric::canonicalFabricBytes(entry.target))
+             .second)
+      return invalid(
+          "System transfer-pattern lineage maps two sources to one target");
+  }
+  return llvm::Error::success();
+}
+
+void writeTransferPatternCorrespondence(
+    Writer &writer,
+    llvm::ArrayRef<loom::fabric::FabricSystemTransferPatternCorrespondence>
+        correspondence) {
+  writer.u64(correspondence.size());
+  for (const auto &entry : correspondence) {
+    writer.ref(entry.source);
+    writer.ref(entry.target);
+  }
+}
+
+llvm::Expected<
+    std::vector<loom::fabric::FabricSystemTransferPatternCorrespondence>>
+readTransferPatternCorrespondence(Reader &reader) {
+  auto count = reader.u64();
+  if (!count)
+    return count.takeError();
+  if (*count > reader.remaining())
+    return invalid(
+        "System transfer-pattern lineage count exceeds its payload");
+  std::vector<loom::fabric::FabricSystemTransferPatternCorrespondence> result;
   result.reserve(*count);
   for (std::uint64_t ordinal = 0; ordinal != *count; ++ordinal) {
-    auto parent = reader.ref<loom::fabric::AccCoreOccurrenceRef>();
-    if (!parent)
-      return parent.takeError();
-    auto child = reader.ref<loom::fabric::AccCoreOccurrenceRef>();
-    if (!child)
-      return child.takeError();
-    result.push_back({*parent, *child});
+    auto source = reader.ref<loom::fabric::FabricTransferPatternRef>();
+    if (!source)
+      return source.takeError();
+    auto target = reader.ref<loom::fabric::FabricTransferPatternRef>();
+    if (!target)
+      return target.takeError();
+    result.push_back({*source, *target});
   }
-  if (llvm::Error error = validateAccCoreCorrespondence(result))
+  if (llvm::Error error = validateTransferPatternCorrespondence(result))
     return std::move(error);
   return result;
 }
@@ -1107,13 +1234,15 @@ std::vector<std::uint8_t> encodeSpatialMicroarchitectureDecision(
 std::vector<std::uint8_t> encodeSystemCompositionDecision(
     const ArtifactRootReference &parent,
     const SystemCompositionDecision &decision,
-    llvm::ArrayRef<SystemCompositionAccCoreCorrespondence>
-        accCoreCorrespondence) {
+    llvm::ArrayRef<loom::fabric::FabricSystemEntityCorrespondence> entities,
+    llvm::ArrayRef<loom::fabric::FabricSystemTransferPatternCorrespondence>
+        transferPatterns) {
   Writer writer;
-  writer.u32(2);
+  writer.u32(3);
   writer.root(parent);
   writeSystemBody(writer, decision);
-  writeAccCoreCorrespondence(writer, accCoreCorrespondence);
+  writeEntityCorrespondence(writer, entities);
+  writeTransferPatternCorrespondence(writer, transferPatterns);
   return writer.take();
 }
 
@@ -1135,7 +1264,7 @@ adoptSystemCompositionDecision(llvm::ArrayRef<std::uint8_t> bytes) {
   auto version = reader.u32();
   if (!version)
     return version.takeError();
-  if (*version != 2)
+  if (*version != 3)
     return invalid("unsupported System candidate decision version");
   auto parent = reader.root();
   if (!parent)
@@ -1143,13 +1272,17 @@ adoptSystemCompositionDecision(llvm::ArrayRef<std::uint8_t> bytes) {
   auto decision = readSystemBody(reader);
   if (!decision)
     return decision.takeError();
-  auto correspondence = readAccCoreCorrespondence(reader);
-  if (!correspondence)
-    return correspondence.takeError();
+  auto entities = readEntityCorrespondence(reader);
+  if (!entities)
+    return entities.takeError();
+  auto transferPatterns = readTransferPatternCorrespondence(reader);
+  if (!transferPatterns)
+    return transferPatterns.takeError();
   if (!reader.empty())
     return invalid("System candidate decision has trailing bytes");
   return SystemCompositionCandidateDecision{
-      std::move(*parent), std::move(*decision), std::move(*correspondence)};
+      std::move(*parent), std::move(*decision), std::move(*entities),
+      std::move(*transferPatterns)};
 }
 
 llvm::ArrayRef<std::uint8_t> spatialTopologyDecisionSchemaBytes() {
@@ -1166,6 +1299,205 @@ llvm::ArrayRef<std::uint8_t> spatialMicroarchitectureDecisionSchemaBytes() {
 llvm::ArrayRef<std::uint8_t> systemCompositionDecisionSchemaBytes() {
   return {reinterpret_cast<const std::uint8_t *>(systemSchema.data()),
           systemSchema.size()};
+}
+
+namespace {
+
+template <typename Ref>
+void canonicalizeImpactRoots(std::vector<Ref> &roots) {
+  llvm::sort(roots, [](const Ref &lhs, const Ref &rhs) {
+    return loom::fabric::canonicalFabricBytes(lhs) <
+           loom::fabric::canonicalFabricBytes(rhs);
+  });
+  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+}
+
+void canonicalizeImpact(HardwareImpactProjection &impact) {
+  canonicalizeImpactRoots(impact.tech.realizationRoots);
+  canonicalizeImpactRoots(impact.spatial.placementRoots);
+  canonicalizeImpactRoots(impact.spatial.routeRoots);
+  canonicalizeImpactRoots(impact.system.executionRoots);
+  canonicalizeImpactRoots(impact.system.instructionContextRoots);
+  canonicalizeImpactRoots(impact.system.transportRoots);
+  canonicalizeImpactRoots(impact.system.routeRoots);
+  canonicalizeImpactRoots(impact.system.serviceRoots);
+  canonicalizeImpactRoots(impact.system.memoryRoots);
+}
+
+template <typename Ref>
+void addModuleRoot(std::vector<loom::fabric::FabricModulePhysicalOwnerRef> &out,
+                   const Ref &reference) {
+  out.push_back(llvm::cantFail(
+      loom::fabric::FabricModulePhysicalOwnerRef::create(reference)));
+}
+
+} // namespace
+
+HardwareImpactProjection projectHardwareImpact(
+    const SpatialTopologyCandidateDecision &candidate,
+    std::optional<ArtifactRootReference> child) {
+  HardwareImpactProjection impact{candidate.parent, std::move(child), {}, {},
+                                  {}};
+  impact.tech.kind = HardwareMappingImpactKind::Rebase;
+  impact.spatial.kind = HardwareMappingImpactKind::Rebase;
+  impact.system.kind = HardwareMappingImpactKind::Rebase;
+  impact.family = HardwareMutationFamily::SpatialTopology;
+  impact.locality = HardwareMutationLocality::LocalCone;
+  std::visit(
+      [&](const auto &decision) {
+        using Decision = std::decay_t<decltype(decision)>;
+        if constexpr (std::is_same_v<Decision, AddOccurrence>) {
+          return;
+        } else if constexpr (std::is_same_v<Decision, RemoveOccurrence>) {
+          impact.tech.kind = HardwareMappingImpactKind::Reopen;
+          impact.spatial.kind = HardwareMappingImpactKind::Reopen;
+          impact.tech.realizationRoots.push_back(decision.target);
+          impact.spatial.placementRoots.push_back(decision.target);
+        } else if constexpr (std::is_same_v<Decision,
+                                            ReplacePointConnection>) {
+          impact.locality = HardwareMutationLocality::GlobalReopen;
+          impact.spatial.kind = HardwareMappingImpactKind::Reopen;
+          impact.spatial.routeRoots.push_back(decision.destination);
+          impact.spatial.routeRoots.push_back(decision.source);
+        } else if constexpr (std::is_same_v<Decision,
+                                            AdjustParallelConnectionCount>) {
+          impact.locality = HardwareMutationLocality::GlobalReopen;
+          impact.spatial.kind = HardwareMappingImpactKind::Reopen;
+          for (const auto &connection : decision.connections) {
+            impact.spatial.routeRoots.push_back(connection.destination);
+            impact.spatial.routeRoots.push_back(connection.source);
+          }
+        } else {
+          impact.locality = HardwareMutationLocality::GlobalReopen;
+          impact.spatial.kind = HardwareMappingImpactKind::Reopen;
+          impact.spatial.routeRoots = decision.value.outputSources;
+        }
+      },
+      candidate.decision);
+  canonicalizeImpact(impact);
+  return impact;
+}
+
+HardwareImpactProjection projectHardwareImpact(
+    const SpatialMicroarchitectureCandidateDecision &candidate,
+    std::optional<ArtifactRootReference> child) {
+  HardwareImpactProjection impact{candidate.parent, std::move(child), {}, {},
+                                  {}};
+  impact.tech.kind = HardwareMappingImpactKind::Rebase;
+  impact.spatial.kind = HardwareMappingImpactKind::Rebase;
+  impact.system.kind = HardwareMappingImpactKind::Rebase;
+  std::visit(
+      [&](const auto &decision) {
+        using Decision = std::decay_t<decltype(decision)>;
+        if constexpr (std::is_same_v<Decision, ResizeInstructionStores>) {
+          impact.family = HardwareMutationFamily::InstructionCapacity;
+          impact.locality = HardwareMutationLocality::LocalCone;
+          for (const ResizeInstructionStore &store : decision.stores) {
+            addModuleRoot(impact.tech.realizationRoots, store.target);
+            addModuleRoot(impact.spatial.placementRoots, store.target);
+          }
+        } else if constexpr (std::is_same_v<Decision,
+                                            ResizeInstructionStore> ||
+                             std::is_same_v<Decision, ResizeMemory> ||
+                             std::is_same_v<Decision, ResizeFifo>) {
+          if constexpr (std::is_same_v<Decision, ResizeInstructionStore>)
+            impact.family = HardwareMutationFamily::InstructionCapacity;
+          else if constexpr (std::is_same_v<Decision, ResizeMemory>)
+            impact.family = HardwareMutationFamily::SpatialMemory;
+          else
+            impact.family = HardwareMutationFamily::SpatialFifo;
+          impact.locality = HardwareMutationLocality::LocalCone;
+          addModuleRoot(impact.tech.realizationRoots, decision.target);
+          addModuleRoot(impact.spatial.placementRoots, decision.target);
+        } else if constexpr (std::is_same_v<Decision,
+                                            ChangeFifoBypassCapability>) {
+          impact.family = HardwareMutationFamily::SpatialFifo;
+          impact.locality = HardwareMutationLocality::LocalCone;
+          impact.spatial.kind = HardwareMappingImpactKind::Reopen;
+          addModuleRoot(impact.spatial.placementRoots, decision.target);
+        } else {
+          if constexpr (std::is_same_v<Decision, ChangeFuInventory> ||
+                        std::is_same_v<Decision, ChangeFuCapability> ||
+                        std::is_same_v<Decision, ChangePeKind>)
+            impact.family = HardwareMutationFamily::FuCapability;
+          else if constexpr (std::is_same_v<Decision,
+                                             ChangeSwitchModeOrScheduleCapacity>)
+            impact.family = HardwareMutationFamily::SpatialSwitch;
+          else
+            impact.family = HardwareMutationFamily::SpatialMemory;
+          impact.locality = HardwareMutationLocality::GlobalReopen;
+          impact.tech.kind = HardwareMappingImpactKind::Reopen;
+          impact.spatial.kind = HardwareMappingImpactKind::Reopen;
+          addModuleRoot(impact.tech.realizationRoots, decision.target);
+          addModuleRoot(impact.spatial.placementRoots, decision.target);
+        }
+      },
+      candidate.decision);
+  canonicalizeImpact(impact);
+  return impact;
+}
+
+HardwareImpactProjection projectHardwareImpact(
+    const SystemCompositionCandidateDecision &candidate,
+    std::optional<ArtifactRootReference> child) {
+  HardwareImpactProjection impact{candidate.parent, std::move(child), {}, {},
+                                  {}};
+  impact.family = HardwareMutationFamily::SystemAccCore;
+  impact.locality = HardwareMutationLocality::GlobalReopen;
+  std::visit(
+      [&](const auto &decision) {
+        using Decision = std::decay_t<decltype(decision)>;
+        if constexpr (std::is_same_v<Decision, AddAccCore>) {
+          impact.family = HardwareMutationFamily::SystemAccCore;
+          impact.system.kind = HardwareMappingImpactKind::Rebase;
+        } else if constexpr (std::is_same_v<Decision, RemoveAccCore> ||
+                             std::is_same_v<Decision,
+                                            ReplaceSpatialAttachment>) {
+          impact.family = HardwareMutationFamily::SystemAccCore;
+          impact.system.kind = HardwareMappingImpactKind::Reopen;
+          impact.system.executionRoots.push_back(decision.target);
+        } else if constexpr (std::is_same_v<
+                                 Decision, SelectInstructionCoreRealization>) {
+          impact.family = HardwareMutationFamily::SystemInstructionContext;
+          impact.locality = HardwareMutationLocality::LocalCone;
+          impact.system.kind = HardwareMappingImpactKind::Reopen;
+          impact.system.instructionContextRoots.push_back(decision.target);
+        } else if constexpr (std::is_same_v<Decision,
+                                            ChangeTransportResource>) {
+          impact.family = HardwareMutationFamily::SystemTransport;
+          impact.system.kind = HardwareMappingImpactKind::Reopen;
+          impact.system.transportRoots.push_back(decision.target);
+        } else if constexpr (std::is_same_v<Decision,
+                                            ChangeTransportConnection>) {
+          impact.family = HardwareMutationFamily::SystemTransport;
+          impact.locality = HardwareMutationLocality::LocalCone;
+          impact.system.kind = HardwareMappingImpactKind::Reopen;
+          impact.system.routeRoots.push_back(decision.destination);
+          impact.system.routeRoots.push_back(decision.source);
+        } else {
+          impact.family = HardwareMutationFamily::SystemMemoryService;
+          impact.system.kind = HardwareMappingImpactKind::Reopen;
+          std::visit(
+              [&](const auto &attachment) {
+                using Attachment = std::decay_t<decltype(attachment)>;
+                if constexpr (std::is_same_v<
+                                  Attachment,
+                                  ChangeSpatialMemoryAttachment>) {
+                  impact.system.memoryRoots.push_back(
+                      attachment.spatialEndpoint);
+                  impact.system.serviceRoots.push_back(
+                      attachment.serviceEndpoint);
+                } else {
+                  impact.system.memoryRoots.push_back(attachment.destination);
+                  impact.system.memoryRoots.push_back(attachment.source);
+                }
+              },
+              decision.value);
+        }
+      },
+      candidate.decision);
+  canonicalizeImpact(impact);
+  return impact;
 }
 
 } // namespace loom::dse

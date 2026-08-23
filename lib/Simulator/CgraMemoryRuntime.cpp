@@ -1,4 +1,5 @@
 #include "CgraMemoryRuntime.h"
+#include "CgraTransportRuntime.h"
 
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Fabric/Identity/FabricMemoryInternalConnection.h"
@@ -433,7 +434,9 @@ llvm::Expected<CgraPhysicalLifecycleEvent> CgraMemoryRuntime::requestAction(
 llvm::Error
 CgraMemoryRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
   for (const ActorBinding &binding : bindings_)
-    if (binding.retirementPending)
+    if (binding.retirementPending ||
+        (transport_ &&
+         !transport_->actorSourcesAvailable(binding.semanticActorOrdinal)))
       state_->plainMemoryCandidates.reset(binding.semanticActorOrdinal);
   if (!state_->plainMemoryCandidates.any())
     return llvm::Error::success();
@@ -560,6 +563,19 @@ CgraMemoryRuntime::physicalTraceBinding(
               firing.actorOccurrenceOrdinal}},
           index.localActionOrdinal},
       std::move(*target)};
+}
+
+std::optional<std::uint64_t>
+CgraMemoryRuntime::physicalActionSemanticActor(
+    std::uint64_t actionOrdinal, std::uint64_t occurrenceOrdinal) const {
+  const auto indexed = actionToFiring_.find({actionOrdinal, occurrenceOrdinal});
+  if (indexed == actionToFiring_.end() ||
+      indexed->second.firingSlot >= firings_.size())
+    return std::nullopt;
+  const Firing &firing = firings_[indexed->second.firingSlot];
+  if (!firing.active || firing.bindingOrdinal >= bindings_.size())
+    return std::nullopt;
+  return bindings_[firing.bindingOrdinal].semanticActorOrdinal;
 }
 
 llvm::Error CgraMemoryRuntime::linearize(std::uint64_t firingSlot,

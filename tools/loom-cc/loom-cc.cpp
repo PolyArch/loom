@@ -89,11 +89,17 @@ struct LoomDriverOptions final {
   std::string hardwarePath;
   std::string visualizationPath;
   std::string deploymentPath;
+  std::string mappingTechCandidateLimit;
+  std::string mappingWallTimeLimitMilliseconds;
+  std::string mappingStoppingPolicy;
   std::vector<std::string> operatorProtocolSymbols;
 
   bool requestsProductFlow() const {
     return !hardwarePath.empty() || !visualizationPath.empty() ||
-           !deploymentPath.empty() || !operatorProtocolSymbols.empty();
+           !deploymentPath.empty() || !mappingTechCandidateLimit.empty() ||
+           !mappingWallTimeLimitMilliseconds.empty() ||
+           !mappingStoppingPolicy.empty() ||
+           !operatorProtocolSymbols.empty();
   }
 };
 
@@ -160,6 +166,27 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
     if (!deployment)
       return deployment.takeError();
     if (*deployment)
+      continue;
+    auto techCandidateLimit = consumeLoomOption(
+        argument, "--loom-mapping-tech-candidate-limit", index, arguments,
+        seen, options.mappingTechCandidateLimit);
+    if (!techCandidateLimit)
+      return techCandidateLimit.takeError();
+    if (*techCandidateLimit)
+      continue;
+    auto mappingWallTimeLimit = consumeLoomOption(
+        argument, "--loom-mapping-wall-time-limit-ms", index, arguments,
+        seen, options.mappingWallTimeLimitMilliseconds);
+    if (!mappingWallTimeLimit)
+      return mappingWallTimeLimit.takeError();
+    if (*mappingWallTimeLimit)
+      continue;
+    auto mappingStoppingPolicy = consumeLoomOption(
+        argument, "--loom-mapping-stopping-policy", index, arguments, seen,
+        options.mappingStoppingPolicy);
+    if (!mappingStoppingPolicy)
+      return mappingStoppingPolicy.takeError();
+    if (*mappingStoppingPolicy)
       continue;
     std::string protocolSymbol;
     std::set<std::string> protocolOptionSeen;
@@ -235,6 +262,15 @@ productHelperOptions(const LoomDriverOptions &options) {
     result.push_back("--hardware=" + options.hardwarePath);
   if (!options.visualizationPath.empty())
     result.push_back("--visualization=" + options.visualizationPath);
+  if (!options.mappingTechCandidateLimit.empty())
+    result.push_back("--mapping-tech-candidate-limit=" +
+                     options.mappingTechCandidateLimit);
+  if (!options.mappingWallTimeLimitMilliseconds.empty())
+    result.push_back("--mapping-wall-time-limit-ms=" +
+                     options.mappingWallTimeLimitMilliseconds);
+  if (!options.mappingStoppingPolicy.empty())
+    result.push_back("--mapping-stopping-policy=" +
+                     options.mappingStoppingPolicy);
   for (const std::string &symbol : options.operatorProtocolSymbols)
     result.push_back("--operator-protocol-symbol=" + symbol);
   return result;

@@ -1,5 +1,7 @@
 #include "Simulator/SourceBackedDfgValidation.h"
 
+#include "Common/ArtifactLocalReference.h"
+
 #include "SimulationPointerCapture.h"
 #include "SimulationWireInternal.h"
 #include "StructuredProgramNativeExecutionInternal.h"
@@ -275,6 +277,7 @@ deriveSelectedCapturePlan(const dataflow::CanonicalDataflowProgramView &view,
     plan.valueInputs.push_back({ordinal, std::nullopt, boundary,
                                 shape.lanesPerToken, shape.laneBitWidth,
                                 byteCount, std::move(*fixed), std::nullopt,
+                                false,
                                 std::nullopt});
   }
 
@@ -714,12 +717,17 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
     SourceBackedDfgValidationLimits limits,
-    const NativeStructuredProgramObservations *sourceObservations) {
+    const NativeStructuredProgramObservations *sourceObservations,
+    SourceBackedDfgReplayCasePublisher publishReplayCase) {
   if (limits.maxWavefrontSteps == 0 || limits.maxEventCount == 0 ||
       limits.maxRetainedCaptureBytes == 0 ||
       limits.maxSimulationWallTime <
           std::chrono::steady_clock::duration::zero())
     return invalid("execution limits must be positive");
+  if (limits.maxSimulationWallTime ==
+      std::chrono::steady_clock::duration::zero())
+    return executionLimit("simulation wall-time budget exhausted before "
+                          "source capture");
   std::optional<NativeStructuredProgramObservations> ownedSourceObservations;
   if (!sourceObservations) {
     auto observed =
@@ -777,6 +785,12 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
         finalizeSimulationRuntimeInput(draft, *replayWorkload, *view);
     if (!replayInput)
       return replayInput.takeError();
+    if (publishReplayCase) {
+      auto replayCase = publishReplayCase(*replayWorkload, *replayInput);
+      if (!replayCase)
+        return replayCase.takeError();
+      result.replayCases.push_back(std::move(*replayCase));
+    }
     auto nativeFinalObjects = canonicalizeNativeFinalObjects(
         call, replayPlan, *replayInput->spatial(), launchContext->graphOp);
     if (!nativeFinalObjects)
@@ -884,6 +898,14 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     result.status = SourceBackedDfgValidationStatus::Inapplicable;
   if (sourceObservations)
     result.sourceReturnValue = sourceObservations->returnValue;
+  llvm::sort(result.replayCases, [](const auto &lhs, const auto &rhs) {
+    if (lhs.workload != rhs.workload)
+      return artifactRootReferenceLess(lhs.workload, rhs.workload);
+    return artifactRootReferenceLess(lhs.runtimeInput, rhs.runtimeInput);
+  });
+  result.replayCases.erase(
+      std::unique(result.replayCases.begin(), result.replayCases.end()),
+      result.replayCases.end());
   return result;
 }
 

@@ -169,10 +169,16 @@ insertions and removals only from fragment refcounts that cross zero. Deletions
 cannot introduce a cycle. Insertions are checked against the committed graph
 plus the exact transaction overlay by affected reachability, without rebuilding
 the candidate graph, canonical order, or a full-Fabric topology. Rollback drops
-the overlay. Commit materializes the new active graph; a refcount-only commit
-whose active fragment set did not change reuses the existing graph. This graph
-is mutable candidate state and is never placed in an invocation, session,
-static, or global cache.
+the overlay. The closure records whether applying the exact incremental rank
+repair is estimated to exceed the deterministic work of rebuilding the
+selected graph;
+that choice is acted on only after the proposal is accepted. A rejected probe
+therefore never pays for an optional whole-graph witness or rebuild. Commit
+uses the cheaper exact rank-repair or selected-graph reconstruction path; a
+refcount-only commit whose active fragment set did not change reuses the
+existing graph. Final independent verification remains identical for both
+paths. This graph is mutable candidate state and is never placed in an
+invocation, session, static, or global cache.
 Candidate selections, refcounts, scratch storage, PRNG state, and budgets also
 remain candidate-owned.
 
@@ -295,8 +301,19 @@ The current descriptors are:
 
 ```text
 loom.system_pnr_search_domain.4.0
-loom.system_pnr.config.7.0
+loom.system_pnr.config.8.0
 ```
+
+The System config may carry a canonical root-keyed binding-partition intent.
+Each entry names one exact `RootThreadLaunchRef` and a positive partition
+count. The intent changes only the Presburger search granularity used to build
+`H`; it neither restricts the legal logical domain nor selects an AccCore.
+Absent roots retain one logical partition; this conservative fallback does not
+speculate concurrent execution. A foreign,
+repeated, zero-count, or non-canonical entry is invalid. Because the intent is
+part of the adopted config bytes and digest, journal replay and hardware
+reopen cannot silently change it. Only a finalized SystemMapping proves which
+partitions were assigned to which physical resources.
 
 System search is hierarchical. A rooted graph selects one immutable compatible
 SpatialMapping and its exact SpatialCore occurrence. There is no Flat graph
@@ -330,35 +347,71 @@ preflight and are constructed and independently verified by the ordinary
 System candidate path.
 
 Complete exhaustion of the imported-capacity relation may persist one
-`loom.mapping.system_execution_binding_checkpoint` 1.0. That checkpoint binds
-the exact Dataflow and parent System and stores canonical thread and graph
-Presburger cells with their selected AccCore and SpatialMapping targets. It is
-not a SystemMapping and owns no service target, route, ResourceUse, progress,
+`loom.mapping.system_execution_binding_checkpoint` 2.0. That checkpoint binds
+the exact Dataflow, parent System, MappingConstraintSet, resolved PnR
+configuration digest, and search-domain digest. It stores canonical thread
+and graph Presburger cells with their selected AccCore and SpatialMapping
+targets, plus a typed imported-capacity witness and its dependency roots. It
+is not a SystemMapping and owns no service target, route, ResourceUse, progress,
 recurrence, or legality claim.
 
 One exact parent-to-child AccCore correspondence may combine that checkpoint
 with a child System into a
-`loom.pnr.system_mapping_checkpoint_migration_seed` 2.0. The seed also names
+`loom.pnr.system_mapping_checkpoint_migration_seed` 5.0. The seed also names
 the exact parent AccCore occurrence whose capacity witness caused the child.
 The correspondence must come from typed hardware lineage and must cover every
 preserved or reopened parent AccCore; Module equality and occurrence ordinal
 are not substitutes. System PnR releases precisely the checkpoint thread cells
 bound to the witness occurrence, validates every remaining thread and graph
 choice against the frozen child domain, and visits that impact-cone initializer
-before the ordinary fresh seed family. A finalized parent SystemMapping may
-supply the same
-invocation-local execution-binding preference through the direct PnR API.
+before the ordinary fresh seed family.
+
+A finalized parent SystemMapping may instead be projected into one
+`loom.pnr.system_mapping_finalized_migration_seed` 5.0. That seed binds the
+exact parent Mapping, child constraints, child SpatialMapping frontier,
+resolved PnR configuration, and canonical parent-to-child entity, transfer,
+Module, and AccCore correspondences. Unlike the incomplete checkpoint, it may
+preserve service targets and routes whose complete referenced hardware lineage
+survives in the child. The child importer validates the complete correspondence
+and rebases every retained Mapping reference before this invocation-local
+preference reaches PnR.
+
+The same seed owns schedule-preserving repair on an unchanged System. In that
+case the exact equal System identity mechanically supplies the identity
+correspondence, and the seed additionally carries a canonical set of Dataflow
+root invalidation roots. System PnR releases only thread and graph decisions
+owned by those roots, preserves the remaining execution decisions, and reopens
+the dependent System service/route cone. The initial route projection is
+conservative and reopens every System service leg when a schedule root changes;
+it must not claim finer locality until the service dependency projection proves
+it. This is still incremental repair rather than legality reuse: the resulting
+candidate passes the ordinary capacity, routing, progress, finalization, and
+independent import gates.
 
 Migration is preference, never constraint or proof. Missing, ambiguous,
 unmatched, or empty impact cones produce one typed fallback and fresh search
 continues. Released choices are solved through the same hard relation and
 complete-candidate closure callbacks as cold initialization; they do not bypass
 capacity, routing, progress, or legality checks. The current checkpoint
-deliberately carries no service selection, so every child service leg is
-reopened and all targets and route trees are rebuilt. Work accounting separates
-preserved and reopened thread bindings, graph bindings, and service legs. Every
-migrated candidate still passes global closure, the cold Mapping verifier, and
-MappingConstraintSet admission before publication.
+deliberately carries no service selection. Its child therefore reopens service
+legs, while a finalized parent seed or a typed Module rebase may preserve
+service identity when the hardware correspondence proves that the target and
+transport are unchanged. Work accounting separates preserved, rebased,
+invalidated, repaired, and reopened thread bindings, graph bindings, service
+legs, and route resources. Every migrated candidate still passes global closure,
+the cold Mapping verifier, and MappingConstraintSet admission before
+publication. A missing or ambiguous correspondence produces one typed
+cold-fallback record; it cannot be treated as a preserved seed.
+
+Hardware-impact reuse reports one closed disposition: `preserved`,
+`local_repair`, or `cold_fallback`. `Unchanged` and `Rebase` Tech/Spatial
+layers may retain exact Mapping frontiers after child reimport. A `Reopen`
+layer invalidates Mapping roots owned by the affected Module while unaffected
+Module frontiers remain available to the ordinary generator. A global impact
+or an empty typed root set is `cold_fallback`; it is never silently treated as
+local repair. System-only transport, service, or attachment changes preserve
+independently verified Tech/Spatial frontiers and reopen System PnR. These
+dispositions describe work reuse only and cannot admit the child Mapping.
 
 Each published result must be a finalized SystemMapping that closes thread and
 graph binding, SpatialMapping selection, service realization, System transport,
@@ -1040,3 +1093,21 @@ tuple. Integration acceptance requires a fresh, independently verified
 Dataflow-to-TechMapping-to-SpatialMapping-to-SystemMapping chain, derived
 configuration and Deployment, execution evidence, and exact SpatialCore
 physical Evidence within the HardwareImplementation scope.
+
+## Temporal Operand Progress
+
+The PnR progress projection consumes the Fabric-owned ordered queue projection
+after ingress, tag, context, FU, and input-role selections are known. It checks
+allocation-unit capacity and service claims, then derives a transient
+qualified-pairing risk from the same QueueKeys used by the simulator and strict
+import. A likely shared-ingress risk only changes route objective ordering;
+only an exact closed wait with a complete causal cone may reject a candidate or
+request a bounded local repair. Unknown rates, dynamic aliases, and incomplete
+queue witnesses remain `ProofNotEstablished` or `Unsupported`.
+
+When route cost, capacity, and functional objective are equal, the Spatial
+router prefers distinct compatible ingresses for input roles in one potential
+wait component, followed by pairing-ready selector arrangements. This is a
+central objective measure, not a hidden router legality rule. TechMapping may
+provide ordered-role, boundary, internal-edge, rate, and fanout facts, but it
+never chooses a physical ingress, tag, context, or allocation unit.

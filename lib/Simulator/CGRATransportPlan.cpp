@@ -236,6 +236,11 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
           spatial.resourceUses(), spatial.physicalTagSegments());
   if (!operandQueueGroups)
     return operandQueueGroups.takeError();
+  auto operandQueueProgress =
+      ::loom::mapping::deriveSpatialPeOperandProgressFeedback(
+          *operandQueueGroups);
+  if (!operandQueueProgress)
+    return operandQueueProgress.takeError();
   auto packedSwitchRows =
       ::loom::mapping::deriveSpatialTemporalSwitchPackedRows(
           fabric, spatial.routeTrees(), spatial.resourceUses(),
@@ -263,6 +268,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       return invalid("Fabric contains duplicate physical traversal references");
 
   CgraTransportPlan result;
+  result.operandQueueProgress = std::move(*operandQueueProgress);
   result.operandQueueActivations.reserve(operandQueueGroups->size());
   for (const auto &group : *operandQueueGroups) {
     auto matchCount =
@@ -280,7 +286,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       for (const auto &consumer : match.consumers)
         result.operandQueueConsumers.push_back({consumer});
       result.operandQueueMatches.push_back(
-          {match.queue, match.allocationUnit, match.entryCapacity,
+          {match.queue, match.fu, match.allocationUnit, match.entryCapacity,
            consumerOffset, *consumerCount});
     }
     result.operandQueueActivations.push_back(

@@ -82,6 +82,16 @@ one-enqueue/one-dequeue service contract, and canonical grant state. The
 simulator must not supply the former implicit depth 2 or any other capacity,
 port, or priority default.
 
+At quiescence, each selected operand queue reports its exact FIFO head
+provenance as producer binding, occurrence, ordered producer-sequence position,
+and Physical Tag, plus QueueKey, concrete FU, allocation unit, occupancy,
+reservation, capacity, and consumers. A blocked publication reports the exact
+queue, ingress, tag, and allocation unit it cannot reserve. These are transient
+runtime observations joined to the immutable Dataflow/Fabric/Tech/Spatial
+owners; they are not a simulator legality rule or persistent queue identity.
+An empty queue has no fabricated head, and a nonempty queue whose head
+provenance is incomplete cannot be reported as exact.
+
 For a temporal PE, the frozen execution plan also consumes the exact active
 context-evaluation domains derived from compute bindings and the PE
 ResourceContract. The runtime projects each ready actor request to its

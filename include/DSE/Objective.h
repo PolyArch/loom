@@ -42,6 +42,23 @@ struct ObjectiveSourceValues final {
   llvm::ArrayRef<EvaluationMetricObjectiveValue> evaluationMetrics;
 };
 
+/// One invocation-local candidate measure dimension. Candidate measures have
+/// no persistent ResolvedConfig spelling or Mapping-measure meaning; their
+/// ordinals are owned by the caller that constructs the program.
+struct CandidateMeasureObjectiveDimension final {
+  std::uint32_t measureOrdinal = 0;
+  ResolvedObjectiveDirection direction =
+      ResolvedObjectiveDirection::Minimize;
+  std::uint64_t lowerIndex = 0;
+  std::uint64_t upperIndex = 0;
+};
+
+struct CandidateMeasureObjectiveCatalogs final {
+  std::vector<CandidateMeasureObjectiveDimension> dimensions;
+  std::vector<ResolvedWeightedObjectiveLevel> weightedLevels;
+  std::vector<ResolvedTotalOrdering> totalOrderings;
+};
+
 class ObjectiveVector final {
 public:
   llvm::ArrayRef<std::uint64_t> codes() const { return codes_; }
@@ -96,6 +113,12 @@ public:
   static llvm::Expected<ObjectiveProgram>
   get(const ResolvedObjectiveCatalogs &catalogs);
 
+  /// Builds the same compiled objective machinery for transient candidate
+  /// features without pretending those features are Mapping measures or
+  /// persisted Evaluation requests.
+  static llvm::Expected<ObjectiveProgram>
+  getCandidateMeasures(const CandidateMeasureObjectiveCatalogs &catalogs);
+
   ObjectiveVector makeVector() const {
     return ObjectiveVector(dimensions_.size());
   }
@@ -106,6 +129,9 @@ public:
 
   llvm::Error evaluate(ObjectiveSourceValues sources,
                        ObjectiveVector &result) const;
+
+  llvm::Error evaluateCandidateMeasures(
+      llvm::ArrayRef<std::uint64_t> measures, ObjectiveVector &result) const;
 
   llvm::Expected<ObjectiveWideValue>
   weightedLevelValue(const ObjectiveVector &vector,
@@ -160,6 +186,7 @@ private:
   std::vector<CompiledLevel> levels_;
   std::vector<std::uint32_t> orderingLevels_;
   std::vector<CompiledOrdering> orderings_;
+  bool candidateMeasureProgram_ = false;
 };
 
 } // namespace loom::dse

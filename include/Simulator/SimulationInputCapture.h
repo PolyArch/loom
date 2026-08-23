@@ -76,9 +76,10 @@ struct SimulationPointerValueTargetCapture {
 };
 
 /// One exact graph value-input source at an execution boundary. Fixed values
-/// preserve Defined, Poison, or Undef semantics in the workload. Runtime
-/// values retain the source SSA value only as an ephemeral instrumentation
-/// handle and are captured into SimulationRuntimeInput.
+/// preserve Defined, Poison, or Undef semantics in the workload, except for
+/// the separately proven `unusedByGraph` scalar projection. Runtime values
+/// retain the source SSA value only as an ephemeral instrumentation handle and
+/// are captured into SimulationRuntimeInput.
 struct SimulationValueInputCapture {
   std::uint64_t valueInputOrdinal = 0;
   std::optional<std::uint64_t> boundaryOperandOrdinal;
@@ -88,6 +89,10 @@ struct SimulationValueInputCapture {
   std::uint64_t byteCount = 0;
   std::optional<CanonicalValueSequence> fixedValue;
   std::optional<SimulationPointerValueTargetCapture> pointerTarget;
+  /// True only when the graph entry argument is provably unused and an
+  /// exceptional scalar was replaced by a defined wire-neutral value. This is
+  /// ephemeral capture provenance; it is never a second graph ABI authority.
+  bool unusedByGraph = false;
   /// Present only when this graph input is one exact root-thread dense
   /// coordinate rather than a fixed value or source boundary operand.
   std::optional<std::uint64_t> denseCoordinateDimension;

@@ -411,3 +411,18 @@ Anchor-level tests cover:
 Tests must not build operation, type, row-count, or graph-shape matrices. They
 must not preserve a search container, recursion layout, diagnostic wording,
 or a particular parallel implementation.
+
+## Operand-Queue Handoff
+
+TechMapping exposes only semantic prerequisites for ordered Temporal inputs:
+template FU roles, actor boundary correspondence, residual versus
+realization-internal edges, ordered/rate support, fanout, and partial-tuple
+facts. These facts may feed the shared analytic queue-pressure score or a
+semantic necessary gate. They do not contain a selected ingress, Physical Tag,
+resident context, allocation unit, or route.
+
+A downstream queue witness may be consumed here only when it back-projects to a
+specific semantic realization or boundary/internal-edge choice. A same-ingress
+physical witness must remain a SpatialMapping concern. If the semantic
+back-projection cannot be proved, TechMapping publishes the typed finding and
+does not invent a physical repair.

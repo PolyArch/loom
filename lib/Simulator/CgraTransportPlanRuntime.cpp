@@ -136,6 +136,7 @@ struct PhysicalUseSlice final {
 
 struct OperandQueueProjection final {
   ::fabric::LogicalOperandQueueKey queue;
+  ::loom::fabric::FabricFuOccurrenceRef fu;
   std::uint32_t allocationUnit = 0;
   std::uint32_t entryCapacity = 0;
   std::uint64_t activationOrdinal = 0;
@@ -239,6 +240,11 @@ CgraTransportRuntime::CgraTransportRuntime(
   }
   storageFrameCommits_.resize(storages_.size());
   touchedStorageFrameCommits_.reserve(storages_.size());
+}
+
+const ::loom::mapping::SpatialPeOperandProgressFeedback &
+CgraTransportRuntime::operandQueueProgress() const {
+  return plan_->transport.operandQueueProgress;
 }
 
 llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
@@ -533,6 +539,12 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
   }
 
   std::map<RefBytes, OperandQueueProjection> projectedQueueSinks;
+  if (!plan.transport.operandQueueMatches.empty() &&
+      (plan.transport.operandQueueProgress.pairingKeyCount == 0 ||
+       plan.transport.operandQueueProgress.pairingKeyCount !=
+           plan.transport.operandQueueMatches.size()))
+    return invalid("CGRA operand queue progress projection is unsupported or "
+                   "disagrees with its match inventory");
   for (auto [activationOrdinal, activation] :
        llvm::enumerate(plan.transport.operandQueueActivations)) {
     if (activation.matchOffset > plan.transport.operandQueueMatches.size() ||
@@ -588,7 +600,7 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
         if (!projectedQueueSinks
                  .try_emplace(*sinkKey,
                               OperandQueueProjection{
-                                  match.queue, match.allocationUnit,
+                                  match.queue, match.fu, match.allocationUnit,
                                   match.entryCapacity, activationOrdinal})
                  .second)
           return invalid("CGRA PE operand consumer belongs to multiple atomic "
@@ -892,7 +904,9 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
               return invalid("CGRA PE operand allocation unit starts overfull");
             unit.occupancy += initialOccupancy;
             operandQueues.push_back(
-                {projected.queue, unitPosition->second, initialOccupancy, {}});
+                {projected.queue, projected.fu, unitPosition->second,
+                 initialOccupancy, {}, {}});
+            operandQueues.back().entries.resize(initialOccupancy);
           } else {
             if (operandQueueBinding >= operandQueues.size())
               return invalid("CGRA PE operand queue index is malformed");

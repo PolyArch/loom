@@ -25,12 +25,12 @@ WIRE_MAGIC = b"LGB1"
 RESULT_MAGIC = b"LGR1"
 RESULT_COLLECTION_MAGIC = b"LGC1"
 SPATIAL_LAUNCH_MAGIC = b"LGL1"
-INVOCATION_RESULT_MAGIC = b"LGX1"
+INVOCATION_RESULT_MAGIC = b"LGX3"
 WIRE_HEADER = struct.Struct(">4sIQQ")
 RESULT_HEADER = struct.Struct(">4sIQQQ")
 RESULT_COLLECTION_HEADER = struct.Struct(">4sQ")
 SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQ")
-INVOCATION_RESULT_HEADER = struct.Struct("<4sQQ")
+INVOCATION_RESULT_HEADER = struct.Struct("<4sQQQQ32s")
 MEMORY_REQUEST_HEADER = struct.Struct(">IQQQQ")
 MEMORY_RESPONSE_HEADER = struct.Struct(">QIQ")
 COMPLETION_HEADER = struct.Struct(">QIQ")
@@ -58,6 +58,23 @@ STACK_BASE = 0x83F00000
 STACK_STRIDE = 0x00010000
 EXPECTED_VALUE = 0x1122334455667788
 EXPECTED_SYSTEM_MEMORY = 0x8877665544332211
+ACC_CORE_OCCURRENCE_KIND = 9
+
+
+def acc_core_reference(entity_id: int) -> str:
+    return struct.pack(">IQ", ACC_CORE_OCCURRENCE_KIND, entity_id).hex()
+
+
+def spatial_execution_context_key(entity_id: int) -> str:
+    acc_core = bytes.fromhex(acc_core_reference(entity_id))
+    mapping_identity = bytes([entity_id + 1]) * 32
+    return (
+        struct.pack(">I", 1)
+        + struct.pack(">Q", len(acc_core))
+        + acc_core
+        + struct.pack(">Q", len(mapping_identity))
+        + mapping_identity
+    ).hex()
 EXPECTED_RESULT = b"loom-gem5-system-smoke"
 EXPECTED_LAUNCH = b"loom-spatial-launch-v1"
 INITIAL_SYSTEM_MEMORY = b"loommem0"
@@ -205,7 +222,12 @@ def decode_spatial_launch_envelope(payload: bytes) -> tuple[bytes, bytes]:
 def invocation_result(invocation: bytes, boundary_result: bytes) -> bytes:
     return (
         INVOCATION_RESULT_HEADER.pack(
-            INVOCATION_RESULT_MAGIC, len(invocation), len(boundary_result)
+            INVOCATION_RESULT_MAGIC,
+            0,
+            len(invocation),
+            0,
+            len(boundary_result),
+            bytes(32),
         )
         + invocation
         + boundary_result
@@ -215,13 +237,22 @@ def invocation_result(invocation: bytes, boundary_result: bytes) -> bytes:
 def decode_invocation_result(payload: bytes) -> tuple[bytes, bytes]:
     if len(payload) < INVOCATION_RESULT_HEADER.size:
         raise RuntimeError("Spatial invocation result is truncated")
-    magic, invocation_size, boundary_size = INVOCATION_RESULT_HEADER.unpack_from(
-        payload
-    )
+    (
+        magic,
+        session_entry_ordinal,
+        invocation_size,
+        runtime_input_size,
+        boundary_size,
+        runtime_input_identity,
+    ) = INVOCATION_RESULT_HEADER.unpack_from(payload)
     if magic != INVOCATION_RESULT_MAGIC:
         raise RuntimeError("Spatial invocation result has the wrong magic")
-    if invocation_size + boundary_size != (
-        len(payload) - INVOCATION_RESULT_HEADER.size
+    if (
+        session_entry_ordinal != 0
+        or runtime_input_size != 0
+        or runtime_input_identity != bytes(32)
+        or invocation_size + runtime_input_size + boundary_size
+        != len(payload) - INVOCATION_RESULT_HEADER.size
     ):
         raise RuntimeError("Spatial invocation result lengths are not canonical")
     invocation_end = INVOCATION_RESULT_HEADER.size + invocation_size
@@ -482,7 +513,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             for ordinal in range(2)
         ]
         projection = {
-            "schema": "loom.gem5_system_projection.6",
+            "schema": "loom.gem5_system_projection.8",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
             "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns"},
@@ -555,6 +586,9 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             ],
             "bridges": [
                 {
+                    "dispatch_target_ordinals": [0],
+                    "acc_core_ref": acc_core_reference(0),
+                    "execution_context_keys": [spatial_execution_context_key(0)],
                     "pio_address": BRIDGE_ADDRESS,
                     "pio_size": 4096,
                     "pio_latency": "10ns",
@@ -565,6 +599,9 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "maximum_invocations": 16,
                 },
                 {
+                    "dispatch_target_ordinals": [1],
+                    "acc_core_ref": acc_core_reference(1),
+                    "execution_context_keys": [spatial_execution_context_key(1)],
                     "pio_address": SECOND_BRIDGE_ADDRESS,
                     "pio_size": 4096,
                     "pio_latency": "10ns",

@@ -280,8 +280,14 @@ explore(const loom::fabric::FinalizedFabricRoot &fabric,
   loom::dse::PreMappingExplorationOptions options{
       {{},
        {loom::evaluation::MetricRequestOrdinal(0),
-        loom::ResolvedObjectiveDirection::Minimize, 1},
+       loom::ResolvedObjectiveDirection::Minimize, 1},
        workers}};
+  options.ownership.selectionMode =
+      loom::dse::StructuredOwnershipSelectionMode::BenefitQualified;
+  // This test asserts the complete finite decision domain. Production calls
+  // intentionally use a smaller bounded beam; make the test policy explicit
+  // rather than coupling it to that default.
+  options.frontier.beamWidthByExpansionDepth = {6};
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
   if (scopeExpansionLimit)
     config.dse.structuredOwnership.scopeExpansionLimit = *scopeExpansionLimit;
@@ -290,22 +296,38 @@ explore(const loom::fabric::FinalizedFabricRoot &fabric,
       blobs));
   auto *completed =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&outcome);
-  if (!completed)
-    fail("finite candidate accounting did not complete selection");
+  if (!completed) {
+    if (const auto *incomplete =
+            std::get_if<loom::dse::IncompletePreMappingExploration>(&outcome))
+      fail("finite candidate accounting ended incomplete: " +
+           loom::dse::toString(incomplete->reason).str() + " at node " +
+           std::to_string(incomplete->planNodeOrdinal.value_or(
+               std::numeric_limits<std::uint64_t>::max())));
+    fail("finite candidate accounting found no feasible candidate");
+  }
   return std::move(*completed);
 }
 
 void requireCompleteAccounting(
     const loom::dse::CompletedPreMappingSelection &selection) {
-  if (selection.dispositions.size() != 11)
+  constexpr std::size_t ownershipDomainWidth = 11;
+  constexpr std::size_t scheduleIntentCount = 3;
+  if (selection.dispositions.size() !=
+      ownershipDomainWidth * scheduleIntentCount)
     fail("candidate domain included a declaration or omitted an attempt; "
          "observed=" +
          std::to_string(selection.dispositions.size()));
-  const auto &ordered = selection.dispositions;
-  if (llvm::any_of(ordered, [](const auto &disposition) {
+  for (std::size_t intent = 1; intent != scheduleIntentCount; ++intent)
+    for (std::size_t ordinal = 0; ordinal != ownershipDomainWidth; ++ordinal)
+      if (!(selection.dispositions[intent * ownershipDomainWidth + ordinal] ==
+            selection.dispositions[ordinal]))
+        fail("schedule-intent ownership domains are not deterministic");
+  if (llvm::any_of(selection.dispositions, [](const auto &disposition) {
         return !disposition.coordinate.decision;
       }))
     fail("accepted ownership scope produced a scope-level disposition");
+  const llvm::ArrayRef<loom::dse::StructuredOwnershipCandidateDisposition>
+      ordered(selection.dispositions.data(), ownershipDomainWidth);
   const auto &point0 = *ordered[0].coordinate.decision;
   const auto &point1 = *ordered[1].coordinate.decision;
   const auto &point2 = *ordered[2].coordinate.decision;
@@ -337,7 +359,7 @@ void requireCompleteAccounting(
   unsigned pointerAddressedChildren = 0;
   unsigned inlineDecisions = 0;
   for (const loom::dse::StructuredOwnershipCandidateDisposition &disposition :
-       selection.dispositions) {
+       ordered) {
     const auto *rejection =
         std::get_if<loom::dse::StructuredOwnershipCandidateRejectionRecord>(
             &disposition.result);
@@ -398,8 +420,12 @@ void requireCompleteAccounting(
 
 void requireDeterministicScopeExpansionBudget(
     const loom::dse::CompletedPreMappingSelection &selection) {
-  if (selection.dispositions.size() != 3)
-    fail("scope expansion budget did not retain one complete decision domain");
+  constexpr std::size_t dispositionsPerIntent = 3;
+  constexpr std::size_t scheduleIntentCount = 3;
+  if (selection.dispositions.size() !=
+      dispositionsPerIntent * scheduleIntentCount)
+    fail("scope expansion budget did not retain one complete decision domain; "
+         "observed=" + std::to_string(selection.dispositions.size()));
   for (const loom::dse::StructuredOwnershipCandidateDisposition &disposition :
        selection.dispositions) {
     if (!disposition.coordinate.decision)

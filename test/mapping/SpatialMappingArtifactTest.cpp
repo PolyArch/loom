@@ -1253,6 +1253,13 @@ void completeCandidateRoundTrip(
           return group.matches.empty() || group.tag.getBitWidth() != 4;
         }))
       fail("Temporal SpatialMapping lost its operand queue match groups");
+    const auto operandProgress =
+        take(loom::mapping::deriveSpatialPeOperandProgressFeedback(
+            operandQueueGroups));
+    if (operandProgress.pairingKeyCount == 0 ||
+        operandProgress.pairingKeyCount < operandProgress.distinctPairingKeyCount ||
+        operandProgress.distinctIngressCount == 0)
+      fail("Temporal SpatialMapping lost its qualified pairing projection");
     bool observedEnqueue = false;
     bool observedTransition = false;
     for (const auto &use : imported.view().resourceUses()) {

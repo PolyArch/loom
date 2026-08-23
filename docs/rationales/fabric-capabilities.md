@@ -248,3 +248,14 @@ firings. Letting two realizations alias one context would require an unmodeled
 instruction selector and would conflate their runtime actor state; equal
 configuration bytes or non-overlapping events cannot supply that missing
 hardware.
+
+### Operand Queue Sharing
+
+The three operand-buffer modes trade replicated storage for service coupling.
+Per-instruction queues isolate contexts, per-input-port banks share a concrete
+FU input, and all-FU-share maximizes storage sharing while exposing the
+strongest admission coupling. Independent logical heads and an explicit
+reservation capability are therefore more expressive than a global arrival
+FIFO. Pair-aware admission prevents a fair arbiter from repeatedly filling an
+unmatched queue, while retaining the cycle-start full-queue rule and atomic
+fanout semantics.

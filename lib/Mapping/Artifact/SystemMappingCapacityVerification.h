@@ -25,7 +25,8 @@ verifySystemMappingCapacity(
     llvm::ArrayRef<SystemServiceRealizationView> services,
     llvm::ArrayRef<SystemResourceUseView> resourceUses,
     llvm::ArrayRef<std::string> resourceUseActivationKeys,
-    const SpatialMappingImportContext &spatialMappings);
+    const SpatialMappingImportContext &spatialMappings,
+    ExecutionControlView executionControl = {});
 
 } // namespace loom::mapping::detail
 

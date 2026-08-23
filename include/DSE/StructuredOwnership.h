@@ -12,6 +12,7 @@
 #include "Simulator/SourceBackedDfgValidation.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -32,6 +33,14 @@ enum class StructuredOwnershipSelectionMode : std::uint8_t {
   SemanticConformance,
 };
 
+llvm::StringRef toString(StructuredOwnershipSelectionMode value);
+
+enum class StructuredOwnershipGenerationIntent : std::uint8_t {
+  Balanced = 0,
+  RequireLogicalThreadDomain = 1,
+  ForbidLogicalThreadDomain = 2,
+};
+
 struct StructuredOwnershipTopKSelection final {
   evaluation::MetricRequestOrdinal metricRequest;
   ResolvedObjectiveDirection direction;
@@ -50,14 +59,23 @@ struct StructuredOwnershipExplorationOptions final {
   /// sole program authority.
   std::vector<frontend::StructuredEntityRef> protocolCallableRoots{};
   StructuredOwnershipSelectionMode selectionMode =
-      StructuredOwnershipSelectionMode::BenefitQualified;
+      StructuredOwnershipSelectionMode::SemanticConformance;
 };
 
 struct StructuredOwnershipGenerationOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
   std::uint64_t scopeExpansionLimit = 64;
+  /// Bounds cheap candidate materialization attempts after the complete
+  /// decision domain of every admitted scope has been enumerated.
+  std::optional<std::uint64_t> maximumMaterializationAttempts;
+  /// Bounds distinct child candidates published to downstream evaluation.
+  /// This is independent of the attempt bound because exact rejection of an
+  /// early decision must not consume a candidate publication slot.
+  std::optional<std::uint64_t> maximumPublishedCandidates;
   std::uint32_t candidateWorkerCount = 1;
   std::vector<frontend::StructuredEntityRef> protocolCallableRoots{};
+  StructuredOwnershipGenerationIntent generationIntent =
+      StructuredOwnershipGenerationIntent::Balanced;
 };
 
 /// One exact parent-local ownership decision that produced a child candidate.
@@ -173,6 +191,8 @@ struct CompletedStructuredOwnershipGeneration final {
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   std::uint64_t plannedScopeCount = 0;
   std::uint64_t decisionAttemptCount = 0;
+  std::uint64_t consumedDecisionAttemptCount = 0;
+  bool candidateDomainTruncated = false;
 };
 
 struct SelectedStructuredOwnershipCandidate final {

@@ -38,6 +38,7 @@ struct CgraPendingGraphPhysicalActionDiagnostic final {
   CgraPendingPhysicalActionDiagnostic action;
   CgraPhysicalUseClientKind client =
       CgraPhysicalUseClientKind::ComputeTransition;
+  std::optional<std::uint64_t> semanticActorOrdinal;
 };
 
 /// One execution-local coordinator for a mapped graph activation. It alone
@@ -63,9 +64,13 @@ public:
   std::uint64_t pendingActorFiringCount() const;
   std::uint64_t pendingTransferCount() const;
   std::uint64_t pendingPhysicalActionCount() const;
+  const ::loom::mapping::SpatialPeOperandProgressFeedback &
+  operandQueueProgress() const;
   std::vector<CgraPendingActorFiringDiagnostic>
   pendingActorFiringDiagnostics() const;
   std::vector<CgraPendingTransferDiagnostic> pendingTransferDiagnostics() const;
+  std::vector<CgraOperandQueueHeadDiagnostic>
+  pendingOperandQueueHeadDiagnostics() const;
   std::vector<CgraPendingGraphPhysicalActionDiagnostic>
   pendingPhysicalActionDiagnostics() const;
 

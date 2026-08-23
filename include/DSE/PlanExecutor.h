@@ -136,7 +136,8 @@ public:
 
 llvm::Expected<DsePlanExecutionOutcome> executeDsePlanWithWorkExecutor(
     const ResolvedDseConfigView &view, const ArtifactStore &store,
-    const BlobStore &blobs, DsePlanWorkExecutor *executor);
+    const BlobStore &blobs, DsePlanWorkExecutor *executor,
+    ExecutionControlView executionControl = {});
 
 } // namespace detail
 } // namespace loom::dse

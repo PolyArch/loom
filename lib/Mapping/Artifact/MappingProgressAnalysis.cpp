@@ -938,25 +938,45 @@ llvm::Expected<FrozenMappingProgressModel> freezeMappingProgressModel(
                                     graph.takeReverseEdges());
 }
 
+llvm::Expected<bool>
+mappingEventPrecedes(const FrozenMappingProgressModel &model,
+                     const ::dataflow::EventFamilyKey &predecessor,
+                     const ::dataflow::EventFamilyKey &dependent) {
+  auto predecessorKey = eventKey(model.dataflowIdentity_, predecessor);
+  if (!predecessorKey)
+    return predecessorKey.takeError();
+  auto dependentKey = eventKey(model.dataflowIdentity_, dependent);
+  if (!dependentKey)
+    return dependentKey.takeError();
+  const auto predecessorOrdinal = model.eventOrdinals_.find(*predecessorKey);
+  const auto dependentOrdinal = model.eventOrdinals_.find(*dependentKey);
+  if (predecessorOrdinal == model.eventOrdinals_.end() ||
+      dependentOrdinal == model.eventOrdinals_.end())
+    return invalid("resource-time event is absent from the frozen Dataflow "
+                   "causality index");
+  if (predecessorOrdinal->second == dependentOrdinal->second)
+    return true;
+  std::vector<bool> visited(model.reverseEdges_.size(), false);
+  std::vector<std::uint32_t> worklist{dependentOrdinal->second};
+  visited[dependentOrdinal->second] = true;
+  for (std::size_t cursor = 0; cursor != worklist.size(); ++cursor)
+    for (std::uint32_t parent : model.reverseEdges_[worklist[cursor]]) {
+      if (parent == predecessorOrdinal->second)
+        return true;
+      if (!visited[parent]) {
+        visited[parent] = true;
+        worklist.push_back(parent);
+      }
+    }
+  return false;
+}
+
 llvm::Expected<MappingProgressProjection> projectSystemMappingProgress(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemMappingClosureProjection &closure) {
-  std::vector<::dataflow::GraphRef> coveredGraphs;
-  std::set<std::uint64_t> coveredGraphOrdinals;
-  for (const SystemSpatialContextDomain &domain :
-       closure.executionContexts.spatialDomains) {
-    auto graph = dataflow.resolve(domain.graph);
-    if (!graph)
-      return graph.takeError();
-    if (coveredGraphOrdinals.insert(graph->entity.value()).second)
-      coveredGraphs.push_back(*graph);
-  }
-  auto basis = deriveMappingDataflowProgressBasis(dataflow, coveredGraphs);
-  if (!basis)
-    return basis.takeError();
   MappingProgressProjection result;
-  result.basis = *basis;
+  result.basis = closure.progressBasis;
   result.routeObligations = closure.routeObligations;
   result.capacityCells.reserve(closure.capacityCells.size());
   for (const SystemCapacityCellProjection &cell : closure.capacityCells)
@@ -1176,16 +1196,11 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
   std::vector<std::vector<std::uint32_t>> waitFor(groups.size() * 2);
 
   for (std::size_t holder = 0; holder != groups.size(); ++holder) {
-    for (const auto &releasePoint : groups[holder].releases) {
-      for (std::size_t pending = 0; pending != groups.size(); ++pending) {
-        if (pending == holder)
-          continue;
-        auto domainsOverlap =
-            relationDomainsIntersect(groups[holder], groups[pending]);
-        if (!domainsOverlap)
-          return domainsOverlap.takeError();
-        if (!*domainsOverlap)
-          continue;
+    for (std::size_t pending = 0; pending != groups.size(); ++pending) {
+      if (pending == holder)
+        continue;
+      bool causallyRequired = false;
+      for (const auto &releasePoint : groups[holder].releases) {
         bool required = false;
         for (std::uint32_t pendingTrigger : groups[pending].triggers) {
           for (std::uint32_t holderTrigger : groups[holder].triggers) {
@@ -1213,9 +1228,19 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
           if (required)
             break;
         }
-        if (required)
-          waitFor[activeNode(holder)].push_back(pendingNode(pending));
+        if (required) {
+          causallyRequired = true;
+          break;
+        }
       }
+      if (!causallyRequired)
+        continue;
+      auto domainsOverlap =
+          relationDomainsIntersect(groups[holder], groups[pending]);
+      if (!domainsOverlap)
+        return domainsOverlap.takeError();
+      if (*domainsOverlap)
+        waitFor[activeNode(holder)].push_back(pendingNode(pending));
     }
   }
   for (std::size_t pending = 0; pending != groups.size(); ++pending)
@@ -1286,6 +1311,8 @@ mappingProgressClosureReasonSpelling(MappingProgressClosureReason reason) {
     return "fixed_priority_starvation";
   case MappingProgressClosureReason::PossibleWaitCycle:
     return "possible_wait_cycle";
+  case MappingProgressClosureReason::FiniteBufferRecurrenceNotEstablished:
+    return "finite_buffer_recurrence_not_established";
   }
   llvm_unreachable("unknown Mapping progress closure reason");
 }
@@ -1311,6 +1338,22 @@ llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
   if (!model)
     return model.takeError();
   return deriveMappingProgressClosure(*model, *projection);
+}
+
+MappingProgressClosure qualifySystemMappingResourceTimeProgress(
+    const FinalizedSystemMapping &mapping) {
+  const MappingDataflowProgressBasis &basis =
+      mapping.verifiedClosure().progressBasis;
+  if (basis.kind == MappingDataflowProgressBasisKind::InitializedFeedback)
+    return {MappingProgressClosureKind::ProofNotEstablished,
+            MappingProgressClosureReason::
+                FiniteBufferRecurrenceNotEstablished,
+            {}};
+  if (basis.kind == MappingDataflowProgressBasisKind::Cyclic)
+    return {MappingProgressClosureKind::ProofNotEstablished,
+            MappingProgressClosureReason::CyclicDataflowBasis, {}};
+  return {MappingProgressClosureKind::ProvenNoClosedWaitSet,
+          MappingProgressClosureReason::None, {}};
 }
 
 llvm::Expected<std::vector<SpatialRouteProgressDependency>>
@@ -1697,7 +1740,35 @@ llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
     llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
-    llvm::ArrayRef<SpatialRouteTreeView> routes) {
+    llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueGroups) {
+  if (!operandQueueGroups.empty()) {
+    auto feedback = deriveSpatialPeOperandProgressFeedback(operandQueueGroups);
+    if (!feedback)
+      return feedback.takeError();
+    mapping_debug::emit(
+        mapping_debug::Level::Decision, mapping_debug::Stage::SpatialPnr,
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+          fields["context_kind"] = "temporal_operand_queue_progress";
+          fields["group_count"] = feedback->groupCount;
+          fields["potentially_blocking_group_count"] =
+              feedback->potentiallyBlockingGroupCount;
+          fields["unknown_pairing_group_count"] =
+              feedback->unknownPairingGroupCount;
+          fields["pairing_opportunity_count"] =
+              feedback->pairingOpportunityCount;
+          fields["distinct_ingress_count"] = feedback->distinctIngressCount;
+          fields["shared_ingress_count"] = feedback->sharedIngressCount;
+          fields["pairing_key_count"] = feedback->pairingKeyCount;
+          fields["distinct_pairing_key_count"] =
+              feedback->distinctPairingKeyCount;
+          fields["status"] = static_cast<std::uint64_t>(feedback->status);
+          fields["support"] = static_cast<std::uint64_t>(feedback->support);
+        });
+  }
+  // The queue/pairing projection is a ranking and runtime-witness input at
+  // this boundary. Analytic risk is deliberately not a Mapping gate; only an
+  // exact queue-level closed-wait witness may change closure status.
   auto projection = projectSpatialMappingProgress(
       dataflow, techMapping, fabric, computeBindings, registerFifoTransfers,
       routes, techMapping.covers());

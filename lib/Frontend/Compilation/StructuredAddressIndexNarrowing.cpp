@@ -82,6 +82,98 @@ bool provesPostTestedInductionDomain(mlir::Value value, unsigned targetWidth) {
          last.isSignedIntN(targetWidth);
 }
 
+// Clang commonly emits a counted scf.while with an unsigned or signed
+// less-than test rather than the canonical `!=` form used by the exact
+// post-tested-loop projection above.  A positive constant step from a
+// constant non-negative start to a constant bound is still an exact finite
+// domain: the condition is checked on the updated value, so no wrap can occur
+// before the first value that fails the bound.  Keep this proof local to the
+// induction value and require the complete comparison shape before narrowing.
+bool provesBoundedWhileInductionDomain(mlir::Value value,
+                                       unsigned targetWidth) {
+  auto induction = llvm::dyn_cast<mlir::BlockArgument>(value);
+  if (!induction)
+    return false;
+  auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(
+      induction.getOwner()->getParentOp());
+  if (!loop || induction.getOwner() != loop.getBeforeBody())
+    return false;
+  auto integer = llvm::dyn_cast<mlir::IntegerType>(induction.getType());
+  if (!integer || induction.getArgNumber() >= loop.getInits().size())
+    return false;
+  mlir::IntegerAttr lower = integerConstant(loop.getInits()[induction.getArgNumber()]);
+  if (!lower || lower.getType() != integer || lower.getValue().isNegative())
+    return false;
+
+  mlir::scf::ConditionOp condition = loop.getConditionOp();
+  if (induction.getArgNumber() >= condition.getArgs().size())
+    return false;
+  auto update = condition.getArgs()[induction.getArgNumber()]
+                    .getDefiningOp<mlir::arith::AddIOp>();
+  if (!update || update->getParentRegion() != &loop.getBefore())
+    return false;
+  mlir::Value stepValue;
+  if (update.getLhs() == induction)
+    stepValue = update.getRhs();
+  else if (update.getRhs() == induction)
+    stepValue = update.getLhs();
+  else
+    return false;
+  mlir::IntegerAttr step = integerConstant(stepValue);
+  if (!step || step.getType() != integer ||
+      !step.getValue().isStrictlyPositive())
+    return false;
+
+  auto compare = condition.getCondition().getDefiningOp<mlir::arith::CmpIOp>();
+  if (!compare || compare->getParentRegion() != &loop.getBefore())
+    return false;
+  mlir::Value boundValue;
+  mlir::arith::CmpIPredicate predicate = compare.getPredicate();
+  if (compare.getLhs() == update.getResult())
+    boundValue = compare.getRhs();
+  else if (compare.getRhs() == update.getResult()) {
+    boundValue = compare.getLhs();
+    predicate = mlir::arith::invertPredicate(predicate);
+  } else {
+    return false;
+  }
+  if (predicate != mlir::arith::CmpIPredicate::ult &&
+      predicate != mlir::arith::CmpIPredicate::slt)
+    return false;
+  mlir::IntegerAttr bound = integerConstant(boundValue);
+  if (!bound || bound.getType() != integer)
+    return false;
+
+  const unsigned width = integer.getWidth();
+  llvm::APInt lowerValue = lower.getValue();
+  llvm::APInt boundValueBits = bound.getValue();
+  llvm::APInt stepBits = step.getValue();
+  if (predicate == mlir::arith::CmpIPredicate::slt) {
+    if (!lowerValue.slt(boundValueBits) || stepBits.isNegative())
+      return false;
+    const llvm::APInt signedMaximum =
+        llvm::APInt::getSignedMaxValue(width);
+    if (boundValueBits.ugt(signedMaximum) ||
+        stepBits.ugt(signedMaximum) ||
+        boundValueBits.ugt(signedMaximum - stepBits))
+      return false;
+  } else {
+    if (!lowerValue.ult(boundValueBits))
+      return false;
+    const llvm::APInt unsignedMaximum = llvm::APInt::getMaxValue(width);
+    // The condition is tested after the increment.  Requiring the bound and
+    // one additional step to stay below the unsigned maximum rules out a
+    // wrapped update that could re-enter the loop.
+    if (stepBits.ugt(unsignedMaximum - boundValueBits))
+      return false;
+  }
+
+  llvm::APInt last = boundValueBits.zext(width + 1) -
+                     stepBits.zext(width + 1);
+  return lower.getValue().isSignedIntN(targetWidth) &&
+         last.isSignedIntN(targetWidth);
+}
+
 bool provesForInductionDomain(mlir::Value value, unsigned targetWidth) {
   auto induction = llvm::dyn_cast<mlir::BlockArgument>(value);
   if (!induction)
@@ -150,6 +242,7 @@ bool provesSignedFit(mlir::Value value, unsigned targetWidth) {
   }
 
   return provesPostTestedInductionDomain(value, targetWidth) ||
+         provesBoundedWhileInductionDomain(value, targetWidth) ||
          provesForInductionDomain(value, targetWidth);
 }
 

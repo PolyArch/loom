@@ -202,3 +202,11 @@ policy and state beyond the first complete execution path. Empty tenant IDs or
 placeholder protection domains would not provide isolation and would constrain
 later design. The first version therefore has one implicit tenant and no
 persistent multi-tenant schema.
+### Runtime Witness Provenance
+
+Queue-level blocked state is execution evidence, not a second Mapping legality
+owner. A runtime witness names the exact QueueKey, allocation unit, ingress,
+tag, reservation, physical action, and causal release that it observed. A
+child hardware replay must independently re-import and verify the resulting
+Fabric and Mapping; an absent cycle remains `ProofNotEstablished` rather than
+being promoted from timeout or finite successful replay.

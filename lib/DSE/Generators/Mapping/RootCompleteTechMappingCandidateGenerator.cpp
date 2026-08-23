@@ -144,7 +144,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteTechMappingCandidateGeneratorKind,
     "mapping.root_complete_tech_mapping",
-    "loom.mapping.root_complete_tech_mapping.generator.v6",
+    "loom.mapping.root_complete_tech_mapping.generator.v7",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -160,7 +160,7 @@ const CandidateGeneratorDescriptor descriptor{
 const CandidateGeneratorDescriptor applicationGraphDescriptor{
     applicationGraphTechMappingCandidateGeneratorKind,
     "mapping.application_graph_tech_mapping",
-    "loom.mapping.application_graph_tech_mapping.generator.v9",
+    "loom.mapping.application_graph_tech_mapping.generator.v10",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -438,7 +438,8 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &store,
-               const ExecutionControlView &executionControl) {
+               const ExecutionControlView &executionControl,
+               std::optional<std::uint64_t> maximumOutputs) {
   auto config = ::loom::mapping::adoptResolvedTechMappingConfigView(
       ::loom::mapping::resolvedTechMappingConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -464,8 +465,14 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
              reason == CandidateGeneratorIncompleteReason::ProofNotEstablished))
           incompleteReason = reason;
       };
-  for (const ArtifactRootReference &dataflowReference :
-       inputBindings[DataflowCandidatesInput].artifacts) {
+  for (const auto indexedDataflow :
+       llvm::enumerate(inputBindings[DataflowCandidatesInput].artifacts)) {
+    if (maximumOutputs && outputs.size() >= *maximumOutputs) {
+      rememberIncomplete(
+          CandidateGeneratorIncompleteReason::SemanticLimitReached);
+      break;
+    }
+    const ArtifactRootReference &dataflowReference = indexedDataflow.value();
     auto artifact =
         ::dataflow::importCanonicalDataflow(dataflowReference, store);
     if (!artifact)
@@ -480,10 +487,24 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     completeCover.reserve(dataflow->graphs().size());
     for (const ::dataflow::CanonicalGraphView &graph : dataflow->graphs())
       completeCover.push_back(graph.ref);
+    std::optional<::loom::mapping::ResolvedTechMappingConfigView>
+        boundedConfig;
+    const ::loom::mapping::ResolvedTechMappingConfigView *generationConfig =
+        &*config;
+    if (maximumOutputs) {
+      auto derived =
+          ::loom::mapping::deriveTechMappingConfigWithPublicationLimit(
+              *config, *maximumOutputs - outputs.size());
+      if (!derived)
+        return derived.takeError();
+      boundedConfig = std::move(*derived);
+      generationConfig = &*boundedConfig;
+    }
     auto incomplete =
         consumeTechMappingOutcome(::loom::mapping::generateTechMappings(
                                       {*dataflow, completeCover, fabric->view(),
-                                       *config, store, executionControl}),
+                                       *generationConfig, store,
+                                       executionControl}),
                                   accounting, outputs, lineage, feedback);
     if (!incomplete)
       return incomplete.takeError();
@@ -492,6 +513,13 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     if (incompleteReason ==
         CandidateGeneratorIncompleteReason::CancelledOrTimeout)
       break;
+    if (maximumOutputs && outputs.size() >= *maximumOutputs &&
+        indexedDataflow.index() + 1 !=
+            inputBindings[DataflowCandidatesInput].artifacts.size()) {
+      rememberIncomplete(
+          CandidateGeneratorIncompleteReason::SemanticLimitReached);
+      break;
+    }
   }
 
   emitFeedback(feedback);
@@ -515,7 +543,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     const ArtifactStore &store, const BlobStore &,
     const CandidateGeneratorInvocationView &invocation) {
   return invokeProvider(inputBindings, binding, store,
-                        invocation.executionControl());
+                        invocation.executionControl(),
+                        invocation.maximumOutputArtifacts(
+                            CandidateGeneratorOutputSlotRef(0)));
 }
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
@@ -608,6 +638,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
   std::uint64_t rootSupplyConstructionNanoseconds = 0;
   std::optional<::loom::mapping::TechMappingComputeContextHallDeficit> feedback;
   std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
+  const std::optional<std::uint64_t> maximumOutputs =
+      invocation.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
+  bool outputDemandReached = false;
   const auto rememberIncomplete =
       [&](CandidateGeneratorIncompleteReason reason) {
         if (!incompleteReason ||
@@ -617,7 +650,29 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
              reason == CandidateGeneratorIncompleteReason::ProofNotEstablished))
           incompleteReason = reason;
       };
-  for (const ::dataflow::GraphRef &graph : graphs) {
+  for (const auto indexedGraph : llvm::enumerate(graphs)) {
+    const ::dataflow::GraphRef &graph = indexedGraph.value();
+    if (maximumOutputs && outputs.size() >= *maximumOutputs) {
+      outputDemandReached = true;
+      rememberIncomplete(
+          CandidateGeneratorIncompleteReason::SemanticLimitReached);
+      break;
+    }
+    const std::uint64_t remainingGraphs = graphs.size() - indexedGraph.index();
+    const std::uint64_t remainingOutputs =
+        maximumOutputs ? *maximumOutputs - outputs.size()
+                       : config->candidatePublicationLimit();
+    const std::uint64_t fairGraphLimit =
+        maximumOutputs ? remainingOutputs / remainingGraphs
+                       : config->candidatePublicationLimit();
+    if (fairGraphLimit == 0) {
+      outputDemandReached = true;
+      rememberIncomplete(
+          CandidateGeneratorIncompleteReason::SemanticLimitReached);
+      break;
+    }
+    const std::uint64_t graphPublicationLimit =
+        std::min(config->candidatePublicationLimit(), fairGraphLimit);
     const std::array cover = {graph};
     std::uint64_t admittedForGraph = 0;
     std::uint64_t candidateOrdinalForGraph = 0;
@@ -758,7 +813,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
                 {}});
             ++admittedForGraph;
           }
-          return admittedForGraph >= config->candidatePublicationLimit()
+          if (maximumOutputs && outputs.size() >= *maximumOutputs) {
+            outputDemandReached = true;
+            return ::loom::mapping::TechMappingCandidateEnumerationControl::
+                Stop;
+          }
+          return admittedForGraph >= graphPublicationLimit
                      ? ::loom::mapping::TechMappingCandidateEnumerationControl::
                            Stop
                      : ::loom::mapping::TechMappingCandidateEnumerationControl::
@@ -797,16 +857,28 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
     if (enumeration->interruption)
       rememberIncomplete(
           CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+    else if (outputDemandReached)
+      rememberIncomplete(
+          CandidateGeneratorIncompleteReason::SemanticLimitReached);
     else if (enumeration->termination ==
              ::loom::mapping::TechMappingGenerationTermination::
                  SemanticLimitReached)
       rememberIncomplete(
-          admittedForGraph >= config->candidatePublicationLimit()
+          admittedForGraph >= graphPublicationLimit
               ? CandidateGeneratorIncompleteReason::SemanticLimitReached
               : CandidateGeneratorIncompleteReason::ProofNotEstablished);
     if (incompleteReason ==
         CandidateGeneratorIncompleteReason::CancelledOrTimeout)
       break;
+    if (outputDemandReached)
+      break;
+  }
+  if (admittedGraphCount != graphs.size()) {
+    outputs.clear();
+    lineage.clear();
+    rememberIncomplete(
+        incompleteReason.value_or(
+            CandidateGeneratorIncompleteReason::ProofNotEstablished));
   }
   ::loom::mapping_debug::emit(
       ::loom::mapping_debug::Level::Summary,

@@ -588,13 +588,16 @@ stored-program baseline. Passing one gate cannot imply the other. A host-only
 selection is a valid DSE result only when complete candidate dispositions and
 workload-aware Evidence justify it; it is not an accelerator-success result.
 
-Pre-Mapping ownership selection has two exact intents. `BenefitQualified`
-requires both gates and continues through the configured Dataflow rewrite
-generator so the resolved objective can compare QoR alternatives.
-`SemanticConformance` is feasibility-only and makes no QoR-optimality claim.
-Multiple explicit protocol roots remain parent-local alternatives in one
-`BenefitQualified` generation; that intent does not greedily compose selected
-children.
+Pre-Mapping ownership selection exposes two spellings at its API boundary.
+`SemanticConformance` is the implemented bounded planner and is
+feasibility-only; it makes no QoR-optimality claim. `BenefitQualified` remains
+an accepted legacy request spelling, but the current planner resolves it to
+the same bounded semantic frontier and records both requested and resolved
+mode in invocation provenance. It must not be described as having applied a
+benefit gate or Dataflow rewrite search. QoR comparison belongs to the later
+bounded-quality owner, where every compared point is a verified
+SystemMapping. Multiple explicit protocol roots remain parent-local
+alternatives and are never greedily composed.
 
 For `SemanticConformance`, one shared source observation projects an exact
 protocol-root activity count and a conservative direct dependency relation.
@@ -607,35 +610,130 @@ it is never guessed. Indirect calls, cross-block order, unknown aliasing,
 channel traffic, and downstream Mapping legality are outside this source
 projection and cannot be inferred from an absent edge.
 
-The controller materializes two deterministic path families from this
-projection. One is the canonical full-root path used when no dependency is
-known. The other starts at each root and greedily extends through the strongest
-known connection to the current path. Every successfully finalized prefix is
-a planning candidate. Candidate Structured identities deduplicate across
-paths, so this construction admits independent single-root closures and
-connected producer-consumer closures without enumerating the arbitrary root
-powerset.
+The controller first creates an invocation-local spectrum of typed
+`PreMappingCoordinate` ownership points: full-root and partial-root coverage,
+root-local schedule intents, high-activity and ordinary singleton regions,
+proven dependency edges, producer/consumer groups, connected components, and
+deterministic canonical prefixes. These coordinates are intentionally
+unclassified. A full root set is compatible with either a spatial schedule or
+a temporal schedule, and a singleton is not temporal merely because its
+logical domain has one point. The materialized logical-domain fact records
+epochs, launch/synchronization lower bounds, occupancy, and live state, but it
+does not classify an endpoint. `MaxSpatial`, `MaxTemporal`, and `intermediate`
+are result classes that may be written only after a real SystemMapping has
+been imported and its explicit event-relative active sets and per-region
+resource allocations have been verified. An endpoint request without such a
+schedule is typed `Unsupported`; it cannot be satisfied by selecting another
+seed or by increasing TopK.
+The planner uses adjacency lists and incremental candidate projections; it
+never enumerates an arbitrary root powerset. A resolved
+`PreMappingFrontierPolicy` limits coordinate generation, Structured-program
+materialization, analytic evaluation, functional replay, Dataflow promotion,
+and Mapping-pair admission separately. Each limit is checked before the
+corresponding expensive call. Exhausting a limit records a typed incomplete
+disposition rather than an infeasibility result.
 
-Every unique successfully materialized candidate receives one invocation-local
-planning record containing its exact owned roots, optional cached Structured
-analytic runtime, and typed `Retained` or `BoundedFrontierBudget` disposition.
-The shared root activity and dependency projections are returned once and are
-joined to those records by exact protocol-root reference. Ranking first uses
-the cached analytic runtime when both candidates have it, then prefers fewer
-cut dependency objects, more internal dependency objects, and canonical
-identity. The bounded retained frontier selects the best-ranked candidate plus
-maximal-coverage and minimal-coverage diversity representatives before filling
-the remaining ownership `TopK` budget. Dense preference ranks apply only to
-retained candidates; budget-excluded records remain inspectable evidence and
-are not misreported as infeasible.
+The downstream `JointDesignPolicy` independently bounds the software and
+System frontiers, admitted software/System pairs, TechMapping candidates per
+target Module, and retained SpatialMappings per pair. The TechMapping bound is
+represented by the ordinary `BoundedPlanOutputJoin` between the Tech and
+Spatial Generate nodes. Its producer bound reaches the Tech generator before
+candidate publication, and its retained bound reaches the root-complete
+Spatial generator before any Spatial PnR invocation. Consequently a small
+Spatial output limit cannot hide an unbounded sequence of discarded
+TechMapping inputs. Any truncated producer remains typed plan incompleteness;
+it is never reported as Mapping infeasibility.
+
+`SemanticConformance` expands each coordinate through a bounded hierarchical
+beam. At every expansion depth the central Objective/Pareto/TopK owners rank a
+small parent frontier and retain objective-best, minimum-coverage, and
+maximum-coverage representatives before the next transform layer. Ownership,
+execution shape, schedule, memory/channel, and special-math derivations remain
+ordinary candidate-generator outputs; the frontier controller only owns
+coordinate identity, fanout, and budgets. Thus a locally inferior parent may
+survive when it is a distinct beam representative, while unrestricted Cartesian
+composition is still forbidden.
+
+The ownership provider keeps three bounds distinct. Its resolved Generate
+binding carries a positive decision-materialization attempt grant reserved by
+the enclosing frontier; its plan-derived output demand limits distinct child
+Artifacts published to analytic evaluation; the later Promote node owns the
+smaller terminal functional-replay width. Exact rejection of an early decision
+therefore consumes an attempt but not a publication slot. A publication or
+attempt truncation remains `SemanticLimitReached`; neither one proves the
+unseen domain infeasible. Special-math choice/mechanical closure uses the same
+separation between its materialization grant and published child bound.
+
+Only a terminal beam survivor is functionally replayed. A survivor retained
+solely as the immutable parent of another transformation layer is an analytic
+continuation: it may contribute typed transformation lineage and a model
+estimate, but it has no functional result and cannot be published to Mapping.
+When a later terminal Promote selects that parent or one of its descendants,
+the functional owner executes or exactly reuses one replay within the already
+reserved terminal slot. Persisted finding-only Evidence is not a substitute
+for the transient replay cases needed by application materialization; the
+invocation retains those cases explicitly after the functional owner supplies
+them.
+
+Every candidate record contains its exact owned roots, seed/lineage, host and
+accelerator region counts, known and unknown internal/cut bytes, activity,
+fanout, channel opportunities, analytic estimate, and support/confidence. A
+candidate that reaches bounded Dataflow materialization additionally carries
+its exact Dataflow root, logical-domain/core lower-bound projection, actor and
+edge inventory, and transport inventory. Unmaterialized candidates leave those
+fields absent rather than guessing them.
+Dependency knowledge is typed as proven-present, proven-absent, or unknown;
+unknown alias/order is never treated as zero cut cost. If a provider cannot
+complete, the record retains the original typed plan reason (`Unsupported`,
+`ProofNotEstablished`, `ExecutionFailed`, `SemanticLimitReached`, or
+`CancelledOrTimeout`) instead of rewriting it as a generic budget disposition.
+The shared source
+projection is computed once and joined by exact root identity. Heuristic
+estimates can rank or promote a candidate, but only a sound necessary-condition
+failure can set an exact rejection disposition; unsupported, timeout, and
+`ProofNotEstablished` remain distinct.
+
+Search completion is a product of independent facts, not a synonym for “the
+current beam returned a candidate.” Invocation provenance serializes
+`domainComplete`, `budgetComplete`, `providerComplete`, `evidenceComplete`,
+and `selectionComplete`. A timeout, interrupt, provider incompleteness,
+unknown dependency, heuristic truncation, or unsupported estimate keeps the
+corresponding fact false. An incomplete result always publishes an invocation
+checkpoint binding source/Fabric/workload/runtime identities, the frontier
+policy digest, eligible-coordinate count, truncation state, the
+source-observation ledger plus the six candidate-frontier work ledgers,
+completeness facts, and retained candidate roots. Unconsumed ledger
+units are classified as rejected for semantic/provider limits and cancelled
+only for an observed cancellation or deadline; the checkpoint never turns a
+budget stop into a timeout.
 
 This is a dependency-aware bounded planning heuristic, not a complete software
-partitioner, a proof of QoR optimality, or a replacement for downstream
-Mapping. Its construction cost is quadratic in the explicit protocol-root
-count. A hierarchical or beam domain would require a separately specified
-owner rather than silently changing this finite domain. Every materialized
-edge retains ordinary candidate lineage, while the original source workload
-and runtime input remain the sole functional oracle.
+partitioner or a proof of QoR optimality. `FirstVerified` reports time to first
+feasible mapping. `BoundedQuality` evaluates a fixed, reproducible frontier of
+current-hardware, hardware-reopen, and spectrum alternatives, then applies the
+central QoR objective to the verified application outcomes. The original source
+workload and runtime input remain the sole functional oracle. The application
+owner carries the planning inventory and joins each downstream attempt by its
+exact planning-record ordinal. That separate outcome row names the Dataflow,
+System, verified SystemMappings, typed disposition, and any incomplete plan
+node/reason. It does not copy those results back into the planning record, so
+prefilter recall, work accounting, and time-to-best can be audited without
+creating a second candidate identity.
+Each materialized planning record also carries a candidate identity digest
+derived only from its semantic coordinate and transformation lineage:
+Structured/Dataflow roots, owned protocol roots, and the immutable candidate
+projection. Source, Fabric, workload, runtime, resolved policy, estimates,
+schedule hints, temporal witnesses, rank, disposition, and cache state are
+invocation evaluation provenance and cannot alter candidate identity. Mapping
+and application diagnostics must repeat and validate the semantic digest while
+carrying that provenance separately; the ordinal is only an invocation-local
+index and is never the cross-layer identity.
+The BoundedQuality policy also carries one non-empty, unique label for every
+objective dimension. The labels are invocation provenance for interpreting the
+objective codes; they do not define ordering or introduce a second objective
+catalog. A complete observation must provide one objective vector with the
+declared arity, while an unsupported, failed, or cancelled observation retains
+the typed reason and no score.
 After one selected Structured candidate lowers mechanically to D0, the
 controller queries the exact Fabric capability index. If every D0 actor is
 admitted, the controller retains that exact input directly as D*, instantiates
@@ -1794,7 +1892,7 @@ search actually executed for ranking or verification under the selected goal.
 The built-in root-complete System PnR generator composes the final Mapping
 boundary without widening the central plan. Its descriptor has kind 9,
 spelling `mapping.root_complete_system_pnr`, schema
-`loom.mapping.root_complete_system_pnr.generator.v10`, and exact input slots
+`loom.mapping.root_complete_system_pnr.generator.v11`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, and
 `fabric: ExactlyOne`, `physical_timing_profile: FiniteSet`, and
 `migration_seed: ZeroOrOne`. Its sole output slot is
@@ -1805,8 +1903,9 @@ which to recover `D`, and because `D` uniquely owns the complete root-launch
 inventory.
 
 For a nonempty root inventory the adapter publishes the exact empty System
-MappingConstraintSet, projects the whole-domain partition and hierarchical
-System search-domain view, and delegates to the ordinary System PnR owner. A
+MappingConstraintSet, projects the root-keyed cyclic partition requested by
+the adopted System PnR config and the hierarchical System search-domain view,
+and delegates to the ordinary System PnR owner. A
 root-free Dataflow input completes with an empty output set. The descriptor
 references the same complete PnR work-unit catalog used by the Spatial PnR
 generator: seed attempt, assignment attempt per seed, endpoint expansion,
@@ -1826,12 +1925,12 @@ not registered.
 The built-in application-scoped System PnR generator is the strict-scope
 counterpart. Its descriptor has kind 22, spelling
 `mapping.application_system_pnr`, implementation semantic identity
-`loom.mapping.application_system_pnr.generator.v9`, and exact input slots
+`loom.mapping.application_system_pnr.generator.v10`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, `fabric: ExactlyOne`, and
 `physical_timing_profile: FiniteSet`, `system_constraints: ExactlyOne`, and
 `migration_seed: ZeroOrOne`. The constraint root must bind exactly that
 Dataflow and Fabric System. Its non-empty `root_thread_launches` is the sole
-coverage root. The adapter projects the whole-domain partition and
+coverage root. The adapter projects the config-owned root-keyed partition and
 hierarchical search domain from that exact set, supplies the finite
 SpatialMapping candidates as the ordinary graph-search input, and invokes the
 unchanged System PnR owner. Output, work accounting, lineage, incomplete
@@ -2190,11 +2289,26 @@ obligations and retained finalized material but no formal selected output.
 
 ### Operational Observations
 
-`loom.dse.invocation_manifest 1.2` is the current compatible extension of that
-Artifact family. Version 1.1 added one optional nonsemantic
+`loom.dse.invocation_manifest 1.3` is the current compatible extension of that
+persistent record family. Version 1.1 added one optional nonsemantic
 `InvocationOperationalObservations` block to 1.0. Version 1.2 admits incomplete
 Generate records before later executed plan nodes while preserving the same
-per-record completion field and canonical encoding:
+per-record completion field and canonical encoding. Version 1.3 adds the
+`CancelledOrTimeout` terminal to the promotion-acquisition incomplete-reason
+domain. It is execution history, never evidence of infeasibility, and retains
+stable tag 4 after `Unsupported` tag 3. Versions 1.0, 1.1, and 1.2 remain
+importable.
+
+```text
+PromotionAcquisitionIncompleteReason =
+    ProviderUnavailable // tag 0
+  | SemanticWorkLimit   // tag 1
+  | ObjectiveUnavailable // tag 2
+  | Unsupported         // tag 3
+  | CancelledOrTimeout  // tag 4
+```
+
+The operational block remains:
 
 ```text
 InvocationOperationalObservations {
@@ -2856,27 +2970,38 @@ bound and every assignment retains imported Spatial capacity pressure. The
 payload names the exact System, complete SpatialMapping input frontier, target
 Module, compatible AccCore count, assignment attempts, the exact witness
 AccCore occurrence, and its usage/capacity witness. It also names one exact
-`loom.mapping.system_execution_binding_checkpoint` 1.0 that retains the
-thread and graph choices of that exhausted assignment. It requests one
-additional compatible AccCore candidate. It neither claims that child
-sufficient nor includes System service routing in its proof. A work-limit
-outcome has no such payload or checkpoint.
+`loom.mapping.system_execution_binding_checkpoint` 2.0 that retains the
+thread and graph choices of that exhausted assignment. The checkpoint also
+binds the exact constraint, resolved PnR configuration, search-domain digest,
+and a typed imported-capacity witness with its dependency root threads. It
+requests one additional compatible AccCore candidate. It neither claims that
+the child is sufficient nor includes System service routing in its proof. A
+work-limit outcome has no such payload or checkpoint.
 
-The central joint DSE controller consumes all three feedback forms through the one
+The central joint DSE controller consumes all three feedback forms through the
 resolved Fabric-template recipe that produced the current System. Compute
-feedback projects the minimum multi-PE instruction-store plan and raises the
-recipe's uniform resident-context count to the largest required resulting
-capacity. Spatial boundary feedback raises the recipe's gateway count by the
-exact directional deficit. System capacity feedback raises the recipe's
+feedback first projects an exact kind-14 atomic `ResizeInstructionStores`
+decision on the parent Module. Its child Module is then attached through
+typed kind-15 `ReplaceSpatialAttachment` decisions for every AccCore that
+actually uses that Module; the per-decision System correspondences are
+composed into one parent-to-child lineage. Unchanged target Modules receive
+identity correspondence entries. This is the schedule-preserving path: the
+downstream rebase may use only those exact Module identities and re-verifies
+the child legality. These per-PE capacities are not converted into the builtin
+template's uniform `temporal_resident_contexts` parameter. That parameter may
+describe the recipe that originally built the System, but it is neither the
+owner nor an upper bound for a later typed subset resize.
+
+Spatial boundary feedback currently has no typed Module-growth decision because
+the Fabric boundary owner intentionally rejects invented domain rows. It uses
+the ordinary template provider and therefore publishes a typed cold-fallback
+reason for Mapping rather than pretending that selections survived. Mixed
+Tech/Spatial/System mutations likewise take the cold path until each mutation
+has an exact owner-level transformation. System capacity feedback raises the
 AccCore count by exactly one only when every current occurrence targets the
 named Module; a heterogeneous recipe that cannot express the requested
-compatible occurrence is rejected rather than silently homogenized. If one
-failed Mapping execution contains several independent witnesses, their
-distinct recipe fields compose into one child. The
-ordinary Fabric-template provider then rematerializes the complete uniform
-System, including every AccCore occurrence and System transport resource, and
-the normal three-level Mapping plan and independent verifiers evaluate it.
-There is no mapper-side Fabric mutation, local occurrence exception, or stale
+compatible occurrence is rejected rather than silently homogenized. There is no
+mapper-side Fabric mutation, local occurrence exception, or ordinal-based
 attachment rewrite.
 
 When a child changes only the AccCore count, the target Module roots are
@@ -2885,7 +3010,7 @@ verified immutable SpatialMapping frontier directly to the new System
 provider, after rechecking each Mapping's exact Dataflow and Module owners.
 For `AddAccCore`, it combines the capacity witness's checkpoint with the exact
 kind-15 AccCore correspondence and publishes one
-`loom.pnr.system_mapping_checkpoint_migration_seed` 2.0. The seed identifies
+`loom.pnr.system_mapping_checkpoint_migration_seed` 5.0. The seed identifies
 the parent witness AccCore as its unique execution-binding reopen root. System
 PnR releases exactly the checkpoint thread cells selected on that parent,
 preserves all other admissible thread cells and every admissible graph cell,
@@ -2893,19 +3018,97 @@ and solves the released relation before its unchanged fresh seed family. All
 service targets, service routes, ResourceUses, progress closure, and final
 legality are rebuilt. A typed migration fallback records why projection could
 not be used and does not suppress fresh search. TechMapping and Spatial PnR
-are not repeated for a System-only composition change. A resident-context or
-gateway change creates a different Module and therefore runs the complete
-three-level Mapping plan; owner mismatch is an error and never triggers an
-implicit Mapping rewrite. No equivalent reuse claim exists yet for arbitrary
-Module, topology, memory, or transport changes.
+are not repeated for a System-only composition change. A resident-context
+change follows the typed kind-14/kind-15 Module lineage above, rebasing Tech
+and Spatial selections against the child and reopening only after the child
+owner rejects an unchanged selection. A gateway change creates a different
+Module without such lineage and is explicitly cold. Apart from the exact FIFO
+feedback path below, no equivalent preserve claim exists for arbitrary
+topology, memory, switch, or transport changes; those paths must publish their
+typed fallback reason until a corresponding hardware decision owner is added.
+
+### Runtime-Derived Spatial FIFO Feedback
+
+CGRA runtime may request a bounded SpatialCore FIFO hardware child only from
+an exact quiescent wait witness. The witness must join the parent SystemMapping
+and SpatialMapping to one canonical `FabricFifoOccurrenceRef`, full occupancy
+and capacity, a closed transfer- or actor-level wait cycle containing that
+FIFO, and one granted physical action held past intrinsic release solely by the
+same actor's unsatisfied causal release. A dense storage ordinal, an isolated
+full queue, an ambiguous FIFO set, or a provider-incomplete wait graph is not a
+hardware request. It remains `ProofNotEstablished` or `Unsupported` and
+publishes no child.
+
+The candidate set is finite and minimal. When a full depth-one FIFO is the
+exact liveness witness, `ResizeFifo` first proposes depth two. For a deeper
+full FIFO, the first proposal is one additional slot; this is a repair probe,
+not proof that one slot is sufficient. `ChangeFifoBypassCapability` may add one
+alternative only when the existing Fabric admits the bypass traversal. The
+ordinary `SpatialMicroarchitectureCandidateGenerator` and
+`HardwareImpactProjection` own these changes; runtime owns neither a second
+Fabric writer nor a Mapping exception.
+
+FIFO semantics remain owner-defined. A depth-one registered FIFO may enqueue
+and dequeue in one cycle only when it was non-full at cycle start. A full
+feedback loop cannot borrow the capacity released later in that same cycle.
+Bypass removes registered latency but adds combinational timing and Fmax
+pressure and can expose a selected handshake cycle. No universal fifty-percent
+throughput rule is inferred from depth one. The central objective orders
+liveness before II and throughput, latency, timing and Fmax, area, power and
+energy, reconfiguration cost, and repair work. A missing metric is typed
+`Unsupported`, not zero.
+
+Every admitted child follows the existing module-to-System replacement,
+typed impact, Mapping invalidation-cone, migration-seed, cold-fallback, and
+independent Fabric/Tech/Spatial/System/CGRA verification path. Parent and child
+identities, preserved/reopened/repaired work, fallback reason, and the final
+runtime disposition are evidence. A child that merely maps, or a resize that
+removes the observed queue without reproducing application execution, is not a
+successful feedback result.
+
+When the parent has a finalized SystemMapping, the controller may instead
+publish `loom.pnr.system_mapping_finalized_migration_seed` 5.0. It binds that
+Mapping, the exact child constraints and Spatial frontier, the resolved PnR
+configuration, and the complete typed entity, transfer, Module, and AccCore
+lineage. The child rebase preserves only references proved by that lineage,
+including service targets and routes when their entire hardware closure is
+unchanged; every accepted result still passes child finalization and the
+independent verifier. Rebase failure produces a typed cold fallback and leaves
+the canonical fresh seed available.
+
+For adjacent resource-time states on the same immutable System, the same seed
+uses a mechanically derived identity correspondence plus canonical Dataflow
+root invalidation roots. It preserves cone-external execution choices and
+releases the changed roots into the ordinary System initializer. The first
+implementation conservatively reopens the System service/route cone; a smaller
+cone requires a typed service-dependency proof. This seed is only a Mapping
+preference. A resource-time transition remains `Unsupported` or
+`ProofNotEstablished` until the separate safe-point, Deployment configuration
+and route deltas, live-state correspondence, and migration-time contract are
+all derived by their existing owners.
 
 Hardware reopen is a bounded feedback chain rather than a Cartesian hardware
 search. One failed execution produces at most one monotonically grown recipe
-child; a failed child may produce the next typed witness. The chain visits no
-more than `maximumSystemFrontier - 1` children after the parent System and
-stops immediately when no supported typed feedback remains, execution is
-cancelled, or a verified SystemMapping is published. Thus a second hardware
-dimension becomes eligible only after ordinary Mapping proves it necessary.
+child; a failed child may produce the next typed witness. Hardware-parent
+promotion remains bounded by the System frontier. Within one promoted parent,
+deterministic local repair has a separate positive
+`maximumHardwareRepairProbes` bound and an additive
+planned/reserved/consumed/rejected/cancelled ledger. A Tech-context probe runs
+only the ordinary Tech generator; Spatial and System PnR remain undispatched
+until the Tech gate covers every required graph. Intermediate repair children
+are not additional QoR alternatives. The chain stops immediately when its
+probe bound is exhausted, no supported typed feedback remains, execution is
+cancelled, or a verified SystemMapping is published. Exhaustion is incomplete,
+not infeasible. Thus a second hardware dimension becomes eligible only after
+ordinary Mapping proves it necessary.
+The owner also stops a non-progressing typed feedback sequence. If successive
+context-growth probes increase the observed Hall demand and context-value set
+by the same amount while preserving the deficit, the aggregate feedback is not
+a valid continuation proof for another child. The owner emits
+`ProofNotEstablished(hall_repair_stagnation)` and records the untried
+alternative repair domain; it does not spend the remaining probe budget or
+call Spatial/System PnR again. This is a search-boundary diagnosis, not a
+claim that the application or Fabric is infeasible.
 The controller has no deficit-size threshold or Application-specific reopen
 heuristic. Switch, memory, FIFO, topology, and other System resources remain
 unchanged unless a later typed Mapping witness and its hardware owner define a
@@ -2913,12 +3116,18 @@ corresponding recipe change.
 
 Hardware reopen is ordered after the bounded current-hardware software/System
 frontier. The controller first visits those exact pairs in their declared
-preference order and returns the first verified Mapping. Only when every
-visited pair has no Mapping may it consume their transient typed feedback and
-visit hardware children in the same pair order. A repairable failure of an
-earlier software candidate cannot therefore grow hardware ahead of a later
-candidate that is already legal on the parent System. Cancellation or timeout
-still stops execution and is never converted into permission to reopen.
+preference order. `FirstVerified` returns the first verified Mapping. Under
+`BoundedQuality`, the complete bounded parent frontier is visited first; exact
+failed-candidate feedback and already verified parents then share one explicit
+hardware-parent budget. Actionable failed candidates are ordered by exact
+accelerated root, graph, and actor coverage, rather than simulation-workload
+row count or log order. Only the declared prefix is promoted. Any remaining
+budget may expand verified parents in analytic order. A repairable failure of
+an earlier software candidate cannot therefore grow hardware ahead of a later
+candidate that is already legal on the parent System, while a high-coverage
+exact failure is not hidden by an unrelated small verified candidate.
+Cancellation or timeout still stops execution and is never converted into
+permission to reopen.
 
 Kinds 19 and 20 are the only built-in cross-frontier adapters. A two-frontier
 join indexes both canonical input sets and visits pairs by increasing
@@ -3022,6 +3231,242 @@ only in owner-attempt or scratch state until its exact Artifact owner exists.
 Evaluation-derived route guidance may order proposals, but cannot
 change legal arcs, prove legality, replace complete `Q`, or enter a Mapping
 Artifact.
+
+### Resource-Time Scheduling
+
+`MaxSpatial`, `MaxTemporal`, and `intermediate` are schedule classifications,
+not ownership seeds. A classification requires one verified SystemMapping and
+an explicit event-relative schedule containing, for every relevant point,
+the active region set and each region's resource allocation. The accelerated
+root coverage, the active set at an event, and the per-region allocation are
+independent facts; none can be reconstructed from root count, logical-point
+count, or available AccCore count alone.
+
+The immutable SystemMapping already admits causal release and resource
+capacity. It must not be confused with runtime reconfiguration. A runtime
+resize, remap, or reprogramming transition is legal only at a compiler-known
+safe point (or a completion event) and switches to another pre-verified
+SystemMapping. Loom does not assume arbitrary mid-kernel preemption.
+
+The single resource-time transition owner is the following finite contract;
+it references existing SystemMapping and Deployment artifacts rather than
+defining a second legality model:
+
+```text
+ResourceTimeTransition {
+  trigger_event: canonical completion or safe-point event
+  safe_point: compiler-owned safe-point artifact
+  before_mapping: verified SystemMapping reference
+  after_mapping: verified SystemMapping reference
+  before_active_regions: Canonical Dataflow RootThreadLaunchRef values
+  after_active_regions: Canonical Dataflow RootThreadLaunchRef values
+  before_resource_allocation: canonical per-region allocation
+  after_resource_allocation: canonical per-region allocation
+  before_live_work: canonical live-work identities
+  after_live_work: canonical live-work identities
+  token_live_state_correspondence: typed correspondence or empty
+  resource_delta: typed Fabric occurrence/capacity delta
+  configuration_delta: Deployment configuration delta
+  route_delta: Deployment route delta
+  migration_time: exact or typed unsupported
+  status: Verified | Unsupported | ProofNotEstablished | CancelledOrTimeout
+}
+```
+
+The initial implementation is a compiler-precomputed finite transition
+sequence. It does not run online DSE or PnR and does not add a second
+Mapping-legality owner. Schedule-preserve uses the same contract for a
+hardware parent-to-child change and for adjacent resource-time states: the
+previous Mapping is the preference, only the typed transitive invalidation
+cone is reopened, and the complete child closure plus independent verifier
+remain mandatory. Unaffected Tech/Spatial/System bindings, routes, services,
+and configurations are preserved by correspondence. A Dataflow-changing
+logical-domain transformation requires an explicit typed state correspondence;
+it cannot bypass the existing Dataflow identity check.
+
+Joint schedule exploration is event-driven. Completion, readiness, and token
+events extend a bounded beam/Pareto state. Candidate-specific lower bounds for
+resource speedup, FIFO rate/II/depth, host transfer, occupancy, and
+configuration/live-state migration cost screen proposals before incremental
+PnR. Every expensive operation reserves work first, and a timeout publishes a
+typed incomplete checkpoint rather than infeasibility.
+
+Performance is part of the resource-time exploration contract. The owner uses
+one cheap-to-expensive funnel rather than materializing the Cartesian product
+of active sets, allocations, transformations, and transitions. One immutable
+source/dependency/event/token projection is shared by the invocation. Frozen
+per-region transformation features, resource-speedup curves, cut/rate/FIFO and
+occupancy facts, and configuration/live-state costs feed incremental typed
+state/action deltas. Sound necessary conditions may reject a state. Analytic or
+calibrated estimates may only rank a bounded beam/Pareto frontier, apply
+dominance and successive halving, preserve diversity, and select promotion
+candidates. Functional replay, Dataflow materialization, and evidence
+promotion are single-flight operations over the smaller survivor set. Only a
+separately bounded finalist set may invoke real Tech/Spatial/System PnR. A
+schedule hint therefore never supplies Mapping legality or an endpoint class;
+every published endpoint and representative intermediate point still passes
+the ordinary complete SystemMapping closure and independent verifier.
+
+The application integration enforces this ordering as two distinct passes. It
+first consumes the already available Canonical Dataflow views only to build the
+resource-time invocation projection and analytic frontier. It publishes
+workloads and constructs joint Mapping plans only for retained finalist
+identities. Invocation evidence reports generated, estimated, replayed,
+materialized, and plan candidates separately, so a larger pre-Mapping software
+inventory cannot be mistaken for expensive Mapping work.
+
+The resource-time funnel also publishes one additive frontier ledger for the
+candidate frontiers that were actually evaluated. It contains planned,
+reserved, consumed, rejected, cancelled, and elapsed work for source
+projection, event actions, states, analytic estimates, and retained finalists,
+plus state-memo hits/misses, beam pruning, and peak retained bytes. A candidate
+that was stopped before frontier evaluation contributes no synthetic reserved
+work. Application-side promotion counters remain separate because workload
+publication, functional replay, plan construction, and provider dispatch have
+different semantic owners; each owner reports its own reserve-before-dispatch
+ledger.
+
+Within one enclosing resource-time funnel invocation, the owner may retain a
+bounded exact memo keyed by the complete invocation, feature, and policy
+inputs. A memo hit reuses only the completed analytic frontier or a sound
+fixed-input rejection; it contributes no second reserved work entry and never
+skips finalist materialization, SystemMapping verification, or independent
+Spectrum verification. Incomplete and cancelled outcomes are not memoized.
+The memo has deterministic entry and byte limits, and its
+hit/miss/single-flight-wait/capacity-bypass/retained-byte observations are
+reported separately from the event-state memo. Concurrent equal misses share
+one active computation; an incomplete active result may satisfy its current
+waiters but is removed immediately afterward. The session is invocation-local
+rather than a second global cache or a Mapping authority. Memo-capacity and
+Mapping-finalist limits do not enter the analytic-result key because they do
+not change the resource-time search result.
+
+Before detailed event-frontier search, every candidate receives one cheap
+lower-bound/support projection. The owner retains objective-best, coverage
+extrema, resource-concentration, and canonical representatives, then advances
+them in that deterministic order until the bounded Mapping-finalist inventory
+has explicit schedule hints. Later candidates remain analytic deferrals, not
+infeasible results. A candidate with a complete allocation domain and no
+capacity-fitting point may still take the sound gate without consuming a
+survivor slot. A no-fit result over an incomplete allocation domain is
+`ProofNotEstablished` and cannot become a capacity proof.
+
+Nested independent Spectrum verification reuses the enclosing immutable
+SystemMapping import session when it belongs to the same ArtifactStore. The
+application Mapping execution owns one such bounded session across all finalist
+joins, while a standalone Spectrum call creates its own fallback session. This
+removes duplicate strict reconstruction but does not skip the Spectrum
+verifier or its allocation, active-set, transition, and endpoint checks. The
+reported import totals are sampled after verification so cache hits, misses,
+retained bytes, and deterministic work cover both materialization and the
+independent verifier.
+
+For each retained Mapping finalist, the application owner derives one
+canonical `SystemBindingPartitionIntent` from the maximum allocation of each
+root across that hint's event-relative states. This typed intent enters the
+System PnR config digest and is consumed only by the existing Presburger
+partition owner. It contains no physical AccCore identity and cannot make a
+Mapping legal. Hardware reopen preserves the same intent. If the independently
+verified Mapping allocation does not match the hint or exceeds a
+workload-specific bound, spectrum verification returns typed
+`ProofNotEstablished`; it does not reject the Mapping itself or reinterpret the
+analytic estimate as legality.
+
+A partitioned logical domain is a distinct fact from temporal reuse. A
+`partitionCount` greater than one creates separate Presburger cells for the
+root's logical points; it does not prove that one temporal epoch is using more
+resources. Spectrum verification therefore carries the logical-epoch count
+and refuses a MaxTemporal label unless a single-epoch or separately typed epoch
+correspondence is present.
+
+Mapping-spectrum verification and application execution are separate joins.
+Before it classifies any schedule point, the Spectrum verifier consumes the
+Mapping-owned progress basis retained by the independently imported
+SystemMapping. An acyclic basis is qualified by the already verified
+route/resource closure. An initialized-feedback basis remains
+`ProofNotEstablished(finite_buffer_recurrence_not_established)` until one owner
+proves its initial-token, finite occupancy, rate, and dequeue progress; durable
+storage alone is not that proof. This does not reject the ordinary Mapping, but
+it publishes no `MaxTemporal`, `MaxSpatial`, or `intermediate` spectrum label.
+
+A spectrum-qualified Mapping may still fail its later DFG/CGRA replay. That
+failure publishes no execution artifact and cannot increment the
+application-level endpoint counters; the application may continue through the
+remaining bounded candidates. A successful application-level endpoint requires
+both the qualified SystemMapping scenario and completed functional/CGRA replay
+for the same candidate identity. A finite successful replay cannot replace the
+static recurrence proof.
+
+The same owner distinguishes three kinds of reuse. Exact memoization is a
+removable derived cache for a completely identical semantic input.
+Schedule-preserving incremental reuse consumes a typed delta and retains only
+transformation and Mapping decisions outside its transitive invalidation cone;
+the repaired child still passes complete verification. Analytic or predictive
+evaluation supplies a lower bound or QoR estimate with support, confidence,
+and out-of-domain status; except for a separately identified sound necessary
+condition, it cannot prove infeasibility. These mechanisms cannot share a
+vague similarity key or become a second Mapping authority.
+
+An exact resource-time state key binds source/Dataflow lineage, ready, active,
+and live work, tokens and live state, per-region allocation, Fabric, workload,
+runtime input, resolved configuration, and the frozen model snapshot. A
+transition or migration key additionally binds the parent Mapping and
+Deployment, safe point, typed schedule/resource/hardware delta, constraints,
+algorithm identity, and child target. Any semantic input change mechanically
+invalidates the derived entry. Concurrent equal misses are single-flight, and
+a cache hit or incremental seed never skips the owner verifier. One invocation
+uses one versioned immutable model snapshot so provider completion order cannot
+change ranking.
+
+Every frontier and cache has deterministic work, memory, and capacity limits.
+The invocation ledger separately records generated, gated, estimated,
+replayed, materialized, and PnR-admitted candidates; actual Mapping dispatches;
+exact-cache hit, miss, and wait; incremental preserved, reopened, and repaired
+work; retained bytes and peak resident memory; wall time, time to first
+feasible, and time to best. Planned, reserved, consumed, rejected, cancelled,
+hit, miss, and wait totals must reconcile before publication. Worker count,
+execution order, and cache warmth cannot change semantic candidate identity,
+formal work accounting, or the final selection for an identical evidence set.
+Timeout remains typed incomplete even when no finalist reached Mapping.
+
+Application operation diagnostics may report `peak_resident_bytes` as the
+whole-process RSS high-water observed at that boundary. It is not a per-stage
+or per-candidate allocation attribution; such attribution is unsupported
+unless a provider owns and measures it directly.
+
+The schedule evidence used by this contract is an explicit witness, not a
+counter-derived endpoint label. Each region interval records its readiness,
+start, completion, and allocation; each event snapshot records the active set
+and the Mapping reference in force at that event. A completion-gated consumer
+may start only after each prerequisite edge marked `Completion` completes. A
+prerequisite edge marked `FifoToken` may release its consumer at an explicitly
+recorded token-ready event before that producer region completes. Readiness is
+therefore owned per dependency edge, not once per region, and the scenario
+does not duplicate it in a `has_fifo` flag. Region identity is the exact
+Dataflow-owned `RootThreadLaunchRef`; an arbitrary Artifact root plus a second
+correspondence table is forbidden. A witness is accepted only
+when its active sets, intervals, transition chain, Mapping references,
+concurrency bound, and makespan agree mechanically. The witness itself carries
+no `MaxSpatial`, `MaxTemporal`, or `intermediate` class. Those classes remain
+available only after the same schedule is attached to a real independently
+verified SystemMapping and the endpoint comparison policy proves the class.
+A complete unpruned event-frontier search derives the exact minimum and
+maximum reachable peak-active-region counts while retaining both extrema under
+future-state memoization. `MaxTemporal` requires the exact minimum peak plus
+the maximum useful allocation for every active region. `MaxSpatial` requires
+the exact maximum peak plus the minimum feasible allocation for every active
+region. The maximum is not the number of covered regions: dependency and
+capacity constraints may make a smaller value exact, as in a five-region
+schedule whose maximum legal active set has three members. A truncated beam,
+budget stop, or missing allocation bound can still produce a verified
+intermediate scenario but cannot prove either endpoint.
+A token-only timestamp, or a timestamp completing multiple roots, is not
+encoded as one arbitrary root-completion event: until the Dataflow event owner
+publishes canonical token-publication and composite-event families, such a
+hint remains typed `Unsupported` and cannot enter Spectrum verification.
+A one-region schedule is a verified intermediate point because the all-active
+and one-active concurrency bounds coincide and cannot distinguish the two
+endpoints.
 
 ### Model Parameters and Training
 
@@ -3468,13 +3913,42 @@ Only these stable semantic anchors belong at this boundary:
 - Equal admitted closure and local binding produce byte-identical bundles;
   `prepare`, caller execution, and `import` remain independently callable and
   expose no Job, scheduler, or process handle.
-- InvocationManifest 1.0 and 1.1 remain importable; 1.2 round-trips absent and
-  present operational observations plus retained incomplete Generate
-  frontiers canonically, rejects unknown plan-node references, duplicate or
-  unsorted rows, zero context counts, and arithmetic overflow, and never
-  changes formal selection or Evidence.
+- InvocationManifest 1.0, 1.1, and 1.2 remain importable; 1.3 round-trips
+  absent and present operational observations plus retained incomplete
+  Generate frontiers and typed promotion timeout canonically, rejects unknown
+  plan-node references, duplicate or unsorted rows, zero context counts, and
+  arithmetic overflow, and never changes formal selection or Evidence.
 - Candidate-generator binding identity is derived from the exact descriptor
   and canonical config view, and a caller-authored replacement is rejected.
 - An external generator publishes only complete descriptor output Artifacts;
-  no completion, partial output, malformed representation root, or direct
-  Evidence output can produce a binding or lineage edge.
+no completion, partial output, malformed representation root, or direct
+Evidence output can produce a binding or lineage edge.
+
+## Temporal Operand-Buffer Feedback
+
+The queue/match/pairing projection is one removable derived view shared by
+Dataflow screening, Fabric contract checks, TechMapping structural handoff,
+SpatialMapping progress, simulator planning, and Hardware DSE. Its qualified
+pairing key is `(InstructionContextRef, concrete FU occurrence, Physical Tag)`;
+it is not an Artifact identity. TechMapping supplies semantic rate, fanout,
+ordered-role, and internal-edge facts only. SpatialMapping owns physical
+ingress/selector preference and exact queue-level blockers.
+
+Analytic queue pressure is a ranking feature and may prune only a sound
+necessary condition. An exact closed-wait witness with a complete invalidation
+cone may request one bounded operand-buffer mode/depth/admission child. The
+child must pass ordinary Fabric, Tech, Spatial, System, and independent CGRA
+verification. Unknown or incomplete queue evidence is typed and cannot launch
+full PnR or become infeasibility. Exact invocation-local projections use the
+existing session/cache and work-ledger rules; repeated observations are
+deduplicated without recursive unbounded feedback.
+
+Runtime feedback carries one canonical ordered-head projection digest and the
+exact SystemMapping plus Dataflow/Fabric/Tech/Spatial owner references. The
+independent feedback verifier reimports those owners and reconstructs the
+Mapping projection; it does not trust runtime labels as legality. Missing head
+provenance, incomplete required roles, sequence mismatch, projection-digest
+drift, or an unmatched wait edge remains `ProofNotEstablished` or
+`Unsupported`. Only a capacity-blocked queue edge in the actual closed
+transfer/actor wait cycle is `ExactClosedWait`; aggregate occupancy, a finite
+halt, or analytic `LikelyRisk` cannot request a hardware child.

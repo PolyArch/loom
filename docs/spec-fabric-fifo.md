@@ -165,3 +165,9 @@ physical topology that only potentially forms a cycle; and rejection only
 when selected switch rows and bypass traversals close that cycle. Tests do not
 preserve internal pointer encoding, queue implementation, raw configuration
 bits, or exhaustive occupancy traces.
+
+An explicit `fabric.fifo` is a different hardware owner from a Temporal PE
+operand-buffer pool. FIFO depth, bypass, and traversal feedback cannot be
+reinterpreted as operand-buffer mode, depth, or admission policy. Both obey
+cycle-start capacity and ordered state transitions, but their Mapping
+invalidation cones and Hardware-DSE decisions remain distinct.

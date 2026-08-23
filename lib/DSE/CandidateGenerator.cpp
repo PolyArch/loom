@@ -965,6 +965,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
               *outputDemands[index].maximumArtifacts)
         return invalid("provider exceeded its plan-derived output demand");
   }
+  // The provider boundary was actually entered and validated. Keep this
+  // transient observation out of recovery bytes and candidate identity.
+  result->dispatched = true;
   return result;
 }
 

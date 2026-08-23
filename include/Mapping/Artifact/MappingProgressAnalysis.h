@@ -5,6 +5,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingProgressProjection.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 
 #include "llvm/Support/Error.h"
@@ -51,6 +52,10 @@ private:
   friend llvm::Expected<MappingProgressClosure>
   deriveMappingProgressClosure(const FrozenMappingProgressModel &,
                                const MappingProgressProjection &);
+  friend llvm::Expected<bool>
+  mappingEventPrecedes(const FrozenMappingProgressModel &,
+                       const ::dataflow::EventFamilyKey &,
+                       const ::dataflow::EventFamilyKey &);
 };
 
 /// Freezes Dataflow causality after interning every possible trigger and
@@ -59,6 +64,14 @@ private:
 llvm::Expected<FrozenMappingProgressModel> freezeMappingProgressModel(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::EventFamilyKey> activationEvents);
+
+/// Queries the one frozen Dataflow causality relation. Equality is reflexive;
+/// a missing event is rejected rather than treated as independent. This is a
+/// derived scheduling fact, not a Mapping progress proof.
+llvm::Expected<bool>
+mappingEventPrecedes(const FrozenMappingProgressModel &model,
+                     const ::dataflow::EventFamilyKey &predecessor,
+                     const ::dataflow::EventFamilyKey &dependent);
 
 /// Derives the progress-only projection of the strict System closure. This is
 /// the adapter used by final verification; System PnR constructs the same
@@ -101,6 +114,14 @@ llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemMappingClosureProjection &closure);
+
+/// Qualifies one independently imported Mapping for resource-time endpoint
+/// publication. The ordinary Mapping verifier already proved route/resource
+/// closure. Until a token/occupancy proof is registered for initialized
+/// feedback, that narrower recurrence domain remains typed
+/// ProofNotEstablished rather than being inferred from finite replay.
+MappingProgressClosure qualifySystemMappingResourceTimeProgress(
+    const FinalizedSystemMapping &mapping);
 
 struct SpatialRouteExternalSinkPrerequisite final {
   std::uint64_t sinkOrdinal = 0;
@@ -177,7 +198,9 @@ llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
     llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
-    llvm::ArrayRef<SpatialRouteTreeView> routes);
+    llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueGroups =
+        {});
 
 } // namespace loom::mapping
 

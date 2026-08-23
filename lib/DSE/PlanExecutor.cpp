@@ -208,6 +208,26 @@ bool providerExecutionStopRequested(const void *opaque) {
          static_cast<std::uint64_t>(now) >= *context.notAfterUnixNanoseconds;
 }
 
+std::optional<std::chrono::steady_clock::duration>
+providerExecutionRemainingTime(const void *opaque) {
+  const auto &context =
+      *static_cast<const ProviderExecutionStopContext *>(opaque);
+  if (context.journal->gracefulStopRequested())
+    return std::chrono::steady_clock::duration::zero();
+  if (!context.notAfterUnixNanoseconds)
+    return std::nullopt;
+  const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
+  const auto now =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+  if (now <= 0 || static_cast<std::uint64_t>(now) >=
+                      *context.notAfterUnixNanoseconds)
+    return std::chrono::steady_clock::duration::zero();
+  const auto remaining = *context.notAfterUnixNanoseconds -
+                         static_cast<std::uint64_t>(now);
+  return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::nanoseconds(remaining));
+}
+
 llvm::Expected<std::optional<JournalWorkUnitRecord>>
 findOrQueue(ExecutionJournal &journal, const WorkUnitKey &key) {
   auto found = journal.find(key);
@@ -543,6 +563,7 @@ RecoverablePlanWorkExecutor::executeGenerate(
         return makeIncompleteCandidateResult(
             *descriptor,
             CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+      (**imported).dispatched = true;
     }
     std::vector<ArtifactRootReference> roots = candidateResultRoots(**imported);
     auto terminalTime = terminalUnixNanoseconds();
@@ -649,7 +670,8 @@ RecoverablePlanWorkExecutor::executeGenerate(
     const ProviderExecutionStopContext stopContext{
         &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
     const ExecutionControlView executionControl{&stopContext,
-                                                providerExecutionStopRequested};
+                                                providerExecutionStopRequested,
+                                                providerExecutionRemainingTime};
     const CandidateGeneratorInvocationView invocation(executionControl,
                                                       outputDemands);
     auto generated =
@@ -727,6 +749,7 @@ RecoverablePlanWorkExecutor::executeGenerate(
   if (!*imported)
     return makeIncompleteCandidateResult(
         *descriptor, CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+  (**imported).dispatched = true;
   auto terminalTime = terminalUnixNanoseconds();
   if (!terminalTime)
     return terminalTime.takeError();
@@ -1125,7 +1148,8 @@ executeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
   if (journal.resolvedDseConfigViewDigest() != view.digest())
     return invalid("ExecutionJournal belongs to another resolved DSE plan");
   RecoverablePlanWorkExecutor executor(journal, scheduler, policy);
-  return detail::executeDsePlanWithWorkExecutor(view, store, blobs, &executor);
+  return detail::executeDsePlanWithWorkExecutor(view, store, blobs, &executor,
+                                                {});
 }
 
 llvm::Expected<DsePlanExecutionResult>

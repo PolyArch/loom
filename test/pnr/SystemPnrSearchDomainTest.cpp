@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -289,6 +290,22 @@ int main() {
           "duplicate root authoring changed the canonical constraint input");
   auto plan = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
       dataflowView, constraints.view().rootThreadLaunches()));
+  auto scheduled = take(loom::pnr::projectScheduledPresburgerPartitionPlan(
+      dataflowView, constraints.view().rootThreadLaunches(),
+      {{firstRoot, 2}, {secondRoot, 3}}, 1));
+  for (const auto &binding : scheduled.bindings) {
+    const auto root = std::visit(
+        [](const auto &key) -> dataflow::RootThreadLaunchRef {
+          using Key = std::decay_t<decltype(key)>;
+          if constexpr (std::is_same_v<Key, dataflow::RootThreadLaunchRef>)
+            return key;
+          else
+            return key.rootThreadLaunch;
+        },
+        binding.key);
+    require(binding.cells.size() == (root == firstRoot ? 2 : 3),
+            "root-keyed schedule intent changed another root's partition");
+  }
   const auto config = take(loom::pnr::projectResolvedSystemPnrConfigView(
       loom::defaultResolvedConfig()));
   auto domain = take(loom::pnr::projectSystemPnrSearchDomain(

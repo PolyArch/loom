@@ -18,6 +18,8 @@
 
 namespace loom::sim::detail {
 
+class CgraTransportRuntime;
+
 enum class CgraActorLifecycleKind : std::uint8_t {
   Committed,
   Retired,
@@ -75,6 +77,10 @@ public:
          ::dataflow::GraphRef graph, const PreparedGraphExecution &execution,
          SimulatorState &state, CgraPhysicalActionRuntime &physical);
 
+  void bindTransport(CgraTransportRuntime &transport) {
+    transport_ = &transport;
+  }
+
   llvm::Error start(SpatialEventCoordinate coordinate);
 
   llvm::Error
@@ -86,6 +92,10 @@ public:
 
   llvm::Expected<CgraPhysicalTraceBinding>
   physicalTraceBinding(const CgraPhysicalLifecycleEvent &event) const;
+
+  std::optional<std::uint64_t>
+  physicalActionSemanticActor(std::uint64_t actionOrdinal,
+                              std::uint64_t occurrenceOrdinal) const;
 
   llvm::Error retireActor(std::uint64_t semanticActorOrdinal,
                           std::uint64_t occurrenceOrdinal,
@@ -174,6 +184,7 @@ private:
   std::vector<std::uint64_t> transitionByCase_;
   std::vector<std::uint64_t> bindingBySemanticActor_;
   CgraPhysicalActionRuntime *physical_ = nullptr;
+  CgraTransportRuntime *transport_ = nullptr;
   CgraEventQueue requestedEvents_{"CGRA compute request"};
   CgraEventQueue actorCommitEvents_{"CGRA actor commit"};
   llvm::SmallBitVector readyCandidates_;

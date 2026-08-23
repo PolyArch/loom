@@ -1060,12 +1060,35 @@ void wholeCallableNormalizesPointerInduction() {
   if (!sawLoad || !sawStore)
     fail(test, "normalized pointer induction lost its memory transactions");
 
+  const auto materializeExactAddressDomain =
+      [&](llvm::StringRef symbol) {
+        const auto selection =
+            findCallable(test, compiled.structuredProgram, symbol);
+        auto domain = take(
+            test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                      compiled.structuredProgram, selection));
+        const loom::frontend::SpatialOwnershipDecisionPoint *chosen = nullptr;
+        for (const auto &point : domain) {
+          const bool exactAddress = point.rootRelativeIndexWidth() == 64;
+          const bool mechanicallyEmpty =
+              !point.addressProjection && !point.forallOwnershipShape &&
+              !point.directCallSpecializationShape &&
+              !point.directCallInlining;
+          if (!exactAddress && !mechanicallyEmpty)
+            continue;
+          if (chosen)
+            fail(test, "pointer-induction scope has an ambiguous exact domain");
+          chosen = &point;
+        }
+        if (!chosen)
+          fail(test, "pointer-induction scope has no exact address domain");
+        return take(test, loom::frontend::materializeSpatialOwnershipDecision(
+                              compiled.structuredProgram, {selection}, *chosen,
+                              design.roots().front()));
+      };
+
   auto runtimeStride =
-      take(test, loom::frontend::materializeSpatialOwnership(
-                     compiled.structuredProgram,
-                     findCallable(test, compiled.structuredProgram,
-                                  "runtime_stride_pointer_induction"),
-                     design.roots().front(), options));
+      materializeExactAddressDomain("runtime_stride_pointer_induction");
   auto runtimeStrideView = take(test, runtimeStride.canonicalDataflow.view());
   if (runtimeStrideView.graphs().size() != 1 ||
       runtimeStrideView.actors().empty())
@@ -1076,11 +1099,7 @@ void wholeCallableNormalizesPointerInduction() {
               carry.getOutput().getType()))
         fail(test, "runtime pointer stride became memory carry state");
 
-  auto bounded = take(test, loom::frontend::materializeSpatialOwnership(
-                                compiled.structuredProgram,
-                                findCallable(test, compiled.structuredProgram,
-                                             "bounded_pointer_induction"),
-                                design.roots().front(), options));
+  auto bounded = materializeExactAddressDomain("bounded_pointer_induction");
   auto boundedView = take(test, bounded.canonicalDataflow.view());
   if (boundedView.graphs().size() != 1 || boundedView.actors().empty())
     fail(test, "runtime-bounded pointer induction did not publish its graph");
@@ -1090,11 +1109,7 @@ void wholeCallableNormalizesPointerInduction() {
               carry.getOutput().getType()))
         fail(test, "runtime-bounded pointer induction retained pointer state");
 
-  auto ordered = take(test, loom::frontend::materializeSpatialOwnership(
-                                compiled.structuredProgram,
-                                findCallable(test, compiled.structuredProgram,
-                                             "ordered_pointer_induction"),
-                                design.roots().front(), options));
+  auto ordered = materializeExactAddressDomain("ordered_pointer_induction");
   auto orderedView = take(test, ordered.canonicalDataflow.view());
   if (orderedView.graphs().size() != 1 || orderedView.actors().empty())
     fail(test, "ordered pointer induction did not publish its graph");

@@ -564,6 +564,14 @@ is `Incomplete(proof_not_established)` and is distinct from a proven
 deadlock. A finite simulation that observes no deadlock cannot produce
 `Verified`. Only `Verified` is eligible to proceed to final admission.
 
+The base proof establishes the Mapping's selected route, resource, arbitration,
+and initialized-feedback durable-disposition closure. Resource-time endpoint
+publication is a schedule-specific stronger claim. When the retained Dataflow
+basis contains initialized feedback, Spectrum must additionally prove initial
+tokens, finite queue occupancy, rates, and dequeue progress. Until that owner is
+implemented, the endpoint qualification is `ProofNotEstablished`; ordinary
+Mapping identity and base admission are unchanged.
+
 ## System Constraint Admission
 
 System constraint admission uses the exact System root and algebra owned by
@@ -639,3 +647,26 @@ Tests must not preserve printer whitespace, diagnostic prose, C++ container
 layout, native cache shape, optional-field Cartesian products, retired
 record models, placeholder profiles, generic bags, runtime/deployment payload
 round trips, or implementation-specific verifier decomposition.
+
+## Ordered Operand Queue Verification
+
+Strict Spatial and System import rebuild the same derived MatchKey, QueueKey,
+qualified pairing-key, allocation-unit, and reservation projection used by
+PnR and simulator planning. A Mapping with a structurally valid route but an
+unproved queue-level recurrence is not promoted to a liveness endpoint. The
+result remains distinct among `ProvenNoClosedWaitSet`,
+`ProvenClosedWaitSet`, `ProofNotEstablished`, and `Unsupported`; a finite
+successful replay cannot establish an absent recurrence proof.
+
+An exact runtime queue witness binds the independently imported Dataflow,
+Fabric, TechMapping, SpatialMapping, and enclosing SystemMapping identities.
+For every selected QueueKey it records occupancy, capacity, allocation-unit
+reservations, and, when nonempty, the FIFO head's Physical Tag and ordered
+producer sequence provenance. The verifier rebuilds the Mapping projection and
+requires its digest and all MatchKey/PairingKey counts to agree before joining
+runtime heads. A nonempty queue without complete head provenance, an absent
+required role, unequal ordered sequence positions, a foreign ingress or tag,
+or a capacity/reservation mismatch is never `Exact`. A full queue is not a
+closed wait by itself: `ProvenClosedWaitSet` additionally requires the exact
+blocked publication-to-queue edge to belong to the reconstructed transfer or
+actor wait cycle.

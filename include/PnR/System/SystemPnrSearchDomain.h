@@ -254,11 +254,20 @@ projectWholeDomainPresburgerPartitionPlan(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> rootThreadLaunches);
 
-llvm::Expected<SystemBindingPartitionPlan>
-projectCyclicPresburgerPartitionPlan(
+llvm::Expected<SystemBindingPartitionPlan> projectCyclicPresburgerPartitionPlan(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
     std::size_t partitionCount);
+
+/// Applies a root-keyed resource-time partition intent and falls back to the
+/// supplied count only for roots absent from that intent. This changes search
+/// granularity, never the legal logical domain.
+llvm::Expected<SystemBindingPartitionPlan>
+projectScheduledPresburgerPartitionPlan(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
+    llvm::ArrayRef<SystemBindingPartitionIntent> partitions,
+    std::size_t fallbackPartitionCount);
 
 llvm::Expected<SystemPnrSearchDomainView> projectSystemPnrSearchDomain(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,

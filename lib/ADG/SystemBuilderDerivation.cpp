@@ -377,25 +377,6 @@ llvm::Error emitSpatialAttachments(
   return emit(module.outputs, loom::fabric::FabricPortDirection::Output);
 }
 
-bool inventoryMemberNamesCore(
-    const loom::fabric::FabricInventoryOwnerRef &owner,
-    loom::fabric::AccCoreOccurrenceRef core) {
-  return std::visit(
-      [&](const auto &member) {
-        using Member = std::decay_t<decltype(member)>;
-        if constexpr (std::is_same_v<Member,
-                                     loom::fabric::AccCoreOccurrenceRef>)
-          return member == core;
-        if constexpr (std::is_same_v<Member,
-                                     loom::fabric::InstructionCoreContextRef> ||
-                      std::is_same_v<Member,
-                                     loom::fabric::SpatialCoreOccurrenceRef>)
-          return member.core == core;
-        return false;
-      },
-      owner.payload);
-}
-
 bool inventoryMemberNamesEndpoint(
     const loom::fabric::FabricInventoryOwnerRef &owner,
     const std::set<loom::fabric::FabricEntityId> &endpoints) {
@@ -692,7 +673,7 @@ llvm::Error removeHardwareDomainMembership(
       return record.takeError();
     std::vector<loom::fabric::FabricInventoryOwnerRef> members;
     for (const auto &member : record->members())
-      if (!inventoryMemberNamesCore(member, target) &&
+      if (!loom::fabric::inventoryOwnerBelongsToAccCore(member, target) &&
           !inventoryMemberNamesEndpoint(member, removedEndpoints))
         members.push_back(member);
     auto updated = loom::fabric::HardwareDomainContractRecord::create(
@@ -943,7 +924,7 @@ SystemBuilder::removeAccCore(loom::fabric::AccCoreOccurrenceRef target) {
         unsignedBytes(endpoint.getOwnerAttr()));
     if (!owner)
       return owner.takeError();
-    if (inventoryMemberNamesCore(owner->owner(), target)) {
+    if (loom::fabric::inventoryOwnerBelongsToAccCore(owner->owner(), target)) {
       auto id = canonicalEntityId(endpoint);
       if (!id)
         return id.takeError();

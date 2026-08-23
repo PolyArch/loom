@@ -1180,6 +1180,27 @@ deriveApplicationSpatialInvocationPlan(
             capture->input.valueResults.size() != launch.resultBitCounts.size())
           return invalid(
               "dynamic invocation capture differs from graph boundary");
+        for (const sim::SimulationValueInputCapture &input :
+             capture->input.valueInputs) {
+          if (input.unusedByGraph &&
+              (!input.fixedValue ||
+               llvm::any_of(input.fixedValue->lanes, [](const auto &lane) {
+                 return lane.state != sim::SemanticState::Defined ||
+                        lane.pointerTarget.has_value();
+               })))
+            return invalid(
+                "graph-unobserved capture does not carry a defined scalar "
+                "wire value");
+          if (!input.fixedValue)
+            continue;
+          if (llvm::any_of(input.fixedValue->lanes, [](const auto &lane) {
+                return lane.state != sim::SemanticState::Defined ||
+                       lane.pointerTarget.has_value();
+              }))
+            return invalid(
+                "fixed invocation value is not representable on the wire: "
+                "undef, poison, or pointer lane");
+        }
 
         std::vector<mlir::Value> boundObjectBases(
             capture->input.objects.size());
@@ -1275,10 +1296,25 @@ deriveApplicationSpatialInvocationPlan(
         valueLayouts.reserve(launch.valueBitCounts.size());
         for (const auto indexed : llvm::enumerate(capture->input.valueInputs)) {
           const sim::SimulationValueInputCapture &input = indexed.value();
+          const std::uint64_t expectedByteCount =
+              (launch.valueBitCounts[indexed.index()] + 7) / 8;
+          const bool byteCountMatches =
+              input.fixedValue ? input.byteCount == 0
+                                : input.byteCount == expectedByteCount;
           if (input.valueInputOrdinal != indexed.index() ||
-              input.byteCount !=
-                  (launch.valueBitCounts[indexed.index()] + 7) / 8)
-            return invalid("dynamic invocation value capture is not exact");
+              !byteCountMatches)
+            return invalid(
+                llvm::Twine("dynamic invocation value capture is not exact: " ) +
+                "root=" + llvm::Twine(boundary.launch.root.entity.value()) +
+                " graph=" +
+                llvm::Twine(launch.graph.staticGraphLaunch.entity.value()) +
+                " path=" + llvm::Twine(pathIndexed.index()) +
+                " input=" + llvm::Twine(indexed.index()) +
+                " captured_ordinal=" +
+                llvm::Twine(input.valueInputOrdinal) +
+                " captured_bytes=" + llvm::Twine(input.byteCount) +
+                " expected_bytes=" +
+                llvm::Twine(input.fixedValue ? 0 : expectedByteCount));
           if (!input.fixedValue) {
             const bool rootOperand = input.boundaryOperandOrdinal.has_value();
             const bool coordinate = input.denseCoordinateDimension.has_value();

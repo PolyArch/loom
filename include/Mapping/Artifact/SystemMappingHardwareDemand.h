@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactLocalReference.h"
+#include "Common/ComponentViewDigest.h"
 #include "Dataflow/IR/DataflowStructuralRefs.h"
 #include "Fabric/Identity/FabricRefs.h"
 #include "Mapping/Artifact/SystemPresburger.h"
@@ -23,7 +24,7 @@ namespace loom::mapping {
 inline constexpr ArtifactSchemaDescriptor
     systemExecutionBindingCheckpointArtifactSchema{
         "loom.mapping.system_execution_binding_checkpoint",
-        SchemaVersion{1, 0}};
+        SchemaVersion{2, 0}};
 
 struct SystemThreadExecutionCheckpoint final {
   ::dataflow::RootThreadLaunchRef root;
@@ -37,6 +38,22 @@ struct SystemGraphExecutionCheckpoint final {
   ArtifactRootReference target;
 };
 
+enum class SystemExecutionBindingCheckpointIncompleteKind : std::uint8_t {
+  ImportedSpatialCapacity,
+};
+
+/// Exact unresolved condition retained with an execution-binding checkpoint.
+/// Dependency roots are precisely the selected root threads resident on the
+/// capacity witness; service and route decisions have not yet been created.
+struct SystemExecutionBindingCheckpointIncomplete final {
+  SystemExecutionBindingCheckpointIncompleteKind kind =
+      SystemExecutionBindingCheckpointIncompleteKind::ImportedSpatialCapacity;
+  ::loom::fabric::AccCoreOccurrenceRef witnessAccCore;
+  std::uint64_t witnessUsage = 0;
+  std::uint64_t witnessCapacity = 0;
+  std::vector<::dataflow::RootThreadLaunchRef> dependencyRoots;
+};
+
 /// Persisted semantic projection of one incomplete System PnR execution-
 /// binding assignment. It contains no service, route, resource-use, or
 /// legality claim; a child PnR invocation may use it only as an initializer
@@ -46,6 +63,16 @@ public:
   const ArtifactRootReference &reference() const { return reference_; }
   const ArtifactRootReference &dataflow() const { return dataflow_; }
   const ArtifactRootReference &system() const { return system_; }
+  const ArtifactRootReference &constraints() const { return constraints_; }
+  const ComponentViewDigest &resolvedPnrConfigDigest() const {
+    return resolvedPnrConfigDigest_;
+  }
+  const ComponentViewDigest &searchDomainDigest() const {
+    return searchDomainDigest_;
+  }
+  const SystemExecutionBindingCheckpointIncomplete &incomplete() const {
+    return incomplete_;
+  }
   llvm::ArrayRef<SystemThreadExecutionCheckpoint> threadBindings() const {
     return threadBindings_;
   }
@@ -56,22 +83,35 @@ public:
 private:
   FinalizedSystemExecutionBindingCheckpoint(
       ArtifactRootReference reference, ArtifactRootReference dataflow,
-      ArtifactRootReference system,
+      ArtifactRootReference system, ArtifactRootReference constraints,
+      ComponentViewDigest resolvedPnrConfigDigest,
+      ComponentViewDigest searchDomainDigest,
+      SystemExecutionBindingCheckpointIncomplete incomplete,
       std::vector<SystemThreadExecutionCheckpoint> threadBindings,
       std::vector<SystemGraphExecutionCheckpoint> graphBindings)
       : reference_(std::move(reference)), dataflow_(std::move(dataflow)),
-        system_(std::move(system)), threadBindings_(std::move(threadBindings)),
+        system_(std::move(system)), constraints_(std::move(constraints)),
+        resolvedPnrConfigDigest_(std::move(resolvedPnrConfigDigest)),
+        searchDomainDigest_(std::move(searchDomainDigest)),
+        incomplete_(std::move(incomplete)),
+        threadBindings_(std::move(threadBindings)),
         graphBindings_(std::move(graphBindings)) {}
 
   ArtifactRootReference reference_;
   ArtifactRootReference dataflow_;
   ArtifactRootReference system_;
+  ArtifactRootReference constraints_;
+  ComponentViewDigest resolvedPnrConfigDigest_;
+  ComponentViewDigest searchDomainDigest_;
+  SystemExecutionBindingCheckpointIncomplete incomplete_;
   std::vector<SystemThreadExecutionCheckpoint> threadBindings_;
   std::vector<SystemGraphExecutionCheckpoint> graphBindings_;
 
   friend llvm::Expected<FinalizedSystemExecutionBindingCheckpoint>
   finalizeSystemExecutionBindingCheckpoint(
       ArtifactRootReference, ArtifactRootReference,
+      ArtifactRootReference, ComponentViewDigest, ComponentViewDigest,
+      SystemExecutionBindingCheckpointIncomplete,
       std::vector<SystemThreadExecutionCheckpoint>,
       std::vector<SystemGraphExecutionCheckpoint>, const ArtifactStore &);
   friend llvm::Expected<FinalizedSystemExecutionBindingCheckpoint>
@@ -82,6 +122,9 @@ private:
 llvm::Expected<FinalizedSystemExecutionBindingCheckpoint>
 finalizeSystemExecutionBindingCheckpoint(
     ArtifactRootReference dataflow, ArtifactRootReference system,
+    ArtifactRootReference constraints, ComponentViewDigest resolvedPnrConfigDigest,
+    ComponentViewDigest searchDomainDigest,
+    SystemExecutionBindingCheckpointIncomplete incomplete,
     std::vector<SystemThreadExecutionCheckpoint> threadBindings,
     std::vector<SystemGraphExecutionCheckpoint> graphBindings,
     const ArtifactStore &store);

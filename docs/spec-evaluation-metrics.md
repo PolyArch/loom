@@ -860,3 +860,10 @@ Stable tests cover:
 
 Tests must not enumerate every registry entry, PVT permutation, clock ratio,
 tool report field, JSON formatting variant, or DSE policy combination.
+### Feedback Evaluation Cost
+
+Deadlock-risk projection, cache hit/miss, local repair work, avoided PnR calls,
+and child-promotion work are reported as separate evaluation observations.
+They are not hidden inside an application QoR scalar or a provider-local
+penalty. Missing runtime, timing, area, power, or migration measurements remain
+typed `Unsupported`.

@@ -6,7 +6,10 @@
 #include "Common/ArtifactStore.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefImport.h"
+
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <array>
@@ -14,6 +17,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -198,7 +202,9 @@ bool isRejectedDraftError(llvm::Error error, std::string &unexpected) {
 
 struct MaterializedSystemChild final {
   loom::fabric::FinalizedFabricRoot root;
-  std::vector<SystemCompositionAccCoreCorrespondence> accCoreCorrespondence;
+  std::vector<loom::fabric::FabricSystemEntityCorrespondence> entities;
+  std::vector<loom::fabric::FabricSystemTransferPatternCorrespondence>
+      transferPatterns;
 };
 
 std::vector<loom::fabric::AccCoreOccurrenceRef>
@@ -224,8 +230,6 @@ materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
   auto parentView = loom::fabric::requireSystemRoot(parent.view());
   if (!parentView)
     return parentView.takeError();
-  std::vector<loom::fabric::AccCoreOccurrenceRef> trackedParentAccCores =
-      preservedParentAccCores(*parentView, decision);
   loom::adg::DesignBuilder design(store);
   auto builder = design.deriveSystem(parent, modules);
   if (!builder)
@@ -242,26 +246,32 @@ materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
       return std::optional<MaterializedSystemChild>();
     return llvm::createStringError(llvm::inconvertibleErrorCode(), unexpected);
   }
-  auto finalized = std::move(design).finalizeDerivedSystemWithTrackedAccCores(
-      trackedParentAccCores);
+  auto finalized =
+      std::move(design).finalizeDerivedSystemWithCorrespondence();
   if (!finalized) {
     std::string unexpected;
     if (isRejectedDraftError(finalized.takeError(), unexpected))
       return std::optional<MaterializedSystemChild>();
     return llvm::createStringError(llvm::inconvertibleErrorCode(), unexpected);
   }
-  if (finalized->trackedAccCores.size() != trackedParentAccCores.size())
-    return invalid("System finalizer lost tracked AccCore correspondence");
   if (llvm::Error error =
           validateHardwareTopologyQuality(finalized->root.view()))
     return std::move(error);
-  std::vector<SystemCompositionAccCoreCorrespondence> correspondence;
-  correspondence.reserve(trackedParentAccCores.size());
-  for (auto [parentCore, childCore] :
-       llvm::zip_equal(trackedParentAccCores, finalized->trackedAccCores))
-    correspondence.push_back({parentCore, childCore});
+
+  std::vector<loom::fabric::FabricSystemEntityCorrespondence> entities;
+  for (const auto &entry : finalized->entities) {
+    const auto parentKind = parentView->artifact().entityKind(entry.source.id);
+    if (parentKind && *parentKind == entry.source.kind)
+      entities.push_back(entry);
+  }
+  std::vector<loom::fabric::FabricSystemTransferPatternCorrespondence>
+      transferPatterns;
+  for (const auto &entry : finalized->transferPatterns)
+    if (parentView->transferPattern(entry.source))
+      transferPatterns.push_back(entry);
   return std::optional<MaterializedSystemChild>(MaterializedSystemChild{
-      std::move(finalized->root), std::move(correspondence)});
+      std::move(finalized->root), std::move(entities),
+      std::move(transferPatterns)});
 }
 
 llvm::Error validateLineagePayload(
@@ -305,10 +315,83 @@ llvm::Error validateLineagePayload(
   if (llvm::Error error = validateDecisionAgainstParent(
           decision->decision, parent->view(), selectedModules))
     return error;
+  std::vector<loom::fabric::FabricSystemEntityReference> removedEntities;
+  if (const auto *remove =
+          std::get_if<RemoveAccCore>(&decision->decision)) {
+    removedEntities.push_back(
+        {loom::fabric::FabricEntityKind::AccCoreOccurrence,
+         remove->target.id()});
+    for (loom::fabric::SystemServiceEndpointRef endpoint :
+         parentView->artifact().systemServiceEndpoints()) {
+      const auto *owner = parentView->serviceEndpointOwner(endpoint);
+      if (owner && loom::fabric::inventoryOwnerBelongsToAccCore(
+                       owner->owner(), remove->target))
+        removedEntities.push_back(
+            {loom::fabric::FabricEntityKind::SystemServiceEndpoint,
+             endpoint.id()});
+    }
+  }
+  std::vector<loom::fabric::FabricSystemEntityReference> expectedEntities;
+  for (loom::fabric::FabricEntityId id = 0;; ++id) {
+    const auto kind = parentView->artifact().entityKind(id);
+    if (!kind)
+      break;
+    loom::fabric::FabricSystemEntityReference reference{*kind, id};
+    if (llvm::none_of(removedEntities, [&](const auto &removed) {
+          return reference == removed;
+        }))
+      expectedEntities.push_back(reference);
+  }
+  llvm::sort(expectedEntities, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.kind, lhs.id) < std::tie(rhs.kind, rhs.id);
+  });
+  if (decision->entities.size() != expectedEntities.size()) {
+    std::string missing;
+    llvm::raw_string_ostream stream(missing);
+    for (const auto &expected : expectedEntities)
+      if (llvm::none_of(decision->entities, [&](const auto &entry) {
+            return entry.source == expected;
+          }))
+        stream << " kind=" << static_cast<unsigned>(expected.kind)
+               << " id=" << expected.id;
+    return invalid("System lineage covers " +
+                   llvm::Twine(decision->entities.size()) + " of " +
+                   llvm::Twine(expectedEntities.size()) +
+                   " preserved entities; missing:" + stream.str());
+  }
+  for (auto [expected, entry] :
+       llvm::zip_equal(expectedEntities, decision->entities)) {
+    if (entry.source != expected || entry.target.kind != expected.kind)
+      return invalid("System lineage changed canonical parent entity order");
+    const auto childKind = childView->artifact().entityKind(entry.target.id);
+    if (!childKind || *childKind != entry.target.kind)
+      return invalid("System lineage target is absent from the child");
+  }
+
+  std::vector<loom::fabric::FabricTransferPatternRef> expectedPatterns;
+  for (loom::fabric::SystemTransportResourceRef resource :
+       parentView->transportResources()) {
+    const auto patterns = parentView->transferPatterns(resource);
+    expectedPatterns.insert(expectedPatterns.end(), patterns.begin(),
+                            patterns.end());
+  }
+  llvm::sort(expectedPatterns, [](const auto &lhs, const auto &rhs) {
+    return loom::fabric::canonicalFabricBytes(lhs) <
+           loom::fabric::canonicalFabricBytes(rhs);
+  });
+  if (decision->transferPatterns.size() != expectedPatterns.size())
+    return invalid("System lineage covers " +
+                   llvm::Twine(decision->transferPatterns.size()) + " of " +
+                   llvm::Twine(expectedPatterns.size()) +
+                   " preserved transfer patterns");
+  for (auto [expected, entry] :
+       llvm::zip_equal(expectedPatterns, decision->transferPatterns)) {
+    if (entry.source != expected || !childView->transferPattern(entry.target))
+      return invalid("System transfer-pattern lineage is not exact");
+  }
+
   const auto expected =
       preservedParentAccCores(*parentView, decision->decision);
-  if (decision->accCoreCorrespondence.size() != expected.size())
-    return invalid("System lineage does not cover every preserved AccCore");
   const auto targetModule = [](const loom::fabric::FabricArtifactView &root,
                                const loom::fabric::FabricSystemRootView &view,
                                loom::fabric::AccCoreOccurrenceRef core)
@@ -318,22 +401,24 @@ llvm::Error validateLineagePayload(
       return invalid("System lineage AccCore has no exact Module target");
     return root.importedModules()[target->dependencyOrdinal].identity();
   };
-  for (auto [ordinal, entry] :
-       llvm::enumerate(decision->accCoreCorrespondence)) {
-    if (entry.parent != expected[ordinal])
-      return invalid("System lineage changed canonical parent AccCore order");
-    if (llvm::Error error =
-            loom::fabric::validateFabricRef(child->view(), entry.child))
-      return error;
-    auto parentModule = targetModule(parent->view(), *parentView, entry.parent);
+  for (loom::fabric::AccCoreOccurrenceRef parentCore : expected) {
+    const auto entry = llvm::find_if(decision->entities, [&](const auto &row) {
+      return row.source.kind ==
+                 loom::fabric::FabricEntityKind::AccCoreOccurrence &&
+             row.source.id == parentCore.id();
+    });
+    if (entry == decision->entities.end())
+      return invalid("System lineage omits a preserved AccCore");
+    const loom::fabric::AccCoreOccurrenceRef childCore(entry->target.id);
+    auto parentModule = targetModule(parent->view(), *parentView, parentCore);
     if (!parentModule)
       return parentModule.takeError();
-    auto childModule = targetModule(child->view(), *childView, entry.child);
+    auto childModule = targetModule(child->view(), *childView, childCore);
     if (!childModule)
       return childModule.takeError();
     const auto *replacement =
         std::get_if<ReplaceSpatialAttachment>(&decision->decision);
-    if (replacement && entry.parent == replacement->target) {
+    if (replacement && parentCore == replacement->target) {
       if (*childModule != replacement->module.artifact)
         return invalid(
             "System lineage replacement selects the wrong AccCore Module");
@@ -445,7 +530,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
           childReference,
           {parentReference},
           encodeSystemCompositionDecision(parentReference, decision,
-                                          (*child)->accCoreCorrespondence)});
+                                          (*child)->entities,
+                                          (*child)->transferPatterns)});
     }
   }
   return CandidateGeneratorProviderResult{

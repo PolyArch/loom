@@ -170,14 +170,27 @@ llvm::Error resolveInputBindings(std::vector<PlanInputBinding> &bindings,
     }
 
     auto &join = std::get<BoundedPlanOutputJoin>(binding);
-    if (join.outputs.empty() || join.maximumArtifacts == 0)
-      return invalid("bounded output join requires prior outputs and a "
-                     "positive artifact bound");
+    if ((join.outputs.empty() && join.exactArtifacts.empty()) ||
+        join.maximumArtifacts == 0 ||
+        join.producerArtifactLimit() < join.maximumArtifacts)
+      return invalid("bounded output join requires an exact or prior input "
+                     "and a positive artifact bound with no smaller producer "
+                     "bound");
     if (!llvm::is_sorted(join.outputs) ||
         std::adjacent_find(join.outputs.begin(), join.outputs.end()) !=
             join.outputs.end())
       return invalid("bounded output join sources are not canonical and "
                      "unique");
+    for (const ArtifactRootReference &artifact : join.exactArtifacts)
+      if (!matchesSchema(artifact, expected[inputIndex].schema))
+        return invalid(
+            "bounded output join exact artifact has the wrong schema");
+    llvm::sort(join.exactArtifacts, artifactRootReferenceLess);
+    join.exactArtifacts.erase(
+        std::unique(join.exactArtifacts.begin(), join.exactArtifacts.end()),
+        join.exactArtifacts.end());
+    if (join.exactArtifacts.size() > join.maximumArtifacts)
+      return invalid("bounded output join exact artifacts exceed its bound");
     std::optional<PlanValueDescriptor> joined;
     for (PlanOutputRef output : join.outputs) {
       auto descriptor =
@@ -197,9 +210,14 @@ llvm::Error resolveInputBindings(std::vector<PlanInputBinding> &bindings,
               joined->calibrationPartitionRole)
         return invalid("bounded output join mixes incompatible plan values");
     }
-    if (!compatible(*joined, expected[inputIndex]))
+    if (joined && !compatible(*joined, expected[inputIndex]))
       return invalid("bounded output join role, artifact schema, or "
                      "cardinality does not match its slot");
+    if (!joined &&
+        !planCardinalityContains(expected[inputIndex].cardinality,
+                                 join.exactArtifacts.size()))
+      return invalid("exact-only bounded output join violates its slot "
+                     "cardinality");
   }
   return llvm::Error::success();
 }
@@ -621,7 +639,7 @@ resolveRuntimeInput(const PlanInputBinding &input,
     return completed.resolve(*output).vec();
   }
   const auto &join = std::get<BoundedPlanOutputJoin>(input);
-  std::vector<ArtifactRootReference> artifacts;
+  std::vector<ArtifactRootReference> artifacts = join.exactArtifacts;
   for (PlanOutputRef output : join.outputs) {
     if (!completed.hasOutput(output))
       return invalid("bounded output join references an unavailable output");
@@ -674,7 +692,8 @@ deriveOutputDemands(const ResolvedDsePlan &plan,
         if (!join || !llvm::is_contained(join->outputs, produced))
           continue;
         referenced = true;
-        maximumArtifacts = std::max(maximumArtifacts, join->maximumArtifacts);
+        maximumArtifacts =
+            std::max(maximumArtifacts, join->producerArtifactLimit());
       }
     }
     demands.push_back(CandidateGeneratorOutputDemand{
@@ -697,10 +716,11 @@ public:
                                     GenerateInvocationRecord invocation,
                                     GenerateInvocationWorkSummary workSummary,
                                     std::optional<std::vector<std::uint8_t>>
-                                        feedback) {
+                                        feedback,
+                                    bool dispatched) {
     return completed.appendGenerate(std::move(invocation),
                                     std::move(workSummary),
-                                    std::move(feedback));
+                                    std::move(feedback), dispatched);
   }
 
   static void
@@ -986,10 +1006,15 @@ bool CompletedDsePlanExecution::hasOutput(PlanOutputRef output) const {
          std::get<PromoteNodeOutputs>(node).outputBindings.size();
 }
 
+bool CompletedDsePlanExecution::generateInvocationWasDispatched(
+    std::size_t ordinal) const {
+  return ordinal < generateDispatched_.size() && generateDispatched_[ordinal];
+}
+
 llvm::Error CompletedDsePlanExecution::appendGenerate(
     GenerateInvocationRecord invocation,
     GenerateInvocationWorkSummary workSummary,
-    std::optional<std::vector<std::uint8_t>> feedback) {
+    std::optional<std::vector<std::uint8_t>> feedback, bool dispatched) {
   if (invocation.planNodeOrdinal != nodeOutputs_.size())
     return invalid("Generate invocation ordinal does not follow plan order");
   if (workSummary.planNodeOrdinal != invocation.planNodeOrdinal)
@@ -1001,6 +1026,7 @@ llvm::Error CompletedDsePlanExecution::appendGenerate(
   const std::uint64_t planNodeOrdinal = invocation.planNodeOrdinal;
   generateInvocations_.push_back(std::move(invocation));
   generateWorkSummaries_.push_back(std::move(workSummary));
+  generateDispatched_.push_back(dispatched);
   if (feedback)
     generateFeedback_.push_back(
         {planNodeOrdinal, std::move(*feedback)});
@@ -1213,6 +1239,8 @@ llvm::StringRef toString(const DsePlanIncompleteReason &reason) {
             return "evidence_objective_unavailable";
           case PromotionAcquisitionIncompleteReason::Unsupported:
             return "evidence_unsupported";
+          case PromotionAcquisitionIncompleteReason::CancelledOrTimeout:
+            return "evidence_cancelled_or_timeout";
           }
         } else {
           return dse::toString(value);
@@ -1224,7 +1252,8 @@ llvm::StringRef toString(const DsePlanIncompleteReason &reason) {
 
 llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
     const ResolvedDseConfigView &view, const ArtifactStore &store,
-    const BlobStore &blobs, detail::DsePlanWorkExecutor *executor) {
+    const BlobStore &blobs, detail::DsePlanWorkExecutor *executor,
+    ExecutionControlView executionControl) {
   const ResolvedDsePlan &plan = view.plan();
   CompletedDsePlanExecution completed =
       DsePlanExecutionBuilder::createCompleted(view.digest());
@@ -1237,6 +1266,12 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
 
   for (std::size_t nodeIndex = 0; nodeIndex < plan.nodes().size();
        ++nodeIndex) {
+    if (executionControl.stopRequested())
+      return DsePlanExecutionOutcome{
+          DsePlanExecutionBuilder::incompleteGenerate(
+              static_cast<std::uint64_t>(nodeIndex),
+              CandidateGeneratorIncompleteReason::CancelledOrTimeout,
+              std::move(completed), true)};
     const ResolvedDsePlanNode &node = plan.nodes()[nodeIndex];
     if (executor && std::holds_alternative<ResolvedGeneratePlanNode>(node)) {
       std::vector<detail::DseGenerateExecutionTask> tasks;
@@ -1311,7 +1346,8 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
               task.planNodeOrdinal, std::move(result.workSummary)};
           if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
                   completed, std::move(invocationRecord),
-                  std::move(workSummary), std::move(result.ownerFeedback)))
+                  std::move(workSummary), std::move(result.ownerFeedback),
+                  result.dispatched))
             return std::move(error);
           if (canContinue(incomplete->reason)) {
             if (!retainedIncompleteness)
@@ -1337,7 +1373,7 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
             task.planNodeOrdinal, std::move(result.workSummary)};
         if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
                 completed, std::move(invocationRecord), std::move(workSummary),
-                std::move(result.ownerFeedback)))
+                std::move(result.ownerFeedback), result.dispatched))
           return std::move(error);
       }
       if (blockingIncompleteness)
@@ -1379,7 +1415,8 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
                                           store, blobs)
               : invokeCandidateGenerator(
                     inputs, *binding, store, blobs,
-                    CandidateGeneratorInvocationView({}, outputDemands));
+                    CandidateGeneratorInvocationView(executionControl,
+                                                     outputDemands));
       if (!result)
         return result.takeError();
       if (auto *incomplete = std::get_if<IncompleteCandidateGeneratorResult>(
@@ -1396,7 +1433,7 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
             std::move(result->workSummary)};
         if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
                 completed, std::move(invocationRecord), std::move(workSummary),
-                std::move(result->ownerFeedback)))
+                std::move(result->ownerFeedback), result->dispatched))
           return std::move(error);
         if (canContinue(incomplete->reason)) {
           if (!retainedIncompleteness)
@@ -1424,7 +1461,7 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
           std::move(result->workSummary)};
       if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
               completed, std::move(invocationRecord), std::move(workSummary),
-              std::move(result->ownerFeedback)))
+              std::move(result->ownerFeedback), result->dispatched))
         return std::move(error);
       continue;
     }
@@ -1564,7 +1601,16 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
 llvm::Expected<DsePlanExecutionOutcome>
 executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
                const BlobStore &blobs) {
-  return detail::executeDsePlanWithWorkExecutor(view, store, blobs, nullptr);
+  return detail::executeDsePlanWithWorkExecutor(view, store, blobs, nullptr,
+                                                {});
+}
+
+llvm::Expected<DsePlanExecutionOutcome>
+executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
+               const BlobStore &blobs,
+               const ExecutionControlView &executionControl) {
+  return detail::executeDsePlanWithWorkExecutor(view, store, blobs, nullptr,
+                                                executionControl);
 }
 
 } // namespace loom::dse

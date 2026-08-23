@@ -21,7 +21,9 @@ bindRootCompleteSystemPnrCandidateGeneratorInputs(
     const ArtifactRootReference &dataflow,
     llvm::ArrayRef<ArtifactRootReference> spatialMappingCandidates,
     const ArtifactRootReference &fabric,
-    llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles);
+    llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
+    std::optional<ArtifactRootReference> checkpointMigrationSeed = std::nullopt,
+    std::optional<ArtifactRootReference> finalizedMigrationSeed = std::nullopt);
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolveRootCompleteSystemPnrCandidateGeneratorBinding(
@@ -37,7 +39,9 @@ bindApplicationSystemPnrCandidateGeneratorInputs(
     llvm::ArrayRef<ArtifactRootReference> spatialMappingCandidates,
     const ArtifactRootReference &fabric,
     llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
-    const ArtifactRootReference &systemConstraints);
+    const ArtifactRootReference &systemConstraints,
+    std::optional<ArtifactRootReference> checkpointMigrationSeed = std::nullopt,
+    std::optional<ArtifactRootReference> finalizedMigrationSeed = std::nullopt);
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolveApplicationSystemPnrCandidateGeneratorBinding(

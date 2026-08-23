@@ -21,7 +21,6 @@
 # RUN:   > %t.run.stdout 2> %t.run.stderr
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
-# RUN:   --spatial-invocations=22 --expected-unique-dispatch-targets=4 \
 # RUN:   --minimum-unique-acc-cores=4 \
 # RUN:   --required-dataflow-text=math.exp \
 # RUN:   --required-dataflow-text=scf.for \

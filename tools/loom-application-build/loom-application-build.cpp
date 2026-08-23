@@ -3,6 +3,7 @@
 #include "Application/BuildDiagnostics.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Common/ExecutionControl.h"
 #include "Config/ResolvedConfig.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Deployment/Package.h"
@@ -97,11 +98,111 @@ llvm::cl::list<std::string> operatorProtocolSymbols(
     "operator-protocol-symbol",
     llvm::cl::desc("Select a defined callable as an operator protocol root"),
     llvm::cl::value_desc("symbol"), llvm::cl::ZeroOrMore);
+llvm::cl::opt<std::uint64_t> mappingTechCandidateLimit(
+    "mapping-tech-candidate-limit",
+    llvm::cl::desc("maximum TechMapping candidates admitted to Spatial PnR "
+                   "for each target Module"),
+    llvm::cl::init(8));
+inline constexpr std::uint64_t kDefaultMappingWallTimeLimitMilliseconds =
+    120000;
+llvm::cl::opt<std::uint64_t> mappingWallTimeLimitMilliseconds(
+    "mapping-wall-time-limit-ms",
+    llvm::cl::desc("cooperative pre-Mapping and Mapping wall-time limit"),
+    llvm::cl::init(kDefaultMappingWallTimeLimitMilliseconds));
+llvm::cl::opt<std::string> mappingStoppingPolicy(
+    "mapping-stopping-policy",
+    llvm::cl::desc(
+        "Mapping stopping policy: first_verified or bounded_quality"),
+    llvm::cl::init("first_verified"));
+
+llvm::Error productError(llvm::StringRef kind, const llvm::Twine &message);
+
+llvm::Expected<loom::dse::JointDesignStoppingPolicy>
+parseMappingStoppingPolicy() {
+  if (mappingStoppingPolicy == "first_verified")
+    return loom::dse::JointDesignStoppingPolicy::FirstVerified;
+  if (mappingStoppingPolicy == "bounded_quality")
+    return loom::dse::JointDesignStoppingPolicy::BoundedQuality;
+  return productError("loom_mapping_stopping_policy_invalid",
+                      "expected first_verified or bounded_quality");
+}
 
 llvm::Error productError(llvm::StringRef kind, const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  kind + ": " + message);
 }
+
+struct ProductMappingExecutionDeadline final {
+  std::uint64_t requestedMilliseconds = 0;
+  std::uint64_t notAfterUnixNanoseconds = 0;
+  MonotonicClock::time_point begin = MonotonicClock::now();
+  MonotonicClock::time_point notAfter = MonotonicClock::time_point::max();
+
+  bool stopRequested() const { return MonotonicClock::now() >= notAfter; }
+
+  std::optional<MonotonicClock::duration> remainingTime() const {
+    const auto now = MonotonicClock::now();
+    return now >= notAfter ? MonotonicClock::duration::zero() : notAfter - now;
+  }
+};
+
+bool productMappingStopRequested(const void *opaque) {
+  return static_cast<const ProductMappingExecutionDeadline *>(opaque)
+      ->stopRequested();
+}
+
+std::optional<MonotonicClock::duration>
+productMappingRemainingTime(const void *opaque) {
+  return static_cast<const ProductMappingExecutionDeadline *>(opaque)
+      ->remainingTime();
+}
+
+llvm::Expected<std::optional<ProductMappingExecutionDeadline>>
+makeProductMappingExecutionDeadline() {
+  const std::uint64_t requested = mappingWallTimeLimitMilliseconds;
+  if (requested == 0)
+    return productError("loom_mapping_execution_policy_invalid",
+                        "Mapping wall-time limit must be positive");
+  constexpr std::uint64_t nanosecondsPerMillisecond = 1000000;
+  if (requested >
+      std::numeric_limits<std::uint64_t>::max() / nanosecondsPerMillisecond)
+    return productError("loom_mapping_execution_policy_invalid",
+                        "Mapping wall-time limit overflows nanoseconds");
+  const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
+  const auto signedNow =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+  if (signedNow <= 0)
+    return productError("loom_mapping_execution_policy_invalid",
+                        "system clock cannot represent a Mapping deadline");
+  const std::uint64_t now = static_cast<std::uint64_t>(signedNow);
+  const std::uint64_t duration = requested * nanosecondsPerMillisecond;
+  if (now > std::numeric_limits<std::uint64_t>::max() - duration)
+    return productError("loom_mapping_execution_policy_invalid",
+                        "Mapping deadline overflows the system clock");
+  const auto begin = MonotonicClock::now();
+  return std::optional<ProductMappingExecutionDeadline>{
+      ProductMappingExecutionDeadline{
+          requested, now + duration, begin,
+          begin + std::chrono::milliseconds(requested)}};
+}
+
+class ProductMappingExecutionPolicyReporter final {
+public:
+  explicit ProductMappingExecutionPolicyReporter(
+      const std::optional<ProductMappingExecutionDeadline> &deadline)
+      : deadline_(deadline) {}
+
+  ~ProductMappingExecutionPolicyReporter() {
+    if (!deadline_)
+      return;
+    loom::application::emitApplicationMappingExecutionPolicyStatistics(
+        {deadline_->requestedMilliseconds, deadline_->notAfterUnixNanoseconds,
+         elapsedNanoseconds(deadline_->begin), deadline_->stopRequested()});
+  }
+
+private:
+  const std::optional<ProductMappingExecutionDeadline> &deadline_;
+};
 
 class ProductWorkspace final {
 public:
@@ -127,10 +228,11 @@ public:
     llvm::sys::path::append(pattern, ("." + filename + ".loom-work").str());
     llvm::SmallString<256> root;
     if (std::error_code error =
-            llvm::sys::fs::createUniqueDirectory(pattern, root))
+            llvm::sys::fs::createUniqueDirectory(pattern, root)) {
       return productError("loom_product_workspace_invalid",
                           "cannot create bounded workspace at '" + pattern +
                               "': " + error.message());
+    }
     auto workspace = std::unique_ptr<ProductWorkspace>(
         new ProductWorkspace(root.str(), destination.str()));
     for (llvm::StringRef directory :
@@ -392,7 +494,9 @@ importProductFinalLink(llvm::LLVMContext &context) {
 
 llvm::Expected<loom::application::PreparedApplicationBuild>
 prepareMappedApplication(const llvm::Module &module,
-                         PreparedProductTarget &target) {
+                         PreparedProductTarget &target,
+                         loom::ExecutionControlView executionControl,
+                         loom::dse::JointDesignStoppingPolicy stoppingPolicy) {
   constexpr std::uint64_t kSoftwareFrontierLimit = 8;
   constexpr std::uint64_t kHardwareFrontierLimit = 8;
   constexpr std::uint64_t kSpatialMappingFrontierLimit = 32;
@@ -407,7 +511,7 @@ prepareMappedApplication(const llvm::Module &module,
 
   auto jointPolicy = loom::dse::JointDesignPolicy::get(
       kSoftwareFrontierLimit, kHardwareFrontierLimit, kSoftwareFrontierLimit,
-      kSpatialMappingFrontierLimit);
+      mappingTechCandidateLimit, kSpatialMappingFrontierLimit);
   if (!jointPolicy)
     return jointPolicy.takeError();
   loom::frontend::PreMappingCompilationOptions compilationOptions;
@@ -418,6 +522,8 @@ prepareMappedApplication(const llvm::Module &module,
        1}};
   preMappingOptions.ownership.selectionMode =
       loom::dse::StructuredOwnershipSelectionMode::SemanticConformance;
+  preMappingOptions.frontier.stoppingPolicy = stoppingPolicy;
+  preMappingOptions.executionControl = executionControl;
   loom::application::ApplicationSourceInvocation sourceInvocation;
   sourceInvocation.entrySymbol = "main";
   sourceInvocation.observeReturnValue = !entry->getReturnType()->isVoidTy();
@@ -427,9 +533,13 @@ prepareMappedApplication(const llvm::Module &module,
       {std::move(sourceInvocation),
        std::vector<std::string>(operatorProtocolSymbols.begin(),
                                 operatorProtocolSymbols.end()),
-       target.system.reference(), target.physicalTimingProfiles, target.config,
-       std::move(*jointPolicy), std::move(compilationOptions),
-       std::move(preMappingOptions)},
+       target.system.reference(),
+       target.physicalTimingProfiles,
+       target.config,
+       std::move(*jointPolicy),
+       std::move(compilationOptions),
+       std::move(preMappingOptions),
+       {}},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!outcome)
     return outcome.takeError();
@@ -444,6 +554,14 @@ prepareMappedApplication(const llvm::Module &module,
                                 std::numeric_limits<std::uint64_t>::max())) +
                             " with reason " +
                             loom::dse::toString(incomplete->reason));
+  if (auto *incomplete = std::get_if<
+          loom::application::IncompleteApplicationResourceTimePlanning>(
+          &*outcome))
+    return productError(
+        "loom_resource_time_planning_incomplete",
+        "resource-time planning ended with reason " +
+            loom::dse::resourceTimeFrontierIncompleteReasonSpelling(
+                incomplete->reason));
   if (std::holds_alternative<loom::dse::CompletedPreMappingNoFeasibleCandidate>(
           *outcome))
     return productError("loom_pre_mapping_no_feasible_candidate",
@@ -462,13 +580,22 @@ prepareMappedApplication(const llvm::Module &module,
                         "root has no replaceable direct invocation boundary "
                         "for launch " +
                             llvm::Twine(unsupported.root.entity.value()));
+  case loom::application::ApplicationBuildUnsupportedKind::
+      DynamicInvocationBoundary:
+    return productError(
+        "loom_application_unsupported",
+        "dynamic invocation value capture is not exact for launch " +
+            llvm::Twine(unsupported.root.entity.value()));
   }
   llvm_unreachable("closed ApplicationBuildUnsupportedKind");
 }
 
-llvm::Expected<loom::dse::JointDesignExecution> executeProductMapping(
+llvm::Expected<loom::application::ApplicationMappingExecution>
+executeProductMapping(
     const loom::application::PreparedApplicationBuild &prepared,
-    PreparedProductTarget &target) {
+    PreparedProductTarget &target,
+    std::optional<std::uint64_t> dispatchNotAfterUnixNanoseconds,
+    loom::dse::JointDesignStoppingPolicy stoppingPolicy) {
   auto producer = loom::dse::DseProducerSemanticBuildIdentity::get(
       loom::application::applicationBuildProducerIdentity);
   if (!producer)
@@ -479,37 +606,48 @@ llvm::Expected<loom::dse::JointDesignExecution> executeProductMapping(
   auto claim = loom::dse::SiteResourceClaim::get(1, 0, 0);
   if (!claim)
     return claim.takeError();
-  auto policy = loom::dse::PlanExecutionPolicy::get(1, std::move(*claim));
+  auto policy = loom::dse::PlanExecutionPolicy::get(
+      1, std::move(*claim), std::nullopt, {}, std::nullopt,
+      dispatchNotAfterUnixNanoseconds);
   if (!policy)
     return policy.takeError();
+  std::optional<loom::dse::JointBoundedQualityPolicy> boundedQuality;
+  if (stoppingPolicy == loom::dse::JointDesignStoppingPolicy::BoundedQuality) {
+    auto quality = loom::application::makeApplicationBoundedQualityPolicy(
+        prepared, *policy, target.workspace->artifacts(),
+        target.workspace->blobs());
+    if (!quality)
+      return quality.takeError();
+    boundedQuality.emplace(std::move(*quality));
+  }
   auto execution = loom::application::executeApplicationMapping(
       prepared,
       {std::move(*producer),
        target.workspace->journalPath().str(),
        {},
+       std::move(boundedQuality),
        std::move(*capacity),
        std::move(*policy)},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!execution)
     return execution.takeError();
   std::size_t mappingCount = 0;
-  for (const loom::dse::JointMappedPair &pair : execution->mappedPairs)
+  for (const loom::dse::JointMappedPair &pair :
+       execution->execution.mappedPairs)
     mappingCount += pair.systemMappings.size();
   if (const auto *incomplete =
           std::get_if<loom::dse::IncompleteDsePlanExecution>(
-              &execution->planExecution)) {
+              &execution->execution.planExecution)) {
     const auto *generationReason =
         std::get_if<loom::dse::CandidateGeneratorIncompleteReason>(
             &incomplete->reason());
     const bool hasUsableBoundedResult =
         mappingCount != 0 && !incomplete->executionStopped() &&
         generationReason &&
-        (*generationReason ==
-             loom::dse::CandidateGeneratorIncompleteReason::
-                 SemanticLimitReached ||
-         *generationReason ==
-             loom::dse::CandidateGeneratorIncompleteReason::
-                 ProofNotEstablished);
+        (*generationReason == loom::dse::CandidateGeneratorIncompleteReason::
+                                  SemanticLimitReached ||
+         *generationReason == loom::dse::CandidateGeneratorIncompleteReason::
+                                  ProofNotEstablished);
     if (!hasUsableBoundedResult)
       return productError("loom_mapping_incomplete",
                           "joint Mapping ended at node " +
@@ -520,15 +658,43 @@ llvm::Expected<loom::dse::JointDesignExecution> executeProductMapping(
   if (mappingCount == 0)
     return productError("loom_mapping_no_feasible_candidate",
                         "joint Mapping selected no SystemMapping");
+  if (stoppingPolicy == loom::dse::JointDesignStoppingPolicy::BoundedQuality &&
+      execution->execution.summary.qualityDisposition !=
+          loom::dse::JointDesignQualityDisposition::Complete) {
+    return productError(
+        "loom_mapping_quality_incomplete",
+        "BoundedQuality did not establish a complete application QoR result");
+  }
+  if (!execution->execution.summary.selectedMapping)
+    return productError("loom_mapping_selection_incomplete",
+                        "Mapping returned candidates without a selected root");
   return std::move(*execution);
 }
 
 llvm::Error publishProductDeployment(const ProductFinalLinkArtifacts &finalLink,
                                      PreparedProductTarget &target) {
-  auto prepared = prepareMappedApplication(*finalLink.linkedModule, target);
+  auto deadline = makeProductMappingExecutionDeadline();
+  if (!deadline)
+    return deadline.takeError();
+  auto stoppingPolicy = parseMappingStoppingPolicy();
+  if (!stoppingPolicy)
+    return stoppingPolicy.takeError();
+  ProductMappingExecutionPolicyReporter reporter(*deadline);
+  const loom::ExecutionControlView executionControl =
+      *deadline
+          ? loom::ExecutionControlView{&**deadline, productMappingStopRequested,
+                                       productMappingRemainingTime}
+          : loom::ExecutionControlView{};
+  auto prepared = prepareMappedApplication(*finalLink.linkedModule, target,
+                                           executionControl, *stoppingPolicy);
   if (!prepared)
     return prepared.takeError();
-  auto mapping = executeProductMapping(*prepared, target);
+  auto mapping = executeProductMapping(
+      *prepared, target,
+      *deadline
+          ? std::optional<std::uint64_t>{(*deadline)->notAfterUnixNanoseconds}
+          : std::nullopt,
+      *stoppingPolicy);
   if (!mapping)
     return mapping.takeError();
   loom::mapping::SystemMappingImportSession systemMappingImportSession(

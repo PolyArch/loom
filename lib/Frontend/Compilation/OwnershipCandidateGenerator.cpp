@@ -1666,7 +1666,33 @@ prepareSpatialOwnershipSelection(
           return point.forallOwnershipShape.has_value();
         }))
       return invalid("selected forall requires an explicit ownership shape");
-    return invalid("decision is not in the selected scope's typed domain");
+    std::string diagnostic =
+        "decision is not in the selected scope's typed domain (domain=" +
+        std::to_string(domain->size()) + ", requested_address=" +
+        (decision.addressProjection
+             ? std::to_string(decision.rootRelativeIndexWidth().value_or(0))
+             : std::string("none")) +
+        ", requested_forall=" +
+        (decision.forallOwnershipShape ? "present" : "none") +
+        ", requested_call_specialization=" +
+        (decision.directCallSpecializationShape ? "present" : "none") +
+        ", requested_call_inline=" +
+        (decision.directCallInlining ? "present" : "none") + ")";
+    if (!domain->empty()) {
+      const SpatialOwnershipDecisionPoint &first = domain->front();
+      diagnostic +=
+          " first=(address=" +
+          (first.addressProjection
+               ? std::to_string(first.rootRelativeIndexWidth().value_or(0))
+               : std::string("none")) +
+          ", forall=" +
+          (first.forallOwnershipShape ? "present" : "none") +
+          ", call_specialization=" +
+          (first.directCallSpecializationShape ? "present" : "none") +
+          ", call_inline=" +
+          (first.directCallInlining ? "present" : "none") + ")";
+    }
+    return invalid(diagnostic);
   }
 
   auto selection = cloneSelectedOperation(

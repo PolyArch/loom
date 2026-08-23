@@ -176,6 +176,7 @@ enum class PromotionAcquisitionIncompleteReason : std::uint8_t {
   SemanticWorkLimit,
   ObjectiveUnavailable,
   Unsupported,
+  CancelledOrTimeout,
 };
 
 struct IncompletePromotionAcquisition final {

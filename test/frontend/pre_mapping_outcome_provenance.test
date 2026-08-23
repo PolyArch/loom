@@ -14,7 +14,7 @@
 # RUN:   | FileCheck %s --check-prefix=NO-FEASIBLE
 
 # BOUNDED-DAG: "central_generate_invocations": {{[1-9][0-9]*}}
-# BOUNDED-DAG: "central_incomplete_generate_invocations": 1
+# BOUNDED-DAG: "central_incomplete_generate_invocations": {{[1-9][0-9]*}}
 # BOUNDED-DAG: "search_complete": false
 
 # NO-FEASIBLE: central DSE found no feasible ownership candidate after

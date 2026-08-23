@@ -1,5 +1,6 @@
 #include "PnR/HandshakeCandidateState.h"
 
+#include "Common/MappingDebugLog.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -96,6 +97,8 @@ struct HandshakeCandidateScratchStorage final {
   std::vector<std::uint64_t> backwardMarks;
   std::vector<PnrIndex> backwardWorklist;
   std::vector<PnrIndex> reorderedNodes;
+  std::vector<PnrIndex> unaffectedReorderedNodes;
+  std::vector<PnrIndex> forwardReorderedNodes;
   std::uint64_t reachabilityEpoch = 0;
   std::uint64_t backwardEpoch = 0;
 };
@@ -965,22 +968,31 @@ llvm::Error reorderForInsertedHandshakeArc(
   }
 
   storage.reorderedNodes.clear();
-  storage.reorderedNodes.reserve(static_cast<std::size_t>(upper) - lower + 1);
-  const auto appendClass = [&](unsigned kind) {
-    for (PnrIndex rank = lower; rank <= upper; ++rank) {
-      const PnrIndex node = graph.order[rank];
-      const bool forward = storage.reachabilityMarks[node] == forwardEpoch;
-      const bool backward = storage.backwardMarks[node] == backwardEpoch;
-      if (forward && backward)
-        continue;
-      if ((kind == 0 && backward) || (kind == 1 && !forward && !backward) ||
-          (kind == 2 && forward))
-        storage.reorderedNodes.push_back(node);
-    }
-  };
-  appendClass(0);
-  appendClass(1);
-  appendClass(2);
+  storage.unaffectedReorderedNodes.clear();
+  storage.forwardReorderedNodes.clear();
+  const std::size_t rankSpan = static_cast<std::size_t>(upper) - lower + 1;
+  storage.reorderedNodes.reserve(rankSpan);
+  storage.unaffectedReorderedNodes.reserve(rankSpan);
+  storage.forwardReorderedNodes.reserve(rankSpan);
+  for (PnrIndex rank = lower; rank <= upper; ++rank) {
+    const PnrIndex node = graph.order[rank];
+    const bool forward = storage.reachabilityMarks[node] == forwardEpoch;
+    const bool backward = storage.backwardMarks[node] == backwardEpoch;
+    if (forward && backward)
+      continue;
+    if (backward)
+      storage.reorderedNodes.push_back(node);
+    else if (forward)
+      storage.forwardReorderedNodes.push_back(node);
+    else
+      storage.unaffectedReorderedNodes.push_back(node);
+  }
+  storage.reorderedNodes.insert(storage.reorderedNodes.end(),
+                                storage.unaffectedReorderedNodes.begin(),
+                                storage.unaffectedReorderedNodes.end());
+  storage.reorderedNodes.insert(storage.reorderedNodes.end(),
+                                storage.forwardReorderedNodes.begin(),
+                                storage.forwardReorderedNodes.end());
   if (storage.reorderedNodes.size() !=
       static_cast<std::size_t>(upper) - lower + 1)
     return candidateError("handshake topology reorder found a cycle");
@@ -1129,6 +1141,8 @@ std::size_t HandshakeCandidateScratch::retainedStorageBytes() const {
          retainedBytes(storage_->backwardMarks) +
          retainedBytes(storage_->backwardWorklist) +
          retainedBytes(storage_->reorderedNodes) +
+         retainedBytes(storage_->unaffectedReorderedNodes) +
+         retainedBytes(storage_->forwardReorderedNodes) +
          retainedBytes(fragmentJournalMarks_) +
          retainedBytes(traversalJournalMarks_) +
          retainedBytes(groupJournalMarks_) + retainedBytes(fragmentDeltas_) +
@@ -1156,6 +1170,8 @@ void HandshakeCandidateScratch::resetTransaction() {
   storage_->reachabilityWorklist.clear();
   storage_->backwardWorklist.clear();
   storage_->reorderedNodes.clear();
+  storage_->unaffectedReorderedNodes.clear();
+  storage_->forwardReorderedNodes.clear();
   fragmentDeltas_.clear();
   traversalDeltas_.clear();
   groupDeltas_.clear();
@@ -1417,6 +1433,7 @@ HandshakeCandidateTransaction::HandshakeCandidateTransaction(
     HandshakeCandidateTransaction &&other) noexcept
     : state_(std::move(other.state_)), scratch_(other.scratch_),
       closed_(other.closed_), cycle_(other.cycle_),
+      rebuildOnCommit_(other.rebuildOnCommit_),
       pendingGraph_(std::move(other.pendingGraph_)) {
   other.scratch_ = nullptr;
   if (state_)
@@ -1622,16 +1639,18 @@ llvm::Expected<bool> HandshakeCandidateTransaction::close() {
   }
   const std::size_t changedContributionCount =
       storage.changedContributions.size();
-  const std::size_t activeContributionCount =
-      state_->activeArcContributionCount();
   const std::size_t nodeCount = state_->graph_->nodeIdentities.size();
   const std::size_t arcCount = state_->graph_->arcs.size();
-  const bool exceedsActiveDemand =
-      changedContributionCount > activeContributionCount;
+  // A full rebuild includes the immutable Fabric handshake inventory, not
+  // only the currently selected fragment contributions. Comparing a local
+  // delta with active contributions alone makes sparse workloads on a large
+  // Fabric rebuild that immutable inventory for almost every rejected probe.
+  // Retain the rebuild path only when the delta itself covers the complete
+  // materialized graph inventory.
   const bool coversGraphInventory =
       changedContributionCount >= nodeCount &&
       changedContributionCount - nodeCount >= arcCount;
-  if (exceedsActiveDemand || coversGraphInventory) {
+  if (coversGraphInventory) {
     auto graph =
         materializeHandshakeGraph(*state_->index_, state_->activeFragments_);
     if (!graph)
@@ -1669,7 +1688,18 @@ llvm::Expected<bool> HandshakeCandidateTransaction::close() {
   addWork(state_->materializationDeterministicWork_,
           closure->deterministicWork);
   cycle_ = !closure->acyclic;
-  if (cycle_) {
+  std::uint64_t rebuildWorkEstimate = state_->graph_->deterministicWork;
+  addWork(rebuildWorkEstimate, projectionWork);
+  addWork(rebuildWorkEstimate, changedContributionCount);
+  rebuildOnCommit_ =
+      !cycle_ && closure->affectedRankSpan > rebuildWorkEstimate;
+  // The incremental closure is the hot legality check. Constructing the
+  // entire graph again merely to format a rejected probe's optional witness
+  // turns a local negative decision into Fabric-sized work. Final candidate
+  // verification remains an independent whole-graph rebuild; materialize a
+  // transient witness here only when diagnostics will actually consume it.
+  if (cycle_ &&
+      mapping_debug::enabled(mapping_debug::Level::Decision)) {
     auto graph =
         materializeHandshakeGraph(*state_->index_, state_->activeFragments_);
     if (!graph)
@@ -1702,6 +1732,24 @@ llvm::Error HandshakeCandidateTransaction::commit() {
     return closure.takeError();
   if (!*closure)
     return candidateError("cannot commit a handshake cycle");
+  if (rebuildOnCommit_) {
+    auto graph =
+        materializeHandshakeGraph(*state_->index_, state_->activeFragments_);
+    if (!graph)
+      return graph.takeError();
+    if (!graph->cycleWitness.empty())
+      return candidateError(
+          "acyclic delta closure disagrees with exact materialization");
+    addWork(state_->materializationConstructionCount_);
+    addWork(state_->materializationConstructionNanoseconds_,
+            graph->constructionNanoseconds);
+    addWork(state_->materializationDeterministicWork_,
+            graph->deterministicWork);
+    state_->graph_ = std::make_shared<detail::MaterializedHandshakeGraph>(
+        std::move(*graph));
+    finish();
+    return llvm::Error::success();
+  }
   if (pendingGraph_) {
     state_->graph_ = std::move(pendingGraph_);
     finish();
@@ -1717,6 +1765,7 @@ llvm::Error HandshakeCandidateTransaction::commit() {
     return work.takeError();
   addWork(state_->materializationDeterministicWork_, *work);
   pendingGraph_.reset();
+  rebuildOnCommit_ = false;
   finish();
   return llvm::Error::success();
 }
@@ -1734,6 +1783,7 @@ void HandshakeCandidateTransaction::rollback() noexcept {
   for (const auto &delta : scratch_->groupDeltas_)
     state_->allGroupSelectedWitnessCounts_[delta.index] = delta.oldValue;
   pendingGraph_.reset();
+  rebuildOnCommit_ = false;
   finish();
 }
 

@@ -4,6 +4,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/SymbolTable.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
@@ -72,9 +73,6 @@ enumerateDirectInvocationPaths(mlir::ModuleOp module,
   };
   if (llvm::Error error = visit(entry))
     return std::move(error);
-  if (result.empty())
-    return invocationPathError("root owner has no direct call path from the "
-                               "application entry");
   return result;
 }
 
@@ -93,37 +91,22 @@ CanonicalDataflowProgramView::projectRootThreadLaunchesReachableFromAbiEntry(
         llvm::inconvertibleErrorCode(),
         "application ABI entry is not a defined LLVM function");
 
-  llvm::SmallPtrSet<mlir::Operation *, 16> reachable;
-  llvm::SmallVector<mlir::LLVM::LLVMFuncOp, 16> worklist{entry};
-  while (!worklist.empty()) {
-    mlir::LLVM::LLVMFuncOp function = worklist.pop_back_val();
-    if (!reachable.insert(function.getOperation()).second)
-      continue;
-    llvm::Error error = llvm::Error::success();
-    function.walk([&](mlir::LLVM::CallOp call) {
-      if (error)
-        return mlir::WalkResult::interrupt();
-      if (!call.getCalleeAttr()) {
-        error = llvm::createStringError(
-            llvm::inconvertibleErrorCode(),
-            "application ABI entry closure contains an indirect call");
-        return mlir::WalkResult::interrupt();
-      }
-      auto callee =
-          mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
-              call, call.getCalleeAttr());
-      if (callee && !callee.isExternal())
-        worklist.push_back(callee);
-      return mlir::WalkResult::advance();
-    });
-    if (error)
-      return std::move(error);
-  }
-
   std::vector<RootThreadLaunchRef> roots;
+  llvm::DenseMap<mlir::Operation *, bool> reachableOwners;
   for (const CanonicalRootThreadLaunchView &root : rootThreadLaunches_) {
     auto owner = root.op->getParentOfType<mlir::LLVM::LLVMFuncOp>();
-    if (owner && reachable.contains(owner.getOperation()))
+    if (!owner || owner.isExternal())
+      return invocationPathError(
+          "root launch is not owned by a defined LLVM callable");
+    auto [known, inserted] =
+        reachableOwners.try_emplace(owner.getOperation(), false);
+    if (inserted) {
+      auto paths = enumerateDirectInvocationPaths(module_, entrySymbol, owner);
+      if (!paths)
+        return paths.takeError();
+      known->second = !paths->empty();
+    }
+    if (known->second)
       roots.push_back(root.ref);
   }
   return roots;
@@ -141,7 +124,15 @@ CanonicalDataflowProgramView::projectRootThreadInvocationPathsFromAbiEntry(
   if (!owner || owner.isExternal())
     return invocationPathError(
         "root launch is not owned by a defined LLVM callable");
-  return enumerateDirectInvocationPaths(module_, entrySymbol, owner);
+  auto paths = enumerateDirectInvocationPaths(module_, entrySymbol, owner);
+  if (!paths)
+    return paths.takeError();
+  if (paths->empty())
+    return invocationPathError(
+        "root owner '" + owner.getSymName() +
+        "' has no direct call path from application entry '" + entrySymbol +
+        "'");
+  return paths;
 }
 
 } // namespace dataflow

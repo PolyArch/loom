@@ -19,6 +19,14 @@ namespace fabric {
 /// with the dialect attribute; only the closed type is needed here.
 enum class OperandBufferMode : std::uint32_t;
 
+/// Derived admission refinement of the existing operand-buffer contract.
+/// Dedicated queues need no shared credit; pooled units use one invocation
+/// reservation per admitted active queue. This is not a new Fabric field.
+enum class OperandAdmissionPolicy : std::uint32_t {
+  Unreserved,
+  PerActiveQueueCredit,
+};
+
 /// One potential logical operand queue of one temporal PE. Fabric owns this key
 /// alone: the resident context is the one canonical
 /// `loom::fabric::InstructionContextRef`, and the other two components are the
@@ -205,6 +213,7 @@ public:
   create(const TemporalOperandBufferDeclaration &declaration);
 
   OperandBufferMode mode() const { return mode_; }
+  OperandAdmissionPolicy admissionPolicy() const { return admissionPolicy_; }
   CapacityUnits entriesPerAllocationUnit() const { return entryCapacity_; }
 
   /// The canonical logical-queue domain, in canonical order. A configured view
@@ -281,6 +290,7 @@ private:
   std::vector<Span> unitSpans_;
   CapacityUnits entryCapacity_{0};
   OperandBufferMode mode_{};
+  OperandAdmissionPolicy admissionPolicy_ = OperandAdmissionPolicy::Unreserved;
 };
 
 } // namespace fabric

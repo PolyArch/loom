@@ -55,11 +55,14 @@ adoptStructuredScheduleDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes);
 
 /// Enumerates the finite legal schedule domain in canonical loop order. The
 /// Fabric is consumed only for proved aggregate-capacity pruning; a surviving
-/// decision is not a Mapping feasibility claim.
+/// decision is not a Mapping feasibility claim. When `schedulingScope` is
+/// present, only loops nested in that exact operation consume the scope bound.
 llvm::Expected<StructuredScheduleDecisionDomain>
 enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
                                      const fabric::FinalizedFabricRoot &fabric,
-                                     std::uint64_t scopeExpansionLimit);
+                                     std::uint64_t scopeExpansionLimit,
+                                     std::optional<StructuredEntityRef>
+                                         schedulingScope = std::nullopt);
 
 /// Applies exactly one typed decision to a private clone and finalizes the
 /// complete immutable child. Failure publishes no partial candidate.

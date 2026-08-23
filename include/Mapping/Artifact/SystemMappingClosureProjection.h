@@ -1,6 +1,7 @@
 #ifndef LOOM_MAPPING_ARTIFACT_SYSTEMMAPPINGCLOSUREPROJECTION_H
 #define LOOM_MAPPING_ARTIFACT_SYSTEMMAPPINGCLOSUREPROJECTION_H
 
+#include "Common/ExecutionControl.h"
 #include "Mapping/Artifact/MappingProgressProjection.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
@@ -53,6 +54,7 @@ struct SystemResourceActivationProjection final {
 struct SystemMappingClosureProjection final {
   SystemExecutionContextProjection executionContexts;
   std::vector<SystemServiceRealizationView> serviceRealizations;
+  MappingDataflowProgressBasis progressBasis;
   std::vector<MappingRouteProgressObligationProjection> routeObligations;
   std::vector<SystemCapacityCellProjection> capacityCells;
   std::vector<SystemResourceActivationProjection> resourceActivations;
@@ -81,7 +83,8 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemMappingView &mapping, const ArtifactStore &store,
-    const SpatialMappingImportContext *spatialMappings = nullptr);
+    const SpatialMappingImportContext *spatialMappings = nullptr,
+    ExecutionControlView executionControl = {});
 
 } // namespace loom::mapping
 

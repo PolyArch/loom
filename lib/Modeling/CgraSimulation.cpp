@@ -2,19 +2,24 @@
 #include "Evaluation/ProductionRegistry.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
+#include "Common/InvocationDiagnosticLog.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/ModelProvider.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Simulator/CGRASimulator.h"
 #include "Simulator/SimulationExecution.h"
 
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <limits>
 #include <optional>
+#include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -207,9 +212,20 @@ const EvaluationModelDescriptor kModelDescriptor{
 llvm::Expected<EvaluationModelResult>
 classifyExecutionFailure(llvm::Error error) {
   std::error_code code;
+  std::string diagnostic;
   llvm::handleAllErrors(std::move(error), [&](const llvm::ErrorInfoBase &info) {
     code = info.convertToErrorCode();
+    llvm::raw_string_ostream stream(diagnostic);
+    info.log(stream);
   });
+  emitInvocationDiagnostic(DiagnosticVerbosity::Summary,
+                           InvocationDiagnosticStage::SystemPnr,
+                           InvocationDiagnosticEvent::MappingFailure, [&] {
+                             return llvm::json::Value(llvm::json::Object{
+                                 {"failure_scope", "cgra_simulation_adapter"},
+                                 {"diagnostic", diagnostic},
+                             });
+                           });
   if (code == std::make_error_code(std::errc::not_supported))
     return EvaluationModelResult{
         {{kExecutionOutputSlot, {}}},
@@ -318,7 +334,10 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
     const sim::CanonicalSimulationWorkload &workload,
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
-    const BlobStore &blobStore) {
+    const BlobStore &blobStore,
+    std::optional<sim::CgraClosedWaitSetDiagnostic> *closedWait = nullptr) {
+  if (closedWait)
+    closedWait->reset();
   if (request.modelBinding().descriptorRef() != kModelDescriptor.reference())
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -346,10 +365,238 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
         {{kExecutionOutputSlot, {}}},
         CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached}};
   if (outcome->state != sim::SpatialExecutionSessionState::Retired ||
-      !outcome->retired)
+      !outcome->retired) {
+    if (closedWait && outcome->closedWaitSet)
+      *closedWait = *outcome->closedWaitSet;
+    emitInvocationDiagnostic(
+        DiagnosticVerbosity::Summary, InvocationDiagnosticStage::SystemPnr,
+        InvocationDiagnosticEvent::MappingFailure, [&] {
+          llvm::json::Object fields;
+          fields["failure_scope"] = "cgra_simulation_session";
+          fields["session_state"] = static_cast<std::uint64_t>(outcome->state);
+          if (outcome->closedWaitSet) {
+            fields["pending_actor_firings"] =
+                outcome->closedWaitSet->pendingActorFirings;
+            fields["pending_transfers"] =
+                outcome->closedWaitSet->pendingTransfers;
+            fields["pending_physical_actions"] =
+                outcome->closedWaitSet->pendingPhysicalActions;
+            fields["graph_retirement_visible"] =
+                outcome->closedWaitSet->graphRetirementVisible;
+            if (outcome->closedWaitSet->ownerReferences) {
+              const auto &owners = *outcome->closedWaitSet->ownerReferences;
+              fields["closed_wait_owners"] = llvm::json::Object{
+                  {"dataflow",
+                   formatArtifactRootReferenceJson(owners.dataflow)},
+                  {"fabric", formatArtifactRootReferenceJson(owners.fabric)},
+                  {"tech_mapping",
+                   formatArtifactRootReferenceJson(owners.techMapping)},
+                  {"spatial_mapping",
+                   formatArtifactRootReferenceJson(owners.spatialMapping)}};
+            }
+            fields["closed_wait_actor_count"] =
+                outcome->closedWaitSet->actorFirings.size();
+            fields["closed_wait_transfer_count"] =
+                outcome->closedWaitSet->transfers.size();
+            fields["closed_wait_transfer_cycle_edge_count"] =
+                outcome->closedWaitSet->transferWaitCycle.size();
+            fields["closed_wait_actor_cycle_edge_count"] =
+                outcome->closedWaitSet->actorWaitCycle.size();
+            fields["operand_queue_group_count"] =
+                outcome->closedWaitSet->operandQueueGroupCount;
+            fields["operand_queue_potentially_blocking_group_count"] =
+                outcome->closedWaitSet->
+                    operandQueuePotentiallyBlockingGroupCount;
+            fields["operand_queue_unknown_pairing_group_count"] =
+                outcome->closedWaitSet->operandQueueUnknownPairingGroupCount;
+            fields["operand_queue_distinct_ingress_count"] =
+                outcome->closedWaitSet->operandQueueDistinctIngressCount;
+            fields["operand_queue_pairing_key_count"] =
+                outcome->closedWaitSet->operandQueuePairingKeyCount;
+            fields["operand_queue_progress_status"] =
+                outcome->closedWaitSet->operandQueueProgressStatus;
+            fields["operand_queue_progress_support"] =
+                outcome->closedWaitSet->operandQueueProgressSupport;
+            if (outcome->closedWaitSet->operandQueueProjectionDigest)
+              fields["operand_queue_projection_digest"] =
+                  formatComponentViewDigestHex(
+                      *outcome->closedWaitSet->operandQueueProjectionDigest);
+            else
+              fields["operand_queue_projection_digest"] = nullptr;
+            llvm::json::Array operandQueueHeads;
+            for (const auto indexed : llvm::enumerate(
+                     outcome->closedWaitSet->operandQueueHeads)) {
+              if (indexed.index() == 16)
+                break;
+              const auto &head = indexed.value();
+              llvm::json::Array consumers;
+              for (const auto &[actor, input] : head.consumers)
+                consumers.push_back(llvm::json::Object{
+                    {"actor", actor}, {"input", input}});
+              llvm::SmallString<32> tagSpelling;
+              head.headTag.toStringUnsigned(tagSpelling, 16);
+              operandQueueHeads.push_back(llvm::json::Object{
+                  {"queue_context",
+                   llvm::toHex(::loom::fabric::canonicalFabricBytes(
+                       head.queue.context), true)},
+                  {"queue_fu_occurrence", head.queue.fuOccurrence},
+                  {"queue_fu_input", head.queue.fuInput},
+                  {"fu",
+                   llvm::toHex(::loom::fabric::canonicalFabricBytes(head.fu),
+                               true)},
+                  {"allocation_unit", head.allocationUnit},
+                  {"capacity", head.capacity},
+                  {"occupancy", head.occupancy},
+                  {"reservations", head.reservations},
+                  {"head_binding", head.headBindingOrdinal},
+                  {"head_occurrence", head.headOccurrenceOrdinal},
+                  {"head_producer_sequence",
+                   head.headProducerSequenceOrdinal},
+                  {"head_tag", tagSpelling.str().str()},
+                  {"exact_head", head.exactHead},
+                  {"consumers", std::move(consumers)}});
+            }
+            fields["closed_wait_operand_queue_heads"] =
+                std::move(operandQueueHeads);
+            llvm::json::Array actors;
+            for (const auto indexed :
+                 llvm::enumerate(outcome->closedWaitSet->actorFirings)) {
+              if (indexed.index() == 4)
+                break;
+              const auto &actor = indexed.value();
+              actors.push_back(llvm::json::Object{
+                  {"actor", actor.semanticActorOrdinal},
+                  {"occurrence", actor.occurrenceOrdinal},
+                  {"expected_transfers", actor.expectedTransfers},
+                  {"completed_transfers", actor.completedTransfers},
+                  {"physical_complete", actor.physicalComplete},
+              });
+            }
+            fields["closed_wait_actors"] = std::move(actors);
+            llvm::json::Array transfers;
+            for (const auto indexed :
+                 llvm::enumerate(outcome->closedWaitSet->transfers)) {
+              if (indexed.index() == 4)
+                break;
+              const auto &transfer = indexed.value();
+              llvm::json::Array operandQueueWaits;
+              for (const auto &wait : transfer.operandQueueWaits) {
+                llvm::SmallString<32> tag;
+                wait.tag.toStringUnsigned(tag, 16);
+                operandQueueWaits.push_back(llvm::json::Object{
+                    {"context",
+                     llvm::toHex(::loom::fabric::canonicalFabricBytes(
+                         wait.queue.context), true)},
+                    {"fu",
+                     llvm::toHex(::loom::fabric::canonicalFabricBytes(wait.fu),
+                                 true)},
+                    {"ingress",
+                     llvm::toHex(::loom::fabric::canonicalFabricBytes(
+                         wait.ingress), true)},
+                    {"fu_input", wait.queue.fuInput},
+                    {"tag", tag.str().str()},
+                    {"allocation_unit", wait.allocationUnit},
+                    {"occupancy", wait.occupancy},
+                    {"reservations", wait.reservations},
+                    {"capacity", wait.capacity}});
+              }
+              transfers.push_back(llvm::json::Object{
+                  {"binding", transfer.bindingOrdinal},
+                  {"occurrence", transfer.occurrenceOrdinal},
+                  {"producer_actor", transfer.producerActorOrdinal},
+                  {"producer_result", transfer.producerResultOrdinal},
+                  {"blocked", transfer.blocked},
+                  {"published", transfer.published},
+                  {"ready_sinks", transfer.readySinkCount},
+                  {"published_sinks", transfer.publishedSinkCount},
+                  {"sink_count", transfer.sinkCount},
+                  {"blocking_actor", transfer.blockingActorOrdinal},
+                  {"blocking_ready_tokens", transfer.blockingReadyTokenCount},
+                  {"blocking_queue_occupancy", transfer.blockingQueueOccupancy},
+                  {"blocking_queue_reservations",
+                   transfer.blockingQueueReservations},
+                  {"blocking_queue_capacity", transfer.blockingQueueCapacity},
+                  {"blocking_storage", transfer.blockingStorageOrdinal},
+                  {"blocking_fifo",
+                   transfer.blockingFifoOccurrence
+                       ? llvm::json::Value(llvm::toHex(
+                             ::loom::fabric::canonicalFabricBytes(
+                                 *transfer.blockingFifoOccurrence),
+                             true))
+                       : llvm::json::Value(nullptr)},
+                  {"blocking_storage_occupancy",
+                   transfer.blockingStorageOccupancy},
+                  {"blocking_storage_reservations",
+                   transfer.blockingStorageReservations},
+                  {"blocking_storage_capacity",
+                   transfer.blockingStorageCapacity},
+                  {"blocking_downstream_storage_count",
+                   transfer.blockingDownstreamStorageCount},
+                  {"blocking_unbuffered_sink_count",
+                   transfer.blockingUnbufferedSinkCount},
+                  {"blocking_downstream_storage",
+                   transfer.blockingDownstreamStorageOrdinal},
+                  {"blocking_downstream_occupancy",
+                   transfer.blockingDownstreamStorageOccupancy},
+                  {"blocking_downstream_capacity",
+                   transfer.blockingDownstreamStorageCapacity},
+                  {"blocking_downstream_reserved",
+                   transfer.blockingDownstreamStorageReserved},
+                  {"operand_queue_waits", std::move(operandQueueWaits)},
+              });
+            }
+            fields["closed_wait_transfers"] = std::move(transfers);
+            llvm::json::Array transferCycle;
+            for (const auto &edge :
+                 outcome->closedWaitSet->transferWaitCycle)
+              transferCycle.push_back(llvm::json::Object{
+                  {"waiting_binding", edge.waitingBindingOrdinal},
+                  {"waiting_occurrence", edge.waitingOccurrenceOrdinal},
+                  {"blocking_actor", edge.blockingActorOrdinal},
+                  {"blocking_binding", edge.blockingBindingOrdinal},
+                  {"blocking_occurrence", edge.blockingOccurrenceOrdinal},
+              });
+            fields["closed_wait_transfer_cycle"] = std::move(transferCycle);
+            llvm::json::Array actorCycle;
+            for (const auto &edge : outcome->closedWaitSet->actorWaitCycle)
+              actorCycle.push_back(llvm::json::Object{
+                  {"waiting_actor", edge.waitingActorOrdinal},
+                  {"blocking_actor", edge.blockingActorOrdinal},
+                  {"kind", static_cast<std::uint64_t>(edge.kind)},
+              });
+            fields["closed_wait_actor_cycle"] = std::move(actorCycle);
+            llvm::json::Array physicalActions;
+            for (const auto indexed :
+                 llvm::enumerate(outcome->closedWaitSet->physicalActions)) {
+              if (indexed.index() == 4)
+                break;
+              const auto &action = indexed.value();
+              physicalActions.push_back(llvm::json::Object{
+                  {"action", action.actionOrdinal},
+                  {"occurrence", action.occurrenceOrdinal},
+                  {"client", action.clientKind},
+                  {"semantic_actor",
+                   action.semanticActorOrdinal
+                       ? llvm::json::Value(*action.semanticActorOrdinal)
+                       : llvm::json::Value(nullptr)},
+                  {"granted", action.granted},
+                  {"has_commit", action.hasCommit},
+                  {"requires_causal_release",
+                   action.requiresCausalRelease},
+                  {"intrinsic_release_reached",
+                   action.intrinsicReleaseReached},
+                  {"causal_release_reached", action.causalReleaseReached},
+              });
+            }
+            fields["closed_wait_physical_actions"] =
+                std::move(physicalActions);
+          }
+          return llvm::json::Value(std::move(fields));
+        });
     return EvaluationModelResult{
         {{kExecutionOutputSlot, {}}},
         ExecutionFailedEvidence{OutcomeReason::AdapterFailure}};
+  }
   const auto &retirement = outcome->retired->progress.graphRetirementVisible;
   if (!retirement || retirement->referenceCycle.denominator() != 1 ||
       retirement->referenceCycle.numerator() >
@@ -411,7 +658,7 @@ evaluate(const EvaluationRequest &request,
     return classifyExecutionFailure(inputs.takeError());
   return evaluateWithPrepared(request, resolution, *execution, inputs->workload,
                               inputs->runtimeInput, {}, artifactStore,
-                              blobStore);
+                              blobStore, nullptr);
 }
 
 const EvaluationModelProvider kProvider{
@@ -549,19 +796,36 @@ evaluateCgraSimulation(const PreparedCgraSimulationEvaluation &prepared,
                        CgraSimulationAttemptLimits limits,
                        const ArtifactStore &artifactStore,
                        const BlobStore &blobStore) {
+  auto evaluated = evaluateCgraSimulationWithDiagnostics(
+      prepared, std::move(limits), artifactStore, blobStore);
+  if (!evaluated)
+    return evaluated.takeError();
+  return std::move(evaluated->evidence);
+}
+
+llvm::Expected<CgraSimulationEvaluation>
+evaluateCgraSimulationWithDiagnostics(
+    const PreparedCgraSimulationEvaluation &prepared,
+    CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore) {
   RequestVerifier verifier(prepared.resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
-  auto result = evaluateWithPrepared(prepared.request, prepared.resolution,
-                                     prepared.execution, prepared.workload,
-                                     prepared.runtimeInput, std::move(limits),
-                                     artifactStore, blobStore);
+  std::optional<sim::CgraClosedWaitSetDiagnostic> closedWait;
+  auto result = evaluateWithPrepared(
+      prepared.request, prepared.resolution, prepared.execution,
+      prepared.workload, prepared.runtimeInput, std::move(limits),
+      artifactStore, blobStore, &closedWait);
   if (!result)
     return result.takeError();
-  return EvaluationEvidence::get(prepared.request,
-                                 std::move(result->outputBindings),
-                                 std::move(result->outcome),
-                                 prepared.resolution, artifactStore, blobStore);
+  auto evidence = EvaluationEvidence::get(
+      prepared.request, std::move(result->outputBindings),
+      std::move(result->outcome), prepared.resolution, artifactStore,
+      blobStore);
+  if (!evidence)
+    return evidence.takeError();
+  return CgraSimulationEvaluation{std::move(*evidence),
+                                  std::move(closedWait)};
 }
 
 } // namespace loom::evaluation::models

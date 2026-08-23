@@ -137,7 +137,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &store, const BlobStore &blobs,
-               const CandidateGeneratorInvocationView &) {
+               const CandidateGeneratorInvocationView &invocationView) {
   auto config = adoptResolvedStructuredMemoryCommunicationGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -154,6 +154,15 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   std::vector<ArtifactRootReference> orderedInputs =
       inputBindings[StructuredProgramsInput].artifacts;
   llvm::sort(orderedInputs, artifactRootReferenceLess);
+  const std::optional<std::uint64_t> maximumOutputs =
+      invocationView.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
+  bool outputLimitReached = false;
+  if (maximumOutputs && orderedInputs.size() > *maximumOutputs) {
+    orderedInputs.erase(
+        orderedInputs.begin() + static_cast<std::size_t>(*maximumOutputs),
+        orderedInputs.end());
+    outputLimitReached = true;
+  }
   std::vector<ArtifactRootReference> outputs;
   std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)> seen(
       &artifactRootReferenceLess);
@@ -166,8 +175,9 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
   std::uint64_t remainingScopes = config->scopeExpansionLimit();
   std::uint64_t inspectedMemoryScopes = 0;
+  std::uint64_t plannedDecisionAttempts = 0;
   std::uint64_t decisionAttempts = 0;
-  while (remainingScopes != 0 && !frontier.empty()) {
+  while (!outputLimitReached && remainingScopes != 0 && !frontier.empty()) {
     FrontierEntry entry = std::move(frontier.front());
     frontier.pop_front();
     auto parent = frontend::importStructuredProgram(entry.reference, store);
@@ -209,6 +219,13 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
               PromoteOrderedBufferToChannel;
       if (!entry.initial && !channelDecision)
         continue;
+      if (plannedDecisionAttempts == std::numeric_limits<std::uint64_t>::max())
+        return invalid("planned memory-decision accounting overflows u64");
+      ++plannedDecisionAttempts;
+      if (maximumOutputs && outputs.size() >= *maximumOutputs) {
+        outputLimitReached = true;
+        break;
+      }
       if (decisionAttempts == std::numeric_limits<std::uint64_t>::max())
         return invalid("memory-decision accounting overflows u64");
       ++decisionAttempts;
@@ -243,13 +260,23 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       }
     }
   }
+  CandidateGeneratorOutputBinding output{CandidateGeneratorOutputSlotRef(0),
+                                         std::move(outputs)};
+  std::vector<CandidateGeneratorWorkUnitSummary> workSummary = {
+      {CandidateGeneratorWorkUnitRef(0), inspectedMemoryScopes,
+       inspectedMemoryScopes},
+      {CandidateGeneratorWorkUnitRef(1), plannedDecisionAttempts,
+       decisionAttempts}};
+  if (outputLimitReached)
+    return CandidateGeneratorProviderResult{
+        IncompleteCandidateGeneratorResult{
+            CandidateGeneratorIncompleteReason::SemanticLimitReached,
+            {std::move(output)}, std::move(lineageEdges)},
+        std::move(workSummary)};
   return CandidateGeneratorProviderResult{
       CompletedCandidateGeneratorResult{
-          {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-          std::move(lineageEdges)},
-      {{CandidateGeneratorWorkUnitRef(0), inspectedMemoryScopes,
-        inspectedMemoryScopes},
-       {CandidateGeneratorWorkUnitRef(1), decisionAttempts, decisionAttempts}}};
+          {std::move(output)}, std::move(lineageEdges)},
+      std::move(workSummary)};
 }
 
 const CandidateGeneratorProvider provider{

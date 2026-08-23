@@ -1,6 +1,8 @@
 add_library(LoomDSECompilerGenerator
   DataflowRewriteCandidateGenerator.cpp
+  PreMappingEvidence.cpp
   PreMappingExploration.cpp
+  PreMappingFrontier.cpp
   StructuredExecutionShapeCandidateGenerator.cpp
   StructuredSpecialMathAccuracyCandidateGenerator.cpp
   StructuredMemoryCommunicationCandidateGenerator.cpp

@@ -61,6 +61,10 @@ add_executable(loom-dse-joint-design-exploration-test
   JointDesignExplorationTest.cpp
 )
 
+add_executable(loom-dse-resource-time-frontier-test
+  ResourceTimeFrontierTest.cpp
+)
+
 add_executable(loom-dse-invocation-manifest-test
   InvocationManifestTest.cpp
 )
@@ -185,12 +189,19 @@ target_link_libraries(loom-dse-fpa-ground-truth-collection-test PRIVATE
 target_link_libraries(loom-dse-joint-design-exploration-test PRIVATE
   LoomADGBuilder
   LoomDSE
+  LoomDSEFeedback
+  LoomDSEProductionOwners
   MLIRArithDialect
   MLIRDataflow
   MLIRDLTIDialect
   MLIRFuncDialect
   MLIRIR
   MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-resource-time-frontier-test PRIVATE
+  LoomDSE
   LLVMSupport
 )
 

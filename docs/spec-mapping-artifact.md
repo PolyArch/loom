@@ -762,7 +762,7 @@ nor the derived configuration-image identity.
 
 ### Incomplete Execution-Binding Checkpoint
 
-`loom.mapping.system_execution_binding_checkpoint` 1.0 is a persisted
+`loom.mapping.system_execution_binding_checkpoint` 2.0 is a persisted
 projection of one incomplete System PnR assignment. It has this exact semantic
 content:
 
@@ -770,6 +770,10 @@ content:
 SystemExecutionBindingCheckpoint {
   exact Canonical Dataflow Program D
   exact parent Fabric System F
+  exact MappingConstraintSet C
+  resolved PnR configuration digest
+  search-domain digest
+  typed imported-capacity witness and dependency root threads
   canonical thread rows (RootThreadLaunchRef, SystemPresburgerCell,
                          AccCoreOccurrenceRef)
   canonical graph rows (RootedGraphLaunchRef, SystemPresburgerCell,
@@ -777,16 +781,18 @@ SystemExecutionBindingCheckpoint {
 }
 ```
 
-The writer validates exact Dataflow and System ownership, canonical unique
-cells, target references, and SpatialMapping schema before publication. This
-root may be published only with typed imported-capacity feedback that names the
-exact overused AccCore occurrence observed in the same retained assignment
-after complete bounded execution-binding exhaustion. It is not a Mapping
-artifact, does not satisfy any Mapping coverage or legality contract, and
-contains no service realization, route tree, ResourceUse, progress,
-recurrence, or configuration claim. Its only supported consumer is a PnR-owned
-cross-hardware migration seed; the child invocation must rebuild every omitted
-relation and independently verify the complete SystemMapping.
+The writer validates exact Dataflow, System, and constraint ownership, the
+resolved configuration and search-domain digests, canonical unique cells,
+typed witness/dependency roots, target references, and SpatialMapping schema
+before publication. This root may be published only with typed
+imported-capacity feedback that names the exact overused AccCore occurrence
+observed in the same retained assignment after complete bounded
+execution-binding exhaustion. It is not a Mapping artifact, does not satisfy
+any Mapping coverage or legality contract, and contains no service realization,
+route tree, ResourceUse, progress, recurrence, or configuration claim. Its only
+supported consumer is a PnR-owned cross-hardware migration seed; the child
+invocation must rebuild every omitted relation and independently verify the
+complete SystemMapping.
 
 ### Exact SpatialMapping Imports
 

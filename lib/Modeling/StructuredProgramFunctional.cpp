@@ -143,7 +143,45 @@ llvm::Error primeSourceObservationCacheImpl(
       source, workloadReference, runtimeInputReference};
   auto value = std::make_shared<const sim::NativeStructuredProgramObservations>(
       observations);
-  std::lock_guard<std::mutex> lock(impl.mutex);
+  using SourceFlightMap = decltype(impl.sourceObservationFlights);
+  std::unique_ptr<detail::CacheFlightGuard<
+      detail::StructuredSourceObservationCacheKey, SourceFlightMap>>
+      sourceFlight;
+  std::unique_lock<std::mutex> lock(impl.mutex);
+  while (true) {
+    auto existing = impl.sourceObservations.find(key);
+    if (existing != impl.sourceObservations.end()) {
+      if (!haveEquivalentSourceObservations(*existing->second, observations))
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "structured_functional_model_invalid: nondeterministic source "
+            "observations");
+      return llvm::Error::success();
+    }
+    auto flight = impl.sourceObservationFlights.find(key);
+    if (flight == impl.sourceObservationFlights.end()) {
+      auto entry = std::make_shared<detail::CacheFlightEntry>();
+      impl.sourceObservationFlights.emplace(key, entry);
+      sourceFlight = std::make_unique<detail::CacheFlightGuard<
+          detail::StructuredSourceObservationCacheKey, SourceFlightMap>>(
+          impl.sourceObservationFlights, impl.mutex, impl.flightChanged, key,
+          std::move(entry));
+      break;
+    }
+    auto entry = flight->second;
+    impl.sourceObservationSingleFlightWaitCount.fetch_add(
+        1, std::memory_order_relaxed);
+    impl.flightChanged.wait(lock, [&] { return entry->complete; });
+  }
+  if (impl.sourceObservations.size() >=
+          impl.limits.maximumSourceObservationEntries &&
+      impl.sourceObservations.find(key) == impl.sourceObservations.end()) {
+    impl.capacityBypassCount.fetch_add(1, std::memory_order_relaxed);
+    return llvm::createStringError(
+        std::make_error_code(std::errc::no_buffer_space),
+        "structured_functional_model_incomplete: source observation cache "
+        "capacity exhausted");
+  }
   auto [found, inserted] =
       impl.sourceObservations.try_emplace(key, std::move(value));
   if (!inserted) {
@@ -166,6 +204,17 @@ replayCacheKey(const ArtifactRootReference &candidate,
                const ArtifactRootReference &workload,
                const ArtifactRootReference &runtimeInput) {
   return {candidate, workload, runtimeInput};
+}
+
+bool cachedReplayMeetsLimits(
+    const CachedReplayResult &cached,
+    const sim::SourceBackedDfgValidationLimits &limits) {
+  if (!cached.replay ||
+      cached.kind == ReplayResultKind::CancelledOrTimeout)
+    return false;
+  return cached.replay->wavefrontSteps <= limits.maxWavefrontSteps &&
+         cached.replay->eventCount <= limits.maxEventCount &&
+         cached.replay->memoryBytesCompared <= limits.maxRetainedCaptureBytes;
 }
 
 llvm::Expected<CachedReplayResult> classifyReplayResult(
@@ -205,6 +254,9 @@ llvm::Expected<CachedReplayResult> classifyReplayResult(
         });
     return CachedReplayResult{ReplayResultKind::Unsupported, std::nullopt};
   }
+  if (code == std::make_error_code(std::errc::timed_out))
+    return CachedReplayResult{ReplayResultKind::CancelledOrTimeout,
+                              std::nullopt};
   return llvm::createStringError(code ? code : llvm::inconvertibleErrorCode(),
                                  "%s", message.c_str());
 }
@@ -289,15 +341,39 @@ sourceObservationsFor(
       detail::currentStructuredEvaluationCache();
   detail::StructuredSourceObservationCacheKey key{source, workloadReference,
                                                   runtimeInputReference};
+  std::unique_ptr<detail::CacheFlightGuard<
+      detail::StructuredSourceObservationCacheKey,
+      decltype(std::declval<StructuredEvaluationInvocationCache::Impl &>()
+                   .sourceObservationFlights)>>
+      sourceFlight;
   if (cache) {
     auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
-    std::lock_guard<std::mutex> lock(impl.mutex);
-    auto found = impl.sourceObservations.find(key);
-    if (found != impl.sourceObservations.end()) {
-      impl.sourceObservationHitCount.fetch_add(1, std::memory_order_relaxed);
-      return found->second;
+    using SourceFlightMap = decltype(impl.sourceObservationFlights);
+    std::unique_lock<std::mutex> lock(impl.mutex);
+    while (true) {
+      auto found = impl.sourceObservations.find(key);
+      if (found != impl.sourceObservations.end()) {
+        impl.sourceObservationHitCount.fetch_add(1,
+                                                std::memory_order_relaxed);
+        return found->second;
+      }
+      auto flight = impl.sourceObservationFlights.find(key);
+      if (flight == impl.sourceObservationFlights.end()) {
+        auto entry = std::make_shared<detail::CacheFlightEntry>();
+        impl.sourceObservationFlights.emplace(key, entry);
+        impl.sourceObservationMissCount.fetch_add(1,
+                                                 std::memory_order_relaxed);
+        sourceFlight = std::make_unique<detail::CacheFlightGuard<
+            detail::StructuredSourceObservationCacheKey, SourceFlightMap>>(
+            impl.sourceObservationFlights, impl.mutex, impl.flightChanged, key,
+            std::move(entry));
+        break;
+      }
+      auto entry = flight->second;
+      impl.sourceObservationSingleFlightWaitCount.fetch_add(
+          1, std::memory_order_relaxed);
+      impl.flightChanged.wait(lock, [&] { return entry->complete; });
     }
-    impl.sourceObservationMissCount.fetch_add(1, std::memory_order_relaxed);
   }
 
   auto observations = sim::executeNativeStructuredProgram(
@@ -310,6 +386,21 @@ sourceObservationsFor(
     return value;
   auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
   std::lock_guard<std::mutex> lock(impl.mutex);
+  if (auto existing = impl.sourceObservations.find(key);
+      existing != impl.sourceObservations.end()) {
+    if (!haveEquivalentSourceObservations(*existing->second, *value))
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_functional_model_invalid: nondeterministic source "
+          "observations");
+    impl.sourceObservationHitCount.fetch_add(1, std::memory_order_relaxed);
+    return existing->second;
+  }
+  if (impl.sourceObservations.size() >=
+      impl.limits.maximumSourceObservationEntries) {
+    impl.capacityBypassCount.fetch_add(1, std::memory_order_relaxed);
+    return value;
+  }
   auto [found, inserted] = impl.sourceObservations.try_emplace(key, value);
   if (!inserted && !haveEquivalentSourceObservations(*found->second, *value))
     return llvm::createStringError(
@@ -348,16 +439,40 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
   if (candidate->identity() != inputs->structuredProgram.identity()) {
     const detail::StructuredFunctionalCacheKey key = replayCacheKey(
         candidates.front(), *request.workload(), *request.runtimeInput());
-    if (StructuredEvaluationInvocationCache *cache =
-            detail::currentStructuredEvaluationCache()) {
+    StructuredEvaluationInvocationCache *cache =
+        detail::currentStructuredEvaluationCache();
+    using FunctionalFlightMap =
+        decltype(std::declval<StructuredEvaluationInvocationCache::Impl &>()
+                     .functionalFlights);
+    std::unique_ptr<detail::CacheFlightGuard<
+        detail::StructuredFunctionalCacheKey, FunctionalFlightMap>>
+        functionalFlight;
+    if (cache) {
       auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
-      std::lock_guard<std::mutex> lock(impl.mutex);
-      auto found = impl.functionalResults.find(key);
-      if (found != impl.functionalResults.end()) {
-        replay = found->second;
-        impl.functionalHitCount.fetch_add(1, std::memory_order_relaxed);
-      } else {
-        impl.functionalMissCount.fetch_add(1, std::memory_order_relaxed);
+      using FlightMap = decltype(impl.functionalFlights);
+      std::unique_lock<std::mutex> lock(impl.mutex);
+      while (true) {
+        auto found = impl.functionalResults.find(key);
+        if (found != impl.functionalResults.end()) {
+          replay = found->second;
+          impl.functionalHitCount.fetch_add(1, std::memory_order_relaxed);
+          break;
+        }
+        auto flight = impl.functionalFlights.find(key);
+        if (flight == impl.functionalFlights.end()) {
+          auto entry = std::make_shared<detail::CacheFlightEntry>();
+          impl.functionalFlights.emplace(key, entry);
+          impl.functionalMissCount.fetch_add(1, std::memory_order_relaxed);
+          functionalFlight = std::make_unique<detail::CacheFlightGuard<
+              detail::StructuredFunctionalCacheKey, FlightMap>>(
+              impl.functionalFlights, impl.mutex, impl.flightChanged, key,
+              std::move(entry));
+          break;
+        }
+        auto entry = flight->second;
+        impl.functionalSingleFlightWaitCount.fetch_add(
+            1, std::memory_order_relaxed);
+        impl.flightChanged.wait(lock, [&] { return entry->complete; });
       }
     }
     if (replay) {
@@ -365,6 +480,10 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
         return EvaluationModelResult{
             {},
             UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+      if (replay->kind == ReplayResultKind::CancelledOrTimeout)
+        return EvaluationModelResult{
+            {}, CancelledOrTimeoutEvidence{
+                    OutcomeReason::ExecutionLimitReached}};
       mismatch = replay->kind == ReplayResultKind::Mismatch;
     } else {
       auto sourceObservations = sourceObservationsFor(
@@ -378,6 +497,37 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
         return classifyNativeFailure(selectedObservations.takeError());
       mismatch = !sim::haveEquivalentFunctionalObservations(
           **sourceObservations, *selectedObservations);
+      auto computedReplay = std::make_shared<const CachedReplayResult>(
+          CachedReplayResult{mismatch ? ReplayResultKind::Mismatch
+                                      : ReplayResultKind::Equivalent,
+                             std::nullopt});
+      if (cache) {
+        auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+        std::lock_guard<std::mutex> lock(impl.mutex);
+        if (auto existing = impl.functionalResults.find(key);
+            existing != impl.functionalResults.end()) {
+          if (!(*existing->second == *computedReplay))
+            return llvm::createStringError(
+                llvm::inconvertibleErrorCode(),
+                "structured_functional_model_invalid: nondeterministic "
+                "replay");
+          replay = existing->second;
+        } else if (impl.functionalResults.size() <
+                   impl.limits.maximumFunctionalEntries) {
+          auto [found, inserted] =
+              impl.functionalResults.try_emplace(key, computedReplay);
+          if (!inserted && !(*found->second == *computedReplay))
+            return llvm::createStringError(
+                llvm::inconvertibleErrorCode(),
+                "structured_functional_model_invalid: nondeterministic "
+                "replay");
+          replay = found->second;
+          if (inserted)
+            impl.functionalPrimeCount.fetch_add(1, std::memory_order_relaxed);
+        } else {
+          impl.capacityBypassCount.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
       if (!mismatch)
         return EvaluationModelResult{
             {},
@@ -505,11 +655,34 @@ llvm::Error primeStructuredProgramFunctionalReplay(
   const detail::StructuredFunctionalCacheKey key = replayCacheKey(
       candidateReference, invocation.workload, invocation.runtimeInput);
   auto &cacheImpl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+  using FunctionalFlightMap = decltype(cacheImpl.functionalFlights);
+  std::unique_ptr<detail::CacheFlightGuard<
+      detail::StructuredFunctionalCacheKey, FunctionalFlightMap>>
+      functionalFlight;
   {
-    std::lock_guard<std::mutex> lock(cacheImpl.mutex);
-    if (cacheImpl.functionalResults.find(key) !=
-        cacheImpl.functionalResults.end())
-      return llvm::Error::success();
+    std::unique_lock<std::mutex> lock(cacheImpl.mutex);
+    while (true) {
+      if (auto found = cacheImpl.functionalResults.find(key);
+          found != cacheImpl.functionalResults.end()) {
+        if (cachedReplayMeetsLimits(*found->second, invocation.limits))
+          return llvm::Error::success();
+        cacheImpl.functionalResults.erase(found);
+      }
+      auto flight = cacheImpl.functionalFlights.find(key);
+      if (flight == cacheImpl.functionalFlights.end()) {
+        auto entry = std::make_shared<detail::CacheFlightEntry>();
+        cacheImpl.functionalFlights.emplace(key, entry);
+        functionalFlight = std::make_unique<detail::CacheFlightGuard<
+            detail::StructuredFunctionalCacheKey, FunctionalFlightMap>>(
+            cacheImpl.functionalFlights, cacheImpl.mutex,
+            cacheImpl.flightChanged, key, std::move(entry));
+        break;
+      }
+      auto entry = flight->second;
+      cacheImpl.functionalSingleFlightWaitCount.fetch_add(
+          1, std::memory_order_relaxed);
+      cacheImpl.flightChanged.wait(lock, [&] { return entry->complete; });
+    }
   }
 
   const ArtifactRootReference sourceReference{
@@ -521,10 +694,25 @@ llvm::Error primeStructuredProgramFunctionalReplay(
           invocation.sourceObservations))
     return error;
 
+  const auto publishReplayCase =
+      [&](const sim::CanonicalSimulationWorkload &replayWorkload,
+          const sim::CanonicalSimulationRuntimeInput &replayInput)
+      -> llvm::Expected<sim::SourceBackedDfgReplayCaseReference> {
+    auto workloadReference =
+        sim::publishSimulationWorkload(replayWorkload, artifactStore);
+    if (!workloadReference)
+      return workloadReference.takeError();
+    auto runtimeInputReference =
+        sim::publishSimulationRuntimeInput(replayInput, artifactStore);
+    if (!runtimeInputReference)
+      return runtimeInputReference.takeError();
+    return sim::SourceBackedDfgReplayCaseReference{
+        std::move(*workloadReference), std::move(*runtimeInputReference)};
+  };
   auto classified = classifyReplayResult(sim::validateSourceBackedDfgReplay(
       invocation.sourceProgram, invocation.candidate,
       invocation.simulationWorkload, invocation.simulationRuntimeInput,
-      invocation.limits, &invocation.sourceObservations));
+      invocation.limits, &invocation.sourceObservations, publishReplayCase));
   if (!classified)
     return classified.takeError();
   mapping_debug::emit(
@@ -544,6 +732,9 @@ llvm::Error primeStructuredProgramFunctionalReplay(
         case ReplayResultKind::Unsupported:
           kind = "unsupported";
           break;
+        case ReplayResultKind::CancelledOrTimeout:
+          kind = "cancelled_or_timeout";
+          break;
         }
         fields["context_kind"] = "structured_functional_replay";
         fields["replay_kind"] = kind;
@@ -551,6 +742,22 @@ llvm::Error primeStructuredProgramFunctionalReplay(
   auto value =
       std::make_shared<const CachedReplayResult>(std::move(*classified));
   std::lock_guard<std::mutex> lock(cacheImpl.mutex);
+  if (auto existing = cacheImpl.functionalResults.find(key);
+      existing != cacheImpl.functionalResults.end()) {
+    if (!(*existing->second == *value))
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_functional_model_invalid: nondeterministic replay");
+    return llvm::Error::success();
+  }
+  if (cacheImpl.functionalResults.size() >=
+      cacheImpl.limits.maximumFunctionalEntries) {
+    cacheImpl.capacityBypassCount.fetch_add(1, std::memory_order_relaxed);
+    return llvm::createStringError(
+        std::make_error_code(std::errc::no_buffer_space),
+        "structured_functional_model_incomplete: replay cache capacity "
+        "exhausted");
+  }
   auto [found, inserted] = cacheImpl.functionalResults.try_emplace(key, value);
   if (!inserted && !(*found->second == *value))
     return llvm::createStringError(
@@ -576,20 +783,34 @@ getPrimedStructuredProgramFunctionalReplay(
   const detail::StructuredFunctionalCacheKey key =
       replayCacheKey(candidate, workload, runtimeInput);
   auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
-  std::lock_guard<std::mutex> lock(impl.mutex);
-  auto found = impl.functionalResults.find(key);
-  if (found == impl.functionalResults.end()) {
-    impl.functionalMissCount.fetch_add(1, std::memory_order_relaxed);
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "structured_functional_model_invalid: replay was not primed");
+  std::unique_lock<std::mutex> lock(impl.mutex);
+  while (true) {
+    auto found = impl.functionalResults.find(key);
+    if (found != impl.functionalResults.end()) {
+      impl.functionalHitCount.fetch_add(1, std::memory_order_relaxed);
+      if (!found->second->replay)
+        return llvm::createStringError(
+            found->second->kind == ReplayResultKind::CancelledOrTimeout
+                ? std::make_error_code(std::errc::timed_out)
+                : std::make_error_code(std::errc::not_supported),
+            found->second->kind == ReplayResultKind::CancelledOrTimeout
+                ? "structured_functional_model_incomplete: replay timed out"
+                : "structured_functional_model_unsupported: replay provider "
+                  "unavailable");
+      return *found->second->replay;
+    }
+    auto flight = impl.functionalFlights.find(key);
+    if (flight == impl.functionalFlights.end()) {
+      impl.functionalMissCount.fetch_add(1, std::memory_order_relaxed);
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_functional_model_invalid: replay was not primed");
+    }
+    auto entry = flight->second;
+    impl.functionalSingleFlightWaitCount.fetch_add(
+        1, std::memory_order_relaxed);
+    impl.flightChanged.wait(lock, [&] { return entry->complete; });
   }
-  impl.functionalHitCount.fetch_add(1, std::memory_order_relaxed);
-  if (!found->second->replay)
-    return llvm::createStringError(
-        std::make_error_code(std::errc::not_supported),
-        "structured_functional_model_unsupported: replay provider unavailable");
-  return *found->second->replay;
 }
 
 llvm::Expected<PreparedStructuredProgramFunctionalEvaluation>

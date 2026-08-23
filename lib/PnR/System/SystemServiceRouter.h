@@ -52,6 +52,7 @@ struct SystemServiceRouteBuildRequest final {
   std::optional<SystemServiceRoutesView> priorRoutes;
   std::optional<SystemServiceRouteTraversalExclusion> exclusion;
   std::optional<SystemServiceRouteRepairRegion> repairRegion;
+  llvm::ArrayRef<PnrIndex> reroutedLegs;
   bool enforceCapacity = true;
 };
 

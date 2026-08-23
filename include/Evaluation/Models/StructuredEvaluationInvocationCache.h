@@ -10,16 +10,34 @@ namespace detail {
 class StructuredEvaluationCacheAccess;
 }
 
+/// Invocation-local cache limits. Entries are exact-key derived state; a full
+/// cache simply declines a new insertion and never changes semantic results.
+/// The limits make memory growth deterministic even when a caller's frontier
+/// is incomplete or a provider repeatedly revisits a miss.
+struct StructuredEvaluationInvocationCacheLimits final {
+  std::uint64_t maximumAnalyticEntries = 4096;
+  std::uint64_t maximumFunctionalEntries = 2048;
+  std::uint64_t maximumDataflowFunctionalEntries = 2048;
+  std::uint64_t maximumSourceObservationEntries = 64;
+  std::uint64_t maximumFabricRootEntries = 8;
+};
+
 struct StructuredEvaluationInvocationCacheStatistics final {
   std::uint64_t analyticPrimeCount = 0;
   std::uint64_t analyticHitCount = 0;
   std::uint64_t analyticMissCount = 0;
+  std::uint64_t analyticSingleFlightWaitCount = 0;
   std::uint64_t functionalPrimeCount = 0;
   std::uint64_t functionalHitCount = 0;
   std::uint64_t functionalMissCount = 0;
+  std::uint64_t functionalSingleFlightWaitCount = 0;
+  std::uint64_t dataflowFunctionalSingleFlightWaitCount = 0;
   std::uint64_t sourceObservationPrimeCount = 0;
   std::uint64_t sourceObservationHitCount = 0;
   std::uint64_t sourceObservationMissCount = 0;
+  std::uint64_t sourceObservationSingleFlightWaitCount = 0;
+  std::uint64_t fabricRootSingleFlightWaitCount = 0;
+  std::uint64_t capacityBypassCount = 0;
 };
 
 /// Removable typed imports and results shared by all workers of one Structured
@@ -27,7 +45,10 @@ struct StructuredEvaluationInvocationCacheStatistics final {
 /// persistent identity and is never consulted outside an explicit scope.
 class StructuredEvaluationInvocationCache final {
 public:
-  StructuredEvaluationInvocationCache();
+  class Impl;
+
+  explicit StructuredEvaluationInvocationCache(
+      StructuredEvaluationInvocationCacheLimits limits = {});
   ~StructuredEvaluationInvocationCache();
 
   StructuredEvaluationInvocationCache(
@@ -36,9 +57,9 @@ public:
   operator=(const StructuredEvaluationInvocationCache &) = delete;
 
   StructuredEvaluationInvocationCacheStatistics statistics() const;
+  const StructuredEvaluationInvocationCacheLimits &limits() const;
 
 private:
-  class Impl;
   std::unique_ptr<Impl> impl_;
 
   friend class detail::StructuredEvaluationCacheAccess;

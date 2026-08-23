@@ -26,7 +26,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.structured_special_math_accuracy_generator.config.1.0";
+    "loom.structured_special_math_accuracy_generator.config.2.0";
 
 enum InputSlot : std::uint32_t {
   StructuredProgramsInput,
@@ -51,8 +51,9 @@ constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
      PlanValueCardinality::FiniteSet},
 }};
 
-constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 1> workUnits = {{
+constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 2> workUnits = {{
     {CandidateGeneratorWorkUnitRef(0), "accuracy_decision"},
+    {CandidateGeneratorWorkUnitRef(1), "mechanical_accuracy_closure"},
 }};
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -64,6 +65,28 @@ llvm::Error invalid(const llvm::Twine &message) {
 llvm::ArrayRef<std::uint8_t> descriptorBytes() {
   return {reinterpret_cast<const std::uint8_t *>(configDescriptor.data()),
           configDescriptor.size()};
+}
+
+std::vector<std::uint8_t>
+encodeConfig(std::optional<std::uint64_t> maximumMaterializationAttempts) {
+  const std::uint64_t value = maximumMaterializationAttempts.value_or(0);
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(8);
+  for (unsigned shift = 56; shift != 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  bytes.push_back(static_cast<std::uint8_t>(value));
+  return bytes;
+}
+
+llvm::Expected<std::optional<std::uint64_t>>
+decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
+  if (bytes.size() != 8)
+    return invalid("config must contain one u64 materialization bound");
+  std::uint64_t value = 0;
+  for (std::uint8_t byte : bytes)
+    value = (value << 8) | byte;
+  return value == 0 ? std::optional<std::uint64_t>{}
+                    : std::optional<std::uint64_t>{value};
 }
 
 llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
@@ -107,7 +130,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredSpecialMathAccuracyCandidateGeneratorKind,
     "compiler.structured_special_math_accuracy",
-    "loom.compiler.structured_special_math_accuracy.generator.v1",
+    "loom.compiler.structured_special_math_accuracy.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -215,22 +238,46 @@ struct AdmittedAccuracyLeaf final {
   frontend::MaterializedOwnershipCandidate candidate;
 };
 
-llvm::Expected<bool> closeMechanicalAccuracy(
-    frontend::MaterializedStructuredOwnershipCandidate &candidate) {
+struct MechanicalAccuracyClosure final {
   bool changed = false;
+  bool complete = true;
+};
+
+llvm::Expected<MechanicalAccuracyClosure> closeMechanicalAccuracy(
+    frontend::MaterializedStructuredOwnershipCandidate &candidate,
+    std::uint64_t maximumMaterializations,
+    std::uint64_t consumedChoiceAttempts,
+    std::uint64_t &plannedMechanicalClosures,
+    std::uint64_t &consumedMechanicalClosures) {
+  MechanicalAccuracyClosure result;
   while (true) {
     auto domain = frontend::enumerateStructuredSpecialMathAccuracyDecisions(
         candidate.structuredProgram);
     if (!domain)
       return domain.takeError();
     if (domain->size() != 1)
-      return changed;
+      return result;
+    if (plannedMechanicalClosures ==
+        std::numeric_limits<std::uint64_t>::max())
+      return invalid("planned mechanical-closure accounting overflows u64");
+    ++plannedMechanicalClosures;
+    if (consumedChoiceAttempts > maximumMaterializations ||
+        consumedMechanicalClosures >
+            maximumMaterializations - consumedChoiceAttempts) {
+      return invalid("accuracy materialization accounting exceeds its bound");
+    }
+    if (consumedChoiceAttempts + consumedMechanicalClosures ==
+        maximumMaterializations) {
+      result.complete = false;
+      return result;
+    }
+    ++consumedMechanicalClosures;
     auto child = frontend::materializeStructuredSpecialMathAccuracyDecision(
         std::move(candidate), domain->front());
     if (!child)
       return child.takeError();
     candidate = std::move(*child);
-    changed = true;
+    result.changed = true;
   }
 }
 
@@ -238,7 +285,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &store, const BlobStore &blobs,
-               const CandidateGeneratorInvocationView &) {
+               const CandidateGeneratorInvocationView &invocationView) {
   auto config = adoptResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -271,13 +318,24 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   std::vector<PendingAccuracyLineage> lineagePath;
   std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)>
       expanded(&artifactRootReferenceLess);
-  std::uint64_t decisionAttempts = 0;
+  const std::optional<std::uint64_t> maximumOutputs =
+      invocationView.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
+  const std::uint64_t maximumMaterializations =
+      config->maximumMaterializationAttempts().value_or(
+          std::numeric_limits<std::uint64_t>::max());
+  std::uint64_t plannedChoiceAttempts = 0;
+  std::uint64_t consumedChoiceAttempts = 0;
+  std::uint64_t plannedMechanicalClosures = 0;
+  std::uint64_t consumedMechanicalClosures = 0;
+  bool outputLimitReached = false;
 
   std::function<llvm::Error(ArtifactRootReference,
                             frontend::MaterializedStructuredOwnershipCandidate)>
       expand = [&](ArtifactRootReference reference,
                    frontend::MaterializedStructuredOwnershipCandidate candidate)
       -> llvm::Error {
+    if (outputLimitReached)
+      return llvm::Error::success();
     if (!expanded.insert(reference).second)
       return llvm::Error::success();
     auto domain = frontend::enumerateStructuredSpecialMathAccuracyDecisions(
@@ -285,6 +343,10 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     if (!domain)
       return domain.takeError();
     if (domain->empty()) {
+      if (maximumOutputs && admittedLeaves.size() >= *maximumOutputs) {
+        outputLimitReached = true;
+        return llvm::Error::success();
+      }
       auto finalized = finalizeCandidate(std::move(candidate), *exactFabric,
                                          loweringOptions);
       if (!finalized)
@@ -298,12 +360,22 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     if (domain->size() == 1)
       return invalid("mechanical accuracy was not normalized before search");
     if (domain->size() >
-        std::numeric_limits<std::uint64_t>::max() - decisionAttempts)
-      return invalid("accuracy-decision accounting overflows u64");
-    decisionAttempts += domain->size();
+        std::numeric_limits<std::uint64_t>::max() - plannedChoiceAttempts)
+      return invalid("planned accuracy-decision accounting overflows u64");
+    plannedChoiceAttempts += domain->size();
 
     for (const frontend::StructuredSpecialMathAccuracyDecision &decision :
          *domain) {
+      if (consumedChoiceAttempts > maximumMaterializations ||
+          consumedMechanicalClosures >
+              maximumMaterializations - consumedChoiceAttempts)
+        return invalid("accuracy materialization accounting exceeds its bound");
+      if (consumedChoiceAttempts + consumedMechanicalClosures ==
+          maximumMaterializations) {
+        outputLimitReached = true;
+        break;
+      }
+      ++consumedChoiceAttempts;
       auto branch = cloneCandidate(candidate);
       if (!branch)
         return branch.takeError();
@@ -311,9 +383,15 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
           std::move(*branch), decision);
       if (!child)
         return child.takeError();
-      auto normalized = closeMechanicalAccuracy(*child);
+      auto normalized = closeMechanicalAccuracy(
+          *child, maximumMaterializations, consumedChoiceAttempts,
+          plannedMechanicalClosures, consumedMechanicalClosures);
       if (!normalized)
         return normalized.takeError();
+      if (!normalized->complete) {
+        outputLimitReached = true;
+        break;
+      }
       auto published =
           frontend::publishStructuredProgram(child->structuredProgram, store);
       if (!published)
@@ -329,14 +407,22 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
 
   for (const ArtifactRootReference &reference :
        inputBindings[StructuredProgramsInput].artifacts) {
+    if (outputLimitReached)
+      break;
     auto candidate = cloneRoot(invocation, reference, store);
     if (!candidate)
       return candidate.takeError();
-    auto normalized = closeMechanicalAccuracy(*candidate);
+    auto normalized = closeMechanicalAccuracy(
+        *candidate, maximumMaterializations, consumedChoiceAttempts,
+        plannedMechanicalClosures, consumedMechanicalClosures);
     if (!normalized)
       return normalized.takeError();
+    if (!normalized->complete) {
+      outputLimitReached = true;
+      break;
+    }
     ArtifactRootReference normalizedReference = reference;
-    if (*normalized) {
+    if (normalized->changed) {
       auto published = frontend::publishStructuredProgram(
           candidate->structuredProgram, store);
       if (!published)
@@ -345,7 +431,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       lineagePath.push_back({reference, normalizedReference, std::nullopt});
     }
     llvm::Error expansion = expand(normalizedReference, std::move(*candidate));
-    if (*normalized)
+    if (normalized->changed)
       lineagePath.pop_back();
     if (expansion)
       return std::move(expansion);
@@ -395,11 +481,23 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     outputs.push_back(std::move(leaf.reference));
   }
 
+  CandidateGeneratorOutputBinding output{CandidateGeneratorOutputSlotRef(0),
+                                         std::move(outputs)};
+  std::vector<CandidateGeneratorWorkUnitSummary> workSummary = {
+      {CandidateGeneratorWorkUnitRef(0), plannedChoiceAttempts,
+       consumedChoiceAttempts},
+      {CandidateGeneratorWorkUnitRef(1), plannedMechanicalClosures,
+       consumedMechanicalClosures}};
+  if (outputLimitReached)
+    return CandidateGeneratorProviderResult{
+        IncompleteCandidateGeneratorResult{
+            CandidateGeneratorIncompleteReason::SemanticLimitReached,
+            {std::move(output)}, std::move(lineageEdges)},
+        std::move(workSummary)};
   return CandidateGeneratorProviderResult{
-      CompletedCandidateGeneratorResult{
-          {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-          std::move(lineageEdges)},
-      {{CandidateGeneratorWorkUnitRef(0), decisionAttempts, decisionAttempts}}};
+      CompletedCandidateGeneratorResult{{std::move(output)},
+                                        std::move(lineageEdges)},
+      std::move(workSummary)};
 }
 
 const CandidateGeneratorProvider provider{
@@ -414,13 +512,18 @@ resolvedStructuredSpecialMathAccuracyGeneratorConfigSchemaBytes() {
 }
 
 llvm::Expected<ResolvedStructuredSpecialMathAccuracyGeneratorConfigView>
-projectResolvedStructuredSpecialMathAccuracyGeneratorConfigView() {
-  std::vector<std::uint8_t> bytes;
+projectResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
+    std::optional<std::uint64_t> maximumMaterializationAttempts) {
+  if (maximumMaterializationAttempts &&
+      *maximumMaterializationAttempts == 0)
+    return invalid("materialization attempt limit must be positive");
+  std::vector<std::uint8_t> bytes =
+      encodeConfig(maximumMaterializationAttempts);
   auto digest = computeComponentViewDigest(descriptorBytes(), bytes);
   if (!digest)
     return digest.takeError();
   return ResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
-      std::move(bytes), std::move(*digest));
+      maximumMaterializationAttempts, std::move(bytes), std::move(*digest));
 }
 
 llvm::Expected<ResolvedStructuredSpecialMathAccuracyGeneratorConfigView>
@@ -430,12 +533,14 @@ adoptResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
     const ComponentViewDigest &digest) {
   if (schemaDescriptorBytes != descriptorBytes())
     return invalid("config descriptor does not match the exact owner");
-  if (!canonicalViewBytes.empty())
-    return invalid("schema-1.0 config must be empty");
   if (llvm::Error error = validateComponentViewDigest(
           schemaDescriptorBytes, canonicalViewBytes, digest))
     return std::move(error);
-  return ResolvedStructuredSpecialMathAccuracyGeneratorConfigView({}, digest);
+  auto decoded = decodeConfig(canonicalViewBytes);
+  if (!decoded)
+    return decoded.takeError();
+  return ResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
+      *decoded, encodeConfig(*decoded), digest);
 }
 
 const CandidateGeneratorDescriptor &

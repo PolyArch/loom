@@ -7,6 +7,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace loom::frontend::analysis {
@@ -33,11 +34,59 @@ struct StructuredProtocolDependency final {
   }
 };
 
-/// Derives the finite exact-memory dependency graph for protocol roots in
-/// caller order. Unknown aliasing, unresolved effects, indirect calls, and
-/// cross-block control remain absent rather than being guessed. Downstream DSE
-/// may use the projection for traversal and ranking, but Mapping remains the
-/// sole owner of placement, channel promotion, and routing legality.
+enum class StructuredProtocolDependencyKnowledge : std::uint8_t {
+  ProvenPresent,
+  ProvenAbsent,
+  Unknown,
+};
+
+/// One ordered pair in the complete protocol-root relation. Presence is
+/// backed by the exact direct-call memory projection above. Absence is
+/// published only when the analyzed call and memory-effect domain proves that
+/// no written object can be read by the consumer. Every other pair remains
+/// Unknown; callers must not interpret it as a zero-cost cut.
+struct StructuredProtocolDependencyRelation final {
+  StructuredEntityRef producer;
+  StructuredEntityRef consumer;
+  StructuredProtocolDependencyKnowledge knowledge =
+      StructuredProtocolDependencyKnowledge::Unknown;
+  std::optional<StructuredProtocolDependency> dependency;
+
+  friend bool
+  operator==(const StructuredProtocolDependencyRelation &lhs,
+             const StructuredProtocolDependencyRelation &rhs) {
+    return lhs.producer == rhs.producer && lhs.consumer == rhs.consumer &&
+           lhs.knowledge == rhs.knowledge &&
+           lhs.dependency == rhs.dependency;
+  }
+};
+
+/// Candidate-independent, immutable protocol relation projected in caller
+/// root order. The relation contains exactly one entry for every distinct
+/// ordered pair. It is neither channel legality nor a Mapping feasibility
+/// result.
+struct StructuredProtocolDependencyProjection final {
+  std::vector<StructuredProtocolDependencyRelation> relations;
+
+  std::vector<StructuredProtocolDependency> presentDependencies() const;
+
+  friend bool
+  operator==(const StructuredProtocolDependencyProjection &lhs,
+             const StructuredProtocolDependencyProjection &rhs) {
+    return lhs.relations == rhs.relations;
+  }
+};
+
+llvm::Expected<StructuredProtocolDependencyProjection>
+projectStructuredProtocolDependencyProjection(
+    const StructuredProgramCandidate &program,
+    llvm::ArrayRef<StructuredEntityRef> protocolRoots);
+
+/// Compatibility projection containing only exact present relations. Unknown
+/// aliasing, unresolved effects, indirect calls, and cross-block control are
+/// omitted, so callers that must distinguish absence from unknown must consume
+/// `projectStructuredProtocolDependencyProjection` instead. Mapping remains
+/// the sole owner of placement, channel promotion, and routing legality.
 llvm::Expected<std::vector<StructuredProtocolDependency>>
 projectStructuredProtocolDependencies(
     const StructuredProgramCandidate &program,

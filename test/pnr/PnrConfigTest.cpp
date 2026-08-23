@@ -9,6 +9,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <type_traits>
@@ -63,8 +64,10 @@ void projectionAndAdoptionAreDomainTyped() {
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               system.schemaDescriptorBytes().data()),
                           system.schemaDescriptorBytes().size()) ==
-              "loom.system_pnr.config.7.0",
+              "loom.system_pnr.config.8.0",
           "System PnR view has the wrong schema descriptor");
+  require(system.systemBindingPartitions().empty(),
+          "base System PnR view invented a partition intent");
   require(spatial.digest() != system.digest(),
           "domain-distinct views have the same digest");
 
@@ -101,6 +104,29 @@ void projectionAndAdoptionAreDomainTyped() {
                       spatial.schemaDescriptorBytes(),
                       spatial.canonicalViewBytes(), spatial.digest()),
                   "pnr_config_descriptor_mismatch");
+
+  std::array<std::uint8_t, loom::ArtifactIdentity::byteSize> identityBytes{};
+  identityBytes.fill(9);
+  const auto dataflowIdentity =
+      take(loom::ArtifactIdentity::fromBytes(identityBytes));
+  const loom::pnr::SystemBindingPartitionIntent intent{
+      {dataflowIdentity, dataflow::RootThreadLaunchId(7)}, 4};
+  const auto specialized =
+      take(loom::pnr::specializeResolvedSystemPnrConfigView(system, {intent}));
+  require(specialized.digest() != system.digest() &&
+              specialized.systemBindingPartitions().size() == 1 &&
+              specialized.systemBindingPartitions().front() == intent,
+          "System partition intent did not enter the exact config view");
+  const auto adoptedSpecialized =
+      take(loom::pnr::adoptResolvedSystemPnrConfigView(
+          specialized.schemaDescriptorBytes(), specialized.canonicalViewBytes(),
+          specialized.digest()));
+  require(adoptedSpecialized.systemBindingPartitions() ==
+              specialized.systemBindingPartitions(),
+          "System partition intent did not survive canonical adoption");
+  requireRejected(
+      loom::pnr::specializeResolvedSystemPnrConfigView(spatial, {intent}),
+      "requires a System PnR view");
 }
 
 void selectedAndUnselectedRecordsHaveExactDependencies() {
@@ -233,7 +259,7 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
 }
 
 void resolvedConfigUsesTheIndependentViolationCatalog() {
-  require(loom::ResolvedConfig::artifactSchema.version.major == 8 &&
+  require(loom::ResolvedConfig::artifactSchema.version.major == 10 &&
               loom::ResolvedConfig::artifactSchema.version.minor == 0,
           "ResolvedConfig has the wrong schema version");
   const std::string canonical =

@@ -1,5 +1,7 @@
 add_library(LoomDSEFeedback
   ../JointHardwareReopen.cpp
+  ../JointMappingMigration.cpp
+  SpatialOperandQueueRuntimeFeedback.cpp
   SpatialMappingFeedbackCandidateGenerator.cpp
   TechMappingHardwareFeedback.cpp
 )

@@ -5,6 +5,7 @@
 #include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
@@ -123,6 +124,7 @@ struct CgraConsumedPhysicalUsePlan final {
 
 struct CgraPeOperandQueueMatchPlan final {
   ::fabric::LogicalOperandQueueKey queue;
+  ::loom::fabric::FabricFuOccurrenceRef fu;
   std::uint32_t allocationUnit = 0;
   std::uint32_t entryCapacity = 0;
   std::uint64_t consumerOffset = 0;
@@ -161,6 +163,7 @@ struct CgraTransportPlan final {
   std::vector<CgraPeOperandQueueActivationPlan> operandQueueActivations;
   std::vector<CgraPeOperandQueueMatchPlan> operandQueueMatches;
   std::vector<CgraPeOperandQueueConsumerPlan> operandQueueConsumers;
+  ::loom::mapping::SpatialPeOperandProgressFeedback operandQueueProgress;
 };
 
 llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(

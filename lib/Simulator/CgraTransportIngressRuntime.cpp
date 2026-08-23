@@ -71,6 +71,7 @@ std::uint64_t CgraTransportRuntime::allocate(
     traversalNodeTransferSlots_[nodeOrdinal] = slot;
   }
   binding.active = true;
+  binding.sourceReserved = false;
   ++activeTransferCount_;
   return slot;
 }
@@ -363,7 +364,8 @@ bool CgraTransportRuntime::actorSourcesAvailable(
     std::uint64_t semanticActorOrdinal) const {
   for (const auto &[key, binding] : actorSourceBindings_)
     if (key.first == semanticActorOrdinal &&
-        (binding >= bindings_.size() || bindings_[binding].active))
+        (binding >= bindings_.size() || bindings_[binding].sourceReserved ||
+         bindings_[binding].active))
       return false;
   return true;
 }

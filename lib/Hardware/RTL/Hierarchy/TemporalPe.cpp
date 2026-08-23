@@ -697,8 +697,6 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
 
         std::vector<llvm::SmallVector<mlir::Value>> inputMatchTerms(
             layout.inputPortCount);
-        std::vector<llvm::SmallVector<mlir::Value>> inputBlockedTerms(
-            layout.inputPortCount);
         std::vector<QueueRuntime> queueRuntime(queues.size());
         std::vector<std::vector<mlir::Value>> queueInputMatches(
             queues.size(), std::vector<mlir::Value>(layout.inputPortCount));
@@ -735,8 +733,7 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
                   bodyBuilder, location,
                   {rowSelectsFu, selector.discard, targetMatches, tagMatches});
               queueInputMatches[queueOrdinal][port] = routeMatches;
-              inputMatchTerms[port].push_back(orValues(
-                  bodyBuilder, location, {routeMatches, discardMatches}));
+              inputMatchTerms[port].push_back(discardMatches);
               enqueueValidTerms.push_back(andValues(
                   bodyBuilder, location,
                   {routeMatches,
@@ -777,29 +774,81 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
             runtime.valid = instance->at(queuePort("dequeue", local, "_valid"));
             runtime.enqueueReady =
                 instance->at(queuePort("enqueue", local, "_ready"));
-            for (std::uint32_t port = 0; port != inputEndpoints.size(); ++port)
-              inputBlockedTerms[port].push_back(andValues(
-                  bodyBuilder, location,
-                  {queueInputMatches[unit.queues[local]][port],
-                   circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                runtime.enqueueReady)}));
           }
         }
 
+        // Prefer a complete context/FU tuple whenever one is available. This
+        // gates only existing per-port head matches; FIFO order and atomic
+        // multi-queue service remain unchanged.
+        std::vector<mlir::Value> queuePairReady(queues.size());
+        for (std::uint32_t queueOrdinal = 0;
+             queueOrdinal != queues.size(); ++queueOrdinal) {
+          const LogicalQueuePlan &queue = queues[queueOrdinal];
+          llvm::SmallVector<mlir::Value> requiredInputs;
+          for (std::uint32_t input = 0;
+               input != layout.fus[queue.fu].inputCount; ++input) {
+            const std::uint32_t requiredQueue =
+                queueOf[queue.context][queue.fu][input];
+            llvm::SmallVector<mlir::Value> headReady;
+            for (std::uint32_t port = 0; port != inputEndpoints.size();
+                 ++port)
+              headReady.push_back(andValues(
+                  bodyBuilder, location,
+                  {queueInputMatches[requiredQueue][port],
+                   accessor.getInput(
+                       inputEndpoints[port]->valid.getName())}));
+            requiredInputs.push_back(orValues(bodyBuilder, location,
+                                              headReady));
+          }
+          queuePairReady[queueOrdinal] =
+              andValues(bodyBuilder, location, requiredInputs);
+        }
+        const mlir::Value anyCompletePair =
+            orValues(bodyBuilder, location, queuePairReady);
+        std::vector<std::vector<mlir::Value>> admissionMatches(
+            queues.size(), std::vector<mlir::Value>(layout.inputPortCount));
+        std::vector<llvm::SmallVector<mlir::Value>> admissionMatchTerms(
+            layout.inputPortCount);
+        std::vector<llvm::SmallVector<mlir::Value>> admissionBlockedTerms(
+            layout.inputPortCount);
+        for (std::uint32_t queueOrdinal = 0;
+             queueOrdinal != queues.size(); ++queueOrdinal)
+          for (std::uint32_t port = 0; port != inputEndpoints.size(); ++port) {
+            const mlir::Value allowed = andValues(
+                bodyBuilder, location,
+                {queueInputMatches[queueOrdinal][port],
+                 orValues(bodyBuilder, location,
+                          {circt::comb::createOrFoldNot(
+                               bodyBuilder, location, anyCompletePair),
+                           queuePairReady[queueOrdinal]})});
+            admissionMatches[queueOrdinal][port] = allowed;
+            admissionMatchTerms[port].push_back(allowed);
+            admissionBlockedTerms[port].push_back(andValues(
+                bodyBuilder, location,
+                {allowed,
+                 circt::comb::createOrFoldNot(
+                     bodyBuilder, location,
+                     queueRuntime[queueOrdinal].enqueueReady)}));
+          }
         std::vector<mlir::Value> inputReady(layout.inputPortCount);
         for (std::uint32_t port = 0; port != layout.inputPortCount; ++port)
           inputReady[port] = andValues(
               bodyBuilder, location,
-              {orValues(bodyBuilder, location, inputMatchTerms[port]),
+              {orValues(bodyBuilder, location,
+                        {orValues(bodyBuilder, location,
+                                  admissionMatchTerms[port]),
+                         orValues(bodyBuilder, location,
+                                  inputMatchTerms[port])}),
                circt::comb::createOrFoldNot(
                    bodyBuilder, location,
-                   orValues(bodyBuilder, location, inputBlockedTerms[port]))});
+                   orValues(bodyBuilder, location,
+                            admissionBlockedTerms[port]))});
         for (std::uint32_t queue = 0; queue != queues.size(); ++queue) {
           llvm::SmallVector<mlir::Value> commitTerms;
           for (std::uint32_t port = 0; port != inputEndpoints.size(); ++port)
             commitTerms.push_back(andValues(
                 bodyBuilder, location,
-                {queueInputMatches[queue][port], inputReady[port],
+                {admissionMatches[queue][port], inputReady[port],
                  accessor.getInput(inputEndpoints[port]->valid.getName())}));
           queueRuntime[queue].enqueueCommit.setValue(
               orValues(bodyBuilder, location, commitTerms));

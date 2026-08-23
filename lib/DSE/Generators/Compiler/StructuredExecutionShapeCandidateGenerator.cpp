@@ -139,7 +139,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &store, const BlobStore &blobs,
-               const CandidateGeneratorInvocationView &) {
+               const CandidateGeneratorInvocationView &invocationView) {
   auto config = adoptResolvedStructuredExecutionShapeGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -151,6 +151,16 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
   std::uint64_t decisionAttempts = 0;
+  std::uint64_t consumedDecisionAttempts = 0;
+  bool truncated = false;
+  const std::optional<std::uint64_t> maximumOutputs =
+      invocationView.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
+  const auto outputAvailable = [&] {
+    if (!maximumOutputs || outputs.size() < *maximumOutputs)
+      return true;
+    truncated = true;
+    return false;
+  };
   for (const ArtifactRootReference &reference :
        inputBindings[StructuredProgramsInput].artifacts) {
     auto parent = cloneParentState(invocation, reference, store);
@@ -166,6 +176,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     decisionAttempts += decisions->size();
 
     if (decisions->empty()) {
+      if (!outputAvailable())
+        continue;
       if (llvm::Error error = recordStructuredCandidate(
               reference, reference, std::nullopt, std::move(*parent), store))
         return std::move(error);
@@ -174,6 +186,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     }
 
     for (auto item : llvm::enumerate(*decisions)) {
+      if (!outputAvailable())
+        break;
       const frontend::StructuredExecutionShapeDecision &decision = item.value();
       llvm::Expected<frontend::MaterializedStructuredOwnershipCandidate>
           candidate = item.index() == 0
@@ -203,13 +217,24 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
           {reference},
           std::move(*ownerPayload)});
       outputs.push_back(std::move(*published));
+      ++consumedDecisionAttempts;
     }
   }
+  std::vector<CandidateGeneratorOutputBinding> outputBindings = {
+      {CandidateGeneratorOutputSlotRef(0), std::move(outputs)}};
+  CandidateGeneratorProviderOutcome outcome =
+      truncated
+          ? CandidateGeneratorProviderOutcome{
+                IncompleteCandidateGeneratorResult{
+                    CandidateGeneratorIncompleteReason::SemanticLimitReached,
+                    std::move(outputBindings), std::move(lineageEdges)}}
+          : CandidateGeneratorProviderOutcome{
+                CompletedCandidateGeneratorResult{
+                    std::move(outputBindings), std::move(lineageEdges)}};
   return CandidateGeneratorProviderResult{
-      CompletedCandidateGeneratorResult{
-          {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-          std::move(lineageEdges)},
-      {{CandidateGeneratorWorkUnitRef(0), decisionAttempts, decisionAttempts}}};
+      std::move(outcome),
+      {{CandidateGeneratorWorkUnitRef(0), decisionAttempts,
+        consumedDecisionAttempts}}};
 }
 
 const CandidateGeneratorProvider provider{

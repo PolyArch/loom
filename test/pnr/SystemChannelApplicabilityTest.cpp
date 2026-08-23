@@ -437,24 +437,27 @@ void verifyRootCompleteSystemAdapter(
       loom::dse::rootCompleteSystemPnrCandidateGeneratorDescriptor();
   const auto physicalTimingProfiles =
       normalizedTimingProfileRoots(systemReference, store);
-  require(descriptor.kind ==
-                  loom::dse::rootCompleteSystemPnrCandidateGeneratorKind &&
-              descriptor.inputSlots.size() == 5 &&
-              descriptor.outputSlots.size() == 1 &&
-              descriptor.implementationSemanticIdentity ==
-                  "loom.mapping.root_complete_system_pnr.generator.v10" &&
-              descriptor.workUnits.size() ==
-                  loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
-              descriptor.inputSlots[0].semanticRole == "dataflow" &&
-              descriptor.inputSlots[1].semanticRole == "spatial_mapping" &&
-              descriptor.inputSlots[2].semanticRole == "fabric" &&
-              descriptor.inputSlots[3].semanticRole ==
-                  "physical_timing_profile" &&
-              descriptor.inputSlots[4].semanticRole == "migration_seed" &&
-              descriptor.inputSlots[4].cardinality ==
-                  loom::dse::PlanValueCardinality::ZeroOrOne,
-          "root-complete System descriptor lost its exact timing-bound input "
-          "shape");
+  require(
+      descriptor.kind ==
+              loom::dse::rootCompleteSystemPnrCandidateGeneratorKind &&
+          descriptor.inputSlots.size() == 6 &&
+          descriptor.outputSlots.size() == 1 &&
+          descriptor.implementationSemanticIdentity ==
+              "loom.mapping.root_complete_system_pnr.generator.v11" &&
+          descriptor.workUnits.size() ==
+              loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
+          descriptor.inputSlots[0].semanticRole == "dataflow" &&
+          descriptor.inputSlots[1].semanticRole == "spatial_mapping" &&
+          descriptor.inputSlots[2].semanticRole == "fabric" &&
+          descriptor.inputSlots[3].semanticRole == "physical_timing_profile" &&
+          descriptor.inputSlots[4].semanticRole == "migration_seed" &&
+          descriptor.inputSlots[4].cardinality ==
+              loom::dse::PlanValueCardinality::ZeroOrOne &&
+          descriptor.inputSlots[5].semanticRole == "finalized_migration_seed" &&
+          descriptor.inputSlots[5].cardinality ==
+              loom::dse::PlanValueCardinality::ZeroOrOne,
+      "root-complete System descriptor lost its exact timing-bound input "
+      "shape");
   auto inputs =
       take(loom::dse::bindRootCompleteSystemPnrCandidateGeneratorInputs(
           dataflowReference, spatialMappings, systemReference,
@@ -517,7 +520,7 @@ void verifyRootCompleteSystemAdapter(
        loom::dse::ExactPlanArtifacts{spatialMappings.vec()},
        loom::dse::ExactPlanArtifacts{{systemReference}},
        loom::dse::ExactPlanArtifacts{physicalTimingProfiles},
-       loom::dse::ExactPlanArtifacts{}},
+       loom::dse::ExactPlanArtifacts{}, loom::dse::ExactPlanArtifacts{}},
       config.canonicalViewBytes().vec(),
       config.digest()}};
   auto planView = take(loom::dse::projectResolvedDseConfigView(planned));

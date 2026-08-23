@@ -556,6 +556,27 @@ void contextDispatchIsFabricOwnedAndFair() {
           "the shared cursor");
 }
 
+void pooledModesExposeDerivedAdmissionCredits() {
+  const auto dedicated = takeContract(
+      __func__, TemporalOperandBufferContract::create(
+                    declaration(OperandBufferMode::PerInstruction, 2)));
+  const auto banked = takeContract(
+      __func__, TemporalOperandBufferContract::create(
+                    declaration(OperandBufferMode::PerInputPort, 2)));
+  const auto shared = takeContract(
+      __func__, TemporalOperandBufferContract::create(
+                    declaration(OperandBufferMode::AllFuShare, 2)));
+  require(__func__,
+          dedicated.admissionPolicy() == OperandAdmissionPolicy::Unreserved,
+          "dedicated queues should not require shared admission credits");
+  require(__func__,
+          banked.admissionPolicy() ==
+                  OperandAdmissionPolicy::PerActiveQueueCredit &&
+              shared.admissionPolicy() ==
+                  OperandAdmissionPolicy::PerActiveQueueCredit,
+          "pooled operand modes lost their derived admission policy");
+}
+
 } // namespace
 
 int main() {
@@ -570,5 +591,6 @@ int main() {
   actorRequiredDequeueOvercapacityIsRejected();
   registerFifoPortCountOwnsServiceConcurrency();
   contextDispatchIsFabricOwnedAndFair();
+  pooledModesExposeDerivedAdmissionCredits();
   return 0;
 }

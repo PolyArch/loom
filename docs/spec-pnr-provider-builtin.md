@@ -17,7 +17,7 @@ Spatial:
   selected FabricPhysicalTimingProfile descriptor and digest
 
 System:
-  loom.system_pnr.config.7.0
+  loom.system_pnr.config.8.0
   loom.system_pnr_search_domain.4.0
   loom.mapping.pnr.objective 3.0
   exact selected SpatialMapping references

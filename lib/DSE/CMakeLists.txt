@@ -7,6 +7,9 @@ add_library(LoomDSE
   JointDesignExploration.cpp
   JointDesignPolicy.cpp
   JointFrontier.cpp
+  ResourceTimeFrontier.cpp
+  ResourceTimeFrontierSession.cpp
+  ResourceTimeSpectrum.cpp
   SpatialMappingEvaluationAcquisition.cpp
   StructuredEvaluationAcquisition.cpp
   StructuredOwnership.cpp

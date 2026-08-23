@@ -3,6 +3,9 @@
 #include "Common/ArtifactLocalReference.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/ErrorHandling.h"
+
+#include <utility>
 
 using namespace loom;
 using namespace loom::evaluation::models;
@@ -98,11 +101,21 @@ bool loom::evaluation::models::detail::operator==(
          left.memoryBytesCompared == right.memoryBytesCompared &&
          left.wavefrontSteps == right.wavefrontSteps &&
          left.eventCount == right.eventCount &&
-         left.operationFireCounts == right.operationFireCounts;
+         left.operationFireCounts == right.operationFireCounts &&
+         left.replayCases == right.replayCases;
 }
 
-StructuredEvaluationInvocationCache::StructuredEvaluationInvocationCache()
-    : impl_(std::make_unique<Impl>()) {}
+StructuredEvaluationInvocationCache::StructuredEvaluationInvocationCache(
+    StructuredEvaluationInvocationCacheLimits limits)
+    : impl_(std::make_unique<Impl>(std::move(limits))) {
+  if (impl_->limits.maximumAnalyticEntries == 0 ||
+      impl_->limits.maximumFunctionalEntries == 0 ||
+      impl_->limits.maximumDataflowFunctionalEntries == 0 ||
+      impl_->limits.maximumSourceObservationEntries == 0 ||
+      impl_->limits.maximumFabricRootEntries == 0)
+    llvm::report_fatal_error("Structured Evaluation cache limits must be "
+                            "positive");
+}
 
 StructuredEvaluationInvocationCache::~StructuredEvaluationInvocationCache() =
     default;
@@ -112,12 +125,28 @@ StructuredEvaluationInvocationCache::statistics() const {
   return {impl_->analyticPrimeCount.load(std::memory_order_relaxed),
           impl_->analyticHitCount.load(std::memory_order_relaxed),
           impl_->analyticMissCount.load(std::memory_order_relaxed),
+          impl_->analyticSingleFlightWaitCount.load(
+              std::memory_order_relaxed),
           impl_->functionalPrimeCount.load(std::memory_order_relaxed),
           impl_->functionalHitCount.load(std::memory_order_relaxed),
           impl_->functionalMissCount.load(std::memory_order_relaxed),
+          impl_->functionalSingleFlightWaitCount.load(
+              std::memory_order_relaxed),
+          impl_->dataflowFunctionalSingleFlightWaitCount.load(
+              std::memory_order_relaxed),
           impl_->sourceObservationPrimeCount.load(std::memory_order_relaxed),
           impl_->sourceObservationHitCount.load(std::memory_order_relaxed),
-          impl_->sourceObservationMissCount.load(std::memory_order_relaxed)};
+          impl_->sourceObservationMissCount.load(std::memory_order_relaxed),
+          impl_->sourceObservationSingleFlightWaitCount.load(
+              std::memory_order_relaxed),
+          impl_->fabricRootSingleFlightWaitCount.load(
+              std::memory_order_relaxed),
+          impl_->capacityBypassCount.load(std::memory_order_relaxed)};
+}
+
+const StructuredEvaluationInvocationCacheLimits &
+StructuredEvaluationInvocationCache::limits() const {
+  return impl_->limits;
 }
 
 StructuredEvaluationInvocationCacheScope::
@@ -165,12 +194,34 @@ loom::evaluation::models::detail::importCachedFabricRoot(
     const ArtifactRootReference &reference, const ArtifactStore &store) {
   StructuredEvaluationInvocationCache *cache =
       currentStructuredEvaluationCache();
+  std::unique_ptr<CacheFlightGuard<
+      ArtifactRootReference,
+      decltype(std::declval<StructuredEvaluationInvocationCache::Impl &>()
+                   .fabricRootFlights)>>
+      fabricFlight;
   if (cache) {
     auto &impl = StructuredEvaluationCacheAccess::impl(*cache);
-    std::lock_guard<std::mutex> lock(impl.mutex);
-    auto found = impl.fabricRoots.find(reference);
-    if (found != impl.fabricRoots.end())
-      return found->second;
+    using FabricFlightMap = decltype(impl.fabricRootFlights);
+    std::unique_lock<std::mutex> lock(impl.mutex);
+    while (true) {
+      auto found = impl.fabricRoots.find(reference);
+      if (found != impl.fabricRoots.end())
+        return found->second;
+      auto flight = impl.fabricRootFlights.find(reference);
+      if (flight == impl.fabricRootFlights.end()) {
+        auto entry = std::make_shared<CacheFlightEntry>();
+        impl.fabricRootFlights.emplace(reference, entry);
+        fabricFlight = std::make_unique<CacheFlightGuard<
+            ArtifactRootReference, FabricFlightMap>>(
+            impl.fabricRootFlights, impl.mutex, impl.flightChanged, reference,
+            std::move(entry));
+        break;
+      }
+      auto entry = flight->second;
+      impl.fabricRootSingleFlightWaitCount.fetch_add(
+          1, std::memory_order_relaxed);
+      impl.flightChanged.wait(lock, [&] { return entry->complete; });
+    }
   }
 
   auto imported = loom::fabric::importEntireFabricRoot(reference, store);
@@ -183,6 +234,13 @@ loom::evaluation::models::detail::importCachedFabricRoot(
 
   auto &impl = StructuredEvaluationCacheAccess::impl(*cache);
   std::lock_guard<std::mutex> lock(impl.mutex);
+  if (auto existing = impl.fabricRoots.find(reference);
+      existing != impl.fabricRoots.end())
+    return existing->second;
+  if (impl.fabricRoots.size() >= impl.limits.maximumFabricRootEntries) {
+    impl.capacityBypassCount.fetch_add(1, std::memory_order_relaxed);
+    return sealed;
+  }
   auto [found, inserted] = impl.fabricRoots.try_emplace(reference, sealed);
   return inserted ? sealed : found->second;
 }

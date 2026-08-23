@@ -751,11 +751,20 @@ loom::pnr::detail::buildSystemServiceRoutes(
   capacityUsage.reserve(topology.capacityCells().size());
   for (const auto &cell : topology.capacityCells())
     capacityUsage.push_back(cell.initialOccupancy);
+  const auto isRerouted = [&](PnrIndex leg) {
+    if (!llvm::is_contained(request.reroutedLegs, leg))
+      return false;
+    // A repair region still needs the complete prior leg as its source tree;
+    // only its selected region is replaced during the route pass.
+    return !request.repairRegion || request.repairRegion->leg != leg;
+  };
 
   if (request.priorRoutes) {
     if (request.priorRoutes->routes.size() != problem.serviceLegs().size())
       return invalid("prior service route count has the wrong width");
     for (PnrIndex leg = 0; leg < request.priorRoutes->routes.size(); ++leg) {
+      if (isRerouted(leg))
+        continue;
       const auto &prior = request.priorRoutes->routes[leg];
       if (prior.leg != leg)
         return invalid("prior service routes are not in canonical leg order");
@@ -772,6 +781,8 @@ loom::pnr::detail::buildSystemServiceRoutes(
       problem.serviceLegs().size());
   if (request.priorRoutes)
     for (PnrIndex leg = 0; leg < request.priorRoutes->routes.size(); ++leg) {
+      if (isRerouted(leg))
+        continue;
       auto copied = copyPriorLegRoute(topology, *request.priorRoutes,
                                       request.priorRoutes->routes[leg]);
       if (!copied)
@@ -780,7 +791,7 @@ loom::pnr::detail::buildSystemServiceRoutes(
     }
 
   for (PnrIndex legOrdinal : request.legOrder) {
-    if (request.priorRoutes) {
+    if (request.priorRoutes && builtLegs[legOrdinal]) {
       auto traversals = selectedRouteTraversals(
           *request.priorRoutes, request.priorRoutes->routes[legOrdinal]);
       if (!traversals)
@@ -813,7 +824,14 @@ loom::pnr::detail::buildSystemServiceRoutes(
     std::size_t retainedNodeCount = 0;
     if (request.repairRegion && request.repairRegion->leg == legOrdinal) {
       if (!builtLegs[legOrdinal])
-        return invalid("repair region has no prior route selection");
+        return invalid(
+            (llvm::Twine("repair region has no prior route selection for leg ") +
+             llvm::Twine(legOrdinal) + "; prior_routes=" +
+             (request.priorRoutes ? "present" : "absent") +
+             "; rerouted=" +
+             (llvm::is_contained(request.reroutedLegs, legOrdinal) ? "yes"
+                                                                   : "no"))
+                .str());
       auto prepared = prepareRepairRegion(topology, *builtLegs[legOrdinal],
                                           *activeSinks, *request.repairRegion);
       if (!prepared)

@@ -732,15 +732,37 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
   StructuredEvaluationInvocationCache *cache =
       detail::currentStructuredEvaluationCache();
   std::shared_ptr<const CachedMetrics> cachedMetrics;
+  using AnalyticFlightMap =
+      decltype(std::declval<StructuredEvaluationInvocationCache::Impl &>()
+                   .analyticFlights);
+  std::unique_ptr<detail::CacheFlightGuard<
+      detail::StructuredAnalyticCacheKey, AnalyticFlightMap>> analyticFlight;
   if (cache) {
     auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
-    std::lock_guard<std::mutex> lock(impl.mutex);
-    auto found = impl.analyticResults.find(cacheKey);
-    if (found != impl.analyticResults.end()) {
-      cachedMetrics = found->second;
-      impl.analyticHitCount.fetch_add(1, std::memory_order_relaxed);
-    } else {
-      impl.analyticMissCount.fetch_add(1, std::memory_order_relaxed);
+    std::unique_lock<std::mutex> lock(impl.mutex);
+    while (true) {
+      auto found = impl.analyticResults.find(cacheKey);
+      if (found != impl.analyticResults.end()) {
+        cachedMetrics = found->second;
+        impl.analyticHitCount.fetch_add(1, std::memory_order_relaxed);
+        break;
+      }
+      auto flight = impl.analyticFlights.find(cacheKey);
+      if (flight == impl.analyticFlights.end()) {
+        auto entry = std::make_shared<detail::CacheFlightEntry>();
+        impl.analyticFlights.emplace(cacheKey, entry);
+        impl.analyticMissCount.fetch_add(1, std::memory_order_relaxed);
+        analyticFlight = std::make_unique<detail::CacheFlightGuard<
+            detail::StructuredAnalyticCacheKey, AnalyticFlightMap>>(
+            impl.analyticFlights, impl.mutex, impl.flightChanged, cacheKey,
+            std::move(entry));
+        break;
+      }
+      auto entry = flight->second;
+      impl.analyticSingleFlightWaitCount.fetch_add(1,
+                                                   std::memory_order_relaxed);
+      impl.flightChanged.wait(lock,
+                              [&] { return entry->complete; });
     }
   }
 
@@ -829,15 +851,27 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
       auto cached = std::make_shared<const CachedMetrics>(metrics);
       std::lock_guard<std::mutex> lock(impl.mutex);
-      auto [found, inserted] =
-          impl.analyticResults.try_emplace(cacheKey, std::move(cached));
-      if (!inserted && *found->second != metrics)
-        return llvm::createStringError(
-            llvm::inconvertibleErrorCode(),
-            "structured_fabric_model_invalid: nondeterministic cached "
-            "result");
-      if (inserted)
-        impl.analyticPrimeCount.fetch_add(1, std::memory_order_relaxed);
+      if (auto existing = impl.analyticResults.find(cacheKey);
+          existing != impl.analyticResults.end()) {
+        if (*existing->second != metrics)
+          return llvm::createStringError(
+              llvm::inconvertibleErrorCode(),
+              "structured_fabric_model_invalid: nondeterministic cached "
+              "result");
+      } else if (impl.analyticResults.size() >=
+                 impl.limits.maximumAnalyticEntries) {
+        impl.capacityBypassCount.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        auto [found, inserted] =
+            impl.analyticResults.try_emplace(cacheKey, std::move(cached));
+        if (!inserted && *found->second != metrics)
+          return llvm::createStringError(
+              llvm::inconvertibleErrorCode(),
+              "structured_fabric_model_invalid: nondeterministic cached "
+              "result");
+        if (inserted)
+          impl.analyticPrimeCount.fetch_add(1, std::memory_order_relaxed);
+      }
     }
   }
   if (!metrics) {
@@ -1095,6 +1129,35 @@ llvm::Error primeStructuredFabricAnalyticResult(
       ResolvedModelConfigView::project(kModelDescriptor.reference(), config);
   if (!configView)
     return configView.takeError();
+  const detail::StructuredAnalyticCacheKey key = metricCacheKey(
+      structuredProgramReference, fabricRoot.reference(), invocation.workload,
+      invocation.runtimeInput, configView->digest());
+  auto &cacheImpl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+  using AnalyticFlightMap = decltype(cacheImpl.analyticFlights);
+  std::unique_ptr<detail::CacheFlightGuard<
+      detail::StructuredAnalyticCacheKey, AnalyticFlightMap>> analyticFlight;
+  {
+    std::unique_lock<std::mutex> lock(cacheImpl.mutex);
+    while (true) {
+      if (cacheImpl.analyticResults.find(key) !=
+          cacheImpl.analyticResults.end())
+        return llvm::Error::success();
+      auto flight = cacheImpl.analyticFlights.find(key);
+      if (flight == cacheImpl.analyticFlights.end()) {
+        auto entry = std::make_shared<detail::CacheFlightEntry>();
+        cacheImpl.analyticFlights.emplace(key, entry);
+        analyticFlight = std::make_unique<detail::CacheFlightGuard<
+            detail::StructuredAnalyticCacheKey, AnalyticFlightMap>>(
+            cacheImpl.analyticFlights, cacheImpl.mutex,
+            cacheImpl.flightChanged, key, std::move(entry));
+        break;
+      }
+      auto entry = flight->second;
+      cacheImpl.analyticSingleFlightWaitCount.fetch_add(
+          1, std::memory_order_relaxed);
+      cacheImpl.flightChanged.wait(lock, [&] { return entry->complete; });
+    }
+  }
   std::optional<dataflow::CanonicalDataflowProgramView> dataflowView;
   if (candidate.canonicalDataflow) {
     auto view = candidate.canonicalDataflow->view();
@@ -1136,20 +1199,32 @@ llvm::Error primeStructuredFabricAnalyticResult(
                                  candidate.spatialGraphs);
   if (!metrics)
     return metrics.takeError();
-  const detail::StructuredAnalyticCacheKey key = metricCacheKey(
-      structuredProgramReference, fabricRoot.reference(), invocation.workload,
-      invocation.runtimeInput, configView->digest());
-  auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
   auto cached = std::make_shared<const CachedMetrics>(*metrics);
-  std::lock_guard<std::mutex> lock(impl.mutex);
+  std::lock_guard<std::mutex> lock(cacheImpl.mutex);
+  if (auto existing = cacheImpl.analyticResults.find(key);
+      existing != cacheImpl.analyticResults.end()) {
+    if (*existing->second != *metrics)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: nondeterministic cached result");
+    return llvm::Error::success();
+  }
+  if (cacheImpl.analyticResults.size() >=
+      cacheImpl.limits.maximumAnalyticEntries) {
+    cacheImpl.capacityBypassCount.fetch_add(1, std::memory_order_relaxed);
+    return llvm::createStringError(
+        std::make_error_code(std::errc::no_buffer_space),
+        "structured_fabric_model_incomplete: analytic cache capacity "
+        "exhausted");
+  }
   auto [found, inserted] =
-      impl.analyticResults.try_emplace(key, std::move(cached));
+      cacheImpl.analyticResults.try_emplace(key, std::move(cached));
   if (!inserted && *found->second != *metrics)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: nondeterministic cached result");
   if (inserted)
-    impl.analyticPrimeCount.fetch_add(1, std::memory_order_relaxed);
+    cacheImpl.analyticPrimeCount.fetch_add(1, std::memory_order_relaxed);
   return llvm::Error::success();
 }
 

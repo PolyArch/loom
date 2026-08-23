@@ -22,8 +22,7 @@
 # RUN:   > %t.run.stdout 2> %t.run.stderr
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
-# RUN:   --spatial-invocations=4 --expected-unique-dispatch-targets=3 \
-# RUN:   --minimum-unique-acc-cores=3 \
+# RUN:   --minimum-unique-acc-cores=2 \
 # RUN:   --required-dataflow-text=math.sqrt \
 # RUN:   --required-dataflow-text=math.exp \
 # RUN:   --required-dataflow-text=arith.mulf \

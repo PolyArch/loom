@@ -22,20 +22,21 @@ product program format. Loom's public source boundary remains C and C++ through
 LLVM IR; the portfolio does not add ONNX, TFLite, framework graphs, or another
 frontend product boundary.
 
-The initial portfolio has exactly these stable application identities:
+The current portfolio has exactly these stable application identities:
 
 ```text
-mlperf-tiny-streaming-wakeword
-mlperf-tiny-visual-wake-words
-llama2-c-tinystories-260k
 gapbs-pagerank
+llama2c-kernels
 loom-multisensor-attention
+mlperf-tiny-anomaly-detection
+mlperf-tiny-keyword-spotting
+mlperf-tiny-visual-wake-words
 ```
 
-The first four consume pinned upstream source packages. Their Gitlink entries
-own the exact upstream revisions; the application manifest references the
-source roots but never copies a commit hash or version alias. The multisensor
-attention application is Loom-owned and reifies the complete
+The five Gitlink-backed rows consume pinned upstream source packages. Their
+Gitlink entries own the exact upstream revisions; the application manifest
+references the source roots but never copies a commit hash or version alias.
+The multisensor attention application is Loom-owned and reifies the complete
 `project`/`attention`/`stats` workload used by the heterogeneous system
 conformance anchor.
 

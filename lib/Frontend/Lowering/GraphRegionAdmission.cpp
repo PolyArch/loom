@@ -110,6 +110,14 @@ GraphLeafLowering classifyGraphLoweringLeaf(mlir::Operation *operation) {
   if (llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp,
                 mlir::LLVM::MemmoveOp, mlir::LLVM::MemsetOp>(operation))
     return GraphLeafLowering::Implemented;
+  // Static LLVM stack objects are normalized by graph-memory lowering before
+  // structured regions are flattened. Unsupported dynamic or aggregate forms
+  // fail at that owner with a typed diagnostic.
+  if (llvm::isa<mlir::LLVM::AllocaOp>(operation))
+    return GraphLeafLowering::Implemented;
+  if (llvm::isa<mlir::LLVM::LifetimeStartOp, mlir::LLVM::LifetimeEndOp>(
+          operation))
+    return GraphLeafLowering::Implemented;
   if (llvm::isa<mlir::memref::AllocOp>(operation))
     return isGraphFrontier(operation->getBlock())
                ? GraphLeafLowering::Implemented

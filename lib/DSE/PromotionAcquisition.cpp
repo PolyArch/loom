@@ -418,7 +418,7 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
           std::get_if<IncompletePromotionAcquisitionResolution>(&*resolution)) {
     if (static_cast<std::uint32_t>(incomplete->reason) >
         static_cast<std::uint32_t>(
-            PromotionAcquisitionIncompleteReason::Unsupported))
+            PromotionAcquisitionIncompleteReason::CancelledOrTimeout))
       return invalid("provider returned an invalid Incomplete reason");
     return PromotionAcquisitionOutcome{
         IncompletePromotionAcquisition{incomplete->reason, {}, std::nullopt}};

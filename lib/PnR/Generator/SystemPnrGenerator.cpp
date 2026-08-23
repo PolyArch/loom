@@ -1,6 +1,7 @@
 #include "PnR/System/SystemPnrGenerator.h"
 
 #include "Common/ArtifactLocalReference.h"
+#include "Common/ArtifactText.h"
 #include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -225,12 +226,22 @@ void emitInvocationAccounting(const SystemPnrGenerationAccounting &accounting,
             accounting.migrationPreservedThreadBindings;
         fields["migration_preserved_graph_bindings"] =
             accounting.migrationPreservedGraphBindings;
+        fields["migration_preserved_service_legs"] =
+            accounting.migrationPreservedServiceLegs;
+        fields["migration_preserved_resource_uses"] =
+            accounting.migrationPreservedResourceUses;
         fields["migration_reopened_thread_bindings"] =
             accounting.migrationReopenedThreadBindings;
         fields["migration_reopened_graph_bindings"] =
             accounting.migrationReopenedGraphBindings;
         fields["migration_reopened_service_legs"] =
             accounting.migrationReopenedServiceLegs;
+        fields["migration_reopened_resource_uses"] =
+            accounting.migrationReopenedResourceUses;
+        fields["migration_new_service_legs"] =
+            accounting.migrationNewServiceLegs;
+        fields["migration_new_resource_uses"] =
+            accounting.migrationNewResourceUses;
         fields["seed_attempt_slots"] = accounting.seedAttemptSlots;
         fields["prepared_seeds"] = accounting.preparedSeeds;
         fields["initializer_assignment_attempts"] =
@@ -262,6 +273,7 @@ void emitInvocationAccounting(const SystemPnrGenerationAccounting &accounting,
 
 llvm::Expected<ArtifactRootReference>
 publishExecutionBindingCheckpoint(const FrozenSystemPnrProblem &problem,
+                                  const SystemCapacityOveruseWitness &witness,
                                   llvm::ArrayRef<PnrIndex> choices,
                                   const ArtifactStore &store) {
   const std::size_t threadCount = problem.threadDecisions().size();
@@ -302,9 +314,35 @@ publishExecutionBindingCheckpoint(const FrozenSystemPnrProblem &problem,
   ArtifactRootReference system{
       ::loom::fabric::fabricArtifactSchema.identity.str(),
       ::loom::fabric::fabricArtifactSchema.version, problem.fabricIdentity()};
+  ArtifactRootReference constraints{
+      ::loom::mapping::mappingConstraintSetSchema.identity.str(),
+      ::loom::mapping::mappingConstraintSetSchema.version,
+      problem.constraintIdentity()};
+  if (witness.namespaceOrdinal == 0 ||
+      witness.namespaceOrdinal > problem.accCores().size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "System capacity checkpoint has no exact witness AccCore");
+  const auto witnessAccCore =
+      problem
+          .accCores()[static_cast<std::size_t>(witness.namespaceOrdinal - 1)];
+  std::vector<::dataflow::RootThreadLaunchRef> dependencyRoots;
+  for (const auto &binding : threads)
+    if (binding.target == witnessAccCore &&
+        !llvm::is_contained(dependencyRoots, binding.root))
+      dependencyRoots.push_back(binding.root);
+  auto searchDomainDigest =
+      ComponentViewDigest::fromBytes(problem.searchDomainDigest().bytes());
+  if (!searchDomainDigest)
+    return searchDomainDigest.takeError();
   auto finalized = ::loom::mapping::finalizeSystemExecutionBindingCheckpoint(
-      std::move(dataflow), std::move(system), std::move(threads),
-      std::move(graphs), store);
+      std::move(dataflow), std::move(system), std::move(constraints),
+      problem.config().digest(), std::move(*searchDomainDigest),
+      {::loom::mapping::SystemExecutionBindingCheckpointIncompleteKind::
+           ImportedSpatialCapacity,
+       witnessAccCore, witness.usage, witness.capacity,
+       std::move(dependencyRoots)},
+      std::move(threads), std::move(graphs), store);
   if (!finalized)
     return finalized.takeError();
   return finalized->reference();
@@ -374,9 +412,14 @@ projectInterruptionSnapshot(SystemPnrInterruptionStage stage,
       accounting.migrationSeedFallbacks,
       accounting.migrationPreservedThreadBindings,
       accounting.migrationPreservedGraphBindings,
+      accounting.migrationPreservedServiceLegs,
+      accounting.migrationPreservedResourceUses,
       accounting.migrationReopenedThreadBindings,
       accounting.migrationReopenedGraphBindings,
       accounting.migrationReopenedServiceLegs,
+      accounting.migrationReopenedResourceUses,
+      accounting.migrationNewServiceLegs,
+      accounting.migrationNewResourceUses,
       accounting.seedAttemptSlots,
       accounting.preparedSeeds,
       accounting.initializerAssignmentAttempts,
@@ -416,12 +459,22 @@ interruptionPayload(const SystemPnrInterruptionSnapshot &snapshot) {
       snapshot.frontier.migrationPreservedThreadBindings;
   frontier["migration_preserved_graph_bindings"] =
       snapshot.frontier.migrationPreservedGraphBindings;
+  frontier["migration_preserved_service_legs"] =
+      snapshot.frontier.migrationPreservedServiceLegs;
+  frontier["migration_preserved_resource_uses"] =
+      snapshot.frontier.migrationPreservedResourceUses;
   frontier["migration_reopened_thread_bindings"] =
       snapshot.frontier.migrationReopenedThreadBindings;
   frontier["migration_reopened_graph_bindings"] =
       snapshot.frontier.migrationReopenedGraphBindings;
   frontier["migration_reopened_service_legs"] =
       snapshot.frontier.migrationReopenedServiceLegs;
+  frontier["migration_reopened_resource_uses"] =
+      snapshot.frontier.migrationReopenedResourceUses;
+  frontier["migration_new_service_legs"] =
+      snapshot.frontier.migrationNewServiceLegs;
+  frontier["migration_new_resource_uses"] =
+      snapshot.frontier.migrationNewResourceUses;
   frontier["seed_attempt_slots"] = snapshot.frontier.seedAttemptSlots;
   frontier["prepared_seeds"] = snapshot.frontier.preparedSeeds;
   frontier["initializer_assignment_attempts"] =
@@ -659,11 +712,65 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
         accounting, {}, interruptionBest, resources);
 
   std::optional<SystemMappingMigrationProjection> migrationProjection;
+  std::optional<ArtifactRootReference> rebasedMapping;
   if (inputs.migrationSeed && inputs.checkpointMigrationSeed)
     return InvalidSystemPnrGeneration{
         InvalidSystemPnrGenerationReason::FrozenInput, accounting,
         "System PnR received two migration seed sources"};
-  if (inputs.migrationSeed || inputs.checkpointMigrationSeed) {
+  if (inputs.migrationSeed && inputs.migrationSeed->reopenedRoots().empty()) {
+    const auto &parent = inputs.migrationSeed->parentMapping();
+    auto rebased = ::loom::mapping::rebaseSystemMapping(
+        parent, inputs.fabric,
+        parent.view().executionBindings().spatialMappingImports(),
+        inputs.migrationSeed->correspondence().entities(),
+        inputs.migrationSeed->correspondence().transferPatterns(),
+        inputs.constraints.view(), inputs.store,
+        &(*problem)->spatialMappingImports());
+    if (rebased) {
+      rebasedMapping = rebased->reference();
+      ++accounting.migrationSeedAttemptSlots;
+      ++accounting.migrationSeedPrepared;
+      accounting.migrationPreservedThreadBindings =
+          (*problem)->threadDecisions().size();
+      accounting.migrationPreservedGraphBindings =
+          (*problem)->graphDecisions().size();
+      accounting.migrationPreservedServiceLegs =
+          (*problem)->serviceLegs().size();
+      accounting.migrationPreservedResourceUses =
+          parent.view().resourceUses().size();
+      ++accounting.finalClosureAttempts;
+      ++accounting.finalVerificationAttempts;
+      ++accounting.publicationSlots;
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+            fields["operation"] = "system_mapping_full_rebase";
+            fields["mapping"] =
+                formatArtifactIdentityHex(rebased->reference().artifact);
+            fields["preserved_thread_bindings"] =
+                accounting.migrationPreservedThreadBindings;
+            fields["preserved_graph_bindings"] =
+                accounting.migrationPreservedGraphBindings;
+            fields["preserved_service_legs"] =
+                accounting.migrationPreservedServiceLegs;
+            fields["preserved_resource_uses"] =
+                accounting.migrationPreservedResourceUses;
+          });
+    } else {
+      ++accounting.migrationSeedFallbacks;
+      const std::string diagnostic = llvm::toString(rebased.takeError());
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+            fields["operation"] = "system_mapping_migration_fallback";
+            fields["reason"] = systemMappingMigrationFallbackReasonSpelling(
+                SystemMappingMigrationFallbackReason::ChildRebaseRejected);
+            fields["diagnostic"] = diagnostic;
+          });
+    }
+  }
+  if (!rebasedMapping &&
+      (inputs.migrationSeed || inputs.checkpointMigrationSeed)) {
     SystemMappingMigrationProjectionOutcome projected =
         inputs.migrationSeed
             ? projectSystemMappingMigrationSeed(*inputs.migrationSeed,
@@ -701,11 +808,18 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
       accounting.migrationReopenedGraphBindings =
           (*problem)->graphDecisions().size() -
           accounting.migrationPreservedGraphBindings;
-      // The current checkpoint deliberately owns no service target or route
-      // selection. Every child service leg therefore remains in the ordinary
-      // initializer/router domain and is reported as reopened work.
+      accounting.migrationPreservedServiceLegs =
+          migrationProjection->preservedServiceLegs;
       accounting.migrationReopenedServiceLegs =
-          (*problem)->serviceLegs().size();
+          migrationProjection->reopenedServiceLegs;
+      accounting.migrationNewServiceLegs =
+          migrationProjection->preservedServiceLegs == 0 &&
+                  migrationProjection->reopenedServiceLegs == 0
+              ? (*problem)->serviceLegs().size()
+              : migrationProjection->reopenedServiceLegs;
+      accounting.migrationNewResourceUses =
+          (*problem)->instructionUsePatternDomains().size() +
+          (*problem)->consistencyUsePatternDomains().size();
     }
   }
 
@@ -746,7 +860,8 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
     if (const auto *pressure =
             std::get_if<SystemImportedCapacityPressure>(&*capacityFit)) {
       auto checkpoint = publishExecutionBindingCheckpoint(
-          **problem, pressure->checkpointChoices, inputs.store);
+          **problem, pressure->witness, pressure->checkpointChoices,
+          inputs.store);
       if (!checkpoint)
         return internal(
             InternalSystemPnrGenerationReason::CandidateInitialization,
@@ -797,6 +912,17 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
   }
   SystemAnnealingSearchScratch annealing;
   std::vector<ArtifactRootReference> candidates;
+  if (rebasedMapping)
+    candidates.push_back(*rebasedMapping);
+  if (rebasedMapping && inputs.config.policy().search.completionGoal ==
+                            ResolvedPnrCompletionGoal::FirstVerifiedCandidate) {
+    emitInvocationAccounting(accounting,
+                             mapping_debug::ClosureStatus::SemanticLimitReached,
+                             candidates.size());
+    return GeneratedSystemMappings{
+        std::move(candidates), PnrGenerationTermination::SemanticLimitReached,
+        accounting};
+  }
   bool semanticLimitReached = false;
   bool proofNotEstablished = false;
   std::string firstIncompleteDiagnostic;
@@ -834,9 +960,13 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
     auto initialized =
         migrationAttempt
             ? (migrationProjection->releasedChoices.empty()
-                   ? initializeSystemCandidateWithFixedChoices(
-                         *problem, migrationProjection->fixedChoices)
-                   : initializeSystemCandidateWithReleasedChoices(
+                   ? (migrationProjection->routeSeed
+                          ? initializeSystemCandidateWithFixedChoicesAndRoutes(
+                                *problem, migrationProjection->fixedChoices,
+                                *migrationProjection->routeSeed)
+                          : initializeSystemCandidateWithFixedChoices(
+                                *problem, migrationProjection->fixedChoices))
+                   : initializeSystemCandidateWithReleasedChoicesAndImportedCapacityClosure(
                          *problem, migrationProjection->fixedChoices,
                          migrationProjection->releasedChoices))
         : requireImportedCapacityClosure
@@ -901,6 +1031,48 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
       return internal(
           InternalSystemPnrGenerationReason::CandidateInitialization,
           accounting, std::move(error));
+    if (migrationAttempt) {
+      llvm::Error directVerification = candidate->verify();
+      if (!directVerification) {
+        ++accounting.finalVerificationAttempts;
+        auto directDraft = materializeSystemCandidateDraft(*candidate, context);
+        if (directDraft) {
+          ++accounting.publicationSlots;
+          auto directFinalized = ::loom::mapping::finalizeSystemMapping(
+              mlir::cast<::mapping::SystemOp>(directDraft->get()),
+              inputs.dataflow, inputs.fabric, inputs.constraints.view(),
+              inputs.store, &candidate->problem().spatialMappingImports(),
+              inputs.executionControl);
+          if (directFinalized) {
+            ++accounting.finalizedRestarts;
+            candidates.push_back(directFinalized->reference());
+            mapping_debug::emit(
+                mapping_debug::Level::Summary,
+                mapping_debug::Stage::SystemPnr,
+                mapping_debug::Event::Candidate,
+                [&](llvm::json::Object &fields) {
+                  fields["operation"] =
+                      "system_mapping_migration_direct_publication";
+                  fields["mapping"] = formatArtifactIdentityHex(
+                      directFinalized->reference().artifact);
+                  fields["released_choice_count"] =
+                      migrationProjection->releasedChoices.size();
+                });
+            if (inputs.config.policy().search.completionGoal ==
+                ResolvedPnrCompletionGoal::FirstVerifiedCandidate) {
+              semanticLimitReached = true;
+              break;
+            }
+          } else {
+            llvm::consumeError(directFinalized.takeError());
+          }
+        } else {
+          llvm::consumeError(directDraft.takeError());
+        }
+      } else {
+        llvm::consumeError(std::move(directVerification));
+      }
+    }
     if (inputs.executionControl.stopRequested())
       return interruptedOutcome(SystemPnrInterruptionStage::Annealing, attempt,
                                 accounting, std::move(candidates),
@@ -1010,17 +1182,33 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
     ++accounting.publicationSlots;
     auto finalized = ::loom::mapping::finalizeSystemMapping(
         root, inputs.dataflow, inputs.fabric, inputs.constraints.view(),
-        inputs.store, &candidate->problem().spatialMappingImports());
+        inputs.store, &candidate->problem().spatialMappingImports(),
+        inputs.executionControl);
     if (!finalized) {
       std::optional<std::string> incompleteDiagnostic;
+      bool interrupted = false;
       llvm::Error remaining = llvm::handleErrors(
           finalized.takeError(),
           [&](const ::loom::mapping::SystemMappingIncompleteError &error) {
-            incompleteDiagnostic = error.diagnostic().str();
+            if (error.reason() ==
+                ::loom::mapping::SystemMappingIncompleteReason::
+                    CancelledOrTimeout)
+              interrupted = true;
+            else
+              incompleteDiagnostic = error.diagnostic().str();
           },
           [&](const ::loom::mapping::SystemMappingRejectedError &error) {
             incompleteDiagnostic = error.diagnostic().str();
           });
+      if (interrupted) {
+        if (remaining)
+          return internal(
+              InternalSystemPnrGenerationReason::CandidateFinalization,
+              accounting, std::move(remaining));
+        return interruptedOutcome(
+            SystemPnrInterruptionStage::CandidateFinalization, attempt,
+            accounting, std::move(candidates), interruptionBest, resources);
+      }
       if (incompleteDiagnostic) {
         if (remaining)
           return internal(

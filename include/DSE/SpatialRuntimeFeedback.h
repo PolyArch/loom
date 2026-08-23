@@ -1,0 +1,113 @@
+#ifndef LOOM_DSE_SPATIALRUNTIMEFEEDBACK_H
+#define LOOM_DSE_SPATIALRUNTIMEFEEDBACK_H
+
+#include "Common/Artifact.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
+#include "Simulator/CGRASimulator.h"
+
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <optional>
+
+namespace loom {
+class ArtifactStore;
+}
+
+namespace loom::dse {
+
+enum class SpatialFifoRuntimeFeedbackDisposition : std::uint8_t {
+  Exact,
+  ProofNotEstablished,
+  Unsupported,
+};
+
+enum class SpatialFifoRuntimeFeedbackReason : std::uint8_t {
+  ExactFullFifoCycle,
+  MissingWaitCycle,
+  MissingCanonicalFifo,
+  AmbiguousFifo,
+  StorageNotFull,
+  MissingCausalReleaseContext,
+};
+
+llvm::StringRef spatialFifoRuntimeFeedbackDispositionSpelling(
+    SpatialFifoRuntimeFeedbackDisposition disposition);
+llvm::StringRef spatialFifoRuntimeFeedbackReasonSpelling(
+    SpatialFifoRuntimeFeedbackReason reason);
+
+struct SpatialFifoRuntimeFeedback final {
+  ArtifactRootReference parentMapping;
+  ArtifactRootReference spatialMapping;
+  SpatialFifoRuntimeFeedbackDisposition disposition =
+      SpatialFifoRuntimeFeedbackDisposition::ProofNotEstablished;
+  SpatialFifoRuntimeFeedbackReason reason =
+      SpatialFifoRuntimeFeedbackReason::MissingWaitCycle;
+  std::optional<::loom::fabric::FabricFifoOccurrenceRef> fifo;
+  std::uint32_t occupancy = 0;
+  std::uint32_t capacity = 0;
+  std::optional<std::uint32_t> minimumCandidateDepth;
+  bool bypassCapable = false;
+  std::uint64_t transferCycleEdgeCount = 0;
+  std::uint64_t actorCycleEdgeCount = 0;
+  std::optional<std::uint64_t> causalActorOrdinal;
+  std::optional<std::uint64_t> causalActionOrdinal;
+  std::optional<std::uint64_t> causalOccurrenceOrdinal;
+};
+
+llvm::Expected<SpatialFifoRuntimeFeedback> deriveSpatialFifoRuntimeFeedback(
+    const ArtifactRootReference &parentMapping,
+    const ArtifactRootReference &spatialMapping,
+    const sim::CgraClosedWaitSetDiagnostic &closedWait,
+    const ArtifactStore &artifacts);
+
+void emitSpatialFifoRuntimeFeedback(
+    const SpatialFifoRuntimeFeedback &feedback);
+
+enum class SpatialOperandQueueRuntimeFeedbackDisposition : std::uint8_t {
+  Exact,
+  ProofNotEstablished,
+  Unsupported,
+};
+
+enum class SpatialOperandQueueRuntimeFeedbackReason : std::uint8_t {
+  ExactClosedWait,
+  MissingOwnerReferences,
+  OwnerMismatch,
+  MissingWaitCycle,
+  MissingQueueWaitEdge,
+  IncompleteOrderedHead,
+  ProjectionMismatch,
+};
+
+struct SpatialOperandQueueRuntimeFeedback final {
+  std::optional<ArtifactRootReference> parentMapping;
+  SpatialOperandQueueRuntimeFeedbackDisposition disposition =
+      SpatialOperandQueueRuntimeFeedbackDisposition::ProofNotEstablished;
+  SpatialOperandQueueRuntimeFeedbackReason reason =
+      SpatialOperandQueueRuntimeFeedbackReason::MissingOwnerReferences;
+  std::optional<sim::CgraExecutionOwnerReferences> owners;
+  mapping::SpatialPeOperandRuntimeWitness witness;
+  std::uint64_t queueWaitEdgeCount = 0;
+  std::uint64_t transferCycleEdgeCount = 0;
+  std::uint64_t actorCycleEdgeCount = 0;
+};
+
+llvm::StringRef spatialOperandQueueRuntimeFeedbackDispositionSpelling(
+    SpatialOperandQueueRuntimeFeedbackDisposition disposition);
+llvm::StringRef spatialOperandQueueRuntimeFeedbackReasonSpelling(
+    SpatialOperandQueueRuntimeFeedbackReason reason);
+
+llvm::Expected<SpatialOperandQueueRuntimeFeedback>
+deriveSpatialOperandQueueRuntimeFeedback(
+    const ArtifactRootReference &parentMapping,
+    const sim::CgraClosedWaitSetDiagnostic &closedWait,
+    const ArtifactStore &artifacts);
+
+void emitSpatialOperandQueueRuntimeFeedback(
+    const SpatialOperandQueueRuntimeFeedback &feedback);
+
+} // namespace loom::dse
+
+#endif // LOOM_DSE_SPATIALRUNTIMEFEEDBACK_H

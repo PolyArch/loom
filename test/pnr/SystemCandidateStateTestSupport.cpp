@@ -3,7 +3,10 @@
 #include "ADG/Builtin.h"
 #include "ADG/FuLibrary.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/CandidateGenerator.h"
+#include "DSE/SystemCompositionCandidateGenerator.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -89,7 +92,8 @@ void verifyProgressGrantPolicyContrast(
       [&](loom::mapping::MappingResourceGrantPolicyKind policy) {
         loom::mapping::MappingProgressProjection projection;
         projection.basis = {
-            loom::mapping::MappingDataflowProgressBasisKind::Acyclic};
+            loom::mapping::MappingDataflowProgressBasisKind::Acyclic, 0, 0,
+            {}};
         for (std::uint32_t requester : {UINT32_C(0), UINT32_C(1)})
           projection.resourceActivations.push_back(
               {loom::mapping::InstructionExecutionContextKey{
@@ -121,7 +125,8 @@ void verifyProgressGrantPolicyContrast(
           const ::dataflow::EventFamilyKey &holderRelease) {
         loom::mapping::MappingProgressProjection projection;
         projection.basis = {
-            loom::mapping::MappingDataflowProgressBasisKind::Acyclic};
+            loom::mapping::MappingDataflowProgressBasisKind::Acyclic, 0, 0,
+            {}};
         projection.capacityCells.push_back({1, 0});
         projection.resourceActivations.push_back(
             {context,
@@ -303,6 +308,33 @@ inOrderMicroarchitecture() {
 }
 
 } // namespace
+
+loom::pnr::test::AppliedSystemCompositionDecision
+loom::pnr::test::applySystemCompositionDecision(
+    ArtifactStore &store, const BlobStore &blobs,
+    const ArtifactRootReference &parent,
+    llvm::ArrayRef<ArtifactRootReference> modules,
+    dse::SystemCompositionDecisionDomain domain) {
+  const std::array<dse::SystemCompositionDecisionDomain, 1> domains = {
+      std::move(domain)};
+  const auto config = take(dse::resolveSystemCompositionRewriteConfig(
+      domains, domains.size()));
+  const auto inputs = take(dse::bindSystemCompositionCandidateGeneratorInputs(
+      {parent}, modules));
+  const auto binding =
+      take(dse::resolveSystemCompositionCandidateGeneratorBinding(config));
+  const auto result =
+      take(dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  const auto *completed =
+      std::get_if<dse::CompletedCandidateGeneratorResult>(&result.outcome);
+  require(completed && completed->outputBindings.size() == 1 &&
+              completed->outputBindings.front().artifacts.size() == 1 &&
+              completed->lineageEdges.size() == 1,
+          "System composition did not publish one child with lineage");
+  return {completed->outputBindings.front().artifacts.front(),
+          take(dse::adoptSystemCompositionDecision(
+              completed->lineageEdges.front().ownerPayload))};
+}
 
 loom::adg::FinalizedFabricDesign
 loom::pnr::test::buildSystemCandidateSpatialModule(loom::ArtifactStore &store,
@@ -1541,24 +1573,20 @@ loom::pnr::test::verifySystemCapacityPressureRoundTrip(
                                .identity() == targetModule.artifact;
   }
   std::optional<fabric::AccCoreOccurrenceRef> witness;
-  for (const auto &binding : checkpoint.threadBindings()) {
-    const auto target = parentSystem.spatialCoreTarget(binding.target);
-    require(target && target->dependencyOrdinal <
-                          parentSystem.artifact().importedModules().size(),
-            "checkpoint AccCore has no exact Module target");
-    if (parentSystem.artifact()
-            .importedModules()[target->dependencyOrdinal]
-            .identity() == targetModule.artifact) {
-      witness = binding.target;
-      break;
-    }
-  }
-  require(witness.has_value(),
-          "checkpoint has no thread on the capacity-witness Module");
+  witness = checkpoint.incomplete().witnessAccCore;
+  const auto witnessTarget = parentSystem.spatialCoreTarget(*witness);
+  require(witnessTarget &&
+              witnessTarget->dependencyOrdinal <
+                  parentSystem.artifact().importedModules().size() &&
+              parentSystem.artifact()
+                      .importedModules()[witnessTarget->dependencyOrdinal]
+                      .identity() == targetModule.artifact,
+          "checkpoint capacity witness has the wrong Module target");
   auto feedback = take(mapping::SystemAccCoreCapacityPressure::get(
       parentSystemRoot.reference(), targetModule, *witness,
-      spatialMappings.vec(), compatibleCoreCount, assignmentAttempts, 2, 1,
-      checkpoint.reference()));
+      spatialMappings.vec(), compatibleCoreCount, assignmentAttempts,
+      checkpoint.incomplete().witnessUsage,
+      checkpoint.incomplete().witnessCapacity, checkpoint.reference()));
   auto adopted = take(mapping::adoptSystemAccCoreCapacityPressure(
       mapping::encodeSystemAccCoreCapacityPressure(feedback),
       parentSystemRoot.reference(), dataflow, spatialMappings, store));
@@ -1577,7 +1605,15 @@ loom::pnr::test::verifySystemAccCoreCorrespondence(
     ArtifactStore &store, const fabric::FinalizedFabricRoot &parentSystemRoot,
     const fabric::FabricSystemRootView &parentSystem,
     const fabric::FinalizedFabricRoot &childSystemRoot,
-    std::vector<SystemAccCoreCorrespondence> correspondence) {
+    std::vector<fabric::FabricSystemEntityCorrespondence> entities,
+    std::vector<fabric::FabricSystemTransferPatternCorrespondence>
+        transferPatterns) {
+  std::vector<SystemAccCoreCorrespondence> correspondence;
+  for (const auto &entry : entities)
+    if (entry.source.kind == fabric::FabricEntityKind::AccCoreOccurrence)
+      correspondence.push_back(
+          {fabric::AccCoreOccurrenceRef(entry.source.id),
+           fabric::AccCoreOccurrenceRef(entry.target.id)});
   std::optional<std::pair<std::size_t, std::size_t>> unlikePair;
   for (std::size_t lhs = 0; lhs != correspondence.size() && !unlikePair;
        ++lhs) {
@@ -1603,11 +1639,26 @@ loom::pnr::test::verifySystemAccCoreCorrespondence(
   }
   require(unlikePair.has_value(),
           "migration test has no unlike AccCore target pair");
-  std::vector<SystemAccCoreCorrespondence> wrong = correspondence;
-  std::swap(wrong[unlikePair->first].child, wrong[unlikePair->second].child);
+  std::vector<fabric::FabricSystemEntityCorrespondence> wrong = entities;
+  std::vector<SystemModuleCorrespondence> modules;
+  for (const fabric::FabricDirectDependency &dependency :
+       parentSystemRoot.directDependencies())
+    if (dependency.role == fabric::FabricDependencyRole::ImportedModule)
+      modules.push_back({dependency.root, dependency.root});
+  auto lhs = llvm::find_if(wrong, [&](const auto &entry) {
+    return entry.source.kind == fabric::FabricEntityKind::AccCoreOccurrence &&
+           entry.source.id == correspondence[unlikePair->first].parent.id();
+  });
+  auto rhs = llvm::find_if(wrong, [&](const auto &entry) {
+    return entry.source.kind == fabric::FabricEntityKind::AccCoreOccurrence &&
+           entry.source.id == correspondence[unlikePair->second].parent.id();
+  });
+  require(lhs != wrong.end() && rhs != wrong.end(),
+          "migration test lost AccCore entity lineage");
+  std::swap(lhs->target, rhs->target);
   auto rejected = SystemExecutionBindingCorrespondence::get(
       parentSystemRoot.reference(), childSystemRoot.reference(),
-      std::move(wrong), store);
+      std::move(wrong), transferPatterns, modules, store);
   require(!rejected,
           "cross-Module AccCore correspondence unexpectedly succeeded");
   const std::string diagnostic = llvm::toString(rejected.takeError());
@@ -1615,5 +1666,6 @@ loom::pnr::test::verifySystemAccCoreCorrespondence(
           "cross-Module correspondence diagnostic changed: " + diagnostic);
   return take(SystemExecutionBindingCorrespondence::get(
       parentSystemRoot.reference(), childSystemRoot.reference(),
-      std::move(correspondence), store));
+      std::move(entities), std::move(transferPatterns), std::move(modules),
+      store));
 }

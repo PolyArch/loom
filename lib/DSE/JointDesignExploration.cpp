@@ -14,6 +14,7 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
@@ -25,6 +26,7 @@
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <optional>
 #include <set>
@@ -205,7 +207,9 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     JointDesignInputs inputs,
     llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
     const JointDesignPolicy &policy, const ResolvedConfig &baseConfig,
-    const ArtifactStore &artifactStore) {
+    const ArtifactStore &artifactStore,
+    const JointDesignMappingSeed *mappingSeed,
+    llvm::ArrayRef<pnr::SystemBindingPartitionIntent> systemBindingPartitions) {
   if (!baseConfig.dse.planNodes.empty())
     return invalid("base ResolvedConfig already owns a DSE invocation plan");
   if (llvm::Error error = registerMappingGenerators())
@@ -220,9 +224,18 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
   auto spatialConfig = pnr::projectResolvedSpatialPnrConfigView(baseConfig);
   if (!spatialConfig)
     return spatialConfig.takeError();
-  auto systemConfig = pnr::projectResolvedSystemPnrConfigView(baseConfig);
-  if (!systemConfig)
-    return systemConfig.takeError();
+  auto projectedSystemConfig =
+      pnr::projectResolvedSystemPnrConfigView(baseConfig);
+  if (!projectedSystemConfig)
+    return projectedSystemConfig.takeError();
+  pnr::ResolvedPnrConfigView systemConfig = std::move(*projectedSystemConfig);
+  if (!systemBindingPartitions.empty()) {
+    auto specialized = pnr::specializeResolvedSystemPnrConfigView(
+        systemConfig, systemBindingPartitions);
+    if (!specialized)
+      return specialized.takeError();
+    systemConfig = std::move(*specialized);
+  }
 
   std::map<ArtifactIdentity::Storage, ArtifactRootReference> timingByModule;
   for (const ArtifactRootReference &profile : physicalTimingProfiles) {
@@ -233,6 +246,36 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     if (!timingByModule.emplace(owner->bytes(), profile).second)
       return invalid(
           "multiple physical timing profiles target the same Module");
+  }
+
+  struct SeedMapping final {
+    ArtifactRootReference reference;
+    ArtifactIdentity dataflow;
+    ArtifactIdentity module;
+    bool matched = false;
+  };
+  std::vector<SeedMapping> seedTechMappings;
+  std::vector<SeedMapping> seedSpatialMappings;
+  if (mappingSeed) {
+    seedTechMappings.reserve(mappingSeed->techMappings.size());
+    for (const ArtifactRootReference &reference : mappingSeed->techMappings) {
+      auto imported = mapping::importTechMapping(reference, artifactStore);
+      if (!imported)
+        return imported.takeError();
+      seedTechMappings.push_back({reference,
+                                  imported->view().dataflowIdentity(),
+                                  imported->view().fabricIdentity(), false});
+    }
+    seedSpatialMappings.reserve(mappingSeed->spatialMappings.size());
+    for (const ArtifactRootReference &reference :
+         mappingSeed->spatialMappings) {
+      auto imported = mapping::importSpatialMapping(reference, artifactStore);
+      if (!imported)
+        return imported.takeError();
+      seedSpatialMappings.push_back({reference,
+                                     imported->view().dataflowIdentity(),
+                                     imported->view().fabricIdentity(), false});
+    }
   }
 
   ResolvedConfig planConfig = baseConfig;
@@ -272,50 +315,105 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     canonicalize(systemTimingProfiles);
     std::vector<PlanOutputRef> techOutputs;
     techOutputs.reserve(modules->size());
-    for (const ArtifactRootReference &module : *modules) {
-      const std::uint64_t techNode = planConfig.dse.planNodes.size();
-      planConfig.dse.planNodes.push_back(GeneratePlanNodeDefinition{
-          applicationGraphTechMappingCandidateGeneratorDescriptor().reference(),
-          {ExactPlanArtifacts{{pair.software.dataflow}},
-           ExactPlanArtifacts{{*constraints}}, ExactPlanArtifacts{{module}}},
-          techConfig->canonicalViewBytes().vec(),
-          techConfig->digest()});
-      techOutputs.push_back(PlanOutputRef{techNode, 0});
-    }
     std::vector<PlanOutputRef> spatialOutputs;
     spatialOutputs.reserve(modules->size());
+    std::vector<ArtifactRootReference> immutableTechMappings;
+    std::vector<ArtifactRootReference> immutableSpatialMappings;
     for (std::size_t moduleIndex = 0; moduleIndex != modules->size();
          ++moduleIndex) {
+      const ArtifactRootReference &module = (*modules)[moduleIndex];
+      std::vector<ArtifactRootReference> retainedTech;
+      std::vector<ArtifactRootReference> retainedSpatial;
+      for (SeedMapping &seed : seedTechMappings)
+        if (seed.dataflow == pair.software.dataflow.artifact &&
+            seed.module == module.artifact) {
+          retainedTech.push_back(seed.reference);
+          seed.matched = true;
+        }
+      for (SeedMapping &seed : seedSpatialMappings)
+        if (seed.dataflow == pair.software.dataflow.artifact &&
+            seed.module == module.artifact) {
+          retainedSpatial.push_back(seed.reference);
+          seed.matched = true;
+        }
+      canonicalize(retainedTech);
+      canonicalize(retainedSpatial);
+      if (retainedTech.size() > policy.maximumTechMappingsPerModule())
+        return invalid("immutable TechMapping frontier exceeds its bound");
+      immutableTechMappings.insert(immutableTechMappings.end(),
+                                   retainedTech.begin(), retainedTech.end());
+      immutableSpatialMappings.insert(immutableSpatialMappings.end(),
+                                      retainedSpatial.begin(),
+                                      retainedSpatial.end());
+      if (!retainedSpatial.empty())
+        continue;
+
+      PlanInputBinding spatialTechInput;
+      if (!retainedTech.empty()) {
+        spatialTechInput = ExactPlanArtifacts{std::move(retainedTech)};
+      } else {
+        const std::uint64_t techNode = planConfig.dse.planNodes.size();
+        planConfig.dse.planNodes.push_back(GeneratePlanNodeDefinition{
+            applicationGraphTechMappingCandidateGeneratorDescriptor()
+                .reference(),
+            {ExactPlanArtifacts{{pair.software.dataflow}},
+             ExactPlanArtifacts{{*constraints}}, ExactPlanArtifacts{{module}}},
+            techConfig->canonicalViewBytes().vec(),
+            techConfig->digest()});
+        const PlanOutputRef techOutput{techNode, 0};
+        techOutputs.push_back(techOutput);
+        spatialTechInput = BoundedPlanOutputJoin{
+            {techOutput}, policy.maximumTechMappingsPerModule()};
+      }
       const std::uint64_t spatialNode = planConfig.dse.planNodes.size();
       planConfig.dse.planNodes.push_back(GeneratePlanNodeDefinition{
           rootCompleteSpatialPnrCandidateGeneratorDescriptor().reference(),
-          {techOutputs[moduleIndex],
-           ExactPlanArtifacts{{(*modules)[moduleIndex]}},
+          {std::move(spatialTechInput), ExactPlanArtifacts{{module}},
            ExactPlanArtifacts{{moduleTimingProfiles[moduleIndex]}}},
           spatialConfig->canonicalViewBytes().vec(),
           spatialConfig->digest()});
       spatialOutputs.push_back(PlanOutputRef{spatialNode, 0});
     }
+    canonicalize(immutableTechMappings);
+    canonicalize(immutableSpatialMappings);
+    if (immutableSpatialMappings.size() >
+        policy.maximumSpatialMappingsPerPair())
+      return invalid("immutable SpatialMapping frontier exceeds its bound");
     const std::uint64_t systemNode = planConfig.dse.planNodes.size();
     const std::vector<PlanOutputRef> retainedSpatialOutputs = spatialOutputs;
+    PlanInputBinding systemSpatialInput;
+    if (spatialOutputs.empty()) {
+      systemSpatialInput = ExactPlanArtifacts{immutableSpatialMappings};
+    } else {
+      systemSpatialInput = BoundedPlanOutputJoin{
+          std::move(spatialOutputs), policy.maximumSpatialMappingsPerPair(), 0,
+          immutableSpatialMappings};
+    }
     planConfig.dse.planNodes.push_back(GeneratePlanNodeDefinition{
         applicationSystemPnrCandidateGeneratorDescriptor().reference(),
         {ExactPlanArtifacts{{pair.software.dataflow}},
-         BoundedPlanOutputJoin{std::move(spatialOutputs),
-                               policy.maximumSpatialMappingsPerPair()},
-         ExactPlanArtifacts{{pair.system}},
+         std::move(systemSpatialInput), ExactPlanArtifacts{{pair.system}},
          ExactPlanArtifacts{std::move(systemTimingProfiles)},
-         ExactPlanArtifacts{{*constraints}}, ExactPlanArtifacts{}},
-        systemConfig->canonicalViewBytes().vec(),
-        systemConfig->digest()});
+         ExactPlanArtifacts{{*constraints}}, ExactPlanArtifacts{},
+         ExactPlanArtifacts{}},
+        systemConfig.canonicalViewBytes().vec(),
+        systemConfig.digest()});
     outputs.push_back({pair, std::move(techOutputs), retainedSpatialOutputs,
+                       std::move(immutableTechMappings),
+                       std::move(immutableSpatialMappings),
                        PlanOutputRef{systemNode, 0}});
   }
+  if (llvm::any_of(seedTechMappings,
+                   [](const SeedMapping &seed) { return !seed.matched; }) ||
+      llvm::any_of(seedSpatialMappings,
+                   [](const SeedMapping &seed) { return !seed.matched; }))
+    return invalid("immutable Mapping seed has no exact joint pair owner");
   auto admitted = projectResolvedDseConfigView(planConfig);
   if (!admitted)
     return admitted.takeError();
-  return JointDesignExplorationPlan{std::move(planConfig), std::move(*frontier),
-                                    std::move(outputs)};
+  return JointDesignExplorationPlan{
+      std::move(planConfig), std::move(*frontier), std::move(outputs),
+      systemConfig.systemBindingPartitions().vec()};
 }
 
 std::vector<ArtifactRootReference>
@@ -334,11 +432,14 @@ projectJointDesignSemanticInputs(const JointDesignExplorationPlan &plan) {
         },
         node);
     for (const PlanInputBinding &binding : bindings) {
-      const auto *exact = std::get_if<ExactPlanArtifacts>(&binding);
-      if (!exact)
-        continue;
-      inputs.insert(inputs.end(), exact->artifacts.begin(),
-                    exact->artifacts.end());
+      if (const auto *exact = std::get_if<ExactPlanArtifacts>(&binding)) {
+        inputs.insert(inputs.end(), exact->artifacts.begin(),
+                      exact->artifacts.end());
+      } else if (const auto *join =
+                     std::get_if<BoundedPlanOutputJoin>(&binding)) {
+        inputs.insert(inputs.end(), join->exactArtifacts.begin(),
+                      join->exactArtifacts.end());
+      }
     }
   }
   canonicalize(inputs);
@@ -356,8 +457,13 @@ llvm::Expected<JointDesignExecution> executeJointDesignExploration(
   auto view = projectResolvedDseConfigView(plan.resolvedConfig);
   if (!view)
     return view.takeError();
+  const auto executionStart = std::chrono::steady_clock::now();
   auto execution = resumeDsePlan(*view, closure, journal, scheduler,
                                  executionPolicy, artifactStore, blobStore);
+  const auto executionElapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - executionStart)
+          .count();
   if (!execution)
     return execution.takeError();
 
@@ -383,7 +489,42 @@ llvm::Expected<JointDesignExecution> executeJointDesignExploration(
     }
     mappedPairs.push_back({pair.pair, std::move(mappings)});
   }
-  return JointDesignExecution{std::move(*execution), std::move(mappedPairs)};
+  JointDesignExecutionSummary summary;
+  summary.eligibleJointPairCount = plan.frontier.eligiblePairCount;
+  summary.analyticEvaluatedJointPairCount =
+      plan.frontier.analyticEvaluatedPairCount;
+  summary.analyticDeferredJointPairCount =
+      plan.frontier.analyticDeferredPairCount;
+  summary.retainedJointPairCount = plan.frontier.pairs.size();
+  summary.jointFrontierTruncated = plan.frontier.truncated;
+  summary.retainedJointPairAnalytics.reserve(plan.frontier.pairs.size());
+  for (std::size_t index = 0; index != plan.frontier.pairs.size(); ++index)
+    summary.retainedJointPairAnalytics.push_back(
+        {plan.frontier.pairs[index].software.dataflow,
+         plan.frontier.pairs[index].system,
+         plan.frontier.pairProjections[index]});
+  const CandidateGeneratorDescriptorRef systemGenerator =
+      applicationSystemPnrCandidateGeneratorDescriptor().reference();
+  const CandidateGeneratorDescriptorRef spatialGenerator =
+      rootCompleteSpatialPnrCandidateGeneratorDescriptor().reference();
+  const CandidateGeneratorDescriptorRef techGenerator =
+      applicationGraphTechMappingCandidateGeneratorDescriptor().reference();
+  for (auto indexed : llvm::enumerate(completed->generateInvocations())) {
+    if (!completed->generateInvocationWasDispatched(indexed.index()))
+      continue;
+    const CandidateGeneratorDescriptorRef descriptor =
+        indexed.value().generatorBinding.descriptorRef();
+    if (descriptor == techGenerator)
+      ++summary.techMappingDispatchCount;
+    else if (descriptor == spatialGenerator)
+      ++summary.spatialPnrDispatchCount;
+    else if (descriptor == systemGenerator)
+      ++summary.systemPnrDispatchCount;
+  }
+  summary.coldReopenWallTimeNanoseconds =
+      static_cast<std::uint64_t>(std::max<std::int64_t>(0, executionElapsed));
+  return JointDesignExecution{std::move(*execution), std::move(mappedPairs),
+                              std::move(summary)};
 }
 
 llvm::Expected<JointDesignSelectionOutcome> selectJointDesignSystems(

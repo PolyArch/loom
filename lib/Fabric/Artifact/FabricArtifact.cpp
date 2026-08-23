@@ -1638,31 +1638,82 @@ strictImportSystem(const ArtifactRootReference &reference,
 struct CanonicalSystemCandidate {
   OwningOpRef<ModuleOp> module;
   std::vector<FabricDirectDependency> dependencies;
-  std::vector<AccCoreOccurrenceRef> trackedAccCores;
+  std::vector<FabricSystemEntityCorrespondence> entities;
+  std::vector<FabricSystemTransferPatternCorrespondence> transferPatterns;
 };
 
-llvm::Expected<std::vector<AccCoreOccurrenceRef>>
-projectTrackedAccCores(llvm::ArrayRef<Operation *> trackedOperations,
-                       const detail::FabricSystemCanonicalLabeling &labeling) {
-  std::vector<AccCoreOccurrenceRef> result;
-  result.reserve(trackedOperations.size());
-  for (Operation *operation : trackedOperations) {
-    auto carrier = llvm::find_if(
-        labeling.carriers, [&](const detail::FabricSystemEntityCarrier &row) {
-          return row.op == operation &&
-                 row.kind == FabricEntityKind::AccCoreOccurrence;
-        });
-    if (carrier == labeling.carriers.end())
-      return invalid("tracked AccCore is absent from canonical labeling");
-    result.emplace_back(carrier->id);
+llvm::Expected<std::vector<FabricSystemEntityCorrespondence>>
+projectSystemEntityCorrespondence(
+    const detail::FabricSystemCanonicalLabeling &labeling) {
+  std::vector<FabricSystemEntityCorrespondence> result;
+  result.reserve(labeling.carriers.size());
+  std::set<std::pair<FabricEntityKind, FabricEntityId>> sourceKeys;
+  std::set<std::pair<FabricEntityKind, FabricEntityId>> targetKeys;
+  for (const detail::FabricSystemEntityCarrier &carrier : labeling.carriers) {
+    if (!carrier.op)
+      return invalid("System canonical entity has no operation carrier");
+    auto authored =
+        carrier.op->getAttrOfType<::fabric::EntityIdAttr>("entity_id");
+    if (!authored)
+      return invalid("System canonical entity has no authored EntityId");
+    const auto source = std::make_pair(carrier.kind, authored.getId());
+    const auto target = std::make_pair(carrier.kind, carrier.id);
+    if (!sourceKeys.insert(source).second || !targetKeys.insert(target).second)
+      return invalid("System entity correspondence is not one-to-one");
+    result.push_back({{source.first, source.second},
+                      {target.first, target.second}});
   }
+  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.source.kind, lhs.source.id) <
+           std::tie(rhs.source.kind, rhs.source.id);
+  });
+  return result;
+}
+
+llvm::Expected<std::vector<FabricSystemTransferPatternCorrespondence>>
+projectSystemTransferPatternCorrespondence(
+    ::fabric::SystemOp root,
+    const detail::FabricSystemCanonicalLabeling &labeling,
+    llvm::ArrayRef<FabricSystemEntityCorrespondence> entities) {
+  std::vector<FabricSystemTransferPatternCorrespondence> result;
+  std::set<std::vector<std::uint8_t>> sourceKeys;
+  std::set<std::vector<std::uint8_t>> targetKeys;
+  for (Operation &operation : root.getBody().front()) {
+    auto pattern = dyn_cast<::fabric::SystemTransferPatternOp>(operation);
+    if (!pattern)
+      continue;
+    auto record = decodeSystemTransferPatternRecord(
+        unsignedBytes(pattern.getContractAttr()));
+    if (!record)
+      return record.takeError();
+    auto ordinal = labeling.transferPatternOrdinalByOperation.find(
+        pattern.getOperation());
+    if (ordinal == labeling.transferPatternOrdinalByOperation.end())
+      return invalid("System transfer pattern has no canonical ordinal");
+    const auto resource = llvm::find_if(entities, [&](const auto &entry) {
+      return entry.source.kind == FabricEntityKind::SystemTransportResource &&
+             entry.source.id == record->pattern().resource.id();
+    });
+    if (resource == entities.end())
+      return invalid("System transfer pattern resource has no correspondence");
+    FabricTransferPatternRef target{
+        SystemTransportResourceRef(resource->target.id), ordinal->second};
+    if (!sourceKeys.insert(canonicalFabricBytes(record->pattern())).second ||
+        !targetKeys.insert(canonicalFabricBytes(target)).second)
+      return invalid(
+          "System transfer-pattern correspondence is not one-to-one");
+    result.push_back({record->pattern(), target});
+  }
+  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
+    return canonicalFabricBytes(lhs.source) < canonicalFabricBytes(rhs.source);
+  });
   return result;
 }
 
 llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
     ::fabric::SystemOp source,
     llvm::ArrayRef<ArtifactRootReference> importedModules,
-    llvm::ArrayRef<AccCoreOccurrenceRef> trackedAccCores) {
+    bool captureCorrespondence) {
   auto sourceModule = source->getParentOfType<ModuleOp>();
   if (!sourceModule || source->getParentOp() != sourceModule.getOperation())
     return invalid("the selected Fabric System must be top-level");
@@ -1684,31 +1735,6 @@ llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
   if (!clonedRoot)
     return invalid("the selected Fabric System was not cloned");
 
-  std::vector<Operation *> trackedOperations;
-  trackedOperations.reserve(trackedAccCores.size());
-  std::set<FabricEntityId> trackedIds;
-  for (AccCoreOccurrenceRef tracked : trackedAccCores) {
-    if (!trackedIds.insert(tracked.id()).second)
-      return invalid("tracked AccCore set contains a duplicate reference");
-    Operation *sourceOperation = nullptr;
-    for (Operation &operation : source.getBody().front()) {
-      auto accCore = dyn_cast<::fabric::SystemAccCoreOp>(&operation);
-      if (!accCore)
-        continue;
-      auto id = accCore.getEntityIdAttr();
-      if (id && id.getId() == tracked.id()) {
-        sourceOperation = &operation;
-        break;
-      }
-    }
-    if (!sourceOperation)
-      return invalid("tracked AccCore does not resolve in the source System");
-    Operation *cloned = cloneMapping.lookupOrNull(sourceOperation);
-    if (!cloned || !isa<::fabric::SystemAccCoreOp>(cloned))
-      return invalid("tracked AccCore was not cloned with its System");
-    trackedOperations.push_back(cloned);
-  }
-
   for (Operation &operation :
        llvm::make_early_inc_range(scratch->getBody()->getOperations()))
     if (&operation != clonedRoot.getOperation())
@@ -1723,9 +1749,19 @@ llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
       clonedRoot, sourceDependencies);
   if (!labeling)
     return labeling.takeError();
-  auto projected = projectTrackedAccCores(trackedOperations, *labeling);
-  if (!projected)
-    return projected.takeError();
+  std::vector<FabricSystemEntityCorrespondence> entities;
+  std::vector<FabricSystemTransferPatternCorrespondence> transferPatterns;
+  if (captureCorrespondence) {
+    auto projectedEntities = projectSystemEntityCorrespondence(*labeling);
+    if (!projectedEntities)
+      return projectedEntities.takeError();
+    entities = std::move(*projectedEntities);
+    auto projectedPatterns = projectSystemTransferPatternCorrespondence(
+        clonedRoot, *labeling, entities);
+    if (!projectedPatterns)
+      return projectedPatterns.takeError();
+    transferPatterns = std::move(*projectedPatterns);
+  }
   if (llvm::Error error =
           detail::materializeFabricSystemCanonicalForm(clonedRoot, *labeling))
     return std::move(error);
@@ -1746,12 +1782,6 @@ llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
   if (canonicalLabeling->relationBytes.bytes() !=
       labeling->relationBytes.bytes())
     return invalid("System canonicalization changed the semantic relation");
-  auto canonicalProjection =
-      projectTrackedAccCores(trackedOperations, *canonicalLabeling);
-  if (!canonicalProjection)
-    return canonicalProjection.takeError();
-  if (*canonicalProjection != *projected)
-    return invalid("tracked AccCore projection changed after canonicalization");
   if (llvm::Error error = detail::materializeFabricSystemCanonicalForm(
           clonedRoot, *canonicalLabeling))
     return std::move(error);
@@ -1759,7 +1789,8 @@ llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
     return invalid("canonical Fabric System produced invalid IR");
   return CanonicalSystemCandidate{std::move(scratch),
                                   std::move(canonicalDependencies),
-                                  std::move(*canonicalProjection)};
+                                  std::move(entities),
+                                  std::move(transferPatterns)};
 }
 
 llvm::Expected<OwningOpRef<ModuleOp>> buildCanonicalCandidate(
@@ -1894,25 +1925,12 @@ llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
                              (*imported)->view);
 }
 
-llvm::Expected<FinalizedFabricRoot>
-finalizeFabricRoot(::fabric::SystemOp source,
-                   llvm::ArrayRef<ArtifactRootReference> importedModules,
-                   const ArtifactStore &store) {
-  auto finalized = finalizeFabricSystemWithTrackedAccCores(
-      source, importedModules, {}, store);
-  if (!finalized)
-    return finalized.takeError();
-  return std::move(finalized->root);
-}
-
-llvm::Expected<FinalizedFabricSystemProjection>
-finalizeFabricSystemWithTrackedAccCores(
+llvm::Expected<FinalizedFabricSystemProjection> detail::finalizeFabricSystem(
     ::fabric::SystemOp source,
     llvm::ArrayRef<ArtifactRootReference> importedModules,
-    llvm::ArrayRef<AccCoreOccurrenceRef> trackedAccCores,
-    const ArtifactStore &store) {
-  auto candidate =
-      buildCanonicalSystemCandidate(source, importedModules, trackedAccCores);
+    const ArtifactStore &store, bool captureCorrespondence) {
+  auto candidate = buildCanonicalSystemCandidate(
+      source, importedModules, captureCorrespondence);
   if (!candidate)
     return candidate.takeError();
   auto bytecode = detail::writeCanonicalFabricBytecode(candidate->module.get());
@@ -1940,7 +1958,26 @@ finalizeFabricSystemWithTrackedAccCores(
   return FinalizedFabricSystemProjection{
       FinalizedFabricRoot(reference, std::move(*canonical),
                           (*imported)->decoded.dependencies, (*imported)->view),
-      std::move(candidate->trackedAccCores)};
+      std::move(candidate->entities), std::move(candidate->transferPatterns)};
+}
+
+llvm::Expected<FinalizedFabricRoot>
+finalizeFabricRoot(::fabric::SystemOp source,
+                   llvm::ArrayRef<ArtifactRootReference> importedModules,
+                   const ArtifactStore &store) {
+  auto finalized =
+      detail::finalizeFabricSystem(source, importedModules, store, false);
+  if (!finalized)
+    return finalized.takeError();
+  return std::move(finalized->root);
+}
+
+llvm::Expected<FinalizedFabricSystemProjection>
+finalizeFabricSystemWithCorrespondence(
+    ::fabric::SystemOp source,
+    llvm::ArrayRef<ArtifactRootReference> importedModules,
+    const ArtifactStore &store) {
+  return detail::finalizeFabricSystem(source, importedModules, store, true);
 }
 
 llvm::Expected<FinalizedFabricRoot>

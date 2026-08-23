@@ -42,6 +42,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -290,7 +291,77 @@ struct RewriteCtx {
   unsigned indexBits = 0;
   ::llvm::DenseMap<ImportedViewKey, ::mlir::Value, ImportedViewKeyInfo>
       importedViews;
+  ::llvm::DenseMap<::mlir::Value, ::mlir::Value> localAllocations;
 };
+
+std::optional<std::uint64_t>
+constantIntegerValue(::mlir::Value value) {
+  if (auto constant = value.getDefiningOp<::mlir::arith::ConstantOp>()) {
+    if (auto integer =
+            ::llvm::dyn_cast<::mlir::IntegerAttr>(constant.getValue()))
+      return integer.getValue().getLimitedValue();
+  }
+  if (auto constant = value.getDefiningOp<::dataflow::ConstantOp>()) {
+    if (auto integer =
+            ::llvm::dyn_cast<::mlir::IntegerAttr>(constant.getConstValue()))
+      return integer.getValue().getLimitedValue();
+  }
+  return std::nullopt;
+}
+
+std::optional<std::pair<std::uint64_t, ::mlir::Type>>
+flattenStaticAllocaType(::mlir::Type type) {
+  std::uint64_t elements = 1;
+  while (auto array =
+             ::llvm::dyn_cast<::mlir::LLVM::LLVMArrayType>(type)) {
+    const std::uint64_t count = array.getNumElements();
+    if (count == 0 ||
+        elements > std::numeric_limits<std::uint64_t>::max() / count)
+      return std::nullopt;
+    elements *= count;
+    type = array.getElementType();
+  }
+  if (!::llvm::isa<::mlir::IntegerType, ::mlir::Float16Type,
+                   ::mlir::BFloat16Type, ::mlir::Float32Type,
+                   ::mlir::Float64Type>(type))
+    return std::nullopt;
+  return std::make_pair(elements, type);
+}
+
+::mlir::LogicalResult materializeLocalAllocations(RewriteCtx &ctx,
+                                                   ::mlir::OpBuilder &builder) {
+  ::llvm::SmallVector<::mlir::LLVM::AllocaOp, 8> allocas;
+  ctx.graph.getBody().walk([&](::mlir::LLVM::AllocaOp alloca) {
+    allocas.push_back(alloca);
+  });
+  if (allocas.empty())
+    return ::mlir::success();
+
+  ::mlir::Block &entry = ctx.graph.getBody().front();
+  builder.setInsertionPointToStart(&entry);
+  for (::mlir::LLVM::AllocaOp alloca : allocas) {
+    const auto count = constantIntegerValue(alloca.getArraySize());
+    const auto flattened = flattenStaticAllocaType(alloca.getElemType());
+    if (!count || *count == 0 || !flattened ||
+        *count > std::numeric_limits<std::uint64_t>::max() /
+                     flattened->first)
+      return alloca.emitOpError(
+          "loom-lower-graph-memory: only static scalar LLVM alloca objects "
+          "can be represented as graph-local memory");
+    const std::uint64_t elements = *count * flattened->first;
+    if (elements > static_cast<std::uint64_t>(
+                       std::numeric_limits<int64_t>::max()))
+      return alloca.emitOpError(
+          "loom-lower-graph-memory: local alloca extent exceeds memref "
+          "dimension range");
+    auto memrefType = ::mlir::MemRefType::get(
+        {static_cast<int64_t>(elements)}, flattened->second);
+    auto allocation = ::mlir::memref::AllocOp::create(
+        builder, alloca.getLoc(), memrefType, ::mlir::ValueRange{});
+    ctx.localAllocations.try_emplace(alloca.getRes(), allocation.getMemref());
+  }
+  return ::mlir::success();
+}
 
 void ensurePointerValueServices(RewriteCtx &ctx) {
   ::llvm::DenseSet<::mlir::Value> representedPointers;
@@ -398,7 +469,16 @@ bool tryRewriteOne(::mlir::Operation *op, ::mlir::OpBuilder &builder,
     elemTy = store.getValue().getType();
   }
   ::mlir::Value root = resolvePointerServiceRoot(ptrArg, ctx.graph);
-  if (!root)
+  bool localAllocation = false;
+  if (!root) {
+    auto resolved = ::loom::lowering::resolveLinearMemoryAddress(
+        ptrArg, elemTy, ctx.indexBits);
+    if (!resolved)
+      return false;
+    root = resolved->root;
+    localAllocation = ctx.localAllocations.contains(root);
+  }
+  if (!root || (localAllocation && !ctx.localAllocations.contains(root)))
     return false;
   ::mlir::FailureOr<::mlir::Type> storage = storageElementType(op, elemTy);
   if (::mlir::failed(storage))
@@ -409,7 +489,7 @@ bool tryRewriteOne(::mlir::Operation *op, ::mlir::OpBuilder &builder,
   ::mlir::Value address = ptrArg;
   ::mlir::Attribute rootRelative =
       op->getAttr(::loom::rootRelativeAddressAttrName);
-  if (rootRelative) {
+  if (rootRelative || localAllocation) {
     if (!::llvm::isa<::mlir::UnitAttr>(rootRelative)) {
       op->emitError("loom-lower-graph-memory: root-relative address marker is "
                     "malformed");
@@ -421,8 +501,10 @@ bool tryRewriteOne(::mlir::Operation *op, ::mlir::OpBuilder &builder,
       return false;
     address = *projected;
   }
-  ::mlir::Value mem =
-      getImportedMemrefView(ctx.graph, ctx.importedViews, root, *storage, loc);
+  ::mlir::Value mem = localAllocation
+                          ? ctx.localAllocations.lookup(root)
+                          : getImportedMemrefView(ctx.graph, ctx.importedViews,
+                                                  root, *storage, loc);
   if (!mem)
     return false;
   if (isLoad) {
@@ -439,6 +521,32 @@ bool tryRewriteOne(::mlir::Operation *op, ::mlir::OpBuilder &builder,
   }
   op->erase();
   return true;
+}
+
+void eraseDeadPointerAddressing(::dataflow::GraphOp graph) {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    ::llvm::SmallVector<::mlir::LLVM::GEPOp, 8> dead;
+    graph.getBody().walk([&](::mlir::LLVM::GEPOp gep) {
+      if (gep->use_empty())
+        dead.push_back(gep);
+    });
+    for (::mlir::LLVM::GEPOp gep : dead) {
+      gep.erase();
+      changed = true;
+    }
+  }
+}
+
+void eraseDeadLocalAllocations(::dataflow::GraphOp graph) {
+  ::llvm::SmallVector<::mlir::LLVM::AllocaOp, 8> dead;
+  graph.getBody().walk([&](::mlir::LLVM::AllocaOp alloca) {
+    if (alloca.getRes().use_empty())
+      dead.push_back(alloca);
+  });
+  for (::mlir::LLVM::AllocaOp alloca : dead)
+    alloca.erase();
 }
 
 // The canonical index width of one graph, read at the exact scope that owns
@@ -559,6 +667,9 @@ checkGraphRegionLoweringPreconditionsAfterLoadSinking(::mlir::ModuleOp module) {
         "loom-lower-graph-memory: graph has no canonical index width");
   ctx.indexBits = *indexBits;
 
+  if (::mlir::failed(materializeLocalAllocations(ctx, builder)))
+    return ::mlir::failure();
+
   (void)sinkBranchSelectedLoads(graph, builder);
 
   // Collect rewrite targets up front so the walk is independent of
@@ -572,6 +683,11 @@ checkGraphRegionLoweringPreconditionsAfterLoadSinking(::mlir::ModuleOp module) {
 
   for (::mlir::Operation *target : targets)
     (void)tryRewriteOne(target, builder, ctx);
+  // Root-relative accesses no longer consume their LLVM address expression.
+  // Retire that pure pointer chain before region lowering decides which values
+  // cross a structured control boundary.
+  eraseDeadPointerAddressing(graph);
+  eraseDeadLocalAllocations(graph);
   ensurePointerValueServices(ctx);
   return normalizeGraphMemoryPorts(graph, ctx.importedViews, sources);
 }
@@ -583,14 +699,16 @@ checkGraphRegionLoweringPreconditionsAfterLoadSinking(::mlir::ModuleOp module) {
             bool lacksCompletion =
                 ::llvm::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
                             ::mlir::LLVM::MemcpyOp, ::mlir::LLVM::MemmoveOp,
-                            ::mlir::LLVM::MemsetOp>(op);
+                            ::mlir::LLVM::MemsetOp,
+                            ::mlir::LLVM::AllocaOp>(op);
             if (!lacksCompletion)
               return ::mlir::WalkResult::advance();
 
             op->emitError()
                 << "loom-lower-graph-memory: residual memory operation '"
                 << op->getName().getStringRef()
-                << "' has no explicit completion event";
+                << "' has no explicit completion event or local-memory "
+                   "normalization";
             return ::mlir::WalkResult::interrupt();
           });
   return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();

@@ -3,7 +3,9 @@
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactStore.h"
+#include "Common/ExecutionControl.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/UsePatternValue.h"
 #include "Mapping/Artifact/MappingArtifact.h"
@@ -34,6 +36,11 @@ enum class SystemMappingImportVerificationDomain : std::uint8_t {
   IndependentReplay,
 };
 
+enum class SystemMappingImportSessionMode : std::uint8_t {
+  New,
+  ReuseEnclosing,
+};
+
 struct SystemMappingImportSessionStatistics final {
   std::uint64_t importRequests = 0;
   std::uint64_t cacheHits = 0;
@@ -50,7 +57,9 @@ struct SystemMappingImportSessionStatistics final {
 class SystemMappingImportSession final {
 public:
   SystemMappingImportSession(const ArtifactStore &store,
-                             std::size_t entryLimit);
+                             std::size_t entryLimit,
+                             SystemMappingImportSessionMode mode =
+                                 SystemMappingImportSessionMode::New);
   ~SystemMappingImportSession();
 
   SystemMappingImportSession(const SystemMappingImportSession &) = delete;
@@ -63,6 +72,7 @@ public:
 
 private:
   std::unique_ptr<detail::SystemMappingImportSessionState> state_;
+  detail::SystemMappingImportSessionState *active_ = nullptr;
   detail::SystemMappingImportSessionState *previous_ = nullptr;
 };
 
@@ -129,7 +139,7 @@ private:
       const CanonicalSemanticBytes &,
       const ::dataflow::CanonicalDataflowProgramView &,
       const ::loom::fabric::FabricSystemRootView &, const ArtifactStore &,
-      const SpatialMappingImportContext *);
+      const SpatialMappingImportContext *, ExecutionControlView);
 };
 
 struct SystemMemoryRegionElementView final {
@@ -270,7 +280,8 @@ private:
       const ::dataflow::CanonicalDataflowProgramView &,
       const ::loom::fabric::FabricSystemRootView &, const ArtifactStore &,
       const SpatialMappingImportContext *,
-      std::shared_ptr<const SystemMappingClosureProjection> *);
+      std::shared_ptr<const SystemMappingClosureProjection> *,
+      ExecutionControlView);
 };
 
 class FinalizedSystemMapping final {
@@ -301,7 +312,7 @@ private:
       ::mapping::SystemOp, const ::dataflow::CanonicalDataflowProgramView &,
       const ::loom::fabric::FabricSystemRootView &,
       const SystemMappingConstraintSetView &, const ArtifactStore &,
-      const SpatialMappingImportContext *);
+      const SpatialMappingImportContext *, ExecutionControlView);
   friend llvm::Expected<FinalizedSystemMapping>
   importSystemMapping(const ArtifactRootReference &, const ArtifactStore &);
 };
@@ -324,6 +335,7 @@ struct RejectedSystemMappingBase final {
 enum class SystemMappingIncompleteReason : std::uint8_t {
   Unsupported,
   ProofNotEstablished,
+  CancelledOrTimeout,
 };
 
 class SystemMappingIncompleteError final
@@ -384,7 +396,8 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const ArtifactStore &store,
-    const SpatialMappingImportContext *spatialMappings = nullptr);
+    const SpatialMappingImportContext *spatialMappings = nullptr,
+    ExecutionControlView executionControl = {});
 
 SystemMappingBaseVerification verifySystemMappingBase(
     ::mapping::SystemOp source,
@@ -398,11 +411,26 @@ llvm::Expected<FinalizedSystemMapping> finalizeSystemMapping(
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemMappingConstraintSetView &constraints,
     const ArtifactStore &store,
-    const SpatialMappingImportContext *spatialMappings = nullptr);
+    const SpatialMappingImportContext *spatialMappings = nullptr,
+    ExecutionControlView executionControl = {});
 
 llvm::Expected<FinalizedSystemMapping>
 importSystemMapping(const ArtifactRootReference &reference,
                     const ArtifactStore &store);
+
+/// Reconstructs a complete verified System selection against one exact child
+/// System canonicalization lineage and an ordinal-preserving SpatialMapping
+/// import set. The child finalizer independently rechecks every closure.
+llvm::Expected<FinalizedSystemMapping> rebaseSystemMapping(
+    const FinalizedSystemMapping &parent,
+    const ::loom::fabric::FabricSystemRootView &childFabric,
+    llvm::ArrayRef<ArtifactRootReference> childSpatialMappings,
+    llvm::ArrayRef<::loom::fabric::FabricSystemEntityCorrespondence> entities,
+    llvm::ArrayRef<::loom::fabric::FabricSystemTransferPatternCorrespondence>
+        transferPatterns,
+    const SystemMappingConstraintSetView &childConstraints,
+    const ArtifactStore &store,
+    const SpatialMappingImportContext *spatialMappings = nullptr);
 
 } // namespace loom::mapping
 

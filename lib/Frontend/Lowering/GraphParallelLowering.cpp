@@ -706,6 +706,7 @@ struct ByteAccessExpression {
   std::uint64_t accessByteCount = 0;
   bool rootRelative = false;
   bool exactCanonicalElementProjection = false;
+  bool definedDomainCanonicalElementArithmetic = false;
 };
 
 using ByteSymbolProjection = ::llvm::DenseMap<::mlir::Value, ::llvm::APInt>;
@@ -759,6 +760,25 @@ bool hasExactCanonicalElementProjection(
   return address.elementTerms.size() == 1 && address.elementBias == 0 &&
          address.elementTerms.front().scale == 1 &&
          address.elementTerms.front().exactSignedDivideShift == 0;
+}
+
+bool hasDefinedDomainCanonicalElementArithmetic(
+    const ResolvedLinearMemoryAddress &address) {
+  auto indexType = ::llvm::dyn_cast<::mlir::IntegerType>(address.indexType);
+  if (!indexType ||
+      !::llvm::isIntN(indexType.getWidth(), address.elementBias))
+    return false;
+  // A symbolic outer-loop component cannot be enumerated with the selected
+  // parallel lane domain. LLVM nusw makes the resolver's exact scaled sum a
+  // defined-domain fact, while the lane-dependent byte intervals below still
+  // prove disjointness independently.
+  return !address.gepsLeafToRoot.empty() &&
+         ::llvm::all_of(address.gepsLeafToRoot, [](::mlir::Operation *op) {
+           auto gep = ::llvm::dyn_cast<::mlir::LLVM::GEPOp>(op);
+           return gep && ::mlir::LLVM::bitEnumContainsAny(
+                             gep.getNoWrapFlags(),
+                             ::mlir::LLVM::GEPNoWrapFlags::nusw);
+         });
 }
 
 bool hasRepresentableCanonicalElementArithmetic(
@@ -1027,6 +1047,9 @@ struct ParallelCheckInfo {
         address.rootRelative = rootRelative;
         address.exactCanonicalElementProjection =
             rootRelative && hasExactCanonicalElementProjection(resolved);
+        address.definedDomainCanonicalElementArithmetic =
+            rootRelative &&
+            hasDefinedDomainCanonicalElementArithmetic(resolved);
         address.terms.reserve(resolved.terms.size());
         for (auto item : ::llvm::enumerate(resolved.terms)) {
           const LinearByteTerm &byteTerm = item.value();
@@ -1087,7 +1110,9 @@ struct ParallelCheckInfo {
       }
       if (!referenceSymbols->empty() &&
           ::llvm::any_of(byteAddresses, [](const ByteAccessExpression &value) {
-            return value.rootRelative && !value.exactCanonicalElementProjection;
+            return value.rootRelative &&
+                   !value.exactCanonicalElementProjection &&
+                   !value.definedDomainCanonicalElementArithmetic;
           }))
         return info.op->emitError(
             "loom-lower-graph-memory: symbolic LLVM element address has no "
@@ -1454,8 +1479,16 @@ explainSpatialCarrierParallelRejection(::mlir::Operation *spatialCarrier) {
     return "Spatial carrier is absent";
 
   ::llvm::SmallVector<::mlir::Operation *, 8> parallelOps;
+  ::llvm::DenseSet<::mlir::Operation *> seen;
+  for (::mlir::Operation *parent = spatialCarrier->getParentOp(); parent;
+       parent = parent->getParentOp())
+    if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(parent) &&
+        seen.insert(parent).second)
+      parallelOps.push_back(parent);
   spatialCarrier->walk([&](::mlir::Operation *operation) {
-    if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(operation))
+    if (::llvm::isa<::mlir::scf::ParallelOp,
+                    ::mlir::scf::ForallOp>(operation) &&
+        seen.insert(operation).second)
       parallelOps.push_back(operation);
   });
   if (parallelOps.empty())

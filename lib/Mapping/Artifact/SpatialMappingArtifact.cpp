@@ -36,6 +36,7 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
@@ -75,6 +76,15 @@ std::vector<std::uint8_t> unsignedBytes(DenseI8ArrayAttr record) {
   return result;
 }
 
+DenseI8ArrayAttr identityBytes(MLIRContext *context,
+                               const ArtifactIdentity &identity) {
+  llvm::SmallVector<std::int8_t, 32> bytes;
+  bytes.reserve(identity.bytes().size());
+  for (std::uint8_t byte : identity.bytes())
+    bytes.push_back(static_cast<std::int8_t>(byte));
+  return DenseI8ArrayAttr::get(context, bytes);
+}
+
 std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
   return std::string(reinterpret_cast<const char *>(bytes.data()),
                      bytes.size());
@@ -103,6 +113,419 @@ struct ParsedSpatialRoot final {
   OwningOpRef<ModuleOp> module;
   ::mapping::SpatialOp root;
 };
+
+/// Module-local correspondence for a child whose canonical labels may have
+/// changed after a typed microarchitecture edit. Mapping decisions retain
+/// owner-relative ordinals, while entity IDs are remapped by the canonical
+/// occurrence inventories of the parent and child. This is intentionally
+/// narrower than the System remapper: System entities and transfer patterns
+/// are not legal Module-local route owners.
+class ModuleReferenceRemapper final {
+public:
+  static llvm::Expected<ModuleReferenceRemapper> get(
+      const ::loom::fabric::FabricArtifactView &parent,
+      const ::loom::fabric::FabricArtifactView &child) {
+    ModuleReferenceRemapper result(parent, child);
+    if (llvm::Error error = result.add(parent.peOccurrences(),
+                                       child.peOccurrences(), result.pes_))
+      return std::move(error);
+    if (llvm::Error error = result.add(parent.fuOccurrences(),
+                                       child.fuOccurrences(), result.fus_))
+      return std::move(error);
+    if (llvm::Error error = result.add(parent.memoryOccurrences(),
+                                       child.memoryOccurrences(), result.memories_))
+      return std::move(error);
+    if (llvm::Error error = result.add(parent.switchOccurrences(),
+                                       child.switchOccurrences(), result.switches_))
+      return std::move(error);
+    if (llvm::Error error = result.add(parent.fifoOccurrences(),
+                                       child.fifoOccurrences(), result.fifos_))
+      return std::move(error);
+    if (llvm::Error error = result.add(parent.boundaryOccurrences(),
+                                       child.boundaryOccurrences(), result.boundaries_))
+      return std::move(error);
+    return result;
+  }
+
+  llvm::Expected<::loom::fabric::FabricPeOccurrenceRef> remap(
+      ::loom::fabric::FabricPeOccurrenceRef ref) const {
+    return lookup(pes_, ref, "PE occurrence");
+  }
+  llvm::Expected<::loom::fabric::FabricFuOccurrenceRef> remap(
+      ::loom::fabric::FabricFuOccurrenceRef ref) const {
+    return lookup(fus_, ref, "FU occurrence");
+  }
+  llvm::Expected<::loom::fabric::FabricMemoryOccurrenceRef> remap(
+      ::loom::fabric::FabricMemoryOccurrenceRef ref) const {
+    return lookup(memories_, ref, "Memory occurrence");
+  }
+  llvm::Expected<::loom::fabric::FabricSwitchOccurrenceRef> remap(
+      ::loom::fabric::FabricSwitchOccurrenceRef ref) const {
+    return lookup(switches_, ref, "Switch occurrence");
+  }
+  llvm::Expected<::loom::fabric::FabricFifoOccurrenceRef> remap(
+      ::loom::fabric::FabricFifoOccurrenceRef ref) const {
+    return lookup(fifos_, ref, "FIFO occurrence");
+  }
+  llvm::Expected<::loom::fabric::FabricBoundaryOccurrenceRef> remap(
+      ::loom::fabric::FabricBoundaryOccurrenceRef ref) const {
+    return lookup(boundaries_, ref, "Boundary occurrence");
+  }
+
+  llvm::Expected<::loom::fabric::FabricTransportEndpointOwnerRef> remap(
+      const ::loom::fabric::FabricTransportEndpointOwnerRef &owner) const {
+    return std::visit(
+        [&](const auto &value)
+            -> llvm::Expected<
+                ::loom::fabric::FabricTransportEndpointOwnerRef> {
+          using Value = std::decay_t<decltype(value)>;
+          if constexpr (std::is_same_v<Value,
+                                       ::loom::fabric::SpatialCoreOccurrenceRef> ||
+                        std::is_same_v<Value,
+                                       ::loom::fabric::SystemServiceEndpointRef> ||
+                        std::is_same_v<Value,
+                                       ::loom::fabric::SystemTransportResourceRef>)
+            return invalid("Module route names a non-local transport owner");
+          else {
+            auto mapped = remap(value);
+            if (!mapped)
+              return mapped.takeError();
+            return ::loom::fabric::FabricTransportEndpointOwnerRef::of(*mapped);
+          }
+        },
+        owner.payload);
+  }
+
+  llvm::Expected<::loom::fabric::FabricTransportEndpointRef> remap(
+      const ::loom::fabric::FabricTransportEndpointRef &endpoint) const {
+    auto owner = remap(endpoint.owner);
+    if (!owner)
+      return owner.takeError();
+    auto result = ::loom::fabric::FabricTransportEndpointRef{*owner,
+                                                               endpoint.ordinal};
+    if (!::loom::fabric::validateFabricRef(child_, result))
+      return result;
+    const auto direction = parent_.transportEndpointDirection(endpoint);
+    const auto type = parent_.transportEndpointType(endpoint);
+    std::vector<::loom::fabric::FabricTransportEndpointRef> matches;
+    for (const auto &candidate : child_.transportEndpoints()) {
+      if (!(candidate.owner == *owner))
+        continue;
+      if (direction && child_.transportEndpointDirection(candidate) != direction)
+        continue;
+      if (!type.equals(child_.transportEndpointType(candidate)))
+        continue;
+      matches.push_back(candidate);
+    }
+    if (matches.size() == 1)
+      return matches.front();
+    return invalid(matches.empty()
+                       ? "Module child lost a remapped transport endpoint"
+                       : "Module child has ambiguous remapped transport "
+                         "endpoint");
+  }
+
+  llvm::Expected<::loom::fabric::FabricPhysicalTraversalRef> remap(
+      const ::loom::fabric::FabricPhysicalTraversalRef &traversal) const {
+    return std::visit(
+        [&](const auto &payload)
+            -> llvm::Expected<
+                ::loom::fabric::FabricPhysicalTraversalRef> {
+          using Payload = std::decay_t<decltype(payload)>;
+          if constexpr (std::is_same_v<Payload,
+                                       ::loom::fabric::FabricPointConnectionPayload>) {
+            auto source = remap(payload.source);
+            if (!source)
+              return source.takeError();
+            auto destination = remap(payload.destination);
+            if (!destination)
+              return destination.takeError();
+            auto result =
+                ::loom::fabric::FabricPhysicalTraversalRef::pointConnection(
+                    *source, *destination);
+            return remapAdmittedTraversal(result, *source, *destination);
+          } else if constexpr (std::is_same_v<
+                                   Payload,
+                                   ::loom::fabric::FabricPeSelectorPayload>) {
+            auto owner = remap(payload.owner);
+            if (!owner)
+              return owner.takeError();
+            auto source = remap(payload.source);
+            if (!source)
+              return source.takeError();
+            auto destination = remap(payload.destination);
+            if (!destination)
+              return destination.takeError();
+            auto result = ::loom::fabric::FabricPhysicalTraversalRef::peSelector(
+                *owner, *source, *destination);
+            return remapAdmittedTraversal(result, *source, *destination);
+          } else if constexpr (std::is_same_v<
+                                   Payload,
+                                   ::loom::fabric::FabricPeRegisterFifoPayload>) {
+            auto owner = remap(payload.owner);
+            if (!owner)
+              return owner.takeError();
+            auto result =
+                ::loom::fabric::FabricPhysicalTraversalRef::peRegisterFifo(
+                    *owner, payload.registerFifo, payload.role);
+            return remapAdmittedTraversal(result, std::nullopt,
+                                          std::nullopt);
+          } else if constexpr (std::is_same_v<
+                                   Payload,
+                                   ::loom::fabric::FabricSwitchTraversalPayload>) {
+            auto owner = remap(payload.owner);
+            if (!owner)
+              return owner.takeError();
+            auto result =
+                ::loom::fabric::FabricPhysicalTraversalRef::switchTraversal(
+                    *owner, payload.input, payload.output);
+            return remapAdmittedTraversal(result, std::nullopt,
+                                          std::nullopt);
+          } else if constexpr (std::is_same_v<
+                                   Payload,
+                                   ::loom::fabric::FabricFifoTraversalPayload>) {
+            auto owner = remap(payload.owner);
+            if (!owner)
+              return owner.takeError();
+            auto result = ::loom::fabric::FabricPhysicalTraversalRef::fifoTraversal(
+                *owner, payload.mode);
+            return remapAdmittedTraversal(result, std::nullopt,
+                                          std::nullopt);
+          } else if constexpr (std::is_same_v<
+                                   Payload,
+                                   ::loom::fabric::FabricBoundaryTraversalPayload>) {
+            auto owner = remap(payload.owner);
+            if (!owner)
+              return owner.takeError();
+            auto result =
+                ::loom::fabric::FabricPhysicalTraversalRef::boundaryTraversal(
+                    *owner, payload.output);
+            return remapAdmittedTraversal(result, std::nullopt,
+                                          std::nullopt);
+          } else {
+            return invalid("Module route names a System transfer pattern");
+          }
+        },
+        traversal.payload);
+  }
+
+private:
+  template <typename Ref>
+  using Map = std::map<std::vector<std::uint8_t>, Ref>;
+
+  ModuleReferenceRemapper(const ::loom::fabric::FabricArtifactView &parent,
+                          const ::loom::fabric::FabricArtifactView &child)
+      : parent_(parent), child_(child) {}
+
+  llvm::Expected<::loom::fabric::FabricPhysicalTraversalRef>
+  remapAdmittedTraversal(
+      const ::loom::fabric::FabricPhysicalTraversalRef &candidate,
+      std::optional<::loom::fabric::FabricTransportEndpointRef> source,
+      std::optional<::loom::fabric::FabricTransportEndpointRef> destination)
+      const {
+    if (child_.physicalTraversal(candidate))
+      return candidate;
+    std::vector<::loom::fabric::FabricPhysicalTraversalRef> matches;
+    for (const auto &view : child_.physicalTraversals()) {
+      if (view.reference.kind() != candidate.kind())
+        continue;
+      if (source &&
+          !llvm::is_contained(view.sources, *source))
+        continue;
+      if (destination &&
+          !llvm::is_contained(view.destinations, *destination))
+        continue;
+      matches.push_back(view.reference);
+    }
+    if (matches.size() == 1)
+      return matches.front();
+
+    // A local Module edit can renumber endpoint identities even when the
+    // owner, direction, and physical type are unchanged.  Preserve the
+    // traversal only when that structural correspondence is unique; an
+    // ambiguous or semantically changed traversal remains a typed cold
+    // fallback instead of guessing by ordinal.
+    if (source || destination) {
+      const auto endpointCompatible = [&](const auto &actual,
+                                           const auto &expected) {
+        return actual.owner == expected.owner &&
+               child_.transportEndpointDirection(actual) ==
+                   parent_.transportEndpointDirection(expected) &&
+               child_.transportEndpointType(actual) ==
+                   parent_.transportEndpointType(expected);
+      };
+      std::vector<::loom::fabric::FabricPhysicalTraversalRef>
+          structuralMatches;
+      for (const auto &view : child_.physicalTraversals()) {
+        if (view.reference.kind() != candidate.kind())
+          continue;
+        const bool sourceMatch =
+            !source || llvm::any_of(view.sources, [&](const auto &actual) {
+              return endpointCompatible(actual, *source);
+            });
+        const bool destinationMatch =
+            !destination ||
+            llvm::any_of(view.destinations, [&](const auto &actual) {
+              return endpointCompatible(actual, *destination);
+            });
+        if (sourceMatch && destinationMatch)
+          structuralMatches.push_back(view.reference);
+      }
+      if (structuralMatches.size() == 1)
+        return structuralMatches.front();
+    }
+    std::size_t sourceOwnerMatches = 0;
+    std::size_t destinationOwnerMatches = 0;
+    if (source || destination) {
+      for (const auto &view : child_.physicalTraversals()) {
+        if (view.reference.kind() != candidate.kind())
+          continue;
+        if (source && llvm::any_of(view.sources, [&](const auto &actual) {
+              return actual.owner == source->owner;
+            }))
+          ++sourceOwnerMatches;
+        if (destination && llvm::any_of(view.destinations, [&](const auto &actual) {
+              return actual.owner == destination->owner;
+            }))
+          ++destinationOwnerMatches;
+      }
+    }
+    return invalid(llvm::Twine(matches.empty()
+                                   ? "Module child lost a remapped physical "
+                                   "traversal"
+                                   : "Module child has ambiguous remapped "
+                                     "physical traversal") +
+                   "; kind=" +
+                   llvm::Twine(static_cast<std::uint32_t>(candidate.kind())) +
+                   "; child_traversal_count=" +
+                   llvm::Twine(child_.physicalTraversals().size()) +
+                   "; source_present=" + llvm::Twine(source.has_value()) +
+                   "; destination_present=" +
+                   llvm::Twine(destination.has_value()) +
+                   "; source_owner_matches=" +
+                   llvm::Twine(sourceOwnerMatches) +
+                   "; destination_owner_matches=" +
+                   llvm::Twine(destinationOwnerMatches));
+  }
+
+  template <typename Ref>
+  llvm::Error add(llvm::ArrayRef<Ref> parent, llvm::ArrayRef<Ref> child,
+                  Map<Ref> &mapping) {
+    if (parent.size() != child.size())
+      return invalid("Module occurrence inventory changed during local rebase");
+    for (std::size_t index = 0; index != parent.size(); ++index)
+      if (!mapping.emplace(::loom::fabric::canonicalFabricBytes(parent[index]),
+                           child[index])
+               .second)
+        return invalid("Module occurrence correspondence is not unique");
+    return llvm::Error::success();
+  }
+
+  template <typename Ref>
+  llvm::Expected<Ref> lookup(const Map<Ref> &mapping, Ref ref,
+                             llvm::StringRef name) const {
+    auto found = mapping.find(::loom::fabric::canonicalFabricBytes(ref));
+    if (found == mapping.end())
+      return invalid(llvm::Twine("Module child has no ") + name +
+                     " correspondence");
+    return found->second;
+  }
+
+  const ::loom::fabric::FabricArtifactView &parent_;
+  const ::loom::fabric::FabricArtifactView &child_;
+  Map<::loom::fabric::FabricPeOccurrenceRef> pes_;
+  Map<::loom::fabric::FabricFuOccurrenceRef> fus_;
+  Map<::loom::fabric::FabricMemoryOccurrenceRef> memories_;
+  Map<::loom::fabric::FabricSwitchOccurrenceRef> switches_;
+  Map<::loom::fabric::FabricFifoOccurrenceRef> fifos_;
+  Map<::loom::fabric::FabricBoundaryOccurrenceRef> boundaries_;
+};
+
+llvm::Error remapSpatialModuleReferences(
+    ::mapping::SpatialOp root, const ModuleReferenceRemapper &remapper) {
+  llvm::Error error = llvm::Error::success();
+  root.walk([&](mlir::Operation *operation) {
+    if (error)
+      return mlir::WalkResult::interrupt();
+    if (auto route = mlir::dyn_cast<::mapping::RouteTreeOp>(operation)) {
+      auto endpoint = decodeFabric<::loom::fabric::FabricTransportEndpointRef>(
+          route.getRootEndpoint());
+      if (!endpoint)
+        error = endpoint.takeError();
+      else {
+        auto mapped = remapper.remap(*endpoint);
+        if (!mapped)
+          error = mapped.takeError();
+        else
+          route->setAttr(
+              "root_endpoint",
+              ::mapping::FabricTransportEndpointRefAttr::get(
+                  route.getContext(),
+                  DenseI8ArrayAttr::get(
+                      route.getContext(),
+                      llvm::to_vector<32>(llvm::map_range(
+                          ::loom::fabric::canonicalFabricBytes(*mapped),
+                          [](std::uint8_t byte) {
+                            return static_cast<std::int8_t>(byte);
+                          })))));
+      }
+    } else if (auto node =
+                   mlir::dyn_cast<::mapping::RouteNodeOp>(operation)) {
+      if (auto traversal = node.getIncomingTraversal()) {
+        auto decoded = decodeFabric<::loom::fabric::FabricPhysicalTraversalRef>(
+            *traversal);
+        if (!decoded)
+          error = decoded.takeError();
+        else {
+          auto mapped = remapper.remap(*decoded);
+          if (!mapped)
+            error = mapped.takeError();
+          else
+            node->setAttr(
+                "incoming_traversal",
+                ::mapping::FabricPhysicalTraversalRefAttr::get(
+                    node.getContext(),
+                    DenseI8ArrayAttr::get(
+                        node.getContext(),
+                        llvm::to_vector<32>(llvm::map_range(
+                            ::loom::fabric::canonicalFabricBytes(*mapped),
+                            [](std::uint8_t byte) {
+                              return static_cast<std::int8_t>(byte);
+                            })))));
+        }
+      }
+    } else if (auto transfer =
+                   mlir::dyn_cast<::mapping::RegisterFifoTransferOp>(operation)) {
+      for (const char *name : {"write_traversal", "read_traversal"}) {
+        auto attribute = transfer->getAttrOfType<
+            ::mapping::FabricPhysicalTraversalRefAttr>(name);
+        if (!attribute)
+          continue;
+        auto decoded = decodeFabric<::loom::fabric::FabricPhysicalTraversalRef>(
+            attribute);
+        if (!decoded) {
+          error = decoded.takeError();
+          break;
+        }
+        auto mapped = remapper.remap(*decoded);
+        if (!mapped) {
+          error = mapped.takeError();
+          break;
+        }
+        auto bytes = ::loom::fabric::canonicalFabricBytes(*mapped);
+        llvm::SmallVector<std::int8_t, 32> signedBytes;
+        for (std::uint8_t byte : bytes)
+          signedBytes.push_back(static_cast<std::int8_t>(byte));
+        transfer->setAttr(
+            name, ::mapping::FabricPhysicalTraversalRefAttr::get(
+                      transfer.getContext(),
+                      DenseI8ArrayAttr::get(transfer.getContext(), signedBytes)));
+      }
+    }
+    return error ? mlir::WalkResult::interrupt() : mlir::WalkResult::advance();
+  });
+  return error;
+}
 
 llvm::Expected<ParsedSpatialRoot>
 parseSpatialRoot(const CanonicalSemanticBytes &canonicalBytes) {
@@ -1317,7 +1740,7 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
 
   auto progress = deriveSpatialMappingProgressClosure(
       dataflow, techMapping, fabric, computeBindings, registerFifoTransfers,
-      routes);
+      routes, *operandQueueMatchGroups);
   if (!progress)
     return progress.takeError();
   switch (progress->kind) {
@@ -1685,6 +2108,32 @@ llvm::Expected<SpatialMappingView> SpatialMappingView::import(
       std::move(imported->handshakeSelection));
 }
 
+bool spatialMappingUsesFifoOccurrence(
+    const SpatialMappingView &mapping,
+    ::loom::fabric::FabricFifoOccurrenceRef fifo) {
+  const auto uses = [&](const std::optional<
+                            ::loom::fabric::FabricPhysicalTraversalRef>
+                            &traversal) {
+    if (!traversal)
+      return false;
+    const auto *payload =
+        std::get_if<::loom::fabric::FabricFifoTraversalPayload>(
+            &traversal->payload);
+    return payload && payload->owner == fifo;
+  };
+  for (const SpatialRouteTreeView &route : mapping.routeTrees()) {
+    if (uses(route.localTraversal))
+      return true;
+    for (const SpatialRouteNodeView &node : route.nodes)
+      if (uses(node.incomingTraversal))
+        return true;
+    for (const SpatialRouteSinkView &sink : route.sinks)
+      if (uses(sink.localTraversal))
+        return true;
+  }
+  return false;
+}
+
 llvm::Error verifySpatialMappingBase(
     ::mapping::SpatialOp source,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -1751,6 +2200,50 @@ importSpatialMapping(const ArtifactRootReference &reference,
     return view.takeError();
   return FinalizedSpatialMapping(reference, std::move(*canonicalBytes),
                                  std::move(*view));
+}
+
+llvm::Expected<FinalizedSpatialMapping> rebaseSpatialMapping(
+    const FinalizedSpatialMapping &parent,
+    const FinalizedTechMapping &childTechMapping,
+    const ::loom::fabric::FabricArtifactView &childFabric,
+    const SpatialMappingConstraintSetView &childConstraints,
+    const ArtifactStore &store,
+    const ::loom::fabric::FabricHandshakeContext *handshakeContext) {
+  auto parsed = parseSpatialRoot(parent.canonicalBytes());
+  if (!parsed)
+    return parsed.takeError();
+  auto parentFabric = ::loom::fabric::importEntireFabricRoot(
+      {::loom::fabric::fabricArtifactSchema.identity.str(),
+       ::loom::fabric::fabricArtifactSchema.version,
+       parent.view().fabricIdentity()},
+      store);
+  if (!parentFabric)
+    return parentFabric.takeError();
+  auto remapper = ModuleReferenceRemapper::get(parentFabric->view(), childFabric);
+  if (!remapper)
+    return remapper.takeError();
+  if (llvm::Error error =
+          remapSpatialModuleReferences(parsed->root, *remapper))
+    return std::move(error);
+  parsed->root.setTechMappingAttr(::mapping::ArtifactIdentityAttr::get(
+      parsed->context.get(),
+      identityBytes(parsed->context.get(), childTechMapping.view().identity())));
+  parsed->root.setFabricAttr(::mapping::ArtifactIdentityAttr::get(
+      parsed->context.get(),
+      identityBytes(parsed->context.get(), childFabric.identity())));
+  auto dataflow = ::dataflow::importCanonicalDataflow(
+      {::dataflow::canonicalDataflowSchema.identity.str(),
+       ::dataflow::canonicalDataflowSchema.version,
+       parent.view().dataflowIdentity()},
+      store);
+  if (!dataflow)
+    return dataflow.takeError();
+  auto dataflowView = dataflow->view();
+  if (!dataflowView)
+    return dataflowView.takeError();
+  return finalizeSpatialMapping(parsed->root, *dataflowView,
+                                childTechMapping.view(), childFabric,
+                                childConstraints, store, handshakeContext);
 }
 
 } // namespace loom::mapping

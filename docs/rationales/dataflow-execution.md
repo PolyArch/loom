@@ -211,3 +211,11 @@ identify domain points and runtime owns concrete occurrences. Adding a
 thread-definition EntityId would create a second path to the same definition
 without identifying any dynamic instance. Rooted consumers therefore begin at
 `RootThreadLaunchRef` and recover the definition mechanically.
+### Ordered Message Correspondence
+
+Ordered token positions constrain how multiple input roles may form one actor
+tuple. Physical tags remain local interpretation keys at the selected ingress;
+they do not replace Dataflow event identity or become globally unique stream
+names. The compiler may expose rate and ordered-edge facts for early ranking,
+but unknown correspondence remains typed incomplete until Mapping owns the
+physical queue and selector projection.

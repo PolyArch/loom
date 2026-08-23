@@ -1,6 +1,7 @@
 #ifndef LOOM_FABRIC_IDENTITY_FABRICHANDSHAKE_H
 #define LOOM_FABRIC_IDENTITY_FABRICHANDSHAKE_H
 
+#include "Common/ExecutionControl.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Fabric/Identity/FabricRefImport.h"
 
@@ -544,13 +545,15 @@ llvm::Error verifySelectedCombinationalHandshakeAcyclic(
 llvm::Expected<std::vector<HandshakeDependencyArc>>
 deriveSelectedHandshakeReachability(
     const FabricArtifactView &view, const FabricHandshakeSelection &selection,
-    llvm::ArrayRef<HandshakeSignalRef> terminals);
+    llvm::ArrayRef<HandshakeSignalRef> terminals,
+    ExecutionControlView executionControl = {});
 
 llvm::Expected<std::vector<HandshakeDependencyArc>>
 deriveSelectedHandshakeReachability(
     const FabricArtifactView &view, const FabricHandshakeSelection &selection,
     llvm::ArrayRef<HandshakeSignalRef> terminals,
-    const FabricHandshakeContext &context);
+    const FabricHandshakeContext &context,
+    ExecutionControlView executionControl = {});
 
 /// Derives the root-complete boundary relation that is present in every legal
 /// configured view. Internal junctions never escape this projection.

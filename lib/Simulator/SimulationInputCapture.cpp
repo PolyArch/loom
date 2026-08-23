@@ -1097,6 +1097,35 @@ CanonicalValueSequence exceptionalValue(const detail::LaneShape &shape,
   return value;
 }
 
+CanonicalValueSequence definedZeroValue(const detail::LaneShape &shape) {
+  CanonicalValueSequence value;
+  value.tokenCount = 1;
+  value.lanes.reserve(shape.lanesPerToken);
+  for (std::uint64_t lane = 0; lane < shape.lanesPerToken; ++lane)
+    value.lanes.push_back(
+        SemanticLane::defined(llvm::APInt(shape.laneBitWidth, 0)));
+  return value;
+}
+
+bool graphScalarInputIsUnused(detail::ResolvedLaunchContext &context,
+                              std::uint64_t ordinal) {
+  if (ordinal >= context.numValueInputs ||
+      ordinal >= context.valueInputShapes.size() ||
+      context.valueInputShapes[ordinal].pointerLayout)
+    return false;
+  mlir::Block &entry = context.graphOp.getBody().front();
+  return ordinal + 1 < entry.getNumArguments() &&
+         entry.getArgument(static_cast<unsigned>(ordinal + 1)).use_empty();
+}
+
+bool exceptionalSequence(const CanonicalValueSequence &value) {
+  return !value.lanes.empty() &&
+         llvm::all_of(value.lanes, [](const SemanticLane &lane) {
+           return lane.state == SemanticState::Undef ||
+                  lane.state == SemanticState::Poison;
+         });
+}
+
 llvm::Expected<llvm::APInt> attributeBits(mlir::Attribute attribute,
                                           std::uint32_t width) {
   if (auto integer = llvm::dyn_cast<mlir::IntegerAttr>(attribute)) {
@@ -1206,6 +1235,20 @@ operationValueInputCapture(detail::ResolvedLaunchContext &context,
       fixedValueOf(boundaryValue, *shape);
   if (!fixed)
     return fixed.takeError();
+  bool unusedByGraph = false;
+  // CFG-to-SCF may leave a dead carry placeholder as a graph input. Preserve
+  // the ABI, but project only a proven-unobserved scalar to a defined wire
+  // value; any semantic use keeps the exceptional state intact.
+  if (*fixed && graphScalarInputIsUnused(context, valueInputOrdinal) &&
+      exceptionalSequence(**fixed)) {
+    *fixed = definedZeroValue(*shape);
+    unusedByGraph = true;
+  }
+  if (*fixed)
+    return SimulationValueInputCapture{
+        valueInputOrdinal, std::nullopt, boundaryValue, shape->lanesPerToken,
+        shape->laneBitWidth, 0, std::move(*fixed), std::nullopt, unusedByGraph,
+        std::nullopt};
   if (!*fixed && !boundaryOrdinal && !coordinateDimension)
     return unsupported(
         "graph value input is neither fixed nor a boundary or coordinate "
@@ -1226,7 +1269,7 @@ operationValueInputCapture(detail::ResolvedLaunchContext &context,
   return SimulationValueInputCapture{valueInputOrdinal,   boundaryOrdinal,
                                      boundaryValue,       shape->lanesPerToken,
                                      shape->laneBitWidth, byteCount,
-                                     std::move(*fixed),   std::nullopt,
+                                     std::move(*fixed),   std::nullopt, false,
                                      coordinateDimension};
 }
 
@@ -1312,11 +1355,17 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
       fixedValueOf(callableSource, *shape);
   if (!fixed)
     return fixed.takeError();
+  bool unusedByGraph = false;
+  if (*fixed && graphScalarInputIsUnused(context, valueInputOrdinal) &&
+      exceptionalSequence(**fixed)) {
+    *fixed = definedZeroValue(*shape);
+    unusedByGraph = true;
+  }
   if (*fixed)
     return SimulationValueInputCapture{
         valueInputOrdinal,    std::nullopt,        callableSource,
         shape->lanesPerToken, shape->laneBitWidth, 0,
-        std::move(*fixed),    std::nullopt,        std::nullopt};
+        std::move(*fixed),    std::nullopt,        unusedByGraph, std::nullopt};
 
   if (llvm::isa<mlir::LLVM::LLVMPointerType>(callableSource.getType()) &&
       callableSource.getDefiningOp<mlir::LLVM::AddressOfOp>()) {
@@ -1329,7 +1378,7 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
     return SimulationValueInputCapture{
         valueInputOrdinal,   std::nullopt, callableSource, shape->lanesPerToken,
         shape->laneBitWidth, *bytes,       std::nullopt,   std::nullopt,
-        std::nullopt};
+        false,               std::nullopt};
   }
 
   llvm::Expected<unsigned> callableArgument =
@@ -1343,11 +1392,16 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
   fixed = fixedValueOf(hostOperand, *shape);
   if (!fixed)
     return fixed.takeError();
+  if (*fixed && graphScalarInputIsUnused(context, valueInputOrdinal) &&
+      exceptionalSequence(**fixed)) {
+    *fixed = definedZeroValue(*shape);
+    unusedByGraph = true;
+  }
   if (*fixed)
     return SimulationValueInputCapture{
         valueInputOrdinal,    std::nullopt,        hostOperand,
         shape->lanesPerToken, shape->laneBitWidth, 0,
-        std::move(*fixed),    std::nullopt,        std::nullopt};
+        std::move(*fixed),    std::nullopt,        unusedByGraph, std::nullopt};
 
   llvm::Expected<std::uint64_t> bytes = fixedTypeByteCount(
       hostOperand.getDefiningOp() ? hostOperand.getDefiningOp()
@@ -1363,7 +1417,7 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
                                      hostOperand,         shape->lanesPerToken,
                                      shape->laneBitWidth, *bytes,
                                      std::nullopt,        std::nullopt,
-                                     std::nullopt};
+                                     false,               std::nullopt};
 }
 
 llvm::Expected<SimulationValueResultCapture> directCallValueResultCapture(

@@ -792,6 +792,24 @@ void routedTokensOwnObservablePhysicalLaneImages() {
   constexpr std::array<std::uint64_t, 2> canonicalDemux = {0, 1};
   take(test, demux.projectSemanticValue(twoChoiceDemux, fixedOperands,
                                         canonicalDemux));
+  constexpr std::array indexDemuxInputs = {64U, 64U};
+  constexpr std::array indexDemuxResults = {64U, 64U, 64U};
+  const FabricOpSemanticFieldRelation indexDemux =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::TokenDemux,
+                     FamilyCapabilityParams(RoutedTokenParams{64, 3}),
+                     demuxSchemas,
+                     indexDemuxInputs, indexDemuxResults, context));
+  const ::dataflow::CanonicalActorSchemaProjection twoChoiceIndexDemux{
+      OperationSchemaId::DataflowDemux,
+      mlir::FunctionType::get(&context,
+                              {i1, mlir::IndexType::get(&context)},
+                              {mlir::IndexType::get(&context),
+                               mlir::IndexType::get(&context)}),
+      ::dataflow::NoPayload{}};
+  take(test, indexDemux.projectSemanticValue(
+                 twoChoiceIndexDemux, fixedOperands, canonicalDemux,
+                 ResolvedIndexWidth::I64));
   auto redundantDemux =
       demux.projectSemanticValue(twoChoiceDemux, fixedOperands, {0, 2});
   require(test, !redundantDemux,

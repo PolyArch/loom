@@ -1455,6 +1455,15 @@ deriveSpatialPeOperandQueueMatchGroups(
 
       const std::vector<std::uint8_t> key =
           matchGroupKey(selector->source, *tag);
+      auto queueSchema = fabric.temporalPeConfigurationSchema(
+          (*boundary)->operandQueue->context.pe);
+      if (!queueSchema)
+        return queueSchema.takeError();
+      if ((*boundary)->operandQueue->fuOccurrence >=
+          queueSchema->layout().fus.size())
+        return invalid("PE operand queue has no concrete FU occurrence");
+      const auto concreteFu =
+          queueSchema->layout().fus[(*boundary)->operandQueue->fuOccurrence].fu;
       auto [found, inserted] = groups.try_emplace(
           key, SpatialPeOperandQueueMatchGroupView{
                    route.logicalNet, selector->source, *tag, {}});
@@ -1465,7 +1474,7 @@ deriveSpatialPeOperandQueueMatchGroups(
       });
       if (queue == found->second.matches.end()) {
         found->second.matches.push_back(
-            {{sink.sink}, *(*boundary)->operandQueue, 0, 0});
+            {{sink.sink}, *(*boundary)->operandQueue, concreteFu, 0, 0});
       } else {
         if (llvm::is_contained(queue->consumers, sink.sink))
           return invalid("PE operand match group repeats a consumer");
@@ -1502,6 +1511,287 @@ deriveSpatialPeOperandQueueMatchGroups(
       return std::move(error);
     result.push_back(std::move(group));
   }
+  return result;
+}
+
+llvm::Expected<SpatialPeOperandProgressFeedback>
+deriveSpatialPeOperandProgressFeedback(
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> groups) {
+  if (groups.empty())
+    return SpatialPeOperandProgressFeedback{
+        SpatialPeOperandProgressStatus::Safe,
+        SpatialPeOperandProgressSupport::Exact, 0, 0, 0, 0, 0, 0, 0, 0, {},
+        {}, std::nullopt};
+  SpatialPeOperandProgressFeedback result;
+  result.status = SpatialPeOperandProgressStatus::Safe;
+  result.support = SpatialPeOperandProgressSupport::Exact;
+  result.groupCount = groups.size();
+  std::set<std::vector<std::uint8_t>> ingressKeys;
+  std::map<std::vector<std::uint8_t>, SpatialPeOperandPairingProjection>
+      pairingProjections;
+  for (const SpatialPeOperandQueueMatchGroupView &group : groups) {
+    ingressKeys.insert(::loom::fabric::canonicalFabricBytes(group.ingress));
+    result.sharedIngressCount += group.matches.size() > 1;
+    for (const SpatialPeOperandQueueMatchView &match : group.matches) {
+      SpatialPeOperandQualifiedPairingKey key{match.queue.context, match.fu,
+                                              group.tag};
+      const auto contextBytes =
+          ::loom::fabric::canonicalFabricBytes(match.queue.context);
+      const auto fuBytes = ::loom::fabric::canonicalFabricBytes(match.fu);
+      std::vector<std::uint8_t> encoded;
+      for (int shift = 56; shift >= 0; shift -= 8)
+        encoded.push_back(static_cast<std::uint8_t>(contextBytes.size() >> shift));
+      encoded.insert(encoded.end(), contextBytes.begin(), contextBytes.end());
+      for (int shift = 56; shift >= 0; shift -= 8)
+        encoded.push_back(static_cast<std::uint8_t>(fuBytes.size() >> shift));
+      encoded.insert(encoded.end(), fuBytes.begin(), fuBytes.end());
+      encoded.push_back(static_cast<std::uint8_t>(group.tag.getBitWidth()));
+      const unsigned byteCount = (group.tag.getBitWidth() + 7) / 8;
+      for (unsigned byte = 0; byte != byteCount; ++byte)
+        encoded.push_back(static_cast<std::uint8_t>(
+            group.tag.extractBitsAsZExtValue(
+                std::min<unsigned>(8, group.tag.getBitWidth() - byte * 8),
+                byte * 8)));
+      auto [found, inserted] = pairingProjections.try_emplace(
+          std::move(encoded),
+          SpatialPeOperandPairingProjection{key, {}, {}, {}});
+      (void)inserted;
+      found->second.requiredInputRoles.push_back(match.queue.fuInput);
+      found->second.ingresses.push_back(group.ingress);
+      found->second.allocationUnits.push_back(match.allocationUnit);
+    }
+  }
+  result.distinctIngressCount = ingressKeys.size();
+  result.pairingKeyCount = 0;
+  for (const auto &group : groups)
+    result.pairingKeyCount += group.matches.size();
+  result.distinctPairingKeyCount = pairingProjections.size();
+  for (auto &[key, value] : pairingProjections) {
+    (void)key;
+    llvm::sort(value.requiredInputRoles);
+    value.requiredInputRoles.erase(
+        std::unique(value.requiredInputRoles.begin(),
+                    value.requiredInputRoles.end()),
+        value.requiredInputRoles.end());
+    llvm::sort(value.ingresses, [](const auto &lhs, const auto &rhs) {
+      return ::loom::fabric::canonicalFabricBytes(lhs) <
+             ::loom::fabric::canonicalFabricBytes(rhs);
+    });
+    value.ingresses.erase(
+        std::unique(value.ingresses.begin(), value.ingresses.end()),
+        value.ingresses.end());
+    llvm::sort(value.allocationUnits);
+    value.allocationUnits.erase(
+        std::unique(value.allocationUnits.begin(),
+                    value.allocationUnits.end()),
+        value.allocationUnits.end());
+    result.pairingKeys.push_back(value.key);
+    result.pairingOpportunityCount += value.ingresses.size() > 1;
+    const auto qualifiedContext = value.key.context;
+    const auto qualifiedFu = value.key.fu;
+    const auto qualifiedTag = value.key.tag;
+    if (value.requiredInputRoles.size() > 1 && value.ingresses.size() == 1) {
+      const bool orderedKnown = llvm::any_of(groups, [&](const auto &group) {
+        return group.orderedCorrespondenceKnown && group.tag == qualifiedTag &&
+               llvm::any_of(group.matches, [&](const auto &match) {
+                 return match.queue.context == qualifiedContext &&
+                        match.fu == qualifiedFu;
+               });
+      });
+      if (orderedKnown) {
+        ++result.potentiallyBlockingGroupCount;
+        result.status = SpatialPeOperandProgressStatus::LikelyRisk;
+        result.support = SpatialPeOperandProgressSupport::Analytic;
+      } else {
+        ++result.unknownPairingGroupCount;
+        result.status = SpatialPeOperandProgressStatus::ProofNotEstablished;
+        result.support = SpatialPeOperandProgressSupport::Unsupported;
+      }
+    }
+    result.pairings.push_back(std::move(value));
+  }
+  static constexpr llvm::StringLiteral descriptor{
+      "loom.mapping.temporal_operand_progress_projection.1"};
+  std::vector<std::uint8_t> canonical;
+  const auto appendU64 = [&](std::uint64_t value) {
+    for (int shift = 56; shift >= 0; shift -= 8)
+      canonical.push_back(static_cast<std::uint8_t>(value >> shift));
+  };
+  appendU64(result.groupCount);
+  appendU64(result.pairingOpportunityCount);
+  appendU64(result.pairingKeyCount);
+  appendU64(result.distinctPairingKeyCount);
+  for (const auto &pairing : result.pairings) {
+    const auto context =
+        ::loom::fabric::canonicalFabricBytes(pairing.key.context);
+    const auto fu = ::loom::fabric::canonicalFabricBytes(pairing.key.fu);
+    appendU64(context.size());
+    canonical.insert(canonical.end(), context.begin(), context.end());
+    appendU64(fu.size());
+    canonical.insert(canonical.end(), fu.begin(), fu.end());
+    appendU64(pairing.key.tag.getBitWidth());
+    for (unsigned byte = 0;
+         byte != (pairing.key.tag.getBitWidth() + 7) / 8; ++byte)
+      canonical.push_back(static_cast<std::uint8_t>(
+          pairing.key.tag.extractBitsAsZExtValue(
+              std::min<unsigned>(8, pairing.key.tag.getBitWidth() - byte * 8),
+              byte * 8)));
+    appendU64(pairing.requiredInputRoles.size());
+    for (std::uint32_t role : pairing.requiredInputRoles)
+      appendU64(role);
+    appendU64(pairing.ingresses.size());
+    for (const auto &ingress : pairing.ingresses) {
+      const auto bytes = ::loom::fabric::canonicalFabricBytes(ingress);
+      appendU64(bytes.size());
+      canonical.insert(canonical.end(), bytes.begin(), bytes.end());
+    }
+    appendU64(pairing.allocationUnits.size());
+    for (std::uint32_t unit : pairing.allocationUnits)
+      appendU64(unit);
+  }
+  auto digest = ::loom::computeComponentViewDigest(
+      {reinterpret_cast<const std::uint8_t *>(descriptor.data()),
+       descriptor.size()},
+      canonical);
+  if (!digest)
+    return digest.takeError();
+  result.projectionDigest = *digest;
+  return result;
+}
+
+llvm::Expected<SpatialPeOperandRuntimeWitness>
+deriveSpatialPeOperandRuntimeWitness(
+    const SpatialPeOperandProgressFeedback &projection,
+    llvm::ArrayRef<SpatialPeOperandRuntimeHeadView> heads) {
+  if (!projection.projectionDigest)
+    return invalid("PE operand runtime witness has no Mapping projection "
+                   "digest");
+  SpatialPeOperandRuntimeWitness result;
+  result.projectionDigest = projection.projectionDigest;
+  result.observedHeadCount = heads.size();
+  if (projection.pairings.empty() && !heads.empty())
+    return invalid("PE operand runtime heads exist without a selected "
+                   "pairing projection");
+
+  std::vector<SpatialPeOperandRuntimeHeadView> canonicalHeads(heads.begin(),
+                                                              heads.end());
+  llvm::sort(canonicalHeads, [](const auto &lhs, const auto &rhs) {
+    if (lhs.queue != rhs.queue)
+      return lhs.queue < rhs.queue;
+    const auto lhsFu = ::loom::fabric::canonicalFabricBytes(lhs.fu);
+    const auto rhsFu = ::loom::fabric::canonicalFabricBytes(rhs.fu);
+    if (lhsFu != rhsFu)
+      return lhsFu < rhsFu;
+    if (lhs.tag.getBitWidth() != rhs.tag.getBitWidth())
+      return lhs.tag.getBitWidth() < rhs.tag.getBitWidth();
+    return lhs.tag.ult(rhs.tag);
+  });
+
+  std::set<std::tuple<std::vector<std::uint8_t>,
+                      std::vector<std::uint8_t>, std::uint32_t>>
+      observedQueues;
+  for (const SpatialPeOperandRuntimeHeadView &head : canonicalHeads) {
+    const auto context =
+        ::loom::fabric::canonicalFabricBytes(head.queue.context);
+    const auto fu = ::loom::fabric::canonicalFabricBytes(head.fu);
+    if (!observedQueues.emplace(context, fu, head.queue.fuInput).second)
+      return invalid("PE operand runtime witness repeats a QueueKey");
+    if (head.occupancy > head.capacity ||
+        head.reservations > head.capacity - head.occupancy)
+      return invalid("PE operand runtime witness has invalid occupancy");
+    if (head.occupancy == head.capacity)
+      ++result.fullQueueCount;
+    if (head.exactHead)
+      ++result.exactHeadCount;
+    if (head.occupancy != 0 && !head.exactHead)
+      ++result.mismatchedHeadCount;
+  }
+
+  for (const SpatialPeOperandPairingProjection &pairing :
+       projection.pairings) {
+    std::optional<std::uint64_t> expectedSequence;
+    bool complete = true;
+    bool pairingMismatch = false;
+    for (std::uint32_t role : pairing.requiredInputRoles) {
+      const auto found = llvm::find_if(canonicalHeads, [&](const auto &head) {
+        return head.queue.context == pairing.key.context &&
+               head.fu == pairing.key.fu &&
+               head.tag.getBitWidth() == pairing.key.tag.getBitWidth() &&
+               head.tag == pairing.key.tag &&
+               head.queue.fuInput == role;
+      });
+      if (found == canonicalHeads.end() || !found->exactHead) {
+        complete = false;
+        continue;
+      }
+      if (expectedSequence &&
+          *expectedSequence != found->headProducerSequenceOrdinal) {
+        ++result.mismatchedHeadCount;
+        pairingMismatch = true;
+      } else {
+        expectedSequence = found->headProducerSequenceOrdinal;
+      }
+    }
+    if (complete && expectedSequence && !pairingMismatch)
+      ++result.matchedPairingKeyCount;
+    else
+      ++result.unmatchedPairingKeyCount;
+  }
+
+  if (result.mismatchedHeadCount != 0) {
+    result.status = SpatialPeOperandRuntimeWitnessStatus::Unsupported;
+    result.support = SpatialPeOperandProgressSupport::Unsupported;
+  } else if (result.unmatchedPairingKeyCount != 0 ||
+             result.exactHeadCount != result.observedHeadCount) {
+    result.status =
+        SpatialPeOperandRuntimeWitnessStatus::ProofNotEstablished;
+    result.support = SpatialPeOperandProgressSupport::Unsupported;
+  } else {
+    result.status = SpatialPeOperandRuntimeWitnessStatus::Exact;
+    result.support = SpatialPeOperandProgressSupport::Exact;
+  }
+  static constexpr llvm::StringLiteral descriptor{
+      "loom.mapping.temporal_operand_runtime_witness.1"};
+  std::vector<std::uint8_t> canonical;
+  const auto appendU64 = [&](std::uint64_t value) {
+    for (int shift = 56; shift >= 0; shift -= 8)
+      canonical.push_back(static_cast<std::uint8_t>(value >> shift));
+  };
+  canonical.insert(canonical.end(), projection.projectionDigest->bytes().begin(),
+                   projection.projectionDigest->bytes().end());
+  appendU64(canonicalHeads.size());
+  for (const SpatialPeOperandRuntimeHeadView &head : canonicalHeads) {
+    const auto context =
+        ::loom::fabric::canonicalFabricBytes(head.queue.context);
+    const auto fu = ::loom::fabric::canonicalFabricBytes(head.fu);
+    appendU64(context.size());
+    canonical.insert(canonical.end(), context.begin(), context.end());
+    appendU64(fu.size());
+    canonical.insert(canonical.end(), fu.begin(), fu.end());
+    appendU64(head.queue.fuOccurrence);
+    appendU64(head.queue.fuInput);
+    appendU64(head.tag.getBitWidth());
+    for (unsigned byte = 0; byte != (head.tag.getBitWidth() + 7) / 8; ++byte)
+      canonical.push_back(static_cast<std::uint8_t>(
+          head.tag.extractBitsAsZExtValue(
+              std::min<unsigned>(8, head.tag.getBitWidth() - byte * 8),
+              byte * 8)));
+    appendU64(head.allocationUnit);
+    appendU64(head.capacity);
+    appendU64(head.occupancy);
+    appendU64(head.reservations);
+    appendU64(head.headBindingOrdinal);
+    appendU64(head.headOccurrenceOrdinal);
+    appendU64(head.headProducerSequenceOrdinal);
+    canonical.push_back(head.exactHead ? 1 : 0);
+  }
+  auto digest = ::loom::computeComponentViewDigest(
+      {reinterpret_cast<const std::uint8_t *>(descriptor.data()),
+       descriptor.size()},
+      canonical);
+  if (!digest)
+    return digest.takeError();
+  result.projectionDigest = *digest;
   return result;
 }
 

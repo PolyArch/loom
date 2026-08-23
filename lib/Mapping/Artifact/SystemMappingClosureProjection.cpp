@@ -17,6 +17,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <system_error>
 #include <tuple>
 #include <utility>
 
@@ -494,7 +495,15 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemMappingView &mapping, const ArtifactStore &store,
-    const SpatialMappingImportContext *spatialMappings) {
+    const SpatialMappingImportContext *spatialMappings,
+    ExecutionControlView executionControl) {
+  const auto interrupted = [&]() -> llvm::Error {
+    return llvm::createStringError(std::errc::timed_out,
+                                   "System closure projection was "
+                                   "interrupted");
+  };
+  if (executionControl.stopRequested())
+    return interrupted();
   if (mapping.dataflowIdentity() != dataflow.identity() ||
       mapping.fabricIdentity() != fabric.artifact().identity())
     return invalid("projection inputs disagree with SystemMapping lineage");
@@ -520,10 +529,13 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
   if (std::adjacent_find(canonicalImports.begin(), canonicalImports.end()) !=
       canonicalImports.end())
     return invalid("SystemMapping import table contains a duplicate");
-  for (const ArtifactRootReference &reference : canonicalImports)
+  for (const ArtifactRootReference &reference : canonicalImports) {
+    if (executionControl.stopRequested())
+      return interrupted();
     if (!spatialMappings->find(reference))
       return invalid("SpatialMapping import context does not cover the exact "
                      "SystemMapping import table");
+  }
 
   std::vector<ResourceCapacityNamespaceView> namespaces{
       {&fabric.artifact(),
@@ -535,6 +547,8 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
   std::map<std::string, std::size_t> namespaceByContext;
 
   for (const auto &domain : contexts->spatialDomains) {
+    if (executionControl.stopRequested())
+      return interrupted();
     const std::string mappingKey =
         byteKey(encodeArtifactRootReference(domain.spatialMapping));
     auto imported = importedMappings.find(mappingKey);
@@ -752,6 +766,7 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
   result.routeObligations = std::move(*serviceProgress);
 
   std::set<std::pair<std::string, std::uint64_t>> projectedSpatialGraphs;
+  std::vector<::dataflow::GraphRef> selectedProgressGraphs;
   for (const SystemSpatialContextDomain &domain :
        result.executionContexts.spatialDomains) {
     auto graph = dataflow.resolve(domain.graph);
@@ -773,6 +788,7 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
         tech == importedTechMappings.end() || !module)
       return invalid("Spatial progress projection lost an imported owner");
     const std::array<::dataflow::GraphRef, 1> selected{*graph};
+    selectedProgressGraphs.push_back(*graph);
     auto progress = projectSpatialMappingProgress(
         dataflow, tech->second.view(), *module,
         spatial->second->view().computeBindings(),
@@ -784,6 +800,17 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
                                    progress->routeObligations.begin(),
                                    progress->routeObligations.end());
   }
+  llvm::sort(selectedProgressGraphs, [](const auto lhs, const auto rhs) {
+    return lhs.entity.value() < rhs.entity.value();
+  });
+  selectedProgressGraphs.erase(
+      std::unique(selectedProgressGraphs.begin(), selectedProgressGraphs.end()),
+      selectedProgressGraphs.end());
+  auto progressBasis =
+      deriveMappingDataflowProgressBasis(dataflow, selectedProgressGraphs);
+  if (!progressBasis)
+    return progressBasis.takeError();
+  result.progressBasis = std::move(*progressBasis);
   result.capacityCells.reserve(cellOrder.size());
   for (const auto &[canonicalOrdinal, keyed] : llvm::enumerate(cellOrder)) {
     const auto &cell = capacity->cells()[keyed.oldOrdinal];

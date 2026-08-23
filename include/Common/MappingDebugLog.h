@@ -66,6 +66,9 @@ struct MappingRunStatistics final {
   void emit(Stage stage, ClosureStatus closureStatus) const;
   void emit(Stage stage, ClosureStatus closureStatus,
             llvm::function_ref<void(llvm::json::Object &)> buildFields) const;
+  void emit(Level minimum, Stage stage, ClosureStatus closureStatus,
+            llvm::function_ref<void(llvm::json::Object &)> buildFields = {})
+      const;
 };
 
 } // namespace loom::mapping_debug

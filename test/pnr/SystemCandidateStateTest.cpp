@@ -5,10 +5,12 @@
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/CandidateGenerator.h"
+#include "DSE/ResourceTimeFrontier.h"
 #include "DSE/SystemCompositionCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Deployment/Deployment.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/ResourceContract.h"
@@ -315,6 +317,53 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
 }
 
 dataflow::CanonicalDataflowArtifact
+buildCapacityPressureDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @first(%start: none) -> ()
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %done = dataflow.sync %start : (none) -> none
+    dataflow.graph.return values() streams() memories()
+        complete(%done : none)
+  }
+  dataflow.graph private @second(%start: none) -> ()
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %done = dataflow.sync %start : (none) -> none
+    dataflow.graph.return values() streams() memories()
+        complete(%done : none)
+  }
+  dataflow.thread private @first_worker domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    %first_done = dataflow.graph.launch @first deps(%ctrl)
+        values() stream_inputs() memories() stream_outputs()
+        : (none) -> none
+    dataflow.thread.yield %first_done : none
+  }
+  dataflow.thread private @second_worker domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    %second_done = dataflow.graph.launch @second deps(%ctrl)
+        values() stream_inputs() memories() stream_outputs()
+        : (none) -> none
+    dataflow.thread.yield %second_done : none
+  }
+  func.func private @host() {
+    %first_completion = dataflow.thread.launch @first_worker()
+        : () -> !dataflow.thread_token
+    %second_completion = dataflow.thread.launch @second_worker()
+        : () -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse imported-capacity pressure Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
 buildMemoryDataflow(mlir::MLIRContext &context) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
@@ -352,11 +401,12 @@ generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
                        const loom::fabric::FinalizedFabricRoot &module,
                        const loom::ResolvedConfig &resolved,
                        loom::ArtifactStore &store,
-                       mlir::MLIRContext *context = nullptr) {
+                       mlir::MLIRContext *context = nullptr,
+                       std::optional<dataflow::GraphRef> cover = std::nullopt) {
   const auto techConfig =
       take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
   const std::array<dataflow::GraphRef, 1> covers = {
-      dataflow.graphs().front().ref};
+      cover.value_or(dataflow.graphs().front().ref)};
   auto techOutcome = loom::mapping::generateTechMappings(
       {dataflow, covers, module.view(), techConfig, store});
   const auto *techCandidates =
@@ -1141,33 +1191,261 @@ void graphBindingWorkflow() {
           "exact imported-capacity binding did not close capacity");
   if (llvm::Error error = capacityFitCandidate.state->verify())
     fail(llvm::toString(std::move(error)));
+  const auto finalizedParentMapping =
+      take(loom::pnr::finalizeSystemMappingCandidate(
+          *capacityFitCandidate.state, dataflow, system, constraints.view(),
+          store, context));
 
+  auto pressureDataflowArtifact = buildCapacityPressureDataflow(context);
+  const auto pressureDataflowReference =
+      take(dataflow::publishCanonicalDataflow(pressureDataflowArtifact, store));
+  auto pressureDataflow = take(pressureDataflowArtifact.view());
+  std::vector<loom::ArtifactRootReference> pressureSpatialMappings;
+  for (const auto &graph : pressureDataflow.graphs())
+    pressureSpatialMappings.push_back(generateSpatialMapping(
+        pressureDataflow, primaryModule, resolved, store, nullptr, graph.ref));
+  require(pressureSpatialMappings.size() == 2 &&
+              pressureSpatialMappings.front() != pressureSpatialMappings.back(),
+          "capacity-pressure fixture did not publish two distinct Mappings");
+  std::vector<dataflow::RootThreadLaunchRef> pressureRoots;
+  for (const dataflow::CanonicalRootThreadLaunchView &root :
+       pressureDataflow.rootThreadLaunches())
+    pressureRoots.push_back(root.ref);
+  require(pressureRoots.size() == 2,
+          "capacity-pressure fixture does not have two execution roots");
+
+  const auto transitionTrigger = [&]() {
+    const dataflow::RootThreadBoundaryTransferRef startTransfer(
+        dataflow::RootThreadStartTransferRef{pressureRoots.front()});
+    return dataflow::EventFamilyKey(dataflow::StaticTransferEventRef(
+        dataflow::ConsumedTransferEventRef{dataflow::CanonicalSinkTerminalRef{
+            dataflow::RootThreadBoundarySinkRef{startTransfer}}}));
+  };
+  const loom::fabric::FabricPhysicalOccurrenceOwnerRef transitionResource;
+  loom::pnr::ResourceTimeTransition structuralTransition{
+      transitionTrigger(),
+      pressureDataflowReference,
+      finalizedParentMapping.reference(),
+      finalizedParentMapping.reference(),
+      {{pressureRoots.front(), {transitionResource}}},
+      {{pressureRoots.front(), {transitionResource}}},
+      {pressureDataflowReference},
+      {pressureDataflowReference},
+      pressureDataflowReference,
+      std::nullopt,
+      std::nullopt,
+      std::nullopt,
+      std::nullopt,
+      loom::pnr::ResourceTimeTransitionStatus::ProofNotEstablished};
+  if (llvm::Error error =
+          loom::pnr::validateResourceTimeTransition(structuralTransition))
+    fail(llvm::toString(std::move(error)));
+  structuralTransition.status =
+      loom::pnr::ResourceTimeTransitionStatus::Verified;
+  structuralTransition.migrationTimePicoseconds = 1;
+  structuralTransition.resourceDeltaDigest = config.digest();
+  structuralTransition.configurationDeltaDigest = config.digest();
+  structuralTransition.routeDeltaDigest = config.digest();
+  if (llvm::Error error =
+          loom::pnr::validateResourceTimeTransition(structuralTransition))
+    fail(llvm::toString(std::move(error)));
+  const loom::ArtifactRootReference transitionDeployment{
+      loom::deployment::deploymentSchema.identity.str(),
+      loom::deployment::deploymentSchema.version,
+      finalizedParentMapping.reference().artifact};
+  const loom::dse::ResourceTimeTransitionCacheKeyInput transitionCacheInput{
+      transitionDeployment, transitionDeployment,   constraints.reference(),
+      config.digest(),      systemRoot.reference(), config.digest(),
+      config.digest()};
+  const auto transitionCacheKey =
+      take(loom::dse::deriveResourceTimeTransitionCacheKey(
+          structuralTransition, transitionCacheInput));
+  auto changedTransition = structuralTransition;
+  changedTransition.afterActive.front().resources = {
+      take(loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(
+          loom::fabric::FabricInventoryOwnerRef::of(
+              loom::fabric::HostCoreOccurrenceRef(1))))};
+  const auto changedTransitionCacheKey =
+      take(loom::dse::deriveResourceTimeTransitionCacheKey(
+          changedTransition, transitionCacheInput));
+  require(transitionCacheKey != changedTransitionCacheKey,
+          "resource-time transition cache key ignored an allocation delta");
+  changedTransition = structuralTransition;
+  changedTransition.migrationTimePicoseconds = 2;
+  require(transitionCacheKey ==
+              take(loom::dse::deriveResourceTimeTransitionCacheKey(
+                  changedTransition, transitionCacheInput)),
+          "resource-time transition result changed its semantic cache key");
+  loom::pnr::ResourceTimeTransitionSequence transitionSequence{
+      {structuralTransition, structuralTransition}};
+  if (llvm::Error error =
+          loom::pnr::validateResourceTimeTransitionSequence(transitionSequence))
+    fail(llvm::toString(std::move(error)));
+  const auto requireTransitionFailure = [&](llvm::Error error,
+                                            llvm::StringRef fragment) {
+    if (!error)
+      fail("malformed resource-time transition unexpectedly validated");
+    const std::string message = llvm::toString(std::move(error));
+    require(llvm::StringRef(message).contains(fragment), message);
+  };
+  transitionSequence.transitions[1].beforeMapping =
+      pressureSpatialMappings.front();
+  requireTransitionFailure(
+      loom::pnr::validateResourceTimeTransitionSequence(transitionSequence),
+      "resource-time transition sequence is not chained");
+  auto duplicateResource = structuralTransition;
+  duplicateResource.beforeActive.push_back(
+      {pressureRoots.back(), {transitionResource}});
+  requireTransitionFailure(
+      loom::pnr::validateResourceTimeTransition(duplicateResource),
+      "assigns one physical resource");
+
+  std::optional<loom::fabric::AccCoreOccurrenceRef> pressureCore;
+  for (const auto core : system.artifact().accCoreOccurrences()) {
+    const auto target = system.spatialCoreTarget(core);
+    require(target && target->dependencyOrdinal <
+                          system.artifact().importedModules().size(),
+            "System AccCore has no exact Module target");
+    if (system.artifact()
+            .importedModules()[target->dependencyOrdinal]
+            .identity() == primaryModule.reference().artifact) {
+      pressureCore = core;
+      break;
+    }
+  }
+  require(pressureCore.has_value(),
+          "System fixture has no pressure-test AccCore");
+  auto pressureModule =
+      buildSystemConstraintModule(context, pressureDataflow.identity(),
+                                  system.artifact().identity(), pressureRoots);
+  auto pressureRoot = llvm::cast<::mapping::ConstraintsSystemOp>(
+      pressureModule->getBody()->front());
+  mlir::OpBuilder pressureBuilder(&context);
+  const std::array<mlir::Attribute, 1> pressureCoreDomain = {
+      constraintFabricAttr<::mapping::FabricAccCoreOccurrenceRefAttr>(
+          &context, *pressureCore)};
+  for (const auto root : pressureRoots)
+    addSystemRestriction(
+        pressureBuilder, pressureRoot,
+        ::mapping::SystemConstraintProjection::ThreadTargetAccCore,
+        constraintDataflowAttr<::mapping::RootThreadLaunchRefAttr>(
+            &context, pressureDataflow.identity(), root),
+        pressureCoreDomain);
+  auto pressureConstraints =
+      take(loom::mapping::finalizeSystemMappingConstraintSet(
+          pressureRoot, pressureDataflow, system, store));
+  auto pressurePartition =
+      take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
+          pressureDataflow, pressureConstraints.view().rootThreadLaunches()));
+  auto pressureSearchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      pressureDataflow, system, config, pressureConstraints, pressurePartition,
+      loom::pnr::SystemHierarchicalGraphSearchInput{pressureSpatialMappings},
+      store));
+  auto pressureProblem = take(loom::pnr::freezeSystemPnrProblem(
+      pressureDataflow, system, physicalTimingProfiles, pressureSearchDomain,
+      config, pressureConstraints, store));
+  auto pressureSearch =
+      take(loom::pnr::searchSystemImportedCapacity(pressureProblem));
+  const auto *capacityPressure =
+      std::get_if<loom::pnr::SystemImportedCapacityPressure>(&pressureSearch);
+  require(
+      capacityPressure &&
+          capacityPressure->checkpointChoices.size() ==
+              pressureProblem->threadDecisions().size() +
+                  pressureProblem->graphDecisions().size() &&
+          capacityPressure->witness.usage > capacityPressure->witness.capacity,
+      "two-Mapping imported-capacity search did not produce a real witness");
+
+  loom::BlobStore blobs(directory.path());
+  require(capacityPressure->witness.namespaceOrdinal > 0 &&
+              capacityPressure->witness.namespaceOrdinal <=
+                  pressureProblem->accCores().size(),
+          "imported-capacity witness names a foreign AccCore namespace");
+  const auto checkpointWitness =
+      pressureProblem
+          ->accCores()[capacityPressure->witness.namespaceOrdinal - 1];
+  require(checkpointWitness == *pressureCore,
+          "imported-capacity witness selected the wrong Module target");
+  const auto &pressureChoices = capacityPressure->checkpointChoices;
   std::vector<loom::mapping::SystemThreadExecutionCheckpoint> checkpointThreads;
   for (const auto &[decision, frozen] :
-       llvm::enumerate(problem->threadDecisions()))
+       llvm::enumerate(pressureProblem->threadDecisions())) {
+    const auto catalog = pressureProblem->threadChoiceCatalogOrdinals(decision);
+    require(pressureChoices[decision] < catalog.size(),
+            "checkpoint thread choice is outside its exact H domain");
     checkpointThreads.push_back(
         {frozen.root, frozen.cell,
-         capacityFitCandidate.state->selectedAccCore(decision)});
+         pressureProblem->accCores()[catalog[pressureChoices[decision]]]});
+  }
   std::vector<loom::mapping::SystemGraphExecutionCheckpoint> checkpointGraphs;
   for (const auto &[decision, frozen] :
-       llvm::enumerate(problem->graphDecisions()))
+       llvm::enumerate(pressureProblem->graphDecisions())) {
+    const auto catalog = pressureProblem->graphChoiceCatalogOrdinals(decision);
+    const std::size_t choiceOffset = pressureProblem->threadDecisions().size();
+    require(pressureChoices[choiceOffset + decision] < catalog.size(),
+            "checkpoint graph choice is outside its exact H domain");
     checkpointGraphs.push_back(
         {frozen.launch, frozen.cell,
-         capacityFitCandidate.state->selectedSpatialMapping(decision)});
+         pressureProblem->spatialMappings()
+             [catalog[pressureChoices[choiceOffset + decision]]]});
+  }
+  std::vector<dataflow::RootThreadLaunchRef> checkpointDependencyRoots;
+  for (const auto &binding : checkpointThreads)
+    if (binding.target == checkpointWitness)
+      checkpointDependencyRoots.push_back(binding.root);
+  llvm::sort(checkpointDependencyRoots, [](const auto &lhs, const auto &rhs) {
+    return lhs.entity.value() < rhs.entity.value();
+  });
+  checkpointDependencyRoots.erase(std::unique(checkpointDependencyRoots.begin(),
+                                              checkpointDependencyRoots.end()),
+                                  checkpointDependencyRoots.end());
+  require(!checkpointDependencyRoots.empty(),
+          "capacity witness owns no checkpoint dependency root");
+  auto checkpointSearchDomainDigest = loom::ComponentViewDigest::fromBytes(
+      pressureSearchDomain.digest().bytes());
+  require(static_cast<bool>(checkpointSearchDomainDigest),
+          "System search-domain digest is malformed");
   const auto checkpoint =
       take(loom::mapping::finalizeSystemExecutionBindingCheckpoint(
-          dataflowReference, systemRoot.reference(),
+          pressureDataflowReference, systemRoot.reference(),
+          pressureConstraints.reference(), config.digest(),
+          std::move(*checkpointSearchDomainDigest),
+          {loom::mapping::SystemExecutionBindingCheckpointIncompleteKind::
+               ImportedSpatialCapacity,
+           checkpointWitness, capacityPressure->witness.usage,
+           capacityPressure->witness.capacity, checkpointDependencyRoots},
           std::move(checkpointThreads), std::move(checkpointGraphs), store));
   const auto importedCheckpoint =
       take(loom::mapping::importSystemExecutionBindingCheckpoint(
           checkpoint.reference(), store));
-  require(importedCheckpoint.dataflow() == dataflowReference &&
+  require(importedCheckpoint.dataflow() == pressureDataflowReference &&
               importedCheckpoint.system() == systemRoot.reference() &&
               importedCheckpoint.threadBindings().size() ==
-                  problem->threadDecisions().size() &&
+                  pressureProblem->threadDecisions().size() &&
               importedCheckpoint.graphBindings().size() ==
-                  problem->graphDecisions().size(),
+                  pressureProblem->graphDecisions().size(),
           "System execution-binding checkpoint lost its exact owners");
+  const auto capacityFeedback =
+      loom::pnr::test::verifySystemCapacityPressureRoundTrip(
+          store, systemRoot, system, primaryModule.reference(),
+          importedCheckpoint, pressureDataflowReference,
+          pressureSpatialMappings, capacityPressure->assignmentAttempts);
+  const auto mismatchedCapacityFeedback =
+      take(loom::mapping::SystemAccCoreCapacityPressure::get(
+          capacityFeedback.system(), capacityFeedback.targetModule(),
+          capacityFeedback.witnessAccCore(),
+          capacityFeedback.spatialMappings().vec(),
+          capacityFeedback.compatibleAccCoreCount(),
+          capacityFeedback.assignmentAttempts(),
+          capacityFeedback.witnessUsage() + 1,
+          capacityFeedback.witnessCapacity(),
+          capacityFeedback.executionBindingCheckpoint()));
+  requireFailureContains(loom::mapping::adoptSystemAccCoreCapacityPressure(
+                             loom::mapping::encodeSystemAccCoreCapacityPressure(
+                                 mismatchedCapacityFeedback),
+                             systemRoot.reference(), pressureDataflowReference,
+                             pressureSpatialMappings, store),
+                         "disagrees with its checkpoint witness");
 
   std::optional<loom::fabric::AccCoreOccurrenceRef> primaryPrototype;
   for (const auto core : system.artifact().accCoreOccurrences()) {
@@ -1184,14 +1462,7 @@ void graphBindingWorkflow() {
   }
   require(primaryPrototype.has_value(),
           "heterogeneous System has no primary AccCore prototype");
-  const auto capacityFeedback =
-      loom::pnr::test::verifySystemCapacityPressureRoundTrip(
-          store, systemRoot, system, primaryModule.reference(),
-          importedCheckpoint, dataflowReference, spatialMappings,
-          capacityFit->assignmentAttempts);
   const auto witnessAccCore = capacityFeedback.witnessAccCore();
-
-  const loom::BlobStore blobs(directory.path());
   std::vector<loom::dse::SystemCompositionDecisionDomain> growthDomains = {
       loom::dse::AddAccCoreDomain{*primaryPrototype,
                                   {primaryModule.reference()}}};
@@ -1225,18 +1496,63 @@ void graphBindingWorkflow() {
   const auto growthLineage = take(loom::dse::adoptSystemCompositionDecision(
       growthCompleted->lineageEdges.front().ownerPayload));
   require(growthLineage.parent == systemRoot.reference() &&
-              growthLineage.accCoreCorrespondence.size() ==
-                  system.artifact().accCoreOccurrences().size(),
+              llvm::count_if(
+                  growthLineage.entities,
+                  [](const auto &entry) {
+                    return entry.source.kind ==
+                           loom::fabric::FabricEntityKind::AccCoreOccurrence;
+                  }) == system.artifact().accCoreOccurrences().size(),
           "typed AddAccCore lineage lost a parent AccCore");
-  std::vector<loom::pnr::SystemAccCoreCorrespondence> pairs;
-  for (const auto &entry : growthLineage.accCoreCorrespondence)
-    pairs.push_back({entry.parent, entry.child});
   const auto correspondence =
       loom::pnr::test::verifySystemAccCoreCorrespondence(
-          store, systemRoot, system, childRoot, std::move(pairs));
+          store, systemRoot, system, childRoot, growthLineage.entities,
+          growthLineage.transferPatterns);
+  const auto checkpointGrowth = loom::pnr::test::applySystemCompositionDecision(
+      store, blobs, systemRoot.reference(), {primaryModule.reference()},
+      loom::dse::AddAccCoreDomain{witnessAccCore, {primaryModule.reference()}});
+  auto checkpointChildRoot =
+      take(loom::fabric::importEntireFabricRoot(checkpointGrowth.child, store));
+  auto checkpointChildSystem =
+      take(loom::fabric::requireSystemRoot(checkpointChildRoot.view()));
+  const auto checkpointCorrespondence =
+      loom::pnr::test::verifySystemAccCoreCorrespondence(
+          store, systemRoot, system, checkpointChildRoot,
+          checkpointGrowth.lineage.entities,
+          checkpointGrowth.lineage.transferPatterns);
+  auto checkpointChildConstraints =
+      take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
+          pressureDataflow, checkpointChildSystem, pressureRoots, store));
+  auto checkpointChildPartition =
+      take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
+          pressureDataflow,
+          checkpointChildConstraints.view().rootThreadLaunches()));
+  auto checkpointChildSearchDomain =
+      take(loom::pnr::projectSystemPnrSearchDomain(
+          pressureDataflow, checkpointChildSystem, config,
+          checkpointChildConstraints, checkpointChildPartition,
+          loom::pnr::SystemHierarchicalGraphSearchInput{
+              pressureSpatialMappings},
+          store));
+  auto checkpointChildPhysicalTiming =
+      take(loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(
+          checkpointChildSystem));
+  auto checkpointChildProblem = take(loom::pnr::freezeSystemPnrProblem(
+      pressureDataflow, checkpointChildSystem, checkpointChildPhysicalTiming,
+      checkpointChildSearchDomain, config, checkpointChildConstraints, store));
+  const auto checkpointMigrationContext =
+      take(loom::pnr::SystemMappingMigrationContext::get(
+          checkpointChildConstraints.reference(), pressureSpatialMappings,
+          config.digest()));
+  auto childConstraints =
+      take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
+          dataflow, childSystem, roots, store));
+  const auto migrationContext =
+      take(loom::pnr::SystemMappingMigrationContext::get(
+          childConstraints.reference(), spatialMappings, config.digest()));
   const auto migrationSeed =
       take(loom::pnr::finalizeSystemMappingCheckpointMigrationSeed(
-          checkpoint.reference(), correspondence, witnessAccCore, store));
+          checkpoint.reference(), checkpointCorrespondence,
+          checkpointMigrationContext, witnessAccCore, store));
   const auto importedMigrationSeed =
       take(loom::pnr::importSystemMappingCheckpointMigrationSeed(
           migrationSeed.reference(), store));
@@ -1244,12 +1560,12 @@ void graphBindingWorkflow() {
                   checkpoint.reference() &&
               importedMigrationSeed.correspondence().accCores().size() ==
                   system.artifact().accCoreOccurrences().size() &&
+              importedMigrationSeed.context().childConstraints() ==
+                  checkpointChildConstraints.reference() &&
+              importedMigrationSeed.context().resolvedPnrConfigDigest() ==
+                  config.digest() &&
               importedMigrationSeed.reopenedParentAccCore() == witnessAccCore,
-          "System migration seed lost its exact checkpoint or correspondence");
-
-  auto childConstraints =
-      take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
-          dataflow, childSystem, roots, store));
+          "System migration seed lost its exact problem closure");
   auto childPartition =
       take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
           dataflow, childConstraints.view().rootThreadLaunches()));
@@ -1261,30 +1577,14 @@ void graphBindingWorkflow() {
   auto childProblem = take(loom::pnr::freezeSystemPnrProblem(
       dataflow, childSystem, childPhysicalTiming, childSearchDomain, config,
       childConstraints, store));
-  const auto migrated = loom::pnr::projectSystemMappingMigrationSeed(
-      importedMigrationSeed, *childProblem);
-  const auto *projection =
-      std::get_if<loom::pnr::SystemMappingMigrationProjection>(&migrated);
-  const std::uint64_t expectedReopenedThreads = static_cast<std::uint64_t>(
-      llvm::count_if(importedCheckpoint.threadBindings(), [&](const auto &row) {
-        return row.target == witnessAccCore;
-      }));
-  require(projection &&
-              projection->preservedThreadBindings ==
-                  childProblem->threadDecisions().size() -
-                      expectedReopenedThreads &&
-              projection->releasedChoices.size() == expectedReopenedThreads &&
-              expectedReopenedThreads != 0 &&
-              projection->preservedGraphBindings ==
-                  childProblem->graphDecisions().size(),
-          "System migration did not isolate its capacity-pressure cone");
-  auto migratedCandidate =
-      take(loom::pnr::initializeSystemCandidateWithReleasedChoices(
-          childProblem, projection->fixedChoices, projection->releasedChoices));
-  if (llvm::Error error = migratedCandidate.state->verify())
-    fail(llvm::toString(std::move(error)));
-
-  const auto generatedChild =
+  const auto finalizedMigrationSeed =
+      take(loom::pnr::finalizeSystemMappingMigrationSeed(
+          finalizedParentMapping.reference(), correspondence, migrationContext,
+          store));
+  const auto importedFinalizedMigrationSeed =
+      take(loom::pnr::importSystemMappingMigrationSeed(
+          finalizedMigrationSeed.reference(), store));
+  const auto fullyRebasedChild =
       loom::pnr::generateSystemMappings({dataflow,
                                          childSystem,
                                          childPhysicalTiming,
@@ -1295,30 +1595,399 @@ void graphBindingWorkflow() {
                                          {},
                                          nullptr,
                                          nullptr,
+                                         &importedFinalizedMigrationSeed,
+                                         nullptr});
+  const auto *fullyRebasedMappings =
+      std::get_if<loom::pnr::GeneratedSystemMappings>(&fullyRebasedChild);
+  require(
+      fullyRebasedMappings && fullyRebasedMappings->candidates.size() == 1 &&
+          fullyRebasedMappings->accounting.migrationSeedPrepared == 1 &&
+          fullyRebasedMappings->accounting.migrationSeedFallbacks == 0 &&
+          fullyRebasedMappings->accounting.migrationPreservedThreadBindings ==
+              childProblem->threadDecisions().size() &&
+          fullyRebasedMappings->accounting.migrationPreservedGraphBindings ==
+              childProblem->graphDecisions().size() &&
+          fullyRebasedMappings->accounting.migrationPreservedServiceLegs ==
+              childProblem->serviceLegs().size() &&
+          fullyRebasedMappings->accounting.migrationReopenedThreadBindings ==
+              0 &&
+          fullyRebasedMappings->accounting.migrationReopenedGraphBindings ==
+              0 &&
+          fullyRebasedMappings->accounting.migrationReopenedServiceLegs == 0 &&
+          fullyRebasedMappings->accounting.migrationReopenedResourceUses == 0,
+      "finalized SystemMapping did not preserve its complete child closure");
+  const auto fullyRebasedMapping = take(loom::mapping::importSystemMapping(
+      fullyRebasedMappings->candidates.front(), store));
+  require(fullyRebasedMapping.view().fabricIdentity() ==
+                  childRoot.reference().artifact &&
+              fullyRebasedMapping.view().serviceRealizations().size() ==
+                  finalizedParentMapping.view().serviceRealizations().size() &&
+              fullyRebasedMapping.view().resourceUses().size() ==
+                  finalizedParentMapping.view().resourceUses().size(),
+          "finalized SystemMapping rebase lost service or ResourceUse state");
+
+  // A resource-time allocation change keeps the immutable System but releases
+  // one exact root-owned decision cone. This is a real preserve-first PnR
+  // attempt, not a copied Mapping label or a hardware-growth correspondence.
+  const auto scheduleRoot = roots.back();
+  std::vector<loom::fabric::AccCoreOccurrenceRef> parentScheduleTargets;
+  for (const auto &binding :
+       finalizedParentMapping.view().executionBindings().threadBindings()) {
+    if (binding.key != scheduleRoot)
+      continue;
+    for (const auto &clause : binding.clauses)
+      parentScheduleTargets.push_back(clause.target);
+    if (binding.defaultTarget)
+      parentScheduleTargets.push_back(*binding.defaultTarget);
+  }
+  llvm::sort(parentScheduleTargets,
+             [](const auto lhs, const auto rhs) { return lhs.id() < rhs.id(); });
+  parentScheduleTargets.erase(
+      std::unique(parentScheduleTargets.begin(), parentScheduleTargets.end()),
+      parentScheduleTargets.end());
+  require(parentScheduleTargets.size() == 1,
+          "schedule migration fixture has no exact parent AccCore");
+  const auto parentScheduleTarget = parentScheduleTargets.front();
+  const auto parentModuleTarget = system.spatialCoreTarget(parentScheduleTarget);
+  require(parentModuleTarget &&
+              parentModuleTarget->dependencyOrdinal <
+                  systemRoot.directDependencies().size(),
+          "schedule migration parent has no exact Module target");
+  const auto parentModuleReference =
+      systemRoot.directDependencies()[parentModuleTarget->dependencyOrdinal]
+          .root;
+  std::optional<loom::fabric::AccCoreOccurrenceRef> alternateScheduleTarget;
+  for (const auto core : system.artifact().accCoreOccurrences()) {
+    if (core == parentScheduleTarget)
+      continue;
+    const auto target = system.spatialCoreTarget(core);
+    if (!target || target->dependencyOrdinal >=
+                       systemRoot.directDependencies().size())
+      continue;
+    if (systemRoot.directDependencies()[target->dependencyOrdinal].root ==
+        parentModuleReference) {
+      alternateScheduleTarget = core;
+      break;
+    }
+  }
+  require(alternateScheduleTarget.has_value(),
+          "schedule migration fixture has no compatible alternate AccCore");
+
+  auto scheduleConstraintModule = buildSystemConstraintModule(
+      context, dataflow.identity(), system.artifact().identity(), roots);
+  auto scheduleConstraintRoot = llvm::cast<::mapping::ConstraintsSystemOp>(
+      scheduleConstraintModule->getBody()->front());
+  mlir::OpBuilder scheduleConstraintBuilder(&context);
+  const std::array<mlir::Attribute, 1> scheduleTargetDomain = {
+      constraintFabricAttr<::mapping::FabricAccCoreOccurrenceRefAttr>(
+          &context, *alternateScheduleTarget)};
+  addSystemRestriction(
+      scheduleConstraintBuilder, scheduleConstraintRoot,
+      ::mapping::SystemConstraintProjection::ThreadTargetAccCore,
+      constraintDataflowAttr<::mapping::RootThreadLaunchRefAttr>(
+          &context, dataflow.identity(), scheduleRoot),
+      scheduleTargetDomain);
+  auto scheduleConstraints =
+      take(loom::mapping::finalizeSystemMappingConstraintSet(
+          scheduleConstraintRoot, dataflow, system, store));
+  auto schedulePartition =
+      take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
+          dataflow, scheduleConstraints.view().rootThreadLaunches()));
+  auto scheduleSearchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      dataflow, system, config, scheduleConstraints, schedulePartition,
+      loom::pnr::SystemHierarchicalGraphSearchInput{spatialMappings}, store));
+  auto scheduleProblem = take(loom::pnr::freezeSystemPnrProblem(
+      dataflow, system, physicalTimingProfiles, scheduleSearchDomain, config,
+      scheduleConstraints, store));
+  const auto identityCorrespondence =
+      take(loom::pnr::SystemExecutionBindingCorrespondence::getIdentity(
+          systemRoot.reference(), store));
+  const auto scheduleMigrationContext =
+      take(loom::pnr::SystemMappingMigrationContext::get(
+          scheduleConstraints.reference(), spatialMappings, config.digest()));
+  const std::array scheduleReopenedRoots{scheduleRoot};
+  const auto scheduleMigrationSeed =
+      take(loom::pnr::finalizeSystemMappingMigrationSeed(
+          finalizedParentMapping.reference(), identityCorrespondence,
+          scheduleMigrationContext, scheduleReopenedRoots, store));
+  const auto importedScheduleMigrationSeed =
+      take(loom::pnr::importSystemMappingMigrationSeed(
+          scheduleMigrationSeed.reference(), store));
+  require(importedScheduleMigrationSeed.reopenedRoots() ==
+                  llvm::ArrayRef<dataflow::RootThreadLaunchRef>(
+                      scheduleReopenedRoots) &&
+              importedScheduleMigrationSeed.correspondence().parentSystem() ==
+                  importedScheduleMigrationSeed.correspondence().childSystem(),
+          "schedule migration seed lost its typed root delta");
+  const auto scheduleRepair = loom::pnr::generateSystemMappings(
+      {dataflow,
+       system,
+       physicalTimingProfiles,
+       scheduleSearchDomain,
+       config,
+       scheduleConstraints,
+       store,
+       {},
+       nullptr,
+       nullptr,
+       &importedScheduleMigrationSeed,
+       nullptr});
+  const auto *scheduleMappings =
+      std::get_if<loom::pnr::GeneratedSystemMappings>(&scheduleRepair);
+  require(
+      scheduleMappings && !scheduleMappings->candidates.empty() &&
+          scheduleMappings->accounting.migrationSeedPrepared == 1 &&
+          scheduleMappings->accounting.migrationSeedFallbacks == 0 &&
+          scheduleMappings->accounting.migrationReopenedThreadBindings != 0 &&
+          scheduleMappings->accounting.migrationReopenedGraphBindings != 0 &&
+          scheduleMappings->accounting.migrationPreservedThreadBindings +
+                  scheduleMappings->accounting.migrationReopenedThreadBindings ==
+              scheduleProblem->threadDecisions().size() &&
+          scheduleMappings->accounting.migrationPreservedGraphBindings +
+                  scheduleMappings->accounting.migrationReopenedGraphBindings ==
+              scheduleProblem->graphDecisions().size() &&
+          scheduleMappings->accounting.migrationReopenedServiceLegs ==
+              scheduleProblem->serviceLegs().size(),
+      "resource-time root delta did not drive bounded System repair");
+  const auto scheduleMapping = take(loom::mapping::importSystemMapping(
+      scheduleMappings->candidates.front(), store));
+  require(scheduleMapping.reference() != finalizedParentMapping.reference(),
+          "resource-time repair reproduced the unchanged parent Mapping");
+  std::vector<loom::fabric::AccCoreOccurrenceRef> repairedScheduleTargets;
+  for (const auto &binding :
+       scheduleMapping.view().executionBindings().threadBindings()) {
+    if (binding.key != scheduleRoot)
+      continue;
+    for (const auto &clause : binding.clauses)
+      repairedScheduleTargets.push_back(clause.target);
+    if (binding.defaultTarget)
+      repairedScheduleTargets.push_back(*binding.defaultTarget);
+  }
+  llvm::sort(repairedScheduleTargets,
+             [](const auto lhs, const auto rhs) { return lhs.id() < rhs.id(); });
+  repairedScheduleTargets.erase(
+      std::unique(repairedScheduleTargets.begin(),
+                  repairedScheduleTargets.end()),
+      repairedScheduleTargets.end());
+  require(repairedScheduleTargets.size() == 1 &&
+              repairedScheduleTargets.front() == *alternateScheduleTarget,
+          "resource-time repair did not realize the requested allocation");
+  const auto migrated = loom::pnr::projectSystemMappingMigrationSeed(
+      importedMigrationSeed, *checkpointChildProblem);
+  const auto *projection =
+      std::get_if<loom::pnr::SystemMappingMigrationProjection>(&migrated);
+  const std::uint64_t expectedReopenedThreads = static_cast<std::uint64_t>(
+      llvm::count_if(checkpoint.threadBindings(), [&](const auto &row) {
+        return row.target == witnessAccCore;
+      }));
+  require(projection &&
+              projection->preservedThreadBindings ==
+                  checkpointChildProblem->threadDecisions().size() -
+                      expectedReopenedThreads &&
+              projection->releasedChoices.size() == expectedReopenedThreads &&
+              expectedReopenedThreads != 0 &&
+              projection->preservedGraphBindings ==
+                  checkpointChildProblem->graphDecisions().size(),
+          "System migration did not isolate its capacity-pressure cone");
+  auto migratedCandidate =
+      take(loom::pnr::initializeSystemCandidateWithReleasedChoices(
+          checkpointChildProblem, projection->fixedChoices,
+          projection->releasedChoices));
+  if (llvm::Error error = migratedCandidate.state->verify())
+    fail(llvm::toString(std::move(error)));
+
+  const auto generatedChild =
+      loom::pnr::generateSystemMappings({pressureDataflow,
+                                         checkpointChildSystem,
+                                         checkpointChildPhysicalTiming,
+                                         checkpointChildSearchDomain,
+                                         config,
+                                         checkpointChildConstraints,
+                                         store,
+                                         {},
+                                         nullptr,
+                                         nullptr,
                                          nullptr,
                                          &importedMigrationSeed});
   const auto *generatedMappings =
       std::get_if<loom::pnr::GeneratedSystemMappings>(&generatedChild);
-  require(generatedMappings && !generatedMappings->candidates.empty() &&
-              generatedMappings->accounting.migrationSeedPrepared == 1 &&
-              generatedMappings->accounting.migrationSeedFallbacks == 0 &&
-              generatedMappings->accounting.migrationPreservedThreadBindings ==
-                  childProblem->threadDecisions().size() -
-                      expectedReopenedThreads &&
-              generatedMappings->accounting.migrationPreservedGraphBindings ==
-                  childProblem->graphDecisions().size() &&
-              generatedMappings->accounting.migrationReopenedThreadBindings ==
+  require(
+      generatedMappings && !generatedMappings->candidates.empty() &&
+          generatedMappings->accounting.migrationSeedPrepared == 1 &&
+          generatedMappings->accounting.migrationSeedFallbacks == 0 &&
+          generatedMappings->accounting.migrationPreservedThreadBindings ==
+              checkpointChildProblem->threadDecisions().size() -
                   expectedReopenedThreads &&
-              generatedMappings->accounting.migrationReopenedGraphBindings ==
-                  0 &&
-              generatedMappings->accounting.migrationReopenedServiceLegs ==
-                  childProblem->serviceLegs().size(),
-          "System PnR did not consume its preserve-first migration seed");
+          generatedMappings->accounting.migrationPreservedGraphBindings ==
+              checkpointChildProblem->graphDecisions().size() &&
+          generatedMappings->accounting.migrationReopenedThreadBindings ==
+              expectedReopenedThreads &&
+          generatedMappings->accounting.migrationReopenedGraphBindings == 0 &&
+          generatedMappings->accounting.migrationReopenedServiceLegs == 0 &&
+          generatedMappings->accounting.migrationNewServiceLegs ==
+              checkpointChildProblem->serviceLegs().size() &&
+          generatedMappings->accounting.migrationNewResourceUses ==
+              checkpointChildProblem->instructionUsePatternDomains().size() +
+                  checkpointChildProblem->consistencyUsePatternDomains().size(),
+      "System PnR did not consume its preserve-first migration seed");
   const auto migratedMapping = take(loom::mapping::importSystemMapping(
       generatedMappings->candidates.front(), store));
   require(migratedMapping.view().fabricIdentity() ==
-              childRoot.reference().artifact,
+              checkpointChildRoot.reference().artifact,
           "migrated SystemMapping did not bind the child System");
+
+  // This witness is deliberately explicit: it compares a resource-time
+  // expansion against an idle alternative, then records a second migration
+  // cost where the same expansion loses. It is schedule evidence only; the
+  // endpoint classifier still requires a verified SystemMapping schedule.
+  std::vector<loom::fabric::FabricPhysicalOccurrenceOwnerRef> witnessResources;
+  for (std::uint64_t ordinal = 0; ordinal != 5; ++ordinal)
+    witnessResources.push_back(
+        take(loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(
+            loom::fabric::FabricInventoryOwnerRef::of(
+                loom::fabric::HostCoreOccurrenceRef(ordinal)))));
+  const std::vector<dataflow::RootThreadLaunchRef> witnessRegions = {
+      dataflow::RootThreadLaunchRef{pressureDataflow.identity(),
+                                    dataflow::RootThreadLaunchId(0)},
+      dataflow::RootThreadLaunchRef{pressureDataflow.identity(),
+                                    dataflow::RootThreadLaunchId(1)},
+      dataflow::RootThreadLaunchRef{pressureDataflow.identity(),
+                                    dataflow::RootThreadLaunchId(2)},
+      dataflow::RootThreadLaunchRef{pressureDataflow.identity(),
+                                    dataflow::RootThreadLaunchId(3)},
+      dataflow::RootThreadLaunchRef{pressureDataflow.identity(),
+                                    dataflow::RootThreadLaunchId(4)}};
+  const auto allocate = [&](dataflow::RootThreadLaunchRef region,
+                            std::initializer_list<std::size_t> owners) {
+    std::vector<loom::fabric::FabricPhysicalOccurrenceOwnerRef> resources;
+    for (std::size_t owner : owners)
+      resources.push_back(witnessResources[owner]);
+    return loom::pnr::ResourceTimeRegionAllocation{region,
+                                                   std::move(resources)};
+  };
+  const auto makeScenario = [&](std::uint64_t migrationCost, bool expand,
+                                bool fifo, std::uint64_t makespan) {
+    const auto &r1 = witnessRegions[0];
+    const auto &r2 = witnessRegions[1];
+    const auto &r3 = witnessRegions[2];
+    const auto &r4 = witnessRegions[3];
+    const auto &r5 = witnessRegions[4];
+    const std::uint64_t r4Completion = expand ? 25 : 40;
+    const std::uint64_t r5Start = fifo ? 20 : (expand ? 35 : 40);
+    const std::uint64_t r5Completion = fifo ? 30 : (expand ? 45 : 50);
+    loom::pnr::ResourceTimeScheduleScenario scenario;
+    scenario.executions = {
+        {r1, {}, 0, 0, 10},
+        {r2, {}, 0, 0, 20},
+        {r3, {}, 0, 0, 15},
+        {r4,
+         {{r1, loom::pnr::ResourceTimeReadinessKind::Completion}},
+         10,
+         10,
+         r4Completion},
+        {r5,
+         fifo
+             ? std::vector<
+                   loom::pnr::
+                       ResourceTimeRegionPrerequisite>{{r2,
+                                                        loom::pnr::
+                                                            ResourceTimeReadinessKind::
+                                                                FifoToken}}
+             : std::vector<
+                   loom::pnr::
+                       ResourceTimeRegionPrerequisite>{{r2,
+                                                        loom::pnr::
+                                                            ResourceTimeReadinessKind::
+                                                                Completion},
+                                                       {r4,
+                                                        loom::pnr::
+                                                            ResourceTimeReadinessKind::
+                                                                Completion}},
+         fifo ? 20 : r4Completion, r5Start, r5Completion}};
+    std::vector<std::uint64_t> times;
+    if (fifo)
+      times = {0, 10, 20, 25, 30};
+    else if (expand)
+      times = {0, 10, 20, 25, 35, 45};
+    else
+      times = {0, 10, 20, 40, 50};
+    for (std::uint64_t time : times) {
+      const bool migrated = expand && time >= 10;
+      auto &mapping = migratedMapping.reference();
+      loom::ArtifactRootReference stateMapping =
+          migrated ? mapping : finalizedParentMapping.reference();
+      std::vector<loom::pnr::ResourceTimeRegionAllocation> active;
+      for (std::size_t region = 0; region != scenario.executions.size();
+           ++region) {
+        const auto &execution = scenario.executions[region];
+        if (execution.startPicoseconds > time ||
+            time >= execution.completionPicoseconds)
+          continue;
+        if (region == 0)
+          active.push_back(allocate(execution.region, {0}));
+        else if (region == 1)
+          active.push_back(allocate(execution.region, {1}));
+        else if (region == 2)
+          active.push_back(allocate(execution.region, {2}));
+        else if (region == 3)
+          active.push_back(expand ? allocate(execution.region, {3, 4})
+                                  : allocate(execution.region, {3}));
+        else
+          active.push_back(fifo ? allocate(execution.region, {0})
+                                : allocate(execution.region, {4}));
+      }
+      scenario.states.push_back(
+          {stateMapping, transitionTrigger(), time, std::move(active)});
+    }
+    if (expand) {
+      auto transition = structuralTransition;
+      transition.afterMapping = migratedMapping.reference();
+      transition.beforeActive = {allocate(r2, {1}), allocate(r3, {2}),
+                                 allocate(r4, {3})};
+      transition.afterActive = {allocate(r2, {1}), allocate(r3, {2}),
+                                allocate(r4, {3, 4})};
+      transition.beforeLiveWork = {pressureSpatialMappings[0],
+                                   pressureSpatialMappings[1],
+                                   finalizedParentMapping.reference()};
+      transition.afterLiveWork = transition.beforeLiveWork;
+      transition.tokenLiveStateCorrespondence = pressureDataflowReference;
+      transition.migrationTimePicoseconds = migrationCost;
+      scenario.transitions.transitions.push_back(std::move(transition));
+    }
+    scenario.makespanPicoseconds = makespan;
+    return scenario;
+  };
+  loom::pnr::ResourceTimeScheduleWitness witness{
+      witnessRegions,
+      {makeScenario(2, true, false, 47), makeScenario(20, true, false, 65),
+       makeScenario(0, false, false, 52), makeScenario(2, true, true, 32)},
+      1,
+      3,
+      loom::pnr::ResourceTimeConcurrencyBoundStatus::Exact};
+  if (llvm::Error error =
+          loom::pnr::validateResourceTimeScheduleWitness(witness))
+    fail(llvm::toString(std::move(error)));
+  auto malformedWitness = witness;
+  malformedWitness.scenarios[0].states[2].active.push_back(
+      allocate(witnessRegions[4], {0}));
+  llvm::Error malformedError =
+      loom::pnr::validateResourceTimeScheduleWitness(malformedWitness);
+  require(static_cast<bool>(malformedError),
+          "resource-time witness accepted an interval-inconsistent active set");
+  llvm::consumeError(std::move(malformedError));
+  require(witness.scenarios[0].makespanPicoseconds <
+                  witness.scenarios[2].makespanPicoseconds &&
+              witness.scenarios[1].makespanPicoseconds >
+                  witness.scenarios[2].makespanPicoseconds,
+          "resource-time witness did not expose both migration-cost outcomes");
+  require(witness.scenarios[2].executions.back().startPicoseconds == 40 &&
+              witness.scenarios[3].executions.back().startPicoseconds == 20,
+          "FIFO readiness did not expose the early consumer distinction");
+  require(llvm::none_of(witness.scenarios[0].states[2].active,
+                        [&](const auto &allocation) {
+                          return allocation.region == witnessRegions[4];
+                        }),
+          "resource-time witness incorrectly admitted R5 before readiness");
 
   require(problem->threadDecisions().size() == 2 &&
               problem->graphDecisions().size() == 4,
@@ -1934,6 +2603,33 @@ void graphBindingWorkflow() {
   verifyFinalizedSystemMappingWorkflow(*alternate, dataflow, system,
                                        constraints.view(), store, context,
                                        problem->serviceDomains().size());
+  auto cancelledDraft =
+      take(loom::pnr::materializeSystemCandidateDraft(*alternate, context));
+  const auto alwaysStop = [](const void *) { return true; };
+  auto cancelledFinalization = loom::mapping::finalizeSystemMapping(
+      mlir::cast<::mapping::SystemOp>(cancelledDraft.get()), dataflow, system,
+      constraints.view(), store, &problem->spatialMappingImports(),
+      loom::ExecutionControlView(nullptr, alwaysStop));
+  require(!cancelledFinalization,
+          "cancelled System finalization published a Mapping");
+  bool sawTypedCancellation = false;
+  llvm::handleAllErrors(
+      cancelledFinalization.takeError(),
+      [&](const loom::mapping::SystemMappingIncompleteError &error) {
+        sawTypedCancellation =
+            error.reason() ==
+            loom::mapping::SystemMappingIncompleteReason::CancelledOrTimeout;
+      },
+      [&](const llvm::ErrorInfoBase &error) {
+        fail("cancelled System finalization returned an untyped error: " +
+             error.message());
+      });
+  require(sawTypedCancellation,
+          "cancelled System finalization lost its typed outcome");
+  const auto spectrumMapping = take(loom::pnr::finalizeSystemMappingCandidate(
+      *alternate, dataflow, system, constraints.view(), store, context));
+  loom::pnr::test::verifyResourceTimeSpectrumWorkflow(dataflow, spectrumMapping,
+                                                      roots, store);
 
   const auto firstThreadDomain = problem->threadChoiceCatalogOrdinals(0);
   const auto firstGraphDomain = problem->graphChoiceCatalogOrdinals(0);

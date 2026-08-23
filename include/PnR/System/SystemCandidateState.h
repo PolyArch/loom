@@ -2,6 +2,7 @@
 #define LOOM_PNR_SYSTEM_SYSTEMCANDIDATESTATE_H
 
 #include "PnR/System/SystemPnrProblem.h"
+#include "PnR/System/SystemRouteMigration.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -58,26 +59,6 @@ struct SystemConsistencyServiceTargetSelection final {
 using SystemServiceTargetSelection =
     std::variant<std::monostate, SystemMemoryServiceTargetSelection,
                  SystemConsistencyServiceTargetSelection>;
-
-struct SystemServiceRouteNodeSelection final {
-  PnrIndex endpoint = 0;
-  PnrIndex parentNode = getInvalidPnrIndex();
-  PnrIndex incomingTraversal = getInvalidPnrIndex();
-};
-
-struct SystemServiceRouteSinkSelection final {
-  PnrIndex terminal = 0;
-  PnrIndex node = 0;
-};
-
-struct SystemServiceRouteSelection final {
-  PnrIndex leg = 0;
-  PnrIndex rootEndpoint = getInvalidPnrIndex();
-  PnrIndex nodeOffset = 0;
-  PnrIndex nodeCount = 0;
-  PnrIndex sinkOffset = 0;
-  PnrIndex sinkCount = 0;
-};
 
 struct SystemRouteCapacityOveruseWitness final {
   PnrIndex capacityCell = getInvalidPnrIndex();
@@ -381,7 +362,18 @@ initializeSystemCandidateWithFixedChoices(
     llvm::ArrayRef<PnrIndex> fixedChoices);
 
 llvm::Expected<InitializedSystemCandidate>
+initializeSystemCandidateWithFixedChoicesAndRoutes(
+    FrozenSystemPnrProblemHandle problem,
+    llvm::ArrayRef<PnrIndex> fixedChoices,
+    const SystemCandidateRouteSeed &routeSeed);
+
+llvm::Expected<InitializedSystemCandidate>
 initializeSystemCandidateWithReleasedChoices(
+    FrozenSystemPnrProblemHandle problem, llvm::ArrayRef<PnrIndex> fixedChoices,
+    llvm::ArrayRef<PnrIndex> releasedChoices);
+
+llvm::Expected<InitializedSystemCandidate>
+initializeSystemCandidateWithReleasedChoicesAndImportedCapacityClosure(
     FrozenSystemPnrProblemHandle problem, llvm::ArrayRef<PnrIndex> fixedChoices,
     llvm::ArrayRef<PnrIndex> releasedChoices);
 

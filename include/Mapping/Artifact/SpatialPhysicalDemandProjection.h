@@ -3,6 +3,7 @@
 
 #include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Fabric/IR/TemporalPeResourceContract.h"
+#include "Common/ComponentViewDigest.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 
 #include "llvm/ADT/APInt.h"
@@ -11,6 +12,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -183,9 +185,110 @@ struct SpatialDurableProgressBoundaryView final {
 struct SpatialPeOperandQueueMatchView final {
   std::vector<::dataflow::CanonicalGraphConsumerEndpointRef> consumers;
   ::fabric::LogicalOperandQueueKey queue;
+  ::loom::fabric::FabricFuOccurrenceRef fu;
   std::uint32_t allocationUnit = 0;
   std::uint32_t entryCapacity = 0;
 };
+
+struct SpatialPeOperandQualifiedPairingKey final {
+  ::loom::fabric::InstructionContextRef context;
+  ::loom::fabric::FabricFuOccurrenceRef fu;
+  llvm::APInt tag = llvm::APInt(1, 0);
+
+  friend bool operator==(const SpatialPeOperandQualifiedPairingKey &lhs,
+                         const SpatialPeOperandQualifiedPairingKey &rhs) {
+    return lhs.context == rhs.context && lhs.fu == rhs.fu &&
+           lhs.tag == rhs.tag;
+  }
+};
+
+enum class SpatialPeOperandProgressStatus : std::uint8_t {
+  Safe,
+  LikelyRisk,
+  ProofNotEstablished,
+  ProvenClosedWait,
+};
+
+enum class SpatialPeOperandProgressSupport : std::uint8_t {
+  Exact,
+  Analytic,
+  Unsupported,
+};
+
+struct SpatialPeOperandPairingProjection final {
+  SpatialPeOperandQualifiedPairingKey key;
+  std::vector<std::uint32_t> requiredInputRoles;
+  std::vector<::loom::fabric::FabricTransportEndpointRef> ingresses;
+  std::vector<std::uint32_t> allocationUnits;
+};
+
+struct SpatialPeOperandProgressFeedback final {
+  SpatialPeOperandProgressStatus status =
+      SpatialPeOperandProgressStatus::ProofNotEstablished;
+  SpatialPeOperandProgressSupport support =
+      SpatialPeOperandProgressSupport::Unsupported;
+  std::uint64_t groupCount = 0;
+  std::uint64_t potentiallyBlockingGroupCount = 0;
+  std::uint64_t unknownPairingGroupCount = 0;
+  std::uint64_t distinctIngressCount = 0;
+  std::uint64_t sharedIngressCount = 0;
+  std::uint64_t pairingOpportunityCount = 0;
+  std::uint64_t pairingKeyCount = 0;
+  std::uint64_t distinctPairingKeyCount = 0;
+  std::vector<SpatialPeOperandQualifiedPairingKey> pairingKeys;
+  std::vector<SpatialPeOperandPairingProjection> pairings;
+  std::optional<::loom::ComponentViewDigest> projectionDigest;
+};
+
+/// Runtime-owned ordered head observation projected into the Mapping
+/// progress domain. It is transient evidence only; queue contents remain
+/// simulator state and are never serialized as a Mapping identity.
+struct SpatialPeOperandRuntimeHeadView final {
+  ::fabric::LogicalOperandQueueKey queue;
+  ::loom::fabric::FabricFuOccurrenceRef fu;
+  llvm::APInt tag = llvm::APInt(1, 0);
+  std::uint32_t allocationUnit = 0;
+  std::uint32_t capacity = 0;
+  std::uint32_t occupancy = 0;
+  std::uint32_t reservations = 0;
+  std::uint64_t headBindingOrdinal = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t headOccurrenceOrdinal =
+      std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t headProducerSequenceOrdinal =
+      std::numeric_limits<std::uint64_t>::max();
+  bool exactHead = false;
+};
+
+enum class SpatialPeOperandRuntimeWitnessStatus : std::uint8_t {
+  Exact,
+  ProofNotEstablished,
+  ProvenClosedWait,
+  Unsupported,
+};
+
+struct SpatialPeOperandRuntimeWitness final {
+  SpatialPeOperandRuntimeWitnessStatus status =
+      SpatialPeOperandRuntimeWitnessStatus::ProofNotEstablished;
+  SpatialPeOperandProgressSupport support =
+      SpatialPeOperandProgressSupport::Unsupported;
+  std::uint64_t observedHeadCount = 0;
+  std::uint64_t exactHeadCount = 0;
+  std::uint64_t matchedPairingKeyCount = 0;
+  std::uint64_t unmatchedPairingKeyCount = 0;
+  std::uint64_t mismatchedHeadCount = 0;
+  std::uint64_t fullQueueCount = 0;
+  std::optional<::loom::ComponentViewDigest> projectionDigest;
+};
+
+/// Joins simulator queue heads with the Mapping-owned qualified pairing
+/// projection. The result is an exact ordered correspondence only when every
+/// required role has an exact head and all heads for one PairingKey agree on
+/// the producer sequence. It does not infer a closed wait cycle from this
+/// join; that proof remains owned by the simulator wait-for projection.
+llvm::Expected<SpatialPeOperandRuntimeWitness>
+deriveSpatialPeOperandRuntimeWitness(
+    const SpatialPeOperandProgressFeedback &projection,
+    llvm::ArrayRef<SpatialPeOperandRuntimeHeadView> heads);
 
 /// One exact Temporal PE ingress activation. Every distinct queue in the group
 /// matches the same physical input and Physical Tag and must append on one
@@ -196,6 +299,7 @@ struct SpatialPeOperandQueueMatchGroupView final {
   ::loom::fabric::FabricTransportEndpointRef ingress;
   llvm::APInt tag = llvm::APInt(1, 0);
   std::vector<SpatialPeOperandQueueMatchView> matches;
+  bool orderedCorrespondenceKnown = false;
 };
 
 /// One active Mapping realization in a Fabric-owned temporal context-
@@ -358,6 +462,13 @@ deriveSpatialPeOperandQueueMatchGroups(
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses,
     llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments);
+
+/// Derives one transient queue/pairing risk result from the same selected
+/// match groups consumed by Mapping, simulator, and hardware projections. It
+/// never selects an ingress or allocates a queue; likely risk is ranking-only.
+llvm::Expected<SpatialPeOperandProgressFeedback>
+deriveSpatialPeOperandProgressFeedback(
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> groups);
 
 } // namespace loom::mapping
 

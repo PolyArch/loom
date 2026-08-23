@@ -9,6 +9,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace loom::dse {
@@ -18,6 +19,9 @@ inline constexpr CandidateGeneratorKind
 
 class ResolvedStructuredSpecialMathAccuracyGeneratorConfigView final {
 public:
+  std::optional<std::uint64_t> maximumMaterializationAttempts() const {
+    return maximumMaterializationAttempts_;
+  }
   llvm::ArrayRef<std::uint8_t> canonicalViewBytes() const {
     return canonicalViewBytes_;
   }
@@ -25,15 +29,19 @@ public:
 
 private:
   ResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
+      std::optional<std::uint64_t> maximumMaterializationAttempts,
       std::vector<std::uint8_t> canonicalViewBytes, ComponentViewDigest digest)
-      : canonicalViewBytes_(std::move(canonicalViewBytes)), digest_(digest) {}
+      : maximumMaterializationAttempts_(maximumMaterializationAttempts),
+        canonicalViewBytes_(std::move(canonicalViewBytes)), digest_(digest) {}
 
+  std::optional<std::uint64_t> maximumMaterializationAttempts_;
   std::vector<std::uint8_t> canonicalViewBytes_;
   ComponentViewDigest digest_;
 
   friend llvm::Expected<
       ResolvedStructuredSpecialMathAccuracyGeneratorConfigView>
-  projectResolvedStructuredSpecialMathAccuracyGeneratorConfigView();
+  projectResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
+      std::optional<std::uint64_t>);
   friend llvm::Expected<
       ResolvedStructuredSpecialMathAccuracyGeneratorConfigView>
   adoptResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
@@ -44,7 +52,9 @@ private:
 llvm::ArrayRef<std::uint8_t>
 resolvedStructuredSpecialMathAccuracyGeneratorConfigSchemaBytes();
 llvm::Expected<ResolvedStructuredSpecialMathAccuracyGeneratorConfigView>
-projectResolvedStructuredSpecialMathAccuracyGeneratorConfigView();
+projectResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
+    std::optional<std::uint64_t> maximumMaterializationAttempts =
+        std::nullopt);
 llvm::Expected<ResolvedStructuredSpecialMathAccuracyGeneratorConfigView>
 adoptResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
     llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,

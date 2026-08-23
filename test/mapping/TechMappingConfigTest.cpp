@@ -75,6 +75,22 @@ void checkProjectionAndAdoption() {
       view.schemaDescriptorBytes(), view.canonicalViewBytes(), view.digest()));
   if (adopted.canonicalViewBytes() != view.canonicalViewBytes())
     fail("adoption changed canonical bytes");
+
+  const auto bounded =
+      take(loom::mapping::deriveTechMappingConfigWithPublicationLimit(view, 2));
+  if (bounded.matchRowAttemptLimit() != view.matchRowAttemptLimit() ||
+      bounded.partialCoverExpansionLimit() !=
+          view.partialCoverExpansionLimit() ||
+      bounded.candidateEvaluationLimit() != view.candidateEvaluationLimit() ||
+      bounded.candidatePublicationLimit() != 2)
+    fail("publication derivation changed an unrelated TechMapping limit");
+  const auto unchanged =
+      take(loom::mapping::deriveTechMappingConfigWithPublicationLimit(view, 9));
+  if (unchanged.canonicalViewBytes() != view.canonicalViewBytes())
+    fail("larger publication demand changed the resolved config");
+  if (!rejected(
+          loom::mapping::deriveTechMappingConfigWithPublicationLimit(view, 0)))
+    fail("zero publication demand was accepted");
 }
 
 void checkInvalidWire() {

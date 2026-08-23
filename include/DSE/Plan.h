@@ -8,6 +8,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -207,6 +208,10 @@ public:
   llvm::ArrayRef<GenerateInvocationRecord> generateInvocations() const {
     return generateInvocations_;
   }
+  /// Operational provenance aligned with generateInvocations(). A false value
+  /// means the result was recovered/imported without dispatching provider work
+  /// in this execution.
+  bool generateInvocationWasDispatched(std::size_t ordinal) const;
   llvm::ArrayRef<GenerateInvocationWorkSummary> generateWorkSummaries() const {
     return generateWorkSummaries_;
   }
@@ -230,7 +235,8 @@ private:
       : resolvedDseConfigViewDigest_(digest) {}
   llvm::Error appendGenerate(GenerateInvocationRecord invocation,
                              GenerateInvocationWorkSummary workSummary,
-                             std::optional<std::vector<std::uint8_t>> feedback);
+                             std::optional<std::vector<std::uint8_t>> feedback,
+                             bool dispatched);
   void
   appendPromote(std::vector<std::vector<ArtifactRootReference>> outputBindings,
                 std::vector<ArtifactRootReference> preferenceOrder = {});
@@ -239,6 +245,7 @@ private:
   std::vector<GenerateInvocationRecord> generateInvocations_;
   std::vector<GenerateInvocationWorkSummary> generateWorkSummaries_;
   std::vector<GenerateInvocationFeedback> generateFeedback_;
+  std::vector<bool> generateDispatched_;
   ComponentViewDigest resolvedDseConfigViewDigest_;
 
   friend class DsePlanExecutionBuilder;
@@ -375,6 +382,11 @@ validateAndSummarizeDsePlanGenerateInvocations(
 llvm::Expected<DsePlanExecutionOutcome>
 executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
                const BlobStore &blobs);
+
+llvm::Expected<DsePlanExecutionOutcome>
+executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
+               const BlobStore &blobs,
+               const ExecutionControlView &executionControl);
 
 } // namespace loom::dse
 

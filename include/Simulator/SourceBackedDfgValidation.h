@@ -10,8 +10,10 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
+#include <vector>
 
 namespace loom::sim {
 
@@ -22,6 +24,26 @@ enum class SourceBackedDfgValidationStatus : std::uint8_t {
   Mismatch,
   Inapplicable,
 };
+
+/// Persistent identities of one exact activation input captured by the
+/// source-backed replay owner. The workload and runtime-input Artifacts remain
+/// the semantic owners; this pair is invocation provenance used by downstream
+/// execution validation.
+struct SourceBackedDfgReplayCaseReference final {
+  ArtifactRootReference workload;
+  ArtifactRootReference runtimeInput;
+
+  friend bool operator==(const SourceBackedDfgReplayCaseReference &lhs,
+                         const SourceBackedDfgReplayCaseReference &rhs) {
+    return lhs.workload == rhs.workload &&
+           lhs.runtimeInput == rhs.runtimeInput;
+  }
+};
+
+using SourceBackedDfgReplayCasePublisher = std::function<
+    llvm::Expected<SourceBackedDfgReplayCaseReference>(
+        const CanonicalSimulationWorkload &,
+        const CanonicalSimulationRuntimeInput &)>;
 
 /// Transient execution accounting for one exact source-backed replay. The
 /// normalized semantic result belongs to EvaluationEvidence; these counters
@@ -37,6 +59,7 @@ struct SourceBackedDfgValidationResult final {
   double simulationSeconds = 0.0;
   std::map<dataflow::OperationSchemaId, std::uint64_t> operationFireCounts;
   std::optional<CanonicalValueSequence> sourceReturnValue;
+  std::vector<SourceBackedDfgReplayCaseReference> replayCases;
 };
 
 struct SourceBackedDfgValidationLimits final {
@@ -60,7 +83,8 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
     SourceBackedDfgValidationLimits limits,
-    const NativeStructuredProgramObservations *sourceObservations = nullptr);
+    const NativeStructuredProgramObservations *sourceObservations = nullptr,
+    SourceBackedDfgReplayCasePublisher publishReplayCase = {});
 
 } // namespace loom::sim
 

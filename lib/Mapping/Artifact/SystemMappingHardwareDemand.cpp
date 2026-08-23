@@ -8,6 +8,8 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingConstraintSet.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -221,15 +223,28 @@ llvm::Error canonicalizeBindings(std::vector<Binding> &bindings, KeyFn keyFn) {
 
 llvm::Expected<CanonicalSemanticBytes> canonicalCheckpointBytes(
     ArtifactRootReference dataflow, ArtifactRootReference system,
+    ArtifactRootReference constraints, ComponentViewDigest resolvedPnrConfigDigest,
+    ComponentViewDigest searchDomainDigest,
+    SystemExecutionBindingCheckpointIncomplete &incomplete,
     std::vector<SystemThreadExecutionCheckpoint> &threadBindings,
     std::vector<SystemGraphExecutionCheckpoint> &graphBindings) {
   if (dataflow.schemaIdentity != ::dataflow::canonicalDataflowSchema.identity ||
       dataflow.schemaVersion != ::dataflow::canonicalDataflowSchema.version ||
       system.schemaIdentity != fabric::fabricArtifactSchema.identity ||
-      system.schemaVersion != fabric::fabricArtifactSchema.version)
-    return invalid("checkpoint has a foreign Dataflow or System schema");
+      system.schemaVersion != fabric::fabricArtifactSchema.version ||
+      constraints.schemaIdentity != mappingConstraintSetSchema.identity ||
+      constraints.schemaVersion != mappingConstraintSetSchema.version)
+    return invalid("checkpoint has a foreign Dataflow, System, or constraint "
+                   "schema");
   if (threadBindings.empty() && graphBindings.empty())
     return invalid("checkpoint has no execution-binding decision");
+  if (incomplete.kind !=
+          SystemExecutionBindingCheckpointIncompleteKind::
+              ImportedSpatialCapacity ||
+      incomplete.witnessCapacity == 0 ||
+      incomplete.witnessUsage <= incomplete.witnessCapacity ||
+      incomplete.dependencyRoots.empty())
+    return invalid("checkpoint has an inconsistent unresolved condition");
   if (llvm::any_of(graphBindings, [](const auto &binding) {
         return binding.target.schemaIdentity !=
                    mappingArtifactSchema.identity ||
@@ -247,9 +262,53 @@ llvm::Expected<CanonicalSemanticBytes> canonicalCheckpointBytes(
           }))
     return std::move(error);
 
+  std::vector<std::pair<std::vector<std::uint8_t>,
+                        ::dataflow::RootThreadLaunchRef>>
+      keyedDependencyRoots;
+  keyedDependencyRoots.reserve(incomplete.dependencyRoots.size());
+  for (const auto &root : incomplete.dependencyRoots) {
+    auto encoded = ::dataflow::encodeDataflowReference(dataflow.artifact, root);
+    if (!encoded)
+      return encoded.takeError();
+    keyedDependencyRoots.emplace_back(std::move(*encoded), root);
+  }
+  llvm::sort(keyedDependencyRoots,
+             [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+  if (std::adjacent_find(
+          keyedDependencyRoots.begin(), keyedDependencyRoots.end(),
+          [](const auto &lhs, const auto &rhs) {
+            return lhs.first == rhs.first;
+          }) != keyedDependencyRoots.end())
+    return invalid("checkpoint has a duplicate unresolved dependency root");
+  incomplete.dependencyRoots.clear();
+  for (const auto &entry : keyedDependencyRoots) {
+    if (!llvm::any_of(threadBindings, [&](const auto &binding) {
+          return binding.root == entry.second &&
+                 binding.target == incomplete.witnessAccCore;
+        }))
+      return invalid("checkpoint unresolved root is not resident on its "
+                     "capacity witness");
+    incomplete.dependencyRoots.push_back(entry.second);
+  }
+
   std::vector<std::uint8_t> bytes = encodeArtifactRootReference(dataflow);
   const auto encodedSystem = encodeArtifactRootReference(system);
   bytes.insert(bytes.end(), encodedSystem.begin(), encodedSystem.end());
+  const auto encodedConstraints = encodeArtifactRootReference(constraints);
+  bytes.insert(bytes.end(), encodedConstraints.begin(), encodedConstraints.end());
+  appendBlob(bytes, resolvedPnrConfigDigest.bytes());
+  appendBlob(bytes, searchDomainDigest.bytes());
+  appendU64(bytes, static_cast<std::uint64_t>(incomplete.kind));
+  appendBlob(bytes, fabric::canonicalFabricBytes(incomplete.witnessAccCore));
+  appendU64(bytes, incomplete.witnessUsage);
+  appendU64(bytes, incomplete.witnessCapacity);
+  appendU64(bytes, incomplete.dependencyRoots.size());
+  for (const auto &root : incomplete.dependencyRoots) {
+    auto encoded = ::dataflow::encodeDataflowReference(dataflow.artifact, root);
+    if (!encoded)
+      return encoded.takeError();
+    appendBlob(bytes, *encoded);
+  }
   appendU64(bytes, threadBindings.size());
   for (const auto &binding : threadBindings) {
     auto root =
@@ -279,11 +338,15 @@ llvm::Expected<CanonicalSemanticBytes> canonicalCheckpointBytes(
 llvm::Expected<FinalizedSystemExecutionBindingCheckpoint>
 finalizeSystemExecutionBindingCheckpoint(
     ArtifactRootReference dataflow, ArtifactRootReference system,
+    ArtifactRootReference constraints, ComponentViewDigest resolvedPnrConfigDigest,
+    ComponentViewDigest searchDomainDigest,
+    SystemExecutionBindingCheckpointIncomplete incomplete,
     std::vector<SystemThreadExecutionCheckpoint> threadBindings,
     std::vector<SystemGraphExecutionCheckpoint> graphBindings,
     const ArtifactStore &store) {
-  auto canonical =
-      canonicalCheckpointBytes(dataflow, system, threadBindings, graphBindings);
+  auto canonical = canonicalCheckpointBytes(
+      dataflow, system, constraints, resolvedPnrConfigDigest,
+      searchDomainDigest, incomplete, threadBindings, graphBindings);
   if (!canonical)
     return canonical.takeError();
   auto identity =
@@ -316,6 +379,62 @@ importSystemExecutionBindingCheckpoint(const ArtifactRootReference &reference,
   auto systemReference = readRootReference(bytes, offset);
   if (!systemReference)
     return systemReference.takeError();
+  auto constraintsReference = readRootReference(bytes, offset);
+  if (!constraintsReference)
+    return constraintsReference.takeError();
+  auto resolvedPnrConfigDigestBytes = readBlob(bytes, offset);
+  if (!resolvedPnrConfigDigestBytes)
+    return resolvedPnrConfigDigestBytes.takeError();
+  auto resolvedPnrConfigDigest =
+      ComponentViewDigest::fromBytes(*resolvedPnrConfigDigestBytes);
+  if (!resolvedPnrConfigDigest)
+    return resolvedPnrConfigDigest.takeError();
+  auto searchDomainDigestBytes = readBlob(bytes, offset);
+  if (!searchDomainDigestBytes)
+    return searchDomainDigestBytes.takeError();
+  auto searchDomainDigest = ComponentViewDigest::fromBytes(*searchDomainDigestBytes);
+  if (!searchDomainDigest)
+    return searchDomainDigest.takeError();
+  auto rawIncompleteKind = readU64(bytes, offset);
+  if (!rawIncompleteKind ||
+      *rawIncompleteKind != static_cast<std::uint64_t>(
+                                SystemExecutionBindingCheckpointIncompleteKind::
+                                    ImportedSpatialCapacity))
+    return invalid("checkpoint has an unknown unresolved condition");
+  auto witnessAccCoreBytes = readBlob(bytes, offset);
+  if (!witnessAccCoreBytes)
+    return witnessAccCoreBytes.takeError();
+  auto witnessAccCore =
+      fabric::decodeFabricRef<fabric::AccCoreOccurrenceRef>(*witnessAccCoreBytes);
+  if (!witnessAccCore)
+    return witnessAccCore.takeError();
+  auto witnessUsage = readU64(bytes, offset);
+  if (!witnessUsage)
+    return witnessUsage.takeError();
+  auto witnessCapacity = readU64(bytes, offset);
+  if (!witnessCapacity)
+    return witnessCapacity.takeError();
+  auto dependencyRootCount = readU64(bytes, offset);
+  if (!dependencyRootCount)
+    return dependencyRootCount.takeError();
+  if (*dependencyRootCount > bytes.size())
+    return invalid("checkpoint dependency-root count exceeds payload size");
+  SystemExecutionBindingCheckpointIncomplete incomplete{
+      SystemExecutionBindingCheckpointIncompleteKind::ImportedSpatialCapacity,
+      *witnessAccCore, *witnessUsage, *witnessCapacity, {}};
+  incomplete.dependencyRoots.reserve(
+      static_cast<std::size_t>(*dependencyRootCount));
+  for (std::uint64_t ordinal = 0; ordinal != *dependencyRootCount; ++ordinal) {
+    auto rootBytes = readBlob(bytes, offset);
+    if (!rootBytes)
+      return rootBytes.takeError();
+    auto root =
+        ::dataflow::decodeDataflowReference<::dataflow::RootThreadLaunchRef>(
+            *rootBytes, dataflowReference->artifact);
+    if (!root)
+      return root.takeError();
+    incomplete.dependencyRoots.push_back(*root);
+  }
   auto threadCount = readU64(bytes, offset);
   if (!threadCount)
     return threadCount.takeError();
@@ -374,7 +493,9 @@ importSystemExecutionBindingCheckpoint(const ArtifactRootReference &reference,
     return invalid("checkpoint payload has trailing bytes");
 
   auto canonical = canonicalCheckpointBytes(
-      *dataflowReference, *systemReference, threadBindings, graphBindings);
+      *dataflowReference, *systemReference, *constraintsReference,
+      *resolvedPnrConfigDigest, *searchDomainDigest, incomplete, threadBindings,
+      graphBindings);
   if (!canonical)
     return canonical.takeError();
   if (canonical->bytes() != bytes)
@@ -393,6 +514,13 @@ importSystemExecutionBindingCheckpoint(const ArtifactRootReference &reference,
   auto systemView = fabric::requireSystemRoot(systemArtifact->view());
   if (!systemView)
     return systemView.takeError();
+  auto constraints = importSystemMappingConstraintSet(*constraintsReference,
+                                                      store);
+  if (!constraints)
+    return constraints.takeError();
+  if (constraints->view().dataflowIdentity() != dataflowView->identity() ||
+      constraints->view().fabricIdentity() != systemView->artifact().identity())
+    return invalid("checkpoint constraint owners disagree with its inputs");
   for (const auto &binding : threadBindings) {
     auto resolved = dataflowView->resolve(binding.root);
     if (!resolved)
@@ -421,6 +549,8 @@ importSystemExecutionBindingCheckpoint(const ArtifactRootReference &reference,
   }
   return FinalizedSystemExecutionBindingCheckpoint(
       reference, std::move(*dataflowReference), std::move(*systemReference),
+      std::move(*constraintsReference), std::move(*resolvedPnrConfigDigest),
+      std::move(*searchDomainDigest), std::move(incomplete),
       std::move(threadBindings), std::move(graphBindings));
 }
 
@@ -448,8 +578,8 @@ SystemAccCoreCapacityPressure::get(
                mapping.schemaVersion != mappingArtifactSchema.version;
       }))
     return invalid("input frontier contains a non-Mapping root");
-  if (compatibleAccCoreCount == 0 || assignmentAttempts == 0 ||
-      witnessCapacity == 0 || witnessUsage <= witnessCapacity)
+  if (compatibleAccCoreCount == 0 || witnessCapacity == 0 ||
+      witnessUsage <= witnessCapacity)
     return invalid("capacity-pressure cardinalities are inconsistent");
   if (executionBindingCheckpoint.schemaIdentity !=
           systemExecutionBindingCheckpointArtifactSchema.identity ||
@@ -561,6 +691,14 @@ adoptSystemAccCoreCapacityPressure(
   if (checkpoint->system() != systemReference ||
       checkpoint->dataflow() != dataflowReference)
     return invalid("capacity pressure checkpoint names foreign inputs");
+  if (checkpoint->incomplete().kind !=
+          SystemExecutionBindingCheckpointIncompleteKind::
+              ImportedSpatialCapacity ||
+      checkpoint->incomplete().witnessAccCore !=
+          feedback->witnessAccCore() ||
+      checkpoint->incomplete().witnessUsage != feedback->witnessUsage() ||
+      checkpoint->incomplete().witnessCapacity != feedback->witnessCapacity())
+    return invalid("capacity pressure disagrees with its checkpoint witness");
   if (!llvm::any_of(checkpoint->threadBindings(), [&](const auto &binding) {
         return binding.target == feedback->witnessAccCore();
       }))

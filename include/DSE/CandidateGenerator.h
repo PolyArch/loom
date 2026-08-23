@@ -366,6 +366,11 @@ struct CandidateGeneratorProviderResult final {
   /// the exact invocation inputs, excluded from Artifact and journal identity,
   /// and unavailable to terminal replay unless promoted by its semantic owner.
   std::optional<std::vector<std::uint8_t>> ownerFeedback = std::nullopt;
+  /// True only when this result came from an actual provider invocation or
+  /// external tool execution in the current process. Recovery/import of a
+  /// terminal work record leaves it false. This is operational provenance;
+  /// it never participates in candidate identity or persisted recovery bytes.
+  bool dispatched = false;
 };
 
 using CandidateGeneratorProviderFunction =

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -940,6 +941,24 @@ inline bool operator==(const FabricInventoryOwnerRef &lhs,
 inline bool operator!=(const FabricInventoryOwnerRef &lhs,
                        const FabricInventoryOwnerRef &rhs) {
   return !(lhs == rhs);
+}
+
+/// Whether this System inventory owner is contained by one AccCore. The
+/// occurrence, its InstructionCore context, and its SpatialCore occurrence
+/// are the only owner forms that denote the same physical core.
+inline bool inventoryOwnerBelongsToAccCore(
+    const FabricInventoryOwnerRef &owner, AccCoreOccurrenceRef core) {
+  return std::visit(
+      [&](const auto &member) {
+        using Member = std::decay_t<decltype(member)>;
+        if constexpr (std::is_same_v<Member, AccCoreOccurrenceRef>)
+          return member == core;
+        if constexpr (std::is_same_v<Member, InstructionCoreContextRef> ||
+                      std::is_same_v<Member, SpatialCoreOccurrenceRef>)
+          return member.core == core;
+        return false;
+      },
+      owner.payload);
 }
 
 /// Projects either endpoint-owner plane into the shared inventory-owner

@@ -1026,14 +1026,29 @@ module {
 
   auto acceptedModule = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
-  llvm.func @kernel(%base: !llvm.ptr) {
+  llvm.func @kernel(%input: !llvm.ptr {llvm.noalias},
+                    %output: !llvm.ptr {llvm.noalias}) {
     %extent = arith.constant 5 : index
     scf.forall (%i) in (%extent) {
       %i32 = arith.index_cast %i : index to i32
-      %ptr = llvm.getelementptr inbounds %base[%i32]
+      %row = llvm.getelementptr inbounds %input[%i32]
           : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<1073741824 x i8>
-      %value = arith.constant 1 : i32
-      llvm.store %value, %ptr : i32, !llvm.ptr
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c4 = arith.constant 4 : index
+      %zero = arith.constant 0 : i32
+      %sum = scf.for %j = %c0 to %c4 step %c1
+          iter_args(%acc = %zero) -> i32 {
+        %j32 = arith.index_cast %j : index to i32
+        %ptr = llvm.getelementptr inbounds %row[%j32]
+            : (!llvm.ptr, i32) -> !llvm.ptr, i32
+        %value = llvm.load %ptr : !llvm.ptr -> i32
+        %next = arith.addi %acc, %value : i32
+        scf.yield %next : i32
+      }
+      %ptr = llvm.getelementptr inbounds %output[%i32]
+          : (!llvm.ptr, i32) -> !llvm.ptr, i32
+      llvm.store %sum, %ptr : i32, !llvm.ptr
       scf.forall.in_parallel {}
     }
     llvm.return

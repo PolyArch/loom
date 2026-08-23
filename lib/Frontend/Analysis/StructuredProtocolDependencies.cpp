@@ -36,6 +36,7 @@ struct ProtocolCallable final {
   StructuredEntityRef reference;
   mlir::LLVM::LLVMFuncOp function;
   std::vector<FormalMemoryAccess> formalAccesses;
+  bool memoryEffectsComplete = true;
 };
 
 struct ProtocolCall final {
@@ -129,30 +130,46 @@ std::optional<unsigned> formalOrdinal(mlir::Value value,
   return argument.getArgNumber();
 }
 
-std::vector<FormalMemoryAccess>
-deriveFormalAccesses(mlir::LLVM::LLVMFuncOp function) {
+struct DerivedFormalAccesses final {
+  std::vector<FormalMemoryAccess> accesses;
+  bool complete = true;
+};
+
+DerivedFormalAccesses deriveFormalAccesses(mlir::LLVM::LLVMFuncOp function) {
   std::vector<FormalMemoryAccess> accesses(
       function.getFunctionType().getParams().size());
+  bool complete = true;
   function.walk([&](mlir::Operation *operation) {
     auto interface = llvm::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
-    if (!interface)
+    if (!interface) {
+      if (!mlir::isMemoryEffectFree(operation))
+        complete = false;
       return;
+    }
     llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> effects;
     interface.getEffects(effects);
     for (const auto &effect : effects) {
       mlir::Value value = effect.getValue();
-      if (!value)
+      if (!value) {
+        if (llvm::isa<mlir::MemoryEffects::Read,
+                      mlir::MemoryEffects::Write>(effect.getEffect()))
+          complete = false;
         continue;
+      }
       std::optional<unsigned> ordinal = formalOrdinal(value, function);
-      if (!ordinal)
+      if (!ordinal) {
+        if (llvm::isa<mlir::MemoryEffects::Read,
+                      mlir::MemoryEffects::Write>(effect.getEffect()))
+          complete = false;
         continue;
+      }
       FormalMemoryAccess &access = accesses[*ordinal];
       access.reads |= llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
       access.writes |=
           llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect());
     }
   });
-  return accesses;
+  return {std::move(accesses), complete};
 }
 
 bool precedes(mlir::Operation *producer, mlir::Operation *consumer) {
@@ -160,10 +177,64 @@ bool precedes(mlir::Operation *producer, mlir::Operation *consumer) {
          producer->isBeforeInBlock(consumer);
 }
 
+bool sameMemoryObject(mlir::Value lhs, mlir::Value rhs) {
+  lhs = projectMemoryDerivationRoot(lhs);
+  rhs = projectMemoryDerivationRoot(rhs);
+  if (lhs == rhs)
+    return true;
+  auto lhsLlvm = lhs.getDefiningOp<mlir::LLVM::AddressOfOp>();
+  auto rhsLlvm = rhs.getDefiningOp<mlir::LLVM::AddressOfOp>();
+  if (lhsLlvm && rhsLlvm)
+    return lhsLlvm.getGlobalName() == rhsLlvm.getGlobalName();
+  auto lhsMemref = lhs.getDefiningOp<mlir::memref::GetGlobalOp>();
+  auto rhsMemref = rhs.getDefiningOp<mlir::memref::GetGlobalOp>();
+  return lhsMemref && rhsMemref &&
+         lhsMemref.getName() == rhsMemref.getName();
+}
+
+bool isUniqueMemoryObject(mlir::Value value) {
+  value = projectMemoryDerivationRoot(value);
+  return value.getDefiningOp<mlir::LLVM::AllocaOp>() ||
+         value.getDefiningOp<mlir::memref::AllocOp>() ||
+         value.getDefiningOp<mlir::memref::AllocaOp>() ||
+         value.getDefiningOp<mlir::LLVM::AddressOfOp>() ||
+         value.getDefiningOp<mlir::memref::GetGlobalOp>();
+}
+
+bool provablyDistinctMemoryObjects(mlir::Value lhs, mlir::Value rhs) {
+  return isUniqueMemoryObject(lhs) && isUniqueMemoryObject(rhs) &&
+         !sameMemoryObject(lhs, rhs);
+}
+
+bool hasRead(const ProtocolCallable &callable) {
+  return llvm::any_of(callable.formalAccesses,
+                      [](const FormalMemoryAccess &access) {
+                        return access.reads;
+                      });
+}
+
+bool hasWrite(const ProtocolCallable &callable) {
+  return llvm::any_of(callable.formalAccesses,
+                      [](const FormalMemoryAccess &access) {
+                        return access.writes;
+                      });
+}
+
 } // namespace
 
-llvm::Expected<std::vector<StructuredProtocolDependency>>
-projectStructuredProtocolDependencies(
+std::vector<StructuredProtocolDependency>
+StructuredProtocolDependencyProjection::presentDependencies() const {
+  std::vector<StructuredProtocolDependency> result;
+  for (const StructuredProtocolDependencyRelation &relation : relations)
+    if (relation.knowledge ==
+            StructuredProtocolDependencyKnowledge::ProvenPresent &&
+        relation.dependency)
+      result.push_back(*relation.dependency);
+  return result;
+}
+
+llvm::Expected<StructuredProtocolDependencyProjection>
+projectStructuredProtocolDependencyProjection(
     const StructuredProgramCandidate &program,
     llvm::ArrayRef<StructuredEntityRef> protocolRoots) {
   auto view = program.view();
@@ -183,7 +254,9 @@ projectStructuredProtocolDependencies(
       return invalid("protocol root is not a defined LLVM callable");
     if (!uniqueFunctions.insert(function.getOperation()).second)
       return invalid("protocol roots contain a duplicate callable");
-    callables.push_back({reference, function, deriveFormalAccesses(function)});
+    DerivedFormalAccesses accesses = deriveFormalAccesses(function);
+    callables.push_back({reference, function, std::move(accesses.accesses),
+                         accesses.complete});
   }
 
   mlir::SymbolTableCollection symbols;
@@ -202,25 +275,35 @@ projectStructuredProtocolDependencies(
       }
   });
 
-  std::vector<StructuredProtocolDependency> dependencies;
+  StructuredProtocolDependencyProjection projection;
+  projection.relations.reserve(protocolRoots.size() *
+                               (protocolRoots.empty()
+                                    ? 0
+                                    : protocolRoots.size() - 1));
   for (std::size_t producerOrdinal = 0; producerOrdinal != callables.size();
        ++producerOrdinal) {
     for (std::size_t consumerOrdinal = 0; consumerOrdinal != callables.size();
          ++consumerOrdinal) {
       if (producerOrdinal == consumerOrdinal)
         continue;
-      llvm::DenseSet<mlir::Value> sharedRoots;
+      std::vector<mlir::Value> sharedRoots;
+      bool sawOrderedCallPair = false;
+      bool relationUnknown = false;
+      const ProtocolCallable &producer = callables[producerOrdinal];
+      const ProtocolCallable &consumer = callables[consumerOrdinal];
       for (ProtocolCall &producerCall : calls) {
         if (producerCall.callableOrdinal != producerOrdinal)
           continue;
         for (ProtocolCall &consumerCall : calls) {
-          if (consumerCall.callableOrdinal != consumerOrdinal ||
-              !precedes(producerCall.call, consumerCall.call))
+          if (consumerCall.callableOrdinal != consumerOrdinal)
             continue;
+          if (!precedes(producerCall.call, consumerCall.call)) {
+            relationUnknown = true;
+            continue;
+          }
+          sawOrderedCallPair = true;
           auto producerArguments = producerCall.call.getArgOperands();
           auto consumerArguments = consumerCall.call.getArgOperands();
-          const ProtocolCallable &producer = callables[producerOrdinal];
-          const ProtocolCallable &consumer = callables[consumerOrdinal];
           for (std::size_t producerArgument = 0;
                producerArgument != producer.formalAccesses.size() &&
                producerArgument != producerArguments.size();
@@ -237,8 +320,15 @@ projectStructuredProtocolDependencies(
                 continue;
               mlir::Value consumerRoot = projectMemoryDerivationRoot(
                   consumerArguments[consumerArgument]);
-              if (producerRoot == consumerRoot)
-                sharedRoots.insert(producerRoot);
+              if (sameMemoryObject(producerRoot, consumerRoot)) {
+                if (!llvm::any_of(sharedRoots, [&](mlir::Value known) {
+                      return sameMemoryObject(known, producerRoot);
+                    }))
+                  sharedRoots.push_back(producerRoot);
+              } else if (!provablyDistinctMemoryObjects(producerRoot,
+                                                        consumerRoot)) {
+                relationUnknown = true;
+              }
             }
           }
         }
@@ -257,14 +347,41 @@ projectStructuredProtocolDependencies(
             return invalid("protocol dependency byte count overflows");
           knownBytes += *bytes;
         }
-        dependencies.push_back({callables[producerOrdinal].reference,
-                                callables[consumerOrdinal].reference,
-                                sharedRoots.size(), knownBytes,
-                                unknownObjects});
+        StructuredProtocolDependency dependency{
+            producer.reference, consumer.reference, sharedRoots.size(),
+            knownBytes, unknownObjects};
+        projection.relations.push_back(
+            {producer.reference, consumer.reference,
+             StructuredProtocolDependencyKnowledge::ProvenPresent,
+             std::move(dependency)});
+        continue;
       }
+      const bool noMemoryRelation =
+          (producer.memoryEffectsComplete && !hasWrite(producer)) ||
+          (consumer.memoryEffectsComplete && !hasRead(consumer));
+      const bool exactDisjointRelation =
+          sawOrderedCallPair && producer.memoryEffectsComplete &&
+          consumer.memoryEffectsComplete && !relationUnknown;
+      projection.relations.push_back(
+          {producer.reference, consumer.reference,
+           noMemoryRelation || exactDisjointRelation
+               ? StructuredProtocolDependencyKnowledge::ProvenAbsent
+               : StructuredProtocolDependencyKnowledge::Unknown,
+           std::nullopt});
     }
   }
-  return dependencies;
+  return projection;
+}
+
+llvm::Expected<std::vector<StructuredProtocolDependency>>
+projectStructuredProtocolDependencies(
+    const StructuredProgramCandidate &program,
+    llvm::ArrayRef<StructuredEntityRef> protocolRoots) {
+  auto projection =
+      projectStructuredProtocolDependencyProjection(program, protocolRoots);
+  if (!projection)
+    return projection.takeError();
+  return projection->presentDependencies();
 }
 
 } // namespace loom::frontend::analysis

@@ -34,6 +34,7 @@ enum InputSlot : std::uint32_t {
   FabricInput,
   PhysicalTimingProfilesInput,
   MigrationSeedInput,
+  FinalizedMigrationSeedInput,
   InputSlotCount,
 };
 
@@ -44,6 +45,7 @@ enum ApplicationInputSlot : std::uint32_t {
   ApplicationPhysicalTimingProfilesInput,
   ApplicationSystemConstraintsInput,
   ApplicationMigrationSeedInput,
+  ApplicationFinalizedMigrationSeedInput,
   ApplicationInputSlotCount,
 };
 
@@ -66,6 +68,10 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
         {CandidateGeneratorInputSlotRef(MigrationSeedInput), "migration_seed",
          PlanValueRole::CandidateSet,
          &::loom::pnr::systemMappingCheckpointMigrationSeedArtifactSchema,
+         PlanValueCardinality::ZeroOrOne},
+        {CandidateGeneratorInputSlotRef(FinalizedMigrationSeedInput),
+         "finalized_migration_seed", PlanValueRole::CandidateSet,
+         &::loom::pnr::systemMappingFinalizedMigrationSeedArtifactSchema,
          PlanValueCardinality::ZeroOrOne},
     }};
 
@@ -95,6 +101,10 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor,
          "migration_seed", PlanValueRole::CandidateSet,
          &::loom::pnr::systemMappingCheckpointMigrationSeedArtifactSchema,
          PlanValueCardinality::ZeroOrOne},
+        {CandidateGeneratorInputSlotRef(ApplicationFinalizedMigrationSeedInput),
+         "finalized_migration_seed", PlanValueRole::CandidateSet,
+         &::loom::pnr::systemMappingFinalizedMigrationSeedArtifactSchema,
+         PlanValueCardinality::ZeroOrOne},
     }};
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {
@@ -104,9 +114,11 @@ constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {
 
 std::size_t defaultSystemPartitionCount(
     const ::loom::fabric::FabricSystemRootView &system) {
-  constexpr std::size_t binaryCyclicPartitionCount = 2;
-  return std::min(system.artifact().accCoreOccurrences().size(),
-                  binaryCyclicPartitionCount);
+  (void)system;
+  // Unscheduled roots retain one logical partition. Resource-time DSE may
+  // request a larger typed partition intent; absence of that intent must not
+  // speculate concurrent execution across the whole Fabric.
+  return 1;
 }
 
 llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
@@ -192,7 +204,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSystemPnrCandidateGeneratorKind,
     "mapping.root_complete_system_pnr",
-    "loom.mapping.root_complete_system_pnr.generator.v10",
+    "loom.mapping.root_complete_system_pnr.generator.v11",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -208,7 +220,7 @@ const CandidateGeneratorDescriptor descriptor{
 const CandidateGeneratorDescriptor applicationDescriptor{
     applicationSystemPnrCandidateGeneratorKind,
     "mapping.application_system_pnr",
-    "loom.mapping.application_system_pnr.generator.v9",
+    "loom.mapping.application_system_pnr.generator.v10",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -382,6 +394,48 @@ importMigrationSeed(llvm::ArrayRef<ArtifactRootReference> references,
       std::move(*imported));
 }
 
+llvm::Expected<std::optional<::loom::pnr::FinalizedSystemMappingMigrationSeed>>
+importFinalizedMigrationSeed(llvm::ArrayRef<ArtifactRootReference> references,
+                             const ArtifactStore &store) {
+  if (references.empty())
+    return std::optional<::loom::pnr::FinalizedSystemMappingMigrationSeed>{};
+  if (references.size() != 1)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "System PnR finalized migration seed input is not zero-or-one");
+  auto imported =
+      ::loom::pnr::importSystemMappingMigrationSeed(references.front(), store);
+  if (!imported)
+    return imported.takeError();
+  return std::optional<::loom::pnr::FinalizedSystemMappingMigrationSeed>(
+      std::move(*imported));
+}
+
+llvm::Error
+admitMigrationContext(const ::loom::pnr::SystemMappingMigrationContext &context,
+                      const ArtifactRootReference &constraints,
+                      llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+                      const ComponentViewDigest &configDigest) {
+  std::vector<ArtifactRootReference> canonicalMappings(spatialMappings.begin(),
+                                                       spatialMappings.end());
+  llvm::sort(canonicalMappings, artifactRootReferenceLess);
+  if (std::adjacent_find(canonicalMappings.begin(), canonicalMappings.end()) !=
+      canonicalMappings.end())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "system_pnr_migration_invalid: current SpatialMapping frontier has "
+        "duplicates");
+  if (context.childConstraints() != constraints ||
+      context.spatialMappings() !=
+          llvm::ArrayRef<ArtifactRootReference>(canonicalMappings) ||
+      context.resolvedPnrConfigDigest() != configDigest)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "system_pnr_migration_invalid: seed problem closure does not match "
+        "the current constraints, SpatialMappings, or PnR config");
+  return llvm::Error::success();
+}
+
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
@@ -424,6 +478,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       importMigrationSeed(inputBindings[MigrationSeedInput].artifacts, store);
   if (!migrationSeed)
     return migrationSeed.takeError();
+  auto finalizedMigrationSeed = importFinalizedMigrationSeed(
+      inputBindings[FinalizedMigrationSeedInput].artifacts, store);
+  if (!finalizedMigrationSeed)
+    return finalizedMigrationSeed.takeError();
 
   std::vector<::dataflow::RootThreadLaunchRef> roots;
   roots.reserve(dataflow->rootThreadLaunches().size());
@@ -442,6 +500,23 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       *dataflow, *system, roots, store);
   if (!constraints)
     return constraints.takeError();
+  if (*migrationSeed && *finalizedMigrationSeed)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "root_complete_system_pnr_generator_invalid: checkpoint and finalized "
+        "migration seeds are mutually exclusive");
+  if (*migrationSeed)
+    if (llvm::Error error = admitMigrationContext(
+            (*migrationSeed)->context(), constraints->reference(),
+            inputBindings[SpatialMappingCandidatesInput].artifacts,
+            config->digest()))
+      return std::move(error);
+  if (*finalizedMigrationSeed)
+    if (llvm::Error error = admitMigrationContext(
+            (*finalizedMigrationSeed)->context(), constraints->reference(),
+            inputBindings[SpatialMappingCandidatesInput].artifacts,
+            config->digest()))
+      return std::move(error);
   ::loom::pnr::DerivedContextCacheAccess activeAccess;
   auto activeContext = ::loom::pnr::buildSystemActiveContext(
       *staticContext, *dataflow, *system, *physicalTimingProfiles, *constraints,
@@ -452,9 +527,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   ::loom::pnr::emitSystemActiveContextStatistics(
       *activeContext, ::loom::mapping_debug::Stage::SystemPnr,
       activeAccess.hits, activeAccess.misses);
-  auto partition = ::loom::pnr::projectCyclicPresburgerPartitionPlan(
+  auto partition = ::loom::pnr::projectScheduledPresburgerPartitionPlan(
       *dataflow, constraints->view().rootThreadLaunches(),
-      defaultSystemPartitionCount(*system));
+      config->systemBindingPartitions(), defaultSystemPartitionCount(*system));
   if (!partition)
     return partition.takeError();
   ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{
@@ -484,7 +559,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       ::loom::pnr::generateSystemMappings(
           {*dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
            *constraints, store, invocation.executionControl(), &*staticContext,
-           &*activeContext, nullptr,
+           &*activeContext,
+           *finalizedMigrationSeed ? &**finalizedMigrationSeed : nullptr,
            *migrationSeed ? &**migrationSeed : nullptr});
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
@@ -580,6 +656,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
       inputBindings[ApplicationMigrationSeedInput].artifacts, store);
   if (!migrationSeed)
     return migrationSeed.takeError();
+  auto finalizedMigrationSeed = importFinalizedMigrationSeed(
+      inputBindings[ApplicationFinalizedMigrationSeedInput].artifacts, store);
+  if (!finalizedMigrationSeed)
+    return finalizedMigrationSeed.takeError();
   auto constraints = ::loom::mapping::importSystemMappingConstraintSet(
       inputBindings[ApplicationSystemConstraintsInput].artifacts.front(),
       store);
@@ -591,6 +671,23 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
         llvm::inconvertibleErrorCode(),
         "application_system_pnr_generator_invalid: constraints bind foreign "
         "Dataflow or Fabric owners");
+  if (*migrationSeed && *finalizedMigrationSeed)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "application_system_pnr_generator_invalid: checkpoint and finalized "
+        "migration seeds are mutually exclusive");
+  if (*migrationSeed)
+    if (llvm::Error error = admitMigrationContext(
+            (*migrationSeed)->context(), constraints->reference(),
+            inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts,
+            config->digest()))
+      return std::move(error);
+  if (*finalizedMigrationSeed)
+    if (llvm::Error error = admitMigrationContext(
+            (*finalizedMigrationSeed)->context(), constraints->reference(),
+            inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts,
+            config->digest()))
+      return std::move(error);
   ::loom::pnr::DerivedContextCacheAccess activeAccess;
   auto activeContext = ::loom::pnr::buildSystemActiveContext(
       *staticContext, *dataflow, *system, *physicalTimingProfiles, *constraints,
@@ -602,9 +699,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
       *activeContext, ::loom::mapping_debug::Stage::SystemPnr,
       activeAccess.hits, activeAccess.misses);
 
-  auto partition = ::loom::pnr::projectCyclicPresburgerPartitionPlan(
+  auto partition = ::loom::pnr::projectScheduledPresburgerPartitionPlan(
       *dataflow, constraints->view().rootThreadLaunches(),
-      defaultSystemPartitionCount(*system));
+      config->systemBindingPartitions(), defaultSystemPartitionCount(*system));
   if (!partition)
     return partition.takeError();
   ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{
@@ -635,7 +732,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
       ::loom::pnr::generateSystemMappings(
           {*dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
            *constraints, store, invocation.executionControl(), &*staticContext,
-           &*activeContext, nullptr,
+           &*activeContext,
+           *finalizedMigrationSeed ? &**finalizedMigrationSeed : nullptr,
            *migrationSeed ? &**migrationSeed : nullptr});
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
@@ -717,7 +815,9 @@ bindRootCompleteSystemPnrCandidateGeneratorInputs(
     const ArtifactRootReference &dataflow,
     llvm::ArrayRef<ArtifactRootReference> spatialMappingCandidates,
     const ArtifactRootReference &fabric,
-    llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles) {
+    llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
+    std::optional<ArtifactRootReference> checkpointMigrationSeed,
+    std::optional<ArtifactRootReference> finalizedMigrationSeed) {
   if (llvm::Error error = registerRootCompleteSystemPnrCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
@@ -727,7 +827,14 @@ bindRootCompleteSystemPnrCandidateGeneratorInputs(
       {CandidateGeneratorInputSlotRef(FabricInput), {fabric}},
       {CandidateGeneratorInputSlotRef(PhysicalTimingProfilesInput),
        physicalTimingProfiles.vec()},
-      {CandidateGeneratorInputSlotRef(MigrationSeedInput), {}},
+      {CandidateGeneratorInputSlotRef(MigrationSeedInput),
+       checkpointMigrationSeed
+           ? std::vector<ArtifactRootReference>{*checkpointMigrationSeed}
+           : std::vector<ArtifactRootReference>{}},
+      {CandidateGeneratorInputSlotRef(FinalizedMigrationSeedInput),
+       finalizedMigrationSeed
+           ? std::vector<ArtifactRootReference>{*finalizedMigrationSeed}
+           : std::vector<ArtifactRootReference>{}},
   };
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           descriptor.reference(), bindings))
@@ -762,7 +869,9 @@ bindApplicationSystemPnrCandidateGeneratorInputs(
     llvm::ArrayRef<ArtifactRootReference> spatialMappingCandidates,
     const ArtifactRootReference &fabric,
     llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
-    const ArtifactRootReference &systemConstraints) {
+    const ArtifactRootReference &systemConstraints,
+    std::optional<ArtifactRootReference> checkpointMigrationSeed,
+    std::optional<ArtifactRootReference> finalizedMigrationSeed) {
   if (llvm::Error error = registerApplicationSystemPnrCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
@@ -774,7 +883,14 @@ bindApplicationSystemPnrCandidateGeneratorInputs(
        physicalTimingProfiles.vec()},
       {CandidateGeneratorInputSlotRef(ApplicationSystemConstraintsInput),
        {systemConstraints}},
-      {CandidateGeneratorInputSlotRef(ApplicationMigrationSeedInput), {}},
+      {CandidateGeneratorInputSlotRef(ApplicationMigrationSeedInput),
+       checkpointMigrationSeed
+           ? std::vector<ArtifactRootReference>{*checkpointMigrationSeed}
+           : std::vector<ArtifactRootReference>{}},
+      {CandidateGeneratorInputSlotRef(ApplicationFinalizedMigrationSeedInput),
+       finalizedMigrationSeed
+           ? std::vector<ArtifactRootReference>{*finalizedMigrationSeed}
+           : std::vector<ArtifactRootReference>{}},
   };
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           applicationDescriptor.reference(), bindings))

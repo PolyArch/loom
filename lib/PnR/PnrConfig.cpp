@@ -22,10 +22,11 @@ struct ResolvedPnrConfigViewAccess final {
   static ResolvedPnrConfigView
   create(PnrConfigDomain domain, ResolvedPnrPolicyConfig policy,
          ResolvedObjectiveCatalogs selectedObjectiveCatalogs,
+         std::vector<SystemBindingPartitionIntent> systemBindingPartitions,
          std::vector<std::uint8_t> canonicalBytes, ComponentViewDigest digest) {
-    return ResolvedPnrConfigView(domain, std::move(policy),
-                                 std::move(selectedObjectiveCatalogs),
-                                 std::move(canonicalBytes), digest);
+    return ResolvedPnrConfigView(
+        domain, std::move(policy), std::move(selectedObjectiveCatalogs),
+        std::move(systemBindingPartitions), std::move(canonicalBytes), digest);
   }
 };
 
@@ -33,7 +34,7 @@ namespace {
 
 constexpr llvm::StringLiteral spatialDescriptor =
     "loom.spatial_pnr.config.15.0";
-constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.7.0";
+constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.8.0";
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -80,6 +81,31 @@ llvm::ArrayRef<std::uint8_t> descriptorBytes(PnrConfigDomain domain) {
           descriptor.size()};
 }
 
+bool partitionIntentLess(const SystemBindingPartitionIntent &lhs,
+                         const SystemBindingPartitionIntent &rhs) {
+  if (lhs.root.artifact != rhs.root.artifact)
+    return lhs.root.artifact.bytes() < rhs.root.artifact.bytes();
+  return lhs.root.entity.value() < rhs.root.entity.value();
+}
+
+llvm::Expected<std::vector<SystemBindingPartitionIntent>>
+canonicalPartitionIntent(
+    PnrConfigDomain domain,
+    llvm::ArrayRef<SystemBindingPartitionIntent> partitions) {
+  if (domain == PnrConfigDomain::Spatial && !partitions.empty())
+    return invalid("Spatial PnR cannot carry a System partition intent");
+  std::vector<SystemBindingPartitionIntent> canonical(partitions.begin(),
+                                                      partitions.end());
+  llvm::sort(canonical, partitionIntentLess);
+  for (const auto &partition : canonical)
+    if (partition.partitionCount == 0)
+      return invalid("System partition count is zero");
+  for (std::size_t index = 1; index < canonical.size(); ++index)
+    if (canonical[index - 1].root == canonical[index].root)
+      return invalid("System partition intent repeats a Dataflow root");
+  return canonical;
+}
+
 class Encoder final {
 public:
   void u32(std::uint32_t value) {
@@ -96,6 +122,10 @@ public:
   }
 
   void i64(std::int64_t value) { u64(static_cast<std::uint64_t>(value)); }
+
+  void bytes(llvm::ArrayRef<std::uint8_t> value) {
+    bytes_.insert(bytes_.end(), value.begin(), value.end());
+  }
 
   void ratio(const ResolvedExactRatio &value) {
     u64(value.numerator);
@@ -144,6 +174,15 @@ public:
     if (*countOrErr > remaining())
       return invalid("sequence count exceeds remaining bytes");
     return static_cast<std::size_t>(*countOrErr);
+  }
+
+  llvm::Expected<std::vector<std::uint8_t>> bytes(std::size_t count) {
+    if (count > remaining())
+      return invalid("truncated byte sequence");
+    std::vector<std::uint8_t> result(bytes_.begin() + offset_,
+                                     bytes_.begin() + offset_ + count);
+    offset_ += count;
+    return result;
   }
 
   llvm::Expected<ResolvedExactRatio> ratio() {
@@ -285,11 +324,20 @@ void encodeClosure(Encoder &encoder, const ResolvedPnrPolicyConfig &policy,
 }
 
 std::vector<std::uint8_t>
-encodeView(const ResolvedPnrPolicyConfig &policy,
-           const ResolvedObjectiveCatalogs &catalogs) {
+encodeView(PnrConfigDomain domain, const ResolvedPnrPolicyConfig &policy,
+           const ResolvedObjectiveCatalogs &catalogs,
+           llvm::ArrayRef<SystemBindingPartitionIntent> partitions) {
   Encoder encoder;
   encodePolicy(encoder, policy);
   encodeClosure(encoder, policy, catalogs);
+  if (domain == PnrConfigDomain::System) {
+    encoder.u64(partitions.size());
+    for (const SystemBindingPartitionIntent &partition : partitions) {
+      encoder.bytes(partition.root.artifact.bytes());
+      encoder.u64(partition.root.entity.value());
+      encoder.u64(partition.partitionCount);
+    }
+  }
   return encoder.take();
 }
 
@@ -498,10 +546,9 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
        ResolvedPnrRoutingPolicy{*endpointLimit, *negotiationLimit,
                                 *noProgressLimit, *noProgressTrendWindow,
                                 std::move(*negotiation)},
-       ResolvedPnrAnnealingPolicy{*calibration, *quantile, *acceptance,
-                                  *fallback, *minimum, *cooling,
-                                  *temperatureLevelLimit, *levelBase,
-                                  *perMovable},
+       ResolvedPnrAnnealingPolicy{
+           *calibration, *quantile, *acceptance, *fallback, *minimum, *cooling,
+           *temperatureLevelLimit, *levelBase, *perMovable},
        repair, completionGoal},
       ResolvedPnrDeterminismPolicy{
           *masterSeed,
@@ -641,8 +688,14 @@ decodeClosure(Decoder &decoder) {
   return std::make_pair(std::move(catalogs), std::move(selection));
 }
 
-llvm::Expected<std::pair<ResolvedPnrPolicyConfig, ResolvedObjectiveCatalogs>>
-decodeView(llvm::ArrayRef<std::uint8_t> bytes) {
+struct DecodedPnrConfigView final {
+  ResolvedPnrPolicyConfig policy;
+  ResolvedObjectiveCatalogs catalogs;
+  std::vector<SystemBindingPartitionIntent> partitions;
+};
+
+llvm::Expected<DecodedPnrConfigView>
+decodeView(PnrConfigDomain domain, llvm::ArrayRef<std::uint8_t> bytes) {
   Decoder decoder(bytes);
   auto policy = decodePolicy(decoder);
   if (!policy)
@@ -651,6 +704,30 @@ decodeView(llvm::ArrayRef<std::uint8_t> bytes) {
   if (!closure)
     return closure.takeError();
   policy->objectiveSelection = std::move(closure->second);
+  std::vector<SystemBindingPartitionIntent> partitions;
+  if (domain == PnrConfigDomain::System) {
+    auto count = decoder.count();
+    if (!count)
+      return count.takeError();
+    partitions.reserve(*count);
+    for (std::size_t ordinal = 0; ordinal != *count; ++ordinal) {
+      auto identityBytes = decoder.bytes(ArtifactIdentity::byteSize);
+      auto entity = decoder.u64();
+      auto partitionCount = decoder.u64();
+      if (!identityBytes)
+        return identityBytes.takeError();
+      auto identity = ArtifactIdentity::fromBytes(*identityBytes);
+      if (!identity)
+        return identity.takeError();
+      if (!entity)
+        return entity.takeError();
+      if (!partitionCount)
+        return partitionCount.takeError();
+      partitions.push_back(
+          {{std::move(*identity), ::dataflow::RootThreadLaunchId(*entity)},
+           *partitionCount});
+    }
+  }
   if (decoder.remaining() != 0)
     return invalid("trailing bytes");
   if (llvm::Error error =
@@ -658,7 +735,13 @@ decodeView(llvm::ArrayRef<std::uint8_t> bytes) {
     return std::move(error);
   if (llvm::Error error = validateObjectiveArithmetic(closure->first))
     return std::move(error);
-  return std::make_pair(std::move(*policy), std::move(closure->first));
+  auto canonical = canonicalPartitionIntent(domain, partitions);
+  if (!canonical)
+    return canonical.takeError();
+  if (*canonical != partitions)
+    return invalid("System partition intent is not canonical");
+  return DecodedPnrConfigView{std::move(*policy), std::move(closure->first),
+                              std::move(partitions)};
 }
 
 llvm::Expected<std::pair<ResolvedPnrPolicyConfig, ResolvedObjectiveCatalogs>>
@@ -734,14 +817,15 @@ makeProjectedView(PnrConfigDomain domain, const ResolvedPnrPolicyConfig &policy,
   if (llvm::Error error =
           validateDomainCapabilities(domain, selected->first, selected->second))
     return std::move(error);
+  std::vector<SystemBindingPartitionIntent> partitions;
   std::vector<std::uint8_t> bytes =
-      encodeView(selected->first, selected->second);
+      encodeView(domain, selected->first, selected->second, partitions);
   auto digest = computeComponentViewDigest(descriptorBytes(domain), bytes);
   if (!digest)
     return digest.takeError();
-  return ResolvedPnrConfigViewAccess::create(domain, std::move(selected->first),
-                                             std::move(selected->second),
-                                             std::move(bytes), *digest);
+  return ResolvedPnrConfigViewAccess::create(
+      domain, std::move(selected->first), std::move(selected->second),
+      std::move(partitions), std::move(bytes), *digest);
 }
 
 llvm::Expected<ResolvedPnrConfigView>
@@ -756,19 +840,19 @@ adoptView(PnrConfigDomain domain,
   if (llvm::Error error = validateComponentViewDigest(
           suppliedDescriptor, suppliedBytes, suppliedDigest))
     return std::move(error);
-  auto decoded = decodeView(suppliedBytes);
+  auto decoded = decodeView(domain, suppliedBytes);
   if (!decoded)
     return decoded.takeError();
-  if (llvm::Error error =
-          validateDomainCapabilities(domain, decoded->first, decoded->second))
+  if (llvm::Error error = validateDomainCapabilities(domain, decoded->policy,
+                                                     decoded->catalogs))
     return std::move(error);
-  std::vector<std::uint8_t> canonical =
-      encodeView(decoded->first, decoded->second);
+  std::vector<std::uint8_t> canonical = encodeView(
+      domain, decoded->policy, decoded->catalogs, decoded->partitions);
   if (llvm::ArrayRef<std::uint8_t>(canonical) != suppliedBytes)
     return invalid("decoded value does not re-encode to exact source bytes");
   return ResolvedPnrConfigViewAccess::create(
-      domain, std::move(decoded->first), std::move(decoded->second),
-      std::move(canonical), suppliedDigest);
+      domain, std::move(decoded->policy), std::move(decoded->catalogs),
+      std::move(decoded->partitions), std::move(canonical), suppliedDigest);
 }
 
 } // namespace
@@ -814,6 +898,28 @@ llvm::Expected<ResolvedPnrConfigView> adoptResolvedSystemPnrConfigView(
                    canonicalViewBytes, digest);
 }
 
+llvm::Expected<ResolvedPnrConfigView> specializeResolvedSystemPnrConfigView(
+    const ResolvedPnrConfigView &base,
+    llvm::ArrayRef<SystemBindingPartitionIntent> partitions) {
+  if (base.domain() != PnrConfigDomain::System)
+    return invalid("System partition intent requires a System PnR view");
+  auto canonical =
+      canonicalPartitionIntent(PnrConfigDomain::System, partitions);
+  if (!canonical)
+    return canonical.takeError();
+  ResolvedPnrPolicyConfig policy = base.policy();
+  ResolvedObjectiveCatalogs catalogs = base.selectedObjectiveCatalogs();
+  std::vector<std::uint8_t> bytes =
+      encodeView(PnrConfigDomain::System, policy, catalogs, *canonical);
+  auto digest = computeComponentViewDigest(
+      resolvedSystemPnrConfigSchemaDescriptorBytes(), bytes);
+  if (!digest)
+    return digest.takeError();
+  return ResolvedPnrConfigViewAccess::create(
+      PnrConfigDomain::System, std::move(policy), std::move(catalogs),
+      std::move(*canonical), std::move(bytes), *digest);
+}
+
 std::vector<DeterministicWorkBudgetEntry>
 deriveDeterministicWorkBudgetView(const ResolvedPnrConfigView &view) {
   const ResolvedPnrSearchPolicy &search = view.policy().search;
@@ -830,8 +936,7 @@ deriveDeterministicWorkBudgetView(const ResolvedPnrConfigView &view) {
        search.routing.noProgressTrendWindow},
       {PnrWorkUnit::CalibrationProposal,
        search.annealing.calibrationProposalCount},
-      {PnrWorkUnit::TemperatureLevel,
-       search.annealing.temperatureLevelLimit},
+      {PnrWorkUnit::TemperatureLevel, search.annealing.temperatureLevelLimit},
       {PnrWorkUnit::ProposalPerLevelBase,
        search.annealing.proposalsPerLevelBase},
       {PnrWorkUnit::ProposalPerMovableDecision,

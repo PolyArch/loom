@@ -194,6 +194,7 @@ private:
   HandshakeCandidateScratch *scratch_ = nullptr;
   bool closed_ = false;
   bool cycle_ = false;
+  bool rebuildOnCommit_ = false;
   std::shared_ptr<detail::MaterializedHandshakeGraph> pendingGraph_;
 
   friend class HandshakeCandidateState;

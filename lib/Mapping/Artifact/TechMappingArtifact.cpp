@@ -21,6 +21,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
@@ -51,6 +52,15 @@ std::vector<std::uint8_t> unsignedBytes(DenseI8ArrayAttr record) {
   for (std::int8_t byte : record.asArrayRef())
     result.push_back(static_cast<std::uint8_t>(byte));
   return result;
+}
+
+DenseI8ArrayAttr identityBytes(MLIRContext *context,
+                               const ArtifactIdentity &identity) {
+  llvm::SmallVector<std::int8_t, 32> bytes;
+  bytes.reserve(identity.bytes().size());
+  for (std::uint8_t byte : identity.bytes())
+    bytes.push_back(static_cast<std::int8_t>(byte));
+  return DenseI8ArrayAttr::get(context, bytes);
 }
 
 llvm::Expected<ArtifactIdentity>
@@ -1284,6 +1294,29 @@ importTechMapping(const ArtifactRootReference &reference,
     return view.takeError();
   return FinalizedTechMapping(reference, std::move(*canonicalBytes),
                               std::move(*view));
+}
+
+llvm::Expected<FinalizedTechMapping> rebaseTechMapping(
+    const FinalizedTechMapping &parent,
+    const ::loom::fabric::FabricArtifactView &childFabric,
+    const ArtifactStore &store) {
+  auto parsed = parseTechRoot(parent.canonicalBytes());
+  if (!parsed)
+    return parsed.takeError();
+  parsed->root.setFabricAttr(::mapping::ArtifactIdentityAttr::get(
+      parsed->context.get(),
+      identityBytes(parsed->context.get(), childFabric.identity())));
+  auto dataflow = ::dataflow::importCanonicalDataflow(
+      {::dataflow::canonicalDataflowSchema.identity.str(),
+       ::dataflow::canonicalDataflowSchema.version,
+       parent.view().dataflowIdentity()},
+      store);
+  if (!dataflow)
+    return dataflow.takeError();
+  auto dataflowView = dataflow->view();
+  if (!dataflowView)
+    return dataflowView.takeError();
+  return finalizeTechMapping(parsed->root, *dataflowView, childFabric, store);
 }
 
 } // namespace loom::mapping

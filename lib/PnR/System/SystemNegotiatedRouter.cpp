@@ -378,7 +378,7 @@ detail::negotiateSystemServiceRoutes(
   mapping_debug::ClosureStatus closureStatus =
       mapping_debug::ClosureStatus::Failed;
   mapping_debug::emit(
-      mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+      mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
       mapping_debug::Event::InvocationBegin, [&](llvm::json::Object &fields) {
         fields["logical_leg_count"] = problem.serviceLegs().size();
         fields["negotiation_iteration_limit"] =
@@ -394,14 +394,15 @@ detail::negotiateSystemServiceRoutes(
     debugStatistics.aStarExpansions = endpointExpansions;
     debugStatistics.negotiatedIterations = negotiationIterations;
     mapping_debug::emit(
-        mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+        mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
         mapping_debug::Event::InvocationEnd, [&](llvm::json::Object &fields) {
           fields["closure_status"] =
               mapping_debug::closureStatusSpelling(closureStatus);
           fields["a_star_expansions"] = endpointExpansions;
           fields["negotiated_iterations"] = negotiationIterations;
         });
-    debugStatistics.emit(mapping_debug::Stage::SystemPnr, closureStatus);
+    debugStatistics.emit(mapping_debug::Level::Decision,
+                         mapping_debug::Stage::SystemPnr, closureStatus);
   });
 
   auto lower = buildSystemServiceRouteLowerBoundArcCosts(topology);
@@ -494,7 +495,8 @@ detail::negotiateSystemServiceRoutes(
     std::uint64_t iterationExpansions = 0;
     auto built = buildSystemServiceRoutes(
         problem, threadChoices, graphChoices,
-        {order, *lower, currentCosts, prior, exclusion, repairRegion, false},
+        {order, *lower, currentCosts, prior, exclusion, repairRegion,
+         reroutedLegs, false},
         iterationExpansions);
     if (llvm::Error error = checkedAdd(iterationExpansions, endpointExpansions,
                                        "endpoint expansion"))

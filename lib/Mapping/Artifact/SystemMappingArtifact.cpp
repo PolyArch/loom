@@ -10,6 +10,7 @@
 #include "Common/InvocationDiagnosticLog.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemReferenceRemapper.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
@@ -23,6 +24,7 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/JSON.h"
 
 #include <algorithm>
@@ -160,6 +162,12 @@ llvm::Error invalid(const llvm::Twine &message) {
                                      message);
 }
 
+llvm::Error cancelled() {
+  return llvm::make_error<SystemMappingIncompleteError>(
+      SystemMappingIncompleteReason::CancelledOrTimeout,
+      "System Mapping finalization was cancelled or timed out");
+}
+
 std::uint64_t
 retainedSystemMappingBytes(const FinalizedSystemMapping &mapping) {
   const SystemMappingView &view = mapping.view();
@@ -172,6 +180,8 @@ retainedSystemMappingBytes(const FinalizedSystemMapping &mapping) {
           sizeof(SystemSpatialContextDomain) +
       closure.serviceRealizations.capacity() *
           sizeof(SystemServiceRealizationView) +
+      closure.progressBasis.residualCycle.capacity() *
+          sizeof(::dataflow::ActorRef) +
       closure.routeObligations.capacity() *
           sizeof(MappingRouteProgressObligationProjection) +
       closure.capacityCells.capacity() * sizeof(SystemCapacityCellProjection) +
@@ -218,7 +228,9 @@ deterministicSystemMappingWork(const FinalizedSystemMapping &mapping) {
   std::uint64_t closureWork =
       1 + closure.executionContexts.instructionDomains.size() +
       closure.executionContexts.spatialDomains.size() +
-      closure.serviceRealizations.size() + closure.routeObligations.size() +
+      closure.serviceRealizations.size() +
+      closure.progressBasis.residualCycle.size() +
+      closure.routeObligations.size() +
       closure.capacityCells.size() + closure.resourceActivations.size();
   for (const auto &domain : closure.executionContexts.instructionDomains)
     closureWork += domain.cells.size();
@@ -258,6 +270,15 @@ std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr record) {
   for (std::int8_t byte : record.asArrayRef())
     result.push_back(static_cast<std::uint8_t>(byte));
   return result;
+}
+
+mlir::DenseI8ArrayAttr denseBytes(mlir::MLIRContext *context,
+                                  llvm::ArrayRef<std::uint8_t> value) {
+  llvm::SmallVector<std::int8_t, 32> bytes;
+  bytes.reserve(value.size());
+  for (std::uint8_t byte : value)
+    bytes.push_back(static_cast<std::int8_t>(byte));
+  return mlir::DenseI8ArrayAttr::get(context, bytes);
 }
 
 std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
@@ -633,11 +654,18 @@ llvm::Error validateSpatialMappingImportContext(
 } // namespace
 
 SystemMappingImportSession::SystemMappingImportSession(
-    const ArtifactStore &store, std::size_t entryLimit)
-    : state_(std::make_unique<detail::SystemMappingImportSessionState>(
-          store, entryLimit)),
-      previous_(currentSystemMappingImportSession) {
-  currentSystemMappingImportSession = state_.get();
+    const ArtifactStore &store, std::size_t entryLimit,
+    SystemMappingImportSessionMode mode)
+    : previous_(currentSystemMappingImportSession) {
+  if (mode == SystemMappingImportSessionMode::ReuseEnclosing && previous_ &&
+      previous_->owns(store)) {
+    active_ = previous_;
+  } else {
+    state_ = std::make_unique<detail::SystemMappingImportSessionState>(
+        store, entryLimit);
+    active_ = state_.get();
+  }
+  currentSystemMappingImportSession = active_;
 }
 
 SystemMappingImportSession::~SystemMappingImportSession() {
@@ -646,7 +674,8 @@ SystemMappingImportSession::~SystemMappingImportSession() {
 
 SystemMappingImportSessionStatistics
 SystemMappingImportSession::statistics() const {
-  return state_->statistics();
+  return active_ ? active_->statistics()
+                 : SystemMappingImportSessionStatistics{};
 }
 
 void emitSystemMappingImportSessionStatistics(
@@ -676,7 +705,14 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const ArtifactStore &store,
-    const SpatialMappingImportContext *spatialMappings) {
+    const SpatialMappingImportContext *spatialMappings,
+    ExecutionControlView executionControl) {
+  const auto interrupted = [&]() -> llvm::Error {
+    return llvm::createStringError(std::errc::timed_out,
+                                   "System execution import was interrupted");
+  };
+  if (executionControl.stopRequested())
+    return interrupted();
   auto parsed = parseSystemRoot(bytes);
   if (!parsed)
     return parsed.takeError();
@@ -694,6 +730,8 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
 
   std::vector<::dataflow::RootThreadLaunchRef> roots;
   for (mlir::Attribute attribute : parsed->root.getRootThreadLaunches()) {
+    if (executionControl.stopRequested())
+      return interrupted();
     auto root = decodeDataflow<::dataflow::RootThreadLaunchRef>(
         mlir::cast<::mapping::RootThreadLaunchRefAttr>(attribute),
         dataflow.identity());
@@ -737,6 +775,8 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
            decltype(&artifactRootReferenceLess)>
       importedMappings(&artifactRootReferenceLess);
   for (const ArtifactRootReference &reference : imports) {
+    if (executionControl.stopRequested())
+      return interrupted();
     auto mapping = resolveSpatialMappingImport(*spatialMappings, reference);
     if (!mapping)
       return mapping.takeError();
@@ -753,6 +793,8 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
   std::map<std::string, std::size_t> threadByKey;
   std::set<std::string> seenKeys;
   for (mlir::Operation &operation : parsed->root.getBody().front()) {
+    if (executionControl.stopRequested())
+      return interrupted();
     if (auto binding =
             mlir::dyn_cast<::mapping::ThreadExecutionBindingOp>(operation)) {
       auto key = decodeDataflow<::dataflow::RootThreadLaunchRef>(
@@ -915,7 +957,10 @@ llvm::Expected<SystemMappingView> importSystemMappingView(
     const ::loom::fabric::FabricSystemRootView &fabric,
     const ArtifactStore &store,
     const SpatialMappingImportContext *spatialMappings,
-    std::shared_ptr<const SystemMappingClosureProjection> *verifiedClosure) {
+    std::shared_ptr<const SystemMappingClosureProjection> *verifiedClosure,
+    ExecutionControlView executionControl) {
+  if (executionControl.stopRequested())
+    return cancelled();
   auto canonical = writeCanonicalSystemMappingAssembly(root);
   if (!canonical)
     return canonical.takeError();
@@ -938,35 +983,78 @@ llvm::Expected<SystemMappingView> importSystemMappingView(
     return std::move(error);
 
   auto execution = strictImportSystemExecutionBindings(
-      *canonical, dataflow, fabric, store, spatialMappings);
-  if (!execution)
+      *canonical, dataflow, fabric, store, spatialMappings, executionControl);
+  if (!execution) {
+    if (executionControl.stopRequested()) {
+      llvm::consumeError(execution.takeError());
+      return cancelled();
+    }
     return execution.takeError();
+  }
+  if (executionControl.stopRequested())
+    return cancelled();
   auto closure = detail::importSystemMappingClosure(
-      root, dataflow, fabric, *execution, *spatialMappings);
-  if (!closure)
+      root, dataflow, fabric, *execution, *spatialMappings, executionControl);
+  if (!closure) {
+    if (executionControl.stopRequested()) {
+      llvm::consumeError(closure.takeError());
+      return cancelled();
+    }
     return closure.takeError();
+  }
+  if (executionControl.stopRequested())
+    return cancelled();
   auto physicalDemand = detail::verifySystemMappingCapacity(
       dataflow, fabric, *execution, closure->services, closure->resourceUses,
-      closure->resourceUseActivationKeys, *spatialMappings);
-  if (!physicalDemand)
+      closure->resourceUseActivationKeys, *spatialMappings, executionControl);
+  if (!physicalDemand) {
+    if (executionControl.stopRequested()) {
+      llvm::consumeError(physicalDemand.takeError());
+      return cancelled();
+    }
     return physicalDemand.takeError();
+  }
+  if (executionControl.stopRequested())
+    return cancelled();
   if (llvm::Error error = detail::verifySystemMappingHandshakeClosure(
-          dataflow, fabric, *execution, closure->services, *spatialMappings))
+          dataflow, fabric, *execution, closure->services, *spatialMappings,
+          executionControl)) {
+    if (executionControl.stopRequested()) {
+      llvm::consumeError(std::move(error));
+      return cancelled();
+    }
     return std::move(error);
+  }
+  if (executionControl.stopRequested())
+    return cancelled();
 
   (void)physicalDemand;
   SystemMappingView result(mappingIdentity, dataflow.identity(),
                            fabric.artifact().identity(), std::move(*execution),
                            std::move(closure->services),
                            std::move(closure->resourceUses));
-  auto projected = projectSystemMappingClosure(dataflow, fabric, result, store,
-                                               spatialMappings);
-  if (!projected)
+  auto projected = projectSystemMappingClosure(
+      dataflow, fabric, result, store, spatialMappings, executionControl);
+  if (!projected) {
+    if (executionControl.stopRequested()) {
+      llvm::consumeError(projected.takeError());
+      return cancelled();
+    }
     return projected.takeError();
+  }
+  if (executionControl.stopRequested())
+    return cancelled();
   auto progress =
       deriveSystemMappingProgressClosure(dataflow, fabric, *projected);
-  if (!progress)
+  if (!progress) {
+    if (executionControl.stopRequested()) {
+      llvm::consumeError(progress.takeError());
+      return cancelled();
+    }
     return progress.takeError();
+  }
+  if (executionControl.stopRequested())
+    return cancelled();
   switch (progress->kind) {
   case MappingProgressClosureKind::ProvenNoClosedWaitSet:
     break;
@@ -1001,7 +1089,7 @@ SystemMappingBaseVerification verifySystemMappingBase(
       finalizeArtifactIdentity(mappingArtifactSchema, assembly->bytes);
   auto view = importSystemMappingView(
       identity, mlir::cast<::mapping::SystemOp>(assembly->root.get()), dataflow,
-      fabric, store, nullptr, nullptr);
+      fabric, store, nullptr, nullptr, {});
   if (!view) {
     std::optional<SystemMappingBaseVerification> typed;
     llvm::Error remaining = llvm::handleErrors(
@@ -1035,7 +1123,10 @@ finalizeSystemMapping(::mapping::SystemOp source,
                       const ::loom::fabric::FabricSystemRootView &fabric,
                       const SystemMappingConstraintSetView &constraints,
                       const ArtifactStore &store,
-                      const SpatialMappingImportContext *spatialMappings) {
+                      const SpatialMappingImportContext *spatialMappings,
+                      ExecutionControlView executionControl) {
+  if (executionControl.stopRequested())
+    return cancelled();
   if (constraints.dataflowIdentity() != dataflow.identity() ||
       constraints.fabricIdentity() != fabric.artifact().identity())
     return invalid("System constraint owner tuple does not match D/F");
@@ -1049,6 +1140,8 @@ finalizeSystemMapping(::mapping::SystemOp source,
       {mappingConstraintSetSchema.identity.str(),
        mappingConstraintSetSchema.version, constraints.identity()}};
   for (const auto &reference : upstream) {
+    if (executionControl.stopRequested())
+      return cancelled();
     auto bytes = store.get(reference);
     if (!bytes)
       return bytes.takeError();
@@ -1062,7 +1155,8 @@ finalizeSystemMapping(::mapping::SystemOp source,
   auto root = mlir::cast<::mapping::SystemOp>(assembly->root.get());
   std::shared_ptr<const SystemMappingClosureProjection> verifiedClosure;
   auto view = importSystemMappingView(identity, root, dataflow, fabric, store,
-                                      spatialMappings, &verifiedClosure);
+                                      spatialMappings, &verifiedClosure,
+                                      executionControl);
   if (!view)
     return view.takeError();
   if (!verifiedClosure)
@@ -1073,6 +1167,9 @@ finalizeSystemMapping(::mapping::SystemOp source,
   if (llvm::Error error =
           admitSystemMappingConstraints(dataflow, fabric, constraints, *view))
     return std::move(error);
+
+  if (executionControl.stopRequested())
+    return cancelled();
 
   auto stored = store.put(mappingArtifactSchema, assembly->bytes);
   if (!stored)
@@ -1144,7 +1241,7 @@ importSystemMapping(const ArtifactRootReference &reference,
   std::shared_ptr<const SystemMappingClosureProjection> verifiedClosure;
   auto view =
       importSystemMappingView(reference.artifact, parsed->root, *dataflowView,
-                              *system, store, nullptr, &verifiedClosure);
+                              *system, store, nullptr, &verifiedClosure, {});
   if (!view)
     return view.takeError();
   if (!verifiedClosure)
@@ -1163,6 +1260,296 @@ importSystemMapping(const ArtifactRootReference &reference,
       reference, imported, retainedSystemMappingBytes(*imported),
       constructionNanoseconds, deterministicSystemMappingWork(*imported));
   return *cached;
+}
+
+namespace {
+
+template <typename Ref, typename Attr>
+llvm::Expected<Attr> remapFabricAttribute(
+    Attr attribute,
+    const ::loom::fabric::FabricSystemReferenceRemapper &remapper) {
+  auto decoded = decodeFabric<Ref>(attribute);
+  if (!decoded)
+    return decoded.takeError();
+  auto mapped = remapper.remap(*decoded);
+  if (!mapped)
+    return mapped.takeError();
+  return Attr::get(attribute.getContext(),
+                   denseBytes(attribute.getContext(),
+                              ::loom::fabric::canonicalFabricBytes(*mapped)));
+}
+
+llvm::Expected<mlir::ArrayAttr> remapTransformPath(
+    mlir::ArrayAttr path,
+    const ::loom::fabric::FabricSystemReferenceRemapper &remapper) {
+  llvm::SmallVector<mlir::Attribute> result;
+  result.reserve(path.size());
+  for (mlir::Attribute raw : path) {
+    auto transform =
+        mlir::dyn_cast<::mapping::SystemServiceTransformRefAttr>(raw);
+    if (!transform)
+      return invalid("System transform path has a non-transform reference");
+    auto mapped =
+        remapFabricAttribute<::loom::fabric::SystemServiceTransformRef>(
+            transform, remapper);
+    if (!mapped)
+      return mapped.takeError();
+    result.push_back(*mapped);
+  }
+  return mlir::ArrayAttr::get(path.getContext(), result);
+}
+
+llvm::Expected<mlir::Attribute> remapServicePlanElement(
+    mlir::Attribute element,
+    const ::loom::fabric::FabricSystemReferenceRemapper &remapper) {
+  if (auto memory =
+          mlir::dyn_cast<::mapping::MemoryRegionElementKeyAttr>(element)) {
+    auto region =
+        remapFabricAttribute<::loom::fabric::FabricMemoryServiceRegionRef>(
+            memory.getServiceRegion(), remapper);
+    if (!region)
+      return region.takeError();
+    auto path = remapTransformPath(memory.getTransformPath(), remapper);
+    if (!path)
+      return path.takeError();
+    return ::mapping::MemoryRegionElementKeyAttr::get(
+        element.getContext(), memory.getLogicalMemory(), memory.getInterval(),
+        *region, *path);
+  }
+  if (auto consistency =
+          mlir::dyn_cast<::mapping::ConsistencyElementKeyAttr>(element)) {
+    auto domain =
+        remapFabricAttribute<::loom::fabric::MemoryConsistencyDomainRef>(
+            consistency.getConsistencyDomain(), remapper);
+    if (!domain)
+      return domain.takeError();
+    return ::mapping::ConsistencyElementKeyAttr::get(
+        element.getContext(), consistency.getFence(), *domain);
+  }
+  if (mlir::isa<::mapping::TransferLegElementKeyAttr>(element))
+    return element;
+  return invalid("System ResourceUse has an unknown service-plan element");
+}
+
+llvm::Expected<mlir::Attribute> remapSystemResourceOwner(
+    mlir::Attribute owner,
+    const ::loom::fabric::FabricSystemReferenceRemapper &remapper) {
+  if (auto instruction =
+          mlir::dyn_cast<::mapping::InstructionExecutionResourceOwnerRefAttr>(
+              owner)) {
+    auto context =
+        remapFabricAttribute<::loom::fabric::InstructionCoreContextRef>(
+            instruction.getInstructionContext(), remapper);
+    if (!context)
+      return context.takeError();
+    return ::mapping::InstructionExecutionResourceOwnerRefAttr::get(
+        owner.getContext(), instruction.getRoot(), *context);
+  }
+  if (auto service =
+          mlir::dyn_cast<::mapping::ServicePlanElementRefAttr>(owner)) {
+    auto element = remapServicePlanElement(service.getElement(), remapper);
+    if (!element)
+      return element.takeError();
+    return ::mapping::ServicePlanElementRefAttr::get(
+        owner.getContext(), service.getService(), service.getPlanOrdinal(),
+        *element);
+  }
+  return invalid("System ResourceUse has an unknown owner reference");
+}
+
+llvm::Expected<::mapping::ServicePlanSelectionKeyAttr>
+remapServicePlanSelectionKey(
+    ::mapping::ServicePlanSelectionKeyAttr attribute,
+    const ArtifactIdentity &dataflowIdentity,
+    const ::loom::fabric::FabricSystemReferenceRemapper &remapper) {
+  auto decoded = decodeServicePlanSelectionKey(
+      unsignedBytes(attribute.getRecord()), dataflowIdentity);
+  if (!decoded)
+    return decoded.takeError();
+  llvm::Error remapError = llvm::Error::success();
+  std::visit(
+      [&](auto &context) {
+        auto mapped = remapper.remap(context.accCore);
+        if (!mapped)
+          remapError = mapped.takeError();
+        else
+          context.accCore = *mapped;
+      },
+      decoded->context);
+  if (remapError)
+    return std::move(remapError);
+  auto encoded = encodeServicePlanSelectionKey(dataflowIdentity, *decoded);
+  if (!encoded)
+    return encoded.takeError();
+  return ::mapping::ServicePlanSelectionKeyAttr::get(
+      attribute.getContext(), denseBytes(attribute.getContext(), *encoded));
+}
+
+llvm::Error remapSystemMappingFabricReferences(
+    ::mapping::SystemOp root, const ArtifactIdentity &dataflowIdentity,
+    const ::loom::fabric::FabricSystemReferenceRemapper &remapper) {
+  llvm::Error error = llvm::Error::success();
+  root.walk([&](mlir::Operation *operation) {
+    if (error)
+      return mlir::WalkResult::interrupt();
+    if (auto binding =
+            mlir::dyn_cast<::mapping::ThreadExecutionBindingOp>(operation)) {
+      if (auto target = binding.getDefaultTarget()) {
+        auto mapped =
+            remapFabricAttribute<::loom::fabric::AccCoreOccurrenceRef>(
+                *target, remapper);
+        if (!mapped)
+          error = mapped.takeError();
+        else
+          binding->setAttr("default_target", *mapped);
+      }
+    } else if (auto clause =
+                   mlir::dyn_cast<::mapping::ThreadPresburgerClauseOp>(
+                       operation)) {
+      auto mapped = remapFabricAttribute<::loom::fabric::AccCoreOccurrenceRef>(
+          clause.getTarget(), remapper);
+      if (!mapped)
+        error = mapped.takeError();
+      else
+        clause->setAttr("target", *mapped);
+    } else if (auto target =
+                   mlir::dyn_cast<::mapping::MemoryRegionTargetOp>(operation)) {
+      auto region =
+          remapFabricAttribute<::loom::fabric::FabricMemoryServiceRegionRef>(
+              target.getServiceRegion(), remapper);
+      if (!region) {
+        error = region.takeError();
+      } else {
+        auto path = remapTransformPath(target.getTransformPath(), remapper);
+        if (!path)
+          error = path.takeError();
+        else {
+          target->setAttr("service_region", *region);
+          target->setAttr("transform_path", *path);
+        }
+      }
+    } else if (auto exposure =
+                   mlir::dyn_cast<::mapping::SystemMemoryExposureOp>(
+                       operation)) {
+      auto mapped =
+          remapFabricAttribute<::loom::fabric::SubordinateEndpointRef>(
+              exposure.getTerminal(), remapper);
+      if (!mapped)
+        error = mapped.takeError();
+      else
+        exposure->setAttr("terminal", *mapped);
+    } else if (auto consistency =
+                   mlir::dyn_cast<::mapping::ConsistencyTargetOp>(operation)) {
+      auto mapped =
+          remapFabricAttribute<::loom::fabric::MemoryConsistencyDomainRef>(
+              consistency.getConsistencyDomain(), remapper);
+      if (!mapped)
+        error = mapped.takeError();
+      else
+        consistency->setAttr("consistency_domain", *mapped);
+    } else if (auto selection =
+                   mlir::dyn_cast<::mapping::ServicePlanSelectionOp>(
+                       operation)) {
+      auto key = remapServicePlanSelectionKey(selection.getKey(),
+                                              dataflowIdentity, remapper);
+      if (!key)
+        error = key.takeError();
+      else
+        selection->setAttr("key", *key);
+    } else if (auto leg = mlir::dyn_cast<::mapping::TransferLegRealizationOp>(
+                   operation)) {
+      auto mapped =
+          remapFabricAttribute<::loom::fabric::FabricTransportEndpointRef>(
+              leg.getRootEndpoint(), remapper);
+      if (!mapped)
+        error = mapped.takeError();
+      else
+        leg->setAttr("root_endpoint", *mapped);
+    } else if (auto node =
+                   mlir::dyn_cast<::mapping::SystemRouteNodeOp>(operation)) {
+      auto mapped =
+          remapFabricAttribute<::loom::fabric::FabricPhysicalTraversalRef>(
+              node.getIncomingTraversal(), remapper);
+      if (!mapped)
+        error = mapped.takeError();
+      else
+        node->setAttr("incoming_traversal", *mapped);
+    } else if (auto use = mlir::dyn_cast<::mapping::ResourceUseOp>(operation)) {
+      if (!mlir::isa<::mapping::SystemOp>(use->getParentOp()))
+        return mlir::WalkResult::advance();
+      auto owner = remapSystemResourceOwner(use.getOwner(), remapper);
+      if (!owner) {
+        error = owner.takeError();
+      } else {
+        auto site = remapFabricAttribute<::loom::fabric::FabricUsePatternRef>(
+            use.getUseSite(), remapper);
+        if (!site)
+          error = site.takeError();
+        else {
+          use->setAttr("owner", *owner);
+          use->setAttr("use_site", *site);
+        }
+      }
+    }
+    return error ? mlir::WalkResult::interrupt() : mlir::WalkResult::advance();
+  });
+  return error;
+}
+
+} // namespace
+
+llvm::Expected<FinalizedSystemMapping> rebaseSystemMapping(
+    const FinalizedSystemMapping &parent,
+    const ::loom::fabric::FabricSystemRootView &childFabric,
+    llvm::ArrayRef<ArtifactRootReference> childSpatialMappings,
+    llvm::ArrayRef<::loom::fabric::FabricSystemEntityCorrespondence> entities,
+    llvm::ArrayRef<::loom::fabric::FabricSystemTransferPatternCorrespondence>
+        transferPatterns,
+    const SystemMappingConstraintSetView &childConstraints,
+    const ArtifactStore &store,
+    const SpatialMappingImportContext *spatialMappings) {
+  if (childSpatialMappings.size() !=
+      parent.view().executionBindings().spatialMappingImports().size())
+    return invalid("System Mapping rebase changed the Spatial import count");
+  auto parsed = parseSystemRoot(parent.canonicalBytes());
+  if (!parsed)
+    return parsed.takeError();
+  auto remapper = ::loom::fabric::FabricSystemReferenceRemapper::get(
+      entities, transferPatterns);
+  if (!remapper)
+    return remapper.takeError();
+  auto dataflowIdentity = ArtifactIdentity::fromBytes(
+      unsignedBytes(parsed->root.getDataflow().getRecord()));
+  if (!dataflowIdentity)
+    return dataflowIdentity.takeError();
+  if (llvm::Error error = remapSystemMappingFabricReferences(
+          parsed->root, *dataflowIdentity, *remapper))
+    return std::move(error);
+  parsed->root.setFabricAttr(::mapping::ArtifactIdentityAttr::get(
+      parsed->context.get(),
+      denseBytes(parsed->context.get(),
+                 childFabric.artifact().identity().bytes())));
+  llvm::SmallVector<mlir::Attribute> imports;
+  imports.reserve(childSpatialMappings.size());
+  for (const ArtifactRootReference &reference : childSpatialMappings)
+    imports.push_back(::mapping::ArtifactRootReferenceAttr::get(
+        parsed->context.get(),
+        denseBytes(parsed->context.get(),
+                   encodeArtifactRootReference(reference))));
+  parsed->root.setSpatialMappingImportsAttr(
+      mlir::ArrayAttr::get(parsed->context.get(), imports));
+  auto dataflow = ::dataflow::importCanonicalDataflow(
+      {::dataflow::canonicalDataflowSchema.identity.str(),
+       ::dataflow::canonicalDataflowSchema.version,
+       parent.view().dataflowIdentity()},
+      store);
+  if (!dataflow)
+    return dataflow.takeError();
+  auto dataflowView = dataflow->view();
+  if (!dataflowView)
+    return dataflowView.takeError();
+  return finalizeSystemMapping(parsed->root, *dataflowView, childFabric,
+                               childConstraints, store, spatialMappings);
 }
 
 } // namespace loom::mapping

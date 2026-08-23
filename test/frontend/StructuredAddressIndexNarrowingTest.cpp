@@ -348,6 +348,60 @@ module attributes {
   });
 }
 
+void normalizesUnsignedBoundedWhileIndexWithoutOverflowFlags() {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::DLTIDialect,
+                  mlir::LLVM::LLVMDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {
+  llvm.data_layout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+} {
+  llvm.func @bounded_index(%base: !llvm.ptr) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %result = scf.while (%index = %c0_i64) : (i64) -> i64 {
+      %pointer = llvm.getelementptr inbounds %base[%index]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      %value = llvm.load %pointer : !llvm.ptr -> i8
+      %next = arith.addi %index, %c1_i64 : i64
+      %more = arith.cmpi ult, %next, %c64_i64 : i64
+      scf.condition(%more) %next : i64
+    } do {
+    ^bb0(%index: i64):
+      scf.yield %index : i64
+    }
+    llvm.return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse the unsigned bounded-while fixture");
+  auto function = module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("bounded_index");
+  if (!function)
+    fail("unsigned bounded-while fixture omitted bounded_index");
+
+  auto normalized = loom::frontend::detail::materializeAddressIndexContract(
+      *module, function.getOperation(), 32,
+      [](mlir::Block *, mlir::Block *) { return llvm::Error::success(); });
+  if (!normalized)
+    fail(llvm::toString(normalized.takeError()));
+
+  bool sawNarrowIndex = false;
+  function.walk([&](mlir::LLVM::GEPOp gep) {
+    auto indices = gep.getDynamicIndices();
+    if (indices.size() != 1)
+      return;
+    auto integer = llvm::dyn_cast<mlir::IntegerType>(indices.front().getType());
+    sawNarrowIndex |= integer && integer.getWidth() == 32;
+  });
+  if (!sawNarrowIndex)
+    fail("bounded unsigned while index was not narrowed");
+}
+
 } // namespace
 
 int main() {
@@ -356,6 +410,7 @@ int main() {
   preservesNarrowSourceRangeThroughStrideWidening();
   normalizesWideCarrierWithNarrowTripCount();
   normalizesConditionallyExecutedPointerInduction();
+  normalizesUnsignedBoundedWhileIndexWithoutOverflowFlags();
   llvm::outs() << "structured address index narrowing anchor passed\n";
   return EXIT_SUCCESS;
 }

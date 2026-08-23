@@ -3,7 +3,14 @@
 
 #include <cstdint>
 
+namespace loom::dse {
+struct IncompletePreMappingExploration;
+} // namespace loom::dse
+
 namespace loom::application {
+
+struct PreparedApplicationBuild;
+struct ApplicationMappingExecution;
 
 enum class ApplicationBuildOperation : std::uint8_t {
   ProductTargetPreparation,
@@ -27,8 +34,34 @@ struct ApplicationBuildOperationStatistics final {
   std::uint64_t deterministicWork = 0;
 };
 
+struct ApplicationMappingExecutionPolicyStatistics final {
+  std::uint64_t requestedWallTimeLimitMilliseconds = 0;
+  std::uint64_t dispatchNotAfterUnixNanoseconds = 0;
+  std::uint64_t observedWallTimeNanoseconds = 0;
+  bool deadlineObserved = false;
+};
+
 void emitApplicationBuildOperationStatistics(
     const ApplicationBuildOperationStatistics &statistics);
+
+void emitApplicationMappingExecutionPolicyStatistics(
+    const ApplicationMappingExecutionPolicyStatistics &statistics);
+
+/// Emits the bounded pre-Mapping policy, deterministic work accounting, and
+/// candidate inventory through the process-wide diagnostic stream. The typed
+/// build objects remain the semantic owner; JSON exists only at this
+/// presentation boundary.
+void emitApplicationPlanningDiagnostics(
+    const PreparedApplicationBuild &prepared);
+
+void emitApplicationPreMappingIncompleteDiagnostics(
+    const dse::IncompletePreMappingExploration &incomplete);
+
+/// Emits the exact planning-record to Mapping-outcome join retained by one
+/// application build. Incomplete, infeasible, and verified outcomes remain
+/// distinct in the diagnostic representation.
+void emitApplicationMappingDiagnostics(
+    const ApplicationMappingExecution &execution);
 
 } // namespace loom::application
 

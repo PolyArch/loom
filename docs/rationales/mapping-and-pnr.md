@@ -1400,8 +1400,11 @@ logical domain points to AccCore occurrences. Thread groups, resident groups,
 batches, and waves are derived partitions or scheduling views of that relation,
 not additional persistent records or mutually exclusive execution modes.
 
-`MaxSpatial` and `MaxTemporal` are useful profile names for opposite search
-preferences, not the only legal answers. One candidate may dedicate different
+`MaxSpatial` and `MaxTemporal` are result labels for opposite schedule
+properties, not ownership seeds or assumptions about the search frontier. A
+label is publishable only after an independent verifier observes explicit
+event-relative active sets and per-region resource allocations in a real
+SystemMapping. One candidate may dedicate different
 AccCore subsets to different kernels and pipeline their channels, while each
 subset processes points of its own kernel in batches. Another may distribute
 one kernel across most cores. Intermediate mixtures are expected and remain
@@ -1427,3 +1430,15 @@ Regular and irregular hardware must expose the same compatible semantic
 candidate set when their capabilities match, even though their complete
 resource inventories and route domains differ. This is the useful invariant;
 forcing identical resource multisets would erase topology diversity.
+
+### Ordered Ingress and Pairing
+
+Capacity overuse alone is not a liveness proof. A Temporal PE can fairly admit
+tokens into a shared pool while an unmatched ordered head prevents the actor
+from firing. The physical projection therefore keeps MatchKey, QueueKey, and
+context-qualified pairing key distinct, preserves each input FIFO, and lets
+SpatialMapping prefer distinct compatible ingresses when route and QoR costs
+tie. This preference is useful because it separates ready/valid control, but
+it is not a universal prohibition: exact atomic admission and progress
+evidence may still justify a shared ingress. Only a complete exact wait cycle
+can drive local repair or Hardware DSE; likely risk remains a ranking signal.

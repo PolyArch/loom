@@ -1354,12 +1354,10 @@ public:
 
   llvm::Expected<FinalizedFabricDesign> finalize() &&;
 
-  /// Finalizes the sole derived System while carrying selected authoring
-  /// AccCore references through Fabric canonical relabeling. This projection
-  /// is transient transformation lineage, not another Fabric representation.
+  /// Finalizes the sole derived System and returns the exact transient
+  /// reference correspondence produced by Fabric canonical relabeling.
   llvm::Expected<loom::fabric::FinalizedFabricSystemProjection>
-  finalizeDerivedSystemWithTrackedAccCores(
-      llvm::ArrayRef<loom::fabric::AccCoreOccurrenceRef> trackedAccCores) &&;
+  finalizeDerivedSystemWithCorrespondence() &&;
 
 private:
   std::shared_ptr<detail::DesignState> state_;

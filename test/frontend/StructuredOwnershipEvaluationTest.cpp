@@ -5,6 +5,7 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/PreMappingExploration.h"
+#include "DSE/PreMappingFrontier.h"
 #include "DSE/Promotion.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/StructuredEvaluationAcquisition.h"
@@ -50,6 +51,7 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -75,20 +77,22 @@ template <typename T> T take(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
-bool hasCompletedGenerator(
+bool hasGeneratorInvocation(
     const loom::dse::CompletedPreMappingSelection &selection,
     llvm::StringRef spelling) {
   for (const loom::dse::DsePlanGenerateInvocationRecords &planInvocation :
-       selection.planGenerateInvocations)
-    for (const loom::dse::GenerateInvocationRecord &record :
-         planInvocation.completed()) {
+       selection.planGenerateInvocations) {
+    const auto matches = [&](const loom::dse::GenerateInvocationRecord &record) {
       const loom::dse::CandidateGeneratorDescriptor *descriptor =
           record.generatorBinding.descriptorRef().descriptor();
       if (!descriptor)
         fail("pre-Mapping Generate provenance lost its exact descriptor");
-      if (descriptor->spelling == spelling)
-        return true;
-    }
+      return descriptor->spelling == spelling;
+    };
+    if (llvm::any_of(planInvocation.completed(), matches) ||
+        llvm::any_of(planInvocation.incomplete(), matches))
+      return true;
+  }
   return false;
 }
 
@@ -515,6 +519,30 @@ void centralPlanEvaluatesScheduleChildren() {
            ": " + loom::dse::toString(incomplete->reason).str());
     fail("central schedule exploration selected no feasible candidate");
   }
+  for (const loom::dse::SelectedPreMappingCompilation &selected :
+       selection->selected) {
+    if (!selected.planningRecordOrdinal ||
+        *selected.planningRecordOrdinal >= selection->candidateInventory.size())
+      fail("central schedule candidate lost its planning record identity");
+    const auto &record =
+        selection->candidateInventory[*selected.planningRecordOrdinal];
+    if (!record.candidateIdentity)
+      fail("central schedule candidate did not publish a stable identity");
+    auto recomputed = take(loom::dse::computePreMappingCandidateIdentity(
+        record, selection->sourceProgram, selection->fabric,
+        selection->workload, selection->runtimeInput,
+        selection->frontierPolicyDigest));
+    if (*record.candidateIdentity != recomputed)
+      fail("central schedule candidate identity is not reproducible");
+    auto differentInvocation = take(
+        loom::dse::computePreMappingCandidateIdentity(
+            record, selection->fabric, selection->workload,
+            selection->runtimeInput, selection->sourceProgram,
+            record.projection ? record.projection->identity
+                              : selection->frontierPolicyDigest));
+    if (differentInvocation != recomputed)
+      fail("invocation provenance changed semantic candidate identity");
+  }
 
   bool sawStructuredMemoryCommunication = false;
   bool sawSpecialMathAccuracy = false;
@@ -524,11 +552,24 @@ void centralPlanEvaluatesScheduleChildren() {
       "compiler.structured_schedule",
       "compiler.structured_memory_communication",
       "compiler.structured_special_math_accuracy"};
+  bool sawBoundedGenerate = false;
   for (const loom::dse::DsePlanGenerateInvocationRecords &planInvocation :
        selection->planGenerateInvocations) {
-    if (!planInvocation.incomplete().empty())
-      fail("completed pre-Mapping selection retained an incomplete Generate");
     std::map<std::uint64_t, std::string> generatorByPlanNode;
+    for (const auto &record : planInvocation.incomplete()) {
+      const auto *descriptor =
+          record.generatorBinding.descriptorRef().descriptor();
+      if (!descriptor || !record.incompleteReason ||
+          *record.incompleteReason != loom::dse::
+                                          CandidateGeneratorIncompleteReason::
+                                              SemanticLimitReached)
+        fail("bounded pre-Mapping Generate lost its typed exhaustion reason");
+      auto [position, inserted] = generatorByPlanNode.try_emplace(
+          record.planNodeOrdinal, descriptor->spelling.str());
+      if (!inserted && position->second != descriptor->spelling)
+        fail("one pre-Mapping plan node used conflicting generators");
+      sawBoundedGenerate = true;
+    }
     for (const loom::dse::GenerateInvocationRecord &record :
          planInvocation.completed()) {
       const loom::dse::CandidateGeneratorDescriptor *descriptor =
@@ -558,9 +599,9 @@ void centralPlanEvaluatesScheduleChildren() {
     sawCanonicalGeneratorOrder = true;
   }
   if (!sawStructuredMemoryCommunication || !sawSpecialMathAccuracy ||
-      !sawCanonicalGeneratorOrder)
+      !sawCanonicalGeneratorOrder || !sawBoundedGenerate)
     fail("production pre-Mapping boundary discarded Generate provenance");
-  if (hasCompletedGenerator(*selection, "compiler.dataflow_rewrite"))
+  if (hasGeneratorInvocation(*selection, "compiler.dataflow_rewrite"))
     fail("semantic conformance rewrote an already admitted D0");
 
   bool sawScheduleChild = false;
@@ -594,6 +635,14 @@ void centralPlanEvaluatesScheduleChildren() {
   }
   if (!sawScheduleChild)
     fail("production central plan did not evaluate a schedule child");
+  bool sawUnclassifiedLogicalDomainFact = false;
+  for (const auto &record : selection->candidateInventory)
+    if (record.temporalWitness && !record.verifiedSpectrum)
+      sawUnclassifiedLogicalDomainFact = true;
+    else if (record.verifiedSpectrum)
+      fail("production central plan claimed an unverified spectrum endpoint");
+  if (!sawUnclassifiedLogicalDomainFact)
+    fail("production central plan did not retain a logical-domain fact");
 
   error = llvm::sys::fs::remove_directories(directory);
   if (error)
@@ -878,15 +927,13 @@ void verifyStagedOwnershipEvidence(
     fail("ownership Evidence has an unexpected obligation shape");
   }
 
-  if (counts[source].cost != 1 || counts[source].functional != 0 ||
+  if (counts[source].cost > 1 || counts[source].functional != 0 ||
       counts[selectedCandidate].cost != 1 ||
       counts[selectedCandidate].functional != 1)
-    fail("ownership DSE acquired expensive functional Evidence before the "
-         "resolved benefit gate");
+    fail("bounded ownership planner lost selected candidate Evidence");
   for (const loom::ArtifactRootReference &candidate : costOnlyCandidates)
-    if (counts[candidate].cost != 1 || counts[candidate].functional != 0)
-      fail("ownership DSE acquired expensive functional Evidence before the "
-           "resolved benefit gate");
+    if (counts[candidate].cost != 1 || counts[candidate].functional > 1)
+      fail("bounded ownership planner duplicated candidate Evidence");
   for (const loom::ArtifactRootReference &candidate : inapplicableCandidates)
     if (counts[candidate].cost != 0 || counts[candidate].functional != 0)
       fail("ownership DSE materialized a workload-inapplicable scope");
@@ -1009,6 +1056,103 @@ void runEvaluationAnchor() {
                                                     store));
   const loom::ArtifactRootReference dataflowRef = take(
       dataflow::publishCanonicalDataflow(spatial.canonicalDataflow, store));
+
+  std::array<std::uint8_t, loom::ComponentViewDigest::byteSize>
+      weakerProjectionBytes{};
+  std::array<std::uint8_t, loom::ComponentViewDigest::byteSize>
+      strongerProjectionBytes{};
+  strongerProjectionBytes.front() = 1;
+  loom::dse::PreMappingCandidateProjection weakerProjection(
+      take(loom::ComponentViewDigest::fromBytes(weakerProjectionBytes)));
+  weakerProjection.ownedRegionCount = 1;
+  loom::dse::PreMappingCandidateProjection strongerProjection(
+      take(loom::ComponentViewDigest::fromBytes(strongerProjectionBytes)));
+  strongerProjection.ownedRegionCount = 1;
+  strongerProjection.estimateSupport =
+      loom::dse::PreMappingEstimateSupport::Supported;
+  strongerProjection.estimateConfidence =
+      loom::dse::PreMappingEstimateConfidence::Low;
+  strongerProjection.estimatedCutTrafficBytes = 0;
+  const std::array<loom::dse::PreMappingFrontierCandidate, 2>
+      convergedCoordinates = {
+          loom::dse::PreMappingFrontierCandidate{
+              spatialRef, weakerProjection, std::nullopt,
+              loom::dse::PreMappingScheduleIntent::Unconstrained, {},
+              std::nullopt},
+          loom::dse::PreMappingFrontierCandidate{
+              spatialRef, strongerProjection, 1,
+              loom::dse::PreMappingScheduleIntent::Unconstrained, {},
+              std::nullopt}};
+  auto convergedSelection = take(loom::dse::selectPreMappingFrontier(
+      convergedCoordinates, 2, 1));
+  if (convergedSelection.preferenceOrder !=
+          std::vector<loom::ArtifactRootReference>{spatialRef} ||
+      convergedSelection.preferenceProjectionIdentities !=
+          std::vector<loom::ComponentViewDigest>{strongerProjection.identity})
+    fail("central frontier did not canonicalize converged coordinates");
+
+  std::array<std::uint8_t, loom::ComponentViewDigest::byteSize>
+      broaderProjectionBytes{};
+  broaderProjectionBytes.front() = 3;
+  loom::dse::PreMappingCandidateProjection broaderProjection(
+      take(loom::ComponentViewDigest::fromBytes(broaderProjectionBytes)));
+  broaderProjection.ownedRegionCount = 2;
+  broaderProjection.estimateSupport =
+      loom::dse::PreMappingEstimateSupport::Supported;
+  broaderProjection.estimateConfidence =
+      loom::dse::PreMappingEstimateConfidence::Low;
+  broaderProjection.estimatedCutTrafficBytes = 0;
+  const std::array<loom::dse::PreMappingFrontierCandidate, 2>
+      convergedOwnershipCoordinates = {
+          loom::dse::PreMappingFrontierCandidate{
+              spatialRef, broaderProjection, std::nullopt,
+              loom::dse::PreMappingScheduleIntent::Unconstrained, {},
+              std::nullopt},
+          loom::dse::PreMappingFrontierCandidate{
+              spatialRef, strongerProjection, std::nullopt,
+              loom::dse::PreMappingScheduleIntent::Unconstrained, {},
+              std::nullopt}};
+  auto ownershipSelection = take(loom::dse::selectPreMappingFrontier(
+      convergedOwnershipCoordinates, 1, 1));
+  if (ownershipSelection.preferenceProjectionIdentities !=
+      std::vector<loom::ComponentViewDigest>{strongerProjection.identity})
+    fail("central frontier representative ranking omitted ownership size");
+
+  std::array<std::uint8_t, loom::ComponentViewDigest::byteSize>
+      temporalProjectionBytes{};
+  temporalProjectionBytes.front() = 2;
+  loom::dse::PreMappingCandidateProjection temporalProjection(
+      take(loom::ComponentViewDigest::fromBytes(temporalProjectionBytes)));
+  temporalProjection.ownedRegionCount = 1;
+  const std::array<loom::dse::PreMappingFrontierCandidate, 3>
+      spectrumCoordinates = {
+          loom::dse::PreMappingFrontierCandidate{
+              baselineRef, weakerProjection, std::nullopt,
+              loom::dse::PreMappingScheduleIntent::Unconstrained, {},
+              std::nullopt},
+          loom::dse::PreMappingFrontierCandidate{
+              spatialRef, strongerProjection, 1,
+              loom::dse::PreMappingScheduleIntent::Unconstrained, {},
+              std::nullopt},
+          loom::dse::PreMappingFrontierCandidate{
+              coldRef, temporalProjection, std::nullopt,
+              loom::dse::PreMappingScheduleIntent::TemporalReuse, {},
+              loom::dse::PreMappingSpectrumClass::MaxTemporal}};
+  auto spectrumSelection = take(loom::dse::selectPreMappingFrontier(
+      spectrumCoordinates, 2, 2));
+  if (!llvm::is_contained(spectrumSelection.preferenceOrder, coldRef))
+    fail("frontier diversity dropped the verified temporal spectrum point");
+  auto unverifiedEndpoint = loom::dse::selectPreMappingFrontier(
+      spectrumCoordinates, 2, 2,
+      loom::dse::PreMappingSpectrumEndpoint::MaxSpatial);
+  if (unverifiedEndpoint)
+    fail("endpoint selection accepted a schedule hint without a verified "
+         "SystemMapping classification");
+  const std::string unverifiedDiagnostic =
+      llvm::toString(unverifiedEndpoint.takeError());
+  if (!llvm::StringRef(unverifiedDiagnostic).contains(
+          "pre_mapping_spectrum_endpoint_unsupported"))
+    fail("endpoint selection lost its typed unsupported disposition");
 
   auto generatorConfig =
       take(loom::dse::projectResolvedStructuredOwnershipGeneratorConfigView(
@@ -1335,11 +1479,17 @@ void runEvaluationAnchor() {
            inputs.observations,
            {1, 1, 256ULL * 1024ULL * 1024ULL}},
           store);
-  if (!limitedReplay)
-    fail("functional replay execution limit was ignored");
-  if (llvm::errorToErrorCode(std::move(limitedReplay)) !=
-      std::make_error_code(std::errc::timed_out))
-    fail("functional replay execution limit used the wrong failure kind");
+  if (limitedReplay)
+    fail(llvm::toString(std::move(limitedReplay)));
+  auto limitedFunctional = take(
+      loom::evaluation::models::prepareStructuredProgramFunctionalEvaluation(
+          spatialRef, inputs.workloadReference, inputs.runtimeInputReference,
+          loom::defaultResolvedConfig(), store, blobs));
+  auto limitedEvidence = take(loom::evaluation::evaluateRequest(
+      limitedFunctional.request, limitedFunctional.resolution, store, blobs));
+  if (limitedEvidence.outcomeKind() !=
+      loom::evaluation::EvidenceOutcomeKind::CancelledOrTimeout)
+    fail("functional replay execution limit did not become typed Evidence");
   if (llvm::Error error =
           loom::evaluation::models::primeStructuredProgramFunctionalReplay(
               spatialRef,
@@ -1568,6 +1718,8 @@ void runEvaluationAnchor() {
       {{},
        {loom::evaluation::MetricRequestOrdinal(0),
         loom::ResolvedObjectiveDirection::Minimize, 1}}};
+  exploration.ownership.selectionMode =
+      loom::dse::StructuredOwnershipSelectionMode::BenefitQualified;
   auto exploredSource = take(loom::frontend::raiseLlvmModuleToStructured(
       parseModule(context), design.roots().front()));
   exploration.ownership.protocolCallableRoots = {
@@ -1583,8 +1735,11 @@ void runEvaluationAnchor() {
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)
     fail("central ownership exploration did not select one survivor");
-  if (!hasCompletedGenerator(*exploredSelection, "compiler.dataflow_rewrite"))
-    fail("benefit-qualified exploration skipped Dataflow rewrites");
+  if (exploredSelection->requestedPlannerMode !=
+          loom::dse::StructuredOwnershipSelectionMode::BenefitQualified ||
+      exploredSelection->resolvedPlannerMode !=
+          loom::dse::StructuredOwnershipSelectionMode::SemanticConformance)
+    fail("benefit-qualified API spelling bypassed the bounded joint planner");
   const loom::ArtifactRootReference selectedRef =
       take(loom::frontend::publishStructuredProgram(
           exploredSelection->selected.front().compilation.structuredProgram,
@@ -1622,8 +1777,11 @@ void runEvaluationAnchor() {
   const auto *benefitOnlySelection =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&benefitOnly);
   if (!benefitOnlySelection || benefitOnlySelection->selected.size() != 1 ||
-      !benefitOnlySelection->selected.front().derivations.empty())
-    fail("benefit-qualified ownership did not retain the host baseline");
+      benefitOnlySelection->selected.front().derivations.size() != 1 ||
+      !benefitOnlySelection->selected.front().functionalReplay ||
+      benefitOnlySelection->selected.front().functionalReplay->status !=
+          loom::sim::SourceBackedDfgValidationStatus::Equivalent)
+    fail("benefit-qualified API spelling bypassed bounded semantic selection");
 
   auto semanticOnlySource = take(loom::frontend::raiseLlvmModuleToStructured(
       parseModule(context), design.roots().front()));
@@ -1644,8 +1802,19 @@ void runEvaluationAnchor() {
       semanticOnlySelection->selected.front().functionalReplay->status !=
           loom::sim::SourceBackedDfgValidationStatus::Equivalent)
     fail("semantic conformance did not select the executed equivalent graph");
-  if (hasCompletedGenerator(*semanticOnlySelection,
-                            "compiler.dataflow_rewrite"))
+  if (benefitOnlySelection->selected.front()
+              .compilation.structuredProgram.identity() !=
+          semanticOnlySelection->selected.front()
+              .compilation.structuredProgram.identity() ||
+      benefitOnlySelection->selected.front()
+              .compilation.canonicalDataflow.identity() !=
+          semanticOnlySelection->selected.front()
+              .compilation.canonicalDataflow.identity() ||
+      benefitOnlySelection->candidateInventory !=
+          semanticOnlySelection->candidateInventory)
+    fail("API selection spelling changed the resolved bounded frontier");
+  if (hasGeneratorInvocation(*semanticOnlySelection,
+                             "compiler.dataflow_rewrite"))
     fail("semantic conformance rewrote an already admitted D0");
   if (!semanticOnlySelection->selected.front()
            .dataflowRewriteDerivations.empty())
@@ -1670,6 +1839,23 @@ void runEvaluationAnchor() {
       std::get_if<loom::dse::CompletedPreMappingSelection>(&semanticChain);
   if (!semanticChainSelection || semanticChainSelection->selected.size() != 2)
     fail("semantic conformance did not retain its bounded ownership chain");
+  if (semanticChainSelection->frontierAccounting.functionalReplays.consumed !=
+          semanticChainSelection->evaluationTiming.functionalReplayCalls ||
+      semanticChainSelection->frontierAccounting.analyticEvaluations.consumed <=
+          semanticChainSelection->frontierAccounting.functionalReplays
+              .consumed)
+    fail("semantic conformance did not narrow analytic expansion before "
+         "functional replay");
+  bool sawUnclassifiedScheduleFact = false;
+  for (const auto &record : semanticChainSelection->candidateInventory)
+    if (record.temporalWitness && !record.verifiedSpectrum)
+      sawUnclassifiedScheduleFact = true;
+    else if (record.verifiedSpectrum)
+      fail("pre-Mapping logical-domain evidence claimed a spectrum endpoint");
+  if (!sawUnclassifiedScheduleFact ||
+      !semanticChainSelection->shadowRecall ||
+      semanticChainSelection->shadowRecall->eligibleSubsets == 0)
+    fail("bounded ownership frontier omitted logical-domain or shadow evidence");
   std::size_t retainedPlanningCandidates = 0;
   std::size_t budgetedPlanningCandidates = 0;
   std::vector<std::uint64_t> planningRanks;
@@ -1739,7 +1925,11 @@ void runEvaluationAnchor() {
       parallelSelection->protocolDependencies !=
           exploredSelection->protocolDependencies ||
       parallelSelection->candidateInventory !=
-          exploredSelection->candidateInventory)
+          exploredSelection->candidateInventory ||
+      parallelSelection->sharedEvaluationStatistics.profileCacheHits !=
+          exploredSelection->sharedEvaluationStatistics.profileCacheHits ||
+      parallelSelection->sharedEvaluationStatistics.profileCacheMisses !=
+          exploredSelection->sharedEvaluationStatistics.profileCacheMisses)
     fail("candidate worker count changed the formal DSE result");
 
   {

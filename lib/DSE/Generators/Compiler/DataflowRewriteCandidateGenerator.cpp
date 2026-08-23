@@ -161,7 +161,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &store, const BlobStore &blobs,
-               const CandidateGeneratorInvocationView &) {
+               const CandidateGeneratorInvocationView &invocationView) {
   auto config = adoptResolvedDataflowRewriteGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -200,6 +200,9 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       &attemptedDecisionLess);
   std::uint64_t expansions = 0;
   bool semanticLimitReached = false;
+  bool outputLimitReached = false;
+  const std::optional<std::uint64_t> maximumOutputs =
+      invocationView.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
 
   const auto classify =
       [&](ArtifactRootReference reference,
@@ -210,8 +213,14 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     if (!miss)
       return miss.takeError();
     if (!*miss) {
+      if (maximumOutputs && outputs.size() >= *maximumOutputs) {
+        outputLimitReached = true;
+        return llvm::Error::success();
+      }
       outputs.push_back(reference);
     }
+    if (outputLimitReached)
+      return llvm::Error::success();
     frontier.push_back(
         SearchCandidate{std::move(reference), std::move(candidate)});
     return llvm::Error::success();
@@ -263,7 +272,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       return std::move(error);
   }
 
-  while (!semanticLimitReached && !frontier.empty()) {
+  while (!semanticLimitReached && !outputLimitReached && !frontier.empty()) {
     SearchCandidate parent = std::move(frontier.front());
     frontier.pop_front();
     auto miss = capabilities.firstInadmissibleActor(parent.artifact);
@@ -298,6 +307,10 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       parentLaunches.push_back(launch.ref);
 
     for (const dataflow::DataflowRewriteDecision &decision : decisions) {
+      if (maximumOutputs && outputs.size() >= *maximumOutputs) {
+        outputLimitReached = true;
+        break;
+      }
       auto payload = dataflow::encodeDataflowRewriteDecision(decision);
       if (!payload)
         return payload.takeError();
@@ -344,7 +357,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       requiredTargets.insert(parent);
   }
   std::reverse(retainedLineageEdges.begin(), retainedLineageEdges.end());
-  if (semanticLimitReached)
+  if (semanticLimitReached || outputLimitReached)
     return CandidateGeneratorProviderResult{
         IncompleteCandidateGeneratorResult{
             CandidateGeneratorIncompleteReason::SemanticLimitReached,

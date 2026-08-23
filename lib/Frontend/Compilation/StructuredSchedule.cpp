@@ -7,6 +7,7 @@
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StructuredSpecialMathAccuracy.h"
 #include "Frontend/IR/LoomOps.h"
+#include "Frontend/Lowering/GraphParallelLowering.h"
 #include "Frontend/Raising/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -459,12 +460,23 @@ adoptStructuredScheduleDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes) {
 llvm::Expected<StructuredScheduleDecisionDomain>
 enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
                                      const fabric::FinalizedFabricRoot &fabric,
-                                     std::uint64_t scopeExpansionLimit) {
+                                     std::uint64_t scopeExpansionLimit,
+                                     std::optional<StructuredEntityRef>
+                                         schedulingScope) {
   if (scopeExpansionLimit == 0)
     return invalid("scope expansion limit must be positive");
   auto view = parent.view();
   if (!view)
     return view.takeError();
+  mlir::Operation *scopeOperation = nullptr;
+  if (schedulingScope) {
+    if (schedulingScope->kind != StructuredEntityKind::Operation)
+      return invalid("schedule scope does not reference an operation");
+    auto resolved = view->resolve(*schedulingScope);
+    if (!resolved)
+      return resolved.takeError();
+    scopeOperation = resolved->operation;
+  }
   FabricCapabilityIndex capabilityIndex(fabric.view());
   std::vector<StructuredScheduleDecision> decisions;
   std::uint64_t expanded = 0;
@@ -472,6 +484,9 @@ enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
        view->entities(StructuredEntityKind::Operation)) {
     auto loop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(entity.operation);
     if (!loop)
+      continue;
+    if (scopeOperation &&
+        !scopeOperation->isAncestor(loop.getOperation()))
       continue;
     if (expanded == scopeExpansionLimit)
       break;
@@ -563,8 +578,24 @@ materializeStructuredScheduleDecision(
   case StructuredScheduleDecisionKind::Parallelize:
     if (decision.factor != 0)
       return invalid("parallelize decision carries a factor");
-    if (mlir::failed(raising::materializeIndependentLoopAsForall(loop)))
-      return invalid("SCF parallelization rejected the selected decision");
+    {
+      mlir::Block *parentBlock = loop->getBlock();
+      mlir::Operation *successor = loop->getNextNode();
+      const bool insideTrackedSpatial =
+          clonedSpatialRegion &&
+          clonedSpatialRegion->isAncestor(loop.getOperation());
+      if (mlir::failed(raising::materializeIndependentLoopAsForall(loop)))
+        return invalid("SCF parallelization rejected the selected decision");
+      mlir::Operation *replacement =
+          successor ? successor->getPrevNode() : &parentBlock->back();
+      auto parallel = llvm::dyn_cast_or_null<mlir::scf::ForallOp>(replacement);
+      if (!parallel)
+        return invalid("SCF parallelization did not produce one forall");
+      if (insideTrackedSpatial)
+        if (llvm::Error error =
+                materializeOwnedSpatialForallThreadDomain(parallel))
+          return std::move(error);
+    }
     break;
   case StructuredScheduleDecisionKind::ParallelizeNest:
     if (decision.factor != 0)
@@ -582,6 +613,16 @@ materializeStructuredScheduleDecision(
     }
     break;
   }
+  std::optional<std::string> parallelRejection;
+  clone->get().walk([&](loom::SpatialRegionOp spatial) {
+    if (!parallelRejection)
+      parallelRejection =
+          lowering::explainSpatialCarrierParallelRejection(spatial);
+  });
+  if (parallelRejection)
+    return llvm::make_error<SpatialOwnershipCandidateRejection>(
+        SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+        std::move(*parallelRejection));
   if (mlir::failed(mlir::verify(**clone)))
     return invalid("materialized schedule candidate does not verify");
   auto finalized = finalizeStructuredProgramWithTrackedEntities(

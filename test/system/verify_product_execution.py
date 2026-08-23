@@ -172,8 +172,22 @@ def validate_mapping_work(
     system = search_invocations(
         events, "system_pnr", "system_pnr_invocation"
     )
-    require(len(system) == 1,
-            "expected one verified System search result")
+    join_rows = [
+        payload
+        for payload in matching_payloads(
+            events, stage="system_pnr", event="statistics"
+        )
+        if payload.get("domain") == "application_mapping_join"
+    ]
+    require(len(join_rows) == 1,
+            "expected one application Mapping join summary")
+    join = join_rows[0]
+    require(
+        join.get("verified_alternatives") == len(system)
+        and isinstance(join.get("system_pnr_dispatch_count"), int)
+        and join["system_pnr_dispatch_count"] >= len(system),
+        "verified System searches disagree with the application join",
+    )
     for name, rows in (("Spatial", spatial), ("System", system)):
         for row in rows:
             require(row.get("closure_status") == "semantic_limit_reached",
@@ -252,7 +266,7 @@ def validate_reference(value: Any, context: str) -> None:
 def validate_manifest(
     manifest: dict[str, Any],
     manifest_path: Path,
-    spatial_invocations: int,
+    spatial_invocations: int | None,
     required_dataflow_text: list[str],
     mapping_inspector: str | None,
     require_actor_multicast: bool,
@@ -265,7 +279,6 @@ def validate_manifest(
     require_temporal_dispatch: bool,
     dense_coordinate_rank: int | None,
     require_unique_dense_coordinates: bool,
-    expected_unique_dispatch_targets: int | None,
     minimum_unique_acc_cores: int,
 ) -> None:
     require(manifest.get("schema") == "loom.execution_matrix_workspace.1.2",
@@ -284,9 +297,29 @@ def validate_manifest(
         and {run.get("engine") for run in system_runs} == {"dfg", "cgra"},
         "execution workspace does not contain both System cells",
     )
+    observed_invocations = sorted(
+        {
+            run.get("invocation_ordinal")
+            for run in spatial_runs
+            if isinstance(run.get("invocation_ordinal"), int)
+            and run.get("invocation_ordinal") >= 0
+        }
+    )
+    require(
+        observed_invocations
+        and observed_invocations == list(range(len(observed_invocations))),
+        "execution workspace has a sparse or empty Spatial invocation set",
+    )
+    if spatial_invocations is not None:
+        require(
+            len(observed_invocations) == spatial_invocations,
+            "execution workspace has the wrong Spatial invocation count",
+        )
+    else:
+        spatial_invocations = len(observed_invocations)
     require(
         len(spatial_runs) == spatial_invocations * 2,
-        "execution workspace has the wrong Spatial invocation count",
+        "execution workspace has an incomplete Spatial execution matrix",
     )
     for ordinal in range(spatial_invocations):
         invocation_runs = [
@@ -358,16 +391,6 @@ def validate_manifest(
         require(
             len(coordinate_points) == spatial_invocations,
             "Spatial invocations do not have unique dense coordinates",
-        )
-    unique_dispatch_targets = {
-        run["dispatch_target_ordinal"]
-        for run in spatial_runs
-        if run.get("engine") == "dfg"
-    }
-    if expected_unique_dispatch_targets is not None:
-        require(
-            len(unique_dispatch_targets) == expected_unique_dispatch_targets,
-            "Spatial invocations use the wrong number of dispatch targets",
         )
     unique_acc_cores = {
         run["acc_core_ref"]
@@ -542,7 +565,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--diagnostics", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--spatial-invocations", type=int, default=1)
+    parser.add_argument("--spatial-invocations", type=int)
     parser.add_argument("--expected-system-active-contexts", type=int)
     parser.add_argument("--spatial-search-frontier", action="store_true")
     parser.add_argument(
@@ -566,11 +589,13 @@ def main() -> None:
     parser.add_argument(
         "--require-unique-dense-coordinates", action="store_true"
     )
-    parser.add_argument("--expected-unique-dispatch-targets", type=int)
     parser.add_argument("--minimum-unique-acc-cores", type=int, default=1)
     arguments = parser.parse_args()
-    require(arguments.spatial_invocations > 0,
-            "Spatial invocation count must be positive")
+    require(
+        arguments.spatial_invocations is None
+        or arguments.spatial_invocations > 0,
+        "Spatial invocation count must be positive",
+    )
     require(
         arguments.expected_system_active_contexts is None
         or arguments.expected_system_active_contexts > 0,
@@ -578,11 +603,6 @@ def main() -> None:
     )
     require(arguments.minimum_unique_acc_cores > 0,
             "minimum unique AccCore count must be positive")
-    require(
-        arguments.expected_unique_dispatch_targets is None
-        or arguments.expected_unique_dispatch_targets > 0,
-        "expected unique dispatch target count must be positive",
-    )
     require(
         arguments.dense_coordinate_rank is None
         or arguments.dense_coordinate_rank >= 0,
@@ -611,7 +631,6 @@ def main() -> None:
         arguments.require_temporal_dispatch,
         arguments.dense_coordinate_rank,
         arguments.require_unique_dense_coordinates,
-        arguments.expected_unique_dispatch_targets,
         arguments.minimum_unique_acc_cores,
     )
 

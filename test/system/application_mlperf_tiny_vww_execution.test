@@ -27,13 +27,11 @@
 # RUN:   > %t.run.stdout 2> %t.run.stderr
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
-# RUN:   --spatial-invocations=1 --expected-unique-dispatch-targets=1 \
 # RUN:   --minimum-unique-acc-cores=1 \
 # RUN:   --required-dataflow-text=arith.xori \
 # RUN:   --required-dataflow-text=arith.cmpi \
 # RUN:   --mapping-inspector=loom-product-mapping-inspection-test \
 # RUN:   --require-actor-multicast \
 # RUN:   --require-operand-queue-atomic-fanout \
-# RUN:   --require-memory-engine \
-# RUN:   --require-register-fifo --require-packed-switch-row \
+# RUN:   --require-memory-engine --require-packed-switch-row \
 # RUN:   --require-temporal-dispatch

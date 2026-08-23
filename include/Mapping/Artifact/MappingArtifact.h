@@ -293,6 +293,14 @@ llvm::Expected<FinalizedTechMapping>
 importTechMapping(const ArtifactRootReference &reference,
                   const ArtifactStore &store);
 
+/// Rebinds an already verified Tech selection to one child Module while
+/// preserving its realization choices. The ordinary finalizer remains the
+/// legality and publication authority.
+llvm::Expected<FinalizedTechMapping> rebaseTechMapping(
+    const FinalizedTechMapping &parent,
+    const ::loom::fabric::FabricArtifactView &childFabric,
+    const ArtifactStore &store);
+
 struct SpatialPhysicalRefinementView final {
   ::loom::fabric::FabricPhysicalRefinementDomainRef domain;
   std::vector<std::uint8_t> canonicalValue;
@@ -610,6 +618,13 @@ private:
   ::loom::fabric::FabricHandshakeSelection handshakeSelection_;
 };
 
+/// Whether one exact selected route disposition uses the physical FIFO
+/// occurrence. Hardware-impact projection and runtime-feedback admission share
+/// this query; Module membership alone never implies Mapping dependence.
+bool spatialMappingUsesFifoOccurrence(
+    const SpatialMappingView &mapping,
+    ::loom::fabric::FabricFifoOccurrenceRef fifo);
+
 /// Resolves the exact Physical Tag assigned to one RouteTree node. Untagged
 /// nodes return the canonical one-bit zero sentinel; callers must inspect the
 /// Fabric data path before treating the value as a physical signal.
@@ -738,6 +753,16 @@ llvm::Expected<FinalizedSpatialMapping> finalizeSpatialMapping(
 llvm::Expected<FinalizedSpatialMapping>
 importSpatialMapping(const ArtifactRootReference &reference,
                      const ArtifactStore &store);
+
+/// Rebinds one verified Spatial selection to exact child Tech/Module owners
+/// and proves it again against the child constraints and handshake model.
+llvm::Expected<FinalizedSpatialMapping> rebaseSpatialMapping(
+    const FinalizedSpatialMapping &parent,
+    const FinalizedTechMapping &childTechMapping,
+    const ::loom::fabric::FabricArtifactView &childFabric,
+    const SpatialMappingConstraintSetView &childConstraints,
+    const ArtifactStore &store,
+    const ::loom::fabric::FabricHandshakeContext *handshakeContext = nullptr);
 
 } // namespace loom::mapping
 

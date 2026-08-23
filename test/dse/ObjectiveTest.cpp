@@ -223,6 +223,26 @@ void malformedOwnerReferencesFailAtPreflight() {
                   "objective direction is unknown");
 }
 
+void transientCandidateMeasuresDoNotBorrowMappingOrdinals() {
+  loom::dse::CandidateMeasureObjectiveCatalogs catalogs;
+  catalogs.dimensions = {
+      {0, loom::ResolvedObjectiveDirection::Minimize, 0, 100},
+      {1, loom::ResolvedObjectiveDirection::Maximize, 0, 100},
+  };
+  catalogs.weightedLevels = {{{{0, 1}}}, {{{1, 1}}}};
+  catalogs.totalOrderings = {{{0, 1}}};
+  const loom::dse::ObjectiveProgram program =
+      take(loom::dse::ObjectiveProgram::getCandidateMeasures(catalogs));
+  loom::dse::ObjectiveVector vector = program.makeVector();
+  const std::uint64_t measures[] = {7, 11};
+  requireSuccess(program.evaluateCandidateMeasures(measures, vector));
+  require(vector.codes() == llvm::ArrayRef<std::uint64_t>({7, 89}),
+          "candidate measures changed direction or ordinal ownership");
+  const std::uint64_t incomplete[] = {7};
+  requireRejected(program.evaluateCandidateMeasures(incomplete, vector),
+                  "objective_unavailable");
+}
+
 } // namespace
 
 int main() {
@@ -231,5 +251,6 @@ int main() {
   builtinOrderingEnergyAndParetoUseOneVector();
   completeDeclaredLevelDomainMustFitUint128();
   malformedOwnerReferencesFailAtPreflight();
+  transientCandidateMeasuresDoNotBorrowMappingOrdinals();
   return 0;
 }

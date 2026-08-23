@@ -120,6 +120,11 @@ llvm::cl::opt<std::uint64_t> jointSpatialMappingLimit(
     "joint-spatial-mapping-limit",
     llvm::cl::desc("maximum SpatialMapping roots joined for each pair"),
     llvm::cl::init(0));
+llvm::cl::opt<std::uint64_t> jointTechMappingLimit(
+    "joint-tech-mapping-limit",
+    llvm::cl::desc("maximum TechMapping candidates admitted to Spatial PnR "
+                   "for each target Module"),
+    llvm::cl::init(0));
 llvm::cl::opt<std::string> resolvedConfigOutputPath(
     "resolved-config-output",
     llvm::cl::desc("optional canonical executed ResolvedConfig JSON output"),
@@ -485,7 +490,8 @@ llvm::Expected<int> run() {
         jointPairLimit == 0 ? completePairCount : jointPairLimit;
     auto policy =
         JointDesignPolicy::get(applicationScopes.size(), systems->size(),
-                               pairLimit, jointSpatialMappingLimit);
+                               pairLimit, jointTechMappingLimit,
+                               jointSpatialMappingLimit);
     if (!policy)
       return policy.takeError();
     auto plan = buildJointDesignExplorationPlan(
@@ -501,7 +507,11 @@ llvm::Expected<int> run() {
     llvm::errs() << "joint_frontier_eligible="
                  << plan->frontier.eligiblePairCount
                  << " retained=" << plan->frontier.pairs.size()
-                 << " truncated=" << (plan->frontier.truncated ? 1 : 0) << '\n';
+                 << " truncated=" << (plan->frontier.truncated ? 1 : 0)
+                 << " analytic_evaluated="
+                 << plan->frontier.analyticEvaluatedPairCount
+                 << " analytic_deferred="
+                 << plan->frontier.analyticDeferredPairCount << '\n';
     jointPairOutputs = plan->pairOutputs;
     *config = std::move(plan->resolvedConfig);
   }

@@ -1,6 +1,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -11,6 +12,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <optional>
@@ -169,10 +171,121 @@ module {
     fail("an unsupported actor cycle did not fail closed");
 }
 
+void qualifiedPairingRiskIsDerivedWithoutPhysicalRepair() {
+  const loom::fabric::FabricPeOccurrenceRef pe(7);
+  const loom::fabric::FabricFuOccurrenceRef fu(11);
+  const loom::fabric::InstructionContextRef context{pe, 2};
+  const loom::fabric::FabricTransportEndpointRef ingress{
+      loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 0};
+  std::array<std::uint8_t, loom::ArtifactIdentity::byteSize> identityBytes{};
+  identityBytes.fill(9);
+  const dataflow::GraphRef graph{
+      take(loom::ArtifactIdentity::fromBytes(identityBytes)),
+      dataflow::GraphId(1)};
+  const dataflow::CanonicalGraphProducerEndpointRef producer =
+      dataflow::GraphStartTokenRef{graph};
+  const llvm::APInt tag(4, 3);
+  loom::mapping::SpatialPeOperandQueueMatchGroupView group{
+      producer,
+      ingress,
+      tag,
+      {{{}, {context, 0, 0}, fu, 0, 2},
+       {{}, {context, 0, 1}, fu, 0, 2}},
+      true};
+  const auto feedback = take(
+      loom::mapping::deriveSpatialPeOperandProgressFeedback({group}));
+  if (feedback.status !=
+          loom::mapping::SpatialPeOperandProgressStatus::LikelyRisk ||
+      feedback.support !=
+          loom::mapping::SpatialPeOperandProgressSupport::Analytic ||
+      feedback.potentiallyBlockingGroupCount != 1 ||
+      feedback.pairingKeyCount != 2 || feedback.distinctPairingKeyCount != 1)
+    fail("same-ingress ordered roles lost their qualified pairing risk");
+
+  group.orderedCorrespondenceKnown = false;
+  const auto fanout = take(
+      loom::mapping::deriveSpatialPeOperandProgressFeedback({group}));
+  if (fanout.status == loom::mapping::SpatialPeOperandProgressStatus::LikelyRisk ||
+      fanout.potentiallyBlockingGroupCount != 0 ||
+      fanout.unknownPairingGroupCount != 1)
+    fail("same-ingress atomic fanout was treated as an automatic risk");
+
+  auto secondIngress = ingress;
+  secondIngress.ordinal = 1;
+  auto secondGroup = group;
+  secondGroup.ingress = secondIngress;
+  secondGroup.matches.resize(1);
+  const auto crossIngress = take(
+      loom::mapping::deriveSpatialPeOperandProgressFeedback(
+          {group, secondGroup}));
+  if (crossIngress.pairingOpportunityCount == 0 ||
+      crossIngress.distinctPairingKeyCount != 1 ||
+      crossIngress.distinctIngressCount != 2)
+    fail("cross-ingress qualified pairing opportunity was not aggregated");
+}
+
+void orderedRuntimeHeadsRequireCompleteExactPairing() {
+  const loom::fabric::FabricPeOccurrenceRef pe(7);
+  const loom::fabric::FabricFuOccurrenceRef fu(11);
+  const loom::fabric::InstructionContextRef context{pe, 2};
+  const loom::fabric::FabricTransportEndpointRef ingress{
+      loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 0};
+  std::array<std::uint8_t, loom::ArtifactIdentity::byteSize> identityBytes{};
+  identityBytes.fill(5);
+  const dataflow::GraphRef graph{
+      take(loom::ArtifactIdentity::fromBytes(identityBytes)),
+      dataflow::GraphId(1)};
+  const llvm::APInt tag(4, 3);
+  const loom::mapping::SpatialPeOperandQueueMatchGroupView group{
+      dataflow::GraphStartTokenRef{graph},
+      ingress,
+      tag,
+      {{{}, {context, 0, 0}, fu, 0, 2},
+       {{}, {context, 0, 1}, fu, 1, 2}},
+      true};
+  const auto projection = take(
+      loom::mapping::deriveSpatialPeOperandProgressFeedback({group}));
+  std::vector<loom::mapping::SpatialPeOperandRuntimeHeadView> heads{
+      {{context, 0, 0}, fu, tag, 0, 2, 1, 0, 10, 4, 7, true},
+      {{context, 0, 1}, fu, tag, 1, 2, 1, 0, 11, 5, 7, true}};
+  const auto exact = take(
+      loom::mapping::deriveSpatialPeOperandRuntimeWitness(projection, heads));
+  if (exact.status !=
+          loom::mapping::SpatialPeOperandRuntimeWitnessStatus::Exact ||
+      exact.matchedPairingKeyCount != 1 ||
+      exact.unmatchedPairingKeyCount != 0 || !exact.projectionDigest)
+    fail("complete ordered queue heads did not produce an exact witness");
+
+  std::reverse(heads.begin(), heads.end());
+  const auto permuted = take(
+      loom::mapping::deriveSpatialPeOperandRuntimeWitness(projection, heads));
+  if (!permuted.projectionDigest ||
+      *permuted.projectionDigest != *exact.projectionDigest)
+    fail("runtime head witness digest depends on observation order");
+
+  heads.front().exactHead = false;
+  const auto incomplete = take(
+      loom::mapping::deriveSpatialPeOperandRuntimeWitness(projection, heads));
+  if (incomplete.status ==
+      loom::mapping::SpatialPeOperandRuntimeWitnessStatus::Exact)
+    fail("an incomplete ordered head was classified as exact");
+
+  heads.front().exactHead = true;
+  heads.front().headProducerSequenceOrdinal = 8;
+  const auto mismatch = take(
+      loom::mapping::deriveSpatialPeOperandRuntimeWitness(projection, heads));
+  if (mismatch.status ==
+          loom::mapping::SpatialPeOperandRuntimeWitnessStatus::Exact ||
+      mismatch.mismatchedHeadCount == 0)
+    fail("mismatched ordered heads were classified as exact");
+}
+
 } // namespace
 
 int main() {
   initializedFeedbackProgressBasis();
+  qualifiedPairingRiskIsDerivedWithoutPhysicalRepair();
+  orderedRuntimeHeadsRequireCompleteExactPairing();
   llvm::outs() << "mapping progress tests passed\n";
   return EXIT_SUCCESS;
 }

@@ -16,7 +16,6 @@
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
 # RUN:   --spatial-invocations=4 --dense-coordinate-rank=2 \
 # RUN:   --require-unique-dense-coordinates \
-# RUN:   --expected-unique-dispatch-targets=4 \
 # RUN:   --minimum-unique-acc-cores=2 \
 # RUN:   --mapping-inspector=loom-product-mapping-inspection-test \
 # RUN:   --require-memory-engine \

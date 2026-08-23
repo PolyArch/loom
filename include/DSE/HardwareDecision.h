@@ -2,6 +2,7 @@
 #define LOOM_DSE_HARDWAREDECISION_H
 
 #include "Common/Artifact.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/Identity/FabricRefs.h"
 
@@ -9,6 +10,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -308,19 +310,6 @@ adoptSpatialMicroarchitectureRewriteConfig(llvm::ArrayRef<std::uint8_t> bytes);
 llvm::Expected<std::pair<std::vector<SystemCompositionDecision>, std::uint64_t>>
 adoptSystemCompositionRewriteConfig(llvm::ArrayRef<std::uint8_t> bytes);
 
-/// Exact transformation lineage through System canonical relabeling. This is
-/// not a claim that the two cores are interchangeable; it only records that
-/// the child entity descends from the selected parent entity.
-struct SystemCompositionAccCoreCorrespondence final {
-  loom::fabric::AccCoreOccurrenceRef parent;
-  loom::fabric::AccCoreOccurrenceRef child;
-
-  friend bool operator==(const SystemCompositionAccCoreCorrespondence &lhs,
-                         const SystemCompositionAccCoreCorrespondence &rhs) {
-    return lhs.parent == rhs.parent && lhs.child == rhs.child;
-  }
-};
-
 std::vector<std::uint8_t>
 encodeSpatialTopologyDecision(const ArtifactRootReference &parent,
                               const SpatialTopologyDecision &decision);
@@ -330,8 +319,9 @@ std::vector<std::uint8_t> encodeSpatialMicroarchitectureDecision(
 std::vector<std::uint8_t> encodeSystemCompositionDecision(
     const ArtifactRootReference &parent,
     const SystemCompositionDecision &decision,
-    llvm::ArrayRef<SystemCompositionAccCoreCorrespondence>
-        accCoreCorrespondence);
+    llvm::ArrayRef<loom::fabric::FabricSystemEntityCorrespondence> entities,
+    llvm::ArrayRef<loom::fabric::FabricSystemTransferPatternCorrespondence>
+        transferPatterns);
 
 struct SpatialTopologyCandidateDecision final {
   ArtifactRootReference parent;
@@ -346,8 +336,92 @@ struct SpatialMicroarchitectureCandidateDecision final {
 struct SystemCompositionCandidateDecision final {
   ArtifactRootReference parent;
   SystemCompositionDecision decision;
-  std::vector<SystemCompositionAccCoreCorrespondence> accCoreCorrespondence;
+  std::vector<loom::fabric::FabricSystemEntityCorrespondence> entities;
+  std::vector<loom::fabric::FabricSystemTransferPatternCorrespondence>
+      transferPatterns;
 };
+
+/// Hardware transformation lineage is the sole owner of the Mapping layers
+/// that can be retained across one child. `Rebase` means the selections are
+/// semantically unchanged but must be reconstructed against the child owner;
+/// `Reopen` means only the dependency cone rooted below may be repaired.
+enum class HardwareMappingImpactKind : std::uint8_t {
+  Unchanged,
+  Rebase,
+  Reopen,
+};
+
+llvm::StringRef
+hardwareMappingImpactKindSpelling(HardwareMappingImpactKind kind);
+
+struct TechMappingImpactProjection final {
+  HardwareMappingImpactKind kind = HardwareMappingImpactKind::Unchanged;
+  std::vector<loom::fabric::FabricModulePhysicalOwnerRef> realizationRoots;
+};
+
+struct SpatialMappingImpactProjection final {
+  HardwareMappingImpactKind kind = HardwareMappingImpactKind::Unchanged;
+  std::vector<loom::fabric::FabricModulePhysicalOwnerRef> placementRoots;
+  std::vector<loom::fabric::FabricTransportEndpointRef> routeRoots;
+};
+
+struct SystemMappingImpactProjection final {
+  HardwareMappingImpactKind kind = HardwareMappingImpactKind::Unchanged;
+  std::vector<loom::fabric::AccCoreOccurrenceRef> executionRoots;
+  std::vector<loom::fabric::InstructionCoreContextRef>
+      instructionContextRoots;
+  std::vector<loom::fabric::SystemTransportResourceRef> transportRoots;
+  std::vector<loom::fabric::FabricTransportEndpointRef> routeRoots;
+  std::vector<loom::fabric::SystemServiceEndpointRef> serviceRoots;
+  std::vector<loom::fabric::FabricMemoryEndpointRef> memoryRoots;
+};
+
+/// Stable mutation classes used by the hardware feedback matrix. A class is
+/// an accounting label, not a second candidate identity or a promise that a
+/// particular provider can already materialize every member.
+enum class HardwareMutationFamily : std::uint8_t {
+  SpatialTopology,
+  InstructionCapacity,
+  FuCapability,
+  SpatialMemory,
+  SpatialFifo,
+  SpatialSwitch,
+  SystemAccCore,
+  SystemInstructionContext,
+  SystemTransport,
+  SystemMemoryService,
+};
+
+llvm::StringRef hardwareMutationFamilySpelling(HardwareMutationFamily family);
+
+enum class HardwareMutationLocality : std::uint8_t {
+  Unchanged,
+  LocalCone,
+  GlobalReopen,
+};
+
+llvm::StringRef
+hardwareMutationLocalitySpelling(HardwareMutationLocality locality);
+
+struct HardwareImpactProjection final {
+  ArtifactRootReference parent;
+  std::optional<ArtifactRootReference> child;
+  TechMappingImpactProjection tech;
+  SpatialMappingImpactProjection spatial;
+  SystemMappingImpactProjection system;
+  HardwareMutationFamily family = HardwareMutationFamily::SpatialTopology;
+  HardwareMutationLocality locality = HardwareMutationLocality::Unchanged;
+};
+
+HardwareImpactProjection projectHardwareImpact(
+    const SpatialTopologyCandidateDecision &decision,
+    std::optional<ArtifactRootReference> child = std::nullopt);
+HardwareImpactProjection projectHardwareImpact(
+    const SpatialMicroarchitectureCandidateDecision &decision,
+    std::optional<ArtifactRootReference> child = std::nullopt);
+HardwareImpactProjection projectHardwareImpact(
+    const SystemCompositionCandidateDecision &decision,
+    std::optional<ArtifactRootReference> child = std::nullopt);
 
 llvm::Expected<SpatialTopologyCandidateDecision>
 adoptSpatialTopologyDecision(llvm::ArrayRef<std::uint8_t> bytes);

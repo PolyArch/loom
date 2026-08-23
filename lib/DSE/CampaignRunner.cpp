@@ -199,7 +199,7 @@ exactCandidateCount(const PlanInputBinding &binding,
     return static_cast<std::uint64_t>(completedPrefix.resolve(*output).size());
   }
   const auto &join = std::get<BoundedPlanOutputJoin>(binding);
-  std::vector<ArtifactRootReference> artifacts;
+  std::vector<ArtifactRootReference> artifacts = join.exactArtifacts;
   for (PlanOutputRef output : join.outputs) {
     if (!completedPrefix.hasOutput(output))
       return std::optional<std::uint64_t>{};

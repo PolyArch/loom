@@ -35,7 +35,10 @@ struct ResolvedSelectedHandshakeGraph final {
 llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
     const FabricHandshakeSelection &selection,
     llvm::ArrayRef<HandshakeOwnerModel> models,
-    llvm::ArrayRef<HandshakeDependencyArc> unconditionalArcs) {
+    llvm::ArrayRef<HandshakeDependencyArc> unconditionalArcs,
+    ExecutionControlView executionControl = {}) {
+  if (executionControl.stopRequested())
+    return invalid("selected handshake resolution was interrupted");
   if (llvm::Error error = detail::verifyMemoryInternalHandshakeClosure(
           selection.memoryOperations))
     return std::move(error);
@@ -44,6 +47,8 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
   std::map<OwnerKey, FabricHandshakeSelection> ownerSelections;
   std::set<std::vector<std::uint8_t>> traversalKeys;
   for (const FabricPhysicalTraversalRef &traversal : selection.traversals) {
+    if (executionControl.stopRequested())
+      return invalid("selected handshake resolution was interrupted");
     if (!traversalKeys.insert(canonicalFabricBytes(traversal)).second)
       return invalid("selected traversal relation contains a duplicate");
     const auto owner = detail::handshakeTraversalOwner(traversal);
@@ -87,6 +92,8 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
       return invalid("handshake model inventory repeats an owner");
 
   for (const auto &[key, ownerSelection] : ownerSelections) {
+    if (executionControl.stopRequested())
+      return invalid("selected handshake resolution was interrupted");
     const auto foundModel = modelsByOwner.find(key);
     if (foundModel == modelsByOwner.end())
       return invalid("selected handshake relation names a stale owner");
@@ -145,6 +152,8 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
       return resolved;
     };
     for (std::uint32_t arcOrdinal : activeArcs) {
+      if (executionControl.stopRequested())
+        return invalid("selected handshake resolution was interrupted");
       if (arcOrdinal >= model.arcCount())
         return invalid("selected handshake arc is out of range");
       const HandshakeOwnerArc arc = model.arc(arcOrdinal);
@@ -164,7 +173,11 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
 }
 
 llvm::Expected<std::vector<std::vector<std::size_t>>>
-acyclicAdjacency(const ResolvedSelectedHandshakeGraph &graph) {
+acyclicAdjacency(const ResolvedSelectedHandshakeGraph &graph,
+                 std::vector<std::size_t> *topologicalOrder = nullptr,
+                 ExecutionControlView executionControl = {}) {
+  if (executionControl.stopRequested())
+    return invalid("selected handshake acyclicity was interrupted");
   std::vector<std::vector<std::size_t>> adjacency(graph.nodeCount);
   std::vector<std::size_t> indegree(graph.nodeCount, 0);
   for (const auto &[source, destination] : graph.arcs) {
@@ -173,20 +186,29 @@ acyclicAdjacency(const ResolvedSelectedHandshakeGraph &graph) {
   }
   std::vector<std::size_t> worklist;
   worklist.reserve(graph.nodeCount);
+  std::vector<std::size_t> order;
+  if (topologicalOrder)
+    order.reserve(graph.nodeCount);
   for (std::size_t node = 0; node < graph.nodeCount; ++node)
     if (indegree[node] == 0)
       worklist.push_back(node);
   std::size_t visited = 0;
   while (!worklist.empty()) {
+    if ((visited & 4095U) == 0 && executionControl.stopRequested())
+      return invalid("selected handshake acyclicity was interrupted");
     const std::size_t node = worklist.back();
     worklist.pop_back();
     ++visited;
+    if (topologicalOrder)
+      order.push_back(node);
     for (std::size_t destination : adjacency[node])
       if (--indegree[destination] == 0)
         worklist.push_back(destination);
   }
   if (visited != graph.nodeCount)
     return invalid("SelectedCombinationalHandshakeCycle");
+  if (topologicalOrder)
+    *topologicalOrder = std::move(order);
   return adjacency;
 }
 
@@ -195,12 +217,15 @@ deriveSelectedHandshakeReachabilityWithModels(
     const FabricArtifactView &view, const FabricHandshakeSelection &selection,
     llvm::ArrayRef<HandshakeSignalRef> terminals,
     llvm::ArrayRef<HandshakeOwnerModel> models,
-    llvm::ArrayRef<HandshakeDependencyArc> unconditionalArcs) {
-  auto graph =
-      resolveSelectedHandshakeGraph(selection, models, unconditionalArcs);
+    llvm::ArrayRef<HandshakeDependencyArc> unconditionalArcs,
+    ExecutionControlView executionControl = {}) {
+  auto graph = resolveSelectedHandshakeGraph(
+      selection, models, unconditionalArcs, executionControl);
   if (!graph)
     return graph.takeError();
-  auto adjacency = acyclicAdjacency(*graph);
+  std::vector<std::size_t> topologicalOrder;
+  auto adjacency =
+      acyclicAdjacency(*graph, &topologicalOrder, executionControl);
   if (!adjacency)
     return adjacency.takeError();
 
@@ -219,32 +244,40 @@ deriveSelectedHandshakeReachabilityWithModels(
                                 : std::optional<std::size_t>(found->second));
   }
 
+  // Propagate one machine word of terminal reachability at a time through the
+  // selected DAG. This keeps temporary memory linear in the selected graph
+  // while replacing one full graph traversal per source terminal with one
+  // traversal per 64 destination terminals.
+  constexpr std::size_t reachabilityBatchWidth = 64;
   std::vector<HandshakeDependencyArc> result;
-  std::vector<bool> visited(graph->nodeCount, false);
-  std::vector<std::size_t> worklist;
-  worklist.reserve(graph->nodeCount);
-  for (std::size_t source = 0; source < terminals.size(); ++source) {
-    if (!terminalNodes[source])
-      continue;
-    std::fill(visited.begin(), visited.end(), false);
-    worklist.clear();
-    worklist.push_back(*terminalNodes[source]);
-    visited[*terminalNodes[source]] = true;
-    while (!worklist.empty()) {
-      const std::size_t node = worklist.back();
-      worklist.pop_back();
-      for (std::size_t destination : (*adjacency)[node]) {
-        if (visited[destination])
-          continue;
-        visited[destination] = true;
-        worklist.push_back(destination);
+  std::vector<std::uint64_t> reachable(graph->nodeCount, 0);
+  for (std::size_t batch = 0; batch < terminals.size();
+       batch += reachabilityBatchWidth) {
+    if (executionControl.stopRequested())
+      return invalid("selected handshake reachability was interrupted");
+    const std::size_t batchSize =
+        std::min(reachabilityBatchWidth, terminals.size() - batch);
+    std::fill(reachable.begin(), reachable.end(), 0);
+    for (std::size_t local = 0; local < batchSize; ++local)
+      if (terminalNodes[batch + local])
+        reachable[*terminalNodes[batch + local]] |= std::uint64_t{1} << local;
+    std::size_t visitedNodes = 0;
+    for (std::size_t node : llvm::reverse(topologicalOrder)) {
+      if ((visitedNodes++ & 4095U) == 0 && executionControl.stopRequested())
+        return invalid("selected handshake reachability was interrupted");
+      for (std::size_t destination : (*adjacency)[node])
+        reachable[node] |= reachable[destination];
+    }
+    for (std::size_t source = 0; source < terminals.size(); ++source) {
+      if (!terminalNodes[source])
+        continue;
+      const std::uint64_t word = reachable[*terminalNodes[source]];
+      for (std::size_t local = 0; local < batchSize; ++local) {
+        const std::size_t destination = batch + local;
+        if (source != destination && (word & (std::uint64_t{1} << local)) != 0)
+          result.push_back({terminals[source], terminals[destination]});
       }
     }
-    for (std::size_t destination = 0; destination < terminals.size();
-         ++destination)
-      if (source != destination && terminalNodes[destination] &&
-          visited[*terminalNodes[destination]])
-        result.push_back({terminals[source], terminals[destination]});
   }
 
   detail::sortHandshakeDependencyArcs(result, false);
@@ -287,25 +320,27 @@ llvm::Error verifySelectedCombinationalHandshakeAcyclic(
 llvm::Expected<std::vector<HandshakeDependencyArc>>
 deriveSelectedHandshakeReachability(
     const FabricArtifactView &view, const FabricHandshakeSelection &selection,
-    llvm::ArrayRef<HandshakeSignalRef> terminals) {
+    llvm::ArrayRef<HandshakeSignalRef> terminals,
+    ExecutionControlView executionControl) {
   auto context = buildFabricHandshakeContext(view);
   if (!context)
     return context.takeError();
   return deriveSelectedHandshakeReachabilityWithModels(
       view, selection, terminals, context->ownerModels(),
-      context->unconditionalDependencyArcs());
+      context->unconditionalDependencyArcs(), executionControl);
 }
 
 llvm::Expected<std::vector<HandshakeDependencyArc>>
 deriveSelectedHandshakeReachability(
     const FabricArtifactView &view, const FabricHandshakeSelection &selection,
     llvm::ArrayRef<HandshakeSignalRef> terminals,
-    const FabricHandshakeContext &context) {
+    const FabricHandshakeContext &context,
+    ExecutionControlView executionControl) {
   if (llvm::Error error = revalidateFabricHandshakeContext(context, view))
     return std::move(error);
   return deriveSelectedHandshakeReachabilityWithModels(
       view, selection, terminals, context.ownerModels(),
-      context.unconditionalDependencyArcs());
+      context.unconditionalDependencyArcs(), executionControl);
 }
 
 } // namespace loom::fabric

@@ -341,6 +341,9 @@ TemporalOperandBufferContract::create(
   derived.unitSpans_ = std::move(unitSpans);
   derived.entryCapacity_ = entries;
   derived.mode_ = declaration.mode;
+  derived.admissionPolicy_ =
+      unitCount != queueTotal ? OperandAdmissionPolicy::PerActiveQueueCredit
+                              : OperandAdmissionPolicy::Unreserved;
 
   // Every admitted concurrent commit set must leave the pool inside its
   // declared bounds. `O - D + E` is linear in `O` with `D` and `E` in `{0, 1}`,
