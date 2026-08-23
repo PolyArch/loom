@@ -303,6 +303,90 @@ def validate_mapping_work(
     require(all(row.get("endpoint_expansion_slots", 0) > 0 for row in spatial),
             "a Spatial search did not exercise endpoint routing")
 
+    breakdowns = [
+        row["payload"]
+        for row in events
+        if row.get("event") == "statistics"
+        and row.get("payload", {}).get("operation")
+        == "simulation_cycle_breakdown"
+    ]
+    require({row.get("engine") for row in breakdowns} >= {"dfg", "cgra"},
+            "product replay omitted DFG/CGRA cycle breakdown profiling")
+    for row in breakdowns:
+        require(row.get("measurement_kind") == "direct_and_derived"
+                and isinstance(row.get("direct"), dict)
+                and isinstance(row.get("derived"), dict),
+                "cycle breakdown did not separate direct and derived metrics")
+        direct = row["direct"]
+        require(isinstance(direct.get("cycle_count"), int)
+                and direct["cycle_count"] > 0,
+                "cycle breakdown has no positive direct cycle count")
+        if row.get("engine") == "cgra":
+            static_plan = direct.get("static_plan")
+            require(isinstance(static_plan, dict),
+                    "CGRA breakdown omitted its static physical plan")
+            for key in (
+                "physical_use_acquire_rank_sum",
+                "physical_use_release_rank_sum",
+                "physical_use_max_acquire_rank",
+                "physical_use_max_release_rank",
+                "compute_transition_timing_count",
+                "memory_transition_timing_count",
+                "produced_transport_timing_count",
+                "consumed_transport_timing_count",
+                "traversal_transport_timing_count",
+                "maximum_route_node_depth",
+                "temporal_compute_actor_count",
+                "spatial_compute_actor_count",
+                "temporal_dispatch_domain_count",
+                "operand_buffer_count",
+            ):
+                require(isinstance(static_plan.get(key), int),
+                        "CGRA static timing profile omitted " + key)
+            for key in (
+                "launch_reference_cycle_numerator",
+                "graph_retirement_reference_cycle_numerator",
+                "terminal_reference_cycle_numerator",
+                "terminal_event_delta",
+                "maximum_reference_cycle_numerator",
+                "maximum_event_delta",
+                "physical_grant_wait_cycle_sum",
+                "physical_grant_wait_cycle_max",
+                "physical_action_lifetime_cycle_sum",
+                "physical_action_lifetime_cycle_max",
+                "physical_granted_lifetime_cycle_sum",
+                "physical_granted_lifetime_cycle_max",
+                "physical_grant_same_cycle_count",
+                "physical_grant_delayed_count",
+                "non_integral_timing_observation_count",
+            ):
+                require(isinstance(direct.get(key), int),
+                        "CGRA runtime timing profile omitted " + key)
+            require(isinstance(row["derived"].get("post_retirement_drain_cycles"),
+                               (dict, type(None))),
+                    "CGRA timing profile omitted post-retirement drain")
+            require(
+                direct.get("physical_request_count")
+                == direct.get("physical_grant_count")
+                == direct.get("physical_retirement_count"),
+                "CGRA physical lifecycle counts do not close")
+    comparisons = [
+        payload
+        for payload in matching_payloads(
+            events, stage="system_pnr", event="statistics"
+        )
+        if payload.get("operation") == "simulation_cycle_comparison"
+    ]
+    require(comparisons, "product replay omitted DFG/CGRA cycle comparison")
+    for comparison in comparisons:
+        require(comparison.get("measurement_kind") == "direct_and_derived"
+                and isinstance(comparison.get("direct"), dict)
+                and isinstance(comparison.get("derived"), dict),
+                "cycle comparison did not separate direct and derived metrics")
+        require(isinstance(comparison["direct"].get("dfg_cycles"), int)
+                and isinstance(comparison["direct"].get("cgra_cycles"), int),
+                "cycle comparison lacks direct DFG/CGRA counts")
+
 
 def validate_spatial_unconditional_handshake(
     events: list[dict[str, Any]],

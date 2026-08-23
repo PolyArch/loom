@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <functional>
 #include <limits>
+#include <map>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -28,6 +29,27 @@ llvm::Expected<SpatialEventCoordinate> launchCoordinate() {
   if (!cycle)
     return cycle.takeError();
   return SpatialEventCoordinate{std::move(*cycle), 0};
+}
+
+std::optional<std::uint64_t>
+integralReferenceCycleDistance(const SpatialEventCoordinate &from,
+                               const SpatialEventCoordinate &to) {
+  if (compareSpatialEventCoordinates(to, from) < 0)
+    return std::nullopt;
+  using u128 = unsigned __int128;
+  const u128 fromValue = static_cast<u128>(from.referenceCycle.numerator()) *
+                         to.referenceCycle.denominator();
+  const u128 toValue = static_cast<u128>(to.referenceCycle.numerator()) *
+                       from.referenceCycle.denominator();
+  const u128 commonDenominator = static_cast<u128>(
+      from.referenceCycle.denominator()) *
+      to.referenceCycle.denominator();
+  const u128 difference = toValue - fromValue;
+  if (commonDenominator == 0 || difference % commonDenominator != 0 ||
+      difference / commonDenominator >
+          std::numeric_limits<std::uint64_t>::max())
+    return std::nullopt;
+  return static_cast<std::uint64_t>(difference / commonDenominator);
 }
 
 std::vector<std::uint64_t> findTransferWaitCycle(
@@ -300,6 +322,10 @@ struct CgraExecutionSession::Impl final {
   std::optional<SpatialEventCoordinate> lastCoordinate;
   std::optional<CgraClosedWaitSetDiagnostic> closedWait;
   std::optional<SpatialDiagnosticTrace> trace;
+  std::map<std::pair<std::uint64_t, std::uint64_t>, SpatialEventCoordinate>
+      physicalRequestCoordinates;
+  std::map<std::pair<std::uint64_t, std::uint64_t>, SpatialEventCoordinate>
+      physicalGrantCoordinates;
   bool resultTaken = false;
 
   Impl(const PreparedCgraExecution::Impl &prepared,
@@ -616,6 +642,11 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
     impl_->lastCoordinate = (**frame).coordinate;
     ++impl_->counters.eventFrameCount;
     ++advanced;
+    impl_->counters.maximumReferenceCycleNumerator = std::max(
+        impl_->counters.maximumReferenceCycleNumerator,
+        (**frame).coordinate.referenceCycle.numerator());
+    impl_->counters.maximumEventDelta = std::max(
+        impl_->counters.maximumEventDelta, (**frame).coordinate.delta);
     impl_->counters.emptyEventFrameCount +=
         (**frame).physicalEvents.empty() && (**frame).actorEvents.empty() &&
         (**frame).publications.empty() &&
@@ -636,17 +667,72 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
         (**frame).memoryLinearizations.size();
     for (const detail::CgraPhysicalLifecycleEvent &event :
          (**frame).physicalEvents) {
+      const auto key = std::make_pair(event.actionOrdinal,
+                                      event.occurrenceOrdinal);
       switch (event.kind) {
       case detail::CgraPhysicalLifecycleKind::Requested:
         ++impl_->counters.physicalRequestCount;
+        if (!impl_->physicalRequestCoordinates.emplace(key, event.coordinate)
+                 .second) {
+          impl_->lifecycle = SpatialExecutionSessionState::Failed;
+          return invalid("CGRA physical request was observed twice");
+        }
         break;
       case detail::CgraPhysicalLifecycleKind::Granted:
         ++impl_->counters.physicalGrantCount;
+        if (auto request = impl_->physicalRequestCoordinates.find(key);
+            request == impl_->physicalRequestCoordinates.end()) {
+          impl_->lifecycle = SpatialExecutionSessionState::Failed;
+          return invalid("CGRA physical grant has no request observation");
+        } else {
+          auto wait = integralReferenceCycleDistance(request->second,
+                                                     event.coordinate);
+          if (!wait) {
+            ++impl_->counters.nonIntegralTimingObservationCount;
+          } else if (*wait == 0) {
+            ++impl_->counters.physicalGrantSameCycleCount;
+          } else {
+            ++impl_->counters.physicalGrantDelayedCount;
+            impl_->counters.physicalGrantWaitCycleSum += *wait;
+            impl_->counters.physicalGrantWaitCycleMax = std::max(
+                impl_->counters.physicalGrantWaitCycleMax, *wait);
+          }
+        }
+        impl_->physicalGrantCoordinates.insert_or_assign(key, event.coordinate);
         break;
       case detail::CgraPhysicalLifecycleKind::Committed:
         break;
       case detail::CgraPhysicalLifecycleKind::Retired:
         ++impl_->counters.physicalRetirementCount;
+        if (auto request = impl_->physicalRequestCoordinates.find(key);
+            request == impl_->physicalRequestCoordinates.end()) {
+          impl_->lifecycle = SpatialExecutionSessionState::Failed;
+          return invalid("CGRA physical retirement has no request observation");
+        } else if (auto lifetime = integralReferenceCycleDistance(
+                       request->second, event.coordinate)) {
+          impl_->counters.physicalActionLifetimeCycleSum += *lifetime;
+          impl_->counters.physicalActionLifetimeCycleMax = std::max(
+              impl_->counters.physicalActionLifetimeCycleMax, *lifetime);
+        } else {
+          ++impl_->counters.nonIntegralTimingObservationCount;
+        }
+        if (auto grant = impl_->physicalGrantCoordinates.find(key);
+            grant != impl_->physicalGrantCoordinates.end()) {
+          if (auto active = integralReferenceCycleDistance(
+                  grant->second, event.coordinate)) {
+            impl_->counters.physicalGrantedLifetimeCycleSum += *active;
+            impl_->counters.physicalGrantedLifetimeCycleMax = std::max(
+                impl_->counters.physicalGrantedLifetimeCycleMax, *active);
+          } else {
+            ++impl_->counters.nonIntegralTimingObservationCount;
+          }
+        } else {
+          impl_->lifecycle = SpatialExecutionSessionState::Failed;
+          return invalid(
+              "CGRA physical retirement has no grant observation");
+        }
+        impl_->physicalRequestCoordinates.erase(key);
+        impl_->physicalGrantCoordinates.erase(key);
         break;
       }
     }

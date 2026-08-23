@@ -1,6 +1,8 @@
 #include "ApplicationRuntimeValidationInternal.h"
 
 #include "Common/MappingDebugLog.h"
+#include "Common/ArtifactText.h"
+#include "Common/InvocationDiagnosticLog.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/DfgSimulation.h"
 #include "Evaluation/Models/SimulationComparison.h"
@@ -379,6 +381,41 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
     if (llvm::Error error =
             accumulateCycle(validation.cgraCycles, *cgraCycles, "CGRA"))
       return std::move(error);
+    emitInvocationDiagnostic(
+        DiagnosticVerbosity::Summary, InvocationDiagnosticStage::SystemPnr,
+        InvocationDiagnosticEvent::Statistics, [&] {
+          llvm::json::Object fields;
+          fields["measurement_kind"] = "direct_and_derived";
+          fields["direct"] = llvm::json::Object{
+              {"dfg_cycles", *dfgCycles}, {"cgra_cycles", *cgraCycles}};
+          fields["derived"] = llvm::json::Object{
+              {"cycle_delta", *cgraCycles >= *dfgCycles
+                                   ? *cgraCycles - *dfgCycles
+                                   : 0},
+              {"cgra_to_dfg_ratio",
+               llvm::json::Object{{"numerator", *cgraCycles},
+                                  {"denominator", *dfgCycles}}},
+              {"cgra_is_slower", *cgraCycles > *dfgCycles}};
+          fields["operation"] = "simulation_cycle_comparison";
+          fields["dataflow"] = formatArtifactRootReferenceJson(
+              alternative.dataflow);
+          fields["spatial_mapping"] = formatArtifactRootReferenceJson(
+              selectedContext->spatialMapping);
+          fields["dfg_request"] = formatArtifactRootReferenceJson(
+              evaluation::evaluationRequestReference(preparedDfg->request));
+          fields["cgra_request"] = formatArtifactRootReferenceJson(
+              evaluation::evaluationRequestReference(preparedCgra->request));
+          fields["dfg_cycles"] = *dfgCycles;
+          fields["cgra_cycles"] = *cgraCycles;
+          fields["cycle_delta"] = *cgraCycles >= *dfgCycles
+                                       ? *cgraCycles - *dfgCycles
+                                       : 0;
+          fields["cgra_to_dfg_ratio"] =
+              llvm::json::Object{{"numerator", *cgraCycles},
+                                 {"denominator", *dfgCycles}};
+          fields["cgra_is_slower"] = *cgraCycles > *dfgCycles;
+          return llvm::json::Value(std::move(fields));
+        });
 
     auto comparison = evaluation::models::prepareSimulationComparisonEvaluation(
         *dfgExecution, preparedDfg->resolution, *cgraExecution,

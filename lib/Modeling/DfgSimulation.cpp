@@ -2,8 +2,11 @@
 #include "Evaluation/ProductionRegistry.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
+#include "Common/InvocationDiagnosticLog.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/OperationSchema.h"
 #include "Evaluation/ModelProvider.h"
 #include "Simulator/DFGSimulator.h"
 #include "Simulator/SimulationArtifacts.h"
@@ -237,6 +240,128 @@ llvm::Expected<EvaluationModelResult> evaluateWithLimits(
   const auto &progress = finalized->spatialProgressObservations();
   const std::uint64_t cycleCount =
       progress.graphRetirementVisible->referenceCycle.numerator();
+  std::uint64_t dynamicOperationFires = 0;
+  std::uint64_t loadCount = 0;
+  std::uint64_t storeCount = 0;
+  std::uint64_t atomicMemoryOperationCount = 0;
+  std::uint64_t fenceCount = 0;
+  std::uint64_t computeOperationCount = 0;
+  std::uint64_t controlOperationCount = 0;
+  std::uint64_t memoryOperationCount = 0;
+  std::uint64_t recurrenceCarrierCount = 0;
+  std::uint64_t streamActorCount = 0;
+  std::uint64_t syncActorCount = 0;
+  llvm::json::Object operationFireCounts;
+  for (const auto &[operation, count] : retired->report.operationFireCounts) {
+    if (count > std::numeric_limits<std::uint64_t>::max() -
+                   dynamicOperationFires)
+      return llvm::createStringError(
+          std::errc::value_too_large,
+          "dfg_simulation_model_invalid: operation fire count overflows");
+    dynamicOperationFires += count;
+    operationFireCounts[dataflow::operationSchemaSpelling(operation)] = count;
+    switch (dataflow::actorKind(operation)) {
+    case dataflow::CanonicalDataflowActorKind::Compute:
+      computeOperationCount += count;
+      break;
+    case dataflow::CanonicalDataflowActorKind::Control:
+      controlOperationCount += count;
+      break;
+    case dataflow::CanonicalDataflowActorKind::Memory:
+      memoryOperationCount += count;
+      break;
+    }
+    switch (operation) {
+    case dataflow::OperationSchemaId::DataflowCarry:
+      recurrenceCarrierCount += count;
+      break;
+    case dataflow::OperationSchemaId::DataflowStream:
+      streamActorCount += count;
+      break;
+    case dataflow::OperationSchemaId::DataflowSync:
+      syncActorCount += count;
+      break;
+    case dataflow::OperationSchemaId::DataflowLoad:
+      loadCount += count;
+      break;
+    case dataflow::OperationSchemaId::DataflowStore:
+      storeCount += count;
+      break;
+    case dataflow::OperationSchemaId::DataflowAtomicRmw:
+    case dataflow::OperationSchemaId::DataflowCmpXchg:
+      atomicMemoryOperationCount += count;
+      break;
+    case dataflow::OperationSchemaId::DataflowFence:
+      fenceCount += count;
+      break;
+    default:
+      break;
+    }
+  }
+  emitInvocationDiagnostic(
+      DiagnosticVerbosity::Summary, InvocationDiagnosticStage::DataflowLowering,
+      InvocationDiagnosticEvent::Statistics, [&] {
+        llvm::json::Object fields;
+        llvm::json::Object direct;
+        direct["cycle_count"] = cycleCount;
+        direct["wavefront_steps"] = retired->report.wavefrontSteps;
+        direct["event_count"] = retired->report.eventCount;
+        direct["dynamic_work_items"] = retired->report.dynamicWorkItems;
+        direct["dynamic_operation_fires"] = dynamicOperationFires;
+        direct["operation_kind_count"] =
+            retired->report.operationFireCounts.size();
+        direct["operation_fire_counts"] = std::move(operationFireCounts);
+        direct["compute_operation_count"] = computeOperationCount;
+        direct["control_operation_count"] = controlOperationCount;
+        direct["memory_operation_count"] = memoryOperationCount;
+        direct["recurrence_carrier_count"] = recurrenceCarrierCount;
+        direct["stream_actor_count"] = streamActorCount;
+        direct["sync_actor_count"] = syncActorCount;
+        direct["load_count"] = loadCount;
+        direct["store_count"] = storeCount;
+        direct["atomic_memory_operation_count"] = atomicMemoryOperationCount;
+        direct["fence_count"] = fenceCount;
+        direct["modeled_library_call_count"] =
+            retired->report.modeledLibraryCalls.size();
+        llvm::json::Object derived;
+        const auto rate = [](std::uint64_t numerator,
+                             std::uint64_t denominator) -> llvm::json::Value {
+          if (denominator == 0)
+            return llvm::json::Value(nullptr);
+          return llvm::json::Object{{"numerator", numerator},
+                                    {"denominator", denominator}};
+        };
+        derived["modeled_instruction_ipc"] =
+            rate(dynamicOperationFires, cycleCount);
+        derived["modeled_instruction_cpi"] =
+            rate(cycleCount, dynamicOperationFires);
+        derived["cycles_per_dynamic_work_item"] =
+            rate(cycleCount, retired->report.dynamicWorkItems);
+        derived["recurrence_or_ii"] = "unsupported_single_activation";
+        fields["measurement_kind"] = "direct_and_derived";
+        fields["direct"] = std::move(direct);
+        fields["derived"] = std::move(derived);
+        fields["operation"] = "simulation_cycle_breakdown";
+        fields["engine"] = "dfg";
+        fields["request"] = formatArtifactRootReferenceJson(
+            evaluationRequestReference(request));
+        fields["cycle_count"] = cycleCount;
+        fields["wavefront_steps"] = retired->report.wavefrontSteps;
+        fields["event_count"] = retired->report.eventCount;
+        fields["dynamic_work_items"] = retired->report.dynamicWorkItems;
+        fields["dynamic_operation_fires"] = dynamicOperationFires;
+        fields["operation_kind_count"] = retired->report.operationFireCounts.size();
+        fields["compute_operation_count"] = computeOperationCount;
+        fields["control_operation_count"] = controlOperationCount;
+        fields["memory_operation_count"] = memoryOperationCount;
+        fields["load_count"] = loadCount;
+        fields["store_count"] = storeCount;
+        fields["atomic_memory_operation_count"] = atomicMemoryOperationCount;
+        fields["fence_count"] = fenceCount;
+        fields["modeled_library_call_count"] =
+            retired->report.modeledLibraryCalls.size();
+        return llvm::json::Value(std::move(fields));
+      });
   std::vector<MetricResult> metrics;
   metrics.reserve(request.metricRequests().size());
   for (const MetricRequest &metric : request.metricRequests()) {

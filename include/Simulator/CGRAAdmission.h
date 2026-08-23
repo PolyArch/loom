@@ -46,6 +46,29 @@ struct CgraExecutionPlanSummary final {
   std::uint64_t localTransferSinkCount = 0;
   std::uint64_t physicalTagSegmentCount = 0;
   std::uint64_t taggedRouteNodeCount = 0;
+  /// Static timing projection derived from the selected Fabric UsePatterns.
+  /// These values explain the physical critical path; they are not an
+  /// alternate cycle metric and never include simulator event deltas.
+  std::uint64_t physicalUseAcquireRankSum = 0;
+  std::uint64_t physicalUseReleaseRankSum = 0;
+  std::uint64_t physicalUseMaxAcquireRank = 0;
+  std::uint64_t physicalUseMaxReleaseRank = 0;
+  std::uint64_t physicalUseCausalReleaseCount = 0;
+  std::uint64_t computeTransitionTimingCount = 0;
+  std::uint64_t memoryTransitionTimingCount = 0;
+  std::uint64_t producedTransportTimingCount = 0;
+  std::uint64_t consumedTransportTimingCount = 0;
+  std::uint64_t traversalTransportTimingCount = 0;
+  std::uint64_t computeTransitionMaxReleaseRank = 0;
+  std::uint64_t memoryTransitionMaxReleaseRank = 0;
+  std::uint64_t producedTransportMaxReleaseRank = 0;
+  std::uint64_t consumedTransportMaxReleaseRank = 0;
+  std::uint64_t traversalTransportMaxReleaseRank = 0;
+  std::uint64_t maximumRouteNodeDepth = 0;
+  std::uint64_t temporalComputeActorCount = 0;
+  std::uint64_t spatialComputeActorCount = 0;
+  std::uint64_t temporalDispatchDomainCount = 0;
+  std::uint64_t operandBufferCount = 0;
 };
 
 struct CgraExecutionOwnerReferences final {

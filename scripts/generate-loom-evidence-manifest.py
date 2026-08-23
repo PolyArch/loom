@@ -229,6 +229,8 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
     ledger_errors: list[dict[str, Any]] = []
     cache_observations: list[dict[str, Any]] = []
     runtime_failures: list[dict[str, Any]] = []
+    simulation_cycle_breakdowns: list[dict[str, Any]] = []
+    simulation_cycle_comparisons: list[dict[str, Any]] = []
     incomplete_observations: list[dict[str, Any]] = []
     resource_time_terminal_observations: list[dict[str, Any]] = []
     resource_time_evaluations: list[dict[str, Any]] = []
@@ -504,6 +506,88 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
         }:
             if isinstance(payload.get("pair_decision"), dict):
                 application_pair_decisions.append(payload["pair_decision"])
+        if payload.get("operation") == "simulation_cycle_breakdown":
+            simulation_cycle_breakdowns.append(
+                {
+                    key: payload[key]
+                    for key in (
+                        "engine",
+                        "measurement_kind",
+                        "direct",
+                        "derived",
+                        "request",
+                        "cycle_count",
+                        "wavefront_steps",
+                        "event_count",
+                        "dynamic_work_items",
+                        "dynamic_operation_fires",
+                        "operation_kind_count",
+                        "operation_fire_counts",
+                        "compute_operation_count",
+                        "control_operation_count",
+                        "memory_operation_count",
+                        "recurrence_carrier_count",
+                        "stream_actor_count",
+                        "sync_actor_count",
+                        "load_count",
+                        "store_count",
+                        "atomic_memory_operation_count",
+                        "fence_count",
+                        "modeled_library_call_count",
+                        "modeled_instruction_ipc",
+                        "modeled_instruction_cpi",
+                        "cycles_per_dynamic_work_item",
+                        "recurrence_or_ii",
+                        "event_frame_count",
+                        "empty_event_frame_count",
+                        "compute_source_frame_count",
+                        "memory_source_frame_count",
+                        "transport_source_frame_count",
+                        "physical_source_frame_count",
+                        "actor_commit_count",
+                        "actor_firing_count",
+                        "actor_retirement_count",
+                        "token_publication_count",
+                        "memory_linearization_count",
+                        "physical_request_count",
+                        "physical_grant_count",
+                        "physical_retirement_count",
+                        "request_grant_gap",
+                        "grant_retirement_gap",
+                        "actor_ipc",
+                        "actor_cpi",
+                        "physical_action_rate",
+                        "cycles_per_physical_action",
+                        "cycles_per_actor_retirement",
+                        "event_frames_per_cycle",
+                        "transport_frames_per_cycle",
+                        "physical_frames_per_cycle",
+                        "memory_load_store_split",
+                    )
+                    if key in payload
+                }
+            )
+        if payload.get("operation") == "simulation_cycle_comparison":
+            simulation_cycle_comparisons.append(
+                {
+                    key: payload[key]
+                    for key in (
+                        "measurement_kind",
+                        "direct",
+                        "derived",
+                        "dataflow",
+                        "spatial_mapping",
+                        "dfg_request",
+                        "cgra_request",
+                        "dfg_cycles",
+                        "cgra_cycles",
+                        "cycle_delta",
+                        "cgra_to_dfg_ratio",
+                        "cgra_is_slower",
+                    )
+                    if key in payload
+                }
+            )
         if payload.get("domain") == "application_mapping_join":
             mapping_observations.append(
                 {
@@ -879,6 +963,8 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
         "timings": timings,
         "cache_observations": cache_observations,
         "runtime_failures": runtime_failures,
+        "simulation_cycle_breakdowns": simulation_cycle_breakdowns,
+        "simulation_cycle_comparisons": simulation_cycle_comparisons,
         "incomplete_observations": incomplete_observations,
         "resource_time_terminal_observations": resource_time_terminal_observations,
         "resource_time_evaluations": resource_time_evaluations,

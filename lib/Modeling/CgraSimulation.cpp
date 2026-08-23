@@ -597,7 +597,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
         {{kExecutionOutputSlot, {}}},
         ExecutionFailedEvidence{OutcomeReason::AdapterFailure}};
   }
-  const auto &retirement = outcome->retired->progress.graphRetirementVisible;
+  const auto &progress = outcome->retired->progress;
+  const auto &retirement = progress.graphRetirementVisible;
   if (!retirement || retirement->referenceCycle.denominator() != 1 ||
       retirement->referenceCycle.numerator() >
           static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
@@ -605,6 +606,210 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
         {{kExecutionOutputSlot, {}}},
         ExecutionFailedEvidence{OutcomeReason::AdapterFailure}};
   const std::uint64_t cycleCount = retirement->referenceCycle.numerator();
+  const sim::CgraSimulationCounters &counters = outcome->retired->counters;
+  emitInvocationDiagnostic(
+      DiagnosticVerbosity::Summary, InvocationDiagnosticStage::SystemPnr,
+      InvocationDiagnosticEvent::Statistics, [&] {
+        llvm::json::Object fields;
+        llvm::json::Object direct;
+        direct["cycle_count"] = cycleCount;
+        direct["launch_reference_cycle_numerator"] =
+            progress.launchAccepted.referenceCycle.numerator();
+        direct["graph_retirement_reference_cycle_numerator"] =
+            retirement->referenceCycle.numerator();
+        direct["terminal_reference_cycle_numerator"] =
+            progress.terminalObserved.referenceCycle.numerator();
+        direct["terminal_event_delta"] = progress.terminalObserved.delta;
+        direct["event_frame_count"] = counters.eventFrameCount;
+        direct["empty_event_frame_count"] = counters.emptyEventFrameCount;
+        direct["compute_source_frame_count"] = counters.computeSourceFrameCount;
+        direct["memory_source_frame_count"] = counters.memorySourceFrameCount;
+        direct["transport_source_frame_count"] =
+            counters.transportSourceFrameCount;
+        direct["physical_source_frame_count"] =
+            counters.physicalSourceFrameCount;
+        direct["maximum_reference_cycle_numerator"] =
+            counters.maximumReferenceCycleNumerator;
+        direct["maximum_event_delta"] = counters.maximumEventDelta;
+        direct["physical_grant_wait_cycle_sum"] =
+            counters.physicalGrantWaitCycleSum;
+        direct["physical_grant_wait_cycle_max"] =
+            counters.physicalGrantWaitCycleMax;
+        direct["physical_action_lifetime_cycle_sum"] =
+            counters.physicalActionLifetimeCycleSum;
+        direct["physical_action_lifetime_cycle_max"] =
+            counters.physicalActionLifetimeCycleMax;
+        direct["physical_granted_lifetime_cycle_sum"] =
+            counters.physicalGrantedLifetimeCycleSum;
+        direct["physical_granted_lifetime_cycle_max"] =
+            counters.physicalGrantedLifetimeCycleMax;
+        direct["physical_grant_same_cycle_count"] =
+            counters.physicalGrantSameCycleCount;
+        direct["physical_grant_delayed_count"] =
+            counters.physicalGrantDelayedCount;
+        direct["non_integral_timing_observation_count"] =
+            counters.nonIntegralTimingObservationCount;
+        direct["actor_commit_count"] = counters.actorCommitCount;
+        direct["actor_firing_count"] = counters.actorCommitCount;
+        direct["actor_retirement_count"] = counters.actorRetirementCount;
+        direct["token_publication_count"] = counters.tokenPublicationCount;
+        direct["memory_linearization_count"] =
+            counters.memoryLinearizationCount;
+        direct["physical_request_count"] = counters.physicalRequestCount;
+        direct["physical_grant_count"] = counters.physicalGrantCount;
+        direct["physical_retirement_count"] =
+            counters.physicalRetirementCount;
+        direct["request_grant_gap"] =
+            counters.physicalRequestCount >= counters.physicalGrantCount
+                ? counters.physicalRequestCount - counters.physicalGrantCount
+                : 0;
+        direct["grant_retirement_gap"] =
+            counters.physicalGrantCount >= counters.physicalRetirementCount
+                ? counters.physicalGrantCount -
+                      counters.physicalRetirementCount
+                : 0;
+        const sim::CgraExecutionPlanSummary plan = execution.summary();
+        llvm::json::Object staticPlan{
+            {"mapped_graph_count", plan.mappedGraphCount},
+            {"compute_actor_count", plan.computeActorCount},
+            {"actor_transition_count", plan.actorTransitionCount},
+            {"semantic_configuration_field_count",
+             plan.semanticConfigurationFieldCount},
+            {"memory_actor_count", plan.memoryActorCount},
+            {"memory_rooted_use_count", plan.memoryRootedUseCount},
+            {"memory_child_transaction_count", plan.memoryChildTransactionCount},
+            {"memory_result_assembly_count", plan.memoryResultAssemblyCount},
+            {"compute_transition_physical_use_count",
+             plan.computeTransitionPhysicalUseCount},
+            {"memory_transition_physical_use_count",
+             plan.memoryTransitionPhysicalUseCount},
+            {"produced_physical_use_count", plan.producedPhysicalUseCount},
+            {"consumed_physical_use_count", plan.consumedPhysicalUseCount},
+            {"traversal_physical_use_count", plan.traversalPhysicalUseCount},
+            {"physical_use_count", plan.physicalUseCount},
+            {"resource_owner_count", plan.resourceOwnerCount},
+            {"claim_count", plan.claimCount},
+            {"route_tree_count", plan.routeTreeCount},
+            {"route_node_count", plan.routeNodeCount},
+            {"route_sink_count", plan.routeSinkCount},
+            {"selected_traversal_count", plan.selectedTraversalCount},
+            {"local_transfer_count", plan.localTransferCount},
+            {"local_transfer_sink_count", plan.localTransferSinkCount},
+            {"physical_tag_segment_count", plan.physicalTagSegmentCount},
+            {"tagged_route_node_count", plan.taggedRouteNodeCount}};
+        staticPlan["physical_use_acquire_rank_sum"] =
+            plan.physicalUseAcquireRankSum;
+        staticPlan["physical_use_release_rank_sum"] =
+            plan.physicalUseReleaseRankSum;
+        staticPlan["physical_use_max_acquire_rank"] =
+            plan.physicalUseMaxAcquireRank;
+        staticPlan["physical_use_max_release_rank"] =
+            plan.physicalUseMaxReleaseRank;
+        staticPlan["physical_use_causal_release_count"] =
+            plan.physicalUseCausalReleaseCount;
+        staticPlan["compute_transition_timing_count"] =
+            plan.computeTransitionTimingCount;
+        staticPlan["memory_transition_timing_count"] =
+            plan.memoryTransitionTimingCount;
+        staticPlan["produced_transport_timing_count"] =
+            plan.producedTransportTimingCount;
+        staticPlan["consumed_transport_timing_count"] =
+            plan.consumedTransportTimingCount;
+        staticPlan["traversal_transport_timing_count"] =
+            plan.traversalTransportTimingCount;
+        staticPlan["compute_transition_max_release_rank"] =
+            plan.computeTransitionMaxReleaseRank;
+        staticPlan["memory_transition_max_release_rank"] =
+            plan.memoryTransitionMaxReleaseRank;
+        staticPlan["produced_transport_max_release_rank"] =
+            plan.producedTransportMaxReleaseRank;
+        staticPlan["consumed_transport_max_release_rank"] =
+            plan.consumedTransportMaxReleaseRank;
+        staticPlan["traversal_transport_max_release_rank"] =
+            plan.traversalTransportMaxReleaseRank;
+        staticPlan["maximum_route_node_depth"] =
+            plan.maximumRouteNodeDepth;
+        staticPlan["temporal_compute_actor_count"] =
+            plan.temporalComputeActorCount;
+        staticPlan["spatial_compute_actor_count"] =
+            plan.spatialComputeActorCount;
+        staticPlan["temporal_dispatch_domain_count"] =
+            plan.temporalDispatchDomainCount;
+        staticPlan["operand_buffer_count"] = plan.operandBufferCount;
+        direct["static_plan"] = std::move(staticPlan);
+        llvm::json::Object derived;
+        const auto rate = [](std::uint64_t numerator,
+                             std::uint64_t denominator) -> llvm::json::Value {
+          if (denominator == 0)
+            return llvm::json::Value(nullptr);
+          return llvm::json::Object{{"numerator", numerator},
+                                    {"denominator", denominator}};
+        };
+        derived["actor_ipc"] =
+            rate(counters.actorCommitCount, cycleCount);
+        derived["actor_cpi"] =
+            rate(cycleCount, counters.actorCommitCount);
+        derived["physical_action_rate"] =
+            rate(counters.physicalRetirementCount, cycleCount);
+        derived["cycles_per_physical_action"] =
+            rate(cycleCount, counters.physicalRetirementCount);
+        derived["cycles_per_actor_retirement"] =
+            rate(cycleCount, counters.actorRetirementCount);
+        derived["event_frames_per_cycle"] =
+            rate(counters.eventFrameCount, cycleCount);
+        derived["transport_frames_per_cycle"] =
+            rate(counters.transportSourceFrameCount, cycleCount);
+        derived["physical_frames_per_cycle"] =
+            rate(counters.physicalSourceFrameCount, cycleCount);
+        if (progress.terminalObserved.referenceCycle.denominator() == 1 &&
+            progress.terminalObserved.referenceCycle.numerator() >=
+                retirement->referenceCycle.numerator())
+          derived["post_retirement_drain_cycles"] = llvm::json::Object{
+              {"numerator",
+               progress.terminalObserved.referenceCycle.numerator() -
+                   retirement->referenceCycle.numerator()},
+              {"denominator", 1}};
+        else
+          derived["post_retirement_drain_cycles"] =
+              llvm::json::Value(nullptr);
+        derived["memory_load_store_split"] = "unsupported_by_cgra_counter";
+        derived["recurrence_or_ii"] = "unsupported_single_activation";
+        fields["measurement_kind"] = "direct_and_derived";
+        fields["direct"] = std::move(direct);
+        fields["derived"] = std::move(derived);
+        fields["operation"] = "simulation_cycle_breakdown";
+        fields["engine"] = "cgra";
+        fields["request"] = formatArtifactRootReferenceJson(
+            evaluationRequestReference(request));
+        fields["cycle_count"] = cycleCount;
+        fields["event_frame_count"] = counters.eventFrameCount;
+        fields["empty_event_frame_count"] = counters.emptyEventFrameCount;
+        fields["compute_source_frame_count"] = counters.computeSourceFrameCount;
+        fields["memory_source_frame_count"] = counters.memorySourceFrameCount;
+        fields["transport_source_frame_count"] =
+            counters.transportSourceFrameCount;
+        fields["physical_source_frame_count"] =
+            counters.physicalSourceFrameCount;
+        fields["actor_commit_count"] = counters.actorCommitCount;
+        fields["actor_retirement_count"] = counters.actorRetirementCount;
+        fields["token_publication_count"] = counters.tokenPublicationCount;
+        fields["memory_linearization_count"] =
+            counters.memoryLinearizationCount;
+        fields["physical_request_count"] = counters.physicalRequestCount;
+        fields["physical_grant_count"] = counters.physicalGrantCount;
+        fields["physical_retirement_count"] =
+            counters.physicalRetirementCount;
+        fields["request_grant_gap"] =
+            counters.physicalRequestCount >= counters.physicalGrantCount
+                ? counters.physicalRequestCount - counters.physicalGrantCount
+                : 0;
+        fields["grant_retirement_gap"] =
+            counters.physicalGrantCount >= counters.physicalRetirementCount
+                ? counters.physicalGrantCount -
+                      counters.physicalRetirementCount
+                : 0;
+        return llvm::json::Value(std::move(fields));
+      });
 
   sim::SpatialSimulationExecution model{
       evaluationRequestReference(request),

@@ -259,6 +259,52 @@ llvm::Expected<std::uint64_t> appendPhysicalActivation(
                                  ownerOrdinal});
   result.physicalUseClients.push_back(client);
   result.physicalUseTimings.push_back(*timing);
+  if (llvm::Error error = add(timing->acquireRank,
+                              result.summary.physicalUseAcquireRankSum,
+                              "physical acquire rank"))
+    return std::move(error);
+  if (llvm::Error error = add(timing->releaseRank,
+                              result.summary.physicalUseReleaseRankSum,
+                              "physical release rank"))
+    return std::move(error);
+  result.summary.physicalUseMaxAcquireRank =
+      std::max<std::uint64_t>(result.summary.physicalUseMaxAcquireRank,
+                              timing->acquireRank);
+  result.summary.physicalUseMaxReleaseRank =
+      std::max<std::uint64_t>(result.summary.physicalUseMaxReleaseRank,
+                              timing->releaseRank);
+  if (timing->requiresCausalRelease)
+    if (llvm::Error error = add(1, result.summary.physicalUseCausalReleaseCount,
+                                "causal-release physical use"))
+      return std::move(error);
+  std::uint64_t *timingCount = nullptr;
+  std::uint64_t *maxReleaseRank = nullptr;
+  switch (client) {
+  case CgraPhysicalUseClientKind::ComputeTransition:
+    timingCount = &result.summary.computeTransitionTimingCount;
+    maxReleaseRank = &result.summary.computeTransitionMaxReleaseRank;
+    break;
+  case CgraPhysicalUseClientKind::MemoryTransition:
+    timingCount = &result.summary.memoryTransitionTimingCount;
+    maxReleaseRank = &result.summary.memoryTransitionMaxReleaseRank;
+    break;
+  case CgraPhysicalUseClientKind::ProducedTransport:
+    timingCount = &result.summary.producedTransportTimingCount;
+    maxReleaseRank = &result.summary.producedTransportMaxReleaseRank;
+    break;
+  case CgraPhysicalUseClientKind::ConsumedTransport:
+    timingCount = &result.summary.consumedTransportTimingCount;
+    maxReleaseRank = &result.summary.consumedTransportMaxReleaseRank;
+    break;
+  case CgraPhysicalUseClientKind::TraversalTransport:
+    timingCount = &result.summary.traversalTransportTimingCount;
+    maxReleaseRank = &result.summary.traversalTransportMaxReleaseRank;
+    break;
+  }
+  if (llvm::Error error = add(1, *timingCount, "typed physical-use client"))
+    return std::move(error);
+  *maxReleaseRank =
+      std::max<std::uint64_t>(*maxReleaseRank, timing->releaseRank);
   activations.push_back(
       {selectionOffset, static_cast<std::uint32_t>(patterns.size())});
   selectedOwners.insert(ownerOrdinal);
@@ -678,6 +724,16 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
   result.resources = std::move(*resources);
   result.summary.physicalUseCount =
       static_cast<std::uint64_t>(result.physicalUses.size());
+  result.summary.temporalComputeActorCount = llvm::count_if(
+      result.computeActors,
+      [](const CgraComputeActorPlan &actor) {
+        return actor.temporalDispatchDomain.has_value();
+      });
+  result.summary.spatialComputeActorCount =
+      result.computeActors.size() - result.summary.temporalComputeActorCount;
+  result.summary.temporalDispatchDomainCount =
+      result.temporalDispatchDomains.size();
+  result.summary.operandBufferCount = result.transport.operandBuffers.size();
   result.summary.resourceOwnerCount =
       static_cast<std::uint64_t>(selectedOwners.size());
   result.summary.claimCount =
@@ -685,6 +741,22 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
   result.summary.routeTreeCount = result.transport.routes.size();
   result.summary.routeNodeCount = result.transport.routeNodes.size();
   result.summary.routeSinkCount = result.transport.routeSinks.size();
+  for (const CgraRoutePlan &route : result.transport.routes) {
+    std::vector<std::uint64_t> depths(route.nodeCount, 0);
+    for (std::uint32_t local = 0; local != route.nodeCount; ++local) {
+      const CgraRouteNodePlan &node =
+          result.transport.routeNodes[route.nodeOffset + local];
+      std::uint64_t depth = 1;
+      if (node.parentOrdinal != std::numeric_limits<std::uint32_t>::max()) {
+        if (node.parentOrdinal >= local)
+          return invalid("CGRA route parent is not topologically ordered");
+        depth = depths[node.parentOrdinal] + 1;
+      }
+      depths[local] = depth;
+      result.summary.maximumRouteNodeDepth =
+          std::max(result.summary.maximumRouteNodeDepth, depth);
+    }
+  }
   result.summary.selectedTraversalCount = result.transport.traversals.size();
   result.summary.localTransferCount = result.transport.localTransfers.size();
   result.summary.localTransferSinkCount =

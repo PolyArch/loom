@@ -129,6 +129,35 @@ backpressure; arbitration; temporal sharing; and selected Fabric configuration.
 System cache, coherence, NoC, and InstructionCore effects require sys-sim
 Evidence rather than being attributed to CGRA-sim.
 
+### Cycle-Difference Evidence
+
+A product workflow that reports both DFG and CGRA cycles must retain a direct
+breakdown for each model and a separate derived comparison. The DFG record may
+include dynamic work items, operation fires by canonical operation kind,
+memory loads/stores, and recurrence or stream counts. The CGRA record must
+include actor firings, memory linearizations, physical request/grant/retire
+counts, transport and physical source frames, and the static plan projection
+that selected the Fabric UsePatterns and RouteTrees.
+
+The CGRA static projection records acquire/release rank sums and maxima,
+client-family counts (compute, memory, produced/consumed endpoint, and
+traversal transport), causal-release count, and maximum RouteTree node depth.
+The runtime projection records graph-retirement reference cycle, terminal
+reference cycle, post-retirement drain, maximum same-cycle `delta`, and
+integral grant-wait and action-lifetime observations. These are explanatory
+facts, not a second metric or clock owner. `delta` remains causal ordering
+inside one reference cycle and is never added to a cycle count.
+
+The graph-retirement cycle is the CGRA cycle metric. A later terminal cycle may
+only drain already-retired physical obligations; that drain is reported
+separately and must not be silently folded into the application cycle result.
+Grant-wait counts distinguish resource arbitration from route critical path:
+zero delayed grants does not imply zero physical latency, while a nonzero
+delayed-grant total identifies actual finite-capacity or policy contention.
+The ratio of CGRA to DFG cycles remains a diagnostic comparison only; it is not
+a speedup claim unless a separately registered compatible model proves that
+relation.
+
 ## Determinism And Results
 
 Given the same request, exact input artifacts, and exact comparison-model

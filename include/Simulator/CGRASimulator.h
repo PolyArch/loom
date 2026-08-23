@@ -36,6 +36,19 @@ struct CgraSimulationCounters final {
   std::uint64_t memorySourceFrameCount = 0;
   std::uint64_t transportSourceFrameCount = 0;
   std::uint64_t physicalSourceFrameCount = 0;
+  /// Runtime coordinate and arbitration observations. `delta` is retained
+  /// only as an ordering diagnostic; it is never folded into cycle_count.
+  std::uint64_t maximumReferenceCycleNumerator = 0;
+  std::uint64_t maximumEventDelta = 0;
+  std::uint64_t physicalGrantWaitCycleSum = 0;
+  std::uint64_t physicalGrantWaitCycleMax = 0;
+  std::uint64_t physicalActionLifetimeCycleSum = 0;
+  std::uint64_t physicalActionLifetimeCycleMax = 0;
+  std::uint64_t physicalGrantedLifetimeCycleSum = 0;
+  std::uint64_t physicalGrantedLifetimeCycleMax = 0;
+  std::uint64_t physicalGrantSameCycleCount = 0;
+  std::uint64_t physicalGrantDelayedCount = 0;
+  std::uint64_t nonIntegralTimingObservationCount = 0;
 };
 
 /// Attempt-local proof summary for a quiescent execution that cannot make
