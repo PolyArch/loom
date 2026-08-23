@@ -359,6 +359,7 @@ struct SearchState final {
 };
 
 struct StateMemoEnvelope final {
+  std::uint64_t minimumLowerBound = 0;
   std::uint64_t minimumPeakConcurrentRegions = 0;
   std::uint64_t maximumPeakConcurrentRegions = 0;
   std::uint64_t minimumAllocatedResourceTime = 0;
@@ -380,7 +381,6 @@ std::vector<std::uint64_t> stateMemoKey(const SearchState &state) {
   key.reserve(5 + state.started.size() * 3 + state.active.size() * 5 +
               state.usedResources.size());
   key.push_back(state.time);
-  key.push_back(state.lowerBound);
   key.push_back(state.minimumRemainingResourceWork);
   key.push_back(state.started.size());
   for (bool value : state.started)
@@ -2112,6 +2112,7 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
       ++accounting.stateMemoHits;
       StateMemoEnvelope &envelope = existing->second;
       envelopeUpdate =
+          state.lowerBound < envelope.minimumLowerBound ||
           state.peakConcurrentRegions <
               envelope.minimumPeakConcurrentRegions ||
           state.peakConcurrentRegions >
@@ -2137,13 +2138,16 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
     }
     if (existing == memo.end()) {
       memo.emplace(std::move(key),
-                   StateMemoEnvelope{state.peakConcurrentRegions,
+                   StateMemoEnvelope{state.lowerBound,
+                                     state.peakConcurrentRegions,
                                      state.peakConcurrentRegions,
                                      state.totalAllocatedResourceTime,
                                      estimateSupportRank(state.support)});
       ++accounting.stateMemoMisses;
     } else {
       StateMemoEnvelope &envelope = existing->second;
+      envelope.minimumLowerBound =
+          std::min(envelope.minimumLowerBound, state.lowerBound);
       envelope.minimumPeakConcurrentRegions =
           std::min(envelope.minimumPeakConcurrentRegions,
                    state.peakConcurrentRegions);
