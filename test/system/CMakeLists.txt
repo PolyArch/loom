@@ -8,8 +8,8 @@ target_include_directories(LoomExecutionMatrixTestSupport PUBLIC
 
 target_compile_definitions(LoomExecutionMatrixTestSupport PRIVATE
   LOOM_TEST_CLANG_PATH="${CMAKE_C_COMPILER}"
-  LOOM_TEST_GEM5_M5OP_SOURCE="${LOOM_SOURCE_DIR}/externals/gem5/util/m5/src/abi/riscv/m5op.S"
-  LOOM_TEST_GEM5_M5_INCLUDE="${LOOM_SOURCE_DIR}/externals/gem5/include"
+  LOOM_TEST_GEM5_M5OP_SOURCE="${LOOM_EXTERNAL_SOURCE_DIR}/gem5/util/m5/src/abi/riscv/m5op.S"
+  LOOM_TEST_GEM5_M5_INCLUDE="${LOOM_EXTERNAL_SOURCE_DIR}/gem5/include"
 )
 
 target_link_libraries(LoomExecutionMatrixTestSupport PUBLIC
