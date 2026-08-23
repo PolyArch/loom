@@ -3331,6 +3331,14 @@ schedule hint therefore never supplies Mapping legality or an endpoint class;
 every published endpoint and representative intermediate point still passes
 the ordinary complete SystemMapping closure and independent verifier.
 
+The event frontier computes its full graph lower bound once for the initial
+state. Each admitted admission/event child then updates the bound from frozen
+successor tails, active completion times, newly-ready regions, and remaining
+minimum resource work; it must not rescan the complete dependency graph. The
+frontier ledger reports full lower-bound evaluations separately from
+incremental updates, and both are part of the deterministic state-work
+reconciliation.
+
 The application integration enforces this ordering as two distinct passes. It
 first consumes the already available Canonical Dataflow views only to build the
 resource-time invocation projection and analytic frontier. It publishes

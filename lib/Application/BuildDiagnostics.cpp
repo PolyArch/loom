@@ -480,6 +480,9 @@ void emitApplicationPlanningDiagnostics(
                                    {"states_pruned_by_beam",
                                     resourceTime.frontierAccounting
                                         .statesPrunedByBeam},
+                                   {"incremental_lower_bound_updates",
+                                    resourceTime.frontierAccounting
+                                        .incrementalLowerBoundUpdates},
                                    {"maximum_retained_bytes",
                                     resourceTime.frontierAccounting
                                         .maximumRetainedBytes}}},
@@ -903,6 +906,8 @@ void emitApplicationMappingDiagnostics(
                resourceTime.frontierAccounting.stateMemoDominatedStates},
               {"states_pruned_by_beam",
                resourceTime.frontierAccounting.statesPrunedByBeam},
+              {"incremental_lower_bound_updates",
+               resourceTime.frontierAccounting.incrementalLowerBoundUpdates},
               {"maximum_retained_bytes",
                resourceTime.frontierAccounting.maximumRetainedBytes}};
           payload["resource_time_funnel_truncated"] =

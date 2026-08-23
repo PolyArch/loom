@@ -211,6 +211,9 @@ struct ResourceTimeFrontierAccounting final {
   std::uint64_t stateMemoEnvelopeUpdates = 0;
   std::uint64_t stateMemoDominatedStates = 0;
   std::uint64_t statesPrunedByBeam = 0;
+  /// Number of admitted states whose lower bound was updated from the parent
+  /// event/action delta rather than by rescanning the frozen graph.
+  std::uint64_t incrementalLowerBoundUpdates = 0;
   std::uint64_t maximumRetainedBytes = 0;
 };
 

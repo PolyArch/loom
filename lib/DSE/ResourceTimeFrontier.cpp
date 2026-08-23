@@ -14,6 +14,7 @@
 #include "llvm/Support/CheckedArithmetic.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <limits>
 #include <map>
@@ -326,6 +327,7 @@ struct FrozenInput final {
   std::vector<std::vector<std::size_t>> incomingDependencies;
   std::vector<std::uint64_t> minimumDurations;
   std::vector<std::uint64_t> minimumResourceWork;
+  std::vector<std::uint64_t> minimumSuccessorTails;
   std::vector<std::size_t> reverseTopologicalOrder;
 };
 
@@ -349,6 +351,8 @@ struct SearchState final {
   std::vector<ResourceTimeActionDelta> actions;
   std::vector<ResourceTimeHintState> snapshots;
   std::uint64_t lowerBound = 0;
+  std::uint64_t minimumRemainingResourceWork = 0;
+  bool lowerBoundInitialized = false;
   std::uint64_t peakConcurrentRegions = 0;
   std::uint64_t totalAllocatedResourceTime = 0;
   ResourceTimeEstimateSupport support = ResourceTimeEstimateSupport::Exact;
@@ -376,6 +380,8 @@ std::vector<std::uint64_t> stateMemoKey(const SearchState &state) {
   key.reserve(5 + state.started.size() * 3 + state.active.size() * 5 +
               state.usedResources.size());
   key.push_back(state.time);
+  key.push_back(state.lowerBound);
+  key.push_back(state.minimumRemainingResourceWork);
   key.push_back(state.started.size());
   for (bool value : state.started)
     key.push_back(value ? 1 : 0);
@@ -422,6 +428,7 @@ std::uint64_t retainedBytes(const SearchState &state,
     return true;
   };
   std::uint64_t bytes = sizeof(SearchState);
+  bytes = add(bytes, sizeof(std::uint64_t) + sizeof(bool));
   bytes = add(bytes, product(memoKey.size(), sizeof(std::uint64_t)));
   bytes = add(bytes, product(state.started.size(), 3));
   bytes = add(bytes, state.dependencySatisfied.size());
@@ -511,6 +518,46 @@ std::uint64_t optimisticLowerBound(const FrozenInput &input,
   return llvm::checkedAddUnsigned(state.time,
                                   std::max(criticalPath, workBound))
       .value_or(std::numeric_limits<std::uint64_t>::max());
+}
+
+std::uint64_t incrementalLowerBound(
+    const FrozenInput &input, const SearchState &parent,
+    const SearchState &state, llvm::ArrayRef<std::uint64_t> capacity,
+    llvm::ArrayRef<std::size_t> changedRegions) {
+  std::uint64_t result = parent.lowerBound;
+  const auto includeRegion = [&](std::size_t region) {
+    if (region >= input.minimumSuccessorTails.size() ||
+        state.completed[region])
+      return;
+    const auto tail = input.minimumSuccessorTails[region];
+    const auto candidate = llvm::checkedAddUnsigned(state.time, tail);
+    result = std::max(result, candidate.value_or(
+                                  std::numeric_limits<std::uint64_t>::max()));
+  };
+  for (const ActiveRegion &active : state.active) {
+    const std::uint64_t tail =
+        input.minimumSuccessorTails[active.region] >=
+                input.minimumDurations[active.region]
+            ? input.minimumSuccessorTails[active.region] -
+                  input.minimumDurations[active.region]
+            : 0;
+    const auto candidate = llvm::checkedAddUnsigned(
+        active.completionTime, tail);
+    result = std::max(result, candidate.value_or(
+                                  std::numeric_limits<std::uint64_t>::max()));
+  }
+  for (std::size_t region : changedRegions)
+    includeRegion(region);
+  const std::uint64_t totalCapacity = allocationMagnitude(capacity);
+  if (totalCapacity != 0) {
+    const std::uint64_t workBound =
+        state.minimumRemainingResourceWork / totalCapacity +
+        (state.minimumRemainingResourceWork % totalCapacity != 0);
+    const auto candidate = llvm::checkedAddUnsigned(state.time, workBound);
+    result = std::max(result, candidate.value_or(
+                                  std::numeric_limits<std::uint64_t>::max()));
+  }
+  return result;
 }
 
 ResourceTimeHintState makeSnapshot(const FrozenInput &input,
@@ -784,6 +831,19 @@ llvm::Expected<FrozenInput> freezeInput(
   }
   input.reverseTopologicalOrder.assign(topological.rbegin(),
                                        topological.rend());
+  input.minimumSuccessorTails.assign(regions.size(), 0);
+  for (std::size_t region : input.reverseTopologicalOrder) {
+    std::uint64_t tail = input.minimumDurations[region];
+    for (std::size_t edge : input.outgoingDependencies[region]) {
+      const std::size_t consumer = input.dependencies[edge].consumer;
+      const auto candidate = llvm::checkedAddUnsigned(
+          input.minimumDurations[region],
+          input.minimumSuccessorTails[consumer]);
+      tail = std::max(tail, candidate.value_or(
+                                std::numeric_limits<std::uint64_t>::max()));
+    }
+    input.minimumSuccessorTails[region] = tail;
+  }
   return input;
 }
 
@@ -1323,6 +1383,10 @@ llvm::Error validateResourceTimeFrontierAccounting(
       accounting.stateMemoDominatedStates);
   if (!memoHits || accounting.stateMemoHits != *memoHits)
     return invalid("state memo hit accounting is not closed");
+  auto lowerBoundUpdates = llvm::checkedAddUnsigned(
+      accounting.estimates.consumed, accounting.incrementalLowerBoundUpdates);
+  if (!lowerBoundUpdates || *lowerBoundUpdates != accounting.states.consumed)
+    return invalid("resource-time lower-bound update accounting is not closed");
   return llvm::Error::success();
 }
 
@@ -1473,6 +1537,10 @@ llvm::Error accumulateResourceTimeFrontierAccounting(
     return error;
   if (llvm::Error error = add(destination.statesPrunedByBeam,
                               source.statesPrunedByBeam, "beam pruning"))
+    return error;
+  if (llvm::Error error = add(destination.incrementalLowerBoundUpdates,
+                              source.incrementalLowerBoundUpdates,
+                              "incremental lower-bound updates"))
     return error;
   destination.maximumRetainedBytes =
       std::max(destination.maximumRetainedBytes,
@@ -2013,11 +2081,19 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
   initial.dependencySatisfied.assign(frozen->dependencies.size(), false);
   initial.satisfiedDependencyCount.assign(regions.size(), 0);
   initial.usedResources.assign(resourceClasses.size(), 0);
-  for (std::size_t region = 0; region != regions.size(); ++region)
+  for (std::size_t region = 0; region != regions.size(); ++region) {
     if (frozen->incomingDependencies[region].empty())
       initial.ready.push_back(region);
+    initial.minimumRemainingResourceWork = llvm::checkedAddUnsigned(
+        initial.minimumRemainingResourceWork,
+        frozen->minimumResourceWork[region])
+                                             .value_or(
+                                                 std::numeric_limits<
+                                                     std::uint64_t>::max());
+  }
   initial.lowerBound =
       optimisticLowerBound(*frozen, initial, policy.availableResourceUnits);
+  initial.lowerBoundInitialized = true;
   initial.snapshots.push_back(makeSnapshot(*frozen, initial));
 
   std::map<std::vector<std::uint64_t>, StateMemoEnvelope> memo;
@@ -2089,14 +2165,16 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
     accounting.maximumRetainedBytes =
         std::max(accounting.maximumRetainedBytes, retained);
     ++accounting.states.consumed;
-    ++accounting.estimates.planned;
-    ++accounting.estimates.reserved;
-    {
+    if (!state.lowerBoundInitialized) {
+      ++accounting.estimates.planned;
+      ++accounting.estimates.reserved;
       WorkTimer timer(accounting.estimates);
       state.lowerBound = optimisticLowerBound(
           *frozen, state, policy.availableResourceUnits);
-    }
-    ++accounting.estimates.consumed;
+      state.lowerBoundInitialized = true;
+      ++accounting.estimates.consumed;
+    } else
+      ++accounting.incrementalLowerBoundUpdates;
     if (!state.snapshots.empty())
       state.snapshots.back().optimisticMakespanLowerBoundPicoseconds =
           state.lowerBound;
@@ -2203,6 +2281,11 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
           delta.beforeTimePicoseconds = state.time;
           delta.afterTimePicoseconds = state.time;
           child.actions.push_back(std::move(delta));
+          const std::array<std::size_t, 1> changedRegions = {region};
+          child.lowerBound = incrementalLowerBound(
+              *frozen, state, child, policy.availableResourceUnits,
+              changedRegions);
+          child.lowerBoundInitialized = true;
           child.snapshots.push_back(makeSnapshot(*frozen, child));
           ++accounting.actions.consumed;
           generatedAction = true;
@@ -2260,6 +2343,11 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
                 changedEdges.push_back(edge);
             const ResourceTimeSpeedupPoint &point =
                 frozen->regions[active.region].speedupCurve[active.point];
+            const std::uint64_t completedWork =
+                frozen->minimumResourceWork[active.region];
+            if (completedWork > child.minimumRemainingResourceWork)
+              return invalid("remaining resource-work underflowed");
+            child.minimumRemainingResourceWork -= completedWork;
             for (std::size_t resource = 0;
                  resource != child.usedResources.size(); ++resource)
               child.usedResources[resource] -= point.resourceUnits[resource];
@@ -2272,12 +2360,18 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
                            }),
             child.active.end());
         sortOrdinals(changedEdges);
-        for (std::size_t region : newlyReady(*frozen, child, changedEdges))
+        const std::vector<std::size_t> newlyReadyRegions =
+            newlyReady(*frozen, child, changedEdges);
+        for (std::size_t region : newlyReadyRegions)
           delta.newlyReadyRegions.push_back(frozen->regions[region].region);
         llvm::sort(delta.completedRegions, rootLess);
         llvm::sort(delta.tokenReadyProducers, rootLess);
         llvm::sort(delta.newlyReadyRegions, rootLess);
         child.actions.push_back(std::move(delta));
+        child.lowerBound = incrementalLowerBound(
+            *frozen, state, child, policy.availableResourceUnits,
+            newlyReadyRegions);
+        child.lowerBoundInitialized = true;
         child.snapshots.push_back(makeSnapshot(*frozen, child));
         ++accounting.actions.consumed;
         generatedAction = true;

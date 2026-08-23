@@ -1135,6 +1135,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
                accounting.frontierAccounting.stateMemoDominatedStates},
               {"states_pruned_by_beam",
                accounting.frontierAccounting.statesPrunedByBeam},
+              {"incremental_lower_bound_updates",
+               accounting.frontierAccounting.incrementalLowerBoundUpdates},
               {"maximum_retained_bytes",
                accounting.frontierAccounting.maximumRetainedBytes}};
           llvm::json::Object funnel{

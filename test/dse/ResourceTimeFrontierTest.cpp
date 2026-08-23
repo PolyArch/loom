@@ -175,6 +175,11 @@ void fiveRegionCostAndReadinessAreEventDriven() {
           "low-cost work accounting is not closed");
   require(low->accounting.stateMemoHits != 0,
           "event frontier did not deduplicate equivalent admission orders");
+  require(low->accounting.incrementalLowerBoundUpdates != 0 &&
+              low->accounting.estimates.consumed <
+                  low->accounting.states.consumed,
+          "event frontier recomputed every lower bound instead of applying "
+          "incremental updates");
 }
 
 void budgetsAndExactRejectionsRemainTyped() {
