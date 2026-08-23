@@ -2689,6 +2689,24 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
       parentPlan.pairOutputs.front().pair.system.artifact)
     return invalid("operand-buffer feedback parent Mapping names another "
                    "System");
+  if (parentMapping->view().dataflowIdentity() !=
+          feedback.owners->dataflow.artifact ||
+      !llvm::is_contained(
+          parentMapping->view().executionBindings().spatialMappingImports(),
+          feedback.owners->spatialMapping))
+    return invalid("operand-buffer feedback is not attached to its parent "
+                   "SystemMapping");
+  auto feedbackSpatial =
+      mapping::importSpatialMapping(feedback.owners->spatialMapping, artifacts);
+  if (!feedbackSpatial)
+    return feedbackSpatial.takeError();
+  if (feedbackSpatial->view().dataflowIdentity() !=
+          feedback.owners->dataflow.artifact ||
+      feedbackSpatial->view().fabricIdentity() !=
+          feedback.owners->fabric.artifact ||
+      feedbackSpatial->view().techMappingIdentity() !=
+          feedback.owners->techMapping.artifact)
+    return invalid("operand-buffer feedback owner identities disagree");
   auto module =
       fabric::importEntireFabricRoot(feedback.owners->fabric, artifacts);
   if (!module)
