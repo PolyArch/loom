@@ -5,6 +5,7 @@
 #include "InitializerRelationSolver.h"
 #include "SpatialBindingRelationModel.h"
 #include "SpatialCandidateLocalTransferPreference.h"
+#include "SpatialCandidateOperandPairingPreference.h"
 #include "SpatialCandidateTopologyPreference.h"
 #include "SpatialLocalTransferIndex.h"
 #include "SpatialMemoryCompatibility.h"
@@ -120,6 +121,8 @@ struct PreferredRootAssignment final {
   std::uint64_t topologyRefinementUnreachableSelections = 0;
   std::uint64_t changedPortAttachments = 0;
   std::uint64_t changedGraphBoundaryAttachments = 0;
+  std::uint64_t pairingScoredPortAttachments = 0;
+  std::uint64_t preferredSharedOperandIngressPressure = 0;
   std::uint64_t structurallyAdjustedRootPreferences = 0;
   std::uint64_t maximumEndpointSelections = 0;
   bool applied = false;
@@ -178,6 +181,10 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           fields["changed_port_attachments"] = result.changedPortAttachments;
           fields["changed_graph_boundary_attachments"] =
               result.changedGraphBoundaryAttachments;
+          fields["pairing_scored_port_attachments"] =
+              result.pairingScoredPortAttachments;
+          fields["preferred_shared_operand_ingress_pressure"] =
+              result.preferredSharedOperandIngressPressure;
           fields["structurally_adjusted_root_preferences"] =
               result.structurallyAdjustedRootPreferences;
           fields["maximum_endpoint_selections"] =
@@ -769,6 +776,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
   std::map<PnrIndex, std::uint64_t> endpointSelectionCounts;
   std::map<std::pair<PnrIndex, PnrIndex>, std::uint64_t>
       logicalNetEndpointSelectionCounts;
+  std::vector<PnrIndex> selectedAttachmentOptions(ports.portDemands().size(),
+                                                  getInvalidPnrIndex());
   const auto countEndpoint = [&](PnrIndex option) -> llvm::Error {
     if (option >= attachmentOptions.size())
       return initializerError(
@@ -834,6 +843,7 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     PnrIndex selected = getInvalidPnrIndex();
     auto selectedScore = std::make_tuple(
         true, std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(), choices.size());
     const PnrIndex origin = preferenceOrigin(baselineChoice);
     for (std::size_t rank = 0; rank < choices.size(); ++rank) {
@@ -860,9 +870,14 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           netEndpoint == logicalNetEndpointSelectionCounts.end()
               ? 0
               : netEndpoint->second;
+      auto pairingPressure = detail::scoreSpatialOperandPairingAttachment(
+          problem, demand, option, selectedAttachmentOptions);
+      if (!pairingPressure)
+        return pairingPressure.takeError();
       const auto score = std::make_tuple(
           netCount == 0,
-          std::numeric_limits<std::uint64_t>::max() - netCount, count, rank);
+          std::numeric_limits<std::uint64_t>::max() - netCount,
+          *pairingPressure, count, rank);
       if (score < selectedScore) {
         selected = local;
         selectedScore = score;
@@ -872,7 +887,20 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       return initializerError(
           "port preference selected placement has no attachment choice");
     fixedChoices[decision] = selected;
+    selectedAttachmentOptions[demand] = choices[selected];
     result.changedPortAttachments += selected != baselineChoice;
+    result.pairingScoredPortAttachments +=
+        !ports.operandPairingGroupsForDemand(demand).empty();
+    auto selectedPairingPressure = detail::scoreSpatialOperandPairingAttachment(
+        problem, demand, choices[selected], selectedAttachmentOptions);
+    if (!selectedPairingPressure)
+      return selectedPairingPressure.takeError();
+    if (*selectedPairingPressure >
+        std::numeric_limits<std::uint64_t>::max() -
+            result.preferredSharedOperandIngressPressure)
+      return initializerError(
+          "preferred shared operand ingress pressure exceeds u64");
+    result.preferredSharedOperandIngressPressure += *selectedPairingPressure;
     if (llvm::Error error = countEndpoint(choices[selected]))
       return std::move(error);
     if (llvm::Error error =

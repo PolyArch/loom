@@ -407,8 +407,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             fields["operand_queue_potentially_blocking_group_count"] =
                 outcome->closedWaitSet->
                     operandQueuePotentiallyBlockingGroupCount;
-            fields["operand_queue_unknown_pairing_group_count"] =
-                outcome->closedWaitSet->operandQueueUnknownPairingGroupCount;
+            fields["operand_queue_shared_ingress_pressure"] =
+                outcome->closedWaitSet->operandQueueSharedIngressPressure;
             fields["operand_queue_distinct_ingress_count"] =
                 outcome->closedWaitSet->operandQueueDistinctIngressCount;
             fields["operand_queue_pairing_key_count"] =

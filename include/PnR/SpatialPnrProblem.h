@@ -20,6 +20,7 @@
 #include "llvm/Support/Error.h"
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -367,6 +368,16 @@ struct FrozenSpatialGraphBoundary final {
   PnrIndex attachmentOptionCount = 0;
 };
 
+/// Search-local ordinalization of one Dataflow-owned ordered-input group.
+/// Members are representatives of distinct logical producers; repeated uses
+/// of one producer remain ordinary atomic fanout and appear only once.
+struct FrozenSpatialOperandPairingGroup final {
+  std::uint64_t realization = 0;
+  ::dataflow::ActorRef actor;
+  PnrIndex memberOffset = 0;
+  PnrIndex memberCount = 0;
+};
+
 class FrozenSpatialPortIndex final {
 public:
   llvm::ArrayRef<FrozenSpatialPortDemand> portDemands() const {
@@ -380,6 +391,33 @@ public:
   }
   llvm::ArrayRef<FrozenSpatialGraphBoundary> graphBoundaries() const {
     return graphBoundaries_;
+  }
+  llvm::ArrayRef<FrozenSpatialOperandPairingGroup>
+  operandPairingGroups() const {
+    return operandPairingGroups_;
+  }
+  llvm::ArrayRef<PnrIndex> operandPairingGroupMembers() const {
+    return operandPairingGroupMembers_;
+  }
+  llvm::ArrayRef<PnrIndex> operandPairingGroupMembers(PnrIndex group) const {
+    assert(group < operandPairingGroups_.size());
+    const auto &record = operandPairingGroups_[group];
+    return llvm::ArrayRef(operandPairingGroupMembers_)
+        .slice(record.memberOffset, record.memberCount);
+  }
+  llvm::ArrayRef<PnrIndex>
+  operandPairingGroupsForDemand(PnrIndex demand) const {
+    assert(demand + 1 < demandOperandPairingOffsets_.size());
+    return llvm::ArrayRef(demandOperandPairingGroups_)
+        .slice(demandOperandPairingOffsets_[demand],
+               demandOperandPairingOffsets_[demand + 1] -
+                   demandOperandPairingOffsets_[demand]);
+  }
+  llvm::ArrayRef<PnrIndex> demandOperandPairingOffsets() const {
+    return demandOperandPairingOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> demandOperandPairingGroups() const {
+    return demandOperandPairingGroups_;
   }
   llvm::ArrayRef<PnrIndex> computeRealizationDemandOffsets() const {
     return computeRealizationDemandOffsets_;
@@ -414,6 +452,10 @@ private:
   std::vector<FrozenSpatialPortPlacementDomain> placementDomains_;
   std::vector<FrozenSpatialAttachmentOption> attachmentOptions_;
   std::vector<FrozenSpatialGraphBoundary> graphBoundaries_;
+  std::vector<FrozenSpatialOperandPairingGroup> operandPairingGroups_;
+  std::vector<PnrIndex> operandPairingGroupMembers_;
+  std::vector<PnrIndex> demandOperandPairingOffsets_;
+  std::vector<PnrIndex> demandOperandPairingGroups_;
   std::vector<PnrIndex> computeRealizationDemandOffsets_;
   std::vector<PnrIndex> computeRealizationDemands_;
   std::vector<PnrIndex> memoryRealizationDemandOffsets_;
@@ -1210,6 +1252,8 @@ struct SpatialActiveProblemStatistics final {
   std::uint64_t localTransferOptionCount = 0;
   std::uint64_t portDemandCount = 0;
   std::uint64_t attachmentOptionCount = 0;
+  std::uint64_t operandPairingGroupCount = 0;
+  std::uint64_t operandPairingMemberCount = 0;
   std::uint64_t computeAttachmentClassLookupCount = 0;
   std::uint64_t computeAttachmentClassHitCount = 0;
   std::uint64_t computeAttachmentClassMissCount = 0;

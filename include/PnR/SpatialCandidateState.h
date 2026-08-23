@@ -254,6 +254,9 @@ public:
   std::uint64_t staticSchedulePressure() const {
     return staticSchedulePressure_;
   }
+  std::uint64_t sharedOperandIngressPressure() const {
+    return sharedOperandIngressPressure_;
+  }
   std::uint64_t routeCapacityOveruse() const {
     return routeResources_.totalCapacityOveruseRaw();
   }
@@ -370,6 +373,7 @@ private:
       SpatialTagAssignmentState tagAssignments,
       std::uint64_t unroutedObligationCount,
       std::uint64_t atomicCapacityOveruse, std::uint64_t staticSchedulePressure,
+      std::uint64_t sharedOperandIngressPressure,
       std::vector<std::uint64_t> logicalNetWorstArrivalDelayQuanta,
       std::vector<std::uint64_t> logicalNetNegativeSlackQuanta,
       std::uint64_t worstRouteArrivalDelayQuanta,
@@ -391,6 +395,7 @@ private:
         unroutedObligationCount_(unroutedObligationCount),
         atomicCapacityOveruse_(atomicCapacityOveruse),
         staticSchedulePressure_(staticSchedulePressure),
+        sharedOperandIngressPressure_(sharedOperandIngressPressure),
         logicalNetWorstArrivalDelayQuanta_(
             std::move(logicalNetWorstArrivalDelayQuanta)),
         logicalNetNegativeSlackQuanta_(
@@ -478,6 +483,7 @@ private:
   std::uint64_t unroutedObligationCount_ = 0;
   std::uint64_t atomicCapacityOveruse_ = 0;
   std::uint64_t staticSchedulePressure_ = 0;
+  std::uint64_t sharedOperandIngressPressure_ = 0;
   std::vector<std::uint64_t> logicalNetWorstArrivalDelayQuanta_;
   std::vector<std::uint64_t> logicalNetNegativeSlackQuanta_;
   std::uint64_t worstRouteArrivalDelayQuanta_ = 0;

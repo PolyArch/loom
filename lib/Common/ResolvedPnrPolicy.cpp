@@ -207,7 +207,7 @@ resolvedBuiltinSpatialPnrPolicy(ResolvedProfilePreset preset) {
               0, ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
               ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
           allTemporaryViolations(),
-          ResolvedPnrObjectiveSelection{0, 5}};
+          ResolvedPnrObjectiveSelection{0, 6}};
 }
 
 ResolvedPnrPolicyConfig
@@ -215,7 +215,7 @@ resolvedBuiltinSystemPnrPolicy(ResolvedProfilePreset preset) {
   ResolvedPnrPolicyConfig policy = resolvedBuiltinSpatialPnrPolicy(preset);
   policy.search.exactRepair =
       ResolvedPnrExactRepairPolicy{ResolvedPnrExactRepairKind::Disabled, 0, 0};
-  policy.objectiveSelection = ResolvedPnrObjectiveSelection{1, 6};
+  policy.objectiveSelection = ResolvedPnrObjectiveSelection{1, 7};
   return policy;
 }
 
@@ -245,6 +245,7 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   ResolvedWeightedObjectiveLevel timing;
   ResolvedWeightedObjectiveLevel spatialEnergy;
   ResolvedWeightedObjectiveLevel energy;
+  ResolvedWeightedObjectiveLevel operandPairing;
   for (std::uint32_t dimension = 0; dimension != resolvedPnrViolationKindCount;
        ++dimension) {
     closure.terms.push_back({dimension, 1});
@@ -259,6 +260,10 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   spatialEnergy.terms.push_back({scheduleDimension, UINT64_C(4294967296)});
   energy.terms.push_back({scheduleDimension, UINT64_C(4294967296)});
   const std::uint32_t timingBegin = scheduleDimension + 1;
+  const std::uint32_t operandPairingDimension =
+      resolvedPnrViolationKindCount +
+      static_cast<std::uint32_t>(
+          BuiltinMappingMeasureKind::SharedOperandIngressPressure);
   for (std::uint32_t dimension = timingBegin;
        dimension != resolvedPnrViolationKindCount + mappingMeasureKindCount;
        ++dimension) {
@@ -267,9 +272,11 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
                          static_cast<std::uint32_t>(
                              BuiltinMappingMeasureKind::
                                  RecurrenceMinimumInitiationIntervalCycles);
-    if (!recurrence)
+    const bool pairing = dimension == operandPairingDimension;
+    if (!recurrence && !pairing)
       spatialTiming.terms.push_back({dimension, 1});
-    timing.terms.push_back({dimension, 1});
+    if (!pairing)
+      timing.terms.push_back({dimension, 1});
     const bool transport =
         dimension ==
         resolvedPnrViolationKindCount +
@@ -277,15 +284,19 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
                 BuiltinMappingMeasureKind::TransportBitCycleDemand);
     if (!recurrence)
       spatialEnergy.terms.push_back(
-          {dimension, transport ? UINT64_C(1) : UINT64_C(4294967296)});
+          {dimension, transport || pairing ? UINT64_C(1)
+                                           : UINT64_C(4294967296)});
     energy.terms.push_back(
-        {dimension, transport ? UINT64_C(1) : UINT64_C(4294967296)});
+        {dimension, transport || pairing ? UINT64_C(1)
+                                         : UINT64_C(4294967296)});
   }
-  catalogs.weightedLevels = {std::move(traversal),     std::move(schedule),
-                             std::move(spatialTiming), std::move(closure),
-                             std::move(timing),        std::move(spatialEnergy),
-                             std::move(energy)};
-  catalogs.totalOrderings = {{{3, 2, 1, 0}}, {{3, 4, 1, 0}}};
+  operandPairing.terms.push_back({operandPairingDimension, 1});
+  catalogs.weightedLevels = {
+      std::move(traversal),      std::move(schedule),
+      std::move(operandPairing), std::move(spatialTiming),
+      std::move(closure),        std::move(timing),
+      std::move(spatialEnergy),  std::move(energy)};
+  catalogs.totalOrderings = {{{4, 3, 1, 0, 2}}, {{4, 5, 1, 0, 2}}};
   return catalogs;
 }
 

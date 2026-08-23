@@ -107,14 +107,15 @@ deriveSpatialOperandQueueRuntimeFeedback(
       spatial->view().physicalTagSegments());
   if (!groups)
     return groups.takeError();
-  auto projection = mapping::deriveSpatialPeOperandProgressFeedback(*groups);
+  auto projection = mapping::deriveSpatialPeOperandProgressFeedback(
+      *dataflowView, tech->view(), *groups);
   if (!projection)
     return projection.takeError();
   if (projection->groupCount != closedWait.operandQueueGroupCount ||
       projection->potentiallyBlockingGroupCount !=
           closedWait.operandQueuePotentiallyBlockingGroupCount ||
-      projection->unknownPairingGroupCount !=
-          closedWait.operandQueueUnknownPairingGroupCount ||
+      projection->sharedIngressPressure !=
+          closedWait.operandQueueSharedIngressPressure ||
       projection->distinctIngressCount !=
           closedWait.operandQueueDistinctIngressCount ||
       projection->pairingKeyCount != closedWait.operandQueuePairingKeyCount ||

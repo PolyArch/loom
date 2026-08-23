@@ -25,6 +25,7 @@ add_mlir_library(LoomPnR
   SpatialCanonicalSeed.cpp
   SpatialCandidateInitializer.cpp
   SpatialCandidateLocalTransferPreference.cpp
+  SpatialCandidateOperandPairingPreference.cpp
   SpatialCandidateTopologyPreference.cpp
   SpatialCandidateMemory.cpp
   SpatialCandidateResourceTime.cpp
@@ -36,6 +37,7 @@ add_mlir_library(LoomPnR
   SpatialMappingMaterializer.cpp
   SpatialMoveTransaction.cpp
   SpatialNetRouter.cpp
+  SpatialOperandPairingPressure.cpp
   SpatialPnrCapacityIndex.cpp
   SpatialPathFinderDiagnostics.cpp
   SpatialPathFinderRouter.cpp

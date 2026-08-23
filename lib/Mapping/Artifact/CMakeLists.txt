@@ -33,6 +33,7 @@ add_library(LoomMappingArtifact
   SystemMappingServiceTargetVerification.cpp
   SystemServiceBindingProjection.cpp
   SystemPresburger.cpp
+  TechComputeOrderedInputProjection.cpp
   TechMappingCanonicalKey.cpp
   TechMappingComputeVerification.cpp
   TechMappingArtifact.cpp

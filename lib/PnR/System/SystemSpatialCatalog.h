@@ -29,6 +29,7 @@ struct SpatialCatalogEntry final {
   std::vector<::dataflow::GraphRef> covers;
   std::vector<SpatialCatalogGraphProgress> graphProgress;
   std::vector<std::uint64_t> graphStaticSchedulePressures;
+  std::vector<std::uint64_t> graphSharedOperandIngressPressures;
   std::vector<std::shared_ptr<const FrozenSpatialRecurrenceTimingDemand>>
       graphRecurrenceDemands;
   std::uint64_t worstRouteArrivalDelayQuanta = 0;

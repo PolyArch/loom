@@ -437,8 +437,8 @@ struct CgraExecutionSession::Impl final {
     closedWait->operandQueueGroupCount = operandProgress.groupCount;
     closedWait->operandQueuePotentiallyBlockingGroupCount =
         operandProgress.potentiallyBlockingGroupCount;
-    closedWait->operandQueueUnknownPairingGroupCount =
-        operandProgress.unknownPairingGroupCount;
+    closedWait->operandQueueSharedIngressPressure =
+        operandProgress.sharedIngressPressure;
     closedWait->operandQueueDistinctIngressCount =
         operandProgress.distinctIngressCount;
     closedWait->operandQueuePairingKeyCount =

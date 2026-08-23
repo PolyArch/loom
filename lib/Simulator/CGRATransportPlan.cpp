@@ -238,7 +238,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     return operandQueueGroups.takeError();
   auto operandQueueProgress =
       ::loom::mapping::deriveSpatialPeOperandProgressFeedback(
-          *operandQueueGroups);
+          dataflow, tech, *operandQueueGroups);
   if (!operandQueueProgress)
     return operandQueueProgress.takeError();
   auto packedSwitchRows =

@@ -164,6 +164,34 @@ llvm::Expected<SpatialMemoryOccurrenceSupplyAnalysis>
 analyzeSpatialMemoryOccurrenceSupply(
     llvm::ArrayRef<const SpatialMemoryOccurrenceDemandView *> demands);
 
+/// One external actor input participating in a Dataflow-owned firing case.
+/// `producer` distinguishes independent ordered token sequences from ordinary
+/// SSA fanout of one common sequence.
+struct TechComputeOrderedInputMemberView final {
+  ::dataflow::ActorTokenOperandRef consumer;
+  ::dataflow::CanonicalGraphProducerEndpointRef producer;
+};
+
+/// One canonical set of independently produced external inputs that a
+/// registered actor firing may consume together. Actor handshake semantics own
+/// the firing cases; TechMapping contributes only its selected boundary
+/// correspondence. Duplicate cases with the same member set are collapsed.
+struct TechComputeOrderedInputGroupView final {
+  std::uint64_t realization = 0;
+  ::dataflow::ActorRef actor;
+  ::dataflow::GraphRef graph;
+  std::vector<TechComputeOrderedInputMemberView> members;
+};
+
+/// Derives the semantic ordered-input groups shared by early Spatial search
+/// and strict Mapping projection. Inputs with one common logical producer are
+/// represented once because their physical disposition is atomic fanout, not
+/// two independently arriving ordered streams.
+llvm::Expected<std::vector<TechComputeOrderedInputGroupView>>
+deriveTechComputeOrderedInputGroups(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping);
+
 /// Fabric-typed durable storage reached by one exact selected sink attachment.
 /// This is a rebuildable physical-demand fact, not a persistent Mapping
 /// reference or an endpoint property.
@@ -222,6 +250,11 @@ struct SpatialPeOperandPairingProjection final {
   std::vector<std::uint32_t> allocationUnits;
 };
 
+struct SpatialPeOperandGraphIngressPressureView final {
+  ::dataflow::GraphRef graph;
+  std::uint64_t pressure = 0;
+};
+
 struct SpatialPeOperandProgressFeedback final {
   SpatialPeOperandProgressStatus status =
       SpatialPeOperandProgressStatus::ProofNotEstablished;
@@ -229,14 +262,15 @@ struct SpatialPeOperandProgressFeedback final {
       SpatialPeOperandProgressSupport::Unsupported;
   std::uint64_t groupCount = 0;
   std::uint64_t potentiallyBlockingGroupCount = 0;
-  std::uint64_t unknownPairingGroupCount = 0;
   std::uint64_t distinctIngressCount = 0;
   std::uint64_t sharedIngressCount = 0;
+  std::uint64_t sharedIngressPressure = 0;
   std::uint64_t pairingOpportunityCount = 0;
   std::uint64_t pairingKeyCount = 0;
   std::uint64_t distinctPairingKeyCount = 0;
   std::vector<SpatialPeOperandQualifiedPairingKey> pairingKeys;
   std::vector<SpatialPeOperandPairingProjection> pairings;
+  std::vector<SpatialPeOperandGraphIngressPressureView> graphPressures;
   std::optional<::loom::ComponentViewDigest> projectionDigest;
 };
 
@@ -299,7 +333,6 @@ struct SpatialPeOperandQueueMatchGroupView final {
   ::loom::fabric::FabricTransportEndpointRef ingress;
   llvm::APInt tag = llvm::APInt(1, 0);
   std::vector<SpatialPeOperandQueueMatchView> matches;
-  bool orderedCorrespondenceKnown = false;
 };
 
 /// One active Mapping realization in a Fabric-owned temporal context-
@@ -468,6 +501,8 @@ deriveSpatialPeOperandQueueMatchGroups(
 /// never selects an ingress or allocates a queue; likely risk is ranking-only.
 llvm::Expected<SpatialPeOperandProgressFeedback>
 deriveSpatialPeOperandProgressFeedback(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
     llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> groups);
 
 } // namespace loom::mapping

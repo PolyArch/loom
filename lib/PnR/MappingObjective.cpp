@@ -29,7 +29,7 @@ using namespace loom::pnr;
 namespace {
 
 constexpr MappingObjectiveRegistryDescriptor registry{
-    "loom.mapping.pnr.objective", 3, 0};
+    "loom.mapping.pnr.objective", 3, 1};
 
 constexpr std::array<MappingViolationDescriptor, resolvedPnrViolationKindCount>
     violations{{
@@ -157,6 +157,24 @@ systemSpatialPhysicalMeasure(const FrozenSystemPnrProblem &problem,
       return std::move(error);
   }
   return result;
+}
+
+llvm::Expected<std::uint64_t> systemSpatialSharedOperandIngressPressure(
+    const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<PnrIndex> graphChoices) {
+  if (graphChoices.size() != problem.graphDecisions().size())
+    return objectiveError("System graph choice pressure is incomplete");
+  std::uint64_t total = 0;
+  for (PnrIndex decision = 0; decision < graphChoices.size(); ++decision) {
+    const auto pressures =
+        problem.graphChoiceSharedOperandIngressPressures(decision);
+    if (graphChoices[decision] >= pressures.size())
+      return objectiveError("System graph choice pressure is out of range");
+    if (llvm::Error error = checkedAdd(total, pressures[graphChoices[decision]],
+                                       "System SharedOperandIngressPressure"))
+      return std::move(error);
+  }
+  return total;
 }
 
 } // namespace
@@ -302,6 +320,8 @@ loom::pnr::spatialMappingMeasureValue(const SpatialCandidateState &candidate,
     return candidate.worstRouteArrivalDelayQuanta();
   case MappingMeasureKind::TotalRouteNegativeSlackQuanta:
     return candidate.totalRouteNegativeSlackQuanta();
+  case MappingMeasureKind::SharedOperandIngressPressure:
+    return candidate.sharedOperandIngressPressure();
   }
   llvm_unreachable("unknown Mapping measure kind");
 }
@@ -364,6 +384,10 @@ loom::pnr::systemMappingMeasureValue(const SystemCandidateState &candidate,
   case MappingMeasureKind::TotalRouteNegativeSlackQuanta:
     return systemSpatialPhysicalMeasure(candidate.problem(),
                                         candidate.graphChoices(), kind);
+  case MappingMeasureKind::SharedOperandIngressPressure: {
+    return systemSpatialSharedOperandIngressPressure(candidate.problem(),
+                                                     candidate.graphChoices());
+  }
   }
   llvm_unreachable("unknown Mapping measure kind");
 }
@@ -486,6 +510,9 @@ MappingObjectiveProgram::evaluateSpatialProjection(
     case MappingMeasureKind::TotalRouteNegativeSlackQuanta:
       measures[ordinal] = projection.totalRouteNegativeSlackQuanta;
       break;
+    case MappingMeasureKind::SharedOperandIngressPressure:
+      measures[ordinal] = candidate.sharedOperandIngressPressure();
+      break;
     }
   }
   dse::ObjectiveVector result = program_.makeVector();
@@ -590,6 +617,14 @@ MappingObjectiveProgram::evaluateSystemProjection(
       if (!physical)
         return physical.takeError();
       measures[ordinal] = *physical;
+      break;
+    }
+    case MappingMeasureKind::SharedOperandIngressPressure: {
+      auto pressure =
+          systemSpatialSharedOperandIngressPressure(problem, graphChoices);
+      if (!pressure)
+        return pressure.takeError();
+      measures[ordinal] = *pressure;
       break;
     }
     }

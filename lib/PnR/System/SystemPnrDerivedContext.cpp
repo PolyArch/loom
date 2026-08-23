@@ -213,6 +213,8 @@ std::uint64_t retainedSpatialCatalogBytes(
           sizeof(::loom::mapping::MappingRouteProgressObligationProjection);
     bytes += entry.graphStaticSchedulePressures.size() * sizeof(std::uint64_t);
     bytes +=
+        entry.graphSharedOperandIngressPressures.size() * sizeof(std::uint64_t);
+    bytes +=
         entry.graphRecurrenceDemands.capacity() *
         sizeof(std::shared_ptr<
                const loom::pnr::detail::FrozenSpatialRecurrenceTimingDemand>);
@@ -779,6 +781,8 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
     statistics.coveredGraphCount += entry.covers.size();
     statistics.schedulePressureCount +=
         entry.graphStaticSchedulePressures.size();
+    statistics.operandIngressPressureCount +=
+        entry.graphSharedOperandIngressPressures.size();
     statistics.recurrenceDemandCount += entry.graphRecurrenceDemands.size();
     for (const auto &progress : entry.graphProgress)
       statistics.routeProgressObligationCount +=
@@ -797,6 +801,7 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
           statistics.spatialMappingCount + statistics.coveredGraphCount +
               statistics.routeProgressObligationCount +
               statistics.schedulePressureCount +
+              statistics.operandIngressPressureCount +
               statistics.recurrenceDemandCount + statistics.timingProfileCount +
               statistics.techMappingImportRequests +
               statistics.techMappingImportMisses))
@@ -888,6 +893,8 @@ void loom::pnr::emitSystemActiveContextStatistics(
         fields["route_progress_obligation_count"] =
             statistics.routeProgressObligationCount;
         fields["schedule_pressure_count"] = statistics.schedulePressureCount;
+        fields["operand_ingress_pressure_count"] =
+            statistics.operandIngressPressureCount;
         fields["recurrence_demand_count"] = statistics.recurrenceDemandCount;
         fields["timing_profile_count"] = statistics.timingProfileCount;
         fields["tech_mapping_import_requests"] =

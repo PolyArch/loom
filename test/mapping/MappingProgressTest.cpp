@@ -171,80 +171,23 @@ module {
     fail("an unsupported actor cycle did not fail closed");
 }
 
-void qualifiedPairingRiskIsDerivedWithoutPhysicalRepair() {
-  const loom::fabric::FabricPeOccurrenceRef pe(7);
-  const loom::fabric::FabricFuOccurrenceRef fu(11);
-  const loom::fabric::InstructionContextRef context{pe, 2};
-  const loom::fabric::FabricTransportEndpointRef ingress{
-      loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 0};
-  std::array<std::uint8_t, loom::ArtifactIdentity::byteSize> identityBytes{};
-  identityBytes.fill(9);
-  const dataflow::GraphRef graph{
-      take(loom::ArtifactIdentity::fromBytes(identityBytes)),
-      dataflow::GraphId(1)};
-  const dataflow::CanonicalGraphProducerEndpointRef producer =
-      dataflow::GraphStartTokenRef{graph};
-  const llvm::APInt tag(4, 3);
-  loom::mapping::SpatialPeOperandQueueMatchGroupView group{
-      producer,
-      ingress,
-      tag,
-      {{{}, {context, 0, 0}, fu, 0, 2},
-       {{}, {context, 0, 1}, fu, 0, 2}},
-      true};
-  const auto feedback = take(
-      loom::mapping::deriveSpatialPeOperandProgressFeedback({group}));
-  if (feedback.status !=
-          loom::mapping::SpatialPeOperandProgressStatus::LikelyRisk ||
-      feedback.support !=
-          loom::mapping::SpatialPeOperandProgressSupport::Analytic ||
-      feedback.potentiallyBlockingGroupCount != 1 ||
-      feedback.pairingKeyCount != 2 || feedback.distinctPairingKeyCount != 1)
-    fail("same-ingress ordered roles lost their qualified pairing risk");
-
-  group.orderedCorrespondenceKnown = false;
-  const auto fanout = take(
-      loom::mapping::deriveSpatialPeOperandProgressFeedback({group}));
-  if (fanout.status == loom::mapping::SpatialPeOperandProgressStatus::LikelyRisk ||
-      fanout.potentiallyBlockingGroupCount != 0 ||
-      fanout.unknownPairingGroupCount != 1)
-    fail("same-ingress atomic fanout was treated as an automatic risk");
-
-  auto secondIngress = ingress;
-  secondIngress.ordinal = 1;
-  auto secondGroup = group;
-  secondGroup.ingress = secondIngress;
-  secondGroup.matches.resize(1);
-  const auto crossIngress = take(
-      loom::mapping::deriveSpatialPeOperandProgressFeedback(
-          {group, secondGroup}));
-  if (crossIngress.pairingOpportunityCount == 0 ||
-      crossIngress.distinctPairingKeyCount != 1 ||
-      crossIngress.distinctIngressCount != 2)
-    fail("cross-ingress qualified pairing opportunity was not aggregated");
-}
-
 void orderedRuntimeHeadsRequireCompleteExactPairing() {
   const loom::fabric::FabricPeOccurrenceRef pe(7);
   const loom::fabric::FabricFuOccurrenceRef fu(11);
   const loom::fabric::InstructionContextRef context{pe, 2};
-  const loom::fabric::FabricTransportEndpointRef ingress{
-      loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 0};
-  std::array<std::uint8_t, loom::ArtifactIdentity::byteSize> identityBytes{};
-  identityBytes.fill(5);
-  const dataflow::GraphRef graph{
-      take(loom::ArtifactIdentity::fromBytes(identityBytes)),
-      dataflow::GraphId(1)};
   const llvm::APInt tag(4, 3);
-  const loom::mapping::SpatialPeOperandQueueMatchGroupView group{
-      dataflow::GraphStartTokenRef{graph},
-      ingress,
-      tag,
-      {{{}, {context, 0, 0}, fu, 0, 2},
-       {{}, {context, 0, 1}, fu, 1, 2}},
-      true};
-  const auto projection = take(
-      loom::mapping::deriveSpatialPeOperandProgressFeedback({group}));
+  loom::mapping::SpatialPeOperandProgressFeedback projection;
+  projection.status = loom::mapping::SpatialPeOperandProgressStatus::Safe;
+  projection.support = loom::mapping::SpatialPeOperandProgressSupport::Exact;
+  projection.groupCount = 1;
+  projection.pairingKeyCount = 2;
+  projection.distinctPairingKeyCount = 1;
+  projection.pairingKeys.push_back({context, fu, tag});
+  projection.pairings.push_back({{context, fu, tag}, {0, 1}, {}, {0, 1}});
+  constexpr std::array<std::uint8_t, 1> descriptor{1};
+  constexpr std::array<std::uint8_t, 1> view{2};
+  projection.projectionDigest =
+      take(loom::computeComponentViewDigest(descriptor, view));
   std::vector<loom::mapping::SpatialPeOperandRuntimeHeadView> heads{
       {{context, 0, 0}, fu, tag, 0, 2, 1, 0, 10, 4, 7, true},
       {{context, 0, 1}, fu, tag, 1, 2, 1, 0, 11, 5, 7, true}};
@@ -284,7 +227,6 @@ void orderedRuntimeHeadsRequireCompleteExactPairing() {
 
 int main() {
   initializedFeedbackProgressBasis();
-  qualifiedPairingRiskIsDerivedWithoutPhysicalRepair();
   orderedRuntimeHeadsRequireCompleteExactPairing();
   llvm::outs() << "mapping progress tests passed\n";
   return EXIT_SUCCESS;

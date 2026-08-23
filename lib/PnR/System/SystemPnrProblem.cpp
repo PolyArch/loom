@@ -1000,13 +1000,19 @@ buildDecisions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   return result;
 }
 
-llvm::Expected<std::vector<std::uint64_t>> buildGraphChoiceSchedulePressures(
+struct GraphChoicePressures final {
+  std::vector<std::uint64_t> schedule;
+  std::vector<std::uint64_t> operandIngress;
+};
+
+llvm::Expected<GraphChoicePressures> buildGraphChoicePressures(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const Catalogs &catalogs, const Decisions &decisions) {
   if (catalogs.spatialCatalog->size() != catalogs.mappings.size())
     return invalid("SpatialMapping pressure catalog has the wrong width");
-  std::vector<std::uint64_t> result;
-  result.reserve(decisions.graphChoices.size());
+  GraphChoicePressures result;
+  result.schedule.reserve(decisions.graphChoices.size());
+  result.operandIngress.reserve(decisions.graphChoices.size());
   for (const FrozenSystemGraphExecutionDecision &decision : decisions.graphs) {
     auto graph = dataflow.resolve(decision.launch);
     if (!graph)
@@ -1018,17 +1024,23 @@ llvm::Expected<std::vector<std::uint64_t>> buildGraphChoiceSchedulePressures(
         return invalid("graph choice pressure names a foreign mapping");
       const detail::SpatialCatalogEntry &entry =
           (*catalogs.spatialCatalog)[mapping];
-      if (entry.covers.size() != entry.graphStaticSchedulePressures.size())
+      if (entry.covers.size() != entry.graphStaticSchedulePressures.size() ||
+          entry.covers.size() !=
+              entry.graphSharedOperandIngressPressures.size())
         return invalid("SpatialMapping graph pressure has the wrong width");
       const auto covered = llvm::find(entry.covers, *graph);
       if (covered == entry.covers.end())
         return invalid("graph choice pressure is absent from its mapping");
-      result.push_back(
-          entry.graphStaticSchedulePressures[static_cast<std::size_t>(
-              covered - entry.covers.begin())]);
+      const std::size_t graphOrdinal =
+          static_cast<std::size_t>(covered - entry.covers.begin());
+      result.schedule.push_back(
+          entry.graphStaticSchedulePressures[graphOrdinal]);
+      result.operandIngress.push_back(
+          entry.graphSharedOperandIngressPressures[graphOrdinal]);
     }
   }
-  if (result.size() != decisions.graphChoices.size())
+  if (result.schedule.size() != decisions.graphChoices.size() ||
+      result.operandIngress.size() != decisions.graphChoices.size())
     return invalid("graph choice pressure projection is incomplete");
   return result;
 }
@@ -1571,10 +1583,10 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
   auto decisions = buildDecisions(dataflow, searchDomain, *catalogs);
   if (!decisions)
     return decisions.takeError();
-  auto graphChoiceSchedulePressures =
-      buildGraphChoiceSchedulePressures(dataflow, *catalogs, *decisions);
-  if (!graphChoiceSchedulePressures)
-    return graphChoiceSchedulePressures.takeError();
+  auto graphChoicePressures =
+      buildGraphChoicePressures(dataflow, *catalogs, *decisions);
+  if (!graphChoicePressures)
+    return graphChoicePressures.takeError();
   auto graphChoiceRecurrenceDemands =
       buildGraphChoiceRecurrenceDemands(dataflow, *catalogs, *decisions);
   if (!graphChoiceRecurrenceDemands)
@@ -1677,7 +1689,8 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       std::move(spatialMappingPhysicalTimingProfileKinds),
       std::move(decisions->threads), std::move(decisions->threadChoices),
       std::move(decisions->graphs), std::move(decisions->graphChoices),
-      std::move(*graphChoiceSchedulePressures),
+      std::move(graphChoicePressures->schedule),
+      std::move(graphChoicePressures->operandIngress),
       std::move(*graphChoiceRecurrenceDemands), std::move(overlapOffsets),
       std::move(overlaps), staticStorage.routingTopology,
       std::move(routing->terminals), std::move(routing->ownerDomains),

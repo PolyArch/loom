@@ -35,6 +35,8 @@ LOOM_MAPPING_MEASURE(WorstRouteArrivalDelayQuanta, 5,
                      "WorstRouteArrivalDelayQuanta")
 LOOM_MAPPING_MEASURE(TotalRouteNegativeSlackQuanta, 6,
                      "TotalRouteNegativeSlackQuanta")
+LOOM_MAPPING_MEASURE(SharedOperandIngressPressure, 7,
+                     "SharedOperandIngressPressure")
 
 #undef LOOM_MAPPING_MEASURE
 #undef LOOM_MAPPING_VIOLATION

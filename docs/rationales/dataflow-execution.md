@@ -219,3 +219,10 @@ they do not replace Dataflow event identity or become globally unique stream
 names. The compiler may expose rate and ordered-edge facts for early ranking,
 but unknown correspondence remains typed incomplete until Mapping owns the
 physical queue and selector projection.
+
+Registered actor handshake cases are the owner of which input roles may be
+consumed by one firing. Tech boundary projection retains only external roles;
+roles fed by one common logical producer are one atomic-fanout member, while
+distinct producers remain independently ordered members. Spatial search may
+use this derived relation to rank ingress choices, but it cannot redefine the
+actor firing or infer physical liveness from it.

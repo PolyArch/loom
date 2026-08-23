@@ -47,6 +47,7 @@
 #include "PnR/SpatialRouteCostState.h"
 #include "PnR/SpatialTagAssignment.h"
 #include "PnR/SpatialTagContinuity.h"
+#include "SpatialOperandPairingPressure.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -527,6 +528,81 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
   requireSuccess(move.commit());
 }
 
+void operandPairingPressureIsIncremental(
+    loom::pnr::SpatialCandidateState &candidate,
+    loom::pnr::SpatialCandidateScratch &scratch) {
+  const auto &problem = candidate.problem();
+  const auto groups = problem.ports().operandPairingGroups();
+  if (groups.empty())
+    fail("Temporal workflow has no Dataflow-owned operand pairing group");
+  const auto options = problem.ports().attachmentOptions();
+  std::optional<loom::pnr::PnrIndex> changedDemand;
+  std::optional<loom::pnr::PnrIndex> sharedOption;
+  for (loom::pnr::PnrIndex group = 0; group < groups.size() && !sharedOption;
+       ++group) {
+    const auto members = problem.ports().operandPairingGroupMembers(group);
+    for (std::size_t lhs = 0; lhs < members.size() && !sharedOption; ++lhs) {
+      const auto &lhsOption = options[candidate.portAttachment(members[lhs])];
+      for (std::size_t rhs = lhs + 1; rhs < members.size() && !sharedOption;
+           ++rhs) {
+        const loom::pnr::PnrIndex demand = members[rhs];
+        const auto &record = problem.ports().portDemands()[demand];
+        const auto &binding = candidate.computeBinding(record.realization);
+        for (const auto &domain : problem.ports().placementDomains().slice(
+                 record.placementDomainOffset, record.placementDomainCount)) {
+          if (domain.placement != binding.placement)
+            continue;
+          for (loom::pnr::PnrIndex option = domain.attachmentOptionOffset;
+               option !=
+               domain.attachmentOptionOffset + domain.attachmentOptionCount;
+               ++option) {
+            if (option != candidate.portAttachment(demand) &&
+                options[option].endpoint == lhsOption.endpoint &&
+                options[option].progressBoundary ==
+                    loom::mapping::SpatialDurableProgressBoundaryKind::
+                        TemporalPeOperandQueue) {
+              changedDemand = demand;
+              sharedOption = option;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+  if (!changedDemand || !sharedOption)
+    fail("Temporal workflow has no same-ingress analytic alternative");
+
+  const std::uint64_t baseline = candidate.sharedOperandIngressPressure();
+  {
+    auto move = take(candidate.beginMove(scratch));
+    requireSuccess(move.setPortAttachment(*changedDemand, *sharedOption));
+    if (candidate.sharedOperandIngressPressure() <= baseline)
+      fail("same-ingress ordered inputs did not increase pairing pressure");
+    const auto objectivePressure = take(loom::pnr::spatialMappingMeasureValue(
+        candidate,
+        loom::pnr::MappingMeasureKind::SharedOperandIngressPressure));
+    if (objectivePressure != candidate.sharedOperandIngressPressure())
+      fail("central objective lost incremental operand pairing pressure");
+    std::vector<loom::pnr::PnrIndex> registerFifoTransfers(
+        problem.transfers().logicalNets().size());
+    for (loom::pnr::PnrIndex logicalNet = 0;
+         logicalNet < registerFifoTransfers.size(); ++logicalNet)
+      registerFifoTransfers[logicalNet] =
+          candidate.registerFifoTransfer(logicalNet);
+    const auto coldPressure =
+        take(loom::pnr::detail::measureSpatialOperandIngressPressure(
+            problem, candidate.portAttachmentSelections(),
+            registerFifoTransfers));
+    if (coldPressure != candidate.sharedOperandIngressPressure())
+      fail("incremental operand pairing pressure differs from cold replay");
+    move.rollback();
+  }
+  if (candidate.sharedOperandIngressPressure() != baseline)
+    fail("operand pairing rollback did not restore the candidate measure");
+  requireSuccess(candidate.verify());
+}
+
 enum class SwitchResidencyExpectation : std::uint8_t {
   Fits,
   ExceedsCapacity,
@@ -762,6 +838,8 @@ void completeCandidateRoundTrip(
                                    requireSeparatedSwitchRows,
                                switchPackingFabric &&
                                    !requireSeparatedSwitchRows);
+    if (!boundaryWrapped && !forceTagConflict && !switchPackingFabric)
+      operandPairingPressureIsIncremental(*candidate, candidateScratch);
     if (forceTagConflict ||
         switchResidency == SwitchResidencyExpectation::ExceedsCapacity) {
       auto costs = take(loom::pnr::SpatialRouteCostState::create(*candidate));
@@ -1255,11 +1333,14 @@ void completeCandidateRoundTrip(
       fail("Temporal SpatialMapping lost its operand queue match groups");
     const auto operandProgress =
         take(loom::mapping::deriveSpatialPeOperandProgressFeedback(
-            operandQueueGroups));
+            dataflow, tech.view(), operandQueueGroups));
     if (operandProgress.pairingKeyCount == 0 ||
         operandProgress.pairingKeyCount < operandProgress.distinctPairingKeyCount ||
         operandProgress.distinctIngressCount == 0)
       fail("Temporal SpatialMapping lost its qualified pairing projection");
+    if (operandProgress.sharedIngressPressure !=
+        candidate->sharedOperandIngressPressure())
+      fail("persistent SpatialMapping changed operand ingress pressure");
     bool observedEnqueue = false;
     bool observedTransition = false;
     for (const auto &use : imported.view().resourceUses()) {

@@ -6,6 +6,7 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -133,10 +134,24 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
         dataflow, techView, *spatialModule, (*spatial)->view());
     if (!pressures)
       return pressures.takeError();
+    auto operandQueueGroups =
+        ::loom::mapping::deriveSpatialPeOperandQueueMatchGroups(
+            techView, *spatialModule, (*spatial)->view().computeBindings(),
+            (*spatial)->view().routeTrees(), (*spatial)->view().resourceUses(),
+            (*spatial)->view().physicalTagSegments());
+    if (!operandQueueGroups)
+      return operandQueueGroups.takeError();
+    auto operandProgress =
+        ::loom::mapping::deriveSpatialPeOperandProgressFeedback(
+            dataflow, techView, *operandQueueGroups);
+    if (!operandProgress)
+      return operandProgress.takeError();
     std::vector<SpatialCatalogGraphProgress> graphProgress;
+    std::vector<std::uint64_t> graphOperandIngressPressures;
     std::vector<std::shared_ptr<const FrozenSpatialRecurrenceTimingDemand>>
         graphRecurrenceDemands;
     graphProgress.reserve(techView.covers().size());
+    graphOperandIngressPressures.reserve(techView.covers().size());
     graphRecurrenceDemands.reserve(techView.covers().size());
     for (const ::dataflow::GraphRef graph : techView.covers()) {
       const std::array<::dataflow::GraphRef, 1> selected{graph};
@@ -148,6 +163,12 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
       if (!progress)
         return progress.takeError();
       graphProgress.push_back({graph, std::move(progress->routeObligations)});
+      const auto operandPressure = llvm::find_if(
+          operandProgress->graphPressures,
+          [&](const auto &candidate) { return candidate.graph == graph; });
+      if (operandPressure == operandProgress->graphPressures.end())
+        return invalid("SpatialMapping graph operand pressure is incomplete");
+      graphOperandIngressPressures.push_back(operandPressure->pressure);
       auto recurrence = freezeSpatialMappingGraphRecurrenceTimingDemand(
           dataflow, techView, *spatialModule, (*spatial)->view(), graph);
       if (!recurrence)
@@ -162,6 +183,7 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
                                            techView.covers().end()),
          std::move(graphProgress),
          std::move(*pressures),
+         std::move(graphOperandIngressPressures),
          std::move(graphRecurrenceDemands),
          0,
          0,

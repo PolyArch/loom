@@ -12,14 +12,14 @@ digests; this document introduces no new persistent schema:
 ```text
 Spatial:
   loom.spatial_pnr.config.15.0
-  loom.spatial_pnr.freeze.2.21
-  loom.mapping.pnr.objective 3.0
+  loom.spatial_pnr.freeze.2.22
+  loom.mapping.pnr.objective 3.1
   selected FabricPhysicalTimingProfile descriptor and digest
 
 System:
   loom.system_pnr.config.8.0
   loom.system_pnr_search_domain.4.0
-  loom.mapping.pnr.objective 3.0
+  loom.mapping.pnr.objective 3.1
   exact selected SpatialMapping references
 ```
 
@@ -61,7 +61,7 @@ profile, and all finite owner domains before candidate allocation. It derives
 canonical compute and memory choices, attachment alternatives, RegFIFO
 alternatives, residual nets, routing topology, resource contracts, packed-row
 fragments, tags, progress dependencies, objective inputs, and reverse indexes.
-Freeze descriptor `loom.spatial_pnr.freeze.2.21` covers those observable
+Freeze descriptor `loom.spatial_pnr.freeze.2.22` covers those observable
 domains. Internal storage layout is not replay state.
 
 System freeze validates exact `D/F/R/H/C/K`, imports and independently verifies

@@ -2005,6 +2005,12 @@ void graphBindingWorkflow() {
               problem->spatialMappingPhysicalTimingProfileKinds().size() ==
                   problem->spatialMappings().size(),
           "frozen System physical timing catalog is incomplete");
+  for (loom::pnr::PnrIndex decision = 0;
+       decision < problem->graphDecisions().size(); ++decision)
+    require(
+        problem->graphChoiceSharedOperandIngressPressures(decision).size() ==
+            problem->graphChoiceCatalogOrdinals(decision).size(),
+        "frozen System graph operand pressure is incomplete");
   for (const auto &[mappingOrdinal, reference] :
        llvm::enumerate(problem->spatialMappings())) {
     auto mapping = take(loom::mapping::importSpatialMapping(reference, store));

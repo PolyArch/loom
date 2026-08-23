@@ -1743,7 +1743,8 @@ llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueGroups) {
   if (!operandQueueGroups.empty()) {
-    auto feedback = deriveSpatialPeOperandProgressFeedback(operandQueueGroups);
+    auto feedback = deriveSpatialPeOperandProgressFeedback(
+        dataflow, techMapping, operandQueueGroups);
     if (!feedback)
       return feedback.takeError();
     mapping_debug::emit(
@@ -1753,12 +1754,11 @@ llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
           fields["group_count"] = feedback->groupCount;
           fields["potentially_blocking_group_count"] =
               feedback->potentiallyBlockingGroupCount;
-          fields["unknown_pairing_group_count"] =
-              feedback->unknownPairingGroupCount;
           fields["pairing_opportunity_count"] =
               feedback->pairingOpportunityCount;
           fields["distinct_ingress_count"] = feedback->distinctIngressCount;
           fields["shared_ingress_count"] = feedback->sharedIngressCount;
+          fields["shared_ingress_pressure"] = feedback->sharedIngressPressure;
           fields["pairing_key_count"] = feedback->pairingKeyCount;
           fields["distinct_pairing_key_count"] =
               feedback->distinctPairingKeyCount;

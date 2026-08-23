@@ -669,6 +669,16 @@ relation over the exact selector disposition, while the RouteTree retains
 every logical sink obligation. Strict SpatialMapping import rebuilds one
 physical logical-queue match with the complete canonical consumer set.
 
+The Dataflow-owned actor handshake cases also derive each canonical set of
+external input roles that one firing may consume together. Tech boundary
+correspondence removes realization-internal roles, and producer identity
+collapses repeated roles of one logical net into one atomic-fanout member.
+Distinct logical producers remain independent ordered members. Frozen Spatial
+search records both group-to-demand and demand-to-group incidence, so one
+attachment move updates only its affected shared-ingress pressure. This
+pressure is a central objective measure; it is neither a hard relation nor a
+deadlock proof.
+
 The frozen attachment domain records the Fabric-derived operand allocation
 unit only when every resident-context choice for that concrete FU input names
 the same unit. Each FU-boundary broadcast class contributes one representative
@@ -883,8 +893,8 @@ legality.
 
 ## Objective Projection
 
-The Mapping objective registry is `loom.mapping.pnr.objective 3.0`. It owns the
-five violation sources above and these seven nonnegative measures in stable
+The Mapping objective registry is `loom.mapping.pnr.objective 3.1`. It owns the
+five violation sources above and these eight nonnegative measures in stable
 ordinal order:
 
 | Ordinal | Measure |
@@ -896,6 +906,19 @@ ordinal order:
 | 4 | `TransportBitCycleDemand` |
 | 5 | `WorstRouteArrivalDelayQuanta` |
 | 6 | `TotalRouteNegativeSlackQuanta` |
+| 7 | `SharedOperandIngressPressure` |
+
+`SharedOperandIngressPressure` is the sum, over Dataflow-owned co-firing input
+groups, of independently produced Temporal operand members beyond the number
+of distinct selected physical ingresses. Repeated consumers of one logical
+producer are collapsed before this count because their selected disposition is
+atomic fanout. The measure is maintained incrementally from the frozen
+demand-to-group incidence and is ranking-only; zero pressure is not a liveness
+proof, while nonzero pressure is not an infeasibility proof.
+System freeze partitions the measure by covered graph and associates each
+value with the exact graph-choice ordinal. It sums selected graph executions;
+it does not charge an inactive graph merely because the same SpatialMapping
+artifact covers it.
 
 `RecurrenceMinimumInitiationIntervalCycles` and
 `ResourceMinimumInitiationIntervalCycles` derive from selected Fabric
@@ -941,6 +964,12 @@ otherwise identical ordering and energy with recurrence included. A custom
 Spatial policy may select recurrence only when every admitted candidate has a
 complete local timing owner; an external manager dispatch then terminates as
 `ProofNotEstablished` rather than receiving a provisional latency.
+
+Both builtin total orderings place `SharedOperandIngressPressure` after
+closure, timing, static schedule, and traversal levels. It therefore breaks an
+otherwise equal Mapping rank without overriding route, capacity, or timing
+quality. Search energy includes the measure at unit weight so incremental
+attachment moves can be guided without a hidden router penalty.
 
 The selected total ordering ranks candidates. The selected search energy may
 guide stochastic acceptance but cannot legalize a violation. Final independent

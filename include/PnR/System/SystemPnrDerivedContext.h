@@ -103,6 +103,7 @@ struct SystemActiveContextStatistics final {
   std::uint64_t coveredGraphCount = 0;
   std::uint64_t routeProgressObligationCount = 0;
   std::uint64_t schedulePressureCount = 0;
+  std::uint64_t operandIngressPressureCount = 0;
   std::uint64_t recurrenceDemandCount = 0;
   std::uint64_t timingProfileCount = 0;
   std::uint64_t techMappingImportRequests = 0;

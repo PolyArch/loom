@@ -2,6 +2,7 @@
 
 #include "ConfiguredHardwareProjectionInternal.h"
 
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Fabric/Identity/FabricMemoryInternalConnection.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -1516,23 +1517,38 @@ deriveSpatialPeOperandQueueMatchGroups(
 
 llvm::Expected<SpatialPeOperandProgressFeedback>
 deriveSpatialPeOperandProgressFeedback(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
     llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> groups) {
-  if (groups.empty())
-    return SpatialPeOperandProgressFeedback{
-        SpatialPeOperandProgressStatus::Safe,
-        SpatialPeOperandProgressSupport::Exact, 0, 0, 0, 0, 0, 0, 0, 0, {},
-        {}, std::nullopt};
   SpatialPeOperandProgressFeedback result;
   result.status = SpatialPeOperandProgressStatus::Safe;
   result.support = SpatialPeOperandProgressSupport::Exact;
+  if (groups.empty()) {
+    for (const ::dataflow::GraphRef graph : techMapping.covers())
+      result.graphPressures.push_back({graph, 0});
+    return result;
+  }
   result.groupCount = groups.size();
   std::set<std::vector<std::uint8_t>> ingressKeys;
+  std::map<std::vector<std::uint8_t>,
+           const SpatialPeOperandQueueMatchGroupView *>
+      selectedGroupByConsumer;
   std::map<std::vector<std::uint8_t>, SpatialPeOperandPairingProjection>
       pairingProjections;
   for (const SpatialPeOperandQueueMatchGroupView &group : groups) {
     ingressKeys.insert(::loom::fabric::canonicalFabricBytes(group.ingress));
     result.sharedIngressCount += group.matches.size() > 1;
     for (const SpatialPeOperandQueueMatchView &match : group.matches) {
+      for (const auto &consumer : match.consumers) {
+        auto key =
+            ::dataflow::encodeDataflowReference(dataflow.identity(), consumer);
+        if (!key)
+          return key.takeError();
+        if (!selectedGroupByConsumer.try_emplace(std::move(*key), &group)
+                 .second)
+          return invalid("PE operand projection repeats one Dataflow "
+                         "consumer");
+      }
       SpatialPeOperandQualifiedPairingKey key{match.queue.context, match.fu,
                                               group.tag};
       const auto contextBytes =
@@ -1562,6 +1578,94 @@ deriveSpatialPeOperandProgressFeedback(
     }
   }
   result.distinctIngressCount = ingressKeys.size();
+
+  auto orderedGroups =
+      deriveTechComputeOrderedInputGroups(dataflow, techMapping);
+  if (!orderedGroups)
+    return orderedGroups.takeError();
+  std::map<std::uint64_t, std::uint64_t> pressureByGraph;
+  for (const ::dataflow::GraphRef graph : techMapping.covers())
+    if (!pressureByGraph.try_emplace(graph.entity.value(), 0).second)
+      return invalid("TechMapping cover inventory contains a duplicate");
+  std::vector<std::uint8_t> orderedCanonical;
+  const auto appendOrderedU64 = [&](std::uint64_t value) {
+    for (int shift = 56; shift >= 0; shift -= 8)
+      orderedCanonical.push_back(static_cast<std::uint8_t>(value >> shift));
+  };
+  const auto appendOrderedBytes = [&](llvm::ArrayRef<std::uint8_t> bytes) {
+    appendOrderedU64(bytes.size());
+    orderedCanonical.insert(orderedCanonical.end(), bytes.begin(), bytes.end());
+  };
+  appendOrderedU64(orderedGroups->size());
+  for (const TechComputeOrderedInputGroupView &ordered : *orderedGroups) {
+    appendOrderedU64(ordered.realization);
+    auto actorKey =
+        ::dataflow::encodeDataflowReference(dataflow.identity(), ordered.actor);
+    if (!actorKey)
+      return actorKey.takeError();
+    appendOrderedBytes(*actorKey);
+    appendOrderedU64(ordered.members.size());
+    std::vector<std::vector<std::uint8_t>> selectedIngresses;
+    for (const TechComputeOrderedInputMemberView &member : ordered.members) {
+      auto consumerKey = ::dataflow::encodeDataflowReference(
+          dataflow.identity(),
+          ::dataflow::CanonicalGraphConsumerEndpointRef{member.consumer});
+      if (!consumerKey)
+        return consumerKey.takeError();
+      auto producerKey = ::dataflow::encodeDataflowReference(
+          dataflow.identity(), member.producer);
+      if (!producerKey)
+        return producerKey.takeError();
+      appendOrderedBytes(*consumerKey);
+      appendOrderedBytes(*producerKey);
+      const auto selected = selectedGroupByConsumer.find(*consumerKey);
+      appendOrderedU64(selected != selectedGroupByConsumer.end());
+      if (selected == selectedGroupByConsumer.end())
+        continue;
+      if (selected->second->logicalNet != member.producer)
+        return invalid("PE operand projection changed an ordered input's "
+                       "logical producer");
+      auto ingress =
+          ::loom::fabric::canonicalFabricBytes(selected->second->ingress);
+      appendOrderedBytes(ingress);
+      selectedIngresses.push_back(std::move(ingress));
+    }
+    if (selectedIngresses.size() < 2)
+      continue;
+    llvm::sort(selectedIngresses);
+    const std::size_t distinct = std::distance(
+        selectedIngresses.begin(),
+        std::unique(selectedIngresses.begin(), selectedIngresses.end()));
+    const std::uint64_t pressure = selectedIngresses.size() - distinct;
+    if (pressure == 0)
+      continue;
+    if (pressure > std::numeric_limits<std::uint64_t>::max() -
+                       result.sharedIngressPressure)
+      return invalid("PE operand shared-ingress pressure exceeds u64");
+    result.sharedIngressPressure += pressure;
+    const auto graphPressure =
+        pressureByGraph.find(ordered.graph.entity.value());
+    if (graphPressure == pressureByGraph.end())
+      return invalid("ordered input group belongs to an uncovered graph");
+    if (pressure >
+        std::numeric_limits<std::uint64_t>::max() - graphPressure->second)
+      return invalid("graph operand shared-ingress pressure exceeds u64");
+    graphPressure->second += pressure;
+    if (result.potentiallyBlockingGroupCount ==
+        std::numeric_limits<std::uint64_t>::max())
+      return invalid("PE operand blocking-group count exceeds u64");
+    ++result.potentiallyBlockingGroupCount;
+  }
+  if (result.sharedIngressPressure != 0) {
+    result.status = SpatialPeOperandProgressStatus::LikelyRisk;
+    result.support = SpatialPeOperandProgressSupport::Analytic;
+  }
+  for (const ::dataflow::GraphRef graph : techMapping.covers()) {
+    const auto pressure = pressureByGraph.find(graph.entity.value());
+    if (pressure == pressureByGraph.end())
+      return invalid("covered graph has no operand pressure projection");
+    result.graphPressures.push_back({graph, pressure->second});
+  }
   result.pairingKeyCount = 0;
   for (const auto &group : groups)
     result.pairingKeyCount += group.matches.size();
@@ -1587,40 +1691,35 @@ deriveSpatialPeOperandProgressFeedback(
         value.allocationUnits.end());
     result.pairingKeys.push_back(value.key);
     result.pairingOpportunityCount += value.ingresses.size() > 1;
-    const auto qualifiedContext = value.key.context;
-    const auto qualifiedFu = value.key.fu;
-    const auto qualifiedTag = value.key.tag;
-    if (value.requiredInputRoles.size() > 1 && value.ingresses.size() == 1) {
-      const bool orderedKnown = llvm::any_of(groups, [&](const auto &group) {
-        return group.orderedCorrespondenceKnown && group.tag == qualifiedTag &&
-               llvm::any_of(group.matches, [&](const auto &match) {
-                 return match.queue.context == qualifiedContext &&
-                        match.fu == qualifiedFu;
-               });
-      });
-      if (orderedKnown) {
-        ++result.potentiallyBlockingGroupCount;
-        result.status = SpatialPeOperandProgressStatus::LikelyRisk;
-        result.support = SpatialPeOperandProgressSupport::Analytic;
-      } else {
-        ++result.unknownPairingGroupCount;
-        result.status = SpatialPeOperandProgressStatus::ProofNotEstablished;
-        result.support = SpatialPeOperandProgressSupport::Unsupported;
-      }
-    }
     result.pairings.push_back(std::move(value));
   }
   static constexpr llvm::StringLiteral descriptor{
-      "loom.mapping.temporal_operand_progress_projection.1"};
+      "loom.mapping.temporal_operand_progress_projection.2"};
   std::vector<std::uint8_t> canonical;
   const auto appendU64 = [&](std::uint64_t value) {
     for (int shift = 56; shift >= 0; shift -= 8)
       canonical.push_back(static_cast<std::uint8_t>(value >> shift));
   };
   appendU64(result.groupCount);
+  appendU64(result.potentiallyBlockingGroupCount);
+  appendU64(result.sharedIngressPressure);
   appendU64(result.pairingOpportunityCount);
   appendU64(result.pairingKeyCount);
   appendU64(result.distinctPairingKeyCount);
+  appendU64(orderedCanonical.size());
+  canonical.insert(canonical.end(), orderedCanonical.begin(),
+                   orderedCanonical.end());
+  appendU64(result.graphPressures.size());
+  for (const SpatialPeOperandGraphIngressPressureView &graph :
+       result.graphPressures) {
+    auto key =
+        ::dataflow::encodeDataflowReference(dataflow.identity(), graph.graph);
+    if (!key)
+      return key.takeError();
+    appendU64(key->size());
+    canonical.insert(canonical.end(), key->begin(), key->end());
+    appendU64(graph.pressure);
+  }
   for (const auto &pairing : result.pairings) {
     const auto context =
         ::loom::fabric::canonicalFabricBytes(pairing.key.context);

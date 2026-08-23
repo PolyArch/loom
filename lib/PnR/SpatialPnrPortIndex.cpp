@@ -74,6 +74,18 @@ constexpr PnrCapacityContext contextCountContext{
     PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext netIndexContext{
     frozenArtifact, "logical_nets", "logical_nets", PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext pairingGroupIndexContext{
+    frozenArtifact, "operand_pairing_groups", "operand_pairing_groups",
+    PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext pairingGroupCountContext{
+    frozenArtifact, "port_demands", "operand_pairing_groups",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext pairingMemberOffsetContext{
+    frozenArtifact, "operand_pairing_groups", "port_demands",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext pairingMemberCountContext{
+    frozenArtifact, "operand_pairing_groups", "port_demands",
+    PnrCapacityMeasure::Count};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::make_error<SpatialPnrFreezeFailure>(
@@ -760,19 +772,21 @@ public:
     const auto appendDemandCsr =
         [&](const std::vector<std::vector<PnrIndex>> &lists,
             std::vector<PnrIndex> &offsets,
-            std::vector<PnrIndex> &values) -> llvm::Error {
+            std::vector<PnrIndex> &values,
+            PnrCapacityContext offsetContext,
+            PnrCapacityContext countContext) -> llvm::Error {
       offsets.reserve(lists.size() + 1);
       for (const auto &list : lists) {
-        auto offset = checked(demandOffsetContext, values.size());
+        auto offset = checked(offsetContext, values.size());
         if (!offset)
           return offset.takeError();
         offsets.push_back(*offset);
         if (llvm::Error error =
-                preflightAppend(demandCountContext, values.size(), list.size()))
+                preflightAppend(countContext, values.size(), list.size()))
           return error;
         values.insert(values.end(), list.begin(), list.end());
       }
-      auto end = checked(demandOffsetContext, values.size());
+      auto end = checked(offsetContext, values.size());
       if (!end)
         return end.takeError();
       offsets.push_back(*end);
@@ -780,11 +794,13 @@ public:
     };
     if (llvm::Error error = appendDemandCsr(
             computeDemands, result.computeRealizationDemandOffsets_,
-            result.computeRealizationDemands_))
+            result.computeRealizationDemands_, demandOffsetContext,
+            demandCountContext))
       return std::move(error);
     if (llvm::Error error = appendDemandCsr(
             memoryDemands, result.memoryRealizationDemandOffsets_,
-            result.memoryRealizationDemands_))
+            result.memoryRealizationDemands_, demandOffsetContext,
+            demandCountContext))
       return std::move(error);
 
     result.portDemands_.reserve(demands.size());
@@ -825,6 +841,69 @@ public:
       demand.frozen.placementDomainCount = *domainCount;
       result.portDemands_.push_back(std::move(demand.frozen));
     }
+
+    auto orderedInputGroups =
+        deriveTechComputeOrderedInputGroups(dataflow, techMapping);
+    if (!orderedInputGroups)
+      return orderedInputGroups.takeError();
+    std::vector<std::vector<PnrIndex>> pairingGroupsByDemand(
+        result.portDemands_.size());
+    for (const TechComputeOrderedInputGroupView &ordered :
+         *orderedInputGroups) {
+      std::vector<PnrIndex> members;
+      members.reserve(ordered.members.size());
+      for (const TechComputeOrderedInputMemberView &member : ordered.members) {
+        auto key = dataflowKey(
+            dataflow.identity(),
+            ::dataflow::CanonicalGraphConsumerEndpointRef{member.consumer});
+        if (!key)
+          return key.takeError();
+        const auto demand = demandByTerminal.find(*key);
+        if (demand == demandByTerminal.end() ||
+            demand->second >= result.portDemands_.size())
+          return invalid(
+              "ordered input group has no residual compute PortDemand");
+        const FrozenSpatialPortDemand &record =
+            result.portDemands_[demand->second];
+        if (record.kind != FrozenSpatialPortDemandKind::Compute ||
+            record.realization >= techMapping.computeRealizations().size() ||
+            techMapping.computeRealizations()[record.realization].entityId !=
+                ordered.realization)
+          return invalid("ordered input group changed its Tech realization");
+        members.push_back(demand->second);
+      }
+      llvm::sort(members);
+      members.erase(std::unique(members.begin(), members.end()), members.end());
+      if (members.size() < 2)
+        continue;
+      auto groupIndex = checked(pairingGroupIndexContext,
+                                result.operandPairingGroups_.size());
+      if (!groupIndex)
+        return groupIndex.takeError();
+      auto memberOffset = checked(pairingMemberOffsetContext,
+                                  result.operandPairingGroupMembers_.size());
+      if (!memberOffset)
+        return memberOffset.takeError();
+      if (llvm::Error error = preflightAppend(
+              pairingMemberCountContext,
+              result.operandPairingGroupMembers_.size(), members.size()))
+        return std::move(error);
+      auto memberCount = checked(pairingMemberCountContext, members.size());
+      if (!memberCount)
+        return memberCount.takeError();
+      result.operandPairingGroups_.push_back(
+          {ordered.realization, ordered.actor, *memberOffset, *memberCount});
+      result.operandPairingGroupMembers_.insert(
+          result.operandPairingGroupMembers_.end(), members.begin(),
+          members.end());
+      for (PnrIndex demand : members)
+        pairingGroupsByDemand[demand].push_back(*groupIndex);
+    }
+    if (llvm::Error error = appendDemandCsr(
+            pairingGroupsByDemand, result.demandOperandPairingOffsets_,
+            result.demandOperandPairingGroups_, pairingMemberOffsetContext,
+            pairingGroupCountContext))
+      return std::move(error);
 
     for (GraphBoundaryDraft &boundary : graphBoundaries) {
       const FabricPortDirection direction =
@@ -1073,6 +1152,63 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialPortIndex(
                                      realizations.memoryRealizations().size(),
                                      FrozenSpatialPortDemandKind::Memory))
     return error;
+
+  const auto pairingGroups = ports.operandPairingGroups();
+  const auto pairingMembers = ports.operandPairingGroupMembers();
+  const auto demandPairingOffsets = ports.demandOperandPairingOffsets();
+  const auto demandPairingGroups = ports.demandOperandPairingGroups();
+  if (demandPairingOffsets.size() != ports.portDemands().size() + 1 ||
+      demandPairingOffsets.empty() || demandPairingOffsets.front() != 0 ||
+      demandPairingOffsets.back() != demandPairingGroups.size())
+    return invalid("PortDemand-to-operand-pairing CSR is inconsistent");
+  std::vector<std::vector<PnrIndex>> expectedPairingIncidence(
+      ports.portDemands().size());
+  for (auto [groupOrdinal, group] : llvm::enumerate(pairingGroups)) {
+    if (groupOrdinal > getPnrIndexMax() || group.memberCount < 2 ||
+        !rangeFits(group.memberOffset, group.memberCount,
+                   pairingMembers.size()))
+      return invalid("operand-pairing group member slice is inconsistent");
+    std::optional<PnrIndex> realization;
+    std::set<PnrIndex> logicalNets;
+    PnrIndex previous = 0;
+    bool first = true;
+    for (PnrIndex demand : ports.operandPairingGroupMembers(
+             static_cast<PnrIndex>(groupOrdinal))) {
+      if (demand >= ports.portDemands().size() ||
+          (!first && demand <= previous))
+        return invalid("operand-pairing group members are not canonical");
+      first = false;
+      previous = demand;
+      const FrozenSpatialPortDemand &record = ports.portDemands()[demand];
+      const auto *operand =
+          std::get_if<::dataflow::ActorTokenOperandRef>(&record.terminal);
+      if (record.kind != FrozenSpatialPortDemandKind::Compute || !operand ||
+          operand->actor != group.actor ||
+          record.logicalNet >= transfers.logicalNets().size() ||
+          !logicalNets.insert(record.logicalNet).second)
+        return invalid("operand-pairing group changed its semantic members");
+      if (!realization)
+        realization = record.realization;
+      else if (*realization != record.realization)
+        return invalid("operand-pairing group spans Tech realizations");
+      expectedPairingIncidence[demand].push_back(
+          static_cast<PnrIndex>(groupOrdinal));
+    }
+    if (!realization ||
+        *realization >= realizations.computeRealizations().size() ||
+        realizations.computeRealizations()[*realization].reference.entity !=
+            group.realization)
+      return invalid("operand-pairing group has the wrong realization");
+  }
+  for (PnrIndex demand = 0; demand < ports.portDemands().size(); ++demand) {
+    const PnrIndex begin = demandPairingOffsets[demand];
+    const PnrIndex end = demandPairingOffsets[demand + 1];
+    if (begin > end || end > demandPairingGroups.size())
+      return invalid("PortDemand operand-pairing incidence is out of range");
+    const auto actual = ports.operandPairingGroupsForDemand(demand);
+    if (actual != llvm::ArrayRef(expectedPairingIncidence[demand]))
+      return invalid("PortDemand operand-pairing incidence is incomplete");
+  }
 
   for (auto [demandOrdinal, demand] : llvm::enumerate(ports.portDemands())) {
     const FabricPortDirection direction = directionOf(demand.terminal);

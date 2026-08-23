@@ -160,12 +160,12 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
        loom::resolvedObjectiveDecimal(1, 0), 0, UINT64_MAX});
   const std::uint32_t unselectedDimension =
       static_cast<std::uint32_t>(catalogs.dimensions.size() - 1);
-  catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 2,
+  catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 3,
                                  {{{unselectedDimension, 1}}});
-  catalogs.totalOrderings[0].weightedLevels = {4, 3, 1, 0};
-  catalogs.totalOrderings[1].weightedLevels = {4, 5, 1, 0};
-  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 6;
-  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 7;
+  catalogs.totalOrderings[0].weightedLevels = {5, 4, 1, 0, 2};
+  catalogs.totalOrderings[1].weightedLevels = {5, 6, 1, 0, 2};
+  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 7;
+  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 8;
 
   const loom::pnr::ResolvedPnrConfigView unselectedView =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(unselectedChange));
@@ -233,7 +233,7 @@ void routingKernelsConsumeTheProjectedOwnerRecord() {
 void mappingObjectiveRegistryIsClosedAndTyped() {
   const auto &registry = loom::pnr::mappingObjectiveRegistryDescriptor();
   require(registry.identity == "loom.mapping.pnr.objective" &&
-              registry.schemaMajor == 3 && registry.schemaMinor == 0,
+              registry.schemaMajor == 3 && registry.schemaMinor == 1,
           "Mapping objective registry has the wrong identity");
 
   const auto violations = loom::pnr::mappingViolationDescriptors();
@@ -250,17 +250,34 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
       "Mapping violation registry changed the canonical catalog order");
 
   const auto measures = loom::pnr::mappingMeasureDescriptors();
-  require(measures.size() == 7 &&
+  require(measures.size() == 8 &&
               measures.front().kind ==
                   loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim &&
               measures.back().kind ==
-                  loom::pnr::MappingMeasureKind::TotalRouteNegativeSlackQuanta,
+                  loom::pnr::MappingMeasureKind::SharedOperandIngressPressure,
           "Mapping measure registry does not own the closed catalog");
+
+  const loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  const auto &catalogs = config.dse.objectiveCatalogs;
+  const std::uint32_t pressureDimension =
+      loom::resolvedPnrViolationKindCount +
+      static_cast<std::uint32_t>(
+          loom::pnr::MappingMeasureKind::SharedOperandIngressPressure);
+  require(catalogs.weightedLevels.size() == 8 &&
+              catalogs.weightedLevels[2].terms.size() == 1 &&
+              catalogs.weightedLevels[2].terms.front().dimension ==
+                  pressureDimension &&
+              catalogs.weightedLevels[2].terms.front().weight == 1 &&
+              catalogs.totalOrderings.size() == 2 &&
+              catalogs.totalOrderings[0].weightedLevels.back() == 2 &&
+              catalogs.totalOrderings[1].weightedLevels.back() == 2,
+          "shared operand ingress pressure is not an explicit final rank "
+          "level");
 }
 
 void resolvedConfigUsesTheIndependentViolationCatalog() {
   require(loom::ResolvedConfig::artifactSchema.version.major == 10 &&
-              loom::ResolvedConfig::artifactSchema.version.minor == 0,
+              loom::ResolvedConfig::artifactSchema.version.minor == 1,
           "ResolvedConfig has the wrong schema version");
   const std::string canonical =
       loom::canonicalResolvedConfigJson(loom::defaultResolvedConfig());
@@ -273,7 +290,7 @@ void resolvedConfigUsesTheIndependentViolationCatalog() {
 
 void objectiveArithmeticIsPreflightedByThePnrView() {
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
-  auto &energy = config.dse.objectiveCatalogs.weightedLevels[5];
+  auto &energy = config.dse.objectiveCatalogs.weightedLevels[6];
   energy.terms[0].weight = UINT64_MAX;
   energy.terms[1].weight = UINT64_MAX - 1;
   requireRejected(loom::pnr::projectResolvedSpatialPnrConfigView(config),

@@ -54,6 +54,8 @@ SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
   result.localTransferOptionCount = localTransfers.options().size();
   result.portDemandCount = ports.portDemands().size();
   result.attachmentOptionCount = ports.attachmentOptions().size();
+  result.operandPairingGroupCount = ports.operandPairingGroups().size();
+  result.operandPairingMemberCount = ports.operandPairingGroupMembers().size();
   result.computeAttachmentClassLookupCount =
       ports.computeAttachmentClassLookupCount();
   result.computeAttachmentClassHitCount =
@@ -99,6 +101,10 @@ SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
   addTrackedArray(bytes, work, ports.placementDomains());
   addTrackedArray(bytes, work, ports.attachmentOptions());
   addTrackedArray(bytes, work, ports.graphBoundaries());
+  addTrackedArray(bytes, work, ports.operandPairingGroups());
+  addTrackedArray(bytes, work, ports.operandPairingGroupMembers());
+  addTrackedArray(bytes, work, ports.demandOperandPairingOffsets());
+  addTrackedArray(bytes, work, ports.demandOperandPairingGroups());
   saturatingAdd(work, result.computeAttachmentClassLookupCount);
   addTrackedArray(bytes, work, capacity.resourceEvents());
   addTrackedArray(bytes, work, capacity.resourceUses());
@@ -146,6 +152,10 @@ void emitSpatialActiveProblemStatistics(const FrozenSpatialPnrProblem &problem,
             statistics.localTransferOptionCount;
         fields["port_demand_count"] = statistics.portDemandCount;
         fields["attachment_option_count"] = statistics.attachmentOptionCount;
+        fields["operand_pairing_group_count"] =
+            statistics.operandPairingGroupCount;
+        fields["operand_pairing_member_count"] =
+            statistics.operandPairingMemberCount;
         fields["compute_attachment_class_lookups"] =
             statistics.computeAttachmentClassLookupCount;
         fields["compute_attachment_class_hits"] =

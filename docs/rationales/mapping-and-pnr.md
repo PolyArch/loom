@@ -1442,3 +1442,10 @@ tie. This preference is useful because it separates ready/valid control, but
 it is not a universal prohibition: exact atomic admission and progress
 evidence may still justify a shared ingress. Only a complete exact wait cycle
 can drive local repair or Hardware DSE; likely risk remains a ranking signal.
+
+The ranking relation begins with Dataflow actor handshake cases and exact Tech
+boundaries. Multiple operand roles sourced by one logical producer are one
+atomic-fanout member and add no shared-ingress pressure. Independently produced
+roles that may participate in one firing remain separate members. This avoids
+turning SSA reuse into a false liveness warning while retaining a cheap signal
+for physical ingress coupling.

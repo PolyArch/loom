@@ -129,7 +129,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 10.0`. Version 2.0 was an
+The current schema is `loom.config.resolved 10.1`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -241,6 +241,11 @@ element-only, vector-only, separate element/vector, or shared element/vector
 Operation Port relation materialized by the builtin Module. It is
 incompatible because version 8 always selected the shared relation and cannot
 reconstruct the identity or resource multiplicity of another variant.
+
+Version 10.1 compatibly extends the Mapping objective catalog with
+`SharedOperandIngressPressure`. Existing ordinals and meanings are unchanged;
+the new measure is a derived Spatial QoR signal and never a legality or
+liveness proof.
 
 `dse.evaluation_and_objective_catalogs` materializes exactly the owner tables
 of the [Resolved Configuration View](spec-dse-feedback.md#resolved-configuration-view):

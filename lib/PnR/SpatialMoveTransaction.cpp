@@ -3,6 +3,7 @@
 #include "SpatialBindingRelationModel.h"
 #include "SpatialCandidateStateInternal.h"
 #include "SpatialMemoryConstraintModel.h"
+#include "SpatialOperandPairingPressure.h"
 #include "SpatialPhysicalTiming.h"
 #include "SpatialRecurrenceTimingInternal.h"
 #include "SpatialRouteConstraintModel.h"
@@ -258,7 +259,8 @@ void SpatialMoveTransaction::recordPort(PnrIndex demand) {
        state_->portAttachments_[demand], 0,
        state_->bindingRelationChoices_[state_->problem_->bindingRelations()
                                            .portDecisionOffset() +
-                                       demand]});
+                                       demand],
+       state_->sharedOperandIngressPressure_});
 }
 
 void SpatialMoveTransaction::recordBoundary(PnrIndex boundary) {
@@ -319,7 +321,8 @@ void SpatialMoveTransaction::recordRegisterFifoTransfer(PnrIndex logicalNet) {
       scratch_->decisionEpoch_;
   scratch_->decisionDeltas_.push_back(
       {SpatialCandidateScratch::DecisionKind::RegisterFifoTransfer, logicalNet,
-       state_->registerFifoTransfers_[logicalNet], 0});
+       state_->registerFifoTransfers_[logicalNet], 0, 0,
+       state_->sharedOperandIngressPressure_});
 }
 
 void SpatialMoveTransaction::markCompute(PnrIndex realization) {
@@ -573,9 +576,46 @@ llvm::Error SpatialMoveTransaction::setRegisterFifoTransfer(
   }
   state_->registerFifoTransfers_[logicalNet] = old;
 
+  std::vector<PnrIndex> affectedPairingGroups;
+  const FrozenSpatialLogicalNet &net =
+      state_->problem_->transfers().logicalNets()[logicalNet];
+  const auto sinkBindings =
+      state_->problem_->transfers().logicalNetSinkBindings().slice(
+          net.sinkOffset, net.sinkCount);
+  for (FrozenSpatialTerminalBinding sink : sinkBindings) {
+    if (sink.kind != FrozenSpatialTerminalBindingKind::PortDemand)
+      continue;
+    const auto groups =
+        state_->problem_->ports().operandPairingGroupsForDemand(sink.index);
+    affectedPairingGroups.insert(affectedPairingGroups.end(), groups.begin(),
+                                 groups.end());
+  }
+  llvm::sort(affectedPairingGroups);
+  affectedPairingGroups.erase(
+      std::unique(affectedPairingGroups.begin(), affectedPairingGroups.end()),
+      affectedPairingGroups.end());
+  auto oldPairingPressure = detail::measureSpatialOperandIngressPressure(
+      *state_->problem_, state_->portAttachments_,
+      state_->registerFifoTransfers_, affectedPairingGroups);
+  if (!oldPairingPressure)
+    return oldPairingPressure.takeError();
+
   recordRegisterFifoTransfer(logicalNet);
   markNet(logicalNet);
   state_->registerFifoTransfers_[logicalNet] = replacement;
+  auto newPairingPressure = detail::measureSpatialOperandIngressPressure(
+      *state_->problem_, state_->portAttachments_,
+      state_->registerFifoTransfers_, affectedPairingGroups);
+  if (!newPairingPressure)
+    return newPairingPressure.takeError();
+  if (*oldPairingPressure > state_->sharedOperandIngressPressure_)
+    return candidateError(
+        "affected operand ingress pressure exceeds its candidate total");
+  state_->sharedOperandIngressPressure_ -= *oldPairingPressure;
+  if (*newPairingPressure > std::numeric_limits<std::uint64_t>::max() -
+                                state_->sharedOperandIngressPressure_)
+    return candidateError("shared operand ingress pressure exceeds u64");
+  state_->sharedOperandIngressPressure_ += *newPairingPressure;
   const std::optional<PnrIndex> oldOption =
       old == getInvalidPnrIndex() ? std::nullopt : std::optional(old);
   const std::optional<PnrIndex> newOption = replacement == getInvalidPnrIndex()
@@ -767,6 +807,14 @@ SpatialMoveTransaction::setPortAttachment(PnrIndex demand,
   if (old == attachmentOption)
     return llvm::Error::success();
 
+  const auto affectedPairingGroups =
+      state_->problem_->ports().operandPairingGroupsForDemand(demand);
+  auto oldPairingPressure = detail::measureSpatialOperandIngressPressure(
+      *state_->problem_, state_->portAttachments_,
+      state_->registerFifoTransfers_, affectedPairingGroups);
+  if (!oldPairingPressure)
+    return oldPairingPressure.takeError();
+
   recordPort(demand);
   markPort(demand);
   if (llvm::Error error = changeTraversal(
@@ -777,6 +825,19 @@ SpatialMoveTransaction::setPortAttachment(PnrIndex demand,
   state_->bindingRelationChoices_
       [state_->problem_->bindingRelations().portDecisionOffset() + demand] =
       *relationChoice;
+  auto newPairingPressure = detail::measureSpatialOperandIngressPressure(
+      *state_->problem_, state_->portAttachments_,
+      state_->registerFifoTransfers_, affectedPairingGroups);
+  if (!newPairingPressure)
+    return newPairingPressure.takeError();
+  if (*oldPairingPressure > state_->sharedOperandIngressPressure_)
+    return candidateError(
+        "affected operand ingress pressure exceeds its candidate total");
+  state_->sharedOperandIngressPressure_ -= *oldPairingPressure;
+  if (*newPairingPressure > std::numeric_limits<std::uint64_t>::max() -
+                                state_->sharedOperandIngressPressure_)
+    return candidateError("shared operand ingress pressure exceeds u64");
+  state_->sharedOperandIngressPressure_ += *newPairingPressure;
   return llvm::Error::success();
 }
 
@@ -1406,6 +1467,7 @@ void SpatialMoveTransaction::rollback() noexcept {
       break;
     case SpatialCandidateScratch::DecisionKind::PortAttachment:
       state_->portAttachments_[delta.index] = delta.oldValue0;
+      state_->sharedOperandIngressPressure_ = delta.oldWideValue;
       state_->bindingRelationChoices_[state_->problem_->bindingRelations()
                                           .portDecisionOffset() +
                                       delta.index] = delta.oldValue2;
@@ -1463,6 +1525,7 @@ void SpatialMoveTransaction::rollback() noexcept {
         llvm::consumeError(std::move(error));
       }
       state_->registerFifoTransfers_[delta.index] = delta.oldValue0;
+      state_->sharedOperandIngressPressure_ = delta.oldWideValue;
       break;
     }
     }

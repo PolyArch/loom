@@ -187,7 +187,7 @@ struct CgraClosedWaitSetDiagnostic final {
   /// selected.
   std::uint64_t operandQueueGroupCount = 0;
   std::uint64_t operandQueuePotentiallyBlockingGroupCount = 0;
-  std::uint64_t operandQueueUnknownPairingGroupCount = 0;
+  std::uint64_t operandQueueSharedIngressPressure = 0;
   std::uint64_t operandQueueDistinctIngressCount = 0;
   std::uint64_t operandQueuePairingKeyCount = 0;
   std::uint8_t operandQueueProgressStatus = 0;

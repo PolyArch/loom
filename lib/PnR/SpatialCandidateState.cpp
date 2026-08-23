@@ -3,6 +3,7 @@
 #include "SpatialBindingRelationModel.h"
 #include "SpatialCandidateStateInternal.h"
 #include "SpatialMemoryConstraintModel.h"
+#include "SpatialOperandPairingPressure.h"
 #include "SpatialPhysicalTiming.h"
 #include "SpatialProgressAnalysis.h"
 #include "SpatialRecurrenceTimingInternal.h"
@@ -556,6 +557,11 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   if (!physicalTiming)
     return physicalTiming.takeError();
 
+  auto operandIngressPressure = detail::measureSpatialOperandIngressPressure(
+      *problem, portAttachments, registerFifoTransfers);
+  if (!operandIngressPressure)
+    return operandIngressPressure.takeError();
+
   auto candidate = SpatialCandidateStateHandle(new SpatialCandidateState(
       std::move(problem), std::move(computeBindings), std::move(memoryBindings),
       std::move(bindingRelationChoices), std::move(portAttachments),
@@ -564,6 +570,7 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
       std::move(memoryExposureSelections), std::move(registerFifoTransfers),
       std::move(routeTrees), std::move(*handshake), std::move(*routeResources),
       std::move(*tagAssignments), unroutedObligationCount, 0, 0,
+      *operandIngressPressure,
       std::move(logicalNetWorstArrivalDelayQuanta),
       std::move(logicalNetNegativeSlackQuanta),
       physicalTiming->worstArrivalDelayQuanta,
@@ -1389,6 +1396,14 @@ llvm::Error SpatialCandidateState::verify() const {
   if (staticSchedulePressure_ != *expectedSchedulePressure)
     return candidateError(
         "static schedule pressure diverges from selected bindings");
+  auto expectedOperandIngressPressure =
+      detail::measureSpatialOperandIngressPressure(*problem_, portAttachments_,
+                                                   registerFifoTransfers_);
+  if (!expectedOperandIngressPressure)
+    return expectedOperandIngressPressure.takeError();
+  if (sharedOperandIngressPressure_ != *expectedOperandIngressPressure)
+    return candidateError(
+        "shared operand ingress pressure diverges from selected attachments");
   if (llvm::Error error = verifyResourceTimeEnvelopeSelections())
     return error;
   if (llvm::Error error =
