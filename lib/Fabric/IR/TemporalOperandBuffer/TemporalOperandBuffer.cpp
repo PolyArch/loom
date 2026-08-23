@@ -14,6 +14,7 @@
 
 #include "Fabric/IR/FabricEnums.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include <cassert>
@@ -341,9 +342,9 @@ TemporalOperandBufferContract::create(
   derived.unitSpans_ = std::move(unitSpans);
   derived.entryCapacity_ = entries;
   derived.mode_ = declaration.mode;
-  derived.admissionPolicy_ =
-      unitCount != queueTotal ? OperandAdmissionPolicy::PerActiveQueueCredit
-                              : OperandAdmissionPolicy::Unreserved;
+  derived.admissionPolicy_ = unitCount != queueTotal
+                                 ? OperandAdmissionPolicy::PerActiveQueueCredit
+                                 : OperandAdmissionPolicy::Unreserved;
 
   // Every admitted concurrent commit set must leave the pool inside its
   // declared bounds. `O - D + E` is linear in `O` with `D` and `E` in `{0, 1}`,
@@ -493,4 +494,89 @@ bool TemporalOperandBufferContract::admitsIngressEnqueueSet(
     served[unit] = true;
   }
   return true;
+}
+
+llvm::Expected<OperandIngressAdmissionPriority>
+TemporalOperandBufferContract::ingressAdmissionPriority(
+    llvm::ArrayRef<std::uint32_t> queues,
+    llvm::ArrayRef<std::uint32_t> requiredQueues,
+    llvm::ArrayRef<OperandQueueCycleObservation> observations) const {
+  if (queues.empty() || requiredQueues.empty() ||
+      observations.size() != queues_.size() || !admitsIngressEnqueueSet(queues))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "operand ingress priority requires one admitted atomic queue set and "
+        "a total cycle-start observation");
+
+  for (std::uint32_t queue = 0; queue != observations.size(); ++queue) {
+    const OperandQueueCycleObservation &observation = observations[queue];
+    if (observation.allocationUnitOccupancy > entryCapacity_)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "operand ingress priority observed an overfull allocation unit");
+  }
+  for (std::uint32_t unit = 0; unit != allocationUnitCount(); ++unit) {
+    const llvm::ArrayRef<std::uint32_t> members = queuesOf(unit);
+    if (members.empty())
+      continue;
+    const CapacityUnits occupancy =
+        observations[members.front()].allocationUnitOccupancy;
+    if (llvm::any_of(members, [&](std::uint32_t queue) {
+          return observations[queue].allocationUnitOccupancy != occupancy;
+        }))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "operand ingress priority observed inconsistent shared-unit "
+          "occupancy");
+  }
+
+  for (auto indexed : llvm::enumerate(requiredQueues)) {
+    const std::uint32_t queue = indexed.value();
+    if (queue >= queues_.size() ||
+        llvm::is_contained(requiredQueues.take_front(indexed.index()), queue))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "operand ingress priority has a foreign or duplicate required "
+          "QueueKey");
+  }
+  for (std::uint32_t queue : queues)
+    if (!llvm::is_contained(requiredQueues, queue))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "operand ingress priority matched a QueueKey outside its active "
+          "tuple domain");
+  OperandIngressAdmissionPriority priority =
+      OperandIngressAdmissionPriority::Ordinary;
+  for (auto indexed : llvm::enumerate(queues)) {
+    const std::uint32_t queue = indexed.value();
+    const LogicalOperandQueueKey &key = queues_[queue];
+    if (llvm::any_of(
+            queues.take_front(indexed.index()), [&](std::uint32_t previous) {
+              return queues_[previous].context == key.context &&
+                     queues_[previous].fuOccurrence == key.fuOccurrence;
+            }))
+      continue;
+    bool completeAfterIngress = true;
+    bool fillsMissingRole = false;
+    bool occupiedRoleNearFull = false;
+    for (std::uint32_t role = 0; role != queues_.size(); ++role) {
+      const LogicalOperandQueueKey &candidate = queues_[role];
+      if (!llvm::is_contained(requiredQueues, role) ||
+          candidate.context != key.context ||
+          candidate.fuOccurrence != key.fuOccurrence)
+        continue;
+      const OperandQueueCycleObservation &observation = observations[role];
+      const bool matched = llvm::is_contained(queues, role);
+      completeAfterIngress &= observation.headPresent || matched;
+      fillsMissingRole |= matched && !observation.headPresent;
+      occupiedRoleNearFull |= observation.headPresent &&
+                              observation.allocationUnitOccupancy.value() >=
+                                  entryCapacity_.value() - 1;
+    }
+    if (completeAfterIngress && fillsMissingRole)
+      return OperandIngressAdmissionPriority::CompletesTuple;
+    if (fillsMissingRole && occupiedRoleNearFull)
+      priority = OperandIngressAdmissionPriority::NearFullComplement;
+  }
+  return priority;
 }

@@ -721,19 +721,19 @@ SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
         return payload.role ==
                loom::hardware::PayloadRole::GenerationConstraint;
       });
-  require(test,
-          constraint !=
-              implementation.implementation().representationRoot().payloads
-                  .end(),
-          "SpatialCore HardwareImplementation omitted its clock constraint");
+  require(
+      test,
+      constraint !=
+          implementation.implementation().representationRoot().payloads.end(),
+      "SpatialCore HardwareImplementation omitted its clock constraint");
   const auto constraintBytes = take(test, blobs.get(constraint->blobDigest));
-  require(test,
-          llvm::StringRef(
-              reinterpret_cast<const char *>(constraintBytes.data()),
-              constraintBytes.size()) ==
-              "create_clock -name loom_clock -period 0.001 -waveform {0 "
-              "0.0005} [get_ports {clock}]\n",
-          "SpatialCore clock constraint is not the exact Fabric projection");
+  require(
+      test,
+      llvm::StringRef(reinterpret_cast<const char *>(constraintBytes.data()),
+                      constraintBytes.size()) ==
+          "create_clock -name loom_clock -period 0.001 -waveform {0 "
+          "0.0005} [get_ports {clock}]\n",
+      "SpatialCore clock constraint is not the exact Fabric projection");
   return result;
 }
 
@@ -1759,7 +1759,20 @@ module temporal_testbench;
       check(!output_0_valid,
             "Temporal operation fired before its independent input arrived");
     end
-    send_input_1(8'd7);
+    @(negedge clock);
+    input_0_data = 8'd9;
+    input_1_data = 8'd7;
+    input_0_tag = 2'd1;
+    input_1_tag = 2'd1;
+    input_0_valid = 1;
+    input_1_valid = 1;
+    #1;
+    check(!input_0_ready && input_1_ready,
+          "Pair-aware admission did not prioritize the missing role");
+    @(posedge clock);
+    @(negedge clock);
+    input_0_valid = 0;
+    input_1_valid = 0;
     while (!output_0_valid)
       @(posedge clock);
     #1;
@@ -1780,6 +1793,7 @@ module temporal_testbench;
     fork
       begin : producer
         integer index;
+        integer wait_cycles;
         for (index = 0; index < 4; index = index + 1) begin
           @(negedge clock);
           input_0_data = 8'(10 + index);
@@ -1788,10 +1802,16 @@ module temporal_testbench;
           input_1_tag = 2'd1;
           input_0_valid = 1;
           input_1_valid = 1;
-          @(posedge clock);
+          wait_cycles = 0;
           #1;
-          check(input_0_ready && input_1_ready,
-                "Temporal operand buffers did not sustain one pair per cycle");
+          while (!(input_0_ready && input_1_ready)) begin
+            @(negedge clock);
+            #1;
+            wait_cycles = wait_cycles + 1;
+            if (wait_cycles == 32)
+              $fatal(1, "Temporal operand pair remained backpressured");
+          end
+          @(posedge clock);
         end
         @(negedge clock);
         input_0_valid = 0;
@@ -1804,9 +1824,13 @@ module temporal_testbench;
           #1;
         end
         for (index = 0; index < 4; index = index + 1) begin
+          while (!output_0_valid) begin
+            @(posedge clock);
+            #1;
+          end
           check(output_0_valid && output_0_data == 8'(30 + 2 * index) &&
                     output_0_tag == 2'd2,
-                "Temporal PE did not publish one ordered result per cycle");
+                "Temporal PE did not publish the ordered result stream");
           @(posedge clock);
           #1;
         end
@@ -1817,27 +1841,56 @@ module temporal_testbench;
   testbench << take("writeTemporalToolArtifacts",
                     loom::hardware::test::portableAxiLiteProgramAndVerify(
                         artifact.target, artifact.dispatchImage));
-  testbench << R"sv(    @(negedge clock);
+  testbench << R"sv(    send_input_0(8'd5);
+    @(negedge clock);
     input_0_data = 8'd9;
-    input_1_data = 8'd4;
+    input_1_data = 8'd7;
     input_0_tag = 2'd3;
-    input_1_tag = 2'd3;
+    input_1_tag = 2'd1;
     input_0_valid = 1;
     input_1_valid = 1;
-    begin : wait_for_context_one_ingress
+    #1;
+    check(input_0_ready && input_1_ready,
+          "Pair priority locked an independent tagged context");
+    @(posedge clock);
+    @(negedge clock);
+    input_0_valid = 0;
+    input_1_valid = 0;
+    begin : wait_for_context_zero_result
       integer wait_cycles;
       wait_cycles = 0;
-      while (!(input_0_ready && input_1_ready)) begin
+      while (!output_0_valid) begin
+        @(posedge clock);
+        #1;
+        wait_cycles = wait_cycles + 1;
+        if (wait_cycles == 8)
+          $fatal(1, "Complementary context did not fire");
+      end
+    end
+    check(output_0_data == 8'd12 && output_0_tag == 2'd2,
+          "Pair-aware context zero result is incorrect");
+    @(posedge clock);
+    #1;
+    check(!output_0_valid, "Pair-aware context zero result did not retire");
+
+    @(negedge clock);
+    input_1_data = 8'd4;
+    input_1_tag = 2'd3;
+    input_1_valid = 1;
+    begin : wait_for_context_one_complement
+      integer wait_cycles;
+      wait_cycles = 0;
+      #1;
+      while (!input_1_ready) begin
         @(negedge clock);
         #1;
         wait_cycles = wait_cycles + 1;
         if (wait_cycles == 8)
-          $fatal(1, "Runnable context was blocked by an idle context");
+          $fatal(1, "Context one complement remained backpressured");
       end
     end
     @(posedge clock);
     @(negedge clock);
-    input_0_valid = 0;
     input_1_valid = 0;
     begin : wait_for_context_one_result
       integer wait_cycles;

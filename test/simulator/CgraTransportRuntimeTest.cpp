@@ -814,10 +814,17 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
   const dataflow::CanonicalGraphConsumerEndpointRef rightSink(
       dataflow::ActorTokenOperandRef{right.ref, 0});
   loom::fabric::FabricPeOccurrenceRef pe;
+  const loom::fabric::FabricFuOccurrenceRef leftFu(0);
+  const loom::fabric::FabricFuOccurrenceRef rightFu(1);
+  const loom::fabric::FabricTransportEndpointRef ingress{
+      loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 0};
+  const llvm::APInt tag(1, 0);
   const fabric::LogicalOperandQueueKey leftQueue{{pe, 0}, 0, 0};
   const fabric::LogicalOperandQueueKey rightQueue{{pe, 0}, 1, 0};
 
   CgraFrozenExecutionPlan plan;
+  plan.transport.operandBuffers.push_back(
+      {pe, fabric::OperandBufferMode::PerInstruction, 1, 2, {1, 1}});
   plan.transport.localTransfers.push_back({producer, left.graph, 0, 2});
   plan.transport.localTransferSinks.push_back({leftSink});
   plan.transport.localTransferSinks.push_back({rightSink});
@@ -825,10 +832,9 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
   plan.transport.consumedUses.push_back({rightSink, 0, 0});
   plan.transport.operandQueueConsumers.push_back({leftSink});
   plan.transport.operandQueueConsumers.push_back({rightSink});
+  plan.transport.operandQueueMatches.push_back({leftQueue, leftFu, 0, 2, 0, 1});
   plan.transport.operandQueueMatches.push_back(
-      {leftQueue, loom::fabric::FabricFuOccurrenceRef(0), 0, 2, 0, 1});
-  plan.transport.operandQueueMatches.push_back(
-      {rightQueue, loom::fabric::FabricFuOccurrenceRef(0), 1, 2, 1, 1});
+      {rightQueue, rightFu, 1, 2, 1, 1});
   plan.transport.operandQueueProgress.groupCount = 1;
   plan.transport.operandQueueProgress.pairingKeyCount = 2;
   plan.transport.operandQueueProgress.distinctPairingKeyCount = 2;
@@ -837,12 +843,12 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
       loom::mapping::SpatialPeOperandProgressStatus::Safe;
   plan.transport.operandQueueProgress.support =
       loom::mapping::SpatialPeOperandProgressSupport::Exact;
+  plan.transport.operandQueueProgress.pairings.push_back(
+      {{{pe, 0}, leftFu, tag}, {0}, {ingress}, {0}});
+  plan.transport.operandQueueProgress.pairings.push_back(
+      {{{pe, 0}, rightFu, tag}, {0}, {ingress}, {1}});
   plan.transport.operandQueueActivations.push_back(
-      {producer,
-       {loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 0},
-       llvm::APInt(1, 0),
-       0,
-       2});
+      {producer, ingress, tag, 0, 2});
 
   SimulatorState state;
   state.graphScope = graph.getOperation();
@@ -904,6 +910,110 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
           "Temporal operand retry did not wait for cycle-start capacity");
 }
 
+void temporalOperandQueueAdmissionPrioritizesComplement() {
+  auto artifact = fanoutProgram();
+  auto view = take(artifact.view());
+  const dataflow::CanonicalActorView *add = nullptr;
+  for (const dataflow::CanonicalActorView &actor : view.actors())
+    if (dataflow::operationSchemaOf(actor.op) ==
+        dataflow::OperationSchemaId::ArithAddI) {
+      add = &actor;
+      break;
+    }
+  require(add, "pair-aware fixture has no add actor");
+  auto graphView = take(view.resolve(add->graph));
+  auto graph = mlir::cast<dataflow::GraphOp>(graphView.op);
+  GraphPreparationResult preparedResult =
+      take(prepareGraphExecution(artifact.module(), graph));
+  auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
+  require(prepared, "pair-aware graph preparation failed");
+
+  const dataflow::CanonicalGraphProducerEndpointRef lhsProducer(
+      dataflow::GraphIngressTokenRef{
+          dataflow::GraphValueInputTokenRef{add->graph, 0}});
+  const dataflow::CanonicalGraphProducerEndpointRef rhsProducer(
+      dataflow::GraphIngressTokenRef{
+          dataflow::GraphValueInputTokenRef{add->graph, 1}});
+  const dataflow::CanonicalGraphConsumerEndpointRef lhsSink(
+      dataflow::ActorTokenOperandRef{add->ref, 0});
+  const dataflow::CanonicalGraphConsumerEndpointRef rhsSink(
+      dataflow::ActorTokenOperandRef{add->ref, 1});
+  const loom::fabric::FabricPeOccurrenceRef pe(0);
+  const loom::fabric::FabricFuOccurrenceRef fu(0);
+  const loom::fabric::FabricTransportEndpointRef lhsIngress{
+      loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 0};
+  const loom::fabric::FabricTransportEndpointRef rhsIngress{
+      loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 1};
+  const llvm::APInt tag(1, 0);
+  const fabric::LogicalOperandQueueKey lhsQueue{{pe, 0}, 0, 0};
+  const fabric::LogicalOperandQueueKey rhsQueue{{pe, 0}, 0, 1};
+
+  CgraFrozenExecutionPlan plan;
+  plan.transport.operandBuffers.push_back(
+      {pe, fabric::OperandBufferMode::PerInstruction, 1, 2, {2}});
+  plan.transport.localTransfers.push_back({lhsProducer, add->graph, 0, 1});
+  plan.transport.localTransferSinks.push_back({lhsSink});
+  plan.transport.localTransfers.push_back({rhsProducer, add->graph, 1, 1});
+  plan.transport.localTransferSinks.push_back({rhsSink});
+  plan.transport.consumedUses.push_back({lhsSink, 0, 0});
+  plan.transport.consumedUses.push_back({rhsSink, 0, 0});
+  plan.transport.operandQueueConsumers.push_back({lhsSink});
+  plan.transport.operandQueueConsumers.push_back({rhsSink});
+  plan.transport.operandQueueMatches.push_back({lhsQueue, fu, 0, 2, 0, 1});
+  plan.transport.operandQueueMatches.push_back({rhsQueue, fu, 1, 2, 1, 1});
+  plan.transport.operandQueueActivations.push_back(
+      {lhsProducer, lhsIngress, tag, 0, 1});
+  plan.transport.operandQueueActivations.push_back(
+      {rhsProducer, rhsIngress, tag, 1, 1});
+  plan.transport.operandQueueProgress.groupCount = 2;
+  plan.transport.operandQueueProgress.pairingKeyCount = 2;
+  plan.transport.operandQueueProgress.distinctPairingKeyCount = 1;
+  plan.transport.operandQueueProgress.distinctIngressCount = 2;
+  plan.transport.operandQueueProgress.status =
+      loom::mapping::SpatialPeOperandProgressStatus::Safe;
+  plan.transport.operandQueueProgress.support =
+      loom::mapping::SpatialPeOperandProgressSupport::Exact;
+  plan.transport.operandQueueProgress.pairings.push_back(
+      {{{pe, 0}, fu, tag}, {0, 1}, {lhsIngress, rhsIngress}, {0, 1}});
+
+  SimulatorState state;
+  state.graphScope = graph.getOperation();
+  initializeRunState(state, *prepared);
+  TokenQueue &lhsChannel = channelQueue(state, add->op->getOpOperand(0));
+  TokenQueue &rhsChannel = channelQueue(state, add->op->getOpOperand(1));
+  lhsChannel.push_back(take(tokenFromBitPattern(
+      llvm::APInt(32, 5), mlir::IntegerType::get(&context(), 32))));
+  auto physical = take(CgraPhysicalActionRuntime::create(
+      plan.resources, plan.physicalUseTimings));
+  auto transport = take(CgraTransportRuntime::create(
+      plan, view, add->graph, *prepared, state, physical));
+
+  llvm::SmallVector<GraphIngressEmission, 2> arrivals;
+  arrivals.push_back(
+      {1, 0,
+       take(tokenFromBitPattern(llvm::APInt(32, 9),
+                                mlir::IntegerType::get(&context(), 32)))});
+  arrivals.push_back(
+      {2, 0,
+       take(tokenFromBitPattern(llvm::APInt(32, 7),
+                                mlir::IntegerType::get(&context(), 32)))});
+  if (llvm::Error error =
+          transport.acceptGraphIngressEmissions(coordinate(90), arrivals))
+    fail(llvm::toString(std::move(error)));
+  auto frame = take(transport.advance());
+  require(frame && frame->publications.size() == 1 &&
+              frame->blockedTransfers.size() == 1 && lhsChannel.size() == 1 &&
+              rhsChannel.size() == 1 &&
+              take(tokenBitPattern(lhsChannel.front(),
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 5) &&
+              take(tokenBitPattern(rhsChannel.front(),
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 7),
+          "CGRA operand admission did not preserve the head and prioritize "
+          "its complement");
+}
+
 } // namespace
 
 int main() {
@@ -911,5 +1021,6 @@ int main() {
   registerFifoWriteAndReadShareOneDurableQueue();
   ordinaryFanoutPublicationsProgressIndependently();
   temporalOperandQueueCapacityAndFanoutAreAtomic();
+  temporalOperandQueueAdmissionPrioritizesComplement();
   return EXIT_SUCCESS;
 }

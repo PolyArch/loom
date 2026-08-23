@@ -1342,6 +1342,12 @@ CgraTransportRuntime::advance() {
     llvm::SmallVector<std::pair<std::uint64_t, std::uint64_t>, 4>
         requestedPublications;
     llvm::SmallDenseSet<std::uint64_t, 4> publicationSlots;
+    struct ReadyPublication final {
+      std::uint64_t slot = 0;
+      std::uint64_t publication = 0;
+      OperandIngressAdmission admission;
+    };
+    llvm::SmallVector<ReadyPublication, 8> readyPublications;
     transfers.reserve((**arrivals).events.size());
     requestedPublications.reserve((**arrivals).events.size());
     for (const CgraScheduledEvent &event : (**arrivals).events) {
@@ -1378,21 +1384,59 @@ CgraTransportRuntime::advance() {
         }
         if (!ready)
           continue;
-        auto capacityReady = reserveOperandQueueCapacity(
-            event.payload, publicationBinding, (**arrivals).coordinate);
-        if (!capacityReady)
-          return capacityReady.takeError();
-        if (!*capacityReady) {
-          blocked_.set(inFlight.bindingOrdinal);
-          frame.blockedTransfers.push_back(inFlight.bindingOrdinal);
-          continue;
-        }
-        transfers.push_back({event.payload, inFlight.bindingOrdinal,
-                             invalidCgraTransportOrdinal, publicationBinding});
-        requestedPublications.emplace_back(event.payload, publicationBinding);
-        if (publication.consumedPhysicalUseCount == 0)
-          publicationSlots.insert(event.payload);
+        auto priority =
+            operandIngressAdmissionPriority(event.payload, publicationBinding);
+        if (!priority)
+          return priority.takeError();
+        readyPublications.push_back(
+            {event.payload, publicationBinding, std::move(*priority)});
       }
+    }
+    llvm::stable_sort(readyPublications, [](const auto &lhs, const auto &rhs) {
+      return static_cast<std::uint8_t>(lhs.admission.priority) >
+             static_cast<std::uint8_t>(rhs.admission.priority);
+    });
+    llvm::SmallVector<const ReadyPublication *, 8> observedPriority;
+    for (const ReadyPublication &candidate : readyPublications) {
+      InFlight &inFlight = inFlight_[candidate.slot];
+      const PublicationBinding &publication =
+          publications_[candidate.publication];
+      const bool suppressed =
+          llvm::any_of(observedPriority, [&](const ReadyPublication *selected) {
+            if (static_cast<std::uint8_t>(selected->admission.priority) <=
+                static_cast<std::uint8_t>(candidate.admission.priority))
+              return false;
+            return llvm::any_of(candidate.admission.pairings,
+                                [&](const auto &pairing) {
+                                  return llvm::is_contained(
+                                      selected->admission.pairings, pairing);
+                                });
+          });
+      observedPriority.push_back(&candidate);
+      if (suppressed) {
+        const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+        InFlight::PublicationState &state =
+            inFlight.publications[candidate.publication -
+                                  binding.publicationOffset];
+        state.capacityBlocked = true;
+        blocked_.set(inFlight.bindingOrdinal);
+        frame.blockedTransfers.push_back(inFlight.bindingOrdinal);
+        continue;
+      }
+      auto capacityReady = reserveOperandQueueCapacity(
+          candidate.slot, candidate.publication, (**arrivals).coordinate);
+      if (!capacityReady)
+        return capacityReady.takeError();
+      if (!*capacityReady) {
+        blocked_.set(inFlight.bindingOrdinal);
+        frame.blockedTransfers.push_back(inFlight.bindingOrdinal);
+        continue;
+      }
+      transfers.push_back({candidate.slot, inFlight.bindingOrdinal,
+                           invalidCgraTransportOrdinal, candidate.publication});
+      requestedPublications.emplace_back(candidate.slot, candidate.publication);
+      if (publication.consumedPhysicalUseCount == 0)
+        publicationSlots.insert(candidate.slot);
     }
     auto requested = requestActions(transfers, ActionStage::Consumed,
                                     (**arrivals).coordinate);
@@ -1544,8 +1588,8 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         diagnostic.blockingTraversalNodeOrdinal = node;
         diagnostic.blockingStorageOrdinal = traversal.storageOrdinal;
         for (std::uint64_t target = traversal.targetTraversalOffset;
-             target != traversal.targetTraversalOffset +
-                           traversal.targetTraversalCount;
+             target !=
+             traversal.targetTraversalOffset + traversal.targetTraversalCount;
              ++target) {
           if (target >= traversalTargets_.size())
             continue;
@@ -1553,8 +1597,7 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
               std::get_if<::loom::fabric::FabricFifoTraversalPayload>(
                   &traversalTargets_[target].payload);
           if (!fifo ||
-              fifo->mode !=
-                  ::loom::fabric::FabricFifoTraversalMode::Buffered)
+              fifo->mode != ::loom::fabric::FabricFifoTraversalMode::Buffered)
             continue;
           if (diagnostic.blockingFifoOccurrence &&
               *diagnostic.blockingFifoOccurrence != fifo->owner) {
@@ -1665,8 +1708,7 @@ CgraTransportRuntime::pendingOperandQueueHeadDiagnostics() const {
   for (const OperandQueueBinding &queue : operandQueues_) {
     if (queue.unitBinding >= operandQueueUnits_.size())
       continue;
-    const OperandQueueUnitBinding &unit =
-        operandQueueUnits_[queue.unitBinding];
+    const OperandQueueUnitBinding &unit = operandQueueUnits_[queue.unitBinding];
     CgraOperandQueueHeadDiagnostic diagnostic{
         queue.queue,
         queue.fu,
@@ -1688,8 +1730,7 @@ CgraTransportRuntime::pendingOperandQueueHeadDiagnostics() const {
       const OperandQueueBinding::Entry &head = queue.entries.front();
       diagnostic.headBindingOrdinal = head.bindingOrdinal;
       diagnostic.headOccurrenceOrdinal = head.occurrenceOrdinal;
-      diagnostic.headProducerSequenceOrdinal =
-          head.producerSequenceOrdinal;
+      diagnostic.headProducerSequenceOrdinal = head.producerSequenceOrdinal;
       diagnostic.headTag = head.tag;
       diagnostic.exactHead =
           diagnostic.exactHead &&

@@ -721,6 +721,18 @@ legality rule. Any admission refinement is a field of this operand-buffer
 contract and is consumed by Fabric, Mapping, simulator, and RTL through the
 same derived projection; it is not a new resource family or persistent key.
 
+The Fabric owner classifies one already admitted atomic MatchKey enqueue set
+against cycle-start queue observations. `CompletesTuple` means the transaction
+fills at least one missing QueueKey and every role of that context/FU tuple has
+either a cycle-start head or a member of the same transaction.
+`NearFullComplement` means the transaction fills a missing role of a still
+partial tuple whose occupied role has at most one free allocation-unit entry.
+`Ordinary` is every other admitted set. Simultaneous ingress transactions are
+ordered by that class before the existing deterministic requester order.
+Priority belongs to the whole MatchKey enqueue set: it never selects one
+QueueKey out of an atomic fanout. Capacity, one-enqueue-service admission, and
+cycle-start-full rejection remain independent gates.
+
 The three mode capacity/service projections remain exact: `per_instruction`
 has one unit per QueueKey, `per_input_port` has one unit per concrete FU input,
 and `all_fu_share` has one unit for the PE. A full allocation unit cannot borrow

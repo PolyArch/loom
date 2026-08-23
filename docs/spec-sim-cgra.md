@@ -92,6 +92,17 @@ owners; they are not a simulator legality rule or persistent queue identity.
 An empty queue has no fabricated head, and a nonempty queue whose head
 provenance is incomplete cannot be reported as exact.
 
+The frozen plan carries the Fabric-owned operand-buffer declaration for each
+selected PE, not a simulator-specific queue policy. At one PE-clock arrival
+frame the runtime reconstructs that contract, classifies each atomic ingress
+transaction as `CompletesTuple`, `NearFullComplement`, or `Ordinary`, and
+processes higher classes first. A lower-class transaction sharing the same
+qualified PairingKey is backpressured as a whole until a later PE clock;
+transactions with disjoint PairingKeys remain independent. Capacity
+reservation and cycle-start-full rejection still use the same allocation-unit
+contract and can reject a high-priority transaction without fabricating
+progress.
+
 For a temporal PE, the frozen execution plan also consumes the exact active
 context-evaluation domains derived from compute bindings and the PE
 ResourceContract. The runtime projects each ready actor request to its

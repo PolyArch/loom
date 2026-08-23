@@ -116,10 +116,12 @@ struct TokenPoolModule final {
   unsigned payloadWidth = 0;
 };
 
-llvm::Expected<TokenPoolModule> buildTokenPoolModule(
-    mlir::OpBuilder &builder, mlir::Location location, llvm::StringRef name,
-    std::uint32_t queueCount, std::uint32_t depth, unsigned payloadWidth,
-    bool singlePort, bool fullReplacement, const ClockResetPlan &clockReset) {
+llvm::Expected<TokenPoolModule>
+buildTokenPoolModule(mlir::OpBuilder &builder, mlir::Location location,
+                     llvm::StringRef name, std::uint32_t queueCount,
+                     std::uint32_t depth, unsigned payloadWidth,
+                     bool singlePort, bool fullReplacement, bool exposeNearFull,
+                     const ClockResetPlan &clockReset) {
   if (queueCount == 0 || depth == 0)
     return invalid("token pool requires nonempty queue and entry domains");
   if (singlePort && fullReplacement)
@@ -159,6 +161,9 @@ llvm::Expected<TokenPoolModule> buildTokenPoolModule(
         {{builder.getStringAttr(queuePort("dequeue", queue, "_ready")),
           builder.getI1Type(), circt::hw::ModulePort::Direction::Input}});
   }
+  if (exposeNearFull)
+    outputs.push_back({{builder.getStringAttr("near_full"), builder.getI1Type(),
+                        circt::hw::ModulePort::Direction::Output}});
 
   std::optional<std::string> materializationError;
   auto module = circt::hw::HWModuleOp::create(
@@ -280,6 +285,19 @@ llvm::Expected<TokenPoolModule> buildTokenPoolModule(
         mlir::Value full = circt::comb::ICmpOp::create(
             bodyBuilder, location, circt::comb::ICmpPredicate::eq, occupancy,
             constant(bodyBuilder, location, occupancyWidth, depth), true);
+        if (exposeNearFull) {
+          mlir::Value nearFull = bitConstant(bodyBuilder, location, true);
+          if (depth != 1) {
+            mlir::Value belowNearFull = circt::comb::ICmpOp::create(
+                bodyBuilder, location, circt::comb::ICmpPredicate::ult,
+                occupancy,
+                constant(bodyBuilder, location, occupancyWidth, depth - 1),
+                true);
+            nearFull = circt::comb::createOrFoldNot(bodyBuilder, location,
+                                                    belowNearFull);
+          }
+          accessor.setOutput("near_full", nearFull);
+        }
         mlir::Value canEnqueue =
             circt::comb::createOrFoldNot(bodyBuilder, location, full);
         if (singlePort)
@@ -408,6 +426,7 @@ struct LogicalQueuePlan final {
 struct AllocationUnitPlan final {
   std::vector<std::uint32_t> queues;
   TokenPoolModule pool;
+  mlir::Value nearFull;
 };
 
 struct SelectorSignals final {
@@ -442,6 +461,7 @@ SelectorSignals decodeSelector(mlir::OpBuilder &builder,
 
 struct QueueRuntime final {
   circt::Backedge dequeueReady;
+  circt::Backedge enqueueAdmission;
   circt::Backedge enqueueCommit;
   std::optional<mlir::Value> data;
   mlir::Value valid;
@@ -566,60 +586,50 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
   if (operandDepth == 0)
     return invalid("Temporal PE has zero operand-buffer depth");
 
+  std::vector<std::uint32_t> fuInputCounts;
+  fuInputCounts.reserve(layout.fus.size());
+  for (const auto &shape : layout.fus)
+    fuInputCounts.push_back(shape.inputCount);
+  auto operandResources = ::fabric::TemporalOperandBufferContract::create(
+      {pe, layout.contextCount, fuInputCounts, *mode, operandDepth});
+  if (!operandResources)
+    return invalid(llvm::toString(operandResources.takeError()));
+
   std::vector<LogicalQueuePlan> queues;
+  queues.reserve(operandResources->logicalQueues().size());
   std::vector<std::vector<std::vector<std::uint32_t>>> queueOf(
       layout.contextCount,
       std::vector<std::vector<std::uint32_t>>(layout.fus.size()));
   for (std::uint32_t context = 0; context != layout.contextCount; ++context)
-    for (std::uint32_t fu = 0; fu != layout.fus.size(); ++fu) {
+    for (std::uint32_t fu = 0; fu != layout.fus.size(); ++fu)
       queueOf[context][fu].resize(layout.fus[fu].inputCount);
-      for (std::uint32_t input = 0; input != layout.fus[fu].inputCount;
-           ++input) {
-        queueOf[context][fu][input] = queues.size();
-        queues.push_back({context, fu, input, 0, 0});
-      }
-    }
-  std::vector<AllocationUnitPlan> units;
-  if (*mode == ::fabric::OperandBufferMode::PerInstruction) {
-    units.resize(queues.size());
-    for (std::uint32_t queue = 0; queue != queues.size(); ++queue) {
-      queues[queue].unit = queue;
-      queues[queue].unitQueue = 0;
-      units[queue].queues.push_back(queue);
-    }
-  } else if (*mode == ::fabric::OperandBufferMode::PerInputPort) {
-    std::vector<std::vector<std::uint32_t>> unitOfInput(layout.fus.size());
-    for (std::uint32_t fu = 0; fu != layout.fus.size(); ++fu) {
-      unitOfInput[fu].resize(layout.fus[fu].inputCount);
-      for (std::uint32_t input = 0; input != layout.fus[fu].inputCount;
-           ++input) {
-        unitOfInput[fu][input] = units.size();
-        units.emplace_back();
-      }
-    }
-    for (std::uint32_t queue = 0; queue != queues.size(); ++queue) {
-      auto &plan = queues[queue];
-      plan.unit = unitOfInput[plan.fu][plan.input];
-      plan.unitQueue = units[plan.unit].queues.size();
-      units[plan.unit].queues.push_back(queue);
-    }
-  } else if (*mode == ::fabric::OperandBufferMode::AllFuShare) {
-    units.emplace_back();
-    for (std::uint32_t queue = 0; queue != queues.size(); ++queue) {
-      queues[queue].unit = 0;
-      queues[queue].unitQueue = queue;
-      units.front().queues.push_back(queue);
-    }
-  } else {
-    return invalid("Temporal PE operand-buffer mode is outside its domain");
+  for (auto indexed : llvm::enumerate(operandResources->logicalQueues())) {
+    const ::fabric::LogicalOperandQueueKey &key = indexed.value();
+    if (key.context.pe != pe || key.context.ordinal >= layout.contextCount ||
+        key.fuOccurrence >= layout.fus.size() ||
+        key.fuInput >= layout.fus[key.fuOccurrence].inputCount)
+      return invalid("Temporal PE operand contract has a foreign QueueKey");
+    const std::uint32_t queue = static_cast<std::uint32_t>(indexed.index());
+    const std::uint32_t unit = operandResources->allocationUnitOf(queue);
+    queueOf[key.context.ordinal][key.fuOccurrence][key.fuInput] = queue;
+    queues.push_back({static_cast<std::uint32_t>(key.context.ordinal),
+                      static_cast<std::uint32_t>(key.fuOccurrence),
+                      static_cast<std::uint32_t>(key.fuInput), unit, 0});
   }
+  std::vector<AllocationUnitPlan> units(
+      operandResources->allocationUnitCount());
+  for (std::uint32_t unit = 0; unit != units.size(); ++unit)
+    for (std::uint32_t queue : operandResources->queuesOf(unit)) {
+      queues[queue].unitQueue = units[unit].queues.size();
+      units[unit].queues.push_back(queue);
+    }
   for (std::uint32_t unit = 0; unit != units.size(); ++unit) {
     auto pool =
         buildTokenPoolModule(builder, location,
                              "loom_temporal_pe_" + std::to_string(pe.id()) +
                                  "_operand_pool_" + std::to_string(unit),
                              units[unit].queues.size(), operandDepth,
-                             payloadWidth, false, false, clockReset);
+                             payloadWidth, false, false, true, clockReset);
     if (!pool)
       return pool.takeError();
     units[unit].pool = std::move(*pool);
@@ -627,10 +637,6 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
 
   const std::uint32_t fifoDepth = fabric.peRegisterFifoDepth(pe);
   const std::uint32_t fifoPorts = fabric.peRegisterFifoPorts(pe);
-  std::vector<std::uint32_t> fuInputCounts;
-  fuInputCounts.reserve(layout.fus.size());
-  for (const auto &shape : layout.fus)
-    fuInputCounts.push_back(shape.inputCount);
   auto peResources = ::fabric::TemporalPeResourceContract::create(
       {pe, layout.contextCount, fuInputCounts, *mode, operandDepth,
        layout.registerFifoCount, fifoDepth, fifoPorts});
@@ -644,7 +650,7 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
                              "loom_temporal_pe_" + std::to_string(pe.id()) +
                                  "_register_fifo_" + std::to_string(fifo),
                              1, fifoDepth, payloadWidth + tagWidth,
-                             fifoPorts == 1, fifoPorts == 2, clockReset);
+                             fifoPorts == 1, fifoPorts == 2, false, clockReset);
     if (!pool)
       return pool.takeError();
     fifoPools.push_back(std::move(*pool));
@@ -747,9 +753,13 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
             if (payloadWidth != 0)
               instanceInputs.emplace(queuePort("enqueue", local, "_data"),
                                      enqueueData);
+            queueRuntime[queueOrdinal].enqueueAdmission =
+                backedges.get(bodyBuilder.getI1Type());
             instanceInputs.emplace(
                 queuePort("enqueue", local, "_valid"),
-                orValues(bodyBuilder, location, enqueueValidTerms));
+                andValues(bodyBuilder, location,
+                          {orValues(bodyBuilder, location, enqueueValidTerms),
+                           queueRuntime[queueOrdinal].enqueueAdmission}));
             queueRuntime[queueOrdinal].enqueueCommit =
                 backedges.get(bodyBuilder.getI1Type());
             instanceInputs.emplace(queuePort("enqueue", local, "_commit"),
@@ -767,6 +777,7 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
             backedges.abandon();
             return;
           }
+          unit.nearFull = instance->at("near_full");
           for (std::uint32_t local = 0; local != unit.queues.size(); ++local) {
             QueueRuntime &runtime = queueRuntime[unit.queues[local]];
             if (payloadWidth != 0)
@@ -777,72 +788,161 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
           }
         }
 
-        // Prefer a complete context/FU tuple whenever one is available. This
-        // gates only existing per-port head matches; FIFO order and atomic
-        // multi-queue service remain unchanged.
+        // Prefer an ingress transaction that fills a missing role and makes a
+        // context/FU tuple complete. Priority belongs to the whole physical
+        // ingress transaction: every QueueKey matched by that ingress remains
+        // one atomic fanout group.
         std::vector<mlir::Value> queuePairReady(queues.size());
-        for (std::uint32_t queueOrdinal = 0;
-             queueOrdinal != queues.size(); ++queueOrdinal) {
+        std::vector<mlir::Value> queueNearFullComplement(queues.size());
+        std::vector<std::vector<mlir::Value>> queueCompletingArrivals(
+            queues.size(), std::vector<mlir::Value>(layout.inputPortCount));
+        for (std::uint32_t queueOrdinal = 0; queueOrdinal != queues.size();
+             ++queueOrdinal) {
           const LogicalQueuePlan &queue = queues[queueOrdinal];
           llvm::SmallVector<mlir::Value> requiredInputs;
+          llvm::SmallVector<mlir::Value> missingRoleArrivals;
+          llvm::SmallVector<mlir::Value> nearFullOccupiedRoles;
           for (std::uint32_t input = 0;
                input != layout.fus[queue.fu].inputCount; ++input) {
             const std::uint32_t requiredQueue =
                 queueOf[queue.context][queue.fu][input];
-            llvm::SmallVector<mlir::Value> headReady;
+            const SelectorSignals &requiredSelector =
+                rows[queue.context].operands[input];
+            llvm::SmallVector<mlir::Value> externalTargets;
+            for (std::uint32_t port = 0; port != inputEndpoints.size(); ++port)
+              externalTargets.push_back(
+                  equals(bodyBuilder, location, requiredSelector.target, port));
+            const mlir::Value roleUsesOperandQueue =
+                andValues(bodyBuilder, location,
+                          {rows[queue.context].active,
+                           equals(bodyBuilder, location,
+                                  rows[queue.context].selectedFu, queue.fu),
+                           requiredSelector.route,
+                           orValues(bodyBuilder, location, externalTargets)});
+            llvm::SmallVector<mlir::Value> arrivals;
             for (std::uint32_t port = 0; port != inputEndpoints.size();
-                 ++port)
-              headReady.push_back(andValues(
+                 ++port) {
+              const mlir::Value arrival = andValues(
                   bodyBuilder, location,
                   {queueInputMatches[requiredQueue][port],
-                   accessor.getInput(
-                       inputEndpoints[port]->valid.getName())}));
-            requiredInputs.push_back(orValues(bodyBuilder, location,
-                                              headReady));
+                   accessor.getInput(inputEndpoints[port]->valid.getName())});
+              arrivals.push_back(arrival);
+              queueCompletingArrivals[requiredQueue][port] =
+                  andValues(bodyBuilder, location,
+                            {arrival, circt::comb::createOrFoldNot(
+                                          bodyBuilder, location,
+                                          queueRuntime[requiredQueue].valid)});
+              missingRoleArrivals.push_back(
+                  queueCompletingArrivals[requiredQueue][port]);
+            }
+            requiredInputs.push_back(
+                orValues(bodyBuilder, location,
+                         {circt::comb::createOrFoldNot(bodyBuilder, location,
+                                                       roleUsesOperandQueue),
+                          queueRuntime[requiredQueue].valid,
+                          orValues(bodyBuilder, location, arrivals)}));
+            nearFullOccupiedRoles.push_back(andValues(
+                bodyBuilder, location,
+                {roleUsesOperandQueue, queueRuntime[requiredQueue].valid,
+                 units[queues[requiredQueue].unit].nearFull}));
           }
+          const mlir::Value fillsMissingRole =
+              orValues(bodyBuilder, location, missingRoleArrivals);
           queuePairReady[queueOrdinal] =
-              andValues(bodyBuilder, location, requiredInputs);
+              andValues(bodyBuilder, location,
+                        {andValues(bodyBuilder, location, requiredInputs),
+                         fillsMissingRole});
+          queueNearFullComplement[queueOrdinal] = andValues(
+              bodyBuilder, location,
+              {fillsMissingRole,
+               orValues(bodyBuilder, location, nearFullOccupiedRoles),
+               circt::comb::createOrFoldNot(bodyBuilder, location,
+                                            queuePairReady[queueOrdinal])});
         }
-        const mlir::Value anyCompletePair =
-            orValues(bodyBuilder, location, queuePairReady);
+        std::vector<std::vector<mlir::Value>> queuePortPreferred(
+            queues.size(), std::vector<mlir::Value>(layout.inputPortCount));
+        for (std::uint32_t queueOrdinal = 0; queueOrdinal != queues.size();
+             ++queueOrdinal) {
+          const LogicalQueuePlan &queue = queues[queueOrdinal];
+          for (std::uint32_t port = 0; port != layout.inputPortCount; ++port) {
+            llvm::SmallVector<mlir::Value> completingRoles;
+            for (std::uint32_t input = 0;
+                 input != layout.fus[queue.fu].inputCount; ++input)
+              completingRoles.push_back(
+                  queueCompletingArrivals[queueOf[queue.context][queue.fu]
+                                                 [input]][port]);
+            const mlir::Value completesTuple =
+                andValues(bodyBuilder, location,
+                          {queuePairReady[queueOrdinal],
+                           orValues(bodyBuilder, location, completingRoles)});
+            const mlir::Value nearFullComplement =
+                andValues(bodyBuilder, location,
+                          {queueNearFullComplement[queueOrdinal],
+                           orValues(bodyBuilder, location, completingRoles)});
+            queuePortPreferred[queueOrdinal][port] = orValues(
+                bodyBuilder, location,
+                {completesTuple,
+                 andValues(
+                     bodyBuilder, location,
+                     {circt::comb::createOrFoldNot(
+                          bodyBuilder, location, queuePairReady[queueOrdinal]),
+                      orValues(
+                          bodyBuilder, location,
+                          {nearFullComplement,
+                           circt::comb::createOrFoldNot(
+                               bodyBuilder, location,
+                               queueNearFullComplement[queueOrdinal])})})});
+          }
+        }
+        std::vector<mlir::Value> portPriorityAdmitted(layout.inputPortCount);
+        for (std::uint32_t port = 0; port != layout.inputPortCount; ++port) {
+          llvm::SmallVector<mlir::Value> blocked;
+          for (std::uint32_t queue = 0; queue != queues.size(); ++queue)
+            blocked.push_back(andValues(
+                bodyBuilder, location,
+                {queueInputMatches[queue][port],
+                 circt::comb::createOrFoldNot(
+                     bodyBuilder, location, queuePortPreferred[queue][port])}));
+          portPriorityAdmitted[port] = circt::comb::createOrFoldNot(
+              bodyBuilder, location, orValues(bodyBuilder, location, blocked));
+        }
         std::vector<std::vector<mlir::Value>> admissionMatches(
             queues.size(), std::vector<mlir::Value>(layout.inputPortCount));
         std::vector<llvm::SmallVector<mlir::Value>> admissionMatchTerms(
             layout.inputPortCount);
         std::vector<llvm::SmallVector<mlir::Value>> admissionBlockedTerms(
             layout.inputPortCount);
-        for (std::uint32_t queueOrdinal = 0;
-             queueOrdinal != queues.size(); ++queueOrdinal)
+        for (std::uint32_t queueOrdinal = 0; queueOrdinal != queues.size();
+             ++queueOrdinal)
           for (std::uint32_t port = 0; port != inputEndpoints.size(); ++port) {
-            const mlir::Value allowed = andValues(
-                bodyBuilder, location,
-                {queueInputMatches[queueOrdinal][port],
-                 orValues(bodyBuilder, location,
-                          {circt::comb::createOrFoldNot(
-                               bodyBuilder, location, anyCompletePair),
-                           queuePairReady[queueOrdinal]})});
+            const mlir::Value allowed =
+                andValues(bodyBuilder, location,
+                          {queueInputMatches[queueOrdinal][port],
+                           portPriorityAdmitted[port]});
             admissionMatches[queueOrdinal][port] = allowed;
             admissionMatchTerms[port].push_back(allowed);
             admissionBlockedTerms[port].push_back(andValues(
                 bodyBuilder, location,
-                {allowed,
-                 circt::comb::createOrFoldNot(
-                     bodyBuilder, location,
-                     queueRuntime[queueOrdinal].enqueueReady)}));
+                {allowed, circt::comb::createOrFoldNot(
+                              bodyBuilder, location,
+                              queueRuntime[queueOrdinal].enqueueReady)}));
           }
         std::vector<mlir::Value> inputReady(layout.inputPortCount);
         for (std::uint32_t port = 0; port != layout.inputPortCount; ++port)
           inputReady[port] = andValues(
               bodyBuilder, location,
-              {orValues(bodyBuilder, location,
-                        {orValues(bodyBuilder, location,
-                                  admissionMatchTerms[port]),
-                         orValues(bodyBuilder, location,
-                                  inputMatchTerms[port])}),
+              {portPriorityAdmitted[port],
+               orValues(
+                   bodyBuilder, location,
+                   {orValues(bodyBuilder, location, admissionMatchTerms[port]),
+                    orValues(bodyBuilder, location, inputMatchTerms[port])}),
                circt::comb::createOrFoldNot(
                    bodyBuilder, location,
                    orValues(bodyBuilder, location,
                             admissionBlockedTerms[port]))});
+        for (std::uint32_t queue = 0; queue != queues.size(); ++queue)
+          queueRuntime[queue].enqueueAdmission.setValue(
+              orValues(bodyBuilder, location, admissionMatches[queue]));
         for (std::uint32_t queue = 0; queue != queues.size(); ++queue) {
           llvm::SmallVector<mlir::Value> commitTerms;
           for (std::uint32_t port = 0; port != inputEndpoints.size(); ++port)

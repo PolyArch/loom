@@ -187,6 +187,7 @@ CgraTransportRuntime::CgraTransportRuntime(
     std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversalTargets,
     std::vector<std::uint64_t> traversalSuccessors,
     std::vector<StorageBinding> storages,
+    std::vector<OperandBufferBinding> operandBuffers,
     std::vector<OperandQueueUnitBinding> operandQueueUnits,
     std::vector<OperandQueueBinding> operandQueues,
     llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
@@ -203,6 +204,7 @@ CgraTransportRuntime::CgraTransportRuntime(
       traversalTargets_(std::move(traversalTargets)),
       traversalSuccessors_(std::move(traversalSuccessors)),
       storages_(std::move(storages)),
+      operandBuffers_(std::move(operandBuffers)),
       operandQueueUnits_(std::move(operandQueueUnits)),
       operandQueues_(std::move(operandQueues)),
       actorSourceBindings_(std::move(actorSourceBindings)),
@@ -625,6 +627,25 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings;
   std::map<std::pair<RefBytes, std::uint32_t>, std::uint64_t>
       operandQueueUnitByKey;
+  std::map<RefBytes, std::uint64_t> operandBufferByPe;
+  std::vector<OperandBufferBinding> operandBuffers;
+  operandBuffers.reserve(plan.transport.operandBuffers.size());
+  for (const CgraPeOperandBufferPlan &buffer : plan.transport.operandBuffers) {
+    auto contract = ::fabric::TemporalOperandBufferContract::create(
+        {buffer.pe, buffer.contextCount, buffer.fuInputCounts, buffer.mode,
+         buffer.entriesPerAllocationUnit});
+    if (!contract)
+      return contract.takeError();
+    const RefBytes key = ::loom::fabric::canonicalFabricBytes(buffer.pe);
+    if (!operandBufferByPe.emplace(key, operandBuffers.size()).second)
+      return invalid("CGRA operand-buffer plan repeats a physical PE");
+    const std::size_t queueCount = contract->logicalQueues().size();
+    const std::uint32_t unitCount = contract->allocationUnitCount();
+    operandBuffers.push_back(
+        {buffer.pe, std::move(*contract),
+         std::vector<std::uint64_t>(queueCount, invalidCgraTransportOrdinal),
+         std::vector<std::uint64_t>(unitCount, invalidCgraTransportOrdinal)});
+  }
   std::map<::fabric::LogicalOperandQueueKey, std::uint64_t>
       operandQueueBindingByKey;
   std::vector<OperandQueueUnitBinding> operandQueueUnits;
@@ -903,16 +924,57 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
                 initialOccupancy > unit.capacity - unit.occupancy)
               return invalid("CGRA PE operand allocation unit starts overfull");
             unit.occupancy += initialOccupancy;
-            operandQueues.push_back(
-                {projected.queue, projected.fu, unitPosition->second,
-                 initialOccupancy, {}, {}});
+            const auto bufferPosition = operandBufferByPe.find(peKey);
+            if (bufferPosition == operandBufferByPe.end())
+              return invalid("CGRA PE operand queue has no Fabric contract");
+            const auto &contract =
+                operandBuffers[bufferPosition->second].contract;
+            const auto contractPosition =
+                llvm::find(contract.logicalQueues(), projected.queue);
+            if (contractPosition == contract.logicalQueues().end())
+              return invalid("CGRA PE operand QueueKey is outside its Fabric "
+                             "contract");
+            const std::uint32_t contractQueue =
+                static_cast<std::uint32_t>(std::distance(
+                    contract.logicalQueues().begin(), contractPosition));
+            if (contract.allocationUnitOf(contractQueue) !=
+                    projected.allocationUnit ||
+                contract.entriesPerAllocationUnit().value() !=
+                    projected.entryCapacity)
+              return invalid("CGRA PE operand queue disagrees with its Fabric "
+                             "allocation unit");
+            OperandBufferBinding &buffer =
+                operandBuffers[bufferPosition->second];
+            if (buffer.runtimeQueues[contractQueue] !=
+                invalidCgraTransportOrdinal)
+              return invalid("CGRA PE operand contract queue is duplicated");
+            const std::uint32_t contractUnit =
+                contract.allocationUnitOf(contractQueue);
+            std::uint64_t &runtimeUnit = buffer.runtimeUnits[contractUnit];
+            if (runtimeUnit != invalidCgraTransportOrdinal &&
+                runtimeUnit != unitPosition->second)
+              return invalid("CGRA PE operand contract unit has two runtime "
+                             "bindings");
+            runtimeUnit = unitPosition->second;
+            buffer.runtimeQueues[contractQueue] = operandQueues.size();
+            operandQueues.push_back({projected.queue,
+                                     projected.fu,
+                                     bufferPosition->second,
+                                     contractQueue,
+                                     unitPosition->second,
+                                     initialOccupancy,
+                                     {},
+                                     {}});
             operandQueues.back().entries.resize(initialOccupancy);
           } else {
             if (operandQueueBinding >= operandQueues.size())
               return invalid("CGRA PE operand queue index is malformed");
             const OperandQueueBinding &queue =
                 operandQueues[operandQueueBinding];
-            if (queue.queue != projected.queue ||
+            const auto bufferPosition = operandBufferByPe.find(peKey);
+            if (queue.queue != projected.queue || queue.fu != projected.fu ||
+                bufferPosition == operandBufferByPe.end() ||
+                queue.bufferBinding != bufferPosition->second ||
                 queue.unitBinding != unitPosition->second ||
                 state.channelSlots[channel->second].ready.size() !=
                     queue.occupancy)
@@ -1078,9 +1140,10 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
       std::move(publications), std::move(publicationSinks),
       std::move(physicalUses), std::move(traversalNodes),
       std::move(traversalTargets), std::move(traversalSuccessors),
-      std::move(storages), std::move(operandQueueUnits),
-      std::move(operandQueues), std::move(actorSourceBindings),
-      std::move(ingressSourceBindings), std::move(actorInputQueueBindings));
+      std::move(storages), std::move(operandBuffers),
+      std::move(operandQueueUnits), std::move(operandQueues),
+      std::move(actorSourceBindings), std::move(ingressSourceBindings),
+      std::move(actorInputQueueBindings));
 }
 
 } // namespace loom::sim::detail

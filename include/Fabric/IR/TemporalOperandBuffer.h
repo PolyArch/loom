@@ -176,6 +176,17 @@ struct OperandCommitSelection {
   bool enqueue = false;
 };
 
+struct OperandQueueCycleObservation final {
+  bool headPresent = false;
+  CapacityUnits allocationUnitOccupancy{0};
+};
+
+enum class OperandIngressAdmissionPriority : std::uint8_t {
+  Ordinary,
+  NearFullComplement,
+  CompletesTuple,
+};
+
 /// The complete operand-buffer contract of one temporal PE: the canonical
 /// logical-queue domain, the mode-derived allocation units, and the exact
 /// `ResourceContract` those two induce.
@@ -272,6 +283,18 @@ public:
   /// group may contain at most one queue from each unit. Atomic fanout across
   /// distinct units remains admitted.
   bool admitsIngressEnqueueSet(llvm::ArrayRef<std::uint32_t> queues) const;
+
+  /// Classifies one already validated atomic MatchKey enqueue set against the
+  /// active external `requiredQueues` and cycle-start queue heads. A complete
+  /// context/FU tuple has highest priority. Otherwise an arrival that fills a
+  /// missing role of a tuple with a near-full occupied role has the next
+  /// priority. This classification orders simultaneously ready ingress
+  /// transactions; it does not bypass a FIFO head, grant capacity, or change
+  /// the atomic enqueue set.
+  llvm::Expected<OperandIngressAdmissionPriority> ingressAdmissionPriority(
+      llvm::ArrayRef<std::uint32_t> queues,
+      llvm::ArrayRef<std::uint32_t> requiredQueues,
+      llvm::ArrayRef<OperandQueueCycleObservation> observations) const;
 
 private:
   struct Span {

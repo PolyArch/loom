@@ -143,6 +143,14 @@ struct CgraPeOperandQueueActivationPlan final {
   std::uint32_t matchCount = 0;
 };
 
+struct CgraPeOperandBufferPlan final {
+  ::loom::fabric::FabricPeOccurrenceRef pe;
+  ::fabric::OperandBufferMode mode{};
+  std::uint32_t contextCount = 0;
+  std::uint32_t entriesPerAllocationUnit = 0;
+  std::vector<std::uint32_t> fuInputCounts;
+};
+
 /// Removable dense projection of the exact selected Spatial RouteTrees and
 /// Fabric traversal contracts. Persistent references remain only in this cold
 /// plan; dynamic execution indexes the flat arrays by ordinal.
@@ -161,6 +169,7 @@ struct CgraTransportPlan final {
   std::vector<CgraConsumedPhysicalUsePlan> consumedUses;
   std::vector<std::uint64_t> endpointPhysicalUses;
   std::vector<CgraPeOperandQueueActivationPlan> operandQueueActivations;
+  std::vector<CgraPeOperandBufferPlan> operandBuffers;
   std::vector<CgraPeOperandQueueMatchPlan> operandQueueMatches;
   std::vector<CgraPeOperandQueueConsumerPlan> operandQueueConsumers;
   ::loom::mapping::SpatialPeOperandProgressFeedback operandQueueProgress;

@@ -419,6 +419,47 @@ void ingressFanoutRespectsAllocationUnitServices() {
           "one shared PE pool cannot serve two fanout enqueues");
 }
 
+void ingressPriorityIsPairAwareAndHeadOrdered() {
+  const TemporalOperandBufferContract pair =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::PerInstruction, 2)));
+  std::vector<OperandQueueCycleObservation> pairState(
+      pair.logicalQueues().size(), {false, CapacityUnits(0)});
+  auto priority = pair.ingressAdmissionPriority({0, 1}, {0, 1}, pairState);
+  require(__func__,
+          priority &&
+              *priority == OperandIngressAdmissionPriority::CompletesTuple,
+          "an atomic two-role arrival must complete its tuple");
+
+  pairState[0] = {true, CapacityUnits(1)};
+  priority = pair.ingressAdmissionPriority({1}, {0, 1}, pairState);
+  require(__func__,
+          priority &&
+              *priority == OperandIngressAdmissionPriority::CompletesTuple,
+          "a delayed complementary role must outrank another leader");
+  priority = pair.ingressAdmissionPriority({0}, {0, 1}, pairState);
+  require(__func__,
+          priority && *priority == OperandIngressAdmissionPriority::Ordinary,
+          "an append behind an existing head must not bypass that head");
+
+  const std::uint32_t threeInputs[] = {3};
+  TemporalOperandBufferDeclaration triple =
+      declaration(OperandBufferMode::PerInstruction, 2);
+  triple.contextCount = 1;
+  triple.fuInputCounts = threeInputs;
+  const TemporalOperandBufferContract nearFull =
+      takeContract(__func__, TemporalOperandBufferContract::create(triple));
+  std::vector<OperandQueueCycleObservation> tripleState(
+      nearFull.logicalQueues().size(), {false, CapacityUnits(0)});
+  tripleState[0] = {true, CapacityUnits(1)};
+  priority = nearFull.ingressAdmissionPriority({1}, {0, 1, 2}, tripleState);
+  require(__func__,
+          priority &&
+              *priority == OperandIngressAdmissionPriority::NearFullComplement,
+          "a partial tuple with a near-full occupied role lost complement "
+          "priority");
+}
+
 // One actor transition removes every head it needs under its single commit
 // activation. Two required heads in one allocation unit exceed that unit's one
 // dequeue service, so the binding is invalid rather than privately serialized.
@@ -557,15 +598,15 @@ void contextDispatchIsFabricOwnedAndFair() {
 }
 
 void pooledModesExposeDerivedAdmissionCredits() {
-  const auto dedicated = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::PerInstruction, 2)));
-  const auto banked = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::PerInputPort, 2)));
-  const auto shared = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::AllFuShare, 2)));
+  const auto dedicated =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::PerInstruction, 2)));
+  const auto banked =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::PerInputPort, 2)));
+  const auto shared =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::AllFuShare, 2)));
   require(__func__,
           dedicated.admissionPolicy() == OperandAdmissionPolicy::Unreserved,
           "dedicated queues should not require shared admission credits");
@@ -588,6 +629,7 @@ int main() {
   dedicatedDepthOneAndTwoDiffer();
   roundRobinContentionBetweenTwoLogicalQueues();
   ingressFanoutRespectsAllocationUnitServices();
+  ingressPriorityIsPairAwareAndHeadOrdered();
   actorRequiredDequeueOvercapacityIsRejected();
   registerFifoPortCountOwnsServiceConcurrency();
   contextDispatchIsFabricOwnedAndFair();

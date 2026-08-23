@@ -453,6 +453,15 @@ the declared canonical round-robin policy where contention is possible. RTL
 must not substitute a default depth, extra port, global arrival-order head, or
 implementation-private priority.
 
+RTL derives the QueueKey and allocation-unit inventories directly from the
+Fabric operand-buffer contract. Its ingress arbiter implements the same
+three-level atomic transaction order: a transaction completing a context/FU
+tuple, then a near-full complementary transaction, then ordinary transactions
+under the existing deterministic requester order. The arbiter gates a whole
+MatchKey fanout before any pool sees an enqueue request; it cannot grant one
+matching queue independently. Queue heads and near-full state are observed at
+cycle start, so priority does not create same-cycle replacement capacity.
+
 Synthesis preserves this semantic hierarchy. Each canonical `fabric.op`
 recipe, switch form, memory form, FIFO, operand queue, and other repeated leaf
 is compiled once per exact implementation dependency closure. A SpatialCore

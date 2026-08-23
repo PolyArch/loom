@@ -9,6 +9,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
 #include <deque>
@@ -81,8 +82,7 @@ struct CgraPendingTransferDiagnostic final {
   std::vector<std::uint64_t> unpublishedReadyTokenCounts;
   std::uint64_t blockingTraversalNodeOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t blockingStorageOrdinal = invalidCgraTransportOrdinal;
-  std::optional<::loom::fabric::FabricFifoOccurrenceRef>
-      blockingFifoOccurrence;
+  std::optional<::loom::fabric::FabricFifoOccurrenceRef> blockingFifoOccurrence;
   std::uint32_t blockingStorageOccupancy = 0;
   std::uint32_t blockingStorageReservations = 0;
   std::uint32_t blockingStorageCapacity = 0;
@@ -377,6 +377,13 @@ private:
     std::uint32_t admissionCredits = 0;
   };
 
+  struct OperandBufferBinding final {
+    ::loom::fabric::FabricPeOccurrenceRef pe;
+    ::fabric::TemporalOperandBufferContract contract;
+    std::vector<std::uint64_t> runtimeQueues;
+    std::vector<std::uint64_t> runtimeUnits;
+  };
+
   struct OperandQueueBinding final {
     struct Consumer final {
       ChannelOrdinal channel = 0;
@@ -386,6 +393,8 @@ private:
 
     ::fabric::LogicalOperandQueueKey queue;
     ::loom::fabric::FabricFuOccurrenceRef fu;
+    std::uint64_t bufferBinding = invalidCgraTransportOrdinal;
+    std::uint32_t contractQueue = 0;
     std::uint64_t unitBinding = invalidCgraTransportOrdinal;
     std::uint32_t occupancy = 0;
     std::vector<Consumer> consumers;
@@ -409,6 +418,7 @@ private:
       std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversalTargets,
       std::vector<std::uint64_t> traversalSuccessors,
       std::vector<StorageBinding> storages,
+      std::vector<OperandBufferBinding> operandBuffers,
       std::vector<OperandQueueUnitBinding> operandQueueUnits,
       std::vector<OperandQueueBinding> operandQueues,
       llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
@@ -435,6 +445,15 @@ private:
   llvm::Error schedulePublication(std::uint64_t slot,
                                   const SpatialEventCoordinate &coordinate);
   llvm::Error beginOperandQueueCycle(const SpatialEventCoordinate &coordinate);
+  struct OperandIngressAdmission final {
+    ::fabric::OperandIngressAdmissionPriority priority =
+        ::fabric::OperandIngressAdmissionPriority::Ordinary;
+    llvm::SmallVector<::loom::mapping::SpatialPeOperandQualifiedPairingKey, 4>
+        pairings;
+  };
+  llvm::Expected<OperandIngressAdmission>
+  operandIngressAdmissionPriority(std::uint64_t slot,
+                                  std::uint64_t publicationBinding) const;
   llvm::Expected<bool>
   reserveOperandQueueCapacity(std::uint64_t slot,
                               std::uint64_t publicationBinding,
@@ -477,6 +496,7 @@ private:
   std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversalTargets_;
   std::vector<std::uint64_t> traversalSuccessors_;
   std::vector<StorageBinding> storages_;
+  std::vector<OperandBufferBinding> operandBuffers_;
   std::vector<OperandQueueUnitBinding> operandQueueUnits_;
   std::vector<OperandQueueBinding> operandQueues_;
   std::vector<StorageFrameCommit> storageFrameCommits_;

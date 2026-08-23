@@ -269,6 +269,29 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
 
   CgraTransportPlan result;
   result.operandQueueProgress = std::move(*operandQueueProgress);
+  std::map<RefBytes, CgraPeOperandBufferPlan> operandBuffers;
+  for (const auto &group : *operandQueueGroups)
+    for (const auto &match : group.matches) {
+      const auto pe = match.queue.context.pe;
+      const RefBytes key = ::loom::fabric::canonicalFabricBytes(pe);
+      if (operandBuffers.find(key) != operandBuffers.end())
+        continue;
+      const auto mode = fabric.peOperandBufferMode(pe);
+      const std::uint32_t entries = fabric.peOperandBufferSize(pe);
+      auto schema = fabric.temporalPeConfigurationSchema(pe);
+      if (!mode || entries == 0 || !schema)
+        return invalid("CGRA PE operand buffer has no exact Fabric contract");
+      CgraPeOperandBufferPlan plan{
+          pe, *mode, schema->layout().contextCount, entries, {}};
+      plan.fuInputCounts.reserve(schema->layout().fus.size());
+      for (const auto &fu : schema->layout().fus)
+        plan.fuInputCounts.push_back(fu.inputCount);
+      operandBuffers.emplace(key, std::move(plan));
+    }
+  for (auto &[key, plan] : operandBuffers) {
+    (void)key;
+    result.operandBuffers.push_back(std::move(plan));
+  }
   result.operandQueueActivations.reserve(operandQueueGroups->size());
   for (const auto &group : *operandQueueGroups) {
     auto matchCount =
@@ -281,8 +304,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
           checkedU32(match.consumers.size(), "CGRA PE operand consumer count");
       if (!consumerCount)
         return consumerCount.takeError();
-      const std::uint64_t consumerOffset =
-          result.operandQueueConsumers.size();
+      const std::uint64_t consumerOffset = result.operandQueueConsumers.size();
       for (const auto &consumer : match.consumers)
         result.operandQueueConsumers.push_back({consumer});
       result.operandQueueMatches.push_back(
@@ -725,8 +747,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     return std::move(error);
   if (consumedLocalTransfers.size() != selectedLocalTransfers.size())
     return invalid("CGRA register-FIFO transfer is absent from Dataflow");
-  if (consumedMemoryInternalEdges.size() !=
-      selectedMemoryInternalEdges.size())
+  if (consumedMemoryInternalEdges.size() != selectedMemoryInternalEdges.size())
     return invalid("CGRA memory internal edge is absent from Dataflow");
   result.localTransfers.reserve(localTransfers.size());
   for (auto &[key, transfer] : localTransfers) {
