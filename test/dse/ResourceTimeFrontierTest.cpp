@@ -527,6 +527,28 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
                   2 &&
               noCacheResult.accounting.exactInvocationMemoRetainedBytes == 0,
           "resource-time exact memo exceeded its byte budget");
+
+  auto temporalEpochGate = candidates.front();
+  temporalEpochGate.candidateIdentity = digest(93);
+  temporalEpochGate.inputPreferenceRank = 93;
+  temporalEpochGate.regions.front().logicalEpochCount = 2;
+  auto temporalEndpointPolicy = bounded;
+  temporalEndpointPolicy.spectrumEndpoint =
+      loom::dse::PreMappingSpectrumEndpoint::MaxTemporal;
+  temporalEndpointPolicy.maximumMappingFinalists = 1;
+  const auto temporalGated = take(
+      loom::dse::selectResourceTimeMappingFinalists(
+          {temporalEpochGate}, temporalEndpointPolicy));
+  require(
+      temporalGated.accounting.detailedFrontierCandidates == 0 &&
+          temporalGated.accounting.incompleteCandidates == 1 &&
+          temporalGated.accounting.successiveHalvingDeferredCandidates == 1 &&
+          temporalGated.finalists.empty() &&
+          temporalGated.incompleteReason ==
+              loom::dse::ResourceTimeFrontierIncompleteReason::Unsupported &&
+          !loom::dse::validateResourceTimeMappingFunnelAccounting(
+              temporalGated.accounting),
+      "partitioned temporal epoch was not rejected before Mapping");
 }
 
 void exactMemoSupportsWarmAndConcurrentReuse() {

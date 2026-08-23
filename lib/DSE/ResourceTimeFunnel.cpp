@@ -95,6 +95,10 @@ struct ResourceTimeCandidateScreening final {
   ResourceTimeEstimateSupport support =
       ResourceTimeEstimateSupport::Unsupported;
   bool exactCapacityFailure = false;
+  /// The current Spectrum owner requires a typed epoch correspondence before
+  /// a partitioned logical domain may be called MaxTemporal. This is a cheap
+  /// semantic unsupported gate, not an infeasibility proof.
+  bool temporalEpochCorrespondenceUnsupported = false;
 };
 
 llvm::Expected<ResourceTimeCandidateScreening>
@@ -171,6 +175,9 @@ screenCandidate(const ResourceTimeMappingCandidateInput &candidate,
     if (!aggregateFeature)
       return invalid("resource-time screening feature score overflows");
     featureScore = *aggregateFeature;
+    if (policy.spectrumEndpoint == PreMappingSpectrumEndpoint::MaxTemporal &&
+        region.logicalEpochCount > 1)
+      result.temporalEpochCorrespondenceUnsupported = true;
   }
   const std::uint64_t resourceBound = totalResourceWork / totalCapacity +
                                       (totalResourceWork % totalCapacity != 0);
@@ -693,6 +700,36 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
     const ScreenedCandidate &screenedCandidate = screened[screenedOrdinal];
     if (evaluations[screenedCandidate.index])
       continue;
+    if (screenedCandidate.screening.temporalEpochCorrespondenceUnsupported) {
+      const ResourceTimeMappingCandidateInput &candidate =
+          candidates[screenedCandidate.index];
+      evaluations[screenedCandidate.index] =
+          ResourceTimeCandidateFunnelEvaluation{
+              candidate.candidateIdentity,
+              candidate.inputPreferenceRank,
+              candidate.acceleratedRegionCount,
+              candidate.acceleratedGraphCount,
+              candidate.acceleratedActorCount,
+              candidate.maximumUsefulResourceUnits,
+              ResourceTimeCandidateFunnelDisposition::Incomplete,
+              screenedCandidate.screening.lowerBoundPicoseconds,
+              screenedCandidate.screening.featureScore,
+              screenedCandidate.screening.support,
+              confidenceForSupport(screenedCandidate.screening.support),
+              false,
+              std::nullopt,
+              std::nullopt,
+              {},
+              ResourceTimeFrontierIncompleteReason::Unsupported,
+              std::nullopt,
+              {}};
+      ++result.accounting.incompleteCandidates;
+      ++result.accounting.successiveHalvingDeferredCandidates;
+      if (!result.incompleteReason)
+        result.incompleteReason =
+            ResourceTimeFrontierIncompleteReason::Unsupported;
+      continue;
+    }
     if (!screenedCandidate.screening.exactCapacityFailure &&
         detailedWithHint >= policy.maximumMappingFinalists)
       continue;

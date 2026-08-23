@@ -3331,6 +3331,13 @@ schedule hint therefore never supplies Mapping legality or an endpoint class;
 every published endpoint and representative intermediate point still passes
 the ordinary complete SystemMapping closure and independent verifier.
 
+The current owner has one sound pre-PnR consequence of this rule: a focused
+MaxTemporal candidate whose region reports more than one logical epoch and no
+typed epoch correspondence is marked `Unsupported` in the cheap funnel before
+Tech/Spatial/System materialization. This is not a capacity or infeasibility
+claim; it prevents a candidate that the endpoint verifier cannot legally label
+from consuming expensive Mapping work.
+
 The event frontier computes its full graph lower bound once for the initial
 state. Each admitted admission/event child then updates the bound from frozen
 successor tails, active completion times, newly-ready regions, and remaining
