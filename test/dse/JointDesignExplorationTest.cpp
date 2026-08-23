@@ -646,6 +646,56 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
       !coldFallbackFrontier.seed.techMappings.empty() ||
       !coldFallbackFrontier.seed.spatialMappings.empty())
     fail("typed global impact did not preserve a cold fallback");
+
+  const auto requireLocalModuleRebase =
+      [&](loom::dse::HardwareMutationFamily family,
+          loom::fabric::FabricModulePhysicalOwnerRef owner) {
+        auto impact = localSpatialImpact;
+        impact.family = family;
+        impact.tech.kind = loom::dse::HardwareMappingImpactKind::Rebase;
+        impact.spatial.kind = loom::dse::HardwareMappingImpactKind::Rebase;
+        impact.spatial.placementRoots = {owner};
+        const auto result = take(loom::dse::rebaseJointMappingFrontier(
+            plan, parentExecution, system, identityModuleCorrespondence,
+            &impact, store));
+        if (result.disposition !=
+                loom::dse::JointMappingReuseDisposition::Preserved ||
+            result.seed.techMappings.empty() ||
+            result.seed.spatialMappings.empty() ||
+            result.accounting.invalidatedTechMappings != 0 ||
+            result.accounting.invalidatedSpatialMappings != 0)
+          fail("local Module mutation did not preserve its typed Mapping "
+               "frontier");
+      };
+  if (!targetModule.view().memoryOccurrences().empty())
+    requireLocalModuleRebase(
+        loom::dse::HardwareMutationFamily::SpatialMemory,
+        take(loom::fabric::FabricModulePhysicalOwnerRef::create(
+            targetModule.view().memoryOccurrences().front())));
+  if (!targetModule.view().peOccurrences().empty())
+    requireLocalModuleRebase(
+        loom::dse::HardwareMutationFamily::InstructionCapacity,
+        take(loom::fabric::FabricModulePhysicalOwnerRef::create(
+            targetModule.view().peOccurrences().front())));
+  if (!targetModule.view().switchOccurrences().empty()) {
+    auto switchImpact = localSpatialImpact;
+    switchImpact.family = loom::dse::HardwareMutationFamily::SpatialSwitch;
+    switchImpact.locality = loom::dse::HardwareMutationLocality::GlobalReopen;
+    switchImpact.tech.kind = loom::dse::HardwareMappingImpactKind::Reopen;
+    switchImpact.spatial.kind = loom::dse::HardwareMappingImpactKind::Reopen;
+    switchImpact.tech.realizationRoots = {take(
+        loom::fabric::FabricModulePhysicalOwnerRef::create(
+            targetModule.view().switchOccurrences().front()))};
+    switchImpact.spatial.placementRoots = switchImpact.tech.realizationRoots;
+    const auto switchFallback = take(loom::dse::rebaseJointMappingFrontier(
+        plan, parentExecution, system, identityModuleCorrespondence,
+        &switchImpact, store));
+    if (switchFallback.disposition !=
+            loom::dse::JointMappingReuseDisposition::ColdFallback ||
+        !switchFallback.seed.techMappings.empty() ||
+        !switchFallback.seed.spatialMappings.empty())
+      fail("global switch mutation did not produce a typed cold fallback");
+  }
   llvm::SmallString<128> adjacentJournal(temporary.path());
   llvm::sys::path::append(adjacentJournal, "adjacent-resource-time");
   const std::array adjacentPartitions = {
