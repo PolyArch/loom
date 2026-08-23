@@ -2091,9 +2091,6 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
                                                  std::numeric_limits<
                                                      std::uint64_t>::max());
   }
-  initial.lowerBound =
-      optimisticLowerBound(*frozen, initial, policy.availableResourceUnits);
-  initial.lowerBoundInitialized = true;
   initial.snapshots.push_back(makeSnapshot(*frozen, initial));
 
   std::map<std::vector<std::uint64_t>, StateMemoEnvelope> memo;
@@ -2173,7 +2170,7 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
           *frozen, state, policy.availableResourceUnits);
       state.lowerBoundInitialized = true;
       ++accounting.estimates.consumed;
-    } else
+    } else if (!state.actions.empty())
       ++accounting.incrementalLowerBoundUpdates;
     if (!state.snapshots.empty())
       state.snapshots.back().optimisticMakespanLowerBoundPicoseconds =
