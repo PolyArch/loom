@@ -4100,3 +4100,17 @@ candidates, along with exact/incremental/analytic reuse, cold-versus-incremental
 work, retained bytes, time-to-first-feasible, time-to-best, and bounded
 analytic-vs-exact recall/error. Missing evidence keeps the invocation typed
 incomplete rather than being replaced by a larger timeout or extra search.
+
+An incomplete or no-Mapping parent may still retain an exact owner feedback
+payload. It remains `Incomplete` and cannot satisfy a sibling-selection gate,
+but an explicit endpoint-focused invocation may promote that payload into one
+bounded hardware-repair parent. Tech Hall pressure is ranking provenance for
+that bounded promotion; it does not change legality. When the minimal
+compatible-PE Hall closure is not a robust PnR seed, the hardware owner may
+admit one uniform Temporal-PE capacity alternative with a deterministic
+context/byte/work budget. The Module occurrence capacities and the System
+recipe parameter must agree, and the child still requires complete
+Fabric/Tech/Spatial/System/CGRA verification. A multi-graph Tech frontier is
+coverage-capped before child planning; if the declared bound cannot retain at
+least one mapping per required graph, the child is typed unsupported rather
+than exceeding the bound.

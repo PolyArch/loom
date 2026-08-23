@@ -1345,16 +1345,21 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
            prepared.mappingAlternatives[ordinal].resourceTimeRegionBounds)
         maximumUsefulAccCoreCount = std::max(maximumUsefulAccCoreCount,
                                              bound.maximumUsefulResourceUnits);
+    dse::JointHardwareReopenRequest reopenRequest{
+        request.producer,
+        std::move(journalRoot),
+        evidence,
+        prepared.preMappingFrontierPolicy.stoppingPolicy,
+        request.boundedQuality,
+        maximumUsefulAccCoreCount == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>(maximumUsefulAccCoreCount),
+        request.siteCapacity,
+        request.executionPolicy};
+    reopenRequest.spectrumEndpoint =
+        prepared.resourceTimePolicy.spectrumEndpoint;
     return dse::executeJointDesignWithHardwareReopen(
-        tail, prepared.jointPolicy,
-        {request.producer, std::move(journalRoot), evidence,
-         prepared.preMappingFrontierPolicy.stoppingPolicy,
-         request.boundedQuality,
-         maximumUsefulAccCoreCount == 0
-             ? std::nullopt
-             : std::optional<std::uint64_t>(maximumUsefulAccCoreCount),
-         request.siteCapacity, request.executionPolicy},
-        artifacts, blobs);
+        tail, prepared.jointPolicy, std::move(reopenRequest), artifacts, blobs);
   };
 
   std::optional<dse::JointDesignExecution> selectedExecution;

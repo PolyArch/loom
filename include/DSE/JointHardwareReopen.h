@@ -3,6 +3,7 @@
 
 #include "DSE/JointDesignExploration.h"
 #include "DSE/JointMappingMigration.h"
+#include "DSE/PreMappingFrontier.h"
 #include "DSE/SpatialRuntimeFeedback.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -59,6 +60,11 @@ struct JointHardwareReopenRequest final {
   std::optional<std::uint64_t> maximumUsefulAccCoreCount;
   SiteCapacity siteCapacity;
   PlanExecutionPolicy executionPolicy;
+  /// Endpoint focus is ranking provenance only. It may prioritize an exact
+  /// feedback parent for a bounded repair, but never supplies endpoint
+  /// legality or a Spectrum label.
+  PreMappingSpectrumEndpoint spectrumEndpoint =
+      PreMappingSpectrumEndpoint::Automatic;
 };
 
 struct JointResourceTimeAdjacentRepair final {

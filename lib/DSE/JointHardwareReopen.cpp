@@ -160,6 +160,7 @@ struct HardwareRecipeGrowth final {
   std::uint64_t resultingGateways = 0;
   std::uint64_t addedAccCores = 0;
   std::uint64_t resultingAccCores = 0;
+  bool uniformContextGrowth = false;
 };
 
 struct MaterializedHardwareCandidate final {
@@ -204,6 +205,49 @@ std::size_t mappingCount(const dse::JointDesignExecution &execution) {
 void canonicalizeRoots(std::vector<ArtifactRootReference> &roots) {
   llvm::sort(roots, artifactRootReferenceLess);
   roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+}
+
+llvm::Expected<std::vector<ArtifactRootReference>>
+boundTechMappingFrontierForRepair(
+    llvm::ArrayRef<ArtifactRootReference> candidates, std::uint64_t limit,
+    const ArtifactStore &artifacts) {
+  if (limit == 0)
+    return invalid("Tech repair frontier has a zero mapping bound");
+  std::vector<ArtifactRootReference> canonical(candidates.begin(),
+                                               candidates.end());
+  canonicalizeRoots(canonical);
+  std::map<std::string, ArtifactRootReference> representativeByGraph;
+  for (const ArtifactRootReference &reference : canonical) {
+    auto mapping = mapping::importTechMapping(reference, artifacts);
+    if (!mapping)
+      return mapping.takeError();
+    for (const ::dataflow::GraphRef graph : mapping->view().covers()) {
+      std::vector<std::uint8_t> key(graph.artifact.bytes().begin(),
+                                    graph.artifact.bytes().end());
+      for (int shift = 56; shift >= 0; shift -= 8)
+        key.push_back(static_cast<std::uint8_t>(graph.entity.value() >> shift));
+      const std::string spelling(reinterpret_cast<const char *>(key.data()),
+                                 key.size());
+      representativeByGraph.emplace(spelling, reference);
+    }
+  }
+  if (representativeByGraph.size() > limit)
+    return invalid("Tech repair frontier bound cannot preserve graph coverage");
+  std::vector<ArtifactRootReference> selected;
+  selected.reserve(static_cast<std::size_t>(limit));
+  for (const auto &[graph, reference] : representativeByGraph) {
+    (void)graph;
+    if (!llvm::is_contained(selected, reference))
+      selected.push_back(reference);
+  }
+  for (const ArtifactRootReference &reference : canonical) {
+    if (selected.size() >= limit)
+      break;
+    if (!llvm::is_contained(selected, reference))
+      selected.push_back(reference);
+  }
+  canonicalizeRoots(selected);
+  return selected;
 }
 
 std::vector<ArtifactRootReference>
@@ -943,6 +987,63 @@ llvm::Expected<HardwareRecipeGrowth> deriveHardwareRecipeGrowth(
   return growth;
 }
 
+/// A parent without a reusable Tech/Spatial frontier can expose an exact Hall
+/// deficit before it has any child Mapping. In that case the minimal compatible-PE
+/// closure is a useful lower bound but not always a robust PnR seed. Admit one
+/// bounded uniform Temporal-PE capacity alternative so the hardware owner can
+/// measure that tradeoff without enumerating a powerset of PE subsets.
+llvm::Expected<HardwareRecipeGrowth> deriveUniformTechHardwareRecipeGrowth(
+    const ResolvedConfig &baseConfig,
+    const TechHardwareFeedbackObservation &observation,
+    const ArtifactStore &artifacts) {
+  if (observation.feedback.deficit() <= 1)
+    return invalid("uniform Tech growth requires a deficit greater than one");
+  auto module =
+      fabric::importEntireFabricRoot(observation.module, artifacts);
+  if (!module)
+    return module.takeError();
+  if (module->view().rootKind() != fabric::FabricRootKind::Module)
+    return invalid("uniform Tech growth target is not a Module");
+
+  HardwareRecipeGrowth growth;
+  growth.config = baseConfig;
+  growth.techModule = observation.module;
+  const std::uint64_t baseContexts =
+      baseConfig.hardwareTarget.parameters.temporalResidentContexts;
+  if (observation.feedback.deficit() >
+      std::numeric_limits<std::uint32_t>::max() - baseContexts)
+    return invalid("uniform Tech growth exceeds the global context ABI");
+  growth.resultingContexts = baseContexts + observation.feedback.deficit();
+  growth.config.hardwareTarget.parameters.temporalResidentContexts =
+      static_cast<std::uint32_t>(growth.resultingContexts);
+  growth.resultingGateways = baseConfig.hardwareTarget.parameters.gatewayCount;
+  growth.resultingAccCores = baseConfig.hardwareTarget.parameters.accCoreCount;
+  for (const fabric::FabricPeOccurrenceRef pe : module->view().peOccurrences()) {
+    auto schedule = module->view().peSchedule(pe);
+    if (!schedule)
+      return invalid("uniform Tech growth target PE has no schedule");
+    if (*schedule != ::fabric::Schedule::Temporal)
+      continue;
+    const std::uint64_t current = module->view().peResidentContextCount(pe);
+    if (current == 0 || observation.feedback.deficit() >
+                             std::numeric_limits<std::uint32_t>::max() - current)
+      return invalid("uniform Tech growth exceeds the Temporal PE context ABI");
+    const std::uint32_t target = static_cast<std::uint32_t>(
+        current + observation.feedback.deficit());
+    growth.instructionStoreResizes.push_back({pe, target});
+    growth.maximumInstructionStoreCapacity =
+        std::max(growth.maximumInstructionStoreCapacity,
+                 static_cast<std::uint64_t>(target));
+  }
+  if (growth.instructionStoreResizes.empty())
+    return invalid("uniform Tech growth has no Temporal PE");
+  growth.resizedInstructionStoreCount =
+      growth.instructionStoreResizes.size();
+  growth.uniformContextGrowth = true;
+  growth.config.dse.planNodes.clear();
+  return growth;
+}
+
 llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
     HardwareRecipeGrowth growth, llvm::ArrayRef<ArtifactRootReference> evidence,
     const JointHardwareReopenRequest &request, dse::SiteScheduler &scheduler,
@@ -961,6 +1062,7 @@ llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
         fields["gateway_count"] = growth.resultingGateways;
         fields["added_acc_cores"] = growth.addedAccCores;
         fields["acc_core_count"] = growth.resultingAccCores;
+        fields["uniform_context_growth"] = growth.uniformContextGrowth;
       });
 
   auto templateConfig =
@@ -1335,6 +1437,7 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
             growth.resizedInstructionStoreCount;
         fields["maximum_instruction_store_capacity"] =
             growth.maximumInstructionStoreCapacity;
+        fields["uniform_context_growth"] = growth.uniformContextGrowth;
         fields["replaced_acc_cores"] = currentCores.size();
         fields["preserved_acc_core_correspondences"] =
             correspondence->accCores().size();
@@ -1663,6 +1766,7 @@ tryHardwareFeedbackReopen(
       currentConfig.hardwareTarget.parameters.accCoreCount;
   const dse::JointDesignExecution *currentFailure = &failedExecution;
   const dse::JointDesignExplorationPlan *currentPlan = &plan;
+  const bool parentHasNoMappingFrontier = mappingCount(failedExecution) == 0;
   bool currentFailureIsTechGate = false;
   std::optional<dse::JointDesignExecution> latestFailed;
   std::optional<dse::JointDesignExplorationPlan> latestFailedPlan;
@@ -1732,9 +1836,16 @@ tryHardwareFeedbackReopen(
     ++accounting.hardwareRepairProbesPlanned;
     ++accounting.hardwareRepairProbesReserved;
 
-    auto growth = deriveHardwareRecipeGrowth(currentConfig, *techObservation,
-                                             *spatialObservation,
-                                             *systemObservation, artifacts);
+    llvm::Expected<HardwareRecipeGrowth> growth =
+        (request.spectrumEndpoint != PreMappingSpectrumEndpoint::Automatic &&
+         parentHasNoMappingFrontier && candidateOrdinal == 0 &&
+         techObservation && *techObservation &&
+         (*techObservation)->feedback.deficit() > 1)
+            ? deriveUniformTechHardwareRecipeGrowth(
+                  currentConfig, **techObservation, artifacts)
+            : deriveHardwareRecipeGrowth(currentConfig, *techObservation,
+                                          *spatialObservation,
+                                          *systemObservation, artifacts);
     if (!growth)
       return growth.takeError();
     const bool accCoreOnlyGrowth = growth->addedAccCores != 0 &&
@@ -1837,7 +1948,7 @@ tryHardwareFeedbackReopen(
             ? &rebased->seed
             : nullptr;
     const auto planBuildStart = std::chrono::steady_clock::now();
-    auto reopenPlan = dse::buildJointDesignExplorationPlan(
+    auto reopenPlanResult = dse::buildJointDesignExplorationPlan(
         {{software.workloads}, {system->reference}}, *timing, *reopenPolicy,
         system->config, artifacts, mappingSeed,
         currentPlan->systemBindingPartitions);
@@ -1845,15 +1956,17 @@ tryHardwareFeedbackReopen(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - planBuildStart)
             .count());
-    if (!reopenPlan) {
+    if (!reopenPlanResult) {
       if (mappingSeed)
         saturatingAdd(accounting.incrementalReopenWallTimeNanoseconds,
                       planBuildNanoseconds);
       else
         saturatingAdd(accounting.coldReopenWallTimeNanoseconds,
                       planBuildNanoseconds);
-      return reopenPlan.takeError();
+      return reopenPlanResult.takeError();
     }
+    std::optional<JointDesignExplorationPlan> reopenPlan(
+        std::move(*reopenPlanResult));
     if (mappingSeed)
       saturatingAdd(accounting.incrementalReopenWallTimeNanoseconds,
                     planBuildNanoseconds);
@@ -1911,19 +2024,38 @@ tryHardwareFeedbackReopen(
         currentFailure = &*latestFailed;
         currentPlan = &*latestFailedPlan;
         currentFailureIsTechGate = true;
-        continue;
+        break;
       }
 
       JointDesignMappingSeed gateSeed;
       if (rebased)
         gateSeed = rebased->seed;
-      gateSeed.techMappings.insert(gateSeed.techMappings.end(),
-                                   gate->techMappings.begin(),
-                                   gate->techMappings.end());
+      std::vector<ArtifactRootReference> gateTechCandidates =
+          gateSeed.techMappings;
+      gateTechCandidates.insert(gateTechCandidates.end(),
+                                gate->techMappings.begin(),
+                                gate->techMappings.end());
+      auto boundedTechMappings = boundTechMappingFrontierForRepair(
+          gateTechCandidates, policy.maximumTechMappingsPerModule(), artifacts);
+      if (!boundedTechMappings) {
+        ++accounting.hardwareRepairProbesRejected;
+        mapping_debug::emit(
+            mapping_debug::Level::Summary, mapping_debug::Stage::TechMapping,
+            mapping_debug::Event::MappingFailure,
+            [&](llvm::json::Object &fields) {
+              fields["failure_scope"] = "hardware_repair_funnel";
+              fields["closure_status"] = "unsupported";
+              fields["reason"] = "tech_frontier_bound_cannot_preserve_coverage";
+              fields["diagnostic"] = llvm::toString(
+                  boundedTechMappings.takeError());
+            });
+        break;
+      }
+      gateSeed.techMappings = std::move(*boundedTechMappings);
       canonicalizeRoots(gateSeed.techMappings);
       canonicalizeRoots(gateSeed.spatialMappings);
       const auto gatedPlanStart = std::chrono::steady_clock::now();
-      auto gatedPlan = dse::buildJointDesignExplorationPlan(
+      auto gatedPlanResult = dse::buildJointDesignExplorationPlan(
           {{software.workloads}, {system->reference}}, *timing, *reopenPolicy,
           system->config, artifacts, &gateSeed,
           currentPlan->systemBindingPartitions);
@@ -1931,15 +2063,15 @@ tryHardwareFeedbackReopen(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
               std::chrono::steady_clock::now() - gatedPlanStart)
               .count());
-      if (!gatedPlan)
-        return gatedPlan.takeError();
+      if (!gatedPlanResult)
+        return gatedPlanResult.takeError();
       if (mappingSeed)
         saturatingAdd(accounting.incrementalReopenWallTimeNanoseconds,
                       gatedPlanNanoseconds);
       else
         saturatingAdd(accounting.coldReopenWallTimeNanoseconds,
                       gatedPlanNanoseconds);
-      reopenPlan = std::move(gatedPlan);
+      reopenPlan = std::move(*gatedPlanResult);
     }
     if (accCoreOnlyGrowth) {
       if (!reusableSpatialMappings) {
@@ -2848,6 +2980,10 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     const JointDesignExplorationPlan *plan = nullptr;
     JointSoftwareCoverage coverage;
     JointDesignExecution execution;
+    /// Exact Tech Hall pressure is ranking provenance for bounded hardware
+    /// parent promotion. It never changes the typed feedback disposition or
+    /// proves a child Mapping legal.
+    std::uint64_t techHallDeficit = 0;
   };
   struct VerifiedAlternative final {
     std::uint64_t planOrdinal = 0;
@@ -3258,12 +3394,41 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     if (const auto *incomplete =
             std::get_if<IncompleteDsePlanExecution>(&initial->planExecution);
         incomplete && incomplete->executionStopped()) {
-      // A bounded/incomplete software candidate does not prove that its
-      // siblings are infeasible. Preserve the first witness and continue
-      // through the declared software frontier; only an external caller
-      // may decide to stop the whole joint invocation.
-      if (!firstIncomplete)
+      // An incomplete parent never proves that its siblings are infeasible,
+      // but an exact owner feedback payload retained by that parent can still
+      // justify one bounded hardware repair. Keep the parent typed incomplete
+      // while admitting only the actionable feedback path; absent feedback
+      // remains the ordinary first-incomplete witness.
+      auto tech = selectTechHardwareFeedback(*initial, artifacts);
+      if (!tech)
+        return tech.takeError();
+      auto spatial = selectSpatialHardwareFeedback(*initial, artifacts);
+      if (!spatial)
+        return spatial.takeError();
+      auto system = selectSystemHardwareFeedback(*initial, artifacts);
+      if (!system)
+        return system.takeError();
+      if (request.spectrumEndpoint != PreMappingSpectrumEndpoint::Automatic &&
+          (*tech || *spatial || *system)) {
+        auto coverage = projectJointSoftwareCoverage(plan, artifacts);
+        if (!coverage)
+          return coverage.takeError();
+        mapping_debug::emit(
+            mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+            mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+              fields["operation"] = "incomplete_parent_hardware_feedback";
+              fields["plan_ordinal"] = indexed.index();
+              fields["tech_feedback"] = static_cast<bool>(*tech);
+              fields["spatial_feedback"] = static_cast<bool>(*spatial);
+              fields["system_feedback"] = static_cast<bool>(*system);
+              fields["parent_disposition"] = "incomplete";
+            });
+        failedSoftwareAttempts.push_back(
+            {static_cast<std::uint64_t>(indexed.index()), planPointer,
+             std::move(*coverage), std::move(*initial), 0});
+      } else if (!firstIncomplete) {
         firstIncomplete = std::move(*initial);
+      }
       if (dispatchDeadlineReached(request.executionPolicy)) {
         deadlineObserved = true;
         boundedQualitySearchIncomplete = true;
@@ -3276,7 +3441,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       return coverage.takeError();
     failedSoftwareAttempts.push_back(
         {static_cast<std::uint64_t>(indexed.index()), planPointer,
-         std::move(*coverage), std::move(*initial)});
+         std::move(*coverage), std::move(*initial), 0});
   }
   // Hardware feedback is consumed only after every bounded software/System
   // pair has been tried on the parent System. This preserves the declared
@@ -3299,11 +3464,16 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       auto system = selectSystemHardwareFeedback(attempt.execution, artifacts);
       if (!system)
         return system.takeError();
+      attempt.techHallDeficit = *tech ? (*tech)->feedback.deficit() : 0;
       if (*tech || *spatial || *system)
         hardwareFeedbackFrontier.push_back(&attempt);
     }
-    llvm::sort(hardwareFeedbackFrontier, [](const FailedSoftwareAttempt *lhs,
-                                            const FailedSoftwareAttempt *rhs) {
+    llvm::sort(hardwareFeedbackFrontier, [&](const FailedSoftwareAttempt *lhs,
+                                             const FailedSoftwareAttempt *rhs) {
+      if (request.spectrumEndpoint !=
+              PreMappingSpectrumEndpoint::Automatic &&
+          lhs->techHallDeficit != rhs->techHallDeficit)
+        return lhs->techHallDeficit > rhs->techHallDeficit;
       if (lhs->coverage.acceleratedRootCount !=
           rhs->coverage.acceleratedRootCount)
         return lhs->coverage.acceleratedRootCount >
@@ -3347,6 +3517,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
           fields["operation"] = "hardware_feedback_promotion";
           fields["plan_ordinal"] = attempt.planOrdinal;
+          fields["tech_hall_deficit"] = attempt.techHallDeficit;
           fields["accelerated_root_count"] =
               attempt.coverage.acceleratedRootCount;
           fields["graph_count"] = attempt.coverage.graphCount;
