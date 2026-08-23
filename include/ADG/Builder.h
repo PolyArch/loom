@@ -860,6 +860,12 @@ public:
                             loom::fabric::FabricPeOccurrenceRef prototype);
   llvm::Error resizeInstructionStore(loom::fabric::FabricPeOccurrenceRef target,
                                      std::uint32_t instructionCapacity);
+  llvm::Error changeTemporalOperandBufferMode(
+      loom::fabric::FabricPeOccurrenceRef target,
+      ::fabric::OperandBufferMode mode);
+  llvm::Error resizeTemporalOperandBuffer(
+      loom::fabric::FabricPeOccurrenceRef target,
+      std::uint32_t entriesPerAllocationUnit);
   llvm::Error replaceFuInventory(
       loom::fabric::FabricPeOccurrenceRef target,
       llvm::ArrayRef<loom::fabric::FabricFuOccurrenceRef> prototypes);

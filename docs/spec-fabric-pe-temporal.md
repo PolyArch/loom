@@ -720,6 +720,11 @@ tokens. Distinct ingresses remain a proof-guided preference, not a universal
 legality rule. Any admission refinement is a field of this operand-buffer
 contract and is consumed by Fabric, Mapping, simulator, and RTL through the
 same derived projection; it is not a new resource family or persistent key.
+The current contract has no independently authored admission-refinement field:
+`Unreserved` versus `PerActiveQueueCredit` is a mode-derived diagnostic fact,
+not a configurable behavior. Hardware DSE may change mode or entry depth, but
+must report an independent policy change as Unsupported until such a physical
+field and its behavior are specified here.
 
 The Fabric owner classifies one already admitted atomic MatchKey enqueue set
 against cycle-start queue observations. `CompletesTuple` means the transaction

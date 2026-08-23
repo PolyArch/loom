@@ -17,6 +17,8 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -248,6 +250,12 @@ void strictConfigAdmission() {
       loom::dse::resolveSpatialMicroarchitectureRewriteConfig(domains, 1)
           .takeError(),
       "duplicate");
+  domains.front() = loom::dse::ResizeTemporalOperandBufferDomain{
+      loom::fabric::FabricPeOccurrenceRef(0), {0}};
+  requireError(
+      loom::dse::resolveSpatialMicroarchitectureRewriteConfig(domains, 1)
+          .takeError(),
+      "positive");
 
   std::vector<loom::dse::SpatialTopologyDecisionDomain> emptyConnections = {
       loom::dse::AdjustParallelConnectionCountDomain{{{}}}};
@@ -490,6 +498,117 @@ microarchitectureRewrite(Fixture &fixture,
   return take(loom::fabric::importEntireFabricRoot(
       completed(result).outputBindings.front().artifacts.front(),
       fixture.store));
+}
+
+void temporalOperandBufferRewrite(
+    Fixture &fixture, const loom::fabric::FinalizedFabricRoot &module) {
+  using BufferSignature =
+      std::pair<::fabric::OperandBufferMode, std::uint32_t>;
+  const auto bufferSignatures = [](const loom::fabric::FabricArtifactView &view) {
+    std::map<BufferSignature, std::uint64_t> result;
+    for (const auto pe : view.peOccurrences()) {
+      const auto mode = view.peOperandBufferMode(pe);
+      if (mode)
+        ++result[{*mode, view.peOperandBufferSize(pe)}];
+    }
+    return result;
+  };
+  std::optional<loom::fabric::FabricPeOccurrenceRef> target;
+  for (const auto pe : module.view().peOccurrences())
+    if (module.view().peSchedule(pe) == ::fabric::Schedule::Temporal) {
+      target = pe;
+      break;
+    }
+  require(target.has_value(), "builtin Module has no Temporal PE");
+  const auto parentMode = module.view().peOperandBufferMode(*target);
+  const std::uint32_t parentEntries =
+      module.view().peOperandBufferSize(*target);
+  require(parentMode.has_value() && parentEntries != 0,
+          "Temporal PE has no operand-buffer declaration");
+  const ::fabric::OperandBufferMode childMode =
+      *parentMode == ::fabric::OperandBufferMode::PerInputPort
+          ? ::fabric::OperandBufferMode::AllFuShare
+          : ::fabric::OperandBufferMode::PerInputPort;
+  require(parentEntries != std::numeric_limits<std::uint32_t>::max(),
+          "Temporal operand-buffer fixture cannot grow");
+  const std::uint32_t childEntries = parentEntries + 1;
+  const auto parentSignatures = bufferSignatures(module.view());
+  const auto replaceSignature = [](auto &signatures, BufferSignature oldValue,
+                                   BufferSignature newValue) {
+    auto old = signatures.find(oldValue);
+    if (old == signatures.end() || old->second == 0)
+      fail("parent operand-buffer signature is absent");
+    if (--old->second == 0)
+      signatures.erase(old);
+    ++signatures[newValue];
+  };
+
+  std::vector<loom::dse::SpatialMicroarchitectureDecisionDomain> domains = {
+      loom::dse::ChangeTemporalOperandBufferModeDomain{*target, {childMode}},
+      loom::dse::ResizeTemporalOperandBufferDomain{*target, {childEntries}}};
+  auto config =
+      take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(domains, 2));
+  auto inputs =
+      take(loom::dse::bindSpatialMicroarchitectureCandidateGeneratorInputs(
+          {module.reference()}));
+  auto binding =
+      take(loom::dse::resolveSpatialMicroarchitectureCandidateGeneratorBinding(
+          config));
+  auto generated = take(loom::dse::invokeCandidateGenerator(
+      inputs, binding, fixture.store, fixture.blobs));
+  const auto &result = completed(generated);
+  require(result.outputBindings.front().artifacts.size() == 2 &&
+              result.lineageEdges.size() == 2,
+          "operand-buffer decisions did not publish two exact children");
+
+  bool sawMode = false;
+  bool sawResize = false;
+  for (const loom::dse::CandidateGeneratorLineageEdge &lineage :
+       result.lineageEdges) {
+    require(lineage.parents ==
+                std::vector<loom::ArtifactRootReference>{module.reference()},
+            "operand-buffer child lost its exact parent");
+    auto decision = take(loom::dse::adoptSpatialMicroarchitectureDecision(
+        lineage.ownerPayload));
+    auto child = take(loom::fabric::importEntireFabricRoot(lineage.output,
+                                                           fixture.store));
+    auto impact = loom::dse::projectHardwareImpact(decision, lineage.output);
+    require(impact.family ==
+                    loom::dse::HardwareMutationFamily::TemporalOperandBuffer &&
+                impact.locality ==
+                    loom::dse::HardwareMutationLocality::LocalCone &&
+                impact.spatial.placementRoots.size() == 1,
+            "operand-buffer child lost its typed local impact");
+    if (const auto *mode = std::get_if<
+            loom::dse::ChangeTemporalOperandBufferMode>(&decision.decision)) {
+      auto expected = parentSignatures;
+      replaceSignature(expected, {*parentMode, parentEntries},
+                       {childMode, parentEntries});
+      require(mode->target == *target && mode->mode == childMode &&
+                  bufferSignatures(child.view()) == expected &&
+                  impact.spatial.kind ==
+                      loom::dse::HardwareMappingImpactKind::Reopen,
+              "operand-buffer mode child changed another hardware fact");
+      sawMode = true;
+      continue;
+    }
+    const auto *resize =
+        std::get_if<loom::dse::ResizeTemporalOperandBuffer>(&decision.decision);
+    auto expected = parentSignatures;
+    replaceSignature(expected, {*parentMode, parentEntries},
+                     {*parentMode, childEntries});
+    require(resize && resize->target == *target &&
+                resize->entriesPerAllocationUnit == childEntries &&
+                bufferSignatures(child.view()) == expected &&
+                impact.spatial.kind ==
+                    loom::dse::HardwareMappingImpactKind::Rebase,
+            "operand-buffer resize child changed another hardware fact");
+    sawResize = true;
+  }
+  require(sawMode && sawResize,
+          "operand-buffer decision lineage is incomplete");
+  require(bufferSignatures(module.view()) == parentSignatures,
+          "operand-buffer child mutated its immutable parent");
 }
 
 bool hasSpecialMath(const loom::fabric::FabricArtifactView &view,
@@ -814,6 +933,7 @@ int main() {
   topologyRewrite(fixture, module);
   occurrenceInventoryRewrite(fixture, module);
   auto replacementModule = microarchitectureRewrite(fixture, module);
+  temporalOperandBufferRewrite(fixture, module);
   redistributeFuCapability(fixture, module);
   systemCompositionRewrite(fixture, system, module);
   spatialAttachmentRewrite(fixture, system, replacementModule);

@@ -5,6 +5,7 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/Identity/FabricRefs.h"
+#include "Fabric/IR/FabricEnums.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -120,11 +121,24 @@ struct ChangeFifoBypassCapability final {
   bool bypassable = false;
 };
 
+struct ChangeTemporalOperandBufferMode final {
+  loom::fabric::FabricPeOccurrenceRef target;
+  ::fabric::OperandBufferMode mode =
+      ::fabric::OperandBufferMode::PerInstruction;
+};
+
+struct ResizeTemporalOperandBuffer final {
+  loom::fabric::FabricPeOccurrenceRef target;
+  std::uint32_t entriesPerAllocationUnit = 0;
+};
+
 using SpatialMicroarchitectureDecision =
     std::variant<ChangePeKind, ResizeInstructionStore, ChangeFuInventory,
                  ChangeFuCapability, ChangeSwitchModeOrScheduleCapacity,
                  ResizeMemory, ChangeMemoryOperationTable, ResizeFifo,
-                 ChangeFifoBypassCapability, ResizeInstructionStores>;
+                 ChangeFifoBypassCapability, ResizeInstructionStores,
+                 ChangeTemporalOperandBufferMode,
+                 ResizeTemporalOperandBuffer>;
 
 struct ChangePeKindDomain final {
   loom::fabric::FabricPeOccurrenceRef target;
@@ -175,11 +189,22 @@ struct ChangeFifoBypassCapabilityDomain final {
   std::vector<bool> values;
 };
 
+struct ChangeTemporalOperandBufferModeDomain final {
+  loom::fabric::FabricPeOccurrenceRef target;
+  std::vector<::fabric::OperandBufferMode> modes;
+};
+
+struct ResizeTemporalOperandBufferDomain final {
+  loom::fabric::FabricPeOccurrenceRef target;
+  std::vector<std::uint32_t> entriesPerAllocationUnit;
+};
+
 using SpatialMicroarchitectureDecisionDomain = std::variant<
     ChangePeKindDomain, ResizeInstructionStoreDomain, ChangeFuInventoryDomain,
     ChangeFuCapabilityDomain, ChangeSwitchModeOrScheduleCapacityDomain,
     ResizeMemoryDomain, ChangeMemoryOperationTableDomain, ResizeFifoDomain,
-    ChangeFifoBypassCapabilityDomain, ResizeInstructionStoresDomain>;
+    ChangeFifoBypassCapabilityDomain, ResizeInstructionStoresDomain,
+    ChangeTemporalOperandBufferModeDomain, ResizeTemporalOperandBufferDomain>;
 
 struct AddAccCore final {
   loom::fabric::AccCoreOccurrenceRef prototype;
@@ -385,6 +410,7 @@ enum class HardwareMutationFamily : std::uint8_t {
   FuCapability,
   SpatialMemory,
   SpatialFifo,
+  TemporalOperandBuffer,
   SpatialSwitch,
   SystemAccCore,
   SystemInstructionContext,

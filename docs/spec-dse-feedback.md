@@ -2822,6 +2822,13 @@ JointMappingFrontierConfig {
 
 ```
 
+The current spatial-microarchitecture configuration and decision descriptors
+are respectively `loom.spatial_microarchitecture_rewrite.config.2.1` and
+`loom.spatial_microarchitecture_candidate_decision.2.1`; the provider identity
+is `loom.spatial_microarchitecture_rewrite.generator.v3`. Version 2.1 appends
+the two Temporal operand-buffer decisions below without renumbering the 2.0
+decision tags.
+
 Kind 16 has one empty canonical resolved-config view. Its exact descriptor
 fixes the portable operation-provider catalog. It consumes exactly one
 finalized `fabric.system`, exactly one finalized ConfigurationABI describing
@@ -2874,9 +2881,24 @@ one-exact-parent decision rule. Its closed decision union is `ChangePeKind`,
 `ChangeFuCapability`,
 `ChangeSwitchModeOrScheduleCapacity`, `ResizeMemory`,
 `ChangeMemoryOperationTable`, `ResizeFifo`, and
-`ChangeFifoBypassCapability`. The referenced Fabric owners define every typed
+`ChangeFifoBypassCapability`, `ChangeTemporalOperandBufferMode`, and
+`ResizeTemporalOperandBuffer`. The referenced Fabric owners define every typed
 parameter domain. The generator cannot create an operation capability, memory
 contract, scheduling rule, or bypass meaning outside those domains.
+`ChangeTemporalOperandBufferMode` selects one of the three exact
+`OperandBufferMode` values on one Temporal PE. It changes allocation-unit,
+capacity, service, queue, and progress projection and therefore reopens the
+affected Spatial cone. `ResizeTemporalOperandBuffer` changes the positive
+entries-per-allocation-unit value while retaining the selected mode; its
+Mapping choices may be rebased and must be independently reverified. Neither
+decision is `ResizeFifo`: an explicit `fabric.fifo` and a Temporal PE operand
+pool have different owners, state, services, and invalidation roots.
+
+The current `OperandAdmissionPolicy` is mechanically derived from mode and has
+no independent Fabric field or alternative physical behavior. It is therefore
+not a Hardware-DSE decision. A policy refinement remains typed Unsupported
+until Fabric defines its physical state, configuration field, RTL/simulator
+semantics, and canonical identity; adding an inert decision tag is forbidden.
 `ResizeInstructionStores` is the only multi-owner member. It carries a
 nonempty canonical set of unique Temporal PE targets and positive capacities
 from one exact parent Module, applies the complete set to one fresh Builder

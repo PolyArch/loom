@@ -20,7 +20,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.spatial_microarchitecture_rewrite.config.2.0";
+    "loom.spatial_microarchitecture_rewrite.config.2.1";
 
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> inputSlots = {{
     {CandidateGeneratorInputSlotRef(0), "fabric_module_parent",
@@ -67,6 +67,24 @@ validateDecisionAgainstParent(const SpatialMicroarchitectureDecision &decision,
           return error;
         }
         if constexpr (std::is_same_v<Value, ResizeInstructionStores>) {
+          return llvm::Error::success();
+        } else if constexpr (std::is_same_v<
+                                 Value, ChangeTemporalOperandBufferMode>) {
+          const auto current = parent.peOperandBufferMode(value.target);
+          if (!current)
+            return invalid("operand-buffer mode change requires a temporal PE");
+          if (*current == value.mode)
+            return invalid("operand-buffer mode change is a no-op");
+          return llvm::Error::success();
+        } else if constexpr (std::is_same_v<
+                                 Value, ResizeTemporalOperandBuffer>) {
+          if (value.entriesPerAllocationUnit == 0)
+            return invalid("operand-buffer entries must be positive");
+          if (!parent.peOperandBufferMode(value.target))
+            return invalid("operand-buffer resize requires a temporal PE");
+          if (parent.peOperandBufferSize(value.target) ==
+              value.entriesPerAllocationUnit)
+            return invalid("operand-buffer resize is a no-op");
           return llvm::Error::success();
         } else if constexpr (std::is_same_v<Value, ChangePeKind> ||
                              std::is_same_v<Value, ChangeFuCapability> ||
@@ -118,6 +136,14 @@ llvm::Error applyDecision(loom::adg::SpatialCoreBuilder &builder,
                                                      value.prototype);
         else if constexpr (std::is_same_v<Value, ResizeFifo>)
           return builder.resizeFifo(value.target, value.depth);
+        else if constexpr (std::is_same_v<
+                               Value, ChangeTemporalOperandBufferMode>)
+          return builder.changeTemporalOperandBufferMode(value.target,
+                                                         value.mode);
+        else if constexpr (std::is_same_v<
+                               Value, ResizeTemporalOperandBuffer>)
+          return builder.resizeTemporalOperandBuffer(
+              value.target, value.entriesPerAllocationUnit);
         else
           return builder.changeFifoBypassCapability(value.target,
                                                     value.bypassable);
@@ -201,7 +227,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialMicroarchitectureCandidateGeneratorKind,
     "spatial_microarchitecture_rewrite",
-    "loom.spatial_microarchitecture_rewrite.generator.v2",
+    "loom.spatial_microarchitecture_rewrite.generator.v3",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},

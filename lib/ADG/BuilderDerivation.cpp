@@ -593,6 +593,58 @@ llvm::Error SpatialCoreBuilder::resizeInstructionStore(
   return llvm::Error::success();
 }
 
+llvm::Error SpatialCoreBuilder::changeTemporalOperandBufferMode(
+    loom::fabric::FabricPeOccurrenceRef target,
+    ::fabric::OperandBufferMode mode) {
+  if (!::fabric::symbolizeOperandBufferMode(static_cast<std::uint32_t>(mode)))
+    return invalid("operand-buffer mode is outside the closed Fabric domain");
+  auto state = detail::activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto root = derivedSpatialRoot(*state, rootOrdinal_);
+  if (!root)
+    return root.takeError();
+  auto operation =
+      moduleOccurrence((*root)->operation, *(*root)->derivedParent, target);
+  if (!operation)
+    return operation.takeError();
+  auto pe = mlir::cast<::fabric::PeOp>(*operation);
+  const auto current = pe.getOperandBufferMode();
+  if (pe.getSchedule() != ::fabric::Schedule::Temporal || !current)
+    return invalid("operand-buffer mode change requires a temporal PE");
+  if (*current == mode)
+    return invalid("operand-buffer mode change is a no-op");
+  pe.setOperandBufferMode(mode);
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialCoreBuilder::resizeTemporalOperandBuffer(
+    loom::fabric::FabricPeOccurrenceRef target,
+    std::uint32_t entriesPerAllocationUnit) {
+  if (entriesPerAllocationUnit == 0 ||
+      entriesPerAllocationUnit >
+          static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
+    return invalid("operand-buffer entries must fit positive i32");
+  auto state = detail::activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto root = derivedSpatialRoot(*state, rootOrdinal_);
+  if (!root)
+    return root.takeError();
+  auto operation =
+      moduleOccurrence((*root)->operation, *(*root)->derivedParent, target);
+  if (!operation)
+    return operation.takeError();
+  auto pe = mlir::cast<::fabric::PeOp>(*operation);
+  const auto current = pe.getOperandBufferSize();
+  if (pe.getSchedule() != ::fabric::Schedule::Temporal || !current)
+    return invalid("operand-buffer resize requires a temporal PE");
+  if (*current == entriesPerAllocationUnit)
+    return invalid("operand-buffer resize is a no-op");
+  pe.setOperandBufferSize(entriesPerAllocationUnit);
+  return llvm::Error::success();
+}
+
 llvm::Error SpatialCoreBuilder::replaceFuInventory(
     loom::fabric::FabricPeOccurrenceRef target,
     llvm::ArrayRef<loom::fabric::FabricFuOccurrenceRef> prototypes) {

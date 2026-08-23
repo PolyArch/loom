@@ -44,6 +44,8 @@ llvm::StringRef hardwareMutationFamilySpelling(
     return "spatial_memory";
   case HardwareMutationFamily::SpatialFifo:
     return "spatial_fifo";
+  case HardwareMutationFamily::TemporalOperandBuffer:
+    return "temporal_operand_buffer";
   case HardwareMutationFamily::SpatialSwitch:
     return "spatial_switch";
   case HardwareMutationFamily::SystemAccCore:
@@ -76,7 +78,7 @@ namespace {
 constexpr llvm::StringLiteral topologySchema =
     "loom.spatial_topology_candidate_decision.1.0";
 constexpr llvm::StringLiteral microarchitectureSchema =
-    "loom.spatial_microarchitecture_candidate_decision.2.0";
+    "loom.spatial_microarchitecture_candidate_decision.2.1";
 constexpr llvm::StringLiteral systemSchema =
     "loom.system_composition_candidate_decision.3.0";
 
@@ -359,6 +361,12 @@ void writeMicroarchitectureBody(
             writer.u64(value.capacityBytes);
           } else if constexpr (std::is_same_v<Value, ResizeFifo>) {
             writer.u32(value.depth);
+          } else if constexpr (std::is_same_v<
+                                   Value, ChangeTemporalOperandBufferMode>) {
+            writer.u32(static_cast<std::uint32_t>(value.mode));
+          } else if constexpr (std::is_same_v<
+                                   Value, ResizeTemporalOperandBuffer>) {
+            writer.u32(value.entriesPerAllocationUnit);
           } else {
             writer.u8(value.bypassable ? 1 : 0);
           }
@@ -491,6 +499,31 @@ readMicroarchitectureBody(Reader &reader) {
       return std::move(error);
     return SpatialMicroarchitectureDecision(
         ResizeInstructionStores{std::move(stores)});
+  }
+  case 10: {
+    auto target = reader.ref<loom::fabric::FabricPeOccurrenceRef>();
+    if (!target)
+      return target.takeError();
+    auto mode = reader.u32();
+    if (!mode)
+      return mode.takeError();
+    auto value = ::fabric::symbolizeOperandBufferMode(*mode);
+    if (!value)
+      return invalid("operand-buffer mode is outside its closed domain");
+    return SpatialMicroarchitectureDecision(
+        ChangeTemporalOperandBufferMode{*target, *value});
+  }
+  case 11: {
+    auto target = reader.ref<loom::fabric::FabricPeOccurrenceRef>();
+    if (!target)
+      return target.takeError();
+    auto entries = reader.u32();
+    if (!entries)
+      return entries.takeError();
+    if (*entries == 0)
+      return invalid("operand-buffer entries must be positive");
+    return SpatialMicroarchitectureDecision(
+        ResizeTemporalOperandBuffer{*target, *entries});
   }
   default:
     return invalid("unknown Spatial microarchitecture decision tag");
@@ -998,6 +1031,14 @@ expandSpatialMicroarchitectureDecisionDomains(
             return requireValues(value.capacitiesBytes, "microarchitecture");
           else if constexpr (std::is_same_v<Value, ResizeFifoDomain>)
             return requireValues(value.depths, "microarchitecture");
+          else if constexpr (std::is_same_v<
+                                 Value,
+                                 ChangeTemporalOperandBufferModeDomain>)
+            return requireValues(value.modes, "microarchitecture");
+          else if constexpr (std::is_same_v<
+                                 Value, ResizeTemporalOperandBufferDomain>)
+            return requireValues(value.entriesPerAllocationUnit,
+                                 "microarchitecture");
           else
             return requireValues(value.values, "microarchitecture");
         },
@@ -1041,6 +1082,17 @@ expandSpatialMicroarchitectureDecisionDomains(
           else if constexpr (std::is_same_v<Value, ResizeFifoDomain>)
             for (auto depth : value.depths)
               decisions.push_back(ResizeFifo{value.target, depth});
+          else if constexpr (std::is_same_v<
+                                 Value,
+                                 ChangeTemporalOperandBufferModeDomain>)
+            for (auto mode : value.modes)
+              decisions.push_back(
+                  ChangeTemporalOperandBufferMode{value.target, mode});
+          else if constexpr (std::is_same_v<
+                                 Value, ResizeTemporalOperandBufferDomain>)
+            for (auto entries : value.entriesPerAllocationUnit)
+              decisions.push_back(
+                  ResizeTemporalOperandBuffer{value.target, entries});
           else
             for (bool bypassable : value.values)
               decisions.push_back(
@@ -1412,6 +1464,18 @@ HardwareImpactProjection projectHardwareImpact(
         } else if constexpr (std::is_same_v<Decision,
                                             ChangeFifoBypassCapability>) {
           impact.family = HardwareMutationFamily::SpatialFifo;
+          impact.locality = HardwareMutationLocality::LocalCone;
+          impact.spatial.kind = HardwareMappingImpactKind::Reopen;
+          addModuleRoot(impact.spatial.placementRoots, decision.target);
+        } else if constexpr (std::is_same_v<
+                                 Decision, ResizeTemporalOperandBuffer>) {
+          impact.family = HardwareMutationFamily::TemporalOperandBuffer;
+          impact.locality = HardwareMutationLocality::LocalCone;
+          addModuleRoot(impact.spatial.placementRoots, decision.target);
+        } else if constexpr (std::is_same_v<
+                                 Decision,
+                                 ChangeTemporalOperandBufferMode>) {
+          impact.family = HardwareMutationFamily::TemporalOperandBuffer;
           impact.locality = HardwareMutationLocality::LocalCone;
           impact.spatial.kind = HardwareMappingImpactKind::Reopen;
           addModuleRoot(impact.spatial.placementRoots, decision.target);

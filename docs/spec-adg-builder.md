@@ -1691,6 +1691,9 @@ The stable Builder anchors are deliberately small:
     identity and content remain unchanged after both success and rejection.
     An FU-inventory decision can copy a shape-compatible FU prototype between
     two PEs in the same parent and rejects an incompatible PE input inventory.
+    Temporal operand-buffer mode and positive entries-per-allocation-unit
+    mutations change exactly one parent-selected PE even when child canonical
+    labeling assigns different occurrence ordinals.
 20. System composition can add, remove, and replace heterogeneous AccCore
     occurrences while preserving ISA/ABI cohort, attachment, transport,
     service, and occurrence-qualified resource invariants through ordinary

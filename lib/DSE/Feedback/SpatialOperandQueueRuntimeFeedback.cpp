@@ -12,6 +12,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace loom::dse {
@@ -46,6 +47,10 @@ llvm::StringRef spatialOperandQueueRuntimeFeedbackReasonSpelling(
     return "incomplete_ordered_head";
   case SpatialOperandQueueRuntimeFeedbackReason::ProjectionMismatch:
     return "projection_mismatch";
+  case SpatialOperandQueueRuntimeFeedbackReason::AmbiguousTargetPe:
+    return "ambiguous_target_pe";
+  case SpatialOperandQueueRuntimeFeedbackReason::CandidateCapacityOverflow:
+    return "candidate_capacity_overflow";
   }
   llvm_unreachable("unknown Spatial operand-queue feedback reason");
 }
@@ -161,6 +166,8 @@ deriveSpatialOperandQueueRuntimeFeedback(
   }
 
   bool queueWaitInCycle = false;
+  std::optional<::loom::fabric::FabricPeOccurrenceRef> targetPe;
+  bool ambiguousTargetPe = false;
   for (const auto &transfer : closedWait.transfers) {
     result.queueWaitEdgeCount += transfer.operandQueueWaits.size();
     const bool transferCycleMember = llvm::any_of(
@@ -207,8 +214,16 @@ deriveSpatialOperandQueueRuntimeFeedback(
             SpatialOperandQueueRuntimeFeedbackReason::ProjectionMismatch;
         return result;
       }
-      queueWaitInCycle |= (transferCycleMember || actorCycleMember) &&
-                          wait.occupancy + wait.reservations == wait.capacity;
+      const bool actionableWait =
+          (transferCycleMember || actorCycleMember) &&
+          wait.occupancy + wait.reservations == wait.capacity;
+      queueWaitInCycle |= actionableWait;
+      if (actionableWait) {
+        if (targetPe && *targetPe != wait.queue.context.pe)
+          ambiguousTargetPe = true;
+        else
+          targetPe = wait.queue.context.pe;
+      }
     }
   }
   if (result.queueWaitEdgeCount == 0) {
@@ -221,6 +236,41 @@ deriveSpatialOperandQueueRuntimeFeedback(
     result.reason = SpatialOperandQueueRuntimeFeedbackReason::MissingWaitCycle;
     return result;
   }
+  if (!targetPe || ambiguousTargetPe) {
+    result.reason =
+        SpatialOperandQueueRuntimeFeedbackReason::AmbiguousTargetPe;
+    return result;
+  }
+  const auto mode = fabric->view().peOperandBufferMode(*targetPe);
+  const std::uint32_t entries =
+      fabric->view().peOperandBufferSize(*targetPe);
+  if (!mode || entries == 0) {
+    result.disposition =
+        SpatialOperandQueueRuntimeFeedbackDisposition::Unsupported;
+    result.reason = SpatialOperandQueueRuntimeFeedbackReason::OwnerMismatch;
+    return result;
+  }
+  if (entries == std::numeric_limits<std::uint32_t>::max()) {
+    result.disposition =
+        SpatialOperandQueueRuntimeFeedbackDisposition::Unsupported;
+    result.reason =
+        SpatialOperandQueueRuntimeFeedbackReason::CandidateCapacityOverflow;
+    return result;
+  }
+  std::optional<::fabric::OperandBufferMode> separatedMode;
+  switch (*mode) {
+  case ::fabric::OperandBufferMode::AllFuShare:
+    separatedMode = ::fabric::OperandBufferMode::PerInputPort;
+    break;
+  case ::fabric::OperandBufferMode::PerInputPort:
+    separatedMode = ::fabric::OperandBufferMode::PerInstruction;
+    break;
+  case ::fabric::OperandBufferMode::PerInstruction:
+    break;
+  }
+  result.repairTarget = SpatialOperandBufferRepairTarget{
+      *targetPe, *mode, entries, separatedMode, entries + 1};
+  result.admissionPolicyAlternativeUnsupported = true;
   result.disposition = SpatialOperandQueueRuntimeFeedbackDisposition::Exact;
   result.reason = SpatialOperandQueueRuntimeFeedbackReason::ExactClosedWait;
   result.witness.status =
@@ -257,6 +307,25 @@ void emitSpatialOperandQueueRuntimeFeedback(
         fields["mismatched_head_count"] =
             feedback.witness.mismatchedHeadCount;
         fields["full_queue_count"] = feedback.witness.fullQueueCount;
+        if (feedback.repairTarget) {
+          fields["target_pe_id"] = feedback.repairTarget->pe.id();
+          fields["current_mode"] = ::fabric::stringifyOperandBufferMode(
+              feedback.repairTarget->currentMode);
+          fields["current_entries_per_allocation_unit"] =
+              feedback.repairTarget->currentEntriesPerAllocationUnit;
+          fields["separated_mode"] =
+              feedback.repairTarget->separatedMode
+                  ? llvm::json::Value(::fabric::stringifyOperandBufferMode(
+                        *feedback.repairTarget->separatedMode))
+                  : llvm::json::Value(nullptr);
+          fields["candidate_entries_per_allocation_unit"] =
+              feedback.repairTarget->candidateEntriesPerAllocationUnit;
+        } else {
+          fields["target_pe_id"] = nullptr;
+        }
+        fields["admission_policy_alternative"] =
+            feedback.admissionPolicyAlternativeUnsupported ? "unsupported"
+                                                           : "not_applicable";
         fields["runtime_projection_digest"] =
             feedback.witness.projectionDigest
                 ? llvm::json::Value(formatComponentViewDigestHex(

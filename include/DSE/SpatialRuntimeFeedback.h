@@ -2,6 +2,7 @@
 #define LOOM_DSE_SPATIALRUNTIMEFEEDBACK_H
 
 #include "Common/Artifact.h"
+#include "Fabric/IR/FabricEnums.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Simulator/CGRASimulator.h"
 
@@ -79,6 +80,17 @@ enum class SpatialOperandQueueRuntimeFeedbackReason : std::uint8_t {
   MissingQueueWaitEdge,
   IncompleteOrderedHead,
   ProjectionMismatch,
+  AmbiguousTargetPe,
+  CandidateCapacityOverflow,
+};
+
+struct SpatialOperandBufferRepairTarget final {
+  ::loom::fabric::FabricPeOccurrenceRef pe;
+  ::fabric::OperandBufferMode currentMode =
+      ::fabric::OperandBufferMode::PerInstruction;
+  std::uint32_t currentEntriesPerAllocationUnit = 0;
+  std::optional<::fabric::OperandBufferMode> separatedMode;
+  std::uint32_t candidateEntriesPerAllocationUnit = 0;
 };
 
 struct SpatialOperandQueueRuntimeFeedback final {
@@ -89,6 +101,8 @@ struct SpatialOperandQueueRuntimeFeedback final {
       SpatialOperandQueueRuntimeFeedbackReason::MissingOwnerReferences;
   std::optional<sim::CgraExecutionOwnerReferences> owners;
   mapping::SpatialPeOperandRuntimeWitness witness;
+  std::optional<SpatialOperandBufferRepairTarget> repairTarget;
+  bool admissionPolicyAlternativeUnsupported = false;
   std::uint64_t queueWaitEdgeCount = 0;
   std::uint64_t transferCycleEdgeCount = 0;
   std::uint64_t actorCycleEdgeCount = 0;
