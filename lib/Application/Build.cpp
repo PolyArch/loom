@@ -236,11 +236,16 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
   }
 
   result.hostOnlyBaseline = makeUnsupportedObjectiveVector();
+  result.planningRecordCount = prepared.candidateInventory.size();
   result.candidates.reserve(prepared.candidateInventory.size());
   for (std::size_t ordinal = 0; ordinal != prepared.candidateInventory.size();
        ++ordinal) {
     const dse::PreMappingCandidatePlanningRecord &planning =
         prepared.candidateInventory[ordinal];
+    if (!planning.candidateIdentity) {
+      ++result.nonCandidatePlanningRecordCount;
+      continue;
+    }
     ApplicationPairCandidateRecord candidate;
     candidate.planningRecordOrdinal = ordinal;
     candidate.candidateIdentity = planning.candidateIdentity;
@@ -262,35 +267,28 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           summary.selectedMapping &&
           llvm::is_contained(outcome.systemMappings, *summary.selectedMapping))
         candidate.selected = true;
-      if (outcome.qualityObjectiveCodes.size() >= 3) {
-        const auto dfg = outcome.dfgCycles
-                             ? *outcome.dfgCycles
-                             : outcome.qualityObjectiveCodes[0];
-        const auto cgra = outcome.cgraCycles
-                              ? *outcome.cgraCycles
-                              : outcome.qualityObjectiveCodes[1];
-        const auto resource = outcome.resourceCoreCost
-                                  ? *outcome.resourceCoreCost
-                                  : outcome.qualityObjectiveCodes[2];
-        setObjective(candidate.objective[
-                         static_cast<std::size_t>(
-                             ApplicationObjectiveDimension::DfgCycles)],
-                     dfg, outcome.dfgCycles
-                              ? ApplicationObjectiveEvidence::RuntimeMeasured
-                              : ApplicationObjectiveEvidence::Exact);
-        setObjective(candidate.objective[
-                         static_cast<std::size_t>(
-                             ApplicationObjectiveDimension::CgraCycles)],
-                     cgra, outcome.cgraCycles
-                              ? ApplicationObjectiveEvidence::RuntimeMeasured
-                              : ApplicationObjectiveEvidence::Exact);
-        setObjective(candidate.objective[
-                         static_cast<std::size_t>(
-                             ApplicationObjectiveDimension::ResourceCoreCost)],
-                     resource, outcome.resourceCoreCost
-                                  ? ApplicationObjectiveEvidence::RuntimeMeasured
-                                  : ApplicationObjectiveEvidence::Exact);
-      }
+      const auto setObservedDimension =
+          [&](ApplicationObjectiveDimension dimension,
+              const std::optional<std::uint64_t> &raw,
+              std::size_t objectiveCodeOrdinal) {
+            if (raw) {
+              setObjective(
+                  candidate.objective[static_cast<std::size_t>(dimension)],
+                  *raw, ApplicationObjectiveEvidence::RuntimeMeasured);
+              return;
+            }
+            if (outcome.qualityObjectiveCodes.size() > objectiveCodeOrdinal)
+              setObjective(
+                  candidate.objective[static_cast<std::size_t>(dimension)],
+                  outcome.qualityObjectiveCodes[objectiveCodeOrdinal],
+                  ApplicationObjectiveEvidence::Exact);
+          };
+      setObservedDimension(ApplicationObjectiveDimension::DfgCycles,
+                           outcome.dfgCycles, 0);
+      setObservedDimension(ApplicationObjectiveDimension::CgraCycles,
+                           outcome.cgraCycles, 1);
+      setObservedDimension(ApplicationObjectiveDimension::ResourceCoreCost,
+                           outcome.resourceCoreCost, 2);
     }
     // The current JointDesign summary owns invocation-wide Mapping work, not
     // a candidate-local split. Keep this dimension explicitly unsupported on
@@ -426,9 +424,14 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
   ApplicationPairDecisionRecord result;
   result.disposition = disposition;
   result.detail = detail.str();
+  result.planningRecordCount = inventory.size();
   result.candidates.reserve(inventory.size());
   for (std::size_t ordinal = 0; ordinal != inventory.size(); ++ordinal) {
     const auto &record = inventory[ordinal];
+    if (!record.candidateIdentity) {
+      ++result.nonCandidatePlanningRecordCount;
+      continue;
+    }
     ApplicationPairCandidateRecord candidate;
     candidate.planningRecordOrdinal = ordinal;
     candidate.candidateIdentity = record.candidateIdentity;

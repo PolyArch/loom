@@ -197,6 +197,9 @@ llvm::json::Object encodePairDecision(
   else
     result["invocation_manifest_run_key"] = nullptr;
   result["disposition"] = toString(decision.disposition);
+  result["planning_record_count"] = decision.planningRecordCount;
+  result["non_candidate_planning_record_count"] =
+      decision.nonCandidatePlanningRecordCount;
   result["host_only_baseline_complete"] = decision.hostOnlyBaselineComplete;
   result["final_application_qor_complete"] =
       decision.finalApplicationQorComplete;

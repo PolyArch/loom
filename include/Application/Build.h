@@ -246,6 +246,11 @@ struct ApplicationPairDecisionRecord final {
   std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
   ApplicationPairDecisionDisposition disposition =
       ApplicationPairDecisionDisposition::ImplementationFailure;
+  /// Planning records include budget/pruning bookkeeping that never became a
+  /// semantic candidate. They remain owned by PreMapping; the pair candidate
+  /// list contains only records with a complete stable candidate identity.
+  std::uint64_t planningRecordCount = 0;
+  std::uint64_t nonCandidatePlanningRecordCount = 0;
   std::vector<ApplicationObjectiveObservation> hostOnlyBaseline;
   std::vector<ApplicationPairCandidateRecord> candidates;
   std::vector<ApplicationObjectiveObservation> selectedObjective;

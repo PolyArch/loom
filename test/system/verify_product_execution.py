@@ -210,11 +210,44 @@ def validate_mapping_work(
         },
         "successful product Mapping published a non-success pair decision",
     )
+    require(pair_decision.get("host_only_baseline_complete") is True,
+            "successful product decision omitted the host-only baseline")
+    require(pair_decision.get("final_application_qor_complete") is True,
+            "successful product decision omitted application QoR evidence")
+    selected_values = {
+        observation.get("dimension"): observation
+        for observation in pair_decision.get("selected_objective", [])
+        if isinstance(observation, dict)
+    }
+    for dimension in ("dfg_cycles", "cgra_cycles"):
+        require(
+            isinstance(selected_values.get(dimension), dict)
+            and isinstance(selected_values[dimension].get("value"), int)
+            and selected_values[dimension].get("evidence") == "runtime_measured",
+            f"successful product decision lacks measured {dimension}",
+        )
     require(
         isinstance(pair_decision.get("candidates"), list)
         and pair_decision["candidates"],
         "pair-level decision omitted its bounded candidate inventory",
     )
+    require(
+        isinstance(pair_decision.get("planning_record_count"), int)
+        and isinstance(pair_decision.get("non_candidate_planning_record_count"), int)
+        and pair_decision["planning_record_count"] >= len(pair_decision["candidates"])
+        and pair_decision["non_candidate_planning_record_count"]
+        == pair_decision["planning_record_count"] - len(pair_decision["candidates"]),
+        "pair-level planning/candidate inventory counts do not reconcile",
+    )
+    for candidate in pair_decision["candidates"]:
+        candidate_identity = candidate.get("candidate_identity")
+        require(
+            isinstance(candidate_identity, str)
+            and len(candidate_identity) == 64
+            and candidate_identity == candidate_identity.lower()
+            and all(character in "0123456789abcdef" for character in candidate_identity),
+            "semantic candidate is missing its stable identity",
+        )
     objective_vectors = [pair_decision.get("host_only_baseline", [])]
     objective_vectors.extend(
         candidate.get("objective", [])
