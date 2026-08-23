@@ -15,8 +15,8 @@ target_link_libraries(LoomApplicationPortfolio PUBLIC
 )
 
 file(GLOB_RECURSE LOOM_LLVM_LIBC_MATH_HEADERS CONFIGURE_DEPENDS
-  "${LOOM_SOURCE_DIR}/externals/llvm/libc/hdr/*.h"
-  "${LOOM_SOURCE_DIR}/externals/llvm/libc/src/__support/*.h"
+  "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/hdr/*.h"
+  "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/src/__support/*.h"
 )
 set(LOOM_FREESTANDING_MATH_BITCODE
   "${CMAKE_CURRENT_BINARY_DIR}/LoomFreestandingMath.bc")
@@ -42,12 +42,12 @@ add_custom_command(
     -DLIBC_MATH_HAS_ASSUME_ROUND_NEAREST_ONLY
     -DLIBC_MATH_HAS_NO_ERRNO
     -DLIBC_MATH_HAS_NO_EXCEPT
-    -I${LOOM_SOURCE_DIR}/externals/llvm/libc
+    -I${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc
     -emit-llvm
-    -c "${LOOM_SOURCE_DIR}/externals/llvm/libc/src/math/generic/expf.cpp"
+    -c "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/src/math/generic/expf.cpp"
     -o "${LOOM_FREESTANDING_MATH_BITCODE}"
   DEPENDS
-    "${LOOM_SOURCE_DIR}/externals/llvm/libc/src/math/generic/expf.cpp"
+    "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/src/math/generic/expf.cpp"
     ${LOOM_LLVM_LIBC_MATH_HEADERS}
   VERBATIM
 )

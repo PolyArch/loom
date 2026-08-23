@@ -124,6 +124,8 @@ endif()
 
 set(LOOM_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 set(LOOM_BINARY_DIR ${PROJECT_BINARY_DIR})
+set(LOOM_EXTERNAL_SOURCE_DIR "${PROJECT_SOURCE_DIR}/externals" CACHE PATH
+  "Primary worktree root containing shared external source checkouts")
 
 # The Loom TableGen driver owns the generated operation and implementation
 # family registries, so it is defined before any directory that generates from

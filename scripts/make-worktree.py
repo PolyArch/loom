@@ -1091,6 +1091,7 @@ def configure_loom(
         f"-DLLVM_EXTERNAL_LIT={paths.llvm_lit}",
         f"-Dortools_DIR={or_tools_dir}",
         f"-DLOOM_ORTOOLS_SOURCE_COMMIT={or_tools_commit}",
+        f"-DLOOM_EXTERNAL_SOURCE_DIR={paths.externals_root}",
         "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
         "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
     ]
@@ -1585,6 +1586,8 @@ def _build_loom_with_lease(
         read_cmake_cache_entry(paths.loom_build, "CIRCT_DIR") != (circt_dir or "")
         or read_cmake_cache_entry(paths.loom_build, "ortools_DIR") != or_tools_dir
         or read_cmake_cache_entry(paths.loom_build, "LOOM_ORTOOLS_SOURCE_COMMIT") != state.or_tools_commit
+        or read_cmake_cache_entry(paths.loom_build, "LOOM_EXTERNAL_SOURCE_DIR")
+        != str(paths.externals_root)
     )
     if bn.exists() and package_changed:
         info(f"loom build dependency package changed; removing {paths.loom_build} and reconfiguring")
