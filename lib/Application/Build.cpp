@@ -1,5 +1,6 @@
 #include "Application/Build.h"
 #include "Application/BuildDiagnostics.h"
+#include "ApplicationRuntimeValidationInternal.h"
 #include "ExecutionGlue.h"
 
 #include "Common/ArtifactStore.h"
@@ -61,6 +62,7 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <type_traits>
 #include <utility>
 
@@ -71,7 +73,6 @@ using MonotonicClock = std::chrono::steady_clock;
 
 constexpr std::uint64_t kPortableRiscVHostImageBase = 0x80000000;
 constexpr std::uint64_t kExecutablePageBytes = 4096;
-constexpr std::uint64_t kApplicationReplayExecutionLimit = 1000000;
 
 std::uint64_t elapsedNanoseconds(MonotonicClock::time_point begin) {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -121,126 +122,8 @@ struct SourceSimulationInputs final {
   sim::CanonicalSimulationRuntimeInput runtimeInput;
 };
 
-struct ImportedApplicationMapping final {
-  mapping::FinalizedSystemMapping mapping;
-  dataflow::CanonicalDataflowArtifact dataflow;
-  dataflow::CanonicalDataflowProgramView dataflowView;
-  fabric::FinalizedFabricRoot system;
-};
-
-llvm::Expected<ArtifactRootReference>
-requireUniqueSystemMapping(const dse::JointDesignExecution &execution) {
-  std::vector<ArtifactRootReference> mappings;
-  for (const dse::JointMappedPair &pair : execution.mappedPairs)
-    mappings.insert(mappings.end(), pair.systemMappings.begin(),
-                    pair.systemMappings.end());
-  llvm::sort(mappings, artifactRootReferenceLess);
-  mappings.erase(std::unique(mappings.begin(), mappings.end()), mappings.end());
-  if (!execution.summary.selectedMapping)
-    return invalid("Deployment requires one explicitly selected SystemMapping");
-  if (!llvm::is_contained(mappings, *execution.summary.selectedMapping))
-    return invalid("selected SystemMapping is outside the verified result");
-  return *execution.summary.selectedMapping;
-}
-
-llvm::Expected<ImportedApplicationMapping>
-importApplicationMapping(const dse::JointDesignExecution &execution,
-                         const ArtifactStore &artifacts) {
-  auto reference = requireUniqueSystemMapping(execution);
-  if (!reference)
-    return reference.takeError();
-  auto mapping = mapping::importSystemMapping(*reference, artifacts);
-  if (!mapping)
-    return mapping.takeError();
-  const ArtifactRootReference dataflowReference{
-      dataflow::canonicalDataflowSchema.identity.str(),
-      dataflow::canonicalDataflowSchema.version,
-      mapping->view().dataflowIdentity()};
-  auto dataflow =
-      dataflow::importCanonicalDataflow(dataflowReference, artifacts);
-  if (!dataflow)
-    return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  const ArtifactRootReference systemReference{
-      fabric::fabricArtifactSchema.identity.str(),
-      fabric::fabricArtifactSchema.version, mapping->view().fabricIdentity()};
-  auto system = fabric::importEntireFabricRoot(systemReference, artifacts);
-  if (!system)
-    return system.takeError();
-  auto systemView = fabric::requireSystemRoot(system->view());
-  if (!systemView)
-    return systemView.takeError();
-  return ImportedApplicationMapping{std::move(*mapping), std::move(*dataflow),
-                                    std::move(*dataflowView),
-                                    std::move(*system)};
-}
-
-llvm::Expected<const PreparedApplicationSoftware *>
-findPreparedSoftware(const PreparedApplicationBuild &prepared,
-                     const ArtifactIdentity &dataflowIdentity) {
-  const PreparedApplicationSoftware *selected = nullptr;
-  for (const PreparedApplicationSoftware &software : prepared.software) {
-    if (software.compilation.canonicalDataflow.artifact != dataflowIdentity)
-      continue;
-    if (selected)
-      return invalid("prepared build repeats one Canonical Dataflow owner");
-    selected = &software;
-  }
-  if (!selected)
-    return invalid("SystemMapping names a foreign prepared software owner");
-  return selected;
-}
-
-struct ApplicationRuntimeValidation final {
-  ApplicationMappingRuntimeDisposition disposition =
-      ApplicationMappingRuntimeDisposition::ProofNotEstablished;
-  std::vector<ArtifactRootReference> evidence;
-  std::optional<std::uint64_t> dfgCycles;
-  std::optional<std::uint64_t> cgraCycles;
-  std::optional<dse::SpatialFifoRuntimeFeedback> spatialFifoFeedback;
-  std::optional<dse::SpatialOperandQueueRuntimeFeedback>
-      spatialOperandQueueFeedback;
-};
-
-ApplicationMappingRuntimeDisposition
-runtimeDisposition(evaluation::EvidenceOutcomeKind outcome) {
-  using Evidence = evaluation::EvidenceOutcomeKind;
-  switch (outcome) {
-  case Evidence::Completed:
-    return ApplicationMappingRuntimeDisposition::Completed;
-  case Evidence::Unsupported:
-    return ApplicationMappingRuntimeDisposition::Unsupported;
-  case Evidence::ExecutionFailed:
-    return ApplicationMappingRuntimeDisposition::ExecutionFailed;
-  case Evidence::CancelledOrTimeout:
-    return ApplicationMappingRuntimeDisposition::CancelledOrTimeout;
-  }
-  llvm_unreachable("unknown Evaluation Evidence outcome");
-}
-
-void emitRuntimeEvidenceFailure(
-    llvm::StringRef model, const evaluation::EvaluationEvidence &evidence) {
-  std::optional<evaluation::OutcomeReason> reason;
-  std::visit(
-      [&](const auto &outcome) {
-        using Outcome = std::decay_t<decltype(outcome)>;
-        if constexpr (!std::is_same_v<Outcome, evaluation::CompletedEvidence>)
-          reason = outcome.reason;
-      },
-      evidence.outcome());
-  mapping_debug::emit(
-      mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
-      mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
-        fields["failure_scope"] = "application_runtime_validation";
-        fields["model"] = model;
-        fields["outcome"] = evaluation::toString(evidence.outcomeKind());
-        fields["reason"] = reason ? evaluation::toString(*reason) : "none";
-      });
-}
-
-llvm::Expected<std::vector<pnr::SystemBindingPartitionIntent>>
+llvm::Expected<
+    std::optional<std::vector<pnr::SystemBindingPartitionIntent>>>
 deriveSystemBindingPartitionIntent(const dse::ResourceTimeScheduleHint &hint) {
   std::map<std::uint64_t, pnr::SystemBindingPartitionIntent> byRoot;
   for (const dse::ResourceTimeHintState &state : hint.states)
@@ -257,8 +140,8 @@ deriveSystemBindingPartitionIntent(const dse::ResourceTimeScheduleHint &hint) {
         if (position->second.root != allocation.region)
           return invalid("resource-time partition intent crosses Dataflow "
                          "owners");
-        position->second.partitionCount = std::max(
-            position->second.partitionCount, allocation.resourceUnits.front());
+        if (position->second.partitionCount != allocation.resourceUnits.front())
+          return std::nullopt;
       }
     }
   if (byRoot.empty())
@@ -269,289 +152,55 @@ deriveSystemBindingPartitionIntent(const dse::ResourceTimeScheduleHint &hint) {
     (void)ordinal;
     result.push_back(std::move(partition));
   }
+  return std::optional<std::vector<pnr::SystemBindingPartitionIntent>>(
+      std::move(result));
+}
+
+llvm::Expected<const dse::ResourceTimeScheduleHint *>
+findResourceTimeScheduleHint(
+    const dse::ResourceTimeCandidateFunnelEvaluation &evaluation,
+    const ComponentViewDigest &digest) {
+  const dse::ResourceTimeScheduleHint *result = nullptr;
+  for (const dse::ResourceTimeScheduleHint &hint : evaluation.retainedHints) {
+    auto candidate = dse::deriveResourceTimeScheduleHintDigest(hint);
+    if (!candidate)
+      return candidate.takeError();
+    if (*candidate != digest)
+      continue;
+    if (result)
+      return invalid("resource-time schedule provenance is not unique");
+    result = &hint;
+  }
+  if (!result)
+    return invalid("resource-time Mapping finalist lost its schedule "
+                   "provenance");
   return result;
 }
 
-llvm::Expected<std::optional<MonotonicClock::time_point>>
-applicationReplayDeadline(const dse::PlanExecutionPolicy &policy) {
-  if (!policy.dispatchNotAfterUnixNanoseconds())
-    return std::nullopt;
-  if (*policy.dispatchNotAfterUnixNanoseconds() >
-      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
-    return invalid("Mapping deadline exceeds the clock representation");
-  const auto deadline = std::chrono::system_clock::time_point{
-      std::chrono::nanoseconds{static_cast<std::int64_t>(
-          *policy.dispatchNotAfterUnixNanoseconds())}};
-  const auto remaining = deadline - std::chrono::system_clock::now();
-  if (remaining <= std::chrono::system_clock::duration::zero())
-    return MonotonicClock::now();
-  return MonotonicClock::now() +
-         std::chrono::duration_cast<MonotonicClock::duration>(remaining);
-}
-
-llvm::Expected<ArtifactRootReference>
-requireExecutionOutput(const evaluation::EvaluationEvidence &evidence) {
-  std::vector<ArtifactRootReference> executions;
-  for (const evaluation::ModelOutputBinding &binding :
-       evidence.outputBindings())
-    for (const ArtifactRootReference &reference : binding.artifacts)
-      if (reference.schemaIdentity == sim::simulationExecutionSchema.identity &&
-          reference.schemaVersion == sim::simulationExecutionSchema.version)
-        executions.push_back(reference);
-  llvm::sort(executions, artifactRootReferenceLess);
-  executions.erase(std::unique(executions.begin(), executions.end()),
-                   executions.end());
-  if (executions.size() != 1)
-    return invalid("completed simulation did not publish one execution");
-  return executions.front();
-}
-
-llvm::Expected<std::uint64_t>
-requireCompletedCycleMetric(const evaluation::EvaluationEvidence &evidence) {
-  const auto *completed =
-      std::get_if<evaluation::CompletedEvidence>(&evidence.outcome());
-  if (!completed || completed->metricResults.size() != 1)
-    return invalid("completed simulation did not publish one cycle metric");
-  const auto *point = std::get_if<evaluation::PointObservation>(
-      &completed->metricResults.front().observation);
-  if (!point)
-    return invalid("completed simulation cycle metric is not a point");
-  const auto *integer = std::get_if<evaluation::IntegerValue>(&point->value);
-  if (!integer || integer->value() < 0)
-    return invalid("completed simulation cycle metric is not nonnegative");
-  return static_cast<std::uint64_t>(integer->value());
-}
-
-llvm::Error accumulateCycle(std::optional<std::uint64_t> &total,
-                            std::uint64_t value, llvm::StringRef subject) {
-  const std::uint64_t current = total.value_or(0);
-  if (value > std::numeric_limits<std::uint64_t>::max() - current)
-    return invalid(subject + " cycle count overflows uint64");
-  total = current + value;
-  return llvm::Error::success();
-}
-
-llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
-    const PreparedApplicationBuild &prepared,
+llvm::Expected<std::optional<dse::ResourceTimeSpectrumFunnelResult>>
+verifyResourceTimeAlternative(
+    const dse::ResourceTimeMappingFunnel &funnel,
     const PreparedApplicationMappingAlternative &alternative,
-    const dse::JointDesignExecution &execution,
-    const dse::PlanExecutionPolicy &executionPolicy,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto imported = importApplicationMapping(execution, artifacts);
-  if (!imported)
-    return imported.takeError();
-  if (imported->mapping.view().dataflowIdentity() !=
-      alternative.dataflow.artifact)
-    return invalid("runtime validation selected a foreign software owner");
-  auto software = findPreparedSoftware(
-      prepared, imported->mapping.view().dataflowIdentity());
-  if (!software)
-    return software.takeError();
-  if ((*software)->replayCases.empty())
-    return ApplicationRuntimeValidation{
-        ApplicationMappingRuntimeDisposition::ProofNotEstablished,
-        {},
-        std::nullopt,
-        std::nullopt,
-        std::nullopt,
-        std::nullopt};
-
-  auto contexts = mapping::projectSystemExecutionContexts(
-      imported->dataflowView, imported->mapping.view().executionBindings());
-  if (!contexts)
-    return contexts.takeError();
-  auto deadline = applicationReplayDeadline(executionPolicy);
-  if (!deadline)
-    return deadline.takeError();
-
-  ApplicationRuntimeValidation validation;
-  validation.disposition = ApplicationMappingRuntimeDisposition::Completed;
-  for (const sim::SourceBackedDfgReplayCaseReference &replay :
-       (*software)->replayCases) {
-    if (*deadline && MonotonicClock::now() >= **deadline) {
-      validation.disposition =
-          ApplicationMappingRuntimeDisposition::CancelledOrTimeout;
-      return validation;
-    }
-    auto inputs = sim::importSpatialSimulationInputs(
-        replay.workload, replay.runtimeInput, artifacts);
-    if (!inputs)
-      return inputs.takeError();
-    if (inputs->dataflow.identity() != alternative.dataflow.artifact)
-      return invalid("source-backed replay names a foreign final Dataflow");
-    const sim::SpatialSimulationWorkload *workload = inputs->workload.spatial();
-    if (!workload)
-      return invalid("source-backed replay is not a Spatial workload");
-    auto selectedContext = mapping::selectSystemSpatialExecutionContext(
-        *contexts, workload->launchRef, workload->denseCoordinates);
-    if (!selectedContext)
-      return selectedContext.takeError();
-    auto spatialMapping = mapping::importSpatialMapping(
-        selectedContext->spatialMapping, artifacts);
-    if (!spatialMapping)
-      return spatialMapping.takeError();
-    const ArtifactRootReference module{
-        fabric::fabricArtifactSchema.identity.str(),
-        fabric::fabricArtifactSchema.version,
-        spatialMapping->view().fabricIdentity()};
-
-    auto preparedDfg = evaluation::models::prepareDfgSimulationEvaluation(
-        alternative.dataflow, replay.workload, replay.runtimeInput,
-        alternative.plan.resolvedConfig, artifacts, blobs);
-    if (!preparedDfg)
-      return preparedDfg.takeError();
-    auto dfgEvidence = evaluation::models::evaluateDfgSimulation(
-        *preparedDfg, {kApplicationReplayExecutionLimit, *deadline}, artifacts,
-        blobs);
-    if (!dfgEvidence)
-      return dfgEvidence.takeError();
-    auto dfgEvidenceReference =
-        evaluation::publishEvaluationEvidence(*dfgEvidence, artifacts);
-    if (!dfgEvidenceReference)
-      return dfgEvidenceReference.takeError();
-    validation.evidence.push_back(*dfgEvidenceReference);
-    if (dfgEvidence->outcomeKind() !=
-        evaluation::EvidenceOutcomeKind::Completed) {
-      emitRuntimeEvidenceFailure("dfg_simulation", *dfgEvidence);
-      validation.disposition = runtimeDisposition(dfgEvidence->outcomeKind());
-      return validation;
-    }
-    auto dfgExecution = requireExecutionOutput(*dfgEvidence);
-    if (!dfgExecution)
-      return dfgExecution.takeError();
-    auto dfgCycles = requireCompletedCycleMetric(*dfgEvidence);
-    if (!dfgCycles)
-      return dfgCycles.takeError();
-    if (llvm::Error error =
-            accumulateCycle(validation.dfgCycles, *dfgCycles, "DFG"))
-      return std::move(error);
-
-    auto preparedCgra = evaluation::models::prepareCgraSimulationEvaluation(
-        alternative.dataflow, module, selectedContext->spatialMapping,
-        replay.workload, replay.runtimeInput, alternative.plan.resolvedConfig,
-        artifacts, blobs);
-    if (!preparedCgra)
-      return preparedCgra.takeError();
-    auto cgraEvaluation =
-        evaluation::models::evaluateCgraSimulationWithDiagnostics(
-            *preparedCgra, {kApplicationReplayExecutionLimit, *deadline},
-            artifacts, blobs);
-    if (!cgraEvaluation)
-      return cgraEvaluation.takeError();
-    evaluation::EvaluationEvidence &cgraEvidence = cgraEvaluation->evidence;
-    if (cgraEvaluation->closedWait) {
-      auto operandFeedback = dse::deriveSpatialOperandQueueRuntimeFeedback(
-          imported->mapping.reference(), *cgraEvaluation->closedWait,
-          artifacts);
-      if (!operandFeedback)
-        return operandFeedback.takeError();
-      dse::emitSpatialOperandQueueRuntimeFeedback(*operandFeedback);
-      const auto operandPriority =
-          [](dse::SpatialOperandQueueRuntimeFeedbackDisposition value) {
-            switch (value) {
-            case dse::SpatialOperandQueueRuntimeFeedbackDisposition::Exact:
-              return 2;
-            case dse::SpatialOperandQueueRuntimeFeedbackDisposition::
-                ProofNotEstablished:
-              return 1;
-            case dse::SpatialOperandQueueRuntimeFeedbackDisposition::
-                Unsupported:
-              return 0;
-            }
-            llvm_unreachable(
-                "unknown Spatial operand-queue feedback disposition");
-          };
-      if (!validation.spatialOperandQueueFeedback ||
-          operandPriority(operandFeedback->disposition) >
-              operandPriority(
-                  validation.spatialOperandQueueFeedback->disposition))
-        validation.spatialOperandQueueFeedback = std::move(*operandFeedback);
-      auto feedback = dse::deriveSpatialFifoRuntimeFeedback(
-          imported->mapping.reference(), selectedContext->spatialMapping,
-          *cgraEvaluation->closedWait, artifacts);
-      if (!feedback)
-        return feedback.takeError();
-      dse::emitSpatialFifoRuntimeFeedback(*feedback);
-      const auto priority = [](dse::SpatialFifoRuntimeFeedbackDisposition
-                                   value) {
-        switch (value) {
-        case dse::SpatialFifoRuntimeFeedbackDisposition::Exact:
-          return 2;
-        case dse::SpatialFifoRuntimeFeedbackDisposition::ProofNotEstablished:
-          return 1;
-        case dse::SpatialFifoRuntimeFeedbackDisposition::Unsupported:
-          return 0;
-        }
-        llvm_unreachable("unknown Spatial FIFO feedback disposition");
-      };
-      if (!validation.spatialFifoFeedback ||
-          priority(feedback->disposition) >
-              priority(validation.spatialFifoFeedback->disposition))
-        validation.spatialFifoFeedback = std::move(*feedback);
-    }
-    auto cgraEvidenceReference =
-        evaluation::publishEvaluationEvidence(cgraEvidence, artifacts);
-    if (!cgraEvidenceReference)
-      return cgraEvidenceReference.takeError();
-    validation.evidence.push_back(*cgraEvidenceReference);
-    if (cgraEvidence.outcomeKind() !=
-        evaluation::EvidenceOutcomeKind::Completed) {
-      emitRuntimeEvidenceFailure("cgra_simulation", cgraEvidence);
-      validation.disposition = runtimeDisposition(cgraEvidence.outcomeKind());
-      return validation;
-    }
-    auto cgraExecution = requireExecutionOutput(cgraEvidence);
-    if (!cgraExecution)
-      return cgraExecution.takeError();
-    auto cgraCycles = requireCompletedCycleMetric(cgraEvidence);
-    if (!cgraCycles)
-      return cgraCycles.takeError();
-    if (llvm::Error error =
-            accumulateCycle(validation.cgraCycles, *cgraCycles, "CGRA"))
-      return std::move(error);
-
-    auto comparison = evaluation::models::prepareSimulationComparisonEvaluation(
-        *dfgExecution, preparedDfg->resolution, *cgraExecution,
-        preparedCgra->resolution, alternative.plan.resolvedConfig, artifacts,
-        blobs);
-    if (!comparison)
-      return comparison.takeError();
-    auto comparisonEvidence = evaluation::models::evaluateSimulationComparison(
-        *comparison, artifacts, blobs);
-    if (!comparisonEvidence)
-      return comparisonEvidence.takeError();
-    auto comparisonEvidenceReference =
-        evaluation::publishEvaluationEvidence(*comparisonEvidence, artifacts);
-    if (!comparisonEvidenceReference)
-      return comparisonEvidenceReference.takeError();
-    validation.evidence.push_back(*comparisonEvidenceReference);
-    if (comparisonEvidence->outcomeKind() !=
-        evaluation::EvidenceOutcomeKind::Completed) {
-      emitRuntimeEvidenceFailure("simulation_comparison", *comparisonEvidence);
-      validation.disposition =
-          runtimeDisposition(comparisonEvidence->outcomeKind());
-      return validation;
-    }
-    const auto *completed = std::get_if<evaluation::CompletedEvidence>(
-        &comparisonEvidence->outcome());
-    if (!completed || completed->findingResults.size() != 1)
-      return invalid("simulation comparison has no unique result");
-    const evaluation::FindingResultValue &comparisonResult =
-        completed->findingResults.front().result;
-    if (std::holds_alternative<evaluation::AbsentFinding>(comparisonResult))
-      continue;
-    validation.disposition =
-        std::holds_alternative<evaluation::NotApplicableFinding>(
-            comparisonResult)
-            ? ApplicationMappingRuntimeDisposition::ProofNotEstablished
-            : ApplicationMappingRuntimeDisposition::ExecutionFailed;
-    return validation;
-  }
-  llvm::sort(validation.evidence, artifactRootReferenceLess);
-  validation.evidence.erase(
-      std::unique(validation.evidence.begin(), validation.evidence.end()),
-      validation.evidence.end());
-  return validation;
+    llvm::ArrayRef<ArtifactRootReference> systemMappings,
+    const ArtifactStore &artifacts) {
+  const auto evaluation =
+      llvm::find_if(funnel.evaluations, [&](const auto &candidate) {
+        return candidate.candidateIdentity == alternative.candidateIdentity;
+      });
+  if (evaluation == funnel.evaluations.end())
+    return invalid("Mapping outcome has no resource-time evaluation");
+  auto hint = findResourceTimeScheduleHint(
+      *evaluation, alternative.resourceTimeScheduleHintDigest);
+  if (!hint)
+    return hint.takeError();
+  auto verified = dse::verifyResourceTimeMappingFinalists(
+      llvm::ArrayRef<dse::ResourceTimeScheduleHint>(*hint, 1),
+      alternative.resourceTimeRegions, alternative.resourceTimeRegionBounds,
+      systemMappings, artifacts, {}, evaluation->concurrencyBounds);
+  if (!verified)
+    return verified.takeError();
+  return std::optional<dse::ResourceTimeSpectrumFunnelResult>(
+      std::move(*verified));
 }
 
 llvm::Expected<deployment::CanonicalTypeBytes>
@@ -1160,6 +809,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
                accounting.soundGateRejectedCandidates},
               {"estimated_candidates", accounting.estimatedCandidates},
               {"incomplete_candidates", accounting.incompleteCandidates},
+              {"mapping_eligible_schedule_hints",
+               accounting.mappingEligibleScheduleHints},
               {"mapping_finalists", accounting.mappingFinalists},
               {"dataflow_projection_requests",
                accounting.dataflowProjectionRequests},
@@ -1180,6 +831,10 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
               {"mapping_plan_candidates", accounting.mappingPlanCandidates},
               {"unsupported_before_mapping_candidates",
                accounting.unsupportedBeforeMappingCandidates},
+              {"unsupported_before_mapping_schedule_hints",
+               accounting.unsupportedBeforeMappingScheduleHints},
+              {"application_promotion_accounting_complete",
+               accounting.applicationPromotionAccountingComplete},
               {"mapping_calls_deferred_by_model",
                accounting.mappingCallsDeferredByModel},
               {"mapping_calls_avoided_by_sound_gate",
@@ -1224,11 +879,11 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
             std::move(completed.candidateInventory), completed.sourceProgram,
             completed.fabric, completed.workload, completed.runtimeInput,
             completed.frontierPolicyDigest}};
-  if (resourceTimeFunnel->preferenceOrder.empty())
+  if (resourceTimeFunnel->finalists.empty())
     emitResourceTimeFunnelTerminal(resourceTimeFunnel->incompleteReason
                                        ? "incomplete"
                                        : "no_mapping_finalist");
-  if (resourceTimeFunnel->preferenceOrder.empty() &&
+  if (resourceTimeFunnel->finalists.empty() &&
       resourceTimeFunnel->incompleteReason)
     return ApplicationBuildPreparationOutcome{
         IncompleteApplicationResourceTimePlanning{
@@ -1237,7 +892,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
             std::move(completed.candidateInventory), completed.sourceProgram,
             completed.fabric, completed.workload, completed.runtimeInput,
             completed.frontierPolicyDigest}};
-  if (resourceTimeFunnel->preferenceOrder.empty())
+  if (resourceTimeFunnel->finalists.empty())
     return ApplicationBuildPreparationOutcome{
         dse::CompletedPreMappingNoFeasibleCandidate{
             std::move(completed.satisfiedEvidence),
@@ -1246,12 +901,24 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
   std::vector<PreparedApplicationSoftware> preparedSoftware;
   std::vector<PreparedApplicationMappingAlternative> mappingAlternatives;
   std::optional<UnsupportedApplicationBuild> firstUnsupported;
-  preparedSoftware.reserve(resourceTimeFunnel->preferenceOrder.size());
-  mappingAlternatives.reserve(resourceTimeFunnel->preferenceOrder.size());
+  preparedSoftware.reserve(resourceTimeFunnel->finalists.size());
+  mappingAlternatives.reserve(resourceTimeFunnel->finalists.size());
   std::vector<ComponentViewDigest> promotedIdentities;
-  promotedIdentities.reserve(resourceTimeFunnel->preferenceOrder.size());
-  for (const ComponentViewDigest &identity :
-       resourceTimeFunnel->preferenceOrder) {
+  promotedIdentities.reserve(resourceTimeFunnel->finalists.size());
+  std::map<std::string, std::size_t> softwareByCandidate;
+  std::set<std::string> unsupportedCandidates;
+  std::map<std::string, std::uint64_t> finalistCountByCandidate;
+  for (const dse::ResourceTimeMappingFinalist &finalist :
+       resourceTimeFunnel->finalists)
+    ++finalistCountByCandidate[
+        formatComponentViewDigestHex(finalist.candidateIdentity)];
+  for (const dse::ResourceTimeMappingFinalist &finalist :
+       resourceTimeFunnel->finalists) {
+    const ComponentViewDigest &identity = finalist.candidateIdentity;
+    const std::string identitySpelling =
+        formatComponentViewDigestHex(identity);
+    if (unsupportedCandidates.count(identitySpelling) != 0)
+      continue;
     auto pending = llvm::find_if(
         pendingCandidates, [&](const PendingResourceTimeCandidate &candidate) {
           return candidate.candidateIdentity == identity;
@@ -1264,113 +931,159 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
         });
     if (evaluation == resourceTimeFunnel->evaluations.end())
       return invalid("resource-time finalist has no funnel evaluation");
-    auto published = frontend::publishPreMappingCompilation(
-        pending->compilation.compilation, artifacts);
-    if (!published)
-      return published.takeError();
-    auto workloads = publishApplicationWorkloads(
-        *published, pending->compilation.compilation.canonicalDataflow,
-        request.sourceInvocation.entrySymbol, artifacts);
-    if (!workloads)
-      return workloads.takeError();
-    if (auto *unsupported =
-            std::get_if<UnsupportedApplicationBuild>(&*workloads)) {
-      if (!firstUnsupported)
-        firstUnsupported = std::move(*unsupported);
-      auto &record =
-          completed.candidateInventory[pending->planningRecordOrdinal];
-      record.disposition =
-          dse::PreMappingCandidatePlanningDisposition::Unsupported;
-      ++resourceTimeFunnel->accounting.unsupportedBeforeMappingCandidates;
-      continue;
-    }
-    auto roots =
-        std::get<std::vector<ArtifactRootReference>>(std::move(*workloads));
-    ++resourceTimeFunnel->accounting.dataflowMaterializedCandidates;
-    if (pending->compilation.functionalReplay)
-      ++resourceTimeFunnel->accounting.functionalReplayCandidates;
-    // Deployment reconstructs this exact invocation plan again. Validate it
-    // before any Tech/Spatial/System provider is dispatched so a candidate
-    // with an inexact dynamic capture becomes a typed unsupported finalist,
-    // rather than a late deployment failure after expensive Mapping work.
-    auto invocationDataflow =
-        pending->compilation.compilation.canonicalDataflow.view();
-    if (!invocationDataflow)
-      return invocationDataflow.takeError();
-    auto invocationPreflight = detail::deriveApplicationSpatialInvocationPlan(
-        *invocationDataflow, request.sourceInvocation.entrySymbol);
-    if (!invocationPreflight) {
-      const std::string diagnostic =
-          llvm::toString(invocationPreflight.takeError());
+    auto scheduleHint = findResourceTimeScheduleHint(
+        *evaluation, finalist.scheduleHintDigest);
+    if (!scheduleHint)
+      return scheduleHint.takeError();
+    auto partitions = deriveSystemBindingPartitionIntent(**scheduleHint);
+    if (!partitions)
+      return partitions.takeError();
+    if (!*partitions) {
+      ++resourceTimeFunnel->accounting.unsupportedBeforeMappingScheduleHints;
       mapping_debug::emit(
-          mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Level::Summary,
+          mapping_debug::Stage::DataflowLowering,
           mapping_debug::Event::MappingFailure,
           [&](llvm::json::Object &fields) {
             fields["failure_scope"] = "application_resource_time_preflight";
-            fields["operation"] = "resource_time_application_preflight";
+            fields["operation"] = "resource_time_mapping_transition";
             fields["disposition"] = "unsupported";
-            fields["diagnostic"] = diagnostic;
-            fields["candidate_identity"] =
-                formatComponentViewDigestHex(identity);
+            fields["candidate_identity"] = identitySpelling;
+            fields["schedule_hint_digest"] =
+                formatComponentViewDigestHex(finalist.scheduleHintDigest);
           });
-      if (!firstUnsupported)
-        firstUnsupported = UnsupportedApplicationBuild{
-            ApplicationBuildUnsupportedKind::DynamicInvocationBoundary,
-            published->canonicalDataflow,
-            pending->projection->regions.front().region};
+      continue;
+    }
+
+    std::size_t softwareOrdinal = 0;
+    auto existingSoftware = softwareByCandidate.find(identitySpelling);
+    if (existingSoftware == softwareByCandidate.end()) {
+      auto published = frontend::publishPreMappingCompilation(
+          pending->compilation.compilation, artifacts);
+      if (!published)
+        return published.takeError();
+      auto workloads = publishApplicationWorkloads(
+          *published, pending->compilation.compilation.canonicalDataflow,
+          request.sourceInvocation.entrySymbol, artifacts);
+      if (!workloads)
+        return workloads.takeError();
+      if (auto *unsupported =
+              std::get_if<UnsupportedApplicationBuild>(&*workloads)) {
+        if (!firstUnsupported)
+          firstUnsupported = std::move(*unsupported);
+        auto &record =
+            completed.candidateInventory[pending->planningRecordOrdinal];
+        record.disposition =
+            dse::PreMappingCandidatePlanningDisposition::Unsupported;
+        ++resourceTimeFunnel->accounting.unsupportedBeforeMappingCandidates;
+        resourceTimeFunnel->accounting.unsupportedBeforeMappingScheduleHints +=
+            finalistCountByCandidate[identitySpelling];
+        unsupportedCandidates.insert(identitySpelling);
+        continue;
+      }
+      auto roots =
+          std::get<std::vector<ArtifactRootReference>>(std::move(*workloads));
+      ++resourceTimeFunnel->accounting.dataflowMaterializedCandidates;
+      if (pending->compilation.functionalReplay)
+        ++resourceTimeFunnel->accounting.functionalReplayCandidates;
+      // Deployment reconstructs this exact invocation plan again. Validate it
+      // before any Tech/Spatial/System provider is dispatched so a candidate
+      // with an inexact dynamic capture becomes a typed unsupported finalist,
+      // rather than a late deployment failure after expensive Mapping work.
+      auto invocationDataflow =
+          pending->compilation.compilation.canonicalDataflow.view();
+      if (!invocationDataflow)
+        return invocationDataflow.takeError();
+      auto invocationPreflight =
+          detail::deriveApplicationSpatialInvocationPlan(
+              *invocationDataflow, request.sourceInvocation.entrySymbol);
+      if (!invocationPreflight) {
+        const std::string diagnostic =
+            llvm::toString(invocationPreflight.takeError());
+        mapping_debug::emit(
+            mapping_debug::Level::Summary,
+            mapping_debug::Stage::DataflowLowering,
+            mapping_debug::Event::MappingFailure,
+            [&](llvm::json::Object &fields) {
+              fields["failure_scope"] =
+                  "application_resource_time_preflight";
+              fields["operation"] = "resource_time_application_preflight";
+              fields["disposition"] = "unsupported";
+              fields["diagnostic"] = diagnostic;
+              fields["candidate_identity"] = identitySpelling;
+            });
+        if (!firstUnsupported)
+          firstUnsupported = UnsupportedApplicationBuild{
+              ApplicationBuildUnsupportedKind::DynamicInvocationBoundary,
+              published->canonicalDataflow,
+              pending->projection->regions.front().region};
+        auto &record =
+            completed.candidateInventory[pending->planningRecordOrdinal];
+        record.disposition =
+            dse::PreMappingCandidatePlanningDisposition::Unsupported;
+        ++resourceTimeFunnel->accounting.unsupportedBeforeMappingCandidates;
+        resourceTimeFunnel->accounting.unsupportedBeforeMappingScheduleHints +=
+            finalistCountByCandidate[identitySpelling];
+        unsupportedCandidates.insert(identitySpelling);
+        continue;
+      }
+      std::vector<sim::SourceBackedDfgReplayCaseReference> replayCases;
+      if (pending->compilation.functionalReplay)
+        replayCases = pending->compilation.functionalReplay->replayCases;
+      const std::uint64_t firstRank = mappingAlternatives.size();
+      preparedSoftware.push_back(
+          {firstRank, pending->planningRecordOrdinal, identity,
+           std::move(*published), std::move(roots), std::move(replayCases)});
+      softwareOrdinal = preparedSoftware.size() - 1;
+      softwareByCandidate.emplace(identitySpelling, softwareOrdinal);
+      promotedIdentities.push_back(identity);
       auto &record =
           completed.candidateInventory[pending->planningRecordOrdinal];
       record.disposition =
-          dse::PreMappingCandidatePlanningDisposition::Unsupported;
-      ++resourceTimeFunnel->accounting.unsupportedBeforeMappingCandidates;
-      continue;
+          dse::PreMappingCandidatePlanningDisposition::Retained;
+      record.preferenceRank = firstRank;
+    } else {
+      softwareOrdinal = existingSoftware->second;
     }
-    std::optional<std::vector<pnr::SystemBindingPartitionIntent>> partitions;
-    if (evaluation->bestHint) {
-      auto derivedPartitions =
-          deriveSystemBindingPartitionIntent(*evaluation->bestHint);
-      if (!derivedPartitions)
-        return derivedPartitions.takeError();
-      partitions = std::move(*derivedPartitions);
-    }
+
+    const PreparedApplicationSoftware &software =
+        preparedSoftware[softwareOrdinal];
     auto mappingPlan = dse::buildJointDesignExplorationPlan(
-        {{roots}, {request.system}}, request.physicalTimingProfiles,
+        {{software.workloads}, {request.system}}, request.physicalTimingProfiles,
         *alternativePolicy, request.resolvedConfig, artifacts, nullptr,
-        partitions
-            ? llvm::ArrayRef<pnr::SystemBindingPartitionIntent>(*partitions)
-            : llvm::ArrayRef<pnr::SystemBindingPartitionIntent>());
+        **partitions);
     if (!mappingPlan)
       return mappingPlan.takeError();
     ++resourceTimeFunnel->accounting.mappingPlanCandidates;
     const std::uint64_t rank = mappingAlternatives.size();
-    auto &record = completed.candidateInventory[pending->planningRecordOrdinal];
-    record.disposition = dse::PreMappingCandidatePlanningDisposition::Retained;
-    record.preferenceRank = rank;
-    promotedIdentities.push_back(identity);
-    std::vector<sim::SourceBackedDfgReplayCaseReference> replayCases;
-    if (pending->compilation.functionalReplay)
-      replayCases = pending->compilation.functionalReplay->replayCases;
-    preparedSoftware.push_back({rank, pending->planningRecordOrdinal, identity,
-                                std::move(*published), std::move(roots),
-                                std::move(replayCases)});
-    const ArtifactRootReference dataflow =
-        preparedSoftware.back().compilation.canonicalDataflow;
     mappingAlternatives.push_back(
-        {rank, pending->planningRecordOrdinal, identity, dataflow,
+        {rank, pending->planningRecordOrdinal, identity,
+         finalist.scheduleHintDigest, software.compilation.canonicalDataflow,
          pending->projection->regions, pending->projection->regionBounds,
          std::move(*mappingPlan)});
   }
+  resourceTimeFunnel->accounting.applicationPromotionAccountingComplete = true;
+  if (llvm::Error error = dse::validateResourceTimeMappingFunnelAccounting(
+          resourceTimeFunnel->accounting))
+    return std::move(error);
   if (mappingAlternatives.empty()) {
     emitResourceTimeFunnelTerminal("all_finalists_rejected_before_mapping");
     if (firstUnsupported)
       return ApplicationBuildPreparationOutcome{std::move(*firstUnsupported)};
+    if (resourceTimeFunnel->accounting
+            .unsupportedBeforeMappingScheduleHints != 0)
+      return ApplicationBuildPreparationOutcome{
+          IncompleteApplicationResourceTimePlanning{
+              dse::ResourceTimeFrontierIncompleteReason::Unsupported,
+              std::move(*resourceTimeFunnel),
+              std::move(completed.candidateInventory), completed.sourceProgram,
+              completed.fabric, completed.workload, completed.runtimeInput,
+              completed.frontierPolicyDigest}};
     return ApplicationBuildPreparationOutcome{
         dse::CompletedPreMappingNoFeasibleCandidate{
             std::move(completed.satisfiedEvidence),
             std::move(completed.planGenerateInvocations)}};
   }
-  if (mappingAlternatives.size() != preparedSoftware.size())
-    return invalid("resource-time promotion lost its application join");
   for (dse::PreMappingCandidatePlanningRecord &record :
        completed.candidateInventory) {
     if (!record.candidateIdentity ||
@@ -1531,27 +1244,17 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         return invalid("Mapping outcome has a foreign planning-record ordinal");
       std::optional<dse::ResourceTimeSpectrumFunnelResult> resourceTimeSpectrum;
       if (!attempt.systemMappings.empty()) {
-        const auto evaluation =
-            llvm::find_if(prepared.resourceTimeFunnel.evaluations,
-                          [&](const auto &candidate) {
-                            return candidate.candidateIdentity ==
-                                   alternative.candidateIdentity;
-                          });
-        if (evaluation == prepared.resourceTimeFunnel.evaluations.end())
-          return invalid("Mapping outcome has no resource-time evaluation");
-        if (!evaluation->retainedHints.empty()) {
-          auto verified = dse::verifyResourceTimeMappingFinalists(
-              evaluation->retainedHints, alternative.resourceTimeRegions,
-              alternative.resourceTimeRegionBounds, attempt.systemMappings,
-              artifacts, {}, evaluation->concurrencyBounds);
-          if (!verified)
-            return verified.takeError();
-          resourceTimeSpectrum.emplace(std::move(*verified));
-        }
+        auto verified = verifyResourceTimeAlternative(
+            prepared.resourceTimeFunnel, alternative, attempt.systemMappings,
+            artifacts);
+        if (!verified)
+          return verified.takeError();
+        resourceTimeSpectrum = std::move(*verified);
       }
       outcomes.push_back(ApplicationMappingCandidateOutcome{
           alternative.preMappingCandidateRecordOrdinal,
           planOrdinal,
+          alternative.resourceTimeScheduleHintDigest,
           alternative.dataflow,
           attempt.system,
           attempt.disposition,
@@ -1663,7 +1366,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         *execution->summary.selectedPlanOrdinal + firstPlan;
     if (selectedPlanOrdinal >= prepared.mappingAlternatives.size())
       return invalid("selected Mapping has a foreign plan ordinal");
-    auto runtime = validateApplicationMappingRuntime(
+    auto runtime = detail::validateApplicationMappingRuntime(
         prepared, prepared.mappingAlternatives[selectedPlanOrdinal], *execution,
         request.executionPolicy, artifacts, blobs);
     if (!runtime)
@@ -1714,36 +1417,23 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                             childMappings});
         if (childMappings.empty() || !childExecution.summary.selectedMapping)
           continue;
-        auto childRuntime = validateApplicationMappingRuntime(
+        auto childRuntime = detail::validateApplicationMappingRuntime(
             prepared, prepared.mappingAlternatives[selectedPlanOrdinal],
             childExecution, request.executionPolicy, artifacts, blobs);
         if (!childRuntime)
           return childRuntime.takeError();
-        std::optional<dse::ResourceTimeSpectrumFunnelResult> childSpectrum;
-        const auto evaluation = llvm::find_if(
-            prepared.resourceTimeFunnel.evaluations,
-            [&](const auto &candidate) {
-              return candidate.candidateIdentity ==
-                     prepared.mappingAlternatives[selectedPlanOrdinal]
-                         .candidateIdentity;
-            });
-        if (evaluation != prepared.resourceTimeFunnel.evaluations.end() &&
-            !evaluation->retainedHints.empty()) {
-          auto verified = dse::verifyResourceTimeMappingFinalists(
-              evaluation->retainedHints,
-              prepared.mappingAlternatives[selectedPlanOrdinal]
-                  .resourceTimeRegions,
-              prepared.mappingAlternatives[selectedPlanOrdinal]
-                  .resourceTimeRegionBounds,
-              childMappings, artifacts, {}, evaluation->concurrencyBounds);
-          if (!verified)
-            return verified.takeError();
-          childSpectrum.emplace(std::move(*verified));
-        }
+        auto childSpectrum = verifyResourceTimeAlternative(
+            prepared.resourceTimeFunnel,
+            prepared.mappingAlternatives[selectedPlanOrdinal], childMappings,
+            artifacts);
+        if (!childSpectrum)
+          return childSpectrum.takeError();
         outcomes.push_back(ApplicationMappingCandidateOutcome{
             prepared.mappingAlternatives[selectedPlanOrdinal]
                 .preMappingCandidateRecordOrdinal,
             selectedPlanOrdinal,
+            prepared.mappingAlternatives[selectedPlanOrdinal]
+                .resourceTimeScheduleHintDigest,
             prepared.mappingAlternatives[selectedPlanOrdinal].dataflow,
             repaired->childSystems[childOrdinal],
             dse::JointDesignAttemptDisposition::Verified,
@@ -1758,7 +1448,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             childRuntime->disposition,
             childRuntime->evidence,
             {},
-            std::move(childSpectrum)});
+            std::move(*childSpectrum)});
         if (childRuntime->disposition ==
             ApplicationMappingRuntimeDisposition::Completed) {
           childExecution.summary.selectedPlanOrdinal = selectedPlanOrdinal;
@@ -1824,36 +1514,23 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                             childMappings});
         if (childMappings.empty() || !childExecution.summary.selectedMapping)
           continue;
-        auto childRuntime = validateApplicationMappingRuntime(
+        auto childRuntime = detail::validateApplicationMappingRuntime(
             prepared, prepared.mappingAlternatives[selectedPlanOrdinal],
             childExecution, request.executionPolicy, artifacts, blobs);
         if (!childRuntime)
           return childRuntime.takeError();
-        std::optional<dse::ResourceTimeSpectrumFunnelResult> childSpectrum;
-        const auto evaluation = llvm::find_if(
-            prepared.resourceTimeFunnel.evaluations,
-            [&](const auto &candidate) {
-              return candidate.candidateIdentity ==
-                     prepared.mappingAlternatives[selectedPlanOrdinal]
-                         .candidateIdentity;
-            });
-        if (evaluation != prepared.resourceTimeFunnel.evaluations.end() &&
-            !evaluation->retainedHints.empty()) {
-          auto verified = dse::verifyResourceTimeMappingFinalists(
-              evaluation->retainedHints,
-              prepared.mappingAlternatives[selectedPlanOrdinal]
-                  .resourceTimeRegions,
-              prepared.mappingAlternatives[selectedPlanOrdinal]
-                  .resourceTimeRegionBounds,
-              childMappings, artifacts, {}, evaluation->concurrencyBounds);
-          if (!verified)
-            return verified.takeError();
-          childSpectrum.emplace(std::move(*verified));
-        }
+        auto childSpectrum = verifyResourceTimeAlternative(
+            prepared.resourceTimeFunnel,
+            prepared.mappingAlternatives[selectedPlanOrdinal], childMappings,
+            artifacts);
+        if (!childSpectrum)
+          return childSpectrum.takeError();
         outcomes.push_back(ApplicationMappingCandidateOutcome{
             prepared.mappingAlternatives[selectedPlanOrdinal]
                 .preMappingCandidateRecordOrdinal,
             selectedPlanOrdinal,
+            prepared.mappingAlternatives[selectedPlanOrdinal]
+                .resourceTimeScheduleHintDigest,
             prepared.mappingAlternatives[selectedPlanOrdinal].dataflow,
             repaired->childSystems[childOrdinal],
             dse::JointDesignAttemptDisposition::Verified,
@@ -1868,7 +1545,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             childRuntime->disposition,
             childRuntime->evidence,
             {},
-            std::move(childSpectrum)});
+            std::move(*childSpectrum)});
         if (childRuntime->disposition !=
             ApplicationMappingRuntimeDisposition::Completed)
           continue;
@@ -2067,10 +1744,10 @@ makeApplicationBoundedQualityPolicy(
       -> llvm::Expected<dse::JointDesignQualityAcquisition> {
     if (planOrdinal >= prepared.mappingAlternatives.size())
       return invalid("bounded-quality selected a foreign software plan");
-    auto imported = importApplicationMapping(execution, artifacts);
+    auto imported = detail::importApplicationMapping(execution, artifacts);
     if (!imported)
       return imported.takeError();
-    auto runtime = validateApplicationMappingRuntime(
+    auto runtime = detail::validateApplicationMappingRuntime(
         prepared, prepared.mappingAlternatives[planOrdinal], execution,
         executionPolicy, artifacts, blobs);
     if (!runtime)
@@ -2130,12 +1807,12 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
   ApplicationBuildOperationTimer timer(
       ApplicationBuildOperation::DeploymentConstruction);
   auto operationBegin = MonotonicClock::now();
-  auto imported =
-      importApplicationMapping(mappingExecution.execution, artifacts);
+  auto imported = detail::importApplicationMapping(mappingExecution.execution,
+                                                    artifacts);
   emitElapsed(ApplicationBuildOperation::MappingImport, operationBegin);
   if (!imported)
     return imported.takeError();
-  auto software = findPreparedSoftware(
+  auto software = detail::findPreparedSoftware(
       prepared, imported->mapping.view().dataflowIdentity());
   if (!software)
     return software.takeError();

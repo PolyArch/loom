@@ -80,6 +80,7 @@ struct PreparedApplicationMappingAlternative final {
   std::uint64_t preferenceRank = 0;
   std::size_t preMappingCandidateRecordOrdinal = 0;
   ComponentViewDigest candidateIdentity;
+  ComponentViewDigest resourceTimeScheduleHintDigest;
   ArtifactRootReference dataflow;
   std::vector<dse::ResourceTimeRegionFeature> resourceTimeRegions;
   std::vector<dse::ResourceTimeRegionResourceBound> resourceTimeRegionBounds;
@@ -163,6 +164,7 @@ enum class ApplicationMappingRuntimeDisposition : std::uint8_t {
 struct ApplicationMappingCandidateOutcome final {
   std::size_t preMappingCandidateRecordOrdinal = 0;
   std::uint64_t planOrdinal = 0;
+  ComponentViewDigest resourceTimeScheduleHintDigest;
   ArtifactRootReference dataflow;
   ArtifactRootReference system;
   dse::JointDesignAttemptDisposition disposition =

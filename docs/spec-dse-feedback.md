@@ -3363,6 +3363,27 @@ identities. Invocation evidence reports generated, estimated, replayed,
 materialized, and plan candidates separately, so a larger pre-Mapping software
 inventory cannot be mistaken for expensive Mapping work.
 
+The real Mapping-finalist unit is one `(software candidate, schedule hint)`
+pair. A stable digest of the hint's actions, event-relative states,
+allocations, and estimated timing is evaluation provenance; it does not enter
+the software candidate identity and does not prove legality. The bounded
+promotion inventory may therefore retain temporal, spatial, and objective-best
+schedules for one software candidate without re-materializing its Structured
+Program, Canonical Dataflow, workload, or functional replay. Each retained
+schedule derives its own exact System partition intent and at most one joint
+Tech/Spatial/System plan. Spectrum verification consumes only the schedule
+that admitted that plan plus the full frontier's exact concurrency bounds; it
+must not test every retained hint against a Mapping built for only the
+objective-best hint.
+
+One static schedule finalist may reuse a verified SystemMapping across changing
+active sets, but each region's allocation must remain constant while that
+Mapping is in force. If a hint changes one region's allocation, Application
+preflight marks that schedule `Unsupported` before workload materialization or
+PnR unless the hint carries the complete verified safe-point Mapping transition
+contract. Taking the maximum allocation and silently treating it as one static
+partition intent is forbidden.
+
 The resource-time funnel also publishes one additive frontier ledger for the
 candidate frontiers that were actually evaluated. It contains planned,
 reserved, consumed, rejected, cancelled, and elapsed work for source

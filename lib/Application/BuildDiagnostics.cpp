@@ -403,6 +403,8 @@ void emitApplicationPlanningDiagnostics(
              resourceTime.soundGateRejectedCandidates},
             {"estimated_candidates", resourceTime.estimatedCandidates},
             {"incomplete_candidates", resourceTime.incompleteCandidates},
+            {"mapping_eligible_schedule_hints",
+             resourceTime.mappingEligibleScheduleHints},
             {"mapping_finalists", resourceTime.mappingFinalists},
             {"functional_replay_candidates",
              resourceTime.functionalReplayCandidates},
@@ -425,6 +427,10 @@ void emitApplicationPlanningDiagnostics(
             {"mapping_plan_candidates", resourceTime.mappingPlanCandidates},
             {"unsupported_before_mapping_candidates",
              resourceTime.unsupportedBeforeMappingCandidates},
+            {"unsupported_before_mapping_schedule_hints",
+             resourceTime.unsupportedBeforeMappingScheduleHints},
+            {"application_promotion_accounting_complete",
+             resourceTime.applicationPromotionAccountingComplete},
             {"mapping_calls_avoided_by_sound_gate",
              resourceTime.mappingCallsAvoidedBySoundGate},
             {"mapping_calls_deferred_by_model",
@@ -552,9 +558,12 @@ void emitApplicationPlanningDiagnostics(
           row["input_preference_rank"] = evaluation.inputPreferenceRank;
           row["maximum_useful_resource_units"] =
               evaluation.maximumUsefulResourceUnits;
-          row["retained_for_mapping"] =
-              llvm::is_contained(prepared.resourceTimeFunnel.preferenceOrder,
-                                 evaluation.candidateIdentity);
+          const std::uint64_t retainedScheduleCount = llvm::count_if(
+              prepared.resourceTimeFunnel.finalists, [&](const auto &finalist) {
+                return finalist.candidateIdentity == evaluation.candidateIdentity;
+              });
+          row["retained_mapping_schedule_count"] = retainedScheduleCount;
+          row["retained_for_mapping"] = retainedScheduleCount != 0;
           if (evaluation.bestHint) {
             row["estimated_makespan_picoseconds"] =
                 evaluation.bestHint->estimatedMakespanPicoseconds;
@@ -860,6 +869,8 @@ void emitApplicationMappingDiagnostics(
               resourceTime.successiveHalvingDeferredCandidates;
           payload["resource_time_mapping_finalists"] =
               resourceTime.mappingFinalists;
+          payload["resource_time_mapping_eligible_schedule_hints"] =
+              resourceTime.mappingEligibleScheduleHints;
           payload["resource_time_functional_replay_candidates"] =
               resourceTime.functionalReplayCandidates;
           payload["resource_time_dataflow_projection_requests"] =
@@ -880,6 +891,10 @@ void emitApplicationMappingDiagnostics(
               resourceTime.dataflowMaterializedCandidates;
           payload["resource_time_mapping_plan_candidates"] =
               resourceTime.mappingPlanCandidates;
+          payload["resource_time_unsupported_before_mapping_schedule_hints"] =
+              resourceTime.unsupportedBeforeMappingScheduleHints;
+          payload["resource_time_application_promotion_accounting_complete"] =
+              resourceTime.applicationPromotionAccountingComplete;
           payload["resource_time_mapping_calls_avoided_by_sound_gate"] =
               resourceTime.mappingCallsAvoidedBySoundGate;
           payload["resource_time_mapping_calls_deferred_by_model"] =
@@ -1119,6 +1134,9 @@ void emitApplicationMappingDiagnostics(
           else
             payload["candidate_identity"] = nullptr;
           payload["plan_ordinal"] = outcome.planOrdinal;
+          payload["resource_time_schedule_hint_digest"] =
+              formatComponentViewDigestHex(
+                  outcome.resourceTimeScheduleHintDigest);
           payload["dataflow"] = encodeRoot(outcome.dataflow);
           payload["system"] = encodeRoot(outcome.system);
           payload["disposition"] = spelling(outcome.disposition);

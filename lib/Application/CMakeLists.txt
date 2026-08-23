@@ -65,6 +65,7 @@ add_custom_command(
 )
 
 add_library(LoomApplicationBuild
+  ApplicationRuntimeValidation.cpp
   Build.cpp
   BuildDiagnostics.cpp
   ExecutionGlue.cpp

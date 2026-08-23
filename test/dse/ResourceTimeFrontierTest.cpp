@@ -7,11 +7,13 @@
 #include <array>
 #include <atomic>
 #include <cstdlib>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <thread>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace {
 
@@ -353,8 +355,11 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
               selected.accounting.detailedFrontierCandidates == 3 &&
               selected.accounting.successiveHalvingDeferredCandidates == 3 &&
               selected.accounting.mappingFinalists == 3 &&
-              selected.accounting.mappingCallsDeferredByModel == 3 &&
-              selected.preferenceOrder.size() == 3 && selected.truncated,
+              selected.accounting.mappingEligibleScheduleHints >
+                  selected.accounting.mappingFinalists &&
+              selected.accounting.mappingCallsDeferredByModel ==
+                  selected.accounting.mappingEligibleScheduleHints - 3 &&
+              selected.finalists.size() == 3 && selected.truncated,
           "resource-time funnel did not bound real Mapping finalists");
   require(selected.accounting.frontierAccounting.states.consumed != 0 &&
               selected.accounting.frontierAccounting.stateMemoMisses -
@@ -375,7 +380,7 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
               noHint.incompleteReason ==
                   loom::dse::ResourceTimeFrontierIncompleteReason::
                       BudgetExhausted &&
-              noHint.preferenceOrder.empty() &&
+              noHint.finalists.empty() &&
               noHint.accounting.mappingCallsDeferredByModel == 0 &&
               noHint.accounting.mappingCallsWithheldByIncomplete == 1,
           "incomplete resource-time candidate without a hint reached Mapping");
@@ -410,7 +415,7 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
   require(cancelled.incompleteReason ==
                   loom::dse::ResourceTimeFrontierIncompleteReason::
                       CancelledOrTimeout &&
-              cancelled.preferenceOrder.empty() &&
+              cancelled.finalists.empty() &&
               cancelled.evaluations.empty(),
           "resource-time funnel dispatched work after cancellation");
 
@@ -430,12 +435,13 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
   fast.regions.front().speedupCurve.front().executionTimePicoseconds = 1;
   const auto ranked = take(loom::dse::selectResourceTimeMappingFinalists(
       {slow, fast}, bounded));
-  require(ranked.preferenceOrder.size() == 2 &&
-              ranked.preferenceOrder.front() == fast.candidateIdentity,
+  require(ranked.finalists.size() == 2 &&
+              ranked.finalists.front().candidateIdentity ==
+                  fast.candidateIdentity,
           "analytic resource-time order was overwritten by input rank");
   const auto reordered = take(loom::dse::selectResourceTimeMappingFinalists(
       {fast, slow}, bounded));
-  require(reordered.preferenceOrder == ranked.preferenceOrder &&
+  require(reordered.finalists == ranked.finalists &&
               reordered.accounting.mappingFinalists ==
                   ranked.accounting.mappingFinalists,
           "resource-time provider order changed the promoted inventory");
@@ -447,6 +453,33 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
       {candidates.front(), duplicate}, bounded));
   const auto single = take(loom::dse::selectResourceTimeMappingFinalists(
       {candidates.front()}, bounded));
+  std::uint64_t minimumMappedConcurrency =
+      std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t maximumMappedConcurrency = 0;
+  std::vector<loom::ComponentViewDigest> mappedScheduleDigests;
+  for (const auto &finalist : single.finalists) {
+    require(finalist.candidateIdentity == candidates.front().candidateIdentity &&
+                !llvm::is_contained(mappedScheduleDigests,
+                                    finalist.scheduleHintDigest),
+            "one software candidate lost distinct schedule provenance");
+    mappedScheduleDigests.push_back(finalist.scheduleHintDigest);
+    const loom::dse::ResourceTimeScheduleHint *matched = nullptr;
+    for (const auto &hint : single.evaluations.front().retainedHints) {
+      const auto digest =
+          take(loom::dse::deriveResourceTimeScheduleHintDigest(hint));
+      if (digest == finalist.scheduleHintDigest)
+        matched = &hint;
+    }
+    require(matched, "Mapping finalist lost its retained schedule hint");
+    minimumMappedConcurrency =
+        std::min(minimumMappedConcurrency, matched->peakConcurrentRegions);
+    maximumMappedConcurrency =
+        std::max(maximumMappedConcurrency, matched->peakConcurrentRegions);
+  }
+  require(single.finalists.size() == 3 && minimumMappedConcurrency == 1 &&
+              maximumMappedConcurrency == 3,
+          "one software candidate did not retain bounded temporal, spatial, "
+          "and objective Mapping schedules");
   require(memoized.accounting.exactInvocationMemoMisses == 1 &&
               memoized.accounting.exactInvocationMemoHits == 1 &&
               memoized.accounting.frontierAccounting.states.consumed ==
@@ -499,7 +532,7 @@ void exactMemoSupportsWarmAndConcurrentReuse() {
               warm.accounting.exactInvocationMemoHits == 1 &&
               warm.accounting.exactInvocationMemoMisses == 0 &&
               warm.accounting.frontierAccounting.states.consumed == 0 &&
-              warm.preferenceOrder == cold.preferenceOrder,
+              warm.finalists == cold.finalists,
           "warm exact memo changed selection or repeated frontier work");
   const auto warmStatistics = warmSession.statistics();
   require(warmStatistics.requests == 2 && warmStatistics.cacheMisses == 1 &&

@@ -22,9 +22,57 @@ using MonotonicClock = std::chrono::steady_clock;
 
 constexpr llvm::StringLiteral resourceTimeExactMemoDescriptor{
     "loom.dse.resource_time_exact_frontier_memo.1"};
+constexpr llvm::StringLiteral resourceTimeScheduleHintDescriptor{
+    "loom.dse.resource_time_schedule_hint.1"};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return invalidResourceTimeFrontier(message);
+}
+
+void appendDataflowRoots(
+    std::vector<std::uint8_t> &bytes,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots) {
+  appendU64(bytes, roots.size());
+  for (const auto root : roots)
+    appendDataflowRoot(bytes, root);
+}
+
+void appendScheduleHint(std::vector<std::uint8_t> &bytes,
+                        const ResourceTimeScheduleHint &hint) {
+  appendU64(bytes, hint.actions.size());
+  for (const ResourceTimeActionDelta &action : hint.actions) {
+    appendU64(bytes, static_cast<std::uint64_t>(action.kind));
+    bytes.push_back(action.admittedRegion ? 1 : 0);
+    if (action.admittedRegion)
+      appendDataflowRoot(bytes, *action.admittedRegion);
+    appendOptionalU64(bytes, action.speedupPointOrdinal);
+    appendU64(bytes, action.beforeTimePicoseconds);
+    appendU64(bytes, action.afterTimePicoseconds);
+    appendDataflowRoots(bytes, action.completedRegions);
+    appendDataflowRoots(bytes, action.tokenReadyProducers);
+    appendDataflowRoots(bytes, action.newlyReadyRegions);
+  }
+  appendU64(bytes, hint.states.size());
+  for (const ResourceTimeHintState &state : hint.states) {
+    appendU64(bytes, state.timePicoseconds);
+    appendU64(bytes, state.active.size());
+    for (const ResourceTimeHintAllocation &allocation : state.active) {
+      appendDataflowRoot(bytes, allocation.region);
+      appendU64(bytes, allocation.speedupPointOrdinal);
+      appendU64(bytes, allocation.resourceUnits.size());
+      for (std::uint64_t units : allocation.resourceUnits)
+        appendU64(bytes, units);
+      appendU64(bytes, allocation.completionTimePicoseconds);
+    }
+    appendDataflowRoots(bytes, state.ready);
+    appendDataflowRoots(bytes, state.completed);
+    appendU64(bytes, state.optimisticMakespanLowerBoundPicoseconds);
+  }
+  appendU64(bytes, hint.estimatedMakespanPicoseconds);
+  appendU64(bytes, hint.optimisticMakespanLowerBoundPicoseconds);
+  appendU64(bytes, hint.peakConcurrentRegions);
+  appendU64(bytes, hint.totalAllocatedResourceTime);
+  appendU64(bytes, static_cast<std::uint64_t>(hint.support));
 }
 
 std::string
@@ -134,6 +182,17 @@ screenCandidate(const ResourceTimeMappingCandidateInput &candidate,
 
 } // namespace
 
+llvm::Expected<ComponentViewDigest>
+deriveResourceTimeScheduleHintDigest(const ResourceTimeScheduleHint &hint) {
+  std::vector<std::uint8_t> bytes;
+  appendScheduleHint(bytes, hint);
+  return computeComponentViewDigest(
+      {reinterpret_cast<const std::uint8_t *>(
+           resourceTimeScheduleHintDescriptor.data()),
+       resourceTimeScheduleHintDescriptor.size()},
+      bytes);
+}
+
 int incompleteReasonPriority(ResourceTimeFrontierIncompleteReason reason) {
   switch (reason) {
   case ResourceTimeFrontierIncompleteReason::CancelledOrTimeout:
@@ -198,8 +257,7 @@ llvm::Error validateResourceTimeMappingFunnelAccounting(
     return error;
   if (accounting.soundGateRejectedCandidates > accounting.generatedCandidates ||
       accounting.estimatedCandidates > accounting.generatedCandidates ||
-      accounting.incompleteCandidates > accounting.generatedCandidates ||
-      accounting.mappingFinalists > accounting.generatedCandidates)
+      accounting.incompleteCandidates > accounting.generatedCandidates)
     return invalid("resource-time funnel candidate counts exceed generation");
   if (accounting.screenedCandidates > accounting.generatedCandidates ||
       accounting.detailedFrontierCandidates > accounting.screenedCandidates ||
@@ -213,18 +271,16 @@ llvm::Error validateResourceTimeMappingFunnelAccounting(
         *evaluated, accounting.soundGateRejectedCandidates);
   auto promotedAndDeferred = llvm::checkedAddUnsigned(
       accounting.mappingFinalists, accounting.mappingCallsDeferredByModel);
-  auto accounted = promotedAndDeferred
-                       ? llvm::checkedAddUnsigned(
-                             *promotedAndDeferred,
-                             accounting.mappingCallsWithheldByIncomplete)
-                       : std::nullopt;
-  if (accounted)
-    accounted = llvm::checkedAddUnsigned(
-        *accounted, accounting.soundGateRejectedCandidates);
-  if (!evaluated || !promotedAndDeferred || !accounted ||
-      *accounted != *evaluated)
-    return invalid("resource-time funnel promotion counts exceed evaluated "
-                   "candidates");
+  if (!evaluated || !promotedAndDeferred ||
+      *promotedAndDeferred != accounting.mappingEligibleScheduleHints)
+    return invalid("resource-time schedule promotion accounting is not "
+                   "closed");
+  if (accounting.mappingCallsWithheldByIncomplete >
+          accounting.incompleteCandidates ||
+      accounting.mappingCallsAvoidedBySoundGate !=
+          accounting.soundGateRejectedCandidates)
+    return invalid("resource-time Mapping avoidance accounting is not "
+                   "closed");
   auto memoAttempts = llvm::checkedAddUnsigned(
       accounting.exactInvocationMemoHits, accounting.exactInvocationMemoMisses);
   if (memoAttempts)
@@ -256,6 +312,18 @@ llvm::Error validateResourceTimeMappingFunnelAccounting(
   if (accounting.dataflowProjectionCacheEntries >
       accounting.dataflowProjectionCacheMisses)
     return invalid("resource-time projection cache entries exceed misses");
+  if (accounting.mappingPlanCandidates > accounting.mappingFinalists ||
+      accounting.unsupportedBeforeMappingScheduleHints >
+          accounting.mappingFinalists ||
+      accounting.unsupportedBeforeMappingCandidates >
+          accounting.generatedCandidates)
+    return invalid("resource-time application promotion counts exceed their "
+                   "bounded domains");
+  if (accounting.applicationPromotionAccountingComplete &&
+      accounting.mappingPlanCandidates +
+              accounting.unsupportedBeforeMappingScheduleHints !=
+          accounting.mappingFinalists)
+    return invalid("resource-time Mapping finalist disposition is not closed");
   return llvm::Error::success();
 }
 
@@ -661,149 +729,155 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
     result.truncated = true;
   }
 
-  std::vector<const ResourceTimeCandidateFunnelEvaluation *> admissible;
-  std::uint64_t modelEligibleCandidates = 0;
+  struct EligibleHint final {
+    const ResourceTimeCandidateFunnelEvaluation *evaluation = nullptr;
+    const ResourceTimeScheduleHint *hint = nullptr;
+    ComponentViewDigest digest;
+  };
+  std::vector<EligibleHint> eligible;
   std::uint64_t withheldByIncomplete = 0;
-  std::uint64_t deferredByScreening = 0;
   for (const auto &evaluation : result.evaluations) {
     if (evaluation.disposition ==
         ResourceTimeCandidateFunnelDisposition::SoundGateRejected)
       continue;
-    if (!evaluation.detailedFrontierEvaluated) {
-      ++deferredByScreening;
+    if (!evaluation.detailedFrontierEvaluated)
       continue;
-    }
     // A timeout is a terminal incomplete checkpoint for this invocation. A
     // budget-bounded candidate may still promote a retained hint, but no
     // candidate without an explicit hint may trigger real Mapping work.
-    if (!evaluation.bestHint ||
+    if (evaluation.retainedHints.empty() ||
         (evaluation.incompleteReason &&
          *evaluation.incompleteReason ==
              ResourceTimeFrontierIncompleteReason::CancelledOrTimeout)) {
       ++withheldByIncomplete;
       continue;
     }
-    ++modelEligibleCandidates;
-    admissible.push_back(&evaluation);
-  }
-  const auto candidateLess = [](const auto *lhs, const auto *rhs) {
-    if (lhs->bestHint.has_value() != rhs->bestHint.has_value())
-      return lhs->bestHint.has_value();
-    if (lhs->bestHint) {
-      if (hintLess(*lhs->bestHint, *rhs->bestHint))
-        return true;
-      if (hintLess(*rhs->bestHint, *lhs->bestHint))
-        return false;
+    for (const ResourceTimeScheduleHint &hint : evaluation.retainedHints) {
+      auto digest = deriveResourceTimeScheduleHintDigest(hint);
+      if (!digest)
+        return digest.takeError();
+      const bool duplicate = llvm::any_of(eligible, [&](const auto &existing) {
+        return existing.evaluation->candidateIdentity ==
+                   evaluation.candidateIdentity &&
+               existing.digest == *digest;
+      });
+      if (duplicate)
+        return invalid("resource-time candidate has duplicate schedule "
+                       "provenance");
+      eligible.push_back({&evaluation, &hint, *digest});
     }
-    return lhs->candidateIdentity.bytes() < rhs->candidateIdentity.bytes();
+  }
+  const auto entryLess = [](const EligibleHint *lhs, const EligibleHint *rhs) {
+    if (hintLess(*lhs->hint, *rhs->hint))
+      return true;
+    if (hintLess(*rhs->hint, *lhs->hint))
+      return false;
+    if (lhs->evaluation->candidateIdentity !=
+        rhs->evaluation->candidateIdentity)
+      return lhs->evaluation->candidateIdentity.bytes() <
+             rhs->evaluation->candidateIdentity.bytes();
+    return lhs->digest.bytes() < rhs->digest.bytes();
   };
-  llvm::sort(admissible, candidateLess);
+  std::vector<const EligibleHint *> rankedHints;
+  rankedHints.reserve(eligible.size());
+  for (const EligibleHint &entry : eligible)
+    rankedHints.push_back(&entry);
+  llvm::sort(rankedHints, entryLess);
   const std::uint64_t limit = std::min<std::uint64_t>(
-      policy.maximumMappingFinalists, admissible.size());
-  const auto append = [&](const ResourceTimeCandidateFunnelEvaluation *value) {
-    if (!value || result.preferenceOrder.size() == limit ||
-        llvm::is_contained(result.preferenceOrder, value->candidateIdentity))
+      policy.maximumMappingFinalists, rankedHints.size());
+  std::vector<const EligibleHint *> selected;
+  selected.reserve(limit);
+  const auto append = [&](const EligibleHint *value) {
+    if (!value || selected.size() == limit ||
+        llvm::is_contained(selected, value))
       return;
-    result.preferenceOrder.push_back(value->candidateIdentity);
+    selected.push_back(value);
   };
-  if (!admissible.empty())
-    append(admissible.front());
-  const ResourceTimeCandidateFunnelEvaluation *minimumConcurrency = nullptr;
-  const ResourceTimeCandidateFunnelEvaluation *maximumConcurrency = nullptr;
-  for (const auto *candidate : admissible) {
-    if (!candidate->bestHint)
-      continue;
+  if (!rankedHints.empty())
+    append(rankedHints.front());
+  const EligibleHint *minimumConcurrency = nullptr;
+  const EligibleHint *maximumConcurrency = nullptr;
+  for (const EligibleHint *candidate : rankedHints) {
     if (!minimumConcurrency ||
-        std::tie(candidate->bestHint->peakConcurrentRegions,
-                 candidate->bestHint->estimatedMakespanPicoseconds) <
-            std::tie(
-                minimumConcurrency->bestHint->peakConcurrentRegions,
-                minimumConcurrency->bestHint->estimatedMakespanPicoseconds))
+        std::tie(candidate->hint->peakConcurrentRegions,
+                 candidate->hint->estimatedMakespanPicoseconds) <
+            std::tie(minimumConcurrency->hint->peakConcurrentRegions,
+                     minimumConcurrency->hint->estimatedMakespanPicoseconds))
       minimumConcurrency = candidate;
     if (!maximumConcurrency ||
-        candidate->bestHint->peakConcurrentRegions >
-            maximumConcurrency->bestHint->peakConcurrentRegions ||
-        (candidate->bestHint->peakConcurrentRegions ==
-             maximumConcurrency->bestHint->peakConcurrentRegions &&
-         candidate->bestHint->estimatedMakespanPicoseconds <
-             maximumConcurrency->bestHint->estimatedMakespanPicoseconds))
+        candidate->hint->peakConcurrentRegions >
+            maximumConcurrency->hint->peakConcurrentRegions ||
+        (candidate->hint->peakConcurrentRegions ==
+             maximumConcurrency->hint->peakConcurrentRegions &&
+         candidate->hint->estimatedMakespanPicoseconds <
+             maximumConcurrency->hint->estimatedMakespanPicoseconds))
       maximumConcurrency = candidate;
   }
   append(minimumConcurrency);
   append(maximumConcurrency);
-  const ResourceTimeCandidateFunnelEvaluation *minimumCoverage = nullptr;
-  const ResourceTimeCandidateFunnelEvaluation *maximumCoverage = nullptr;
-  for (const auto *candidate : admissible) {
+  const EligibleHint *minimumCoverage = nullptr;
+  const EligibleHint *maximumCoverage = nullptr;
+  for (const EligibleHint *candidate : rankedHints) {
+    const auto *evaluation = candidate->evaluation;
     if (!minimumCoverage ||
-        std::tie(
-            candidate->acceleratedRegionCount, candidate->acceleratedGraphCount,
-            candidate->acceleratedActorCount, candidate->inputPreferenceRank) <
-            std::tie(minimumCoverage->acceleratedRegionCount,
-                     minimumCoverage->acceleratedGraphCount,
-                     minimumCoverage->acceleratedActorCount,
-                     minimumCoverage->inputPreferenceRank))
+        std::tie(evaluation->acceleratedRegionCount,
+                 evaluation->acceleratedGraphCount,
+                 evaluation->acceleratedActorCount,
+                 evaluation->inputPreferenceRank) <
+            std::tie(minimumCoverage->evaluation->acceleratedRegionCount,
+                     minimumCoverage->evaluation->acceleratedGraphCount,
+                     minimumCoverage->evaluation->acceleratedActorCount,
+                     minimumCoverage->evaluation->inputPreferenceRank))
       minimumCoverage = candidate;
     if (!maximumCoverage ||
-        candidate->acceleratedRegionCount >
-            maximumCoverage->acceleratedRegionCount ||
-        (candidate->acceleratedRegionCount ==
-             maximumCoverage->acceleratedRegionCount &&
-         candidate->acceleratedGraphCount >
-             maximumCoverage->acceleratedGraphCount) ||
-        (candidate->acceleratedRegionCount ==
-             maximumCoverage->acceleratedRegionCount &&
-         candidate->acceleratedGraphCount ==
-             maximumCoverage->acceleratedGraphCount &&
-         candidate->acceleratedActorCount >
-             maximumCoverage->acceleratedActorCount))
+        evaluation->acceleratedRegionCount >
+            maximumCoverage->evaluation->acceleratedRegionCount ||
+        (evaluation->acceleratedRegionCount ==
+             maximumCoverage->evaluation->acceleratedRegionCount &&
+         evaluation->acceleratedGraphCount >
+             maximumCoverage->evaluation->acceleratedGraphCount) ||
+        (evaluation->acceleratedRegionCount ==
+             maximumCoverage->evaluation->acceleratedRegionCount &&
+         evaluation->acceleratedGraphCount ==
+             maximumCoverage->evaluation->acceleratedGraphCount &&
+         evaluation->acceleratedActorCount >
+             maximumCoverage->evaluation->acceleratedActorCount))
       maximumCoverage = candidate;
   }
   append(minimumCoverage);
   append(maximumCoverage);
-  const ResourceTimeCandidateFunnelEvaluation *maximumConcentration = nullptr;
-  for (const auto *candidate : admissible)
+  const EligibleHint *maximumConcentration = nullptr;
+  for (const EligibleHint *candidate : rankedHints)
     if (!maximumConcentration ||
-        candidate->maximumUsefulResourceUnits >
-            maximumConcentration->maximumUsefulResourceUnits ||
-        (candidate->maximumUsefulResourceUnits ==
-             maximumConcentration->maximumUsefulResourceUnits &&
-         candidateLess(candidate, maximumConcentration)))
+        candidate->evaluation->maximumUsefulResourceUnits >
+            maximumConcentration->evaluation->maximumUsefulResourceUnits ||
+        (candidate->evaluation->maximumUsefulResourceUnits ==
+             maximumConcentration->evaluation->maximumUsefulResourceUnits &&
+         entryLess(candidate, maximumConcentration)))
       maximumConcentration = candidate;
   append(maximumConcentration);
-  if (!admissible.empty()) {
-    const auto canonical =
-        *std::min_element(admissible.begin(), admissible.end(),
-                          [](const auto *lhs, const auto *rhs) {
-                            return lhs->candidateIdentity.bytes() <
-                                   rhs->candidateIdentity.bytes();
-                          });
+  if (!rankedHints.empty()) {
+    const auto canonical = *std::min_element(
+        rankedHints.begin(), rankedHints.end(),
+        [](const auto *lhs, const auto *rhs) {
+          if (lhs->evaluation->candidateIdentity !=
+              rhs->evaluation->candidateIdentity)
+            return lhs->evaluation->candidateIdentity.bytes() <
+                   rhs->evaluation->candidateIdentity.bytes();
+          return lhs->digest.bytes() < rhs->digest.bytes();
+        });
     append(canonical);
   }
-  for (const auto *candidate : admissible)
+  for (const EligibleHint *candidate : rankedHints)
     append(candidate);
-  // Keep the analytic order for promotion. Input preference is a stable
-  // tie-break inside the model order, not an authority that can undo the
-  // cheap-to-expensive ranking before a real Mapping dispatch.
-  llvm::sort(result.preferenceOrder, [&](const ComponentViewDigest &lhs,
-                                         const ComponentViewDigest &rhs) {
-    const auto left = llvm::find_if(admissible, [&](const auto *candidate) {
-      return candidate->candidateIdentity == lhs;
-    });
-    const auto right = llvm::find_if(admissible, [&](const auto *candidate) {
-      return candidate->candidateIdentity == rhs;
-    });
-    if (left == admissible.end() || right == admissible.end())
-      return lhs.bytes() < rhs.bytes();
-    if (candidateLess(*left, *right))
-      return true;
-    if (candidateLess(*right, *left))
-      return false;
-    return (*left)->inputPreferenceRank < (*right)->inputPreferenceRank;
-  });
-  result.accounting.mappingFinalists = result.preferenceOrder.size();
-  result.accounting.mappingCallsDeferredByModel = deferredByScreening +
-                                                  modelEligibleCandidates -
-                                                  result.preferenceOrder.size();
+  llvm::sort(selected, entryLess);
+  for (const EligibleHint *candidate : selected)
+    result.finalists.push_back(
+        {candidate->evaluation->candidateIdentity, candidate->digest});
+  result.accounting.mappingEligibleScheduleHints = eligible.size();
+  result.accounting.mappingFinalists = result.finalists.size();
+  result.accounting.mappingCallsDeferredByModel =
+      eligible.size() - result.finalists.size();
   result.accounting.mappingCallsWithheldByIncomplete = withheldByIncomplete;
   const ResourceTimeFrontierSessionStatistics sessionStatistics =
       session->statistics();
@@ -811,7 +885,7 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
   result.accounting.exactInvocationMemoRetainedBytes =
       sessionStatistics.retainedBytes;
   result.truncated = result.truncated ||
-                     result.preferenceOrder.size() < admissible.size() ||
+                     result.finalists.size() < eligible.size() ||
                      result.evaluations.size() < candidates.size() ||
                      result.accounting.successiveHalvingDeferredCandidates != 0;
   result.accounting.elapsedNanoseconds =

@@ -288,6 +288,11 @@ struct ResourceTimeScheduleHint final {
       ResourceTimeEstimateSupport::Unsupported;
 };
 
+/// Stable evaluation provenance for one schedule proposal. This digest is not
+/// software candidate identity and never supplies Mapping legality.
+llvm::Expected<ComponentViewDigest>
+deriveResourceTimeScheduleHintDigest(const ResourceTimeScheduleHint &hint);
+
 enum class ResourceTimeFrontierIncompleteReason : std::uint8_t {
   BudgetExhausted,
   CancelledOrTimeout,
@@ -449,6 +454,7 @@ struct ResourceTimeMappingFunnelAccounting final {
   std::uint64_t soundGateRejectedCandidates = 0;
   std::uint64_t estimatedCandidates = 0;
   std::uint64_t incompleteCandidates = 0;
+  std::uint64_t mappingEligibleScheduleHints = 0;
   std::uint64_t mappingFinalists = 0;
   /// Counts are filled by the application owner after the analytic funnel.
   /// They make the cheap-to-expensive boundary auditable without implying
@@ -467,6 +473,11 @@ struct ResourceTimeMappingFunnelAccounting final {
   std::uint64_t dataflowMaterializedCandidates = 0;
   std::uint64_t mappingPlanCandidates = 0;
   std::uint64_t unsupportedBeforeMappingCandidates = 0;
+  std::uint64_t unsupportedBeforeMappingScheduleHints = 0;
+  /// Application owner sets this after schedule finalists have been promoted
+  /// or typed-unsupported before PnR. The analytic funnel alone has no plan
+  /// disposition to validate.
+  bool applicationPromotionAccountingComplete = false;
   std::uint64_t mappingCallsAvoidedBySoundGate = 0;
   std::uint64_t mappingCallsDeferredByModel = 0;
   std::uint64_t mappingCallsWithheldByIncomplete = 0;
@@ -487,9 +498,20 @@ struct ResourceTimeMappingFunnelAccounting final {
   std::uint64_t elapsedNanoseconds = 0;
 };
 
+struct ResourceTimeMappingFinalist final {
+  ComponentViewDigest candidateIdentity;
+  ComponentViewDigest scheduleHintDigest;
+
+  friend bool operator==(const ResourceTimeMappingFinalist &lhs,
+                         const ResourceTimeMappingFinalist &rhs) {
+    return lhs.candidateIdentity == rhs.candidateIdentity &&
+           lhs.scheduleHintDigest == rhs.scheduleHintDigest;
+  }
+};
+
 struct ResourceTimeMappingFunnel final {
   std::vector<ResourceTimeCandidateFunnelEvaluation> evaluations;
-  std::vector<ComponentViewDigest> preferenceOrder;
+  std::vector<ResourceTimeMappingFinalist> finalists;
   ResourceTimeMappingFunnelAccounting accounting;
   bool truncated = false;
   std::optional<ResourceTimeFrontierIncompleteReason> incompleteReason;
