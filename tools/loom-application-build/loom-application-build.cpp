@@ -709,6 +709,14 @@ executeProductMapping(
     }();
     const bool verified = llvm::any_of(
         execution->candidateOutcomes, [&](const auto &outcome) {
+          if (execution->execution.summary.selectedPlanOrdinal &&
+              outcome.planOrdinal !=
+                  *execution->execution.summary.selectedPlanOrdinal)
+            return false;
+          if (!execution->execution.summary.selectedMapping ||
+              !llvm::is_contained(outcome.systemMappings,
+                                  *execution->execution.summary.selectedMapping))
+            return false;
           if (!outcome.resourceTimeSpectrum)
             return false;
           const auto *spectrum = std::get_if<loom::dse::VerifiedResourceTimeSpectrum>(
