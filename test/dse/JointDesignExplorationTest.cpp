@@ -298,7 +298,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
   for (const auto &module : targetModules)
     identityModuleCorrespondence.push_back({module, module});
   loom::dse::HardwareImpactProjection systemOnlyImpact{
-      system, system, {}, {}, {}};
+      system, system, {}, {}, {}, {}};
   systemOnlyImpact.family =
       loom::dse::HardwareMutationFamily::SystemTransport;
   systemOnlyImpact.locality = loom::dse::HardwareMutationLocality::LocalCone;
@@ -441,7 +441,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
       take(loom::fabric::FabricModulePhysicalOwnerRef::create(
           targetModule.view().fuOccurrences().front()));
   loom::dse::HardwareImpactProjection localSpatialImpact{
-      targetModules.front(), system, {}, {}, {}};
+      targetModules.front(), system, {}, {}, {}, {}};
   localSpatialImpact.family = loom::dse::HardwareMutationFamily::SpatialFifo;
   localSpatialImpact.locality =
       loom::dse::HardwareMutationLocality::LocalCone;

@@ -1649,6 +1649,8 @@ projectSystemEntityCorrespondence(
   result.reserve(labeling.carriers.size());
   std::set<std::pair<FabricEntityKind, FabricEntityId>> sourceKeys;
   std::set<std::pair<FabricEntityKind, FabricEntityId>> targetKeys;
+  std::map<std::pair<FabricEntityKind, FabricEntityId>, Operation *>
+      sourceOperations;
   for (const detail::FabricSystemEntityCarrier &carrier : labeling.carriers) {
     if (!carrier.op)
       return invalid("System canonical entity has no operation carrier");
@@ -1793,9 +1795,90 @@ llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
                                   std::move(transferPatterns)};
 }
 
-llvm::Expected<OwningOpRef<ModuleOp>> buildCanonicalCandidate(
+struct CanonicalModuleCandidate final {
+  OwningOpRef<ModuleOp> module;
+  std::vector<FabricModuleEntityCorrespondence> entities;
+};
+
+std::optional<FabricEntityKind> moduleOccurrenceKind(Operation *operation) {
+  if (isa<::fabric::ModuleOp>(operation))
+    return FabricEntityKind::FabricModuleTemplate;
+  if (isa<::fabric::PeOp>(operation))
+    return FabricEntityKind::FabricPeOccurrence;
+  if (isa<::fabric::FuOp>(operation))
+    return FabricEntityKind::FabricFuOccurrence;
+  if (isa<::fabric::MemOp>(operation))
+    return FabricEntityKind::FabricMemoryOccurrence;
+  if (isa<::fabric::SwitchOp>(operation))
+    return FabricEntityKind::FabricSwitchOccurrence;
+  if (isa<::fabric::FifoOp>(operation))
+    return FabricEntityKind::FabricFifoOccurrence;
+  if (isa<::fabric::BoundaryOp>(operation))
+    return FabricEntityKind::FabricBoundaryOccurrence;
+  return std::nullopt;
+}
+
+llvm::Expected<std::vector<FabricModuleEntityCorrespondence>>
+projectModuleEntityCorrespondence(
+    const std::map<Operation *, FabricModuleEntityReference> &authored,
+    const detail::FabricCanonicalLabeling &labeling) {
+  std::vector<FabricModuleEntityCorrespondence> result;
+  std::set<std::pair<FabricEntityKind, FabricEntityId>> sourceKeys;
+  std::set<std::pair<FabricEntityKind, FabricEntityId>> targetKeys;
+  std::map<Operation *, FabricEntityId> targetByOperation;
+  std::map<FabricEntityKind, std::uint64_t> targetOrdinals;
+  for (const detail::FabricEntityCarrier &carrier : labeling.carriers) {
+    if (!carrier.op)
+      continue;
+    const auto priorTarget = targetByOperation.find(carrier.op);
+    if (priorTarget != targetByOperation.end()) {
+      if (priorTarget->second != carrier.id)
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "fabric_module_correspondence_invalid: one operation has "
+            "multiple canonical entity IDs");
+      continue;
+    }
+    targetByOperation.emplace(carrier.op, carrier.id);
+    const auto source = authored.find(carrier.op);
+    if (source == authored.end() || source->second.kind != carrier.kind)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "fabric_module_correspondence_invalid: Module canonical entity has "
+          "no authored correspondence kind=" +
+              llvm::Twine(static_cast<std::uint32_t>(carrier.kind)) +
+              " authored_count=" + llvm::Twine(authored.size()));
+    const auto sourceKey = std::make_pair(
+        source->second.kind, source->second.occurrenceOrdinal);
+    const auto targetOrdinal = targetOrdinals[carrier.kind]++;
+    const auto targetKey = std::make_pair(carrier.kind, targetOrdinal);
+    const bool sourceInserted = sourceKeys.insert(sourceKey).second;
+    const bool targetInserted = targetKeys.insert(targetKey).second;
+    if (!sourceInserted || !targetInserted) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "fabric_module_correspondence_invalid: Module entity "
+          "correspondence is not one-to-one");
+    }
+    result.push_back(
+        {source->second, {carrier.kind, carrier.id, targetOrdinal}});
+  }
+  if (result.size() != authored.size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "fabric_module_correspondence_invalid: Module entity "
+        "correspondence is incomplete");
+  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.source.kind, lhs.source.occurrenceOrdinal) <
+           std::tie(rhs.source.kind, rhs.source.occurrenceOrdinal);
+  });
+  return result;
+}
+
+llvm::Expected<CanonicalModuleCandidate> buildCanonicalCandidate(
     ::fabric::ModuleOp source,
-    const ::fabric::ModuleDomainAuthoringRelation *domainRelation) {
+    const ::fabric::ModuleDomainAuthoringRelation *domainRelation,
+    bool captureCorrespondence) {
   auto sourceModule = source->getParentOfType<ModuleOp>();
   if (!sourceModule || source->getParentOp() != sourceModule.getOperation())
     return invalid("the selected Fabric Module must be top-level");
@@ -1810,6 +1893,26 @@ llvm::Expected<OwningOpRef<ModuleOp>> buildCanonicalCandidate(
   auto clonedRoot = dyn_cast_or_null<::fabric::ModuleOp>(clonedOperation);
   if (!clonedRoot)
     return invalid("the selected Fabric root was not cloned");
+
+  std::map<Operation *, FabricModuleEntityReference> authoredEntities;
+  if (captureCorrespondence) {
+    std::map<FabricEntityKind, std::uint64_t> authoredOrdinals;
+    clonedRoot->walk([&](Operation *operation) {
+      const auto kind = moduleOccurrenceKind(operation);
+      if (!kind)
+        return;
+      auto id = operation->getAttrOfType<::fabric::EntityIdAttr>(
+          ::fabric::kEntityIdAttrName);
+      if (id)
+        authoredEntities.emplace(
+            operation,
+            FabricModuleEntityReference{*kind, id.getId(),
+                                        authoredOrdinals[*kind]++});
+    });
+    if (authoredEntities.empty())
+      return invalid(
+          "Module correspondence capture requires canonical parent IDs");
+  }
 
   std::optional<::fabric::ModuleDomainAuthoringRelation> remappedDomain;
   if (domainRelation && domainRelation->hasDomainAuthoring()) {
@@ -1873,6 +1976,14 @@ llvm::Expected<OwningOpRef<ModuleOp>> buildCanonicalCandidate(
       clonedRoot, *normalizedDomain);
   if (!reordered)
     return reordered.takeError();
+  std::vector<FabricModuleEntityCorrespondence> entities;
+  if (captureCorrespondence) {
+    auto projected =
+        projectModuleEntityCorrespondence(authoredEntities, *reordered);
+    if (!projected)
+      return projected.takeError();
+    entities = std::move(*projected);
+  }
   if (llvm::Error error = detail::materializeFabricCanonicalIds(*reordered))
     return std::move(error);
   if (llvm::Error error = detail::materializeFabricModuleDomainRelation(
@@ -1880,7 +1991,7 @@ llvm::Expected<OwningOpRef<ModuleOp>> buildCanonicalCandidate(
     return std::move(error);
   if (failed(verify(*scratch)))
     return invalid("canonical Fabric IDs produced invalid IR");
-  return std::move(scratch);
+  return CanonicalModuleCandidate{std::move(scratch), std::move(entities)};
 }
 
 } // namespace
@@ -1891,14 +2002,16 @@ finalizeFabricRoot(::fabric::ModuleOp source, const ArtifactStore &store) {
   return finalizeFabricRoot(source, empty, store);
 }
 
-llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
+llvm::Expected<FinalizedFabricModuleProjection> detail::finalizeFabricModule(
     ::fabric::ModuleOp source,
     const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
-    const ArtifactStore &store) {
-  auto candidate = buildCanonicalCandidate(source, &domainRelation);
+    const ArtifactStore &store, bool captureCorrespondence) {
+  auto candidate =
+      buildCanonicalCandidate(source, &domainRelation, captureCorrespondence);
   if (!candidate)
     return candidate.takeError();
-  auto bytecode = detail::writeCanonicalFabricBytecode(candidate->get());
+  auto bytecode =
+      detail::writeCanonicalFabricBytecode(candidate->module.get());
   if (!bytecode)
     return bytecode.takeError();
   auto canonical =
@@ -1920,9 +2033,30 @@ llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
     return stored.takeError();
   if (*stored != reference.artifact)
     return invalid("ArtifactStore returned a different Fabric identity");
-  return FinalizedFabricRoot(reference, std::move(*canonical),
-                             (*imported)->decoded.dependencies,
-                             (*imported)->view);
+  return FinalizedFabricModuleProjection{
+      FinalizedFabricRoot(reference, std::move(*canonical),
+                          (*imported)->decoded.dependencies,
+                          (*imported)->view),
+      std::move(candidate->entities)};
+}
+
+llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+    const ArtifactStore &store) {
+  auto finalized =
+      detail::finalizeFabricModule(source, domainRelation, store, false);
+  if (!finalized)
+    return finalized.takeError();
+  return std::move(finalized->root);
+}
+
+llvm::Expected<FinalizedFabricModuleProjection>
+finalizeFabricModuleWithCorrespondence(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+    const ArtifactStore &store) {
+  return detail::finalizeFabricModule(source, domainRelation, store, true);
 }
 
 llvm::Expected<FinalizedFabricSystemProjection> detail::finalizeFabricSystem(

@@ -161,7 +161,7 @@ bool isRejectedDraftError(llvm::Error error, std::string &unexpected) {
   return false;
 }
 
-llvm::Expected<std::optional<loom::fabric::FinalizedFabricRoot>>
+llvm::Expected<std::optional<loom::fabric::FinalizedFabricModuleProjection>>
 materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
                  const SpatialMicroarchitectureDecision &decision,
                  const ArtifactStore &store) {
@@ -172,30 +172,28 @@ materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
   if (llvm::Error error = applyDecision(*builder, decision)) {
     std::string unexpected;
     if (isRejectedDraftError(std::move(error), unexpected))
-      return std::optional<loom::fabric::FinalizedFabricRoot>();
+      return std::optional<loom::fabric::FinalizedFabricModuleProjection>();
     return llvm::createStringError(llvm::inconvertibleErrorCode(), unexpected);
   }
   if (llvm::Error error = builder->closeDerived()) {
     std::string unexpected;
     if (isRejectedDraftError(std::move(error), unexpected))
-      return std::optional<loom::fabric::FinalizedFabricRoot>();
+      return std::optional<loom::fabric::FinalizedFabricModuleProjection>();
     return llvm::createStringError(llvm::inconvertibleErrorCode(), unexpected);
   }
-  auto finalized = std::move(design).finalize();
+  auto finalized =
+      std::move(design).finalizeDerivedSpatialCoreWithCorrespondence();
   if (!finalized) {
     std::string unexpected;
     if (isRejectedDraftError(finalized.takeError(), unexpected))
-      return std::optional<loom::fabric::FinalizedFabricRoot>();
+      return std::optional<loom::fabric::FinalizedFabricModuleProjection>();
     return llvm::createStringError(llvm::inconvertibleErrorCode(), unexpected);
   }
-  if (finalized->roots().size() != 1)
-    return invalid(
-        "one microarchitecture decision did not finalize one Module child");
   if (llvm::Error error =
-          validateHardwareTopologyQuality(finalized->roots().front().view()))
+          validateHardwareTopologyQuality(finalized->root.view()))
     return std::move(error);
-  return std::optional<loom::fabric::FinalizedFabricRoot>(
-      finalized->roots().front());
+  return std::optional<loom::fabric::FinalizedFabricModuleProjection>(
+      std::move(*finalized));
 }
 
 llvm::Error validateLineagePayload(
@@ -209,7 +207,12 @@ llvm::Error validateLineagePayload(
   auto parent = loom::fabric::importEntireFabricRoot(decision->parent, store);
   if (!parent)
     return parent.takeError();
-  return validateDecisionAgainstParent(decision->decision, parent->view());
+  if (llvm::Error error =
+          validateDecisionAgainstParent(decision->decision, parent->view()))
+    return error;
+  if (decision->entities.empty())
+    return invalid("microarchitecture lineage has no Module correspondence");
+  return llvm::Error::success();
 }
 
 const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
@@ -272,7 +275,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         return child.takeError();
       if (!*child)
         continue;
-      const ArtifactRootReference childReference = (*child)->reference();
+      const ArtifactRootReference childReference = (*child)->root.reference();
       if (childReference == parentReference)
         continue;
       if (llvm::none_of(outputs, [&](const auto &existing) {
@@ -284,7 +287,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
           CandidateGeneratorOutputSlotRef(0),
           childReference,
           {parentReference},
-          encodeSpatialMicroarchitectureDecision(parentReference, decision)});
+          encodeSpatialMicroarchitectureDecision(parentReference, decision,
+                                                 (*child)->entities)});
     }
   }
   return CandidateGeneratorProviderResult{

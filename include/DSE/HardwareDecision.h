@@ -340,7 +340,9 @@ encodeSpatialTopologyDecision(const ArtifactRootReference &parent,
                               const SpatialTopologyDecision &decision);
 std::vector<std::uint8_t> encodeSpatialMicroarchitectureDecision(
     const ArtifactRootReference &parent,
-    const SpatialMicroarchitectureDecision &decision);
+    const SpatialMicroarchitectureDecision &decision,
+    llvm::ArrayRef<loom::fabric::FabricModuleEntityCorrespondence> entities =
+        {});
 std::vector<std::uint8_t> encodeSystemCompositionDecision(
     const ArtifactRootReference &parent,
     const SystemCompositionDecision &decision,
@@ -356,6 +358,7 @@ struct SpatialTopologyCandidateDecision final {
 struct SpatialMicroarchitectureCandidateDecision final {
   ArtifactRootReference parent;
   SpatialMicroarchitectureDecision decision;
+  std::vector<loom::fabric::FabricModuleEntityCorrespondence> entities;
 };
 
 struct SystemCompositionCandidateDecision final {
@@ -432,6 +435,7 @@ hardwareMutationLocalitySpelling(HardwareMutationLocality locality);
 struct HardwareImpactProjection final {
   ArtifactRootReference parent;
   std::optional<ArtifactRootReference> child;
+  std::vector<loom::fabric::FabricModuleEntityCorrespondence> moduleEntities;
   TechMappingImpactProjection tech;
   SpatialMappingImpactProjection spatial;
   SystemMappingImpactProjection system;

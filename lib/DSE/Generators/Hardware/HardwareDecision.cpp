@@ -78,7 +78,7 @@ namespace {
 constexpr llvm::StringLiteral topologySchema =
     "loom.spatial_topology_candidate_decision.1.0";
 constexpr llvm::StringLiteral microarchitectureSchema =
-    "loom.spatial_microarchitecture_candidate_decision.2.1";
+    "loom.spatial_microarchitecture_candidate_decision.3.0";
 constexpr llvm::StringLiteral systemSchema =
     "loom.system_composition_candidate_decision.3.0";
 
@@ -683,6 +683,82 @@ llvm::Error validateEntityCorrespondence(
   return llvm::Error::success();
 }
 
+llvm::Error validateModuleEntityCorrespondence(
+    llvm::ArrayRef<loom::fabric::FabricModuleEntityCorrespondence>
+        correspondence) {
+  std::optional<std::pair<loom::fabric::FabricEntityKind, std::uint64_t>>
+      previousSource;
+  std::set<std::pair<loom::fabric::FabricEntityKind, std::uint64_t>>
+      targetKeys;
+  for (const auto &entry : correspondence) {
+    const auto source =
+        std::make_pair(entry.source.kind, entry.source.occurrenceOrdinal);
+    const auto target =
+        std::make_pair(entry.target.kind, entry.target.occurrenceOrdinal);
+    if (entry.source.kind != entry.target.kind)
+      return invalid("Module entity lineage changes an entity kind");
+    if (previousSource && !(*previousSource < source))
+      return invalid("Module entity lineage sources are not canonical");
+    previousSource = source;
+    if (!targetKeys.insert(target).second)
+      return invalid("Module entity lineage maps two sources to one target");
+  }
+  return llvm::Error::success();
+}
+
+void writeModuleEntityCorrespondence(
+    Writer &writer,
+    llvm::ArrayRef<loom::fabric::FabricModuleEntityCorrespondence>
+        correspondence) {
+  writer.u64(correspondence.size());
+  for (const auto &entry : correspondence) {
+    writer.u32(static_cast<std::uint32_t>(entry.source.kind));
+    writer.u64(entry.source.id);
+    writer.u64(entry.source.occurrenceOrdinal);
+    writer.u64(entry.target.id);
+    writer.u64(entry.target.occurrenceOrdinal);
+  }
+}
+
+llvm::Expected<std::vector<loom::fabric::FabricModuleEntityCorrespondence>>
+readModuleEntityCorrespondence(Reader &reader) {
+  auto count = reader.u64();
+  if (!count)
+    return count.takeError();
+  if (*count > reader.remaining())
+    return invalid("Module entity lineage count exceeds its payload");
+  std::vector<loom::fabric::FabricModuleEntityCorrespondence> result;
+  result.reserve(*count);
+  const std::uint32_t kindCount = loom::fabric::fabricClosedBound(
+      loom::fabric::FabricEntityKind());
+  for (std::uint64_t ordinal = 0; ordinal != *count; ++ordinal) {
+    auto rawKind = reader.u32();
+    if (!rawKind)
+      return rawKind.takeError();
+    if (*rawKind >= kindCount)
+      return invalid("Module entity lineage has an unknown entity kind");
+    auto source = reader.u64();
+    if (!source)
+      return source.takeError();
+    auto sourceOrdinal = reader.u64();
+    if (!sourceOrdinal)
+      return sourceOrdinal.takeError();
+    auto target = reader.u64();
+    if (!target)
+      return target.takeError();
+    auto targetOrdinal = reader.u64();
+    if (!targetOrdinal)
+      return targetOrdinal.takeError();
+    const auto kind =
+        static_cast<loom::fabric::FabricEntityKind>(*rawKind);
+    result.push_back(
+        {{kind, *source, *sourceOrdinal}, {kind, *target, *targetOrdinal}});
+  }
+  if (llvm::Error error = validateModuleEntityCorrespondence(result))
+    return std::move(error);
+  return result;
+}
+
 void writeEntityCorrespondence(
     Writer &writer,
     llvm::ArrayRef<loom::fabric::FabricSystemEntityCorrespondence>
@@ -1279,8 +1355,14 @@ encodeSpatialTopologyDecision(const ArtifactRootReference &parent,
 
 std::vector<std::uint8_t> encodeSpatialMicroarchitectureDecision(
     const ArtifactRootReference &parent,
-    const SpatialMicroarchitectureDecision &decision) {
-  return encodeDecision(parent, decision, writeMicroarchitectureBody);
+    const SpatialMicroarchitectureDecision &decision,
+    llvm::ArrayRef<loom::fabric::FabricModuleEntityCorrespondence> entities) {
+  Writer writer;
+  writer.u32(2);
+  writer.root(parent);
+  writeMicroarchitectureBody(writer, decision);
+  writeModuleEntityCorrespondence(writer, entities);
+  return writer.take();
 }
 
 std::vector<std::uint8_t> encodeSystemCompositionDecision(
@@ -1306,8 +1388,25 @@ adoptSpatialTopologyDecision(llvm::ArrayRef<std::uint8_t> bytes) {
 
 llvm::Expected<SpatialMicroarchitectureCandidateDecision>
 adoptSpatialMicroarchitectureDecision(llvm::ArrayRef<std::uint8_t> bytes) {
-  return adoptDecision<SpatialMicroarchitectureCandidateDecision>(
-      bytes, readMicroarchitectureBody);
+  Reader reader(bytes);
+  auto version = reader.u32();
+  if (!version)
+    return version.takeError();
+  if (*version != 2)
+    return invalid("unsupported microarchitecture candidate decision version");
+  auto parent = reader.root();
+  if (!parent)
+    return parent.takeError();
+  auto decision = readMicroarchitectureBody(reader);
+  if (!decision)
+    return decision.takeError();
+  auto entities = readModuleEntityCorrespondence(reader);
+  if (!entities)
+    return entities.takeError();
+  if (reader.empty())
+    return SpatialMicroarchitectureCandidateDecision{
+        std::move(*parent), std::move(*decision), std::move(*entities)};
+  return invalid("microarchitecture candidate decision has trailing bytes");
 }
 
 llvm::Expected<SystemCompositionCandidateDecision>
@@ -1389,7 +1488,7 @@ HardwareImpactProjection projectHardwareImpact(
     const SpatialTopologyCandidateDecision &candidate,
     std::optional<ArtifactRootReference> child) {
   HardwareImpactProjection impact{candidate.parent, std::move(child), {}, {},
-                                  {}};
+                                  {}, {}};
   impact.tech.kind = HardwareMappingImpactKind::Rebase;
   impact.spatial.kind = HardwareMappingImpactKind::Rebase;
   impact.system.kind = HardwareMappingImpactKind::Rebase;
@@ -1434,7 +1533,8 @@ HardwareImpactProjection projectHardwareImpact(
     const SpatialMicroarchitectureCandidateDecision &candidate,
     std::optional<ArtifactRootReference> child) {
   HardwareImpactProjection impact{candidate.parent, std::move(child), {}, {},
-                                  {}};
+                                  {}, {}};
+  impact.moduleEntities = candidate.entities;
   impact.tech.kind = HardwareMappingImpactKind::Rebase;
   impact.spatial.kind = HardwareMappingImpactKind::Rebase;
   impact.system.kind = HardwareMappingImpactKind::Rebase;
@@ -1505,7 +1605,7 @@ HardwareImpactProjection projectHardwareImpact(
     const SystemCompositionCandidateDecision &candidate,
     std::optional<ArtifactRootReference> child) {
   HardwareImpactProjection impact{candidate.parent, std::move(child), {}, {},
-                                  {}};
+                                  {}, {}};
   impact.family = HardwareMutationFamily::SystemAccCore;
   impact.locality = HardwareMutationLocality::GlobalReopen;
   std::visit(

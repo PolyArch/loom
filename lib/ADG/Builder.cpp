@@ -1784,6 +1784,23 @@ llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
   return FinalizedFabricDesign(std::move(finalized));
 }
 
+llvm::Expected<loom::fabric::FinalizedFabricModuleProjection>
+DesignBuilder::finalizeDerivedSpatialCoreWithCorrespondence() && {
+  if (!state_ || state_->consumed)
+    return invalid("DesignBuilder is already consumed");
+  if (state_->spatialRoots.size() != 1 || !state_->systemRoots.empty())
+    return invalid(
+        "correspondence finalization requires one sole derived Module");
+  const detail::SpatialRootState &root = state_->spatialRoots.front();
+  if (!root.closed)
+    return invalid("derived Module is not closed");
+  if (!root.derivedParent)
+    return invalid("correspondence finalization requires a derived Module");
+  state_->consumed = true;
+  return loom::fabric::finalizeFabricModuleWithCorrespondence(
+      root.operation, root.domainRelation, state_->store);
+}
+
 llvm::Expected<loom::fabric::FinalizedFabricSystemProjection>
 DesignBuilder::finalizeDerivedSystemWithCorrespondence() && {
   if (!state_ || state_->consumed)

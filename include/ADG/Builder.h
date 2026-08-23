@@ -1360,6 +1360,11 @@ public:
 
   llvm::Expected<FinalizedFabricDesign> finalize() &&;
 
+  /// Finalizes the sole derived Module and returns the exact transient
+  /// occurrence correspondence produced by Fabric canonical relabeling.
+  llvm::Expected<loom::fabric::FinalizedFabricModuleProjection>
+  finalizeDerivedSpatialCoreWithCorrespondence() &&;
+
   /// Finalizes the sole derived System and returns the exact transient
   /// reference correspondence produced by Fabric canonical relabeling.
   llvm::Expected<loom::fabric::FinalizedFabricSystemProjection>

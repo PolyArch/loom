@@ -26,12 +26,17 @@ class SystemOp;
 namespace loom::fabric {
 
 struct FinalizedFabricSystemProjection;
+struct FinalizedFabricModuleProjection;
 
 namespace detail {
 class FabricArtifactImportSessionState;
 llvm::Expected<FinalizedFabricSystemProjection> finalizeFabricSystem(
     ::fabric::SystemOp source,
     llvm::ArrayRef<ArtifactRootReference> importedModules,
+    const ArtifactStore &store, bool captureCorrespondence);
+llvm::Expected<FinalizedFabricModuleProjection> finalizeFabricModule(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
     const ArtifactStore &store, bool captureCorrespondence);
 }
 
@@ -146,6 +151,11 @@ private:
       ::fabric::ModuleOp source,
       const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
       const ArtifactStore &store);
+  friend llvm::Expected<FinalizedFabricModuleProjection>
+  finalizeFabricModuleWithCorrespondence(
+      ::fabric::ModuleOp source,
+      const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+      const ArtifactStore &store);
   friend llvm::Expected<FinalizedFabricRoot>
   finalizeFabricRoot(::fabric::SystemOp source,
                      llvm::ArrayRef<ArtifactRootReference> importedModules,
@@ -160,9 +170,45 @@ private:
       ::fabric::SystemOp source,
       llvm::ArrayRef<ArtifactRootReference> importedModules,
       const ArtifactStore &store, bool captureCorrespondence);
+  friend llvm::Expected<FinalizedFabricModuleProjection>
+  detail::finalizeFabricModule(
+      ::fabric::ModuleOp source,
+      const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+      const ArtifactStore &store, bool captureCorrespondence);
   friend llvm::Expected<FinalizedFabricRoot>
   importEntireFabricRoot(const ArtifactRootReference &reference,
                          const ArtifactStore &store);
+};
+
+struct FabricModuleEntityReference final {
+  FabricEntityKind kind = FabricEntityKind::FabricPeOccurrence;
+  FabricEntityId id = 0;
+  std::uint64_t occurrenceOrdinal = 0;
+
+  friend bool operator==(const FabricModuleEntityReference &lhs,
+                         const FabricModuleEntityReference &rhs) {
+    return lhs.kind == rhs.kind && lhs.id == rhs.id &&
+           lhs.occurrenceOrdinal == rhs.occurrenceOrdinal;
+  }
+};
+
+struct FabricModuleEntityCorrespondence final {
+  FabricModuleEntityReference source;
+  FabricModuleEntityReference target;
+
+  friend bool operator==(const FabricModuleEntityCorrespondence &lhs,
+                         const FabricModuleEntityCorrespondence &rhs) {
+    return lhs.source == rhs.source && lhs.target == rhs.target;
+  }
+};
+
+/// Finalizer-owned transient correspondence for every Module-local occurrence
+/// entity in one derived root. Source references belong to the authored parent
+/// namespace and targets belong to `root`. The relation is produced by the
+/// same canonical-labeling transaction and is never serialized as Fabric.
+struct FinalizedFabricModuleProjection final {
+  FinalizedFabricRoot root;
+  std::vector<FabricModuleEntityCorrespondence> entities;
 };
 
 struct FabricSystemEntityReference final {
@@ -218,6 +264,12 @@ finalizeFabricRoot(::fabric::ModuleOp source, const ArtifactStore &store);
 /// Finalizes one Module together with its sole pre-canonical domain authoring
 /// relation. The relation is consumed only for canonical materialization.
 llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+    const ArtifactStore &store);
+
+llvm::Expected<FinalizedFabricModuleProjection>
+finalizeFabricModuleWithCorrespondence(
     ::fabric::ModuleOp source,
     const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
     const ArtifactStore &store);

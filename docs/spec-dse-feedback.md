@@ -2822,12 +2822,14 @@ JointMappingFrontierConfig {
 
 ```
 
-The current spatial-microarchitecture configuration and decision descriptors
-are respectively `loom.spatial_microarchitecture_rewrite.config.2.1` and
-`loom.spatial_microarchitecture_candidate_decision.2.1`; the provider identity
-is `loom.spatial_microarchitecture_rewrite.generator.v3`. Version 2.1 appends
-the two Temporal operand-buffer decisions below without renumbering the 2.0
-decision tags.
+The current spatial-microarchitecture configuration descriptor is
+`loom.spatial_microarchitecture_rewrite.config.2.1`; the candidate-decision
+descriptor is `loom.spatial_microarchitecture_candidate_decision.3.0`, and the
+provider identity is `loom.spatial_microarchitecture_rewrite.generator.v3`.
+Config 2.1 appends the two Temporal operand-buffer decisions below without
+renumbering 2.0 decision tags. Decision 3.0 additionally carries the complete
+finalizer-produced parent-to-child Module occurrence correspondence, so a
+consumer never guesses a child occurrence from a parent dense ordinal.
 
 Kind 16 has one empty canonical resolved-config view. Its exact descriptor
 fixes the portable operation-provider catalog. It consumes exactly one
