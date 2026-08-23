@@ -3960,12 +3960,16 @@ ingress/selector preference and exact queue-level blockers.
 
 Analytic queue pressure is a ranking feature and may prune only a sound
 necessary condition. An exact closed-wait witness with a complete invalidation
-cone may request one bounded operand-buffer mode/depth/admission child. The
-child must pass ordinary Fabric, Tech, Spatial, System, and independent CGRA
-verification. Unknown or incomplete queue evidence is typed and cannot launch
-full PnR or become infeasibility. Exact invocation-local projections use the
-existing session/cache and work-ledger rules; repeated observations are
-deduplicated without recursive unbounded feedback.
+cone may request a finite, shared-budget set of operand-buffer mode/depth
+children (the current provider admits at most the next separated mode and one
+depth-growth alternative). Each child must pass ordinary Fabric, Tech,
+Spatial, System, and independent CGRA verification. The alternatives are
+sequentially dispatched under the invocation deadline; a deadline or provider
+stop publishes an incomplete outcome rather than infeasibility. Unknown or
+incomplete queue evidence is typed and cannot launch full PnR or become
+infeasibility. Exact invocation-local projections use the existing
+session/cache and work-ledger rules; repeated observations are deduplicated
+without recursive unbounded feedback.
 
 Runtime feedback carries one canonical ordered-head projection digest and the
 exact SystemMapping plus Dataflow/Fabric/Tech/Spatial owner references. The

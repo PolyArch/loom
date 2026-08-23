@@ -1,11 +1,11 @@
 #include "DSE/JointDesignExploration.h"
-#include "DSE/HardwareDecision.h"
-#include "DSE/JointHardwareReopen.h"
-#include "DSE/JointMappingMigration.h"
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/HardwareDecision.h"
+#include "DSE/JointHardwareReopen.h"
+#include "DSE/JointMappingMigration.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -143,8 +143,8 @@ identityModuleEntityCorrespondence(
                           loom::fabric::FabricEntityKind kind) {
     for (std::uint64_t ordinal = 0; ordinal != occurrences.size(); ++ordinal) {
       const auto occurrence = occurrences[ordinal];
-      result.push_back({{kind, occurrence.id(), ordinal},
-                        {kind, occurrence.id(), ordinal}});
+      result.push_back(
+          {{kind, occurrence.id(), ordinal}, {kind, occurrence.id(), ordinal}});
     }
   };
   append(module.peOccurrences(),
@@ -262,9 +262,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
   for (const loom::dse::PlanOutputRef &spatialOutput : join.outputs) {
     const auto &spatialNode = std::get<loom::dse::GeneratePlanNodeDefinition>(
         plan.resolvedConfig.dse.planNodes[spatialOutput.producerNodeOrdinal]);
-    const auto &techJoin =
-        std::get<loom::dse::BoundedPlanOutputJoin>(
-            spatialNode.inputBindings.front());
+    const auto &techJoin = std::get<loom::dse::BoundedPlanOutputJoin>(
+        spatialNode.inputBindings.front());
     if (techJoin.outputs.size() != 1 || techJoin.maximumArtifacts != 2)
       fail("joint Mapping plan lost its TechMapping admission bound");
     const auto &techOutput = techJoin.outputs.front();
@@ -317,9 +316,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
       systemView.artifact().accCoreOccurrences().size() < 2)
     fail("adjacent resource-time repair fixture lacks one root and two cores");
   loom::dse::JointDesignExecution parentExecution{
-      std::move(execution),
-      {{plan.frontier.pairs.front(), mappings}},
-      {}};
+      std::move(execution), {{plan.frontier.pairs.front(), mappings}}, {}};
   parentExecution.summary.selectedMapping = mappings.front();
   parentExecution.summary.selectedPlanOrdinal = 0;
   parentExecution.summary.verifiedAlternatives = mappings.size();
@@ -329,20 +326,17 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
       identityModuleCorrespondence;
   for (const auto &module : targetModules)
     identityModuleCorrespondence.push_back({module, module});
-  loom::dse::HardwareImpactProjection systemOnlyImpact{
-      system, system, {}, {}, {}, {}};
-  systemOnlyImpact.family =
-      loom::dse::HardwareMutationFamily::SystemTransport;
+  loom::dse::HardwareImpactProjection systemOnlyImpact{system, system, {},
+                                                       {},     {},     {}};
+  systemOnlyImpact.family = loom::dse::HardwareMutationFamily::SystemTransport;
   systemOnlyImpact.locality = loom::dse::HardwareMutationLocality::LocalCone;
-  systemOnlyImpact.system.kind =
-      loom::dse::HardwareMappingImpactKind::Reopen;
+  systemOnlyImpact.system.kind = loom::dse::HardwareMappingImpactKind::Reopen;
   if (!systemView.transportResources().empty())
     systemOnlyImpact.system.transportRoots.push_back(
         systemView.transportResources().front());
-  const auto preservedFrontier =
-      take(loom::dse::rebaseJointMappingFrontier(
-          plan, parentExecution, system, identityModuleCorrespondence,
-          &systemOnlyImpact, store));
+  const auto preservedFrontier = take(loom::dse::rebaseJointMappingFrontier(
+      plan, parentExecution, system, identityModuleCorrespondence,
+      &systemOnlyImpact, store));
   if (preservedFrontier.disposition !=
           loom::dse::JointMappingReuseDisposition::Preserved ||
       preservedFrontier.seed.techMappings.empty() ||
@@ -377,6 +371,100 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
   }
   if (!feedbackSpatialMapping || !feedbackFifo)
     fail("FIFO feedback fixture has no selected physical FIFO");
+  std::optional<loom::fabric::FabricPeOccurrenceRef> operandPe;
+  for (const auto pe : targetModule.view().peOccurrences())
+    if (targetModule.view().peSchedule(pe) == ::fabric::Schedule::Temporal) {
+      operandPe = pe;
+      break;
+    }
+  if (!operandPe)
+    fail("operand-buffer feedback fixture has no Temporal PE");
+  const auto operandMode = targetModule.view().peOperandBufferMode(*operandPe);
+  const std::uint32_t operandEntries =
+      targetModule.view().peOperandBufferSize(*operandPe);
+  if (!operandMode || operandEntries == 0 ||
+      operandEntries == std::numeric_limits<std::uint32_t>::max())
+    fail("operand-buffer feedback fixture has no growable Temporal PE");
+  std::optional<::fabric::OperandBufferMode> separatedMode;
+  if (*operandMode == ::fabric::OperandBufferMode::AllFuShare)
+    separatedMode = ::fabric::OperandBufferMode::PerInputPort;
+  else if (*operandMode == ::fabric::OperandBufferMode::PerInputPort)
+    separatedMode = ::fabric::OperandBufferMode::PerInstruction;
+  loom::ArtifactRootReference operandTech{
+      loom::mapping::mappingArtifactSchema.identity.str(),
+      loom::mapping::mappingArtifactSchema.version,
+      take(loom::mapping::importSpatialMapping(*feedbackSpatialMapping, store))
+          .view()
+          .techMappingIdentity()};
+  loom::dse::SpatialOperandQueueRuntimeFeedback operandFeedback;
+  operandFeedback.parentMapping = mappings.front();
+  operandFeedback.owners = loom::sim::CgraExecutionOwnerReferences{
+      plan.frontier.pairs.front().software.dataflow, targetModules.front(),
+      operandTech, *feedbackSpatialMapping};
+  operandFeedback.disposition =
+      loom::dse::SpatialOperandQueueRuntimeFeedbackDisposition::Exact;
+  operandFeedback.reason =
+      loom::dse::SpatialOperandQueueRuntimeFeedbackReason::ExactClosedWait;
+  operandFeedback.repairTarget = loom::dse::SpatialOperandBufferRepairTarget{
+      *operandPe, *operandMode, operandEntries, separatedMode,
+      operandEntries + 1};
+  llvm::SmallString<128> operandJournal(temporary.path());
+  llvm::sys::path::append(operandJournal, "operand-buffer-repair");
+  const auto operandRepair =
+      take(loom::dse::executeSpatialOperandBufferHardwareFeedbackReopen(
+          plan, parentExecution, policy, operandFeedback,
+          {take(loom::dse::DseProducerSemanticBuildIdentity::get(
+               "loom.test.spatial_operand_buffer_feedback.v1")),
+           operandJournal.str().str(),
+           {},
+           loom::dse::JointDesignStoppingPolicy::FirstVerified,
+           std::nullopt,
+           std::nullopt,
+           take(loom::dse::SiteCapacity::get(2, 0, 0)),
+           take(loom::dse::PlanExecutionPolicy::get(
+               2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+          store, blobs));
+  if (operandRepair.childSystems.empty() || operandRepair.executions.empty() ||
+      operandRepair.reuseDispositions.empty())
+    fail("exact operand-buffer feedback did not materialize a bounded child");
+  if (separatedMode && operandRepair.childSystems.size() != 2)
+    fail("exact operand-buffer feedback did not retain both bounded "
+         "mode/depth alternatives");
+  bool operandMappingVerified = false;
+  for (std::size_t ordinal = 0; ordinal != operandRepair.executions.size();
+       ++ordinal) {
+    for (const auto &pair : operandRepair.executions[ordinal].mappedPairs)
+      for (const auto &mapping : pair.systemMappings) {
+        auto imported =
+            take(loom::mapping::importSystemMapping(mapping, store));
+        if (imported.view().fabricIdentity() !=
+            operandRepair.childSystems[ordinal].artifact)
+          fail("operand-buffer child Mapping names the parent System");
+        operandMappingVerified = true;
+      }
+  }
+  if (!operandMappingVerified)
+    fail("exact operand-buffer feedback produced no verified SystemMapping");
+  auto incompleteOperandFeedback = operandFeedback;
+  incompleteOperandFeedback.disposition = loom::dse::
+      SpatialOperandQueueRuntimeFeedbackDisposition::ProofNotEstablished;
+  const auto rejectedOperandRepair =
+      take(loom::dse::executeSpatialOperandBufferHardwareFeedbackReopen(
+          plan, parentExecution, policy, incompleteOperandFeedback,
+          {take(loom::dse::DseProducerSemanticBuildIdentity::get(
+               "loom.test.spatial_operand_buffer_feedback.negative.v1")),
+           operandJournal.str().str(),
+           {},
+           loom::dse::JointDesignStoppingPolicy::FirstVerified,
+           std::nullopt,
+           std::nullopt,
+           take(loom::dse::SiteCapacity::get(2, 0, 0)),
+           take(loom::dse::PlanExecutionPolicy::get(
+               2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+          store, blobs));
+  if (!rejectedOperandRepair.childSystems.empty() ||
+      !rejectedOperandRepair.executions.empty())
+    fail("incomplete operand-buffer feedback synthesized a hardware child");
   loom::sim::CgraClosedWaitSetDiagnostic exactFifoWait;
   exactFifoWait.pendingActorFirings = 1;
   exactFifoWait.pendingTransfers = 1;
@@ -437,7 +525,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
         repairSummary.repairedTechDecisions == 0 ||
         repairSummary.parentRouteNodeCount == 0 ||
         (fifoHardwareRepair.reuseDispositions.front() ==
-             loom::dse::JointMappingReuseDisposition::ColdFallback
+                 loom::dse::JointMappingReuseDisposition::ColdFallback
              ? (repairSummary.repairedSpatialDecisions != 0 ||
                 repairSummary.coldReopenWallTimeNanoseconds == 0 ||
                 repairSummary.reopenedSpatialDecisions == 0)
@@ -475,19 +563,16 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
   loom::dse::HardwareImpactProjection localSpatialImpact{
       targetModules.front(), system, {}, {}, {}, {}};
   localSpatialImpact.family = loom::dse::HardwareMutationFamily::SpatialFifo;
-  localSpatialImpact.locality =
-      loom::dse::HardwareMutationLocality::LocalCone;
-  localSpatialImpact.tech.kind =
-      loom::dse::HardwareMappingImpactKind::Rebase;
+  localSpatialImpact.locality = loom::dse::HardwareMutationLocality::LocalCone;
+  localSpatialImpact.tech.kind = loom::dse::HardwareMappingImpactKind::Rebase;
   localSpatialImpact.spatial.kind =
       loom::dse::HardwareMappingImpactKind::Reopen;
   localSpatialImpact.spatial.placementRoots.push_back(moduleRoot);
   localSpatialImpact.moduleEntities =
       identityModuleEntityCorrespondence(targetModule.view());
-  const auto localRepairFrontier =
-      take(loom::dse::rebaseJointMappingFrontier(
-          plan, parentExecution, system, identityModuleCorrespondence,
-          &localSpatialImpact, store));
+  const auto localRepairFrontier = take(loom::dse::rebaseJointMappingFrontier(
+      plan, parentExecution, system, identityModuleCorrespondence,
+      &localSpatialImpact, store));
   if (localRepairFrontier.disposition !=
           loom::dse::JointMappingReuseDisposition::LocalRepair ||
       localRepairFrontier.seed.techMappings.empty() ||
@@ -497,14 +582,12 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
 
   auto globalImpact = localSpatialImpact;
   globalImpact.family = loom::dse::HardwareMutationFamily::FuCapability;
-  globalImpact.locality =
-      loom::dse::HardwareMutationLocality::GlobalReopen;
+  globalImpact.locality = loom::dse::HardwareMutationLocality::GlobalReopen;
   globalImpact.tech.kind = loom::dse::HardwareMappingImpactKind::Reopen;
   globalImpact.tech.realizationRoots.push_back(moduleRoot);
-  const auto coldFallbackFrontier =
-      take(loom::dse::rebaseJointMappingFrontier(
-          plan, parentExecution, system, identityModuleCorrespondence,
-          &globalImpact, store));
+  const auto coldFallbackFrontier = take(loom::dse::rebaseJointMappingFrontier(
+      plan, parentExecution, system, identityModuleCorrespondence,
+      &globalImpact, store));
   if (coldFallbackFrontier.disposition !=
           loom::dse::JointMappingReuseDisposition::ColdFallback ||
       !coldFallbackFrontier.seed.techMappings.empty() ||
@@ -608,8 +691,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc > 2 ||
-      (argc == 2 && llvm::StringRef(argv[1]) != "fifo-feedback"))
+  if (argc > 2 || (argc == 2 && llvm::StringRef(argv[1]) != "fifo-feedback"))
     fail("expected no workflow or fifo-feedback");
   exerciseJointExploration(argc == 2);
   return 0;

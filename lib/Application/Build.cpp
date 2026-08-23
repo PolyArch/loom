@@ -43,8 +43,8 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -434,32 +434,33 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
       return preparedCgra.takeError();
     auto cgraEvaluation =
         evaluation::models::evaluateCgraSimulationWithDiagnostics(
-        *preparedCgra, {kApplicationReplayExecutionLimit, *deadline}, artifacts,
-        blobs);
+            *preparedCgra, {kApplicationReplayExecutionLimit, *deadline},
+            artifacts, blobs);
     if (!cgraEvaluation)
       return cgraEvaluation.takeError();
     evaluation::EvaluationEvidence &cgraEvidence = cgraEvaluation->evidence;
     if (cgraEvaluation->closedWait) {
-      auto operandFeedback =
-          dse::deriveSpatialOperandQueueRuntimeFeedback(
-              imported->mapping.reference(), *cgraEvaluation->closedWait,
-              artifacts);
+      auto operandFeedback = dse::deriveSpatialOperandQueueRuntimeFeedback(
+          imported->mapping.reference(), *cgraEvaluation->closedWait,
+          artifacts);
       if (!operandFeedback)
         return operandFeedback.takeError();
       dse::emitSpatialOperandQueueRuntimeFeedback(*operandFeedback);
-      const auto operandPriority = [](
-          dse::SpatialOperandQueueRuntimeFeedbackDisposition value) {
-        switch (value) {
-        case dse::SpatialOperandQueueRuntimeFeedbackDisposition::Exact:
-          return 2;
-        case dse::SpatialOperandQueueRuntimeFeedbackDisposition::
-            ProofNotEstablished:
-          return 1;
-        case dse::SpatialOperandQueueRuntimeFeedbackDisposition::Unsupported:
-          return 0;
-        }
-        llvm_unreachable("unknown Spatial operand-queue feedback disposition");
-      };
+      const auto operandPriority =
+          [](dse::SpatialOperandQueueRuntimeFeedbackDisposition value) {
+            switch (value) {
+            case dse::SpatialOperandQueueRuntimeFeedbackDisposition::Exact:
+              return 2;
+            case dse::SpatialOperandQueueRuntimeFeedbackDisposition::
+                ProofNotEstablished:
+              return 1;
+            case dse::SpatialOperandQueueRuntimeFeedbackDisposition::
+                Unsupported:
+              return 0;
+            }
+            llvm_unreachable(
+                "unknown Spatial operand-queue feedback disposition");
+          };
       if (!validation.spatialOperandQueueFeedback ||
           operandPriority(operandFeedback->disposition) >
               operandPriority(
@@ -471,7 +472,8 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
       if (!feedback)
         return feedback.takeError();
       dse::emitSpatialFifoRuntimeFeedback(*feedback);
-      const auto priority = [](dse::SpatialFifoRuntimeFeedbackDisposition value) {
+      const auto priority = [](dse::SpatialFifoRuntimeFeedbackDisposition
+                                   value) {
         switch (value) {
         case dse::SpatialFifoRuntimeFeedbackDisposition::Exact:
           return 2;
@@ -923,10 +925,11 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
     std::uint64_t inputPreferenceRank = 0;
   };
 
-  // The projection-only pass is deliberately limited to the already materialized
-  // Canonical Dataflow view and the provider-owned resource-time projection.
-  // Workload publication and joint-plan construction belong after the bounded
-  // resource-time funnel so rejected estimates cannot trigger Mapping work.
+  // The projection-only pass is deliberately limited to the already
+  // materialized Canonical Dataflow view and the provider-owned resource-time
+  // projection. Workload publication and joint-plan construction belong after
+  // the bounded resource-time funnel so rejected estimates cannot trigger
+  // Mapping work.
   std::vector<PendingResourceTimeCandidate> pendingCandidates;
   std::vector<dse::ResourceTimeMappingCandidateInput> resourceTimeInputs;
   pendingCandidates.reserve(completed.selected.size());
@@ -1009,17 +1012,15 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
       ++resourceTimeProjectionCacheHits;
     } else {
       ++resourceTimeProjectionCacheMisses;
-      const MonotonicClock::time_point projectionBegin =
-          MonotonicClock::now();
+      const MonotonicClock::time_point projectionBegin = MonotonicClock::now();
       auto computedProjection = dse::projectResourceTimeDataflow(
           *dataflowView, *systemView, request.sourceInvocation.entrySymbol,
           planningRecord.estimatedRuntimePicoseconds);
       const std::uint64_t projectionElapsed =
           elapsedNanoseconds(projectionBegin);
       resourceTimeProjectionElapsedNanoseconds =
-          projectionElapsed >
-                  std::numeric_limits<std::uint64_t>::max() -
-                      resourceTimeProjectionElapsedNanoseconds
+          projectionElapsed > std::numeric_limits<std::uint64_t>::max() -
+                                  resourceTimeProjectionElapsedNanoseconds
               ? std::numeric_limits<std::uint64_t>::max()
               : resourceTimeProjectionElapsedNanoseconds + projectionElapsed;
       if (!computedProjection)
@@ -1040,8 +1041,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
               : 0;
       if (fitsEntryLimit && retainedBytes <= availableBytes) {
         resourceTimeProjectionCache.emplace(
-            projectionKeySpelling, std::make_pair(resourceTimeProjection,
-                                                   retainedBytes));
+            projectionKeySpelling,
+            std::make_pair(resourceTimeProjection, retainedBytes));
         resourceTimeProjectionCacheRetainedBytes += retainedBytes;
       } else {
         ++resourceTimeProjectionCacheCapacityBypasses;
@@ -1070,14 +1071,12 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
          std::move(resourceTimeProjection), inputPreferenceRank});
     const PendingResourceTimeCandidate &pending = pendingCandidates.back();
     resourceTimeInputs.push_back(
-        {*candidateIdentity,
-         pending.inputPreferenceRank,
+        {*candidateIdentity, pending.inputPreferenceRank,
          planningRecord.ownedProtocolRoots.size(),
          pending.projection->acceleratedGraphCount,
-         pending.projection->acceleratedActorCount,
-         maximumUsefulResourceUnits,
-         std::move(invocation),
-         pending.projection->resourceClasses, pending.projection->regions});
+         pending.projection->acceleratedActorCount, maximumUsefulResourceUnits,
+         std::move(invocation), pending.projection->resourceClasses,
+         pending.projection->regions});
   }
   auto resourceTimeFunnel = dse::selectResourceTimeMappingFinalists(
       resourceTimeInputs, request.resourceTimePolicy,
@@ -1114,10 +1113,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
           {"elapsed_nanoseconds", counter.elapsedNanoseconds}};
     };
     mapping_debug::emit(
-        mapping_debug::Level::Summary,
-        mapping_debug::Stage::DataflowLowering,
-        mapping_debug::Event::DerivedContext,
-        [&](llvm::json::Object &fields) {
+        mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
           fields["context_kind"] = "resource_time_application_funnel";
           fields["status"] = status;
           llvm::json::Object frontierWork{
@@ -1129,8 +1126,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
                counterObject(accounting.frontierAccounting.estimates)},
               {"finalists",
                counterObject(accounting.frontierAccounting.finalists)},
-              {"state_memo_hits",
-               accounting.frontierAccounting.stateMemoHits},
+              {"state_memo_hits", accounting.frontierAccounting.stateMemoHits},
               {"state_memo_misses",
                accounting.frontierAccounting.stateMemoMisses},
               {"state_memo_envelope_updates",
@@ -1217,9 +1213,9 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
             completed.fabric, completed.workload, completed.runtimeInput,
             completed.frontierPolicyDigest}};
   if (resourceTimeFunnel->preferenceOrder.empty())
-    emitResourceTimeFunnelTerminal(
-        resourceTimeFunnel->incompleteReason ? "incomplete"
-                                             : "no_mapping_finalist");
+    emitResourceTimeFunnelTerminal(resourceTimeFunnel->incompleteReason
+                                       ? "incomplete"
+                                       : "no_mapping_finalist");
   if (resourceTimeFunnel->preferenceOrder.empty() &&
       resourceTimeFunnel->incompleteReason)
     return ApplicationBuildPreparationOutcome{
@@ -1269,8 +1265,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
             std::get_if<UnsupportedApplicationBuild>(&*workloads)) {
       if (!firstUnsupported)
         firstUnsupported = std::move(*unsupported);
-      auto &record = completed.candidateInventory[
-          pending->planningRecordOrdinal];
+      auto &record =
+          completed.candidateInventory[pending->planningRecordOrdinal];
       record.disposition =
           dse::PreMappingCandidatePlanningDisposition::Unsupported;
       ++resourceTimeFunnel->accounting.unsupportedBeforeMappingCandidates;
@@ -1295,8 +1291,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
       const std::string diagnostic =
           llvm::toString(invocationPreflight.takeError());
       mapping_debug::emit(
-          mapping_debug::Level::Summary,
-          mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
           mapping_debug::Event::MappingFailure,
           [&](llvm::json::Object &fields) {
             fields["failure_scope"] = "application_resource_time_preflight";
@@ -1329,9 +1324,9 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
     auto mappingPlan = dse::buildJointDesignExplorationPlan(
         {{roots}, {request.system}}, request.physicalTimingProfiles,
         *alternativePolicy, request.resolvedConfig, artifacts, nullptr,
-        partitions ? llvm::ArrayRef<pnr::SystemBindingPartitionIntent>(
-                         *partitions)
-                   : llvm::ArrayRef<pnr::SystemBindingPartitionIntent>());
+        partitions
+            ? llvm::ArrayRef<pnr::SystemBindingPartitionIntent>(*partitions)
+            : llvm::ArrayRef<pnr::SystemBindingPartitionIntent>());
     if (!mappingPlan)
       return mappingPlan.takeError();
     ++resourceTimeFunnel->accounting.mappingPlanCandidates;
@@ -1343,9 +1338,9 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
     std::vector<sim::SourceBackedDfgReplayCaseReference> replayCases;
     if (pending->compilation.functionalReplay)
       replayCases = pending->compilation.functionalReplay->replayCases;
-    preparedSoftware.push_back(
-        {rank, pending->planningRecordOrdinal, identity, std::move(*published),
-         std::move(roots), std::move(replayCases)});
+    preparedSoftware.push_back({rank, pending->planningRecordOrdinal, identity,
+                                std::move(*published), std::move(roots),
+                                std::move(replayCases)});
     const ArtifactRootReference dataflow =
         preparedSoftware.back().compilation.canonicalDataflow;
     mappingAlternatives.push_back(
@@ -1423,10 +1418,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         pnrDerivedContextSession.statistics();
     mapping_debug::emit(
         mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
-        mapping_debug::Event::DerivedContext,
-        [&](llvm::json::Object &fields) {
-          fields["context_kind"] =
-              "application_pnr_derived_context_session";
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+          fields["context_kind"] = "application_pnr_derived_context_session";
           fields["requests"] = statistics.requests;
           fields["cache_hits"] = statistics.cacheHits;
           fields["cache_misses"] = statistics.cacheMisses;
@@ -1434,8 +1427,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
           fields["revalidation_count"] = statistics.revalidationCount;
           fields["unique_constructions"] = statistics.uniqueConstructions;
           fields["uncached_constructions"] = statistics.uncachedConstructions;
-          fields["construction_time_ns"] =
-              statistics.constructionNanoseconds;
+          fields["construction_time_ns"] = statistics.constructionNanoseconds;
           fields["construction_time_saved_ns"] =
               statistics.constructionNanosecondsSaved;
           fields["deterministic_work"] = statistics.deterministicWork;
@@ -1613,8 +1605,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         execution->summary.hardwareReopensDeferredByQuality;
     hardwareReopensWithheldWithoutExactFeedback +=
         execution->summary.hardwareReopensWithheldWithoutExactFeedback;
-    hardwareRepairProbeLimit +=
-        execution->summary.hardwareRepairProbeLimit;
+    hardwareRepairProbeLimit += execution->summary.hardwareRepairProbeLimit;
     hardwareRepairProbesPlanned +=
         execution->summary.hardwareRepairProbesPlanned;
     hardwareRepairProbesReserved +=
@@ -1677,36 +1668,16 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     }
     if (!joined)
       return invalid("runtime validation has no exact Mapping attempt join");
-    if (runtime->disposition !=
-            ApplicationMappingRuntimeDisposition::Completed &&
-        runtime->spatialFifoFeedback &&
-        runtime->spatialFifoFeedback->disposition ==
-            dse::SpatialFifoRuntimeFeedbackDisposition::Exact) {
-      llvm::SmallString<256> feedbackJournal(request.journalRoot);
-      llvm::sys::path::append(
-          feedbackJournal,
-          "fifo-runtime-feedback-" + std::to_string(selectedPlanOrdinal));
-      auto repaired = dse::executeSpatialFifoHardwareFeedbackReopen(
-          prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
-          prepared.jointPolicy, *runtime->spatialFifoFeedback,
-          {request.producer,
-           feedbackJournal.str().str(),
-           evidence,
-           dse::JointDesignStoppingPolicy::FirstVerified,
-           std::nullopt,
-           std::nullopt,
-           request.siteCapacity,
-           request.executionPolicy},
-          artifacts, blobs);
-      if (!repaired)
-        return repaired.takeError();
+    auto consumeRepairedExecutions =
+        [&](auto &repaired) -> llvm::Expected<bool> {
       for (std::size_t childOrdinal = 0;
            childOrdinal != repaired->executions.size(); ++childOrdinal) {
         dse::JointDesignExecution &childExecution =
             repaired->executions[childOrdinal];
         if (childOrdinal >= repaired->childSystems.size())
-          return invalid("FIFO hardware repair lost its child System");
-        techMappingDispatches += childExecution.summary.techMappingDispatchCount;
+          return invalid("hardware repair lost its child System");
+        techMappingDispatches +=
+            childExecution.summary.techMappingDispatchCount;
         spatialPnrDispatches += childExecution.summary.spatialPnrDispatchCount;
         systemPnrDispatches += childExecution.summary.systemPnrDispatchCount;
         std::vector<ArtifactRootReference> childMappings;
@@ -1717,19 +1688,18 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         childMappings.erase(
             std::unique(childMappings.begin(), childMappings.end()),
             childMappings.end());
-        attempts.push_back(
-            {selectedPlanOrdinal,
-             repaired->childSystems[childOrdinal],
-             childMappings.empty()
-                 ? dse::JointDesignAttemptDisposition::Incomplete
-                 : dse::JointDesignAttemptDisposition::Verified,
-             std::nullopt,
-             childMappings.empty()
-                 ? std::optional<dse::DsePlanIncompleteReason>(
-                       dse::CandidateGeneratorIncompleteReason::
-                           ProofNotEstablished)
-                 : std::nullopt,
-             childMappings});
+        attempts.push_back({selectedPlanOrdinal,
+                            repaired->childSystems[childOrdinal],
+                            childMappings.empty()
+                                ? dse::JointDesignAttemptDisposition::Incomplete
+                                : dse::JointDesignAttemptDisposition::Verified,
+                            std::nullopt,
+                            childMappings.empty()
+                                ? std::optional<dse::DsePlanIncompleteReason>(
+                                      dse::CandidateGeneratorIncompleteReason::
+                                          ProofNotEstablished)
+                                : std::nullopt,
+                            childMappings});
         if (childMappings.empty() || !childExecution.summary.selectedMapping)
           continue;
         auto childRuntime = validateApplicationMappingRuntime(
@@ -1738,14 +1708,117 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         if (!childRuntime)
           return childRuntime.takeError();
         std::optional<dse::ResourceTimeSpectrumFunnelResult> childSpectrum;
-        const auto evaluation =
-            llvm::find_if(prepared.resourceTimeFunnel.evaluations,
-                          [&](const auto &candidate) {
-                            return candidate.candidateIdentity ==
-                                   prepared.mappingAlternatives
-                                       [selectedPlanOrdinal]
-                                           .candidateIdentity;
-                          });
+        const auto evaluation = llvm::find_if(
+            prepared.resourceTimeFunnel.evaluations,
+            [&](const auto &candidate) {
+              return candidate.candidateIdentity ==
+                     prepared.mappingAlternatives[selectedPlanOrdinal]
+                         .candidateIdentity;
+            });
+        if (evaluation != prepared.resourceTimeFunnel.evaluations.end() &&
+            !evaluation->retainedHints.empty()) {
+          auto verified = dse::verifyResourceTimeMappingFinalists(
+              evaluation->retainedHints,
+              prepared.mappingAlternatives[selectedPlanOrdinal]
+                  .resourceTimeRegions,
+              prepared.mappingAlternatives[selectedPlanOrdinal]
+                  .resourceTimeRegionBounds,
+              childMappings, artifacts, {}, evaluation->concurrencyBounds);
+          if (!verified)
+            return verified.takeError();
+          childSpectrum.emplace(std::move(*verified));
+        }
+        outcomes.push_back(ApplicationMappingCandidateOutcome{
+            prepared.mappingAlternatives[selectedPlanOrdinal]
+                .preMappingCandidateRecordOrdinal,
+            selectedPlanOrdinal,
+            prepared.mappingAlternatives[selectedPlanOrdinal].dataflow,
+            repaired->childSystems[childOrdinal],
+            dse::JointDesignAttemptDisposition::Verified,
+            std::nullopt,
+            std::nullopt,
+            childMappings,
+            prepared.candidateInventory
+                [prepared.mappingAlternatives[selectedPlanOrdinal]
+                     .preMappingCandidateRecordOrdinal],
+            prepared.mappingAlternatives[selectedPlanOrdinal]
+                .plan.systemBindingPartitions,
+            childRuntime->disposition,
+            childRuntime->evidence,
+            {},
+            std::move(childSpectrum)});
+        if (childRuntime->disposition ==
+            ApplicationMappingRuntimeDisposition::Completed) {
+          childExecution.summary.selectedPlanOrdinal = selectedPlanOrdinal;
+          selectedExecution.emplace(std::move(childExecution));
+          return true;
+        }
+      }
+      return false;
+    };
+    if (runtime->disposition !=
+            ApplicationMappingRuntimeDisposition::Completed &&
+        runtime->spatialFifoFeedback &&
+        runtime->spatialFifoFeedback->disposition ==
+            dse::SpatialFifoRuntimeFeedbackDisposition::Exact) {
+      llvm::SmallString<256> feedbackJournal(request.journalRoot);
+      llvm::sys::path::append(feedbackJournal,
+                              "fifo-runtime-feedback-" +
+                                  std::to_string(selectedPlanOrdinal));
+      auto repaired = dse::executeSpatialFifoHardwareFeedbackReopen(
+          prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
+          prepared.jointPolicy, *runtime->spatialFifoFeedback,
+          {request.producer, feedbackJournal.str().str(), evidence,
+           dse::JointDesignStoppingPolicy::FirstVerified, std::nullopt,
+           std::nullopt, request.siteCapacity, request.executionPolicy},
+          artifacts, blobs);
+      if (!repaired)
+        return repaired.takeError();
+      for (std::size_t childOrdinal = 0;
+           childOrdinal != repaired->executions.size(); ++childOrdinal) {
+        dse::JointDesignExecution &childExecution =
+            repaired->executions[childOrdinal];
+        if (childOrdinal >= repaired->childSystems.size())
+          return invalid("FIFO hardware repair lost its child System");
+        techMappingDispatches +=
+            childExecution.summary.techMappingDispatchCount;
+        spatialPnrDispatches += childExecution.summary.spatialPnrDispatchCount;
+        systemPnrDispatches += childExecution.summary.systemPnrDispatchCount;
+        std::vector<ArtifactRootReference> childMappings;
+        for (const dse::JointMappedPair &pair : childExecution.mappedPairs)
+          childMappings.insert(childMappings.end(), pair.systemMappings.begin(),
+                               pair.systemMappings.end());
+        llvm::sort(childMappings, artifactRootReferenceLess);
+        childMappings.erase(
+            std::unique(childMappings.begin(), childMappings.end()),
+            childMappings.end());
+        attempts.push_back({selectedPlanOrdinal,
+                            repaired->childSystems[childOrdinal],
+                            childMappings.empty()
+                                ? dse::JointDesignAttemptDisposition::Incomplete
+                                : dse::JointDesignAttemptDisposition::Verified,
+                            std::nullopt,
+                            childMappings.empty()
+                                ? std::optional<dse::DsePlanIncompleteReason>(
+                                      dse::CandidateGeneratorIncompleteReason::
+                                          ProofNotEstablished)
+                                : std::nullopt,
+                            childMappings});
+        if (childMappings.empty() || !childExecution.summary.selectedMapping)
+          continue;
+        auto childRuntime = validateApplicationMappingRuntime(
+            prepared, prepared.mappingAlternatives[selectedPlanOrdinal],
+            childExecution, request.executionPolicy, artifacts, blobs);
+        if (!childRuntime)
+          return childRuntime.takeError();
+        std::optional<dse::ResourceTimeSpectrumFunnelResult> childSpectrum;
+        const auto evaluation = llvm::find_if(
+            prepared.resourceTimeFunnel.evaluations,
+            [&](const auto &candidate) {
+              return candidate.candidateIdentity ==
+                     prepared.mappingAlternatives[selectedPlanOrdinal]
+                         .candidateIdentity;
+            });
         if (evaluation != prepared.resourceTimeFunnel.evaluations.end() &&
             !evaluation->retainedHints.empty()) {
           auto verified = dse::verifyResourceTimeMappingFinalists(
@@ -1785,8 +1858,31 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         selectedExecution.emplace(std::move(childExecution));
         break;
       }
-      if (selectedExecution &&
-          selectedExecution->summary.selectedPlanOrdinal)
+      if (selectedExecution && selectedExecution->summary.selectedPlanOrdinal)
+        break;
+    }
+    if (runtime->disposition !=
+            ApplicationMappingRuntimeDisposition::Completed &&
+        runtime->spatialOperandQueueFeedback &&
+        runtime->spatialOperandQueueFeedback->disposition ==
+            dse::SpatialOperandQueueRuntimeFeedbackDisposition::Exact) {
+      llvm::SmallString<256> feedbackJournal(request.journalRoot);
+      llvm::sys::path::append(feedbackJournal,
+                              "operand-buffer-runtime-feedback-" +
+                                  std::to_string(selectedPlanOrdinal));
+      auto repaired = dse::executeSpatialOperandBufferHardwareFeedbackReopen(
+          prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
+          prepared.jointPolicy, *runtime->spatialOperandQueueFeedback,
+          {request.producer, feedbackJournal.str().str(), evidence,
+           dse::JointDesignStoppingPolicy::FirstVerified, std::nullopt,
+           std::nullopt, request.siteCapacity, request.executionPolicy},
+          artifacts, blobs);
+      if (!repaired)
+        return repaired.takeError();
+      auto selected = consumeRepairedExecutions(repaired);
+      if (!selected)
+        return selected.takeError();
+      if (*selected)
         break;
     }
     if (runtime->disposition ==
@@ -1873,15 +1969,13 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   selectedExecution->summary.invalidationConeDecisionCount =
       invalidationConeDecisionCount;
   selectedExecution->summary.parentRouteNodeCount = parentRouteNodeCount;
-  selectedExecution->summary.preservedRouteNodeCount =
-      preservedRouteNodeCount;
+  selectedExecution->summary.preservedRouteNodeCount = preservedRouteNodeCount;
   selectedExecution->summary.reopenedRouteNodeCount = reopenedRouteNodeCount;
   selectedExecution->summary.repairedRouteNodeCount = repairedRouteNodeCount;
   selectedExecution->summary.parentServiceLegCount = parentServiceLegCount;
   selectedExecution->summary.preservedServiceLegCount =
       preservedServiceLegCount;
-  selectedExecution->summary.reopenedServiceLegCount =
-      reopenedServiceLegCount;
+  selectedExecution->summary.reopenedServiceLegCount = reopenedServiceLegCount;
   selectedExecution->summary.verifiedAlternatives = verifiedAlternatives;
   selectedExecution->summary.techMappingDispatchCount = techMappingDispatches;
   selectedExecution->summary.spatialPnrDispatchCount = spatialPnrDispatches;

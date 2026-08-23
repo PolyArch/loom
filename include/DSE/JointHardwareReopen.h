@@ -27,6 +27,13 @@ struct JointSpatialFifoHardwareRepair final {
   bool bypassAlternativeUnsupported = false;
 };
 
+struct JointSpatialOperandBufferHardwareRepair final {
+  SpatialOperandQueueRuntimeFeedback feedback;
+  std::vector<ArtifactRootReference> childSystems;
+  std::vector<JointDesignExecution> executions;
+  std::vector<JointMappingReuseDisposition> reuseDispositions;
+};
+
 struct JointHardwareReopenRequest final {
   DseProducerSemanticBuildIdentity producer;
   std::string journalRoot;
@@ -74,6 +81,18 @@ executeSpatialFifoHardwareFeedbackReopen(
     const JointDesignExecution &parentExecution,
     const JointDesignPolicy &policy,
     const SpatialFifoRuntimeFeedback &feedback,
+    JointHardwareReopenRequest request, const ArtifactStore &artifacts,
+    const BlobStore &blobs);
+
+/// Materializes the bounded Temporal operand-buffer child set admitted by one
+/// exact queue-level closed-wait witness. Incomplete, ambiguous, or analytic
+/// feedback returns no child and never enters Mapping.
+llvm::Expected<JointSpatialOperandBufferHardwareRepair>
+executeSpatialOperandBufferHardwareFeedbackReopen(
+    const JointDesignExplorationPlan &parentPlan,
+    const JointDesignExecution &parentExecution,
+    const JointDesignPolicy &policy,
+    const SpatialOperandQueueRuntimeFeedback &feedback,
     JointHardwareReopenRequest request, const ArtifactStore &artifacts,
     const BlobStore &blobs);
 
