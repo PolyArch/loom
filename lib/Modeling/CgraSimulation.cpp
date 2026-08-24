@@ -473,6 +473,15 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
               });
             }
             fields["closed_wait_actors"] = std::move(actors);
+            const auto storageHeadJson = [](const auto &head) {
+              if (!head)
+                return llvm::json::Value(nullptr);
+              return llvm::json::Value(llvm::json::Object{
+                  {"storage", head->storageOrdinal},
+                  {"binding", head->bindingOrdinal},
+                  {"occurrence", head->occurrenceOrdinal},
+                  {"traversal_node", head->traversalNodeOrdinal}});
+            };
             llvm::json::Array transfers;
             for (const auto indexed :
                  llvm::enumerate(outcome->closedWaitSet->transfers)) {
@@ -530,6 +539,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                    transfer.blockingStorageReservations},
                   {"blocking_storage_capacity",
                    transfer.blockingStorageCapacity},
+                  {"blocking_storage_head",
+                   storageHeadJson(transfer.blockingStorageHead)},
                   {"blocking_downstream_storage_count",
                    transfer.blockingDownstreamStorageCount},
                   {"blocking_unbuffered_sink_count",
@@ -542,6 +553,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                    transfer.blockingDownstreamStorageCapacity},
                   {"blocking_downstream_reserved",
                    transfer.blockingDownstreamStorageReserved},
+                  {"blocking_downstream_head",
+                   storageHeadJson(transfer.blockingDownstreamStorageHead)},
                   {"operand_queue_waits", std::move(operandQueueWaits)},
               });
             }
@@ -555,6 +568,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                   {"blocking_actor", edge.blockingActorOrdinal},
                   {"blocking_binding", edge.blockingBindingOrdinal},
                   {"blocking_occurrence", edge.blockingOccurrenceOrdinal},
+                  {"kind", static_cast<std::uint64_t>(edge.kind)},
               });
             fields["closed_wait_transfer_cycle"] = std::move(transferCycle);
             llvm::json::Array actorCycle;

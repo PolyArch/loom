@@ -41,6 +41,13 @@ struct CgraTransportFrame final {
 };
 
 struct CgraPendingTransferDiagnostic final {
+  struct StorageHead final {
+    std::uint64_t storageOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t bindingOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t occurrenceOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t traversalNodeOrdinal = invalidCgraTransportOrdinal;
+  };
+
   struct OperandQueueWait final {
     ::fabric::LogicalOperandQueueKey queue;
     ::loom::fabric::FabricFuOccurrenceRef fu;
@@ -86,7 +93,8 @@ struct CgraPendingTransferDiagnostic final {
   std::uint32_t blockingStorageOccupancy = 0;
   std::uint32_t blockingStorageReservations = 0;
   std::uint32_t blockingStorageCapacity = 0;
-  std::uint8_t blockingTraversalState = 0;
+  std::optional<StorageHead> blockingStorageHead;
+  bool blockingTraversalWaitingForStorage = false;
   std::uint32_t blockingDownstreamStorageCount = 0;
   std::uint32_t blockingUnbufferedSinkCount = 0;
   std::uint64_t blockingDownstreamStorageOrdinal = invalidCgraTransportOrdinal;
@@ -94,6 +102,7 @@ struct CgraPendingTransferDiagnostic final {
   std::uint32_t blockingDownstreamStorageReservations = 0;
   std::uint32_t blockingDownstreamStorageCapacity = 0;
   bool blockingDownstreamStorageReserved = false;
+  std::optional<StorageHead> blockingDownstreamStorageHead;
   std::uint64_t blockingActorOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t blockingReadyTokenCount = 0;
   std::uint64_t blockingQueueOccupancy = 0;

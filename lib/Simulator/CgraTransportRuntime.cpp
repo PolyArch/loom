@@ -1520,6 +1520,21 @@ std::vector<CgraPendingTransferDiagnostic>
 CgraTransportRuntime::pendingTransferDiagnostics() const {
   std::vector<CgraPendingTransferDiagnostic> result;
   result.reserve(activeTransferCount_);
+  const auto storageHead = [&](std::uint64_t storageOrdinal)
+      -> std::optional<CgraPendingTransferDiagnostic::StorageHead> {
+    if (storageOrdinal >= storages_.size() ||
+        storages_[storageOrdinal].queue.empty())
+      return std::nullopt;
+    const CgraTransportStorageEntry &head =
+        storages_[storageOrdinal].queue.front();
+    if (head.transferSlot >= inFlight_.size() ||
+        !inFlight_[head.transferSlot].active)
+      return std::nullopt;
+    const InFlight &owner = inFlight_[head.transferSlot];
+    return CgraPendingTransferDiagnostic::StorageHead{
+        storageOrdinal, owner.bindingOrdinal, owner.occurrenceOrdinal,
+        head.traversalNodeOrdinal};
+  };
   for (const InFlight &transfer : inFlight_) {
     if (!transfer.active)
       continue;
@@ -1609,7 +1624,10 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         diagnostic.blockingStorageOccupancy = storage.queue.occupancy();
         diagnostic.blockingStorageReservations = storage.reservations;
         diagnostic.blockingStorageCapacity = storage.queue.capacity();
-        diagnostic.blockingTraversalState = static_cast<std::uint8_t>(state);
+        diagnostic.blockingStorageHead =
+            storageHead(traversal.storageOrdinal);
+        diagnostic.blockingTraversalWaitingForStorage =
+            state == TraversalNodeState::WaitingStorage;
         diagnostic.blockingDownstreamStorageCount =
             static_cast<std::uint32_t>(traversal.downstreamStorageNodes.size());
         diagnostic.blockingUnbufferedSinkCount = static_cast<std::uint32_t>(
@@ -1631,6 +1649,8 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
                 downstreamStorage.queue.capacity();
             diagnostic.blockingDownstreamStorageReserved =
                 traversalStorageReserved_[downstream];
+            diagnostic.blockingDownstreamStorageHead =
+                storageHead(boundary.storageOrdinal);
           }
         }
         break;

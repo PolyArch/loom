@@ -99,6 +99,17 @@ struct CgraClosedWaitSetDiagnostic final {
     bool causalReleaseReached = false;
   };
   struct Transfer final {
+    struct StorageHead final {
+      std::uint64_t storageOrdinal =
+          std::numeric_limits<std::uint64_t>::max();
+      std::uint64_t bindingOrdinal =
+          std::numeric_limits<std::uint64_t>::max();
+      std::uint64_t occurrenceOrdinal =
+          std::numeric_limits<std::uint64_t>::max();
+      std::uint64_t traversalNodeOrdinal =
+          std::numeric_limits<std::uint64_t>::max();
+    };
+
     struct OperandQueueWait final {
       ::fabric::LogicalOperandQueueKey queue;
       ::loom::fabric::FabricFuOccurrenceRef fu;
@@ -146,7 +157,8 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint32_t blockingStorageOccupancy = 0;
     std::uint32_t blockingStorageReservations = 0;
     std::uint32_t blockingStorageCapacity = 0;
-    std::uint8_t blockingTraversalState = 0;
+    std::optional<StorageHead> blockingStorageHead;
+    bool blockingTraversalWaitingForStorage = false;
     std::uint32_t blockingDownstreamStorageCount = 0;
     std::uint32_t blockingUnbufferedSinkCount = 0;
     std::uint64_t blockingDownstreamStorageOrdinal = 0;
@@ -154,6 +166,7 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint32_t blockingDownstreamStorageReservations = 0;
     std::uint32_t blockingDownstreamStorageCapacity = 0;
     bool blockingDownstreamStorageReserved = false;
+    std::optional<StorageHead> blockingDownstreamStorageHead;
     std::uint64_t blockingActorOrdinal = 0;
     std::uint64_t blockingReadyTokenCount = 0;
     std::uint64_t blockingQueueOccupancy = 0;
@@ -161,12 +174,18 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint64_t blockingQueueCapacity = 0;
     std::vector<OperandQueueWait> operandQueueWaits;
   };
+  enum class TransferWaitKind : std::uint8_t {
+    ActorPublication,
+    StorageHead,
+    DownstreamStorageHead,
+  };
   struct TransferWaitCycleEdge final {
     std::uint64_t waitingBindingOrdinal = 0;
     std::uint64_t waitingOccurrenceOrdinal = 0;
     std::uint64_t blockingActorOrdinal = 0;
     std::uint64_t blockingBindingOrdinal = 0;
     std::uint64_t blockingOccurrenceOrdinal = 0;
+    TransferWaitKind kind = TransferWaitKind::ActorPublication;
   };
   enum class ActorWaitKind : std::uint8_t {
     OutputBackpressure,

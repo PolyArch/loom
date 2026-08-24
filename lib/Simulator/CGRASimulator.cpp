@@ -58,12 +58,26 @@ std::vector<std::uint64_t> findTransferWaitCycle(
   std::vector<std::vector<std::uint64_t>> edges(transfers.size());
   for (std::uint64_t waiting = 0; waiting != transfers.size(); ++waiting) {
     const auto &transfer = transfers[waiting];
-    if (!transfer.blocked || transfer.blockingActorOrdinal == absent)
+    if (!transfer.blocked)
       continue;
-    for (std::uint64_t blocking = 0; blocking != transfers.size(); ++blocking)
-      if (transfers[blocking].producerActorOrdinal ==
-          transfer.blockingActorOrdinal)
+    for (std::uint64_t blocking = 0; blocking != transfers.size(); ++blocking) {
+      const auto &candidate = transfers[blocking];
+      const bool actorWait =
+          transfer.blockingActorOrdinal != absent &&
+          candidate.producerActorOrdinal == transfer.blockingActorOrdinal;
+      const auto ownsStorageHead = [&](const auto &head) {
+        return head && candidate.bindingOrdinal == head->bindingOrdinal &&
+               candidate.occurrenceOrdinal == head->occurrenceOrdinal &&
+               blocking != waiting;
+      };
+      const bool waitingForStorageCapacity =
+          transfer.blockingTraversalWaitingForStorage;
+      if (actorWait ||
+          (waitingForStorageCapacity &&
+           ownsStorageHead(transfer.blockingStorageHead)) ||
+          ownsStorageHead(transfer.blockingDownstreamStorageHead))
         edges[waiting].push_back(blocking);
+    }
     llvm::sort(edges[waiting]);
     edges[waiting].erase(
         std::unique(edges[waiting].begin(), edges[waiting].end()),
@@ -101,6 +115,22 @@ std::vector<std::uint64_t> findTransferWaitCycle(
   return cycle;
 }
 
+CgraClosedWaitSetDiagnostic::TransferWaitKind transferWaitKind(
+    const CgraClosedWaitSetDiagnostic::Transfer &waiting,
+    const CgraClosedWaitSetDiagnostic::Transfer &blocking) {
+  const auto matches = [&](const auto &head) {
+    return head && blocking.bindingOrdinal == head->bindingOrdinal &&
+           blocking.occurrenceOrdinal == head->occurrenceOrdinal;
+  };
+  if (waiting.blockingTraversalWaitingForStorage &&
+      matches(waiting.blockingStorageHead))
+    return CgraClosedWaitSetDiagnostic::TransferWaitKind::StorageHead;
+  if (matches(waiting.blockingDownstreamStorageHead))
+    return CgraClosedWaitSetDiagnostic::TransferWaitKind::
+        DownstreamStorageHead;
+  return CgraClosedWaitSetDiagnostic::TransferWaitKind::ActorPublication;
+}
+
 struct ActorWaitCase final {
   std::vector<std::uint64_t> internalProducers;
 };
@@ -131,11 +161,26 @@ deriveActorWaitCycle(
 
   std::vector<ActorWaitState> waits(actorCount);
   for (const auto &transfer : closedWait.transfers) {
-    if (!transfer.blocked || transfer.producerActorOrdinal >= actorCount ||
-        transfer.blockingActorOrdinal >= actorCount)
+    if (!transfer.blocked || transfer.producerActorOrdinal >= actorCount)
       continue;
-    waits[transfer.producerActorOrdinal].outputBackpressure.push_back(
-        transfer.blockingActorOrdinal);
+    ActorWaitState &wait = waits[transfer.producerActorOrdinal];
+    if (transfer.blockingActorOrdinal < actorCount)
+      wait.outputBackpressure.push_back(transfer.blockingActorOrdinal);
+    const auto appendStorageOwner = [&](const auto &head) {
+      if (!head || (head->bindingOrdinal == transfer.bindingOrdinal &&
+                    head->occurrenceOrdinal == transfer.occurrenceOrdinal))
+        return;
+      const auto owner = llvm::find_if(closedWait.transfers, [&](const auto &c) {
+        return c.bindingOrdinal == head->bindingOrdinal &&
+               c.occurrenceOrdinal == head->occurrenceOrdinal;
+      });
+      if (owner != closedWait.transfers.end() &&
+          owner->producerActorOrdinal < actorCount)
+        wait.outputBackpressure.push_back(owner->producerActorOrdinal);
+    };
+    if (transfer.blockingTraversalWaitingForStorage)
+      appendStorageOwner(transfer.blockingStorageHead);
+    appendStorageOwner(transfer.blockingDownstreamStorageHead);
   }
   for (ActorWaitState &wait : waits) {
     llvm::sort(wait.outputBackpressure);
@@ -180,6 +225,9 @@ deriveActorWaitCycle(
         if (!state.channelSlots[channel].ready.empty())
           continue;
         mlir::Value value = actor.operation->getOperand(input);
+        if (actor.memory && input == actor.memory->memoryOperandOrdinal &&
+            (state.memoryViews.contains(value) || state.memories.contains(value)))
+          continue;
         mlir::Operation *producer = value.getDefiningOp();
         const auto found = producer ? actorByOperation.find(producer)
                                     : actorByOperation.end();
@@ -495,6 +543,16 @@ struct CgraExecutionSession::Impl final {
            firing.transitionCaseOrdinal, firing.expectedTransfers,
            firing.completedTransfers, firing.physicalComplete,
            firing.causalReleaseSatisfied});
+    const auto projectStorageHead =
+        [](const std::optional<detail::CgraPendingTransferDiagnostic::StorageHead>
+               &head)
+        -> std::optional<CgraClosedWaitSetDiagnostic::Transfer::StorageHead> {
+      if (!head)
+        return std::nullopt;
+      return CgraClosedWaitSetDiagnostic::Transfer::StorageHead{
+          head->storageOrdinal, head->bindingOrdinal, head->occurrenceOrdinal,
+          head->traversalNodeOrdinal};
+    };
     for (const auto &transfer : runtime->pendingTransferDiagnostics()) {
       std::vector<CgraClosedWaitSetDiagnostic::Transfer::OperandQueueWait>
           operandQueueWaits;
@@ -537,7 +595,8 @@ struct CgraExecutionSession::Impl final {
            transfer.blockingStorageOccupancy,
            transfer.blockingStorageReservations,
            transfer.blockingStorageCapacity,
-           transfer.blockingTraversalState,
+           projectStorageHead(transfer.blockingStorageHead),
+           transfer.blockingTraversalWaitingForStorage,
            transfer.blockingDownstreamStorageCount,
            transfer.blockingUnbufferedSinkCount,
            transfer.blockingDownstreamStorageOrdinal,
@@ -545,6 +604,7 @@ struct CgraExecutionSession::Impl final {
            transfer.blockingDownstreamStorageReservations,
            transfer.blockingDownstreamStorageCapacity,
            transfer.blockingDownstreamStorageReserved,
+           projectStorageHead(transfer.blockingDownstreamStorageHead),
            transfer.blockingActorOrdinal,
            transfer.blockingReadyTokenCount,
            transfer.blockingQueueOccupancy,
@@ -568,7 +628,7 @@ struct CgraExecutionSession::Impl final {
       closedWait->transferWaitCycle.push_back(
           {waiting.bindingOrdinal, waiting.occurrenceOrdinal,
            waiting.blockingActorOrdinal, blocking.bindingOrdinal,
-           blocking.occurrenceOrdinal});
+           blocking.occurrenceOrdinal, transferWaitKind(waiting, blocking)});
     }
     auto actorCycle = deriveActorWaitCycle(graphExecution->execution,
                                            dynamicState, *closedWait);

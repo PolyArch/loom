@@ -1,7 +1,9 @@
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
+#include "Common/ComponentViewDigest.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Runtime/Gem5BridgeWire.h"
 #include "Runtime/Gem5SpatialChannel.h"
@@ -14,6 +16,7 @@
 #include "Simulator/SpatialChannelWire.h"
 #include "Simulator/SpatialInvocation.h"
 
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/InitLLVM.h"
@@ -727,6 +730,8 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
       for (const auto &transfer : outcome->closedWaitSet->transfers) {
         stream << ", transfer={binding=" << transfer.bindingOrdinal
                << ", occurrence=" << transfer.occurrenceOrdinal
+               << ", producer=" << transfer.producerActorOrdinal << ":"
+               << transfer.producerResultOrdinal
                << ", blocked=" << transfer.blocked
                << ", arrival_scheduled=" << transfer.arrivalScheduled
                << ", publication_ready=" << transfer.publicationReady
@@ -748,18 +753,34 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
                << transfer.requestedPublicationCount << "/"
                << transfer.publicationCount << ", blocking_traversal="
                << transfer.blockingTraversalNodeOrdinal << ":"
-               << static_cast<unsigned>(transfer.blockingTraversalState)
+               << transfer.blockingTraversalWaitingForStorage
                << ", blocking_storage=" << transfer.blockingStorageOrdinal
                << ":" << transfer.blockingStorageOccupancy << "+"
                << transfer.blockingStorageReservations << "/"
-               << transfer.blockingStorageCapacity
+               << transfer.blockingStorageCapacity << ":";
+        if (transfer.blockingStorageHead)
+          stream << transfer.blockingStorageHead->bindingOrdinal << ":"
+                 << transfer.blockingStorageHead->occurrenceOrdinal << ":"
+                 << transfer.blockingStorageHead->traversalNodeOrdinal;
+        else
+          stream << "none";
+        stream
                << ", downstream=" << transfer.blockingDownstreamStorageCount
                << ":" << transfer.blockingUnbufferedSinkCount << ":"
                << transfer.blockingDownstreamStorageOrdinal << ":"
                << transfer.blockingDownstreamStorageOccupancy << "+"
                << transfer.blockingDownstreamStorageReservations << "/"
                << transfer.blockingDownstreamStorageCapacity << ":"
-               << transfer.blockingDownstreamStorageReserved
+               << transfer.blockingDownstreamStorageReserved << ":";
+        if (transfer.blockingDownstreamStorageHead)
+          stream << transfer.blockingDownstreamStorageHead->bindingOrdinal
+                 << ":"
+                 << transfer.blockingDownstreamStorageHead->occurrenceOrdinal
+                 << ":"
+                 << transfer.blockingDownstreamStorageHead->traversalNodeOrdinal;
+        else
+          stream << "none";
+        stream
                << ", blocking_actor=" << transfer.blockingActorOrdinal
                << ", blocking_ready=" << transfer.blockingReadyTokenCount
                << ", blocking_queue=" << transfer.blockingQueueOccupancy << "+"
@@ -775,6 +796,82 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
         }
         stream << "]}";
       }
+    if (outcome->closedWaitSet) {
+      stream << ", transfer_wait_cycle=[";
+      for (std::size_t index = 0;
+           index != outcome->closedWaitSet->transferWaitCycle.size(); ++index) {
+        if (index != 0)
+          stream << ",";
+        const auto &edge = outcome->closedWaitSet->transferWaitCycle[index];
+        stream << edge.waitingBindingOrdinal << ":"
+               << edge.waitingOccurrenceOrdinal << "->"
+               << edge.blockingActorOrdinal << ":"
+               << edge.blockingBindingOrdinal << ":"
+               << edge.blockingOccurrenceOrdinal << ":"
+               << static_cast<unsigned>(edge.kind);
+      }
+      stream << "]";
+      stream << ", actor_wait_cycle=[";
+      for (std::size_t index = 0;
+           index != outcome->closedWaitSet->actorWaitCycle.size(); ++index) {
+        if (index != 0)
+          stream << ",";
+        const auto &edge = outcome->closedWaitSet->actorWaitCycle[index];
+        stream << edge.waitingActorOrdinal << "->" << edge.blockingActorOrdinal
+               << ":" << static_cast<unsigned>(edge.kind);
+      }
+      stream << "]";
+      stream << ", operand_queue_summary={groups="
+             << outcome->closedWaitSet->operandQueueGroupCount
+             << ",blocking_groups="
+             << outcome->closedWaitSet->operandQueuePotentiallyBlockingGroupCount
+             << ",shared_ingress="
+             << outcome->closedWaitSet->operandQueueSharedIngressPressure
+             << ",distinct_ingress="
+             << outcome->closedWaitSet->operandQueueDistinctIngressCount
+             << ",pairing_keys="
+             << outcome->closedWaitSet->operandQueuePairingKeyCount
+             << ",status="
+             << static_cast<unsigned>(
+                    outcome->closedWaitSet->operandQueueProgressStatus)
+             << ",support="
+             << static_cast<unsigned>(
+                    outcome->closedWaitSet->operandQueueProgressSupport)
+             << ",digest=";
+      if (outcome->closedWaitSet->operandQueueProjectionDigest)
+        stream << loom::formatComponentViewDigestHex(
+            *outcome->closedWaitSet->operandQueueProjectionDigest);
+      else
+        stream << "none";
+      stream << "}";
+      stream << ", operand_queue_heads=[";
+      for (std::size_t index = 0;
+           index != outcome->closedWaitSet->operandQueueHeads.size() &&
+           index != 16;
+           ++index) {
+        if (index != 0)
+          stream << ",";
+        const auto &head = outcome->closedWaitSet->operandQueueHeads[index];
+        llvm::SmallString<32> tag;
+        head.headTag.toStringUnsigned(tag, 16);
+        stream << "{context="
+               << llvm::toHex(::loom::fabric::canonicalFabricBytes(
+                                  head.queue.context),
+                              true)
+               << ",fu_occurrence=" << head.queue.fuOccurrence
+               << ",fu_input=" << head.queue.fuInput << ",unit="
+               << head.allocationUnit << ",occupancy=" << head.occupancy
+               << ",reservations=" << head.reservations
+               << ",capacity=" << head.capacity << ",head="
+               << head.headBindingOrdinal << ":"
+               << head.headOccurrenceOrdinal << ":"
+               << head.headProducerSequenceOrdinal << ":" << tag.str()
+               << ",exact=" << head.exactHead << "}";
+      }
+      if (outcome->closedWaitSet->operandQueueHeads.size() > 16)
+        stream << ",...";
+      stream << "]";
+    }
     if (outcome->closedWaitSet)
       for (const auto &action : outcome->closedWaitSet->physicalActions)
         stream << ", physical_action={action=" << action.actionOrdinal
@@ -1162,6 +1259,8 @@ int main(int argc, char **argv) {
           std::to_string(runtime->spatial()->runtimeValues.size()) +
           ", runtime_streams=" +
           std::to_string(runtime->spatial()->runtimeStreams.size()) +
+          ", runtime_identity=" +
+          formatArtifactIdentityHex(runtime->identity()) +
           ", dense_coordinates=" +
           (spatial ? std::to_string(spatial->denseCoordinates.size()) : "0") +
           "): " + diagnostic;
