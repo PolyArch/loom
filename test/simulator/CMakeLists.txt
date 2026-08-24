@@ -53,6 +53,7 @@ target_include_directories(loom-simulator-dfg-actor-transition-probe-test PRIVAT
 target_link_libraries(loom-simulator-dfg-actor-transition-probe-test PRIVATE
   LoomSimulator
   MLIRDataflow
+  MLIRDLTIDialect
   MLIRIR
   MLIRParser
   MLIRSupport

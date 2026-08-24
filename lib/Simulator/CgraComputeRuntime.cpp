@@ -247,12 +247,15 @@ CgraComputeRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
     auto selected = probeActorTransition(*binding.semantic, *state_);
     if (!selected)
       return selected.takeError();
-    if (!*selected)
+    if (selected->readiness != ActorTransitionReadiness::Ready)
       continue;
-    if (**selected >= binding.transitionCount)
+    if (!selected->transitionCaseOrdinal)
+      return invalid("ready CGRA actor probe omitted its transition case");
+    if (*selected->transitionCaseOrdinal >= binding.transitionCount)
       return invalid("CGRA probe selected an unknown transition case");
     const std::uint64_t transitionOrdinal =
-        transitionByCase_[binding.transitionIndexOffset + **selected];
+        transitionByCase_[binding.transitionIndexOffset +
+                          *selected->transitionCaseOrdinal];
     const CgraComputeTransitionPlan &transition =
         plan_->computeTransitions[transitionOrdinal];
     auto requestCoordinate = dispatchCoordinate(binding, coordinate);
@@ -440,7 +443,9 @@ CgraComputeRuntime::processActorCommit(std::uint64_t firingSlot,
   auto selected = probeActorTransition(*binding.semantic, *state_);
   if (!selected)
     return selected.takeError();
-  if (!*selected || **selected != firing.transitionCaseOrdinal)
+  if (selected->readiness != ActorTransitionReadiness::Ready ||
+      !selected->transitionCaseOrdinal ||
+      *selected->transitionCaseOrdinal != firing.transitionCaseOrdinal)
     return invalid("CGRA actor readiness changed after physical reservation");
   if (state_->actorEmissionCapture)
     return invalid("CGRA actor commit found a nested emission capture");

@@ -148,7 +148,8 @@ void seed(SimulatorState &state, mlir::BlockArgument argument,
 
 Token fireOnce(ActorExecutionPlan &actor, SimulatorState &state) {
   auto transition = take(probeActorTransition(actor, state));
-  require(transition && *transition == 0,
+  require(transition.readiness == ActorTransitionReadiness::Ready &&
+              transition.transitionCaseOrdinal == 0,
           "structural actor did not select its all-input transition");
   llvm::SmallVector<ActorResultEmission, 1> emissions;
   state.actorEmissionCapture = &emissions;

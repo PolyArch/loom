@@ -142,13 +142,36 @@ struct ActorWaitState final {
   bool eligible = false;
 };
 
+using ActorTransitionProbeTable =
+    std::vector<std::optional<detail::ActorTransitionProbeResult>>;
+
+ActorTransitionProbeTable deriveActorTransitionProbes(
+    const detail::PreparedGraphExecution &execution,
+    const detail::SimulatorState &state) {
+  ActorTransitionProbeTable probes(execution.actorPlans.size());
+  for (const auto [ordinal, actor] : llvm::enumerate(execution.actorPlans)) {
+    if (actor.transitionProbe == detail::ActorTransitionProbeKind::Unavailable)
+      continue;
+    auto probe = detail::probeActorTransition(actor, state);
+    if (!probe) {
+      llvm::consumeError(probe.takeError());
+      continue;
+    }
+    probes[ordinal] = std::move(*probe);
+  }
+  return probes;
+}
+
 llvm::Expected<std::vector<CgraClosedWaitSetDiagnostic::ActorWaitCycleEdge>>
 deriveActorWaitCycle(
     const detail::PreparedGraphExecution &execution,
     const detail::SimulatorState &state,
+    llvm::ArrayRef<std::optional<detail::ActorTransitionProbeResult>> probes,
     const CgraClosedWaitSetDiagnostic &closedWait) {
   const std::uint64_t absent = std::numeric_limits<std::uint64_t>::max();
   const std::size_t actorCount = execution.actorPlans.size();
+  if (probes.size() != actorCount)
+    return invalid("CGRA actor probe table does not cover the graph");
   llvm::DenseMap<mlir::Operation *, std::uint64_t> actorByOperation;
   actorByOperation.reserve(actorCount);
   for (const auto [ordinal, actor] : llvm::enumerate(execution.actorPlans))
@@ -198,55 +221,45 @@ deriveActorWaitCycle(
       continue;
     }
     const auto &actor = execution.actorPlans[ordinal];
-    // This is a diagnostic proof attempt over an already halted execution.
-    // An unavailable semantic probe must leave the narrower actor-cycle proof
-    // unknown; it must not change the simulator outcome.
-    if (actor.transitionProbe == detail::ActorTransitionProbeKind::Unavailable)
+    if (!probes[ordinal])
       continue;
-    auto selected = detail::probeActorTransition(actor, state);
-    if (!selected) {
-      llvm::consumeError(selected.takeError());
-      continue;
-    }
-    if (*selected)
+    const detail::ActorTransitionProbeResult &selected = *probes[ordinal];
+    if (selected.readiness != detail::ActorTransitionReadiness::Blocked)
       continue;
 
-    wait.missingInputCases.reserve(actor.handshakeCases.size());
-    bool allCasesHaveInternalWait = !actor.handshakeCases.empty();
-    for (const auto &handshake : actor.handshakeCases) {
-      ActorWaitCase blockedCase;
-      bool hasUnownedMissingInput = false;
-      for (std::uint32_t input : handshake.consumedInputs) {
-        if (input >= actor.inputChannelCount)
-          return invalid("CGRA handshake case names an unknown actor input");
-        const std::uint64_t channel = actor.firstInputChannel + input;
-        if (channel >= state.channelSlots.size())
-          return invalid("CGRA actor input channel is outside runtime state");
-        if (!state.channelSlots[channel].ready.empty())
-          continue;
-        mlir::Value value = actor.operation->getOperand(input);
-        if (actor.memory && input == actor.memory->memoryOperandOrdinal &&
-            (state.memoryViews.contains(value) || state.memories.contains(value)))
-          continue;
-        mlir::Operation *producer = value.getDefiningOp();
-        const auto found = producer ? actorByOperation.find(producer)
-                                    : actorByOperation.end();
-        if (found == actorByOperation.end()) {
-          hasUnownedMissingInput = true;
-          continue;
-        }
-        blockedCase.internalProducers.push_back(found->second);
+    ActorWaitCase blockedCase;
+    bool hasUnownedMissingInput = false;
+    bool hasMissingInput = false;
+    for (std::uint32_t input : selected.shape.requiredInputs) {
+      if (input >= actor.inputChannelCount)
+        return invalid("CGRA actor probe names an unknown required input");
+      const std::uint64_t channel = actor.firstInputChannel + input;
+      if (channel >= state.channelSlots.size())
+        return invalid("CGRA actor input channel is outside runtime state");
+      if (!state.channelSlots[channel].ready.empty())
+        continue;
+      mlir::Value value = actor.operation->getOperand(input);
+      if (actor.memory && input == actor.memory->memoryOperandOrdinal &&
+          (state.memoryViews.contains(value) || state.memories.contains(value)))
+        continue;
+      hasMissingInput = true;
+      mlir::Operation *producer = value.getDefiningOp();
+      const auto found = producer ? actorByOperation.find(producer)
+                                  : actorByOperation.end();
+      if (found == actorByOperation.end()) {
+        hasUnownedMissingInput = true;
+        continue;
       }
-      llvm::sort(blockedCase.internalProducers);
-      blockedCase.internalProducers.erase(
-          std::unique(blockedCase.internalProducers.begin(),
-                      blockedCase.internalProducers.end()),
-          blockedCase.internalProducers.end());
-      if (hasUnownedMissingInput || blockedCase.internalProducers.empty())
-        allCasesHaveInternalWait = false;
-      wait.missingInputCases.push_back(std::move(blockedCase));
+      blockedCase.internalProducers.push_back(found->second);
     }
-    wait.eligible = allCasesHaveInternalWait;
+    llvm::sort(blockedCase.internalProducers);
+    blockedCase.internalProducers.erase(
+        std::unique(blockedCase.internalProducers.begin(),
+                    blockedCase.internalProducers.end()),
+        blockedCase.internalProducers.end());
+    wait.eligible = hasMissingInput && !hasUnownedMissingInput &&
+                    !blockedCase.internalProducers.empty();
+    wait.missingInputCases.push_back(std::move(blockedCase));
   }
 
   std::vector<bool> closed(actorCount, false);
@@ -612,6 +625,71 @@ struct CgraExecutionSession::Impl final {
            transfer.blockingQueueCapacity,
            std::move(operandQueueWaits)});
     }
+    const std::size_t actorCount = graphExecution->execution.actorPlans.size();
+    ActorTransitionProbeTable probes = deriveActorTransitionProbes(
+        graphExecution->execution, dynamicState);
+    llvm::DenseMap<mlir::Operation *, std::uint64_t> actorByOperation;
+    actorByOperation.reserve(actorCount);
+    for (const auto [ordinal, actor] :
+         llvm::enumerate(graphExecution->execution.actorPlans))
+      if (actor.operation)
+        actorByOperation.try_emplace(actor.operation, ordinal);
+    for (std::size_t actor = 0; actor != actorCount; ++actor) {
+      if (!probes[actor] ||
+          probes[actor]->readiness != detail::ActorTransitionReadiness::Blocked)
+        continue;
+      const auto &plan = graphExecution->execution.actorPlans[actor];
+      if (!plan.operation)
+        continue;
+      const auto actorEntity =
+          plan.operation->getAttrOfType<dataflow::EntityIdAttr>(
+              dataflow::kEntityIdAttrName);
+      const std::uint64_t actorEntityId =
+          actorEntity ? actorEntity.getId() : detail::invalidCgraTransportOrdinal;
+      for (std::uint32_t input : probes[actor]->shape.requiredInputs) {
+        const std::uint64_t channel = plan.firstInputChannel + input;
+        if (channel >= dynamicState.channelSlots.size())
+          continue;
+        if (!dynamicState.channelSlots[channel].ready.empty())
+          continue;
+        mlir::Value value = plan.operation->getOperand(input);
+        CgraClosedWaitSetDiagnostic::ActorInputSourceKind sourceKind =
+            CgraClosedWaitSetDiagnostic::ActorInputSourceKind::Unknown;
+        std::uint64_t definingActor = detail::invalidCgraTransportOrdinal;
+        std::uint64_t definingActorEntity =
+            detail::invalidCgraTransportOrdinal;
+        bool definingActorTerminal = false;
+        const bool memoryCapability =
+            plan.memory && input == plan.memory->memoryOperandOrdinal &&
+            (dynamicState.memoryViews.contains(value) ||
+             dynamicState.memories.contains(value));
+        if (memoryCapability)
+          continue;
+        if (mlir::Operation *producer = value.getDefiningOp()) {
+          auto found = actorByOperation.find(producer);
+          if (found != actorByOperation.end()) {
+            sourceKind = CgraClosedWaitSetDiagnostic::ActorInputSourceKind::
+                ActorResult;
+            definingActor = found->second;
+            if (auto entity =
+                    producer->getAttrOfType<dataflow::EntityIdAttr>(
+                        dataflow::kEntityIdAttrName))
+              definingActorEntity = entity.getId();
+            definingActorTerminal =
+                probes[definingActor] &&
+                probes[definingActor]->readiness ==
+                    detail::ActorTransitionReadiness::Terminal;
+          }
+        } else if (llvm::isa<mlir::BlockArgument>(value)) {
+          sourceKind =
+              CgraClosedWaitSetDiagnostic::ActorInputSourceKind::GraphInput;
+        }
+        closedWait->blockedActorInputs.push_back(
+            {static_cast<std::uint64_t>(actor), actorEntityId, input, channel,
+             sourceKind, definingActor, definingActorEntity,
+             definingActorTerminal});
+      }
+    }
     for (const auto &action : runtime->pendingPhysicalActionDiagnostics())
       closedWait->physicalActions.push_back(
           {action.action.actionOrdinal, action.action.occurrenceOrdinal,
@@ -630,8 +708,8 @@ struct CgraExecutionSession::Impl final {
            waiting.blockingActorOrdinal, blocking.bindingOrdinal,
            blocking.occurrenceOrdinal, transferWaitKind(waiting, blocking)});
     }
-    auto actorCycle = deriveActorWaitCycle(graphExecution->execution,
-                                           dynamicState, *closedWait);
+    auto actorCycle = deriveActorWaitCycle(
+        graphExecution->execution, dynamicState, probes, *closedWait);
     if (!actorCycle)
       return actorCycle.takeError();
     closedWait->actorWaitCycle = std::move(*actorCycle);

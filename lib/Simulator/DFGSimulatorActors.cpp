@@ -867,10 +867,10 @@ actorRuntimeProvider(dataflow::OperationSchemaId schema) {
         fireTypedActor<dataflow::SerializeOp, fireSerialize>, Probe::Serialize};
   case Schema::DataflowLoad:
     return ActorRuntimeProvider{fireTypedActor<dataflow::LoadOp, fireLoad>,
-                                Probe::Unavailable};
+                                Probe::MemoryInputs};
   case Schema::DataflowStore:
     return ActorRuntimeProvider{fireTypedActor<dataflow::StoreOp, fireStore>,
-                                Probe::Unavailable};
+                                Probe::MemoryInputs};
   default:
     return std::nullopt;
   }

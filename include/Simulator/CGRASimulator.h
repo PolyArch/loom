@@ -87,6 +87,24 @@ struct CgraClosedWaitSetDiagnostic final {
     bool physicalComplete = false;
     bool causalReleaseSatisfied = false;
   };
+  enum class ActorInputSourceKind : std::uint8_t {
+    GraphInput,
+    ActorResult,
+    Unknown,
+  };
+  struct BlockedActorInput final {
+    std::uint64_t semanticActorOrdinal = 0;
+    std::uint64_t actorEntityId = std::numeric_limits<std::uint64_t>::max();
+    std::uint32_t inputOrdinal = 0;
+    std::uint64_t channelOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    ActorInputSourceKind sourceKind = ActorInputSourceKind::Unknown;
+    std::uint64_t definingActorOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t definingActorEntityId =
+        std::numeric_limits<std::uint64_t>::max();
+    bool definingActorTerminal = false;
+  };
   struct PhysicalAction final {
     std::uint64_t actionOrdinal = 0;
     std::uint64_t occurrenceOrdinal = 0;
@@ -201,6 +219,10 @@ struct CgraClosedWaitSetDiagnostic final {
   std::uint64_t pendingPhysicalActions = 0;
   bool graphRetirementVisible = false;
   std::vector<ActorFiring> actorFirings;
+  /// Exact missing inputs selected by the current semantic state of every
+  /// blocked actor. Producer terminality distinguishes finite underproduction
+  /// from an unresolved internal wait without creating another liveness owner.
+  std::vector<BlockedActorInput> blockedActorInputs;
   std::vector<Transfer> transfers;
   std::vector<PhysicalAction> physicalActions;
   /// Canonical cycle in the actual quiescent transfer wait-for graph. An edge
@@ -211,8 +233,8 @@ struct CgraClosedWaitSetDiagnostic final {
   std::vector<TransferWaitCycleEdge> transferWaitCycle;
   /// Canonical cycle in the actor-level wait closure. Output-backpressure
   /// edges are reconstructed from blocked physical transfers. Missing-input
-  /// edges are admitted only when every registered handshake case remains
-  /// blocked by an internal producer in the same greatest closed set.
+  /// edges use only the dynamic transition selected by the actor semantics and
+  /// are admitted when its missing producers remain in the greatest closed set.
   std::vector<ActorWaitCycleEdge> actorWaitCycle;
   /// Shared derived Mapping/Simulator queue projection summary. These fields
   /// carry no new runtime identity and are absent when no operand queues are

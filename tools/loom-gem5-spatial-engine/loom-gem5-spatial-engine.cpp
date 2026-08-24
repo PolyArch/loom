@@ -797,6 +797,22 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
         stream << "]}";
       }
     if (outcome->closedWaitSet) {
+      stream << ", blocked_actor_inputs=[";
+      for (std::size_t index = 0;
+           index != outcome->closedWaitSet->blockedActorInputs.size();
+           ++index) {
+        if (index != 0)
+          stream << ",";
+        const auto &input = outcome->closedWaitSet->blockedActorInputs[index];
+        stream << input.semanticActorOrdinal << ":" << input.actorEntityId
+               << ":" << input.inputOrdinal << ":" << input.channelOrdinal
+               << ":"
+               << static_cast<unsigned>(input.sourceKind) << ":"
+               << input.definingActorOrdinal << ":"
+               << input.definingActorEntityId << ":"
+               << input.definingActorTerminal;
+      }
+      stream << "]";
       stream << ", transfer_wait_cycle=[";
       for (std::size_t index = 0;
            index != outcome->closedWaitSet->transferWaitCycle.size(); ++index) {

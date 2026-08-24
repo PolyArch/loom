@@ -835,8 +835,23 @@ using ActorProvider = bool (*)(mlir::Operation *,
 /// OperationSchema remains the authority for valid cases; this value is only
 /// matched against the actor's cached canonical case table.
 struct ActorTransitionShape {
-  llvm::SmallVector<std::uint32_t, 4> consumedInputs;
+  llvm::SmallVector<std::uint32_t, 4> requiredInputs;
   llvm::SmallVector<std::uint32_t, 4> activeResults;
+};
+
+enum class ActorTransitionReadiness : std::uint8_t {
+  Ready,
+  Blocked,
+  Terminal,
+};
+
+/// One non-mutating dynamic transition decision. A blocked decision retains
+/// the exact input heads selected by the current semantic state; terminal
+/// means the actor has no future transition in this activation.
+struct ActorTransitionProbeResult final {
+  ActorTransitionReadiness readiness = ActorTransitionReadiness::Blocked;
+  ActorTransitionShape shape;
+  std::optional<std::uint32_t> transitionCaseOrdinal;
 };
 
 enum class ActorTransitionProbeKind : std::uint8_t {
@@ -853,6 +868,7 @@ enum class ActorTransitionProbeKind : std::uint8_t {
   Demux,
   Parallelize,
   Serialize,
+  MemoryInputs,
 };
 
 struct ActorRuntimeProvider {
@@ -1381,7 +1397,7 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state);
 std::optional<ActorRuntimeProvider>
 actorRuntimeProvider(dataflow::OperationSchemaId schema);
 ActorProvider actorProvider(dataflow::OperationSchemaId schema);
-llvm::Expected<std::optional<std::uint32_t>>
+llvm::Expected<ActorTransitionProbeResult>
 probeActorTransition(const ActorExecutionPlan &plan,
                      const SimulatorState &state);
 enum class ActorTransitionCommitOutcome : std::uint8_t {

@@ -52,30 +52,60 @@ std::optional<bool> peekBool(const ActorExecutionPlan &plan,
 
 ActorTransitionShape allPorts(const ActorExecutionPlan &plan) {
   ActorTransitionShape shape;
-  shape.consumedInputs.reserve(plan.inputChannelCount);
+  shape.requiredInputs.reserve(plan.inputChannelCount);
   for (std::uint32_t ordinal = 0; ordinal < plan.inputChannelCount; ++ordinal)
-    shape.consumedInputs.push_back(ordinal);
+    shape.requiredInputs.push_back(ordinal);
   shape.activeResults.reserve(plan.outputs.size());
   for (std::uint32_t ordinal = 0; ordinal < plan.outputs.size(); ++ordinal)
     shape.activeResults.push_back(ordinal);
   return shape;
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>>
+llvm::Expected<ActorTransitionProbeResult>
 ready(ActorTransitionShape shape) {
-  return std::optional<ActorTransitionShape>(std::move(shape));
+  return ActorTransitionProbeResult{ActorTransitionReadiness::Ready,
+                                    std::move(shape), std::nullopt};
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>> blocked() {
-  return std::optional<ActorTransitionShape>();
+llvm::Expected<ActorTransitionProbeResult>
+blocked(ActorTransitionShape shape) {
+  return ActorTransitionProbeResult{ActorTransitionReadiness::Blocked,
+                                    std::move(shape), std::nullopt};
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>>
+llvm::Expected<ActorTransitionProbeResult> terminal() {
+  return ActorTransitionProbeResult{ActorTransitionReadiness::Terminal, {},
+                                    std::nullopt};
+}
+
+llvm::Expected<ActorTransitionProbeResult>
 probeAllInputs(const ActorExecutionPlan &plan, const SimulatorState &state) {
+  ActorTransitionShape shape = allPorts(plan);
   for (unsigned ordinal = 0; ordinal < plan.inputChannelCount; ++ordinal)
     if (!hasInput(plan, state, ordinal))
-      return blocked();
-  return ready(allPorts(plan));
+      return blocked(std::move(shape));
+  return ready(std::move(shape));
+}
+
+llvm::Expected<ActorTransitionProbeResult>
+probeMemoryInputs(const ActorExecutionPlan &plan,
+                  const SimulatorState &state) {
+  if (!plan.memory)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "memory-input probe received an actor without a memory plan");
+  ActorTransitionShape shape = allPorts(plan);
+  for (unsigned ordinal = 0; ordinal < plan.inputChannelCount; ++ordinal) {
+    if (hasInput(plan, state, ordinal))
+      continue;
+    if (ordinal == plan.memory->memoryOperandOrdinal) {
+      mlir::Value memory = plan.operation->getOperand(ordinal);
+      if (state.memoryViews.contains(memory) || state.memories.contains(memory))
+        continue;
+    }
+    return blocked(std::move(shape));
+  }
+  return ready(std::move(shape));
 }
 
 ActorTransitionShape
@@ -83,8 +113,8 @@ shapeFromDecision(const SemanticFiringDecision &decision,
                   llvm::ArrayRef<std::uint32_t> activeResults) {
   ActorTransitionShape shape;
   for (std::uint32_t ordinal = 0; ordinal < 8; ++ordinal)
-    if ((decision.consumedInputs & (SemanticInputMask{1} << ordinal)) != 0)
-      shape.consumedInputs.push_back(ordinal);
+    if ((decision.requiredInputs & (SemanticInputMask{1} << ordinal)) != 0)
+      shape.requiredInputs.push_back(ordinal);
   shape.activeResults.assign(activeResults.begin(), activeResults.end());
   return shape;
 }
@@ -95,7 +125,7 @@ unsigned streamIntegerBitWidth(mlir::Type type) {
   return 0;
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>>
+llvm::Expected<ActorTransitionProbeResult>
 probeStream(const ActorExecutionPlan &plan, const SimulatorState &state) {
   const auto *payload =
       std::get_if<dataflow::StreamRecurrencePayload>(&plan.projection.payload);
@@ -137,17 +167,17 @@ probeStream(const ActorExecutionPlan &plan, const SimulatorState &state) {
       activation);
   if (!transition)
     return transition.takeError();
-  if (!transition->firing.ready)
-    return blocked();
   llvm::SmallVector<std::uint32_t, 2> active;
   if (transition->emitIv)
     active.push_back(0);
   if (transition->emitPhase)
     active.push_back(1);
-  return ready(shapeFromDecision(transition->firing, active));
+  ActorTransitionShape shape = shapeFromDecision(transition->firing, active);
+  return transition->firing.ready ? ready(std::move(shape))
+                                  : blocked(std::move(shape));
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>>
+llvm::Expected<ActorTransitionProbeResult>
 probeCarry(const ActorExecutionPlan &plan, const SimulatorState &state) {
   CarrySemanticState semanticState = CarrySemanticState::Initial;
   auto current = state.carryStates.find(plan.operation);
@@ -156,15 +186,15 @@ probeCarry(const ActorExecutionPlan &plan, const SimulatorState &state) {
   const CarryTransition transition = evaluateCarryTransition(
       semanticState, peekBool(plan, state, 0), hasInput(plan, state, 1),
       hasInput(plan, state, 2));
-  if (!transition.firing.ready)
-    return blocked();
   llvm::SmallVector<std::uint32_t, 1> active;
   if (transition.forwardedInput)
     active.push_back(0);
-  return ready(shapeFromDecision(transition.firing, active));
+  ActorTransitionShape shape = shapeFromDecision(transition.firing, active);
+  return transition.firing.ready ? ready(std::move(shape))
+                                 : blocked(std::move(shape));
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>>
+llvm::Expected<ActorTransitionProbeResult>
 probeInvariant(const ActorExecutionPlan &plan, const SimulatorState &state) {
   InvariantSemanticState semanticState = InvariantSemanticState::Initial;
   auto current = state.invariantStates.find(plan.operation);
@@ -172,15 +202,15 @@ probeInvariant(const ActorExecutionPlan &plan, const SimulatorState &state) {
     semanticState = current->second.semanticState;
   const InvariantTransition transition = evaluateInvariantTransition(
       semanticState, peekBool(plan, state, 0), hasInput(plan, state, 1));
-  if (!transition.firing.ready)
-    return blocked();
   llvm::SmallVector<std::uint32_t, 1> active;
   if (transition.output != InvariantOutputSource::None)
     active.push_back(0);
-  return ready(shapeFromDecision(transition.firing, active));
+  ActorTransitionShape shape = shapeFromDecision(transition.firing, active);
+  return transition.firing.ready ? ready(std::move(shape))
+                                 : blocked(std::move(shape));
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>>
+llvm::Expected<ActorTransitionProbeResult>
 probeGate(const ActorExecutionPlan &plan, const SimulatorState &state) {
   const GateSemanticState gate =
       state.gateContinueStates.contains(plan.operation)
@@ -188,14 +218,14 @@ probeGate(const ActorExecutionPlan &plan, const SimulatorState &state) {
           : GateSemanticState::Closed;
   const GateTransition transition = evaluateGateTransition(
       gate, peekBool(plan, state, 0), hasInput(plan, state, 1));
-  if (!transition.firing.ready)
-    return blocked();
   llvm::SmallVector<std::uint32_t, 2> active;
   if (transition.emitPhase)
     active.push_back(0);
   if (transition.forwardedInput)
     active.push_back(1);
-  return ready(shapeFromDecision(transition.firing, active));
+  ActorTransitionShape shape = shapeFromDecision(transition.firing, active);
+  return transition.firing.ready ? ready(std::move(shape))
+                                 : blocked(std::move(shape));
 }
 
 std::int64_t selectorLane(mlir::Type selectorType, const Token &selector) {
@@ -203,10 +233,10 @@ std::int64_t selectorLane(mlir::Type selectorType, const Token &selector) {
                                                     : integerToken(selector);
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>>
+llvm::Expected<ActorTransitionProbeResult>
 probeMux(const ActorExecutionPlan &plan, const SimulatorState &state) {
   if (!hasInput(plan, state, 0))
-    return blocked();
+    return blocked(ActorTransitionShape{{0}, {}});
   auto op = mlir::cast<dataflow::MuxOp>(plan.operation);
   const std::int64_t lane =
       selectorLane(op.getSel().getType(), peekInput(plan, state, 0));
@@ -215,25 +245,26 @@ probeMux(const ActorExecutionPlan &plan, const SimulatorState &state) {
                                    "dataflow.mux selector is out of range");
   const std::uint32_t selected = static_cast<std::uint32_t>(lane) + 1;
   if (!hasInput(plan, state, selected))
-    return blocked();
+    return blocked(ActorTransitionShape{{0, selected}, {0}});
   return ready(ActorTransitionShape{{0, selected}, {0}});
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>>
+llvm::Expected<ActorTransitionProbeResult>
 probeDemux(const ActorExecutionPlan &plan, const SimulatorState &state) {
-  if (!hasInput(plan, state, 0) || !hasInput(plan, state, 1))
-    return blocked();
+  if (!hasInput(plan, state, 0))
+    return blocked(ActorTransitionShape{{0}, {}});
   auto op = mlir::cast<dataflow::DemuxOp>(plan.operation);
   const std::int64_t lane =
       selectorLane(op.getSel().getType(), peekInput(plan, state, 0));
   if (lane < 0 || static_cast<std::size_t>(lane) >= op.getOutputs().size())
     return llvm::createStringError(std::errc::invalid_argument,
                                    "dataflow.demux selector is out of range");
-  return ready(
-      ActorTransitionShape{{0, 1}, {static_cast<std::uint32_t>(lane)}});
+  ActorTransitionShape shape{{0, 1}, {static_cast<std::uint32_t>(lane)}};
+  return hasInput(plan, state, 1) ? ready(std::move(shape))
+                                  : blocked(std::move(shape));
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>>
+llvm::Expected<ActorTransitionProbeResult>
 probeParallelize(const ActorExecutionPlan &plan, const SimulatorState &state) {
   auto op = mlir::cast<dataflow::ParallelizeOp>(plan.operation);
   const std::uint64_t vectorLength =
@@ -251,8 +282,6 @@ probeParallelize(const ActorExecutionPlan &plan, const SimulatorState &state) {
   const ParallelizeTransition transition = evaluateParallelizeTransition(
       semanticState, vectorLength, peekBool(plan, state, 1),
       hasInput(plan, state, 0));
-  if (!transition.firing.ready)
-    return blocked();
   llvm::SmallVector<std::uint32_t, 3> active;
   if (transition.emitGroup) {
     active.push_back(0);
@@ -260,17 +289,17 @@ probeParallelize(const ActorExecutionPlan &plan, const SimulatorState &state) {
   }
   if (transition.emitTruePhase || transition.emitFalsePhase)
     active.push_back(2);
-  return ready(shapeFromDecision(transition.firing, active));
+  ActorTransitionShape shape = shapeFromDecision(transition.firing, active);
+  return transition.firing.ready ? ready(std::move(shape))
+                                 : blocked(std::move(shape));
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>>
+llvm::Expected<ActorTransitionProbeResult>
 probeSerialize(const ActorExecutionPlan &plan, const SimulatorState &state) {
   const SerializeTransition transition = evaluateSerializeTransition(
       peekBool(plan, state, 2), hasInput(plan, state, 0),
       hasInput(plan, state, 1));
-  if (!transition.firing.ready)
-    return blocked();
-  if (transition.emitActiveItems) {
+  if (transition.firing.ready && transition.emitActiveItems) {
     auto op = mlir::cast<dataflow::SerializeOp>(plan.operation);
     auto mask = vectorPrimitiveValues(peekInput(plan, state, 1),
                                       op.getMask().getType(), op);
@@ -291,10 +320,12 @@ probeSerialize(const ActorExecutionPlan &plan, const SimulatorState &state) {
   } else if (transition.emitFalsePhase) {
     active.push_back(1);
   }
-  return ready(shapeFromDecision(transition.firing, active));
+  ActorTransitionShape shape = shapeFromDecision(transition.firing, active);
+  return transition.firing.ready ? ready(std::move(shape))
+                                 : blocked(std::move(shape));
 }
 
-llvm::Expected<std::optional<ActorTransitionShape>>
+llvm::Expected<ActorTransitionProbeResult>
 selectDynamicShape(const ActorExecutionPlan &plan,
                    const SimulatorState &state) {
   using Kind = ActorTransitionProbeKind;
@@ -307,17 +338,17 @@ selectDynamicShape(const ActorExecutionPlan &plan,
     return probeAllInputs(plan, state);
   case Kind::OneShot:
     if (state.oneShotOps.contains(plan.operation))
-      return blocked();
+      return terminal();
     return probeAllInputs(plan, state);
   case Kind::StatelessCompute:
     if (state.terminalComputeOps.contains(plan.operation) ||
         (plan.inputChannelCount == 0 &&
          state.oneShotOps.contains(plan.operation)))
-      return blocked();
+      return terminal();
     return probeAllInputs(plan, state);
   case Kind::GetElementPtr:
     if (state.terminalComputeOps.contains(plan.operation))
-      return blocked();
+      return terminal();
     return probeAllInputs(plan, state);
   case Kind::Stream:
     return probeStream(plan, state);
@@ -335,26 +366,28 @@ selectDynamicShape(const ActorExecutionPlan &plan,
     return probeParallelize(plan, state);
   case Kind::Serialize:
     return probeSerialize(plan, state);
+  case Kind::MemoryInputs:
+    return probeMemoryInputs(plan, state);
   }
   llvm_unreachable("closed actor transition probe kind");
 }
 
 } // namespace
 
-llvm::Expected<std::optional<std::uint32_t>>
+llvm::Expected<ActorTransitionProbeResult>
 probeActorTransition(const ActorExecutionPlan &plan,
                      const SimulatorState &state) {
-  auto shape = selectDynamicShape(plan, state);
-  if (!shape)
-    return shape.takeError();
-  if (!*shape)
-    return std::nullopt;
+  auto result = selectDynamicShape(plan, state);
+  if (!result)
+    return result.takeError();
+  if (result->readiness != ActorTransitionReadiness::Ready)
+    return std::move(*result);
 
   std::optional<std::uint32_t> selected;
   for (const dataflow::semantics::ActorHandshakeCase &candidate :
        plan.handshakeCases) {
-    if (candidate.consumedInputs != (*shape)->consumedInputs ||
-        candidate.activeResults != (*shape)->activeResults)
+    if (candidate.consumedInputs != result->shape.requiredInputs ||
+        candidate.activeResults != result->shape.activeResults)
       continue;
     if (selected)
       return llvm::createStringError(
@@ -366,7 +399,8 @@ probeActorTransition(const ActorExecutionPlan &plan,
     return llvm::createStringError(
         std::errc::invalid_argument,
         "dynamic actor transition is absent from its schema cases");
-  return selected;
+  result->transitionCaseOrdinal = *selected;
+  return std::move(*result);
 }
 
 ActorTransitionCommitOutcome

@@ -473,6 +473,20 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
               });
             }
             fields["closed_wait_actors"] = std::move(actors);
+            llvm::json::Array blockedActorInputs;
+            for (const auto &input :
+                 outcome->closedWaitSet->blockedActorInputs)
+              blockedActorInputs.push_back(llvm::json::Object{
+                  {"actor", input.semanticActorOrdinal},
+                  {"actor_entity", input.actorEntityId},
+                  {"input", input.inputOrdinal},
+                  {"channel", input.channelOrdinal},
+                  {"source_kind", static_cast<std::uint64_t>(input.sourceKind)},
+                  {"defining_actor", input.definingActorOrdinal},
+                  {"defining_actor_entity", input.definingActorEntityId},
+                  {"defining_actor_terminal", input.definingActorTerminal}});
+            fields["closed_wait_blocked_actor_inputs"] =
+                std::move(blockedActorInputs);
             const auto storageHeadJson = [](const auto &head) {
               if (!head)
                 return llvm::json::Value(nullptr);

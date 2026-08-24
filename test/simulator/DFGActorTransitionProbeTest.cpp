@@ -3,6 +3,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -39,7 +40,7 @@ void require(bool condition, llvm::StringRef message) {
 mlir::MLIRContext &context() {
   static mlir::MLIRContext *instance = [] {
     mlir::DialectRegistry registry;
-    registry.insert<dataflow::DataflowDialect>();
+    registry.insert<dataflow::DataflowDialect, mlir::DLTIDialect>();
     auto *result =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     result->loadAllAvailableDialects();
@@ -50,7 +51,9 @@ mlir::MLIRContext &context() {
 
 dataflow::CanonicalDataflowArtifact program() {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module {
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+} {
   dataflow.graph private @select(
       %start: none, %selector: index,
       %lane0: i32, %lane1: i32, %lane2: i32) -> (i32)
@@ -79,6 +82,17 @@ module {
         : (i1, none) -> (none, none)
     dataflow.graph.return values() streams(%iv : i32) memories()
         complete(%complete#0 : none)
+  }
+
+  dataflow.graph private @memory_probe(
+      %start: none, %address: index, %memory: memref<4xi32>) -> (i32)
+      attributes {
+        input_segments = array<i32: 1, 0, 1>,
+        result_segments = array<i32: 1, 0, 0>
+      } {
+    %loaded, %done = dataflow.load %memory[%address] %start : memref<4xi32>
+    dataflow.graph.return values(%loaded : i32) streams() memories()
+        complete(%done : none)
   }
 }
 )mlir",
@@ -142,14 +156,20 @@ void selectiveProbeIsExactAndNonMutating(
   seedBlockArgument(state, entry.getArgument(2), i32(11));
   const std::size_t beforeBlocked = readyTokenCount(state);
   auto blocked = take(probeActorTransition(mux, state));
-  require(!blocked && readyTokenCount(state) == beforeBlocked &&
+  require(blocked.readiness == ActorTransitionReadiness::Blocked &&
+              blocked.shape.requiredInputs ==
+                  llvm::SmallVector<std::uint32_t, 2>({0, 3}) &&
+              !blocked.transitionCaseOrdinal &&
+              readyTokenCount(state) == beforeBlocked &&
               state.diagnostics.empty(),
           "probe consumed an unselected lane or mutated blocked state");
 
   seedBlockArgument(state, entry.getArgument(4), i32(33));
   const std::size_t beforeReady = readyTokenCount(state);
   auto selected = take(probeActorTransition(mux, state));
-  require(selected && *selected == 2 && readyTokenCount(state) == beforeReady &&
+  require(selected.readiness == ActorTransitionReadiness::Ready &&
+              selected.transitionCaseOrdinal == 2 &&
+              readyTokenCount(state) == beforeReady &&
               state.diagnostics.empty(),
           "probe did not select the exact mux lane without mutation");
 }
@@ -171,7 +191,9 @@ void statefulProbeTracksSchemaCasesWithoutMutation(
   seedBlockArgument(state, entry.getArgument(3), i32(1));
   const std::size_t beforeStart = readyTokenCount(state);
   auto start = take(probeActorTransition(stream, state));
-  require(start && *start == 0 && readyTokenCount(state) == beforeStart &&
+  require(start.readiness == ActorTransitionReadiness::Ready &&
+              start.transitionCaseOrdinal == 0 &&
+              readyTokenCount(state) == beforeStart &&
               state.streamStates.empty(),
           "stream probe did not select StartTrue without creating state");
 
@@ -185,7 +207,8 @@ void statefulProbeTracksSchemaCasesWithoutMutation(
   const llvm::APInt currentIv = current->second.current;
   const std::size_t beforeContinue = readyTokenCount(state);
   auto continuation = take(probeActorTransition(stream, state));
-  require(continuation && *continuation == 2 &&
+  require(continuation.readiness == ActorTransitionReadiness::Ready &&
+              continuation.transitionCaseOrdinal == 2 &&
               readyTokenCount(state) == beforeContinue &&
               state.streamStates.find(stream.operation)->second.current ==
                   currentIv,
@@ -212,6 +235,38 @@ void blockedCommitDoesNotMutate(dataflow::CanonicalDataflowArtifact &artifact) {
           "blocked commit mutated tokens or diagnostics");
 }
 
+void memoryProbeUsesRuntimeCapability(
+    dataflow::CanonicalDataflowArtifact &artifact) {
+  dataflow::GraphOp graph =
+      findGraph(artifact.module(), dataflow::OperationSchemaId::DataflowLoad);
+  PreparedGraphExecution execution = prepare(artifact.module(), graph);
+  ActorExecutionPlan &load =
+      findActor(execution, dataflow::OperationSchemaId::DataflowLoad);
+  SimulatorState state;
+  initializeRunState(state, execution);
+
+  mlir::Block &entry = graph.getBody().front();
+  auto memory = std::make_shared<MemoryValue>();
+  state.memories[entry.getArgument(2)] = memory;
+  state.memoryViews[entry.getArgument(2)] =
+      MemoryView{memory, entry.getArgument(2), 0,
+                 mlir::IntegerType::get(&context(), 32)};
+  seedBlockArgument(state, entry.getArgument(1),
+                    indexToken(llvm::APInt(64, 1)));
+  auto blocked = take(probeActorTransition(load, state));
+  require(blocked.readiness == ActorTransitionReadiness::Blocked &&
+              blocked.shape.requiredInputs ==
+                  llvm::SmallVector<std::uint32_t, 3>({0, 1, 2}) &&
+              !blocked.transitionCaseOrdinal,
+          "memory probe did not retain the missing control dependency");
+
+  seedBlockArgument(state, entry.getArgument(0), noneToken());
+  auto ready = take(probeActorTransition(load, state));
+  require(ready.readiness == ActorTransitionReadiness::Ready &&
+              ready.transitionCaseOrdinal == 0,
+          "memory probe did not admit the complete issue tuple");
+}
+
 } // namespace
 
 int main() {
@@ -219,5 +274,6 @@ int main() {
   selectiveProbeIsExactAndNonMutating(artifact);
   statefulProbeTracksSchemaCasesWithoutMutation(artifact);
   blockedCommitDoesNotMutate(artifact);
+  memoryProbeUsesRuntimeCapability(artifact);
   return EXIT_SUCCESS;
 }
