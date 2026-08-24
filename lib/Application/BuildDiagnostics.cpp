@@ -199,6 +199,16 @@ llvm::json::Object encodePairDecision(
                     /*LowerCase=*/true);
   else
     result["invocation_manifest_run_key"] = nullptr;
+  if (decision.manifestJoinOwner)
+    result["manifest_join_owner"] = *decision.manifestJoinOwner;
+  else
+    result["manifest_join_owner"] = nullptr;
+  if (decision.manifestJoinContract)
+    result["manifest_join_contract"] = *decision.manifestJoinContract;
+  else
+    result["manifest_join_contract"] = nullptr;
+  result["manifest_join_owner_verified"] =
+      decision.manifestJoinOwnerVerified;
   result["disposition"] = toString(decision.disposition);
   result["invocation_manifest_join_status"] =
       toString(decision.manifestJoinStatus);

@@ -114,6 +114,10 @@ llvm::Error invalid(const llvm::Twine &message) {
 
 constexpr llvm::StringLiteral applicationPairIdentityDescriptor{
     "loom.application.pair.decision.identity.1"};
+constexpr llvm::StringLiteral preAdmissionManifestJoinOwner =
+    "application_build";
+constexpr llvm::StringLiteral preAdmissionManifestJoinContract =
+    "pre_mapping_owner_verified_v1";
 
 void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
   for (unsigned shift = 56; shift != 0; shift -= 8)
@@ -268,8 +272,14 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           : prepared.preMappingInvocationRunKey
                 ? ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure
           : summary.attempts.empty()
-                ? ApplicationPairManifestJoinStatus::NotStartedBeforeMapping
+                ? ApplicationPairManifestJoinStatus::OwnerVerifiedPreAdmission
                 : ApplicationPairManifestJoinStatus::Missing;
+  if (result.manifestJoinStatus ==
+      ApplicationPairManifestJoinStatus::OwnerVerifiedPreAdmission) {
+    result.manifestJoinOwner = preAdmissionManifestJoinOwner.str();
+    result.manifestJoinContract = preAdmissionManifestJoinContract.str();
+    result.manifestJoinOwnerVerified = true;
+  }
   result.sourceProgram = prepared.preMappingSourceProgram;
   result.fabric = prepared.preMappingFabric;
   result.workload = prepared.preMappingWorkload;
@@ -525,16 +535,25 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
     ApplicationPairDecisionDisposition disposition, llvm::StringRef detail,
     std::optional<std::uint64_t> sourceHostOnlyWork = std::nullopt,
     std::optional<std::array<std::uint8_t, 32>> invocationRunKey =
-        std::nullopt) {
+        std::nullopt, bool ownerVerifiedPreAdmission = false) {
   ApplicationPairDecisionRecord result;
   result.invocationRunKey = std::move(invocationRunKey);
   if (result.invocationRunKey)
     result.manifestJoinStatus =
         ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure;
   result.disposition = disposition;
-  if (!result.invocationRunKey)
-    result.manifestJoinStatus =
-        ApplicationPairManifestJoinStatus::NotStartedBeforeMapping;
+  if (!result.invocationRunKey) {
+    result.manifestJoinStatus = ownerVerifiedPreAdmission
+                                    ? ApplicationPairManifestJoinStatus::
+                                          OwnerVerifiedPreAdmission
+                                    : ApplicationPairManifestJoinStatus::
+                                          NotStartedBeforeMapping;
+    if (ownerVerifiedPreAdmission) {
+      result.manifestJoinOwner = preAdmissionManifestJoinOwner.str();
+      result.manifestJoinContract = preAdmissionManifestJoinContract.str();
+      result.manifestJoinOwnerVerified = true;
+    }
+  }
   result.detail = detail.str();
   result.sourceProgram = sourceProgram;
   result.fabric = fabric;
@@ -1141,7 +1160,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           std::nullopt, std::nullopt, std::nullopt, std::nullopt, {},
           mapIncompleteReasonToPairDisposition(incomplete->reason),
           dse::toString(incomplete->reason), incomplete->sourceHostOnlyWork,
-          std::nullopt);
+          std::nullopt, true);
       emitApplicationPairDecisionDiagnostics(decision);
     }
     return ApplicationBuildPreparationOutcome{std::move(*incomplete)};
@@ -1902,6 +1921,9 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
   ApplicationPairDecisionRecord decision;
   decision.manifestJoinStatus =
       ApplicationPairManifestJoinStatus::OwnerVerifiedPreAdmission;
+  decision.manifestJoinOwner = preAdmissionManifestJoinOwner.str();
+  decision.manifestJoinContract = preAdmissionManifestJoinContract.str();
+  decision.manifestJoinOwnerVerified = true;
   decision.fabric = requestedSystem;
   decision.disposition = executionControl.stopRequested()
                              ? ApplicationPairDecisionDisposition::CancelledOrTimeout

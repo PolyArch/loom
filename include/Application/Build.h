@@ -293,6 +293,12 @@ struct ApplicationPairDecisionRecord final {
   std::optional<ComponentViewDigest> pairIdentity;
   /// Exact DSE InvocationManifest run-key join for the Mapping attempt.
   std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
+  /// A pre-admission decision may have no semantic roots yet. In that narrow
+  /// case the application-build owner identifies the explicit contract that
+  /// authorizes a keyless record; this is not a substitute run key.
+  std::optional<std::string> manifestJoinOwner;
+  std::optional<std::string> manifestJoinContract;
+  bool manifestJoinOwnerVerified = false;
   ApplicationPairManifestJoinStatus manifestJoinStatus =
       ApplicationPairManifestJoinStatus::Missing;
   ApplicationPairDecisionDisposition disposition =

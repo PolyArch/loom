@@ -4135,3 +4135,20 @@ Fabric/Tech/Spatial/System/CGRA verification. A multi-graph Tech frontier is
 coverage-capped before child planning; if the declared bound cannot retain at
 least one mapping per required graph, the child is typed unsupported rather
 than exceeding the bound.
+
+### Pre-admission pair-decision join
+
+Every application/workload plus Fabric/System request publishes one derived
+pair decision. Once source, workload, runtime, and Fabric roots exist, the
+decision carries the exact `InvocationManifest` run-key computed by the
+existing DSE closure owner. If the build owner stops before those semantic
+roots can be published, the only legal keyless record is an explicit
+`OwnerVerifiedPreAdmission` record carrying the owner name,
+`pre_mapping_owner_verified_v1` contract, and a typed terminal disposition.
+It must state why admission stopped and set the owner-verification bit;
+`NotStartedBeforeMapping` or a bare missing join is not a cancellation
+explanation. A keyless record never claims that an InvocationManifest exists,
+and a partially available root set without a valid key remains an internal
+error. The pair record is a derived diagnostic join; candidate identity,
+legality, checkpoints, and work ledgers remain owned by their existing
+providers.
