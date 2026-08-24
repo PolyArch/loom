@@ -33,9 +33,10 @@ struct ResourceTimeRegionMapping final {
       ResourceTimeEstimateSupport::Unsupported;
   ResourceTimeEstimateSupport maximumBoundSupport =
       ResourceTimeEstimateSupport::Unsupported;
-  /// Temporal endpoint proof requires a single logical epoch unless a
-  /// separate typed epoch correspondence is supplied. Partition count alone
-  /// is a spatial domain fact.
+  /// Logical epochs are a Dataflow fact, not an endpoint label. A temporal
+  /// endpoint still requires an explicit event-relative active-set schedule;
+  /// this field is retained as correspondence evidence and is never used as
+  /// a stand-alone proof of temporal reuse.
   std::uint64_t logicalEpochCount = 0;
 };
 
@@ -51,9 +52,11 @@ struct VerifiedResourceTimeSpectrumScenario final {
 /// Every named Mapping has passed the ordinary independent SystemMapping
 /// importer and every state allocation equals that Mapping's selected AccCore
 /// set for the corresponding Dataflow root. Endpoint labels use only the
-/// structural global bounds: one concurrent region for MaxTemporal and all
-/// covered regions concurrent for MaxSpatial. Schedules that do not attain a
-/// bound remain verified intermediate points rather than inferred endpoints.
+/// structural global bounds: the event-relative minimum concurrent active set
+/// for MaxTemporal and the maximum concurrent active set for MaxSpatial.
+/// Accelerated coverage, active-set membership, and per-region allocation are
+/// checked independently. Schedules that do not attain a bound remain
+/// verified intermediate points rather than inferred endpoints.
 struct VerifiedResourceTimeSpectrum final {
   ArtifactRootReference dataflow;
   ArtifactRootReference fabric;

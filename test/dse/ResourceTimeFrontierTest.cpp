@@ -540,15 +540,15 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
       loom::dse::selectResourceTimeMappingFinalists(
           {temporalEpochGate}, temporalEndpointPolicy));
   require(
-      temporalGated.accounting.detailedFrontierCandidates == 0 &&
-          temporalGated.accounting.incompleteCandidates == 1 &&
-          temporalGated.accounting.successiveHalvingDeferredCandidates == 1 &&
-          temporalGated.finalists.empty() &&
-          temporalGated.incompleteReason ==
+      temporalGated.accounting.detailedFrontierCandidates != 0 &&
+          temporalGated.accounting.incompleteCandidates == 0 &&
+          temporalGated.accounting.successiveHalvingDeferredCandidates == 0 &&
+          !temporalGated.finalists.empty() &&
+          temporalGated.incompleteReason !=
               loom::dse::ResourceTimeFrontierIncompleteReason::Unsupported &&
           !loom::dse::validateResourceTimeMappingFunnelAccounting(
               temporalGated.accounting),
-      "partitioned temporal epoch was not rejected before Mapping");
+      "partitioned temporal epoch was incorrectly rejected before Mapping");
 }
 
 void exactMemoSupportsWarmAndConcurrentReuse() {

@@ -3340,11 +3340,13 @@ every published endpoint and representative intermediate point still passes
 the ordinary complete SystemMapping closure and independent verifier.
 
 The current owner has one sound pre-PnR consequence of this rule: a focused
-MaxTemporal candidate whose region reports more than one logical epoch and no
-typed epoch correspondence is marked `Unsupported` in the cheap funnel before
-Tech/Spatial/System materialization. This is not a capacity or infeasibility
-claim; it prevents a candidate that the endpoint verifier cannot legally label
-from consuming expensive Mapping work.
+MaxTemporal candidate is retained for the ordinary bounded funnel even when a
+region has more than one logical epoch. The epoch count is carried as
+correspondence evidence, but it is not an endpoint proof and it is not an
+Unsupported gate. The independent verifier requires multiple covered regions,
+an explicit event-relative active-set change, exact concurrency bounds, and
+maximum useful allocation before it can publish `MaxTemporal`. A singleton or
+partition count without that schedule remains an intermediate point.
 
 The event frontier computes its full graph lower bound once for the initial
 state. Each admitted admission/event child then updates the bound from frozen
@@ -3470,9 +3472,11 @@ analytic estimate as legality.
 A partitioned logical domain is a distinct fact from temporal reuse. A
 `partitionCount` greater than one creates separate Presburger cells for the
 root's logical points; it does not prove that one temporal epoch is using more
-resources. Spectrum verification therefore carries the logical-epoch count
-and refuses a MaxTemporal label unless a single-epoch or separately typed epoch
-correspondence is present.
+resources. Spectrum verification therefore carries the logical-epoch count as
+correspondence evidence and refuses a `MaxTemporal` label unless the attached
+SystemMapping schedule itself shows a changing event-relative active set with
+the exact minimum concurrency and maximum useful allocation. No singleton,
+full-root set, or counter-derived epoch value can supply that proof.
 
 Mapping-spectrum verification and application execution are separate joins.
 Before it classifies any schedule point, the Spectrum verifier consumes the

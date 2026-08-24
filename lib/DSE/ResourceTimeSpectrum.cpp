@@ -310,6 +310,31 @@ bool hasUnrepresentableCompositeEvent(const ResourceTimeScheduleHint &hint) {
   });
 }
 
+bool hasExplicitTemporalActiveSet(
+    const ::loom::pnr::ResourceTimeScheduleScenario &scenario,
+    std::size_t coveredRegionCount) {
+  if (coveredRegionCount < 2 || scenario.states.size() < 2)
+    return false;
+  std::set<::dataflow::RootThreadLaunchRef, decltype(&rootLess)> first(
+      &rootLess);
+  bool haveFirst = false;
+  bool sawDifferentActiveSet = false;
+  for (const auto &state : scenario.states) {
+    std::set<::dataflow::RootThreadLaunchRef, decltype(&rootLess)> active(
+        &rootLess);
+    for (const auto &allocation : state.active)
+      active.insert(allocation.region);
+    if (!haveFirst) {
+      first = std::move(active);
+      haveFirst = true;
+      continue;
+    }
+    if (active != first)
+      sawDifferentActiveSet = true;
+  }
+  return sawDifferentActiveSet;
+}
+
 } // namespace
 
 llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
@@ -415,7 +440,6 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
     bool everyAllocationAtMaximum = true;
     bool everyMinimumBoundExact = true;
     bool everyMaximumBoundExact = true;
-    bool everyTemporalEpochSingle = true;
     std::uint64_t peakConcurrentRegions = 0;
     std::set<::dataflow::RootThreadLaunchRef, decltype(&rootLess)>
         observedRegions(&rootLess);
@@ -461,7 +485,6 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
           return invalid("resource-time allocation has no region "
                          "correspondence");
         const ResourceTimeRegionMapping &region = *correspondence->second;
-        everyTemporalEpochSingle &= region.logicalEpochCount == 1;
         observedRegions.insert(allocation.region);
         std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef> observed =
             allocation.resources;
@@ -565,7 +588,7 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
              peakConcurrentRegions == witness.maximumConcurrentRegions)
       spectrumClass = PreMappingSpectrumClass::MaxSpatial;
     else if (witness.regions.size() > 1 && exactConcurrencyBounds &&
-             everyTemporalEpochSingle &&
+             hasExplicitTemporalActiveSet(scenario, witness.regions.size()) &&
              everyMaximumBoundExact &&
              everyAllocationAtMaximum &&
              peakConcurrentRegions == witness.minimumConcurrentRegions)
