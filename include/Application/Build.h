@@ -193,6 +193,7 @@ llvm::StringRef toString(ApplicationPairDecisionDisposition value);
 
 enum class ApplicationPairManifestJoinStatus : std::uint8_t {
   Exact,
+  OwnerScopedPlanningClosure,
   NotStartedBeforeMapping,
   Missing,
 };

@@ -253,6 +253,8 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
   result.manifestJoinStatus =
       summary.invocationRunKey
           ? ApplicationPairManifestJoinStatus::Exact
+          : prepared.preMappingInvocationRunKey
+                ? ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure
           : summary.attempts.empty()
                 ? ApplicationPairManifestJoinStatus::NotStartedBeforeMapping
                 : ApplicationPairManifestJoinStatus::Missing;
@@ -515,7 +517,8 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
   ApplicationPairDecisionRecord result;
   result.invocationRunKey = std::move(invocationRunKey);
   if (result.invocationRunKey)
-    result.manifestJoinStatus = ApplicationPairManifestJoinStatus::Exact;
+    result.manifestJoinStatus =
+        ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure;
   result.disposition = disposition;
   if (!result.invocationRunKey)
     result.manifestJoinStatus =
@@ -1042,6 +1045,8 @@ llvm::StringRef toString(ApplicationPairManifestJoinStatus value) {
   switch (value) {
   case ApplicationPairManifestJoinStatus::Exact:
     return "exact";
+  case ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure:
+    return "owner_scoped_planning_closure";
   case ApplicationPairManifestJoinStatus::NotStartedBeforeMapping:
     return "not_started_before_mapping";
   case ApplicationPairManifestJoinStatus::Missing:
