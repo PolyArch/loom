@@ -13,6 +13,7 @@ from pathlib import Path
 _MISSING_FEATURES_PREFIX = (
     "Test requires the following unavailable features: "
 )
+_INDEPENDENT_TEST_BATCH_SIZE = "1"
 
 
 def _explicit_report_path(arguments: Sequence[str]) -> Path | None:
@@ -84,6 +85,11 @@ def run_lit_with_unsupported_summary(
 
     assert report_path is not None
     report_arguments = [] if not owns_report else ["--output", str(report_path)]
+    lit_environment = dict(environment)
+    # Lit batches adjacent tests into one serial worker task by default. Smart
+    # ordering puts the longest tests next to each other, so batching turns
+    # independent long-running tests into the suite's critical path.
+    lit_environment["LIT_BATCH_SIZE"] = _INDEPENDENT_TEST_BATCH_SIZE
     try:
         runner(
             [
@@ -95,7 +101,7 @@ def run_lit_with_unsupported_summary(
                 *report_arguments,
                 str(test_root),
             ],
-            env=dict(environment),
+            env=lit_environment,
         )
         report = json.loads(report_path.read_text())
         for line in unsupported_summary(report):

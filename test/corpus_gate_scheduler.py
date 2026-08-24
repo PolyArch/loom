@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import sys
 import threading
+from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
 from simulation_conformance import (
     MAX_OUTER_WORKERS,
     outer_worker_limit,
 )
 
 
-DEFAULT_CASE_TIMEOUT_SECONDS = 120.0
-DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS = 30.0
+DEFAULT_CASE_TIMEOUT_SECONDS = float(timeout_seconds(Tier.FAST))
+DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS = float(timeout_seconds(Tier.FAST))
 MAX_CASE_WORKERS = MAX_OUTER_WORKERS
 
 

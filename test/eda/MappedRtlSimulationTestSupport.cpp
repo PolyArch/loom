@@ -187,11 +187,12 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
     %published_value:2 = dataflow.sync %start, %value
         : (none, i32) -> (none, i32)
     %sum = arith.addi %stream1_lane#0, %increment : i32
+    %stream1_sum = arith.addi %sum, %increment : i32
     %scheduled = arith.addi %value, %increment : i32
     %scheduled_done:2 = dataflow.sync %published_value#0, %scheduled
         : (none, i32) -> (none, i32)
     %published_stream0 = dataflow.sync %stream0_lane#0 : (i32) -> i32
-    %published_stream1 = dataflow.sync %sum : (i32) -> i32
+    %published_stream1 = dataflow.sync %stream1_sum : (i32) -> i32
     %retired:3 = dataflow.sync %scheduled_done#0, %published_stream0,
         %published_stream1 : (none, i32, i32) -> (none, i32, i32)
     %stored = dataflow.store %memory[%address] %store_value

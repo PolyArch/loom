@@ -110,10 +110,10 @@ def _valid_summary() -> tuple[dict[str, object], tuple[object, ...]]:
         {
             "candidate_jobs": 1,
             "case_count": len(cases),
-            "case_timeout_seconds": 30.0,
+            "case_timeout_seconds": semantic_baseline.CASE_WALL_LIMIT_SECONDS,
             "cases": cases,
             "cpu_seconds": 1.0,
-            "dfg_simulation_timeout_seconds": 15.0,
+            "dfg_simulation_timeout_seconds": semantic_baseline.DFG_WALL_LIMIT_SECONDS,
             "duration_seconds": 2.0,
             "failed": 0,
             "failure_categories": {},

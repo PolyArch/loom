@@ -150,16 +150,16 @@ void testCampaignPolicyAdmission() {
       CampaignExecutionPolicy::maximumSampleActiveWallTimeNanoseconds + 1,
       CampaignExecutionPolicy::maximumCampaignActiveWallTimeNanoseconds);
   if (excessiveSample)
-    fail("campaign policy accepted a sample limit above 600 seconds");
-  requireErrorContains(excessiveSample.takeError(), "600-second bound");
+    fail("campaign policy accepted a sample limit above its configured bound");
+  requireErrorContains(excessiveSample.takeError(), "configured bound");
 
   auto excessiveCampaign = CampaignExecutionPolicy::get(
       1, 1,
       CampaignExecutionPolicy::maximumSampleActiveWallTimeNanoseconds,
       CampaignExecutionPolicy::maximumCampaignActiveWallTimeNanoseconds + 1);
   if (excessiveCampaign)
-    fail("campaign policy accepted a limit above 23 hours");
-  requireErrorContains(excessiveCampaign.takeError(), "23-hour bound");
+    fail("campaign policy accepted a limit above its configured bound");
+  requireErrorContains(excessiveCampaign.takeError(), "configured bound");
 }
 
 void testPilotContinuation(const ArtifactStore &store, const BlobStore &blobs,

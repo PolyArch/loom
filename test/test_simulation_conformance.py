@@ -20,27 +20,39 @@ class PairedSimulationBudgetTest(unittest.TestCase):
     def test_warmed_median_and_floor_define_the_system_budget(self) -> None:
         tiny = simulation_conformance.paired_system_budget(
             [0.002, 0.003, 0.004],
-            spatial_absolute_budget_seconds=15.0,
+            spatial_absolute_budget_seconds=(
+                simulation_conformance.DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS
+            ),
         )
         ordinary = simulation_conformance.paired_system_budget(
             [0.8, 1.0, 1.2],
-            spatial_absolute_budget_seconds=15.0,
+            spatial_absolute_budget_seconds=(
+                simulation_conformance.DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS
+            ),
+        )
+        absolute_budget = (
+            simulation_conformance.DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS
         )
         capped = simulation_conformance.paired_system_budget(
-            [20.0, 21.0, 22.0],
-            spatial_absolute_budget_seconds=15.0,
+            [absolute_budget + 1.0] * 3,
+            spatial_absolute_budget_seconds=absolute_budget,
         )
 
         self.assertEqual(tiny.spatial_reference_seconds, 0.1)
         self.assertAlmostEqual(tiny.system_budget_seconds, 0.3)
         self.assertEqual(ordinary.spatial_reference_seconds, 1.0)
         self.assertEqual(ordinary.system_budget_seconds, 3.0)
-        self.assertEqual(capped.system_budget_seconds, 45.0)
+        self.assertEqual(
+            capped.system_budget_seconds,
+            simulation_conformance.SYSTEM_BUDGET_MULTIPLIER * absolute_budget,
+        )
 
     def test_paired_result_keeps_budget_rate_and_hard_ratio_distinct(self) -> None:
         budget = simulation_conformance.paired_system_budget(
             [1.0, 1.0, 1.0],
-            spatial_absolute_budget_seconds=15.0,
+            spatial_absolute_budget_seconds=(
+                simulation_conformance.DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS
+            ),
         )
         within = simulation_conformance.evaluate_paired_execution(
             budget,
@@ -76,7 +88,10 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         for samples in ([], [0.0], [-1.0], [math.inf], [math.nan]):
             with self.subTest(samples=samples):
                 with self.assertRaises(ValueError):
-                    simulation_conformance.paired_system_budget(samples, 15.0)
+                    simulation_conformance.paired_system_budget(
+                        samples,
+                        simulation_conformance.DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS,
+                    )
 
         with self.assertRaises(ValueError):
             simulation_conformance.ActiveExecutionTiming(0.0, 1)

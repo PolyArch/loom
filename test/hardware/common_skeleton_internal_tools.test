@@ -2,5 +2,5 @@
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-common-skeleton-test %t
 # RUN: cd %t && verilator --binary --timing --Wall --Wno-fatal --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module internal_testbench internal_module.sv internal_testbench.sv --Mdir obj_internal
-# RUN: timeout 30s %t/obj_internal/Vinternal_testbench
+# RUN: timeout %loom-timeout-xlong %t/obj_internal/Vinternal_testbench
 # RUN: cd %t && yosys -q -s internal_skeleton.ys

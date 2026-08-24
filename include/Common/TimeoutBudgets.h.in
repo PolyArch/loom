@@ -1,0 +1,50 @@
+#ifndef LOOM_COMMON_TIMEOUTBUDGETS_H
+#define LOOM_COMMON_TIMEOUTBUDGETS_H
+
+#include <chrono>
+#include <cstdint>
+
+namespace loom::timeout {
+
+enum class Tier : std::uint8_t {
+  UltraFast,
+  Fast,
+  Medium,
+  Long,
+  XLong,
+  Nightly,
+};
+
+inline constexpr std::uint64_t seconds(Tier tier) {
+  switch (tier) {
+  case Tier::UltraFast:
+    return @LOOM_TIMEOUT_ULTRAFAST_SECONDS@ULL;
+  case Tier::Fast:
+    return @LOOM_TIMEOUT_FAST_SECONDS@ULL;
+  case Tier::Medium:
+    return @LOOM_TIMEOUT_MEDIUM_SECONDS@ULL;
+  case Tier::Long:
+    return @LOOM_TIMEOUT_LONG_SECONDS@ULL;
+  case Tier::XLong:
+    return @LOOM_TIMEOUT_XLONG_SECONDS@ULL;
+  case Tier::Nightly:
+    return @LOOM_TIMEOUT_NIGHTLY_SECONDS@ULL;
+  }
+  return 0;
+}
+
+inline constexpr std::chrono::seconds duration(Tier tier) {
+  return std::chrono::seconds(seconds(tier));
+}
+
+inline constexpr std::uint64_t milliseconds(Tier tier) {
+  return seconds(tier) * 1000ULL;
+}
+
+inline constexpr std::uint64_t nanoseconds(Tier tier) {
+  return seconds(tier) * 1000ULL * 1000ULL * 1000ULL;
+}
+
+} // namespace loom::timeout
+
+#endif // LOOM_COMMON_TIMEOUTBUDGETS_H

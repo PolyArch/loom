@@ -179,7 +179,7 @@ class CoverageAccountingTest(unittest.TestCase):
                     for preset in corpus_tech_mapping.BUILTIN_PRESETS
                 },
                 root_identities=roots,
-                timeout_seconds=1.0,
+                timeout_seconds=corpus_tech_mapping.DEFAULT_CASE_TIMEOUT_SECONDS,
             )
 
             self.assertEqual(result["status"], "failed")

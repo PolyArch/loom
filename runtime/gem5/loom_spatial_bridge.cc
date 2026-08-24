@@ -71,11 +71,19 @@ LoomSpatialBridge::EngineResponseEvent::EngineResponseEvent(
 
 void LoomSpatialBridge::EngineResponseEvent::process(int revents) {
   EventQueue::ScopedMigration migrate(bridge.eventQueue());
+  const bool terminal = (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0;
+  // A single-use engine may close immediately after sending its canonical
+  // completion. The completion event can still be pending in simulated time.
+  if (terminal &&
+      (bridge.engineCompletionReceived || bridge.state == State::Complete)) {
+    bridge.scheduleEngineDisconnect();
+    return;
+  }
   if ((revents & POLLIN) != 0) {
     bridge.consumeEngineMessage();
     return;
   }
-  if ((revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+  if (terminal)
     bridge.fail(6, "Spatial engine connection became unavailable");
 }
 
@@ -93,8 +101,9 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
                                 name() + ".invocation_completion"),
       dmaCompletionEvent([this] { completeMemoryRequest(); },
                          name() + ".dma_completion"),
-      completionEvent([this] { completeInvocation(); },
-                      name() + ".completion") {
+      completionEvent([this] { completeInvocation(); }, name() + ".completion"),
+      engineDisconnectEvent([this] { disconnectEngine(); },
+                            name() + ".engine_disconnect") {
   panic_if(engineSocketPath.empty(), "LoomSpatialBridge socket is empty");
   panic_if(resultPath.empty(), "LoomSpatialBridge result path is empty");
   panic_if(maximumMessageBytes < loom::runtime::gem5BridgeWireHeaderBytes,
@@ -107,10 +116,9 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
 }
 
 LoomSpatialBridge::~LoomSpatialBridge() {
-  if (engineResponseEvent && engineResponseEvent->queued())
-    pollQueue.remove(engineResponseEvent.get());
-  if (engineSocket >= 0)
-    ::close(engineSocket);
+  if (engineDisconnectEvent.scheduled())
+    deschedule(&engineDisconnectEvent);
+  disconnectEngine();
 }
 
 AddrRangeList LoomSpatialBridge::getAddrRanges() const {
@@ -230,6 +238,7 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
       activeStaticLaunchSize = staticLaunchSize;
       activeInvocationAddress = invocationAddress;
       activeInvocationSize = invocationSize;
+      engineCompletionReceived = false;
       state = State::Running;
       errorCode = 0;
       schedule(&launchEvent, clockEdge());
@@ -285,6 +294,20 @@ bool LoomSpatialBridge::connectEngine() {
       std::make_unique<EngineResponseEvent>(*this, engineSocket);
   pollQueue.schedule(engineResponseEvent.get());
   return true;
+}
+
+void LoomSpatialBridge::scheduleEngineDisconnect() {
+  if (!engineDisconnectEvent.scheduled())
+    schedule(&engineDisconnectEvent, curTick());
+}
+
+void LoomSpatialBridge::disconnectEngine() {
+  if (engineResponseEvent && engineResponseEvent->queued())
+    pollQueue.remove(engineResponseEvent.get());
+  if (engineSocket >= 0) {
+    ::close(engineSocket);
+    engineSocket = -1;
+  }
 }
 
 bool LoomSpatialBridge::sendMessage(
@@ -392,6 +415,7 @@ void LoomSpatialBridge::consumeEngineMessage() {
     fail(19, "Spatial completion names a foreign invocation");
     return;
   }
+  engineCompletionReceived = true;
   schedule(&completionEvent, curTick() + pendingCompletion.readyAfterTicks);
 }
 
@@ -442,6 +466,7 @@ void LoomSpatialBridge::completeInvocation() {
   }
   errorCode = pendingCompletion.status;
   state = pendingCompletion.status == 0 ? State::Complete : State::Failed;
+  engineCompletionReceived = false;
   ++nextSequence;
 }
 
@@ -466,6 +491,7 @@ void LoomSpatialBridge::resetBridge() {
   invocationPayload.clear();
   pendingMemory = {};
   pendingCompletion = {};
+  engineCompletionReceived = false;
   errorCode = 0;
   staticLaunchAddress = 0;
   staticLaunchSize = 0;

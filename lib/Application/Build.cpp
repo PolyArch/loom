@@ -354,7 +354,8 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
       if (outcome.preMappingCandidateRecordOrdinal != ordinal)
         continue;
       candidate.enteredMapping = true;
-      candidate.planOrdinal = outcome.planOrdinal;
+      if (!candidate.planOrdinal)
+        candidate.planOrdinal = outcome.planOrdinal;
       ApplicationPairMappingObservation mappingObservation{
           outcome.planOrdinal,
           outcome.resourceTimeScheduleHintDigest,
@@ -382,8 +383,11 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
       if (summary.selectedPlanOrdinal &&
           *summary.selectedPlanOrdinal == outcome.planOrdinal &&
           summary.selectedMapping &&
-          llvm::is_contained(outcome.systemMappings, *summary.selectedMapping))
+          llvm::is_contained(outcome.systemMappings,
+                             *summary.selectedMapping)) {
         candidate.selected = true;
+        candidate.planOrdinal = outcome.planOrdinal;
+      }
       const auto setObservedDimension =
           [&](ApplicationObjectiveDimension dimension,
               const std::optional<std::uint64_t> &raw,

@@ -2,6 +2,7 @@
 #include "ADG/Builtin.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/TimeoutBudgets.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -777,7 +778,7 @@ void serialTopologyPrunesIndependentActorScale() {
       infeasible->accounting.matchRowCursorResumptions == 0 ||
       infeasible->accounting.matchRowReplayVisits != 0)
     fail("independent-actor scale fixture did not exhaust its linear domain");
-  if (elapsed >= std::chrono::seconds(10))
+  if (elapsed >= loom::timeout::duration(loom::timeout::Tier::UltraFast))
     fail("independent actors caused factorial serial-topology enumeration");
 }
 
@@ -807,7 +808,7 @@ void narrowTokenSyncUsesCanonicalFamilyEmbedding() {
       generated->termination !=
           loom::mapping::TechMappingGenerationTermination::SearchExhausted)
     fail("narrow token sync did not exhaust one canonical correspondence");
-  if (elapsed >= std::chrono::seconds(5))
+  if (elapsed >= loom::timeout::duration(loom::timeout::Tier::UltraFast))
     fail("narrow token sync repeated symmetric lane embeddings");
 }
 

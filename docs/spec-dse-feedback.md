@@ -2440,11 +2440,12 @@ The initial collection policy imposes two hard active-wall-time bounds:
 
 - for every Evidence root that would enter model data, active elapsed wall time
   from dispatch of its earliest newly required uncached ancestor work unit to
-  terminal Evidence completion is at most 600 seconds; a shared ancestor's
+  terminal Evidence completion is at most the `long` tier from the canonical
+  [`timeout-budgets.json`](../config/timeout-budgets.json); a shared ancestor's
   interval applies to every dependent sample but is executed and charged only
   once; and
 - one complete Training, Validation, and HeldOut collection invocation has a
-  campaign limit of at most 23 hours of active wall time.
+  campaign limit of at most the canonical `nightly` tier of active wall time.
 
 Shared uncached Mapping, RTL derivation, HardwareImplementation, and external
 tool prerequisites are explicit work units in the same plan and are charged
@@ -4065,8 +4066,9 @@ Only these stable semantic anchors belong at this boundary:
   implicit Cartesian product or Journal-owned current best appears.
 - A collection pilot and resumed campaign retain identical WorkUnitKeys and
   accepted Evidence; hidden prerequisite work, a sample dependency slice above
-  600 seconds of active elapsed wall time, a campaign limit above 23 hours, or
-  treating timeout as a sample is rejected by the initial collection policy.
+  the canonical `long` active wall-time tier, a campaign limit above the
+  canonical `nightly` tier, or treating timeout as a sample is rejected by the
+  initial collection policy.
 - Candidate Generator admission rejects a missing slot, wrong cardinality,
   incompatible contract, or unreadable Artifact/Blob closure before external
   `prepare` is entered.

@@ -1,6 +1,7 @@
 #include "Application/Manifest.h"
 #include "Application/SourceAdmission.h"
 #include "Common/BlobDigest.h"
+#include "Common/TimeoutBudgets.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
@@ -141,9 +142,10 @@ private:
         errorText};
     std::string message;
     bool executionFailed = false;
-    const int status =
-        llvm::sys::ExecuteAndWait(git_, command, std::nullopt, redirects, 30,
-                                  256, &message, &executionFailed);
+    const int status = llvm::sys::ExecuteAndWait(
+        git_, command, std::nullopt, redirects,
+        static_cast<unsigned>(timeout::seconds(timeout::Tier::Fast)), 256,
+        &message, &executionFailed);
     std::string output = capture ? readFile(outputPath) : std::string{};
     std::string error = readFile(errorPath);
     if (!message.empty()) {

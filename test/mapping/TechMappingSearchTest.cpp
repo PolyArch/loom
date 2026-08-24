@@ -1,5 +1,7 @@
 #include "TechMappingCandidateDomain.h"
 
+#include "Common/TimeoutBudgets.h"
+
 #include "Config/ResolvedConfig.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -182,7 +184,7 @@ void independentComponentFrontierIsCompact() {
 
   if (result.covers.size() != publicationLimit || result.exhausted)
     fail("independent component product did not return its canonical prefix");
-  if (elapsed > std::chrono::seconds(10))
+  if (elapsed > loom::timeout::duration(loom::timeout::Tier::UltraFast))
     fail("independent component product exceeded its runtime gate");
   if (rssDelta > 16 * 1024)
     fail("independent component product exceeded its incremental RSS gate");

@@ -1,8 +1,8 @@
 // RUN: loom %s -split-input-file -verify-diagnostics
 // RUN: %python -c 'n=50000; p=chr(37); lines=[f"dataflow.thread private @t_deep domain(#dataflow.thread_domain<dense>)() ctrl ({p}ctrl: none) iv ({p}i: index) {{", "  dataflow.thread.yield", "}", "func.func @deep_extent_chain() {", f"  {p}v0 = arith.constant {-n - 1} : index", f"  {p}one = arith.constant 1 : index"]; lines += [f"  {p}v{i} = arith.addi {p}v{i - 1}, {p}one : index" for i in range(1, n + 1)]; lines += ["  // expected-error @+1 {{grid upper bound #0 must be nonnegative}}", f"  {p}result = dataflow.thread.launch @t_deep() grid({p}v{n}) : () -> !dataflow.thread_token", "  return", "}"]; print("\n".join(lines))' > %t.deep.mlir
-// RUN: timeout 5s loom %t.deep.mlir -verify-diagnostics
+// RUN: timeout %loom-timeout-ultrafast loom %t.deep.mlir -verify-diagnostics
 // RUN: %python -c 'n=6400; p=chr(37); lines=[f"dataflow.thread private @t_shared domain(#dataflow.thread_domain<dense>)() ctrl ({p}ctrl: none) iv ({p}i: index) {{", "  dataflow.thread.yield", "}", "func.func @shared_extent_dag() {", f"  {p}v0 = arith.constant 0 : index", f"  {p}zero = arith.constant 0 : index"]; lines += [f"  {p}v{i} = arith.addi {p}v{i - 1}, {p}zero : index" for i in range(1, n + 1)]; lines += [f"  {p}result{i} = dataflow.thread.launch @t_shared() grid({p}v{n}) : () -> !dataflow.thread_token" for i in range(n)]; lines += ["  return", "}"]; print("\n".join(lines))' > %t.shared.mlir
-// RUN: timeout 5s loom %t.shared.mlir
+// RUN: timeout %loom-timeout-ultrafast loom %t.shared.mlir
 
 // -----
 // The domain is definition-owned and has no implicit default.

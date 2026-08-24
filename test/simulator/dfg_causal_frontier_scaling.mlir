@@ -1,4 +1,4 @@
-// RUN: not timeout --signal=TERM --kill-after=2s 5s loom-dfg-sim %s --graph uncovered_nested_frontier --output %t.json 2>&1 | FileCheck %s
+// RUN: not timeout --signal=TERM --kill-after=%loom-timeout-ultrafast %loom-timeout-ultrafast loom-dfg-sim %s --graph uncovered_nested_frontier --output %t.json 2>&1 | FileCheck %s
 
 // The retirement query starts from the uncovered memory event. Unrelated
 // selector diamonds must not make validation enumerate their path product.

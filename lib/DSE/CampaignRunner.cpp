@@ -367,11 +367,11 @@ llvm::Expected<CampaignExecutionPolicy> CampaignExecutionPolicy::get(
   if (sampleActiveWallTimeLimitNanoseconds == 0 ||
       sampleActiveWallTimeLimitNanoseconds >
           maximumSampleActiveWallTimeNanoseconds)
-    return invalid("sample active-time limit exceeds the 600-second bound");
+    return invalid("sample active-time limit exceeds its configured bound");
   if (campaignActiveWallTimeLimitNanoseconds == 0 ||
       campaignActiveWallTimeLimitNanoseconds >
           maximumCampaignActiveWallTimeNanoseconds)
-    return invalid("campaign active-time limit exceeds the 23-hour bound");
+    return invalid("campaign active-time limit exceeds its configured bound");
   return CampaignExecutionPolicy(pilotDispatchCount,
                                  minimumObservedPilotWorkUnits,
                                  sampleActiveWallTimeLimitNanoseconds,

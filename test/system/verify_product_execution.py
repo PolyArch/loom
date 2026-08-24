@@ -283,6 +283,12 @@ def validate_mapping_work(
                 require(observation.get("mapping_disposition") in {
                     "verified", "proven_no_feasible_candidate", "incomplete"
                 }, "candidate Mapping observation lacks typed disposition")
+    verified_mapping_count = sum(
+        len(observation.get("system_mappings", []))
+        for candidate in pair_decision["candidates"]
+        for observation in candidate.get("mapping_observations", [])
+        if observation.get("mapping_disposition") == "verified"
+    )
     objective_vectors = [pair_decision.get("host_only_baseline", [])]
     objective_vectors.extend(
         candidate.get("objective", [])
@@ -301,10 +307,10 @@ def validate_mapping_work(
                 require(observation.get("value") is None,
                         "unsupported objective dimension was encoded as zero")
     require(
-        join.get("verified_alternatives") == len(system)
+        join.get("verified_alternatives") == verified_mapping_count
         and isinstance(join.get("system_pnr_dispatch_count"), int)
         and join["system_pnr_dispatch_count"] >= len(system),
-        "verified System searches disagree with the application join",
+        "verified Mapping observations disagree with the application join",
     )
     for name, rows in (("Spatial", spatial), ("System", system)):
         for row in rows:
@@ -325,8 +331,12 @@ def validate_mapping_work(
                 ):
                     require(row.get(field) == 0,
                             f"{name} search performed {field}")
-            require(row.get("final_closure_attempts") == 1,
-                    f"{name} search skipped or repeated final closure")
+            require(
+                row.get("final_closure_attempts")
+                + row.get("migration_seed_prepared", 0)
+                == 1,
+                f"{name} search skipped or repeated its finalization path",
+            )
             require(row.get("finalized_restarts") == 1 and
                     row.get("publication_slots") == 1,
                     f"{name} search did not finalize exactly one result")
