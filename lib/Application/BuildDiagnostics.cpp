@@ -1284,6 +1284,39 @@ void emitApplicationMappingDiagnostics(
              summary.preservedServiceRealizationCount},
             {"reopened_service_realization_count",
              summary.reopenedServiceRealizationCount}};
+        llvm::json::Array incrementalTransitions;
+        for (const ApplicationIncrementalMappingObservation &observation :
+             execution.provenance.incrementalMappingObservations) {
+          llvm::json::Object transition;
+          transition["parent_mapping"] = encodeRoot(observation.parentMapping);
+          transition["child_system"] = encodeRoot(observation.childSystem);
+          transition["parent_schedule_hint_digest"] =
+              formatComponentViewDigestHex(
+                  observation.parentScheduleHintDigest);
+          transition["child_schedule_hint_digest"] =
+              formatComponentViewDigestHex(observation.childScheduleHintDigest);
+          transition["mapping_reuse_disposition"] =
+              dse::jointMappingReuseDispositionSpelling(
+                  observation.reuseDisposition);
+          transition["reopened_root_count"] = observation.reopenedRoots.size();
+          transition["preserved_tech_mappings"] =
+              observation.preservedTechMappings;
+          transition["preserved_spatial_mappings"] =
+              observation.preservedSpatialMappings;
+          transition["repaired_tech_mappings"] =
+              observation.repairedTechMappings;
+          transition["repaired_spatial_mappings"] =
+              observation.repairedSpatialMappings;
+          transition["preserved_system_bindings"] =
+              observation.preservedSystemBindings;
+          transition["reopened_system_bindings"] =
+              observation.reopenedSystemBindings;
+          transition["wall_time_ns"] = observation.wallTimeNanoseconds;
+          transition["verified"] = observation.verified;
+          incrementalTransitions.push_back(std::move(transition));
+        }
+        payload["application_incremental_mapping_transitions"] =
+            std::move(incrementalTransitions);
         payload["verified_alternatives"] = summary.verifiedAlternatives;
         payload["quality_disposition"] = spelling(summary.qualityDisposition);
         payload["declared_work_exhausted"] = summary.declaredWorkExhausted;

@@ -2614,9 +2614,19 @@ executeResourceTimeAdjacentMappingRepair(
             execution->summary.systemPnrDispatchCount;
         fields["wall_time_ns"] = elapsedNanoseconds;
       });
-  return JointResourceTimeAdjacentRepair{*parentMapping, seed->reference(),
-                                         std::move(*childPlan),
-                                         std::move(*execution)};
+  JointMappingReuseDisposition reuseDisposition =
+      JointMappingReuseDisposition::ColdFallback;
+  if (execution->summary.preservedTechMappings != 0 ||
+      execution->summary.preservedSpatialMappings != 0) {
+    reuseDisposition =
+        execution->summary.repairedTechMappings != 0 ||
+                execution->summary.repairedSpatialMappings != 0
+            ? JointMappingReuseDisposition::LocalRepair
+            : JointMappingReuseDisposition::Preserved;
+  }
+  return JointResourceTimeAdjacentRepair{
+      *parentMapping, seed->reference(), std::move(*childPlan),
+      std::move(*execution), reuseDisposition};
 }
 
 struct TypedModuleHardwareRepair final {

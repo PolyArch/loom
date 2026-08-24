@@ -4,6 +4,7 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/InvocationManifest.h"
 #include "DSE/JointDesignExploration.h"
+#include "DSE/JointMappingMigration.h"
 #include "DSE/PreMappingExploration.h"
 #include "DSE/ResourceTimeFrontier.h"
 #include "DSE/ResourceTimeSpectrum.h"
@@ -341,6 +342,28 @@ struct ApplicationMappingCandidateOutcome final {
   std::optional<std::uint64_t> resourceCoreCost;
 };
 
+/// Evidence for one application-level resource-time transition attempt. The
+/// Mapping migration owner remains responsible for preservation and repair
+/// counts; this record only joins that result to the application schedule
+/// which caused the typed delta.
+struct ApplicationIncrementalMappingObservation final {
+  ArtifactRootReference parentMapping;
+  ArtifactRootReference childSystem;
+  ComponentViewDigest parentScheduleHintDigest;
+  ComponentViewDigest childScheduleHintDigest;
+  std::vector<dataflow::RootThreadLaunchRef> reopenedRoots;
+  dse::JointMappingReuseDisposition reuseDisposition =
+      dse::JointMappingReuseDisposition::ColdFallback;
+  std::uint64_t preservedTechMappings = 0;
+  std::uint64_t preservedSpatialMappings = 0;
+  std::uint64_t repairedTechMappings = 0;
+  std::uint64_t repairedSpatialMappings = 0;
+  std::uint64_t preservedSystemBindings = 0;
+  std::uint64_t reopenedSystemBindings = 0;
+  std::uint64_t wallTimeNanoseconds = 0;
+  bool verified = false;
+};
+
 struct ApplicationMappingProvenance final {
   std::optional<ArtifactRootReference> sourceProgram;
   std::optional<ArtifactRootReference> fabric;
@@ -357,6 +380,8 @@ struct ApplicationMappingProvenance final {
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
   dse::StructuredOwnershipSelectionMode resolvedPlannerMode =
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
+  std::vector<ApplicationIncrementalMappingObservation>
+      incrementalMappingObservations;
   /// Derived application decision view. All detailed evidence remains owned by
   /// the records referenced above; this field only closes the pair-level join.
   std::optional<ApplicationPairDecisionRecord> pairDecision;

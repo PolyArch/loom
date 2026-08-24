@@ -72,6 +72,8 @@ struct JointResourceTimeAdjacentRepair final {
   ArtifactRootReference migrationSeed;
   JointDesignExplorationPlan plan;
   JointDesignExecution execution;
+  JointMappingReuseDisposition reuseDisposition =
+      JointMappingReuseDisposition::ColdFallback;
 };
 
 /// Executes one already-promoted adjacent resource-time state on the same

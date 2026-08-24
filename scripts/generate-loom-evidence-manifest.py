@@ -638,6 +638,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                         "resource_time_analytic_shadow_best_rank_matches",
                         "resource_time_analytic_shadow_out_of_domain_candidates",
                         "resource_time_analytic_shadow_maximum_lower_bound_gap_picoseconds",
+                        "application_incremental_mapping_transitions",
                         "resource_time_actual_tech_mapping_dispatch_count",
                         "resource_time_actual_spatial_pnr_dispatch_count",
                         "resource_time_actual_system_pnr_dispatch_count",
