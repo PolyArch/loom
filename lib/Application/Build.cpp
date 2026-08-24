@@ -223,6 +223,12 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const dse::JointDesignExecutionSummary &summary) {
   ApplicationPairDecisionRecord result;
   result.invocationRunKey = summary.invocationRunKey;
+  result.manifestJoinStatus =
+      summary.invocationRunKey
+          ? ApplicationPairManifestJoinStatus::Exact
+          : summary.attempts.empty()
+                ? ApplicationPairManifestJoinStatus::NotStartedBeforeMapping
+                : ApplicationPairManifestJoinStatus::Missing;
   result.sourceProgram = prepared.preMappingSourceProgram;
   result.fabric = prepared.preMappingFabric;
   result.workload = prepared.preMappingWorkload;
@@ -479,6 +485,8 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
     std::optional<std::uint64_t> sourceHostOnlyWork = std::nullopt) {
   ApplicationPairDecisionRecord result;
   result.disposition = disposition;
+  result.manifestJoinStatus =
+      ApplicationPairManifestJoinStatus::NotStartedBeforeMapping;
   result.detail = detail.str();
   result.sourceProgram = sourceProgram;
   result.fabric = fabric;
@@ -956,6 +964,18 @@ llvm::StringRef toString(ApplicationPairDecisionDisposition value) {
     return "hardware_dse_alternative";
   }
   llvm_unreachable("unknown application pair decision disposition");
+}
+
+llvm::StringRef toString(ApplicationPairManifestJoinStatus value) {
+  switch (value) {
+  case ApplicationPairManifestJoinStatus::Exact:
+    return "exact";
+  case ApplicationPairManifestJoinStatus::NotStartedBeforeMapping:
+    return "not_started_before_mapping";
+  case ApplicationPairManifestJoinStatus::Missing:
+    return "missing";
+  }
+  llvm_unreachable("unknown application pair manifest join status");
 }
 
 llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(

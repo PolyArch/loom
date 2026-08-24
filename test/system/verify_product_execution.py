@@ -205,6 +205,8 @@ def validate_mapping_work(
         and all(character in "0123456789abcdef" for character in manifest_run_key),
         "pair-level decision has no InvocationManifest run-key join",
     )
+    require(pair_decision.get("invocation_manifest_join_status") == "exact",
+            "successful product decision did not join an exact Manifest")
     require(
         pair_decision.get("disposition")
         in {

@@ -200,6 +200,8 @@ llvm::json::Object encodePairDecision(
   else
     result["invocation_manifest_run_key"] = nullptr;
   result["disposition"] = toString(decision.disposition);
+  result["invocation_manifest_join_status"] =
+      toString(decision.manifestJoinStatus);
   addOptionalRoot(result, "source_program", decision.sourceProgram);
   addOptionalRoot(result, "fabric", decision.fabric);
   addOptionalRoot(result, "workload", decision.workload);

@@ -185,6 +185,14 @@ enum class ApplicationPairDecisionDisposition : std::uint8_t {
 
 llvm::StringRef toString(ApplicationPairDecisionDisposition value);
 
+enum class ApplicationPairManifestJoinStatus : std::uint8_t {
+  Exact,
+  NotStartedBeforeMapping,
+  Missing,
+};
+
+llvm::StringRef toString(ApplicationPairManifestJoinStatus value);
+
 /// Fixed application-QoR dimensions. The ordering is stable for reports, but
 /// the existing DSE ObjectiveProgram remains the sole ordering authority.
 enum class ApplicationObjectiveDimension : std::uint8_t {
@@ -273,6 +281,8 @@ struct ApplicationPairDecisionRecord final {
   std::optional<ComponentViewDigest> pairIdentity;
   /// Exact DSE InvocationManifest run-key join for the Mapping attempt.
   std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
+  ApplicationPairManifestJoinStatus manifestJoinStatus =
+      ApplicationPairManifestJoinStatus::Missing;
   ApplicationPairDecisionDisposition disposition =
       ApplicationPairDecisionDisposition::ImplementationFailure;
   std::optional<ArtifactRootReference> sourceProgram;
