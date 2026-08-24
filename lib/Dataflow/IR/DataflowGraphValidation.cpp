@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -120,6 +121,72 @@ bool isResidualLLVMMemoryOperation(mlir::Operation *op) {
   return llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp,
                    mlir::LLVM::MemcpyOp, mlir::LLVM::MemmoveOp,
                    mlir::LLVM::MemsetOp>(op);
+}
+
+mlir::DenseElementsAttr getDenseConstant(mlir::Value value) {
+  mlir::Attribute attribute;
+  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>())
+    attribute = constant.getValue();
+  else if (auto constant = value.getDefiningOp<dataflow::ConstantOp>())
+    attribute = constant.getConstValue();
+  else if (auto constant = value.getDefiningOp<mlir::LLVM::ConstantOp>())
+    attribute = constant.getValue();
+  return llvm::dyn_cast_or_null<mlir::DenseElementsAttr>(attribute);
+}
+
+bool hasNoActiveLanes(mlir::Value mask) {
+  mlir::DenseElementsAttr constant = getDenseConstant(mask);
+  if (!constant || !llvm::isa<mlir::IntegerType>(constant.getElementType()))
+    return false;
+  return llvm::all_of(constant.getValues<llvm::APInt>(),
+                      [](const llvm::APInt &lane) { return lane.isZero(); });
+}
+
+bool hasProvenDistinctActiveAddresses(dataflow::StoreOp store) {
+  auto addressType =
+      llvm::dyn_cast<mlir::VectorType>(store.getAddr().getType());
+  if (!addressType)
+    return true;
+
+  std::optional<dataflow::semantics::MemoryActorContract> contract =
+      dataflow::semantics::getMemoryActorContract(store.getOperation());
+  if (!contract || contract->atomic)
+    return true;
+  if (store.getMask() && hasNoActiveLanes(store.getMask()))
+    return true;
+
+  mlir::DenseElementsAttr addresses = getDenseConstant(store.getAddr());
+  if (!addresses || !llvm::isa<mlir::IntegerType, mlir::IndexType>(
+                        addresses.getElementType()))
+    return false;
+
+  mlir::DenseElementsAttr mask = store.getMask()
+                                     ? getDenseConstant(store.getMask())
+                                     : mlir::DenseElementsAttr();
+  llvm::SmallVector<llvm::APInt, 8> activeAddresses;
+  auto addressValues = addresses.getValues<llvm::APInt>();
+  auto address = addressValues.begin();
+  if (mask) {
+    if (!llvm::isa<mlir::IntegerType>(mask.getElementType()) ||
+        mask.getNumElements() != addresses.getNumElements())
+      return false;
+    for (const llvm::APInt &active : mask.getValues<llvm::APInt>()) {
+      const llvm::APInt &candidate = *address++;
+      if (active.isZero())
+        continue;
+      if (llvm::is_contained(activeAddresses, candidate))
+        return false;
+      activeAddresses.push_back(candidate);
+    }
+    return true;
+  }
+
+  for (const llvm::APInt &candidate : addressValues) {
+    if (llvm::is_contained(activeAddresses, candidate))
+      return false;
+    activeAddresses.push_back(candidate);
+  }
+  return true;
 }
 
 using SelectorLanes = llvm::DenseMap<mlir::Value, unsigned>;
@@ -1638,6 +1705,11 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
   });
   if (structuralError)
     return structuralError;
+
+  for (dataflow::StoreOp store : graph.getOps<dataflow::StoreOp>())
+    if (!hasProvenDistinctActiveAddresses(store))
+      return graphError(
+          "plain scatter active-address distinctness proof not established");
 
   bool hasRealWork =
       llvm::any_of(entry.without_terminator(), [&](mlir::Operation &op) {

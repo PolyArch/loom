@@ -10,20 +10,19 @@
 // RUN:   --memref 1=10,20,30,40,50 --output %t.rank-gather.json
 // RUN: FileCheck %s --check-prefix=RANK-GATHER < %t.rank-gather.json
 // RUN: loom-dfg-sim %s --graph ranked_scatter \
-// RUN:   --arg 0=0x00000003000000000000000200000004 --arg 1=287454020 \
-// RUN:   --memref 2=1,2,3,4,5 --output %t.rank-scatter.json
+// RUN:   --arg 0=287454020 --memref 1=1,2,3,4,5 \
+// RUN:   --output %t.rank-scatter.json
 // RUN: FileCheck %s --check-prefix=RANK-SCATTER < %t.rank-scatter.json
 // RUN: loom-dfg-sim %s --graph masked_scatter \
-// RUN:   --arg 0=0x00000063000000030000006300000001 --arg 1=287454020 \
-// RUN:   --arg 2=5 --memref 3=1,2,3,4,5 --output %t.masked-scatter.json
+// RUN:   --arg 0=287454020 --memref 1=1,2,3,4,5 \
+// RUN:   --output %t.masked-scatter.json
 // RUN: FileCheck %s --check-prefix=MASKED-SCATTER < %t.masked-scatter.json
-// RUN: loom-dfg-sim %s --graph masked_scatter \
+// RUN: loom-dfg-sim %s --graph zero_scatter \
 // RUN:   --arg 0=0x00000063000000630000006300000063 --arg 1=287454020 \
-// RUN:   --arg 2=0 --memref 3=1,2,3,4,5 --output %t.zero-scatter.json
+// RUN:   --memref 2=1,2,3,4,5 --output %t.zero-scatter.json
 // RUN: FileCheck %s --check-prefix=ZERO-SCATTER < %t.zero-scatter.json
-// RUN: loom-dfg-sim %s --graph ranked_scatter \
-// RUN:   --arg 0=0x00000002000000630000000100000000 --arg 1=287454020 \
-// RUN:   --memref 2=1,2,3,4,5 --output %t.range-scatter.json
+// RUN: loom-dfg-sim %s --graph range_scatter --arg 0=287454020 \
+// RUN:   --memref 1=1,2,3,4,5 --output %t.range-scatter.json
 // RUN: FileCheck %s --check-prefix=RANGE-SCATTER < %t.range-scatter.json
 // RUN: loom-dfg-sim %s --graph wrapped_masked_load --arg 0=4294967294 \
 // RUN:   --arg 1=12 --memref 2=10,20,30,40,50 --output %t.wrap-load.json
@@ -62,8 +61,8 @@
 
 // Distinct active scatter destinations execute; lane `i` writes the element
 // named by address lane `i`.
-// RANK-SCATTER: "event_count": 2
-// RANK-SCATTER: "arg2": [
+// RANK-SCATTER: "event_count": 3
+// RANK-SCATTER: "arg1": [
 // RANK-SCATTER-NEXT: "i8:34",
 // RANK-SCATTER-NEXT: "i8:2",
 // RANK-SCATTER-NEXT: "i8:51",
@@ -74,8 +73,8 @@
 
 // Inactive lanes evaluate no address, so their out-of-range and duplicated
 // addresses neither fault nor collide.
-// MASKED-SCATTER: "event_count": 3
-// MASKED-SCATTER: "arg3": [
+// MASKED-SCATTER: "event_count": 4
+// MASKED-SCATTER: "arg1": [
 // MASKED-SCATTER-NEXT: "i8:1",
 // MASKED-SCATTER-NEXT: "i8:68",
 // MASKED-SCATTER-NEXT: "i8:3",
@@ -86,7 +85,7 @@
 
 // An all-zero mask completes the firing without evaluating any address.
 // ZERO-SCATTER: "event_count": 3
-// ZERO-SCATTER: "arg3": [
+// ZERO-SCATTER: "arg2": [
 // ZERO-SCATTER-NEXT: "i8:1",
 // ZERO-SCATTER-NEXT: "i8:2",
 // ZERO-SCATTER-NEXT: "i8:3",
@@ -98,7 +97,7 @@
 // One out-of-range active lane refuses the whole firing, so the lanes that
 // resolved before it leave no partial write behind.
 // RANGE-SCATTER: "dataflow.store address is out of range"
-// RANGE-SCATTER: "arg2": [
+// RANGE-SCATTER: "arg1": [
 // RANGE-SCATTER-NEXT: "i8:1",
 // RANGE-SCATTER-NEXT: "i8:2",
 // RANGE-SCATTER-NEXT: "i8:3",
@@ -156,10 +155,11 @@ module attributes {
   }
 
   dataflow.graph private @ranked_scatter(
-      %start: none, %addresses: vector<2x2xindex>, %packed: i32,
-      %mem: memref<?xi8>)
-      attributes {input_segments = array<i32: 2, 0, 1>,
+      %start: none, %packed: i32, %mem: memref<?xi8>)
+      attributes {input_segments = array<i32: 1, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
+    %addresses = arith.constant dense<[[4, 2], [0, 3]]>
+        : vector<2x2xindex>
     %data = dataflow.unpack %packed : i32 -> vector<2x2xi8>
     %done = dataflow.store %mem[%addresses] %data %start
         : memref<?xi8>, vector<2x2xindex>, vector<2x2xi8>
@@ -167,13 +167,39 @@ module attributes {
   }
 
   dataflow.graph private @masked_scatter(
-      %start: none, %addresses: vector<2x2xindex>, %packed: i32,
-      %packed_mask: i4, %mem: memref<?xi8>)
-      attributes {input_segments = array<i32: 3, 0, 1>,
+      %start: none, %packed: i32, %mem: memref<?xi8>)
+      attributes {input_segments = array<i32: 1, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
+    %addresses = arith.constant dense<[[1, 99], [3, 99]]>
+        : vector<2x2xindex>
+    %mask = arith.constant dense<[[true, false], [true, false]]>
+        : vector<2x2xi1>
     %data = dataflow.unpack %packed : i32 -> vector<2x2xi8>
-    %mask = dataflow.unpack %packed_mask : i4 -> vector<2x2xi1>
     %done = dataflow.store %mem[%addresses] %data %start mask %mask
+        : memref<?xi8>, vector<2x2xindex>, vector<2x2xi8>
+    dataflow.graph.return %done : none
+  }
+
+  dataflow.graph private @zero_scatter(
+      %start: none, %addresses: vector<2x2xindex>, %packed: i32,
+      %mem: memref<?xi8>)
+      attributes {input_segments = array<i32: 2, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %mask = arith.constant dense<false> : vector<2x2xi1>
+    %data = dataflow.unpack %packed : i32 -> vector<2x2xi8>
+    %done = dataflow.store %mem[%addresses] %data %start mask %mask
+        : memref<?xi8>, vector<2x2xindex>, vector<2x2xi8>
+    dataflow.graph.return %done : none
+  }
+
+  dataflow.graph private @range_scatter(
+      %start: none, %packed: i32, %mem: memref<?xi8>)
+      attributes {input_segments = array<i32: 1, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %addresses = arith.constant dense<[[0, 1], [99, 2]]>
+        : vector<2x2xindex>
+    %data = dataflow.unpack %packed : i32 -> vector<2x2xi8>
+    %done = dataflow.store %mem[%addresses] %data %start
         : memref<?xi8>, vector<2x2xindex>, vector<2x2xi8>
     dataflow.graph.return %done : none
   }
