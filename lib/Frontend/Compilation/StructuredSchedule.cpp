@@ -112,7 +112,8 @@ rectangularParallelNest(mlir::scf::ForOp root) {
       break;
     current = child;
   }
-  return raising::hasProvenIndependentIterations(result)
+  return raising::proveIndependentIterations(result) ==
+             raising::ParallelDependenceResult::ProvenIndependent
              ? result
              : llvm::SmallVector<mlir::scf::ForOp>{};
 }
@@ -350,8 +351,10 @@ llvm::Error applyUnroll(mlir::scf::ForOp loop, std::uint64_t factor) {
 llvm::Error applyInterchange(mlir::scf::ForOp outer) {
   mlir::scf::ForOp inner;
   if (!isPerfectAdjacentNest(outer, inner) ||
-      !raising::hasProvenIndependentIterations(outer) ||
-      !raising::hasProvenIndependentIterations(inner))
+      raising::proveIndependentIterations(outer) !=
+          raising::ParallelDependenceResult::ProvenIndependent ||
+      raising::proveIndependentIterations(inner) !=
+          raising::ParallelDependenceResult::ProvenIndependent)
     return invalid("interchange preconditions are not satisfied");
 
   mlir::OpBuilder builder(outer);
@@ -512,8 +515,10 @@ enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
 
     mlir::scf::ForOp inner;
     if (isPerfectAdjacentNest(loop, inner) &&
-        raising::hasProvenIndependentIterations(loop) &&
-        raising::hasProvenIndependentIterations(inner)) {
+        raising::proveIndependentIterations(loop) ==
+            raising::ParallelDependenceResult::ProvenIndependent &&
+        raising::proveIndependentIterations(inner) ==
+            raising::ParallelDependenceResult::ProvenIndependent) {
       decisions.push_back(
           {entity.reference, StructuredScheduleDecisionKind::Interchange, 0});
       if (tripCount && *tripCount > 1 && hasInvariantNestedLoopBounds(loop)) {
@@ -530,7 +535,8 @@ enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
       }
     }
     if (loop.getInitArgs().empty() &&
-        raising::hasProvenIndependentIterations(loop))
+        raising::proveIndependentIterations(loop) ==
+            raising::ParallelDependenceResult::ProvenIndependent)
       decisions.push_back(
           {entity.reference, StructuredScheduleDecisionKind::Parallelize, 0});
     if (rectangularParallelNest(loop).size() >= 2)

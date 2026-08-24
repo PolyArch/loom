@@ -55,7 +55,10 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallVector.h"
+#include <cstdint>
+#include <limits>
 #include <optional>
 
 namespace {
@@ -99,6 +102,43 @@ bool dependsOnIV(::mlir::Value v, ::mlir::Value iv,
 bool dependsOnIV(::mlir::Value v, ::mlir::Value iv) {
   ::llvm::DenseSet<::mlir::Value> visited;
   return dependsOnIV(v, iv, visited);
+}
+
+std::optional<unsigned> fixedIntegerWidth(::mlir::Type type,
+                                          ::mlir::Operation *anchor) {
+  if (auto integer = ::mlir::dyn_cast<::mlir::IntegerType>(type))
+    return integer.getWidth();
+  if (::mlir::isa<::mlir::IndexType>(type)) {
+    auto width = ::loom::getIndexBitWidth(anchor);
+    if (!width) {
+      ::llvm::consumeError(width.takeError());
+      return std::nullopt;
+    }
+    return *width;
+  }
+  return std::nullopt;
+}
+
+bool isInjectiveCast(::mlir::Operation *operation,
+                     ::mlir::scf::ForOp loop) {
+  if (!operation || operation->getNumOperands() != 1 ||
+      operation->getNumResults() != 1)
+    return false;
+  const auto sourceWidth =
+      fixedIntegerWidth(operation->getOperand(0).getType(), loop);
+  const auto resultWidth =
+      fixedIntegerWidth(operation->getResult(0).getType(), loop);
+  if (!sourceWidth || !resultWidth)
+    return false;
+  if (::mlir::isa<::mlir::arith::TruncIOp, ::mlir::LLVM::TruncOp>(operation))
+    return false;
+  if (::mlir::isa<::mlir::arith::ExtSIOp, ::mlir::arith::ExtUIOp,
+                  ::mlir::LLVM::SExtOp, ::mlir::LLVM::ZExtOp>(operation))
+    return *resultWidth >= *sourceWidth;
+  if (::mlir::isa<::mlir::arith::IndexCastOp,
+                  ::mlir::arith::IndexCastUIOp>(operation))
+    return *resultWidth >= *sourceWidth;
+  return false;
 }
 
 // True if the index-computation tree rooted at `v` is "syntactic affine
@@ -148,6 +188,8 @@ bool isAffineStyle(::mlir::Value v, ::mlir::Value iv, ::mlir::scf::ForOp loop,
                   ::mlir::arith::ExtSIOp, ::mlir::arith::ExtUIOp,
                   ::mlir::arith::TruncIOp, ::mlir::LLVM::SExtOp,
                   ::mlir::LLVM::ZExtOp, ::mlir::LLVM::TruncOp>(def)) {
+    if (!isInjectiveCast(def, loop))
+      return false;
     return isAffineStyle(def->getOperand(0), iv, loop, visited);
   }
   // Allow add / sub / mul / shl with constant shift amount.
@@ -240,32 +282,55 @@ struct LinearExpr {
   int64_t constant = 0;
 };
 
-int64_t abs64(int64_t value) { return value < 0 ? -value : value; }
+std::optional<std::int64_t> abs64(std::int64_t value) {
+  if (value == std::numeric_limits<std::int64_t>::min())
+    return std::nullopt;
+  return value < 0 ? -value : value;
+}
 
-int64_t positiveMod(int64_t value, int64_t modulus) {
-  int64_t residue = value % modulus;
+std::optional<std::int64_t> positiveMod(std::int64_t value,
+                                        std::int64_t modulus) {
+  if (modulus <= 0)
+    return std::nullopt;
+  std::int64_t residue = value % modulus;
   return residue < 0 ? residue + modulus : residue;
 }
 
 std::optional<int64_t> getConstantInt(::mlir::Value value) {
   if (auto constant = value.getDefiningOp<::mlir::arith::ConstantOp>()) {
     if (auto intAttr =
-            ::llvm::dyn_cast<::mlir::IntegerAttr>(constant.getValue()))
-      return intAttr.getInt();
+            ::llvm::dyn_cast<::mlir::IntegerAttr>(constant.getValue())) {
+      const ::llvm::APInt &bits = intAttr.getValue();
+      if (!bits.isSignedIntN(64))
+        return std::nullopt;
+      return bits.getSExtValue();
+    }
   }
   return std::nullopt;
 }
 
 std::optional<LinearExpr> addLinear(LinearExpr lhs, LinearExpr rhs) {
-  return LinearExpr{lhs.ivCoeff + rhs.ivCoeff, lhs.constant + rhs.constant};
+  LinearExpr result;
+  if (__builtin_add_overflow(lhs.ivCoeff, rhs.ivCoeff, &result.ivCoeff) ||
+      __builtin_add_overflow(lhs.constant, rhs.constant, &result.constant))
+    return std::nullopt;
+  return result;
 }
 
 std::optional<LinearExpr> subLinear(LinearExpr lhs, LinearExpr rhs) {
-  return LinearExpr{lhs.ivCoeff - rhs.ivCoeff, lhs.constant - rhs.constant};
+  LinearExpr result;
+  if (__builtin_sub_overflow(lhs.ivCoeff, rhs.ivCoeff, &result.ivCoeff) ||
+      __builtin_sub_overflow(lhs.constant, rhs.constant, &result.constant))
+    return std::nullopt;
+  return result;
 }
 
 std::optional<LinearExpr> scaleLinear(LinearExpr expr, int64_t scale) {
-  return LinearExpr{expr.ivCoeff * scale, expr.constant * scale};
+  LinearExpr result;
+  if (__builtin_mul_overflow(expr.ivCoeff, scale, &result.ivCoeff) ||
+      __builtin_mul_overflow(expr.constant, scale, &result.constant))
+    return std::nullopt;
+  return result;
 }
 
 std::optional<LinearExpr> linearExpr(::mlir::Value value, ::mlir::Value iv,
@@ -290,6 +355,11 @@ std::optional<LinearExpr> linearExpr(::mlir::Value value, ::mlir::Value iv,
                   ::mlir::arith::ExtSIOp, ::mlir::arith::ExtUIOp,
                   ::mlir::arith::TruncIOp, ::mlir::LLVM::SExtOp,
                   ::mlir::LLVM::ZExtOp, ::mlir::LLVM::TruncOp>(def))
+    if (!isInjectiveCast(def, loop))
+      return std::nullopt;
+  if (::mlir::isa<::mlir::arith::IndexCastOp, ::mlir::arith::IndexCastUIOp,
+                  ::mlir::arith::ExtSIOp, ::mlir::arith::ExtUIOp,
+                  ::mlir::LLVM::SExtOp, ::mlir::LLVM::ZExtOp>(def))
     return linearExpr(def->getOperand(0), iv, loop, visited);
 
   if (::mlir::isa<::mlir::arith::AddIOp, ::mlir::LLVM::AddOp>(def)) {
@@ -348,6 +418,11 @@ std::optional<LinearExpr> linearExpr(::mlir::Value value, ::mlir::Value iv,
 std::optional<LinearExpr> linearGepOffset(::mlir::LLVM::GEPOp gep,
                                           ::mlir::Value iv,
                                           ::mlir::scf::ForOp loop) {
+  // The conservative provider currently proves only one-index GEPs. A
+  // multidimensional GEP needs DataLayout-aware affine scaling and is kept
+  // serial until that proof is available.
+  if (gep.getIndices().size() != 1)
+    return std::nullopt;
   LinearExpr total;
   bool sawIndex = false;
   for (::mlir::Value operand : gep->getOperands()) {
@@ -356,7 +431,10 @@ std::optional<LinearExpr> linearGepOffset(::mlir::LLVM::GEPOp gep,
     auto expr = linearExpr(operand, iv, loop);
     if (!expr)
       return std::nullopt;
-    total = *addLinear(total, *expr);
+    auto added = addLinear(total, *expr);
+    if (!added)
+      return std::nullopt;
+    total = *added;
     sawIndex = true;
   }
   if (!sawIndex)
@@ -461,14 +539,20 @@ bool sameBaseStoresAreLaneDisjoint(::llvm::ArrayRef<::mlir::Operation *> stores,
       return false;
     if (!expectedCoeff) {
       expectedCoeff = expr->ivCoeff;
-      stride = abs64(expr->ivCoeff * *stepConst);
+      std::int64_t scaled = 0;
+      if (__builtin_mul_overflow(expr->ivCoeff, *stepConst, &scaled))
+        return false;
+      auto magnitude = abs64(scaled);
+      if (!magnitude)
+        return false;
+      stride = *magnitude;
       if (stride == 0 || (stores.size() > 1 && stride <= 1))
         return false;
     } else if (*expectedCoeff != expr->ivCoeff) {
       return false;
     }
-    int64_t residue = positiveMod(expr->constant, stride);
-    if (!residues.insert(residue).second)
+    auto residue = positiveMod(expr->constant, stride);
+    if (!residue || !residues.insert(*residue).second)
       return false;
   }
   return true;
@@ -671,6 +755,43 @@ bool hasZeroBasedUnitStep(::mlir::scf::ForOp loop) {
          getConstantInt(loop.getStep()) == std::optional<int64_t>{1};
 }
 
+bool hasLosslessIndexDomain(::mlir::scf::ForOp loop) {
+  auto indexWidth = ::loom::getIndexBitWidth(loop);
+  if (!indexWidth)
+    return false;
+  ::mlir::Type type = loop.getInductionVar().getType();
+  if (::mlir::isa<::mlir::IndexType>(type))
+    return true;
+  auto integer = ::mlir::dyn_cast<::mlir::IntegerType>(type);
+  if (!integer || integer.getWidth() < *indexWidth)
+    return false;
+  // An integer loop with unsigned comparison needs a range proof that the
+  // conversion to index preserves unsigned ordering. The initial owner does
+  // not have that proof, so retain it serially rather than changing bounds.
+  if (loop.getUnsignedCmp())
+    return false;
+  if (integer.getWidth() > *indexWidth) {
+    // A wider integer induction variable may be narrowed only when every
+    // bound is a constant in the signed index range. Dynamic bounds have no
+    // range proof in this owner and remain serial.
+    const auto lower = getConstantInt(loop.getLowerBound());
+    const auto upper = getConstantInt(loop.getUpperBound());
+    const auto step = getConstantInt(loop.getStep());
+    if (!lower || !upper || !step || *indexWidth == 0)
+      return false;
+    if (*indexWidth < 64) {
+      const std::int64_t minimum =
+          -(std::int64_t{1} << (*indexWidth - 1));
+      const std::int64_t maximum =
+          (std::int64_t{1} << (*indexWidth - 1)) - 1;
+      if (*lower < minimum || *lower > maximum || *upper < minimum ||
+          *upper > maximum || *step < minimum || *step > maximum)
+        return false;
+    }
+  }
+  return true;
+}
+
 bool isPerfectRectangularNest(::llvm::ArrayRef<::mlir::scf::ForOp> nest) {
   if (nest.size() < 2)
     return false;
@@ -783,6 +904,8 @@ struct ForToForall : public ::mlir::OpRewritePattern<::mlir::scf::ForOp> {
     ::mlir::Type ivType = lb.getType();
     if (!::mlir::isa<::mlir::IndexType, ::mlir::IntegerType>(ivType))
       return ::mlir::failure();
+    if (!hasLosslessIndexDomain(loop))
+      return ::mlir::failure();
 
     // Body must be parallel-safe.
     if (failed(checkBodyParallel(loop)))
@@ -881,15 +1004,42 @@ namespace loom {
 namespace raising {
 
 bool hasProvenIndependentIterations(::mlir::scf::ForOp loop) {
-  return ::mlir::succeeded(checkBodyParallel(loop));
+  return proveIndependentIterations(loop) ==
+         loom::raising::ParallelDependenceResult::ProvenIndependent;
 }
 
 bool hasProvenIndependentIterations(::llvm::ArrayRef<::mlir::scf::ForOp> nest) {
+  return proveIndependentIterations(nest) ==
+         loom::raising::ParallelDependenceResult::ProvenIndependent;
+}
+
+ParallelDependenceResult
+proveIndependentIterations(::mlir::scf::ForOp loop) {
+  if (loop.getInitArgs().empty() == false)
+    return ParallelDependenceResult::ProvenDependent;
+  if (!hasLosslessIndexDomain(loop))
+    return ParallelDependenceResult::ProofNotEstablished;
+  return ::mlir::succeeded(checkBodyParallel(loop))
+             ? ParallelDependenceResult::ProvenIndependent
+             : ParallelDependenceResult::ProofNotEstablished;
+}
+
+ParallelDependenceResult proveIndependentIterations(
+    ::llvm::ArrayRef<::mlir::scf::ForOp> nest) {
   if (!isPerfectRectangularNest(nest))
-    return false;
+    return ParallelDependenceResult::ProofNotEstablished;
+  for (::mlir::scf::ForOp loop : nest)
+    if (loop.getInitArgs().empty() == false)
+      return ParallelDependenceResult::ProvenDependent;
+  if (::llvm::any_of(nest, [](::mlir::scf::ForOp loop) {
+        return !hasLosslessIndexDomain(loop);
+      }))
+    return ParallelDependenceResult::ProofNotEstablished;
   ::mlir::scf::ForOp innermost = nest.back();
   return ::mlir::succeeded(checkBodyParallel(innermost)) &&
-         hasIndependentDenseStores(nest);
+                 hasIndependentDenseStores(nest)
+             ? ParallelDependenceResult::ProvenIndependent
+             : ParallelDependenceResult::ProofNotEstablished;
 }
 
 ::mlir::LogicalResult

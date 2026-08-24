@@ -703,6 +703,22 @@ The child stores the logical parallel domain in ordinary SCF; it carries no
 physical coordinate, AccCore binding, placement, or routing fact. A later
 ownership decision may retain that domain inside one Spatial graph or
 materialize it as a logical `dataflow.thread` domain.
+
+The common owner exposes one typed admission result:
+
+```text
+ProvenIndependent | ProvenDependent | ProofNotEstablished
+```
+
+Only `ProvenIndependent` may materialize `scf.forall`. The other two preserve
+the serial loop and are not compilation errors. The initial proof is
+deliberately conservative and DataLayout-aware: a narrowing integer cast,
+wrapped affine coefficient or constant, unsigned bound conversion without a
+range proof, unknown pointer root, multidimensional or otherwise unsupported
+GEP, and a non-injective integer-to-index cast all produce
+`ProofNotEstablished`. Arithmetic is checked at the source integer width; a
+host `int64_t` overflow cannot become an independence proof. Widening casts
+are admitted only when the source and destination widths prove injectivity.
 ParallelizeNest is the arbitrary-rank form of the same decision. It consumes a
 maximal rectangular chain rooted at the selected loop and emits one rank-N
 `scf.forall`. Its joint proof requires zero-based unit-step loops, bounds

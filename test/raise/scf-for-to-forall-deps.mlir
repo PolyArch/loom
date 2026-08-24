@@ -143,3 +143,23 @@ func.func @overlapping_lane_stores_same_base(%dst: memref<?xf32>,
     }
     return
 }
+
+// A narrowing induction cast can alias iterations (for example, i=0 and
+// i=256). It is not an independence proof even when the resulting address
+// expression looks affine.
+
+// CHECK-LABEL: func.func @truncating_induction
+// CHECK: scf.for
+// CHECK-NOT: scf.forall
+func.func @truncating_induction(%dst: memref<?xf32>, %n: index) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    %f0 = arith.constant 0.0 : f32
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %narrow = arith.trunci %i : i64 to i8
+      %index = arith.index_cast %narrow : i8 to index
+      memref.store %f0, %dst[%index] : memref<?xf32>
+    }
+    return
+}

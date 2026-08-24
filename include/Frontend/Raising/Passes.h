@@ -6,6 +6,7 @@
 #include "llvm/ADT/ArrayRef.h"
 
 #include <memory>
+#include <cstdint>
 
 namespace mlir {
 class Operation;
@@ -141,15 +142,28 @@ createMaterializeFMulAddPass(FMulAddExecutionShape shape);
 // runners. The standard raising pipeline does not invoke it.
 std::unique_ptr<::mlir::Pass> createSCFForToForallPass();
 
-/// Proves that iterations of one exact scf.for are independent using the same
-/// conservative memory, control, and effect analysis consumed by the
-/// parallelization transform. Unknown facts return false.
+enum class ParallelDependenceResult : std::uint8_t {
+  ProvenIndependent,
+  ProvenDependent,
+  ProofNotEstablished,
+};
+
+/// The single typed owner of SCF iteration-independence admission. Unknown
+/// facts are deliberately distinct from a proven dependence so callers can
+/// preserve serial semantics without treating conservative rejection as an
+/// error.
+ParallelDependenceResult
+proveIndependentIterations(::mlir::scf::ForOp loop);
+
+ParallelDependenceResult proveIndependentIterations(
+    ::llvm::ArrayRef<::mlir::scf::ForOp> nest);
+
+/// Compatibility predicate for callers that only need the positive admission
+/// bit. The typed `proveIndependentIterations` result remains authoritative.
 bool hasProvenIndependentIterations(::mlir::scf::ForOp loop);
 
-/// Proves that the complete rectangular loop nest has independent iterations.
-/// This recognizes only zero-based unit-step nests whose writes use an exact
-/// dense coordinate projection across every dimension. Unknown layout,
-/// aliasing, or coordinate facts return false.
+/// Compatibility predicate for a complete rectangular loop nest. Unknown
+/// layout, aliasing, or coordinate facts remain serial.
 bool hasProvenIndependentIterations(::llvm::ArrayRef<::mlir::scf::ForOp> nest);
 
 /// Materializes the same exact conservative parallelization recognized by
