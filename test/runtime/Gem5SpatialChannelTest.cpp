@@ -31,9 +31,8 @@ template <typename T> T take(llvm::Expected<T> value) {
 }
 
 void strictProjectionRoundTrips() {
-  Gem5SpatialChannelProjection projection{
-      {{4, 1, 0x5000, 4096}, {2, 0, 0x3000, 4096}},
-      {{7, 0x9000, 4096}, {3, 0x7000, 4096}}};
+  Gem5SpatialChannelProjection projection{{{4, 1, 5, 3}, {2, 0, 3, 2}},
+                                          {{7, 9, 3}, {3, 7, 2}}};
   const std::vector<std::uint8_t> encoded =
       take(encodeGem5SpatialChannelProjection(projection));
   Gem5SpatialChannelProjection decoded =
@@ -42,6 +41,8 @@ void strictProjectionRoundTrips() {
           "strict projection lost an entry");
   require(decoded.inputs[0].consumerStreamInputOrdinal == 0 &&
               decoded.inputs[1].consumerStreamInputOrdinal == 1 &&
+              decoded.inputs[0].channelOrdinal == 3 &&
+              decoded.inputs[0].capacityMessages == 2 &&
               decoded.outputs[0].producerStreamOutputOrdinal == 3,
           "strict projection is not canonically ordered");
   require(take(encodeGem5SpatialChannelProjection(decoded)) == encoded,
@@ -51,6 +52,11 @@ void strictProjectionRoundTrips() {
   auto duplicate = encodeGem5SpatialChannelProjection(std::move(projection));
   require(!duplicate, "duplicate consumer binding was accepted");
   llvm::consumeError(duplicate.takeError());
+
+  decoded.outputs[0].capacityMessages = 0;
+  auto emptyCapacity = encodeGem5SpatialChannelProjection(std::move(decoded));
+  require(!emptyCapacity, "zero message capacity was accepted");
+  llvm::consumeError(emptyCapacity.takeError());
 
   std::vector<std::uint8_t> trailing = encoded;
   trailing.push_back(0);

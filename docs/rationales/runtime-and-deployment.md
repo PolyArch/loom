@@ -186,6 +186,30 @@ Bridges while each Bridge retains its own PIO and completion session. This
 keeps the Dataflow-owned correspondence and SystemMapping-owned service intact
 instead of making process placement an accidental message-routing rule.
 
+Service outstanding capacity counts messages, whereas bridge framing limits
+bytes. Conflating them makes a large payload consume several logical credits
+or lets a small payload create an unbounded queue. Runtime therefore derives
+message slots from the selected endpoint rate contracts and treats framing
+bytes only as a provider admission bound.
+
+Output credit can stall retirement after computation has already finished.
+Retaining the encoded messages and a publication cursor makes that stall an
+ordinary bounded transport wait. Replaying the computation would duplicate
+memory effects, while requiring all activation messages to fit at once would
+deadlock whenever a legal stream is longer than the channel capacity.
+
+The same separation applies to control progress. A channel consumer may be the
+first mapped thread submitted, so Host glue must preserve launch handles and
+defer its join to the source wait. Each target has independent transient
+dispatch state; one global busy bit would serialize otherwise independent
+InstructionCores. Once a Spatial launch is sent, gem5 socket readiness is an
+external event, not a reason to block the simulator thread. Using gem5's poll
+queue lets a pending consumer coexist with the producer whose publication will
+make it ready, while gem5 remains the sole simulated-time authority.
+Targets sharing one InstructionCore are reconsidered when its running worker
+reports completion, rather than polling the same busy state every simulated
+cycle.
+
 ## Why Technology Corners Stay Platform-Local
 
 An ImplementationPlatform already owns the immutable technology or device

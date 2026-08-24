@@ -116,6 +116,7 @@ add_mlir_library(LoomNativeSimulationOracle
 
   LINK_LIBS PUBLIC
   LoomFrontendCompilation
+  LoomRuntimePlatformBinding
   LoomSimulator
   ${loom_native_oracle_llvm_libs}
 )

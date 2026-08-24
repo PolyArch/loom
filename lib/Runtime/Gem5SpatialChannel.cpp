@@ -12,7 +12,7 @@ namespace loom::runtime {
 namespace {
 
 constexpr std::array<std::uint8_t, 8> kProjectionMagic{'L', 'G', 'C', 'P',
-                                                       '0', '0', '0', '2'};
+                                                       '0', '0', '0', '3'};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -45,32 +45,23 @@ private:
   llvm::ArrayRef<std::uint8_t> bytes_;
 };
 
-llvm::Error validateRange(std::uint64_t address, std::uint64_t capacity) {
-  if (capacity <= gem5SpatialChannelBufferHeaderBytes)
-    return invalid("channel buffer cannot hold a payload");
-  if (address > std::numeric_limits<std::uint64_t>::max() - capacity)
-    return invalid("channel buffer range overflows u64");
-  return llvm::Error::success();
-}
-
 llvm::Error canonicalize(Gem5SpatialChannelProjection &projection) {
   llvm::sort(projection.inputs, [](const auto &lhs, const auto &rhs) {
     return std::tie(lhs.consumerStreamInputOrdinal,
-                    lhs.producerStreamOutputOrdinal, lhs.address) <
+                    lhs.producerStreamOutputOrdinal, lhs.channelOrdinal) <
            std::tie(rhs.consumerStreamInputOrdinal,
-                    rhs.producerStreamOutputOrdinal, rhs.address);
+                    rhs.producerStreamOutputOrdinal, rhs.channelOrdinal);
   });
   llvm::sort(projection.outputs, [](const auto &lhs, const auto &rhs) {
-    return std::tie(lhs.producerStreamOutputOrdinal, lhs.address) <
-           std::tie(rhs.producerStreamOutputOrdinal, rhs.address);
+    return std::tie(lhs.producerStreamOutputOrdinal, lhs.channelOrdinal) <
+           std::tie(rhs.producerStreamOutputOrdinal, rhs.channelOrdinal);
   });
-  for (const Gem5SpatialChannelInput &input : projection.inputs) {
-    if (llvm::Error error = validateRange(input.address, input.capacityBytes))
-      return error;
-  }
+  for (const Gem5SpatialChannelInput &input : projection.inputs)
+    if (input.capacityMessages == 0)
+      return invalid("channel input capacity must be positive");
   for (const Gem5SpatialChannelOutput &output : projection.outputs)
-    if (llvm::Error error = validateRange(output.address, output.capacityBytes))
-      return error;
+    if (output.capacityMessages == 0)
+      return invalid("channel output capacity must be positive");
   if (std::adjacent_find(projection.inputs.begin(), projection.inputs.end(),
                          [](const auto &lhs, const auto &rhs) {
                            return lhs.consumerStreamInputOrdinal ==
@@ -94,14 +85,14 @@ encodeCanonical(const Gem5SpatialChannelProjection &projection) {
   for (const Gem5SpatialChannelInput &input : projection.inputs) {
     appendU64(bytes, input.producerStreamOutputOrdinal);
     appendU64(bytes, input.consumerStreamInputOrdinal);
-    appendU64(bytes, input.address);
-    appendU64(bytes, input.capacityBytes);
+    appendU64(bytes, input.channelOrdinal);
+    appendU64(bytes, input.capacityMessages);
   }
   appendU64(bytes, projection.outputs.size());
   for (const Gem5SpatialChannelOutput &output : projection.outputs) {
     appendU64(bytes, output.producerStreamOutputOrdinal);
-    appendU64(bytes, output.address);
-    appendU64(bytes, output.capacityBytes);
+    appendU64(bytes, output.channelOrdinal);
+    appendU64(bytes, output.capacityMessages);
   }
   return bytes;
 }
@@ -141,8 +132,7 @@ decodeGem5SpatialChannelProjection(llvm::ArrayRef<std::uint8_t> bytes) {
     auto capacity = reader.u64();
     if (!capacity)
       return capacity.takeError();
-    projection.inputs.push_back(
-        {*producer, *consumer, *address, *capacity});
+    projection.inputs.push_back({*producer, *consumer, *address, *capacity});
   }
   auto outputCount = reader.u64();
   if (!outputCount || *outputCount > bytes.size())

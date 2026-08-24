@@ -112,14 +112,25 @@ loom_host_entry:
   sd t1, 0(t0)
   li s4, 0
 4:
-  bgeu s4, s3, 5f
-  li t0, 2
-  sw t0, 8(s0)
+  bgeu s4, s3, 6f
   sw s4, 0(s0)
   sw zero, 4(s0)
+  li t0, 2
+  sw t0, 8(s0)
   li t0, 1
   fence iorw, iorw
   sw t0, 8(s0)
+  lw t0, 12(s0)
+  andi t1, t0, 4
+  bnez t1, 3f
+  addi s4, s4, 1
+  j 4b
+6:
+  li s4, 0
+7:
+  bgeu s4, s3, 5f
+  sw s4, 0(s0)
+  sw zero, 4(s0)
 1:
   lw t0, 12(s0)
   andi t1, t0, 4
@@ -128,7 +139,7 @@ loom_host_entry:
   beqz t1, 1b
   fence iorw, iorw
   addi s4, s4, 1
-  j 4b
+  j 7b
 5:
   li t2, {EXTERNAL_VALUE_ADDRESS}
   ld t3, 0(t2)
@@ -168,12 +179,17 @@ __loom_thread_entry_0:
   beqz t1, 1b
   fence iorw, iorw
   li t0, 1
-  sw t0, 16(a3)
+  sw t0, 0(a3)
 2:
   wfi
   j 2b
 3:
-  j 3b
+  lw t0, 8(a0)
+  bnez t0, 4f
+  li t0, 1
+4:
+  sw t0, 4(a3)
+  j 2b
 .size __loom_thread_entry_0, .-__loom_thread_entry_0
 """
 

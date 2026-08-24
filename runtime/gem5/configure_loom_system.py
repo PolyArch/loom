@@ -31,7 +31,7 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.9"
+CONFIG_SCHEMA = "loom.gem5_system_projection.10"
 
 PROCESSOR_FIELDS = {
     "cpu_id",
@@ -132,6 +132,7 @@ def start_engines(
                     "dispatch_target_ordinals",
                     "acc_core_ref",
                     "execution_context_keys",
+                    "spatial_workloads",
                     "pio_address",
                     "pio_size",
                     "pio_latency",
@@ -146,6 +147,7 @@ def start_engines(
             )
             targets = bridge["dispatch_target_ordinals"]
             contexts = bridge["execution_context_keys"]
+            workloads = bridge["spatial_workloads"]
             if (
                 not isinstance(targets, list)
                 or not targets
@@ -158,6 +160,8 @@ def start_engines(
                 )
                 or not isinstance(contexts, list)
                 or len(contexts) != len(targets)
+                or not isinstance(workloads, list)
+                or len(workloads) != len(targets)
             ):
                 raise ValueError(f"bridge {ordinal} target table is invalid")
             if claimed_targets.intersection(targets):
@@ -172,6 +176,13 @@ def start_engines(
                     or any(character not in "0123456789abcdef" for character in encoded)
                 ):
                     raise ValueError(f"bridge {ordinal} reference is invalid")
+            if any(
+                not isinstance(workload, str)
+                or len(workload) != 64
+                or any(character not in "0123456789abcdef" for character in workload)
+                for workload in workloads
+            ):
+                raise ValueError(f"bridge {ordinal} Spatial workload is invalid")
             if bridge["session_ordinal"] != ordinal:
                 raise ValueError(f"bridge {ordinal} session ordinal is invalid")
             command = bridge["engine_command"]

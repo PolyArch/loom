@@ -81,8 +81,8 @@ LoomRiscvDeploymentWorkload::LoomRiscvDeploymentWorkload(const Params &params)
              "Loom dispatch target %d has an empty entry symbol", ordinal);
     fatal_if(params.target_launch_sizes[ordinal] == 0,
              "Loom dispatch target %d has an empty Spatial launch", ordinal);
-    auto [image, inserted] = imageByCpu.try_emplace(
-        params.target_cpu_ids[ordinal], imageOrdinal);
+    auto [image, inserted] =
+        imageByCpu.try_emplace(params.target_cpu_ids[ordinal], imageOrdinal);
     fatal_if(!inserted && image->second != imageOrdinal,
              "Loom dispatch targets for CPU id %d use different images",
              params.target_cpu_ids[ordinal]);
@@ -199,18 +199,23 @@ LoomRiscvDeploymentWorkload::symtab(ThreadContext *context) {
   return bootloaderSymtab;
 }
 
-bool LoomRiscvDeploymentWorkload::dispatch(std::uint64_t targetOrdinal,
-                                           Addr completionAddress,
-                                           Addr invocationAddress,
-                                           std::uint64_t invocationSize) {
+LoomRiscvDeploymentWorkload::DispatchState
+LoomRiscvDeploymentWorkload::dispatch(std::uint64_t targetOrdinal,
+                                      Addr completionAddress,
+                                      Addr invocationAddress,
+                                      std::uint64_t invocationSize) {
   if (targetOrdinal >= targets.size() ||
       activeTargets[targetOrdinal] != noActiveTarget ||
       ((invocationAddress == 0) != (invocationSize == 0)))
-    return false;
+    return DispatchState::Invalid;
   const Target &target = targets[targetOrdinal];
   ThreadContext *context = contextForCpu(target.cpuId);
-  if (!context || context->status() == ThreadContext::Active)
-    return false;
+  if (!context)
+    return DispatchState::Invalid;
+  if (context->status() == ThreadContext::Active)
+    return DispatchState::Busy;
+  if (context->status() != ThreadContext::Suspended)
+    return DispatchState::Invalid;
   context->getIsaPtr()->resetThread();
   context->pcState(symbolAddress(
       instructionImages[target.imageOrdinal]->symtab(), target.entrySymbol));
@@ -223,7 +228,7 @@ bool LoomRiscvDeploymentWorkload::dispatch(std::uint64_t targetOrdinal,
   context->setReg(RiscvISA::int_reg::A5, invocationSize);
   activeTargets[targetOrdinal] = target.cpuId;
   context->activate();
-  return true;
+  return DispatchState::Started;
 }
 
 LoomRiscvDeploymentWorkload::CompletionState

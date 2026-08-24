@@ -164,13 +164,20 @@ void nativeInvalidLogicalThreadExtent() {
 
 std::uint64_t nativeLogicalChannelCreate(std::uint64_t receiverCount) {
   if (!activeExecution || receiverCount == 0 ||
-      receiverCount > std::numeric_limits<std::size_t>::max()) {
+      receiverCount > std::numeric_limits<std::uint32_t>::max()) {
     recordExecutionError(
         "logical channel create has an invalid receiver count");
     return 0;
   }
   NativeExecutionContext::LogicalChannel channel;
-  channel.receiverCursors.resize(static_cast<std::size_t>(receiverCount));
+  auto sequence = loom::runtime::OrderedChannelSequence::create(
+      std::numeric_limits<std::uint64_t>::max(),
+      static_cast<std::uint32_t>(receiverCount));
+  if (!sequence) {
+    recordExecutionError(llvm::toString(sequence.takeError()));
+    return 0;
+  }
+  channel.sequence.emplace(std::move(*sequence));
   activeExecution->logicalChannels.push_back(std::move(channel));
   return activeExecution->logicalChannels.size();
 }
@@ -184,9 +191,11 @@ void nativeLogicalChannelSend(std::uint64_t handle, const void *base,
     return;
   }
   auto &channel = activeExecution->logicalChannels[handle - 1];
-  std::vector<std::uint8_t> message(static_cast<std::size_t>(byteCount));
-  std::memcpy(message.data(), base, message.size());
-  channel.messages.push_back(std::move(message));
+  auto published = channel.sequence->publish(
+      llvm::ArrayRef<std::uint8_t>(static_cast<const std::uint8_t *>(base),
+                                   static_cast<std::size_t>(byteCount)));
+  if (!published)
+    recordExecutionError(llvm::toString(published.takeError()));
 }
 
 void nativeLogicalChannelReceive(std::uint64_t handle,
@@ -199,19 +208,29 @@ void nativeLogicalChannelReceive(std::uint64_t handle,
     return;
   }
   auto &channel = activeExecution->logicalChannels[handle - 1];
-  if (receiverOrdinal >= channel.receiverCursors.size()) {
+  if (!channel.sequence ||
+      receiverOrdinal >= channel.sequence->consumerCount()) {
     recordExecutionError("logical channel receive has an invalid endpoint");
     return;
   }
-  std::uint64_t &cursor = channel.receiverCursors[receiverOrdinal];
-  if (cursor >= channel.messages.size() ||
-      channel.messages[cursor].size() != byteCount) {
+  auto received =
+      channel.sequence->reserve(static_cast<std::uint32_t>(receiverOrdinal));
+  if (!received) {
+    recordExecutionError(llvm::toString(received.takeError()));
+    return;
+  }
+  if (received->kind != loom::runtime::OrderedChannelReceiveKind::Message ||
+      received->payload.size() != byteCount) {
+    if (received->kind == loom::runtime::OrderedChannelReceiveKind::Message)
+      llvm::consumeError(channel.sequence->cancel(
+          static_cast<std::uint32_t>(receiverOrdinal), received->sequence));
     recordExecutionError("logical channel receive has no matching message");
     return;
   }
-  std::memcpy(base, channel.messages[cursor].data(),
-              channel.messages[cursor].size());
-  ++cursor;
+  std::memcpy(base, received->payload.data(), received->payload.size());
+  if (llvm::Error error = channel.sequence->commit(
+          static_cast<std::uint32_t>(receiverOrdinal), received->sequence))
+    recordExecutionError(llvm::toString(std::move(error)));
 }
 
 void *nativeRuntimeObject(std::uint64_t ordinal) {
@@ -1530,8 +1549,10 @@ llvm::Error runInstrumentedExecution(
     return executionFailed(*capture.error);
   for (const NativeExecutionContext::LogicalChannel &channel :
        capture.logicalChannels)
-    for (std::uint64_t cursor : channel.receiverCursors)
-      if (cursor != channel.messages.size())
+    for (std::uint32_t receiver = 0;
+         receiver != channel.sequence->consumerCount(); ++receiver)
+      if (channel.sequence->nextReceiveSequence(receiver) !=
+          channel.sequence->nextSendSequence())
         return executionFailed(
             "logical channel endpoint did not consume its complete sequence");
   if (workloadCapture) {

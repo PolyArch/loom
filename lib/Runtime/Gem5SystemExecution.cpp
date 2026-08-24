@@ -242,7 +242,7 @@ renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.9");
+    json.attribute("schema", "loom.gem5_system_projection.10");
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
@@ -383,6 +383,12 @@ renderProjection(const Gem5SystemFacts &facts,
           json.attributeArray("execution_context_keys", [&] {
             for (std::size_t launchOrdinal : session.launchOrdinals)
               json.value(executionContextKeys[launchOrdinal]);
+          });
+          json.attributeArray("spatial_workloads", [&] {
+            for (std::size_t launchOrdinal : session.launchOrdinals)
+              json.value(
+                  formatArtifactIdentityHex(facts.spatialLaunches[launchOrdinal]
+                                                .spatialWorkload.artifact));
           });
           json.attribute("pio_address", session.bridge.pioAddress);
           json.attribute("pio_size", session.bridge.pioSize);

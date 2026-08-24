@@ -121,7 +121,7 @@ struct SpatialSessionEntry final {
 };
 
 struct ChannelReservation final {
-  std::uint64_t address = 0;
+  std::uint64_t channelOrdinal = 0;
   std::uint32_t consumerOrdinal = 0;
   std::uint64_t sequence = 0;
 };
@@ -129,6 +129,23 @@ struct ChannelReservation final {
 struct ChannelSequenceState final {
   loom::runtime::OrderedChannelSequence sequence;
   std::map<std::string, std::uint32_t> consumerOrdinals;
+};
+
+struct PendingChannelPublication final {
+  std::uint64_t channelOrdinal = 0;
+  std::vector<std::vector<std::uint8_t>> payloads;
+  std::size_t nextPayload = 0;
+};
+
+struct PendingLaunchCompletion final {
+  std::vector<PendingChannelPublication> channelPublications;
+  std::vector<ChannelReservation> channelReservations;
+  std::vector<loom::sim::SpatialInvocationMemoryWrite> invocationWrites;
+  std::vector<std::uint8_t> completionResult;
+  std::uint64_t completionDelay = 0;
+  std::uint64_t requestId = 0;
+  bool invocationDelayApplied = false;
+  bool retired = false;
 };
 
 llvm::Expected<loom::ArtifactRootReference>
@@ -423,7 +440,7 @@ channelConsumerKey(const loom::sim::ImportedSpatialSimulationWorkload &workload,
   if (!spatial)
     return invalid("channel consumer key lost its Spatial workload");
   std::string key;
-  appendChannelKeyU64(key, input.address);
+  appendChannelKeyU64(key, input.channelOrdinal);
   appendChannelKeyU64(key, spatial->launchRef.rootThreadLaunch.entity.value());
   appendChannelKeyU64(key, spatial->launchRef.staticGraphLaunch.entity.value());
   appendChannelKeyU64(key, input.consumerStreamInputOrdinal);
@@ -433,12 +450,11 @@ channelConsumerKey(const loom::sim::ImportedSpatialSimulationWorkload &workload,
   return key;
 }
 
-llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> bindChannelInputs(
-    int connection, std::uint64_t sequence,
+llvm::Expected<std::optional<loom::sim::CanonicalSimulationRuntimeInput>>
+bindChannelInputs(
     const loom::runtime::Gem5SpatialChannelProjection &projection,
     const loom::sim::ImportedSpatialSimulationWorkload &workload,
     const loom::sim::CanonicalSimulationRuntimeInput &runtimeInput,
-    std::uint64_t &requestId,
     std::map<std::uint64_t, ChannelSequenceState> &channelSequences,
     std::vector<ChannelReservation> &reservations) {
   const auto *base = runtimeInput.spatial();
@@ -466,7 +482,7 @@ llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> bindChannelInputs(
        projection.inputs) {
     if (channel.consumerStreamInputOrdinal >= draft.runtimeStreams.size())
       return invalid("channel projection names an absent consumer input");
-    auto state = channelSequences.find(channel.address);
+    auto state = channelSequences.find(channel.channelOrdinal);
     if (state == channelSequences.end())
       return invalid("channel input has no ordered sequence state");
     auto key = channelConsumerKey(workload, channel);
@@ -479,13 +495,11 @@ llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> bindChannelInputs(
     if (!received)
       return received.takeError();
     if (received->kind == loom::runtime::OrderedChannelReceiveKind::WouldBlock)
-      return llvm::createStringError(std::errc::timed_out,
-                                     "ordered channel input is waiting for "
-                                     "the next SendSeq");
+      return std::optional<loom::sim::CanonicalSimulationRuntimeInput>{};
     if (received->kind == loom::runtime::OrderedChannelReceiveKind::Closed)
       return invalid("ordered channel input reached channel close");
     reservations.push_back(
-        {channel.address, branch->second, received->sequence});
+        {channel.channelOrdinal, branch->second, received->sequence});
     auto stream = loom::sim::decodeSpatialChannelStream(
         received->payload, *view, spatialWorkload->launchRef,
         channel.consumerStreamInputOrdinal, draft.memoryObjects.size());
@@ -494,20 +508,42 @@ llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> bindChannelInputs(
     draft.runtimeStreams[channel.consumerStreamInputOrdinal] =
         std::move(*stream);
   }
-  return loom::sim::finalizeSimulationRuntimeInput(draft, workload.workload,
-                                                   *view);
+  auto finalized = loom::sim::finalizeSimulationRuntimeInput(
+      draft, workload.workload, *view);
+  if (!finalized)
+    return finalized.takeError();
+  return std::optional<loom::sim::CanonicalSimulationRuntimeInput>(
+      std::move(*finalized));
 }
 
-llvm::Error publishChannelOutputs(
-    int connection, std::uint64_t sequence,
+llvm::Expected<bool> settleChannelReservations(
+    std::map<std::uint64_t, ChannelSequenceState> &channelSequences,
+    std::vector<ChannelReservation> &reservations, bool commit) {
+  const bool stateAdvanced = commit && !reservations.empty();
+  for (auto it = reservations.rbegin(); it != reservations.rend(); ++it) {
+    auto state = channelSequences.find(it->channelOrdinal);
+    if (state == channelSequences.end())
+      return invalid("channel reservation lost its sequence state");
+    llvm::Error error =
+        commit
+            ? state->second.sequence.commit(it->consumerOrdinal, it->sequence)
+            : state->second.sequence.cancel(it->consumerOrdinal, it->sequence);
+    if (error)
+      return std::move(error);
+  }
+  reservations.clear();
+  return stateAdvanced;
+}
+
+llvm::Expected<std::vector<PendingChannelPublication>>
+prepareChannelPublications(
     const loom::runtime::Gem5SpatialChannelProjection &projection,
     const loom::sim::SpatialEngineBoundaryResult &result,
     const loom::sim::ImportedSpatialSimulationWorkload &workload,
     const loom::sim::CanonicalSimulationRuntimeInput &runtimeInput,
-    std::uint64_t &requestId,
     std::map<std::uint64_t, ChannelSequenceState> &channelSequences) {
   if (projection.outputs.empty())
-    return llvm::Error::success();
+    return std::vector<PendingChannelPublication>{};
   if (!std::holds_alternative<loom::sim::RetiredExecution>(result.terminal))
     return invalid("channel producer did not retire");
   const auto *spatialWorkload = workload.workload.spatial();
@@ -517,6 +553,7 @@ llvm::Error publishChannelOutputs(
   auto view = workload.dataflow.view();
   if (!view)
     return view.takeError();
+  std::map<std::uint64_t, std::vector<std::vector<std::uint8_t>>> payloads;
   for (const loom::runtime::Gem5SpatialChannelOutput &channel :
        projection.outputs) {
     const auto found =
@@ -528,19 +565,7 @@ llvm::Error publishChannelOutputs(
         spatialWorkload->observableContract.streamOutputs.begin(), found));
     if (observation >= result.functionalObservations.streamOutputs.size())
       return invalid("channel producer omitted its selected stream output");
-    auto encodedStream = loom::sim::encodeSpatialChannelStream(
-        result.functionalObservations.streamOutputs[observation], *view,
-        spatialWorkload->launchRef, channel.producerStreamOutputOrdinal,
-        spatialRuntime->memoryObjects.size());
-    if (!encodedStream)
-      return encodedStream.takeError();
-    if (encodedStream->empty() ||
-        encodedStream->size() >
-            channel.capacityBytes -
-                loom::runtime::gem5SpatialChannelBufferHeaderBytes)
-      return invalid("channel stream exceeds its selected buffer");
-    auto state = channelSequences.find(channel.address);
-    if (state == channelSequences.end())
+    if (channelSequences.find(channel.channelOrdinal) == channelSequences.end())
       return invalid("channel output has no ordered sequence state");
     const loom::sim::CanonicalStreamSequence &stream =
         result.functionalObservations.streamOutputs[observation];
@@ -568,42 +593,46 @@ llvm::Error publishChannelOutputs(
             spatialRuntime->memoryObjects.size());
         if (!encodedToken)
           return encodedToken.takeError();
-        auto published = state->second.sequence.publish(*encodedToken);
-        if (!published)
-          return published.takeError();
+        payloads[channel.channelOrdinal].push_back(std::move(*encodedToken));
       }
     }
-    const std::size_t payloadBytes = encodedStream->size();
-    loom::runtime::Gem5BridgeMemoryRequest payload{
-        loom::runtime::Gem5BridgeMemoryOperation::Write,
-        0,
-        requestId++,
-        channel.address + loom::runtime::gem5SpatialChannelBufferHeaderBytes,
-        payloadBytes,
-        std::move(*encodedStream)};
-    auto payloadResponse =
-        transactMemory(connection, sequence,
-                       loom::runtime::Gem5BridgeMessageKind::ChannelTransfer,
-                       std::move(payload));
-    if (!payloadResponse)
-      return payloadResponse.takeError();
-    const auto header =
-        loom::runtime::encodeGem5SpatialChannelBufferHeader(payloadBytes);
-    loom::runtime::Gem5BridgeMemoryRequest commit{
-        loom::runtime::Gem5BridgeMemoryOperation::Write,
-        0,
-        requestId++,
-        channel.address,
-        header.size(),
-        std::vector<std::uint8_t>(header.begin(), header.end())};
-    auto commitResponse =
-        transactMemory(connection, sequence,
-                       loom::runtime::Gem5BridgeMessageKind::ChannelTransfer,
-                       std::move(commit));
-    if (!commitResponse)
-      return commitResponse.takeError();
   }
-  return llvm::Error::success();
+  std::vector<PendingChannelPublication> publications;
+  publications.reserve(payloads.size());
+  for (auto &[channelOrdinal, channelPayloads] : payloads) {
+    if (channelPayloads.empty())
+      return invalid("channel output produced no message payload");
+    publications.push_back({channelOrdinal, std::move(channelPayloads), 0});
+  }
+  return publications;
+}
+
+struct ChannelPublicationProgress final {
+  bool complete = false;
+  bool advanced = false;
+};
+
+llvm::Expected<ChannelPublicationProgress> publishAvailableChannelOutputs(
+    std::vector<PendingChannelPublication> &publications,
+    std::map<std::uint64_t, ChannelSequenceState> &channelSequences) {
+  ChannelPublicationProgress progress{true, false};
+  for (PendingChannelPublication &publication : publications) {
+    auto state = channelSequences.find(publication.channelOrdinal);
+    if (state == channelSequences.end())
+      return invalid("pending channel output lost its sequence state");
+    while (publication.nextPayload < publication.payloads.size() &&
+           state->second.sequence.canPublish(1)) {
+      auto published = state->second.sequence.publish(
+          publication.payloads[publication.nextPayload]);
+      if (!published)
+        return published.takeError();
+      ++publication.nextPayload;
+      progress.advanced = true;
+    }
+    if (publication.nextPayload != publication.payloads.size())
+      progress.complete = false;
+  }
+  return progress;
 }
 
 llvm::Error publishInvocationResults(
@@ -1135,25 +1164,25 @@ int main(int argc, char **argv) {
   std::map<std::uint64_t, std::set<std::string>> channelConsumerKeys;
   for (const SpatialSessionEntry &entry : entries) {
     for (const auto &output : entry.channels.outputs) {
-      auto [position, inserted] =
-          channelCapacities.emplace(output.address, output.capacityBytes);
-      if (!inserted && position->second != output.capacityBytes)
+      auto [position, inserted] = channelCapacities.emplace(
+          output.channelOrdinal, output.capacityMessages);
+      if (!inserted && position->second != output.capacityMessages)
         return report(invalid("ordered channel outputs disagree on capacity"));
     }
     for (const auto &input : entry.channels.inputs) {
-      auto [position, inserted] =
-          channelCapacities.emplace(input.address, input.capacityBytes);
-      if (!inserted && position->second != input.capacityBytes)
+      auto [position, inserted] = channelCapacities.emplace(
+          input.channelOrdinal, input.capacityMessages);
+      if (!inserted && position->second != input.capacityMessages)
         return report(invalid("ordered channel inputs disagree on capacity"));
       auto key = channelConsumerKey(entry.workload, input);
       if (!key)
         return report(key.takeError());
-      channelConsumerKeys[input.address].insert(std::move(*key));
+      channelConsumerKeys[input.channelOrdinal].insert(std::move(*key));
     }
   }
   std::map<std::uint64_t, ChannelSequenceState> channelSequences;
-  for (const auto &[address, capacityBytes] : channelCapacities) {
-    const auto keys = channelConsumerKeys.find(address);
+  for (const auto &[channelOrdinal, capacityMessages] : channelCapacities) {
+    const auto keys = channelConsumerKeys.find(channelOrdinal);
     if (keys == channelConsumerKeys.end() || keys->second.empty())
       return report(invalid("ordered channel has no consumer branch"));
     if (keys->second.size() > std::numeric_limits<std::uint32_t>::max())
@@ -1162,23 +1191,21 @@ int main(int argc, char **argv) {
         static_cast<std::uint32_t>(keys->second.size());
     if (consumers == 0)
       return report(invalid("ordered channel has no consumer branch"));
-    if (capacityBytes <= loom::runtime::gem5SpatialChannelBufferHeaderBytes)
-      return report(invalid("ordered channel capacity has no payload space"));
     auto sequence = loom::runtime::OrderedChannelSequence::create(
-        capacityBytes - loom::runtime::gem5SpatialChannelBufferHeaderBytes,
-        consumers);
+        capacityMessages, consumers);
     if (!sequence)
       return report(sequence.takeError());
-    channelSequences.emplace(address,
+    channelSequences.emplace(channelOrdinal,
                              ChannelSequenceState{std::move(*sequence), {}});
-    auto &ordinals = channelSequences.find(address)->second.consumerOrdinals;
+    auto &ordinals =
+        channelSequences.find(channelOrdinal)->second.consumerOrdinals;
     std::uint32_t ordinal = 0;
     for (const std::string &key : keys->second)
       ordinals.emplace(key, ordinal++);
   }
   for (const SpatialSessionEntry &entry : entries) {
     for (const auto &input : entry.channels.inputs) {
-      auto state = channelSequences.find(input.address);
+      auto state = channelSequences.find(input.channelOrdinal);
       if (state == channelSequences.end())
         return report(invalid("ordered channel input has no sequence state"));
       auto key = channelConsumerKey(entry.workload, input);
@@ -1197,50 +1224,119 @@ int main(int argc, char **argv) {
   struct BridgeConnection final {
     int descriptor = -1;
     std::uint64_t nextSequence = 0;
+    std::optional<loom::runtime::Gem5BridgeMessage> pendingMessage;
+    std::optional<PendingLaunchCompletion> pendingCompletion;
+    std::uint64_t pendingChannelGeneration = 0;
+
+    bool pending() const {
+      return pendingMessage.has_value() || pendingCompletion.has_value();
+    }
   };
   std::optional<int> serverDescriptor(*server);
   std::vector<BridgeConnection> connections;
   connections.reserve(static_cast<std::size_t>(bridgeCount));
   std::uint64_t acceptedConnections = 0;
+  std::uint64_t channelGeneration = 0;
+  const auto completeLaunch =
+      [&](BridgeConnection &bridge,
+          PendingLaunchCompletion &pending) -> llvm::Expected<bool> {
+    auto consumed = settleChannelReservations(
+        channelSequences, pending.channelReservations, pending.retired);
+    if (!consumed)
+      return consumed.takeError();
+    if (*consumed)
+      ++channelGeneration;
+    if (!pending.retired && !pending.channelPublications.empty())
+      return invalid("non-retired launch retained channel output");
+    auto publication = publishAvailableChannelOutputs(
+        pending.channelPublications, channelSequences);
+    if (!publication)
+      return publication.takeError();
+    if (publication->advanced)
+      ++channelGeneration;
+    if (!publication->complete)
+      return false;
+    if (llvm::Error error = publishInvocationResults(
+            bridge.descriptor, bridge.nextSequence, pending.invocationWrites,
+            pending.completionDelay, pending.requestId))
+      return std::move(error);
+    const loom::runtime::Gem5BridgeCompletion completion{
+        pending.invocationDelayApplied ? 0 : pending.completionDelay,
+        pending.retired ? 0U : 1U, std::move(pending.completionResult)};
+    if (llvm::Error error = writeMessage(
+            bridge.descriptor,
+            {loom::runtime::Gem5BridgeMessageKind::Completion,
+             bridge.nextSequence,
+             loom::runtime::encodeGem5BridgeCompletion(completion)}))
+      return std::move(error);
+    ++bridge.nextSequence;
+    return true;
+  };
   while (serverDescriptor || !connections.empty()) {
-    std::vector<pollfd> descriptors;
-    descriptors.reserve(connections.size() + (serverDescriptor ? 1 : 0));
-    if (serverDescriptor)
-      descriptors.push_back({*serverDescriptor, POLLIN, 0});
-    for (const BridgeConnection &connection : connections)
-      descriptors.push_back({connection.descriptor, POLLIN, 0});
-    int readyCount = 0;
-    do {
-      readyCount = ::poll(descriptors.data(), descriptors.size(), -1);
-    } while (readyCount < 0 && errno == EINTR);
-    if (readyCount < 0)
-      return report(invalid("cannot wait for a bridge message"));
-
-    const std::size_t connectionOffset = serverDescriptor ? 1 : 0;
-    if (serverDescriptor && (descriptors.front().revents & POLLIN) != 0) {
-      const int connection = ::accept(*serverDescriptor, nullptr, nullptr);
-      if (connection < 0)
-        return report(invalid("cannot accept a bridge connection"));
-      connections.push_back({connection, 0});
-      ++acceptedConnections;
-      if (acceptedConnections == bridgeCount) {
-        ::close(*serverDescriptor);
-        serverDescriptor.reset();
-      }
-      continue;
-    }
-
     std::optional<std::size_t> readyConnection;
+    bool retryingPendingMessage = false;
     for (std::size_t ordinal = 0; ordinal != connections.size(); ++ordinal) {
-      const short events = descriptors[ordinal + connectionOffset].revents;
-      if ((events & POLLIN) != 0) {
+      const BridgeConnection &connection = connections[ordinal];
+      if (connection.pending() &&
+          connection.pendingChannelGeneration < channelGeneration) {
         readyConnection = ordinal;
+        retryingPendingMessage = true;
         break;
       }
-      if ((events & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
-        ::close(connections[ordinal].descriptor);
-        connections.erase(connections.begin() + ordinal);
-        break;
+    }
+    if (!readyConnection) {
+      if (!serverDescriptor && !connections.empty() &&
+          llvm::all_of(connections, [](const BridgeConnection &connection) {
+            return connection.pending();
+          }))
+        return report(llvm::createStringError(
+            std::errc::timed_out,
+            "ordered channel session reached a closed wait set"));
+
+      std::vector<pollfd> descriptors;
+      descriptors.reserve(connections.size() + (serverDescriptor ? 1 : 0));
+      if (serverDescriptor)
+        descriptors.push_back({*serverDescriptor, POLLIN, 0});
+      for (const BridgeConnection &connection : connections)
+        descriptors.push_back({connection.descriptor, POLLIN, 0});
+      int readyCount = 0;
+      do {
+        readyCount = ::poll(descriptors.data(), descriptors.size(), -1);
+      } while (readyCount < 0 && errno == EINTR);
+      if (readyCount < 0)
+        return report(invalid("cannot wait for a bridge message"));
+
+      const std::size_t connectionOffset = serverDescriptor ? 1 : 0;
+      if (serverDescriptor && (descriptors.front().revents & POLLIN) != 0) {
+        const int connection = ::accept(*serverDescriptor, nullptr, nullptr);
+        if (connection < 0)
+          return report(invalid("cannot accept a bridge connection"));
+        connections.push_back({connection, 0, std::nullopt, std::nullopt, 0});
+        ++acceptedConnections;
+        if (acceptedConnections == bridgeCount) {
+          ::close(*serverDescriptor);
+          serverDescriptor.reset();
+        }
+        continue;
+      }
+
+      for (std::size_t ordinal = 0; ordinal != connections.size(); ++ordinal) {
+        const short events = descriptors[ordinal + connectionOffset].revents;
+        if ((events & POLLIN) != 0) {
+          if (connections[ordinal].pending())
+            return report(invalid(
+                "bridge issued a second launch before channel readiness"));
+          readyConnection = ordinal;
+          break;
+        }
+        if ((events & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+          if (connections[ordinal].pending())
+            return report(
+                invalid("bridge disconnected with a pending channel launch"));
+          ::close(connections[ordinal].descriptor);
+          connections.erase(connections.begin() + ordinal);
+          break;
+        }
       }
     }
     if (!readyConnection)
@@ -1250,10 +1346,30 @@ int main(int argc, char **argv) {
       return report(invalid("bridge exceeded its invocation limit"));
     const int connection = bridge.descriptor;
     const std::uint64_t sequence = bridge.nextSequence;
-    auto message = readMessage(connection);
-    if (!message) {
-      ::close(connection);
-      return report(message.takeError());
+    std::optional<loom::runtime::Gem5BridgeMessage> message;
+    if (retryingPendingMessage) {
+      if (bridge.pendingCompletion) {
+        auto completed = completeLaunch(bridge, *bridge.pendingCompletion);
+        if (!completed) {
+          ::close(connection);
+          return report(completed.takeError());
+        }
+        if (!*completed) {
+          bridge.pendingChannelGeneration = channelGeneration;
+          continue;
+        }
+        bridge.pendingCompletion.reset();
+        continue;
+      }
+      message = std::move(bridge.pendingMessage);
+      bridge.pendingMessage.reset();
+    } else {
+      auto received = readMessage(connection);
+      if (!received) {
+        ::close(connection);
+        return report(received.takeError());
+      }
+      message.emplace(std::move(*received));
     }
     loom::runtime::Gem5SpatialLaunchEnvelope launch;
     std::string launchDiagnostic;
@@ -1306,30 +1422,30 @@ int main(int argc, char **argv) {
         invocationRuntime ? *invocationRuntime : *entry.staticRuntime;
     std::uint64_t requestId = 0;
     std::vector<ChannelReservation> channelReservations;
-    const auto settleChannelReservations = [&](bool commit) -> llvm::Error {
-      for (auto it = channelReservations.rbegin();
-           it != channelReservations.rend(); ++it) {
-        auto state = channelSequences.find(it->address);
-        if (state == channelSequences.end())
-          return invalid("channel reservation lost its sequence state");
-        llvm::Error error = commit ? state->second.sequence.commit(
-                                         it->consumerOrdinal, it->sequence)
-                                   : state->second.sequence.cancel(
-                                         it->consumerOrdinal, it->sequence);
-        if (error)
-          return error;
-      }
-      channelReservations.clear();
-      return llvm::Error::success();
+    const auto cancelReservations = [&]() -> llvm::Error {
+      auto cancelled = settleChannelReservations(channelSequences,
+                                                 channelReservations, false);
+      return cancelled ? llvm::Error::success() : cancelled.takeError();
     };
-    auto runtime = bindChannelInputs(
-        connection, message->sequence, entry.channels, entry.workload,
-        baseRuntime, requestId, channelSequences, channelReservations);
-    if (!runtime) {
-      llvm::consumeError(settleChannelReservations(false));
+    auto boundRuntime =
+        bindChannelInputs(entry.channels, entry.workload, baseRuntime,
+                          channelSequences, channelReservations);
+    if (!boundRuntime) {
+      llvm::consumeError(cancelReservations());
       ::close(connection);
-      return report(runtime.takeError());
+      return report(boundRuntime.takeError());
     }
+    if (!*boundRuntime) {
+      if (llvm::Error error = cancelReservations()) {
+        ::close(connection);
+        return report(std::move(error));
+      }
+      bridge.pendingMessage = std::move(message);
+      bridge.pendingChannelGeneration = channelGeneration;
+      continue;
+    }
+    std::optional<loom::sim::CanonicalSimulationRuntimeInput> runtime =
+        std::move(*boundRuntime);
 #if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
     auto result = runDfg(preparedExecutions[entry.preparedOrdinal],
                          entry.workload, *runtime);
@@ -1347,7 +1463,7 @@ int main(int argc, char **argv) {
       externallyServicedThrough = externalMemoryProvider->lastCoordinate();
 #endif
     if (!result) {
-      llvm::consumeError(settleChannelReservations(false));
+      llvm::consumeError(cancelReservations());
       ::close(connection);
       std::string diagnostic = llvm::toString(result.takeError());
       const auto *spatial = entry.workload.workload.spatial();
@@ -1372,29 +1488,23 @@ int main(int argc, char **argv) {
     auto encoded = loom::sim::encodeSpatialEngineBoundaryResult(
         *result, entry.workload, *runtime);
     if (!encoded) {
-      llvm::consumeError(settleChannelReservations(false));
+      llvm::consumeError(cancelReservations());
       ::close(connection);
       return report(encoded.takeError());
     }
-    if (llvm::Error error = publishChannelOutputs(
-            connection, message->sequence, entry.channels, *result,
-            entry.workload, *runtime, requestId, channelSequences)) {
-      llvm::consumeError(settleChannelReservations(false));
-      ::close(connection);
-      return report(std::move(error));
-    }
     auto delay = completionDelay(*result, externallyServicedThrough);
     if (!delay) {
-      llvm::consumeError(settleChannelReservations(false));
+      llvm::consumeError(cancelReservations());
       ::close(connection);
       return report(delay.takeError());
     }
+    std::vector<loom::sim::SpatialInvocationMemoryWrite> invocationWrites;
     bool invocationDelayApplied = false;
     if (invocation) {
       auto writes = loom::sim::projectSpatialInvocationResultWrites(
           *invocation, entry.workload, result->functionalObservations);
       if (!writes) {
-        llvm::consumeError(settleChannelReservations(false));
+        llvm::consumeError(cancelReservations());
         ::close(connection);
         return report(writes.takeError());
       }
@@ -1403,23 +1513,10 @@ int main(int argc, char **argv) {
         *writes = externalMemoryProvider->retainUncommittedWrites(*writes);
 #endif
       invocationDelayApplied = !writes->empty();
-      if (llvm::Error error = publishInvocationResults(
-              connection, message->sequence, *writes, *delay, requestId)) {
-        llvm::consumeError(settleChannelReservations(false));
-        ::close(connection);
-        return report(std::move(error));
-      }
+      invocationWrites = std::move(*writes);
     }
-    if (llvm::Error error = settleChannelReservations(
-            std::holds_alternative<loom::sim::RetiredExecution>(
-                result->terminal))) {
-      ::close(connection);
-      return report(std::move(error));
-    }
-    const std::uint32_t status =
-        std::holds_alternative<loom::sim::RetiredExecution>(result->terminal)
-            ? 0
-            : 1;
+    const bool retired =
+        std::holds_alternative<loom::sim::RetiredExecution>(result->terminal);
     std::optional<loom::runtime::SpatialInvocationRuntimeInputSnapshot>
         runtimeSnapshot;
     if (invocation)
@@ -1434,21 +1531,34 @@ int main(int argc, char **argv) {
             {entry.sessionEntryOrdinal, launch.invocation,
              std::move(runtimeSnapshot), std::move(*encoded)});
     if (completionResult.empty()) {
+      llvm::consumeError(cancelReservations());
       ::close(connection);
       return report(invalid("cannot encode Spatial invocation result"));
     }
-    const loom::runtime::Gem5BridgeCompletion completion{
-        invocationDelayApplied ? 0 : *delay, status,
-        std::move(completionResult)};
-    if (llvm::Error error = writeMessage(
-            connection,
-            {loom::runtime::Gem5BridgeMessageKind::Completion,
-             message->sequence,
-             loom::runtime::encodeGem5BridgeCompletion(completion)})) {
+    auto channelPublications = prepareChannelPublications(
+        entry.channels, *result, entry.workload, *runtime, channelSequences);
+    if (!channelPublications) {
+      llvm::consumeError(cancelReservations());
       ::close(connection);
-      return report(std::move(error));
+      return report(channelPublications.takeError());
     }
-    ++bridge.nextSequence;
+    PendingLaunchCompletion pending{std::move(*channelPublications),
+                                    std::move(channelReservations),
+                                    std::move(invocationWrites),
+                                    std::move(completionResult),
+                                    *delay,
+                                    requestId,
+                                    invocationDelayApplied,
+                                    retired};
+    auto completed = completeLaunch(bridge, pending);
+    if (!completed) {
+      ::close(connection);
+      return report(completed.takeError());
+    }
+    if (!*completed) {
+      bridge.pendingCompletion.emplace(std::move(pending));
+      bridge.pendingChannelGeneration = channelGeneration;
+    }
   }
   for (const BridgeConnection &connection : connections)
     ::close(connection.descriptor);

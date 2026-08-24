@@ -108,6 +108,8 @@ struct PendingSpatialLaunch final {
 struct PendingChannelBuffer final {
   std::size_t producerLaunch = 0;
   std::uint64_t producerStreamOutputOrdinal = 0;
+  std::uint64_t capacityMessages = 0;
+  std::uint64_t stagingCapacityBytes = 0;
   std::uint64_t address = 0;
 };
 
@@ -115,6 +117,64 @@ llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
       "gem5_system_execution_invalid: " + message);
+}
+
+llvm::Error incorporateMessageEndpointCapacity(
+    const fabric::FabricSystemRootView &system,
+    const fabric::FabricTransportEndpointRef &endpoint,
+    std::optional<std::uint64_t> &capacity) {
+  const auto *service =
+      std::get_if<fabric::SystemServiceEndpointRef>(&endpoint.owner.payload);
+  if (!service)
+    return llvm::Error::success();
+  const fabric::CanonicalServiceCapabilitySet *capabilities =
+      system.serviceEndpointCapabilities(*service);
+  if (!capabilities)
+    return invalid("selected message endpoint has no capability set");
+  const fabric::CanonicalServiceCapabilityRecord *message = nullptr;
+  for (const auto &candidate : capabilities->capabilities()) {
+    if (candidate.kind() != dataflow::semantics::ServiceKind::MessageTransfer)
+      continue;
+    if (message)
+      return invalid("selected endpoint repeats MessageTransfer capability");
+    if (!std::holds_alternative<fabric::MessageTransferCapabilityDomain>(
+            candidate.domain()))
+      return invalid("MessageTransfer capability has the wrong domain");
+    message = &candidate;
+  }
+  if (!message)
+    return invalid("selected endpoint has no MessageTransfer capability");
+  const std::uint64_t outstanding = message->rate().maxOutstanding();
+  capacity = capacity ? std::min(*capacity, outstanding) : outstanding;
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::uint64_t> deriveSelectedMessageOutstandingCapacity(
+    const fabric::FabricSystemRootView &system,
+    const mapping::SystemTransferLegView &leg) {
+  std::optional<std::uint64_t> capacity;
+  if (llvm::Error error = incorporateMessageEndpointCapacity(
+          system, leg.rootEndpoint, capacity))
+    return std::move(error);
+  for (const mapping::SystemTransferRouteNodeView &node : leg.nodes) {
+    const fabric::FabricPhysicalTraversalView *traversal =
+        system.artifact().physicalTraversal(node.incomingTraversal);
+    if (!traversal)
+      return invalid("selected message route has an absent traversal");
+    for (const fabric::FabricTransportEndpointRef &endpoint :
+         traversal->sources)
+      if (llvm::Error error =
+              incorporateMessageEndpointCapacity(system, endpoint, capacity))
+        return std::move(error);
+    for (const fabric::FabricTransportEndpointRef &endpoint :
+         traversal->destinations)
+      if (llvm::Error error =
+              incorporateMessageEndpointCapacity(system, endpoint, capacity))
+        return std::move(error);
+  }
+  if (!capacity)
+    return invalid("selected message route has no service endpoint capacity");
+  return *capacity;
 }
 
 std::string bytesToString(llvm::ArrayRef<std::uint8_t> bytes) {
@@ -453,6 +513,7 @@ deriveFacts(const EvaluationRequest &request,
   if (!systemInputs)
     return systemInputs.takeError();
   const sim::ImportedSystemSimulationInputs &inputs = **systemInputs;
+  const Gem5SystemEngine engine = selectedEngine(request);
   if (inputs.deployment.reference() != subjects->first)
     return invalid("System workload names a foreign Deployment");
   auto binding = importGem5SimulationBinding(subjects->second, artifacts);
@@ -681,8 +742,13 @@ deriveFacts(const EvaluationRequest &request,
           return invalid("selected channel route omits a dynamic sink");
       }
 
+      auto capacity = deriveSelectedMessageOutstandingCapacity(*system, *leg);
+      if (!capacity)
+        return capacity.takeError();
+
       const std::size_t bufferOrdinal = channelBuffers.size();
-      channelBuffers.push_back({producerIndexed.index(), producer->ordinal, 0});
+      channelBuffers.push_back(
+          {producerIndexed.index(), producer->ordinal, *capacity, 0, 0});
       producerLaunch.channelOutputs.push_back(
           {producer->ordinal, bufferOrdinal});
       for (const DynamicSink &sink : dynamicSinks) {
@@ -723,7 +789,7 @@ deriveFacts(const EvaluationRequest &request,
     if (dynamicInvocation && !launchOp.getMemoryResults().empty())
       return Gem5SystemFactsOrUnsupported{
           UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    if (dynamicInvocation && selectedEngine(request) == Gem5SystemEngine::Rtl)
+    if (dynamicInvocation && engine == Gem5SystemEngine::Rtl)
       return Gem5SystemFactsOrUnsupported{
           UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
     sim::SpatialSimulationWorkload workloadDraft{pending.graph};
@@ -981,7 +1047,7 @@ deriveFacts(const EvaluationRequest &request,
     return dispatchAddressValue.takeError();
   const std::uint64_t dispatchAddress = *dispatchAddressValue;
   auto dispatchEndValue = checkedAdd(
-      dispatchAddress, kThreadDispatchApertureBytes, "Thread Dispatch");
+      dispatchAddress, gem5ThreadDispatchApertureBytes, "Thread Dispatch");
   if (!dispatchEndValue)
     return dispatchEndValue.takeError();
   if (memory->baseAddress < *dispatchEndValue && dispatchAddress < memoryEnd)
@@ -1167,17 +1233,32 @@ deriveFacts(const EvaluationRequest &request,
     launchAddresses.push_back(*address);
   }
 
-  for (const auto indexed : llvm::enumerate(channelBuffers)) {
-    auto address = reserveRuntimeRange(kSpatialChannelBufferBytes,
-                                       "gem5 Spatial channel buffer");
-    if (!address)
-      return address.takeError();
-    indexed.value().address = *address;
-    const std::string path = spatialChannelBufferPath(indexed.index());
-    runtimeImages.push_back({path, *address});
-    semanticInputs->push_back(
-        {path, std::string(gem5SpatialChannelBufferHeaderBytes, '\0'),
-         inputs.deployment.reference(), false});
+  if (engine == Gem5SystemEngine::Rtl) {
+    for (const auto indexed : llvm::enumerate(channelBuffers)) {
+      PendingChannelBuffer &buffer = indexed.value();
+      if (buffer.producerLaunch >= pendingLaunches.size())
+        return invalid("channel staging owner names an absent launch");
+      const fabric::AccCoreOccurrenceRef producerCore =
+          pendingLaunches[buffer.producerLaunch].accCore;
+      const auto bridge = llvm::find_if(bridges, [&](const auto &candidate) {
+        return candidate.first == producerCore;
+      });
+      if (bridge == bridges.end() || bridge->second.maximumMessageBytes <=
+                                         gem5SpatialChannelBufferHeaderBytes)
+        return Gem5SystemFactsOrUnsupported{
+            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+      buffer.stagingCapacityBytes = bridge->second.maximumMessageBytes;
+      auto address = reserveRuntimeRange(buffer.stagingCapacityBytes,
+                                         "gem5 RTL channel staging buffer");
+      if (!address)
+        return address.takeError();
+      buffer.address = *address;
+      const std::string path = spatialChannelBufferPath(indexed.index());
+      runtimeImages.push_back({path, *address});
+      semanticInputs->push_back(
+          {path, std::string(gem5SpatialChannelBufferHeaderBytes, '\0'),
+           inputs.deployment.reference(), false});
+    }
   }
 
   std::vector<Gem5SpatialLaunchProjection> spatialLaunches;
@@ -1214,8 +1295,7 @@ deriveFacts(const EvaluationRequest &request,
           return candidate.accCore == pending.accCore;
         });
     if (session == spatialBridgeSessions.end()) {
-      spatialBridgeSessions.push_back(
-          {pending.accCore, *selectedBridge, {}});
+      spatialBridgeSessions.push_back({pending.accCore, *selectedBridge, {}});
       session = std::prev(spatialBridgeSessions.end());
     } else if (!(session->bridge == *selectedBridge)) {
       return invalid("one AccCore selects inconsistent Spatial Bridges");
@@ -1259,25 +1339,26 @@ deriveFacts(const EvaluationRequest &request,
       if (producerWidth != consumerWidth)
         return invalid("Spatial channel changes token bit width");
       channelProjection.inputs.push_back(
-          {input.producerStreamOutputOrdinal,
-           input.consumerStreamInputOrdinal, buffer.address,
-           kSpatialChannelBufferBytes});
-      enginePlan.inputs.push_back(
-          {input.consumerStreamInputOrdinal,
-           static_cast<std::uint64_t>(std::distance(
-               producer.observableStreamOutputOrdinals.begin(), observation)),
-           producerWidth, buffer.address, kSpatialChannelBufferBytes});
+          {input.producerStreamOutputOrdinal, input.consumerStreamInputOrdinal,
+           static_cast<std::uint64_t>(input.buffer), buffer.capacityMessages});
+      if (engine == Gem5SystemEngine::Rtl)
+        enginePlan.inputs.push_back(
+            {input.consumerStreamInputOrdinal,
+             static_cast<std::uint64_t>(std::distance(
+                 producer.observableStreamOutputOrdinals.begin(), observation)),
+             producerWidth, buffer.address, buffer.stagingCapacityBytes});
     }
     channelProjection.outputs.reserve(pending.channelOutputs.size());
     for (const PendingChannelOutput &output : pending.channelOutputs) {
       if (output.buffer >= channelBuffers.size())
         return invalid("Spatial channel output names an absent buffer");
       const PendingChannelBuffer &buffer = channelBuffers[output.buffer];
-      channelProjection.outputs.push_back({output.producerStreamOutputOrdinal,
-                                           buffer.address,
-                                           kSpatialChannelBufferBytes});
-      enginePlan.outputs.push_back(
-          {buffer.address, kSpatialChannelBufferBytes});
+      channelProjection.outputs.push_back(
+          {output.producerStreamOutputOrdinal,
+           static_cast<std::uint64_t>(output.buffer), buffer.capacityMessages});
+      if (engine == Gem5SystemEngine::Rtl)
+        enginePlan.outputs.push_back(
+            {buffer.address, buffer.stagingCapacityBytes});
     }
     auto encodedProjection =
         encodeGem5SpatialChannelProjection(std::move(channelProjection));
@@ -1296,8 +1377,8 @@ deriveFacts(const EvaluationRequest &request,
     spatialLaunches.push_back(
         {pending.context, pending.fabric, pending.spatialMapping,
          pending.hardwareImplementation, *pending.spatialWorkload,
-         pending.spatialRuntimeInput,
-         std::move(channelPath), std::move(enginePlanPath),
+         pending.spatialRuntimeInput, std::move(channelPath),
+         std::move(enginePlanPath),
          std::vector<std::uint8_t>(launchBytes.begin(), launchBytes.end()),
          std::move(dispatch), bridgeSessionOrdinal});
     session = spatialBridgeSessions.begin() + bridgeSessionOrdinal;
@@ -1425,7 +1506,7 @@ deriveFacts(const EvaluationRequest &request,
   });
 
   return Gem5SystemFactsOrUnsupported{
-      Gem5SystemFacts{selectedEngine(request),
+      Gem5SystemFacts{engine,
                       inputs.deployment.reference(),
                       binding->reference(),
                       std::move(dataflowReference),

@@ -1,6 +1,7 @@
 #ifndef LOOM_SIMULATOR_STRUCTUREDPROGRAMNATIVEEXECUTIONINTERNAL_H
 #define LOOM_SIMULATOR_STRUCTUREDPROGRAMNATIVEEXECUTIONINTERNAL_H
 
+#include "Runtime/OrderedChannelSequence.h"
 #include "Simulator/NativeSimulationOracle.h"
 
 #include "SimulationWireInternal.h"
@@ -53,8 +54,7 @@ struct MemoryTargetPlan final {
 
 struct NativeExecutionContext final {
   struct LogicalChannel final {
-    std::vector<std::vector<std::uint8_t>> messages;
-    std::vector<std::uint64_t> receiverCursors;
+    std::optional<loom::runtime::OrderedChannelSequence> sequence;
   };
 
   std::vector<AlignedByteStorage> objects;

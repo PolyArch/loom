@@ -11,6 +11,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -63,6 +64,21 @@ bool writeAll(int descriptor, const std::uint8_t *bytes, std::size_t size) {
 
 } // namespace
 
+LoomSpatialBridge::EngineResponseEvent::EngineResponseEvent(
+    LoomSpatialBridge &bridge, int descriptor)
+    : PollEvent(descriptor, POLLIN | POLLERR | POLLHUP | POLLNVAL),
+      bridge(bridge) {}
+
+void LoomSpatialBridge::EngineResponseEvent::process(int revents) {
+  EventQueue::ScopedMigration migrate(bridge.eventQueue());
+  if ((revents & POLLIN) != 0) {
+    bridge.consumeEngineMessage();
+    return;
+  }
+  if ((revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+    bridge.fail(6, "Spatial engine connection became unavailable");
+}
+
 LoomSpatialBridge::LoomSpatialBridge(const Params &params)
     : DmaDevice(params), pioAddress(params.pio_addr), pioSize(params.pio_size),
       pioDelay(params.pio_latency),
@@ -91,6 +107,8 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
 }
 
 LoomSpatialBridge::~LoomSpatialBridge() {
+  if (engineResponseEvent && engineResponseEvent->queued())
+    pollQueue.remove(engineResponseEvent.get());
   if (engineSocket >= 0)
     ::close(engineSocket);
 }
@@ -263,6 +281,9 @@ bool LoomSpatialBridge::connectEngine() {
     engineSocket = -1;
     return false;
   }
+  engineResponseEvent =
+      std::make_unique<EngineResponseEvent>(*this, engineSocket);
+  pollQueue.schedule(engineResponseEvent.get());
   return true;
 }
 
@@ -308,7 +329,6 @@ void LoomSpatialBridge::startLaunch() {
     fail(5, "could not send the Spatial launch");
     return;
   }
-  consumeEngineMessage();
 }
 
 void LoomSpatialBridge::consumeEngineMessage() {
@@ -393,7 +413,6 @@ void LoomSpatialBridge::completeMemoryRequest() {
     return;
   }
   state = State::Running;
-  consumeEngineMessage();
 }
 
 void LoomSpatialBridge::completeInvocation() {

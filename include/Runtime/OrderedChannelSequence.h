@@ -32,27 +32,26 @@ struct OrderedChannelReceive final {
 class OrderedChannelSequence final {
 public:
   static llvm::Expected<OrderedChannelSequence>
-  create(std::uint64_t capacityBytes, std::uint32_t consumerCount);
+  create(std::uint64_t capacityMessages, std::uint32_t consumerCount);
 
   OrderedChannelSequence(OrderedChannelSequence &&) noexcept = default;
-  OrderedChannelSequence &operator=(OrderedChannelSequence &&) noexcept =
-      default;
+  OrderedChannelSequence &
+  operator=(OrderedChannelSequence &&) noexcept = default;
   OrderedChannelSequence(const OrderedChannelSequence &) = delete;
   OrderedChannelSequence &operator=(const OrderedChannelSequence &) = delete;
 
-  llvm::Expected<std::uint64_t>
-  publish(llvm::ArrayRef<std::uint8_t> payload);
+  llvm::Expected<std::uint64_t> publish(llvm::ArrayRef<std::uint8_t> payload);
 
-  llvm::Expected<OrderedChannelReceive>
-  reserve(std::uint32_t consumerOrdinal);
+  llvm::Expected<OrderedChannelReceive> reserve(std::uint32_t consumerOrdinal);
 
-  llvm::Error commit(std::uint32_t consumerOrdinal,
-                    std::uint64_t sequence);
+  llvm::Error commit(std::uint32_t consumerOrdinal, std::uint64_t sequence);
   llvm::Error cancel(std::uint32_t consumerOrdinal, std::uint64_t sequence);
   llvm::Error close();
 
-  std::uint64_t capacityBytes() const { return capacityBytes_; }
-  std::uint64_t occupiedBytes() const { return occupiedBytes_; }
+  bool canPublish(std::uint64_t messageCount) const;
+  std::uint64_t capacityMessages() const { return capacityMessages_; }
+  std::uint64_t retainedMessageCount() const { return messages_.size(); }
+  std::uint64_t retainedBytes() const { return retainedBytes_; }
   std::uint64_t nextSendSequence() const { return nextSendSequence_; }
   std::uint64_t nextReceiveSequence(std::uint32_t consumerOrdinal) const;
   std::uint32_t consumerCount() const {
@@ -68,19 +67,18 @@ private:
     std::vector<bool> committed;
   };
 
-  OrderedChannelSequence(std::uint64_t capacityBytes,
+  OrderedChannelSequence(std::uint64_t capacityMessages,
                          std::uint32_t consumerCount)
-      : capacityBytes_(capacityBytes),
-        nextReceiveSequences_(consumerCount, 0),
-        reservations_(consumerCount) {}
+      : capacityMessages_(capacityMessages),
+        nextReceiveSequences_(consumerCount, 0), reservations_(consumerCount) {}
 
   llvm::Error validateConsumer(std::uint32_t consumerOrdinal) const;
   Message *findMessage(std::uint64_t sequence);
   const Message *findMessage(std::uint64_t sequence) const;
   void reclaimCommittedPrefix();
 
-  std::uint64_t capacityBytes_ = 0;
-  std::uint64_t occupiedBytes_ = 0;
+  std::uint64_t capacityMessages_ = 0;
+  std::uint64_t retainedBytes_ = 0;
   std::uint64_t nextSendSequence_ = 0;
   std::vector<std::uint64_t> nextReceiveSequences_;
   std::vector<std::optional<std::uint64_t>> reservations_;

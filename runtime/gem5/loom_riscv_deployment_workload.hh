@@ -23,6 +23,12 @@ public:
     Invalid = 2,
   };
 
+  enum class DispatchState : std::uint32_t {
+    Started = 0,
+    Busy = 1,
+    Invalid = 2,
+  };
+
   explicit LoomRiscvDeploymentWorkload(const Params &params);
   ~LoomRiscvDeploymentWorkload() override;
 
@@ -30,8 +36,8 @@ public:
   const loader::SymbolTable &symtab(ThreadContext *context) override;
   void writeMemoryObservations();
 
-  bool dispatch(std::uint64_t targetOrdinal, Addr completionAddress,
-                Addr invocationAddress, std::uint64_t invocationSize);
+  DispatchState dispatch(std::uint64_t targetOrdinal, Addr completionAddress,
+                         Addr invocationAddress, std::uint64_t invocationSize);
   CompletionState complete(std::uint64_t targetOrdinal);
   std::size_t targetCount() const { return targets.size(); }
 

@@ -68,8 +68,6 @@ inline constexpr std::uint64_t kMaximumGem5Ticks =
 inline constexpr std::uint64_t kMaximumSpatialWork = 1'000'000;
 inline constexpr std::uint64_t kGem5PageBytes = 4096;
 inline constexpr std::uint64_t kGem5StackBytes = 64 * 1024;
-inline constexpr std::uint64_t kThreadDispatchApertureBytes = 4096;
-inline constexpr std::uint64_t kSpatialChannelBufferBytes = 1024 * 1024;
 
 enum class Gem5SystemEngine { Dfg, Cgra, Rtl };
 enum class Gem5ProcessorModelKind { TimingSimple, O3 };

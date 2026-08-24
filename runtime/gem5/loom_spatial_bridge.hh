@@ -3,11 +3,13 @@
 
 #include "Runtime/Gem5BridgeWire.h"
 
+#include "base/pollevent.hh"
 #include "dev/dma_device.hh"
 #include "params/LoomSpatialBridge.hh"
 #include "sim/eventq.hh"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -25,6 +27,15 @@ public:
   Tick write(PacketPtr packet) override;
 
 private:
+  class EngineResponseEvent final : public PollEvent {
+  public:
+    EngineResponseEvent(LoomSpatialBridge &bridge, int descriptor);
+    void process(int revents) override;
+
+  private:
+    LoomSpatialBridge &bridge;
+  };
+
   enum class State : std::uint32_t {
     Idle = 0,
     Running = 1,
@@ -47,6 +58,7 @@ private:
   const std::uint64_t maximumInvocations;
 
   int engineSocket = -1;
+  std::unique_ptr<EngineResponseEvent> engineResponseEvent;
   State state = State::Idle;
   std::uint32_t errorCode = 0;
   std::uint64_t nextSequence = 0;

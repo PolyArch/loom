@@ -116,6 +116,25 @@ implicit thread-body argument, and cannot select Mapping, binary, route, or
 configuration state. Repeated execution of the same root launch therefore
 reuses its persistent bindings while retaining distinct runtime state.
 
+The Thread Dispatch provider maintains one bounded transient record per exact
+Deployment target. Target selection addresses that record for submission and
+status queries; it is not the completion identity. A successful submission
+atomically snapshots the invocation descriptor, assigns a nonzero occurrence
+ID, and may coexist with submissions to independent InstructionCore contexts.
+Targets that resolve to one physical InstructionCore remain mutually exclusive
+and wait for that context rather than manufacturing another hardware thread.
+Worker completion is qualified by its target record, and Host glue verifies the
+record's occurrence ID before accepting completion. The record bound is the
+existing runtime invocation bound; no unbounded software queue is implied.
+
+Generated Host glue preserves the Canonical Dataflow asynchronous boundary. It
+submits all points of a root at `dataflow.thread.launch`, returns one transient
+collective handle, and joins the recorded point occurrences only at the
+corresponding `dataflow.thread.wait`. An all-of wait may join handles in any
+deterministic order after every preceding launch has been submitted. Replacing
+each launch with submit-and-immediate-wait is invalid because it can prevent a
+later channel producer from ever becoming active.
+
 For a statically bounded dense root, Canonical Dataflow alone enumerates the
 finite coordinate tuples in row-major order under the runtime invocation
 bound. Generated host glue emits one completed Thread Dispatch per tuple and
@@ -301,6 +320,16 @@ Mapping, route, service, or configuration. A result continues to name its
 entry by the session-local ordinal described below, rather than by the
 provider's process-wide entry index.
 
+The current strict gem5 System projection schema is
+`loom.gem5_system_projection.10`. For every Bridge session it records aligned
+arrays of dispatch-target ordinals, execution-context keys, and Spatial
+workload identities. These arrays are derived together from the immutable
+Deployment and System execution projection. Provider command arguments only
+start the shared or per-Bridge engine; they are not a semantic source from
+which an importer may infer target ownership. Sharing one engine across
+several Bridges therefore does not move workloads into the command-owning
+Bridge.
+
 The current incompatible invocation-result envelope has magic `LGX3`. In
 addition to the exact invocation bytes, effective runtime-input snapshot, and
 Spatial boundary result, it carries the session-local entry ordinal selected
@@ -374,11 +403,37 @@ The production gem5 Spatial provider materializes this contract through one
 invocation-local ordered sequence owner per selected channel service. It keeps
 monotonic `SendSeq`, one cursor and at most one reservation per consumer
 branch, atomically commits receives, and reclaims a message only after every
-multicast branch acknowledges it. The byte capacity is the selected service
-capacity; an exhausted queue returns a typed backpressure/timeout outcome and
-never overwrites an unacknowledged message. A graph stream's
+multicast branch acknowledges it. Its message-slot capacity is the minimum
+`maxOutstanding` guarantee of the exact MessageTransfer service endpoints on
+the selected route. One Dataflow message consumes one slot regardless of its
+wire encoding size. An exhausted queue returns a typed backpressure/timeout
+outcome and never overwrites an unacknowledged message. A graph stream's
 `ClosedAfterLast` observation is only the horizon of that graph activation and
 does not implicitly close the thread-level channel.
+
+The Spatial Bridge binding's `maximumMessageBytes` is a separate provider wire
+and staging limit. It may reject an unrepresentable invocation or message with
+a typed provider outcome, but it cannot change logical capacity, split one
+message across several SendSeq ordinals, or admit more outstanding messages.
+Likewise, a consumer launch that arrives before its next message remains a
+bounded pending launch; absence at that instant is not infeasibility. The
+session retries it only after relevant channel state advances and reports a
+closed wait or execution budget exhaustion distinctly.
+
+A producer activation may emit more messages than the selected outstanding
+capacity. The provider executes that activation once, encodes its messages
+once, and advances a retained per-channel publication cursor as credits become
+available. Each message becomes visible atomically at its own SendSeq commit;
+the producer completion remains pending until every message from that
+activation has been published. Re-executing the producer to recover output
+credit, requiring the complete activation output to fit simultaneously, or
+partially publishing one message is invalid.
+
+After an activation retires successfully, its reserved input messages commit
+before its output publication cursors advance. This ordering releases the
+credits consumed by that activation and permits a capacity-one feedback
+channel to make progress. A non-retired activation instead cancels every input
+reservation and publishes no output.
 
 That sequence owner is scoped to the exact System invocation and spans every
 physical Bridge session used by the selected producer and consumer branches.
@@ -779,15 +834,27 @@ request, completion, interrupt, mapped boundary transfer, or deterministic
 wakeup time. The Bridge translates that event and resumes execution when the
 corresponding gem5 event or response occurs.
 
-The gem5 Thread Dispatch MMIO surface carries both target selection and the
-address and size of the dynamic invocation wire. Dispatch snapshots all fields
-atomically before activating an InstructionCore. That core receives the exact
-static launch descriptor and dynamic invocation descriptor in separate ABI
-registers. The zero-address, zero-size pair selects the static runtime-input
-form defined above; all other dispatches require both fields. The Spatial
-Bridge performs separate DMA reads and frames them only after the required
-reads complete. Mutable MMIO registers, DMA scratch buffers, CPU state, socket
-state, and event budgets are never cached as candidate-invariant state.
+External Spatial-engine socket readiness enters through gem5's poll queue and
+is migrated to the owning Bridge event queue before state changes. Sending a
+launch returns control to gem5; the Bridge consumes a response only when its
+socket becomes readable. A consumer waiting for a channel message therefore
+keeps its own Bridge pending without blocking another InstructionCore, Bridge,
+DMA completion, or producer launch. Blocking on a host socket inside a gem5
+device event is invalid because it creates a host-induced closed wait absent
+from both Dataflow and SystemMapping.
+
+The gem5 Thread Dispatch MMIO surface carries target selection, the address and
+size of the dynamic invocation wire, per-target status/error, and the assigned
+occurrence ID. Dispatch snapshots all submission fields atomically before
+activating an InstructionCore. The worker receives a target-qualified
+completion slot rather than mutating one global dispatch state. That core
+receives the exact static launch descriptor and dynamic invocation descriptor
+in separate ABI registers. The zero-address, zero-size pair selects the static
+runtime-input form defined above; all other dispatches require both fields. The
+Spatial Bridge performs separate DMA reads and frames them only after the
+required reads complete. Mutable MMIO registers, target records, DMA scratch
+buffers, CPU state, socket state, and event budgets are never cached as
+candidate-invariant state.
 
 Gem5 executes concrete arbiter, queue, credit, protocol, cache, and memory
 microstate from the selected implementation. Every cycle-visible grant follows

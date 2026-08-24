@@ -16,14 +16,14 @@ namespace loom::runtime {
 struct Gem5SpatialChannelInput final {
   std::uint64_t producerStreamOutputOrdinal = 0;
   std::uint64_t consumerStreamInputOrdinal = 0;
-  std::uint64_t address = 0;
-  std::uint64_t capacityBytes = 0;
+  std::uint64_t channelOrdinal = 0;
+  std::uint64_t capacityMessages = 0;
 };
 
 struct Gem5SpatialChannelOutput final {
   std::uint64_t producerStreamOutputOrdinal = 0;
-  std::uint64_t address = 0;
-  std::uint64_t capacityBytes = 0;
+  std::uint64_t channelOrdinal = 0;
+  std::uint64_t capacityMessages = 0;
 };
 
 struct Gem5SpatialChannelProjection final {

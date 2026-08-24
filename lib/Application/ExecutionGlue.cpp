@@ -194,6 +194,17 @@ void storeAddressDescriptor(llvm::IRBuilder<> &builder, llvm::Value *base,
               builder.CreateTrunc(builder.CreateLShr(address, 32), i32));
 }
 
+llvm::Value *loadMmio64Descriptor(llvm::IRBuilder<> &builder, llvm::Value *base,
+                                  std::uint64_t lowOffset,
+                                  std::uint64_t highOffset) {
+  llvm::Type *i64 = llvm::Type::getInt64Ty(builder.getContext());
+  llvm::Value *low =
+      builder.CreateZExt(loadMmio32(builder, base, lowOffset), i64);
+  llvm::Value *high =
+      builder.CreateZExt(loadMmio32(builder, base, highOffset), i64);
+  return builder.CreateOr(low, builder.CreateShl(high, 32));
+}
+
 void emitFence(llvm::IRBuilder<> &builder) {
   builder.CreateFence(llvm::AtomicOrdering::SequentiallyConsistent);
 }
@@ -278,18 +289,27 @@ dispatchOperandOrdinal(const ApplicationSpatialInvocationPlan::Launch &launch,
       std::distance(launch.dispatchRootOperandOrdinals.begin(), found));
 }
 
-llvm::Expected<llvm::Function *> materializeRootDispatchHelper(
+struct MaterializedRootDispatch final {
+  llvm::Function *start = nullptr;
+  llvm::Function *wait = nullptr;
+};
+
+llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
     llvm::Module &module,
     const ApplicationSpatialInvocationPlan::Launch &launch,
     const ApplicationSpatialInvocationPlan::Site &site,
-    llvm::FunctionType *rootType, llvm::GlobalVariable &dispatchBase,
-    std::size_t siteOrdinal, std::size_t launchOrdinal) {
+    llvm::FunctionType *startType, llvm::FunctionType *waitType,
+    llvm::GlobalVariable &dispatchBase, std::size_t siteOrdinal,
+    std::size_t launchOrdinal) {
   const llvm::DataLayout &layout = module.getDataLayout();
   if (!layout.isLittleEndian() || layout.getPointerSizeInBits() != 64)
     return invalid("dynamic invocation currently requires little-endian RV64");
-  if (!rootType || !rootType->getReturnType()->isVoidTy() ||
-      rootType->isVarArg())
-    return invalid("selected root dispatch type is not fixed and void");
+  llvm::Type *i64 = llvm::Type::getInt64Ty(module.getContext());
+  if (!startType || startType->getReturnType() != i64 ||
+      startType->isVarArg() || !waitType || waitType->isVarArg() ||
+      !waitType->getReturnType()->isVoidTy() || waitType->getNumParams() != 1 ||
+      waitType->getParamType(0) != i64)
+    return invalid("selected root dispatch helper types are inconsistent");
   const sim::SimulationInputCapturePlan &capture = site.capture.input;
   if (launch.points.empty() ||
       site.pointWireLayouts.size() != launch.points.size() ||
@@ -313,13 +333,54 @@ llvm::Expected<llvm::Function *> materializeRootDispatchHelper(
   std::string helperName = "__loom_spatial_dispatch_" +
                            std::to_string(siteOrdinal) + "_" +
                            std::to_string(launchOrdinal);
-  if (module.getNamedValue(helperName))
+  const std::string waitName = helperName + "_wait";
+  const std::string handlesName = helperName + ".occurrences";
+  const std::string activeName = helperName + ".active_generation";
+  const std::string nextName = helperName + ".next_generation";
+  if (module.getNamedValue(helperName) || module.getNamedValue(waitName) ||
+      module.getNamedValue(handlesName) || module.getNamedValue(activeName) ||
+      module.getNamedValue(nextName))
     return invalid("final-linked module defines a reserved dispatch helper");
+  llvm::ArrayType *handlesType =
+      llvm::ArrayType::get(i64, launch.points.size());
+  auto *handles = new llvm::GlobalVariable(
+      module, handlesType, false, llvm::GlobalValue::PrivateLinkage,
+      llvm::ConstantAggregateZero::get(handlesType), handlesName);
+  handles->setAlignment(llvm::Align(8));
+  auto *activeGeneration = new llvm::GlobalVariable(
+      module, i64, false, llvm::GlobalValue::PrivateLinkage,
+      llvm::ConstantInt::get(i64, 0), activeName);
+  activeGeneration->setAlignment(llvm::Align(8));
+  auto *nextGeneration = new llvm::GlobalVariable(
+      module, i64, false, llvm::GlobalValue::PrivateLinkage,
+      llvm::ConstantInt::get(i64, 1), nextName);
+  nextGeneration->setAlignment(llvm::Align(8));
+
   llvm::Function *helper = llvm::Function::Create(
-      rootType, llvm::GlobalValue::InternalLinkage, helperName, module);
+      startType, llvm::GlobalValue::InternalLinkage, helperName, module);
   llvm::BasicBlock *entry =
       llvm::BasicBlock::Create(module.getContext(), "entry", helper);
+  llvm::BasicBlock *prepare =
+      llvm::BasicBlock::Create(module.getContext(), "prepare", helper);
+  llvm::BasicBlock *begin =
+      llvm::BasicBlock::Create(module.getContext(), "begin", helper);
+  llvm::BasicBlock *failed =
+      llvm::BasicBlock::Create(module.getContext(), "failed", helper);
   llvm::IRBuilder<> builder(entry);
+  llvm::Value *inactive =
+      builder.CreateICmpEQ(builder.CreateLoad(i64, activeGeneration),
+                           llvm::ConstantInt::get(i64, 0));
+  builder.CreateCondBr(inactive, prepare, failed);
+  builder.SetInsertPoint(prepare);
+  llvm::Value *generation = builder.CreateLoad(i64, nextGeneration);
+  llvm::Value *validGeneration =
+      builder.CreateICmpNE(generation, llvm::ConstantInt::get(i64, 0));
+  builder.CreateCondBr(validGeneration, begin, failed);
+  builder.SetInsertPoint(begin);
+  builder.CreateStore(
+      builder.CreateAdd(generation, llvm::ConstantInt::get(i64, 1)),
+      nextGeneration);
+  builder.CreateStore(generation, activeGeneration);
   for (const auto pointIndexed : llvm::enumerate(launch.points)) {
     const ApplicationSpatialInvocationPlan::Launch::Point &point =
         pointIndexed.value();
@@ -492,12 +553,12 @@ llvm::Expected<llvm::Function *> materializeRootDispatchHelper(
 
     llvm::Value *dispatch = builder.CreateLoad(
         llvm::Type::getInt64Ty(module.getContext()), &dispatchBase);
-    storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchControl,
-                runtime::gem5ThreadDispatchReset);
     storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchTargetLow,
                 static_cast<std::uint32_t>(point.dispatchTargetOrdinal));
     storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchTargetHigh,
                 static_cast<std::uint32_t>(point.dispatchTargetOrdinal >> 32));
+    storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchControl,
+                runtime::gem5ThreadDispatchReset);
     llvm::Value *wireAddress = builder.CreatePtrToInt(
         wire, llvm::Type::getInt64Ty(module.getContext()));
     storeAddressDescriptor(
@@ -509,35 +570,112 @@ llvm::Expected<llvm::Function *> materializeRootDispatchHelper(
     storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchControl,
                 runtime::gem5ThreadDispatchStart);
 
-    const std::string suffix = "." + std::to_string(pointIndexed.index());
-    llvm::BasicBlock *poll =
-        llvm::BasicBlock::Create(module.getContext(), "poll" + suffix, helper);
-    llvm::BasicBlock *failed = llvm::BasicBlock::Create(
-        module.getContext(), "failed" + suffix, helper);
-    llvm::BasicBlock *checkDone = llvm::BasicBlock::Create(
-        module.getContext(), "check_done" + suffix, helper);
-    llvm::BasicBlock *complete = llvm::BasicBlock::Create(
-        module.getContext(), "complete" + suffix, helper);
-    builder.CreateBr(poll);
-    builder.SetInsertPoint(poll);
+    llvm::Value *occurrence = loadMmio64Descriptor(
+        builder, dispatch, runtime::gem5ThreadDispatchOccurrenceLow,
+        runtime::gem5ThreadDispatchOccurrenceHigh);
     llvm::Value *status =
         loadMmio32(builder, dispatch, runtime::gem5ThreadDispatchStatus);
     llvm::Value *hasFailed = builder.CreateICmpNE(
         builder.CreateAnd(status, runtime::gem5ThreadDispatchFailed),
         llvm::ConstantInt::get(status->getType(), 0));
-    builder.CreateCondBr(hasFailed, failed, checkDone);
-    builder.SetInsertPoint(checkDone);
-    llvm::Value *isDone = builder.CreateICmpNE(
-        builder.CreateAnd(status, runtime::gem5ThreadDispatchDone),
-        llvm::ConstantInt::get(status->getType(), 0));
-    builder.CreateCondBr(isDone, complete, poll);
-    builder.SetInsertPoint(failed);
-    builder.CreateBr(failed);
-    builder.SetInsertPoint(complete);
-    emitFence(builder);
+    llvm::Value *accepted = builder.CreateAnd(
+        builder.CreateNot(hasFailed),
+        builder.CreateICmpNE(occurrence, llvm::ConstantInt::get(i64, 0)));
+    llvm::Value *handleSlot = builder.CreateInBoundsGEP(
+        handlesType, handles,
+        {llvm::ConstantInt::get(i64, 0),
+         llvm::ConstantInt::get(i64, pointIndexed.index())});
+    builder.CreateStore(occurrence, handleSlot);
+    llvm::BasicBlock *next = llvm::BasicBlock::Create(
+        module.getContext(),
+        "submitted." + std::to_string(pointIndexed.index()), helper);
+    builder.CreateCondBr(accepted, next, failed);
+    builder.SetInsertPoint(next);
   }
-  builder.CreateRetVoid();
-  return helper;
+  builder.CreateRet(generation);
+  builder.SetInsertPoint(failed);
+  builder.CreateBr(failed);
+
+  llvm::Function *wait = llvm::Function::Create(
+      waitType, llvm::GlobalValue::InternalLinkage, waitName, module);
+  wait->getArg(0)->setName("generation");
+  llvm::BasicBlock *waitEntry =
+      llvm::BasicBlock::Create(module.getContext(), "entry", wait);
+  llvm::BasicBlock *waitFailed =
+      llvm::BasicBlock::Create(module.getContext(), "failed", wait);
+  llvm::BasicBlock *waitNext =
+      llvm::BasicBlock::Create(module.getContext(), "point.0", wait);
+  llvm::IRBuilder<> waitBuilder(waitEntry);
+  llvm::Value *requestedGeneration = wait->getArg(0);
+  llvm::Value *active = waitBuilder.CreateLoad(i64, activeGeneration);
+  llvm::Value *validHandle = waitBuilder.CreateAnd(
+      waitBuilder.CreateICmpNE(requestedGeneration,
+                               llvm::ConstantInt::get(i64, 0)),
+      waitBuilder.CreateICmpEQ(requestedGeneration, active));
+  waitBuilder.CreateCondBr(validHandle, waitNext, waitFailed);
+
+  for (const auto pointIndexed : llvm::enumerate(launch.points)) {
+    const ApplicationSpatialInvocationPlan::Launch::Point &point =
+        pointIndexed.value();
+    waitBuilder.SetInsertPoint(waitNext);
+    llvm::Value *dispatch = waitBuilder.CreateLoad(i64, &dispatchBase);
+    storeMmio32(waitBuilder, dispatch, runtime::gem5ThreadDispatchTargetLow,
+                static_cast<std::uint32_t>(point.dispatchTargetOrdinal));
+    storeMmio32(waitBuilder, dispatch, runtime::gem5ThreadDispatchTargetHigh,
+                static_cast<std::uint32_t>(point.dispatchTargetOrdinal >> 32));
+    llvm::Value *actualOccurrence = loadMmio64Descriptor(
+        waitBuilder, dispatch, runtime::gem5ThreadDispatchOccurrenceLow,
+        runtime::gem5ThreadDispatchOccurrenceHigh);
+    llvm::Value *handleSlot = waitBuilder.CreateInBoundsGEP(
+        handlesType, handles,
+        {llvm::ConstantInt::get(i64, 0),
+         llvm::ConstantInt::get(i64, pointIndexed.index())});
+    llvm::Value *expectedOccurrence = waitBuilder.CreateLoad(i64, handleSlot);
+    llvm::BasicBlock *poll = llvm::BasicBlock::Create(
+        module.getContext(), "poll." + std::to_string(pointIndexed.index()),
+        wait);
+    llvm::Value *matchingOccurrence = waitBuilder.CreateAnd(
+        waitBuilder.CreateICmpNE(expectedOccurrence,
+                                 llvm::ConstantInt::get(i64, 0)),
+        waitBuilder.CreateICmpEQ(actualOccurrence, expectedOccurrence));
+    waitBuilder.CreateCondBr(matchingOccurrence, poll, waitFailed);
+    waitBuilder.SetInsertPoint(poll);
+    llvm::Value *status =
+        loadMmio32(waitBuilder, dispatch, runtime::gem5ThreadDispatchStatus);
+    llvm::Value *hasFailed = waitBuilder.CreateICmpNE(
+        waitBuilder.CreateAnd(status, runtime::gem5ThreadDispatchFailed),
+        llvm::ConstantInt::get(status->getType(), 0));
+    llvm::BasicBlock *checkDone = llvm::BasicBlock::Create(
+        module.getContext(),
+        "check_done." + std::to_string(pointIndexed.index()), wait);
+    waitBuilder.CreateCondBr(hasFailed, waitFailed, checkDone);
+    waitBuilder.SetInsertPoint(checkDone);
+    llvm::Value *isDone = waitBuilder.CreateICmpNE(
+        waitBuilder.CreateAnd(status, runtime::gem5ThreadDispatchDone),
+        llvm::ConstantInt::get(status->getType(), 0));
+    waitNext = llvm::BasicBlock::Create(
+        module.getContext(),
+        "point." + std::to_string(pointIndexed.index() + 1), wait);
+    waitBuilder.CreateCondBr(isDone, waitNext, poll);
+  }
+
+  waitBuilder.SetInsertPoint(waitNext);
+  emitFence(waitBuilder);
+  for (const ApplicationSpatialInvocationPlan::Launch::Point &point :
+       launch.points) {
+    llvm::Value *dispatch = waitBuilder.CreateLoad(i64, &dispatchBase);
+    storeMmio32(waitBuilder, dispatch, runtime::gem5ThreadDispatchTargetLow,
+                static_cast<std::uint32_t>(point.dispatchTargetOrdinal));
+    storeMmio32(waitBuilder, dispatch, runtime::gem5ThreadDispatchTargetHigh,
+                static_cast<std::uint32_t>(point.dispatchTargetOrdinal >> 32));
+    storeMmio32(waitBuilder, dispatch, runtime::gem5ThreadDispatchControl,
+                runtime::gem5ThreadDispatchReset);
+  }
+  waitBuilder.CreateStore(llvm::ConstantInt::get(i64, 0), activeGeneration);
+  waitBuilder.CreateRetVoid();
+  waitBuilder.SetInsertPoint(waitFailed);
+  waitBuilder.CreateBr(waitFailed);
+  return MaterializedRootDispatch{helper, wait};
 }
 
 llvm::Error lowerSelectedHostControlModule(mlir::ModuleOp module) {
@@ -567,6 +705,7 @@ struct TranslatedSelectedCallable final {
   std::unique_ptr<llvm::Module> module;
   llvm::Function *callable = nullptr;
   std::vector<llvm::Function *> rootDispatches;
+  std::vector<llvm::Function *> rootWaits;
 };
 
 llvm::Expected<TranslatedSelectedCallable> translateSelectedCallable(
@@ -585,7 +724,14 @@ llvm::Expected<TranslatedSelectedCallable> translateSelectedCallable(
       llvm::cast<mlir::ModuleOp>(dataflow.module()->clone(mapping)));
   mlir::LLVM::LLVMFuncOp selectedCallable;
   std::vector<std::string> rootDispatchSymbols;
+  std::vector<std::string> rootWaitSymbols;
   rootDispatchSymbols.reserve(callablePlan.launchOrdinals.size());
+  rootWaitSymbols.reserve(callablePlan.launchOrdinals.size());
+  llvm::DenseMap<mlir::Value, std::pair<mlir::Value, std::string>>
+      completionHandles;
+  llvm::SmallVector<dataflow::ThreadLaunchOp> selectedLaunches;
+  llvm::SmallVector<dataflow::ThreadWaitOp> selectedWaits;
+  llvm::SmallPtrSet<mlir::Operation *, 8> uniqueWaits;
   mlir::OpBuilder declarations(selected->getContext());
   declarations.setInsertionPointToStart(selected->getBody());
   for (std::uint64_t launchOrdinal : callablePlan.launchOrdinals) {
@@ -615,7 +761,10 @@ llvm::Expected<TranslatedSelectedCallable> translateSelectedCallable(
 
     std::string symbol =
         "__loom_selected_root_dispatch_" + std::to_string(launchOrdinal);
-    if (mlir::SymbolTable::lookupSymbolIn(*selected, symbol))
+    std::string waitSymbol =
+        "__loom_selected_root_wait_" + std::to_string(launchOrdinal);
+    if (mlir::SymbolTable::lookupSymbolIn(*selected, symbol) ||
+        mlir::SymbolTable::lookupSymbolIn(*selected, waitSymbol))
       return invalid("selected Dataflow defines a reserved root dispatch");
     llvm::SmallVector<mlir::Type> rootTypes;
     llvm::SmallVector<mlir::Value> rootOperands;
@@ -670,18 +819,43 @@ llvm::Expected<TranslatedSelectedCallable> translateSelectedCallable(
                 prototype.memoryObjectSources[sourceIndexed.index()].base)
           return invalid("selected root sites disagree on memory source ABI");
     }
-    auto dispatchType = mlir::LLVM::LLVMFunctionType::get(
-        mlir::LLVM::LLVMVoidType::get(selected->getContext()), rootTypes,
+    mlir::Type handleType = mlir::IntegerType::get(selected->getContext(), 64);
+    auto dispatchType = mlir::LLVM::LLVMFunctionType::get(handleType, rootTypes,
+                                                          /*isVarArg=*/false);
+    auto waitType = mlir::LLVM::LLVMFunctionType::get(
+        mlir::LLVM::LLVMVoidType::get(selected->getContext()), {handleType},
         /*isVarArg=*/false);
     mlir::LLVM::LLVMFuncOp::create(declarations, rootLaunch.getLoc(), symbol,
                                    dispatchType);
+    mlir::LLVM::LLVMFuncOp::create(declarations, rootLaunch.getLoc(),
+                                   waitSymbol, waitType);
     mlir::OpBuilder launchBuilder(rootLaunch);
-    mlir::LLVM::CallOp::create(launchBuilder, rootLaunch.getLoc(),
-                               mlir::TypeRange{}, symbol, rootOperands);
-    wait.erase();
-    rootLaunch.erase();
+    mlir::LLVM::CallOp dispatch = mlir::LLVM::CallOp::create(
+        launchBuilder, rootLaunch.getLoc(), mlir::TypeRange{handleType}, symbol,
+        rootOperands);
+    completionHandles.try_emplace(rootLaunch.getAsyncToken(),
+                                  dispatch.getResult(), waitSymbol);
+    selectedLaunches.push_back(rootLaunch);
+    if (uniqueWaits.insert(wait.getOperation()).second)
+      selectedWaits.push_back(wait);
     rootDispatchSymbols.push_back(std::move(symbol));
+    rootWaitSymbols.push_back(std::move(waitSymbol));
   }
+
+  for (dataflow::ThreadWaitOp wait : selectedWaits) {
+    mlir::OpBuilder waitBuilder(wait);
+    for (mlir::Value token : wait.getAsyncDependencies()) {
+      auto found = completionHandles.find(token);
+      if (found == completionHandles.end())
+        return invalid("selected host wait retains an unselected root");
+      mlir::LLVM::CallOp::create(waitBuilder, wait.getLoc(), mlir::TypeRange{},
+                                 found->second.second,
+                                 mlir::ValueRange{found->second.first});
+    }
+    wait.erase();
+  }
+  for (dataflow::ThreadLaunchOp launch : selectedLaunches)
+    launch.erase();
 
   llvm::SmallVector<mlir::LLVM::LLVMFuncOp> functions;
   selected->walk(
@@ -730,15 +904,22 @@ llvm::Expected<TranslatedSelectedCallable> translateSelectedCallable(
   if (!translatedCallable || translatedCallable->isDeclaration())
     return invalid("translated host control lost its callable");
   std::vector<llvm::Function *> translatedDispatches;
+  std::vector<llvm::Function *> translatedWaits;
   translatedDispatches.reserve(rootDispatchSymbols.size());
-  for (llvm::StringRef symbol : rootDispatchSymbols) {
-    llvm::Function *dispatch = translated->getFunction(symbol);
-    if (!dispatch || !dispatch->isDeclaration())
-      return invalid("translated host control lost a root dispatch");
+  translatedWaits.reserve(rootWaitSymbols.size());
+  for (auto [dispatchSymbol, waitSymbol] :
+       llvm::zip_equal(rootDispatchSymbols, rootWaitSymbols)) {
+    llvm::Function *dispatch = translated->getFunction(dispatchSymbol);
+    llvm::Function *wait = translated->getFunction(waitSymbol);
+    if (!dispatch || !dispatch->isDeclaration() || !wait ||
+        !wait->isDeclaration())
+      return invalid("translated host control lost a root dispatch helper");
     translatedDispatches.push_back(dispatch);
+    translatedWaits.push_back(wait);
   }
   return TranslatedSelectedCallable{std::move(translated), translatedCallable,
-                                    std::move(translatedDispatches)};
+                                    std::move(translatedDispatches),
+                                    std::move(translatedWaits)};
 }
 
 void collectReferencedGlobals(llvm::Value *value,
@@ -772,8 +953,12 @@ llvm::Expected<llvm::Function *>
 cloneSelectedCallable(llvm::Module &host, llvm::Function &source,
                       llvm::ArrayRef<llvm::Function *> sourceRootDispatches,
                       llvm::ArrayRef<llvm::Function *> siteRootDispatches,
+                      llvm::ArrayRef<llvm::Function *> sourceRootWaits,
+                      llvm::ArrayRef<llvm::Function *> siteRootWaits,
                       std::uint64_t helperOrdinal) {
   if (sourceRootDispatches.size() != siteRootDispatches.size() ||
+      sourceRootWaits.size() != siteRootWaits.size() ||
+      sourceRootDispatches.size() != sourceRootWaits.size() ||
       sourceRootDispatches.empty())
     return invalid("selected callable dispatch table is inconsistent");
   const std::string name =
@@ -792,6 +977,9 @@ cloneSelectedCallable(llvm::Module &host, llvm::Function &source,
   for (auto [sourceDispatch, siteDispatch] :
        llvm::zip_equal(sourceRootDispatches, siteRootDispatches))
     values[sourceDispatch] = siteDispatch;
+  for (auto [sourceWait, siteWait] :
+       llvm::zip_equal(sourceRootWaits, siteRootWaits))
+    values[sourceWait] = siteWait;
   for (auto [sourceArgument, targetArgument] :
        llvm::zip_equal(source.args(), target->args()))
     values[&sourceArgument] = &targetArgument;
@@ -1012,7 +1200,8 @@ void emitInstructionEntry(llvm::Module &module, std::uint64_t ordinal) {
   builder.CreateCondBr(isDone, complete, poll);
   builder.SetInsertPoint(complete);
   emitFence(builder);
-  storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchCompletion, 1);
+  storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchWorkerCompletion,
+              1);
   builder.CreateBr(suspend);
   builder.SetInsertPoint(failed);
   llvm::Value *error =
@@ -1300,18 +1489,16 @@ deriveApplicationSpatialInvocationPlan(
               (launch.valueBitCounts[indexed.index()] + 7) / 8;
           const bool byteCountMatches =
               input.fixedValue ? input.byteCount == 0
-                                : input.byteCount == expectedByteCount;
-          if (input.valueInputOrdinal != indexed.index() ||
-              !byteCountMatches)
+                               : input.byteCount == expectedByteCount;
+          if (input.valueInputOrdinal != indexed.index() || !byteCountMatches)
             return invalid(
-                llvm::Twine("dynamic invocation value capture is not exact: " ) +
+                llvm::Twine("dynamic invocation value capture is not exact: ") +
                 "root=" + llvm::Twine(boundary.launch.root.entity.value()) +
                 " graph=" +
                 llvm::Twine(launch.graph.staticGraphLaunch.entity.value()) +
                 " path=" + llvm::Twine(pathIndexed.index()) +
                 " input=" + llvm::Twine(indexed.index()) +
-                " captured_ordinal=" +
-                llvm::Twine(input.valueInputOrdinal) +
+                " captured_ordinal=" + llvm::Twine(input.valueInputOrdinal) +
                 " captured_bytes=" + llvm::Twine(input.byteCount) +
                 " expected_bytes=" +
                 llvm::Twine(input.fixedValue ? 0 : expectedByteCount));
@@ -1437,7 +1624,9 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
                                                 module->getContext());
     if (!translated)
       return translated.takeError();
-    if (translated->rootDispatches.size() != callablePlan.launchOrdinals.size())
+    if (translated->rootDispatches.size() !=
+            callablePlan.launchOrdinals.size() ||
+        translated->rootWaits.size() != callablePlan.launchOrdinals.size())
       return invalid("callable dispatch table is inconsistent");
     const std::uint64_t firstLaunch = callablePlan.launchOrdinals.front();
     if (firstLaunch >= plan.launches.size())
@@ -1501,7 +1690,9 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
     const ApplicationSpatialInvocationPlan::Callable &callablePlan =
         *preparedCallable.plan;
     std::vector<llvm::Function *> dispatches;
+    std::vector<llvm::Function *> waits;
     dispatches.reserve(callablePlan.launchOrdinals.size());
+    waits.reserve(callablePlan.launchOrdinals.size());
     for (const auto launchIndexed :
          llvm::enumerate(callablePlan.launchOrdinals)) {
       const std::uint64_t launchOrdinal = launchIndexed.value();
@@ -1513,18 +1704,22 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
           site.capture.invocationPath.size() != pending.path->size() ||
           !isDirectCallPathPrefix(*pending.path, site.capture.invocationPath))
         return invalid("dynamic roots disagree on their invocation locator");
-      auto dispatch = materializeRootDispatchHelper(
+      auto dispatch = materializeRootDispatchHelpers(
           *module, launch, site,
           preparedCallable.translated.rootDispatches[launchIndexed.index()]
+              ->getFunctionType(),
+          preparedCallable.translated.rootWaits[launchIndexed.index()]
               ->getFunctionType(),
           *dispatchBase, helperOrdinal, launchOrdinal);
       if (!dispatch)
         return dispatch.takeError();
-      dispatches.push_back(*dispatch);
+      dispatches.push_back(dispatch->start);
+      waits.push_back(dispatch->wait);
     }
     auto callable = cloneSelectedCallable(
         *module, *preparedCallable.translated.callable,
-        preparedCallable.translated.rootDispatches, dispatches, helperOrdinal);
+        preparedCallable.translated.rootDispatches, dispatches,
+        preparedCallable.translated.rootWaits, waits, helperOrdinal);
     if (!callable)
       return callable.takeError();
 

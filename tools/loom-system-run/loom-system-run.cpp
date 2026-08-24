@@ -415,7 +415,7 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
   const llvm::json::Array *dispatchTargets =
       dispatch ? dispatch->getArray("targets") : nullptr;
   const auto schema = object ? object->getString("schema") : std::nullopt;
-  if (!schema || *schema != "loom.gem5_system_projection.9" || !bridges ||
+  if (!schema || *schema != "loom.gem5_system_projection.10" || !bridges ||
       bridges->empty() || !dispatchTargets || dispatchTargets->empty())
     return invalid("gem5 projection contains no Spatial bridge");
 
@@ -431,10 +431,13 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
     const auto accCoreReference = bridge->getString("acc_core_ref");
     const llvm::json::Array *executionContextKeys =
         bridge->getArray("execution_context_keys");
+    const llvm::json::Array *spatialWorkloads =
+        bridge->getArray("spatial_workloads");
     if (!dispatchTargetOrdinals || dispatchTargetOrdinals->empty() ||
         !accCoreReference || accCoreReference->empty() ||
-        !executionContextKeys ||
-        executionContextKeys->size() != dispatchTargetOrdinals->size())
+        !executionContextKeys || !spatialWorkloads ||
+        executionContextKeys->size() != dispatchTargetOrdinals->size() ||
+        spatialWorkloads->size() != dispatchTargetOrdinals->size())
       return invalid("gem5 bridge has no canonical execution target identity");
     std::vector<std::uint64_t> targetOrdinals;
     std::vector<std::string> contextKeys;
@@ -460,28 +463,19 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
         "outputs/spatial-bridge-" + std::to_string(indexed.index()) + ".result";
     if (!resultPath || *resultPath != expectedPath)
       return invalid("gem5 projection has a noncanonical bridge result path");
-    const llvm::json::Array *engineCommand = bridge->getArray("engine_command");
     std::vector<loom::ArtifactRootReference> workloadReferences;
-    if (engineCommand) {
-      for (std::size_t argument = 0; argument < engineCommand->size();
-           ++argument) {
-        const auto value = (*engineCommand)[argument].getAsString();
-        if (!value || *value != "--workload")
-          continue;
-        if (argument + 1 == engineCommand->size())
-          return invalid("gem5 bridge has an ambiguous workload argument");
-        const auto workloadIdentityText =
-            (*engineCommand)[++argument].getAsString();
-        if (!workloadIdentityText)
-          return invalid("gem5 bridge workload argument is not a string");
-        auto workloadIdentity =
-            loom::parseArtifactIdentityHex(*workloadIdentityText);
-        if (!workloadIdentity)
-          return workloadIdentity.takeError();
-        workloadReferences.push_back(
-            {loom::sim::simulationWorkloadSchema.identity.str(),
-             loom::sim::simulationWorkloadSchema.version, *workloadIdentity});
-      }
+    workloadReferences.reserve(spatialWorkloads->size());
+    for (const llvm::json::Value &workload : *spatialWorkloads) {
+      const auto workloadIdentityText = workload.getAsString();
+      if (!workloadIdentityText)
+        return invalid("gem5 bridge workload identity is not a string");
+      auto workloadIdentity =
+          loom::parseArtifactIdentityHex(*workloadIdentityText);
+      if (!workloadIdentity)
+        return workloadIdentity.takeError();
+      workloadReferences.push_back(
+          {loom::sim::simulationWorkloadSchema.identity.str(),
+           loom::sim::simulationWorkloadSchema.version, *workloadIdentity});
     }
     if (workloadReferences.size() != targetOrdinals.size())
       return invalid("gem5 bridge omits its exact Spatial workload");

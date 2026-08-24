@@ -17,13 +17,13 @@ llvm::Error invalid(llvm::Twine message) {
 } // namespace
 
 llvm::Expected<OrderedChannelSequence>
-OrderedChannelSequence::create(std::uint64_t capacityBytes,
+OrderedChannelSequence::create(std::uint64_t capacityMessages,
                                std::uint32_t consumerCount) {
-  if (capacityBytes == 0)
+  if (capacityMessages == 0)
     return invalid("channel capacity must be positive");
   if (consumerCount == 0)
     return invalid("channel must have at least one consumer");
-  return OrderedChannelSequence(capacityBytes, consumerCount);
+  return OrderedChannelSequence(capacityMessages, consumerCount);
 }
 
 llvm::Error
@@ -53,7 +53,7 @@ llvm::Expected<std::uint64_t>
 OrderedChannelSequence::publish(llvm::ArrayRef<std::uint8_t> payload) {
   if (closed_)
     return invalid("publish followed channel close");
-  if (payload.size() > capacityBytes_ - occupiedBytes_)
+  if (messages_.size() >= capacityMessages_)
     return llvm::createStringError(std::errc::no_space_on_device,
                                    "ordered channel capacity is exhausted");
   if (nextSendSequence_ == std::numeric_limits<std::uint64_t>::max())
@@ -65,8 +65,14 @@ OrderedChannelSequence::publish(llvm::ArrayRef<std::uint8_t> payload) {
   message.reserved.assign(nextReceiveSequences_.size(), false);
   message.committed.assign(nextReceiveSequences_.size(), false);
   messages_.push_back(std::move(message));
-  occupiedBytes_ += payload.size();
+  retainedBytes_ += payload.size();
   return nextSendSequence_ - 1;
+}
+
+bool OrderedChannelSequence::canPublish(std::uint64_t messageCount) const {
+  return !closed_ && messageCount <= capacityMessages_ - messages_.size() &&
+         messageCount <=
+             std::numeric_limits<std::uint64_t>::max() - nextSendSequence_;
 }
 
 llvm::Expected<OrderedChannelReceive>
@@ -79,13 +85,12 @@ OrderedChannelSequence::reserve(std::uint32_t consumerOrdinal) {
   Message *message = findMessage(sequence);
   if (!message) {
     if (closed_ && sequence >= nextSendSequence_)
-      return OrderedChannelReceive{OrderedChannelReceiveKind::Closed, sequence,
-                                   {}};
-    return OrderedChannelReceive{OrderedChannelReceiveKind::WouldBlock,
-                                 sequence, {}};
+      return OrderedChannelReceive{
+          OrderedChannelReceiveKind::Closed, sequence, {}};
+    return OrderedChannelReceive{
+        OrderedChannelReceiveKind::WouldBlock, sequence, {}};
   }
-  if (message->committed[consumerOrdinal] ||
-      message->reserved[consumerOrdinal])
+  if (message->committed[consumerOrdinal] || message->reserved[consumerOrdinal])
     return invalid("consumer cursor state is inconsistent");
   message->reserved[consumerOrdinal] = true;
   reservations_[consumerOrdinal] = sequence;
@@ -149,11 +154,10 @@ std::uint64_t OrderedChannelSequence::nextReceiveSequence(
 void OrderedChannelSequence::reclaimCommittedPrefix() {
   while (!messages_.empty()) {
     const Message &message = messages_.front();
-    if (!llvm::all_of(message.committed, [](bool committed) {
-          return committed;
-        }))
+    if (!llvm::all_of(message.committed,
+                      [](bool committed) { return committed; }))
       break;
-    occupiedBytes_ -= message.payload.size();
+    retainedBytes_ -= message.payload.size();
     messages_.pop_front();
   }
 }
