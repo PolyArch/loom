@@ -23,12 +23,14 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <map>
 #include <optional>
+#include <poll.h>
 #include <set>
 #include <string>
 #include <sys/socket.h>
@@ -62,6 +64,10 @@ llvm::cl::list<std::string> channelProjectionPaths(
     "channel-projection",
     llvm::cl::desc("Invocation-local Spatial channel projection"),
     llvm::cl::OneOrMore);
+llvm::cl::list<std::uint64_t> bridgeOrdinals(
+    "bridge-ordinal",
+    llvm::cl::desc("System bridge session ordinal for the preceding entry"),
+    llvm::cl::OneOrMore);
 llvm::cl::opt<std::string>
     dataflowIdentity("dataflow",
                      llvm::cl::desc("Canonical Dataflow ArtifactIdentity"),
@@ -82,6 +88,10 @@ llvm::cl::opt<std::uint64_t> maximumInvocations(
     "maximum-invocations",
     llvm::cl::desc("Maximum dynamic invocations in this engine session"),
     llvm::cl::init(4096));
+llvm::cl::opt<std::uint64_t> bridgeCount(
+    "bridge-count",
+    llvm::cl::desc("Number of bridge connections sharing this System session"),
+    llvm::cl::init(1));
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -105,6 +115,8 @@ struct SpatialSessionEntry final {
   std::optional<loom::sim::CanonicalSimulationRuntimeInput> staticRuntime;
   loom::runtime::Gem5SpatialChannelProjection channels;
   std::vector<std::uint8_t> expectedLaunch;
+  std::uint64_t bridgeOrdinal = 0;
+  std::uint64_t sessionEntryOrdinal = 0;
   std::size_t preparedOrdinal = 0;
 };
 
@@ -180,7 +192,9 @@ llvm::Expected<int> openServer() {
   std::memcpy(address.sun_path, socketPath.c_str(), socketPath.size() + 1);
   if (::bind(server, reinterpret_cast<sockaddr *>(&address), sizeof(address)) !=
           0 ||
-      ::listen(server, 1) != 0) {
+      ::listen(server, static_cast<int>(std::min<std::uint64_t>(
+                           bridgeCount, std::numeric_limits<int>::max()))) !=
+          0) {
     ::close(server);
     return invalid("cannot publish the bridge socket");
   }
@@ -402,18 +416,16 @@ void appendChannelKeyU64(std::string &key, std::uint64_t value) {
     key.push_back(static_cast<char>(value >> (byte * 8)));
 }
 
-llvm::Expected<std::string> channelConsumerKey(
-    const loom::sim::ImportedSpatialSimulationWorkload &workload,
-    const loom::runtime::Gem5SpatialChannelInput &input) {
+llvm::Expected<std::string>
+channelConsumerKey(const loom::sim::ImportedSpatialSimulationWorkload &workload,
+                   const loom::runtime::Gem5SpatialChannelInput &input) {
   const auto *spatial = workload.workload.spatial();
   if (!spatial)
     return invalid("channel consumer key lost its Spatial workload");
   std::string key;
   appendChannelKeyU64(key, input.address);
-  appendChannelKeyU64(key,
-                      spatial->launchRef.rootThreadLaunch.entity.value());
-  appendChannelKeyU64(key,
-                      spatial->launchRef.staticGraphLaunch.entity.value());
+  appendChannelKeyU64(key, spatial->launchRef.rootThreadLaunch.entity.value());
+  appendChannelKeyU64(key, spatial->launchRef.staticGraphLaunch.entity.value());
   appendChannelKeyU64(key, input.consumerStreamInputOrdinal);
   key.push_back(static_cast<char>(spatial->denseCoordinates.size()));
   for (std::uint64_t coordinate : spatial->denseCoordinates)
@@ -547,10 +559,9 @@ llvm::Error publishChannelOutputs(
         const auto begin = stream.values.lanes.begin() +
                            static_cast<std::size_t>(token) * lanesPerToken;
         one.values.lanes.assign(begin, begin + lanesPerToken);
-        one.termination =
-            token + 1 == stream.values.tokenCount
-                ? stream.termination
-                : loom::sim::StreamTermination::OpenAfterLast;
+        one.termination = token + 1 == stream.values.tokenCount
+                              ? stream.termination
+                              : loom::sim::StreamTermination::OpenAfterLast;
         auto encodedToken = loom::sim::encodeSpatialChannelStream(
             one, *view, spatialWorkload->launchRef,
             channel.producerStreamOutputOrdinal,
@@ -764,8 +775,7 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
                  << transfer.blockingStorageHead->traversalNodeOrdinal;
         else
           stream << "none";
-        stream
-               << ", downstream=" << transfer.blockingDownstreamStorageCount
+        stream << ", downstream=" << transfer.blockingDownstreamStorageCount
                << ":" << transfer.blockingUnbufferedSinkCount << ":"
                << transfer.blockingDownstreamStorageOrdinal << ":"
                << transfer.blockingDownstreamStorageOccupancy << "+"
@@ -773,11 +783,11 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
                << transfer.blockingDownstreamStorageCapacity << ":"
                << transfer.blockingDownstreamStorageReserved << ":";
         if (transfer.blockingDownstreamStorageHead)
-          stream << transfer.blockingDownstreamStorageHead->bindingOrdinal
-                 << ":"
-                 << transfer.blockingDownstreamStorageHead->occurrenceOrdinal
-                 << ":"
-                 << transfer.blockingDownstreamStorageHead->traversalNodeOrdinal;
+          stream
+              << transfer.blockingDownstreamStorageHead->bindingOrdinal << ":"
+              << transfer.blockingDownstreamStorageHead->occurrenceOrdinal
+              << ":"
+              << transfer.blockingDownstreamStorageHead->traversalNodeOrdinal;
         else
           stream << "none";
         stream << ", blocking_route_targets=[";
@@ -796,8 +806,7 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
               loom::fabric::canonicalFabricBytes(indexed.value()), true);
         }
         stream << "]";
-        stream
-               << ", blocking_actor=" << transfer.blockingActorOrdinal
+        stream << ", blocking_actor=" << transfer.blockingActorOrdinal
                << ", blocking_ready=" << transfer.blockingReadyTokenCount
                << ", blocking_queue=" << transfer.blockingQueueOccupancy << "+"
                << transfer.blockingQueueReservations << "/"
@@ -822,8 +831,7 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
         const auto &input = outcome->closedWaitSet->blockedActorInputs[index];
         stream << input.semanticActorOrdinal << ":" << input.actorEntityId
                << ":" << input.inputOrdinal << ":" << input.channelOrdinal
-               << ":"
-               << static_cast<unsigned>(input.sourceKind) << ":"
+               << ":" << static_cast<unsigned>(input.sourceKind) << ":"
                << input.definingActorOrdinal << ":"
                << input.definingActorEntityId << ":"
                << input.definingActorTerminal;
@@ -853,23 +861,23 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
                << ":" << static_cast<unsigned>(edge.kind);
       }
       stream << "]";
-      stream << ", operand_queue_summary={groups="
-             << outcome->closedWaitSet->operandQueueGroupCount
-             << ",blocking_groups="
-             << outcome->closedWaitSet->operandQueuePotentiallyBlockingGroupCount
-             << ",shared_ingress="
-             << outcome->closedWaitSet->operandQueueSharedIngressPressure
-             << ",distinct_ingress="
-             << outcome->closedWaitSet->operandQueueDistinctIngressCount
-             << ",pairing_keys="
-             << outcome->closedWaitSet->operandQueuePairingKeyCount
-             << ",status="
-             << static_cast<unsigned>(
-                    outcome->closedWaitSet->operandQueueProgressStatus)
-             << ",support="
-             << static_cast<unsigned>(
-                    outcome->closedWaitSet->operandQueueProgressSupport)
-             << ",digest=";
+      stream
+          << ", operand_queue_summary={groups="
+          << outcome->closedWaitSet->operandQueueGroupCount
+          << ",blocking_groups="
+          << outcome->closedWaitSet->operandQueuePotentiallyBlockingGroupCount
+          << ",shared_ingress="
+          << outcome->closedWaitSet->operandQueueSharedIngressPressure
+          << ",distinct_ingress="
+          << outcome->closedWaitSet->operandQueueDistinctIngressCount
+          << ",pairing_keys="
+          << outcome->closedWaitSet->operandQueuePairingKeyCount << ",status="
+          << static_cast<unsigned>(
+                 outcome->closedWaitSet->operandQueueProgressStatus)
+          << ",support="
+          << static_cast<unsigned>(
+                 outcome->closedWaitSet->operandQueueProgressSupport)
+          << ",digest=";
       if (outcome->closedWaitSet->operandQueueProjectionDigest)
         stream << loom::formatComponentViewDigestHex(
             *outcome->closedWaitSet->operandQueueProjectionDigest);
@@ -887,15 +895,16 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
         llvm::SmallString<32> tag;
         head.headTag.toStringUnsigned(tag, 16);
         stream << "{context="
-               << llvm::toHex(::loom::fabric::canonicalFabricBytes(
-                                  head.queue.context),
-                              true)
+               << llvm::toHex(
+                      ::loom::fabric::canonicalFabricBytes(head.queue.context),
+                      true)
                << ",fu_occurrence=" << head.queue.fuOccurrence
-               << ",fu_input=" << head.queue.fuInput << ",unit="
-               << head.allocationUnit << ",occupancy=" << head.occupancy
+               << ",fu_input=" << head.queue.fuInput
+               << ",unit=" << head.allocationUnit
+               << ",occupancy=" << head.occupancy
                << ",reservations=" << head.reservations
-               << ",capacity=" << head.capacity << ",head="
-               << head.headBindingOrdinal << ":"
+               << ",capacity=" << head.capacity
+               << ",head=" << head.headBindingOrdinal << ":"
                << head.headOccurrenceOrdinal << ":"
                << head.headProducerSequenceOrdinal << ":" << tag.str()
                << ",exact=" << head.exactHead << "}";
@@ -972,6 +981,8 @@ llvm::Expected<std::size_t> selectSessionEntry(
   std::optional<std::size_t> selected;
   for (const auto indexed : llvm::enumerate(entries)) {
     const SpatialSessionEntry &entry = indexed.value();
+    if (entry.bridgeOrdinal != launch.bridgeSessionOrdinal)
+      continue;
     if (entry.expectedLaunch != launch.staticLaunch)
       continue;
     const auto *workload = entry.workload.workload.spatial();
@@ -1005,7 +1016,8 @@ llvm::Expected<std::size_t> selectSessionEntry(
 int main(int argc, char **argv) {
   llvm::InitLLVM initialization(argc, argv);
   llvm::cl::ParseCommandLineOptions(argc, argv);
-  if (maximumWork == 0 || ticksPerCycle == 0 || maximumInvocations == 0)
+  if (maximumWork == 0 || ticksPerCycle == 0 || maximumInvocations == 0 ||
+      bridgeCount == 0 || bridgeCount > std::numeric_limits<int>::max())
     return report(invalid("work, timing, and invocation limits must be "
                           "positive"));
 
@@ -1016,7 +1028,8 @@ int main(int argc, char **argv) {
   const std::size_t entryCount = workloadIdentities.size();
   if (expectedLaunchPaths.size() != entryCount ||
       runtimeInputIdentities.size() != entryCount ||
-      channelProjectionPaths.size() != entryCount)
+      channelProjectionPaths.size() != entryCount ||
+      bridgeOrdinals.size() != entryCount)
     return report(invalid("Spatial session argument tables have different "
                           "lengths"));
 #if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
@@ -1032,7 +1045,10 @@ int main(int argc, char **argv) {
   entries.reserve(entryCount);
   std::vector<PreparedSpatialExecution> preparedExecutions;
   std::map<std::string, std::size_t> preparedByKey;
+  std::map<std::uint64_t, std::uint64_t> nextSessionEntryOrdinal;
   for (std::size_t ordinal = 0; ordinal != entryCount; ++ordinal) {
+    if (bridgeOrdinals[ordinal] >= bridgeCount)
+      return report(invalid("Spatial entry names an absent bridge session"));
     auto workload =
         root(workloadIdentities[ordinal], loom::sim::simulationWorkloadSchema);
     if (!workload)
@@ -1105,10 +1121,15 @@ int main(int argc, char **argv) {
     } else {
       preparedOrdinal = prepared->second;
     }
+    const std::uint64_t sessionEntryOrdinal =
+        nextSessionEntryOrdinal[bridgeOrdinals[ordinal]]++;
     entries.push_back({std::move(*importedWorkload), std::move(staticRuntime),
                        std::move(*channels), std::move(*expectedLaunch),
+                       bridgeOrdinals[ordinal], sessionEntryOrdinal,
                        preparedOrdinal});
   }
+  if (nextSessionEntryOrdinal.size() != bridgeCount)
+    return report(invalid("Spatial entry table does not cover every bridge"));
 
   std::map<std::uint64_t, std::uint64_t> channelCapacities;
   std::map<std::uint64_t, std::set<std::string>> channelConsumerKeys;
@@ -1148,8 +1169,8 @@ int main(int argc, char **argv) {
         consumers);
     if (!sequence)
       return report(sequence.takeError());
-    channelSequences.emplace(
-        address, ChannelSequenceState{std::move(*sequence), {}});
+    channelSequences.emplace(address,
+                             ChannelSequenceState{std::move(*sequence), {}});
     auto &ordinals = channelSequences.find(address)->second.consumerOrdinals;
     std::uint32_t ordinal = 0;
     for (const std::string &key : keys->second)
@@ -1166,18 +1187,69 @@ int main(int argc, char **argv) {
       if (state->second.consumerOrdinals.find(*key) ==
           state->second.consumerOrdinals.end())
         return report(invalid("ordered channel branch identity was not "
-                             "materialized canonically"));
+                              "materialized canonically"));
     }
   }
 
   auto server = openServer();
   if (!server)
     return report(server.takeError());
-  const int connection = ::accept(*server, nullptr, nullptr);
-  ::close(*server);
-  if (connection < 0)
-    return report(invalid("cannot accept the bridge connection"));
-  for (std::uint64_t sequence = 0; sequence != maximumInvocations; ++sequence) {
+  struct BridgeConnection final {
+    int descriptor = -1;
+    std::uint64_t nextSequence = 0;
+  };
+  std::optional<int> serverDescriptor(*server);
+  std::vector<BridgeConnection> connections;
+  connections.reserve(static_cast<std::size_t>(bridgeCount));
+  std::uint64_t acceptedConnections = 0;
+  while (serverDescriptor || !connections.empty()) {
+    std::vector<pollfd> descriptors;
+    descriptors.reserve(connections.size() + (serverDescriptor ? 1 : 0));
+    if (serverDescriptor)
+      descriptors.push_back({*serverDescriptor, POLLIN, 0});
+    for (const BridgeConnection &connection : connections)
+      descriptors.push_back({connection.descriptor, POLLIN, 0});
+    int readyCount = 0;
+    do {
+      readyCount = ::poll(descriptors.data(), descriptors.size(), -1);
+    } while (readyCount < 0 && errno == EINTR);
+    if (readyCount < 0)
+      return report(invalid("cannot wait for a bridge message"));
+
+    const std::size_t connectionOffset = serverDescriptor ? 1 : 0;
+    if (serverDescriptor && (descriptors.front().revents & POLLIN) != 0) {
+      const int connection = ::accept(*serverDescriptor, nullptr, nullptr);
+      if (connection < 0)
+        return report(invalid("cannot accept a bridge connection"));
+      connections.push_back({connection, 0});
+      ++acceptedConnections;
+      if (acceptedConnections == bridgeCount) {
+        ::close(*serverDescriptor);
+        serverDescriptor.reset();
+      }
+      continue;
+    }
+
+    std::optional<std::size_t> readyConnection;
+    for (std::size_t ordinal = 0; ordinal != connections.size(); ++ordinal) {
+      const short events = descriptors[ordinal + connectionOffset].revents;
+      if ((events & POLLIN) != 0) {
+        readyConnection = ordinal;
+        break;
+      }
+      if ((events & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+        ::close(connections[ordinal].descriptor);
+        connections.erase(connections.begin() + ordinal);
+        break;
+      }
+    }
+    if (!readyConnection)
+      continue;
+    BridgeConnection &bridge = connections[*readyConnection];
+    if (bridge.nextSequence >= maximumInvocations)
+      return report(invalid("bridge exceeded its invocation limit"));
+    const int connection = bridge.descriptor;
+    const std::uint64_t sequence = bridge.nextSequence;
     auto message = readMessage(connection);
     if (!message) {
       ::close(connection);
@@ -1240,21 +1312,19 @@ int main(int argc, char **argv) {
         auto state = channelSequences.find(it->address);
         if (state == channelSequences.end())
           return invalid("channel reservation lost its sequence state");
-        llvm::Error error = commit
-                                ? state->second.sequence.commit(
-                                      it->consumerOrdinal, it->sequence)
-                                : state->second.sequence.cancel(
-                                      it->consumerOrdinal, it->sequence);
+        llvm::Error error = commit ? state->second.sequence.commit(
+                                         it->consumerOrdinal, it->sequence)
+                                   : state->second.sequence.cancel(
+                                         it->consumerOrdinal, it->sequence);
         if (error)
           return error;
       }
       channelReservations.clear();
       return llvm::Error::success();
     };
-    auto runtime =
-        bindChannelInputs(connection, message->sequence, entry.channels,
-                          entry.workload, baseRuntime, requestId,
-                          channelSequences, channelReservations);
+    auto runtime = bindChannelInputs(
+        connection, message->sequence, entry.channels, entry.workload,
+        baseRuntime, requestId, channelSequences, channelReservations);
     if (!runtime) {
       llvm::consumeError(settleChannelReservations(false));
       ::close(connection);
@@ -1361,8 +1431,8 @@ int main(int argc, char **argv) {
                   runtime->canonicalBytes().bytes().end())});
     std::vector<std::uint8_t> completionResult =
         loom::runtime::encodeSpatialInvocationResultWire(
-            {*selected, launch.invocation, std::move(runtimeSnapshot),
-             std::move(*encoded)});
+            {entry.sessionEntryOrdinal, launch.invocation,
+             std::move(runtimeSnapshot), std::move(*encoded)});
     if (completionResult.empty()) {
       ::close(connection);
       return report(invalid("cannot encode Spatial invocation result"));
@@ -1378,8 +1448,10 @@ int main(int argc, char **argv) {
       ::close(connection);
       return report(std::move(error));
     }
+    ++bridge.nextSequence;
   }
-  ::close(connection);
+  for (const BridgeConnection &connection : connections)
+    ::close(connection.descriptor);
   ::unlink(socketPath.c_str());
   return 0;
 }

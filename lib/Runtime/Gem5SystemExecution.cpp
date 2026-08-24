@@ -242,7 +242,7 @@ renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.8");
+    json.attribute("schema", "loom.gem5_system_projection.9");
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
@@ -369,43 +369,47 @@ renderProjection(const Gem5SystemFacts &facts,
       }
     });
     json.attributeArray("bridges", [&] {
-      for (const auto indexed :
-           llvm::enumerate(facts.spatialBridgeSessions)) {
+      for (const auto indexed : llvm::enumerate(facts.spatialBridgeSessions)) {
         const Gem5SpatialBridgeSession &session = indexed.value();
-        const std::string socket = spatialBridgeSocketPath(indexed.index());
+        const bool sharedEngine = facts.engine != Gem5SystemEngine::Rtl;
+        const std::string socket =
+            spatialBridgeSocketPath(sharedEngine ? 0 : indexed.index());
         json.object([&] {
           json.attributeArray("dispatch_target_ordinals", [&] {
             for (std::size_t launchOrdinal : session.launchOrdinals)
               json.value(launchOrdinal);
           });
-          json.attribute("acc_core_ref",
-                         accCoreReferences[indexed.index()]);
+          json.attribute("acc_core_ref", accCoreReferences[indexed.index()]);
           json.attributeArray("execution_context_keys", [&] {
             for (std::size_t launchOrdinal : session.launchOrdinals)
               json.value(executionContextKeys[launchOrdinal]);
           });
           json.attribute("pio_address", session.bridge.pioAddress);
           json.attribute("pio_size", session.bridge.pioSize);
+          json.attribute("session_ordinal", indexed.index());
           json.attribute("pio_latency",
-                         std::to_string(session.bridge.pioLatencyTicks) +
-                             "ps");
+                         std::to_string(session.bridge.pioLatencyTicks) + "ps");
           json.attribute("engine_socket", socket);
           json.attributeArray("engine_command", [&] {
             if (facts.engine == Gem5SystemEngine::Rtl)
+              return;
+            if (indexed.index() != 0)
               return;
             json.value(engine);
             json.value("--artifact-store");
             json.value(kPackageObjectPath);
             json.value("--socket");
             json.value(socket);
-            for (std::size_t launchOrdinal : session.launchOrdinals) {
+            for (std::size_t launchOrdinal = 0;
+                 launchOrdinal != facts.spatialLaunches.size();
+                 ++launchOrdinal) {
               const Gem5SpatialLaunchProjection &launch =
                   facts.spatialLaunches[launchOrdinal];
               json.value("--expected-launch");
               json.value(spatialLaunchPath(launchOrdinal));
               json.value("--workload");
-              json.value(formatArtifactIdentityHex(
-                  launch.spatialWorkload.artifact));
+              json.value(
+                  formatArtifactIdentityHex(launch.spatialWorkload.artifact));
               json.value("--runtime-input");
               json.value(launch.spatialRuntimeInput
                              ? formatArtifactIdentityHex(
@@ -413,13 +417,14 @@ renderProjection(const Gem5SystemFacts &facts,
                              : "none");
               json.value("--channel-projection");
               json.value(launch.channelProjectionPath);
+              json.value("--bridge-ordinal");
+              json.value(std::to_string(launch.bridgeSessionOrdinal));
               if (facts.engine == Gem5SystemEngine::Cgra) {
                 json.value("--fabric");
-                json.value(
-                    formatArtifactIdentityHex(launch.fabric.artifact));
+                json.value(formatArtifactIdentityHex(launch.fabric.artifact));
                 json.value("--spatial-mapping");
-                json.value(formatArtifactIdentityHex(
-                    launch.spatialMapping.artifact));
+                json.value(
+                    formatArtifactIdentityHex(launch.spatialMapping.artifact));
               }
             }
             json.value("--dataflow");
@@ -429,8 +434,9 @@ renderProjection(const Gem5SystemFacts &facts,
             json.value("--ticks-per-cycle");
             json.value(std::to_string(ticksPerCycle));
             json.value("--maximum-invocations");
-            json.value(
-                std::to_string(gem5MaximumDynamicSpatialInvocations));
+            json.value(std::to_string(gem5MaximumDynamicSpatialInvocations));
+            json.value("--bridge-count");
+            json.value(std::to_string(facts.spatialBridgeSessions.size()));
           });
           json.attribute("result_path",
                          spatialBridgeResultPath(indexed.index()));
@@ -475,8 +481,7 @@ ExternalToolInvocationImportExpectation makeExpectation(
         {"gem5_binary", std::move(*gem5Binary)});
   expectation.declaredOutputs = {kSystemResultPath.str(),
                                  kMemoryResultPath.str()};
-  for (std::size_t ordinal = 0;
-       ordinal != facts.spatialBridgeSessions.size();
+  for (std::size_t ordinal = 0; ordinal != facts.spatialBridgeSessions.size();
        ++ordinal)
     expectation.declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
   if (facts.engine == Gem5SystemEngine::Rtl)
@@ -911,8 +916,7 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
     commands.push_back(std::move(primaryCommand));
     std::vector<std::string> declaredOutputs{kSystemResultPath.str(),
                                              kMemoryResultPath.str()};
-    for (std::size_t ordinal = 0;
-         ordinal != facts.spatialBridgeSessions.size();
+    for (std::size_t ordinal = 0; ordinal != facts.spatialBridgeSessions.size();
          ++ordinal) {
       declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
     }
@@ -985,8 +989,7 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
       {gem5ExternalFile},
       {},
       {}};
-  for (std::size_t ordinal = 0;
-       ordinal != facts.spatialBridgeSessions.size();
+  for (std::size_t ordinal = 0; ordinal != facts.spatialBridgeSessions.size();
        ++ordinal)
     specification.declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
   llvm::sort(specification.declaredOutputs);
@@ -1068,8 +1071,7 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
   if (!llvm::StringRef(systemResult->cause).contains("m5_exit"))
     return terminalResult(
         CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
-  for (const auto indexed :
-       llvm::enumerate(facts.spatialBridgeSessions)) {
+  for (const auto indexed : llvm::enumerate(facts.spatialBridgeSessions)) {
     const Gem5SpatialBridgeSession &session = indexed.value();
     auto bridgeText = readExternalToolInvocationDeclaredOutput(
         imported, spatialBridgeResultPath(indexed.index()));
@@ -1101,8 +1103,7 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
               bridgeResult.result, invocationResult, invocationDiagnostic))
         return invalid("bridge invocation result is invalid: " +
                        invocationDiagnostic);
-      if (invocationResult.sessionEntryOrdinal >=
-          session.launchOrdinals.size())
+      if (invocationResult.sessionEntryOrdinal >= session.launchOrdinals.size())
         return invalid("bridge result names an absent session entry");
       const std::size_t sessionEntryOrdinal =
           static_cast<std::size_t>(invocationResult.sessionEntryOrdinal);

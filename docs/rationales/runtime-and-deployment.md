@@ -179,6 +179,13 @@ implementation binding. Architecture guarantees and Mapping-visible controls
 remain Fabric truth. Runtime counters and reorder state are transient and do
 not become Mapping fields.
 
+A provider process or socket boundary is not a transport-semantic boundary.
+One mapped channel can connect graph launches on several AccCores, so its
+ordered message state must be shared across the corresponding physical Spatial
+Bridges while each Bridge retains its own PIO and completion session. This
+keeps the Dataflow-owned correspondence and SystemMapping-owned service intact
+instead of making process placement an accidental message-routing rule.
+
 ## Why Technology Corners Stay Platform-Local
 
 An ImplementationPlatform already owns the immutable technology or device

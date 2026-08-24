@@ -10,6 +10,7 @@ class LoomSpatialBridge(DmaDevice):
     pio_addr = Param.Addr("Bridge MMIO base address")
     pio_latency = Param.Latency("100ns", "Bridge MMIO access latency")
     pio_size = Param.Addr(0x1000, "Bridge MMIO aperture size")
+    session_ordinal = Param.Unsigned("System bridge session ordinal")
     engine_socket = Param.String("Invocation-local Spatial engine socket")
     result_path = Param.String("Normalized bridge result destination")
     max_message_bytes = Param.Unsigned(

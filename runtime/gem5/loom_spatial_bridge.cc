@@ -65,8 +65,9 @@ bool writeAll(int descriptor, const std::uint8_t *bytes, std::size_t size) {
 
 LoomSpatialBridge::LoomSpatialBridge(const Params &params)
     : DmaDevice(params), pioAddress(params.pio_addr), pioSize(params.pio_size),
-      pioDelay(params.pio_latency), engineSocketPath(params.engine_socket),
-      resultPath(params.result_path),
+      pioDelay(params.pio_latency),
+      bridgeSessionOrdinal(params.session_ordinal),
+      engineSocketPath(params.engine_socket), resultPath(params.result_path),
       maximumMessageBytes(params.max_message_bytes),
       maximumInvocations(params.max_invocations),
       launchEvent([this] { fetchStaticLaunch(); }, name() + ".launch"),
@@ -299,7 +300,7 @@ void LoomSpatialBridge::startLaunch() {
   }
   std::vector<std::uint8_t> launchPayload =
       loom::runtime::encodeGem5SpatialLaunchEnvelope(
-          {staticLaunchPayload, invocationPayload});
+          {bridgeSessionOrdinal, staticLaunchPayload, invocationPayload});
   const loom::runtime::Gem5BridgeMessage launch{
       loom::runtime::Gem5BridgeMessageKind::SpatialLaunch, nextSequence,
       launchPayload};

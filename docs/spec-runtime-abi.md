@@ -292,6 +292,15 @@ Bridge session and one PIO range. Any target in that session may be invoked
 more than once by the target program. The Bridge therefore publishes one dense
 dynamic result sequence for the session, not one result per dispatch target.
 
+The current incompatible Spatial Bridge message ABI is
+`loom.gem5_spatial_bridge_abi.v5`. Its Spatial launch envelope has magic
+`LGL2` and carries the physical bridge-session ordinal, the immutable static
+launch bytes, and the optional dynamic invocation bytes. The ordinal selects
+one entry partition in the exact System projection; it cannot select another
+Mapping, route, service, or configuration. A result continues to name its
+entry by the session-local ordinal described below, rather than by the
+provider's process-wide entry index.
+
 The current incompatible invocation-result envelope has magic `LGX3`. In
 addition to the exact invocation bytes, effective runtime-input snapshot, and
 Spatial boundary result, it carries the session-local entry ordinal selected
@@ -370,6 +379,15 @@ capacity; an exhausted queue returns a typed backpressure/timeout outcome and
 never overwrites an unacknowledged message. A graph stream's
 `ClosedAfterLast` observation is only the horizon of that graph activation and
 does not implicitly close the thread-level channel.
+
+That sequence owner is scoped to the exact System invocation and spans every
+physical Bridge session used by the selected producer and consumer branches.
+The physical Bridges retain distinct PIO ranges, clocks, launch cursors, and
+result collections, but a provider may multiplex their connections through
+one execution session so that one selected channel service has one mutable
+sequence state. Partitioning work by AccCore, socket, or provider process may
+not partition that state or turn connection arrival order into message
+ownership.
 
 Endpoint occurrence ordinals, event counters, and reorder entries are
 transient execution state. They are not Mapping records, Artifact identities,

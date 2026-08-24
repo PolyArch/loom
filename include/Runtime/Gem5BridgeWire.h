@@ -13,7 +13,7 @@
 namespace loom::runtime {
 
 inline constexpr char gem5BridgeAbiIdentity[] =
-    "loom.gem5_spatial_bridge_abi.v4";
+    "loom.gem5_spatial_bridge_abi.v5";
 
 enum class Gem5BridgeMessageKind : std::uint32_t {
   SpatialLaunch = 0,
@@ -67,13 +67,14 @@ struct Gem5BridgeResultCollection final {
 };
 
 struct Gem5SpatialLaunchEnvelope final {
+  std::uint64_t bridgeSessionOrdinal = 0;
   std::vector<std::uint8_t> staticLaunch;
   std::vector<std::uint8_t> invocation;
 };
 
 inline constexpr std::array<std::uint8_t, 4> gem5SpatialLaunchMagic{'L', 'G',
-                                                                    'L', '1'};
-inline constexpr std::size_t gem5SpatialLaunchHeaderBytes = 20;
+                                                                    'L', '2'};
+inline constexpr std::size_t gem5SpatialLaunchHeaderBytes = 28;
 
 inline constexpr std::array<std::uint8_t, 4> gem5BridgeResultMagic{'L', 'G',
                                                                    'R', '1'};
@@ -124,6 +125,7 @@ encodeGem5SpatialLaunchEnvelope(const Gem5SpatialLaunchEnvelope &launch) {
                 launch.invocation.size());
   bytes.insert(bytes.end(), gem5SpatialLaunchMagic.begin(),
                gem5SpatialLaunchMagic.end());
+  detail::appendGem5BridgeU64(bytes, launch.bridgeSessionOrdinal);
   detail::appendGem5BridgeU64(bytes, launch.staticLaunch.size());
   detail::appendGem5BridgeU64(bytes, launch.invocation.size());
   bytes.insert(bytes.end(), launch.staticLaunch.begin(),
@@ -142,9 +144,10 @@ decodeGem5SpatialLaunchEnvelope(const std::vector<std::uint8_t> &bytes,
     error = "wrong or truncated Spatial launch envelope";
     return false;
   }
-  const std::uint64_t staticSize = detail::readGem5BridgeU64(bytes.data() + 4);
+  launch.bridgeSessionOrdinal = detail::readGem5BridgeU64(bytes.data() + 4);
+  const std::uint64_t staticSize = detail::readGem5BridgeU64(bytes.data() + 12);
   const std::uint64_t invocationSize =
-      detail::readGem5BridgeU64(bytes.data() + 12);
+      detail::readGem5BridgeU64(bytes.data() + 20);
   if (staticSize > std::numeric_limits<std::size_t>::max() ||
       invocationSize > std::numeric_limits<std::size_t>::max()) {
     error = "Spatial launch envelope length exceeds the host size domain";

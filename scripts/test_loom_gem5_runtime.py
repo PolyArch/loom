@@ -24,12 +24,12 @@ TEST_RUN_ROOT = REPOSITORY_ROOT / "build" / "test-runs"
 WIRE_MAGIC = b"LGB1"
 RESULT_MAGIC = b"LGR1"
 RESULT_COLLECTION_MAGIC = b"LGC1"
-SPATIAL_LAUNCH_MAGIC = b"LGL1"
+SPATIAL_LAUNCH_MAGIC = b"LGL2"
 INVOCATION_RESULT_MAGIC = b"LGX3"
 WIRE_HEADER = struct.Struct(">4sIQQ")
 RESULT_HEADER = struct.Struct(">4sIQQQ")
 RESULT_COLLECTION_HEADER = struct.Struct(">4sQ")
-SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQ")
+SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQQ")
 INVOCATION_RESULT_HEADER = struct.Struct("<4sQQQQ32s")
 MEMORY_REQUEST_HEADER = struct.Struct(">IQQQQ")
 MEMORY_RESPONSE_HEADER = struct.Struct(">QIQ")
@@ -183,8 +183,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--gem5", type=pathlib.Path)
     parser.add_argument("--engine", action="store_true")
     parser.add_argument("--socket", type=pathlib.Path)
-    parser.add_argument("--expected-launch", type=pathlib.Path)
-    parser.add_argument("--trace", type=pathlib.Path)
+    parser.add_argument("--expected-launch", type=pathlib.Path, action="append")
+    parser.add_argument("--trace", type=pathlib.Path, action="append")
+    parser.add_argument("--bridge-ordinal", type=int, action="append")
     return parser.parse_args()
 
 
@@ -207,16 +208,22 @@ def receive_message(connection: socket.socket) -> tuple[int, int, bytes]:
     return kind, sequence, read_exact(connection, payload_size)
 
 
-def decode_spatial_launch_envelope(payload: bytes) -> tuple[bytes, bytes]:
+def decode_spatial_launch_envelope(payload: bytes) -> tuple[int, bytes, bytes]:
     if len(payload) < SPATIAL_LAUNCH_HEADER.size:
         raise RuntimeError("Spatial launch envelope is truncated")
-    magic, static_size, invocation_size = SPATIAL_LAUNCH_HEADER.unpack_from(payload)
+    magic, bridge_ordinal, static_size, invocation_size = (
+        SPATIAL_LAUNCH_HEADER.unpack_from(payload)
+    )
     if magic != SPATIAL_LAUNCH_MAGIC:
         raise RuntimeError("Spatial launch envelope has the wrong magic")
     if static_size + invocation_size != len(payload) - SPATIAL_LAUNCH_HEADER.size:
         raise RuntimeError("Spatial launch envelope lengths are not canonical")
     static_end = SPATIAL_LAUNCH_HEADER.size + static_size
-    return payload[SPATIAL_LAUNCH_HEADER.size : static_end], payload[static_end:]
+    return (
+        bridge_ordinal,
+        payload[SPATIAL_LAUNCH_HEADER.size : static_end],
+        payload[static_end:],
+    )
 
 
 def invocation_result(invocation: bytes, boundary_result: bytes) -> bytes:
@@ -289,56 +296,77 @@ def require_memory_response(
 
 
 def run_engine(arguments: argparse.Namespace) -> int:
-    if arguments.socket is None or arguments.expected_launch is None or arguments.trace is None:
-        raise RuntimeError("engine mode requires socket, launch, and trace paths")
+    if (
+        arguments.socket is None
+        or not arguments.expected_launch
+        or len(arguments.expected_launch) != len(arguments.trace or [])
+        or len(arguments.expected_launch) != len(arguments.bridge_ordinal or [])
+        or len(set(arguments.bridge_ordinal)) != len(arguments.bridge_ordinal)
+    ):
+        raise RuntimeError("engine mode requires one unique launch table per bridge")
+    entries = {
+        ordinal: (launch, trace)
+        for ordinal, launch, trace in zip(
+            arguments.bridge_ordinal,
+            arguments.expected_launch,
+            arguments.trace,
+            strict=True,
+        )
+    }
     arguments.socket.unlink(missing_ok=True)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(arguments.socket))
-    server.listen(1)
+    server.listen(len(entries))
     try:
-        connection, _ = server.accept()
-        with connection:
-            kind, sequence, payload = receive_message(connection)
-            launch, invocation = decode_spatial_launch_envelope(payload)
-            expected_launch = arguments.expected_launch.read_bytes()
-            if (
-                kind != SPATIAL_LAUNCH
-                or sequence != 0
-                or launch != expected_launch
-                or invocation
-            ):
-                raise RuntimeError("bridge launch differs from the expected payload")
-
-            value = EXPECTED_VALUE.to_bytes(8, byteorder="little")
-            write_payload = MEMORY_REQUEST_HEADER.pack(
-                MEMORY_WRITE, 7, 1, EXTERNAL_VALUE_ADDRESS, len(value)
-            ) + value
-            send_message(connection, MEMORY_REQUEST, sequence, write_payload)
-            require_memory_response(connection, sequence, 1, b"")
-
-            read_payload = MEMORY_REQUEST_HEADER.pack(
-                MEMORY_READ, 11, 2, EXTERNAL_VALUE_ADDRESS, len(value)
-            )
-            send_message(connection, MEMORY_REQUEST, sequence, read_payload)
-            require_memory_response(connection, sequence, 2, value)
-
-            result = invocation_result(invocation, EXPECTED_RESULT)
-            completion = COMPLETION_HEADER.pack(13, 0, len(result))
-            send_message(connection, COMPLETION, sequence, completion + result)
-            arguments.trace.write_text(
-                json.dumps(
-                    {
-                        "launch_sha256": hashlib.sha256(launch).hexdigest(),
-                        "memory_address": EXTERNAL_VALUE_ADDRESS,
-                        "memory_value": EXPECTED_VALUE,
-                        "sequence": sequence,
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
+        pending = dict(entries)
+        while pending:
+            connection, _ = server.accept()
+            with connection:
+                kind, sequence, payload = receive_message(connection)
+                bridge_ordinal, launch, invocation = decode_spatial_launch_envelope(
+                    payload
                 )
-                + "\n",
-                encoding="utf-8",
-            )
+                entry = pending.pop(bridge_ordinal, None)
+                if (
+                    kind != SPATIAL_LAUNCH
+                    or sequence != 0
+                    or entry is None
+                    or launch != entry[0].read_bytes()
+                    or invocation
+                ):
+                    raise RuntimeError("bridge launch differs from the expected payload")
+
+                value = EXPECTED_VALUE.to_bytes(8, byteorder="little")
+                write_payload = MEMORY_REQUEST_HEADER.pack(
+                    MEMORY_WRITE, 7, 1, EXTERNAL_VALUE_ADDRESS, len(value)
+                ) + value
+                send_message(connection, MEMORY_REQUEST, sequence, write_payload)
+                require_memory_response(connection, sequence, 1, b"")
+
+                read_payload = MEMORY_REQUEST_HEADER.pack(
+                    MEMORY_READ, 11, 2, EXTERNAL_VALUE_ADDRESS, len(value)
+                )
+                send_message(connection, MEMORY_REQUEST, sequence, read_payload)
+                require_memory_response(connection, sequence, 2, value)
+
+                result = invocation_result(invocation, EXPECTED_RESULT)
+                completion = COMPLETION_HEADER.pack(13, 0, len(result))
+                send_message(connection, COMPLETION, sequence, completion + result)
+                entry[1].write_text(
+                    json.dumps(
+                        {
+                            "bridge_ordinal": bridge_ordinal,
+                            "launch_sha256": hashlib.sha256(launch).hexdigest(),
+                            "memory_address": EXTERNAL_VALUE_ADDRESS,
+                            "memory_value": EXPECTED_VALUE,
+                            "sequence": sequence,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
     finally:
         server.close()
         arguments.socket.unlink(missing_ok=True)
@@ -450,9 +478,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         memory_object_path = root / "system-memory.bin"
         memory_table_path = root / "system-memory-table.bin"
         memory_observation_path = root / "system-memory.result"
-        socket_paths = [
-            root / f"spatial-bridge-{ordinal}.sock" for ordinal in range(2)
-        ]
+        socket_path = root / "spatial-bridge-session.sock"
         bridge_result_paths = [
             root / f"spatial-result-{ordinal}.bin" for ordinal in range(2)
         ]
@@ -498,22 +524,27 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             False,
         )
 
-        engine_commands = [
-            [
-                sys.executable,
-                str(pathlib.Path(__file__).resolve()),
-                "--engine",
-                "--socket",
-                str(socket_paths[ordinal]),
-                "--expected-launch",
-                str(launch_paths[ordinal]),
-                "--trace",
-                str(engine_trace_paths[ordinal]),
-            ]
-            for ordinal in range(2)
+        engine_command = [
+            sys.executable,
+            str(pathlib.Path(__file__).resolve()),
+            "--engine",
+            "--socket",
+            str(socket_path),
         ]
+        for ordinal in range(2):
+            engine_command.extend(
+                [
+                    "--expected-launch",
+                    str(launch_paths[ordinal]),
+                    "--trace",
+                    str(engine_trace_paths[ordinal]),
+                    "--bridge-ordinal",
+                    str(ordinal),
+                ]
+            )
+        engine_commands = [engine_command, []]
         projection = {
-            "schema": "loom.gem5_system_projection.8",
+            "schema": "loom.gem5_system_projection.9",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
             "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns"},
@@ -592,7 +623,8 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "pio_address": BRIDGE_ADDRESS,
                     "pio_size": 4096,
                     "pio_latency": "10ns",
-                    "engine_socket": str(socket_paths[0]),
+                    "session_ordinal": 0,
+                    "engine_socket": str(socket_path),
                     "engine_command": engine_commands[0],
                     "result_path": str(bridge_result_paths[0]),
                     "maximum_message_bytes": 1048576,
@@ -605,7 +637,8 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "pio_address": SECOND_BRIDGE_ADDRESS,
                     "pio_size": 4096,
                     "pio_latency": "10ns",
-                    "engine_socket": str(socket_paths[1]),
+                    "session_ordinal": 1,
+                    "engine_socket": str(socket_path),
                     "engine_command": engine_commands[1],
                     "result_path": str(bridge_result_paths[1]),
                     "maximum_message_bytes": 1048576,
@@ -646,8 +679,8 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         if "m5_exit instruction encountered" not in system_result["cause"]:
             raise RuntimeError(f"guest did not retire normally: {system_result['cause']}")
         completion_ticks = []
-        for bridge_result_path, engine_trace_path in zip(
-            bridge_result_paths, engine_trace_paths, strict=True
+        for ordinal, (bridge_result_path, engine_trace_path) in enumerate(
+            zip(bridge_result_paths, engine_trace_paths, strict=True)
         ):
             bridge_results = decode_bridge_results(bridge_result_path)
             if len(bridge_results) != 1:
@@ -669,8 +702,13 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 )
             completion_ticks.append(completion_tick)
             trace = json.loads(engine_trace_path.read_text(encoding="utf-8"))
-            if trace["memory_value"] != EXPECTED_VALUE:
-                raise RuntimeError("engine trace omitted the exact external-memory value")
+            if (
+                trace["bridge_ordinal"] != ordinal
+                or trace["launch_sha256"]
+                != hashlib.sha256(EXPECTED_LAUNCH).hexdigest()
+                or trace["memory_value"] != EXPECTED_VALUE
+            ):
+                raise RuntimeError("engine trace differs from its exact bridge entry")
         expected_memory = EXPECTED_SYSTEM_MEMORY.to_bytes(8, byteorder="little")
         expected_observation = (
             b"LGM1"

@@ -40,6 +40,7 @@ private:
   const Addr pioAddress;
   const Addr pioSize;
   const Tick pioDelay;
+  const std::uint64_t bridgeSessionOrdinal;
   const std::string engineSocketPath;
   const std::string resultPath;
   const std::uint64_t maximumMessageBytes;

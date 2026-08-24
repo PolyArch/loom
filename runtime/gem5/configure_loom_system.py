@@ -31,7 +31,7 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.8"
+CONFIG_SCHEMA = "loom.gem5_system_projection.9"
 
 PROCESSOR_FIELDS = {
     "cpu_id",
@@ -135,6 +135,7 @@ def start_engines(
                     "pio_address",
                     "pio_size",
                     "pio_latency",
+                    "session_ordinal",
                     "engine_socket",
                     "engine_command",
                     "result_path",
@@ -171,6 +172,8 @@ def start_engines(
                     or any(character not in "0123456789abcdef" for character in encoded)
                 ):
                     raise ValueError(f"bridge {ordinal} reference is invalid")
+            if bridge["session_ordinal"] != ordinal:
+                raise ValueError(f"bridge {ordinal} session ordinal is invalid")
             command = bridge["engine_command"]
             if not isinstance(command, list) or not all(
                 isinstance(item, str) and item for item in command
@@ -462,6 +465,7 @@ def build_system(projection: dict) -> RiscvSystem:
             pio_addr=bridge["pio_address"],
             pio_size=bridge["pio_size"],
             pio_latency=bridge["pio_latency"],
+            session_ordinal=bridge["session_ordinal"],
             engine_socket=bridge["engine_socket"],
             result_path=bridge["result_path"],
             max_message_bytes=bridge["maximum_message_bytes"],
