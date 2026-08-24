@@ -1,5 +1,7 @@
 #include "ApplicationRuntimeValidationInternal.h"
 
+#include "ExecutionGlue.h"
+
 #include "Common/MappingDebugLog.h"
 #include "Common/ArtifactText.h"
 #include "Common/InvocationDiagnosticLog.h"
@@ -16,7 +18,9 @@
 #include <algorithm>
 #include <chrono>
 #include <limits>
+#include <map>
 #include <optional>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -28,6 +32,27 @@ namespace {
 using MonotonicClock = std::chrono::steady_clock;
 
 constexpr std::uint64_t kApplicationReplayExecutionLimit = 1000000;
+
+struct ApplicationSpatialRuntimePoint final {
+  dataflow::RootThreadLaunchRef root;
+  dataflow::RootedGraphLaunchRef graph;
+  std::vector<std::uint64_t> denseCoordinates;
+  mapping::SpatialExecutionContextKey context;
+
+  friend bool operator==(const ApplicationSpatialRuntimePoint &lhs,
+                         const ApplicationSpatialRuntimePoint &rhs) {
+    return lhs.root == rhs.root && lhs.graph == rhs.graph &&
+           lhs.denseCoordinates == rhs.denseCoordinates &&
+           lhs.context == rhs.context;
+  }
+};
+
+struct ResolvedApplicationReplay final {
+  const sim::SourceBackedDfgReplayCaseReference *reference = nullptr;
+  ApplicationSpatialRuntimePoint point;
+  ArtifactRootReference module;
+  ArtifactRootReference spatialMapping;
+};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -232,19 +257,33 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
       imported->dataflowView, imported->mapping.view().executionBindings());
   if (!contexts)
     return contexts.takeError();
-  auto deadline = applicationReplayDeadline(executionPolicy);
-  if (!deadline)
-    return deadline.takeError();
+  auto invocationPlan = deriveApplicationSpatialInvocationPlan(
+      imported->dataflowView, prepared.sourceInvocation.entrySymbol);
+  if (!invocationPlan)
+    return invocationPlan.takeError();
 
-  ApplicationRuntimeValidation validation;
-  validation.disposition = ApplicationMappingRuntimeDisposition::Completed;
+  std::vector<ApplicationSpatialRuntimePoint> requiredPoints;
+  for (const ApplicationSpatialInvocationPlan::Launch &launch :
+       invocationPlan->launches)
+    for (const ApplicationSpatialInvocationPlan::Launch::Point &point :
+         launch.points) {
+      auto selected = mapping::selectSystemSpatialExecutionContext(
+          *contexts, launch.graph, point.denseCoordinates);
+      if (!selected)
+        return selected.takeError();
+      ApplicationSpatialRuntimePoint required{
+          launch.root, launch.graph, point.denseCoordinates, selected->context};
+      if (!llvm::is_contained(requiredPoints, required))
+        requiredPoints.push_back(std::move(required));
+    }
+  if (requiredPoints.empty())
+    return invalid(
+        "selected SystemMapping has no ABI-reachable Spatial invocation");
+
+  std::vector<ResolvedApplicationReplay> resolvedReplays;
+  resolvedReplays.reserve((*software)->replayCases.size());
   for (const sim::SourceBackedDfgReplayCaseReference &replay :
        (*software)->replayCases) {
-    if (*deadline && MonotonicClock::now() >= **deadline) {
-      validation.disposition =
-          ApplicationMappingRuntimeDisposition::CancelledOrTimeout;
-      return validation;
-    }
     auto inputs = sim::importSpatialSimulationInputs(
         replay.workload, replay.runtimeInput, artifacts);
     if (!inputs)
@@ -254,19 +293,79 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
     const sim::SpatialSimulationWorkload *workload = inputs->workload.spatial();
     if (!workload)
       return invalid("source-backed replay is not a Spatial workload");
-    auto selectedContext = mapping::selectSystemSpatialExecutionContext(
+    auto selected = mapping::selectSystemSpatialExecutionContext(
         *contexts, workload->launchRef, workload->denseCoordinates);
-    if (!selectedContext)
-      return selectedContext.takeError();
-    auto spatialMapping = mapping::importSpatialMapping(
-        selectedContext->spatialMapping, artifacts);
+    if (!selected)
+      return selected.takeError();
+    auto spatialMapping =
+        mapping::importSpatialMapping(selected->spatialMapping, artifacts);
     if (!spatialMapping)
       return spatialMapping.takeError();
     const ArtifactRootReference module{
         fabric::fabricArtifactSchema.identity.str(),
         fabric::fabricArtifactSchema.version,
         spatialMapping->view().fabricIdentity()};
+    resolvedReplays.push_back(
+        {&replay,
+         {workload->launchRef.rootThreadLaunch, workload->launchRef,
+          workload->denseCoordinates, selected->context},
+         module,
+         selected->spatialMapping});
+  }
 
+  for (const ResolvedApplicationReplay &replay : resolvedReplays)
+    if (!llvm::is_contained(requiredPoints, replay.point))
+      return invalid(
+          "source-backed replay is outside the ABI invocation plan");
+
+  for (const ApplicationSpatialRuntimePoint &required : requiredPoints) {
+    const bool covered = llvm::any_of(
+        resolvedReplays, [&](const ResolvedApplicationReplay &replay) {
+          return replay.point == required;
+        });
+    if (covered)
+      continue;
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+        mapping_debug::Event::MappingFailure,
+        [&](llvm::json::Object &fields) {
+          fields["failure_scope"] = "application_runtime_validation";
+          fields["operation"] = "source_backed_context_coverage";
+          fields["outcome"] = "proof_not_established";
+          fields["required_point_count"] = requiredPoints.size();
+          fields["covered_replay_count"] = resolvedReplays.size();
+          fields["missing_root_entity"] = required.root.entity.value();
+          fields["missing_graph_entity"] =
+              required.graph.staticGraphLaunch.entity.value();
+          llvm::json::Array coordinates;
+          for (std::uint64_t coordinate : required.denseCoordinates)
+            coordinates.push_back(coordinate);
+          fields["missing_dense_coordinates"] = std::move(coordinates);
+          fields["missing_spatial_mapping"] = formatArtifactIdentityHex(
+              required.context.spatialMapping);
+        });
+    return ApplicationRuntimeValidation{
+        ApplicationMappingRuntimeDisposition::ProofNotEstablished,
+        {},
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt};
+  }
+  auto deadline = applicationReplayDeadline(executionPolicy);
+  if (!deadline)
+    return deadline.takeError();
+
+  ApplicationRuntimeValidation validation;
+  validation.disposition = ApplicationMappingRuntimeDisposition::Completed;
+  for (const ResolvedApplicationReplay &resolved : resolvedReplays) {
+    const sim::SourceBackedDfgReplayCaseReference &replay =
+        *resolved.reference;
+    if (*deadline && MonotonicClock::now() >= **deadline) {
+      validation.disposition =
+          ApplicationMappingRuntimeDisposition::CancelledOrTimeout;
+      return validation;
+    }
     auto preparedDfg = evaluation::models::prepareDfgSimulationEvaluation(
         alternative.dataflow, replay.workload, replay.runtimeInput,
         alternative.plan.resolvedConfig, artifacts, blobs);
@@ -299,7 +398,7 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
       return std::move(error);
 
     auto preparedCgra = evaluation::models::prepareCgraSimulationEvaluation(
-        alternative.dataflow, module, selectedContext->spatialMapping,
+        alternative.dataflow, resolved.module, resolved.spatialMapping,
         replay.workload, replay.runtimeInput, alternative.plan.resolvedConfig,
         artifacts, blobs);
     if (!preparedCgra)
@@ -339,7 +438,7 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
                   validation.spatialOperandQueueFeedback->disposition))
         validation.spatialOperandQueueFeedback = std::move(*operandFeedback);
       auto feedback = dse::deriveSpatialFifoRuntimeFeedback(
-          imported->mapping.reference(), selectedContext->spatialMapping,
+          imported->mapping.reference(), resolved.spatialMapping,
           *cgraEvaluation->closedWait, artifacts);
       if (!feedback)
         return feedback.takeError();
@@ -400,7 +499,7 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
           fields["dataflow"] = formatArtifactRootReferenceJson(
               alternative.dataflow);
           fields["spatial_mapping"] = formatArtifactRootReferenceJson(
-              selectedContext->spatialMapping);
+              resolved.spatialMapping);
           fields["dfg_request"] = formatArtifactRootReferenceJson(
               evaluation::evaluationRequestReference(preparedDfg->request));
           fields["cgra_request"] = formatArtifactRootReferenceJson(

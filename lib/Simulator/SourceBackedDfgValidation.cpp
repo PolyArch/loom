@@ -388,52 +388,33 @@ struct SelectedActivationCapture final {
 llvm::Expected<SelectedActivationCapture> deriveSelectedActivationCapture(
     const frontend::MaterializedOwnershipCandidate &candidate,
     const dataflow::CanonicalDataflowProgramView &view,
-    dataflow::RootedGraphLaunchRef launch) {
+    dataflow::RootedGraphLaunchRef launch,
+    frontend::StructuredEntityRef spatialRegion) {
   dataflow::ThreadOp thread;
   loom::SpatialRegionOp spatial;
-  mlir::OwningOpRef<mlir::ModuleOp> module;
-  if (candidate.ownedSpatialRegion) {
-    auto view = candidate.structuredProgram.view();
-    if (!view)
-      return view.takeError();
-    auto entity = view->resolve(*candidate.ownedSpatialRegion);
-    if (!entity)
-      return entity.takeError();
-    auto sourceSpatial =
-        llvm::dyn_cast_or_null<loom::SpatialRegionOp>(entity->operation);
-    if (!sourceSpatial)
-      return invalid("owned Spatial projection does not resolve to a region");
-    auto sourceThread = sourceSpatial->getParentOfType<dataflow::ThreadOp>();
-    if (!sourceThread)
-      return invalid("owned Spatial region has no thread carrier");
-    mlir::IRMapping mapping;
-    module = mlir::OwningOpRef<mlir::ModuleOp>(llvm::cast<mlir::ModuleOp>(
-        candidate.structuredProgram.module()->clone(mapping)));
-    spatial = llvm::dyn_cast_or_null<loom::SpatialRegionOp>(
-        mapping.lookupOrNull(sourceSpatial.getOperation()));
-    thread = llvm::dyn_cast_or_null<dataflow::ThreadOp>(
-        mapping.lookupOrNull(sourceThread.getOperation()));
-    if (!thread || !spatial)
-      return invalid("owned Spatial carrier was not mapped into the clone");
-  } else {
-    module = mlir::OwningOpRef<mlir::ModuleOp>(llvm::cast<mlir::ModuleOp>(
-        candidate.structuredProgram.module()->clone()));
-    bool duplicateThread = false;
-    bool duplicateSpatial = false;
-    module->walk([&](mlir::Operation *operation) {
-      if (auto value = llvm::dyn_cast<dataflow::ThreadOp>(operation)) {
-        duplicateThread |= static_cast<bool>(thread);
-        thread = value;
-      }
-      if (auto value = llvm::dyn_cast<loom::SpatialRegionOp>(operation)) {
-        duplicateSpatial |= static_cast<bool>(spatial);
-        spatial = value;
-      }
-    });
-    if (!thread || !spatial || duplicateThread || duplicateSpatial)
-      return invalid(
-          "unprojected candidate has no unique thread/spatial carrier");
-  }
+  auto structuredView = candidate.structuredProgram.view();
+  if (!structuredView)
+    return structuredView.takeError();
+  auto entity = structuredView->resolve(spatialRegion);
+  if (!entity)
+    return entity.takeError();
+  auto sourceSpatial =
+      llvm::dyn_cast_or_null<loom::SpatialRegionOp>(entity->operation);
+  if (!sourceSpatial)
+    return invalid("Spatial projection does not resolve to a region");
+  auto sourceThread = sourceSpatial->getParentOfType<dataflow::ThreadOp>();
+  if (!sourceThread)
+    return invalid("Spatial region has no thread carrier");
+  mlir::IRMapping mapping;
+  mlir::OwningOpRef<mlir::ModuleOp> module(
+      llvm::cast<mlir::ModuleOp>(
+          candidate.structuredProgram.module()->clone(mapping)));
+  spatial = llvm::dyn_cast_or_null<loom::SpatialRegionOp>(
+      mapping.lookupOrNull(sourceSpatial.getOperation()));
+  thread = llvm::dyn_cast_or_null<dataflow::ThreadOp>(
+      mapping.lookupOrNull(sourceThread.getOperation()));
+  if (!thread || !spatial)
+    return invalid("Spatial carrier was not mapped into the clone");
   auto plan = deriveSelectedCapturePlan(view, launch, thread, spatial);
   if (!plan)
     return plan.takeError();
@@ -441,58 +422,60 @@ llvm::Expected<SelectedActivationCapture> deriveSelectedActivationCapture(
                                    std::move(*plan)};
 }
 
-llvm::Expected<dataflow::RootedGraphLaunchRef> selectOwnedRootedLaunch(
+llvm::Expected<std::optional<dataflow::RootedGraphLaunchRef>>
+selectReachableRootedLaunch(
     const frontend::MaterializedOwnershipCandidate &candidate,
-    const dataflow::CanonicalDataflowProgramView &view) {
+    const dataflow::CanonicalDataflowProgramView &view,
+    frontend::StructuredEntityRef spatialRegion,
+    llvm::ArrayRef<dataflow::RootThreadLaunchRef> reachableRoots) {
   std::optional<dataflow::StaticGraphLaunchRef> selectedStaticLaunch;
-  if (candidate.ownedSpatialRegion) {
-    for (const lowering::StructuredSpatialGraphProjection &projection :
-         candidate.spatialGraphs) {
-      if (projection.spatialRegion != *candidate.ownedSpatialRegion)
-        continue;
-      if (selectedStaticLaunch)
-        return invalid("owned Spatial region has duplicate graph projections");
-      selectedStaticLaunch = projection.staticGraphLaunch;
-    }
-    if (!selectedStaticLaunch)
-      return invalid("owned Spatial region has no graph projection");
+  for (const lowering::StructuredSpatialGraphProjection &projection :
+       candidate.spatialGraphs) {
+    if (projection.spatialRegion != spatialRegion)
+      continue;
+    if (selectedStaticLaunch)
+      return invalid("Spatial region has duplicate graph projections");
+    selectedStaticLaunch = projection.staticGraphLaunch;
   }
+  if (!selectedStaticLaunch && !candidate.spatialGraphs.empty())
+    return invalid("Spatial region has no graph projection");
 
   std::optional<dataflow::RootedGraphLaunchRef> selected;
   bool duplicate = false;
-  std::uint64_t rootedLaunchCount = 0;
+  std::uint64_t matchingRootedLaunchCount = 0;
   view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
-    ++rootedLaunchCount;
     if (selectedStaticLaunch &&
         launch.staticGraphLaunch != *selectedStaticLaunch)
+      return;
+    ++matchingRootedLaunchCount;
+    if (!llvm::is_contained(reachableRoots, launch.rootThreadLaunch))
       return;
     duplicate |= selected.has_value();
     selected = launch;
   });
-  if (!selected)
+  if (matchingRootedLaunchCount == 0) {
+    if (!selectedStaticLaunch)
+      return invalid("unprojected Spatial carrier has no rooted graph launch");
     return invalid(
-        "ownership candidate has no matching rooted graph launch: "
-        "rooted_launches=" +
-        llvm::Twine(rootedLaunchCount) + ", spatial_projections=" +
-        llvm::Twine(candidate.spatialGraphs.size()) + ", owned_region=" +
-        llvm::Twine(candidate.ownedSpatialRegion.has_value()) +
+        "Spatial projection has no matching rooted graph launch: "
+        "spatial_projections=" + llvm::Twine(candidate.spatialGraphs.size()) +
         ", projection_artifact_matches=" +
-        llvm::Twine(selectedStaticLaunch &&
-                    selectedStaticLaunch->artifact == view.identity()) +
+        llvm::Twine(selectedStaticLaunch->artifact == view.identity()) +
         ", projection_matches_artifact=" +
-        llvm::Twine(selectedStaticLaunch &&
-                    selectedStaticLaunch->artifact ==
-                        candidate.canonicalDataflow.identity()) +
+        llvm::Twine(selectedStaticLaunch->artifact ==
+                    candidate.canonicalDataflow.identity()) +
         ", view_matches_artifact=" +
         llvm::Twine(view.identity() == candidate.canonicalDataflow.identity()) +
         ", projection_entity=" +
-        llvm::Twine(selectedStaticLaunch
-                        ? selectedStaticLaunch->entity.value()
-                        : std::numeric_limits<std::uint64_t>::max()));
+        llvm::Twine(selectedStaticLaunch->entity.value()));
+  }
+  if (!selected)
+    return std::optional<dataflow::RootedGraphLaunchRef>{};
   if (duplicate)
     return unsupported(
-        "owned graph projection reaches multiple rooted graph launches");
-  return *selected;
+        "Spatial graph projection reaches multiple reachable rooted graph "
+        "launches");
+  return selected;
 }
 
 RuntimeMemoryObject
@@ -740,159 +723,213 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
   auto view = candidate.canonicalDataflow.view();
   if (!view)
     return view.takeError();
-  auto launch = selectOwnedRootedLaunch(candidate, *view);
-  if (!launch)
-    return launch.takeError();
-  auto preparedDfg = prepareDfgExecution(candidate.canonicalDataflow, *launch);
-  if (!preparedDfg)
-    return preparedDfg.takeError();
-  auto launchContext = detail::resolveLaunchContext(*view, *launch);
-  if (!launchContext)
-    return launchContext.takeError();
+  const StructuredProgramSimulationWorkload *structuredWorkload =
+      workload.structuredProgram();
+  if (!structuredWorkload)
+    return invalid("source-backed replay workload is not Structured");
+  auto sourceView = sourceProgram.view();
+  if (!sourceView)
+    return sourceView.takeError();
+  auto entry = sourceView->resolve(structuredWorkload->entryRef);
+  if (!entry)
+    return entry.takeError();
+  auto entryFunction =
+      llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entry->operation);
+  if (!entryFunction)
+    return invalid("source-backed replay entry is not an LLVM function");
+  auto reachableRoots = view->projectRootThreadLaunchesReachableFromAbiEntry(
+      entryFunction.getSymName());
+  if (!reachableRoots)
+    return reachableRoots.takeError();
 
-  auto selected = deriveSelectedActivationCapture(candidate, *view, *launch);
-  if (!selected)
-    return selected.takeError();
-  const WorkloadBackedSimulationInputCapturePlan &replayPlan = selected->plan;
-  std::uint64_t activationCount = 0;
+  std::vector<frontend::StructuredEntityRef> spatialRegions;
+  spatialRegions.reserve(candidate.spatialGraphs.size());
+  for (const lowering::StructuredSpatialGraphProjection &projection :
+       candidate.spatialGraphs)
+    if (!llvm::is_contained(spatialRegions, projection.spatialRegion))
+      spatialRegions.push_back(projection.spatialRegion);
+  if (spatialRegions.empty()) {
+    auto structuredView = candidate.structuredProgram.view();
+    if (!structuredView)
+      return structuredView.takeError();
+    for (const frontend::StructuredEntity &entity :
+         structuredView->entities(frontend::StructuredEntityKind::Operation))
+      if (llvm::isa_and_nonnull<loom::SpatialRegionOp>(entity.operation))
+        spatialRegions.push_back(entity.reference);
+  }
+  if (spatialRegions.empty())
+    return invalid("ownership candidate has no Spatial graph projection");
+
   SourceBackedDfgValidationResult result;
   result.status = SourceBackedDfgValidationStatus::Equivalent;
   std::chrono::steady_clock::duration remainingSimulationWallTime =
       limits.maxSimulationWallTime;
-  auto replayActivation =
-      [&](NativeSimulationCallCapture &&call) -> llvm::Error {
-    if (result.wavefrontSteps >= limits.maxWavefrontSteps)
-      return executionLimit("aggregate wavefront budget exhausted");
-    auto replayWorkload =
-        finalizeReplayWorkload(replayPlan, call.denseCoordinates, *view);
-    if (!replayWorkload)
-      return replayWorkload.takeError();
-    if (call.memoryRootObjectOrdinals.size() != replayPlan.memoryRoots.size() ||
-        call.memoryRootByteOffsets.size() != replayPlan.memoryRoots.size())
-      return executionFailed("native memory-root capture is not total");
-    SpatialSimulationRuntimeInputDraft draft{replayWorkload->identity()};
-    draft.runtimeValues = call.runtimeValues;
-    draft.runtimeStreams = call.runtimeStreams;
-    draft.memoryObjects.reserve(call.objects.size());
-    for (const NativeCapturedMemoryObject &object : call.objects)
-      draft.memoryObjects.push_back(
-          capturedMemoryObject(object.initialBytes, object.initialPointers));
-    for (auto [ordinal, root] : llvm::enumerate(replayPlan.memoryRoots))
-      draft.memoryRootBindings.push_back(RuntimeMemoryBindingDraft{
-          root.root, call.memoryRootObjectOrdinals[ordinal],
-          call.memoryRootByteOffsets[ordinal]});
-    auto replayInput =
-        finalizeSimulationRuntimeInput(draft, *replayWorkload, *view);
-    if (!replayInput)
-      return replayInput.takeError();
-    if (publishReplayCase) {
-      auto replayCase = publishReplayCase(*replayWorkload, *replayInput);
-      if (!replayCase)
-        return replayCase.takeError();
-      result.replayCases.push_back(std::move(*replayCase));
-    }
-    auto nativeFinalObjects = canonicalizeNativeFinalObjects(
-        call, replayPlan, *replayInput->spatial(), launchContext->graphOp);
-    if (!nativeFinalObjects)
-      return nativeFinalObjects.takeError();
-    if (remainingSimulationWallTime ==
-        std::chrono::steady_clock::duration::zero())
-      return executionLimit("aggregate simulation wall-time budget exhausted");
-    const auto started = std::chrono::steady_clock::now();
-    std::optional<std::chrono::steady_clock::time_point> executionDeadline;
-    if (remainingSimulationWallTime !=
-        std::chrono::steady_clock::duration::max())
-      executionDeadline = started + remainingSimulationWallTime;
-    auto execution = simulateRetiredDfgWorkload(
-        *preparedDfg, *replayWorkload, *replayInput,
-        limits.maxWavefrontSteps - result.wavefrontSteps, executionDeadline);
-    const auto stopped = std::chrono::steady_clock::now();
-    const auto elapsed = stopped - started;
-    result.simulationSeconds += std::chrono::duration<double>(elapsed).count();
-    if (remainingSimulationWallTime !=
-        std::chrono::steady_clock::duration::max())
-      remainingSimulationWallTime =
-          elapsed >= remainingSimulationWallTime
-              ? std::chrono::steady_clock::duration::zero()
-              : remainingSimulationWallTime - elapsed;
-    auto accountExecution =
-        [&](const DFGSimulationReport &report) -> llvm::Error {
-      if (report.eventCount > limits.maxEventCount - result.eventCount)
-        return executionLimit("aggregate event budget exhausted");
-      if (result.dynamicActivations ==
-              std::numeric_limits<std::uint64_t>::max() ||
-          result.wavefrontSteps > std::numeric_limits<std::uint64_t>::max() -
-                                      report.wavefrontSteps ||
-          result.eventCount >
-              std::numeric_limits<std::uint64_t>::max() - report.eventCount)
-        return executionFailed("source-backed replay accounting overflowed");
-      ++result.dynamicActivations;
-      result.wavefrontSteps += report.wavefrontSteps;
-      result.eventCount += report.eventCount;
-      for (const auto &[schema, count] : report.operationFireCounts) {
-        std::uint64_t &aggregate = result.operationFireCounts[schema];
-        if (aggregate > std::numeric_limits<std::uint64_t>::max() - count)
-          return executionFailed(
-              "source-backed operation firing count overflowed");
-        aggregate += count;
+  for (frontend::StructuredEntityRef spatialRegion : spatialRegions) {
+    auto launch = selectReachableRootedLaunch(candidate, *view, spatialRegion,
+                                               *reachableRoots);
+    if (!launch)
+      return launch.takeError();
+    if (!*launch)
+      continue;
+    auto preparedDfg =
+        prepareDfgExecution(candidate.canonicalDataflow, **launch);
+    if (!preparedDfg)
+      return preparedDfg.takeError();
+    auto launchContext = detail::resolveLaunchContext(*view, **launch);
+    if (!launchContext)
+      return launchContext.takeError();
+    auto selected = deriveSelectedActivationCapture(
+        candidate, *view, **launch, spatialRegion);
+    if (!selected)
+      return selected.takeError();
+    const WorkloadBackedSimulationInputCapturePlan &replayPlan = selected->plan;
+    const std::uint64_t firstRegionActivation = result.dynamicActivations;
+    std::uint64_t capturedActivationCount = 0;
+
+    auto replayActivation =
+        [&](NativeSimulationCallCapture &&call) -> llvm::Error {
+      if (result.wavefrontSteps >= limits.maxWavefrontSteps)
+        return executionLimit("aggregate wavefront budget exhausted");
+      auto replayWorkload =
+          finalizeReplayWorkload(replayPlan, call.denseCoordinates, *view);
+      if (!replayWorkload)
+        return replayWorkload.takeError();
+      if (call.memoryRootObjectOrdinals.size() !=
+              replayPlan.memoryRoots.size() ||
+          call.memoryRootByteOffsets.size() != replayPlan.memoryRoots.size())
+        return executionFailed("native memory-root capture is not total");
+      SpatialSimulationRuntimeInputDraft draft{replayWorkload->identity()};
+      draft.runtimeValues = call.runtimeValues;
+      draft.runtimeStreams = call.runtimeStreams;
+      draft.memoryObjects.reserve(call.objects.size());
+      for (const NativeCapturedMemoryObject &object : call.objects)
+        draft.memoryObjects.push_back(
+            capturedMemoryObject(object.initialBytes, object.initialPointers));
+      for (auto [ordinal, root] : llvm::enumerate(replayPlan.memoryRoots))
+        draft.memoryRootBindings.push_back(RuntimeMemoryBindingDraft{
+            root.root, call.memoryRootObjectOrdinals[ordinal],
+            call.memoryRootByteOffsets[ordinal]});
+      auto replayInput =
+          finalizeSimulationRuntimeInput(draft, *replayWorkload, *view);
+      if (!replayInput)
+        return replayInput.takeError();
+      if (publishReplayCase) {
+        auto replayCase = publishReplayCase(*replayWorkload, *replayInput);
+        if (!replayCase)
+          return replayCase.takeError();
+        result.replayCases.push_back(std::move(*replayCase));
       }
+      auto nativeFinalObjects = canonicalizeNativeFinalObjects(
+          call, replayPlan, *replayInput->spatial(), launchContext->graphOp);
+      if (!nativeFinalObjects)
+        return nativeFinalObjects.takeError();
+      if (remainingSimulationWallTime ==
+          std::chrono::steady_clock::duration::zero())
+        return executionLimit(
+            "aggregate simulation wall-time budget exhausted");
+      const auto started = std::chrono::steady_clock::now();
+      std::optional<std::chrono::steady_clock::time_point> executionDeadline;
+      if (remainingSimulationWallTime !=
+          std::chrono::steady_clock::duration::max())
+        executionDeadline = started + remainingSimulationWallTime;
+      auto execution = simulateRetiredDfgWorkload(
+          *preparedDfg, *replayWorkload, *replayInput,
+          limits.maxWavefrontSteps - result.wavefrontSteps, executionDeadline);
+      const auto stopped = std::chrono::steady_clock::now();
+      const auto elapsed = stopped - started;
+      result.simulationSeconds +=
+          std::chrono::duration<double>(elapsed).count();
+      if (remainingSimulationWallTime !=
+          std::chrono::steady_clock::duration::max())
+        remainingSimulationWallTime =
+            elapsed >= remainingSimulationWallTime
+                ? std::chrono::steady_clock::duration::zero()
+                : remainingSimulationWallTime - elapsed;
+      auto accountExecution =
+          [&](const DFGSimulationReport &report) -> llvm::Error {
+        if (report.eventCount > limits.maxEventCount - result.eventCount)
+          return executionLimit("aggregate event budget exhausted");
+        if (result.dynamicActivations ==
+                std::numeric_limits<std::uint64_t>::max() ||
+            result.wavefrontSteps > std::numeric_limits<std::uint64_t>::max() -
+                                        report.wavefrontSteps ||
+            result.eventCount >
+                std::numeric_limits<std::uint64_t>::max() - report.eventCount)
+          return executionFailed("source-backed replay accounting overflowed");
+        ++result.dynamicActivations;
+        result.wavefrontSteps += report.wavefrontSteps;
+        result.eventCount += report.eventCount;
+        for (const auto &[schema, count] : report.operationFireCounts) {
+          std::uint64_t &aggregate = result.operationFireCounts[schema];
+          if (aggregate > std::numeric_limits<std::uint64_t>::max() - count)
+            return executionFailed(
+                "source-backed operation firing count overflowed");
+          aggregate += count;
+        }
+        return llvm::Error::success();
+      };
+      if (!execution) {
+        return llvm::handleErrors(
+            execution.takeError(),
+            [&](const NonRetiredDFGExecutionError &failure) -> llvm::Error {
+              if (llvm::Error error = accountExecution(failure.report()))
+                return error;
+              result.status = SourceBackedDfgValidationStatus::Mismatch;
+              return llvm::Error::success();
+            });
+      }
+      auto equivalent = compareObservations(
+          *replayWorkload->spatial(), execution->observations, replayPlan, call,
+          *replayInput->spatial(), *nativeFinalObjects, result);
+      if (!equivalent)
+        return equivalent.takeError();
+      if (!*equivalent)
+        result.status = SourceBackedDfgValidationStatus::Mismatch;
+      return accountExecution(execution->report);
+    };
+    std::optional<llvm::Error> deferredReplayFailure;
+    auto captureAndReplay =
+        [&](NativeSimulationCallCapture &&call) -> llvm::Error {
+      if (capturedActivationCount ==
+          std::numeric_limits<std::uint64_t>::max())
+        return executionFailed("selected activation count overflowed");
+      ++capturedActivationCount;
+      if (deferredReplayFailure)
+        return llvm::Error::success();
+      if (llvm::Error error = replayActivation(std::move(call)))
+        deferredReplayFailure.emplace(std::move(error));
       return llvm::Error::success();
     };
-    if (!execution) {
-      return llvm::handleErrors(
-          execution.takeError(),
-          [&](const NonRetiredDFGExecutionError &failure) -> llvm::Error {
-            if (llvm::Error error = accountExecution(failure.report()))
-              return error;
-            result.status = SourceBackedDfgValidationStatus::Mismatch;
-            return llvm::Error::success();
-          });
+    auto selectedObservations =
+        native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
+            std::move(selected->module), selected->spatial, selected->plan,
+            sourceProgram, workload, runtimeInput,
+            limits.maxRetainedCaptureBytes, captureAndReplay);
+    if (!selectedObservations) {
+      if (deferredReplayFailure)
+        return llvm::joinErrors(selectedObservations.takeError(),
+                                std::move(*deferredReplayFailure));
+      return selectedObservations.takeError();
     }
-    auto equivalent = compareObservations(
-        *replayWorkload->spatial(), execution->observations, replayPlan, call,
-        *replayInput->spatial(), *nativeFinalObjects, result);
-    if (!equivalent)
-      return equivalent.takeError();
-    if (!*equivalent)
+    const bool wholeProgramMismatch =
+        sourceObservations && !haveEquivalentFunctionalObservations(
+                                  *sourceObservations, *selectedObservations);
+    if (wholeProgramMismatch) {
+      if (deferredReplayFailure)
+        llvm::consumeError(std::move(*deferredReplayFailure));
       result.status = SourceBackedDfgValidationStatus::Mismatch;
-    return accountExecution(execution->report);
-  };
-  std::optional<llvm::Error> deferredReplayFailure;
-  auto captureAndReplay =
-      [&](NativeSimulationCallCapture &&call) -> llvm::Error {
-    if (activationCount == std::numeric_limits<std::uint64_t>::max())
-      return executionFailed("selected activation count overflowed");
-    ++activationCount;
+      if (capturedActivationCount >
+          std::numeric_limits<std::uint64_t>::max() - firstRegionActivation)
+        return executionFailed("source-backed activation count overflowed");
+      result.dynamicActivations =
+          firstRegionActivation + capturedActivationCount;
+      return result;
+    }
     if (deferredReplayFailure)
-      return llvm::Error::success();
-    if (llvm::Error error = replayActivation(std::move(call)))
-      deferredReplayFailure.emplace(std::move(error));
-    return llvm::Error::success();
-  };
-  auto selectedObservations =
-      native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
-          std::move(selected->module), selected->spatial, selected->plan,
-          sourceProgram, workload, runtimeInput, limits.maxRetainedCaptureBytes,
-          captureAndReplay);
-  if (!selectedObservations) {
-    if (deferredReplayFailure)
-      return llvm::joinErrors(selectedObservations.takeError(),
-                              std::move(*deferredReplayFailure));
-    return selectedObservations.takeError();
+      return std::move(*deferredReplayFailure);
+    if (result.status == SourceBackedDfgValidationStatus::Mismatch)
+      return result;
   }
-  const bool wholeProgramMismatch =
-      sourceObservations && !haveEquivalentFunctionalObservations(
-                                *sourceObservations, *selectedObservations);
-  if (wholeProgramMismatch) {
-    if (deferredReplayFailure)
-      llvm::consumeError(std::move(*deferredReplayFailure));
-    SourceBackedDfgValidationResult mismatch;
-    mismatch.status = SourceBackedDfgValidationStatus::Mismatch;
-    mismatch.dynamicActivations = activationCount;
-    return mismatch;
-  }
-  if (deferredReplayFailure)
-    return std::move(*deferredReplayFailure);
   if (result.dynamicActivations == 0 &&
       result.status == SourceBackedDfgValidationStatus::Equivalent)
     result.status = SourceBackedDfgValidationStatus::Inapplicable;

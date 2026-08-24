@@ -1459,6 +1459,15 @@ void runEvaluationAnchor() {
       spatialReplay.dynamicActivations != 1 ||
       spatialReplay.wavefrontSteps == 0 || spatialReplay.eventCount == 0)
     fail("functional replay did not execute the selected graph activation");
+  auto combinedReplay = take(loom::sim::validateSourceBackedDfgReplay(
+      compiled.structuredProgram, combined, inputs.workload,
+      inputs.runtimeInput,
+      {100000, 1000000, 256ULL * 1024ULL * 1024ULL}, &inputs.observations));
+  if (combinedReplay.status !=
+          loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
+      combinedReplay.dynamicActivations != 2 ||
+      combinedReplay.wavefrontSteps == 0 || combinedReplay.eventCount == 0)
+    fail("functional replay did not cover every reachable Spatial region");
   auto coldReplay = take(loom::sim::validateSourceBackedDfgReplay(
       compiled.structuredProgram, cold, inputs.workload, inputs.runtimeInput,
       {100000, 1000000, 256ULL * 1024ULL * 1024ULL}, &inputs.observations));
