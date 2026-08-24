@@ -102,14 +102,18 @@ makeSpatialCoreSystem(const fabric::FinalizedFabricRoot &module,
   auto host = system->addHostCore(*architecture, *microarchitecture);
   if (!host)
     return host.takeError();
-  std::vector<adg::HardwareDomainMember> domainMembers{host->domainMember()};
+  std::vector<adg::HardwareDomainMember> clockMembers{host->domainMember()};
+  std::vector<adg::HardwareDomainMember> resetMembers{host->domainMember()};
   for (std::uint64_t ordinal = 0; ordinal < spatialCoreCount; ++ordinal) {
     auto core =
         system->addAccCore(*architecture, *microarchitecture, *imported);
     if (!core)
       return core.takeError();
-    domainMembers.push_back(core->instructionCoreDomainMember());
-    domainMembers.push_back(core->spatialCoreDomainMember());
+    clockMembers.push_back(core->instructionCoreDomainMember());
+    clockMembers.push_back(core->spatialCoreDomainMember(
+        fabric::FabricClockResetKind::Clock));
+    resetMembers.push_back(core->instructionCoreDomainMember());
+    resetMembers.push_back(core->spatialCoreResetDomainMember());
   }
   auto clock = system->createHardwareDomain();
   if (!clock)
@@ -118,7 +122,7 @@ makeSpatialCoreSystem(const fabric::FinalizedFabricRoot &module,
   if (!clockContract)
     return clockContract.takeError();
   if (llvm::Error error =
-          clock->close(domainMembers, std::move(*clockContract)))
+          clock->close(clockMembers, std::move(*clockContract)))
     return std::move(error);
   auto reset = system->createHardwareDomain();
   if (!reset)
@@ -130,7 +134,7 @@ makeSpatialCoreSystem(const fabric::FinalizedFabricRoot &module,
   if (!resetContract)
     return resetContract.takeError();
   if (llvm::Error error =
-          reset->close(domainMembers, std::move(*resetContract)))
+          reset->close(resetMembers, std::move(*resetContract)))
     return std::move(error);
   if (llvm::Error error = system->close())
     return std::move(error);

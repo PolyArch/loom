@@ -435,7 +435,7 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
   std::vector<adg::HardwareDomainMember> resetMembers{host.domainMember()};
   for (const auto &core : cores) {
     resetMembers.push_back(core.instructionCoreDomainMember());
-    resetMembers.push_back(core.spatialCoreDomainMember());
+    resetMembers.push_back(core.spatialCoreResetDomainMember());
   }
   requireSuccess(
       test, reset.close(resetMembers,

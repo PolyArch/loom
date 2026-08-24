@@ -736,6 +736,10 @@ llvm::Error validateFabricRef(const FabricArtifactView &view,
 llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricInventoryOwnerRef &ref);
 llvm::Error validateFabricRef(const FabricArtifactView &view,
+                              const SpatialCoreDomainSlotOccurrenceRef &ref);
+llvm::Error validateFabricRef(const FabricArtifactView &view,
+                              const FabricHardwareDomainMemberRef &ref);
+llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricTransportEndpointRef &ref);
 llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricMemoryEndpointRef &ref);

@@ -71,8 +71,16 @@ public:
   llvm::ArrayRef<HardwareDomainRef> hardwareDomains() const;
   const HardwareDomainContractRecord *
   hardwareDomainContract(HardwareDomainRef domain) const;
-  llvm::ArrayRef<FabricInventoryOwnerRef>
+  llvm::ArrayRef<FabricHardwareDomainMemberRef>
   hardwareDomainMembers(HardwareDomainRef domain) const;
+  llvm::Expected<HardwareDomainRef> effectiveHardwareDomain(
+      const FabricClockResetDirectOwnerRef &owner,
+      FabricClockResetKind kind) const;
+  llvm::Expected<HardwareDomainRef> effectiveHardwareDomain(
+      SpatialCoreOccurrenceRef spatialCore, FabricClockResetKind kind) const;
+  llvm::Expected<HardwareDomainRef> effectiveHardwareDomain(
+      const SpatialCorePhysicalDomainTargetRef &target,
+      FabricClockResetKind kind) const;
   llvm::ArrayRef<SystemTransportResourceRef> transportResources() const;
   llvm::ArrayRef<FabricTransferPatternRef>
   transferPatterns(SystemTransportResourceRef resource) const;

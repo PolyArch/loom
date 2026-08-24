@@ -10,7 +10,7 @@ identity, finalization, and publication.
 The current persistent family is:
 
 ```text
-loom.fabric 5.0
+loom.fabric 6.0
 
 ArtifactSchemaDescriptor {
   identity = "loom.fabric"
@@ -59,7 +59,7 @@ string spelling and the authoring-only `pe_enable`, `instruction_mem`, and
 exists only in the Mapping-derived configured view and ConfigurationImage.
 Because this changes the canonical Module grammar and removes a competing
 configuration authority, the current owner accepts and emits only the exact
-`loom.fabric 5.0` descriptor. There is no 4.x compatibility owner, string
+`loom.fabric 6.0` descriptor. There is no 4.x compatibility owner, string
 alias, fallback importer, or in-place upgrade.
 
 The 4.0 `fabric.system.connection` relation retains both its Transport and
@@ -109,7 +109,7 @@ dependency, it stores the dependency-table ordinal plus that owner's canonical
 local target bytes. This compact form mechanically recovers the complete
 `ArtifactReference<T>` and does not create another reference authority.
 
-The dependency-role catalog remains unchanged in `loom.fabric 5.0`:
+The dependency-role catalog remains unchanged in `loom.fabric 6.0`:
 
 ```text
 ImportedModule       = 0
@@ -131,11 +131,11 @@ The enabled schema-5.0 dependency contracts are exact:
 
 ```text
 ImportedModule:
-  owner schema = loom.fabric 5.0
+  owner schema = loom.fabric 6.0
   required root = Module
 
 RefinedSystem:
-  owner schema = loom.fabric 5.0
+  owner schema = loom.fabric 6.0
   required root = System
 ```
 
@@ -278,7 +278,7 @@ The exact Fabric canonical semantic bytes passed to the Common Artifact
 SHA-256 v1 finalizer are:
 
 ```text
-bytes("loom.fabric.semantic.v5\0")
+bytes("loom.fabric.semantic.v6\0")
 || u32be(root_variant)
 || u64be(direct_dependency_count)
 || repeated direct_dependency_count times {
@@ -669,7 +669,7 @@ Anchor tests cover:
 * wrong-kind, foreign, duplicate, cyclic, and missing direct references;
 * fixed byte vectors for every root variant, zero and multiple dependencies,
   dependency-table target uses, and malformed count or length framing;
-* the `loom.fabric.semantic.v5` envelope, Module slot/assignment relation,
+* the `loom.fabric.semantic.v6` envelope, Module slot/assignment relation,
   System occurrence-slot membership, and memory-plane spatial service binding
   changing identity exactly when their semantic content changes;
 * strict field-owned dependency-use decoding, target re-encoding, and

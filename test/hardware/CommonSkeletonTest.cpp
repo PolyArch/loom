@@ -1385,22 +1385,12 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
 
   auto system =
       take(test, loom::fabric::requireSystemRoot(fabric.system.view()));
-  const loom::fabric::FabricInventoryOwnerRef spatialCoreOwner =
-      loom::fabric::FabricInventoryOwnerRef::of(fabric.spatialCore);
-  std::optional<loom::fabric::HardwareDomainRef> clockDomain;
-  std::optional<loom::fabric::HardwareDomainRef> resetDomain;
-  for (const loom::fabric::HardwareDomainRef domain :
-       system.hardwareDomains()) {
-    const auto *contract = system.hardwareDomainContract(domain);
-    if (!contract || !llvm::is_contained(contract->members(), spatialCoreOwner))
-      continue;
-    if (contract->kind() == loom::fabric::FabricHardwareDomainKind::Clock)
-      clockDomain = domain;
-    else if (contract->kind() == loom::fabric::FabricHardwareDomainKind::Reset)
-      resetDomain = domain;
-  }
-  require(test, clockDomain.has_value() && resetDomain.has_value(),
-          "internal operation System has no exact Clock/Reset domains");
+  auto clockDomain = take(
+      test, system.effectiveHardwareDomain(
+                fabric.spatialCore, loom::fabric::FabricClockResetKind::Clock));
+  auto resetDomain = take(
+      test, system.effectiveHardwareDomain(
+                fabric.spatialCore, loom::fabric::FabricClockResetKind::Reset));
 
   using loom::hardware::ImplementationClockInterfaceRef;
   using loom::hardware::ImplementationConfigurationInterfaceRef;
@@ -1409,10 +1399,10 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
   using loom::hardware::RepresentationLocator;
   using loom::hardware::RepresentationObjectKind;
   std::vector<ImplementationInterface> interfaces{
-      {ImplementationClockInterfaceRef{*clockDomain},
+      {ImplementationClockInterfaceRef{clockDomain},
        {RepresentationObjectKind::Port, "loom_module.clock"},
        std::nullopt},
-      {ImplementationResetInterfaceRef{*resetDomain},
+      {ImplementationResetInterfaceRef{resetDomain},
        {RepresentationObjectKind::Port, "loom_module.reset"},
        std::nullopt},
       {ImplementationConfigurationInterfaceRef{

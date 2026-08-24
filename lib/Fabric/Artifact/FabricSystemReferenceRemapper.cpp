@@ -85,6 +85,20 @@ FabricSystemReferenceRemapper::remap(
       reference.payload);
 }
 
+llvm::Expected<FabricHardwareDomainMemberRef>
+FabricSystemReferenceRemapper::remap(
+    const FabricHardwareDomainMemberRef &reference) const {
+  return std::visit(
+      [&](const auto &payload)
+          -> llvm::Expected<FabricHardwareDomainMemberRef> {
+        auto mapped = remap(payload);
+        if (!mapped)
+          return mapped.takeError();
+        return FabricHardwareDomainMemberRef::create(*mapped);
+      },
+      reference.payload());
+}
+
 llvm::Expected<FabricMemoryServiceRef>
 FabricSystemReferenceRemapper::remap(
     const FabricMemoryServiceRef &reference) const {

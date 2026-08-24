@@ -1,5 +1,8 @@
 #include "Fabric/Identity/FabricRefImport.h"
 
+#include "Fabric/Artifact/FabricModuleRootView.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
+
 #include "llvm/ADT/STLExtras.h"
 
 #include <cstdint>
@@ -156,6 +159,50 @@ llvm::Error
 loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                 const InstructionCoreContextRef &ref) {
   return validateFabricRef(view, ref.core);
+}
+
+llvm::Error loom::fabric::validateFabricRef(
+    const FabricArtifactView &view,
+    const SpatialCoreDomainSlotOccurrenceRef &ref) {
+  if (llvm::Error error = validateFabricRef(view, ref.spatialCore))
+    return error;
+  if (ref.kind != FabricClockResetKind::Clock &&
+      ref.kind != FabricClockResetKind::Reset)
+    return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
+                              "hardware-domain slot has an invalid kind");
+  auto system = requireSystemRoot(view);
+  if (!system)
+    return system.takeError();
+  auto target = system->spatialCoreTarget(ref.spatialCore.core);
+  if (!target || target->dependencyOrdinal >= view.importedModules().size())
+    return makeFabricRefError(FabricRefErrorKind::UnknownEntity,
+                              "hardware-domain slot has no imported Module");
+  auto module = requireModuleRoot(
+      view.importedModules()[target->dependencyOrdinal]);
+  if (!module)
+    return module.takeError();
+  const auto moduleTemplate = module->artifact().moduleRootTemplate();
+  if (!moduleTemplate || *moduleTemplate != target->target)
+    return makeFabricRefError(
+        FabricRefErrorKind::InvalidOwnerFamily,
+        "hardware-domain slot names a different Module template");
+  const FabricModuleDomainSlotRef expected{*moduleTemplate, ref.kind,
+                                           ref.ordinal};
+  bool declared = false;
+  for (const FabricModuleDomainSlotRef &slot : module->domainSlots())
+    declared |= slot == expected;
+  if (!declared)
+    return makeFabricRefError(FabricRefErrorKind::UnknownEntity,
+                              "hardware-domain slot is not declared by its Module");
+  return llvm::Error::success();
+}
+
+llvm::Error loom::fabric::validateFabricRef(
+    const FabricArtifactView &view,
+    const FabricHardwareDomainMemberRef &ref) {
+  return std::visit([&](const auto &member) {
+    return validateFabricRef(view, member);
+  }, ref.payload());
 }
 
 llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,

@@ -117,7 +117,7 @@ ConfigurationABI {
 ```
 
 In `loom.configuration_abi 3.0`, `fabric_ref` is an exact
-`loom.fabric 5.0` System root. A complete implementation cannot bind an
+`loom.fabric 6.0` System root. A complete implementation cannot bind an
 uninstantiated Module root. The physical references used by the two nested
 fields above are closed unions:
 

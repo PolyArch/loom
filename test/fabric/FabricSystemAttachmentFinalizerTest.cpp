@@ -196,14 +196,17 @@ loom::fabric::SystemServiceEndpointRef addDistinctEquivalentServiceEndpoint(
     auto contract = take(
         test, loom::fabric::decodeHardwareDomainContractRecord(
                   unsignedBytes(domain.getContractAttr())));
-    std::vector<loom::fabric::FabricInventoryOwnerRef> members(
+    std::vector<loom::fabric::FabricHardwareDomainMemberRef> members(
         contract.members().begin(), contract.members().end());
     bool containsOriginal = false;
+    const auto originalDomainMember =
+        loom::fabric::FabricHardwareDomainMemberRef::of(originalMember);
     for (const auto &member : members)
-      containsOriginal |= member == originalMember;
+      containsOriginal |= member == originalDomainMember;
     if (!containsOriginal)
       continue;
-    members.push_back(addedMember);
+    members.push_back(loom::fabric::FabricHardwareDomainMemberRef::of(
+        addedMember));
     auto expanded = take(
         test, loom::fabric::HardwareDomainContractRecord::create(
                   std::move(members), contract.contract()));

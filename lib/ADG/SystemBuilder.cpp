@@ -36,7 +36,18 @@ struct SystemHandleAccess final {
   makeDomainMember(const std::weak_ptr<DesignState> &state,
                    std::size_t rootOrdinal,
                    loom::fabric::FabricInventoryOwnerRef owner) {
-    return HardwareDomainMember(state.lock(), rootOrdinal, std::move(owner));
+    return HardwareDomainMember(
+        state.lock(), rootOrdinal,
+        loom::fabric::FabricHardwareDomainMemberRef::of(owner));
+  }
+
+  static HardwareDomainMember
+  makeDomainMember(const std::weak_ptr<DesignState> &state,
+                   std::size_t rootOrdinal,
+                   loom::fabric::SpatialCoreDomainSlotOccurrenceRef slot) {
+    return HardwareDomainMember(
+        state.lock(), rootOrdinal,
+        loom::fabric::FabricHardwareDomainMemberRef::of(slot));
   }
 };
 
@@ -151,6 +162,14 @@ makeDomainMember(const std::weak_ptr<detail::DesignState> &weak,
                                                       std::move(owner));
 }
 
+HardwareDomainMember
+makeDomainMember(const std::weak_ptr<detail::DesignState> &weak,
+                 std::size_t rootOrdinal,
+                 loom::fabric::SpatialCoreDomainSlotOccurrenceRef slot) {
+  return detail::SystemHandleAccess::makeDomainMember(weak, rootOrdinal,
+                                                      std::move(slot));
+}
+
 loom::fabric::FabricTransportEndpointOwnerRef
 spatialTransportOwner(loom::fabric::FabricEntityId core) {
   return loom::fabric::FabricTransportEndpointOwnerRef::of(
@@ -208,11 +227,19 @@ HardwareDomainMember AccCore::instructionCoreDomainMember() const {
 }
 
 HardwareDomainMember AccCore::spatialCoreDomainMember() const {
+  return spatialCoreDomainMember(
+      loom::fabric::FabricClockResetKind::Clock, 0);
+}
+
+HardwareDomainMember AccCore::spatialCoreDomainMember(
+    loom::fabric::FabricClockResetKind kind,
+    loom::fabric::FabricOrdinal ordinal) const {
   return makeDomainMember(
       state_, rootOrdinal_,
-      loom::fabric::FabricInventoryOwnerRef::of(
+      loom::fabric::SpatialCoreDomainSlotOccurrenceRef{
           loom::fabric::SpatialCoreOccurrenceRef{
-              loom::fabric::AccCoreOccurrenceRef(entity_)}));
+              loom::fabric::AccCoreOccurrenceRef(entity_)},
+          kind, ordinal});
 }
 
 HardwareDomainMember SystemMemoryService::domainMember() const {
@@ -1245,12 +1272,12 @@ HardwareDomainBuilder::close(llvm::ArrayRef<HardwareDomainMember> members,
     return entity.takeError();
   if ((*entity)->closed)
     return detail::invalid("hardware domain is already closed");
-  std::vector<loom::fabric::FabricInventoryOwnerRef> references;
+  std::vector<loom::fabric::FabricHardwareDomainMemberRef> references;
   references.reserve(members.size());
   for (const HardwareDomainMember &member : members) {
     if (llvm::Error error = checkOwned(member, *state, rootOrdinal_))
       return error;
-    references.push_back(member.owner_);
+    references.push_back(member.member_);
   }
   auto record = loom::fabric::HardwareDomainContractRecord::create(
       std::move(references), std::move(contract));

@@ -939,12 +939,12 @@ public:
 private:
   HardwareDomainMember(const std::shared_ptr<detail::DesignState> &state,
                        std::size_t rootOrdinal,
-                       loom::fabric::FabricInventoryOwnerRef owner)
-      : state_(state), rootOrdinal_(rootOrdinal), owner_(std::move(owner)) {}
+                       loom::fabric::FabricHardwareDomainMemberRef member)
+      : state_(state), rootOrdinal_(rootOrdinal), member_(std::move(member)) {}
 
   std::weak_ptr<detail::DesignState> state_;
   std::size_t rootOrdinal_ = 0;
-  loom::fabric::FabricInventoryOwnerRef owner_;
+  loom::fabric::FabricHardwareDomainMemberRef member_;
 
   friend class HostCore;
   friend class AccCore;
@@ -1030,6 +1030,12 @@ public:
   HardwareDomainMember domainMember() const;
   HardwareDomainMember instructionCoreDomainMember() const;
   HardwareDomainMember spatialCoreDomainMember() const;
+  HardwareDomainMember spatialCoreDomainMember(
+      loom::fabric::FabricClockResetKind kind,
+      loom::fabric::FabricOrdinal ordinal = 0) const;
+  HardwareDomainMember spatialCoreResetDomainMember() const {
+    return spatialCoreDomainMember(loom::fabric::FabricClockResetKind::Reset);
+  }
 
   llvm::Expected<SystemTransportEndpoint>
   spatialTransportInput(std::size_t ordinal) const;

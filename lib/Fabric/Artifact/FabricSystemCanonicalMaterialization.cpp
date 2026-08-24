@@ -409,8 +409,8 @@ llvm::Error remapHardwareDomain(::fabric::SystemHardwareDomainOp domain,
       unsignedBytes(domain.getContractAttr()));
   if (!record)
     return record.takeError();
-  std::vector<FabricInventoryOwnerRef> members;
-  for (const FabricInventoryOwnerRef &member : record->members()) {
+  std::vector<FabricHardwareDomainMemberRef> members;
+  for (const FabricHardwareDomainMemberRef &member : record->members()) {
     auto mapped = remapper.remap(member);
     if (!mapped)
       return mapped.takeError();

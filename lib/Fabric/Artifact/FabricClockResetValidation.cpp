@@ -42,6 +42,15 @@ ordinaryClock(const ClockMembership &membership,
              : std::optional<ClockDomainRef>(found->second);
 }
 
+std::optional<ClockDomainRef>
+ordinaryClock(const ClockMembership &membership,
+              const FabricHardwareDomainMemberRef &member) {
+  auto found = membership.find(canonicalFabricBytes(member));
+  return found == membership.end()
+             ? std::nullopt
+             : std::optional<ClockDomainRef>(found->second);
+}
+
 llvm::Expected<std::optional<ClockDomainRef>>
 effectiveClock(const FabricSystemRootView &system,
                const ClockMembership &membership,
@@ -62,7 +71,18 @@ effectiveClock(const FabricSystemRootView &system,
                                                ? crossing->sourceClock()
                                                : crossing->destinationClock());
   }
-  return ordinaryClock(membership, projectFabricInventoryOwner(endpoint.owner));
+  if (endpoint.owner.kind() ==
+      FabricTransportEndpointOwnerKind::SpatialCoreOccurrence) {
+    const auto core = std::get<SpatialCoreOccurrenceRef>(endpoint.owner.payload);
+    auto domain = system.effectiveHardwareDomain(core, FabricClockResetKind::Clock);
+    if (!domain)
+      return domain.takeError();
+    return std::optional<ClockDomainRef>(ClockDomainRef(*domain));
+  }
+  return ordinaryClock(
+      membership,
+      FabricHardwareDomainMemberRef::of(
+          projectFabricInventoryOwner(endpoint.owner)));
 }
 
 llvm::Expected<std::optional<ClockDomainRef>>
@@ -72,7 +92,17 @@ effectiveClock(const FabricSystemRootView &system,
   const FabricArtifactView &artifact = system.artifact();
   if (!artifact.memoryEndpointRole(endpoint))
     return invalid("clock validation received an unknown memory endpoint");
-  return ordinaryClock(membership, projectFabricInventoryOwner(endpoint.owner));
+  if (endpoint.owner.kind() == FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence) {
+    const auto core = std::get<SpatialCoreOccurrenceRef>(endpoint.owner.payload);
+    auto domain = system.effectiveHardwareDomain(core, FabricClockResetKind::Clock);
+    if (!domain)
+      return domain.takeError();
+    return std::optional<ClockDomainRef>(ClockDomainRef(*domain));
+  }
+  return ordinaryClock(
+      membership,
+      FabricHardwareDomainMemberRef::of(
+          projectFabricInventoryOwner(endpoint.owner)));
 }
 
 template <typename Owner>
@@ -416,10 +446,10 @@ validateClockReset(FabricSystemRootView system) {
     if (record->kind() != FabricHardwareDomainKind::Clock)
       continue;
     const ClockDomainRef clock(domain);
-    for (const FabricInventoryOwnerRef &member : record->members()) {
+    for (const FabricHardwareDomainMemberRef &member : record->members()) {
       if (llvm::Error error = validateFabricRef(artifact, member))
         return std::move(error);
-      if (!clockMembership.emplace(ownerKey(member), clock).second)
+      if (!clockMembership.emplace(canonicalFabricBytes(member), clock).second)
         return invalid("one Fabric owner belongs to multiple Clock domains");
     }
   }
@@ -436,9 +466,24 @@ validateClockReset(FabricSystemRootView system) {
       if (llvm::Error error =
               validateFabricRef(artifact, *reset->synchronousTo()))
         return std::move(error);
-      for (const FabricInventoryOwnerRef &member : record->members()) {
-        std::optional<ClockDomainRef> memberClock =
-            ordinaryClock(clockMembership, member);
+      for (const FabricHardwareDomainMemberRef &member : record->members()) {
+        std::optional<ClockDomainRef> memberClock;
+        std::visit(
+            [&](const auto &payload) {
+              using Payload = std::decay_t<decltype(payload)>;
+              if constexpr (std::is_same_v<Payload,
+                                           FabricInventoryOwnerRef>) {
+                memberClock = ordinaryClock(clockMembership, member);
+              } else {
+                auto effective = system.effectiveHardwareDomain(
+                    payload.spatialCore, FabricClockResetKind::Clock);
+                if (effective)
+                  memberClock = ClockDomainRef(*effective);
+                else
+                  llvm::consumeError(effective.takeError());
+              }
+            },
+            member.payload());
         if (!memberClock || *memberClock != *reset->synchronousTo())
           return invalid("synchronous reset member is not in its declared "
                          "Clock domain");

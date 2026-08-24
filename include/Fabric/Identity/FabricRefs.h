@@ -1713,7 +1713,11 @@ public:
           Type>,                                                               \
       "alternative order must match the discriminants");                       \
   static llvm::Expected<FabricHardwareDomainMemberRef> create(                 \
-      const Type &value);
+      const Type &value);                                                       \
+  static FabricHardwareDomainMemberRef of(const Type &value) {                 \
+    return FabricHardwareDomainMemberRef(                                      \
+        Payload(std::in_place_type<Type>, value));                              \
+  }
 #include "Fabric/Identity/FabricRefs.def"
 
   const Payload &payload() const { return payload_; }

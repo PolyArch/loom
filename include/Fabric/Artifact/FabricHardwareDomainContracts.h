@@ -62,19 +62,23 @@ using HardwareDomainContract =
 class HardwareDomainContractRecord {
 public:
   static llvm::Expected<HardwareDomainContractRecord>
-  create(std::vector<FabricInventoryOwnerRef> members,
+  create(std::vector<FabricHardwareDomainMemberRef> members,
          HardwareDomainContract contract);
 
   FabricHardwareDomainKind kind() const;
-  llvm::ArrayRef<FabricInventoryOwnerRef> members() const { return members_; }
+  llvm::ArrayRef<FabricHardwareDomainMemberRef> members() const {
+    return members_;
+  }
+  bool contains(const FabricInventoryOwnerRef &owner) const;
   const HardwareDomainContract &contract() const { return contract_; }
 
 private:
-  HardwareDomainContractRecord(std::vector<FabricInventoryOwnerRef> members,
+  HardwareDomainContractRecord(
+      std::vector<FabricHardwareDomainMemberRef> members,
                                HardwareDomainContract contract)
       : members_(std::move(members)), contract_(std::move(contract)) {}
 
-  std::vector<FabricInventoryOwnerRef> members_;
+  std::vector<FabricHardwareDomainMemberRef> members_;
   HardwareDomainContract contract_;
 };
 

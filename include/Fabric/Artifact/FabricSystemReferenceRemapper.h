@@ -60,6 +60,8 @@ public:
   remap(const FabricMemoryEndpointOwnerRef &reference) const;
   llvm::Expected<FabricInventoryOwnerRef>
   remap(const FabricInventoryOwnerRef &reference) const;
+  llvm::Expected<FabricHardwareDomainMemberRef>
+  remap(const FabricHardwareDomainMemberRef &reference) const;
   llvm::Expected<FabricMemoryServiceRef>
   remap(const FabricMemoryServiceRef &reference) const;
   llvm::Expected<FabricTransferPatternRef>

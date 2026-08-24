@@ -208,30 +208,22 @@ physicalCode(const FiniteCodebookEncoding &codebook,
 llvm::Expected<ClockResetPlan>
 prepareClockReset(const fabric::FabricSystemRootView &system,
                   fabric::SpatialCoreOccurrenceRef spatialCore) {
-  const fabric::FabricInventoryOwnerRef owner =
-      fabric::FabricInventoryOwnerRef::of(spatialCore);
-  const fabric::HardwareDomainContractRecord *clock = nullptr;
-  const fabric::HardwareDomainContractRecord *reset = nullptr;
-  std::optional<fabric::ClockDomainRef> clockReference;
-  for (fabric::HardwareDomainRef domain : system.hardwareDomains()) {
-    const fabric::HardwareDomainContractRecord *contract =
-        system.hardwareDomainContract(domain);
-    if (!contract || !llvm::is_contained(contract->members(), owner))
-      continue;
-    if (contract->kind() == fabric::FabricHardwareDomainKind::Clock) {
-      if (clock)
-        return invalid("SpatialCore belongs to multiple Clock domains");
-      clock = contract;
-      clockReference = fabric::ClockDomainRef(domain);
-    } else if (contract->kind() == fabric::FabricHardwareDomainKind::Reset) {
-      if (reset)
-        return invalid("SpatialCore belongs to multiple Reset domains");
-      reset = contract;
-    }
-  }
-  if (!clock || !reset || !clockReference)
+  auto clockReference = system.effectiveHardwareDomain(
+      spatialCore, fabric::FabricClockResetKind::Clock);
+  if (!clockReference)
     return unsupported("hierarchy lowering requires exact Clock and Reset "
                        "domains");
+  auto resetReference = system.effectiveHardwareDomain(
+      spatialCore, fabric::FabricClockResetKind::Reset);
+  if (!resetReference)
+    return unsupported("hierarchy lowering requires exact Clock and Reset "
+                       "domains");
+  const fabric::HardwareDomainContractRecord *clock =
+      system.hardwareDomainContract(*clockReference);
+  const fabric::HardwareDomainContractRecord *reset =
+      system.hardwareDomainContract(*resetReference);
+  if (!clock || !reset)
+    return invalid("effective Clock or Reset domain disappeared");
   if (!std::get_if<fabric::ClockDomainContractRecord>(&clock->contract()))
     return invalid("Clock domain carries a non-Clock contract");
   const auto *resetContract =
@@ -250,7 +242,8 @@ prepareClockReset(const fabric::FabricSystemRootView &system,
       resetContract->deassertion() == fabric::ResetTiming::Synchronous;
   if (!asynchronous && !synchronous)
     return unsupported("mixed Reset timing is unsupported");
-  if (synchronous && resetContract->synchronousTo() != clockReference)
+  if (synchronous && resetContract->synchronousTo() !=
+                         fabric::ClockDomainRef(*clockReference))
     return invalid("synchronous Reset names a different Clock domain");
   return ClockResetPlan{asynchronous, resetContract->polarity() ==
                                           fabric::ResetPolarity::ActiveLow};

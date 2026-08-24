@@ -789,11 +789,17 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
   if (!bits128)
     return bits128.takeError();
   std::vector<HardwareDomainMember> clockMembers;
+  std::vector<HardwareDomainMember> resetMembers;
   clockMembers.reserve(cores.size() * (2 + scale.gatewayCount * 2) + 3);
+  resetMembers.reserve(cores.size() * (2 + scale.gatewayCount * 2) + 3);
   clockMembers.push_back(host->domainMember());
+  resetMembers.push_back(host->domainMember());
   for (const AccCore &core : cores) {
     clockMembers.push_back(core.instructionCoreDomainMember());
-    clockMembers.push_back(core.spatialCoreDomainMember());
+    clockMembers.push_back(core.spatialCoreDomainMember(
+        loom::fabric::FabricClockResetKind::Clock));
+    resetMembers.push_back(core.instructionCoreDomainMember());
+    resetMembers.push_back(core.spatialCoreResetDomainMember());
   }
   std::vector<SystemTransportEndpoint> memoryRequestCarriers;
   std::vector<SystemTransportEndpoint> memoryResponseCarriers;
@@ -836,6 +842,8 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
         return std::move(error);
       clockMembers.push_back(transport->domainMember());
       clockMembers.push_back(pattern->domainMember());
+      resetMembers.push_back(transport->domainMember());
+      resetMembers.push_back(pattern->domainMember());
     }
   }
 
@@ -1049,7 +1057,7 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
       loom::fabric::ClockDomainRef(clock->reference()), 0);
   if (!resetContract)
     return resetContract.takeError();
-  if (llvm::Error error = reset->close(clockMembers, *resetContract))
+  if (llvm::Error error = reset->close(resetMembers, *resetContract))
     return std::move(error);
   return std::move(*system);
 }

@@ -22,21 +22,11 @@ llvm::Expected<fabric::HardwareDomainRef>
 findDomain(const fabric::FabricSystemRootView &system,
            fabric::SpatialCoreOccurrenceRef subject,
            fabric::FabricHardwareDomainKind kind) {
-  const fabric::FabricInventoryOwnerRef owner =
-      fabric::FabricInventoryOwnerRef::of(subject);
-  std::optional<fabric::HardwareDomainRef> result;
-  for (fabric::HardwareDomainRef domain : system.hardwareDomains()) {
-    const auto *contract = system.hardwareDomainContract(domain);
-    if (!contract || contract->kind() != kind ||
-        !llvm::is_contained(contract->members(), owner))
-      continue;
-    if (result)
-      return invalid("SpatialCore belongs to multiple required domains");
-    result = domain;
-  }
-  if (!result)
-    return invalid("SpatialCore has no required Clock or Reset domain");
-  return *result;
+  const fabric::FabricClockResetKind resetKind =
+      kind == fabric::FabricHardwareDomainKind::Clock
+          ? fabric::FabricClockResetKind::Clock
+          : fabric::FabricClockResetKind::Reset;
+  return system.effectiveHardwareDomain(subject, resetKind);
 }
 
 llvm::Expected<fabric::SpatialCoreOccurrenceRef>

@@ -913,9 +913,17 @@ bool domainContainsSubject(const fabric::FabricSystemRootView &system,
                            fabric::HardwareDomainRef domain,
                            fabric::SpatialCoreOccurrenceRef subject) {
   const auto *contract = system.hardwareDomainContract(domain);
-  return contract && llvm::is_contained(
-                         contract->members(),
-                         fabric::FabricInventoryOwnerRef::of(subject));
+  if (!contract)
+    return false;
+  const auto kind = contract->kind();
+  if (kind != fabric::FabricHardwareDomainKind::Clock &&
+      kind != fabric::FabricHardwareDomainKind::Reset)
+    return false;
+  auto effective = system.effectiveHardwareDomain(
+      subject, kind == fabric::FabricHardwareDomainKind::Clock
+                   ? fabric::FabricClockResetKind::Clock
+                   : fabric::FabricClockResetKind::Reset);
+  return effective && *effective == domain;
 }
 
 bool physicalOwnerBelongsTo(

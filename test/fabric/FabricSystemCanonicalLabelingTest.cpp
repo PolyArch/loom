@@ -177,10 +177,12 @@ std::string serviceEndpointSystemSource(std::uint32_t carrierWidth) {
       take(test, loom::fabric::ClockDomainContractRecord::create(1'000, 0));
   loom::fabric::HardwareDomainContractRecord hardwareDomain =
       take(test, loom::fabric::HardwareDomainContractRecord::create(
-                     {loom::fabric::FabricInventoryOwnerRef::of(
-                          loom::fabric::ExternalBoundaryRef(boundaryId)),
-                      loom::fabric::FabricInventoryOwnerRef::of(
-                          SystemServiceEndpointRef(endpointId))},
+                     {loom::fabric::FabricHardwareDomainMemberRef::of(
+                          loom::fabric::FabricInventoryOwnerRef::of(
+                              loom::fabric::ExternalBoundaryRef(boundaryId))),
+                      loom::fabric::FabricHardwareDomainMemberRef::of(
+                          loom::fabric::FabricInventoryOwnerRef::of(
+                              SystemServiceEndpointRef(endpointId)))},
                      std::move(clockContract)));
   std::vector<std::uint8_t> domainBytes = take(
       test, loom::fabric::encodeHardwareDomainContractRecord(hardwareDomain));

@@ -993,7 +993,7 @@ llvm::Error validateSystemRelations(
       auto id = canonicalEntityId(domain);
       if (!id)
         return id.takeError();
-      for (const FabricInventoryOwnerRef &member : record->members()) {
+      for (const FabricHardwareDomainMemberRef &member : record->members()) {
         if (llvm::Error error = validateFabricRef(view, member))
           return error;
       }

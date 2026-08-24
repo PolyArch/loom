@@ -297,14 +297,15 @@ AddressDomainContractRecord::create(std::uint32_t addressWidth,
 
 llvm::Expected<HardwareDomainContractRecord>
 HardwareDomainContractRecord::create(
-    std::vector<FabricInventoryOwnerRef> members,
+    std::vector<FabricHardwareDomainMemberRef> members,
     HardwareDomainContract contract) {
   if (members.empty())
     return invalid("hardware domain member set must not be empty");
-  std::vector<std::pair<std::vector<std::uint8_t>, FabricInventoryOwnerRef>>
+  std::vector<std::pair<std::vector<std::uint8_t>,
+                        FabricHardwareDomainMemberRef>>
       ordered;
   ordered.reserve(members.size());
-  for (FabricInventoryOwnerRef &member : members)
+  for (FabricHardwareDomainMemberRef &member : members)
     ordered.emplace_back(canonicalFabricBytes(member), std::move(member));
   llvm::sort(ordered, [](const auto &left, const auto &right) {
     return left.first < right.first;
@@ -331,13 +332,21 @@ FabricHardwareDomainKind HardwareDomainContractRecord::kind() const {
   return FabricHardwareDomainKind::MemoryConsistency;
 }
 
+bool HardwareDomainContractRecord::contains(
+    const FabricInventoryOwnerRef &owner) const {
+  auto member = FabricHardwareDomainMemberRef::create(owner);
+  if (!member)
+    return false;
+  return llvm::is_contained(members_, *member);
+}
+
 llvm::Expected<std::vector<std::uint8_t>>
 loom::fabric::encodeHardwareDomainContractRecord(
     const HardwareDomainContractRecord &record) {
   Writer writer;
   writer.u32(static_cast<std::uint32_t>(record.kind()));
   writer.u64(record.members().size());
-  for (const FabricInventoryOwnerRef &member : record.members())
+  for (const FabricHardwareDomainMemberRef &member : record.members())
     writer.blob(canonicalFabricBytes(member));
   auto payload = encodeContractPayload(record);
   if (!payload)
@@ -357,13 +366,13 @@ loom::fabric::decodeHardwareDomainContractRecord(
   auto memberCount = reader.count(8, "hardware domain member count");
   if (!memberCount)
     return memberCount.takeError();
-  std::vector<FabricInventoryOwnerRef> members;
+  std::vector<FabricHardwareDomainMemberRef> members;
   members.reserve(static_cast<std::size_t>(*memberCount));
   for (std::uint64_t index = 0; index < *memberCount; ++index) {
     auto memberBytes = reader.blob("hardware domain member");
     if (!memberBytes)
       return memberBytes.takeError();
-    auto member = decodeFabricRef<FabricInventoryOwnerRef>(*memberBytes);
+    auto member = decodeFabricRef<FabricHardwareDomainMemberRef>(*memberBytes);
     if (!member)
       return member.takeError();
     members.push_back(std::move(*member));

@@ -478,9 +478,19 @@ llvm::Expected<Graph> buildSystemGraph(const FinalizedFabricRoot &root) {
     auto domainNode = nodeByEntity.find(domain.id());
     if (domainNode == nodeByEntity.end())
       continue;
-    for (const FabricInventoryOwnerRef &member :
+    for (const FabricHardwareDomainMemberRef &member :
          system->hardwareDomainMembers(domain)) {
-      auto memberId = inventoryOwnerEntity(member);
+      auto memberId = std::visit(
+          [](const auto &payload) -> std::optional<FabricEntityId> {
+            using Member = std::decay_t<decltype(payload)>;
+            if constexpr (std::is_same_v<
+                              Member,
+                              SpatialCoreDomainSlotOccurrenceRef>)
+              return payload.spatialCore.core.id();
+            else
+              return inventoryOwnerEntity(payload);
+          },
+          member.payload());
       if (!memberId)
         continue;
       auto memberNode = nodeByEntity.find(*memberId);

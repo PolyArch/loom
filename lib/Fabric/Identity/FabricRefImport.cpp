@@ -1,4 +1,5 @@
 #include "Fabric/Identity/FabricRefImport.h"
+#include "Fabric/Artifact/FabricModuleRootView.h"
 
 #include "Fabric/Artifact/FabricSystemRootView.h"
 
@@ -844,11 +845,200 @@ FabricSystemRootView::hardwareDomainContract(HardwareDomainRef domain) const {
              : nullptr;
 }
 
-llvm::ArrayRef<FabricInventoryOwnerRef>
+llvm::ArrayRef<FabricHardwareDomainMemberRef>
 FabricSystemRootView::hardwareDomainMembers(HardwareDomainRef domain) const {
   const HardwareDomainContractRecord *contract = hardwareDomainContract(domain);
   return contract ? contract->members()
-                  : llvm::ArrayRef<FabricInventoryOwnerRef>();
+                  : llvm::ArrayRef<FabricHardwareDomainMemberRef>();
+}
+
+namespace {
+
+llvm::Expected<HardwareDomainRef> findHardwareDomainMember(
+    const FabricSystemRootView &system,
+    const FabricHardwareDomainMemberRef &member, FabricClockResetKind kind) {
+  FabricHardwareDomainKind requiredKind = FabricHardwareDomainKind::Clock;
+  if (kind == FabricClockResetKind::Clock) {
+    requiredKind = FabricHardwareDomainKind::Clock;
+  } else if (kind == FabricClockResetKind::Reset) {
+    requiredKind = FabricHardwareDomainKind::Reset;
+  } else {
+    return makeFabricRefError(FabricRefErrorKind::InvalidOwnerFamily,
+                              "hardware domain lookup requires Clock or Reset");
+  }
+  std::optional<HardwareDomainRef> result;
+  for (HardwareDomainRef domain : system.hardwareDomains()) {
+    const auto *contract = system.hardwareDomainContract(domain);
+    const auto declaredKind = system.artifact().hardwareDomainKind(domain);
+    if (!contract || !declaredKind || *declaredKind != requiredKind)
+      continue;
+    if (!llvm::is_contained(contract->members(), member))
+      continue;
+    if (result)
+      return makeFabricRefError(
+          FabricRefErrorKind::InvalidOwnerFamily,
+          "one physical target belongs to multiple same-kind hardware domains");
+    result = domain;
+  }
+  if (!result)
+    return makeFabricRefError(FabricRefErrorKind::UnknownEntity,
+                              "physical target has no effective hardware domain");
+  return *result;
+}
+
+llvm::Expected<FabricModuleDomainMemberRef> moduleDomainMemberForTarget(
+    const FabricSystemRootView &system,
+    const SpatialCorePhysicalDomainTargetRef &target,
+    SpatialCoreOccurrenceRef &core) {
+  return std::visit(
+      [&](const auto &payload)
+          -> llvm::Expected<FabricModuleDomainMemberRef> {
+        using Target = std::decay_t<decltype(payload)>;
+        if constexpr (std::is_same_v<Target, FabricTransportEndpointRef>) {
+          for (const FabricSpatialAttachmentRecordView &attachment :
+               system.spatialAttachments()) {
+            if (attachment.spatialEndpoint.transport() &&
+                *attachment.spatialEndpoint.transport() == payload) {
+              if (payload.owner.kind() !=
+                  FabricTransportEndpointOwnerKind::SpatialCoreOccurrence)
+                return makeFabricRefError(
+                    FabricRefErrorKind::InvalidOwnerFamily,
+                    "transport target is not owned by a SpatialCore");
+              core = std::get<SpatialCoreOccurrenceRef>(payload.owner.payload);
+              return FabricModuleDomainMemberRef::of(
+                  attachment.moduleEndpoint.target);
+            }
+          }
+          return makeFabricRefError(
+              FabricRefErrorKind::UnknownEntity,
+              "SpatialCore boundary target has no exact System attachment");
+        } else if constexpr (std::is_same_v<Target, FabricMemoryEndpointRef>) {
+          for (const FabricSpatialAttachmentRecordView &attachment :
+               system.spatialAttachments()) {
+            if (attachment.spatialEndpoint.memory() &&
+                *attachment.spatialEndpoint.memory() == payload) {
+              if (payload.owner.kind() !=
+                  FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
+                return makeFabricRefError(
+                    FabricRefErrorKind::InvalidOwnerFamily,
+                    "memory target is not owned by a SpatialCore");
+              core = std::get<SpatialCoreOccurrenceRef>(payload.owner.payload);
+              return FabricModuleDomainMemberRef::of(
+                  attachment.moduleEndpoint.target);
+            }
+          }
+          return makeFabricRefError(
+              FabricRefErrorKind::UnknownEntity,
+              "SpatialCore memory target has no exact System attachment");
+        } else {
+          core = payload.spatialCore;
+          if (payload.target.kind() != FabricModulePhysicalTargetKind::Owner)
+            return makeFabricRefError(
+                FabricRefErrorKind::InvalidOwnerFamily,
+                "domain lookup requires a Module physical owner target");
+          return FabricModuleDomainMemberRef::of(
+              std::get<FabricModulePhysicalOwnerRef>(payload.target.payload()));
+        }
+      },
+      target.payload());
+}
+
+} // namespace
+
+llvm::Expected<HardwareDomainRef>
+FabricSystemRootView::effectiveHardwareDomain(
+    const FabricClockResetDirectOwnerRef &owner,
+    FabricClockResetKind kind) const {
+  auto member = FabricHardwareDomainMemberRef::create(owner.underlying());
+  if (!member)
+    return member.takeError();
+  return findHardwareDomainMember(*this, *member, kind);
+}
+
+llvm::Expected<HardwareDomainRef>
+FabricSystemRootView::effectiveHardwareDomain(
+    SpatialCoreOccurrenceRef spatialCore, FabricClockResetKind kind) const {
+  auto selected = spatialCoreTarget(spatialCore.core);
+  if (!selected || selected->dependencyOrdinal >= artifact_.importedModules().size())
+    return makeFabricRefError(FabricRefErrorKind::UnknownEntity,
+                              "SpatialCore has no imported Module target");
+  auto module = requireModuleRoot(
+      artifact_.importedModules()[selected->dependencyOrdinal]);
+  if (!module)
+    return module.takeError();
+
+  std::optional<HardwareDomainRef> result;
+  bool foundSlot = false;
+  for (const FabricModuleDomainSlotRef &declared : module->domainSlots()) {
+    if (declared.kind != kind)
+      continue;
+    foundSlot = true;
+    const bool assigned = llvm::any_of(
+        module->domainAssignments(), [&](const ModuleDomainAssignment &assignment) {
+          return assignment.slot == declared;
+        });
+    if (!assigned)
+      return makeFabricRefError(
+          FabricRefErrorKind::UnknownEntity,
+          "SpatialCore Module domain slot has no assignment");
+
+    auto member = FabricHardwareDomainMemberRef::create(
+        SpatialCoreDomainSlotOccurrenceRef{spatialCore, kind,
+                                           declared.ordinal});
+    if (!member)
+      return member.takeError();
+    auto domain = findHardwareDomainMember(*this, *member, kind);
+    if (!domain)
+      return domain.takeError();
+    if (result && *result != *domain)
+      return makeFabricRefError(
+          FabricRefErrorKind::InvalidOwnerFamily,
+          "one SpatialCore kind resolves to multiple effective domains");
+    result = *domain;
+  }
+  if (!foundSlot || !result)
+    return makeFabricRefError(FabricRefErrorKind::UnknownEntity,
+                              "SpatialCore has no declared domain slot");
+  return *result;
+}
+
+llvm::Expected<HardwareDomainRef>
+FabricSystemRootView::effectiveHardwareDomain(
+    const SpatialCorePhysicalDomainTargetRef &target,
+    FabricClockResetKind kind) const {
+  SpatialCoreOccurrenceRef core;
+  auto moduleMember = moduleDomainMemberForTarget(*this, target, core);
+  if (!moduleMember)
+    return moduleMember.takeError();
+  auto selected = spatialCoreTarget(core.core);
+  if (!selected || selected->dependencyOrdinal >= artifact_.importedModules().size())
+    return makeFabricRefError(FabricRefErrorKind::UnknownEntity,
+                              "SpatialCore target has no imported Module");
+  auto module = requireModuleRoot(
+      artifact_.importedModules()[selected->dependencyOrdinal]);
+  if (!module)
+    return module.takeError();
+  std::optional<FabricModuleDomainSlotRef> slot;
+  for (const ModuleDomainAssignment &assignment :
+       module->domainAssignments()) {
+    if (assignment.member != *moduleMember)
+      continue;
+    if (assignment.slot.kind != kind)
+      continue;
+    if (slot)
+      return makeFabricRefError(
+          FabricRefErrorKind::InvalidOwnerFamily,
+          "Module target has duplicate same-kind domain assignments");
+    slot = assignment.slot;
+  }
+  if (!slot)
+    return makeFabricRefError(FabricRefErrorKind::UnknownEntity,
+                              "Module target has no same-kind domain slot");
+  auto occurrenceSlot = FabricHardwareDomainMemberRef::create(
+      SpatialCoreDomainSlotOccurrenceRef{core, slot->kind, slot->ordinal});
+  if (!occurrenceSlot)
+    return occurrenceSlot.takeError();
+  return findHardwareDomainMember(*this, *occurrenceSlot, kind);
 }
 
 llvm::ArrayRef<SystemTransportResourceRef>

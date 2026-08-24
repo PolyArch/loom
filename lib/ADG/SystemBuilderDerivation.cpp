@@ -425,34 +425,62 @@ bool memoryEndpointNamesService(
   return owner && services.count(owner->id());
 }
 
-std::optional<loom::fabric::FabricInventoryOwnerRef>
-remapCoreMember(const loom::fabric::FabricInventoryOwnerRef &owner,
+std::optional<loom::fabric::FabricHardwareDomainMemberRef>
+remapCoreMember(const loom::fabric::FabricHardwareDomainMemberRef &member,
                 loom::fabric::AccCoreOccurrenceRef source,
                 loom::fabric::AccCoreOccurrenceRef destination) {
   return std::visit(
       [&](const auto &member)
-          -> std::optional<loom::fabric::FabricInventoryOwnerRef> {
+          -> std::optional<loom::fabric::FabricHardwareDomainMemberRef> {
         using Member = std::decay_t<decltype(member)>;
-        if constexpr (std::is_same_v<Member,
-                                     loom::fabric::AccCoreOccurrenceRef>) {
-          if (member == source)
-            return loom::fabric::FabricInventoryOwnerRef::of(destination);
+        if constexpr (std::is_same_v<
+                          Member, loom::fabric::FabricInventoryOwnerRef>) {
+          auto mapped = std::visit(
+              [&](const auto &owner) -> std::optional<
+                  loom::fabric::FabricInventoryOwnerRef> {
+                using Owner = std::decay_t<decltype(owner)>;
+                if constexpr (std::is_same_v<Owner,
+                                             loom::fabric::AccCoreOccurrenceRef>) {
+                  if (owner == source)
+                    return loom::fabric::FabricInventoryOwnerRef::of(
+                        destination);
+                } else if constexpr (std::is_same_v<
+                                         Owner,
+                                         loom::fabric::InstructionCoreContextRef>) {
+                  if (owner.core == source)
+                    return loom::fabric::FabricInventoryOwnerRef::of(
+                        loom::fabric::InstructionCoreContextRef{destination});
+                } else if constexpr (std::is_same_v<
+                                         Owner,
+                                         loom::fabric::SpatialCoreOccurrenceRef>) {
+                  if (owner.core == source)
+                    return loom::fabric::FabricInventoryOwnerRef::of(
+                        loom::fabric::SpatialCoreOccurrenceRef{destination});
+                }
+                return std::nullopt;
+              },
+              member.payload);
+          if (mapped) {
+            auto result = loom::fabric::FabricHardwareDomainMemberRef::create(
+                *mapped);
+            if (result)
+              return *result;
+          }
         } else if constexpr (std::is_same_v<
                                  Member,
-                                 loom::fabric::InstructionCoreContextRef>) {
-          if (member.core == source)
-            return loom::fabric::FabricInventoryOwnerRef::of(
-                loom::fabric::InstructionCoreContextRef{destination});
-        } else if constexpr (std::is_same_v<
-                                 Member,
-                                 loom::fabric::SpatialCoreOccurrenceRef>) {
-          if (member.core == source)
-            return loom::fabric::FabricInventoryOwnerRef::of(
-                loom::fabric::SpatialCoreOccurrenceRef{destination});
+                                 loom::fabric::SpatialCoreDomainSlotOccurrenceRef>) {
+          if (member.spatialCore.core == source) {
+            loom::fabric::SpatialCoreDomainSlotOccurrenceRef slot = member;
+            slot.spatialCore.core = destination;
+            auto mapped = loom::fabric::FabricHardwareDomainMemberRef::create(
+                slot);
+            if (mapped)
+              return *mapped;
+          }
         }
         return std::nullopt;
       },
-      owner.payload);
+      member.payload());
 }
 
 llvm::Error
@@ -468,7 +496,7 @@ copyHardwareDomainMembership(detail::DesignState &state,
         unsignedBytes(domain.getContractAttr()));
     if (!record)
       return record.takeError();
-    std::vector<loom::fabric::FabricInventoryOwnerRef> members(
+    std::vector<loom::fabric::FabricHardwareDomainMemberRef> members(
         record->members().begin(), record->members().end());
     for (const auto &member : record->members())
       if (auto mapped = remapCoreMember(member, source, destination))
@@ -671,10 +699,23 @@ llvm::Error removeHardwareDomainMembership(
         unsignedBytes(domain.getContractAttr()));
     if (!record)
       return record.takeError();
-    std::vector<loom::fabric::FabricInventoryOwnerRef> members;
+    std::vector<loom::fabric::FabricHardwareDomainMemberRef> members;
     for (const auto &member : record->members())
-      if (!loom::fabric::inventoryOwnerBelongsToAccCore(member, target) &&
-          !inventoryMemberNamesEndpoint(member, removedEndpoints))
+      if (!std::visit(
+              [&](const auto &payload) {
+                using Member = std::decay_t<decltype(payload)>;
+                if constexpr (std::is_same_v<
+                                  Member,
+                                  loom::fabric::SpatialCoreDomainSlotOccurrenceRef>)
+                  return payload.spatialCore.core == target;
+                else {
+                  const auto &owner = payload;
+                  return loom::fabric::inventoryOwnerBelongsToAccCore(
+                             owner, target) ||
+                         inventoryMemberNamesEndpoint(owner, removedEndpoints);
+                }
+              },
+              member.payload()))
         members.push_back(member);
     auto updated = loom::fabric::HardwareDomainContractRecord::create(
         std::move(members), record->contract());

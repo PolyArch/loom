@@ -217,7 +217,7 @@ makeMemorySystem(const loom::fabric::FinalizedFabricRoot &module,
       loom::fabric::ResetInitialState::Asserted, std::nullopt, 0));
   if (llvm::Error error =
           reset.close({host.domainMember(), core.instructionCoreDomainMember(),
-                       core.spatialCoreDomainMember()},
+                       core.spatialCoreResetDomainMember()},
                       std::move(resetContract)))
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error = system.close())

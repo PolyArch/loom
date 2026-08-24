@@ -829,6 +829,25 @@ private:
     return llvm::Error::success();
   }
 
+  llvm::Error addHardwareDomainMemberRelation(
+      std::uint32_t source, const FabricHardwareDomainMemberRef &member,
+      RelationKind role) {
+    return std::visit(
+        [&](const auto &payload) -> llvm::Error {
+          using Member = std::decay_t<decltype(payload)>;
+          if constexpr (std::is_same_v<
+                            Member,
+                            SpatialCoreDomainSlotOccurrenceRef>) {
+            return addEntityRelation(
+                source, entityReference(payload.spatialCore), role,
+                {static_cast<std::uint32_t>(payload.kind), payload.ordinal});
+          } else {
+            return addInventoryOwnerRelation(source, payload, role);
+          }
+        },
+        member.payload());
+  }
+
   llvm::Error addClockRelation(std::uint32_t source,
                                const ClockDomainRef &clock, RelationKind role) {
     return addEntityRelation(source, entityReference(clock.underlying()), role);
@@ -1004,10 +1023,12 @@ private:
         unsignedBytes(domain.getContractAttr()));
     if (!record)
       return record.takeError();
-    for (const FabricInventoryOwnerRef &member : record->members())
-      if (llvm::Error error = addInventoryOwnerRelation(
-              vertex, member, RelationKind::HardwareDomainMember))
+    for (const FabricHardwareDomainMemberRef &member : record->members()) {
+      llvm::Error error = addHardwareDomainMemberRelation(
+          vertex, member, RelationKind::HardwareDomainMember);
+      if (error)
         return error;
+    }
     if (const auto *reset =
             std::get_if<ResetDomainContractRecord>(&record->contract())) {
       if (reset->synchronousTo())

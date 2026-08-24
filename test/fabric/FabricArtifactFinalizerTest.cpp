@@ -387,8 +387,9 @@ std::string clockDomain(llvm::StringRef test, std::uint64_t id,
       take(test, loom::fabric::ClockDomainContractRecord::create(1'000, 0));
   auto record =
       take(test, loom::fabric::HardwareDomainContractRecord::create(
-                     {loom::fabric::FabricInventoryOwnerRef::of(
-                         loom::fabric::SystemTransportResourceRef(memberId))},
+                     {loom::fabric::FabricHardwareDomainMemberRef::of(
+                         loom::fabric::FabricInventoryOwnerRef::of(
+                             loom::fabric::SystemTransportResourceRef(memberId)))},
                      std::move(clock)));
   auto bytes =
       take(test, loom::fabric::encodeHardwareDomainContractRecord(record));

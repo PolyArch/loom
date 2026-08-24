@@ -603,7 +603,9 @@ void checkHardwareDomainContract() {
       FabricInventoryOwnerRef::of(HostCoreOccurrenceRef(8));
   const FabricInventoryOwnerRef accelerator =
       FabricInventoryOwnerRef::of(AccCoreOccurrenceRef(3));
-  const std::vector<FabricInventoryOwnerRef> members = {host, accelerator};
+  const std::vector<FabricHardwareDomainMemberRef> members = {
+      FabricHardwareDomainMemberRef::of(host),
+      FabricHardwareDomainMemberRef::of(accelerator)};
 
   const ClockDomainContractRecord clock =
       take(test, ClockDomainContractRecord::create(1'000, 0));
@@ -662,7 +664,9 @@ void checkHardwareDomainContract() {
 
   expectRejected(test,
                  HardwareDomainContractRecord::create(
-                     {host, host}, HardwareDomainContract(clock)),
+                     {FabricHardwareDomainMemberRef::of(host),
+                      FabricHardwareDomainMemberRef::of(host)},
+                     HardwareDomainContract(clock)),
                  "accepted duplicate domain membership");
 
   const AddressDomainContractRecord merged =

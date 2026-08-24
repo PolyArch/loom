@@ -46,7 +46,7 @@ and freeze-local PnR indices are never persistent target identity.
 
 ## Owner-Local Reference Kind Catalog
 
-`loom.fabric 5.0` owns this complete existential local-reference catalog. The
+`loom.fabric 6.0` owns this complete existential local-reference catalog. The
 ordinal is the Common `owner_local_kind`; the payload is the exact canonical
 bytes of the named Fabric reference defined in this specification.
 

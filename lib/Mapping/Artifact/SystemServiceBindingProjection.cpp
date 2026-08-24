@@ -187,22 +187,18 @@ clockContract(const ::loom::fabric::FabricSystemRootView &fabric,
 
 llvm::Expected<::loom::fabric::ClockDomainRef>
 ownerClock(const ::loom::fabric::FabricSystemRootView &fabric,
-           const ::loom::fabric::FabricInventoryOwnerRef &owner) {
-  std::optional<::loom::fabric::ClockDomainRef> result;
-  for (const auto domain : fabric.hardwareDomains()) {
-    const auto *record = fabric.hardwareDomainContract(domain);
-    if (!record ||
-        !std::holds_alternative<::loom::fabric::ClockDomainContractRecord>(
-            record->contract()) ||
-        !llvm::is_contained(record->members(), owner))
-      continue;
-    if (result)
-      return invalid("service issuer belongs to multiple clock domains");
-    result = ::loom::fabric::ClockDomainRef(domain);
-  }
-  if (!result)
-    return invalid("service issuer has no clock domain");
-  return *result;
+           ::loom::fabric::AccCoreOccurrenceRef accCore) {
+  auto domain = fabric.effectiveHardwareDomain(
+      ::loom::fabric::SpatialCoreOccurrenceRef{accCore},
+      ::loom::fabric::FabricClockResetKind::Clock);
+  if (!domain)
+    return domain.takeError();
+  const auto *record = fabric.hardwareDomainContract(*domain);
+  if (!record ||
+      !std::holds_alternative<::loom::fabric::ClockDomainContractRecord>(
+          record->contract()))
+    return invalid("service issuer has no Clock domain");
+  return ::loom::fabric::ClockDomainRef(*domain);
 }
 
 llvm::Expected<std::uint64_t>
@@ -531,8 +527,7 @@ projectSystemOperationCompletion(
   if (!progressClock)
     return progressClock.takeError();
   auto issuerClock = ownerClock(
-      fabric, ::loom::fabric::FabricInventoryOwnerRef::of(
-                  ::loom::fabric::SpatialCoreOccurrenceRef{accCore}));
+      fabric, accCore);
   if (!issuerClock)
     return issuerClock.takeError();
   auto issuerClockContract = clockContract(fabric, *issuerClock);

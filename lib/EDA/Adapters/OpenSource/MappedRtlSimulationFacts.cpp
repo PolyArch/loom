@@ -886,7 +886,7 @@ selectedClockPort(const HardwareImplementation &implementation,
     if (!clock)
       continue;
     const auto *record = system.hardwareDomainContract(clock->domain);
-    if (!record || !llvm::is_contained(record->members(), owner))
+    if (!record || !record->contains(owner))
       continue;
     const auto *contract =
         std::get_if<fabric::ClockDomainContractRecord>(&record->contract());
