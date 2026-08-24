@@ -372,6 +372,11 @@ struct ApplicationIncrementalMappingObservation final {
   std::uint64_t repairedSpatialMappings = 0;
   std::uint64_t preservedSystemBindings = 0;
   std::uint64_t reopenedSystemBindings = 0;
+  dse::JointDesignAttemptDisposition disposition =
+      dse::JointDesignAttemptDisposition::Incomplete;
+  std::optional<dse::DsePlanIncompleteReason> incompleteReason;
+  std::uint64_t coldWallTimeNanoseconds = 0;
+  std::uint64_t incrementalWallTimeNanoseconds = 0;
   std::uint64_t wallTimeNanoseconds = 0;
   bool verified = false;
 };

@@ -1321,6 +1321,17 @@ void emitApplicationMappingDiagnostics(
               observation.preservedSystemBindings;
           transition["reopened_system_bindings"] =
               observation.reopenedSystemBindings;
+          transition["disposition"] =
+              spelling(observation.disposition);
+          if (observation.incompleteReason)
+            transition["incomplete_reason"] =
+                dse::toString(*observation.incompleteReason);
+          else
+            transition["incomplete_reason"] = nullptr;
+          transition["cold_wall_time_ns"] =
+              observation.coldWallTimeNanoseconds;
+          transition["incremental_wall_time_ns"] =
+              observation.incrementalWallTimeNanoseconds;
           transition["wall_time_ns"] = observation.wallTimeNanoseconds;
           transition["verified"] = observation.verified;
           incrementalTransitions.push_back(std::move(transition));
