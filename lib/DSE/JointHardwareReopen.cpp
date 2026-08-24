@@ -2118,19 +2118,31 @@ tryHardwareFeedbackReopen(
             fields["seed_source"] = mappingSeed ? "rebased_mapping" : "cold";
             fields["mapping_reuse_disposition"] =
                 jointMappingReuseDispositionSpelling(rebased->disposition);
-            fields["hardware_mutation_family"] =
-                hardwareMutationFamilySpelling(system->mappingImpact->family);
-            fields["hardware_mutation_locality"] =
-                hardwareMutationLocalitySpelling(
-                    system->mappingImpact->locality);
-            fields["hardware_tech_impact"] = hardwareMappingImpactKindSpelling(
-                system->mappingImpact->tech.kind);
-            fields["hardware_spatial_impact"] =
-                hardwareMappingImpactKindSpelling(
-                    system->mappingImpact->spatial.kind);
-            fields["hardware_system_impact"] =
-                hardwareMappingImpactKindSpelling(
-                    system->mappingImpact->system.kind);
+            if (system->mappingImpact) {
+              fields["hardware_mutation_family"] =
+                  hardwareMutationFamilySpelling(system->mappingImpact->family);
+              fields["hardware_mutation_locality"] =
+                  hardwareMutationLocalitySpelling(
+                      system->mappingImpact->locality);
+              fields["hardware_tech_impact"] =
+                  hardwareMappingImpactKindSpelling(
+                      system->mappingImpact->tech.kind);
+              fields["hardware_spatial_impact"] =
+                  hardwareMappingImpactKindSpelling(
+                      system->mappingImpact->spatial.kind);
+              fields["hardware_system_impact"] =
+                  hardwareMappingImpactKindSpelling(
+                      system->mappingImpact->system.kind);
+            } else {
+              // Generic recipe growth is an admitted hardware child, but it
+              // has no typed parent correspondence. Keep that fact explicit;
+              // the downstream cold verifier remains the legality owner.
+              fields["hardware_mutation_family"] = "unprojected_recipe_growth";
+              fields["hardware_mutation_locality"] = "global_reopen";
+              fields["hardware_tech_impact"] = "unknown";
+              fields["hardware_spatial_impact"] = "unknown";
+              fields["hardware_system_impact"] = "unknown";
+            }
             fields["parent_tech_mappings"] =
                 rebased->accounting.parentTechMappings;
             fields["parent_spatial_mappings"] =
