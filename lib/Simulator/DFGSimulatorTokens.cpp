@@ -5,6 +5,7 @@
 #include "Common/VectorWidth.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
@@ -329,7 +330,8 @@ llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
                                  "unsupported bit-pattern destination type");
 }
 
-llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr) {
+llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr,
+                                         mlir::Operation *scope) {
   if (mlir::isa<mlir::NoneType>(attr.getType()))
     return noneToken();
   if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
@@ -347,6 +349,46 @@ llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr) {
   if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr))
     return tokenFromBitPattern(floatAttr.getValue().bitcastToAPInt(),
                                floatAttr.getType());
+  if (auto dense = mlir::dyn_cast<mlir::DenseElementsAttr>(attr)) {
+    auto vector = mlir::dyn_cast<mlir::VectorType>(dense.getType());
+    if (!vector)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "dense dataflow.constant attribute is not a fixed vector");
+    if (vector.isScalable() || vector.getRank() == 0 ||
+        dense.getNumElements() != vector.getNumElements())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "dense dataflow.constant attribute has no exact fixed-vector "
+          "shape");
+
+    llvm::SmallVector<PrimitiveValue, 8> lanes;
+    lanes.reserve(static_cast<std::size_t>(dense.getNumElements()));
+    if (mlir::isa<mlir::IntegerType>(vector.getElementType())) {
+      for (const llvm::APInt &value : dense.getValues<llvm::APInt>())
+        lanes.push_back(PrimitiveValue::integer(value));
+    } else if (mlir::isa<mlir::IndexType>(vector.getElementType())) {
+      auto width = loom::getIndexBitWidth(scope);
+      if (!width)
+        return width.takeError();
+      for (const llvm::APInt &value : dense.getValues<llvm::APInt>()) {
+        if (!value.isIntN(*width) && !value.isSignedIntN(*width))
+          return llvm::createStringError(
+              std::errc::result_out_of_range,
+              "dense index lane is not representable at the resolved index "
+              "width");
+        lanes.push_back(PrimitiveValue::integer(value.sextOrTrunc(*width)));
+      }
+    } else if (mlir::isa<mlir::FloatType>(vector.getElementType())) {
+      for (const llvm::APFloat &value : dense.getValues<llvm::APFloat>())
+        lanes.push_back(PrimitiveValue::integer(value.bitcastToAPInt()));
+    } else {
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "dense dataflow.constant vector element is not bit-valued");
+    }
+    return tokenFromVectorPrimitiveValues(lanes, vector, scope);
+  }
   return llvm::createStringError(std::errc::invalid_argument,
                                  "unsupported dataflow.constant attribute");
 }

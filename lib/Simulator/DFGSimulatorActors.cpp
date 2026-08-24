@@ -133,7 +133,7 @@ fireConstant(dataflow::ConstantOp op,
   const auto *payload =
       std::get_if<dataflow::ConstantValuePayload>(&projection.payload);
   assert(payload && "constant provider received the wrong semantic payload");
-  auto tokenOrErr = tokenFromTypedAttr(payload->value);
+  auto tokenOrErr = tokenFromTypedAttr(payload->value, op.getOperation());
   if (!tokenOrErr) {
     state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
     return false;
@@ -764,7 +764,7 @@ fireArithConstant(mlir::arith::ConstantOp op,
   const auto *payload =
       std::get_if<dataflow::ConstantValuePayload>(&projection.payload);
   assert(payload && "constant provider received the wrong semantic payload");
-  auto tokenOrErr = tokenFromTypedAttr(payload->value);
+  auto tokenOrErr = tokenFromTypedAttr(payload->value, op.getOperation());
   if (!tokenOrErr) {
     state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
     return false;

@@ -186,6 +186,28 @@ void requireLane(const SemanticLane &lane, SemanticState state,
             "observed vector lane has the wrong bits");
 }
 
+void denseConstantsUseCanonicalLaneOrder() {
+  mlir::Builder builder(&context());
+  auto integerType = mlir::VectorType::get({2, 2}, builder.getI8Type());
+  llvm::APInt integerValues[] = {llvm::APInt(8, 0x12), llvm::APInt(8, 0x34),
+                                 llvm::APInt(8, 0x56), llvm::APInt(8, 0x78)};
+  auto integerAttr =
+      mlir::DenseIntElementsAttr::get(integerType, integerValues);
+  Token integerToken = take(tokenFromTypedAttr(integerAttr, nullptr));
+  llvm::APInt integerBits = take(tokenBitPattern(integerToken, integerType));
+  require(integerBits == llvm::APInt(32, 0x78563412),
+          "dense integer constant did not use row-major lane-zero-low order");
+
+  auto floatType = mlir::VectorType::get({2}, builder.getF32Type());
+  llvm::APFloat floatValues[] = {llvm::APFloat(1.0f), llvm::APFloat(-2.5f)};
+  auto floatAttr = mlir::DenseFPElementsAttr::get(floatType, floatValues);
+  Token floatToken = take(tokenFromTypedAttr(floatAttr, nullptr));
+  llvm::APInt floatBits = take(tokenBitPattern(floatToken, floatType));
+  require(floatBits.extractBits(32, 0) == floatValues[0].bitcastToAPInt() &&
+              floatBits.extractBits(32, 32) == floatValues[1].bitcastToAPInt(),
+          "dense floating constant changed canonical lane bit patterns");
+}
+
 void exactStructuralActorsFireRepeatedly() {
   auto artifact = structuralProgram();
   PreparedGraphExecution execution = prepare(artifact);
@@ -604,6 +626,7 @@ module attributes {
 } // namespace
 
 int main() {
+  denseConstantsUseCanonicalLaneOrder();
   exactStructuralActorsFireRepeatedly();
   indexStructuralActorsUseResolvedWidth();
   mixedLaneTypedInputRoundTrips();

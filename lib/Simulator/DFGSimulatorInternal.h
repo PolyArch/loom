@@ -1180,7 +1180,8 @@ Token memoryCapabilityToken(mlir::Value root,
                             std::shared_ptr<MemoryValue> memory = {},
                             std::int64_t byteOffset = 0,
                             mlir::Type elementType = {});
-llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr);
+llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr,
+                                         mlir::Operation *scope);
 llvm::Expected<Token> zeroToken(mlir::Type type);
 
 /// Resolves the frontier an accumulator publishes, interning its immutable
