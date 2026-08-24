@@ -2501,14 +2501,18 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     }
     if (runtime->disposition ==
         ApplicationMappingRuntimeDisposition::Completed) {
-      // Exercise every already-retained adjacent resource-time state through
-      // the application owner while the parent Mapping is live. The frontier
-      // has already supplied the finite bound; this loop does not enumerate a
-      // new candidate domain. Each child remains subject to the ordinary
-      // System verifier and is recorded even when it cannot close.
-      for (std::size_t childOrdinal = selectedPlanOrdinal + 1;
+      // Exercise every already-retained resource-time state for this exact
+      // Dataflow through the application owner while the parent Mapping is
+      // live. The frontier has already supplied the finite bound; this loop
+      // does not enumerate a new candidate domain. Walking both directions
+      // matters when the selected quality winner is the last retained plan.
+      // Each child remains subject to the ordinary System verifier and is
+      // recorded even when it cannot close.
+      for (std::size_t childOrdinal = 0;
            childOrdinal != prepared.mappingAlternatives.size();
            ++childOrdinal) {
+          if (childOrdinal == selectedPlanOrdinal)
+            continue;
           const PreparedApplicationMappingAlternative &childAlternative =
               prepared.mappingAlternatives[childOrdinal];
           if (childAlternative.dataflow.artifact !=
@@ -2581,6 +2585,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
           ApplicationIncrementalMappingObservation observation{
               *execution->summary.selectedMapping,
               childAlternative.plan.pairOutputs.front().pair.system,
+              static_cast<std::uint64_t>(selectedPlanOrdinal),
+              static_cast<std::uint64_t>(childOrdinal),
               prepared.mappingAlternatives[selectedPlanOrdinal]
                   .resourceTimeScheduleHintDigest,
               childAlternative.resourceTimeScheduleHintDigest,
@@ -2598,7 +2604,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               childIncompleteReason,
               childSummary.coldReopenWallTimeNanoseconds,
               childSummary.incrementalReopenWallTimeNanoseconds,
-              childSummary.incrementalReopenWallTimeNanoseconds,
+              childSummary.coldReopenWallTimeNanoseconds +
+                  childSummary.incrementalReopenWallTimeNanoseconds,
               false};
           if (childHasMapping) {
             adjacent->execution.summary.selectedPlanOrdinal = childOrdinal;

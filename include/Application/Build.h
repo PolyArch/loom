@@ -361,6 +361,8 @@ struct ApplicationMappingCandidateOutcome final {
 struct ApplicationIncrementalMappingObservation final {
   ArtifactRootReference parentMapping;
   ArtifactRootReference childSystem;
+  std::uint64_t parentPlanOrdinal = 0;
+  std::uint64_t childPlanOrdinal = 0;
   ComponentViewDigest parentScheduleHintDigest;
   ComponentViewDigest childScheduleHintDigest;
   std::vector<dataflow::RootThreadLaunchRef> reopenedRoots;
