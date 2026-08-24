@@ -109,6 +109,10 @@ struct CgraPendingTransferDiagnostic final {
   std::uint64_t blockingQueueReservations = 0;
   std::uint64_t blockingQueueCapacity = 0;
   std::vector<OperandQueueWait> operandQueueWaits;
+  std::optional<::dataflow::CanonicalGraphProducerEndpointRef> producer;
+  std::vector<::loom::fabric::FabricPhysicalTraversalRef> blockingTraversals;
+  std::vector<::loom::fabric::FabricPhysicalTraversalRef>
+      blockingDownstreamTraversals;
 };
 
 /// Exact runtime witness for one selected Temporal PE operand queue. The

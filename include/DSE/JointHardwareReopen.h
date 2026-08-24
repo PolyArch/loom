@@ -9,8 +9,8 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
-#include <string>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace loom {
@@ -36,6 +36,20 @@ struct JointSpatialFifoHardwareRepair final {
 
 struct JointSpatialOperandBufferHardwareRepair final {
   SpatialOperandQueueRuntimeFeedback feedback;
+  std::vector<ArtifactRootReference> childSystems;
+  std::vector<JointDesignExecution> executions;
+  std::vector<JointMappingReuseDisposition> reuseDispositions;
+  std::uint64_t candidateLimit = 0;
+  std::uint64_t candidatesPlanned = 0;
+  std::uint64_t candidatesReserved = 0;
+  std::uint64_t candidatesConsumed = 0;
+  std::uint64_t candidatesRejected = 0;
+  std::uint64_t candidatesCancelled = 0;
+};
+
+struct JointSpatialTransportMappingRepair final {
+  SpatialTransportRuntimeFeedback feedback;
+  std::vector<ArtifactRootReference> constraintSets;
   std::vector<ArtifactRootReference> childSystems;
   std::vector<JointDesignExecution> executions;
   std::vector<JointMappingReuseDisposition> reuseDispositions;
@@ -99,8 +113,7 @@ llvm::Expected<JointSpatialFifoHardwareRepair>
 executeSpatialFifoHardwareFeedbackReopen(
     const JointDesignExplorationPlan &parentPlan,
     const JointDesignExecution &parentExecution,
-    const JointDesignPolicy &policy,
-    const SpatialFifoRuntimeFeedback &feedback,
+    const JointDesignPolicy &policy, const SpatialFifoRuntimeFeedback &feedback,
     JointHardwareReopenRequest request, const ArtifactStore &artifacts,
     const BlobStore &blobs);
 
@@ -113,6 +126,20 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
     const JointDesignExecution &parentExecution,
     const JointDesignPolicy &policy,
     const SpatialOperandQueueRuntimeFeedback &feedback,
+    JointHardwareReopenRequest request, const ArtifactStore &artifacts,
+    const BlobStore &blobs);
+
+/// Reopens one exact route at a time on the immutable parent System. Each
+/// candidate excludes one Mapping-verified traversal from a closed storage
+/// wait and executes the ordinary Spatial/System providers. Finalized Spatial
+/// state cannot yet seed the mutable router, so this path reports an explicit
+/// constrained cold fallback rather than claiming incremental preservation.
+llvm::Expected<JointSpatialTransportMappingRepair>
+executeSpatialTransportRuntimeRepair(
+    const JointDesignExplorationPlan &parentPlan,
+    const JointDesignExecution &parentExecution,
+    const JointDesignPolicy &policy,
+    const SpatialTransportRuntimeFeedback &feedback,
     JointHardwareReopenRequest request, const ArtifactStore &artifacts,
     const BlobStore &blobs);
 

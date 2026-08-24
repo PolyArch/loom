@@ -711,6 +711,16 @@ projection and applies it both during PnR and final verification. After that
 route closure and Fabric atomic progress are verified, topological induction
 always exposes a next actor under fair execution.
 
+Not every storage wait belongs to one growable queue. A route can use several
+shared storage and selector resources whose combined occupancy closes a wait
+cycle. Treating that observation as a FIFO-depth request would assign the
+cause to the wrong owner. The useful exact feedback is instead the semantic
+producer plus the selected traversal that cannot advance. Mapping can exclude
+that one choice and re-run its ordinary legality path. Until finalized Spatial
+state has a verified mutable-checkpoint correspondence, such a retry is
+honestly cold; claiming incremental preservation would be more damaging than
+the extra work because it would hide an unproved invalidation cone.
+
 Ordinary structured loops need a similarly typed but narrower extension.
 `dataflow.carry` and `dataflow.invariant` already define initialization
 transitions that publish state without consuming their later feedback inputs.

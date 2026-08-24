@@ -42,6 +42,11 @@ struct JointDesignPlanPair final {
 struct JointDesignMappingSeed final {
   std::vector<ArtifactRootReference> techMappings;
   std::vector<ArtifactRootReference> spatialMappings;
+  struct SpatialRepairConstraint final {
+    ArtifactRootReference techMapping;
+    ArtifactRootReference constraintSet;
+  };
+  std::vector<SpatialRepairConstraint> spatialRepairConstraints;
 };
 
 struct JointDesignExplorationPlan final {
@@ -160,6 +165,12 @@ struct JointDesignExecutionSummary final {
   std::uint64_t hardwareRepairProbesConsumed = 0;
   std::uint64_t hardwareRepairProbesRejected = 0;
   std::uint64_t hardwareRepairProbesCancelled = 0;
+  std::uint64_t spatialMappingRepairCandidateLimit = 0;
+  std::uint64_t spatialMappingRepairsPlanned = 0;
+  std::uint64_t spatialMappingRepairsReserved = 0;
+  std::uint64_t spatialMappingRepairsConsumed = 0;
+  std::uint64_t spatialMappingRepairsRejected = 0;
+  std::uint64_t spatialMappingRepairsCancelled = 0;
   /// Provider invocation and dispatch accounting. A journal replay is an
   /// available invocation result without a provider dispatch; it remains
   /// distinct from exact resource-time memoization.

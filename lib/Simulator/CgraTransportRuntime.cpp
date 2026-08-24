@@ -1520,6 +1520,18 @@ std::vector<CgraPendingTransferDiagnostic>
 CgraTransportRuntime::pendingTransferDiagnostics() const {
   std::vector<CgraPendingTransferDiagnostic> result;
   result.reserve(activeTransferCount_);
+  const auto appendTraversalTargets =
+      [&](const TraversalNodeBinding &node,
+          std::vector<::loom::fabric::FabricPhysicalTraversalRef> &targets) {
+        if (node.targetTraversalOffset > traversalTargets_.size() ||
+            node.targetTraversalCount >
+                traversalTargets_.size() - node.targetTraversalOffset)
+          return;
+        const auto selected =
+            llvm::ArrayRef(traversalTargets_)
+                .slice(node.targetTraversalOffset, node.targetTraversalCount);
+        targets.insert(targets.end(), selected.begin(), selected.end());
+      };
   const auto storageHead = [&](std::uint64_t storageOrdinal)
       -> std::optional<CgraPendingTransferDiagnostic::StorageHead> {
     if (storageOrdinal >= storages_.size() ||
@@ -1582,6 +1594,7 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
     diagnostic.publishedPublicationCount = publishedPublicationCount;
     if (transfer.bindingOrdinal < bindings_.size()) {
       const TransferBinding &binding = bindings_[transfer.bindingOrdinal];
+      diagnostic.producer = binding.producer;
       diagnostic.sinkCount = binding.sinkCount;
       if (const auto *producer =
               std::get_if<::dataflow::ActorTokenResultRef>(&binding.producer)) {
@@ -1602,6 +1615,7 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         const StorageBinding &storage = storages_[traversal.storageOrdinal];
         diagnostic.blockingTraversalNodeOrdinal = node;
         diagnostic.blockingStorageOrdinal = traversal.storageOrdinal;
+        appendTraversalTargets(traversal, diagnostic.blockingTraversals);
         for (std::uint64_t target = traversal.targetTraversalOffset;
              target !=
              traversal.targetTraversalOffset + traversal.targetTraversalCount;
@@ -1624,8 +1638,7 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         diagnostic.blockingStorageOccupancy = storage.queue.occupancy();
         diagnostic.blockingStorageReservations = storage.reservations;
         diagnostic.blockingStorageCapacity = storage.queue.capacity();
-        diagnostic.blockingStorageHead =
-            storageHead(traversal.storageOrdinal);
+        diagnostic.blockingStorageHead = storageHead(traversal.storageOrdinal);
         diagnostic.blockingTraversalWaitingForStorage =
             state == TraversalNodeState::WaitingStorage;
         diagnostic.blockingDownstreamStorageCount =
@@ -1636,6 +1649,8 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
           const std::uint64_t downstream =
               traversal.downstreamStorageNodes.front();
           const TraversalNodeBinding &boundary = traversalNodes_[downstream];
+          appendTraversalTargets(boundary,
+                                 diagnostic.blockingDownstreamTraversals);
           if (boundary.storageOrdinal < storages_.size()) {
             const StorageBinding &downstreamStorage =
                 storages_[boundary.storageOrdinal];

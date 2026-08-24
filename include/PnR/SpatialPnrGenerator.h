@@ -229,6 +229,10 @@ struct SpatialPnrGenerationInputs final {
       nullptr;
   FrozenSpatialPnrProblemHandle preparedActiveProblem = nullptr;
   bool emitTopologyQualityDiagnostic = true;
+  /// Plan-derived maximum number of canonical candidate restarts to retain.
+  /// This transient work policy bounds provider effort and publication; it is
+  /// not part of Mapping identity or legality.
+  std::optional<std::uint64_t> maximumCandidatePublications = std::nullopt;
 };
 
 /// Runs the fixed canonical Spatial restart sequence for one exact D/T/F/C/K

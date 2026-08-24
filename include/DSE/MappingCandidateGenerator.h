@@ -56,7 +56,8 @@ std::optional<CandidateGeneratorIncompleteReason> pnrGenerationIncompleteReason(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, std::uint32_t candidateWorkerCount = 1,
-    const ExecutionControlView &executionControl = {});
+    const ExecutionControlView &executionControl = {},
+    std::optional<std::uint64_t> maximumCandidatePublications = std::nullopt);
 
 } // namespace loom::dse
 

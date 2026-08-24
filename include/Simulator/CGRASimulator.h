@@ -191,6 +191,10 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint64_t blockingQueueReservations = 0;
     std::uint64_t blockingQueueCapacity = 0;
     std::vector<OperandQueueWait> operandQueueWaits;
+    std::optional<::dataflow::CanonicalGraphProducerEndpointRef> producer;
+    std::vector<::loom::fabric::FabricPhysicalTraversalRef> blockingTraversals;
+    std::vector<::loom::fabric::FabricPhysicalTraversalRef>
+        blockingDownstreamTraversals;
   };
   enum class TransferWaitKind : std::uint8_t {
     ActorPublication,

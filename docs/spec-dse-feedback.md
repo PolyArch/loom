@@ -3119,6 +3119,48 @@ cone; a transport, route, service, or memory impact reopens the corresponding
 resource/service cone. Unaffected System relations remain preserved. Artifact
 counts alone are insufficient evidence for any of these classifications.
 
+### Runtime-Derived Spatial Transport Feedback
+
+A quiescent actor wait cycle may be caused by selected route storage even when
+no single explicit FIFO or Temporal operand queue is the complete owner. This
+is Mapping feedback, not a request to grow arbitrary storage. Runtime records
+the canonical graph producer and exact selected physical traversal references
+for each blocked transfer. Dense binding, storage, and traversal-node ordinals
+are diagnostics only.
+
+The independent feedback verifier reimports the parent SystemMapping and its
+exact Dataflow, TechMapping, SpatialMapping, Module, and RouteTrees. It
+reconstructs graph-local actor ownership and accepts only traversal references
+that occur on the producer's selected RouteTree and participate in an
+output-backpressure edge of the canonical closed actor wait cycle. Missing
+owners, a missing cycle, a runtime/Mapping projection disagreement, or a wait
+without a selected route traversal is `ProofNotEstablished` or `Unsupported`.
+It cannot be reclassified as a FIFO resize, operand-buffer resize, or
+infeasibility.
+
+Each accepted wait produces a finite canonical list of alternatives. One
+alternative excludes one exact contested traversal through the existing
+`NetSelectedPhysicalTraversals` MappingConstraintSet projection. The ordinary
+Spatial and System providers and their independent final verifiers remain the
+only legality owners. The controller tries alternatives in canonical order
+under the invocation's existing deadline and Mapping work bound; timeout is
+Incomplete and remaining alternatives are not inferred infeasible.
+
+The constrained Spatial Generate invocation consumes its plan-derived output
+demand before running the canonical restart sequence. Once that many candidate
+restarts have been retained, the unvisited suffix remains
+`SemanticLimitReached`; it is not searched and discarded after publication.
+This transient bound controls work and completeness only. It does not enter
+SpatialMapping identity or relax candidate finalization.
+
+When a finalized SpatialMapping cannot be projected into a mutable Spatial PnR
+checkpoint, this constrained retry is explicitly a cold fallback. It may not
+claim preserved placements, routes, tags, configurations, or incremental work.
+A future persistent-to-mutable seed may narrow the invalidation cone, but it
+must prove correspondence and retain the same independent finalization path.
+Successful Mapping alone is insufficient: application runtime replay must
+retire the graph before the repair is accepted by the application decision.
+
 Hardware reopen is a bounded feedback chain rather than a Cartesian hardware
 search. One failed execution produces at most one monotonically grown recipe
 child; a failed child may produce the next typed witness. Hardware-parent

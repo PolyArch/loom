@@ -83,9 +83,11 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                       const ArtifactStore &store, const BlobStore &blobs,
                       const CandidateGeneratorInvocationView &invocation) {
   ::loom::pnr::SpatialPnrGenerationOutcome outcome =
-      invokeSpatialPnrCandidateGenerator(inputs, binding, store,
-                                         defaultCandidateWorkerCount(),
-                                         invocation.executionControl());
+      invokeSpatialPnrCandidateGenerator(
+          inputs, binding, store, defaultCandidateWorkerCount(),
+          invocation.executionControl(),
+          invocation.maximumOutputArtifacts(
+              CandidateGeneratorOutputSlotRef(0)));
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSpatialMappings>(&outcome)) {
     std::vector<CandidateGeneratorLineageEdge> lineageEdges;
@@ -270,7 +272,8 @@ resolveSpatialPnrCandidateGeneratorBinding(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, std::uint32_t candidateWorkerCount,
-    const ExecutionControlView &executionControl) {
+    const ExecutionControlView &executionControl,
+    std::optional<std::uint64_t> maximumCandidatePublications) {
   if (binding.descriptorRef() != descriptor.reference())
     return invalidOutcome("binding does not select the Spatial PnR generator");
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
@@ -318,7 +321,8 @@ resolveSpatialPnrCandidateGeneratorBinding(
 
   return ::loom::pnr::generateSpatialMappings(
       {*dataflow, tech->view(), fabric->view(), *physicalTiming, *config,
-       constraints->view(), store, candidateWorkerCount, executionControl});
+       constraints->view(), store, candidateWorkerCount, executionControl,
+       nullptr, nullptr, nullptr, true, maximumCandidatePublications});
 }
 
 } // namespace loom::dse

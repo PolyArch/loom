@@ -251,6 +251,7 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         std::nullopt,
         std::nullopt,
         std::nullopt,
+        std::nullopt,
         std::nullopt};
 
   auto contexts = mapping::projectSystemExecutionContexts(
@@ -347,6 +348,7 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
     return ApplicationRuntimeValidation{
         ApplicationMappingRuntimeDisposition::ProofNotEstablished,
         {},
+        std::nullopt,
         std::nullopt,
         std::nullopt,
         std::nullopt,
@@ -459,6 +461,30 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
           priority(feedback->disposition) >
               priority(validation.spatialFifoFeedback->disposition))
         validation.spatialFifoFeedback = std::move(*feedback);
+      auto transportFeedback = dse::deriveSpatialTransportRuntimeFeedback(
+          imported->mapping.reference(), *cgraEvaluation->closedWait,
+          artifacts);
+      if (!transportFeedback)
+        return transportFeedback.takeError();
+      dse::emitSpatialTransportRuntimeFeedback(*transportFeedback);
+      const auto transportPriority =
+          [](dse::SpatialTransportRuntimeFeedbackDisposition value) {
+            switch (value) {
+            case dse::SpatialTransportRuntimeFeedbackDisposition::Exact:
+              return 2;
+            case dse::SpatialTransportRuntimeFeedbackDisposition::
+                ProofNotEstablished:
+              return 1;
+            case dse::SpatialTransportRuntimeFeedbackDisposition::Unsupported:
+              return 0;
+            }
+            llvm_unreachable("unknown Spatial transport feedback disposition");
+          };
+      if (!validation.spatialTransportFeedback ||
+          transportPriority(transportFeedback->disposition) >
+              transportPriority(
+                  validation.spatialTransportFeedback->disposition))
+        validation.spatialTransportFeedback = std::move(*transportFeedback);
     }
     auto cgraEvidenceReference =
         evaluation::publishEvaluationEvidence(cgraEvidence, artifacts);

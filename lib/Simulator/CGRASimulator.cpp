@@ -623,7 +623,10 @@ struct CgraExecutionSession::Impl final {
            transfer.blockingQueueOccupancy,
            transfer.blockingQueueReservations,
            transfer.blockingQueueCapacity,
-           std::move(operandQueueWaits)});
+           std::move(operandQueueWaits),
+           transfer.producer,
+           transfer.blockingTraversals,
+           transfer.blockingDownstreamTraversals});
     }
     const std::size_t actorCount = graphExecution->execution.actorPlans.size();
     ActorTransitionProbeTable probes = deriveActorTransitionProbes(

@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace loom {
 class ArtifactStore;
@@ -63,8 +64,7 @@ llvm::Expected<SpatialFifoRuntimeFeedback> deriveSpatialFifoRuntimeFeedback(
     const sim::CgraClosedWaitSetDiagnostic &closedWait,
     const ArtifactStore &artifacts);
 
-void emitSpatialFifoRuntimeFeedback(
-    const SpatialFifoRuntimeFeedback &feedback);
+void emitSpatialFifoRuntimeFeedback(const SpatialFifoRuntimeFeedback &feedback);
 
 enum class SpatialOperandQueueRuntimeFeedbackDisposition : std::uint8_t {
   Exact,
@@ -121,6 +121,54 @@ deriveSpatialOperandQueueRuntimeFeedback(
 
 void emitSpatialOperandQueueRuntimeFeedback(
     const SpatialOperandQueueRuntimeFeedback &feedback);
+
+enum class SpatialTransportRuntimeFeedbackDisposition : std::uint8_t {
+  Exact,
+  ProofNotEstablished,
+  Unsupported,
+};
+
+enum class SpatialTransportRuntimeFeedbackReason : std::uint8_t {
+  ExactClosedStorageWait,
+  MissingOwnerReferences,
+  OwnerMismatch,
+  MissingWaitCycle,
+  MissingOutputBackpressure,
+  ProjectionMismatch,
+  NoAlternativeTraversal,
+  CandidateCapacityOverflow,
+};
+
+struct SpatialTransportRepairAlternative final {
+  ::dataflow::CanonicalGraphProducerEndpointRef producer;
+  ::loom::fabric::FabricPhysicalTraversalRef forbiddenTraversal;
+};
+
+struct SpatialTransportRuntimeFeedback final {
+  std::optional<ArtifactRootReference> parentMapping;
+  SpatialTransportRuntimeFeedbackDisposition disposition =
+      SpatialTransportRuntimeFeedbackDisposition::ProofNotEstablished;
+  SpatialTransportRuntimeFeedbackReason reason =
+      SpatialTransportRuntimeFeedbackReason::MissingOwnerReferences;
+  std::optional<sim::CgraExecutionOwnerReferences> owners;
+  std::vector<SpatialTransportRepairAlternative> alternatives;
+  std::uint64_t outputBackpressureEdgeCount = 0;
+  std::uint64_t exactBlockedTransferCount = 0;
+};
+
+llvm::StringRef spatialTransportRuntimeFeedbackDispositionSpelling(
+    SpatialTransportRuntimeFeedbackDisposition disposition);
+llvm::StringRef spatialTransportRuntimeFeedbackReasonSpelling(
+    SpatialTransportRuntimeFeedbackReason reason);
+
+llvm::Expected<SpatialTransportRuntimeFeedback>
+deriveSpatialTransportRuntimeFeedback(
+    const ArtifactRootReference &parentMapping,
+    const sim::CgraClosedWaitSetDiagnostic &closedWait,
+    const ArtifactStore &artifacts);
+
+void emitSpatialTransportRuntimeFeedback(
+    const SpatialTransportRuntimeFeedback &feedback);
 
 } // namespace loom::dse
 

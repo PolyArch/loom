@@ -1100,6 +1100,13 @@ void emitApplicationMappingDiagnostics(
             {"consumed", summary.hardwareRepairProbesConsumed},
             {"rejected", summary.hardwareRepairProbesRejected},
             {"cancelled", summary.hardwareRepairProbesCancelled}};
+        payload["spatial_mapping_repair_work"] = llvm::json::Object{
+            {"limit", summary.spatialMappingRepairCandidateLimit},
+            {"planned", summary.spatialMappingRepairsPlanned},
+            {"reserved", summary.spatialMappingRepairsReserved},
+            {"consumed", summary.spatialMappingRepairsConsumed},
+            {"rejected", summary.spatialMappingRepairsRejected},
+            {"cancelled", summary.spatialMappingRepairsCancelled}};
         payload["tech_mapping_dispatch_count"] =
             summary.techMappingDispatchCount;
         payload["spatial_pnr_dispatch_count"] = summary.spatialPnrDispatchCount;

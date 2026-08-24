@@ -14,6 +14,7 @@
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Frontend/IR/LoomOps.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "PnR/System/SystemMappingMigration.h"
@@ -195,7 +196,9 @@ bool everyCoreIsUsed(const loom::ArtifactRootReference &systemReference,
       });
 }
 
-void exerciseJointExploration(bool runFifoHardwareRepair) {
+void exerciseJointExploration(bool runFifoHardwareRepair,
+                              bool runOperandHardwareRepair,
+                              bool runTransportRepair) {
   TemporaryDirectory temporary;
   llvm::SmallString<128> blobPath(temporary.path());
   llvm::sys::path::append(blobPath, "blobs");
@@ -416,76 +419,202 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
   operandFeedback.repairTarget = loom::dse::SpatialOperandBufferRepairTarget{
       *operandPe, *operandMode, operandEntries, separatedMode,
       operandEntries + 1};
-  llvm::SmallString<128> operandJournal(temporary.path());
-  llvm::sys::path::append(operandJournal, "operand-buffer-repair");
-  const auto operandRepair =
-      take(loom::dse::executeSpatialOperandBufferHardwareFeedbackReopen(
-          plan, parentExecution, policy, operandFeedback,
-          {take(loom::dse::DseProducerSemanticBuildIdentity::get(
-               "loom.test.spatial_operand_buffer_feedback.v1")),
-           operandJournal.str().str(),
-           {},
-           loom::dse::JointDesignStoppingPolicy::FirstVerified,
-           std::nullopt,
-           std::nullopt,
-           take(loom::dse::SiteCapacity::get(2, 0, 0)),
-           take(loom::dse::PlanExecutionPolicy::get(
-               2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
-          store, blobs));
-  if (operandRepair.childSystems.empty() || operandRepair.executions.empty() ||
-      operandRepair.reuseDispositions.empty())
-    fail("exact operand-buffer feedback did not materialize a bounded child");
-  if (separatedMode && operandRepair.childSystems.size() != 2)
-    fail("exact operand-buffer feedback did not retain both bounded "
-         "mode/depth alternatives");
-  const std::uint64_t expectedOperandCandidateLimit = separatedMode ? 2 : 1;
-  if (operandRepair.candidateLimit != expectedOperandCandidateLimit ||
-      operandRepair.candidatesPlanned != operandRepair.candidatesReserved ||
-      operandRepair.candidatesReserved != operandRepair.candidatesConsumed +
-                                               operandRepair.candidatesRejected +
-                                               operandRepair.candidatesCancelled)
-    fail("operand-buffer hardware child budget ledger is not closed: limit=" +
-         llvm::Twine(operandRepair.candidateLimit) +
-         " planned=" + llvm::Twine(operandRepair.candidatesPlanned) +
-         " reserved=" + llvm::Twine(operandRepair.candidatesReserved) +
-         " consumed=" + llvm::Twine(operandRepair.candidatesConsumed) +
-         " rejected=" + llvm::Twine(operandRepair.candidatesRejected) +
-         " cancelled=" + llvm::Twine(operandRepair.candidatesCancelled));
-  bool operandMappingVerified = false;
-  for (std::size_t ordinal = 0; ordinal != operandRepair.executions.size();
-       ++ordinal) {
-    for (const auto &pair : operandRepair.executions[ordinal].mappedPairs)
-      for (const auto &mapping : pair.systemMappings) {
-        auto imported =
-            take(loom::mapping::importSystemMapping(mapping, store));
-        if (imported.view().fabricIdentity() !=
-            operandRepair.childSystems[ordinal].artifact)
-          fail("operand-buffer child Mapping names the parent System");
-        operandMappingVerified = true;
-      }
+  if (runOperandHardwareRepair) {
+    llvm::SmallString<128> operandJournal(temporary.path());
+    llvm::sys::path::append(operandJournal, "operand-buffer-repair");
+    const auto operandRepair =
+        take(loom::dse::executeSpatialOperandBufferHardwareFeedbackReopen(
+            plan, parentExecution, policy, operandFeedback,
+            {take(loom::dse::DseProducerSemanticBuildIdentity::get(
+                 "loom.test.spatial_operand_buffer_feedback.v1")),
+             operandJournal.str().str(),
+             {},
+             loom::dse::JointDesignStoppingPolicy::FirstVerified,
+             std::nullopt,
+             std::nullopt,
+             take(loom::dse::SiteCapacity::get(2, 0, 0)),
+             take(loom::dse::PlanExecutionPolicy::get(
+                 2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+            store, blobs));
+    if (operandRepair.childSystems.empty() ||
+        operandRepair.executions.empty() ||
+        operandRepair.reuseDispositions.empty())
+      fail("exact operand-buffer feedback did not materialize a bounded child");
+    if (separatedMode && operandRepair.childSystems.size() != 2)
+      fail("exact operand-buffer feedback did not retain both bounded "
+           "mode/depth alternatives");
+    const std::uint64_t expectedOperandCandidateLimit = separatedMode ? 2 : 1;
+    if (operandRepair.candidateLimit != expectedOperandCandidateLimit ||
+        operandRepair.candidatesPlanned != operandRepair.candidatesReserved ||
+        operandRepair.candidatesReserved !=
+            operandRepair.candidatesConsumed +
+                operandRepair.candidatesRejected +
+                operandRepair.candidatesCancelled)
+      fail("operand-buffer hardware child budget ledger is not closed: limit=" +
+           llvm::Twine(operandRepair.candidateLimit) +
+           " planned=" + llvm::Twine(operandRepair.candidatesPlanned) +
+           " reserved=" + llvm::Twine(operandRepair.candidatesReserved) +
+           " consumed=" + llvm::Twine(operandRepair.candidatesConsumed) +
+           " rejected=" + llvm::Twine(operandRepair.candidatesRejected) +
+           " cancelled=" + llvm::Twine(operandRepair.candidatesCancelled));
+    bool operandMappingVerified = false;
+    for (std::size_t ordinal = 0; ordinal != operandRepair.executions.size();
+         ++ordinal) {
+      for (const auto &pair : operandRepair.executions[ordinal].mappedPairs)
+        for (const auto &mapping : pair.systemMappings) {
+          auto imported =
+              take(loom::mapping::importSystemMapping(mapping, store));
+          if (imported.view().fabricIdentity() !=
+              operandRepair.childSystems[ordinal].artifact)
+            fail("operand-buffer child Mapping names the parent System");
+          operandMappingVerified = true;
+        }
+    }
+    if (!operandMappingVerified)
+      fail("exact operand-buffer feedback produced no verified SystemMapping");
+    auto incompleteOperandFeedback = operandFeedback;
+    incompleteOperandFeedback.disposition = loom::dse::
+        SpatialOperandQueueRuntimeFeedbackDisposition::ProofNotEstablished;
+    const auto rejectedOperandRepair =
+        take(loom::dse::executeSpatialOperandBufferHardwareFeedbackReopen(
+            plan, parentExecution, policy, incompleteOperandFeedback,
+            {take(loom::dse::DseProducerSemanticBuildIdentity::get(
+                 "loom.test.spatial_operand_buffer_feedback.negative.v1")),
+             operandJournal.str().str(),
+             {},
+             loom::dse::JointDesignStoppingPolicy::FirstVerified,
+             std::nullopt,
+             std::nullopt,
+             take(loom::dse::SiteCapacity::get(2, 0, 0)),
+             take(loom::dse::PlanExecutionPolicy::get(
+                 2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+            store, blobs));
+    if (!rejectedOperandRepair.childSystems.empty() ||
+        !rejectedOperandRepair.executions.empty())
+      fail("incomplete operand-buffer feedback synthesized a hardware child");
   }
-  if (!operandMappingVerified)
-    fail("exact operand-buffer feedback produced no verified SystemMapping");
-  auto incompleteOperandFeedback = operandFeedback;
-  incompleteOperandFeedback.disposition = loom::dse::
-      SpatialOperandQueueRuntimeFeedbackDisposition::ProofNotEstablished;
-  const auto rejectedOperandRepair =
-      take(loom::dse::executeSpatialOperandBufferHardwareFeedbackReopen(
-          plan, parentExecution, policy, incompleteOperandFeedback,
-          {take(loom::dse::DseProducerSemanticBuildIdentity::get(
-               "loom.test.spatial_operand_buffer_feedback.negative.v1")),
-           operandJournal.str().str(),
-           {},
-           loom::dse::JointDesignStoppingPolicy::FirstVerified,
-           std::nullopt,
-           std::nullopt,
-           take(loom::dse::SiteCapacity::get(2, 0, 0)),
-           take(loom::dse::PlanExecutionPolicy::get(
-               2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
-          store, blobs));
-  if (!rejectedOperandRepair.childSystems.empty() ||
-      !rejectedOperandRepair.executions.empty())
-    fail("incomplete operand-buffer feedback synthesized a hardware child");
+
+  auto transportSpatial =
+      take(loom::mapping::importSpatialMapping(*feedbackSpatialMapping, store));
+  auto transportDataflow = take(dataflow::importCanonicalDataflow(
+      plan.frontier.pairs.front().software.dataflow, store));
+  auto transportDataflowView = take(transportDataflow.view());
+  auto transportTech =
+      take(loom::mapping::importTechMapping(operandTech, store));
+  std::optional<dataflow::CanonicalGraphProducerEndpointRef> transportProducer;
+  std::optional<loom::fabric::FabricPhysicalTraversalRef> transportTraversal;
+  std::optional<std::uint64_t> transportActorOrdinal;
+  for (const auto &route : transportSpatial.view().routeTrees()) {
+    const auto *producer =
+        std::get_if<dataflow::ActorTokenResultRef>(&route.logicalNet);
+    if (!producer)
+      continue;
+    const auto node = llvm::find_if(route.nodes, [](const auto &candidate) {
+      return candidate.incomingTraversal.has_value();
+    });
+    if (node == route.nodes.end())
+      continue;
+    auto actor = take(transportDataflowView.resolve(producer->actor));
+    std::uint64_t graphLocalOrdinal = 0;
+    bool foundActor = false;
+    for (const auto &candidate : transportDataflowView.actors()) {
+      if (candidate.graph != actor.graph)
+        continue;
+      if (candidate.ref == producer->actor) {
+        foundActor = true;
+        break;
+      }
+      ++graphLocalOrdinal;
+    }
+    if (!foundActor)
+      fail("transport feedback producer has no graph-local actor ordinal");
+    transportProducer = route.logicalNet;
+    transportTraversal = *node->incomingTraversal;
+    transportActorOrdinal = graphLocalOrdinal;
+    break;
+  }
+  if (!transportProducer || !transportTraversal || !transportActorOrdinal)
+    fail("transport feedback fixture has no routed actor result");
+  loom::sim::CgraClosedWaitSetDiagnostic exactTransportWait;
+  exactTransportWait.ownerReferences = loom::sim::CgraExecutionOwnerReferences{
+      plan.frontier.pairs.front().software.dataflow, targetModules.front(),
+      operandTech, *feedbackSpatialMapping};
+  loom::sim::CgraClosedWaitSetDiagnostic::Transfer transportTransfer;
+  transportTransfer.bindingOrdinal = 0;
+  transportTransfer.occurrenceOrdinal = 0;
+  transportTransfer.producerActorOrdinal = *transportActorOrdinal;
+  transportTransfer.blocked = true;
+  transportTransfer.blockingActorOrdinal = *transportActorOrdinal;
+  transportTransfer.producer = *transportProducer;
+  transportTransfer.blockingTraversals.push_back(*transportTraversal);
+  exactTransportWait.transfers.push_back(std::move(transportTransfer));
+  exactTransportWait.actorWaitCycle.push_back(
+      {*transportActorOrdinal, *transportActorOrdinal,
+       loom::sim::CgraClosedWaitSetDiagnostic::ActorWaitKind::
+           OutputBackpressure});
+  const auto transportFeedback =
+      take(loom::dse::deriveSpatialTransportRuntimeFeedback(
+          mappings.front(), exactTransportWait, store));
+  if (transportFeedback.disposition !=
+          loom::dse::SpatialTransportRuntimeFeedbackDisposition::Exact ||
+      transportFeedback.alternatives.size() != 1 ||
+      transportFeedback.alternatives.front().producer != *transportProducer ||
+      transportFeedback.alternatives.front().forbiddenTraversal !=
+          *transportTraversal)
+    fail("exact storage wait did not produce one canonical reroute");
+  std::vector<loom::fabric::FabricPhysicalTraversalRef> transportDomain;
+  for (const auto &traversal : targetModule.view().admittedTraversals())
+    if (traversal != *transportTraversal)
+      transportDomain.push_back(traversal);
+  auto transportConstraints =
+      take(loom::mapping::finalizeSpatialNetTraversalDomainConstraintSet(
+          transportDataflowView, transportTech.view(), targetModule.view(),
+          *transportProducer, transportDomain, store));
+  llvm::Error parentConstraintAdmission =
+      loom::mapping::admitSpatialMappingConstraints(
+          transportDataflowView, transportTech.view(), targetModule.view(),
+          transportConstraints.view(), transportSpatial.view());
+  if (!parentConstraintAdmission)
+    fail("reroute constraint admitted the blocked parent RouteTree");
+  llvm::consumeError(std::move(parentConstraintAdmission));
+  if (runTransportRepair) {
+    llvm::SmallString<128> transportJournal(temporary.path());
+    llvm::sys::path::append(transportJournal, "transport-runtime-repair");
+    const auto transportRepair =
+        take(loom::dse::executeSpatialTransportRuntimeRepair(
+            plan, parentExecution, policy, transportFeedback,
+            {take(loom::dse::DseProducerSemanticBuildIdentity::get(
+                 "loom.test.spatial_transport_feedback.v1")),
+             transportJournal.str().str(),
+             {},
+             loom::dse::JointDesignStoppingPolicy::FirstVerified,
+             std::nullopt,
+             std::nullopt,
+             take(loom::dse::SiteCapacity::get(2, 0, 0)),
+             take(loom::dse::PlanExecutionPolicy::get(
+                 2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+            store, blobs));
+    if (transportRepair.candidateLimit != 1 ||
+        transportRepair.candidatesPlanned != 1 ||
+        transportRepair.candidatesReserved != 1 ||
+        transportRepair.candidatesConsumed +
+                transportRepair.candidatesRejected +
+                transportRepair.candidatesCancelled !=
+            1 ||
+        transportRepair.constraintSets.size() != 1 ||
+        transportRepair.executions.size() != 1 ||
+        transportRepair.childSystems !=
+            std::vector<loom::ArtifactRootReference>{system} ||
+        transportRepair.reuseDispositions !=
+            std::vector<loom::dse::JointMappingReuseDisposition>{
+                loom::dse::JointMappingReuseDisposition::ColdFallback} ||
+        transportRepair.executions.front().summary.techMappingDispatchCount !=
+            0 ||
+        transportRepair.executions.front().summary.spatialPnrDispatchCount != 1)
+      fail("bounded transport reroute did not use the constrained Spatial "
+           "provider with a closed cold-fallback ledger");
+  }
+
   loom::sim::CgraClosedWaitSetDiagnostic exactFifoWait;
   exactFifoWait.pendingActorFirings = 1;
   exactFifoWait.pendingTransfers = 1;
@@ -585,8 +714,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
   if (runFifoHardwareRepair)
     return;
   const auto moduleRoot =
-      take(loom::fabric::FabricModulePhysicalOwnerRef::create(
-          *feedbackFifo));
+      take(loom::fabric::FabricModulePhysicalOwnerRef::create(*feedbackFifo));
   loom::dse::HardwareImpactProjection localSpatialImpact{
       targetModules.front(), system, {}, {}, {}, {}};
   localSpatialImpact.family = loom::dse::HardwareMutationFamily::SpatialFifo;
@@ -613,8 +741,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
       take(loom::mapping::importSpatialMapping(*feedbackSpatialMapping, store));
   std::optional<loom::fabric::FabricFifoOccurrenceRef> unusedFifo;
   for (const auto fifo : targetModule.view().fifoOccurrences())
-    if (!loom::mapping::spatialMappingUsesFifoOccurrence(
-            impactSpatial.view(), fifo)) {
+    if (!loom::mapping::spatialMappingUsesFifoOccurrence(impactSpatial.view(),
+                                                         fifo)) {
       unusedFifo = fifo;
       break;
     }
@@ -630,10 +758,9 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
       take(loom::fabric::FabricModulePhysicalOwnerRef::create(*unusedFifo)));
   unusedImpact.moduleEntities =
       identityModuleEntityCorrespondence(targetModule.view());
-  const auto unusedFrontier =
-      take(loom::dse::rebaseJointMappingFrontier(
-          plan, parentExecution, system, identityModuleCorrespondence,
-          &unusedImpact, store));
+  const auto unusedFrontier = take(loom::dse::rebaseJointMappingFrontier(
+      plan, parentExecution, system, identityModuleCorrespondence,
+      &unusedImpact, store));
   if (unusedFrontier.disposition !=
           loom::dse::JointMappingReuseDisposition::Preserved ||
       unusedFrontier.accounting.invalidatedSpatialMappings != 0 ||
@@ -691,8 +818,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
     switchImpact.locality = loom::dse::HardwareMutationLocality::GlobalReopen;
     switchImpact.tech.kind = loom::dse::HardwareMappingImpactKind::Reopen;
     switchImpact.spatial.kind = loom::dse::HardwareMappingImpactKind::Reopen;
-    switchImpact.tech.realizationRoots = {take(
-        loom::fabric::FabricModulePhysicalOwnerRef::create(
+    switchImpact.tech.realizationRoots = {
+        take(loom::fabric::FabricModulePhysicalOwnerRef::create(
             targetModule.view().switchOccurrences().front()))};
     switchImpact.spatial.placementRoots = switchImpact.tech.realizationRoots;
     const auto switchFallback = take(loom::dse::rebaseJointMappingFrontier(
@@ -802,8 +929,12 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc > 2 || (argc == 2 && llvm::StringRef(argv[1]) != "fifo-feedback"))
-    fail("expected no workflow or fifo-feedback");
-  exerciseJointExploration(argc == 2);
+  const llvm::StringRef mode = argc == 2 ? argv[1] : "";
+  if (argc > 2 || (argc == 2 && mode != "fifo-feedback" &&
+                   mode != "operand-feedback" && mode != "transport-feedback"))
+    fail("expected no workflow, fifo-feedback, operand-feedback, or "
+         "transport-feedback");
+  exerciseJointExploration(mode == "fifo-feedback", mode == "operand-feedback",
+                           mode == "transport-feedback");
   return 0;
 }

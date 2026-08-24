@@ -33,6 +33,7 @@ struct ApplicationRuntimeValidation final {
   std::optional<dse::SpatialFifoRuntimeFeedback> spatialFifoFeedback;
   std::optional<dse::SpatialOperandQueueRuntimeFeedback>
       spatialOperandQueueFeedback;
+  std::optional<dse::SpatialTransportRuntimeFeedback> spatialTransportFeedback;
 };
 
 llvm::Expected<ImportedApplicationMapping>

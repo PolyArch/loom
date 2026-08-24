@@ -1,5 +1,7 @@
 #include "Mapping/Artifact/MappingConstraintSet.h"
 
+#include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/IR/MappingAttrs.h"
 #include "Mapping/IR/MappingDialect.h"
 
@@ -49,6 +51,58 @@ finalizeEmptySpatialMappingConstraintSet(
       identityAttr(&context, techMapping.identity()),
       identityAttr(&context, fabric.identity()));
   root.getBody().emplaceBlock();
+  return finalizeSpatialMappingConstraintSet(root, dataflow, techMapping,
+                                             fabric, store);
+}
+
+llvm::Expected<FinalizedSpatialMappingConstraintSet>
+finalizeSpatialNetTraversalDomainConstraintSet(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
+    llvm::ArrayRef<::loom::fabric::FabricPhysicalTraversalRef>
+        admissibleTraversals,
+    const ArtifactStore &store) {
+  if (llvm::Error error = dataflow.validate(producer))
+    return std::move(error);
+  auto encodedProducer =
+      ::dataflow::encodeDataflowReference(dataflow.identity(), producer);
+  if (!encodedProducer)
+    return encodedProducer.takeError();
+
+  mlir::MLIRContext context;
+  context.loadDialect<::mapping::MappingDialect>();
+  mlir::OpBuilder builder(&context);
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::ModuleOp::create(builder.getUnknownLoc());
+  builder.setInsertionPointToStart(module->getBody());
+  auto root = ::mapping::ConstraintsSpatialOp::create(
+      builder, builder.getUnknownLoc(),
+      identityAttr(&context, dataflow.identity()),
+      identityAttr(&context, techMapping.identity()),
+      identityAttr(&context, fabric.identity()));
+  root.getBody().emplaceBlock();
+  builder.setInsertionPointToStart(&root.getBody().front());
+
+  std::vector<mlir::Attribute> domain;
+  domain.reserve(admissibleTraversals.size());
+  for (const auto &traversal : admissibleTraversals) {
+    if (llvm::Error error = validateFabricRef(fabric, traversal))
+      return std::move(error);
+    domain.push_back(::mapping::FabricPhysicalTraversalRefAttr::get(
+        &context,
+        denseBytes(&context, ::loom::fabric::canonicalFabricBytes(traversal))));
+  }
+  ::mapping::ConstraintDomainRestrictionOp::create(
+      builder, builder.getUnknownLoc(),
+      ::mapping::SpatialConstraintProjectionKeyAttr::get(
+          &context,
+          static_cast<std::uint32_t>(::mapping::SpatialConstraintProjection::
+                                         NetSelectedPhysicalTraversals)),
+      ::mapping::GraphProducerEndpointRefAttr::get(
+          &context, denseBytes(&context, *encodedProducer)),
+      builder.getArrayAttr(domain));
   return finalizeSpatialMappingConstraintSet(root, dataflow, techMapping,
                                              fabric, store);
 }

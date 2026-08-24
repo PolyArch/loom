@@ -1134,6 +1134,16 @@ only an exact closed wait with a complete causal cone may reject a candidate or
 request a bounded local repair. Unknown rates, dynamic aliases, and incomplete
 queue witnesses remain `ProofNotEstablished` or `Unsupported`.
 
+Selected transport storage is a separate feedback boundary. If a closed actor
+wait crosses multiple route-storage owners and no one FIFO or operand queue is
+the complete witness, runtime must name the canonical producer and selected
+physical traversals. Spatial feedback independently joins those references to
+the finalized RouteTree. A bounded retry may exclude one exact contested
+traversal through `NetSelectedPhysicalTraversals`; it may not infer a storage
+resize or bypass queue/FIFO ownership. Without a verified mutable checkpoint,
+the retry is a constrained cold Mapping invocation rather than an incremental
+repair claim.
+
 When route cost, capacity, and functional objective are equal, the Spatial
 router prefers distinct compatible ingresses for input roles in one potential
 wait component, followed by pairing-ready selector arrangements. This is a

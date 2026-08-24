@@ -780,6 +780,22 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
                  << transfer.blockingDownstreamStorageHead->traversalNodeOrdinal;
         else
           stream << "none";
+        stream << ", blocking_route_targets=[";
+        for (auto indexed : llvm::enumerate(transfer.blockingTraversals)) {
+          if (indexed.index())
+            stream << ",";
+          stream << llvm::toHex(
+              loom::fabric::canonicalFabricBytes(indexed.value()), true);
+        }
+        stream << "], downstream_route_targets=[";
+        for (auto indexed :
+             llvm::enumerate(transfer.blockingDownstreamTraversals)) {
+          if (indexed.index())
+            stream << ",";
+          stream << llvm::toHex(
+              loom::fabric::canonicalFabricBytes(indexed.value()), true);
+        }
+        stream << "]";
         stream
                << ", blocking_actor=" << transfer.blockingActorOrdinal
                << ", blocking_ready=" << transfer.blockingReadyTokenCount
@@ -1230,7 +1246,7 @@ int main(int argc, char **argv) {
                                 : state->second.sequence.cancel(
                                       it->consumerOrdinal, it->sequence);
         if (error)
-          return std::move(error);
+          return error;
       }
       channelReservations.clear();
       return llvm::Error::success();

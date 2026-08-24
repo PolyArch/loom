@@ -1991,6 +1991,12 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::uint64_t hardwareRepairProbesConsumed = 0;
   std::uint64_t hardwareRepairProbesRejected = 0;
   std::uint64_t hardwareRepairProbesCancelled = 0;
+  std::uint64_t spatialMappingRepairCandidateLimit = 0;
+  std::uint64_t spatialMappingRepairsPlanned = 0;
+  std::uint64_t spatialMappingRepairsReserved = 0;
+  std::uint64_t spatialMappingRepairsConsumed = 0;
+  std::uint64_t spatialMappingRepairsRejected = 0;
+  std::uint64_t spatialMappingRepairsCancelled = 0;
   std::uint64_t parentTechDecisions = 0;
   std::uint64_t parentSpatialDecisions = 0;
   std::uint64_t preservedTechDecisions = 0;
@@ -2209,6 +2215,18 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         execution->summary.hardwareRepairProbesRejected;
     hardwareRepairProbesCancelled +=
         execution->summary.hardwareRepairProbesCancelled;
+    spatialMappingRepairCandidateLimit +=
+        execution->summary.spatialMappingRepairCandidateLimit;
+    spatialMappingRepairsPlanned +=
+        execution->summary.spatialMappingRepairsPlanned;
+    spatialMappingRepairsReserved +=
+        execution->summary.spatialMappingRepairsReserved;
+    spatialMappingRepairsConsumed +=
+        execution->summary.spatialMappingRepairsConsumed;
+    spatialMappingRepairsRejected +=
+        execution->summary.spatialMappingRepairsRejected;
+    spatialMappingRepairsCancelled +=
+        execution->summary.spatialMappingRepairsCancelled;
     parentTechDecisions += execution->summary.parentTechDecisions;
     parentSpatialDecisions += execution->summary.parentSpatialDecisions;
     preservedTechDecisions += execution->summary.preservedTechDecisions;
@@ -2361,6 +2379,36 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       }
       return false;
     };
+    if (runtime->disposition !=
+            ApplicationMappingRuntimeDisposition::Completed &&
+        runtime->spatialTransportFeedback &&
+        runtime->spatialTransportFeedback->disposition ==
+            dse::SpatialTransportRuntimeFeedbackDisposition::Exact) {
+      llvm::SmallString<256> feedbackJournal(request.journalRoot);
+      llvm::sys::path::append(feedbackJournal,
+                              "transport-runtime-feedback-" +
+                                  std::to_string(selectedPlanOrdinal));
+      auto repaired = dse::executeSpatialTransportRuntimeRepair(
+          prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
+          prepared.jointPolicy, *runtime->spatialTransportFeedback,
+          {request.producer, feedbackJournal.str().str(), evidence,
+           dse::JointDesignStoppingPolicy::FirstVerified, std::nullopt,
+           std::nullopt, request.siteCapacity, request.executionPolicy},
+          artifacts, blobs);
+      if (!repaired)
+        return repaired.takeError();
+      spatialMappingRepairCandidateLimit += repaired->candidateLimit;
+      spatialMappingRepairsPlanned += repaired->candidatesPlanned;
+      spatialMappingRepairsReserved += repaired->candidatesReserved;
+      spatialMappingRepairsConsumed += repaired->candidatesConsumed;
+      spatialMappingRepairsRejected += repaired->candidatesRejected;
+      spatialMappingRepairsCancelled += repaired->candidatesCancelled;
+      auto selected = consumeRepairedExecutions(repaired);
+      if (!selected)
+        return selected.takeError();
+      if (*selected)
+        break;
+    }
     if (runtime->disposition !=
             ApplicationMappingRuntimeDisposition::Completed &&
         runtime->spatialFifoFeedback &&
@@ -2754,6 +2802,18 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       hardwareRepairProbesRejected;
   selectedExecution->summary.hardwareRepairProbesCancelled =
       hardwareRepairProbesCancelled;
+  selectedExecution->summary.spatialMappingRepairCandidateLimit =
+      spatialMappingRepairCandidateLimit;
+  selectedExecution->summary.spatialMappingRepairsPlanned =
+      spatialMappingRepairsPlanned;
+  selectedExecution->summary.spatialMappingRepairsReserved =
+      spatialMappingRepairsReserved;
+  selectedExecution->summary.spatialMappingRepairsConsumed =
+      spatialMappingRepairsConsumed;
+  selectedExecution->summary.spatialMappingRepairsRejected =
+      spatialMappingRepairsRejected;
+  selectedExecution->summary.spatialMappingRepairsCancelled =
+      spatialMappingRepairsCancelled;
   selectedExecution->summary.parentTechDecisions = parentTechDecisions;
   selectedExecution->summary.parentSpatialDecisions = parentSpatialDecisions;
   selectedExecution->summary.preservedTechDecisions = preservedTechDecisions;

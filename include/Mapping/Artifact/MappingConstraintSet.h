@@ -243,6 +243,19 @@ finalizeEmptySpatialMappingConstraintSet(
     const ::loom::fabric::FabricArtifactView &fabric,
     const ArtifactStore &store);
 
+/// Publishes one exact domain restriction for a logical net's selected
+/// physical traversals. The caller supplies the complete admissible domain;
+/// finalization remains the sole owner of reference and projection legality.
+llvm::Expected<FinalizedSpatialMappingConstraintSet>
+finalizeSpatialNetTraversalDomainConstraintSet(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
+    llvm::ArrayRef<::loom::fabric::FabricPhysicalTraversalRef>
+        admissibleTraversals,
+    const ArtifactStore &store);
+
 llvm::Expected<FinalizedSpatialMappingConstraintSet>
 importSpatialMappingConstraintSet(const ArtifactRootReference &reference,
                                   const ArtifactStore &store);

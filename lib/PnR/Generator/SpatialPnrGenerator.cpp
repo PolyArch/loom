@@ -942,6 +942,11 @@ SpatialPnrGenerationOutcome
 generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   const ExecutionResourceTracker resources;
   SpatialPnrGenerationAccounting accounting;
+  if (inputs.maximumCandidatePublications &&
+      *inputs.maximumCandidatePublications == 0)
+    return InvalidSpatialPnrGeneration{
+        InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
+        "maximum candidate publications must be positive"};
   if (inputs.executionControl.stopRequested())
     return interruptedOutcome(SpatialPnrInterruptionStage::InputAdmission,
                               std::nullopt, accounting, {}, {}, resources);
@@ -1071,14 +1076,19 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   const bool firstVerifiedCandidate =
       inputs.config.policy().search.completionGoal ==
       ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
-  if (firstVerifiedCandidate) {
+  if (firstVerifiedCandidate || inputs.maximumCandidatePublications) {
     restartResults.reserve(restartCount);
+    std::uint64_t candidateRestarts = 0;
     for (std::uint32_t attempt = 0; attempt != restartCount; ++attempt) {
       restartResults.push_back(runRestart(attempt));
       if (restartResults.back().disposition ==
-              SpatialRestartDisposition::Candidate ||
-          restartResults.back().disposition ==
-              SpatialRestartDisposition::ProvenInfeasible)
+          SpatialRestartDisposition::Candidate)
+        ++candidateRestarts;
+      if (restartResults.back().disposition ==
+              SpatialRestartDisposition::ProvenInfeasible ||
+          (firstVerifiedCandidate && candidateRestarts != 0) ||
+          (inputs.maximumCandidatePublications &&
+           candidateRestarts >= *inputs.maximumCandidatePublications))
         break;
     }
   } else if (workerCount == 1) {

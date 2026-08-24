@@ -3,6 +3,7 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "DSE/MappingCandidateGenerator.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
 #include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
@@ -55,6 +56,8 @@ llvm::Error registerMappingGenerators() {
           registerApplicationGraphTechMappingCandidateGenerator())
     return error;
   if (llvm::Error error = registerRootCompleteSpatialPnrCandidateGenerator())
+    return error;
+  if (llvm::Error error = registerSpatialPnrCandidateGenerator())
     return error;
   return registerApplicationSystemPnrCandidateGenerator();
 }
@@ -256,6 +259,14 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
   };
   std::vector<SeedMapping> seedTechMappings;
   std::vector<SeedMapping> seedSpatialMappings;
+  struct SeedRepairConstraint final {
+    ArtifactRootReference techMapping;
+    ArtifactRootReference constraintSet;
+    ArtifactIdentity dataflow;
+    ArtifactIdentity module;
+    bool matched = false;
+  };
+  std::vector<SeedRepairConstraint> seedRepairConstraints;
   if (mappingSeed) {
     seedTechMappings.reserve(mappingSeed->techMappings.size());
     for (const ArtifactRootReference &reference : mappingSeed->techMappings) {
@@ -275,6 +286,25 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
       seedSpatialMappings.push_back({reference,
                                      imported->view().dataflowIdentity(),
                                      imported->view().fabricIdentity(), false});
+    }
+    seedRepairConstraints.reserve(mappingSeed->spatialRepairConstraints.size());
+    for (const auto &repair : mappingSeed->spatialRepairConstraints) {
+      auto tech = mapping::importTechMapping(repair.techMapping, artifactStore);
+      if (!tech)
+        return tech.takeError();
+      auto constraints = mapping::importSpatialMappingConstraintSet(
+          repair.constraintSet, artifactStore);
+      if (!constraints)
+        return constraints.takeError();
+      if (constraints->view().techMappingIdentity() !=
+              tech->view().identity() ||
+          constraints->view().dataflowIdentity() !=
+              tech->view().dataflowIdentity() ||
+          constraints->view().fabricIdentity() != tech->view().fabricIdentity())
+        return invalid("Spatial repair constraint has inconsistent owners");
+      seedRepairConstraints.push_back({repair.techMapping, repair.constraintSet,
+                                       tech->view().dataflowIdentity(),
+                                       tech->view().fabricIdentity(), false});
     }
   }
 
@@ -338,6 +368,15 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
         }
       canonicalize(retainedTech);
       canonicalize(retainedSpatial);
+      SeedRepairConstraint *repairConstraint = nullptr;
+      for (SeedRepairConstraint &candidate : seedRepairConstraints) {
+        if (candidate.dataflow != pair.software.dataflow.artifact ||
+            candidate.module != module.artifact)
+          continue;
+        if (repairConstraint)
+          return invalid("joint pair has multiple Spatial repair constraints");
+        repairConstraint = &candidate;
+      }
       if (retainedTech.size() > policy.maximumTechMappingsPerModule())
         return invalid("immutable TechMapping frontier exceeds its bound");
       immutableTechMappings.insert(immutableTechMappings.end(),
@@ -345,8 +384,32 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
       immutableSpatialMappings.insert(immutableSpatialMappings.end(),
                                       retainedSpatial.begin(),
                                       retainedSpatial.end());
-      if (!retainedSpatial.empty())
+      if (!retainedSpatial.empty()) {
+        if (repairConstraint)
+          return invalid("Spatial repair constraint also retains an immutable "
+                         "SpatialMapping");
         continue;
+      }
+
+      if (repairConstraint) {
+        if (retainedTech.size() != 1 ||
+            retainedTech.front() != repairConstraint->techMapping)
+          return invalid("Spatial repair constraint requires its one exact "
+                         "TechMapping seed");
+        repairConstraint->matched = true;
+        const std::uint64_t spatialNode = planConfig.dse.planNodes.size();
+        planConfig.dse.planNodes.push_back(GeneratePlanNodeDefinition{
+            spatialPnrCandidateGeneratorDescriptor().reference(),
+            {ExactPlanArtifacts{{pair.software.dataflow}},
+             ExactPlanArtifacts{{repairConstraint->techMapping}},
+             ExactPlanArtifacts{{module}},
+             ExactPlanArtifacts{{moduleTimingProfiles[moduleIndex]}},
+             ExactPlanArtifacts{{repairConstraint->constraintSet}}},
+            spatialConfig->canonicalViewBytes().vec(),
+            spatialConfig->digest()});
+        spatialOutputs.push_back(PlanOutputRef{spatialNode, 0});
+        continue;
+      }
 
       PlanInputBinding spatialTechInput;
       if (!retainedTech.empty()) {
@@ -406,7 +469,10 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
   if (llvm::any_of(seedTechMappings,
                    [](const SeedMapping &seed) { return !seed.matched; }) ||
       llvm::any_of(seedSpatialMappings,
-                   [](const SeedMapping &seed) { return !seed.matched; }))
+                   [](const SeedMapping &seed) { return !seed.matched; }) ||
+      llvm::any_of(seedRepairConstraints, [](const SeedRepairConstraint &seed) {
+        return !seed.matched;
+      }))
     return invalid("immutable Mapping seed has no exact joint pair owner");
   auto admitted = projectResolvedDseConfigView(planConfig);
   if (!admitted)
@@ -508,6 +574,8 @@ llvm::Expected<JointDesignExecution> executeJointDesignExploration(
       applicationSystemPnrCandidateGeneratorDescriptor().reference();
   const CandidateGeneratorDescriptorRef spatialGenerator =
       rootCompleteSpatialPnrCandidateGeneratorDescriptor().reference();
+  const CandidateGeneratorDescriptorRef constrainedSpatialGenerator =
+      spatialPnrCandidateGeneratorDescriptor().reference();
   const CandidateGeneratorDescriptorRef techGenerator =
       applicationGraphTechMappingCandidateGeneratorDescriptor().reference();
   for (auto indexed : llvm::enumerate(completed->generateInvocations())) {
@@ -521,7 +589,8 @@ llvm::Expected<JointDesignExecution> executeJointDesignExploration(
         ++summary.techMappingDispatchCount;
       else
         ++summary.techMappingJournalReplayCount;
-    } else if (descriptor == spatialGenerator) {
+    } else if (descriptor == spatialGenerator ||
+               descriptor == constrainedSpatialGenerator) {
       ++summary.spatialPnrInvocationCount;
       if (dispatched)
         ++summary.spatialPnrDispatchCount;

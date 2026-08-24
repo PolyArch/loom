@@ -1,5 +1,7 @@
 #include "DSE/JointHardwareReopen.h"
 
+#include "JointHardwareReopenExecution.h"
+
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
@@ -654,44 +656,6 @@ executeTechGate(const JointDesignExplorationPlan &plan,
   return TechGateExecution{
       JointDesignExecution{std::move(*planExecution), {}, std::move(summary)},
       std::move(retained), coversRequiredGraphs};
-}
-
-llvm::Expected<dse::JointDesignExecution>
-executeJointPlan(const dse::JointDesignExplorationPlan &plan,
-                 llvm::ArrayRef<ArtifactRootReference> evidence,
-                 const JointHardwareReopenRequest &request,
-                 dse::SiteScheduler &scheduler, const ArtifactStore &artifacts,
-                 const BlobStore &blobs,
-                 const PlanExecutionPolicy *executionPolicy = nullptr) {
-  const ResolvedConfig &config = plan.resolvedConfig;
-  auto publishedConfig = artifacts.put(ResolvedConfig::artifactSchema,
-                                       canonicalResolvedConfigBytes(config));
-  if (!publishedConfig)
-    return publishedConfig.takeError();
-  if (*publishedConfig != resolvedConfigIdentity(config))
-    return invalid("ResolvedConfig publication changed its identity");
-  std::vector<ArtifactRootReference> semanticInputs =
-      dse::projectJointDesignSemanticInputs(plan);
-  auto closure = dse::DseRunClosure::get(request.producer, semanticInputs,
-                                         config, evidence, artifacts);
-  if (!closure)
-    return closure.takeError();
-  auto configView = dse::projectResolvedDseConfigView(config);
-  if (!configView)
-    return configView.takeError();
-  llvm::SmallString<256> journalPath(request.journalRoot);
-  llvm::sys::path::append(journalPath,
-                          llvm::toHex(closure->runKey().bytes(), true));
-  if (std::error_code error = llvm::sys::fs::create_directories(journalPath))
-    return invalid("cannot create Mapping alternative journal: " +
-                   error.message());
-  auto journal = dse::openExecutionJournal(journalPath, *closure, *configView);
-  if (!journal)
-    return journal.takeError();
-  return dse::executeJointDesignExploration(
-      plan, *closure, *journal, scheduler,
-      executionPolicy ? *executionPolicy : request.executionPolicy, artifacts,
-      blobs);
 }
 
 llvm::Expected<std::optional<TechHardwareFeedbackObservation>>
@@ -1565,31 +1529,6 @@ materializeTypedAccCoreGrowth(HardwareRecipeGrowth growth,
                                        growth.resultingAccCores};
 }
 
-llvm::Expected<std::vector<ArtifactRootReference>>
-normalizedTimingProfiles(const ArtifactRootReference &system,
-                         const ArtifactStore &artifacts) {
-  auto modules = dse::projectJointDesignTargetModules(system, artifacts);
-  if (!modules)
-    return modules.takeError();
-  std::vector<ArtifactRootReference> profiles;
-  profiles.reserve(modules->size());
-  for (const ArtifactRootReference &moduleReference : *modules) {
-    auto module = fabric::importEntireFabricRoot(moduleReference, artifacts);
-    if (!module)
-      return module.takeError();
-    auto timing =
-        fabric::projectNormalizedFabricPhysicalTimingProfile(module->view());
-    if (!timing)
-      return timing.takeError();
-    auto reference =
-        fabric::publishFabricPhysicalTimingProfile(*timing, artifacts);
-    if (!reference)
-      return reference.takeError();
-    profiles.push_back(std::move(*reference));
-  }
-  return profiles;
-}
-
 llvm::Expected<FinalizedMappingHardwareSpectrum>
 exploreFinalizedMappingHardwareSpectrum(
     const JointDesignPolicy &policy, const JointDesignExplorationPlan &plan,
@@ -2369,11 +2308,13 @@ llvm::Expected<SpatialFifoRuntimeFeedback> deriveSpatialFifoRuntimeFeedback(
   };
   const bool hasCycle = !closedWait.transferWaitCycle.empty() ||
                         !closedWait.actorWaitCycle.empty();
+  if (!hasCycle)
+    return feedback;
   std::vector<const sim::CgraClosedWaitSetDiagnostic::Transfer *> fifoWaits;
   for (const auto &transfer : closedWait.transfers) {
     if (!transfer.blocked || !transfer.blockingFifoOccurrence)
       continue;
-    if (hasCycle && !inTransferCycle(transfer) && !inActorCycle(transfer))
+    if (!inTransferCycle(transfer) && !inActorCycle(transfer))
       continue;
     fifoWaits.push_back(&transfer);
   }
@@ -2413,8 +2354,6 @@ llvm::Expected<SpatialFifoRuntimeFeedback> deriveSpatialFifoRuntimeFeedback(
         candidate && candidate->owner == fifo &&
         candidate->mode == fabric::FabricFifoTraversalMode::Bypass;
   }
-  if (!hasCycle)
-    return feedback;
   if (feedback.capacity == 0 || feedback.occupancy != feedback.capacity) {
     feedback.reason = SpatialFifoRuntimeFeedbackReason::StorageNotFull;
     return feedback;
