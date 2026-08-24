@@ -221,6 +221,32 @@ void orderedRuntimeHeadsRequireCompleteExactPairing() {
           loom::mapping::SpatialPeOperandRuntimeWitnessStatus::Exact ||
       mismatch.mismatchedHeadCount == 0)
     fail("mismatched ordered heads were classified as exact");
+
+  // Potential pairings that are currently empty are dormant, not missing
+  // runtime observations. They must not prevent an active exact tuple from
+  // reaching the liveness verifier.
+  auto dormantProjection = projection;
+  const loom::fabric::InstructionContextRef dormantContext{pe, 3};
+  dormantProjection.pairings.push_back(
+      {{dormantContext, fu, llvm::APInt(4, 9)}, {0, 1}, {}, {0, 1}});
+  auto dormantHeads = std::vector<loom::mapping::SpatialPeOperandRuntimeHeadView>{
+      {{context, 0, 0}, fu, tag, 0, 2, 1, 0, 10, 4, 7, true},
+      {{context, 0, 1}, fu, tag, 1, 2, 1, 0, 11, 5, 7, true},
+      {{dormantContext, 0, 0}, fu, llvm::APInt(4, 9), 0, 2, 0, 0,
+       std::numeric_limits<std::uint64_t>::max(),
+       std::numeric_limits<std::uint64_t>::max(),
+       std::numeric_limits<std::uint64_t>::max(), true},
+      {{dormantContext, 0, 1}, fu, llvm::APInt(4, 9), 1, 2, 0, 0,
+       std::numeric_limits<std::uint64_t>::max(),
+       std::numeric_limits<std::uint64_t>::max(),
+       std::numeric_limits<std::uint64_t>::max(), true}};
+  const auto dormant = take(loom::mapping::deriveSpatialPeOperandRuntimeWitness(
+      dormantProjection, dormantHeads));
+  if (dormant.status !=
+          loom::mapping::SpatialPeOperandRuntimeWitnessStatus::Exact ||
+      dormant.matchedPairingKeyCount != 1 ||
+      dormant.unmatchedPairingKeyCount != 0 || dormant.exactHeadCount != 4)
+    fail("dormant empty pairing was treated as an incomplete head");
 }
 
 } // namespace

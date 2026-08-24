@@ -1047,6 +1047,8 @@ llvm::StringRef toString(ApplicationPairManifestJoinStatus value) {
     return "exact";
   case ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure:
     return "owner_scoped_planning_closure";
+  case ApplicationPairManifestJoinStatus::OwnerVerifiedPreAdmission:
+    return "owner_verified_pre_admission";
   case ApplicationPairManifestJoinStatus::NotStartedBeforeMapping:
     return "not_started_before_mapping";
   case ApplicationPairManifestJoinStatus::Missing:
@@ -1055,7 +1057,7 @@ llvm::StringRef toString(ApplicationPairManifestJoinStatus value) {
   llvm_unreachable("unknown application pair manifest join status");
 }
 
-llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
+llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
     const llvm::Module &finalLinkedModule, ApplicationBuildRequest request,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   ApplicationBuildOperationTimer timer(
@@ -1869,6 +1871,38 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
   return ApplicationBuildPreparationOutcome{std::move(prepared)};
 }
 
+llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
+    const llvm::Module &finalLinkedModule, ApplicationBuildRequest request,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  // Before source/workload/runtime roots exist there is no sound
+  // InvocationManifest run-key to publish.  Close that narrow boundary with
+  // an explicit owner-level status instead of emitting a bare Missing join.
+  const ArtifactRootReference requestedSystem = request.system;
+  const ExecutionControlView executionControl =
+      request.preMappingOptions.executionControl;
+  auto outcome = prepareApplicationBuildImpl(
+      finalLinkedModule, std::move(request), artifacts, blobs);
+  if (outcome)
+    return outcome;
+
+  llvm::Error error = outcome.takeError();
+  const std::string diagnostic = llvm::toString(std::move(error));
+  ApplicationPairDecisionRecord decision;
+  decision.manifestJoinStatus =
+      ApplicationPairManifestJoinStatus::OwnerVerifiedPreAdmission;
+  decision.fabric = requestedSystem;
+  decision.disposition = executionControl.stopRequested()
+                             ? ApplicationPairDecisionDisposition::CancelledOrTimeout
+                         : llvm::StringRef(diagnostic).contains("unsupported")
+                             ? ApplicationPairDecisionDisposition::UnsupportedSemantic
+                             : ApplicationPairDecisionDisposition::ImplementationFailure;
+  decision.detail = "owner_verified_pre_admission: " + diagnostic;
+  decision.hostOnlyBaseline = makeUnsupportedObjectiveVector();
+  emitApplicationPairDecisionDiagnostics(decision);
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument), diagnostic);
+}
+
 llvm::Expected<ApplicationMappingExecution>
 executeApplicationMapping(const PreparedApplicationBuild &prepared,
                           ApplicationMappingExecutionRequest request,
@@ -1948,6 +1982,39 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::vector<ApplicationIncrementalMappingObservation>
       incrementalMappingObservations;
   bool applicationIncrementalAttempted = false;
+  const auto requestedSpectrumClass = [&]()
+      -> std::optional<dse::PreMappingSpectrumClass> {
+    switch (prepared.resourceTimePolicy.spectrumEndpoint) {
+    case dse::PreMappingSpectrumEndpoint::Automatic:
+      return std::nullopt;
+    case dse::PreMappingSpectrumEndpoint::MaxTemporal:
+      return dse::PreMappingSpectrumClass::MaxTemporal;
+    case dse::PreMappingSpectrumEndpoint::MaxSpatial:
+      return dse::PreMappingSpectrumClass::MaxSpatial;
+    case dse::PreMappingSpectrumEndpoint::Intermediate:
+      return dse::PreMappingSpectrumClass::Intermediate;
+    }
+    llvm_unreachable("unknown resource-time spectrum endpoint");
+  }();
+  const auto outcomeMatchesRequestedSpectrum =
+      [&](std::uint64_t planOrdinal,
+          const ArtifactRootReference &mapping) {
+        if (!requestedSpectrumClass)
+          return true;
+        return llvm::any_of(outcomes, [&](const auto &outcome) {
+          if (outcome.planOrdinal != planOrdinal ||
+              !llvm::is_contained(outcome.systemMappings, mapping) ||
+              !outcome.resourceTimeSpectrum)
+            return false;
+          const auto *verified = std::get_if<dse::VerifiedResourceTimeSpectrum>(
+              &outcome.resourceTimeSpectrum->verification);
+          return verified && llvm::any_of(
+                                 verified->scenarios, [&](const auto &scenario) {
+                                   return scenario.spectrumClass ==
+                                          *requestedSpectrumClass;
+                                 });
+        });
+      };
   const std::size_t mappingImportEntryLimit =
       prepared.mappingAlternatives.size() >
               std::numeric_limits<std::size_t>::max() / 16
@@ -2165,6 +2232,20 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     }
     if (!joined)
       return invalid("runtime validation has no exact Mapping attempt join");
+    // An explicit spectrum endpoint constrains selection, not just reporting.
+    // Keep a verified non-endpoint result as evidence, but continue through
+    // the already bounded finalist frontier until a real SystemMapping proves
+    // the requested class.
+    if (runtime->disposition ==
+            ApplicationMappingRuntimeDisposition::Completed &&
+        !outcomeMatchesRequestedSpectrum(
+            selectedPlanOrdinal, *execution->summary.selectedMapping)) {
+      execution->summary.selectedPlanOrdinal.reset();
+      execution->summary.selectedMapping.reset();
+      selectedExecution.emplace(std::move(*execution));
+      firstPlan = static_cast<std::size_t>(selectedPlanOrdinal) + 1;
+      continue;
+    }
     auto consumeRepairedExecutions =
         [&](auto &repaired) -> llvm::Expected<bool> {
       for (std::size_t childOrdinal = 0;
@@ -2237,7 +2318,10 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             childRuntime->cgraCycles,
             std::nullopt});
         if (childRuntime->disposition ==
-            ApplicationMappingRuntimeDisposition::Completed) {
+                ApplicationMappingRuntimeDisposition::Completed &&
+            outcomeMatchesRequestedSpectrum(
+                selectedPlanOrdinal,
+                childExecution.summary.selectedMapping.value())) {
           childExecution.summary.selectedPlanOrdinal = selectedPlanOrdinal;
           selectedExecution.emplace(std::move(childExecution));
           return true;
@@ -2340,6 +2424,10 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             std::nullopt});
         if (childRuntime->disposition !=
             ApplicationMappingRuntimeDisposition::Completed)
+          continue;
+        if (!outcomeMatchesRequestedSpectrum(
+                selectedPlanOrdinal,
+                childExecution.summary.selectedMapping.value()))
           continue;
         childExecution.summary.selectedPlanOrdinal = selectedPlanOrdinal;
         selectedExecution.emplace(std::move(childExecution));

@@ -194,6 +194,11 @@ llvm::StringRef toString(ApplicationPairDecisionDisposition value);
 enum class ApplicationPairManifestJoinStatus : std::uint8_t {
   Exact,
   OwnerScopedPlanningClosure,
+  /// The ApplicationBuild owner stopped before source/workload/runtime roots
+  /// existed, so no InvocationManifest run-key could be derived. The public
+  /// boundary still publishes a typed, auditable decision instead of a bare
+  /// missing join.
+  OwnerVerifiedPreAdmission,
   NotStartedBeforeMapping,
   Missing,
 };

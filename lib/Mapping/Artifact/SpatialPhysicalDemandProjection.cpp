@@ -1811,6 +1811,8 @@ deriveSpatialPeOperandRuntimeWitness(
     std::optional<std::uint64_t> expectedSequence;
     bool complete = true;
     bool pairingMismatch = false;
+    bool active = false;
+    bool missingRole = false;
     for (std::uint32_t role : pairing.requiredInputRoles) {
       const auto found = llvm::find_if(canonicalHeads, [&](const auto &head) {
         return head.queue.context == pairing.key.context &&
@@ -1819,8 +1821,18 @@ deriveSpatialPeOperandRuntimeWitness(
                head.tag == pairing.key.tag &&
                head.queue.fuInput == role;
       });
-      if (found == canonicalHeads.end() || !found->exactHead ||
-          found->occupancy == 0) {
+      if (found == canonicalHeads.end()) {
+        missingRole = true;
+        complete = false;
+        continue;
+      }
+      // The projection contains dormant potential pairings as well as the
+      // queues participating in the current firing.  An empty, unreserved
+      // role is not an incomplete head; it is simply not active in this
+      // runtime observation.  Once one role is active, every required role
+      // must be present, non-empty, and exactly ordered.
+      active |= found->occupancy != 0 || found->reservations != 0;
+      if (!found->exactHead || found->occupancy == 0) {
         complete = false;
         continue;
       }
@@ -1832,6 +1844,8 @@ deriveSpatialPeOperandRuntimeWitness(
         expectedSequence = found->headProducerSequenceOrdinal;
       }
     }
+    if (!active && !missingRole)
+      continue;
     if (complete && expectedSequence && !pairingMismatch)
       ++result.matchedPairingKeyCount;
     else
