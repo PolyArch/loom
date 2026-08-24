@@ -55,6 +55,10 @@ void builtinPresetsExpandThroughPublicBuilder() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
+  expectError(test,
+              loom::adg::getBuiltinTargetDescriptor(
+                  static_cast<loom::adg::BuiltinTargetPreset>(255)),
+              "invalid builtin target preset");
   const auto architecture =
       take(test, loom::adg::getBuiltinInstructionCoreArchitecture());
   const std::array expectedExtensions{loom::fabric::RiscVExtension::M,
@@ -85,8 +89,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
   }};
 
   for (const Expectation &expected : expectations) {
-    const auto &descriptor =
-        loom::adg::getBuiltinTargetDescriptor(expected.preset);
+    const auto &descriptor = *take(
+        test, loom::adg::getBuiltinTargetDescriptor(expected.preset));
     require(
         test,
         descriptor.scale.accCoreCount == expected.accCores &&
@@ -1010,8 +1014,9 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
   auto systemView = take(
       test, loom::fabric::requireSystemRoot(system.roots().front().view()));
   const auto attachments = systemView.serviceLegCarrierAttachments();
-  const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(
-      loom::adg::BuiltinTargetPreset::Small);
+  const auto &descriptor = *take(
+      test, loom::adg::getBuiltinTargetDescriptor(
+                loom::adg::BuiltinTargetPreset::Small));
   const std::size_t expectedAttachmentCount =
       4 * (descriptor.scale.accCoreCount + 1);
   require(test, attachments.size() == expectedAttachmentCount,

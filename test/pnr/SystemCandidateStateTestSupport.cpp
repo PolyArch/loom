@@ -743,9 +743,10 @@ static loom::adg::FinalizedFabricDesign buildHeterogeneousSystemImpl(
   const std::array messageSinks{hostMessageSink, coreMessageSink};
   std::vector<loom::adg::SystemTransportResource> messageRouters;
   messageRouters.reserve(2);
-  const auto &builtinScale = loom::adg::getBuiltinTargetDescriptor(
-                                 loom::adg::BuiltinTargetPreset::Small)
-                                 .scale;
+  const auto &builtinScale =
+      take(loom::adg::getBuiltinTargetDescriptor(
+               loom::adg::BuiltinTargetPreset::Small))
+          ->scale;
   const auto messageTransportContract = singleRequesterResourceContract(
       builtinScale.accCoreCount * builtinScale.temporalResidentContexts);
   const std::array<std::vector<std::uint32_t>, 3> messagePatterns = {

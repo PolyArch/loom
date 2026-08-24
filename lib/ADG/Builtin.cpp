@@ -1080,9 +1080,10 @@ parseBuiltinTargetPreset(llvm::StringRef spelling) {
 
 llvm::Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset) {
-  const BuiltinTargetDescriptor &descriptor =
-      getBuiltinTargetDescriptor(preset);
-  return expandBuiltinSpatialCoreImpl(design, descriptor.scale);
+  auto descriptor = getBuiltinTargetDescriptor(preset);
+  if (!descriptor)
+    return descriptor.takeError();
+  return expandBuiltinSpatialCoreImpl(design, (*descriptor)->scale);
 }
 
 llvm::Expected<BuiltinSpatialCoreExpansion>
@@ -1094,9 +1095,10 @@ expandBuiltinSpatialCore(DesignBuilder &design,
 llvm::Expected<SystemBuilder>
 expandBuiltinSystem(DesignBuilder &design, BuiltinTargetPreset preset,
                     const loom::fabric::FinalizedFabricRoot &spatialCore) {
-  const BuiltinTargetDescriptor &descriptor =
-      getBuiltinTargetDescriptor(preset);
-  return expandBuiltinSystemImpl(design, descriptor.scale, spatialCore);
+  auto descriptor = getBuiltinTargetDescriptor(preset);
+  if (!descriptor)
+    return descriptor.takeError();
+  return expandBuiltinSystemImpl(design, (*descriptor)->scale, spatialCore);
 }
 
 llvm::Expected<SystemBuilder>
@@ -1108,7 +1110,10 @@ expandBuiltinSystem(DesignBuilder &design, const BuiltinTargetScale &scale,
 llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store,
                    BuiltinTargetPreset preset) {
-  return buildBuiltinTarget(store, getBuiltinTargetDescriptor(preset).scale);
+  auto descriptor = getBuiltinTargetDescriptor(preset);
+  if (!descriptor)
+    return descriptor.takeError();
+  return buildBuiltinTarget(store, (*descriptor)->scale);
 }
 
 llvm::Expected<FinalizedFabricDesign>

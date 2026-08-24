@@ -4,9 +4,11 @@
 #include "ADG/MemoryLibrary.h"
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <system_error>
 
 namespace loom::adg {
 
@@ -129,17 +131,19 @@ inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
      builtinBalancedFuOccurrences(16), 4, 4, 8,
      LocalMemoryPortVariant::SharedElementVector, 5, 8, 1024 * 1024}};
 
-constexpr const BuiltinTargetDescriptor &
+inline llvm::Expected<const BuiltinTargetDescriptor *>
 getBuiltinTargetDescriptor(BuiltinTargetPreset preset) {
   switch (preset) {
   case BuiltinTargetPreset::Small:
-    return builtinSmallTarget;
+    return &builtinSmallTarget;
   case BuiltinTargetPreset::Coverage:
-    return builtinCoverageTarget;
+    return &builtinCoverageTarget;
   case BuiltinTargetPreset::Large:
-    return builtinLargeTarget;
+    return &builtinLargeTarget;
   }
-  return builtinCoverageTarget;
+  return llvm::createStringError(
+      std::errc::invalid_argument,
+      "invalid builtin target preset enum value");
 }
 
 inline const BuiltinTargetDescriptor *

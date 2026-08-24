@@ -93,7 +93,7 @@ struct Fixture final {
 loom::fabric::FinalizedFabricRoot
 generateBuiltinSystem(Fixture &fixture, loom::adg::BuiltinTargetPreset preset,
                       const loom::adg::BuiltinTargetScale &scale) {
-  const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(preset);
+  const auto &descriptor = *take(loom::adg::getBuiltinTargetDescriptor(preset));
   auto config = take(loom::dse::resolveFabricTemplateConfig(
       descriptor.templateIdentity, descriptor.schemaMajor,
       descriptor.schemaMinor, scale));
@@ -116,7 +116,8 @@ generateBuiltinSystem(Fixture &fixture,
                       loom::adg::BuiltinTargetPreset preset =
                           loom::adg::BuiltinTargetPreset::Small) {
   return generateBuiltinSystem(
-      fixture, preset, loom::adg::getBuiltinTargetDescriptor(preset).scale);
+      fixture, preset,
+      take(loom::adg::getBuiltinTargetDescriptor(preset))->scale);
 }
 
 loom::fabric::FinalizedFabricRoot
