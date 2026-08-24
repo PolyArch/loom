@@ -1,4 +1,5 @@
 #include "ADG/Builtin.h"
+#include "ADG/Export.h"
 #include "Application/Build.h"
 #include "Application/BuildDiagnostics.h"
 #include "Common/ArtifactStore.h"
@@ -330,9 +331,6 @@ llvm::Error validateRequestedProductCapabilities() {
   if (!hardwarePath.empty())
     return productError("loom_hardware_import_unsupported",
                         "external Fabric MLIR import is not yet available");
-  if (!visualizationPath.empty())
-    return productError("loom_visualization_export_unsupported",
-                        "product visualization export is not yet available");
   return llvm::Error::success();
 }
 
@@ -436,6 +434,12 @@ llvm::Expected<PreparedProductTarget> prepareProductTarget() {
           "loom_product_target_unsupported",
           "one final-linked module cannot serve the heterogeneous compiler "
           "target cohort");
+  }
+  if (!visualizationPath.empty()) {
+    if (llvm::Error error = loom::adg::exportFabricDesign(
+            *system, (*workspace)->artifacts(), visualizationPath))
+      return productError("loom_visualization_export_failed",
+                          llvm::toString(std::move(error)));
   }
   return PreparedProductTarget{
       std::move(*workspace),     std::move(*config),
