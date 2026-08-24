@@ -234,15 +234,26 @@ requireCompatiblePayloadCohort(llvm::ArrayRef<CollectedPayload> collected) {
   return llvm::Error::success();
 }
 
-llvm::Expected<SelectedInput> decodeLldInputName(llvm::StringRef inputName) {
+llvm::Expected<SelectedInput>
+decodeLldInputName(llvm::StringRef inputName, llvm::StringRef inputDirectory) {
   std::vector<SelectedInput> candidates;
 
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> direct =
-      llvm::MemoryBuffer::getFile(inputName, /*IsText=*/false,
-                                  /*RequiresNullTerminator=*/false);
-  if (direct &&
-      llvm::identify_magic((*direct)->getBuffer()) != llvm::file_magic::archive)
-    candidates.push_back({inputName.str(), std::nullopt});
+  llvm::SmallVector<std::string, 2> directPaths;
+  directPaths.push_back(inputName.str());
+  if (!inputDirectory.empty() && !llvm::sys::path::is_absolute(inputName)) {
+    llvm::SmallString<256> qualified(inputDirectory);
+    llvm::sys::path::append(qualified, inputName);
+    directPaths.push_back(qualified.str().str());
+  }
+
+  for (const std::string &directPath : directPaths) {
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> direct =
+        llvm::MemoryBuffer::getFile(directPath, /*IsText=*/false,
+                                    /*RequiresNullTerminator=*/false);
+    if (direct && llvm::identify_magic((*direct)->getBuffer()) !=
+                      llvm::file_magic::archive)
+      candidates.push_back({directPath, std::nullopt});
+  }
 
   for (std::size_t open = inputName.find('('); open != llvm::StringRef::npos;
        open = inputName.find('(', open + 1)) {
@@ -258,40 +269,64 @@ llvm::Expected<SelectedInput> decodeLldInputName(llvm::StringRef inputName) {
     if (memberDescription.drop_front(at + 4).getAsInteger(10, offset))
       continue;
 
-    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> archiveFile =
-        llvm::MemoryBuffer::getFile(archivePath, /*IsText=*/false,
-                                    /*RequiresNullTerminator=*/false);
-    if (!archiveFile)
-      continue;
-    llvm::Expected<std::unique_ptr<llvm::object::Archive>> archive =
-        llvm::object::Archive::create((*archiveFile)->getMemBufferRef());
-    if (!archive) {
-      llvm::consumeError(archive.takeError());
-      continue;
+    llvm::SmallVector<std::string, 2> archivePaths;
+    archivePaths.push_back(archivePath.str());
+    if (!inputDirectory.empty() &&
+        !llvm::sys::path::is_absolute(archivePath)) {
+      llvm::SmallString<256> qualified(inputDirectory);
+      llvm::sys::path::append(qualified, archivePath);
+      archivePaths.push_back(qualified.str().str());
     }
-
-    llvm::Error iteration = llvm::Error::success();
-    for (const llvm::object::Archive::Child &child :
-         (*archive)->children(iteration)) {
-      if (child.getChildOffset() != offset)
+    for (const std::string &archivePathCandidate : archivePaths) {
+      llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> archiveFile =
+          llvm::MemoryBuffer::getFile(archivePathCandidate, /*IsText=*/false,
+                                      /*RequiresNullTerminator=*/false);
+      if (!archiveFile)
         continue;
-      llvm::Expected<llvm::MemoryBufferRef> member = child.getMemoryBufferRef();
-      if (!member) {
-        llvm::consumeError(member.takeError());
+      llvm::Expected<std::unique_ptr<llvm::object::Archive>> archive =
+          llvm::object::Archive::create((*archiveFile)->getMemBufferRef());
+      if (!archive) {
+        llvm::consumeError(archive.takeError());
+        continue;
+      }
+
+      llvm::Error iteration = llvm::Error::success();
+      for (const llvm::object::Archive::Child &child :
+           (*archive)->children(iteration)) {
+        if (child.getChildOffset() != offset)
+          continue;
+        llvm::Expected<llvm::MemoryBufferRef> member =
+            child.getMemoryBufferRef();
+        if (!member) {
+          llvm::consumeError(member.takeError());
+          break;
+        }
+        const llvm::StringRef memberName =
+            llvm::sys::path::filename(member->getBufferIdentifier());
+        const std::string reconstructed = archivePath.str() + "(" +
+                                          memberName.str() + " at " +
+                                          std::to_string(offset) + ")";
+        if (reconstructed == inputName)
+          candidates.push_back({archivePathCandidate, offset});
         break;
       }
-      const llvm::StringRef memberName =
-          llvm::sys::path::filename(member->getBufferIdentifier());
-      const std::string reconstructed = archivePath.str() + "(" +
-                                        memberName.str() + " at " +
-                                        std::to_string(offset) + ")";
-      if (reconstructed == inputName)
-        candidates.push_back({archivePath.str(), offset});
-      break;
+      if (iteration)
+        llvm::consumeError(std::move(iteration));
     }
-    if (iteration)
-      llvm::consumeError(std::move(iteration));
   }
+
+  llvm::sort(candidates, [](const SelectedInput &lhs, const SelectedInput &rhs) {
+    if (lhs.path != rhs.path)
+      return lhs.path < rhs.path;
+    return lhs.memberChildOffset < rhs.memberChildOffset;
+  });
+  candidates.erase(
+      std::unique(candidates.begin(), candidates.end(),
+                  [](const SelectedInput &lhs, const SelectedInput &rhs) {
+                    return lhs.path == rhs.path &&
+                           lhs.memberChildOffset == rhs.memberChildOffset;
+                  }),
+      candidates.end());
 
   if (candidates.empty())
     return rejected("lld_resolution_input_unreadable: cannot resolve selected "
@@ -332,7 +367,8 @@ llvm::Error validateLldResolutionRow(llvm::StringRef inputName,
 }
 
 llvm::Expected<SelectedInputs>
-parseLldSelectedInputs(llvm::MemoryBufferRef resolution) {
+parseLldSelectedInputs(llvm::MemoryBufferRef resolution,
+                       llvm::StringRef inputDirectory) {
   SelectedInputs selected;
   std::optional<std::string> currentInput;
   llvm::SmallVector<llvm::StringRef, 32> lines;
@@ -356,7 +392,8 @@ parseLldSelectedInputs(llvm::MemoryBufferRef resolution) {
       continue;
     }
 
-    llvm::Expected<SelectedInput> selection = decodeLldInputName(line);
+    llvm::Expected<SelectedInput> selection =
+        decodeLldInputName(line, inputDirectory);
     if (!selection)
       return selection.takeError();
     selected.push_back(std::move(*selection));
@@ -424,7 +461,16 @@ llvm::Expected<std::unique_ptr<llvm::Module>>
 importLldAcceleratorFinalLink(llvm::MemoryBufferRef resolution,
                               llvm::MemoryBufferRef linkedBitcode,
                               llvm::LLVMContext &context) {
-  llvm::Expected<SelectedInputs> selected = parseLldSelectedInputs(resolution);
+  return importLldAcceleratorFinalLink(resolution, linkedBitcode, context, {});
+}
+
+llvm::Expected<std::unique_ptr<llvm::Module>>
+importLldAcceleratorFinalLink(llvm::MemoryBufferRef resolution,
+                              llvm::MemoryBufferRef linkedBitcode,
+                              llvm::LLVMContext &context,
+                              llvm::StringRef inputDirectory) {
+  llvm::Expected<SelectedInputs> selected =
+      parseLldSelectedInputs(resolution, inputDirectory);
   if (!selected)
     return selected.takeError();
   llvm::Expected<std::vector<CollectedPayload>> collectedOrError =

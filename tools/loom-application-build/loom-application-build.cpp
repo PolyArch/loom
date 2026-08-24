@@ -375,6 +375,15 @@ llvm::Expected<PreparedProductTarget> prepareProductTarget() {
       loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
   config->dse.systemPnr.search.completionGoal =
       loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  auto publishedConfig = (*workspace)->artifacts().put(
+      loom::ResolvedConfig::artifactSchema,
+      loom::canonicalResolvedConfigBytes(*config));
+  if (!publishedConfig)
+    return publishedConfig.takeError();
+  if (*publishedConfig != loom::resolvedConfigIdentity(*config))
+    return productError("loom_product_target_invalid",
+                        "resolved configuration publication changed its "
+                        "identity");
   auto design = loom::adg::buildBuiltinTarget(
       (*workspace)->artifacts(), config->hardwareTarget.templateIdentity,
       config->hardwareTarget.schemaVersion.major,
@@ -505,8 +514,15 @@ importProductFinalLink(llvm::LLVMContext &context) {
     return productError("loom_final_link_artifact_missing",
                         "cannot read LLD pre-code-generation bitcode: " +
                             bitcode.getError().message());
+  llvm::SmallString<256> inputDirectory(finalLinkOutput);
+  if (std::error_code error = llvm::sys::fs::make_absolute(inputDirectory))
+    return productError("loom_final_link_artifact_invalid",
+                        "cannot resolve final-link output directory: " +
+                            error.message());
+  llvm::sys::path::remove_filename(inputDirectory);
   auto module = loom::importLldAcceleratorFinalLink(
-      (*resolution)->getMemBufferRef(), (*bitcode)->getMemBufferRef(), context);
+      (*resolution)->getMemBufferRef(), (*bitcode)->getMemBufferRef(), context,
+      inputDirectory);
   if (!module)
     return module.takeError();
 

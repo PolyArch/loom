@@ -3,6 +3,7 @@
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MemoryBufferRef.h"
+#include "llvm/ADT/StringRef.h"
 
 #include <memory>
 
@@ -31,6 +32,15 @@ llvm::Expected<std::unique_ptr<llvm::Module>>
 importLldAcceleratorFinalLink(llvm::MemoryBufferRef resolution,
                               llvm::MemoryBufferRef linkedBitcode,
                               llvm::LLVMContext &context);
+
+/// Imports the same final-link pair when LLD spelled selected relative inputs
+/// against a known output directory. The directory is an invocation binding;
+/// it never contributes to payload or module identity.
+llvm::Expected<std::unique_ptr<llvm::Module>>
+importLldAcceleratorFinalLink(llvm::MemoryBufferRef resolution,
+                              llvm::MemoryBufferRef linkedBitcode,
+                              llvm::LLVMContext &context,
+                              llvm::StringRef inputDirectory);
 
 } // namespace loom
 

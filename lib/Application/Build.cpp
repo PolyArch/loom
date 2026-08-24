@@ -4,6 +4,7 @@
 #include "ExecutionGlue.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
 #include "Common/ArtifactLocalReference.h"
 #include "Common/BlobStore.h"
 #include "Common/MappingDebugLog.h"
@@ -162,6 +163,17 @@ derivePreMappingInvocationRunKey(
     return producer.takeError();
   const std::array<ArtifactRootReference, 4> inputs = {
       *sourceProgram, *fabric, *workload, *runtimeInput};
+  for (const ArtifactRootReference &input : inputs) {
+    auto stored = artifacts.get(input);
+    if (!stored)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "pre_mapping_input_unavailable: schema='" + input.schemaIdentity +
+              "' version=" + llvm::Twine(input.schemaVersion.major) + "." +
+              llvm::Twine(input.schemaVersion.minor) + "' identity=" +
+              formatArtifactIdentityHex(input.artifact) + ": " +
+              llvm::toString(stored.takeError()));
+  }
   auto closure = dse::DseRunClosure::get(
       std::move(*producer), inputs, config, {}, artifacts);
   if (!closure)

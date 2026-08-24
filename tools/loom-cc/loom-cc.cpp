@@ -507,6 +507,24 @@ insertRelocatablePayloadPass(llvm::SmallVectorImpl<const char *> &args,
   args.insert(args.begin() + 1, GetStableCStr(saved, option));
 }
 
+static void ensureProductLinkInputsAreReplayable(
+    llvm::SmallVectorImpl<const char *> &args, llvm::StringSet<> &saved) {
+  for (const char *raw : llvm::ArrayRef(args).drop_front()) {
+    if (!raw)
+      continue;
+    const llvm::StringRef argument(raw);
+    if (argument == "-save-temps" || argument.starts_with("-save-temps="))
+      return;
+  }
+  // LLD's resolution report names selected LTO inputs, while the ordinary
+  // driver otherwise removes those temporary objects before the product
+  // importer runs. Keep one exact object beside the final link output; the
+  // importer resolves that invocation-local path and never folds it into
+  // semantic identity.
+  args.insert(args.begin() + 1,
+              GetStableCStr(saved, "-save-temps=obj"));
+}
+
 template <class T>
 static T checkEnvVar(const char *EnvOptSet, const char *EnvOptFile,
                      std::string &OptFile) {
@@ -628,6 +646,7 @@ static int loom_main(int Argc, char **Argv,
 
   std::vector<std::string> ProductTargetArguments;
   if (LoomOptions->requestsProductFlow()) {
+    ensureProductLinkInputsAreReplayable(Args, SavedStrings);
     auto Projection = requestProductDriverArguments(*LoomOptions);
     if (!Projection) {
       llvm::errs() << "loom-cc: error: "

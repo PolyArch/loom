@@ -110,7 +110,8 @@ llvm::Expected<int> openStoredObject(int directory,
   } while (handle == -1 && errno == EINTR);
   if (handle == -1) {
     if (errno == ENOENT)
-      return storeError("artifact_store_missing", "stored object is missing");
+      return storeError("artifact_store_missing",
+                        "stored object '" + objectName + "' is missing");
     return storeErrno("artifact_store_io",
                       "unable to open stored object handle");
   }
@@ -389,7 +390,12 @@ ArtifactStore::getExact(llvm::StringRef schemaIdentity,
   const std::string objectName = formatArtifactIdentityHex(identity);
   auto fileOrError = openStoredObject(directory, objectName);
   if (!fileOrError)
-    return fileOrError.takeError();
+    return storeError(
+        "artifact_store_lookup",
+        "schema='" + schemaIdentity + "' version=" +
+            llvm::Twine(schemaVersion.major) + "." +
+            llvm::Twine(schemaVersion.minor) + "' identity='" + objectName +
+            "': " + llvm::toString(fileOrError.takeError()));
   int file = *fileOrError;
   llvm::scope_exit closeObject([&] {
     if (file != -1)
