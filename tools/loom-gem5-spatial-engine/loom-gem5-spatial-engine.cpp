@@ -5,6 +5,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Runtime/Gem5BridgeWire.h"
 #include "Runtime/Gem5SpatialChannel.h"
+#include "Runtime/OrderedChannelSequence.h"
 #include "Simulator/CGRAAdmission.h"
 #include "Simulator/CGRASimulator.h"
 #include "Simulator/DFGSimulator.h"
@@ -25,6 +26,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -88,6 +90,31 @@ int report(llvm::Error error) {
   llvm::errs() << llvm::toString(std::move(error)) << '\n';
   return 1;
 }
+
+#if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+using PreparedSpatialExecution = loom::sim::PreparedDfgExecution;
+#else
+using PreparedSpatialExecution = loom::sim::PreparedCgraExecution;
+#endif
+
+struct SpatialSessionEntry final {
+  loom::sim::ImportedSpatialSimulationWorkload workload;
+  std::optional<loom::sim::CanonicalSimulationRuntimeInput> staticRuntime;
+  loom::runtime::Gem5SpatialChannelProjection channels;
+  std::vector<std::uint8_t> expectedLaunch;
+  std::size_t preparedOrdinal = 0;
+};
+
+struct ChannelReservation final {
+  std::uint64_t address = 0;
+  std::uint32_t consumerOrdinal = 0;
+  std::uint64_t sequence = 0;
+};
+
+struct ChannelSequenceState final {
+  loom::runtime::OrderedChannelSequence sequence;
+  std::map<std::string, std::uint32_t> consumerOrdinals;
+};
 
 llvm::Expected<loom::ArtifactRootReference>
 root(llvm::StringRef text, const loom::ArtifactSchemaDescriptor &schema) {
@@ -367,48 +394,28 @@ private:
   std::map<std::uint64_t, std::uint8_t> externallyCommittedBytes_;
 };
 
-llvm::Expected<std::vector<std::uint8_t>>
-readChannelPayload(int connection, std::uint64_t sequence,
-                   const loom::runtime::Gem5SpatialChannelInput &input,
-                   std::uint64_t &requestId) {
-  for (std::uint64_t attempt = 0; attempt != maximumWork; ++attempt) {
-    const loom::runtime::Gem5BridgeMemoryRequest headerRequest{
-        loom::runtime::Gem5BridgeMemoryOperation::Read,
-        attempt == 0 ? 0 : static_cast<std::uint64_t>(ticksPerCycle),
-        requestId++,
-        input.address,
-        loom::runtime::gem5SpatialChannelBufferHeaderBytes,
-        {}};
-    auto header = transactMemory(
-        connection, sequence,
-        loom::runtime::Gem5BridgeMessageKind::MemoryRequest, headerRequest);
-    if (!header)
-      return header.takeError();
-    if (llvm::all_of(header->data, [](std::uint8_t byte) { return byte == 0; }))
-      continue;
-    auto payloadBytes =
-        loom::runtime::decodeGem5SpatialChannelBufferHeader(header->data);
-    if (!payloadBytes)
-      return payloadBytes.takeError();
-    if (*payloadBytes > input.capacityBytes -
-                            loom::runtime::gem5SpatialChannelBufferHeaderBytes)
-      return invalid("channel payload exceeds its selected buffer");
-    const loom::runtime::Gem5BridgeMemoryRequest payloadRequest{
-        loom::runtime::Gem5BridgeMemoryOperation::Read,
-        0,
-        requestId++,
-        input.address + loom::runtime::gem5SpatialChannelBufferHeaderBytes,
-        *payloadBytes,
-        {}};
-    auto payload = transactMemory(
-        connection, sequence,
-        loom::runtime::Gem5BridgeMessageKind::MemoryRequest, payloadRequest);
-    if (!payload)
-      return payload.takeError();
-    return std::move(payload->data);
-  }
-  return llvm::createStringError(std::errc::timed_out,
-                                 "channel input did not become ready");
+void appendChannelKeyU64(std::string &key, std::uint64_t value) {
+  for (unsigned byte = 0; byte != 8; ++byte)
+    key.push_back(static_cast<char>(value >> (byte * 8)));
+}
+
+llvm::Expected<std::string> channelConsumerKey(
+    const loom::sim::ImportedSpatialSimulationWorkload &workload,
+    const loom::runtime::Gem5SpatialChannelInput &input) {
+  const auto *spatial = workload.workload.spatial();
+  if (!spatial)
+    return invalid("channel consumer key lost its Spatial workload");
+  std::string key;
+  appendChannelKeyU64(key, input.address);
+  appendChannelKeyU64(key,
+                      spatial->launchRef.rootThreadLaunch.entity.value());
+  appendChannelKeyU64(key,
+                      spatial->launchRef.staticGraphLaunch.entity.value());
+  appendChannelKeyU64(key, input.consumerStreamInputOrdinal);
+  key.push_back(static_cast<char>(spatial->denseCoordinates.size()));
+  for (std::uint64_t coordinate : spatial->denseCoordinates)
+    appendChannelKeyU64(key, coordinate);
+  return key;
 }
 
 llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> bindChannelInputs(
@@ -416,7 +423,9 @@ llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> bindChannelInputs(
     const loom::runtime::Gem5SpatialChannelProjection &projection,
     const loom::sim::ImportedSpatialSimulationWorkload &workload,
     const loom::sim::CanonicalSimulationRuntimeInput &runtimeInput,
-    std::uint64_t &requestId) {
+    std::uint64_t &requestId,
+    std::map<std::uint64_t, ChannelSequenceState> &channelSequences,
+    std::vector<ChannelReservation> &reservations) {
   const auto *base = runtimeInput.spatial();
   if (!base)
     return invalid("Spatial runtime input lost its typed payload");
@@ -442,11 +451,28 @@ llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> bindChannelInputs(
        projection.inputs) {
     if (channel.consumerStreamInputOrdinal >= draft.runtimeStreams.size())
       return invalid("channel projection names an absent consumer input");
-    auto payload = readChannelPayload(connection, sequence, channel, requestId);
-    if (!payload)
-      return payload.takeError();
+    auto state = channelSequences.find(channel.address);
+    if (state == channelSequences.end())
+      return invalid("channel input has no ordered sequence state");
+    auto key = channelConsumerKey(workload, channel);
+    if (!key)
+      return key.takeError();
+    auto branch = state->second.consumerOrdinals.find(*key);
+    if (branch == state->second.consumerOrdinals.end())
+      return invalid("channel input has no deterministic consumer branch");
+    auto received = state->second.sequence.reserve(branch->second);
+    if (!received)
+      return received.takeError();
+    if (received->kind == loom::runtime::OrderedChannelReceiveKind::WouldBlock)
+      return llvm::createStringError(std::errc::timed_out,
+                                     "ordered channel input is waiting for "
+                                     "the next SendSeq");
+    if (received->kind == loom::runtime::OrderedChannelReceiveKind::Closed)
+      return invalid("ordered channel input reached channel close");
+    reservations.push_back(
+        {channel.address, branch->second, received->sequence});
     auto stream = loom::sim::decodeSpatialChannelStream(
-        *payload, *view, spatialWorkload->launchRef,
+        received->payload, *view, spatialWorkload->launchRef,
         channel.consumerStreamInputOrdinal, draft.memoryObjects.size());
     if (!stream)
       return stream.takeError();
@@ -463,7 +489,8 @@ llvm::Error publishChannelOutputs(
     const loom::sim::SpatialEngineBoundaryResult &result,
     const loom::sim::ImportedSpatialSimulationWorkload &workload,
     const loom::sim::CanonicalSimulationRuntimeInput &runtimeInput,
-    std::uint64_t &requestId) {
+    std::uint64_t &requestId,
+    std::map<std::uint64_t, ChannelSequenceState> &channelSequences) {
   if (projection.outputs.empty())
     return llvm::Error::success();
   if (!std::holds_alternative<loom::sim::RetiredExecution>(result.terminal))
@@ -497,6 +524,41 @@ llvm::Error publishChannelOutputs(
             channel.capacityBytes -
                 loom::runtime::gem5SpatialChannelBufferHeaderBytes)
       return invalid("channel stream exceeds its selected buffer");
+    auto state = channelSequences.find(channel.address);
+    if (state == channelSequences.end())
+      return invalid("channel output has no ordered sequence state");
+    const loom::sim::CanonicalStreamSequence &stream =
+        result.functionalObservations.streamOutputs[observation];
+    // ClosedAfterLast belongs to this graph observation horizon; the Dataflow
+    // channel contract has no implicit EOS. Repeated producer launches append
+    // to the same SendSeq stream until an explicit channel protocol closes it.
+    if (stream.values.tokenCount != 0) {
+      if (stream.values.lanes.size() % stream.values.tokenCount != 0)
+        return invalid("channel stream lane count is not token aligned");
+      const std::size_t lanesPerToken =
+          stream.values.lanes.size() / stream.values.tokenCount;
+      for (std::uint64_t token = 0; token != stream.values.tokenCount;
+           ++token) {
+        loom::sim::CanonicalStreamSequence one;
+        one.values.tokenCount = 1;
+        const auto begin = stream.values.lanes.begin() +
+                           static_cast<std::size_t>(token) * lanesPerToken;
+        one.values.lanes.assign(begin, begin + lanesPerToken);
+        one.termination =
+            token + 1 == stream.values.tokenCount
+                ? stream.termination
+                : loom::sim::StreamTermination::OpenAfterLast;
+        auto encodedToken = loom::sim::encodeSpatialChannelStream(
+            one, *view, spatialWorkload->launchRef,
+            channel.producerStreamOutputOrdinal,
+            spatialRuntime->memoryObjects.size());
+        if (!encodedToken)
+          return encodedToken.takeError();
+        auto published = state->second.sequence.publish(*encodedToken);
+        if (!published)
+          return published.takeError();
+      }
+    }
     const std::size_t payloadBytes = encodedStream->size();
     loom::runtime::Gem5BridgeMemoryRequest payload{
         loom::runtime::Gem5BridgeMemoryOperation::Write,
@@ -762,20 +824,6 @@ llvm::Expected<std::uint64_t> completionDelay(
 }
 
 #if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
-using PreparedSpatialExecution = loom::sim::PreparedDfgExecution;
-#else
-using PreparedSpatialExecution = loom::sim::PreparedCgraExecution;
-#endif
-
-struct SpatialSessionEntry final {
-  loom::sim::ImportedSpatialSimulationWorkload workload;
-  std::optional<loom::sim::CanonicalSimulationRuntimeInput> staticRuntime;
-  loom::runtime::Gem5SpatialChannelProjection channels;
-  std::vector<std::uint8_t> expectedLaunch;
-  std::size_t preparedOrdinal = 0;
-};
-
-#if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
 void appendKeyU64(std::string &key, std::uint64_t value) {
   for (unsigned byte = 0; byte != 8; ++byte)
     key.push_back(static_cast<char>(value >> (byte * 8)));
@@ -933,6 +981,66 @@ int main(int argc, char **argv) {
                        preparedOrdinal});
   }
 
+  std::map<std::uint64_t, std::uint64_t> channelCapacities;
+  std::map<std::uint64_t, std::set<std::string>> channelConsumerKeys;
+  for (const SpatialSessionEntry &entry : entries) {
+    for (const auto &output : entry.channels.outputs) {
+      auto [position, inserted] =
+          channelCapacities.emplace(output.address, output.capacityBytes);
+      if (!inserted && position->second != output.capacityBytes)
+        return report(invalid("ordered channel outputs disagree on capacity"));
+    }
+    for (const auto &input : entry.channels.inputs) {
+      auto [position, inserted] =
+          channelCapacities.emplace(input.address, input.capacityBytes);
+      if (!inserted && position->second != input.capacityBytes)
+        return report(invalid("ordered channel inputs disagree on capacity"));
+      auto key = channelConsumerKey(entry.workload, input);
+      if (!key)
+        return report(key.takeError());
+      channelConsumerKeys[input.address].insert(std::move(*key));
+    }
+  }
+  std::map<std::uint64_t, ChannelSequenceState> channelSequences;
+  for (const auto &[address, capacityBytes] : channelCapacities) {
+    const auto keys = channelConsumerKeys.find(address);
+    if (keys == channelConsumerKeys.end() || keys->second.empty())
+      return report(invalid("ordered channel has no consumer branch"));
+    if (keys->second.size() > std::numeric_limits<std::uint32_t>::max())
+      return report(invalid("ordered channel consumer count exceeds u32"));
+    const std::uint32_t consumers =
+        static_cast<std::uint32_t>(keys->second.size());
+    if (consumers == 0)
+      return report(invalid("ordered channel has no consumer branch"));
+    if (capacityBytes <= loom::runtime::gem5SpatialChannelBufferHeaderBytes)
+      return report(invalid("ordered channel capacity has no payload space"));
+    auto sequence = loom::runtime::OrderedChannelSequence::create(
+        capacityBytes - loom::runtime::gem5SpatialChannelBufferHeaderBytes,
+        consumers);
+    if (!sequence)
+      return report(sequence.takeError());
+    channelSequences.emplace(
+        address, ChannelSequenceState{std::move(*sequence), {}});
+    auto &ordinals = channelSequences.find(address)->second.consumerOrdinals;
+    std::uint32_t ordinal = 0;
+    for (const std::string &key : keys->second)
+      ordinals.emplace(key, ordinal++);
+  }
+  for (const SpatialSessionEntry &entry : entries) {
+    for (const auto &input : entry.channels.inputs) {
+      auto state = channelSequences.find(input.address);
+      if (state == channelSequences.end())
+        return report(invalid("ordered channel input has no sequence state"));
+      auto key = channelConsumerKey(entry.workload, input);
+      if (!key)
+        return report(key.takeError());
+      if (state->second.consumerOrdinals.find(*key) ==
+          state->second.consumerOrdinals.end())
+        return report(invalid("ordered channel branch identity was not "
+                             "materialized canonically"));
+    }
+  }
+
   auto server = openServer();
   if (!server)
     return report(server.takeError());
@@ -996,10 +1104,30 @@ int main(int argc, char **argv) {
     const loom::sim::CanonicalSimulationRuntimeInput &baseRuntime =
         invocationRuntime ? *invocationRuntime : *entry.staticRuntime;
     std::uint64_t requestId = 0;
+    std::vector<ChannelReservation> channelReservations;
+    const auto settleChannelReservations = [&](bool commit) -> llvm::Error {
+      for (auto it = channelReservations.rbegin();
+           it != channelReservations.rend(); ++it) {
+        auto state = channelSequences.find(it->address);
+        if (state == channelSequences.end())
+          return invalid("channel reservation lost its sequence state");
+        llvm::Error error = commit
+                                ? state->second.sequence.commit(
+                                      it->consumerOrdinal, it->sequence)
+                                : state->second.sequence.cancel(
+                                      it->consumerOrdinal, it->sequence);
+        if (error)
+          return std::move(error);
+      }
+      channelReservations.clear();
+      return llvm::Error::success();
+    };
     auto runtime =
         bindChannelInputs(connection, message->sequence, entry.channels,
-                          entry.workload, baseRuntime, requestId);
+                          entry.workload, baseRuntime, requestId,
+                          channelSequences, channelReservations);
     if (!runtime) {
+      llvm::consumeError(settleChannelReservations(false));
       ::close(connection);
       return report(runtime.takeError());
     }
@@ -1020,23 +1148,27 @@ int main(int argc, char **argv) {
       externallyServicedThrough = externalMemoryProvider->lastCoordinate();
 #endif
     if (!result) {
+      llvm::consumeError(settleChannelReservations(false));
       ::close(connection);
       return report(result.takeError());
     }
     auto encoded = loom::sim::encodeSpatialEngineBoundaryResult(
         *result, entry.workload, *runtime);
     if (!encoded) {
+      llvm::consumeError(settleChannelReservations(false));
       ::close(connection);
       return report(encoded.takeError());
     }
     if (llvm::Error error = publishChannelOutputs(
             connection, message->sequence, entry.channels, *result,
-            entry.workload, *runtime, requestId)) {
+            entry.workload, *runtime, requestId, channelSequences)) {
+      llvm::consumeError(settleChannelReservations(false));
       ::close(connection);
       return report(std::move(error));
     }
     auto delay = completionDelay(*result, externallyServicedThrough);
     if (!delay) {
+      llvm::consumeError(settleChannelReservations(false));
       ::close(connection);
       return report(delay.takeError());
     }
@@ -1045,6 +1177,7 @@ int main(int argc, char **argv) {
       auto writes = loom::sim::projectSpatialInvocationResultWrites(
           *invocation, entry.workload, result->functionalObservations);
       if (!writes) {
+        llvm::consumeError(settleChannelReservations(false));
         ::close(connection);
         return report(writes.takeError());
       }
@@ -1055,9 +1188,16 @@ int main(int argc, char **argv) {
       invocationDelayApplied = !writes->empty();
       if (llvm::Error error = publishInvocationResults(
               connection, message->sequence, *writes, *delay, requestId)) {
+        llvm::consumeError(settleChannelReservations(false));
         ::close(connection);
         return report(std::move(error));
       }
+    }
+    if (llvm::Error error = settleChannelReservations(
+            std::holds_alternative<loom::sim::RetiredExecution>(
+                result->terminal))) {
+      ::close(connection);
+      return report(std::move(error));
     }
     const std::uint32_t status =
         std::holds_alternative<loom::sim::RetiredExecution>(result->terminal)

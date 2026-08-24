@@ -361,6 +361,16 @@ of earlier sequence contributions. Serialization, independent contexts and
 queues, or deterministic reorder state may implement this rule. A runtime
 arrival race cannot select message ownership.
 
+The production gem5 Spatial provider materializes this contract through one
+invocation-local ordered sequence owner per selected channel service. It keeps
+monotonic `SendSeq`, one cursor and at most one reservation per consumer
+branch, atomically commits receives, and reclaims a message only after every
+multicast branch acknowledges it. The byte capacity is the selected service
+capacity; an exhausted queue returns a typed backpressure/timeout outcome and
+never overwrites an unacknowledged message. A graph stream's
+`ClosedAfterLast` observation is only the horizon of that graph activation and
+does not implicitly close the thread-level channel.
+
 Endpoint occurrence ordinals, event counters, and reorder entries are
 transient execution state. They are not Mapping records, Artifact identities,
 message fields, channel sessions, or Physical Tags. Runtime cannot use them to

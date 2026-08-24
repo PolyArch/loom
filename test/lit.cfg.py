@@ -327,6 +327,18 @@ config.substitutions.insert(
 config.substitutions.insert(
     0,
     (
+        "%loom-runtime-ordered-channel-sequence-test\\b",
+        os.path.join(
+            config.loom_obj_root,
+            "test",
+            "runtime",
+            "loom-runtime-ordered-channel-sequence-test",
+        ),
+    ),
+)
+config.substitutions.insert(
+    0,
+    (
         "%loom-runtime-gem5-simulation-binding-test\\b",
         os.path.join(
             config.loom_obj_root,

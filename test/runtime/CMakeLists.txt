@@ -31,6 +31,14 @@ target_link_libraries(loom-runtime-gem5-spatial-channel-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-runtime-ordered-channel-sequence-test
+  OrderedChannelSequenceTest.cpp
+)
+target_link_libraries(loom-runtime-ordered-channel-sequence-test PRIVATE
+  LoomRuntimePlatformBinding
+  LLVMSupport
+)
+
 add_executable(loom-runtime-gem5-simulation-binding-test
   Gem5SimulationBindingTest.cpp
 )
