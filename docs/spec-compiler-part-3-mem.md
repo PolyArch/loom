@@ -471,7 +471,8 @@ The owner rejects before mutation when:
 
 * raw or unverifiably owned parallel SCF reaches a graph;
 * an effectful or unmodeled nested operation reaches a graph;
-* a residual LLVM load, store, memcpy, memmove, or memset remains after
+* a residual LLVM load, store, atomicrmw, cmpxchg, fence, memcpy, memmove, or
+  memset remains after
   normalization and therefore has no explicit completion event;
 * a source memory access has not been normalized to the canonical linear
   memory-space form required by its scalar or vector Dataflow actor;
@@ -479,9 +480,12 @@ The owner rejects before mutation when:
 * the graph entry lacks the leading `none` execution value.
 
 LLVM memcpy, memmove, and memset intrinsics are expanded into their exact
-structured loop semantics before ownership selection. Supported LLVM load and
-store forms are then normalized before recursive region lowering, after which
-the same frontier rules apply. Every residual raw LLVM memory operation fails
+structured loop semantics before ownership selection. Supported LLVM
+load/store (including volatile and atomic contracts), `atomicrmw`, `cmpxchg`,
+and `fence` forms are then normalized before recursive region lowering, after
+which the same frontier rules apply. LLVM target-specific sync scopes without
+a compiler-target owner and atomic accesses without an explicit power-of-two
+source alignment fail closed. Every residual raw LLVM memory operation fails
 closed. The finalized-graph gate also rejects residual
 `memref.load`/`memref.store`, `memref.get_global`, raw pointer arithmetic,
 pointer-bearing operations, `builtin.unrealized_conversion_cast`, and unknown

@@ -254,6 +254,20 @@ getParallelMemoryAccess(::mlir::Operation *op) {
                                 mlir::Type{},
                                 /*writes=*/true,
                                 atomic()};
+  if (auto rmw = ::llvm::dyn_cast<::dataflow::AtomicRmwOp>(op))
+    return ParallelMemoryAccess{op,
+                                rmw.getMem(),
+                                {rmw.getAddr()},
+                                mlir::Type{},
+                                /*writes=*/true,
+                                /*atomic=*/true};
+  if (auto cmp = ::llvm::dyn_cast<::dataflow::CmpXchgOp>(op))
+    return ParallelMemoryAccess{op,
+                                cmp.getMem(),
+                                {cmp.getAddr()},
+                                mlir::Type{},
+                                /*writes=*/true,
+                                /*atomic=*/true};
   if (auto load = ::llvm::dyn_cast<::mlir::LLVM::LoadOp>(op))
     return getLlvmMemoryAccess(op, load.getAddr(), load.getType(),
                                /*writes=*/false,
@@ -264,10 +278,18 @@ getParallelMemoryAccess(::mlir::Operation *op) {
                                /*writes=*/true,
                                store.getOrdering() !=
                                    ::mlir::LLVM::AtomicOrdering::not_atomic);
+  if (auto rmw = ::llvm::dyn_cast<::mlir::LLVM::AtomicRMWOp>(op))
+    return getLlvmMemoryAccess(op, rmw.getPtr(), rmw.getVal().getType(),
+                               /*writes=*/true, /*atomic=*/true);
+  if (auto cmp = ::llvm::dyn_cast<::mlir::LLVM::AtomicCmpXchgOp>(op))
+    return getLlvmMemoryAccess(op, cmp.getPtr(), cmp.getCmp().getType(),
+                               /*writes=*/true, /*atomic=*/true);
   return std::nullopt;
 }
 
 bool hasUnmodeledWriteEffect(::mlir::Operation *op) {
+  if (::llvm::isa<::dataflow::FenceOp, ::mlir::LLVM::FenceOp>(op))
+    return true;
   if (op->getNumRegions() != 0 ||
       ::llvm::isa<::mlir::memref::AllocOp, ::mlir::memref::AllocaOp>(op))
     return false;

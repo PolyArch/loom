@@ -103,11 +103,15 @@ GraphLeafLowering classifyGraphLoweringLeaf(mlir::Operation *operation) {
     return GraphLeafLowering::Movable;
   if (llvm::isa<mlir::memref::LoadOp, mlir::memref::StoreOp,
                 mlir::memref::DeallocOp, dataflow::LoadOp, dataflow::StoreOp,
-                dataflow::ChannelSendOp, dataflow::ChannelReceiveOp>(operation))
+                dataflow::AtomicRmwOp, dataflow::CmpXchgOp,
+                dataflow::FenceOp, dataflow::ChannelSendOp,
+                dataflow::ChannelReceiveOp>(operation))
     return GraphLeafLowering::Implemented;
   if (detail::isGraphRegionRepresentationBitcast(operation))
     return GraphLeafLowering::Implemented;
-  if (llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp,
+  if (llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp,
+                mlir::LLVM::AtomicRMWOp, mlir::LLVM::AtomicCmpXchgOp,
+                mlir::LLVM::FenceOp, mlir::LLVM::MemcpyOp,
                 mlir::LLVM::MemmoveOp, mlir::LLVM::MemsetOp>(operation))
     return GraphLeafLowering::Implemented;
   // Static LLVM stack objects are normalized by graph-memory lowering before

@@ -1,18 +1,16 @@
 // RUN: rm -rf %t.dir
 // RUN: split-file %s %t.dir
-// RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/fence.mlir 2>&1 | FileCheck %s --check-prefix=FENCE
-// RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/atomic.mlir 2>&1 | FileCheck %s --check-prefix=ATOMIC
+// RUN: loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading %t.dir/fence.mlir | FileCheck %s --check-prefix=FENCE
+// RUN: loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading %t.dir/atomic.mlir | FileCheck %s --check-prefix=ATOMIC
+// RUN: loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading %t.dir/source.mlir | FileCheck %s --check-prefix=SOURCE
 
-// An effectful canonical actor that no lowering capability covers is rejected
-// during preflight inside a serial scf container in the same shape as the
-// parallel path, instead of aborting lowering. One structured container
-// exercises the shared classification for every effectful actor kind.
+// Atomic and fence actors use the same graph-region completion lowering as
+// ordinary memory actors. One structured container exercises the shared
+// classification and memory frontier path for each effectful actor kind.
 
-// FENCE: error: loom-lower-graph-memory: canonical Dataflow actor 'dataflow.fence' has no graph-region lowering
 // FENCE-LABEL: dataflow.graph private @serial_fence
-// FENCE: scf.if
+// FENCE-NOT: scf.if
 // FENCE: dataflow.fence
-// FENCE-NOT: dataflow.demux
 
 //--- fence.mlir
 dataflow.graph private @serial_fence(%start: none, %cond: i1) -> ()
@@ -26,11 +24,15 @@ dataflow.graph private @serial_fence(%start: none, %cond: i1) -> ()
   dataflow.graph.return %start : none
 }
 
-// ATOMIC: error: loom-lower-graph-memory: canonical Dataflow actor 'dataflow.atomic_rmw' has no graph-region lowering
 // ATOMIC-LABEL: dataflow.graph private @serial_atomic
-// ATOMIC: scf.if
+// ATOMIC-NOT: scf.if
 // ATOMIC: dataflow.atomic_rmw
-// ATOMIC-NOT: dataflow.demux
+
+// SOURCE-LABEL: dataflow.graph private @source_atomic
+// SOURCE: dataflow.atomic_rmw
+// SOURCE: dataflow.cmpxchg
+// SOURCE: dataflow.fence
+// SOURCE: dataflow.plain_access
 
 //--- atomic.mlir
 dataflow.graph private @serial_atomic(
@@ -47,4 +49,31 @@ dataflow.graph private @serial_atomic(
         : memref<10xi32>
   }
   dataflow.graph.return %start : none
+}
+
+//--- source.mlir
+module attributes {
+  llvm.data_layout = "e-p:64:64",
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+} {
+  dataflow.graph private @source_atomic(
+      %start: none, %base: !llvm.ptr, %expected: i32, %desired: i32,
+      %index: i64) -> ()
+      attributes {input_segments = array<i32: 4, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %ptr = llvm.getelementptr inbounds %base[%index]
+        : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+    %old = llvm.atomicrmw add %ptr, %desired monotonic {alignment = 4 : i64}
+        : !llvm.ptr, i32
+    %pair = llvm.cmpxchg volatile %ptr, %expected, %desired
+        syncscope("singlethread") acq_rel monotonic {alignment = 4 : i64}
+        : !llvm.ptr, i32
+    %old_pair = llvm.extractvalue %pair[0] : !llvm.struct<(i32, i1)>
+    %success = llvm.extractvalue %pair[1] : !llvm.struct<(i32, i1)>
+    llvm.fence seq_cst
+    llvm.store volatile %old_pair, %ptr {alignment = 4 : i64}
+        : i32, !llvm.ptr
+    llvm.store %success, %ptr : i1, !llvm.ptr
+    dataflow.graph.return %start : none
+  }
 }

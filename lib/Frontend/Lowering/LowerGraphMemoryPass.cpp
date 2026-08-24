@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <vector>
 
 namespace {
@@ -448,26 +449,169 @@ materializeRootRelativeAddress(::mlir::Operation *access, ::mlir::Value pointer,
       .getResult();
 }
 
+std::optional<::dataflow::AtomicOrdering>
+convertAtomicOrdering(::mlir::LLVM::AtomicOrdering ordering) {
+  switch (ordering) {
+  case ::mlir::LLVM::AtomicOrdering::unordered:
+    return ::dataflow::AtomicOrdering::Unordered;
+  case ::mlir::LLVM::AtomicOrdering::monotonic:
+    return ::dataflow::AtomicOrdering::Monotonic;
+  case ::mlir::LLVM::AtomicOrdering::acquire:
+    return ::dataflow::AtomicOrdering::Acquire;
+  case ::mlir::LLVM::AtomicOrdering::release:
+    return ::dataflow::AtomicOrdering::Release;
+  case ::mlir::LLVM::AtomicOrdering::acq_rel:
+    return ::dataflow::AtomicOrdering::AcqRel;
+  case ::mlir::LLVM::AtomicOrdering::seq_cst:
+    return ::dataflow::AtomicOrdering::SeqCst;
+  case ::mlir::LLVM::AtomicOrdering::not_atomic:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+std::optional<::dataflow::SyncScopeRefAttr>
+convertSyncScope(::mlir::MLIRContext *context,
+                 std::optional<::llvm::StringRef> syncscope) {
+  if (!syncscope || syncscope->empty() || *syncscope == "system")
+    return ::dataflow::SyncScopeRefAttr::get(
+        context, ::dataflow::SyncScopeKind::System);
+  if (*syncscope == "singlethread" || *syncscope == "single_thread")
+    return ::dataflow::SyncScopeRefAttr::get(
+        context, ::dataflow::SyncScopeKind::SingleThread);
+  return std::nullopt;
+}
+
+std::optional<::dataflow::AtomicRmwKind>
+convertAtomicRmwKind(::mlir::LLVM::AtomicBinOp kind) {
+  switch (kind) {
+  case ::mlir::LLVM::AtomicBinOp::xchg:
+    return ::dataflow::AtomicRmwKind::Xchg;
+  case ::mlir::LLVM::AtomicBinOp::add:
+    return ::dataflow::AtomicRmwKind::Add;
+  case ::mlir::LLVM::AtomicBinOp::sub:
+    return ::dataflow::AtomicRmwKind::Sub;
+  case ::mlir::LLVM::AtomicBinOp::_and:
+    return ::dataflow::AtomicRmwKind::And;
+  case ::mlir::LLVM::AtomicBinOp::nand:
+    return ::dataflow::AtomicRmwKind::Nand;
+  case ::mlir::LLVM::AtomicBinOp::_or:
+    return ::dataflow::AtomicRmwKind::Or;
+  case ::mlir::LLVM::AtomicBinOp::_xor:
+    return ::dataflow::AtomicRmwKind::Xor;
+  case ::mlir::LLVM::AtomicBinOp::max:
+    return ::dataflow::AtomicRmwKind::Max;
+  case ::mlir::LLVM::AtomicBinOp::min:
+    return ::dataflow::AtomicRmwKind::Min;
+  case ::mlir::LLVM::AtomicBinOp::umax:
+    return ::dataflow::AtomicRmwKind::UMax;
+  case ::mlir::LLVM::AtomicBinOp::umin:
+    return ::dataflow::AtomicRmwKind::UMin;
+  case ::mlir::LLVM::AtomicBinOp::fadd:
+    return ::dataflow::AtomicRmwKind::FAdd;
+  case ::mlir::LLVM::AtomicBinOp::fsub:
+    return ::dataflow::AtomicRmwKind::FSub;
+  case ::mlir::LLVM::AtomicBinOp::fmax:
+    return ::dataflow::AtomicRmwKind::FMax;
+  case ::mlir::LLVM::AtomicBinOp::fmin:
+    return ::dataflow::AtomicRmwKind::FMin;
+  case ::mlir::LLVM::AtomicBinOp::uinc_wrap:
+    return ::dataflow::AtomicRmwKind::UIncWrap;
+  case ::mlir::LLVM::AtomicBinOp::udec_wrap:
+    return ::dataflow::AtomicRmwKind::UDecWrap;
+  case ::mlir::LLVM::AtomicBinOp::usub_cond:
+    return ::dataflow::AtomicRmwKind::USubCond;
+  case ::mlir::LLVM::AtomicBinOp::usub_sat:
+    return ::dataflow::AtomicRmwKind::USubSat;
+  case ::mlir::LLVM::AtomicBinOp::fmaximum:
+    return ::dataflow::AtomicRmwKind::FMaximum;
+  case ::mlir::LLVM::AtomicBinOp::fminimum:
+    return ::dataflow::AtomicRmwKind::FMinimum;
+  case ::mlir::LLVM::AtomicBinOp::fmaximumnum:
+    return ::dataflow::AtomicRmwKind::FMaximumNum;
+  case ::mlir::LLVM::AtomicBinOp::fminimumnum:
+    return ::dataflow::AtomicRmwKind::FMinimumNum;
+  }
+  return std::nullopt;
+}
+
+template <typename AtomicOp>
+std::optional<::dataflow::AtomicAccessContractAttr>
+makeAtomicAccessContract(AtomicOp op, ::mlir::MLIRContext *context,
+                         ::mlir::Type dataType) {
+  auto ordering = convertAtomicOrdering(op.getOrdering());
+  auto scope = convertSyncScope(context, op.getSyncscope());
+  auto alignment = op.getAlignment();
+  if (!ordering || !scope || !alignment || *alignment == 0 ||
+      !::llvm::isPowerOf2_64(*alignment)) {
+    op.emitError(
+        "loom-lower-graph-memory: atomic source requires a supported "
+        "ordering/scope and an explicit power-of-two alignment");
+    return std::nullopt;
+  }
+  std::optional<::dataflow::VectorAtomicGranularity> granularity;
+  if (auto vector = ::llvm::dyn_cast<::mlir::VectorType>(dataType)) {
+    if (vector.isScalable() || vector.getRank() == 0 ||
+        vector.getNumElements() == 0) {
+      op.emitError("loom-lower-graph-memory: scalable or empty atomic vector is "
+                   "not representable");
+      return std::nullopt;
+    }
+    granularity = ::dataflow::VectorAtomicGranularity::WholePayload;
+  }
+  return ::dataflow::AtomicAccessContractAttr::get(
+      context, *ordering, *scope, *alignment, granularity,
+      op.getVolatile_());
+}
+
+// Translate the LLVM memory spelling while keeping all ordering, scope,
+// alignment, volatility, and atomic-action semantics in Dataflow contracts.
 bool tryRewriteOne(::mlir::Operation *op, ::mlir::OpBuilder &builder,
                    RewriteCtx &ctx) {
+  if (auto fence = ::llvm::dyn_cast<::mlir::LLVM::FenceOp>(op)) {
+    auto ordering = convertAtomicOrdering(fence.getOrdering());
+    auto scope = convertSyncScope(ctx.graph.getContext(), fence.getSyncscope());
+    if (!ordering || !scope) {
+      fence.emitError("loom-lower-graph-memory: unsupported LLVM fence "
+                      "ordering or synchronization scope");
+      return false;
+    }
+    ::mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPoint(fence);
+    auto contract = ::dataflow::FenceContractAttr::get(
+        ctx.graph.getContext(), *ordering, *scope);
+    ::dataflow::FenceOp::create(builder, fence.getLoc(), builder.getNoneType(),
+                                ctx.ctrl, contract);
+    fence.erase();
+    return true;
+  }
+
   ::mlir::Value ptrArg;
   ::mlir::Type elemTy;
-  bool isLoad = ::llvm::isa<::mlir::LLVM::LoadOp>(op);
+  const bool isLoad = ::llvm::isa<::mlir::LLVM::LoadOp>(op);
+  const bool isStore = ::llvm::isa<::mlir::LLVM::StoreOp>(op);
+  const bool isRmw = ::llvm::isa<::mlir::LLVM::AtomicRMWOp>(op);
+  const bool isCmpXchg = ::llvm::isa<::mlir::LLVM::AtomicCmpXchgOp>(op);
   if (isLoad) {
     auto load = ::llvm::cast<::mlir::LLVM::LoadOp>(op);
-    if (load.getVolatile_() ||
-        load.getOrdering() != ::mlir::LLVM::AtomicOrdering::not_atomic)
-      return false;
     ptrArg = load.getAddr();
     elemTy = load.getResult().getType();
-  } else {
+  } else if (isStore) {
     auto store = ::llvm::cast<::mlir::LLVM::StoreOp>(op);
-    if (store.getVolatile_() ||
-        store.getOrdering() != ::mlir::LLVM::AtomicOrdering::not_atomic)
-      return false;
     ptrArg = store.getAddr();
     elemTy = store.getValue().getType();
+  } else if (isRmw) {
+    auto rmw = ::llvm::cast<::mlir::LLVM::AtomicRMWOp>(op);
+    ptrArg = rmw.getPtr();
+    elemTy = rmw.getVal().getType();
+  } else if (isCmpXchg) {
+    auto cmp = ::llvm::cast<::mlir::LLVM::AtomicCmpXchgOp>(op);
+    ptrArg = cmp.getPtr();
+    elemTy = cmp.getCmp().getType();
+  } else {
+    return false;
   }
+
   ::mlir::Value root = resolvePointerServiceRoot(ptrArg, ctx.graph);
   bool localAllocation = false;
   if (!root) {
@@ -484,7 +628,7 @@ bool tryRewriteOne(::mlir::Operation *op, ::mlir::OpBuilder &builder,
   if (::mlir::failed(storage))
     return false;
   ::mlir::Location loc = op->getLoc();
-  ::mlir::OpBuilder::InsertionGuard g(builder);
+  ::mlir::OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPoint(op);
   ::mlir::Value address = ptrArg;
   ::mlir::Attribute rootRelative =
@@ -509,15 +653,74 @@ bool tryRewriteOne(::mlir::Operation *op, ::mlir::OpBuilder &builder,
     return false;
   if (isLoad) {
     auto load = ::llvm::cast<::mlir::LLVM::LoadOp>(op);
-    auto newLoad = ::dataflow::LoadOp::create(
-        builder, loc, /*data=*/elemTy, /*done=*/builder.getNoneType(),
-        /*mem=*/mem, /*addr=*/address, /*ctrl=*/ctx.ctrl);
-    load.getResult().replaceAllUsesWith(newLoad.getData());
-  } else {
+    auto lowered = ::dataflow::LoadOp::create(
+        builder, loc, elemTy, builder.getNoneType(), mem, address, ctx.ctrl);
+    if (load.getOrdering() == ::mlir::LLVM::AtomicOrdering::not_atomic) {
+      lowered.setContractAttr(::dataflow::PlainAccessContractAttr::get(
+          ctx.graph.getContext(), load.getVolatile_()));
+    } else if (auto contract = makeAtomicAccessContract(
+                   load, ctx.graph.getContext(), elemTy)) {
+      lowered.setContractAttr(*contract);
+    } else {
+      lowered.erase();
+      return false;
+    }
+    load.getResult().replaceAllUsesWith(lowered.getData());
+  } else if (isStore) {
     auto store = ::llvm::cast<::mlir::LLVM::StoreOp>(op);
-    ::dataflow::StoreOp::create(
-        builder, loc, /*done=*/builder.getNoneType(), /*mem=*/mem,
-        /*addr=*/address, /*data=*/store.getValue(), /*ctrl=*/ctx.ctrl);
+    auto lowered = ::dataflow::StoreOp::create(
+        builder, loc, builder.getNoneType(), mem, address, store.getValue(),
+        ctx.ctrl);
+    if (store.getOrdering() == ::mlir::LLVM::AtomicOrdering::not_atomic) {
+      lowered.setContractAttr(::dataflow::PlainAccessContractAttr::get(
+          ctx.graph.getContext(), store.getVolatile_()));
+    } else if (auto contract = makeAtomicAccessContract(
+                   store, ctx.graph.getContext(), store.getValue().getType())) {
+      lowered.setContractAttr(*contract);
+    } else {
+      lowered.erase();
+      return false;
+    }
+  } else if (isRmw) {
+    auto rmw = ::llvm::cast<::mlir::LLVM::AtomicRMWOp>(op);
+    auto kind = convertAtomicRmwKind(rmw.getBinOp());
+    auto access = makeAtomicAccessContract(rmw, ctx.graph.getContext(), elemTy);
+    if (!kind || !access)
+      return false;
+    auto contract = ::dataflow::AtomicRmwContractAttr::get(
+        ctx.graph.getContext(), *kind, *access);
+    auto lowered = ::dataflow::AtomicRmwOp::create(
+        builder, loc, elemTy, builder.getNoneType(), mem, address, rmw.getVal(),
+        ctx.ctrl, {}, contract);
+    rmw.getRes().replaceAllUsesWith(lowered.getOld());
+  } else {
+    auto cmp = ::llvm::cast<::mlir::LLVM::AtomicCmpXchgOp>(op);
+    auto successOrdering = convertAtomicOrdering(cmp.getSuccessOrdering());
+    auto failureOrdering = convertAtomicOrdering(cmp.getFailureOrdering());
+    auto scope = convertSyncScope(ctx.graph.getContext(), cmp.getSyncscope());
+    auto alignment = cmp.getAlignment();
+    if (!successOrdering || !failureOrdering || !scope || !alignment ||
+        *alignment == 0 || !::llvm::isPowerOf2_64(*alignment)) {
+      cmp.emitError(
+          "loom-lower-graph-memory: compare-exchange requires supported "
+          "orderings/scope and an explicit power-of-two alignment");
+      return false;
+    }
+    auto contract = ::dataflow::CompareExchangeContractAttr::get(
+        ctx.graph.getContext(), *successOrdering, *failureOrdering, *scope,
+        *alignment, std::nullopt, cmp.getWeak(), cmp.getVolatile_());
+    auto lowered = ::dataflow::CmpXchgOp::create(
+        builder, loc, cmp.getCmp().getType(), builder.getI1Type(),
+        builder.getNoneType(), mem, address, cmp.getCmp(), cmp.getVal(),
+        ctx.ctrl, {}, contract);
+    ::mlir::Value packed = ::mlir::LLVM::UndefOp::create(
+        builder, loc, cmp.getRes().getType());
+    packed = ::mlir::LLVM::InsertValueOp::create(
+        builder, loc, packed, lowered.getOld(), ::llvm::ArrayRef<int64_t>{0});
+    packed = ::mlir::LLVM::InsertValueOp::create(
+        builder, loc, packed, lowered.getSuccess(),
+        ::llvm::ArrayRef<int64_t>{1});
+    cmp.getRes().replaceAllUsesWith(packed);
   }
   op->erase();
   return true;
@@ -676,7 +879,10 @@ checkGraphRegionLoweringPreconditionsAfterLoadSinking(::mlir::ModuleOp module) {
   // mutations performed by tryRewriteOne.
   ::llvm::SmallVector<::mlir::Operation *, 16> targets;
   graph.getBody().walk([&](::mlir::Operation *op) {
-    if (::llvm::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp>(op))
+          if (::llvm::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
+                          ::mlir::LLVM::AtomicRMWOp,
+                          ::mlir::LLVM::AtomicCmpXchgOp,
+                          ::mlir::LLVM::FenceOp>(op))
       targets.push_back(op);
     return ::mlir::WalkResult::advance();
   });
@@ -698,8 +904,10 @@ checkGraphRegionLoweringPreconditionsAfterLoadSinking(::mlir::ModuleOp module) {
           [](::mlir::Operation *op) -> ::mlir::WalkResult {
             bool lacksCompletion =
                 ::llvm::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
-                            ::mlir::LLVM::MemcpyOp, ::mlir::LLVM::MemmoveOp,
-                            ::mlir::LLVM::MemsetOp,
+                            ::mlir::LLVM::AtomicRMWOp,
+                            ::mlir::LLVM::AtomicCmpXchgOp,
+                            ::mlir::LLVM::FenceOp, ::mlir::LLVM::MemcpyOp,
+                            ::mlir::LLVM::MemmoveOp, ::mlir::LLVM::MemsetOp,
                             ::mlir::LLVM::AllocaOp>(op);
             if (!lacksCompletion)
               return ::mlir::WalkResult::advance();

@@ -121,6 +121,12 @@ bool isCompilerOwnedControlUse(::mlir::OpOperand &use) {
     return &use == &load.getCtrlMutable();
   if (auto store = ::llvm::dyn_cast<::dataflow::StoreOp>(owner))
     return &use == &store.getCtrlMutable();
+  if (auto rmw = ::llvm::dyn_cast<::dataflow::AtomicRmwOp>(owner))
+    return &use == &rmw.getCtrlMutable();
+  if (auto cmp = ::llvm::dyn_cast<::dataflow::CmpXchgOp>(owner))
+    return &use == &cmp.getCtrlMutable();
+  if (auto fence = ::llvm::dyn_cast<::dataflow::FenceOp>(owner))
+    return &use == &fence.getCtrlMutable();
   if (auto constant = ::llvm::dyn_cast<::dataflow::ConstantOp>(owner))
     return &use == &constant.getCtrlMutable();
   return false;
@@ -671,6 +677,10 @@ private:
       return load.getMem();
     if (auto store = ::llvm::dyn_cast<::dataflow::StoreOp>(op))
       return store.getMem();
+    if (auto rmw = ::llvm::dyn_cast<::dataflow::AtomicRmwOp>(op))
+      return rmw.getMem();
+    if (auto cmp = ::llvm::dyn_cast<::dataflow::CmpXchgOp>(op))
+      return cmp.getMem();
     if (auto load = ::llvm::dyn_cast<::mlir::memref::LoadOp>(op))
       return load.getMemref();
     if (auto store = ::llvm::dyn_cast<::mlir::memref::StoreOp>(op))
@@ -773,6 +783,15 @@ private:
     if (auto store = ::llvm::dyn_cast<::dataflow::StoreOp>(def))
       return event == store.getDone() &&
              causallyDependsOn(store.getCtrl(), prerequisite, visited);
+    if (auto rmw = ::llvm::dyn_cast<::dataflow::AtomicRmwOp>(def))
+      return event == rmw.getDone() &&
+             causallyDependsOn(rmw.getCtrl(), prerequisite, visited);
+    if (auto cmp = ::llvm::dyn_cast<::dataflow::CmpXchgOp>(def))
+      return event == cmp.getDone() &&
+             causallyDependsOn(cmp.getCtrl(), prerequisite, visited);
+    if (auto fence = ::llvm::dyn_cast<::dataflow::FenceOp>(def))
+      return event == fence.getDone() &&
+             causallyDependsOn(fence.getCtrl(), prerequisite, visited);
     if (auto demux = ::llvm::dyn_cast<::dataflow::DemuxOp>(def))
       return causallyDependsOn(demux.getInput(), prerequisite, visited);
     if (auto mux = ::llvm::dyn_cast<::dataflow::MuxOp>(def)) {
@@ -1102,6 +1121,21 @@ private:
         lowerDataflowStore(store, execution, memory);
         continue;
       }
+      if (auto rmw = ::llvm::dyn_cast<::dataflow::AtomicRmwOp>(op)) {
+        lowerDataflowAtomicRmw(rmw, execution, memory);
+        execution = rmw.getDone();
+        continue;
+      }
+      if (auto cmp = ::llvm::dyn_cast<::dataflow::CmpXchgOp>(op)) {
+        lowerDataflowCmpXchg(cmp, execution, memory);
+        execution = cmp.getDone();
+        continue;
+      }
+      if (auto fence = ::llvm::dyn_cast<::dataflow::FenceOp>(op)) {
+        lowerDataflowFence(fence, execution, memory);
+        execution = fence.getDone();
+        continue;
+      }
       if (::loom::lowering::detail::isGraphRegionRepresentationBitcast(op)) {
         auto bitcast = ::mlir::cast<::mlir::LLVM::BitcastOp>(op);
         builder.setInsertionPoint(bitcast);
@@ -1320,6 +1354,41 @@ private:
     updateWriteFrontiers(store, store.getDone(), memory);
     if (store->getBlock() != &entry)
       store->moveBefore(anchor);
+  }
+
+  ::mlir::Value atomicControl(::mlir::Operation *op,
+                              ::mlir::Value execution,
+                              const MemoryState &memory) {
+    ::llvm::SmallVector<::mlir::Value, 8> inputs{execution};
+    for (const MemoryFrontier &frontier : memory) {
+      inputs.push_back(frontier.write);
+      inputs.push_back(frontier.read);
+    }
+    return joinEvents(inputs, op->getLoc());
+  }
+
+  void lowerDataflowAtomicRmw(::dataflow::AtomicRmwOp rmw,
+                              ::mlir::Value execution,
+                              MemoryState &memory) {
+    rmw.getCtrlMutable().assign(atomicControl(rmw, execution, memory));
+    updateWriteFrontiers(rmw, rmw.getDone(), memory);
+    if (rmw->getBlock() != &entry)
+      rmw->moveBefore(anchor);
+  }
+
+  void lowerDataflowCmpXchg(::dataflow::CmpXchgOp cmp,
+                            ::mlir::Value execution, MemoryState &memory) {
+    cmp.getCtrlMutable().assign(atomicControl(cmp, execution, memory));
+    updateWriteFrontiers(cmp, cmp.getDone(), memory);
+    if (cmp->getBlock() != &entry)
+      cmp->moveBefore(anchor);
+  }
+
+  void lowerDataflowFence(::dataflow::FenceOp fence, ::mlir::Value execution,
+                          const MemoryState &memory) {
+    fence.getCtrlMutable().assign(atomicControl(fence, execution, memory));
+    if (fence->getBlock() != &entry)
+      fence->moveBefore(anchor);
   }
 
   RegionResult lowerSelection(::mlir::Operation *selection,
