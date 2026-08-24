@@ -4145,9 +4145,9 @@ existing DSE closure owner. If the build owner stops before those semantic
 roots can be published, the only legal keyless record is an explicit
 `OwnerVerifiedPreAdmission` record carrying the owner name,
 `pre_mapping_owner_verified_v1` contract, and a typed terminal disposition.
-It must state why admission stopped and set the owner-verification bit;
-`NotStartedBeforeMapping` or a bare missing join is not a cancellation
-explanation. A keyless record never claims that an InvocationManifest exists,
+It must state why admission stopped and set the owner-verification bit. A bare
+missing join is not a cancellation explanation. A keyless record never claims
+that an InvocationManifest exists,
 and a partially available root set without a valid key remains an internal
 error. The pair record is a derived diagnostic join; candidate identity,
 legality, checkpoints, and work ledgers remain owned by their existing

@@ -543,15 +543,16 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
         ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure;
   result.disposition = disposition;
   if (!result.invocationRunKey) {
-    result.manifestJoinStatus = ownerVerifiedPreAdmission
-                                    ? ApplicationPairManifestJoinStatus::
-                                          OwnerVerifiedPreAdmission
-                                    : ApplicationPairManifestJoinStatus::
-                                          NotStartedBeforeMapping;
     if (ownerVerifiedPreAdmission) {
+      result.manifestJoinStatus =
+          ApplicationPairManifestJoinStatus::OwnerVerifiedPreAdmission;
       result.manifestJoinOwner = preAdmissionManifestJoinOwner.str();
       result.manifestJoinContract = preAdmissionManifestJoinContract.str();
       result.manifestJoinOwnerVerified = true;
+    } else {
+      // A root-bearing invocation must carry the canonical run key. The only
+      // valid keyless boundary is the explicit owner-scoped exception above.
+      result.manifestJoinStatus = ApplicationPairManifestJoinStatus::Missing;
     }
   }
   result.detail = detail.str();
@@ -1080,8 +1081,6 @@ llvm::StringRef toString(ApplicationPairManifestJoinStatus value) {
     return "owner_scoped_planning_closure";
   case ApplicationPairManifestJoinStatus::OwnerVerifiedPreAdmission:
     return "owner_verified_pre_admission";
-  case ApplicationPairManifestJoinStatus::NotStartedBeforeMapping:
-    return "not_started_before_mapping";
   case ApplicationPairManifestJoinStatus::Missing:
     return "missing";
   }

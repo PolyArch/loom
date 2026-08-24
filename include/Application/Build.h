@@ -199,7 +199,6 @@ enum class ApplicationPairManifestJoinStatus : std::uint8_t {
   /// boundary still publishes a typed, auditable decision instead of a bare
   /// missing join.
   OwnerVerifiedPreAdmission,
-  NotStartedBeforeMapping,
   Missing,
 };
 
