@@ -6,6 +6,7 @@
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace loom::adg {
 
@@ -15,6 +16,14 @@ namespace loom::adg {
 llvm::Error exportFabricDesign(const loom::fabric::FinalizedFabricRoot &root,
                                const loom::ArtifactStore &store,
                                llvm::StringRef outputBase);
+
+/// Writes one self-contained authoring MLIR container containing the exact
+/// System root and its imported Module roots. This is a textual input
+/// projection, not another Fabric artifact or identity.
+llvm::Error
+writeFabricAuthoringMlir(const loom::fabric::FinalizedFabricRoot &root,
+                         const loom::ArtifactStore &store,
+                         llvm::raw_ostream &output);
 
 } // namespace loom::adg
 

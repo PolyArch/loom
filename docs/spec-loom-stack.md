@@ -101,6 +101,12 @@ the resolved acceleration profile, and omission selects its designated
 canonical default. An invocation cannot silently combine or override external
 and builtin hardware sources.
 
+The externally selected System is a fixed hardware frontier. Ordinary Mapping
+repair may reopen bindings, routes, services, and configurations on that exact
+System, but hardware feedback cannot substitute a child rematerialized from a
+builtin target recipe. Hardware DSE requires an explicit bounded policy and a
+target family capable of materializing typed children.
+
 ## Machine Model
 
 The target machine is:

@@ -26,6 +26,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Application/ProductBuild.h"
+
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/Stack.h"
 #include "clang/Config/config.h"
@@ -46,13 +48,10 @@
 #include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/IOSandbox.h"
 #include "llvm/Support/LLVMDriver.h"
-#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
-#include "llvm/Support/Program.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/TargetSelect.h"
@@ -88,6 +87,7 @@ struct LoomDriverOptions final {
   std::string accelerationProfile;
   std::string hardwarePath;
   std::string visualizationPath;
+  std::string localToolConfigPath;
   std::string deploymentPath;
   std::string mappingTechCandidateLimit;
   std::string mappingWallTimeLimitMilliseconds;
@@ -97,10 +97,10 @@ struct LoomDriverOptions final {
 
   bool requestsProductFlow() const {
     return !hardwarePath.empty() || !visualizationPath.empty() ||
-           !deploymentPath.empty() || !mappingTechCandidateLimit.empty() ||
+           !localToolConfigPath.empty() || !deploymentPath.empty() ||
+           !mappingTechCandidateLimit.empty() ||
            !mappingWallTimeLimitMilliseconds.empty() ||
-           !mappingStoppingPolicy.empty() ||
-           !mappingSpectrumEndpoint.empty() ||
+           !mappingStoppingPolicy.empty() || !mappingSpectrumEndpoint.empty() ||
            !operatorProtocolSymbols.empty();
   }
 };
@@ -162,6 +162,13 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
       return visualization.takeError();
     if (*visualization)
       continue;
+    auto localToolConfig =
+        consumeLoomOption(argument, "--loom-local-config", index, arguments,
+                          seen, options.localToolConfigPath);
+    if (!localToolConfig)
+      return localToolConfig.takeError();
+    if (*localToolConfig)
+      continue;
     auto deployment =
         consumeLoomOption(argument, "--loom-deploy-output", index, arguments,
                           seen, options.deploymentPath);
@@ -170,29 +177,29 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
     if (*deployment)
       continue;
     auto techCandidateLimit = consumeLoomOption(
-        argument, "--loom-mapping-tech-candidate-limit", index, arguments,
-        seen, options.mappingTechCandidateLimit);
+        argument, "--loom-mapping-tech-candidate-limit", index, arguments, seen,
+        options.mappingTechCandidateLimit);
     if (!techCandidateLimit)
       return techCandidateLimit.takeError();
     if (*techCandidateLimit)
       continue;
     auto mappingWallTimeLimit = consumeLoomOption(
-        argument, "--loom-mapping-wall-time-limit-ms", index, arguments,
-        seen, options.mappingWallTimeLimitMilliseconds);
+        argument, "--loom-mapping-wall-time-limit-ms", index, arguments, seen,
+        options.mappingWallTimeLimitMilliseconds);
     if (!mappingWallTimeLimit)
       return mappingWallTimeLimit.takeError();
     if (*mappingWallTimeLimit)
       continue;
-    auto mappingStoppingPolicy = consumeLoomOption(
-        argument, "--loom-mapping-stopping-policy", index, arguments, seen,
-        options.mappingStoppingPolicy);
+    auto mappingStoppingPolicy =
+        consumeLoomOption(argument, "--loom-mapping-stopping-policy", index,
+                          arguments, seen, options.mappingStoppingPolicy);
     if (!mappingStoppingPolicy)
       return mappingStoppingPolicy.takeError();
     if (*mappingStoppingPolicy)
       continue;
-    auto mappingSpectrumEndpoint = consumeLoomOption(
-        argument, "--loom-mapping-spectrum-endpoint", index, arguments, seen,
-        options.mappingSpectrumEndpoint);
+    auto mappingSpectrumEndpoint =
+        consumeLoomOption(argument, "--loom-mapping-spectrum-endpoint", index,
+                          arguments, seen, options.mappingSpectrumEndpoint);
     if (!mappingSpectrumEndpoint)
       return mappingSpectrumEndpoint.takeError();
     if (*mappingSpectrumEndpoint)
@@ -237,95 +244,59 @@ bool preventsFinalLink(llvm::ArrayRef<const char *> arguments) {
   return false;
 }
 
-llvm::Expected<std::vector<std::string>>
-readProductDriverArguments(llvm::StringRef path) {
-  auto buffer = llvm::MemoryBuffer::getFile(path, false, false);
-  if (!buffer)
-    return productError("loom_product_driver_projection_invalid",
-                        "cannot read driver argument projection: " +
-                            buffer.getError().message());
-  llvm::StringRef bytes = (*buffer)->getBuffer();
-  if (bytes.empty() || bytes.back() != '\0')
-    return productError("loom_product_driver_projection_invalid",
-                        "driver argument projection is not terminated");
-  std::vector<std::string> result;
-  while (!bytes.empty()) {
-    const std::size_t end = bytes.find('\0');
-    if (end == 0 || end == llvm::StringRef::npos)
-      return productError("loom_product_driver_projection_invalid",
-                          "driver argument projection contains an empty "
-                          "argument");
-    result.push_back(bytes.take_front(end).str());
-    bytes = bytes.drop_front(end + 1);
+llvm::Expected<std::uint64_t>
+parsePositiveProductLimit(llvm::StringRef spelling, llvm::StringRef option) {
+  std::uint64_t value = 0;
+  if (spelling.getAsInteger(10, value) || value == 0)
+    return productError("loom_driver_option_invalid",
+                        option + " requires a positive integer");
+  return value;
+}
+
+llvm::Expected<loom::application::ProductBuildOptions>
+makeProductBuildOptions(const LoomDriverOptions &options) {
+  std::uint64_t techCandidateLimit =
+      loom::application::defaultProductTechCandidateLimit;
+  if (!options.mappingTechCandidateLimit.empty()) {
+    auto parsed =
+        parsePositiveProductLimit(options.mappingTechCandidateLimit,
+                                  "--loom-mapping-tech-candidate-limit");
+    if (!parsed)
+      return parsed.takeError();
+    techCandidateLimit = *parsed;
   }
-  return result;
-}
-
-llvm::SmallVector<std::string, 8>
-productHelperOptions(const LoomDriverOptions &options) {
-  llvm::SmallVector<std::string, 8> result;
-  result.push_back("--deployment-output=" + options.deploymentPath);
-  if (!options.accelerationProfile.empty())
-    result.push_back("--acceleration-profile=" + options.accelerationProfile);
-  if (!options.hardwarePath.empty())
-    result.push_back("--hardware=" + options.hardwarePath);
-  if (!options.visualizationPath.empty())
-    result.push_back("--visualization=" + options.visualizationPath);
-  if (!options.mappingTechCandidateLimit.empty())
-    result.push_back("--mapping-tech-candidate-limit=" +
-                     options.mappingTechCandidateLimit);
-  if (!options.mappingWallTimeLimitMilliseconds.empty())
-    result.push_back("--mapping-wall-time-limit-ms=" +
-                     options.mappingWallTimeLimitMilliseconds);
-  if (!options.mappingStoppingPolicy.empty())
-    result.push_back("--mapping-stopping-policy=" +
-                     options.mappingStoppingPolicy);
-  if (!options.mappingSpectrumEndpoint.empty())
-    result.push_back("--mapping-spectrum-endpoint=" +
-                     options.mappingSpectrumEndpoint);
-  for (const std::string &symbol : options.operatorProtocolSymbols)
-    result.push_back("--operator-protocol-symbol=" + symbol);
-  return result;
-}
-
-llvm::Error invokeProductHelper(const LoomDriverOptions &options,
-                                llvm::StringRef action) {
-  llvm::SmallVector<std::string, 8> owned = productHelperOptions(options);
-  owned.push_back(action.str());
-  llvm::SmallVector<llvm::StringRef, 10> command{LOOM_APPLICATION_BUILD_PATH};
-  for (const std::string &argument : owned)
-    command.push_back(argument);
-  std::string message;
-  bool failed = false;
-  const int status =
-      llvm::sys::ExecuteAndWait(LOOM_APPLICATION_BUILD_PATH, command,
-                                std::nullopt, {}, 0, 0, &message, &failed);
-  if (failed || status < 0)
-    return productError("loom_product_helper_unavailable",
-                        "cannot execute application build helper: " + message);
-  if (status != 0)
-    return productError("loom_product_build_failed",
-                        "application build helper exited with status " +
-                            llvm::Twine(status));
-  return llvm::Error::success();
-}
-
-llvm::Expected<std::vector<std::string>>
-requestProductDriverArguments(const LoomDriverOptions &options) {
-  int descriptor = -1;
-  llvm::SmallString<256> path;
-  if (std::error_code error = llvm::sys::fs::createTemporaryFile(
-          "loom-product-driver", "args", descriptor, path))
-    return productError("loom_product_driver_projection_invalid",
-                        "cannot create driver argument capture: " +
-                            error.message());
-  llvm::sys::Process::SafelyCloseFileDescriptor(descriptor);
-  llvm::FileRemover remove(path);
-  const std::string action =
-      (llvm::Twine("--driver-arguments-output=") + path).str();
-  if (llvm::Error error = invokeProductHelper(options, action))
-    return std::move(error);
-  return readProductDriverArguments(path);
+  std::uint64_t wallTimeLimit =
+      loom::application::defaultProductMappingWallTimeLimitMilliseconds;
+  if (!options.mappingWallTimeLimitMilliseconds.empty()) {
+    auto parsed =
+        parsePositiveProductLimit(options.mappingWallTimeLimitMilliseconds,
+                                  "--loom-mapping-wall-time-limit-ms");
+    if (!parsed)
+      return parsed.takeError();
+    wallTimeLimit = *parsed;
+  }
+  auto stoppingPolicy = loom::application::parseProductMappingStoppingPolicy(
+      options.mappingStoppingPolicy.empty() ? "first_verified"
+                                            : options.mappingStoppingPolicy);
+  if (!stoppingPolicy)
+    return stoppingPolicy.takeError();
+  auto spectrumEndpoint =
+      loom::application::parseProductMappingSpectrumEndpoint(
+          options.mappingSpectrumEndpoint.empty()
+              ? "automatic"
+              : options.mappingSpectrumEndpoint);
+  if (!spectrumEndpoint)
+    return spectrumEndpoint.takeError();
+  return loom::application::ProductBuildOptions{options.deploymentPath,
+                                                options.accelerationProfile,
+                                                options.hardwarePath,
+                                                options.visualizationPath,
+                                                options.localToolConfigPath,
+                                                options.operatorProtocolSymbols,
+                                                techCandidateLimit,
+                                                wallTimeLimit,
+                                                *stoppingPolicy,
+                                                *spectrumEndpoint};
 }
 
 llvm::StringRef projectedValue(llvm::ArrayRef<std::string> projection,
@@ -507,8 +478,9 @@ insertRelocatablePayloadPass(llvm::SmallVectorImpl<const char *> &args,
   args.insert(args.begin() + 1, GetStableCStr(saved, option));
 }
 
-static void ensureProductLinkInputsAreReplayable(
-    llvm::SmallVectorImpl<const char *> &args, llvm::StringSet<> &saved) {
+static void
+ensureProductLinkInputsAreReplayable(llvm::SmallVectorImpl<const char *> &args,
+                                     llvm::StringSet<> &saved) {
   for (const char *raw : llvm::ArrayRef(args).drop_front()) {
     if (!raw)
       continue;
@@ -521,8 +493,7 @@ static void ensureProductLinkInputsAreReplayable(
   // importer runs. Keep one exact object beside the final link output; the
   // importer resolves that invocation-local path and never folds it into
   // semantic identity.
-  args.insert(args.begin() + 1,
-              GetStableCStr(saved, "-save-temps=obj"));
+  args.insert(args.begin() + 1, GetStableCStr(saved, "-save-temps=obj"));
 }
 
 template <class T>
@@ -645,20 +616,30 @@ static int loom_main(int Argc, char **Argv,
   }
 
   std::vector<std::string> ProductTargetArguments;
+  std::unique_ptr<loom::application::ProductBuildInvocation> ProductInvocation;
   if (LoomOptions->requestsProductFlow()) {
     ensureProductLinkInputsAreReplayable(Args, SavedStrings);
-    auto Projection = requestProductDriverArguments(*LoomOptions);
-    if (!Projection) {
+    auto ProductOptions = makeProductBuildOptions(*LoomOptions);
+    if (!ProductOptions) {
       llvm::errs() << "loom-cc: error: "
-                   << llvm::toString(Projection.takeError()) << '\n';
+                   << llvm::toString(ProductOptions.takeError()) << '\n';
       return 1;
     }
-    if (llvm::Error Error = validateUserTargetArguments(Args, *Projection)) {
+    auto Invocation = loom::application::ProductBuildInvocation::create(
+        std::move(*ProductOptions));
+    if (!Invocation) {
+      llvm::errs() << "loom-cc: error: "
+                   << llvm::toString(Invocation.takeError()) << '\n';
+      return 1;
+    }
+    auto Projection = (*Invocation)->compilerArguments();
+    if (llvm::Error Error = validateUserTargetArguments(Args, Projection)) {
       llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(Error))
                    << '\n';
       return 1;
     }
-    ProductTargetArguments = std::move(*Projection);
+    ProductTargetArguments = std::move(Projection);
+    ProductInvocation = std::move(*Invocation);
   }
 
   std::string Path = GetExecutablePath(ToolContext.Path, CanonicalPrefixes);
@@ -771,8 +752,8 @@ static int loom_main(int Argc, char **Argv,
   }
 
   if (Res == 0 && ProductLinkOutput) {
-    const std::string action = "--final-link-output=" + *ProductLinkOutput;
-    if (llvm::Error Error = invokeProductHelper(*LoomOptions, action)) {
+    if (llvm::Error Error =
+            ProductInvocation->buildFromFinalLink(*ProductLinkOutput)) {
       llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(Error))
                    << '\n';
       Res = 1;

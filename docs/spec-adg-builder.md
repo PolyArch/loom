@@ -1563,6 +1563,12 @@ Builtin examples, compiler builtin selection, and user-authored designs call
 this same export function. There is no builtin-only printer, visualization IR,
 or Builder-draft rendering path.
 
+For a System root, the developer-only `--authoring-output` projection may emit
+one MLIR container holding the exact imported Module roots followed by the
+System root. It is a textual authoring input for strict external-Fabric import;
+the ordinary `<output>.mlir` remains the single-root canonical projection and
+the authoring file does not acquire an Artifact identity.
+
 ## Determinism
 
 For one Builder semantic version and equal semantic inputs, elaboration must

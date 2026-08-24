@@ -268,7 +268,14 @@ buildModuleGraph(const FinalizedFabricRoot &root,
                            typeText(value.getType()), "fabric.module_output"});
 
   std::set<std::tuple<std::size_t, std::size_t, std::string>> seen;
-  for (const auto &entry : nodeByOperation) {
+  std::vector<std::pair<mlir::Operation *, std::size_t>> orderedNodes;
+  orderedNodes.reserve(nodeByOperation.size());
+  for (const auto &entry : nodeByOperation)
+    orderedNodes.push_back(entry);
+  llvm::sort(orderedNodes, [](const auto &lhs, const auto &rhs) {
+    return lhs.second < rhs.second;
+  });
+  for (const auto &entry : orderedNodes) {
     mlir::Operation *destination = entry.first;
     for (mlir::Value operand : destination->getOperands()) {
       if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(operand)) {
@@ -347,7 +354,14 @@ Graph buildFuGraph(const ArtifactIdentity &artifact, ::fabric::FuOp fu,
                              typeText(value.getType()), "fabric.fu_output"});
 
   std::set<std::tuple<std::size_t, std::size_t, std::string>> seen;
+  std::vector<std::pair<mlir::Operation *, std::size_t>> orderedNodes;
+  orderedNodes.reserve(nodeByOperation.size());
   for (const auto &entry : nodeByOperation)
+    orderedNodes.push_back(entry);
+  llvm::sort(orderedNodes, [](const auto &lhs, const auto &rhs) {
+    return lhs.second < rhs.second;
+  });
+  for (const auto &entry : orderedNodes)
     for (mlir::Value operand : entry.first->getOperands()) {
       if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(operand)) {
         if (argument.getOwner() == &body)
@@ -483,9 +497,8 @@ llvm::Expected<Graph> buildSystemGraph(const FinalizedFabricRoot &root) {
       auto memberId = std::visit(
           [](const auto &payload) -> std::optional<FabricEntityId> {
             using Member = std::decay_t<decltype(payload)>;
-            if constexpr (std::is_same_v<
-                              Member,
-                              SpatialCoreDomainSlotOccurrenceRef>)
+            if constexpr (std::is_same_v<Member,
+                                         SpatialCoreDomainSlotOccurrenceRef>)
               return payload.spatialCore.core.id();
             else
               return inventoryOwnerEntity(payload);

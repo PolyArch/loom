@@ -1,6 +1,8 @@
 #ifndef LOOM_APPLICATION_BUILDDIAGNOSTICS_H
 #define LOOM_APPLICATION_BUILDDIAGNOSTICS_H
 
+#include "llvm/Support/JSON.h"
+
 #include <cstdint>
 
 namespace loom::dse {
@@ -68,6 +70,11 @@ void emitApplicationMappingDiagnostics(
 /// ApplicationMappingExecution exists. The detailed planning/checkpoint
 /// diagnostics remain emitted by their existing owners.
 void emitApplicationPairDecisionDiagnostics(
+    const ApplicationPairDecisionRecord &decision);
+
+/// Shared presentation-only projection used by diagnostics and product
+/// visualization. The decision record remains the semantic owner.
+llvm::json::Object projectApplicationPairDecisionJson(
     const ApplicationPairDecisionRecord &decision);
 
 } // namespace loom::application

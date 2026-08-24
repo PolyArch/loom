@@ -3469,6 +3469,17 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     if (const auto *incomplete =
             std::get_if<IncompleteDsePlanExecution>(&initial->planExecution);
         incomplete && incomplete->executionStopped()) {
+      if (request.hardwareExplorationScope ==
+          JointHardwareExplorationScope::FixedSystemFrontier) {
+        if (!firstIncomplete)
+          firstIncomplete = std::move(*initial);
+        if (dispatchDeadlineReached(request.executionPolicy)) {
+          deadlineObserved = true;
+          boundedQualitySearchIncomplete = true;
+          break;
+        }
+        continue;
+      }
       // An incomplete parent never proves that its siblings are infeasible,
       // but an exact owner feedback payload retained by that parent can still
       // justify one bounded hardware repair. Keep the parent typed incomplete
@@ -3511,6 +3522,11 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       }
       continue;
     }
+    if (request.hardwareExplorationScope ==
+        JointHardwareExplorationScope::FixedSystemFrontier) {
+      lastNoFeasible = std::move(*initial);
+      continue;
+    }
     auto coverage = projectJointSoftwareCoverage(plan, artifacts);
     if (!coverage)
       return coverage.takeError();
@@ -3523,11 +3539,14 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
   // software frontier order and prevents repairable early failures from
   // hiding a later parent-hardware solution.
   std::vector<FailedSoftwareAttempt *> hardwareFeedbackFrontier;
-  if (request.stoppingPolicy != JointDesignStoppingPolicy::BoundedQuality ||
-      verifiedAlternatives.empty()) {
+  if (request.hardwareExplorationScope ==
+          JointHardwareExplorationScope::BoundedHardwareReopen &&
+      (request.stoppingPolicy != JointDesignStoppingPolicy::BoundedQuality ||
+       verifiedAlternatives.empty())) {
     for (FailedSoftwareAttempt &attempt : failedSoftwareAttempts)
       hardwareFeedbackFrontier.push_back(&attempt);
-  } else {
+  } else if (request.hardwareExplorationScope ==
+             JointHardwareExplorationScope::BoundedHardwareReopen) {
     for (FailedSoftwareAttempt &attempt : failedSoftwareAttempts) {
       auto tech = selectTechHardwareFeedback(attempt.execution, artifacts);
       if (!tech)
@@ -3655,7 +3674,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
   // parent budget first in semantic coverage order. Any remaining budget may
   // expand verified parents in analytic order. Both paths reserve a terminal
   // share for application QoR and retain their original typed outcome.
-  if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality &&
+  if (request.hardwareExplorationScope ==
+          JointHardwareExplorationScope::BoundedHardwareReopen &&
+      request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality &&
       !verifiedAlternatives.empty()) {
     const std::size_t baseAlternativeCount = verifiedAlternatives.size();
     const std::uint64_t remainingParentBudget =

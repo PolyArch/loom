@@ -2185,6 +2185,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         request.executionPolicy};
     reopenRequest.spectrumEndpoint =
         prepared.resourceTimePolicy.spectrumEndpoint;
+    reopenRequest.hardwareExplorationScope = request.hardwareExplorationScope;
     return dse::executeJointDesignWithHardwareReopen(
         tail, prepared.jointPolicy, std::move(reopenRequest), artifacts, blobs);
   };
@@ -2518,6 +2519,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     }
     if (runtime->disposition !=
             ApplicationMappingRuntimeDisposition::Completed &&
+        request.hardwareExplorationScope ==
+            dse::JointHardwareExplorationScope::BoundedHardwareReopen &&
         runtime->spatialOperandQueueFeedback &&
         runtime->spatialOperandQueueFeedback->disposition ==
             dse::SpatialOperandQueueRuntimeFeedbackDisposition::Exact) {

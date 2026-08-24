@@ -69,6 +69,8 @@ add_library(LoomApplicationBuild
   Build.cpp
   BuildDiagnostics.cpp
   ExecutionGlue.cpp
+  ProductBuild.cpp
+  ProductVisualization.cpp
   "${LOOM_FREESTANDING_MATH_HEADER}"
 )
 
@@ -77,6 +79,10 @@ target_include_directories(LoomApplicationBuild PUBLIC
 )
 target_include_directories(LoomApplicationBuild PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+target_compile_definitions(LoomApplicationBuild PRIVATE
+  LOOM_LLVM_TOOLS_DIR="${LLVM_TOOLS_BINARY_DIR}"
 )
 
 target_link_libraries(LoomApplicationBuild PUBLIC
@@ -98,6 +104,11 @@ target_link_libraries(LoomApplicationBuild PUBLIC
   LLVMipo
   LLVMTransformUtils
   LLVMSupport
+)
+
+target_link_libraries(LoomApplicationBuild PRIVATE
+  LoomADGBuilder
+  LoomExternalTool
 )
 
 mlir_target_link_libraries(LoomApplicationBuild PRIVATE

@@ -1,0 +1,28 @@
+# RUN: rm -rf %t && mkdir -p %t/store
+# RUN: loom-adg --builtin=coverage --artifact-store=%t/store \
+# RUN:   --output=%t/coverage --authoring-output=%t/hardware-a.mlir \
+# RUN:   --root-reference=%t/system.json > /dev/null
+# RUN: cp %t/hardware-a.mlir %t/hardware-b.mlir
+# RUN: %loom-cc -std=c11 -O1 -ffp-contract=off -fno-math-errno \
+# RUN:   %S/Inputs/product_scalar.c -o %t/a.elf \
+# RUN:   --loom-hardware=%t/hardware-a.mlir \
+# RUN:   --loom-deploy-output=%t/deployment-a \
+# RUN:   --loom-viz-export=%t/viz-a \
+# RUN:   --loom-mapping-wall-time-limit-ms=30000
+# RUN: %loom-cc -std=c11 -O1 -ffp-contract=off -fno-math-errno \
+# RUN:   %S/Inputs/product_scalar.c -o %t/b.elf \
+# RUN:   --loom-hardware=%t/hardware-b.mlir \
+# RUN:   --loom-deploy-output=%t/deployment-b \
+# RUN:   --loom-viz-export=%t/viz-b \
+# RUN:   --loom-mapping-wall-time-limit-ms=30000
+# RUN: %loom-application-build --final-link-output=%t/a.elf \
+# RUN:   --hardware=%t/hardware-b.mlir \
+# RUN:   --deployment-output=%t/deployment-replay \
+# RUN:   --visualization=%t/viz-replay \
+# RUN:   --mapping-wall-time-limit-ms=30000
+# RUN: cmp %t/viz-a/viz.bundle.json %t/viz-b/viz.bundle.json
+# RUN: cmp %t/viz-a/viz.bundle.json %t/viz-replay/viz.bundle.json
+# RUN: cmp %t/viz-a/fabric.mlir %t/viz-b/fabric.mlir
+# RUN: cmp %t/viz-a/fabric.html %t/viz-b/fabric.html
+# RUN: %python %S/verify_product_visualization.py \
+# RUN:   --fabric-root=%t/system.json --bundle=%t/viz-a/viz.bundle.json

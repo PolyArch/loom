@@ -353,13 +353,20 @@ config.substitutions.insert(
 config.substitutions.insert(
     1, ("%loom-cc\\b", os.path.join(_loom_cc_dir, "loom-cc")))
 config.substitutions.insert(
-    2, ("%loom-raise\\b", os.path.join(_loom_cc_dir, "loom-raise")))
+    2,
+    (
+        "%loom-application-build\\b",
+        os.path.join(config.loom_obj_root, "bin", "loom-application-build"),
+    ),
+)
 config.substitutions.insert(
-    3, ("%loom-lower\\b", os.path.join(_loom_cc_dir, "loom-lower")))
+    3, ("%loom-raise\\b", os.path.join(_loom_cc_dir, "loom-raise")))
 config.substitutions.insert(
-    4, ("%loom-payload\\b", os.path.join(_loom_cc_dir, "loom-payload")))
+    4, ("%loom-lower\\b", os.path.join(_loom_cc_dir, "loom-lower")))
 config.substitutions.insert(
-    5, ("%objdump-h",
+    5, ("%loom-payload\\b", os.path.join(_loom_cc_dir, "loom-payload")))
+config.substitutions.insert(
+    6, ("%objdump-h",
         os.path.join(config.llvm_tools_dir, "llvm-objdump") + " -h"))
 
 # Source-backed execution anchors must enter the runner with the exact shared

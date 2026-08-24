@@ -4,6 +4,7 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/InvocationManifest.h"
 #include "DSE/JointDesignExploration.h"
+#include "DSE/JointHardwareReopen.h"
 #include "DSE/JointMappingMigration.h"
 #include "DSE/PreMappingExploration.h"
 #include "DSE/ResourceTimeFrontier.h"
@@ -161,6 +162,11 @@ struct ApplicationMappingExecutionRequest final {
   std::optional<dse::JointBoundedQualityPolicy> boundedQuality;
   dse::SiteCapacity siteCapacity;
   dse::PlanExecutionPolicy executionPolicy;
+  /// External user-selected Systems are fixed invocation targets. Builtin
+  /// product targets may opt into the existing bounded hardware-feedback
+  /// loop without changing Mapping legality or candidate identity.
+  dse::JointHardwareExplorationScope hardwareExplorationScope =
+      dse::JointHardwareExplorationScope::BoundedHardwareReopen;
 };
 
 enum class ApplicationMappingRuntimeDisposition : std::uint8_t {

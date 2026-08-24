@@ -3175,6 +3175,14 @@ probe bound is exhausted, no supported typed feedback remains, execution is
 cancelled, or a verified SystemMapping is published. Exhaustion is incomplete,
 not infeasible. Thus a second hardware dimension becomes eligible only after
 ordinary Mapping proves it necessary.
+
+The invocation declares whether its exact System frontier is fixed or admits
+this bounded reopen chain. A fixed frontier still permits Mapping repair on the
+same immutable Systems, but no feedback or QoR promotion may materialize a new
+System. In particular, an externally authored System cannot be reinterpreted
+as the builtin recipe stored in an otherwise applicable resolved DSE config.
+This scope is invocation search policy; it does not enter System, Mapping, or
+candidate identity.
 The owner also stops a non-progressing typed feedback sequence. If successive
 context-growth probes increase the observed Hall demand and context-value set
 by the same amount while preserving the deficit, the aggregate feedback is not

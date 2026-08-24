@@ -1640,4 +1640,9 @@ void emitApplicationPairDecisionDiagnostics(
       });
 }
 
+llvm::json::Object projectApplicationPairDecisionJson(
+    const ApplicationPairDecisionRecord &decision) {
+  return encodePairDecision(decision);
+}
+
 } // namespace loom::application

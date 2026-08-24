@@ -36,6 +36,11 @@ llvm::cl::opt<std::string>
                llvm::cl::desc("output base for paired .mlir and .html files"),
                llvm::cl::value_desc("path"), llvm::cl::Required);
 
+llvm::cl::opt<std::string> authoringOutput(
+    "authoring-output",
+    llvm::cl::desc("optional self-contained System authoring MLIR output"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+
 llvm::cl::opt<std::string> rootReferencePath(
     "root-reference",
     llvm::cl::desc("optional canonical Fabric root-reference JSON output"),
@@ -100,6 +105,20 @@ int main(int argc, char **argv) {
   if (llvm::Error error =
           loom::adg::exportFabricDesign(root, store, outputBase))
     return reportError(std::move(error));
+  if (!authoringOutput.empty()) {
+    std::error_code error;
+    llvm::raw_fd_ostream output(authoringOutput, error, llvm::sys::fs::OF_Text);
+    if (error)
+      return reportError(llvm::createStringError(
+          error, "cannot open authoring output '%s'", authoringOutput.c_str()));
+    if (llvm::Error writeError =
+            loom::adg::writeFabricAuthoringMlir(root, store, output))
+      return reportError(std::move(writeError));
+    output.close();
+    if (output.has_error())
+      return reportError(llvm::createStringError(
+          llvm::inconvertibleErrorCode(), "cannot write authoring output"));
+  }
   if (!rootReferencePath.empty())
     if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
             rootReferencePath, root.reference()))

@@ -12,10 +12,13 @@
 # RUN: loom-adg --config=%t/config.json --artifact-store=%t/store \
 # RUN:   --output=%t/configured --root-reference=%t/system.json \
 # RUN:   --module-root-reference=%t/module.json \
+# RUN:   --authoring-output=%t/configured-authoring.mlir \
 # RUN:   --topology-quality=%t/topology.json > /dev/null
+# RUN: test -s %t/configured-authoring.mlir
 # RUN: FileCheck %s --check-prefix=SYSTEM-ROOT < %t/system.json
 # RUN: FileCheck %s --check-prefix=MODULE-ROOT < %t/module.json
 # RUN: FileCheck %s --check-prefix=TOPOLOGY < %t/topology.json
+# RUN: FileCheck %s --check-prefix=AUTHORING < %t/configured-authoring.mlir
 
 # IDENTITY: {{^[0-9a-f]{64}$}}
 # SYSTEM-ROOT: "schema":"loom.fabric"
@@ -24,6 +27,9 @@
 # TOPOLOGY: "schema_version":"1.1"
 # TOPOLOGY: "root_kind":"system"
 # TOPOLOGY: "root_kind":"module"
+
+# AUTHORING: fabric.module @__loom_imported_module_0
+# AUTHORING: fabric.system @__loom_imported_system
 
 # MLIR: fabric.system
 # MLIR: fabric.system.acc_core

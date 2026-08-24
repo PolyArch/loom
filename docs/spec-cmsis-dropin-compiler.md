@@ -95,6 +95,7 @@ full-stack contract are:
 --loom-hardware=<fabric.mlir>
 --loom-viz-export=<directory>
 --loom-deploy-output=<path>
+--loom-local-config=<path>
 ```
 
 The only public semantic policy selector and its exact spelling are owned by
@@ -106,6 +107,20 @@ constraints, Evaluation requests, and focused artifact inputs remain typed
 shared-library or developer-tool interfaces until a public driver contract
 explicitly assigns their spelling. Components must not independently expose ad
 hoc public flags for them.
+
+A System selected by `--loom-hardware` is the fixed System frontier for that
+product invocation. Mapping feedback may repair choices within that immutable
+System, but it cannot replace the user-selected root with a builtin-derived
+hardware child. A separately specified bounded hardware-exploration policy may
+admit such children for builtin targets; it never follows implicitly from an
+external source path.
+
+A product final link retains LLD's `<output>.resolution.txt` and
+`<output>.0.5.precodegen.bc` save-temporary files beside the requested output.
+Together with the selected fat-LTO inputs named by the resolution report, these
+files are the removable final-link replay closure consumed by the public
+ApplicationBuild owner and its developer replay wrapper. Consuming the closure
+does not delete it or assign it a second Artifact identity.
 
 ## Compatibility Mode
 

@@ -20,6 +20,14 @@ class BlobStore;
 
 namespace loom::dse {
 
+/// Declares whether one joint Mapping invocation may materialize hardware
+/// children beyond its exact input System frontier. This is search policy,
+/// not hardware identity or Mapping legality.
+enum class JointHardwareExplorationScope : std::uint8_t {
+  FixedSystemFrontier,
+  BoundedHardwareReopen,
+};
+
 struct JointSpatialFifoHardwareRepair final {
   SpatialFifoRuntimeFeedback feedback;
   std::vector<ArtifactRootReference> childSystems;
@@ -79,6 +87,8 @@ struct JointHardwareReopenRequest final {
   /// legality or a Spectrum label.
   PreMappingSpectrumEndpoint spectrumEndpoint =
       PreMappingSpectrumEndpoint::Automatic;
+  JointHardwareExplorationScope hardwareExplorationScope =
+      JointHardwareExplorationScope::BoundedHardwareReopen;
 };
 
 struct JointResourceTimeAdjacentRepair final {

@@ -62,6 +62,7 @@ set(LOOM_TEST_DEPENDS
   llvm-objdump
   loom
   loom-adg
+  loom-application-build
   loom-cc
   loom-lower
   loom-payload

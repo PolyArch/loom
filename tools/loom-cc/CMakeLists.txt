@@ -36,7 +36,12 @@ set_target_properties(loom-cc PROPERTIES
 
 llvm_update_compile_flags(loom-cc)
 
+target_link_options(loom-cc PRIVATE
+  "LINKER:--no-as-needed,$<TARGET_FILE:LLVM>,--as-needed"
+)
+
 target_link_libraries(loom-cc PRIVATE
+  LoomApplicationBuild
   clangBasic
   clangCodeGen
   clangDriver
@@ -46,10 +51,9 @@ target_link_libraries(loom-cc PRIVATE
   clangSerialization
 )
 
-add_dependencies(loom-cc LoomRelocatablePayloadPass loom-application-build)
+add_dependencies(loom-cc LoomRelocatablePayloadPass)
 target_compile_definitions(loom-cc PRIVATE
   LOOM_RELOCATABLE_PAYLOAD_PASS_PATH="$<TARGET_FILE:LoomRelocatablePayloadPass>"
-  LOOM_APPLICATION_BUILD_PATH="$<TARGET_FILE:loom-application-build>"
 )
 
 mlir_check_all_link_libraries(loom-cc)
