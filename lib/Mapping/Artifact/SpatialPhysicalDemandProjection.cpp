@@ -1819,7 +1819,8 @@ deriveSpatialPeOperandRuntimeWitness(
                head.tag == pairing.key.tag &&
                head.queue.fuInput == role;
       });
-      if (found == canonicalHeads.end() || !found->exactHead) {
+      if (found == canonicalHeads.end() || !found->exactHead ||
+          found->occupancy == 0) {
         complete = false;
         continue;
       }

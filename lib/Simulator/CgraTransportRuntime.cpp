@@ -1720,7 +1720,11 @@ CgraTransportRuntime::pendingOperandQueueHeadDiagnostics() const {
         invalidCgraTransportOrdinal,
         invalidCgraTransportOrdinal,
         llvm::APInt(1, 0),
-        queue.occupancy != 0 && queue.entries.size() == queue.occupancy,
+        // An empty queue is an exact observation too: the absence of a head
+        // must not be confused with an unknown queue representation.  A
+        // non-empty queue is exact only when its retained entries account for
+        // the complete occupancy.
+        queue.entries.size() == queue.occupancy,
         {}};
     diagnostic.consumers.reserve(queue.consumers.size());
     for (const OperandQueueBinding::Consumer &consumer : queue.consumers)
