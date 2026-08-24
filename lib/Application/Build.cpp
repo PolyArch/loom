@@ -140,8 +140,33 @@ llvm::Expected<ComponentViewDigest> deriveApplicationPairIdentity(
   return computeComponentViewDigest(
       {reinterpret_cast<const std::uint8_t *>(
            applicationPairIdentityDescriptor.data()),
-       applicationPairIdentityDescriptor.size()},
+      applicationPairIdentityDescriptor.size()},
       bytes);
+}
+
+/// Derive the same semantic DSE closure that owns Mapping manifests.  The
+/// pre-Mapping planner may stop before a PlanExecutor occurrence exists, but
+/// its pair-level decision still needs an exact, reproducible run-key join.
+llvm::Expected<std::optional<std::array<std::uint8_t, 32>>>
+derivePreMappingInvocationRunKey(
+    const std::optional<ArtifactRootReference> &sourceProgram,
+    const std::optional<ArtifactRootReference> &fabric,
+    const std::optional<ArtifactRootReference> &workload,
+    const std::optional<ArtifactRootReference> &runtimeInput,
+    const ResolvedConfig &config, const ArtifactStore &artifacts) {
+  if (!sourceProgram || !fabric || !workload || !runtimeInput)
+    return std::optional<std::array<std::uint8_t, 32>>{};
+  auto producer = dse::DseProducerSemanticBuildIdentity::get(
+      applicationBuildProducerIdentity);
+  if (!producer)
+    return producer.takeError();
+  const std::array<ArtifactRootReference, 4> inputs = {
+      *sourceProgram, *fabric, *workload, *runtimeInput};
+  auto closure = dse::DseRunClosure::get(
+      std::move(*producer), inputs, config, {}, artifacts);
+  if (!closure)
+    return closure.takeError();
+  return std::optional<std::array<std::uint8_t, 32>>{closure->runKey().bytes()};
 }
 
 ApplicationObjectiveObservation unsupportedObjective(
@@ -222,7 +247,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,
     const dse::JointDesignExecutionSummary &summary) {
   ApplicationPairDecisionRecord result;
-  result.invocationRunKey = summary.invocationRunKey;
+  result.invocationRunKey = summary.invocationRunKey
+                                ? summary.invocationRunKey
+                                : prepared.preMappingInvocationRunKey;
   result.manifestJoinStatus =
       summary.invocationRunKey
           ? ApplicationPairManifestJoinStatus::Exact
@@ -482,11 +509,17 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
     const std::optional<ArtifactRootReference> &runtimeInput,
     llvm::ArrayRef<dse::PreMappingCandidatePlanningRecord> inventory,
     ApplicationPairDecisionDisposition disposition, llvm::StringRef detail,
-    std::optional<std::uint64_t> sourceHostOnlyWork = std::nullopt) {
+    std::optional<std::uint64_t> sourceHostOnlyWork = std::nullopt,
+    std::optional<std::array<std::uint8_t, 32>> invocationRunKey =
+        std::nullopt) {
   ApplicationPairDecisionRecord result;
+  result.invocationRunKey = std::move(invocationRunKey);
+  if (result.invocationRunKey)
+    result.manifestJoinStatus = ApplicationPairManifestJoinStatus::Exact;
   result.disposition = disposition;
-  result.manifestJoinStatus =
-      ApplicationPairManifestJoinStatus::NotStartedBeforeMapping;
+  if (!result.invocationRunKey)
+    result.manifestJoinStatus =
+        ApplicationPairManifestJoinStatus::NotStartedBeforeMapping;
   result.detail = detail.str();
   result.sourceProgram = sourceProgram;
   result.fabric = fabric;
@@ -1022,22 +1055,35 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
       blobs);
   if (!preMapping)
     return preMapping.takeError();
+  const auto preMappingRunKeyFor = [&](const auto &value)
+      -> llvm::Expected<std::optional<std::array<std::uint8_t, 32>>> {
+    return derivePreMappingInvocationRunKey(
+        value.sourceProgram, value.fabric, value.workload, value.runtimeInput,
+        request.resolvedConfig, artifacts);
+  };
   if (auto *incomplete =
           std::get_if<dse::IncompletePreMappingExploration>(&*preMapping)) {
     emitApplicationPreMappingIncompleteDiagnostics(*incomplete);
     if (incomplete->checkpoint) {
       const dse::PreMappingCheckpoint &checkpoint = *incomplete->checkpoint;
+      auto invocationRunKey = derivePreMappingInvocationRunKey(
+          checkpoint.sourceProgram, checkpoint.fabric, checkpoint.workload,
+          checkpoint.runtimeInput, request.resolvedConfig, artifacts);
+      if (!invocationRunKey)
+        return invocationRunKey.takeError();
       auto decision = makePreparationPairDecision(
           checkpoint.sourceProgram, checkpoint.fabric, checkpoint.workload,
           checkpoint.runtimeInput, checkpoint.candidateInventory,
           mapIncompleteReasonToPairDisposition(incomplete->reason),
-          dse::toString(incomplete->reason), incomplete->sourceHostOnlyWork);
+          dse::toString(incomplete->reason), incomplete->sourceHostOnlyWork,
+          *invocationRunKey);
       emitApplicationPairDecisionDiagnostics(decision);
     } else {
       auto decision = makePreparationPairDecision(
           std::nullopt, std::nullopt, std::nullopt, std::nullopt, {},
           mapIncompleteReasonToPairDisposition(incomplete->reason),
-          dse::toString(incomplete->reason), incomplete->sourceHostOnlyWork);
+          dse::toString(incomplete->reason), incomplete->sourceHostOnlyWork,
+          std::nullopt);
       emitApplicationPairDecisionDiagnostics(decision);
     }
     return ApplicationBuildPreparationOutcome{std::move(*incomplete)};
@@ -1045,6 +1091,9 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
   if (auto *noFeasible =
           std::get_if<dse::CompletedPreMappingNoFeasibleCandidate>(
               &*preMapping)) {
+    auto invocationRunKey = preMappingRunKeyFor(*noFeasible);
+    if (!invocationRunKey)
+      return invocationRunKey.takeError();
     auto decision = makePreparationPairDecision(
         noFeasible->sourceProgram, noFeasible->fabric, noFeasible->workload,
         noFeasible->runtimeInput, noFeasible->candidateInventory,
@@ -1054,13 +1103,18 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
         noFeasible->completeness.exactComplete()
             ? "bounded front-end retained no candidate"
             : "front-end terminated before a complete candidate-domain proof",
-        noFeasible->sourceHostOnlyWork);
+        noFeasible->sourceHostOnlyWork, *invocationRunKey);
     emitApplicationPairDecisionDiagnostics(decision);
     return ApplicationBuildPreparationOutcome{std::move(*noFeasible)};
   }
 
   auto completed =
       std::get<dse::CompletedPreMappingSelection>(std::move(*preMapping));
+  auto completedInvocationRunKey = derivePreMappingInvocationRunKey(
+      completed.sourceProgram, completed.fabric, completed.workload,
+      completed.runtimeInput, request.resolvedConfig, artifacts);
+  if (!completedInvocationRunKey)
+    return completedInvocationRunKey.takeError();
   if (completed.selected.empty())
     return invalid("completed pre-Mapping selection is empty");
   for (std::size_t index = 0; index != completed.selected.size(); ++index)
@@ -1400,7 +1454,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
           completed.runtimeInput, completed.candidateInventory,
           ApplicationPairDecisionDisposition::CancelledOrTimeout,
           "resource-time funnel cancelled or timed out",
-          completed.sourceHostOnlyWork);
+          completed.sourceHostOnlyWork, *completedInvocationRunKey);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{
           IncompleteApplicationResourceTimePlanning{
@@ -1427,7 +1481,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
           completed.runtimeInput, completed.candidateInventory, disposition,
           dse::resourceTimeFrontierIncompleteReasonSpelling(
               *resourceTimeFunnel->incompleteReason),
-          completed.sourceHostOnlyWork);
+          completed.sourceHostOnlyWork, *completedInvocationRunKey);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{
           IncompleteApplicationResourceTimePlanning{
@@ -1451,7 +1505,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
         completeNoPromisingProof
             ? "resource-time funnel retained no Mapping finalist"
             : "resource-time funnel ended without a complete candidate proof",
-        completed.sourceHostOnlyWork);
+        completed.sourceHostOnlyWork, *completedInvocationRunKey);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{
           dse::CompletedPreMappingNoFeasibleCandidate{
@@ -1674,7 +1728,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
           completed.runtimeInput, completed.candidateInventory,
           ApplicationPairDecisionDisposition::UnsupportedSemantic,
           "all retained finalists were rejected at the application boundary",
-          completed.sourceHostOnlyWork);
+          completed.sourceHostOnlyWork, *completedInvocationRunKey);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{std::move(*firstUnsupported)};
     }
@@ -1686,7 +1740,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
             completed.runtimeInput, completed.candidateInventory,
             ApplicationPairDecisionDisposition::UnsupportedSemantic,
             "resource-time finalists were unsupported before Mapping",
-            completed.sourceHostOnlyWork);
+            completed.sourceHostOnlyWork, *completedInvocationRunKey);
         emitApplicationPairDecisionDiagnostics(decision);
         return ApplicationBuildPreparationOutcome{
             IncompleteApplicationResourceTimePlanning{
@@ -1709,7 +1763,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
         completeNoPromisingProof
             ? "bounded resource-time funnel retained no Mapping finalist"
             : "resource-time funnel did not close its bounded candidate domain",
-        completed.sourceHostOnlyWork);
+        completed.sourceHostOnlyWork, *completedInvocationRunKey);
     emitApplicationPairDecisionDiagnostics(decision);
     return ApplicationBuildPreparationOutcome{
         dse::CompletedPreMappingNoFeasibleCandidate{
@@ -1765,7 +1819,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
       completed.workload,
       completed.runtimeInput,
       completed.frontierPolicyDigest,
-      systemView->artifact().accCoreOccurrences().size()};
+      systemView->artifact().accCoreOccurrences().size(), std::nullopt};
+  prepared.preMappingInvocationRunKey = *completedInvocationRunKey;
   emitApplicationPlanningDiagnostics(prepared);
   return ApplicationBuildPreparationOutcome{std::move(prepared)};
 }

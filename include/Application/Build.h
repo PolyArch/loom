@@ -133,6 +133,11 @@ struct PreparedApplicationBuild final {
   ArtifactRootReference preMappingRuntimeInput;
   ComponentViewDigest preMappingFrontierPolicyDigest;
   std::uint64_t preMappingFabricAccCoreCount = 0;
+  /// The InvocationManifest-owned semantic closure for the pre-Mapping
+  /// planning invocation.  It is present even when cancellation happens
+  /// before a Mapping provider is dispatched, so the pair decision never
+  /// loses its provenance join.
+  std::optional<std::array<std::uint8_t, 32>> preMappingInvocationRunKey;
 };
 
 struct ApplicationDeploymentRequest final {
