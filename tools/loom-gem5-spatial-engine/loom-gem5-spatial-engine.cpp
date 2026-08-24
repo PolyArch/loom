@@ -1150,7 +1150,23 @@ int main(int argc, char **argv) {
     if (!result) {
       llvm::consumeError(settleChannelReservations(false));
       ::close(connection);
-      return report(result.takeError());
+      std::string diagnostic = llvm::toString(result.takeError());
+      const auto *spatial = entry.workload.workload.spatial();
+      diagnostic =
+          "Spatial invocation sequence " + std::to_string(sequence) +
+          " (session_entry=" + std::to_string(*selected) +
+          ", prepared_entry=" + std::to_string(entry.preparedOrdinal) +
+          ", runtime_objects=" +
+          std::to_string(runtime->spatial()->memoryObjects.size()) +
+          ", runtime_values=" +
+          std::to_string(runtime->spatial()->runtimeValues.size()) +
+          ", runtime_streams=" +
+          std::to_string(runtime->spatial()->runtimeStreams.size()) +
+          ", dense_coordinates=" +
+          (spatial ? std::to_string(spatial->denseCoordinates.size()) : "0") +
+          "): " + diagnostic;
+      return report(llvm::createStringError(
+          std::make_error_code(std::errc::state_not_recoverable), diagnostic));
     }
     auto encoded = loom::sim::encodeSpatialEngineBoundaryResult(
         *result, entry.workload, *runtime);
