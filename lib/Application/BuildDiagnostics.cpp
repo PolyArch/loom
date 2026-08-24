@@ -591,6 +591,8 @@ void emitApplicationPlanningDiagnostics(
             prepared.preMappingEvaluationTiming);
         addCandidateInventorySummary(payload, prepared.candidateInventory);
         payload["selected_software_count"] = prepared.software.size();
+        addOptionalUnsigned(payload, "source_host_only_work",
+                            prepared.preMappingSourceHostOnlyWork);
         payload["mapping_alternative_count"] =
             prepared.mappingAlternatives.size();
         const auto &resourceTime = prepared.resourceTimeFunnel.accounting;
@@ -970,6 +972,8 @@ void emitApplicationPreMappingIncompleteDiagnostics(
         payload["evidence_complete"] = incomplete.completeness.evidenceComplete;
         payload["selection_complete"] =
             incomplete.completeness.selectionComplete;
+        addOptionalUnsigned(payload, "source_host_only_work",
+                            incomplete.sourceHostOnlyWork);
         payload["evaluation_timing"] = dse::serializePreMappingEvaluationTiming(
             incomplete.evaluationTiming);
         if (incomplete.checkpoint) {
