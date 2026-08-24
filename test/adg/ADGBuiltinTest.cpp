@@ -6,6 +6,7 @@
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Fabric/Artifact/FabricClockResetValidation.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Artifact/FabricTopologyQuality.h"
 #include "Fabric/IR/OperationResourceContract.h"
@@ -174,26 +175,26 @@ void builtinPresetsExpandThroughPublicBuilder() {
         fail(test, "builtin declares an unexpected hardware domain kind");
       }
     }
+    const bool domainCheck =
+        clockDomain && resetDomain && clockContract && resetContract &&
+        clockContract->periodFs() == loom::adg::builtinSystemClockPeriodFs &&
+        clockContract->phaseFs() == 0 &&
+        resetContract->polarity() == loom::fabric::ResetPolarity::ActiveHigh &&
+        resetContract->assertion() == loom::fabric::ResetTiming::Synchronous &&
+        resetContract->deassertion() == loom::fabric::ResetTiming::Synchronous &&
+        resetContract->initialState() == loom::fabric::ResetInitialState::Asserted &&
+        resetContract->synchronousTo() ==
+            std::optional<loom::fabric::ClockDomainRef>(
+                loom::fabric::ClockDomainRef(*clockDomain)) &&
+        resetContract->releaseLatencyCycles() == 0 &&
+        systemView.hardwareDomainMembers(*clockDomain).size() ==
+            systemView.hardwareDomainMembers(*resetDomain).size();
+    auto clockReset = loom::fabric::validateClockReset(systemView);
     require(test,
-            clockDomain && resetDomain && clockContract && resetContract &&
-                clockContract->periodFs() ==
-                    loom::adg::builtinSystemClockPeriodFs &&
-                clockContract->phaseFs() == 0 &&
-                resetContract->polarity() ==
-                    loom::fabric::ResetPolarity::ActiveHigh &&
-                resetContract->assertion() ==
-                    loom::fabric::ResetTiming::Synchronous &&
-                resetContract->deassertion() ==
-                    loom::fabric::ResetTiming::Synchronous &&
-                resetContract->initialState() ==
-                    loom::fabric::ResetInitialState::Asserted &&
-                resetContract->synchronousTo() ==
-                    std::optional<loom::fabric::ClockDomainRef>(
-                        loom::fabric::ClockDomainRef(*clockDomain)) &&
-                resetContract->releaseLatencyCycles() == 0 &&
-                llvm::equal(systemView.hardwareDomainMembers(*clockDomain),
-                            systemView.hardwareDomainMembers(*resetDomain)),
+            domainCheck && static_cast<bool>(clockReset),
             "builtin lost its exact Clock and Reset contract");
+    if (!clockReset)
+      llvm::consumeError(clockReset.takeError());
     requireExactCanonicalEntityRange(
         test, root.view(), systemView.artifact().hostCoreOccurrences(),
         loom::fabric::FabricEntityKind::HostCoreOccurrence);

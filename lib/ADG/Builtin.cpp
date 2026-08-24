@@ -941,6 +941,8 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
     return std::move(error);
   clockMembers.push_back(memoryService->domainMember());
   clockMembers.push_back(memoryEndpoint->domainMember());
+  resetMembers.push_back(memoryService->domainMember());
+  resetMembers.push_back(memoryEndpoint->domainMember());
 
   mlir::MLIRContext messageTypeContext;
   auto fixedVectors = loom::fabric::FixedVectorMessagePayloadDomain::create(
@@ -988,6 +990,8 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
       return sink.takeError();
     clockMembers.push_back(source->domainMember());
     clockMembers.push_back(sink->domainMember());
+    resetMembers.push_back(source->domainMember());
+    resetMembers.push_back(sink->domainMember());
     messageSources.push_back(*source);
     messageSinks.push_back(*sink);
     return llvm::Error::success();
@@ -1009,12 +1013,14 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
     if (!router)
       return router.takeError();
     clockMembers.push_back(router->domainMember());
+    resetMembers.push_back(router->domainMember());
     for (std::size_t input = 0; input != 2; ++input)
       for (const auto &outputs : messagePatterns) {
         auto pattern = system->addTransferPattern(*router, input, outputs, 0);
         if (!pattern)
           return pattern.takeError();
         clockMembers.push_back(pattern->domainMember());
+        resetMembers.push_back(pattern->domainMember());
       }
     auto source = messageSources[ordinal].transport();
     if (!source)

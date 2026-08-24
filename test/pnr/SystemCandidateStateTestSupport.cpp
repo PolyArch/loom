@@ -1365,18 +1365,60 @@ void loom::pnr::test::verifySystemResourceAction(
 void loom::pnr::test::verifySystemFixedTerminalCutAndAnnealing(
     FrozenSystemPnrProblemHandle problem,
     const SystemCandidateStateHandle &baseline) {
-  std::vector<PnrIndex> threadChoices(problem->threadDecisions().size(), 0);
-  std::vector<PnrIndex> graphChoices(problem->graphDecisions().size(), 0);
-  auto candidate =
-      take(initializeSystemCandidate(problem, threadChoices, graphChoices));
-  require(candidate->capacityOveruse() != 0,
+  std::vector<PnrIndex> threadChoices(baseline->threadChoices().begin(),
+                                      baseline->threadChoices().end());
+  std::vector<PnrIndex> graphChoices(baseline->graphChoices().begin(),
+                                     baseline->graphChoices().end());
+  require(!threadChoices.empty(),
+          "fixed-terminal cut fixture has no thread decisions");
+  const auto firstThreadDomain =
+      problem->threadChoiceCatalogOrdinals(/*decision=*/0);
+  for (PnrIndex decision = 0; decision < graphChoices.size(); ++decision) {
+    const auto domain = problem->graphChoiceCatalogOrdinals(decision);
+    require(graphChoices[decision] < domain.size() && domain.size() > 1,
+            "fixed-terminal cut fixture has no alternate SpatialMapping");
+    PnrIndex alternative = 0;
+    while (alternative < domain.size() &&
+           alternative == graphChoices[decision])
+      ++alternative;
+    require(alternative < domain.size(),
+            "fixed-terminal cut fixture has no distinct SpatialMapping");
+    graphChoices[decision] = alternative;
+  }
+  std::optional<SystemCandidateStateHandle> candidate;
+  for (PnrIndex core : firstThreadDomain) {
+    std::vector<PnrIndex> trialChoices = threadChoices;
+    bool availableEverywhere = true;
+    for (PnrIndex decision = 0; decision < trialChoices.size(); ++decision) {
+      const auto domain = problem->threadChoiceCatalogOrdinals(decision);
+      const auto selected = llvm::find(domain, core);
+      if (selected == domain.end()) {
+        availableEverywhere = false;
+        break;
+      }
+      trialChoices[decision] =
+          static_cast<PnrIndex>(selected - domain.begin());
+    }
+    if (!availableEverywhere)
+      continue;
+    auto trial = initializeSystemCandidate(problem, trialChoices, graphChoices);
+    if (!trial) {
+      llvm::consumeError(trial.takeError());
+      continue;
+    }
+    if ((*trial)->capacityOveruse() != 0) {
+      candidate = std::move(*trial);
+      break;
+    }
+  }
+  require(candidate.has_value(),
           "fixed-terminal cut fixture unexpectedly closed capacity");
 
   auto objective =
-      take(candidate->problem().objectiveProgram().evaluate(*candidate));
+      take((*candidate)->problem().objectiveProgram().evaluate(**candidate));
   SystemActionProbeAccounting work;
   auto probe =
-      probeSystemAction(candidate, objective,
+      probeSystemAction(*candidate, objective,
                         SystemMappingAction{SystemTransportRoutingAction{
                             SystemGlobalRoutingAction{}}},
                         work, SystemActionExecutionContext::FinalClosure);
@@ -1402,7 +1444,7 @@ void loom::pnr::test::verifySystemFixedTerminalCutAndAnnealing(
           "fixed-terminal cut lost its typed upstream reopen witness");
 
   auto coupledProbe = take(probeSystemAction(
-      candidate, objective,
+      *candidate, objective,
       SystemMappingAction{SystemExecutionBindingReopenAction{
           reopenWitness->capacityCell, reopenWitness->graphDecisions}},
       work));
@@ -1414,7 +1456,7 @@ void loom::pnr::test::verifySystemFixedTerminalCutAndAnnealing(
   if (llvm::Error error = coupledProbe.candidate->verify())
     fail(llvm::toString(std::move(error)));
 
-  auto reopened = candidate;
+  auto reopened = *candidate;
   SystemAnnealingSearchScratch reopenSearch;
   const auto reopenStatistics = take(reopenSearch.run(reopened, 0));
   require(reopenStatistics.upstreamReopenWitnessCount != 0 &&
@@ -1422,7 +1464,7 @@ void loom::pnr::test::verifySystemFixedTerminalCutAndAnnealing(
               reopenStatistics.upstreamReopenAcceptedActionCount != 0,
           "fixed-terminal cut did not reopen the graph-binding domain");
   require(reopened->capacityOveruse() == 0 &&
-              reopened->graphChoices() != candidate->graphChoices(),
+              reopened->graphChoices() != (*candidate)->graphChoices(),
           "upstream reopen retained the fixed SpatialMapping conflict");
 
   auto baselineObjective =

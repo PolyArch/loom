@@ -190,8 +190,8 @@ void verifyResourceTimeSpectrumWorkflow(
       std::get_if<dse::VerifiedResourceTimeSpectrum>(&partitionedResult);
   require(partitionedVerified &&
               partitionedVerified->scenarios[1].spectrumClass ==
-                  dse::PreMappingSpectrumClass::Intermediate,
-          "partitioned logical epochs were incorrectly labeled MaxTemporal");
+                  dse::PreMappingSpectrumClass::MaxTemporal,
+          "partition count changed an otherwise explicit temporal endpoint");
 
   auto mismatched = witness;
   mismatched.scenarios[1].states[0].active[0].resources = secondResources;

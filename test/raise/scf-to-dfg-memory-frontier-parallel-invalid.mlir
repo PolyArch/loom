@@ -92,7 +92,7 @@ module attributes {
 
 //--- unsupported-actor.mlir
 
-// ACTOR: error: loom-lower-graph-memory: parallel actor 'dataflow.fence' has no completion lowering
+// ACTOR: error: loom-lower-graph-memory: parallel lane effect has no disjoint, atomic, reduction, or ordered proof
 // ACTOR-LABEL: dataflow.graph private @would_be_rewritten
 // ACTOR: memref.load
 // ACTOR-NOT: dataflow.load

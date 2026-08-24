@@ -111,7 +111,7 @@ llvm::Expected<int> openStoredObject(int directory,
   if (handle == -1) {
     if (errno == ENOENT)
       return storeError("artifact_store_missing",
-                        "stored object '" + objectName + "' is missing");
+                        "stored object is missing: '" + objectName + "'");
     return storeErrno("artifact_store_io",
                       "unable to open stored object handle");
   }

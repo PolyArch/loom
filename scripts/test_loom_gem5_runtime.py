@@ -560,7 +560,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             )
         engine_commands = [engine_command, []]
         projection = {
-            "schema": "loom.gem5_system_projection.9",
+            "schema": "loom.gem5_system_projection.10",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
             "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns"},
@@ -636,6 +636,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "dispatch_target_ordinals": [0],
                     "acc_core_ref": acc_core_reference(0),
                     "execution_context_keys": [spatial_execution_context_key(0)],
+                    "spatial_workloads": [hashlib.sha256(EXPECTED_LAUNCH).hexdigest()],
                     "pio_address": BRIDGE_ADDRESS,
                     "pio_size": 4096,
                     "pio_latency": "10ns",
@@ -650,6 +651,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "dispatch_target_ordinals": [1],
                     "acc_core_ref": acc_core_reference(1),
                     "execution_context_keys": [spatial_execution_context_key(1)],
+                    "spatial_workloads": [hashlib.sha256(EXPECTED_LAUNCH).hexdigest()],
                     "pio_address": SECOND_BRIDGE_ADDRESS,
                     "pio_size": 4096,
                     "pio_latency": "10ns",

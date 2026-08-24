@@ -876,8 +876,10 @@ selectedClockPort(const HardwareImplementation &implementation,
                   const fabric::FabricSystemRootView &system,
                   fabric::SpatialCoreOccurrenceRef spatialCore,
                   std::uint64_t &periodFs) {
-  const fabric::FabricInventoryOwnerRef owner =
-      fabric::FabricInventoryOwnerRef::of(spatialCore);
+  auto effectiveClock = system.effectiveHardwareDomain(
+      spatialCore, fabric::FabricClockResetKind::Clock);
+  if (!effectiveClock)
+    return effectiveClock.takeError();
   const ImplementationInterface *selected = nullptr;
   const fabric::ClockDomainContractRecord *selectedContract = nullptr;
   for (const ImplementationInterface &interface : implementation.interfaces()) {
@@ -885,9 +887,11 @@ selectedClockPort(const HardwareImplementation &implementation,
         std::get_if<ImplementationClockInterfaceRef>(&interface.semanticRef);
     if (!clock)
       continue;
-    const auto *record = system.hardwareDomainContract(clock->domain);
-    if (!record || !record->contains(owner))
+    if (clock->domain != *effectiveClock)
       continue;
+    const auto *record = system.hardwareDomainContract(clock->domain);
+    if (!record)
+      return invalid("selected Clock interface has no domain contract");
     const auto *contract =
         std::get_if<fabric::ClockDomainContractRecord>(&record->contract());
     if (!contract)

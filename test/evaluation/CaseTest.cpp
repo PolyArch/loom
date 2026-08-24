@@ -1136,7 +1136,8 @@ void requestCanonicalRoundTripAndStoreImport() {
       llvm::toString(missingDependency.takeError());
   require(
       __func__,
-      llvm::StringRef(missingMessage).starts_with("artifact_store_missing:"),
+      llvm::StringRef(missingMessage).contains("artifact_store_lookup:") &&
+          llvm::StringRef(missingMessage).contains("artifact_store_missing:"),
       "Request publication changed the ArtifactStore error class: " +
           missingMessage);
 
@@ -1189,8 +1190,10 @@ void requestCanonicalRoundTripAndStoreImport() {
   const std::string missingImportMessage =
       llvm::toString(missingImport.takeError());
   require(__func__,
-          llvm::StringRef(missingImportMessage)
-              .starts_with("artifact_store_missing:"),
+          llvm::StringRef(missingImportMessage).contains(
+              "artifact_store_lookup:") &&
+              llvm::StringRef(missingImportMessage).contains(
+                  "artifact_store_missing:"),
           "Request import changed the ArtifactStore error class: " +
               missingImportMessage);
 

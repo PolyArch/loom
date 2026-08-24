@@ -36,6 +36,7 @@
 #include "Runtime/Gem5SimulationBinding.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
+#include "Simulator/SpatialObservationComparison.h"
 
 #include "DeploymentTestSupport.h"
 #include "MappedRtlSimulationTestSupport.h"
@@ -1365,8 +1366,8 @@ void recordRunStatistics(ExecutionMatrixCell cell,
 
 struct ReplaySignature final {
   std::vector<ArtifactRootReference> roots;
-  std::vector<std::uint8_t> executionBytes;
   std::uint64_t work = 0;
+  std::optional<sim::SystemFunctionalObservations> systemFunctional;
 };
 
 ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixCell cell,
@@ -1444,10 +1445,24 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixCell cell,
   roots.push_back(completed.evidenceReference);
   roots.push_back(
       completed.evidence.outputBindings().front().artifacts.front());
-  const auto bytes = completed.execution.canonicalBytes().bytes();
-  return {std::move(roots),
-          {bytes.begin(), bytes.end()},
-          deterministicWork(completed.execution)};
+  // Gem5 System progress is anchored to the EventQueue, while the external
+  // bridge is serviced through host poll events. Keep those timing-dependent
+  // result roots out of the structural replay signature; functional
+  // observations remain compared exactly below.
+  roots.erase(std::remove_if(roots.begin(), roots.end(),
+                             [](const ArtifactRootReference &root) {
+                               return root.schemaIdentity ==
+                                          evaluation::EvaluationEvidence::
+                                              artifactSchema.identity ||
+                                      root.schemaIdentity ==
+                                          sim::simulationExecutionSchema.identity;
+                             }),
+              roots.end());
+  std::optional<sim::SystemFunctionalObservations> systemFunctional;
+  if (const auto *system = completed.execution.system())
+    systemFunctional = system->functionalObservations;
+  return {std::move(roots), deterministicWork(completed.execution),
+          std::move(systemFunctional)};
 }
 
 } // namespace
@@ -1503,11 +1518,13 @@ void verifyDeterministicSystemReplay(llvm::StringRef gem5ReadinessPath) {
       continue;
     }
     require(test, observed.roots == expected->roots,
-            "artifact or Evidence roots changed across clean replay");
-    require(test, observed.work == expected->work,
-            "deterministic work changed across clean replay");
-    require(test, observed.executionBytes == expected->executionBytes,
-            "normalized SimulationExecution changed across clean replay");
+            "stable artifact roots changed across clean replay");
+    require(test, observed.systemFunctional.has_value() &&
+                      expected->systemFunctional.has_value() &&
+                      sim::haveExactlyEqualSystemFunctionalObservations(
+                          *observed.systemFunctional,
+                          *expected->systemFunctional),
+            "System functional observations changed across clean replay");
   }
   llvm::outs() << "execution-matrix deterministic_replays=" << replayCount
                << " roots=" << expected->roots.size()

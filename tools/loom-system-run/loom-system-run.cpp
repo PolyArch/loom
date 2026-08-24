@@ -3,6 +3,7 @@
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Deployment/Deployment.h"
 #include "Deployment/DeploymentSpatialLaunchSelection.h"
 #include "Deployment/HardwareConfigurationImage.h"
@@ -652,6 +653,191 @@ struct CompletedSpatialRun final {
   loom::sim::CanonicalSimulationExecution importedExecution;
 };
 
+bool sameValueSequence(const loom::sim::CanonicalValueSequence &lhs,
+                       const loom::sim::CanonicalValueSequence &rhs) {
+  return lhs.tokenCount == rhs.tokenCount && lhs.lanes == rhs.lanes;
+}
+
+bool sameStreamSequence(const loom::sim::CanonicalStreamSequence &lhs,
+                        const loom::sim::CanonicalStreamSequence &rhs) {
+  return lhs.termination == rhs.termination &&
+         sameValueSequence(lhs.values, rhs.values);
+}
+
+bool sameInvocationPointerTarget(
+    const std::optional<loom::runtime::SpatialInvocationPointerTarget> &lhs,
+    const std::optional<loom::runtime::SpatialInvocationPointerTarget> &rhs) {
+  if (lhs.has_value() != rhs.has_value())
+    return false;
+  return !lhs || (lhs->objectOrdinal == rhs->objectOrdinal &&
+                  lhs->byteOffset == rhs->byteOffset);
+}
+
+bool sameInvocationValue(const loom::runtime::SpatialInvocationValue &lhs,
+                         const loom::runtime::SpatialInvocationValue &rhs) {
+  return lhs.ordinal == rhs.ordinal && lhs.bitCount == rhs.bitCount &&
+         sameInvocationPointerTarget(lhs.pointerTarget, rhs.pointerTarget) &&
+         lhs.littleEndianBits == rhs.littleEndianBits;
+}
+
+bool sameInvocationMemoryRootBinding(
+    const loom::runtime::SpatialInvocationMemoryRootBinding &lhs,
+    const loom::runtime::SpatialInvocationMemoryRootBinding &rhs) {
+  return lhs.logicalMemoryRootEntity == rhs.logicalMemoryRootEntity &&
+         lhs.objectOrdinal == rhs.objectOrdinal &&
+         lhs.byteOffset == rhs.byteOffset;
+}
+
+bool sameInvocationResultDestination(
+    const loom::runtime::SpatialInvocationResultDestination &lhs,
+    const loom::runtime::SpatialInvocationResultDestination &rhs) {
+  return lhs.ordinal == rhs.ordinal && lhs.bitCount == rhs.bitCount &&
+         lhs.address == rhs.address;
+}
+
+bool sameRuntimeMemoryPointer(const loom::sim::RuntimeMemoryPointer &lhs,
+                              const loom::sim::RuntimeMemoryPointer &rhs) {
+  return lhs.storageByteOffset == rhs.storageByteOffset &&
+         lhs.addressSpace == rhs.addressSpace && lhs.target == rhs.target;
+}
+
+bool sameRuntimeMemoryBinding(const loom::sim::MemoryRootBindingEntry &lhs,
+                              const loom::sim::MemoryRootBindingEntry &rhs) {
+  return lhs.root == rhs.root &&
+         lhs.binding.objectOrdinal == rhs.binding.objectOrdinal &&
+         lhs.binding.byteOffset == rhs.binding.byteOffset;
+}
+
+bool sameMemoryBytes(llvm::ArrayRef<loom::sim::SemanticMemoryByte> lhs,
+                     llvm::ArrayRef<loom::sim::SemanticMemoryByte> rhs) {
+  return lhs.size() == rhs.size() && llvm::equal(
+                                        lhs, rhs, [](const auto &left,
+                                                     const auto &right) {
+                                          return left.state == right.state &&
+                                                 left.value == right.value;
+                                        });
+}
+
+llvm::Expected<std::set<std::uint64_t>> readMemoryRoots(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    ::dataflow::RootedGraphLaunchRef launch) {
+  std::set<std::uint64_t> roots;
+  llvm::Error error = dataflow.forEachContextualServiceActor(
+      launch.rootThreadLaunch,
+      [&](::dataflow::ContextualActorRef actorRef) -> llvm::Error {
+        if (actorRef.launch != launch)
+          return llvm::Error::success();
+        auto actor = dataflow.resolve(actorRef.actor);
+        if (!actor)
+          return actor.takeError();
+        if (llvm::isa<::dataflow::FenceOp>(actor->op))
+          return llvm::Error::success();
+        auto access =
+            ::dataflow::semantics::getCanonicalMemoryAccessView(actor->op);
+        if (!access)
+          return access.takeError();
+        if (access->operation() ==
+            ::dataflow::semantics::MemoryAccessOperation::Store)
+          return llvm::Error::success();
+        auto memory = dataflow.resolveAddressedMemory(actorRef);
+        if (!memory)
+          return memory.takeError();
+        std::optional<dataflow::LogicalMemoryRootRef> root;
+        if (const auto *rootReference =
+                std::get_if<dataflow::LogicalMemoryRootRef>(&*memory))
+          root = *rootReference;
+        else
+          root = std::get<dataflow::LogicalMemoryViewRef>(*memory).root;
+        roots.insert(root->entity.value());
+        return llvm::Error::success();
+      });
+  if (error)
+    return std::move(error);
+  return roots;
+}
+
+bool sameRuntimeInputSemantics(
+    const loom::sim::SpatialSimulationRuntimeInput &lhs,
+    const loom::sim::SpatialSimulationRuntimeInput &rhs,
+    llvm::ArrayRef<std::uint8_t> compareMemoryBytes) {
+  if (lhs.runtimeValues.size() != rhs.runtimeValues.size() ||
+      lhs.runtimeStreams.size() != rhs.runtimeStreams.size() ||
+      lhs.memoryObjects.size() != rhs.memoryObjects.size() ||
+      lhs.workloadIdentity != rhs.workloadIdentity ||
+      lhs.memoryRootBindings.size() != rhs.memoryRootBindings.size() ||
+      !llvm::equal(lhs.memoryRootBindings, rhs.memoryRootBindings,
+                   sameRuntimeMemoryBinding))
+    return false;
+  for (std::size_t ordinal = 0; ordinal != lhs.runtimeValues.size();
+       ++ordinal)
+    if (lhs.runtimeValues[ordinal].valueInputOrdinal !=
+            rhs.runtimeValues[ordinal].valueInputOrdinal ||
+        !sameValueSequence(lhs.runtimeValues[ordinal].value,
+                           rhs.runtimeValues[ordinal].value))
+      return false;
+  for (std::size_t ordinal = 0; ordinal != lhs.runtimeStreams.size();
+       ++ordinal)
+    if (!sameStreamSequence(lhs.runtimeStreams[ordinal],
+                            rhs.runtimeStreams[ordinal]))
+      return false;
+  for (std::size_t ordinal = 0; ordinal != lhs.memoryObjects.size();
+       ++ordinal) {
+    const auto &left = lhs.memoryObjects[ordinal];
+    const auto &right = rhs.memoryObjects[ordinal];
+    if (left.pointerValues.size() != right.pointerValues.size() ||
+        !llvm::equal(left.pointerValues, right.pointerValues,
+                     sameRuntimeMemoryPointer) ||
+        left.initialBytes.size() != right.initialBytes.size() ||
+        (compareMemoryBytes[ordinal] &&
+         !sameMemoryBytes(left.initialBytes, right.initialBytes)))
+      return false;
+  }
+  return true;
+}
+
+llvm::Expected<bool> sameInvocationSemantics(
+    const loom::runtime::SpatialInvocationWire &lhs,
+    const loom::runtime::SpatialInvocationWire &rhs,
+    const loom::sim::SpatialSimulationRuntimeInput &lhsRuntime,
+    const loom::sim::SpatialSimulationRuntimeInput &rhsRuntime,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    ::dataflow::RootedGraphLaunchRef launch) {
+  if (lhs.canonicalDataflowIdentity != rhs.canonicalDataflowIdentity ||
+      lhs.rootThreadLaunchEntity != rhs.rootThreadLaunchEntity ||
+      lhs.graphLaunchEntity != rhs.graphLaunchEntity ||
+      lhs.denseCoordinates != rhs.denseCoordinates ||
+      lhs.values.size() != rhs.values.size() ||
+      !llvm::equal(lhs.values, rhs.values, sameInvocationValue) ||
+      lhs.memoryRootBindings.size() != rhs.memoryRootBindings.size() ||
+      !llvm::equal(lhs.memoryRootBindings, rhs.memoryRootBindings,
+                   sameInvocationMemoryRootBinding) ||
+      lhs.results.size() != rhs.results.size() ||
+      !llvm::equal(lhs.results, rhs.results, sameInvocationResultDestination) ||
+      lhs.memoryObjects.size() != rhs.memoryObjects.size())
+    return false;
+  auto readRoots = readMemoryRoots(dataflow, launch);
+  if (!readRoots)
+    return readRoots.takeError();
+  std::vector<std::uint8_t> compareMemoryBytes(lhs.memoryObjects.size(), 0);
+  for (const auto &binding : lhs.memoryRootBindings)
+    if (readRoots->find(binding.logicalMemoryRootEntity) != readRoots->end()) {
+      if (binding.objectOrdinal >= compareMemoryBytes.size())
+        return invalid("invocation memory binding exceeds its object table");
+      compareMemoryBytes[binding.objectOrdinal] = 1;
+    }
+  for (std::size_t ordinal = 0; ordinal != lhs.memoryObjects.size();
+       ++ordinal) {
+    const auto &left = lhs.memoryObjects[ordinal];
+    const auto &right = rhs.memoryObjects[ordinal];
+    if (left.ordinal != right.ordinal || left.address != right.address ||
+        left.initialBytes.size() != right.initialBytes.size() ||
+        (compareMemoryBytes[ordinal] &&
+         left.initialBytes != right.initialBytes))
+      return false;
+  }
+  return sameRuntimeInputSemantics(lhsRuntime, rhsRuntime, compareMemoryBytes);
+}
+
 bool sameWrites(llvm::ArrayRef<loom::sim::SpatialInvocationMemoryWrite> lhs,
                 llvm::ArrayRef<loom::sim::SpatialInvocationMemoryWrite> rhs) {
   return lhs.size() == rhs.size() &&
@@ -668,59 +854,102 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   if (dfg.dispatchTargetOrdinal != cgra.dispatchTargetOrdinal ||
       dfg.accCoreReference != cgra.accCoreReference ||
       dfg.executionContextKey != cgra.executionContextKey ||
-      dfg.invocation != cgra.invocation || dfg.workload != cgra.workload ||
-      dfg.runtimeInput.identity != cgra.runtimeInput.identity ||
-      dfg.runtimeInput.canonicalBytes != cgra.runtimeInput.canonicalBytes)
+      dfg.workload != cgra.workload)
     return invalid("System DFG and CGRA observed different effective "
                    "invocations");
-  loom::runtime::SpatialInvocationWire wire;
+  loom::runtime::SpatialInvocationWire dfgWire;
   std::string diagnostic;
-  if (!loom::runtime::decodeSpatialInvocationWire(dfg.invocation, wire,
+  if (!loom::runtime::decodeSpatialInvocationWire(dfg.invocation, dfgWire,
                                                   diagnostic))
     return invalid("cannot decode System Spatial invocation: " +
                    llvm::Twine(diagnostic));
+  loom::runtime::SpatialInvocationWire cgraWire;
+  diagnostic.clear();
+  if (!loom::runtime::decodeSpatialInvocationWire(cgra.invocation, cgraWire,
+                                                   diagnostic))
+    return invalid("cannot decode CGRA System Spatial invocation: " +
+                   llvm::Twine(diagnostic));
   auto dataflowIdentity =
-      loom::ArtifactIdentity::fromBytes(wire.canonicalDataflowIdentity);
+      loom::ArtifactIdentity::fromBytes(dfgWire.canonicalDataflowIdentity);
   if (!dataflowIdentity)
     return dataflowIdentity.takeError();
   loom::ArtifactRootReference dataflowReference{
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version, *dataflowIdentity};
-  auto workload =
+  auto dfgWorkload =
       loom::sim::importSpatialSimulationWorkload(dfg.workload, artifacts);
-  if (!workload)
-    return workload.takeError();
-  auto dataflowView = workload->dataflow.view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  if (workload->dataflow.identity() != dataflowReference.artifact)
+  if (!dfgWorkload)
+    return dfgWorkload.takeError();
+  auto cgraWorkload =
+      loom::sim::importSpatialSimulationWorkload(cgra.workload, artifacts);
+  if (!cgraWorkload)
+    return cgraWorkload.takeError();
+  auto dfgDataflowView = dfgWorkload->dataflow.view();
+  if (!dfgDataflowView)
+    return dfgDataflowView.takeError();
+  auto cgraDataflowView = cgraWorkload->dataflow.view();
+  if (!cgraDataflowView)
+    return cgraDataflowView.takeError();
+  if (dfgWorkload->dataflow.identity() != dataflowReference.artifact ||
+      cgraWorkload->dataflow.identity() != dataflowReference.artifact)
     return invalid("System invocation workload has a foreign Dataflow owner");
-  const auto *spatialWorkload = workload->workload.spatial();
-  if (!spatialWorkload)
+  const auto *dfgSpatialWorkload = dfgWorkload->workload.spatial();
+  const auto *cgraSpatialWorkload = cgraWorkload->workload.spatial();
+  if (!dfgSpatialWorkload || !cgraSpatialWorkload ||
+      dfgSpatialWorkload->launchRef != cgraSpatialWorkload->launchRef)
     return invalid("System invocation workload is not Spatial");
-  const dataflow::RootedGraphLaunchRef graph = spatialWorkload->launchRef;
-  auto runtimeIdentity =
+  const dataflow::RootedGraphLaunchRef graph = dfgSpatialWorkload->launchRef;
+  auto dfgRuntimeIdentity =
       loom::ArtifactIdentity::fromBytes(dfg.runtimeInput.identity);
-  if (!runtimeIdentity)
-    return runtimeIdentity.takeError();
-  auto runtime = loom::sim::importSimulationRuntimeInput(
-      dfg.runtimeInput.canonicalBytes, workload->workload, *dataflowView,
-      *runtimeIdentity);
-  if (!runtime)
-    return runtime.takeError();
+  if (!dfgRuntimeIdentity)
+    return dfgRuntimeIdentity.takeError();
+  auto dfgRuntime = loom::sim::importSimulationRuntimeInput(
+      dfg.runtimeInput.canonicalBytes, dfgWorkload->workload,
+      *dfgDataflowView, *dfgRuntimeIdentity);
+  if (!dfgRuntime)
+    return dfgRuntime.takeError();
+  auto cgraRuntimeIdentity =
+      loom::ArtifactIdentity::fromBytes(cgra.runtimeInput.identity);
+  if (!cgraRuntimeIdentity)
+    return cgraRuntimeIdentity.takeError();
+  auto cgraRuntime = loom::sim::importSimulationRuntimeInput(
+      cgra.runtimeInput.canonicalBytes, cgraWorkload->workload,
+      *cgraDataflowView, *cgraRuntimeIdentity);
+  if (!cgraRuntime)
+    return cgraRuntime.takeError();
   if (llvm::Error error =
           loom::sim::validateEffectiveSpatialInvocationRuntimeInput(
-              *workload, wire, *runtime))
+              *dfgWorkload, dfgWire, *dfgRuntime))
     return std::move(error);
-  loom::sim::ImportedSpatialSimulationInputs inputs{
-      std::move(workload->dataflow), std::move(workload->workload),
-      std::move(*runtime)};
+  if (llvm::Error error =
+          loom::sim::validateEffectiveSpatialInvocationRuntimeInput(
+              *cgraWorkload, cgraWire, *cgraRuntime))
+    return std::move(error);
+  const auto *dfgSpatialRuntime = dfgRuntime->spatial();
+  const auto *cgraSpatialRuntime = cgraRuntime->spatial();
+  if (!dfgSpatialRuntime || !cgraSpatialRuntime)
+    return invalid("System invocation runtime is not Spatial");
+  auto invocationSemantics = sameInvocationSemantics(
+      dfgWire, cgraWire, *dfgSpatialRuntime, *cgraSpatialRuntime,
+      *dfgDataflowView, graph);
+  if (!invocationSemantics)
+    return invocationSemantics.takeError();
+  if (!*invocationSemantics)
+    return invalid("System DFG and CGRA observed different effective "
+                   "invocation semantics");
+  loom::sim::ImportedSpatialSimulationInputs dfgInputs{
+      std::move(dfgWorkload->dataflow), std::move(dfgWorkload->workload),
+      std::move(*dfgRuntime)};
+  loom::sim::ImportedSpatialSimulationInputs cgraInputs{
+      std::move(cgraWorkload->dataflow), std::move(cgraWorkload->workload),
+      std::move(*cgraRuntime)};
   auto runtimeReference =
-      loom::sim::publishSimulationRuntimeInput(inputs.runtimeInput, artifacts);
+      loom::sim::publishSimulationRuntimeInput(dfgInputs.runtimeInput,
+                                                artifacts);
   if (!runtimeReference)
     return runtimeReference.takeError();
   auto selection = loom::deployment::resolveDeploymentSpatialLaunchSelection(
-      deployment, graph, wire.denseCoordinates, artifacts, blobs);
+      deployment, graph, dfgWire.denseCoordinates, artifacts, blobs);
   if (!selection)
     return selection.takeError();
   const std::string selectedAccCoreReference =
@@ -743,11 +972,13 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
     return invalid("Deployment selected a foreign Dataflow owner");
 
   auto dfgBoundary =
-      loom::sim::decodeSpatialEngineBoundaryResult(dfg.boundaryResult, inputs);
+      loom::sim::decodeSpatialEngineBoundaryResult(dfg.boundaryResult,
+                                                   dfgInputs);
   if (!dfgBoundary)
     return dfgBoundary.takeError();
   auto cgraBoundary =
-      loom::sim::decodeSpatialEngineBoundaryResult(cgra.boundaryResult, inputs);
+      loom::sim::decodeSpatialEngineBoundaryResult(cgra.boundaryResult,
+                                                   cgraInputs);
   if (!cgraBoundary)
     return cgraBoundary.takeError();
   if (!std::holds_alternative<loom::sim::RetiredExecution>(
@@ -759,11 +990,11 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
           cgraBoundary->functionalObservations))
     return invalid("System Spatial DFG and CGRA observations differ");
   auto dfgWrites = loom::sim::projectSpatialInvocationResultWrites(
-      wire, inputs, dfgBoundary->functionalObservations);
+      dfgWire, dfgInputs, dfgBoundary->functionalObservations);
   if (!dfgWrites)
     return dfgWrites.takeError();
   auto cgraWrites = loom::sim::projectSpatialInvocationResultWrites(
-      wire, inputs, cgraBoundary->functionalObservations);
+      cgraWire, cgraInputs, cgraBoundary->functionalObservations);
   if (!cgraWrites)
     return cgraWrites.takeError();
   if (!sameWrites(*dfgWrites, *cgraWrites))
@@ -773,7 +1004,7 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
                                dfg.dispatchTargetOrdinal,
                                dfg.accCoreReference,
                                dfg.executionContextKey,
-                               std::move(wire.denseCoordinates),
+                               std::move(dfgWire.denseCoordinates),
                                std::move(dataflowReference),
                                dfg.workload,
                                std::move(*runtimeReference),
