@@ -170,8 +170,12 @@ llvm::Error validateDecisionPayload(
   auto loop = view->resolve(adopted->loop);
   if (!loop)
     return loop.takeError();
+  const bool acceptsAffineLoop =
+      adopted->kind == frontend::StructuredScheduleDecisionKind::Vectorize ||
+      adopted->kind ==
+          frontend::StructuredScheduleDecisionKind::PolyhedralSchedule;
   const bool exactLoop =
-      adopted->kind == frontend::StructuredScheduleDecisionKind::Vectorize
+      acceptsAffineLoop
           ? llvm::isa_and_nonnull<mlir::scf::ForOp, mlir::affine::AffineForOp>(
                 loop->operation)
           : llvm::isa_and_nonnull<mlir::scf::ForOp>(loop->operation);
@@ -190,7 +194,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v10",
+    "loom.compiler.structured_schedule.generator.v11",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},

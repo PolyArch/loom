@@ -63,6 +63,16 @@ enum class StructuredPolyhedralProviderKind : std::uint32_t {
   PinnedPollyIsl = 0,
 };
 
+/// Exact execution order of the provider schedule for a uniform perfect loop
+/// nest. General covers every schedule that is not one of these closed forms.
+enum class StructuredPolyhedralScheduleForm : std::uint32_t {
+  General = 0,
+  SourceOrder = 1,
+  AdjacentInterchange = 2,
+  StatementMajor = 3,
+  StatementMajorAdjacentInterchange = 4,
+};
+
 enum class StructuredPolyhedralConstraintKind : std::uint32_t {
   Equality = 0,
   Inequality = 1,
@@ -112,6 +122,8 @@ struct StructuredPolyhedralStatementScheduleView final {
 struct StructuredPolyhedralScheduleView final {
   StructuredPolyhedralProviderKind provider =
       StructuredPolyhedralProviderKind::PinnedPollyIsl;
+  StructuredPolyhedralScheduleForm form =
+      StructuredPolyhedralScheduleForm::General;
   std::uint64_t parameterCount = 0;
   std::uint64_t dependenceCount = 0;
   std::uint64_t scheduleBandCount = 0;

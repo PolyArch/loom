@@ -661,6 +661,7 @@ llvm::Expected<StructuredScopAnalysisOutcome> analyzeProjectedScop(
   if (!reductions.empty())
     result.reductionKind = reductions.front().kind;
   result.polyhedralSchedule = {StructuredPolyhedralProviderKind::PinnedPollyIsl,
+                               providerSchedule.form,
                                providerSchedule.parameterCount,
                                providerDependences.size(),
                                providerSchedule.scheduleBandCount,
@@ -1427,6 +1428,7 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
     result.parameters.push_back(*reference);
   }
   result.schedule = {StructuredPolyhedralProviderKind::PinnedPollyIsl,
+                     providerSchedule.form,
                      providerSchedule.parameterCount,
                      providerDependences.size(),
                      providerSchedule.scheduleBandCount,

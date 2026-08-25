@@ -32,6 +32,8 @@ struct PolyhedralDependenceRelation final {
 
 struct PolyhedralScheduleProviderView final {
   std::uint64_t parameterCount = 0;
+  StructuredPolyhedralScheduleForm form =
+      StructuredPolyhedralScheduleForm::General;
   std::uint64_t scheduleBandCount = 0;
   std::uint64_t scheduleDimensionCount = 0;
   std::uint64_t coincidentDimensionCount = 0;

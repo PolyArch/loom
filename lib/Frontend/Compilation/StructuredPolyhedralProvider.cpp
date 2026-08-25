@@ -22,6 +22,7 @@
 #include <isl/val.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -808,6 +809,71 @@ isl_stat freezeScheduleMap(isl_map *rawMap, void *opaque) {
   return isl_stat_ok;
 }
 
+bool matchesCanonicalSchedulePiece(
+    const StructuredPolyhedralStatementScheduleView &statement,
+    bool statementMajor, bool adjacentInterchange) {
+  if (statement.pieces.size() != 1)
+    return false;
+  const StructuredPolyhedralSchedulePieceView &piece = statement.pieces.front();
+  if (piece.sourceDimensionCount == 0 || !piece.divisions.empty() ||
+      piece.scheduleDimensionCount != piece.sourceDimensionCount + 1 ||
+      (adjacentInterchange && piece.sourceDimensionCount < 2) ||
+      statement.statementOrdinal >
+          static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+    return false;
+  const std::size_t width = static_cast<std::size_t>(
+      piece.sourceDimensionCount + piece.scheduleDimensionCount +
+      piece.parameterCount + 1);
+  std::vector<StructuredPolyhedralConstraintView> expected;
+  expected.reserve(static_cast<std::size_t>(piece.sourceDimensionCount + 1));
+  for (std::uint64_t position = 0; position != piece.sourceDimensionCount;
+       ++position) {
+    std::vector<std::int64_t> row(width, 0);
+    const std::uint64_t source =
+        adjacentInterchange && position < 2 ? 1 - position : position;
+    const std::uint64_t destination = statementMajor ? position + 1 : position;
+    row[static_cast<std::size_t>(source)] = -1;
+    row[static_cast<std::size_t>(piece.sourceDimensionCount + destination)] = 1;
+    expected.push_back(
+        {StructuredPolyhedralConstraintKind::Equality, std::move(row)});
+  }
+  std::vector<std::int64_t> statementRow(width, 0);
+  const std::uint64_t statementPosition =
+      statementMajor ? 0 : piece.sourceDimensionCount;
+  statementRow[static_cast<std::size_t>(piece.sourceDimensionCount +
+                                        statementPosition)] = 1;
+  statementRow.back() = -static_cast<std::int64_t>(statement.statementOrdinal);
+  expected.push_back(
+      {StructuredPolyhedralConstraintKind::Equality, std::move(statementRow)});
+  llvm::sort(expected, constraintLess);
+  return expected == piece.constraints;
+}
+
+StructuredPolyhedralScheduleForm classifyFrozenScheduleForm(
+    llvm::ArrayRef<StructuredPolyhedralStatementScheduleView> schedules) {
+  struct CanonicalForm final {
+    StructuredPolyhedralScheduleForm form;
+    bool statementMajor = false;
+    bool adjacentInterchange = false;
+  };
+  constexpr std::array<CanonicalForm, 4> forms = {{
+      {StructuredPolyhedralScheduleForm::SourceOrder, false, false},
+      {StructuredPolyhedralScheduleForm::AdjacentInterchange, false, true},
+      {StructuredPolyhedralScheduleForm::StatementMajor, true, false},
+      {StructuredPolyhedralScheduleForm::StatementMajorAdjacentInterchange,
+       true, true},
+  }};
+  for (const CanonicalForm &candidate : forms)
+    if (!schedules.empty() &&
+        llvm::all_of(schedules, [&](const auto &schedule) {
+          return matchesCanonicalSchedulePiece(schedule,
+                                               candidate.statementMajor,
+                                               candidate.adjacentInterchange);
+        }))
+      return candidate.form;
+  return StructuredPolyhedralScheduleForm::General;
+}
+
 isl_bool summarizeBand(isl_schedule_node *node, void *opaque) {
   auto &summary = *static_cast<BandSummary *>(opaque);
   if (isl_schedule_node_get_type(node) != isl_schedule_node_band)
@@ -1031,9 +1097,11 @@ llvm::Expected<PolyhedralScheduleProviderOutcome> computePinnedIslSchedule(
   });
   if (frozen.schedules.size() != statements.size())
     return providerError("the frozen ISL schedule lost a statement map");
+  const StructuredPolyhedralScheduleForm form =
+      classifyFrozenScheduleForm(frozen.schedules);
 
   return PolyhedralScheduleProviderOutcome(PolyhedralScheduleProviderView{
-      parameters.values.size(), bands.bands, bands.dimensions,
+      parameters.values.size(), form, bands.bands, bands.dimensions,
       bands.coincidentDimensions, std::move(frozen.schedules),
       std::move(parameters.values)});
 }

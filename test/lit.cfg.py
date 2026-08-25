@@ -249,6 +249,7 @@ tools = [
     "loom-structured-thread-domain-test",
     "loom-structured-ownership-lineage-index-test",
     "loom-structured-schedule-generator-test",
+    "loom-structured-polyhedral-schedule-test",
     "loom-structured-memory-communication-generator-test",
     "loom-structured-memory-communication-lineage-test",
     "loom-structured-memory-channel-test",

@@ -689,11 +689,7 @@ checker, while scalar SSA edges are exact same-iteration precedence over the
 common loop prefix. A fixed dependence-query budget and the pinned Polly/ISL
 operation quota bound the analysis. The production decision domain exposes
 the resulting removable typed view when the narrower vector domain cannot
-supply a finite coordinate for the same root. It does not create a
-transformation proposal from that general schedule map; production enumeration
-reports
-`PolyhedralMaterializationUnavailable` for that admitted root until it can do
-so.
+supply a finite coordinate for the same root.
 
 Loop-carried values and reductions, nested conditionals, non-unit steps,
 unresolved aliases, unknown effects, access or dependence relations with
@@ -706,6 +702,26 @@ relation persists beyond the analysis call. The SCoP view freezes the exact
 source-entity order of the provider's global parameter columns so every
 schedule coefficient remains interpretable without reconstructing an ISL
 space.
+
+Before releasing the provider objects, the same owner classifies the exact
+schedule relation against four canonical perfect-nest forms: source order,
+an adjacent exchange of the first two dimensions, statement-major
+distribution, and statement-major distribution followed by that exchange.
+Classification compares the frozen integer relation itself; it is not a
+heuristic inferred from band counts. Source order is already materialized by
+the parent. Each other form that passes its structural gates produces one
+factorless `PolyhedralSchedule` proposal bound to the frozen general SCoP. A
+selected statement-major schedule clones the perfect loop nest once per source
+statement and retains exactly one statement in each clone. Cross-statement
+scalar SSA prevents this fission, because Loom does not invent scalar-expansion
+storage. An adjacent exchange additionally requires homogeneous SCF or Affine
+loops and inner bounds that remain invariant at the exchanged scope. General
+multi-band relations,
+imperfect nests, nonuniform statement depth, unsupported bound motion, and
+distribution requiring scalar expansion retain
+`PolyhedralMaterializationUnavailable`. Thus a provider schedule is either
+already present, replayably materialized into ordinary MLIR, or explicitly
+typed unavailable; no schedule map is silently approximated.
 
 The exact vector SCoP domain is deliberately closed. Its root is one `scf.for`
 or `affine.for` with zero lower bound, unit stride, and a static trip count. A
@@ -860,16 +876,16 @@ induction-variable uses while exchanging dimensions.
 Each materialized proposal resolves its parent-local `StructuredEntityRef`,
 clones the complete parent, applies one transform, verifies the result, and
 passes it through the sole Structured Program finalizer. For each exact-vector
-proposal, the SCoP analysis and dependence view is frozen once during proposal
-enumeration and reused by the selected materializer; direct untrusted decision
-materialization repeats the same analysis. Equal children deduplicate by
-Artifact identity. No schedule tree, factor table, hidden pass state, or
-persisted analysis view exists.
+or general-polyhedral proposal, the SCoP analysis and dependence view is frozen
+once during proposal enumeration and reused by the selected materializer;
+direct untrusted decision materialization repeats the same analysis. Equal
+children deduplicate by Artifact identity. No schedule tree, factor table,
+hidden pass state, or persisted analysis view exists.
 
 The canonical lineage-payload schema is
-`loom.structured_schedule.decision.4.0`. The earlier 3.0 schema admitted
-unbounded scalar factors and cannot be reinterpreted as this finite coordinate
-domain.
+`loom.structured_schedule.decision.5.0`. The earlier 4.0 schema has no
+`PolyhedralSchedule` decision, while the earlier 3.0 schema also admitted
+unbounded scalar factors; neither can be reinterpreted as this domain.
 
 The exact schedule derivation is the typed edge
 `(parent, child, fabric, decision)`.
@@ -913,7 +929,7 @@ or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v10`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v11`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator
