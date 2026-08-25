@@ -45,6 +45,7 @@ enum class StructuredScopRefusalKind : std::uint32_t {
   ProviderDomainNotAdmitted = 24,
   ProviderScheduleNotEstablished = 25,
   ProviderScheduleBudgetExhausted = 26,
+  PolyhedralMaterializationUnavailable = 27,
 };
 
 enum class StructuredScopAccessKind : std::uint32_t {
@@ -121,6 +122,75 @@ struct StructuredPolyhedralScheduleView final {
   std::uint64_t scheduleMapCount() const { return statementSchedules.size(); }
 };
 
+struct StructuredPolyhedralSetView final {
+  std::vector<StructuredEntityRef> dimensions;
+  std::vector<StructuredEntityRef> parameters;
+  std::vector<StructuredPolyhedralConstraintView> constraints;
+};
+
+struct StructuredPolyhedralRelationView final {
+  std::uint64_t sourceDimensionCount = 0;
+  std::uint64_t destinationDimensionCount = 0;
+  std::vector<StructuredEntityRef> parameters;
+  std::vector<StructuredPolyhedralConstraintView> constraints;
+};
+
+struct StructuredPolyhedralStatementView final {
+  StructuredEntityRef operation;
+  StructuredPolyhedralSetView domain;
+};
+
+enum class StructuredPolyhedralAccessKind : std::uint32_t {
+  Read = 0,
+  Write = 1,
+};
+
+struct StructuredPolyhedralAccessRelationView final {
+  StructuredEntityRef operation;
+  StructuredEntityRef memory;
+  std::uint64_t statementOrdinal = 0;
+  StructuredPolyhedralAccessKind kind = StructuredPolyhedralAccessKind::Read;
+  std::uint64_t elementBytes = 0;
+  StructuredPolyhedralRelationView relation;
+  std::optional<std::uint64_t> constantFootprintElementUpperBound;
+};
+
+enum class StructuredPolyhedralDependenceKind : std::uint32_t {
+  ReadAfterWrite = 0,
+  WriteAfterRead = 1,
+  WriteAfterWrite = 2,
+  ScalarSsa = 3,
+};
+
+struct StructuredPolyhedralDependenceView final {
+  StructuredPolyhedralDependenceKind kind =
+      StructuredPolyhedralDependenceKind::ScalarSsa;
+  std::uint64_t sourceStatementOrdinal = 0;
+  std::uint64_t destinationStatementOrdinal = 0;
+  /// Scalar SSA precedence means equal coordinates over the common loop
+  /// prefix and therefore carries no explicit relation rows.
+  std::optional<StructuredPolyhedralRelationView> relation;
+};
+
+/// Exact multi-statement SCoP analysis. Access relations are the symbolic
+/// footprints; any constant footprint size is a conservative upper bound.
+struct StructuredPolyhedralScopView final {
+  explicit StructuredPolyhedralScopView(StructuredEntityRef root)
+      : root(std::move(root)) {}
+
+  StructuredEntityRef root;
+  std::uint64_t loopCount = 0;
+  std::uint64_t maximumLoopDepth = 0;
+  bool imperfectNest = false;
+  std::uint64_t dependenceQueryCount = 0;
+  /// Global parameter order used by every frozen schedule-map piece.
+  std::vector<StructuredEntityRef> parameters;
+  std::vector<StructuredPolyhedralStatementView> statements;
+  std::vector<StructuredPolyhedralAccessRelationView> accesses;
+  std::vector<StructuredPolyhedralDependenceView> dependences;
+  StructuredPolyhedralScheduleView schedule;
+};
+
 struct StructuredScopAccessView final {
   StructuredScopAccessKind kind;
   std::uint64_t statementOrdinal = 0;
@@ -154,6 +224,7 @@ struct ExactStructuredScopView final {
   std::uint64_t statementCount = 0;
   std::uint64_t parameterCount = 0;
   std::uint64_t domainConstraintCount = 0;
+  std::uint64_t dependenceQueryCount = 0;
   std::vector<StructuredScopAccessView> accesses;
   std::vector<StructuredScopComputeView> computes;
   StructuredReductionSchedule reductionSchedule =
@@ -169,7 +240,11 @@ struct ExactStructuredScopView final {
 struct StructuredScopRefusal final {
   StructuredEntityRef loop;
   StructuredScopRefusalKind kind;
+  std::uint64_t dependenceQueryCount = 0;
 };
+
+using StructuredPolyhedralScopAnalysisOutcome =
+    std::variant<StructuredPolyhedralScopView, StructuredScopRefusal>;
 
 using StructuredScopAnalysisOutcome =
     std::variant<ExactStructuredScopView, StructuredScopRefusal>;
@@ -182,9 +257,18 @@ llvm::Expected<StructuredScopAnalysisOutcome>
 analyzeExactStructuredScop(const StructuredProgramCandidate &parent,
                            const StructuredEntityRef &loop);
 
-/// Mechanically projects one selected SCF loop and its direct memref accesses
-/// into the Affine spelling consumed by the upstream analysis and vectorizer.
-/// The caller owns a private clone; sibling operations are not rewritten.
+/// Extracts one bounded exact affine/Presburger region rooted at a top-level
+/// structured loop. Multi-statement, multi-loop, and imperfect nests are
+/// admitted when all statement domains, accesses, aliases, and dependences are
+/// exactly representable by the shared MLIR and pinned Polly/ISL providers.
+llvm::Expected<StructuredPolyhedralScopAnalysisOutcome>
+analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
+                                const StructuredEntityRef &loop);
+
+/// Mechanically projects one selected SCF loop tree and affine-indexable memref
+/// accesses into the Affine spelling consumed by upstream analysis and the
+/// vectorizer. The caller owns a private clone; sibling operations are not
+/// rewritten.
 llvm::Expected<mlir::affine::AffineForOp>
 projectExactStructuredScopToAffine(mlir::Operation *loop);
 

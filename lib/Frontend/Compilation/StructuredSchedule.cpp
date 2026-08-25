@@ -1008,15 +1008,25 @@ enumerateStructuredScheduleDecisions(
   }
   FabricCapabilityIndex capabilityIndex(fabric.view());
   std::vector<StructuredScheduleProposal> proposals;
+  std::vector<StructuredPolyhedralScopView> polyhedralScops;
   std::vector<StructuredScopRefusal> refusals;
   std::uint64_t expanded = 0;
   std::uint64_t inspectedCoordinates = 0;
+  std::uint64_t inspectedPolyhedralDependenceQueries = 0;
   const auto recordCoordinates = [&](std::uint64_t count) -> llvm::Error {
     const std::optional<std::uint64_t> next =
         llvm::checkedAddUnsigned(inspectedCoordinates, count);
     if (!next)
       return invalid("schedule-coordinate accounting overflows u64");
     inspectedCoordinates = *next;
+    return llvm::Error::success();
+  };
+  const auto recordDependenceQueries = [&](std::uint64_t count) -> llvm::Error {
+    const std::optional<std::uint64_t> next =
+        llvm::checkedAddUnsigned(inspectedPolyhedralDependenceQueries, count);
+    if (!next)
+      return invalid("polyhedral dependence-query accounting overflows u64");
+    inspectedPolyhedralDependenceQueries = *next;
     return llvm::Error::success();
   };
   for (const StructuredEntity &entity :
@@ -1036,13 +1046,69 @@ enumerateStructuredScheduleDecisions(
     auto analysis = analyzeExactStructuredScop(parent, entity.reference);
     if (!analysis)
       return analysis.takeError();
+    const auto appendGeneralScop = [&]() -> llvm::Expected<bool> {
+      auto polyhedral =
+          analyzeStructuredPolyhedralScop(parent, entity.reference);
+      if (!polyhedral)
+        return polyhedral.takeError();
+      if (auto *general =
+              std::get_if<StructuredPolyhedralScopView>(&*polyhedral)) {
+        if (llvm::Error error =
+                recordDependenceQueries(general->dependenceQueryCount))
+          return std::move(error);
+        polyhedralScops.push_back(std::move(*general));
+        refusals.push_back(
+            {entity.reference,
+             StructuredScopRefusalKind::PolyhedralMaterializationUnavailable});
+        return true;
+      }
+      StructuredScopRefusal &polyhedralRefusal =
+          std::get<StructuredScopRefusal>(*polyhedral);
+      if (llvm::Error error =
+              recordDependenceQueries(polyhedralRefusal.dependenceQueryCount))
+        return std::move(error);
+      refusals.push_back(std::move(polyhedralRefusal));
+      return false;
+    };
     if (auto *refusal = std::get_if<StructuredScopRefusal>(&*analysis)) {
-      refusals.push_back(*refusal);
+      if (llvm::Error error =
+              recordDependenceQueries(refusal->dependenceQueryCount))
+        return std::move(error);
+      const bool mayEnterGeneralDomain = [&] {
+        switch (refusal->kind) {
+        case StructuredScopRefusalKind::NonCanonicalIterationDomain:
+        case StructuredScopRefusalKind::NestedControl:
+        case StructuredScopRefusalKind::NonContiguousAccess:
+        case StructuredScopRefusalKind::LoopCarriedMemoryDependence:
+        case StructuredScopRefusalKind::AlignmentProofNotEstablished:
+        case StructuredScopRefusalKind::NonUnitPhysicalStride:
+        case StructuredScopRefusalKind::HeterogeneousElementWidth:
+        case StructuredScopRefusalKind::NonLocalMemoryRoot:
+        case StructuredScopRefusalKind::UnsupportedPhysicalOffset:
+          return true;
+        default:
+          return false;
+        }
+      }();
+      if (!mayEnterGeneralDomain) {
+        refusals.push_back(*refusal);
+      } else {
+        auto admitted = appendGeneralScop();
+        if (!admitted)
+          return admitted.takeError();
+      }
     } else {
       const ExactStructuredScopView &scop =
           std::get<ExactStructuredScopView>(*analysis);
+      if (llvm::Error error =
+              recordDependenceQueries(scop.dependenceQueryCount))
+        return std::move(error);
       auto frozenScop = std::make_shared<const ExactStructuredScopView>(scop);
-      if (!scop.constantTripCount || *scop.constantTripCount <= 1) {
+      if (!scop.constantTripCount) {
+        auto admitted = appendGeneralScop();
+        if (!admitted)
+          return admitted.takeError();
+      } else if (*scop.constantTripCount <= 1) {
         refusals.push_back(
             {entity.reference,
              StructuredScopRefusalKind::NonCanonicalIterationDomain});
@@ -1164,9 +1230,10 @@ enumerateStructuredScheduleDecisions(
                            std::nullopt});
     }
   }
-  return StructuredScheduleDecisionDomain{std::move(proposals),
-                                          std::move(refusals), expanded,
-                                          inspectedCoordinates};
+  return StructuredScheduleDecisionDomain{
+      std::move(proposals), std::move(polyhedralScops),
+      std::move(refusals),  expanded,
+      inspectedCoordinates, inspectedPolyhedralDependenceQueries};
 }
 
 namespace {

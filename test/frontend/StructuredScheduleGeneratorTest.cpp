@@ -274,12 +274,27 @@ generated(const loom::frontend::StructuredProgramCandidate &program,
       loom::dse::resolveStructuredScheduleCandidateGeneratorBinding(config));
   auto outcome =
       take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
-  auto *completed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
-      &outcome.outcome);
-  if (!completed || completed->outputBindings.size() != 1)
+  const std::vector<loom::dse::CandidateGeneratorOutputBinding> *bindings =
+      nullptr;
+  const std::vector<loom::dse::CandidateGeneratorLineageEdge> *lineage =
+      nullptr;
+  if (auto *completed =
+          std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+              &outcome.outcome)) {
+    bindings = &completed->outputBindings;
+    lineage = &completed->lineageEdges;
+  } else if (auto *incomplete =
+                 std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+                     &outcome.outcome);
+             incomplete && incomplete->reason ==
+                               loom::dse::CandidateGeneratorIncompleteReason::
+                                   ProofNotEstablished) {
+    bindings = &incomplete->retainedOutputBindings;
+    lineage = &incomplete->lineageEdges;
+  }
+  if (!bindings || bindings->size() != 1 || !lineage)
     fail("schedule generator did not complete one output set");
-  for (const loom::dse::CandidateGeneratorLineageEdge &edge :
-       completed->lineageEdges) {
+  for (const loom::dse::CandidateGeneratorLineageEdge &edge : *lineage) {
     if (edge.kind !=
             loom::dse::CandidateGeneratorLineageEdgeKind::CandidateDecision ||
         edge.parents.size() != 2 ||
@@ -288,7 +303,7 @@ generated(const loom::frontend::StructuredProgramCandidate &program,
       fail("schedule generator changed its parent lineage");
     take(loom::frontend::adoptStructuredScheduleDecision(edge.ownerPayload));
   }
-  return completed->outputBindings.front().artifacts;
+  return bindings->front().artifacts;
 }
 
 void configRoundTripsAndRejectsMalformedBytes() {
@@ -664,7 +679,7 @@ module {
       identityCompleted->outputBindings.front().artifacts !=
           std::vector<loom::ArtifactRootReference>{identityReference} ||
       !identityCompleted->lineageEdges.empty() ||
-      identityResult.workSummary.size() != 4 ||
+      identityResult.workSummary.size() != 5 ||
       identityResult.workSummary[1].planned != 1 ||
       identityResult.workSummary[1].consumed != 1 ||
       identityResult.workSummary[3].planned != 1 ||
@@ -880,7 +895,7 @@ module attributes {dlti.dl_spec = #layout} {
           loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
       incomplete->retainedOutputBindings.size() != 1 ||
       incomplete->retainedOutputBindings.front().artifacts.size() != 2 ||
-      incomplete->lineageEdges.size() != 1 || bounded.workSummary.size() != 4 ||
+      incomplete->lineageEdges.size() != 1 || bounded.workSummary.size() != 5 ||
       bounded.workSummary[0].planned != 1 ||
       bounded.workSummary[0].consumed != 1 ||
       bounded.workSummary[1].planned != 1 ||
@@ -1452,7 +1467,7 @@ module attributes {dlti.dl_spec = #layout} {
       limitedIncomplete->retainedOutputBindings.size() != 1 ||
       limitedIncomplete->retainedOutputBindings.front().artifacts.size() != 1 ||
       !limitedIncomplete->lineageEdges.empty() ||
-      limited.workSummary.size() != 4 || limited.workSummary[1].planned != 1 ||
+      limited.workSummary.size() != 5 || limited.workSummary[1].planned != 1 ||
       limited.workSummary[1].consumed != 1 ||
       limited.workSummary[3].planned != 2 ||
       limited.workSummary[3].consumed != 1)
@@ -1476,7 +1491,7 @@ module attributes {dlti.dl_spec = #layout} {
       refillIncomplete->retainedOutputBindings.size() != 1 ||
       refillIncomplete->retainedOutputBindings.front().artifacts.size() != 2 ||
       refillIncomplete->lineageEdges.size() != 1 ||
-      refill.workSummary.size() != 4 || refill.workSummary[1].planned <= 1 ||
+      refill.workSummary.size() != 5 || refill.workSummary[1].planned <= 1 ||
       refill.workSummary[1].planned != refill.workSummary[1].consumed ||
       refill.workSummary[3].planned <= refill.workSummary[3].consumed ||
       refill.workSummary[3].consumed != refill.workSummary[1].consumed)
@@ -1652,6 +1667,179 @@ module {
   llvm::sys::fs::remove_directories(directory);
 }
 
+void nestedImperfectScopFreezesExactRelations() {
+  auto parent = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+module attributes {dlti.dl_spec = #layout} {
+  func.func @kernel(%a: memref<?xi32>, %b: memref<?xi32>,
+                    %c: memref<?x?xi32>, %d: memref<?xi32>,
+                    %m: index, %n: index) {
+    %a0, %b0, %c0, %d0 = memref.distinct_objects %a, %b, %c, %d
+        : memref<?xi32>, memref<?xi32>, memref<?x?xi32>, memref<?xi32>
+    %a1 = memref.assume_alignment %a0, 64 : memref<?xi32>
+    %d1 = memref.assume_alignment %d0, 64 : memref<?xi32>
+    affine.for %i = 0 to %m {
+      %outer = affine.load %a0[%i] : memref<?xi32>
+      affine.for %j = 0 to %n {
+        %lhs = affine.load %a0[%i] : memref<?xi32>
+        %rhs = affine.load %b0[%j] : memref<?xi32>
+        %sum = arith.addi %lhs, %rhs : i32
+        affine.store %sum, %c0[%i, %j] : memref<?x?xi32>
+        %roundtrip = affine.load %c0[%i, %j] : memref<?x?xi32>
+      }
+      %after = affine.load %d0[%i] : memref<?xi32>
+    }
+    affine.for %k = 0 to %m {
+      %flat = affine.load %a1[%k] : memref<?xi32>
+      affine.store %flat, %d1[%k] : memref<?xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto view = take(parent.view());
+  std::optional<loom::frontend::StructuredEntityRef> loop;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto affine =
+        llvm::dyn_cast_or_null<mlir::affine::AffineForOp>(entity.operation);
+    if (!affine || affine->getParentOfType<mlir::affine::AffineForOp>())
+      continue;
+    std::uint64_t nestedLoopCount = 0;
+    affine->walk([&](mlir::affine::AffineForOp) { ++nestedLoopCount; });
+    if (nestedLoopCount != 2)
+      continue;
+    auto function = affine->getParentOfType<mlir::func::FuncOp>();
+    if (function && function.getSymName() == "kernel") {
+      loop = entity.reference;
+      break;
+    }
+  }
+  if (!loop)
+    fail("nested symbolic fixture lost its top-level loop");
+  auto outcome =
+      take(loom::frontend::analyzeStructuredPolyhedralScop(parent, *loop));
+  const auto *scop =
+      std::get_if<loom::frontend::StructuredPolyhedralScopView>(&outcome);
+  if (!scop) {
+    const auto &refusal =
+        std::get<loom::frontend::StructuredScopRefusal>(outcome);
+    fail("nested symbolic SCoP refusal=" +
+         std::to_string(static_cast<std::uint32_t>(refusal.kind)));
+  }
+  if (scop->loopCount != 2 || scop->maximumLoopDepth != 2 ||
+      !scop->imperfectNest || scop->statements.size() != 7 ||
+      scop->accesses.size() != 6 || scop->dependenceQueryCount != 9 ||
+      scop->schedule.provider !=
+          loom::frontend::StructuredPolyhedralProviderKind::PinnedPollyIsl ||
+      scop->parameters.size() != 2 || scop->schedule.parameterCount != 2 ||
+      scop->schedule.scheduleMapCount() != 7)
+    fail("nested symbolic SCoP summary mismatch: loops=" +
+         std::to_string(scop->loopCount) +
+         " depth=" + std::to_string(scop->maximumLoopDepth) +
+         " imperfect=" + std::to_string(scop->imperfectNest) +
+         " statements=" + std::to_string(scop->statements.size()) +
+         " accesses=" + std::to_string(scop->accesses.size()) +
+         " queries=" + std::to_string(scop->dependenceQueryCount) +
+         " global_parameters=" + std::to_string(scop->parameters.size()) +
+         " parameters=" + std::to_string(scop->schedule.parameterCount) +
+         " provider=" +
+         std::to_string(static_cast<std::uint32_t>(scop->schedule.provider)) +
+         " maps=" + std::to_string(scop->schedule.scheduleMapCount()));
+  const std::size_t scalarDependences =
+      llvm::count_if(scop->dependences, [](const auto &dependence) {
+        return dependence.kind ==
+               loom::frontend::StructuredPolyhedralDependenceKind::ScalarSsa;
+      });
+  auto memoryDependence = llvm::find_if(scop->dependences, [](const auto
+                                                                  &dependence) {
+    return dependence.kind ==
+           loom::frontend::StructuredPolyhedralDependenceKind::ReadAfterWrite;
+  });
+  if (scalarDependences != 3 || memoryDependence == scop->dependences.end() ||
+      !memoryDependence->relation ||
+      memoryDependence->relation->sourceDimensionCount != 2 ||
+      memoryDependence->relation->destinationDimensionCount != 2 ||
+      memoryDependence->relation->parameters.size() != 2)
+    fail("nested symbolic SCoP changed exact dependence ownership");
+  auto matrixWrite = llvm::find_if(scop->accesses, [](const auto &access) {
+    return access.kind ==
+               loom::frontend::StructuredPolyhedralAccessKind::Write &&
+           access.relation.destinationDimensionCount == 2;
+  });
+  if (matrixWrite == scop->accesses.end() ||
+      matrixWrite->relation.sourceDimensionCount != 2 ||
+      matrixWrite->relation.parameters.size() != 2 ||
+      matrixWrite->constantFootprintElementUpperBound)
+    fail("multidimensional symbolic footprint was not frozen exactly");
+  for (const auto &statement : scop->statements)
+    if (statement.domain.constraints.empty() ||
+        statement.domain.dimensions.empty())
+      fail("nested statement lost its exact Presburger domain");
+
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-schedule-polyhedral", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code blobError = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + blobError.message());
+  const loom::BlobStore blobs(blobPath);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  auto domain = take(loom::frontend::enumerateStructuredScheduleDecisions(
+      parent, design.roots().front(), 3));
+  if (domain.polyhedralScops.size() != 2 ||
+      llvm::none_of(
+          domain.polyhedralScops,
+          [&](const auto &candidate) { return candidate.root == *loop; }) ||
+      domain.inspectedPolyhedralDependenceQueries != 17 ||
+      llvm::none_of(domain.refusals,
+                    [](const auto &refusal) {
+                      return refusal.kind ==
+                             loom::frontend::StructuredScopRefusalKind::
+                                 PolyhedralMaterializationUnavailable;
+                    }) ||
+      llvm::none_of(domain.refusals, [](const auto &refusal) {
+        return refusal.kind ==
+               loom::frontend::StructuredScopRefusalKind::NestedAffineRoot;
+      }))
+    fail("production enumeration dropped the admitted polyhedral SCoP: " +
+         std::to_string(domain.polyhedralScops.size()) + " scops, " +
+         std::to_string(domain.inspectedPolyhedralDependenceQueries) +
+         " queries, " + std::to_string(domain.refusals.size()) + " refusals");
+  auto parentReference =
+      take(loom::frontend::publishStructuredProgram(parent, store));
+  auto inputs = take(loom::dse::bindStructuredScheduleCandidateGeneratorInputs(
+      {parentReference}, design.roots().front().reference()));
+  auto config =
+      take(loom::dse::projectResolvedStructuredScheduleGeneratorConfigView(
+          loom::defaultResolvedConfig(),
+          loom::dse::StructuredScheduleGenerationIntent::Balanced, 3));
+  auto binding = take(
+      loom::dse::resolveStructuredScheduleCandidateGeneratorBinding(config));
+  auto generated =
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  const auto *incomplete =
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &generated.outcome);
+  // Nested general 9 + flat exact 6 + flat general 2.
+  if (!incomplete ||
+      incomplete->reason !=
+          loom::dse::CandidateGeneratorIncompleteReason::ProofNotEstablished ||
+      generated.workSummary.size() != 5 ||
+      generated.workSummary[4].planned != 17 ||
+      generated.workSummary[4].consumed != 17)
+    fail("production work ledger dropped exact dependence queries: " +
+         std::to_string(generated.workSummary.size() == 5
+                            ? generated.workSummary[4].consumed
+                            : 0));
+  llvm::sys::fs::remove_directories(directory);
+}
+
 void productionVectorScheduleLowersToCanonicalDataflow() {
   llvm::SmallString<128> directory;
   std::error_code error = llvm::sys::fs::createUniqueDirectory(
@@ -1800,6 +1988,7 @@ int main() {
   symbolicScopUsesExactParameterIdentity();
   exactScopRefusalsAreLocalAndTyped();
   reassociatedReductionOwnsItsMaskedTail();
+  nestedImperfectScopFreezesExactRelations();
   productionVectorScheduleLowersToCanonicalDataflow();
   return EXIT_SUCCESS;
 }

@@ -676,6 +676,37 @@ prime, and unit trip counts have no such SCF factor decision in the current
 contract; other generator families or later invocations may still transform
 their enclosing structure.
 
+The general exact polyhedral analysis domain is a top-level unit-step
+`scf.for` or `affine.for` tree whose complete statement domains, accesses,
+aliases, and dependences are representable by MLIR Affine/Presburger without
+local division variables. It admits multi-statement nested and imperfect
+loop trees, affine symbolic bounds and parameters, multidimensional affine
+accesses, and heterogeneous scalar element widths. Each statement owns its
+exact domain; each access owns its exact logical footprint relation and an
+optional conservative constant footprint bound. RAW, WAR, and WAW relations
+are the disjoint lexicographic components returned by the MLIR dependence
+checker, while scalar SSA edges are exact same-iteration precedence over the
+common loop prefix. A fixed dependence-query budget and the pinned Polly/ISL
+operation quota bound the analysis. The production decision domain exposes
+the resulting removable typed view when the narrower vector domain cannot
+supply a finite coordinate for the same root. It does not create a
+transformation proposal from that general schedule map; production enumeration
+reports
+`PolyhedralMaterializationUnavailable` for that admitted root until it can do
+so.
+
+Loop-carried values and reductions, nested conditionals, non-unit steps,
+unresolved aliases, unknown effects, access or dependence relations with
+Presburger local variables, and provider failures remain typed local
+refusals. The exact access relation is the footprint authority; the referenced
+source memref retains its physical layout. Polly/ISL consumes only the frozen
+MLIR-owned domains and dependence relations and returns exact typed schedule
+maps. No provider object, textual ISL spelling, or alternate dependence
+relation persists beyond the analysis call. The SCoP view freezes the exact
+source-entity order of the provider's global parameter columns so every
+schedule coefficient remains interpretable without reconstructing an ISL
+space.
+
 The exact vector SCoP domain is deliberately closed. Its root is one `scf.for`
 or `affine.for` with zero lower bound, unit stride, and a static trip count. A
 selected SCF loop is projected on a private clone through the pinned upstream
@@ -871,15 +902,18 @@ heuristic ranking. Hardware-aware runtime measures, Pareto/TopK selection,
 diversity, and bounded Mapping finalists remain with the central PreMapping
 objective and Promote owners. Generator work accounting separately records
 inspected loop scopes, every syntactically present schedule coordinate before
-its exact legality/capability gate, generated proposals selected by the
-independent bounds, and actual materialization attempts. A typed refusal
+its exact legality/capability gate, exact polyhedral dependence-provider
+queries, generated proposals selected by the independent bounds, and actual
+materialization attempts. A dependence or schedule refusal carries the query
+count already consumed, so failed proof work enters the same ledger. A typed
+refusal
 consumes its attempt but no distinct output slot; a later proposal may fill
 that slot until the attempt grant is exhausted. A materialized identity no-op
 or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v9`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v10`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator

@@ -36,6 +36,8 @@ struct PolyhedralScheduleProviderView final {
   std::uint64_t scheduleDimensionCount = 0;
   std::uint64_t coincidentDimensionCount = 0;
   std::vector<StructuredPolyhedralStatementScheduleView> statementSchedules;
+  /// Exact parameter order used by the invocation-local ISL spaces.
+  std::vector<mlir::Value> parameters;
 };
 
 enum class PolyhedralScheduleProviderRefusalKind : std::uint32_t {

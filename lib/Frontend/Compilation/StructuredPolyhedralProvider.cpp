@@ -1034,7 +1034,8 @@ llvm::Expected<PolyhedralScheduleProviderOutcome> computePinnedIslSchedule(
 
   return PolyhedralScheduleProviderOutcome(PolyhedralScheduleProviderView{
       parameters.values.size(), bands.bands, bands.dimensions,
-      bands.coincidentDimensions, std::move(frozen.schedules)});
+      bands.coincidentDimensions, std::move(frozen.schedules),
+      std::move(parameters.values)});
 }
 
 } // namespace loom::frontend::detail

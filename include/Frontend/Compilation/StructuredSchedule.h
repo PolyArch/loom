@@ -145,9 +145,14 @@ private:
 
 struct StructuredScheduleDecisionDomain final {
   std::vector<StructuredScheduleProposal> proposals;
+  /// Exact schedules admitted beyond the vector-materialization subset. These
+  /// removable views are analysis results, not candidate identities or
+  /// persistent Schedule artifacts.
+  std::vector<StructuredPolyhedralScopView> polyhedralScops;
   std::vector<StructuredScopRefusal> refusals;
   std::uint64_t inspectedLoopScopes = 0;
   std::uint64_t inspectedDecisionCoordinates = 0;
+  std::uint64_t inspectedPolyhedralDependenceQueries = 0;
 };
 
 llvm::ArrayRef<std::uint8_t> structuredScheduleDecisionSchemaBytes();
