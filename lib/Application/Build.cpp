@@ -11,6 +11,7 @@
 #include "DSE/ProductionOwners.h"
 #include "DSE/ResolvedConfigView.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Evaluation/Models/CalibratedFpa.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
@@ -272,6 +273,7 @@ publishApplicationWorkloads(
 
 } // namespace build_detail
 using build_detail::ApplicationBuildOperationTimer;
+using build_detail::classifyPreMappingNoFeasibleOutcome;
 using build_detail::derivePreMappingInvocationRunKey;
 using build_detail::deriveSystemBindingPartitionIntent;
 using build_detail::elapsedNanoseconds;
@@ -294,12 +296,17 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
   if (llvm::Error error = dse::registerProductionDseOwners())
     return std::move(error);
   std::optional<ArtifactRootReference> edaPredictionModelWeight;
+  std::shared_ptr<const evaluation::models::EdaPredictionModelWeight>
+      importedEdaPredictionModelWeight;
   if (request.edaPredictionModelWeight) {
     auto imported = evaluation::models::importEdaPredictionModelWeight(
         *request.edaPredictionModelWeight, artifacts, blobs);
     if (!imported)
       return imported.takeError();
     edaPredictionModelWeight = imported->reference();
+    importedEdaPredictionModelWeight =
+        std::make_shared<const evaluation::models::EdaPredictionModelWeight>(
+            std::move(*imported));
   } else if (!request.fpaOperatingConditions.empty()) {
     return invalid("FPA operating conditions require a frozen model weight");
   }
@@ -380,15 +387,14 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
     auto invocationRunKey = preMappingRunKeyFor(*noFeasible);
     if (!invocationRunKey)
       return invocationRunKey.takeError();
+    const ApplicationPairDecisionDisposition disposition =
+        classifyPreMappingNoFeasibleOutcome(*noFeasible);
     auto decision = makePreparationPairDecision(
         noFeasible->sourceProgram, noFeasible->fabric, noFeasible->workload,
-        noFeasible->runtimeInput, noFeasible->candidateInventory,
-        noFeasible->completeness.exactComplete()
-            ? ApplicationPairDecisionDisposition::NoPromisingCandidate
-            : ApplicationPairDecisionDisposition::BudgetExhausted,
-        noFeasible->completeness.exactComplete()
+        noFeasible->runtimeInput, noFeasible->candidateInventory, disposition,
+        disposition == ApplicationPairDecisionDisposition::NoPromisingCandidate
             ? "bounded front-end retained no candidate"
-            : "front-end terminated before a complete candidate-domain proof",
+            : toString(disposition),
         noFeasible->sourceHostOnlyWork, *invocationRunKey, false,
         request.portfolioInput);
     emitApplicationPairDecisionDiagnostics(decision);
@@ -441,10 +447,16 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
            std::pair<std::shared_ptr<const dse::ResourceTimeDataflowProjection>,
                      std::uint64_t>>
       resourceTimeProjectionCache;
-  auto resourceTimeModelSnapshot =
-      dse::resourceTimeAnalyticModelSnapshotDigest();
-  if (!resourceTimeModelSnapshot)
-    return resourceTimeModelSnapshot.takeError();
+  auto analyticModelSnapshot = dse::resourceTimeAnalyticModelSnapshotDigest();
+  if (!analyticModelSnapshot)
+    return analyticModelSnapshot.takeError();
+  struct PhysicalModelObservation final {
+    dse::ResourceTimeEstimateSupport support;
+    ComponentViewDigest modelSnapshot;
+  };
+  std::map<ArtifactRootReference, PhysicalModelObservation,
+           decltype(&artifactRootReferenceLess)>
+      physicalModelObservations(&artifactRootReferenceLess);
   auto resourceTimeConfig =
       dse::projectResolvedDseConfigView(request.resolvedConfig);
   if (!resourceTimeConfig)
@@ -484,6 +496,44 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         dataflow::canonicalDataflowSchema.identity.str(),
         dataflow::canonicalDataflowSchema.version,
         selected.compilation.canonicalDataflow.identity()};
+    dse::ResourceTimeEstimateSupport physicalModelSupport =
+        dse::ResourceTimeEstimateSupport::Unsupported;
+    ComponentViewDigest modelSnapshot = *analyticModelSnapshot;
+    if (importedEdaPredictionModelWeight) {
+      auto observation = physicalModelObservations.find(dataflow);
+      if (observation == physicalModelObservations.end()) {
+        auto inference = evaluation::models::inferCanonicalDataflowFabricFpa(
+            dataflow, request.system, *importedEdaPredictionModelWeight,
+            request.fpaOperatingConditions, artifacts, blobs);
+        if (!inference)
+          return inference.takeError();
+        dse::ResourceTimeEstimateSupport support;
+        if (std::holds_alternative<
+                evaluation::OutOfDomainModelParameterInference>(
+                inference->outcome)) {
+          support = dse::ResourceTimeEstimateSupport::OutOfDomain;
+        } else {
+          const auto *prediction =
+              std::get<evaluation::ModelParameterPrediction>(inference->outcome)
+                  .view.getIf<evaluation::models::FpaMetricPredictionView>();
+          if (!prediction)
+            return invalid("resource-time FPA inference returned a foreign "
+                           "prediction view");
+          support = dse::ResourceTimeEstimateSupport::Calibrated;
+        }
+        auto physicalSnapshot = dse::resourceTimePhysicalModelSnapshotDigest(
+            *edaPredictionModelWeight, inference->contextDigest);
+        if (!physicalSnapshot)
+          return physicalSnapshot.takeError();
+        observation =
+            physicalModelObservations
+                .emplace(dataflow,
+                         PhysicalModelObservation{support, *physicalSnapshot})
+                .first;
+      }
+      physicalModelSupport = observation->second.support;
+      modelSnapshot = observation->second.modelSnapshot;
+    }
     dse::ResourceTimeInvocationKey invocation{
         *planningRecord.structuredProgram,
         dataflow,
@@ -491,7 +541,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         completed.workload,
         completed.runtimeInput,
         resourceTimeConfig->digest(),
-        *resourceTimeModelSnapshot,
+        modelSnapshot,
         request.sourceInvocation.entrySymbol,
         planningRecord.estimatedRuntimePicoseconds};
     auto projectionKey = dse::deriveResourceTimeProjectionCacheKey(invocation);
@@ -512,7 +562,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       const MonotonicClock::time_point projectionBegin = MonotonicClock::now();
       auto computedProjection = dse::projectResourceTimeDataflow(
           *dataflowView, *systemView, request.sourceInvocation.entrySymbol,
-          planningRecord.estimatedRuntimePicoseconds);
+          planningRecord.estimatedRuntimePicoseconds, physicalModelSupport);
       const std::uint64_t projectionElapsed =
           elapsedNanoseconds(projectionBegin);
       resourceTimeProjectionElapsedNanoseconds =
@@ -573,7 +623,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
          pending.projection->acceleratedGraphCount,
          pending.projection->acceleratedActorCount, maximumUsefulResourceUnits,
          std::move(invocation), pending.projection->resourceClasses,
-         pending.projection->regions});
+         pending.projection->regions,
+         pending.projection->physicalModelSupport});
   }
   auto resourceTimeFunnel = dse::selectResourceTimeMappingFinalists(
       resourceTimeInputs, request.resourceTimePolicy,

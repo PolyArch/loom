@@ -209,6 +209,55 @@ ApplicationPairDecisionDisposition prioritizeIncompletePairDisposition(
   });
 }
 
+ApplicationPairDecisionDisposition classifyPreMappingNoFeasibleOutcome(
+    const dse::CompletedPreMappingNoFeasibleCandidate &outcome) {
+  std::vector<ApplicationPairDecisionDisposition> causes;
+  for (const dse::PreMappingCandidatePlanningRecord &record :
+       outcome.candidateInventory) {
+    if (record.incompleteReason) {
+      causes.push_back(
+          mapIncompleteReasonToPairDisposition(*record.incompleteReason));
+      continue;
+    }
+    switch (record.disposition) {
+    case dse::PreMappingCandidatePlanningDisposition::ExactGateRejected:
+      break;
+    case dse::PreMappingCandidatePlanningDisposition::Unsupported:
+      causes.push_back(ApplicationPairDecisionDisposition::UnsupportedSemantic);
+      break;
+    case dse::PreMappingCandidatePlanningDisposition::Unknown:
+    case dse::PreMappingCandidatePlanningDisposition::Retained:
+    case dse::PreMappingCandidatePlanningDisposition::HeuristicPruned:
+      causes.push_back(
+          ApplicationPairDecisionDisposition::MappingProofNotEstablished);
+      break;
+    case dse::PreMappingCandidatePlanningDisposition::CancelledOrTimeout:
+      causes.push_back(ApplicationPairDecisionDisposition::CancelledOrTimeout);
+      break;
+    case dse::PreMappingCandidatePlanningDisposition::CoordinateBudget:
+    case dse::PreMappingCandidatePlanningDisposition::
+        ProgramMaterializationBudget:
+    case dse::PreMappingCandidatePlanningDisposition::AnalyticEvaluationBudget:
+    case dse::PreMappingCandidatePlanningDisposition::FunctionalReplayBudget:
+    case dse::PreMappingCandidatePlanningDisposition::DataflowPromotionBudget:
+    case dse::PreMappingCandidatePlanningDisposition::MappingPairBudget:
+      causes.push_back(ApplicationPairDecisionDisposition::BudgetExhausted);
+      break;
+    }
+  }
+  if (!outcome.completeness.domainComplete ||
+      !outcome.completeness.budgetComplete)
+    causes.push_back(ApplicationPairDecisionDisposition::BudgetExhausted);
+  if (!outcome.completeness.providerComplete ||
+      !outcome.completeness.evidenceComplete ||
+      !outcome.completeness.selectionComplete)
+    causes.push_back(
+        ApplicationPairDecisionDisposition::MappingProofNotEstablished);
+  if (!causes.empty())
+    return prioritizeIncompletePairDisposition(causes, false);
+  return ApplicationPairDecisionDisposition::NoPromisingCandidate;
+}
+
 ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const PreparedApplicationBuild &prepared,
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,

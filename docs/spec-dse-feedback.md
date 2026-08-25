@@ -3700,6 +3700,24 @@ provider-contract error, not a calibration miss. Neither side is Mapping/PnR
 legality evidence. These counters describe only the sampled detailed set and
 do not generalize recall to deferred candidates.
 
+Screening retains two lower-bound components: the maximum per-region critical
+path bound and the aggregate resource-work bound divided by exact capacity.
+Each component carries the support of the curve point that actually selected
+it, combining all points tied at that value. The published bound is their
+maximum and carries the winning component's support, combining support only on
+a component tie. A weaker estimate that did not select the bound cannot
+silently downgrade or upgrade its evidence grade.
+
+Physical-model applicability is orthogonal to timing support. When an
+application invocation binds an immutable `EdaPredictionModelWeight`, the
+resource-time projection runs the existing FPA parameter contract in process
+for the exact Canonical Dataflow/Fabric/condition tuple and records either
+`Calibrated` or `OutOfDomain`. It does not relabel analytic execution time as
+calibrated timing. An invocation without a weight records `Unsupported` for
+the physical-model grade. This inference cannot dispatch EDA; its cache
+dependency is mechanically derived from the exact weight root and canonical
+Evaluation case.
+
 Application operation diagnostics may report `peak_resident_bytes` as the
 whole-process RSS high-water observed at that boundary. It is not a per-stage
 or per-candidate allocation attribution; such attribution is unsupported
@@ -3731,10 +3749,18 @@ capacity constraints may make a smaller value exact, as in a five-region
 schedule whose maximum legal active set has three members. A truncated beam,
 budget stop, or missing allocation bound can still produce a verified
 intermediate scenario but cannot prove either endpoint.
-A token-only timestamp, or a timestamp completing multiple roots, is not
-encoded as one arbitrary root-completion event: until the Dataflow event owner
-publishes canonical token-publication and composite-event families, such a
-hint remains typed `Unsupported` and cannot enter Spectrum verification.
+A statically enumerable nonempty Canonical Dataflow root has an exact minimum
+allocation of one AccCore and a maximum useful allocation bounded by its exact
+logical-domain parallelism and the frozen System capacity. A dynamic or
+otherwise unproven logical domain keeps both endpoint bounds unsupported; an
+observed one-core Mapping never manufactures either proof.
+A token-publication timestamp is not encoded as an arbitrary root-completion
+event and remains typed `Unsupported` until the Dataflow event owner publishes
+its canonical family. Equal-time root completions that retain one Mapping are
+represented as a deterministic sequence of the existing canonical completion
+families at the same timestamp; this serialization adds no time or causal
+precedence. A Mapping change across such a composite frontier remains typed
+`Unsupported` until a transition correspondence owns the ordering.
 A one-region schedule is a verified intermediate point because the all-active
 and one-active concurrency bounds coincide and cannot distinguish the two
 endpoints.

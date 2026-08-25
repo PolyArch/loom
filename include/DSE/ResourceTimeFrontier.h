@@ -153,9 +153,22 @@ struct ResourceTimeDataflowProjection final {
   std::vector<std::uint64_t> availableResourceUnits;
   std::vector<ResourceTimeRegionFeature> regions;
   std::vector<ResourceTimeRegionResourceBound> regionBounds;
+  /// Physical-model applicability for this exact Dataflow/Fabric projection.
+  /// Timing support remains owned by each speedup point; a calibrated FPA
+  /// weight does not turn an analytic runtime estimate into physical timing.
+  ResourceTimeEstimateSupport physicalModelSupport =
+      ResourceTimeEstimateSupport::Unsupported;
 };
 
 llvm::Expected<ComponentViewDigest> resourceTimeAnalyticModelSnapshotDigest();
+
+/// Derives the removable projection-cache dependency for one immutable FPA
+/// weight root and exact inference context. The root and canonical Evaluation
+/// case remain the semantic owners; this digest is never an independently
+/// authored model identity.
+llvm::Expected<ComponentViewDigest> resourceTimePhysicalModelSnapshotDigest(
+    const ArtifactRootReference &edaPredictionModelWeight,
+    const ComponentViewDigest &inferenceContextDigest);
 
 /// Derives the invocation-local key for the immutable Dataflow-to-resource-
 /// time projection. The key binds the complete semantic invocation context;
@@ -177,7 +190,9 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &system,
     llvm::StringRef entrySymbol,
-    std::optional<std::uint64_t> estimatedRuntimePicoseconds = std::nullopt);
+    std::optional<std::uint64_t> estimatedRuntimePicoseconds = std::nullopt,
+    ResourceTimeEstimateSupport physicalModelSupport =
+        ResourceTimeEstimateSupport::Unsupported);
 
 struct ResourceTimeFrontierPolicy final {
   std::vector<std::uint64_t> availableResourceUnits;
@@ -417,6 +432,8 @@ struct ResourceTimeMappingCandidateInput final {
   ResourceTimeInvocationKey invocation;
   std::vector<ArtifactRootReference> resourceClasses;
   std::vector<ResourceTimeRegionFeature> regions;
+  ResourceTimeEstimateSupport physicalModelSupport =
+      ResourceTimeEstimateSupport::Unsupported;
 };
 
 enum class ResourceTimeCandidateFunnelDisposition : std::uint8_t {
@@ -450,6 +467,17 @@ struct ResourceTimeCandidateFunnelEvaluation final {
   std::optional<ResourceTimeFrontierIncompleteReason> incompleteReason;
   std::optional<ResourceTimeFrontierInfeasibleReason> infeasibleReason;
   ResourceTimeFrontierAccounting frontierAccounting;
+  /// Component lower bounds and their exact evidence grades. The published
+  /// screening bound is their maximum and carries only the winning support
+  /// (both supports on a tie), rather than an unrelated curve point's grade.
+  std::uint64_t screeningCriticalPathLowerBoundPicoseconds = 0;
+  ResourceTimeEstimateSupport screeningCriticalPathSupport =
+      ResourceTimeEstimateSupport::Unsupported;
+  std::uint64_t screeningResourceWorkLowerBoundPicoseconds = 0;
+  ResourceTimeEstimateSupport screeningResourceWorkSupport =
+      ResourceTimeEstimateSupport::Unsupported;
+  ResourceTimeEstimateSupport physicalModelSupport =
+      ResourceTimeEstimateSupport::Unsupported;
 };
 
 struct ResourceTimeMappingFunnelAccounting final {
@@ -493,6 +521,8 @@ struct ResourceTimeMappingFunnelAccounting final {
   std::uint64_t screeningDetailedFeasibleIntersection = 0;
   std::uint64_t screeningDetailedBestRankMatches = 0;
   std::uint64_t screeningOutOfDomainCandidates = 0;
+  std::uint64_t screeningCalibratedPhysicalCandidates = 0;
+  std::uint64_t screeningPhysicalOutOfDomainCandidates = 0;
   std::uint64_t maximumScreeningLowerBoundGapPicoseconds = 0;
   std::uint64_t screeningLowerBoundViolations = 0;
   /// Exact static Mapping inputs may be shared by several schedule hints. This
