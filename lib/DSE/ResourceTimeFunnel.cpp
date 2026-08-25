@@ -276,10 +276,8 @@ llvm::Error validateResourceTimeMappingFunnelAccounting(
     return invalid("resource-time schedule promotion accounting is not "
                    "closed");
   if (accounting.mappingCallsWithheldByIncomplete >
-          accounting.incompleteCandidates ||
-      accounting.mappingCallsAvoidedBySoundGate !=
-          accounting.soundGateRejectedCandidates)
-    return invalid("resource-time Mapping avoidance accounting is not "
+      accounting.incompleteCandidates)
+    return invalid("resource-time Mapping withholding accounting is not "
                    "closed");
   if (accounting.mappingPlanConstructionsAvoidedByExactMemo >
       accounting.mappingFinalists)
@@ -322,14 +320,14 @@ llvm::Error validateResourceTimeMappingFunnelAccounting(
           accounting.generatedCandidates)
     return invalid("resource-time application promotion counts exceed their "
                    "bounded domains");
-  if (accounting.analyticShadowFeasibleIntersection >
-          accounting.analyticShadowExactFeasibleCandidates ||
-      accounting.analyticShadowExactFeasibleCandidates >
-          accounting.analyticShadowComparedCandidates ||
-      accounting.analyticShadowAdmissibleCandidates >
-          accounting.analyticShadowComparedCandidates ||
-      accounting.analyticShadowLowerBoundViolations != 0)
-    return invalid("resource-time analytic shadow evidence is inconsistent");
+  if (accounting.screeningDetailedFeasibleIntersection >
+          accounting.detailedScheduleFeasibleCandidates ||
+      accounting.detailedScheduleFeasibleCandidates >
+          accounting.screeningComparisonCandidates ||
+      accounting.screeningAdmissibleCandidates >
+          accounting.screeningComparisonCandidates ||
+      accounting.screeningLowerBoundViolations != 0)
+    return invalid("resource-time screening comparison is inconsistent");
   if (accounting.applicationPromotionAccountingComplete &&
       accounting.mappingPlanCandidates +
               accounting.mappingPlanConstructionsAvoidedByExactMemo +
@@ -664,7 +662,6 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
       if (lookup->cacheMiss)
         evaluation.frontierAccounting = infeasible.accounting;
       ++result.accounting.soundGateRejectedCandidates;
-      ++result.accounting.mappingCallsAvoidedBySoundGate;
     }
     ++result.accounting.detailedFrontierCandidates;
     detailedWithHint += evaluation.bestHint.has_value();
@@ -736,59 +733,58 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
     if (evaluation)
       result.evaluations.push_back(std::move(*evaluation));
 
-  const ResourceTimeCandidateFunnelEvaluation *exactBest = nullptr;
-  const ResourceTimeCandidateFunnelEvaluation *analyticBest = nullptr;
+  const ResourceTimeCandidateFunnelEvaluation *detailedBest = nullptr;
+  const ResourceTimeCandidateFunnelEvaluation *screeningBest = nullptr;
   for (const ResourceTimeCandidateFunnelEvaluation &evaluation :
        result.evaluations) {
     if (!evaluation.detailedFrontierEvaluated)
       continue;
-    ++result.accounting.analyticShadowComparedCandidates;
+    ++result.accounting.screeningComparisonCandidates;
     const bool outOfDomain =
         evaluation.screeningSupport == ResourceTimeEstimateSupport::OutOfDomain;
     if (outOfDomain)
-      ++result.accounting.analyticShadowOutOfDomainCandidates;
+      ++result.accounting.screeningOutOfDomainCandidates;
     const bool admissible =
         evaluation.disposition !=
             ResourceTimeCandidateFunnelDisposition::SoundGateRejected &&
         evaluation.screeningSupport != ResourceTimeEstimateSupport::Unsupported &&
         !outOfDomain;
     if (admissible)
-      ++result.accounting.analyticShadowAdmissibleCandidates;
+      ++result.accounting.screeningAdmissibleCandidates;
     if (evaluation.disposition !=
             ResourceTimeCandidateFunnelDisposition::Estimated ||
         !evaluation.bestHint)
       continue;
-    ++result.accounting.analyticShadowExactFeasibleCandidates;
+    ++result.accounting.detailedScheduleFeasibleCandidates;
     if (admissible)
-      ++result.accounting.analyticShadowFeasibleIntersection;
+      ++result.accounting.screeningDetailedFeasibleIntersection;
     if (admissible &&
-        (!analyticBest ||
+        (!screeningBest ||
          std::tuple(evaluation.screeningLowerBoundPicoseconds,
                     evaluation.candidateIdentity.bytes()) <
-             std::tuple(analyticBest->screeningLowerBoundPicoseconds,
-                         analyticBest->candidateIdentity.bytes())))
-      analyticBest = &evaluation;
-    if (!exactBest ||
+             std::tuple(screeningBest->screeningLowerBoundPicoseconds,
+                        screeningBest->candidateIdentity.bytes())))
+      screeningBest = &evaluation;
+    if (!detailedBest ||
         std::tuple(evaluation.bestHint->estimatedMakespanPicoseconds,
                    evaluation.candidateIdentity.bytes()) <
-            std::tuple(exactBest->bestHint->estimatedMakespanPicoseconds,
-                       exactBest->candidateIdentity.bytes()))
-      exactBest = &evaluation;
+            std::tuple(detailedBest->bestHint->estimatedMakespanPicoseconds,
+                       detailedBest->candidateIdentity.bytes()))
+      detailedBest = &evaluation;
     if (evaluation.screeningLowerBoundPicoseconds >
         evaluation.bestHint->estimatedMakespanPicoseconds) {
-      ++result.accounting.analyticShadowLowerBoundViolations;
+      ++result.accounting.screeningLowerBoundViolations;
       continue;
     }
     const std::uint64_t gap =
         evaluation.bestHint->estimatedMakespanPicoseconds -
         evaluation.screeningLowerBoundPicoseconds;
-    result.accounting.analyticShadowMaximumLowerBoundGapPicoseconds =
-        std::max(result.accounting.analyticShadowMaximumLowerBoundGapPicoseconds,
-                 gap);
+    result.accounting.maximumScreeningLowerBoundGapPicoseconds = std::max(
+        result.accounting.maximumScreeningLowerBoundGapPicoseconds, gap);
   }
-  if (exactBest && analyticBest &&
-      exactBest->candidateIdentity == analyticBest->candidateIdentity)
-    result.accounting.analyticShadowBestRankMatches = 1;
+  if (detailedBest && screeningBest &&
+      detailedBest->candidateIdentity == screeningBest->candidateIdentity)
+    result.accounting.screeningDetailedBestRankMatches = 1;
 
   if (result.incompleteReason ==
       ResourceTimeFrontierIncompleteReason::CancelledOrTimeout) {

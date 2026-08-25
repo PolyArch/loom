@@ -152,8 +152,9 @@ struct ResourceTimeTransition final {
   std::vector<ResourceTimeRegionAllocation> beforeActive;
   std::vector<ResourceTimeRegionAllocation> afterActive;
   /// Canonical roots already complete immediately before `trigger`. Together
-  /// with the one completing active root, this frontier must cover the entire
-  /// Dataflow root inventory before exact zero live-state migration is valid.
+  /// with the one completing active root, this is the exact completed subset
+  /// at a completion-only safe point. Remaining roots may start under the
+  /// child Mapping after the edge is selected.
   std::vector<::dataflow::RootThreadLaunchRef> completedBefore;
   std::vector<ArtifactRootReference> beforeLiveWork;
   std::vector<ArtifactRootReference> afterLiveWork;
@@ -172,6 +173,15 @@ struct ResourceTimeTransition final {
 };
 
 struct ResourceTimeTransitionSequence final {
+  std::vector<ResourceTimeTransition> transitions;
+};
+
+/// One finite compiler-owned catalog of preverified Mapping states and safe-
+/// point edges. Runtime may select only an edge in this catalog. Endpoint and
+/// edge order is provenance, not identity or a runtime priority rule.
+struct ResourceTimeTransitionGraph final {
+  ResourceTimeTransitionEndpointReference entry;
+  std::vector<ResourceTimeTransitionEndpointReference> endpoints;
   std::vector<ResourceTimeTransition> transitions;
 };
 
@@ -240,9 +250,11 @@ verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
 /// Derives the resource, Deployment-configuration, and Mapping-route deltas
 /// from exact endpoint closures, marks the edge verified, and immediately
 /// replays the independent closure verifier. The draft must carry an exact
-/// compiler-owned completion safe point; the bounded profile derives its exact
-/// zero cost components here. This function neither discovers a Mapping nor
-/// invents live-state evidence.
+/// compiler-owned completion safe point; the bounded completion-only profile
+/// derives exact zero cost components here. The completion prefix may be
+/// nonterminal, but no in-flight region or persistent live state may cross the
+/// edge. This function neither discovers a Mapping nor invents live-state
+/// evidence.
 llvm::Expected<ResourceTimeTransition>
 finalizeResourceTimeTransition(ResourceTimeTransition draft,
                                const ArtifactStore &artifacts,
@@ -250,6 +262,18 @@ finalizeResourceTimeTransition(ResourceTimeTransition draft,
 
 llvm::Error validateResourceTimeTransitionSequence(
     const ResourceTimeTransitionSequence &sequence);
+
+/// Checks graph closure and exact endpoint membership without importing
+/// Mapping or Deployment artifacts.
+llvm::Error
+validateResourceTimeTransitionGraph(const ResourceTimeTransitionGraph &graph);
+
+/// Strictly imports every graph endpoint, independently verifies every edge,
+/// and proves that all finite states are reachable from `entry`.
+llvm::Error
+verifyResourceTimeTransitionGraph(const ResourceTimeTransitionGraph &graph,
+                                  const ArtifactStore &artifacts,
+                                  const BlobStore &blobs);
 
 llvm::Error
 validateResourceTimeScheduleWitness(const ResourceTimeScheduleWitness &witness);

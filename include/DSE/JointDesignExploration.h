@@ -183,6 +183,10 @@ struct JointDesignExecutionSummary final {
   std::uint64_t techMappingJournalReplayCount = 0;
   std::uint64_t spatialPnrJournalReplayCount = 0;
   std::uint64_t systemPnrJournalReplayCount = 0;
+  /// Wall time of this exact plan execution. The enclosing workflow classifies
+  /// it as a cold or incremental attempt; the generic executor cannot infer
+  /// that semantic distinction from the plan alone.
+  std::uint64_t executionWallTimeNanoseconds = 0;
   std::uint64_t coldReopenWallTimeNanoseconds = 0;
   std::uint64_t incrementalReopenWallTimeNanoseconds = 0;
   std::optional<std::uint64_t> timeToFirstFeasibleWallTimeNanoseconds;

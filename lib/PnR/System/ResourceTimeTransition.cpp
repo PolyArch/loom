@@ -285,7 +285,7 @@ struct DerivedTransitionDigests final {
   ComponentViewDigest routes;
   bool hardwareProgrammingChanged = false;
   bool noPersistentLiveState = false;
-  bool completionCoversCanonicalRootSet = false;
+  bool completionFrontierIsCanonicalSubset = false;
 };
 
 llvm::Expected<DerivedTransitionDigests>
@@ -404,12 +404,17 @@ deriveTransitionDigests(const ResourceTimeTransition &transition,
         };
         llvm::sort(canonical, less);
         llvm::sort(observed, less);
-        return canonical == observed;
+        if (std::adjacent_find(observed.begin(), observed.end()) !=
+            observed.end())
+          return false;
+        return llvm::all_of(observed, [&](const auto &root) {
+          return llvm::binary_search(canonical, root, less);
+        });
       }()};
 }
 
 llvm::Error
-requireQuiescentCompletionDraft(const ResourceTimeTransition &transition) {
+requireCompletionSafePointDraft(const ResourceTimeTransition &transition) {
   if (!transition.safePoint ||
       transition.safePoint->kind != ResourceTimeSafePointKind::Completion)
     return invalid("transition finalization requires a completion safe point");
@@ -418,13 +423,16 @@ requireQuiescentCompletionDraft(const ResourceTimeTransition &transition) {
     return invalid("transition finalization requires distinct Mapping and "
                    "Deployment endpoints");
   if (transition.beforeActive.size() != 1)
-    return invalid("completion transition requires one globally active parent "
-                   "region");
+    return invalid("completion transition requires one active completing "
+                   "parent region");
   if (!transition.beforeLiveWork.empty() || !transition.afterLiveWork.empty() ||
       transition.tokenLiveStateCorrespondence)
     return invalid("completion transition has unproved live or token state");
-  if (!transition.afterActive.empty())
-    return invalid("completion transition is not globally quiescent");
+  if (llvm::any_of(transition.afterActive, [&](const auto &allocation) {
+        return allocation.region == transition.beforeActive.front().region;
+      }))
+    return invalid("completing region remains active after its completion "
+                   "safe point");
   return llvm::Error::success();
 }
 
@@ -476,14 +484,14 @@ finalizeResourceTimeTransition(ResourceTimeTransition draft,
     return invalid("transition draft has authored delta digests");
   if (draft.reprogrammingTimePicoseconds || draft.migrationTimePicoseconds)
     return invalid("transition draft has authored cost components");
-  if (llvm::Error error = requireQuiescentCompletionDraft(draft))
+  if (llvm::Error error = requireCompletionSafePointDraft(draft))
     return std::move(error);
   auto digests = deriveTransitionDigests(draft, artifacts, blobs);
   if (!digests)
     return digests.takeError();
-  if (!digests->completionCoversCanonicalRootSet)
-    return invalid("completion frontier does not cover the canonical root "
-                   "launch inventory");
+  if (!digests->completionFrontierIsCanonicalSubset)
+    return invalid("completion frontier is not a canonical root-launch "
+                   "subset");
   if (!digests->noPersistentLiveState)
     return invalid("Canonical Dataflow has persistent live state without a "
                    "migration proof owner");
@@ -505,14 +513,14 @@ finalizeResourceTimeTransition(ResourceTimeTransition draft,
 llvm::Error verifyResourceTimeTransitionDeltaDigests(
     const ResourceTimeTransition &transition, const ArtifactStore &artifacts,
     const BlobStore &blobs) {
-  if (llvm::Error error = requireQuiescentCompletionDraft(transition))
+  if (llvm::Error error = requireCompletionSafePointDraft(transition))
     return error;
   auto expected = deriveTransitionDigests(transition, artifacts, blobs);
   if (!expected)
     return expected.takeError();
-  if (!expected->completionCoversCanonicalRootSet)
-    return invalid("completion frontier does not cover the canonical root "
-                   "launch inventory");
+  if (!expected->completionFrontierIsCanonicalSubset)
+    return invalid("completion frontier is not a canonical root-launch "
+                   "subset");
   if (!expected->noPersistentLiveState)
     return invalid("Canonical Dataflow has persistent live state without a "
                    "migration proof owner");
@@ -527,7 +535,7 @@ llvm::Error verifyResourceTimeTransitionDeltaDigests(
                    "nonzero "
                    "reprogramming time");
   if (*transition.migrationTimePicoseconds != 0)
-    return invalid("quiescent completion transition cannot claim live-state "
+    return invalid("completion-only transition cannot claim live-state "
                    "migration work");
   if (!transition.resourceDeltaDigest ||
       *transition.resourceDeltaDigest != expected->resources)

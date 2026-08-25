@@ -404,10 +404,10 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
               selected.finalists.size() == 3 && selected.truncated,
           "resource-time funnel did not bound real Mapping finalists");
   require(selected.accounting.frontierAccounting.states.consumed != 0 &&
-              selected.accounting.analyticShadowComparedCandidates != 0 &&
-              selected.accounting.analyticShadowLowerBoundViolations == 0 &&
-              selected.accounting.analyticShadowFeasibleIntersection <=
-                  selected.accounting.analyticShadowExactFeasibleCandidates &&
+              selected.accounting.screeningComparisonCandidates != 0 &&
+              selected.accounting.screeningLowerBoundViolations == 0 &&
+              selected.accounting.screeningDetailedFeasibleIntersection <=
+                  selected.accounting.detailedScheduleFeasibleCandidates &&
               selected.accounting.frontierAccounting.stateMemoMisses -
                       selected.accounting.frontierAccounting
                           .stateMemoMissCapacityRejections +
@@ -449,7 +449,6 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
   const auto gated =
       take(loom::dse::selectResourceTimeMappingFinalists(candidates, bounded));
   require(gated.accounting.soundGateRejectedCandidates == 1 &&
-              gated.accounting.mappingCallsAvoidedBySoundGate == 1 &&
               gated.accounting.mappingFinalists == 3 &&
               !loom::dse::validateResourceTimeMappingFunnelAccounting(
                   gated.accounting),

@@ -668,20 +668,20 @@ void emitApplicationPlanningDiagnostics(
             {"incomplete_candidates", resourceTime.incompleteCandidates},
             {"mapping_eligible_schedule_hints",
              resourceTime.mappingEligibleScheduleHints},
-            {"analytic_shadow_compared_candidates",
-             resourceTime.analyticShadowComparedCandidates},
-            {"analytic_shadow_exact_feasible_candidates",
-             resourceTime.analyticShadowExactFeasibleCandidates},
-            {"analytic_shadow_admissible_candidates",
-             resourceTime.analyticShadowAdmissibleCandidates},
-            {"analytic_shadow_feasible_intersection",
-             resourceTime.analyticShadowFeasibleIntersection},
-            {"analytic_shadow_best_rank_matches",
-             resourceTime.analyticShadowBestRankMatches},
-            {"analytic_shadow_out_of_domain_candidates",
-             resourceTime.analyticShadowOutOfDomainCandidates},
-            {"analytic_shadow_maximum_lower_bound_gap_picoseconds",
-             resourceTime.analyticShadowMaximumLowerBoundGapPicoseconds},
+            {"screening_comparison_candidates",
+             resourceTime.screeningComparisonCandidates},
+            {"detailed_schedule_feasible_candidates",
+             resourceTime.detailedScheduleFeasibleCandidates},
+            {"screening_admissible_candidates",
+             resourceTime.screeningAdmissibleCandidates},
+            {"screening_detailed_feasible_intersection",
+             resourceTime.screeningDetailedFeasibleIntersection},
+            {"screening_detailed_best_rank_matches",
+             resourceTime.screeningDetailedBestRankMatches},
+            {"screening_out_of_domain_candidates",
+             resourceTime.screeningOutOfDomainCandidates},
+            {"maximum_screening_lower_bound_gap_picoseconds",
+             resourceTime.maximumScreeningLowerBoundGapPicoseconds},
             {"mapping_finalists", resourceTime.mappingFinalists},
             {"functional_replay_candidates",
              resourceTime.functionalReplayCandidates},
@@ -708,8 +708,6 @@ void emitApplicationPlanningDiagnostics(
              resourceTime.unsupportedBeforeMappingScheduleHints},
             {"application_promotion_accounting_complete",
              resourceTime.applicationPromotionAccountingComplete},
-            {"mapping_calls_avoided_by_sound_gate",
-             resourceTime.mappingCallsAvoidedBySoundGate},
             {"mapping_plan_constructions_avoided_by_exact_memo",
              resourceTime.mappingPlanConstructionsAvoidedByExactMemo},
             {"mapping_calls_deferred_by_model",
@@ -1185,20 +1183,21 @@ void emitApplicationMappingDiagnostics(
               resourceTime.mappingFinalists;
           payload["resource_time_mapping_eligible_schedule_hints"] =
               resourceTime.mappingEligibleScheduleHints;
-          payload["resource_time_analytic_shadow_compared_candidates"] =
-              resourceTime.analyticShadowComparedCandidates;
-          payload["resource_time_analytic_shadow_exact_feasible_candidates"] =
-              resourceTime.analyticShadowExactFeasibleCandidates;
-          payload["resource_time_analytic_shadow_admissible_candidates"] =
-              resourceTime.analyticShadowAdmissibleCandidates;
-          payload["resource_time_analytic_shadow_feasible_intersection"] =
-              resourceTime.analyticShadowFeasibleIntersection;
-          payload["resource_time_analytic_shadow_best_rank_matches"] =
-              resourceTime.analyticShadowBestRankMatches;
-          payload["resource_time_analytic_shadow_out_of_domain_candidates"] =
-              resourceTime.analyticShadowOutOfDomainCandidates;
-          payload["resource_time_analytic_shadow_maximum_lower_bound_gap_picoseconds"] =
-              resourceTime.analyticShadowMaximumLowerBoundGapPicoseconds;
+          payload["resource_time_screening_comparison_candidates"] =
+              resourceTime.screeningComparisonCandidates;
+          payload["resource_time_detailed_schedule_feasible_candidates"] =
+              resourceTime.detailedScheduleFeasibleCandidates;
+          payload["resource_time_screening_admissible_candidates"] =
+              resourceTime.screeningAdmissibleCandidates;
+          payload["resource_time_screening_detailed_feasible_intersection"] =
+              resourceTime.screeningDetailedFeasibleIntersection;
+          payload["resource_time_screening_detailed_best_rank_matches"] =
+              resourceTime.screeningDetailedBestRankMatches;
+          payload["resource_time_screening_out_of_domain_candidates"] =
+              resourceTime.screeningOutOfDomainCandidates;
+          payload
+              ["resource_time_maximum_screening_lower_bound_gap_picoseconds"] =
+                  resourceTime.maximumScreeningLowerBoundGapPicoseconds;
           payload["resource_time_functional_replay_candidates"] =
               resourceTime.functionalReplayCandidates;
           payload["resource_time_dataflow_projection_requests"] =
@@ -1225,8 +1224,6 @@ void emitApplicationMappingDiagnostics(
               resourceTime.unsupportedBeforeMappingScheduleHints;
           payload["resource_time_application_promotion_accounting_complete"] =
               resourceTime.applicationPromotionAccountingComplete;
-          payload["resource_time_mapping_calls_avoided_by_sound_gate"] =
-              resourceTime.mappingCallsAvoidedBySoundGate;
           payload["resource_time_mapping_calls_deferred_by_model"] =
               resourceTime.mappingCallsDeferredByModel;
           payload["resource_time_mapping_calls_withheld_by_incomplete"] =
@@ -1358,6 +1355,10 @@ void emitApplicationMappingDiagnostics(
             transition["child_mapping"] = encodeRoot(*observation.childMapping);
           else
             transition["child_mapping"] = nullptr;
+          if (observation.coldMapping)
+            transition["cold_mapping"] = encodeRoot(*observation.coldMapping);
+          else
+            transition["cold_mapping"] = nullptr;
           transition["parent_plan_ordinal"] = observation.parentPlanOrdinal;
           transition["child_plan_ordinal"] = observation.childPlanOrdinal;
           transition["parent_schedule_hint_digest"] =
@@ -1393,6 +1394,22 @@ void emitApplicationMappingDiagnostics(
           transition["incremental_wall_time_ns"] =
               observation.incrementalWallTimeNanoseconds;
           transition["wall_time_ns"] = observation.wallTimeNanoseconds;
+          transition["cold_dfg_cycles"] =
+              observation.coldDfgCycles
+                  ? llvm::json::Value(*observation.coldDfgCycles)
+                  : llvm::json::Value(nullptr);
+          transition["cold_cgra_cycles"] =
+              observation.coldCgraCycles
+                  ? llvm::json::Value(*observation.coldCgraCycles)
+                  : llvm::json::Value(nullptr);
+          transition["incremental_dfg_cycles"] =
+              observation.incrementalDfgCycles
+                  ? llvm::json::Value(*observation.incrementalDfgCycles)
+                  : llvm::json::Value(nullptr);
+          transition["incremental_cgra_cycles"] =
+              observation.incrementalCgraCycles
+                  ? llvm::json::Value(*observation.incrementalCgraCycles)
+                  : llvm::json::Value(nullptr);
           transition["verified"] = observation.verified;
           incrementalTransitions.push_back(std::move(transition));
         }

@@ -193,6 +193,21 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   if (llvm::Error error = pnr::verifyResourceTimeTransitionClosure(
           transition, artifacts, blobs))
     deployment::test::fail(test, llvm::toString(std::move(error)));
+  const pnr::ResourceTimeTransitionGraph transitionGraph{
+      transition.parent, {transition.parent, transition.child}, {transition}};
+  if (llvm::Error error = pnr::verifyResourceTimeTransitionGraph(
+          transitionGraph, artifacts, blobs))
+    deployment::test::fail(
+        test, (llvm::Twine("finite transition graph failed closure: ") +
+               llvm::toString(std::move(error)))
+                  .str());
+  auto duplicateEdgeGraph = transitionGraph;
+  duplicateEdgeGraph.transitions.push_back(transition);
+  llvm::Error duplicateEdgeError =
+      pnr::validateResourceTimeTransitionGraph(duplicateEdgeGraph);
+  deployment::test::require(test, static_cast<bool>(duplicateEdgeError),
+                            "transition graph accepted a duplicate edge");
+  llvm::consumeError(std::move(duplicateEdgeError));
 
   dse::ResourceTimeScheduleHint applicationHint;
   applicationHint.actions = {
@@ -283,16 +298,29 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
                      applicationMappings, artifacts, {},
                      dse::ResourceTimeConcurrencyBounds{
                          1, 1, dse::ResourceTimeEstimateSupport::Exact},
-                     &blobs, applicationEndpoints,
-                     dse::ResourceTimeMappingTransitionCandidate{
-                         parentMapping.reference(), childMapping.reference()}));
+                     &blobs, applicationEndpoints));
   const auto *verifiedApplication =
       std::get_if<dse::VerifiedResourceTimeSpectrum>(
           &applicationFunnel.verification);
+  if (!verifiedApplication) {
+    const auto *incompleteApplication =
+        std::get_if<dse::IncompleteResourceTimeSpectrum>(
+            &applicationFunnel.verification);
+    const std::string diagnostic =
+        incompleteApplication
+            ? (llvm::Twine("application materializer remained incomplete: ") +
+               incompleteApplication->diagnostic)
+                  .str()
+            : "application materializer was not verified";
+    deployment::test::fail(test, diagnostic);
+  }
   deployment::test::require(
       test,
-      verifiedApplication && verifiedApplication->scenarios.size() == 1 &&
+      verifiedApplication->scenarios.size() == 1 &&
           verifiedApplication->scenarios.front().systemMappings.size() == 2 &&
+          verifiedApplication->scenarios.front().transitionGraph &&
+          verifiedApplication->scenarios.front()
+                  .transitionGraph->transitions.size() == 1 &&
           verifiedApplication->scenarios.front()
                   .transitions.transitions.front()
                   .parent.deployment == parent.reference() &&
@@ -327,9 +355,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
                      applicationMappings, artifacts, {},
                      dse::ResourceTimeConcurrencyBounds{
                          1, 1, dse::ResourceTimeEstimateSupport::Exact},
-                     &blobs, parentEndpointOnly,
-                     dse::ResourceTimeMappingTransitionCandidate{
-                         parentMapping.reference(), childMapping.reference()}));
+                     &blobs, parentEndpointOnly));
   const auto *incompleteApplication =
       std::get_if<dse::IncompleteResourceTimeSpectrum>(
           &incompleteApplicationFunnel.verification);
@@ -397,8 +423,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
                              "must be owned by Canonical Dataflow");
   auto survivingRegion = draft;
   survivingRegion.afterActive = survivingRegion.beforeActive;
-  requireFinalizationFailure(std::move(survivingRegion),
-                             "not globally quiescent");
+  requireFinalizationFailure(std::move(survivingRegion), "remains active");
   auto liveWork = draft;
   liveWork.beforeLiveWork = {parent.reference()};
   requireFinalizationFailure(std::move(liveWork), "unproved live or token");
@@ -447,24 +472,32 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   for (const auto &domain : multiRootContexts.spatialDomains)
     if (domain.graph.rootThreadLaunch == omittedRoot)
       appendOmittedRootCore(domain.context.accCore);
-  auto omittedActiveRoot = draft;
-  omittedActiveRoot.trigger =
+  auto nonterminalCompletion = draft;
+  nonterminalCompletion.trigger =
       dataflow::rootThreadCompletionEventFamily(omittedRoot);
-  omittedActiveRoot.safePoint = pnr::ResourceTimeSafePointReference{
+  nonterminalCompletion.safePoint = pnr::ResourceTimeSafePointReference{
       multiRootDataflowReference, pnr::ResourceTimeSafePointKind::Completion};
-  omittedActiveRoot.parent = {multiRootParentMapping.reference(),
-                              multiRootParent.reference()};
-  omittedActiveRoot.child = {multiRootChild.deployment().systemMapping(),
-                             multiRootChild.reference()};
-  omittedActiveRoot.beforeActive = {{omittedRoot, omittedRootResources}};
-  omittedActiveRoot.completedBefore.clear();
-  requireFinalizationFailure(std::move(omittedActiveRoot),
-                             "canonical root launch inventory");
+  nonterminalCompletion.parent = {multiRootParentMapping.reference(),
+                                  multiRootParent.reference()};
+  nonterminalCompletion.child = {multiRootChild.deployment().systemMapping(),
+                                 multiRootChild.reference()};
+  nonterminalCompletion.beforeActive = {{omittedRoot, omittedRootResources}};
+  nonterminalCompletion.completedBefore.clear();
+  const auto nonterminalTransition =
+      take(test, pnr::finalizeResourceTimeTransition(
+                     std::move(nonterminalCompletion), artifacts, blobs));
+  if (llvm::Error error = pnr::verifyResourceTimeTransitionClosure(
+          nonterminalTransition, artifacts, blobs))
+    deployment::test::fail(
+        test, (llvm::Twine(
+                   "nonterminal completion edge failed independent closure: ") +
+               llvm::toString(std::move(error)))
+                  .str());
 
   auto repeatedCompletion = draft;
   repeatedCompletion.completedBefore.push_back(precedingRoot);
   requireFinalizationFailure(std::move(repeatedCompletion),
-                             "canonical root launch inventory");
+                             "canonical root-launch subset");
 
   const FinalizedDeployment changedProgramming =
       deployment::test::buildRetargetedSharedProgrammingEndpointDeployment(

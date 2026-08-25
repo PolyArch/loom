@@ -3126,6 +3126,14 @@ preference. A resource-time transition remains `Unsupported` or
 and route deltas, live-state correspondence, and migration-time contract are
 all derived by their existing owners.
 
+Cold comparison and preserve-first repair are two real executions over the
+same Dataflow, System, partition intent, and policy. They use distinct journal
+roots, schedulers, and PnR derived-context sessions. Each side independently
+imports its Mapping, runs application runtime/QoR validation, and replays the
+resource-time spectrum verifier. One execution is never charged to both wall-
+time classes, and a missing or incomplete side cannot publish a verified
+paired observation.
+
 The rebase ledger must account for the System layer separately from lower
 Mapping layers. For every parent SystemMapping it records parent, preserved,
 and reopened thread bindings, graph bindings, resource uses, service
@@ -3387,37 +3395,37 @@ Changed runtime images therefore change the configuration delta without
 inventing hardware programming work. Measured time is not inferred from a
 digest or a changed bit count.
 
-A verified completion edge is globally quiescent: the compiler-owned
-`completed_before` frontier plus the one active root named by the trigger
-covers the complete Canonical Dataflow root inventory, that root completes,
-and the child active set is empty. Static thread and graph computation is
-permitted because canonical root completion closes it. Exact zero live-state
-migration still rejects logical memory, channel-typed state, and DynamicWork,
-whose persistent state needs a separate correspondence owner. Caller-authored
-empty active vectors are not proof. Unchanged hardware-programming state has
-exact zero reprogramming time. A changed programming state remains
+A verified completion edge is quiescent at its transition frontier: the
+compiler-owned `completed_before` roots plus the one active root named by the
+trigger form a unique subset of the Canonical Dataflow root inventory, that
+root completes, and no in-flight region or persistent state crosses the edge.
+Remaining roots may start under the child Mapping, so the edge need not be an
+application-terminal event. Exact zero live-state migration still rejects
+logical memory, channel-typed state, and DynamicWork, whose persistent state
+needs a separate correspondence owner. Caller-authored empty active vectors
+are not proof. Unchanged hardware-programming state has exact zero
+reprogramming time. A changed programming state remains
 `ProofNotEstablished` until an exact programming-time owner exists. Surviving
 work, token publication, composite completion, and explicit safe points
 likewise remain typed incomplete until their respective proof artifacts exist.
 
 Application Mapping verification runs before Deployment construction and may
 therefore retain an incomplete edge. After selecting the bounded Mapping
-alternative, Deployment construction follows only exact parent/child Mapping
-adjacencies already recorded by application-level incremental repair, builds
-each endpoint's own binaries and Deployment, and replays the same resource-time
-alternative verifier. Every resulting edge is retained by
+alternative, Deployment construction follows an ordered finite
+Mapping/Deployment path recorded by application-level incremental repair,
+builds each endpoint's own binaries and Deployment, and replays the same
+resource-time alternative verifier. Path identity is explicit; it is never
+inferred from equal allocation counts. Every resulting edge is retained by
 ApplicationDeploymentArtifacts together with both the parent completion
 spectrum and the independently verified child spectrum that carries active
-work. The optional visualization bundle independently replays each closure and
-publishes the exact endpoints, edge, costs, active allocations, and endpoint
-spectrum summaries as removable application evidence. The current Deployment
-package and runtime do not yet import this graph; runtime selection therefore
-remains unavailable rather than adding a Mapping, synthesizing an endpoint, or
-running PnR.
+work. The application then constructs one `ResourceTimeTransitionGraph` and
+replays its independent endpoint, reachability, and edge closure verifier.
+Visualization derives its endpoint array from that graph and cannot act as a
+second catalog.
 
-The initial implementation is a compiler-precomputed finite transition
-sequence. It does not run online DSE or PnR and does not add a second
-Mapping-legality owner. Schedule-preserve uses the same contract for a
+The implementation is a compiler-precomputed finite transition graph. It does
+not run online DSE or PnR and does not add a second Mapping-legality owner.
+Schedule-preserve uses the same contract for a
 hardware parent-to-child change and for adjacent resource-time states: the
 previous Mapping is the preference, only the typed transitive invalidation
 cone is reopened, and the complete child closure plus independent verifier
@@ -3638,16 +3646,16 @@ execution order, and cache warmth cannot change semantic candidate identity,
 formal work accounting, or the final selection for an identical evidence set.
 Timeout remains typed incomplete even when no finalist reached Mapping.
 
-For the detailed bounded sample already evaluated by one invocation, the same
-owner records an analytic-shadow comparison without another frontier or PnR
-call. It counts compared candidates, exact-complete feasible candidates,
-screening-admissible candidates, their feasible intersection, whether the
-analytic lower-bound order selected the exact-best candidate, out-of-domain
-rows, and the maximum exact-makespan minus screening-lower-bound gap. A lower
-bound that exceeds its exact completed makespan is a provider-contract error,
-not a calibration miss. These counters are evidence about the sampled detailed
-set; they do not generalize recall to deferred candidates and never establish
-Mapping legality.
+For the bounded sample already evaluated by one invocation, the same owner
+compares the cheap screening projection with its detailed schedule frontier
+without another frontier or PnR call. It counts compared candidates, detailed
+schedule-feasible candidates, screening-admissible candidates, their feasible
+intersection, whether both schedules rank the same candidate first,
+out-of-domain rows, and the maximum detailed-makespan minus screening-lower-
+bound gap. A lower bound that exceeds its detailed completed makespan is a
+provider-contract error, not a calibration miss. Neither side is Mapping/PnR
+legality evidence. These counters describe only the sampled detailed set and
+do not generalize recall to deferred candidates.
 
 Application operation diagnostics may report `peak_resident_bytes` as the
 whole-process RSS high-water observed at that boundary. It is not a per-stage

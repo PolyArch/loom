@@ -416,16 +416,23 @@ admission semantics. Reprogramming cost separately compares the physical
 hardware-binding and configuration-payload state. An authored digest, authored
 cost, or successful child PnR is not transition proof.
 
+`ResourceTimeTransitionGraph` is the finite compiler-owned catalog. It names
+one exact Mapping/Deployment entry, unique endpoints, and preverified edges;
+`verifyResourceTimeTransitionGraph` independently imports every endpoint,
+replays every edge closure, and rejects foreign or unreachable states. Runtime
+may select only a graph member and cannot synthesize Mapping or invoke PnR.
+
 The admitted completion profile requires `completed_before` plus the one
-active completing root to equal the complete Canonical Dataflow root inventory,
-an empty child active set, no logical memory, channel-typed state, or
-DynamicWork, unchanged hardware-programming state, and owner-derived exact zero
-reprogramming and migration time. Ordinary completed thread and graph
-computation is allowed. Explicit safe points, changed hardware programming,
-surviving active work, and composite or token boundaries fail closed until
-typed proof owners are available. These restrictions prevent the transition
-contract from becoming an online PnR or arbitrary in-flight preemption
-mechanism.
+active completing root to be a unique subset of the Canonical Dataflow root
+inventory. The completing root is absent after the edge; roots not yet started
+may begin under the child Mapping. No logical memory, channel-typed state, or
+DynamicWork may persist across the edge. Hardware-programming state is
+unchanged and the owner derives exact zero reprogramming and migration time.
+Ordinary completed thread and graph computation is allowed. Explicit safe
+points, changed hardware programming, surviving in-flight work, and composite
+or token boundaries fail closed until typed proof owners are available. These
+restrictions prevent the graph from becoming an online PnR or arbitrary
+in-flight preemption mechanism.
 
 Hardware-impact reuse reports one closed disposition: `preserved`,
 `local_repair`, or `cold_fallback`. `Unchanged` and `Rebase` Tech/Spatial

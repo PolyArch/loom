@@ -734,9 +734,7 @@ verifyResourceTimeAlternative(
     llvm::ArrayRef<ArtifactRootReference> systemMappings,
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const ComponentViewDigest &scheduleHintDigest,
-    llvm::ArrayRef<dse::ResourceTimeMappingDeploymentEndpoint> endpoints = {},
-    std::optional<dse::ResourceTimeMappingTransitionCandidate> transition =
-        std::nullopt) {
+    llvm::ArrayRef<dse::ResourceTimeMappingDeploymentEndpoint> endpoints = {}) {
   const auto evaluation =
       llvm::find_if(funnel.evaluations, [&](const auto &candidate) {
         return candidate.candidateIdentity == alternative.candidateIdentity;
@@ -751,7 +749,7 @@ verifyResourceTimeAlternative(
       llvm::ArrayRef<dse::ResourceTimeScheduleHint>(*hint, 1),
       alternative.resourceTimeRegions, alternative.resourceTimeRegionBounds,
       systemMappings, artifacts, {}, evaluation->concurrencyBounds, &blobs,
-      endpoints, transition);
+      endpoints);
   if (!verified)
     return verified.takeError();
   return std::optional<dse::ResourceTimeSpectrumFunnelResult>(
@@ -1455,20 +1453,20 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
               {"incomplete_candidates", accounting.incompleteCandidates},
               {"mapping_eligible_schedule_hints",
                accounting.mappingEligibleScheduleHints},
-              {"analytic_shadow_compared_candidates",
-               accounting.analyticShadowComparedCandidates},
-              {"analytic_shadow_exact_feasible_candidates",
-               accounting.analyticShadowExactFeasibleCandidates},
-              {"analytic_shadow_admissible_candidates",
-               accounting.analyticShadowAdmissibleCandidates},
-              {"analytic_shadow_feasible_intersection",
-               accounting.analyticShadowFeasibleIntersection},
-              {"analytic_shadow_best_rank_matches",
-               accounting.analyticShadowBestRankMatches},
-              {"analytic_shadow_out_of_domain_candidates",
-               accounting.analyticShadowOutOfDomainCandidates},
-              {"analytic_shadow_maximum_lower_bound_gap_picoseconds",
-               accounting.analyticShadowMaximumLowerBoundGapPicoseconds},
+              {"screening_comparison_candidates",
+               accounting.screeningComparisonCandidates},
+              {"detailed_schedule_feasible_candidates",
+               accounting.detailedScheduleFeasibleCandidates},
+              {"screening_admissible_candidates",
+               accounting.screeningAdmissibleCandidates},
+              {"screening_detailed_feasible_intersection",
+               accounting.screeningDetailedFeasibleIntersection},
+              {"screening_detailed_best_rank_matches",
+               accounting.screeningDetailedBestRankMatches},
+              {"screening_out_of_domain_candidates",
+               accounting.screeningOutOfDomainCandidates},
+              {"maximum_screening_lower_bound_gap_picoseconds",
+               accounting.maximumScreeningLowerBoundGapPicoseconds},
               {"mapping_finalists", accounting.mappingFinalists},
               {"dataflow_projection_requests",
                accounting.dataflowProjectionRequests},
@@ -1495,8 +1493,6 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
                accounting.applicationPromotionAccountingComplete},
               {"mapping_calls_deferred_by_model",
                accounting.mappingCallsDeferredByModel},
-              {"mapping_calls_avoided_by_sound_gate",
-               accounting.mappingCallsAvoidedBySoundGate},
               {"mapping_plan_constructions_avoided_by_exact_memo",
                accounting.mappingPlanConstructionsAvoidedByExactMemo},
               {"mapping_calls_withheld_by_incomplete",
@@ -2656,6 +2652,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               *execution->summary.selectedMapping,
               childAlternative.plan.pairOutputs.front().pair.system,
               childSummary.selectedMapping,
+              adjacent->coldMapping,
               static_cast<std::uint64_t>(selectedPlanOrdinal),
               static_cast<std::uint64_t>(childOrdinal),
               prepared.mappingAlternatives[selectedPlanOrdinal]
@@ -2673,10 +2670,14 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                   childSummary.reopenedGraphBindingCount,
               childDisposition,
               childIncompleteReason,
-              childSummary.coldReopenWallTimeNanoseconds,
+              adjacent->coldExecution.summary.executionWallTimeNanoseconds,
               childSummary.incrementalReopenWallTimeNanoseconds,
-              childSummary.coldReopenWallTimeNanoseconds +
+              adjacent->coldExecution.summary.executionWallTimeNanoseconds +
                   childSummary.incrementalReopenWallTimeNanoseconds,
+              std::nullopt,
+              std::nullopt,
+              std::nullopt,
+              std::nullopt,
               false};
           if (childHasMapping) {
             adjacent->execution.summary.selectedPlanOrdinal = childOrdinal;
@@ -2691,9 +2692,49 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 childAlternative.resourceTimeScheduleHintDigest);
             if (!childSpectrum)
               return childSpectrum.takeError();
+            bool coldVerified = false;
+            if (adjacent->coldMapping) {
+              adjacent->coldExecution.summary.selectedPlanOrdinal =
+                  childOrdinal;
+              auto coldRuntime = detail::validateApplicationMappingRuntime(
+                  prepared, childAlternative, adjacent->coldExecution,
+                  request.executionPolicy, artifacts, blobs);
+              if (!coldRuntime)
+                return coldRuntime.takeError();
+              std::vector<ArtifactRootReference> coldMappings;
+              for (const dse::JointMappedPair &pair :
+                   adjacent->coldExecution.mappedPairs)
+                coldMappings.insert(coldMappings.end(),
+                                    pair.systemMappings.begin(),
+                                    pair.systemMappings.end());
+              llvm::sort(coldMappings, artifactRootReferenceLess);
+              coldMappings.erase(
+                  std::unique(coldMappings.begin(), coldMappings.end()),
+                  coldMappings.end());
+              auto coldSpectrum = verifyResourceTimeAlternative(
+                  prepared.resourceTimeFunnel, childAlternative, coldMappings,
+                  artifacts, blobs,
+                  childAlternative.resourceTimeScheduleHintDigest);
+              if (!coldSpectrum)
+                return coldSpectrum.takeError();
+              observation.coldDfgCycles = coldRuntime->dfgCycles;
+              observation.coldCgraCycles = coldRuntime->cgraCycles;
+              coldVerified =
+                  coldRuntime->disposition ==
+                      ApplicationMappingRuntimeDisposition::Completed &&
+                  coldSpectrum->has_value() &&
+                  std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
+                      (*coldSpectrum)->verification);
+            }
+            observation.incrementalDfgCycles = childRuntime->dfgCycles;
+            observation.incrementalCgraCycles = childRuntime->cgraCycles;
             observation.verified =
+                coldVerified &&
                 childRuntime->disposition ==
-                ApplicationMappingRuntimeDisposition::Completed;
+                    ApplicationMappingRuntimeDisposition::Completed &&
+                childSpectrum->has_value() &&
+                std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
+                    (*childSpectrum)->verification);
             outcomes.push_back(ApplicationMappingCandidateOutcome{
                 childAlternative.preMappingCandidateRecordOrdinal,
                 childOrdinal,
@@ -3344,12 +3385,10 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
         if (endpoint != endpoints.end())
           transitionEndpoints.push_back(*endpoint);
       }
-      const dse::ResourceTimeMappingTransitionCandidate edge{
-          transitionMappings[0], transitionMappings[1]};
       auto verified = verifyResourceTimeAlternative(
           prepared.resourceTimeFunnel, alternative, transitionMappings,
           artifacts, blobs, candidate->parentScheduleHintDigest,
-          transitionEndpoints, edge);
+          transitionEndpoints);
       if (!verified)
         return verified.takeError();
       if (!*verified)
@@ -3365,8 +3404,8 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
              spectrum.scenarios)
           for (const pnr::ResourceTimeTransition &candidateEdge :
                scenario.transitions.transitions) {
-            if (candidateEdge.parent.mapping != edge.parentMapping ||
-                candidateEdge.child.mapping != edge.childMapping)
+            if (candidateEdge.parent.mapping != transitionMappings[0] ||
+                candidateEdge.child.mapping != transitionMappings[1])
               continue;
             if (verifiedEdge)
               return invalid("resource-time application evidence repeats one "
@@ -3414,13 +3453,33 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       }
     }
   }
+  std::optional<pnr::ResourceTimeTransitionGraph> resourceTimeTransitionGraph;
+  if (selectedPlan) {
+    resourceTimeTransitionGraph.emplace(pnr::ResourceTimeTransitionGraph{
+        {imported->mapping.reference(), deployment->reference()}, {}, {}});
+    resourceTimeTransitionGraph->endpoints.push_back(
+        resourceTimeTransitionGraph->entry);
+    const auto appendEndpoint = [&](const auto &endpoint) {
+      if (!llvm::is_contained(resourceTimeTransitionGraph->endpoints, endpoint))
+        resourceTimeTransitionGraph->endpoints.push_back(endpoint);
+    };
+    for (const ApplicationResourceTimeTransitionEvidence &evidence :
+         resourceTimeTransitions) {
+      appendEndpoint(evidence.transition.parent);
+      appendEndpoint(evidence.transition.child);
+      resourceTimeTransitionGraph->transitions.push_back(evidence.transition);
+    }
+    if (llvm::Error error = pnr::verifyResourceTimeTransitionGraph(
+            *resourceTimeTransitionGraph, artifacts, blobs))
+      return std::move(error);
+  }
   emitElapsed(ApplicationBuildOperation::DeclarativeDeploymentFinalization,
               operationBegin);
   return ApplicationDeploymentArtifacts{abi->reference(),
                                         abi->constructionStatistics(),
                                         std::move(*selectedHardwareBindings),
                                         std::move(*selectedBinaries),
-                                        std::move(endpoints),
+                                        std::move(resourceTimeTransitionGraph),
                                         std::move(resourceTimeTransitions),
                                         std::move(resourceTimeSpectrum),
                                         std::move(*deployment)};

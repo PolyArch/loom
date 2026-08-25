@@ -55,6 +55,10 @@ struct VerifiedResourceTimeSpectrumScenario final {
   /// the scenario changes Mapping state.
   std::vector<::loom::pnr::ResourceTimeScheduleState> states;
   ::loom::pnr::ResourceTimeTransitionSequence transitions;
+  /// Present when the scenario changes Mapping and every finite state has an
+  /// exact Deployment endpoint. This is the runtime-selectable catalog; the
+  /// sequence above is the chosen path through it.
+  std::optional<::loom::pnr::ResourceTimeTransitionGraph> transitionGraph;
 };
 
 /// Every named Mapping has passed the ordinary independent SystemMapping
@@ -109,20 +113,13 @@ struct ResourceTimeSpectrumFunnelResult final {
   ResourceTimeSpectrumFunnelAccounting accounting;
 };
 
-/// Exact Deployment closure paired with one already verified Mapping state.
-/// The catalog is invocation-local compiler output; it is never discovered by
-/// scanning the ArtifactStore.
+/// One state in an ordered finite Mapping/Deployment path. The path is
+/// invocation-local compiler output; it is never inferred from allocation
+/// counts or discovered by scanning the ArtifactStore. Path advancement is
+/// allowed only at a compiler-known completion action.
 struct ResourceTimeMappingDeploymentEndpoint final {
   ArtifactRootReference mapping;
   ArtifactRootReference deployment;
-};
-
-/// One finite application-owned adjacency between independently verified
-/// Mapping states. Spectrum may bind the terminal quiescent completion of the
-/// parent schedule to this child; it never discovers an edge by store scan.
-struct ResourceTimeMappingTransitionCandidate final {
-  ArtifactRootReference parentMapping;
-  ArtifactRootReference childMapping;
 };
 
 /// Independently imports every SystemMapping used by the schedule and proves
@@ -148,9 +145,7 @@ verifyResourceTimeMappingFinalists(
     std::optional<ResourceTimeConcurrencyBounds> concurrencyBounds =
         std::nullopt,
     const BlobStore *blobs = nullptr,
-    llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> endpoints = {},
-    std::optional<ResourceTimeMappingTransitionCandidate> transition =
-        std::nullopt);
+    llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> mappingPath = {});
 
 } // namespace loom::dse
 

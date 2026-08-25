@@ -113,23 +113,22 @@ llvm::Expected<std::vector<std::string>>
 verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
                            const ArtifactStore &artifacts,
                            const BlobStore &blobs) {
-  for (std::size_t index = 0; index != application.resourceTimeEndpoints.size();
-       ++index) {
-    const auto &endpoint = application.resourceTimeEndpoints[index];
-    for (std::size_t prior = 0; prior != index; ++prior)
-      if (application.resourceTimeEndpoints[prior].mapping == endpoint.mapping)
-        return visualizationError("resource-time endpoint catalog repeats one "
-                                  "Mapping");
-    auto imported = ::loom::deployment::importDeployment(endpoint.deployment,
-                                                         artifacts, blobs);
-    if (!imported)
-      return visualizationError("cannot strictly import a resource-time "
-                                "Deployment endpoint: " +
-                                llvm::toString(imported.takeError()));
-    if (imported->deployment().systemMapping() != endpoint.mapping)
-      return visualizationError("resource-time Deployment endpoint selects "
-                                "another Mapping");
+  if (!application.resourceTimeTransitionGraph) {
+    if (!application.resourceTimeTransitions.empty())
+      return visualizationError("resource-time edge evidence has no finite "
+                                "transition graph");
+    return std::vector<std::string>{};
   }
+  const pnr::ResourceTimeTransitionGraph &graph =
+      *application.resourceTimeTransitionGraph;
+  if (llvm::Error error =
+          pnr::verifyResourceTimeTransitionGraph(graph, artifacts, blobs))
+    return visualizationError("resource-time transition graph failed "
+                              "independent closure: " +
+                              llvm::toString(std::move(error)));
+  if (graph.transitions.size() != application.resourceTimeTransitions.size())
+    return visualizationError("resource-time graph and edge evidence counts "
+                              "disagree");
 
   std::vector<std::string> triggers;
   triggers.reserve(application.resourceTimeTransitions.size());
@@ -142,16 +141,17 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
                                 llvm::toString(std::move(error)));
     for (const pnr::ResourceTimeTransitionEndpointReference *endpoint :
          {&evidence.transition.parent, &evidence.transition.child}) {
-      const auto found = llvm::find_if(
-          application.resourceTimeEndpoints, [&](const auto &candidate) {
-            return endpoint->deployment &&
-                   candidate.mapping == endpoint->mapping &&
-                   candidate.deployment == *endpoint->deployment;
-          });
-      if (found == application.resourceTimeEndpoints.end())
+      if (!llvm::is_contained(graph.endpoints, *endpoint))
         return visualizationError("resource-time transition lost an exact "
                                   "endpoint catalog member");
     }
+    if (llvm::count_if(graph.transitions, [&](const auto &candidate) {
+          return candidate.parent == evidence.transition.parent &&
+                 candidate.child == evidence.transition.child &&
+                 candidate.trigger == evidence.transition.trigger;
+        }) != 1)
+      return visualizationError("resource-time edge evidence is not an exact "
+                                "finite-graph member");
     const auto *parent = std::get_if<dse::VerifiedResourceTimeSpectrum>(
         &evidence.parentSpectrum.verification);
     const auto *child = std::get_if<dse::VerifiedResourceTimeSpectrum>(
@@ -317,13 +317,13 @@ llvm::Error writeBundle(llvm::StringRef destination,
                                              deployment.deployment.reference());
       });
       json.attributeArray("resource_time_endpoints", [&] {
-        for (const dse::ResourceTimeMappingDeploymentEndpoint &endpoint :
-             deployment.resourceTimeEndpoints) {
-          json.object([&] {
-            writeReference(json, "mapping", endpoint.mapping);
-            writeReference(json, "deployment", endpoint.deployment);
-          });
-        }
+        if (deployment.resourceTimeTransitionGraph)
+          for (const pnr::ResourceTimeTransitionEndpointReference &endpoint :
+               deployment.resourceTimeTransitionGraph->endpoints)
+            json.object([&] {
+              writeReference(json, "mapping", endpoint.mapping);
+              writeReference(json, "deployment", *endpoint.deployment);
+            });
       });
       json.attributeArray("resource_time_transitions", [&] {
         for (const auto indexed :

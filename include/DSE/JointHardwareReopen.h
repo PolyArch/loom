@@ -95,16 +95,21 @@ struct JointResourceTimeAdjacentRepair final {
   ArtifactRootReference parentMapping;
   ArtifactRootReference migrationSeed;
   JointDesignExplorationPlan plan;
+  std::optional<ArtifactRootReference> coldMapping;
+  std::optional<ArtifactRootReference> incrementalMapping;
+  JointDesignExecution coldExecution;
   JointDesignExecution execution;
   JointMappingReuseDisposition reuseDisposition =
       JointMappingReuseDisposition::ColdFallback;
 };
 
 /// Executes one already-promoted adjacent resource-time state on the same
-/// immutable System. Tech and Spatial frontiers are retained, while the typed
-/// Dataflow root delta is bound to the existing System preserve-first
-/// initializer. This function does not construct a ResourceTimeTransition or
-/// claim a safe point, Deployment delta, migration cost, or endpoint class.
+/// immutable System. It executes one independent cold Mapping and one
+/// preserve-first Mapping for the same child partitions. Tech and Spatial
+/// frontiers are retained only by the latter, while the typed Dataflow root
+/// delta is bound to the existing System preserve-first initializer. This
+/// function does not construct a ResourceTimeTransition or claim a safe point,
+/// Deployment delta, migration cost, or endpoint class.
 llvm::Expected<JointResourceTimeAdjacentRepair>
 executeResourceTimeAdjacentMappingRepair(
     const JointDesignExplorationPlan &parentPlan,

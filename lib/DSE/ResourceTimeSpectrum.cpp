@@ -190,8 +190,7 @@ materializeHint(
     const ResourceTimeScheduleHint &hint,
     llvm::ArrayRef<ResourceTimeRegionFeature> regions,
     llvm::ArrayRef<ImportedMappingProjection> mappings,
-    llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> endpoints,
-    std::optional<ResourceTimeMappingTransitionCandidate> transition,
+    llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> mappingPath,
     const ArtifactStore &store, const BlobStore *blobs,
     ResourceTimeSpectrumFunnelAccounting &accounting) {
   if (hint.states.size() != hint.actions.size() + 1)
@@ -201,37 +200,39 @@ materializeHint(
   // single Mapping is only a valid shortcut when every state matches it.
   std::vector<const ImportedMappingProjection *> selectedStates(
       hint.states.size());
-  if (transition) {
-    const auto parent = llvm::find_if(mappings, [&](const auto &mapping) {
-      return mapping.reference == transition->parentMapping;
-    });
-    const auto child = llvm::find_if(mappings, [&](const auto &mapping) {
-      return mapping.reference == transition->childMapping;
-    });
-    if (parent == mappings.end() || child == mappings.end())
-      return invalid("resource-time transition candidate lost an imported "
-                     "Mapping endpoint");
-    if (hint.states.size() < 2 || !hint.states.back().active.empty())
+  std::vector<std::vector<const ImportedMappingProjection *>> matches;
+  matches.reserve(hint.states.size());
+  for (const ResourceTimeHintState &state : hint.states) {
+    std::vector<const ImportedMappingProjection *> candidates;
+    for (const ImportedMappingProjection &mapping : mappings)
+      if (mappingMatchesState(mapping, state, accounting))
+        candidates.push_back(&mapping);
+    if (candidates.empty())
       return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
+    matches.push_back(std::move(candidates));
+  }
+  const bool exactMappingPath =
+      !mappingPath.empty() && mappingPath.size() == mappings.size();
+  if (exactMappingPath) {
+    std::size_t pathPosition = 0;
     for (std::size_t index = 0; index != hint.states.size(); ++index) {
-      const ImportedMappingProjection *selected =
-          index + 1 == hint.states.size() ? &*child : &*parent;
-      if (!mappingMatchesState(*selected, hint.states[index], accounting))
+      if (index != 0 && pathPosition + 1 != mappingPath.size()) {
+        const ResourceTimeActionDelta &action = hint.actions[index - 1];
+        if (action.kind == ResourceTimeActionKind::AdvanceEvent &&
+            action.completedRegions.size() == 1)
+          ++pathPosition;
+      }
+      const auto selected = llvm::find_if(mappings, [&](const auto &mapping) {
+        return mapping.reference == mappingPath[pathPosition].mapping;
+      });
+      if (selected == mappings.end() ||
+          !llvm::is_contained(matches[index], &*selected))
         return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
-      selectedStates[index] = selected;
+      selectedStates[index] = &*selected;
     }
+    if (pathPosition + 1 != mappingPath.size())
+      return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
   } else {
-    std::vector<std::vector<const ImportedMappingProjection *>> matches;
-    matches.reserve(hint.states.size());
-    for (const ResourceTimeHintState &state : hint.states) {
-      std::vector<const ImportedMappingProjection *> candidates;
-      for (const ImportedMappingProjection &mapping : mappings)
-        if (mappingMatchesState(mapping, state, accounting))
-          candidates.push_back(&mapping);
-      if (candidates.empty())
-        return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
-      matches.push_back(std::move(candidates));
-    }
     for (std::size_t index = 0; index != hint.states.size(); ++index) {
       if (matches[index].size() == 1) {
         selectedStates[index] = matches[index].front();
@@ -240,9 +241,9 @@ materializeHint(
       if (!hint.states[index].active.empty())
         return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
       // An empty boundary has no allocation fact of its own. Bind it to the
-      // next uniquely matched nonempty state so a Mapping switch occurs at the
-      // preceding completion rather than at a same-time admission. A terminal
-      // empty state retains the preceding Mapping.
+      // next uniquely matched nonempty state so a Mapping switch occurs at
+      // the preceding completion. A terminal empty state retains the prior
+      // Mapping.
       for (std::size_t next = index + 1; next != hint.states.size(); ++next) {
         if (hint.states[next].active.empty())
           continue;
@@ -387,11 +388,11 @@ materializeHint(
       if (execution.completionPicoseconds < after.timePicoseconds)
         transition.completedBefore.push_back(execution.region);
     llvm::sort(transition.completedBefore, rootLess);
-    if (blobs && !endpoints.empty()) {
-      const auto parent = llvm::find_if(endpoints, [&](const auto &endpoint) {
+    if (blobs && exactMappingPath) {
+      const auto parent = llvm::find_if(mappingPath, [&](const auto &endpoint) {
         return endpoint.mapping == before.mapping;
       });
-      const auto child = llvm::find_if(endpoints, [&](const auto &endpoint) {
+      const auto child = llvm::find_if(mappingPath, [&](const auto &endpoint) {
         return endpoint.mapping == after.mapping;
       });
       const auto completing =
@@ -399,7 +400,7 @@ materializeHint(
             return ::dataflow::rootThreadCompletionEventFamily(
                        allocation.region) == after.event;
           });
-      if (parent != endpoints.end() && child != endpoints.end() &&
+      if (parent != mappingPath.end() && child != mappingPath.end() &&
           completing != before.active.end()) {
         transition.safePoint = ::loom::pnr::ResourceTimeSafePointReference{
             {::dataflow::canonicalDataflowSchema.identity.str(),
@@ -720,6 +721,34 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
       }
     }
 
+    std::optional<::loom::pnr::ResourceTimeTransitionGraph> transitionGraph;
+    if (!scenario.transitions.transitions.empty()) {
+      transitionGraph.emplace(::loom::pnr::ResourceTimeTransitionGraph{
+          scenario.transitions.transitions.front().parent,
+          {},
+          scenario.transitions.transitions});
+      const auto appendEndpoint = [&](const auto &endpoint) {
+        if (!llvm::is_contained(transitionGraph->endpoints, endpoint))
+          transitionGraph->endpoints.push_back(endpoint);
+      };
+      for (const auto &edge : transitionGraph->transitions) {
+        appendEndpoint(edge.parent);
+        appendEndpoint(edge.child);
+      }
+      if (!blobs)
+        return ResourceTimeSpectrumVerification{incomplete(
+            ResourceTimeSpectrumIncompleteReason::ProofNotEstablished,
+            "resource-time transition graph has no Deployment verifier",
+            imported.size())};
+      if (llvm::Error error = ::loom::pnr::verifyResourceTimeTransitionGraph(
+              *transitionGraph, store, *blobs))
+        return ResourceTimeSpectrumVerification{incomplete(
+            ResourceTimeSpectrumIncompleteReason::ProofNotEstablished,
+            "resource-time transition graph closure is not established: " +
+                llvm::toString(std::move(error)),
+            imported.size())};
+    }
+
     PreMappingSpectrumClass spectrumClass =
         PreMappingSpectrumClass::Intermediate;
     const bool exactConcurrencyBounds =
@@ -737,7 +766,7 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
     verified.scenarios.push_back(
         {indexedScenario.index(), spectrumClass, peakConcurrentRegions,
          scenario.makespanPicoseconds, std::move(scenarioMappings),
-         scenario.states, scenario.transitions});
+         scenario.states, scenario.transitions, std::move(transitionGraph)});
   }
   return ResourceTimeSpectrumVerification{std::move(verified)};
 }
@@ -751,8 +780,7 @@ verifyResourceTimeMappingFinalists(
     const ArtifactStore &store, ExecutionControlView executionControl,
     std::optional<ResourceTimeConcurrencyBounds> concurrencyBounds,
     const BlobStore *blobs,
-    llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> endpoints,
-    std::optional<ResourceTimeMappingTransitionCandidate> transition) {
+    llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> mappingPath) {
   const auto begin = std::chrono::steady_clock::now();
   ResourceTimeSpectrumFunnelAccounting accounting;
   accounting.hintCandidates = hints.size();
@@ -792,27 +820,19 @@ verifyResourceTimeMappingFinalists(
       std::unique(canonicalMappings.begin(), canonicalMappings.end()),
       canonicalMappings.end());
   std::vector<ArtifactRootReference> endpointMappings;
-  endpointMappings.reserve(endpoints.size());
-  for (const ResourceTimeMappingDeploymentEndpoint &endpoint : endpoints) {
+  endpointMappings.reserve(mappingPath.size());
+  for (const ResourceTimeMappingDeploymentEndpoint &endpoint : mappingPath) {
     if (!llvm::is_contained(canonicalMappings, endpoint.mapping))
-      return invalid("resource-time Deployment endpoint names a foreign "
+      return invalid("resource-time Mapping path names a foreign "
                      "Mapping finalist");
     if (endpoint.deployment.schemaIdentity !=
             ::loom::deployment::deploymentSchema.identity ||
         endpoint.deployment.schemaVersion !=
             ::loom::deployment::deploymentSchema.version)
-      return invalid("resource-time endpoint has a non-Deployment root");
+      return invalid("resource-time Mapping path has a non-Deployment root");
     if (llvm::is_contained(endpointMappings, endpoint.mapping))
-      return invalid("resource-time endpoint catalog repeats a Mapping");
+      return invalid("resource-time Mapping path repeats a Mapping");
     endpointMappings.push_back(endpoint.mapping);
-  }
-  if (transition) {
-    if (transition->parentMapping == transition->childMapping)
-      return invalid("resource-time transition candidate repeats one Mapping");
-    if (!llvm::is_contained(canonicalMappings, transition->parentMapping) ||
-        !llvm::is_contained(canonicalMappings, transition->childMapping))
-      return invalid("resource-time transition candidate names a foreign "
-                     "Mapping finalist");
   }
   // The finalist projection and the independent verifier share only the
   // existing invocation-local SystemMapping import session. A cache hit here
@@ -927,24 +947,15 @@ verifyResourceTimeMappingFinalists(
       ++accounting.transitionUnsupportedHints;
       continue;
     }
-    auto scenario = materializeHint(hint, regions, imported, endpoints,
-                                    transition, store, blobs, accounting);
+    auto scenario = materializeHint(hint, regions, imported, mappingPath, store,
+                                    blobs, accounting);
     if (!scenario)
       return scenario.takeError();
     if (*scenario) {
       witness.scenarios.push_back(std::move(**scenario));
       ++accounting.materializedScenarios;
     } else {
-      const bool everyStateHasMapping =
-          llvm::all_of(hint.states, [&](const ResourceTimeHintState &state) {
-            return llvm::any_of(imported, [&](const auto &mapping) {
-              return mappingMatchesState(mapping, state, accounting);
-            });
-          });
-      if (everyStateHasMapping && imported.size() > 1)
-        ++accounting.transitionUnsupportedHints;
-      else
-        ++accounting.unmatchedHints;
+      ++accounting.unmatchedHints;
     }
   }
   if (witness.scenarios.empty()) {

@@ -1118,7 +1118,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     if (!accounting.invocationRunKey && initial->summary.invocationRunKey)
       accounting.invocationRunKey = initial->summary.invocationRunKey;
     saturatingAdd(accounting.coldReopenWallTimeNanoseconds,
-                  initial->summary.coldReopenWallTimeNanoseconds);
+                  initial->summary.executionWallTimeNanoseconds);
     saturatingAdd(accounting.incrementalReopenWallTimeNanoseconds,
                   initial->summary.incrementalReopenWallTimeNanoseconds);
     saturatingAdd(accounting.preservedTechMappings,

@@ -779,7 +779,15 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   if (coldFallbackFrontier.disposition !=
           loom::dse::JointMappingReuseDisposition::ColdFallback ||
       !coldFallbackFrontier.seed.techMappings.empty() ||
-      !coldFallbackFrontier.seed.spatialMappings.empty())
+      !coldFallbackFrontier.seed.spatialMappings.empty() ||
+      coldFallbackFrontier.accounting.parentTechMappings == 0 ||
+      coldFallbackFrontier.accounting.parentSpatialMappings == 0 ||
+      coldFallbackFrontier.accounting.invalidatedTechMappings !=
+          coldFallbackFrontier.accounting.parentTechMappings ||
+      coldFallbackFrontier.accounting.invalidatedSpatialMappings !=
+          coldFallbackFrontier.accounting.parentSpatialMappings ||
+      coldFallbackFrontier.accounting.invalidationRootCount == 0 ||
+      coldFallbackFrontier.accounting.invalidationConeDecisionCount == 0)
     fail("typed global impact did not preserve a cold fallback");
 
   const auto requireLocalModuleRebase =
@@ -854,9 +862,19 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       adjacentRepair.migrationSeed, store));
   if (adjacentSeed.reopenedRoots() !=
           llvm::ArrayRef<dataflow::RootThreadLaunchRef>(adjacentRoots) ||
+      adjacentRepair.coldExecution.summary.techMappingDispatchCount == 0 ||
+      adjacentRepair.coldExecution.summary.spatialPnrDispatchCount == 0 ||
+      adjacentRepair.coldExecution.summary.systemPnrDispatchCount == 0 ||
+      adjacentRepair.coldExecution.summary.coldReopenWallTimeNanoseconds !=
+          adjacentRepair.coldExecution.summary.executionWallTimeNanoseconds ||
+      adjacentRepair.coldExecution.summary
+              .incrementalReopenWallTimeNanoseconds != 0 ||
       adjacentRepair.execution.summary.techMappingDispatchCount != 0 ||
       adjacentRepair.execution.summary.spatialPnrDispatchCount != 0 ||
       adjacentRepair.execution.summary.systemPnrDispatchCount != 1 ||
+      adjacentRepair.execution.summary.incrementalReopenWallTimeNanoseconds !=
+          adjacentRepair.execution.summary.executionWallTimeNanoseconds ||
+      adjacentRepair.execution.summary.coldReopenWallTimeNanoseconds != 0 ||
       adjacentRepair.execution.summary.preservedTechMappings == 0 ||
       adjacentRepair.execution.summary.preservedSpatialMappings == 0)
     fail("adjacent resource-time finalist did not use preserve-first repair");
@@ -868,9 +886,24 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   adjacentMappings.erase(
       std::unique(adjacentMappings.begin(), adjacentMappings.end()),
       adjacentMappings.end());
+  std::vector<loom::ArtifactRootReference> coldAdjacentMappings;
+  for (const auto &pair : adjacentRepair.coldExecution.mappedPairs)
+    coldAdjacentMappings.insert(coldAdjacentMappings.end(),
+                                pair.systemMappings.begin(),
+                                pair.systemMappings.end());
+  llvm::sort(coldAdjacentMappings, loom::artifactRootReferenceLess);
+  coldAdjacentMappings.erase(
+      std::unique(coldAdjacentMappings.begin(), coldAdjacentMappings.end()),
+      coldAdjacentMappings.end());
   if (adjacentMappings.empty() ||
       llvm::is_contained(adjacentMappings, mappings.front()))
     fail("adjacent resource-time repair did not publish a distinct Mapping");
+  if (coldAdjacentMappings.empty() || !adjacentRepair.coldMapping ||
+      !adjacentRepair.incrementalMapping ||
+      !llvm::is_contained(coldAdjacentMappings, *adjacentRepair.coldMapping) ||
+      !llvm::is_contained(adjacentMappings, *adjacentRepair.incrementalMapping))
+    fail("adjacent resource-time repair did not publish a paired cold and "
+         "incremental Mapping");
   auto adjacentMapping =
       take(loom::mapping::importSystemMapping(adjacentMappings.front(), store));
   if (adjacentMapping.view().dataflowIdentity() !=

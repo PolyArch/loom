@@ -205,6 +205,94 @@ const TechRecord *findTechRecord(llvm::ArrayRef<TechRecord> records,
   return found == records.end() ? nullptr : &*found;
 }
 
+std::uint64_t invalidationRootCount(const HardwareImpactProjection &impact) {
+  return impact.tech.realizationRoots.size() +
+         impact.spatial.placementRoots.size() +
+         impact.spatial.routeRoots.size() +
+         impact.system.executionRoots.size() +
+         impact.system.instructionContextRoots.size() +
+         impact.system.transportRoots.size() + impact.system.routeRoots.size() +
+         impact.system.serviceRoots.size() + impact.system.memoryRoots.size();
+}
+
+llvm::Error
+accountColdFallbackCone(const JointDesignExplorationPlan &parentPlan,
+                        const JointDesignExecution &parentExecution,
+                        const HardwareImpactProjection &impact,
+                        JointMappingRebaseAccounting &accounting,
+                        const ArtifactStore &artifacts) {
+  const JointDesignPlanPair &pair = parentPlan.pairOutputs.front();
+  const CompletedDsePlanExecution &available =
+      availableExecution(parentExecution.planExecution);
+  std::vector<ArtifactRootReference> parentTech = pair.immutableTechMappings;
+  std::vector<ArtifactRootReference> parentSpatial =
+      pair.immutableSpatialMappings;
+  appendAvailableRoots(available, pair.techMappings, parentTech);
+  appendAvailableRoots(available, pair.spatialMappings, parentSpatial);
+  canonicalize(parentSpatial);
+  for (const ArtifactRootReference &spatialReference : parentSpatial) {
+    auto spatial = mapping::importSpatialMapping(spatialReference, artifacts);
+    if (!spatial)
+      return spatial.takeError();
+    parentTech.push_back({mapping::mappingArtifactSchema.identity.str(),
+                          mapping::mappingArtifactSchema.version,
+                          spatial->view().techMappingIdentity()});
+  }
+  canonicalize(parentTech);
+
+  accounting.parentTechMappings = parentTech.size();
+  accounting.parentSpatialMappings = parentSpatial.size();
+  accounting.invalidatedTechMappings = parentTech.size();
+  accounting.invalidatedSpatialMappings = parentSpatial.size();
+  accounting.invalidationRootCount = invalidationRootCount(impact);
+  for (const ArtifactRootReference &reference : parentTech) {
+    auto imported = mapping::importTechMapping(reference, artifacts);
+    if (!imported)
+      return imported.takeError();
+    accounting.parentTechDecisions += techDecisionCount(imported->view());
+  }
+  accounting.reopenedTechDecisions = accounting.parentTechDecisions;
+  for (const ArtifactRootReference &reference : parentSpatial) {
+    auto imported = mapping::importSpatialMapping(reference, artifacts);
+    if (!imported)
+      return imported.takeError();
+    accounting.parentSpatialDecisions += spatialDecisionCount(imported->view());
+    accounting.parentRouteNodeCount += spatialRouteNodeCount(imported->view());
+  }
+  accounting.reopenedSpatialDecisions = accounting.parentSpatialDecisions;
+  accounting.reopenedRouteNodeCount = accounting.parentRouteNodeCount;
+
+  for (const ArtifactRootReference &reference : mappingRoots(parentExecution)) {
+    auto imported = mapping::importSystemMapping(reference, artifacts);
+    if (!imported)
+      return imported.takeError();
+    const auto &view = imported->view();
+    accounting.parentThreadBindingCount +=
+        view.executionBindings().threadBindings().size();
+    accounting.parentGraphBindingCount +=
+        view.executionBindings().graphBindings().size();
+    accounting.parentResourceUseCount += view.resourceUses().size();
+    accounting.parentServiceRealizationCount +=
+        view.serviceRealizations().size();
+    accounting.parentServiceLegCount += systemServiceLegCount(view);
+  }
+  accounting.reopenedThreadBindingCount = accounting.parentThreadBindingCount;
+  accounting.reopenedGraphBindingCount = accounting.parentGraphBindingCount;
+  accounting.reopenedResourceUseCount = accounting.parentResourceUseCount;
+  accounting.reopenedServiceRealizationCount =
+      accounting.parentServiceRealizationCount;
+  accounting.reopenedServiceLegCount = accounting.parentServiceLegCount;
+  accounting.invalidationConeDecisionCount =
+      accounting.reopenedTechDecisions + accounting.reopenedSpatialDecisions +
+      accounting.reopenedRouteNodeCount +
+      accounting.reopenedThreadBindingCount +
+      accounting.reopenedGraphBindingCount +
+      accounting.reopenedResourceUseCount +
+      accounting.reopenedServiceRealizationCount +
+      accounting.reopenedServiceLegCount;
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::StringRef jointMappingRebaseFailureReasonSpelling(
@@ -276,7 +364,12 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
   }
   if (impact->child && *impact->child != childSystem)
     return invalid("hardware impact projection names a different child System");
+  if (parentPlan.pairOutputs.size() != 1)
+    return invalid("Mapping rebase requires one exact parent pair");
   if (impact->locality == HardwareMutationLocality::GlobalReopen) {
+    if (llvm::Error error = accountColdFallbackCone(
+            parentPlan, parentExecution, *impact, result.accounting, artifacts))
+      return std::move(error);
     result.failures.push_back(
         {JointMappingRebaseFailureReason::ImpactRequiresColdFallback,
          std::nullopt,
@@ -300,8 +393,6 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
          "typed Spatial impact has no placement or route root"});
     return result;
   }
-  if (parentPlan.pairOutputs.size() != 1)
-    return invalid("Mapping rebase requires one exact parent pair");
   if (moduleCorrespondences.empty())
     return JointMappingRebaseResult{
         {}, {}, {{JointMappingRebaseFailureReason::ModuleCorrespondence,
@@ -373,10 +464,7 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
 
   result.accounting.parentTechMappings = parentTech.size();
   result.accounting.parentSpatialMappings = parentSpatial.size();
-  result.accounting.invalidationRootCount =
-      impact->tech.realizationRoots.size() +
-      impact->spatial.placementRoots.size() + impact->spatial.routeRoots.size() +
-      impact->system.executionRoots.size();
+  result.accounting.invalidationRootCount = invalidationRootCount(*impact);
   if (parentTech.empty() || parentSpatial.empty()) {
     result.failures.push_back(
         {JointMappingRebaseFailureReason::MissingParentFrontier, std::nullopt,
@@ -557,7 +645,8 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
     const bool systemReopen =
         impact->system.kind == HardwareMappingImpactKind::Reopen;
     const bool bindingReopen =
-        systemReopen && !impact->system.executionRoots.empty();
+        systemReopen && (!impact->system.executionRoots.empty() ||
+                         !impact->system.instructionContextRoots.empty());
     const bool serviceReopen =
         systemReopen &&
         (!impact->system.executionRoots.empty() ||
@@ -589,7 +678,15 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
   result.accounting.invalidationConeDecisionCount =
       result.accounting.reopenedTechDecisions +
       result.accounting.reopenedSpatialDecisions +
-      result.accounting.reopenedRouteNodeCount;
+      result.accounting.reopenedRouteNodeCount +
+      result.accounting.repairedTechDecisions +
+      result.accounting.repairedSpatialDecisions +
+      result.accounting.repairedRouteNodeCount +
+      result.accounting.reopenedThreadBindingCount +
+      result.accounting.reopenedGraphBindingCount +
+      result.accounting.reopenedResourceUseCount +
+      result.accounting.reopenedServiceRealizationCount +
+      result.accounting.reopenedServiceLegCount;
   canonicalize(result.seed.techMappings);
   canonicalize(result.seed.spatialMappings);
   if (result.accounting.invalidatedTechMappings == 0 &&

@@ -484,18 +484,17 @@ struct ResourceTimeMappingFunnelAccounting final {
   /// or typed-unsupported before PnR. The analytic funnel alone has no plan
   /// disposition to validate.
   bool applicationPromotionAccountingComplete = false;
-  /// Comparison of the cheap screening facts with the exact frontier results
-  /// already computed for the bounded detailed sample. These are evidence
-  /// counters, not legality or candidate identity.
-  std::uint64_t analyticShadowComparedCandidates = 0;
-  std::uint64_t analyticShadowExactFeasibleCandidates = 0;
-  std::uint64_t analyticShadowAdmissibleCandidates = 0;
-  std::uint64_t analyticShadowFeasibleIntersection = 0;
-  std::uint64_t analyticShadowBestRankMatches = 0;
-  std::uint64_t analyticShadowOutOfDomainCandidates = 0;
-  std::uint64_t analyticShadowMaximumLowerBoundGapPicoseconds = 0;
-  std::uint64_t analyticShadowLowerBoundViolations = 0;
-  std::uint64_t mappingCallsAvoidedBySoundGate = 0;
+  /// Comparison of cheap screening facts with the detailed schedule frontier
+  /// already computed for the bounded sample. Neither side is Mapping/PnR
+  /// legality evidence.
+  std::uint64_t screeningComparisonCandidates = 0;
+  std::uint64_t detailedScheduleFeasibleCandidates = 0;
+  std::uint64_t screeningAdmissibleCandidates = 0;
+  std::uint64_t screeningDetailedFeasibleIntersection = 0;
+  std::uint64_t screeningDetailedBestRankMatches = 0;
+  std::uint64_t screeningOutOfDomainCandidates = 0;
+  std::uint64_t maximumScreeningLowerBoundGapPicoseconds = 0;
+  std::uint64_t screeningLowerBoundViolations = 0;
   /// Exact static Mapping inputs may be shared by several schedule hints. This
   /// counts avoided plan constructions, not skipped owner verification; the
   /// shared plan still undergoes ordinary Mapping and Spectrum verification.

@@ -99,6 +99,7 @@ executeResourceTimeAdjacentMappingRepair(
       artifacts, nullptr, childPartitions);
   if (!childPlan)
     return childPlan.takeError();
+  JointDesignExplorationPlan coldPlan = *childPlan;
 
   auto spatialMappings =
       resolveJointSpatialMappingFrontier(parentPlan, parentExecution);
@@ -122,27 +123,51 @@ executeResourceTimeAdjacentMappingRepair(
           *childPlan, seed->reference(), artifacts))
     return std::move(error);
 
-  auto scheduler = SiteScheduler::create(std::move(request.siteCapacity));
-  if (!scheduler)
-    return scheduler.takeError();
-  loom::pnr::PnrDerivedContextSession derivedContextSession;
-  const auto begin = std::chrono::steady_clock::now();
-  auto execution = executeJointPlan(*childPlan, request.evidence, request,
-                                    *scheduler, artifacts, blobs);
+  JointHardwareReopenRequest coldRequest = request;
+  llvm::SmallString<256> coldJournal(coldRequest.journalRoot);
+  llvm::sys::path::append(coldJournal, "cold");
+  coldRequest.journalRoot = coldJournal.str().str();
+  JointHardwareReopenRequest incrementalRequest = request;
+  llvm::SmallString<256> incrementalJournal(incrementalRequest.journalRoot);
+  llvm::sys::path::append(incrementalJournal, "incremental");
+  incrementalRequest.journalRoot = incrementalJournal.str().str();
+  const auto executeIndependent = [&](const JointDesignExplorationPlan &plan,
+                                      const JointHardwareReopenRequest &run)
+      -> llvm::Expected<JointDesignExecution> {
+    auto scheduler = SiteScheduler::create(run.siteCapacity);
+    if (!scheduler)
+      return scheduler.takeError();
+    loom::pnr::PnrDerivedContextSession derivedContextSession;
+    return executeJointPlan(plan, run.evidence, run, *scheduler, artifacts,
+                            blobs);
+  };
+  auto coldExecution = executeIndependent(coldPlan, coldRequest);
+  if (!coldExecution)
+    return coldExecution.takeError();
+  coldExecution->summary.coldReopenWallTimeNanoseconds =
+      coldExecution->summary.executionWallTimeNanoseconds;
+
+  auto execution = executeIndependent(*childPlan, incrementalRequest);
   if (!execution)
     return execution.takeError();
-  const std::uint64_t elapsedNanoseconds = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now() - begin)
-          .count());
-  if (elapsedNanoseconds >
-      std::numeric_limits<std::uint64_t>::max() -
-          execution->summary.incrementalReopenWallTimeNanoseconds)
-    execution->summary.incrementalReopenWallTimeNanoseconds =
-        std::numeric_limits<std::uint64_t>::max();
-  else
-    execution->summary.incrementalReopenWallTimeNanoseconds +=
-        elapsedNanoseconds;
+  execution->summary.incrementalReopenWallTimeNanoseconds =
+      execution->summary.executionWallTimeNanoseconds;
+  const std::optional<ArtifactRootReference> coldMapping =
+      firstMapping(*coldExecution);
+  const std::optional<ArtifactRootReference> incrementalMapping =
+      firstMapping(*execution);
+  for (const auto *reference : {&coldMapping, &incrementalMapping}) {
+    if (!*reference)
+      continue;
+    auto imported = mapping::importSystemMapping(**reference, artifacts);
+    if (!imported)
+      return imported.takeError();
+    if (imported->view().dataflowIdentity() != software.dataflow.artifact ||
+        imported->view().fabricIdentity() != system.artifact)
+      return invalid("paired resource-time Mapping has foreign owners");
+  }
+  coldExecution->summary.selectedMapping = coldMapping;
+  execution->summary.selectedMapping = incrementalMapping;
 
   std::set<ArtifactIdentity::Storage> preservedTech;
   for (const ArtifactRootReference &reference : *spatialMappings) {
@@ -166,7 +191,10 @@ executeResourceTimeAdjacentMappingRepair(
             execution->summary.spatialPnrDispatchCount;
         fields["system_pnr_dispatch_count"] =
             execution->summary.systemPnrDispatchCount;
-        fields["wall_time_ns"] = elapsedNanoseconds;
+        fields["cold_wall_time_ns"] =
+            coldExecution->summary.executionWallTimeNanoseconds;
+        fields["incremental_wall_time_ns"] =
+            execution->summary.executionWallTimeNanoseconds;
       });
   JointMappingReuseDisposition reuseDisposition =
       JointMappingReuseDisposition::ColdFallback;
@@ -178,7 +206,8 @@ executeResourceTimeAdjacentMappingRepair(
                            : JointMappingReuseDisposition::Preserved;
   }
   return JointResourceTimeAdjacentRepair{
-      *parentMapping, seed->reference(), std::move(*childPlan),
+      *parentMapping,        seed->reference(),  std::move(*childPlan),
+      coldMapping,           incrementalMapping, std::move(*coldExecution),
       std::move(*execution), reuseDisposition};
 }
 
@@ -337,10 +366,11 @@ llvm::Expected<TypedModuleHardwareRepair> executeTypedModuleHardwareReopen(
   execution->summary.reopenedServiceRealizationCount =
       rebased->accounting.reopenedServiceRealizationCount;
   if (rebased->disposition == JointMappingReuseDisposition::ColdFallback)
-    execution->summary.coldReopenWallTimeNanoseconds = elapsedNanoseconds;
+    execution->summary.coldReopenWallTimeNanoseconds =
+        execution->summary.executionWallTimeNanoseconds;
   else
     execution->summary.incrementalReopenWallTimeNanoseconds =
-        elapsedNanoseconds;
+        execution->summary.executionWallTimeNanoseconds;
   if (auto selected = firstMapping(*execution)) {
     execution->summary.selectedMapping = *selected;
     execution->summary.selectedPlanOrdinal = 0;

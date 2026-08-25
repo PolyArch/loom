@@ -604,7 +604,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignExploration(
         ++summary.systemPnrJournalReplayCount;
     }
   }
-  summary.coldReopenWallTimeNanoseconds =
+  summary.executionWallTimeNanoseconds =
       static_cast<std::uint64_t>(std::max<std::int64_t>(0, executionElapsed));
   return JointDesignExecution{std::move(*execution), std::move(mappedPairs),
                               std::move(summary)};

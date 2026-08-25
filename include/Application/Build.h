@@ -162,9 +162,9 @@ struct ApplicationDeploymentArtifacts final {
   hardware::ConfigurationABIConstructionStatistics configurationAbiConstruction;
   std::vector<deployment::DeploymentHardwareBinding> hardwareBindings;
   std::vector<ArtifactRootReference> instructionCoreBinaries;
-  /// Exact compiler-built Deployment endpoint catalog for the selected
-  /// finite resource-time Mapping graph.
-  std::vector<dse::ResourceTimeMappingDeploymentEndpoint> resourceTimeEndpoints;
+  /// Exact compiler-built finite Mapping/Deployment graph. Runtime selection
+  /// is restricted to this catalog and cannot synthesize Mapping work.
+  std::optional<pnr::ResourceTimeTransitionGraph> resourceTimeTransitionGraph;
   /// Every compiler-preverified adjacency together with the parent completion
   /// schedule and the child schedule which carries real active work.
   std::vector<ApplicationResourceTimeTransitionEvidence>
@@ -388,6 +388,7 @@ struct ApplicationIncrementalMappingObservation final {
   ArtifactRootReference parentMapping;
   ArtifactRootReference childSystem;
   std::optional<ArtifactRootReference> childMapping;
+  std::optional<ArtifactRootReference> coldMapping;
   std::uint64_t parentPlanOrdinal = 0;
   std::uint64_t childPlanOrdinal = 0;
   ComponentViewDigest parentScheduleHintDigest;
@@ -407,6 +408,10 @@ struct ApplicationIncrementalMappingObservation final {
   std::uint64_t coldWallTimeNanoseconds = 0;
   std::uint64_t incrementalWallTimeNanoseconds = 0;
   std::uint64_t wallTimeNanoseconds = 0;
+  std::optional<std::uint64_t> coldDfgCycles;
+  std::optional<std::uint64_t> coldCgraCycles;
+  std::optional<std::uint64_t> incrementalDfgCycles;
+  std::optional<std::uint64_t> incrementalCgraCycles;
   bool verified = false;
 };
 
