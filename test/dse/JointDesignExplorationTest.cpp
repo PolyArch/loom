@@ -1,5 +1,6 @@
 #include "DSE/JointDesignExploration.h"
 #include "ADG/Builtin.h"
+#include "Application/Build.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
@@ -10,6 +11,12 @@
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Evaluation/Evidence.h"
+#include "Evaluation/ModelParameter.h"
+#include "Evaluation/ModelParameterBundle.h"
+#include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
+#include "Evaluation/Models/FpaParameterContract.h"
+#include "Evaluation/ProductionRegistry.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -129,6 +136,34 @@ publishApplicationWorkload(const dataflow::CanonicalDataflowArtifact &artifact,
                               loom::sim::RuntimeValueInput{});
   auto workload = take(loom::sim::finalizeSimulationWorkload(draft, view));
   return take(loom::sim::publishSimulationWorkload(workload, store));
+}
+
+loom::evaluation::models::FpaFeatureView
+projectFpaFeatures(const loom::ArtifactRootReference &dataflow,
+                   const loom::ArtifactRootReference &system,
+                   const loom::ResolvedConfig &config,
+                   const loom::ArtifactStore &artifacts,
+                   const loom::BlobStore &blobs) {
+  auto prepared =
+      take(loom::evaluation::models::prepareCanonicalDataflowFabricEvaluation(
+          dataflow, system, config, artifacts, blobs));
+  const loom::evaluation::EvaluationModelDescriptor *descriptor =
+      prepared.request.modelBinding().descriptorRef().descriptor();
+  if (!descriptor)
+    fail("FPA feature fixture lost its model descriptor");
+  auto evaluationCase = take(loom::evaluation::EvaluationCase::get(
+      descriptor->caseSignature, prepared.request.subjectBindings(),
+      prepared.request.workload(), prepared.request.runtimeInput(),
+      prepared.request.baseConditions(), prepared.resolution, artifacts,
+      blobs));
+  auto projected = take(loom::evaluation::projectModelFeatures(
+      loom::evaluation::models::fpaModelParameterContractRef(), evaluationCase,
+      prepared.resolution, artifacts, blobs));
+  const auto *features =
+      projected.getIf<loom::evaluation::models::FpaFeatureView>();
+  if (!features)
+    fail("FPA contract returned a foreign feature view");
+  return *features;
 }
 
 std::string key(llvm::ArrayRef<std::uint8_t> bytes) {
@@ -311,6 +346,9 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   }
 
   if (runHardwareQualityPromotion) {
+    if (llvm::Error error =
+            loom::evaluation::registerProductionEvaluationRegistry())
+      fail(llvm::toString(std::move(error)));
     const loom::dse::JointDesignPolicy promotionPolicy =
         take(loom::dse::JointDesignPolicy::get(2, 2, 1, 2, 32));
     auto firstPlan = take(loom::dse::buildJointDesignExplorationPlan(
@@ -320,6 +358,161 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         {{{secondWorkload}}, {system}}, timingProfileRoots, promotionPolicy,
         config, store));
     const std::array promotionPlans = {&firstPlan, &secondPlan};
+
+    auto alternateRoot =
+        take(loom::fabric::importEntireFabricRoot(alternateSystem, store));
+    auto alternateView =
+        take(loom::fabric::requireSystemRoot(alternateRoot.view()));
+    auto alternateTiming =
+        take(loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(
+            alternateView));
+    std::vector<loom::ArtifactRootReference> alternateTimingRoots;
+    for (const auto &profile : alternateTiming)
+      alternateTimingRoots.push_back(take(
+          loom::fabric::publishFabricPhysicalTimingProfile(profile, store)));
+    auto alternatePlan = take(loom::dse::buildJointDesignExplorationPlan(
+        {{{secondWorkload}}, {alternateSystem}}, alternateTimingRoots,
+        promotionPolicy, config, store));
+
+    const auto firstFeatures =
+        projectFpaFeatures(firstPlan.frontier.softwareFrontier.front().dataflow,
+                           system, config, store, blobs);
+    const auto alternateFeatures = projectFpaFeatures(
+        alternatePlan.frontier.softwareFrontier.front().dataflow,
+        alternateSystem, config, store, blobs);
+    const loom::evaluation::models::FpaMetricPredictionView firstObservation{
+        take(loom::evaluation::DecimalValue::get(1, 8)),
+        take(loom::evaluation::DecimalValue::get(1, -6)),
+        take(loom::evaluation::DecimalValue::get(1, -3)),
+        take(loom::evaluation::DecimalValue::get(1, -4))};
+    const loom::evaluation::models::FpaMetricPredictionView
+        alternateObservation{take(loom::evaluation::DecimalValue::get(5, 8)),
+                             take(loom::evaluation::DecimalValue::get(2, -6)),
+                             take(loom::evaluation::DecimalValue::get(2, -3)),
+                             take(loom::evaluation::DecimalValue::get(2, -4))};
+    auto parameters = take(loom::evaluation::models::trainFpaGbdtParameters(
+        {{firstFeatures, firstObservation, {0x21}, {0x31}},
+         {alternateFeatures, alternateObservation, {0x21}, {0x32}}},
+        loom::evaluation::models::FpaGbdtTrainingConfig{13, 4, 2, 1, 1, 1}));
+    auto bundle = take(loom::evaluation::finalizeModelParameterBundle(
+        loom::evaluation::models::fpaModelParameterContractRef(),
+        loom::evaluation::OwnerValue::get(std::move(parameters)), store,
+        blobs));
+    const std::array<std::uint8_t, 1> digestOwner = {0x41};
+    const std::array<std::uint8_t, 1> digestValue = {0x42};
+    const loom::ComponentViewDigest candidateDigest =
+        take(loom::computeComponentViewDigest(digestOwner, digestValue));
+    std::vector<loom::application::PreparedApplicationMappingAlternative>
+        applicationAlternatives = {
+            {0,
+             0,
+             candidateDigest,
+             candidateDigest,
+             {},
+             firstPlan.frontier.softwareFrontier.front().dataflow,
+             {},
+             {},
+             firstPlan},
+            {1,
+             1,
+             candidateDigest,
+             candidateDigest,
+             {},
+             alternatePlan.frontier.softwareFrontier.front().dataflow,
+             {},
+             {},
+             alternatePlan}};
+    loom::application::PreparedApplicationBuild preparedApplication{
+        {},
+        promotionPolicy,
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        0,
+        false,
+        {},
+        {},
+        {},
+        {},
+        {},
+        std::move(applicationAlternatives),
+        {},
+        {},
+        loom::dse::StructuredOwnershipSelectionMode::SemanticConformance,
+        loom::dse::StructuredOwnershipSelectionMode::SemanticConformance,
+        {},
+        std::nullopt,
+        std::nullopt,
+        firstPlan.frontier.softwareFrontier.front().dataflow,
+        system,
+        firstWorkload,
+        firstWorkload,
+        candidateDigest,
+        systemView.artifact().accCoreOccurrences().size(),
+        std::nullopt,
+        std::nullopt,
+        bundle.reference(),
+        {}};
+    const auto qualityPolicyExecution =
+        take(loom::dse::PlanExecutionPolicy::get(
+            32, take(loom::dse::SiteResourceClaim::get(1, 0, 0))));
+    auto applicationQuality =
+        take(loom::application::makeApplicationBoundedQualityPolicy(
+            preparedApplication, qualityPolicyExecution, store, blobs));
+    if (!applicationQuality.hardwarePromotion ||
+        applicationQuality.objectiveDimensionLabels.size() != 7 ||
+        applicationQuality.semanticInputs.size() != 3 ||
+        !llvm::is_contained(applicationQuality.semanticInputs,
+                            bundle.reference()))
+      fail("application quality policy lost its frozen FPA closure");
+    if (llvm::count_if(applicationQuality.semanticInputs, [](const auto &root) {
+          return root.schemaIdentity ==
+                     loom::evaluation::EvaluationRequest::artifactSchema
+                         .identity &&
+                 root.schemaVersion ==
+                     loom::evaluation::EvaluationRequest::artifactSchema
+                         .version;
+        }) != 2)
+      fail("application quality closure lost an exact FPA Request");
+    auto firstPhysical =
+        take(applicationQuality.hardwarePromotion->acquire(firstPlan, 0));
+    auto alternatePhysical =
+        take(applicationQuality.hardwarePromotion->acquire(alternatePlan, 1));
+    auto *firstPhysicalObjectives =
+        std::get_if<std::vector<loom::dse::JointDesignQualityCandidate>>(
+            &firstPhysical);
+    auto *alternatePhysicalObjectives =
+        std::get_if<std::vector<loom::dse::JointDesignQualityCandidate>>(
+            &alternatePhysical);
+    if (!firstPhysicalObjectives || firstPhysicalObjectives->size() != 1 ||
+        !alternatePhysicalObjectives ||
+        alternatePhysicalObjectives->size() != 1 ||
+        !firstPhysicalObjectives->front().evidence ||
+        !alternatePhysicalObjectives->front().evidence)
+      fail("application FPA promotion did not publish completed Evidence");
+    for (const auto *objectives :
+         {firstPhysicalObjectives, alternatePhysicalObjectives}) {
+      const loom::ArtifactRootReference &evidence =
+          *objectives->front().evidence;
+      if (evidence.schemaIdentity !=
+              loom::evaluation::EvaluationEvidence::artifactSchema.identity ||
+          evidence.schemaVersion !=
+              loom::evaluation::EvaluationEvidence::artifactSchema.version)
+        fail("application FPA promotion returned a foreign Evidence root");
+      take(store.get(evidence));
+    }
+    auto physicalOrder =
+        take(applicationQuality.hardwarePromotion->objectiveProgram
+                 ->compareTotalOrdering(
+                     alternatePhysicalObjectives->front().objective.objective,
+                     loom::encodeArtifactRootReference(alternateSystem),
+                     firstPhysicalObjectives->front().objective.objective,
+                     loom::encodeArtifactRootReference(system), 0));
+    if (physicalOrder >= 0)
+      fail("frozen FPA predictions did not rank the better physical plan");
 
     loom::dse::CandidateMeasureObjectiveCatalogs objectiveCatalogs;
     objectiveCatalogs.dimensions = {
@@ -351,8 +544,9 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
               measures, objective))
         return std::move(error);
       return loom::dse::JointDesignQualityAcquisition{
-          std::vector<loom::dse::CandidateObjectiveVector>{
-              {*result.summary.selectedMapping, std::move(objective)}}};
+          std::vector<loom::dse::JointDesignQualityCandidate>{
+              {{*result.summary.selectedMapping, std::move(objective)},
+               std::nullopt}}};
     };
     quality.hardwarePromotion = loom::dse::JointHardwarePromotionQualityPolicy{
         sharedObjectiveProgram,
@@ -375,9 +569,10 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                                                                     objective))
             return std::move(error);
           return loom::dse::JointDesignQualityAcquisition{
-              std::vector<loom::dse::CandidateObjectiveVector>{
-                  {candidate.frontier.systemFrontier.front(),
-                   std::move(objective)}}};
+              std::vector<loom::dse::JointDesignQualityCandidate>{
+                  {{candidate.frontier.systemFrontier.front(),
+                    std::move(objective)},
+                   std::nullopt}}};
         }};
     quality.maximumHardwareSpectrumParents = 1;
     quality.maximumHardwareRepairProbes = 1;

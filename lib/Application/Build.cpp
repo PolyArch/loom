@@ -9,7 +9,6 @@
 #include "Common/BlobStore.h"
 #include "Common/MappingDebugLog.h"
 #include "DSE/JointHardwareReopen.h"
-#include "DSE/Objective.h"
 #include "DSE/ProductionOwners.h"
 #include "DSE/Promotion.h"
 #include "DSE/ResolvedConfigView.h"
@@ -2057,6 +2056,13 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::vector<ArtifactRootReference> evidence = prepared.satisfiedEvidence;
   evidence.insert(evidence.end(), request.preexistingEvidence.begin(),
                   request.preexistingEvidence.end());
+  std::vector<ArtifactRootReference> qualitySemanticInputs;
+  if (request.boundedQuality)
+    qualitySemanticInputs = request.boundedQuality->semanticInputs;
+  llvm::sort(qualitySemanticInputs, artifactRootReferenceLess);
+  qualitySemanticInputs.erase(
+      std::unique(qualitySemanticInputs.begin(), qualitySemanticInputs.end()),
+      qualitySemanticInputs.end());
   std::vector<const dse::JointDesignExplorationPlan *> plans;
   plans.reserve(prepared.mappingAlternatives.size());
   for (const PreparedApplicationMappingAlternative &alternative :
@@ -2258,12 +2264,40 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
            prepared.mappingAlternatives[ordinal].resourceTimeRegionBounds)
         maximumUsefulAccCoreCount = std::max(maximumUsefulAccCoreCount,
                                              bound.maximumUsefulResourceUnits);
+    std::optional<dse::JointBoundedQualityPolicy> boundedQuality =
+        request.boundedQuality;
+    if (boundedQuality && firstPlan != 0) {
+      dse::JointDesignQualityAcquirer acquire = boundedQuality->acquire;
+      boundedQuality->acquire =
+          [acquire = std::move(acquire), firstPlan](
+              const dse::JointDesignExecution &execution,
+              std::uint64_t planOrdinal)
+          -> llvm::Expected<dse::JointDesignQualityAcquisition> {
+        if (planOrdinal > std::numeric_limits<std::uint64_t>::max() - firstPlan)
+          return invalid("bounded-quality plan ordinal overflowed");
+        return acquire(execution, planOrdinal + firstPlan);
+      };
+      if (boundedQuality->hardwarePromotion) {
+        dse::JointHardwarePromotionQualityAcquirer promote =
+            boundedQuality->hardwarePromotion->acquire;
+        boundedQuality->hardwarePromotion->acquire =
+            [promote = std::move(promote), firstPlan](
+                const dse::JointDesignExplorationPlan &plan,
+                std::uint64_t planOrdinal)
+            -> llvm::Expected<dse::JointDesignQualityAcquisition> {
+          if (planOrdinal >
+              std::numeric_limits<std::uint64_t>::max() - firstPlan)
+            return invalid("hardware-promotion plan ordinal overflowed");
+          return promote(plan, planOrdinal + firstPlan);
+        };
+      }
+    }
     dse::JointHardwareReopenRequest reopenRequest{
         request.producer,
         std::move(journalRoot),
         evidence,
         prepared.preMappingFrontierPolicy.stoppingPolicy,
-        request.boundedQuality,
+        std::move(boundedQuality),
         maximumUsefulAccCoreCount == 0
             ? std::nullopt
             : std::optional<std::uint64_t>(maximumUsefulAccCoreCount),
@@ -2272,8 +2306,24 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     reopenRequest.spectrumEndpoint =
         prepared.resourceTimePolicy.spectrumEndpoint;
     reopenRequest.hardwareExplorationScope = request.hardwareExplorationScope;
+    reopenRequest.invocationSemanticInputs = qualitySemanticInputs;
     return dse::executeJointDesignWithHardwareReopen(
         tail, prepared.jointPolicy, std::move(reopenRequest), artifacts, blobs);
+  };
+
+  const auto makeRepairRequest =
+      [&](std::string journalRoot) -> dse::JointHardwareReopenRequest {
+    dse::JointHardwareReopenRequest repairRequest{
+        request.producer,
+        std::move(journalRoot),
+        evidence,
+        dse::JointDesignStoppingPolicy::FirstVerified,
+        std::nullopt,
+        std::nullopt,
+        request.siteCapacity,
+        request.executionPolicy};
+    repairRequest.invocationSemanticInputs = qualitySemanticInputs;
+    return repairRequest;
   };
 
   std::optional<dse::JointDesignExecution> selectedExecution;
@@ -2282,6 +2332,13 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     auto execution = executeTail(firstPlan);
     if (!execution)
       return execution.takeError();
+    for (dse::JointHardwarePromotionObservation &observation :
+         execution->summary.hardwarePromotionObservations) {
+      if (observation.planOrdinal >
+          std::numeric_limits<std::uint64_t>::max() - firstPlan)
+        return invalid("hardware-promotion observation ordinal overflowed");
+      observation.planOrdinal += firstPlan;
+    }
     if (llvm::Error error = appendOutcomes(*execution, firstPlan))
       return std::move(error);
     attemptedSoftwarePlans += execution->summary.attemptedSoftwarePlans;
@@ -2480,9 +2537,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       auto repaired = dse::executeSpatialTransportRuntimeRepair(
           prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
           prepared.jointPolicy, *runtime->spatialTransportFeedback,
-          {request.producer, feedbackJournal.str().str(), evidence,
-           dse::JointDesignStoppingPolicy::FirstVerified, std::nullopt,
-           std::nullopt, request.siteCapacity, request.executionPolicy},
+          makeRepairRequest(feedbackJournal.str().str()),
           artifacts, blobs);
       if (!repaired)
         return repaired.takeError();
@@ -2510,9 +2565,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       auto repaired = dse::executeSpatialFifoHardwareFeedbackReopen(
           prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
           prepared.jointPolicy, *runtime->spatialFifoFeedback,
-          {request.producer, feedbackJournal.str().str(), evidence,
-           dse::JointDesignStoppingPolicy::FirstVerified, std::nullopt,
-           std::nullopt, request.siteCapacity, request.executionPolicy},
+          makeRepairRequest(feedbackJournal.str().str()),
           artifacts, blobs);
       if (!repaired)
         return repaired.takeError();
@@ -2620,9 +2673,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       auto repaired = dse::executeSpatialOperandBufferHardwareFeedbackReopen(
           prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
           prepared.jointPolicy, *runtime->spatialOperandQueueFeedback,
-          {request.producer, feedbackJournal.str().str(), evidence,
-           dse::JointDesignStoppingPolicy::FirstVerified, std::nullopt,
-           std::nullopt, request.siteCapacity, request.executionPolicy},
+          makeRepairRequest(feedbackJournal.str().str()),
           artifacts, blobs);
       if (!repaired)
         return repaired.takeError();
@@ -2671,15 +2722,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               "application-resource-time-adjacent-" +
                   std::to_string(selectedPlanOrdinal) + "-" +
                   std::to_string(childOrdinal));
-          dse::JointHardwareReopenRequest adjacentRequest{
-              request.producer,
-              adjacentJournal.str().str(),
-              evidence,
-              dse::JointDesignStoppingPolicy::FirstVerified,
-              std::nullopt,
-              std::nullopt,
-              request.siteCapacity,
-              request.executionPolicy};
+          dse::JointHardwareReopenRequest adjacentRequest =
+              makeRepairRequest(adjacentJournal.str().str());
           adjacentRequest.spectrumEndpoint =
               prepared.resourceTimePolicy.spectrumEndpoint;
           auto adjacent = dse::executeResourceTimeAdjacentMappingRepair(
@@ -3009,97 +3053,6 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                                      std::move(outcomes),
                                      std::move(provenance)};
   emitApplicationMappingDiagnostics(result);
-  return result;
-}
-
-llvm::Expected<dse::JointBoundedQualityPolicy>
-makeApplicationBoundedQualityPolicy(
-    const PreparedApplicationBuild &prepared,
-    const dse::PlanExecutionPolicy &executionPolicy,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
-  dse::CandidateMeasureObjectiveCatalogs catalogs;
-  const auto dimension = [](std::uint32_t ordinal) {
-    return dse::CandidateMeasureObjectiveDimension{
-        ordinal, ResolvedObjectiveDirection::Minimize, 0,
-        std::numeric_limits<std::uint64_t>::max()};
-  };
-  // The application QoR contract is deliberately small and exact: software
-  // work, accelerator work, then imported AccCore cost.  Area, power, and
-  // physical timing are not silently approximated here; a future provider
-  // must add those dimensions at this owner with their own completed evidence.
-  catalogs.dimensions = {dimension(0), dimension(1), dimension(2)};
-  catalogs.weightedLevels = {{{{0, 1}}}, {{{1, 1}}}, {{{2, 1}}}};
-  catalogs.totalOrderings = {{{0, 1, 2}}};
-  auto program = dse::ObjectiveProgram::getCandidateMeasures(catalogs);
-  if (!program)
-    return program.takeError();
-  auto sharedProgram =
-      std::make_shared<const dse::ObjectiveProgram>(std::move(*program));
-
-  dse::JointBoundedQualityPolicy result;
-  result.objectiveProgram = sharedProgram;
-  result.objectiveDimensionLabels = {"dfg_cycles", "cgra_cycles",
-                                     "acc_core_count"};
-  result.paretoDimensions = {0, 1, 2};
-  result.finalTotalOrdering = 0;
-  result.acquire = [&prepared, executionPolicy, &artifacts, &blobs,
-                    sharedProgram](const dse::JointDesignExecution &execution,
-                                   std::uint64_t planOrdinal)
-      -> llvm::Expected<dse::JointDesignQualityAcquisition> {
-    if (planOrdinal >= prepared.mappingAlternatives.size())
-      return invalid("bounded-quality selected a foreign software plan");
-    auto imported = detail::importApplicationMapping(execution, artifacts);
-    if (!imported)
-      return imported.takeError();
-    auto runtime = detail::validateApplicationMappingRuntime(
-        prepared, prepared.mappingAlternatives[planOrdinal], execution,
-        executionPolicy, artifacts, blobs);
-    if (!runtime)
-      return runtime.takeError();
-    switch (runtime->disposition) {
-    case ApplicationMappingRuntimeDisposition::Completed:
-      break;
-    case ApplicationMappingRuntimeDisposition::Unsupported:
-      return dse::JointDesignQualityAcquisition{
-          dse::IncompleteJointDesignQuality{
-              dse::JointDesignQualityIncompleteReason::Unsupported,
-              execution.summary.selectedMapping}};
-    case ApplicationMappingRuntimeDisposition::CancelledOrTimeout:
-      return dse::JointDesignQualityAcquisition{
-          dse::IncompleteJointDesignQuality{
-              dse::JointDesignQualityIncompleteReason::CancelledOrTimeout,
-              execution.summary.selectedMapping}};
-    case ApplicationMappingRuntimeDisposition::ExecutionFailed:
-      return dse::JointDesignQualityAcquisition{
-          dse::IncompleteJointDesignQuality{
-              dse::JointDesignQualityIncompleteReason::ExecutionFailed,
-              execution.summary.selectedMapping}};
-    case ApplicationMappingRuntimeDisposition::ProofNotEstablished:
-    case ApplicationMappingRuntimeDisposition::NotRequested:
-      return dse::JointDesignQualityAcquisition{
-          dse::IncompleteJointDesignQuality{
-              dse::JointDesignQualityIncompleteReason::ProofNotEstablished,
-              execution.summary.selectedMapping}};
-    }
-    if (!runtime->dfgCycles || !runtime->cgraCycles)
-      return dse::JointDesignQualityAcquisition{
-          dse::IncompleteJointDesignQuality{
-              dse::JointDesignQualityIncompleteReason::ProofNotEstablished,
-              execution.summary.selectedMapping}};
-    const std::array<std::uint64_t, 3> measures = {
-        *runtime->dfgCycles, *runtime->cgraCycles,
-        static_cast<std::uint64_t>(
-            imported->system.view().accCoreOccurrences().size())};
-    dse::ObjectiveVector objective = sharedProgram->makeVector();
-    if (llvm::Error error =
-            sharedProgram->evaluateCandidateMeasures(measures, objective))
-      return std::move(error);
-    if (!execution.summary.selectedMapping)
-      return invalid("bounded-quality acquisition has no selected mapping");
-    return dse::JointDesignQualityAcquisition{
-        std::vector<dse::CandidateObjectiveVector>{
-            {*execution.summary.selectedMapping, std::move(objective)}}};
-  };
   return result;
 }
 

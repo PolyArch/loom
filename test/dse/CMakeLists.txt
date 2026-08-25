@@ -194,6 +194,7 @@ target_link_libraries(loom-dse-fpa-ground-truth-collection-test PRIVATE
 
 target_link_libraries(loom-dse-joint-design-exploration-test PRIVATE
   LoomADGBuilder
+  LoomApplicationBuild
   LoomDSE
   LoomDSEFeedback
   LoomDSEProductionOwners

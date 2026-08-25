@@ -84,6 +84,7 @@ add_library(LoomApplicationBuild
   ExecutionGlue.cpp
   ProductBuild.cpp
   ProductVisualization.cpp
+  Quality.cpp
   "${LOOM_FREESTANDING_MATH_HEADER}"
 )
 

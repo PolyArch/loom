@@ -520,8 +520,10 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
 /// Builds the application-owned bounded-quality adapter. Each selected
 /// SystemMapping is replayed through the existing DFG/CGRA evidence models;
 /// only completed cycle observations and the imported Fabric AccCore count
-/// become candidate measures. Missing or non-completed evidence remains a
-/// typed bounded-quality outcome rather than an estimate.
+/// become candidate measures. When the prepared build carries an admitted
+/// frozen FPA weight, the same objective also evaluates exact Decimal FPA
+/// predictions and uses them to promote bounded hardware parents. Missing,
+/// OOD, or non-completed evidence remains a typed bounded-quality outcome.
 llvm::Expected<dse::JointBoundedQualityPolicy>
 makeApplicationBoundedQualityPolicy(
     const PreparedApplicationBuild &prepared,

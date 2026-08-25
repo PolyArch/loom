@@ -1526,9 +1526,38 @@ void emitApplicationMappingDiagnostics(
                 spelling(*observation.incompleteReason);
           else
             entry["incomplete_reason"] = nullptr;
+          if (observation.evidence)
+            entry["evidence"] = encodeRoot(*observation.evidence);
+          else
+            entry["evidence"] = nullptr;
           qualityObservations.push_back(std::move(entry));
         }
         payload["quality_observations"] = std::move(qualityObservations);
+        llvm::json::Array hardwarePromotionObservations;
+        for (const dse::JointHardwarePromotionObservation &observation :
+             summary.hardwarePromotionObservations) {
+          llvm::json::Object entry;
+          entry["plan_ordinal"] = observation.planOrdinal;
+          entry["system"] = encodeRoot(observation.system);
+          llvm::json::Array objective;
+          for (std::uint64_t code : observation.objectiveCodes)
+            objective.push_back(code);
+          entry["objective_codes"] = std::move(objective);
+          if (observation.incompleteReason)
+            entry["incomplete_reason"] =
+                spelling(*observation.incompleteReason);
+          else
+            entry["incomplete_reason"] = nullptr;
+          if (observation.evidence)
+            entry["evidence"] = encodeRoot(*observation.evidence);
+          else
+            entry["evidence"] = nullptr;
+          entry["promoted_to_exact_mapping"] =
+              observation.promotedToExactMapping;
+          hardwarePromotionObservations.push_back(std::move(entry));
+        }
+        payload["hardware_promotion_observations"] =
+            std::move(hardwarePromotionObservations);
         std::uint64_t completeQualityObservations = 0;
         std::uint64_t incompleteQualityObservations = 0;
         for (const dse::JointDesignQualityObservation &observation :

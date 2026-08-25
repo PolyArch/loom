@@ -115,6 +115,7 @@ struct JointDesignQualityObservation final {
   ArtifactRootReference candidate;
   std::vector<std::uint64_t> objectiveCodes;
   std::optional<JointDesignQualityIncompleteReason> incompleteReason;
+  std::optional<ArtifactRootReference> evidence;
 };
 
 /// Pre-Mapping quality observation for one exact software/System plan. The
@@ -125,6 +126,7 @@ struct JointHardwarePromotionObservation final {
   ArtifactRootReference system;
   std::vector<std::uint64_t> objectiveCodes;
   std::optional<JointDesignQualityIncompleteReason> incompleteReason;
+  std::optional<ArtifactRootReference> evidence;
   bool promotedToExactMapping = false;
 };
 
@@ -261,10 +263,16 @@ struct IncompleteJointDesignQuality final {
   JointDesignQualityIncompleteReason reason =
       JointDesignQualityIncompleteReason::ProofNotEstablished;
   std::optional<ArtifactRootReference> candidate;
+  std::optional<ArtifactRootReference> evidence;
+};
+
+struct JointDesignQualityCandidate final {
+  CandidateObjectiveVector objective;
+  std::optional<ArtifactRootReference> evidence;
 };
 
 using JointDesignQualityAcquisition =
-    std::variant<std::vector<CandidateObjectiveVector>,
+    std::variant<std::vector<JointDesignQualityCandidate>,
                  IncompleteJointDesignQuality>;
 
 using JointDesignQualityAcquirer =
@@ -300,6 +308,9 @@ struct JointBoundedQualityPolicy final {
   std::uint32_t finalTotalOrdering = 0;
   JointDesignQualityAcquirer acquire;
   std::optional<JointHardwarePromotionQualityPolicy> hardwarePromotion;
+  /// Immutable ranking inputs included in every Mapping and hardware-reopen
+  /// invocation closure. The referenced owner artifacts remain authoritative.
+  std::vector<ArtifactRootReference> semanticInputs;
   /// Maximum verified base mappings promoted to hardware-spectrum expansion
   /// after the bounded software frontier has completed. Base application QoR
   /// and final selection remain owned by this policy; zero is invalid.
