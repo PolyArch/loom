@@ -41,8 +41,14 @@ legalDomain(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   auto logical = dataflow.projectRootThreadLogicalDomain(root);
   if (!logical)
     return logical.takeError();
-  if (logical->kind == ::dataflow::ThreadDomainKind::DynamicWork)
-    return invalid("dynamic root domain has no Presburger projection");
+  if (logical->kind == ::dataflow::ThreadDomainKind::DynamicWork) {
+    auto dynamic = dataflow.projectDynamicWork(root);
+    if (!dynamic)
+      return dynamic.takeError();
+    if (dynamic->stableItemKeys.size() != 1)
+      return invalid("DynamicWork stable-key domain is not singleton");
+    return canonicalizeSystemPresburgerCell(SystemPresburgerCell{});
+  }
   SystemPresburgerCell cell;
   cell.dimensionCount = logical->coordinateRank;
   cell.symbolCount = logical->launchParameters.size();
@@ -65,6 +71,7 @@ legalDomain(const ::dataflow::CanonicalDataflowProgramView &dataflow,
 template <typename Target> struct ConcreteRelationPart final {
   Target target;
   std::vector<SystemPresburgerCell> cells;
+  std::vector<::dataflow::DynamicWorkStableItemKey> stableItemKeys;
 };
 
 template <typename Target, typename Key>
@@ -81,7 +88,7 @@ llvm::Expected<std::vector<ConcreteRelationPart<Target>>> concretizeRelation(
     if (!key)
       return key.takeError();
     auto [entry, inserted] = grouped.try_emplace(
-        *key, ConcreteRelationPart<Target>{clause.target, {}});
+        *key, ConcreteRelationPart<Target>{clause.target, {}, {}});
     entry->second.cells.insert(entry->second.cells.end(), clause.cells.begin(),
                                clause.cells.end());
   }
@@ -95,7 +102,7 @@ llvm::Expected<std::vector<ConcreteRelationPart<Target>>> concretizeRelation(
     if (!key)
       return key.takeError();
     auto [entry, inserted] = grouped.try_emplace(
-        *key, ConcreteRelationPart<Target>{*defaultTarget, {}});
+        *key, ConcreteRelationPart<Target>{*defaultTarget, {}, {}});
     entry->second.cells.insert(
         entry->second.cells.end(),
         std::make_move_iterator(complement->outside.begin()),
@@ -110,6 +117,33 @@ llvm::Expected<std::vector<ConcreteRelationPart<Target>>> concretizeRelation(
   return result;
 }
 
+template <typename Target, typename Key>
+llvm::Expected<std::vector<ConcreteRelationPart<Target>>>
+concretizeStableRelation(
+    const std::vector<SystemStableKeyEntryView<Target>> &entries,
+    Key &&targetKey) {
+  std::map<std::string, ConcreteRelationPart<Target>> grouped;
+  for (const auto &entry : entries) {
+    auto key = targetKey(entry.target);
+    if (!key)
+      return key.takeError();
+    auto [part, inserted] = grouped.try_emplace(
+        *key, ConcreteRelationPart<Target>{entry.target, {}, {}});
+    part->second.stableItemKeys.push_back(entry.key);
+  }
+  auto surrogate = canonicalizeSystemPresburgerCell(SystemPresburgerCell{});
+  if (!surrogate)
+    return surrogate.takeError();
+  std::vector<ConcreteRelationPart<Target>> result;
+  result.reserve(grouped.size());
+  for (auto &[key, part] : grouped) {
+    (void)key;
+    part.cells.push_back(*surrogate);
+    result.push_back(std::move(part));
+  }
+  return result;
+}
+
 template <typename Target> std::string fabricKey(const Target &target) {
   const auto bytes = ::loom::fabric::canonicalFabricBytes(target);
   return byteKey(bytes);
@@ -119,8 +153,20 @@ llvm::Expected<std::string> mappingKey(const ArtifactRootReference &reference) {
   return byteKey(encodeArtifactRootReference(reference));
 }
 
+std::vector<::dataflow::DynamicWorkStableItemKey> intersectStableItemKeys(
+    llvm::ArrayRef<::dataflow::DynamicWorkStableItemKey> lhs,
+    llvm::ArrayRef<::dataflow::DynamicWorkStableItemKey> rhs) {
+  std::vector<::dataflow::DynamicWorkStableItemKey> intersection;
+  for (const auto key : lhs)
+    if (llvm::is_contained(rhs, key) && !llvm::is_contained(intersection, key))
+      intersection.push_back(key);
+  return intersection;
+}
+
 struct ThreadProjection final {
   ::dataflow::RootThreadLaunchRef root;
+  ::mapping::SystemBindingRelationKind relationKind =
+      ::mapping::SystemBindingRelationKind::PresburgerPartition;
   std::vector<ConcreteRelationPart<::loom::fabric::AccCoreOccurrenceRef>> parts;
 };
 
@@ -138,20 +184,29 @@ llvm::Expected<SystemExecutionContextProjection> projectSystemExecutionContexts(
       return rootKey.takeError();
     if (!domain)
       return domain.takeError();
-    auto parts = concretizeRelation(
-        binding.clauses, binding.defaultTarget, *domain,
-        [](const auto &target) -> llvm::Expected<std::string> {
-          return fabricKey(target);
-        });
+    auto parts =
+        binding.relationKind ==
+                ::mapping::SystemBindingRelationKind::StableKeyLookup
+            ? concretizeStableRelation(
+                  binding.stableKeyEntries,
+                  [](const auto &target) -> llvm::Expected<std::string> {
+                    return fabricKey(target);
+                  })
+            : concretizeRelation(
+                  binding.clauses, binding.defaultTarget, *domain,
+                  [](const auto &target) -> llvm::Expected<std::string> {
+                    return fabricKey(target);
+                  });
     if (!parts)
       return parts.takeError();
     for (const auto &part : *parts)
       result.instructionDomains.push_back(SystemInstructionContextDomain{
-          binding.key, InstructionExecutionContextKey{part.target},
-          part.cells});
+          binding.key, InstructionExecutionContextKey{part.target}, part.cells,
+          binding.relationKind, part.stableItemKeys});
     if (!threads
              .emplace(*rootKey,
-                      ThreadProjection{binding.key, std::move(*parts)})
+                      ThreadProjection{binding.key, binding.relationKind,
+                                       std::move(*parts)})
              .second)
       return invalid("duplicate thread binding in execution projection");
   }
@@ -167,15 +222,47 @@ llvm::Expected<SystemExecutionContextProjection> projectSystemExecutionContexts(
     auto thread = threads.find(*rootKey);
     if (thread == threads.end())
       return invalid("graph binding has no parent thread binding");
-    auto graphParts = concretizeRelation(
-        binding.clauses, binding.defaultTarget, *domain,
-        [](const auto &target) { return mappingKey(target); });
+    if (binding.relationKind != thread->second.relationKind)
+      return invalid("graph and thread relation kinds differ");
+    auto graphParts =
+        binding.relationKind ==
+                ::mapping::SystemBindingRelationKind::StableKeyLookup
+            ? concretizeStableRelation(
+                  binding.stableKeyEntries,
+                  [](const auto &target) { return mappingKey(target); })
+            : concretizeRelation(
+                  binding.clauses, binding.defaultTarget, *domain,
+                  [](const auto &target) { return mappingKey(target); });
     if (!graphParts)
       return graphParts.takeError();
 
     std::map<std::string, SystemSpatialContextDomain> grouped;
     for (const auto &graphPart : *graphParts)
-      for (const auto &threadPart : thread->second.parts)
+      for (const auto &threadPart : thread->second.parts) {
+        SpatialExecutionContextKey context{threadPart.target,
+                                           graphPart.target.artifact};
+        auto encoded = encodeExecutionContextKey(context);
+        if (!encoded)
+          return encoded.takeError();
+        if (binding.relationKind ==
+            ::mapping::SystemBindingRelationKind::StableKeyLookup) {
+          auto commonKeys = intersectStableItemKeys(graphPart.stableItemKeys,
+                                                    threadPart.stableItemKeys);
+          if (commonKeys.empty())
+            continue;
+          auto surrogate =
+              canonicalizeSystemPresburgerCell(SystemPresburgerCell{});
+          if (!surrogate)
+            return surrogate.takeError();
+          grouped.try_emplace(byteKey(*encoded), SystemSpatialContextDomain{
+                                                     binding.key,
+                                                     graphPart.target,
+                                                     context,
+                                                     {*surrogate},
+                                                     binding.relationKind,
+                                                     std::move(commonKeys)});
+          continue;
+        }
         for (const auto &graphCell : graphPart.cells)
           for (const auto &threadCell : threadPart.cells) {
             auto overlap =
@@ -184,17 +271,17 @@ llvm::Expected<SystemExecutionContextProjection> projectSystemExecutionContexts(
               return overlap.takeError();
             if (!*overlap)
               continue;
-            SpatialExecutionContextKey context{threadPart.target,
-                                               graphPart.target.artifact};
-            auto encoded = encodeExecutionContextKey(context);
-            if (!encoded)
-              return encoded.takeError();
             auto [entry, inserted] = grouped.try_emplace(
                 byteKey(*encoded),
-                SystemSpatialContextDomain{
-                    binding.key, graphPart.target, context, {}});
+                SystemSpatialContextDomain{binding.key,
+                                           graphPart.target,
+                                           context,
+                                           {},
+                                           binding.relationKind,
+                                           graphPart.stableItemKeys});
             entry->second.cells.push_back(std::move(**overlap));
           }
+      }
     if (grouped.empty())
       return invalid("graph binding has no reachable execution context");
     for (auto &[key, projection] : grouped) {
@@ -203,6 +290,70 @@ llvm::Expected<SystemExecutionContextProjection> projectSystemExecutionContexts(
     }
   }
   return result;
+}
+
+llvm::Expected<InstructionExecutionContextKey>
+selectSystemDynamicWorkInstructionExecutionContext(
+    const SystemExecutionContextProjection &projection,
+    ::dataflow::RootThreadLaunchRef root,
+    ::dataflow::DynamicWorkStableItemKey stableItem) {
+  std::map<std::string, InstructionExecutionContextKey> selected;
+  bool foundRoot = false;
+  for (const SystemInstructionContextDomain &domain :
+       projection.instructionDomains) {
+    if (domain.root != root)
+      continue;
+    foundRoot = true;
+    if (domain.relationKind !=
+        ::mapping::SystemBindingRelationKind::StableKeyLookup)
+      return invalid("DynamicWork root has a non-stable execution binding");
+    if (!llvm::is_contained(domain.stableItemKeys, stableItem))
+      continue;
+    auto key = encodeExecutionContextKey(domain.context);
+    if (!key)
+      return key.takeError();
+    selected.try_emplace(byteKey(*key), domain.context);
+  }
+  if (!foundRoot)
+    return invalid("DynamicWork root has no System execution binding");
+  if (selected.empty())
+    return invalid("DynamicWork stable item selects no Instruction context");
+  if (selected.size() != 1)
+    return invalid("DynamicWork stable item selects multiple Instruction "
+                   "contexts");
+  return selected.begin()->second;
+}
+
+llvm::Expected<SelectedSystemSpatialContext>
+selectSystemDynamicWorkSpatialExecutionContext(
+    const SystemExecutionContextProjection &projection,
+    ::dataflow::RootedGraphLaunchRef graph,
+    ::dataflow::DynamicWorkStableItemKey stableItem) {
+  std::map<std::string, SelectedSystemSpatialContext> selected;
+  bool foundGraph = false;
+  for (const SystemSpatialContextDomain &domain : projection.spatialDomains) {
+    if (domain.graph != graph)
+      continue;
+    foundGraph = true;
+    if (domain.relationKind !=
+        ::mapping::SystemBindingRelationKind::StableKeyLookup)
+      return invalid("DynamicWork graph has a non-stable execution binding");
+    if (!llvm::is_contained(domain.stableItemKeys, stableItem))
+      continue;
+    auto key = encodeExecutionContextKey(domain.context);
+    if (!key)
+      return key.takeError();
+    selected.try_emplace(
+        byteKey(*key),
+        SelectedSystemSpatialContext{domain.spatialMapping, domain.context});
+  }
+  if (!foundGraph)
+    return invalid("DynamicWork graph has no System execution binding");
+  if (selected.empty())
+    return invalid("DynamicWork stable item selects no Spatial context");
+  if (selected.size() != 1)
+    return invalid("DynamicWork stable item selects multiple Spatial contexts");
+  return selected.begin()->second;
 }
 
 llvm::Expected<std::vector<fabric::SpatialCoreOccurrenceRef>>
@@ -218,9 +369,11 @@ projectSystemExecutionSpatialCoreSubjects(
                    projection->spatialDomains.size());
   for (const SystemInstructionContextDomain &domain :
        projection->instructionDomains)
-    subjects.push_back(fabric::SpatialCoreOccurrenceRef{domain.context.accCore});
+    subjects.push_back(
+        fabric::SpatialCoreOccurrenceRef{domain.context.accCore});
   for (const SystemSpatialContextDomain &domain : projection->spatialDomains)
-    subjects.push_back(fabric::SpatialCoreOccurrenceRef{domain.context.accCore});
+    subjects.push_back(
+        fabric::SpatialCoreOccurrenceRef{domain.context.accCore});
   llvm::sort(subjects, [](fabric::SpatialCoreOccurrenceRef lhs,
                           fabric::SpatialCoreOccurrenceRef rhs) {
     return fabric::canonicalFabricBytes(lhs) <
@@ -241,6 +394,9 @@ selectSystemSpatialExecutionContext(
     if (domain.graph != graph)
       continue;
     foundGraph = true;
+    if (domain.relationKind ==
+        ::mapping::SystemBindingRelationKind::StableKeyLookup)
+      return invalid("DynamicWork graph selection requires a stable item key");
     for (const SystemPresburgerCell &cell : domain.cells) {
       if (cell.dimensionCount != denseCoordinates.size())
         return invalid("launch coordinate rank does not match its domain");
@@ -304,6 +460,9 @@ llvm::Expected<std::uint64_t> selectSystemServicePlanOrdinal(
   }
   if (!selection)
     return invalid("service plan selection key is absent");
+  if (selection->relationKind ==
+      ::mapping::SystemBindingRelationKind::StableKeyLookup)
+    return invalid("DynamicWork service selection requires a stable item key");
   if (contextDomain.empty())
     return invalid("service plan selection context domain is empty");
 
@@ -371,6 +530,43 @@ llvm::Expected<std::uint64_t> selectSystemServicePlanOrdinal(
                     [&](const auto &plan) { return plan.ordinal == ordinal; }))
     return invalid("selected service plan is absent");
   return ordinal;
+}
+
+llvm::Expected<std::uint64_t> selectSystemDynamicWorkServicePlanOrdinal(
+    const SystemServiceRealizationView &realization,
+    const ServicePlanSelectionAnchor &anchor,
+    const ExecutionContextKey &context,
+    ::dataflow::DynamicWorkStableItemKey stableItem) {
+  const SystemServicePlanSelectionView *selection = nullptr;
+  for (const SystemServicePlanSelectionView &candidate :
+       realization.selections) {
+    if (!(candidate.key.anchor == anchor) ||
+        !(candidate.key.context == context))
+      continue;
+    if (selection)
+      return invalid("service plan selection key is duplicated");
+    selection = &candidate;
+  }
+  if (!selection)
+    return invalid("service plan selection key is absent");
+  if (selection->relationKind !=
+      ::mapping::SystemBindingRelationKind::StableKeyLookup)
+    return invalid("service plan selection is not a stable-key lookup");
+  std::optional<std::uint64_t> selected;
+  for (const auto &entry : selection->stableKeyEntries) {
+    if (!(entry.key == stableItem))
+      continue;
+    if (selected && *selected != entry.target)
+      return invalid("stable item selects multiple service plans");
+    selected = entry.target;
+  }
+  if (!selected)
+    return invalid("stable item selects no service plan");
+  if (!llvm::any_of(realization.plans, [&](const auto &plan) {
+        return plan.ordinal == *selected;
+      }))
+    return invalid("selected service plan is absent");
+  return *selected;
 }
 
 } // namespace loom::mapping

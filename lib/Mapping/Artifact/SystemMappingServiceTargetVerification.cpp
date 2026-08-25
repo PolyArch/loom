@@ -89,6 +89,8 @@ selectedPlanOrdinals(const SystemServicePlanSelectionView &selection) {
     result.push_back(clause.target);
   if (selection.defaultPlanOrdinal)
     result.push_back(*selection.defaultPlanOrdinal);
+  for (const auto &entry : selection.stableKeyEntries)
+    result.push_back(entry.target);
   llvm::sort(result);
   result.erase(std::unique(result.begin(), result.end()), result.end());
   return result;
@@ -341,6 +343,22 @@ llvm::Expected<std::vector<SelectedMessagePlanDomain>>
 selectedMessagePlanDomains(const SystemServicePlanSelectionView &selection,
                            llvm::ArrayRef<SystemPresburgerCell> contextDomain) {
   std::map<std::uint64_t, SelectedMessagePlanDomain> grouped;
+  if (selection.relationKind ==
+      ::mapping::SystemBindingRelationKind::StableKeyLookup) {
+    for (const auto &entry : selection.stableKeyEntries) {
+      auto [domain, inserted] = grouped.try_emplace(
+          entry.target, SelectedMessagePlanDomain{entry.target, {}});
+      domain->second.cells.insert(domain->second.cells.end(),
+                                  contextDomain.begin(), contextDomain.end());
+    }
+    std::vector<SelectedMessagePlanDomain> result;
+    result.reserve(grouped.size());
+    for (auto &[ordinal, domain] : grouped) {
+      (void)ordinal;
+      result.push_back(std::move(domain));
+    }
+    return result;
+  }
   std::vector<SystemPresburgerCell> explicitCells;
   for (const auto &clause : selection.clauses) {
     explicitCells.insert(explicitCells.end(), clause.cells.begin(),
@@ -675,10 +693,10 @@ compatibleMemoryPlans(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   return result;
 }
 
-llvm::Error verifyOperationPlanLegs(
-    const SystemServiceObligationProjection &obligation,
-    const ServicePlanSelectionAnchor &anchor,
-    const SystemServicePlanView &plan) {
+llvm::Error
+verifyOperationPlanLegs(const SystemServiceObligationProjection &obligation,
+                        const ServicePlanSelectionAnchor &anchor,
+                        const SystemServicePlanView &plan) {
   std::vector<CanonicalServiceLegKey> expected;
   if (const auto *member =
           std::get_if<ServiceMemberPlanSelectionAnchor>(&anchor))

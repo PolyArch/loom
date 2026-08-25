@@ -8,7 +8,10 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <optional>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -32,6 +35,28 @@ inline constexpr ArtifactSchemaDescriptor spatialLaunchImageSchema{
     "loom.spatial_launch_image", SchemaVersion{1, 0}};
 inline constexpr ArtifactSchemaDescriptor admissionImageSchema{
     "loom.admission_image", SchemaVersion{1, 0}};
+
+enum class RuntimeImageUnsupportedReason : std::uint8_t {
+  StableKeyLookup,
+};
+
+class RuntimeImageUnsupported final
+    : public llvm::ErrorInfo<RuntimeImageUnsupported> {
+public:
+  static char ID;
+
+  RuntimeImageUnsupported(RuntimeImageUnsupportedReason reason,
+                          std::string message)
+      : reason_(reason), message_(std::move(message)) {}
+
+  RuntimeImageUnsupportedReason reason() const { return reason_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  RuntimeImageUnsupportedReason reason_;
+  std::string message_;
+};
 
 struct DeploymentHardwareBinding final {
   ArtifactRootReference hardwareImplementation;

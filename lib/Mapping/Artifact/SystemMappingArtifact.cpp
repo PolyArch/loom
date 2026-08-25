@@ -230,8 +230,8 @@ deterministicSystemMappingWork(const FinalizedSystemMapping &mapping) {
       closure.executionContexts.spatialDomains.size() +
       closure.serviceRealizations.size() +
       closure.progressBasis.residualCycle.size() +
-      closure.routeObligations.size() +
-      closure.capacityCells.size() + closure.resourceActivations.size();
+      closure.routeObligations.size() + closure.capacityCells.size() +
+      closure.resourceActivations.size();
   for (const auto &domain : closure.executionContexts.instructionDomains)
     closureWork += domain.cells.size();
   for (const auto &domain : closure.executionContexts.spatialDomains)
@@ -268,6 +268,14 @@ std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr record) {
   std::vector<std::uint8_t> result;
   result.reserve(record.size());
   for (std::int8_t byte : record.asArrayRef())
+    result.push_back(static_cast<std::uint8_t>(byte));
+  return result;
+}
+
+std::vector<std::uint8_t> unsignedBytes(llvm::ArrayRef<std::int8_t> record) {
+  std::vector<std::uint8_t> result;
+  result.reserve(record.size());
+  for (std::int8_t byte : record)
     result.push_back(static_cast<std::uint8_t>(byte));
   return result;
 }
@@ -365,11 +373,29 @@ decodeCell(::mapping::SystemPresburgerCellAttr attribute) {
   return canonicalizeSystemPresburgerCell(cell);
 }
 
-llvm::Expected<SystemPresburgerCell>
-legalDomain(const ::dataflow::CanonicalRootThreadLogicalDomainView &domain) {
-  if (domain.kind == ::dataflow::ThreadDomainKind::DynamicWork)
-    return invalid(
-        "StableKeyLookup is unavailable without a Dataflow stable-key owner");
+struct ExpectedLogicalDomain final {
+  SystemPresburgerCell presburgerSurrogate;
+  ::mapping::SystemBindingRelationKind relationKind =
+      ::mapping::SystemBindingRelationKind::PresburgerPartition;
+  std::vector<::dataflow::DynamicWorkStableItemKey> stableItemKeys;
+};
+
+llvm::Expected<ExpectedLogicalDomain>
+legalDomain(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+            const ::dataflow::CanonicalRootThreadLogicalDomainView &domain) {
+  if (domain.kind == ::dataflow::ThreadDomainKind::DynamicWork) {
+    auto projection = dataflow.projectDynamicWork(domain.launch);
+    if (!projection)
+      return projection.takeError();
+    if (projection->stableItemKeys.size() != 1)
+      return invalid("DynamicWork stable-key domain is not singleton");
+    auto cell = canonicalizeSystemPresburgerCell(SystemPresburgerCell{});
+    if (!cell)
+      return cell.takeError();
+    return ExpectedLogicalDomain{
+        std::move(*cell), ::mapping::SystemBindingRelationKind::StableKeyLookup,
+        std::move(projection->stableItemKeys)};
+  }
   SystemPresburgerCell cell;
   cell.dimensionCount = domain.coordinateRank;
   cell.symbolCount = static_cast<std::uint32_t>(domain.launchParameters.size());
@@ -386,7 +412,13 @@ legalDomain(const ::dataflow::CanonicalRootThreadLogicalDomainView &domain) {
     upper.back() = -1;
     cell.inequalities.push_back(std::move(upper));
   }
-  return canonicalizeSystemPresburgerCell(cell);
+  auto canonical = canonicalizeSystemPresburgerCell(cell);
+  if (!canonical)
+    return canonical.takeError();
+  return ExpectedLogicalDomain{
+      std::move(*canonical),
+      ::mapping::SystemBindingRelationKind::PresburgerPartition,
+      {}};
 }
 
 struct ExpectedBinding final {
@@ -395,25 +427,29 @@ struct ExpectedBinding final {
       key;
   SystemPresburgerCell legalDomain;
   std::vector<std::uint8_t> canonicalKey;
+  ::mapping::SystemBindingRelationKind relationKind =
+      ::mapping::SystemBindingRelationKind::PresburgerPartition;
+  std::vector<::dataflow::DynamicWorkStableItemKey> stableItemKeys;
 };
 
 llvm::Expected<std::vector<ExpectedBinding>> collectExpectedBindings(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots) {
   std::vector<ExpectedBinding> result;
-  std::map<std::uint64_t, SystemPresburgerCell> domains;
+  std::map<std::uint64_t, ExpectedLogicalDomain> domains;
   for (const auto &root : roots) {
     auto logical = dataflow.projectRootThreadLogicalDomain(root);
     if (!logical)
       return logical.takeError();
-    auto domain = legalDomain(*logical);
+    auto domain = legalDomain(dataflow, *logical);
     if (!domain)
       return domain.takeError();
     auto key = ::dataflow::encodeDataflowReference(dataflow.identity(), root);
     if (!key)
       return key.takeError();
     domains.emplace(root.entity.value(), *domain);
-    result.push_back({root, std::move(*domain), std::move(*key)});
+    result.push_back({root, domain->presburgerSurrogate, std::move(*key),
+                      domain->relationKind, domain->stableItemKeys});
   }
   llvm::Error callbackError = llvm::Error::success();
   dataflow.forEachRootedGraphLaunch(
@@ -439,7 +475,9 @@ llvm::Expected<std::vector<ExpectedBinding>> collectExpectedBindings(
           callbackError = key.takeError();
           return;
         }
-        result.push_back({graph, found->second, std::move(*key)});
+        result.push_back({graph, found->second.presburgerSurrogate,
+                          std::move(*key), found->second.relationKind,
+                          found->second.stableItemKeys});
       });
   if (callbackError)
     return std::move(callbackError);
@@ -470,6 +508,27 @@ llvm::Error validateRelation(llvm::ArrayRef<SystemPresburgerCell> cells,
     return invalid("binding default is forbidden for an empty complement");
   if (!hasDefault && !analysis->coversLegalDomain)
     return invalid("binding relation does not cover its Dataflow may-domain");
+  return llvm::Error::success();
+}
+
+template <typename Target>
+llvm::Error validateStableRelation(
+    const std::vector<SystemStableKeyEntryView<Target>> &entries,
+    llvm::ArrayRef<::dataflow::DynamicWorkStableItemKey> expectedKeys) {
+  std::vector<std::vector<std::uint8_t>> actual;
+  actual.reserve(entries.size());
+  for (const auto &entry : entries)
+    actual.push_back(::dataflow::encodeDynamicWorkStableItemKey(entry.key));
+  std::vector<std::vector<std::uint8_t>> expected;
+  expected.reserve(expectedKeys.size());
+  for (const auto &key : expectedKeys)
+    expected.push_back(::dataflow::encodeDynamicWorkStableItemKey(key));
+  llvm::sort(actual);
+  llvm::sort(expected);
+  if (std::adjacent_find(actual.begin(), actual.end()) != actual.end())
+    return invalid("StableKeyLookup contains a duplicate key");
+  if (actual != expected)
+    return invalid("StableKeyLookup does not cover its exact Dataflow key set");
   return llvm::Error::success();
 }
 
@@ -528,6 +587,37 @@ llvm::Error verifyTargetCompatibility(
     const ::loom::fabric::FabricSystemRootView &fabric,
     const std::map<ArtifactRootReference, SpatialMappingView,
                    decltype(&artifactRootReferenceLess)> &mappings) {
+  if (thread.relationKind != graph.relationKind)
+    return invalid("graph and thread binding relation kinds differ");
+  if (thread.relationKind ==
+      ::mapping::SystemBindingRelationKind::StableKeyLookup) {
+    std::map<std::vector<std::uint8_t>, ::loom::fabric::AccCoreOccurrenceRef>
+        threadTargets;
+    for (const auto &entry : thread.stableKeyEntries)
+      threadTargets.emplace(
+          ::dataflow::encodeDynamicWorkStableItemKey(entry.key), entry.target);
+    for (const auto &entry : graph.stableKeyEntries) {
+      auto threadTarget = threadTargets.find(
+          ::dataflow::encodeDynamicWorkStableItemKey(entry.key));
+      if (threadTarget == threadTargets.end())
+        return invalid("graph stable key has no parent thread target");
+      auto mapping = mappings.find(entry.target);
+      if (mapping == mappings.end())
+        return invalid("graph stable-key target was not strictly imported");
+      auto graphClass = mappingTargetClass(fabric, mapping->second);
+      if (!graphClass)
+        return graphClass.takeError();
+      auto threadClass = coreTargetClass(fabric, threadTarget->second);
+      if (!threadClass)
+        return threadClass.takeError();
+      if (*threadClass != *graphClass)
+        return invalid("graph and thread stable-key targets are incompatible");
+    }
+    if (threadTargets.size() != graph.stableKeyEntries.size())
+      return invalid("graph stable-key domain differs from its parent thread");
+    return llvm::Error::success();
+  }
+
   const auto threadCells = explicitCells(thread);
   const auto graphCells = explicitCells(graph);
   for (const auto &graphClause : graph.clauses) {
@@ -809,7 +899,13 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
       auto expectedIt = expectedByKey.find(lookup);
       if (expectedIt == expectedByKey.end() || !seenKeys.insert(lookup).second)
         return invalid("ThreadExecutionBinding has a foreign or duplicate key");
-      SystemThreadExecutionBindingView view{*key, {}, std::nullopt};
+      SystemThreadExecutionBindingView view{
+          *key,
+          {},
+          std::nullopt,
+          ::mapping::SystemBindingRelationKind::PresburgerPartition,
+          {}};
+      view.relationKind = binding.getRelationKind();
       std::vector<SystemPresburgerCell> cells;
       for (auto clause : binding.getBody()
                              .front()
@@ -832,6 +928,21 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
         }
         view.clauses.push_back(std::move(imported));
       }
+      for (auto entry : binding.getBody()
+                            .front()
+                            .getOps<::mapping::ThreadStableKeyEntryOp>()) {
+        auto stableKey = ::dataflow::decodeDynamicWorkStableItemKey(
+            unsignedBytes(entry.getStableKey()));
+        if (!stableKey)
+          return stableKey.takeError();
+        auto target = decodeFabric<::loom::fabric::AccCoreOccurrenceRef>(
+            entry.getTarget());
+        if (!target)
+          return target.takeError();
+        if (auto targetClass = coreTargetClass(fabric, *target); !targetClass)
+          return targetClass.takeError();
+        view.stableKeyEntries.push_back({*stableKey, *target});
+      }
       if (binding.getDefaultTarget()) {
         auto target = decodeFabric<::loom::fabric::AccCoreOccurrenceRef>(
             *binding.getDefaultTarget());
@@ -841,10 +952,23 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
           return targetClass.takeError();
         view.defaultTarget = *target;
       }
-      if (llvm::Error error =
-              validateRelation(cells, view.defaultTarget.has_value(),
-                               expectedIt->second->legalDomain))
-        return std::move(error);
+      if (view.relationKind != expectedIt->second->relationKind)
+        return invalid("ThreadExecutionBinding relation kind differs from D");
+      if (view.relationKind ==
+          ::mapping::SystemBindingRelationKind::StableKeyLookup) {
+        if (!view.clauses.empty() || view.defaultTarget)
+          return invalid("DynamicWork binding contains a Presburger branch");
+        if (llvm::Error error = validateStableRelation(
+                view.stableKeyEntries, expectedIt->second->stableItemKeys))
+          return std::move(error);
+      } else {
+        if (!view.stableKeyEntries.empty())
+          return invalid("dense binding contains a stable-key entry");
+        if (llvm::Error error =
+                validateRelation(cells, view.defaultTarget.has_value(),
+                                 expectedIt->second->legalDomain))
+          return std::move(error);
+      }
       threadByKey.emplace(byteKey(*keyBytes), threadBindings.size());
       threadBindings.push_back(std::move(view));
       continue;
@@ -869,7 +993,13 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
     auto expectedIt = expectedByKey.find(lookup);
     if (expectedIt == expectedByKey.end() || !seenKeys.insert(lookup).second)
       return invalid("GraphExecutionBinding has a foreign or duplicate key");
-    SystemGraphExecutionBindingView view{*key, {}, std::nullopt};
+    SystemGraphExecutionBindingView view{
+        *key,
+        {},
+        std::nullopt,
+        ::mapping::SystemBindingRelationKind::PresburgerPartition,
+        {}};
+    view.relationKind = binding.getRelationKind();
     std::vector<SystemPresburgerCell> cells;
     for (auto clause : binding.getBody()
                            .front()
@@ -889,16 +1019,41 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
       }
       view.clauses.push_back(std::move(imported));
     }
+    for (auto entry :
+         binding.getBody().front().getOps<::mapping::GraphStableKeyEntryOp>()) {
+      auto stableKey = ::dataflow::decodeDynamicWorkStableItemKey(
+          unsignedBytes(entry.getStableKey()));
+      if (!stableKey)
+        return stableKey.takeError();
+      const std::uint64_t ordinal = entry.getTarget().getOrdinal();
+      if (ordinal >= imports.size())
+        return invalid(
+            "graph stable key names an absent SpatialMapping import");
+      view.stableKeyEntries.push_back({*stableKey, imports[ordinal]});
+    }
     if (binding.getDefaultTarget()) {
       const std::uint64_t ordinal = binding.getDefaultTarget()->getOrdinal();
       if (ordinal >= imports.size())
         return invalid("graph default names an absent SpatialMapping import");
       view.defaultTarget = imports[ordinal];
     }
-    if (llvm::Error error =
-            validateRelation(cells, view.defaultTarget.has_value(),
-                             expectedIt->second->legalDomain))
-      return std::move(error);
+    if (view.relationKind != expectedIt->second->relationKind)
+      return invalid("GraphExecutionBinding relation kind differs from D");
+    if (view.relationKind ==
+        ::mapping::SystemBindingRelationKind::StableKeyLookup) {
+      if (!view.clauses.empty() || view.defaultTarget)
+        return invalid("DynamicWork graph binding has a Presburger branch");
+      if (llvm::Error error = validateStableRelation(
+              view.stableKeyEntries, expectedIt->second->stableItemKeys))
+        return std::move(error);
+    } else {
+      if (!view.stableKeyEntries.empty())
+        return invalid("dense graph binding contains a stable-key entry");
+      if (llvm::Error error =
+              validateRelation(cells, view.defaultTarget.has_value(),
+                               expectedIt->second->legalDomain))
+        return std::move(error);
+    }
     graphBindings.push_back(std::move(view));
   }
   if (seenKeys.size() != expected->size())
@@ -910,6 +1065,8 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
       selectedImports.push_back(clause.target);
     if (binding.defaultTarget)
       selectedImports.push_back(*binding.defaultTarget);
+    for (const auto &entry : binding.stableKeyEntries)
+      selectedImports.push_back(entry.target);
   }
   llvm::sort(selectedImports, artifactRootReferenceLess);
   selectedImports.erase(

@@ -595,12 +595,16 @@ void activationKeysIgnorePartitionsAndDistinguishRootedLaunches() {
        {loom::mapping::mappingArtifactSchema.identity.str(),
         loom::mapping::mappingArtifactSchema.version, firstMapping},
        {firstCore, firstMapping},
-       {even}},
+       {even},
+       ::mapping::SystemBindingRelationKind::PresburgerPartition,
+       {}},
       {first,
        {loom::mapping::mappingArtifactSchema.identity.str(),
         loom::mapping::mappingArtifactSchema.version, secondMapping},
        {secondCore, secondMapping},
-       {odd}}};
+       {odd},
+       ::mapping::SystemBindingRelationKind::PresburgerPartition,
+       {}}};
   const auto firstKey =
       take(test, loom::runtime::detail::configurationActivationEventKey(
                      dataflowIdentity, sameEvent,

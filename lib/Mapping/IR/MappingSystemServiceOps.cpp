@@ -286,6 +286,11 @@ LogicalResult mapping::ServiceRealizationOp::verify() {
                            .getOps<mapping::ServicePlanPresburgerClauseOp>())
       selectedOrdinals.insert(static_cast<std::uint64_t>(
           integerValue(clause, "target_plan_ordinal")));
+    for (auto entry : selection.getBody()
+                          .front()
+                          .getOps<mapping::ServicePlanStableKeyEntryOp>())
+      selectedOrdinals.insert(static_cast<std::uint64_t>(
+          integerValue(entry, "target_plan_ordinal")));
   }
   if (ordinals.empty())
     return emitOpError("requires at least one ServicePlan");
@@ -456,20 +461,28 @@ LogicalResult mapping::ServicePlanSelectionOp::verify() {
   if (failed(requireSingleBlock(
           *this, {"key", "relation_kind", "default_plan_ordinal"})))
     return failure();
-  if (getRelationKind() !=
-      mapping::SystemBindingRelationKind::PresburgerPartition)
-    return emitOpError(
-        "StableKeyLookup is unavailable without a Dataflow stable-key owner");
   auto defaultTarget =
       (*this)->getAttrOfType<IntegerAttr>("default_plan_ordinal");
   if (defaultTarget && defaultTarget.getInt() < 0)
     return emitOpError("default plan ordinal must be nonnegative");
-  if (getBody().front().empty() && !defaultTarget)
-    return emitOpError(
-        "Presburger relation requires a clause or default plan ordinal");
-  for (Operation &child : getBody().front())
-    if (!isa<mapping::ServicePlanPresburgerClauseOp>(child))
-      return child.emitOpError("is not a service-plan Presburger clause");
+  if (getRelationKind() ==
+      mapping::SystemBindingRelationKind::PresburgerPartition) {
+    if (getBody().front().empty() && !defaultTarget)
+      return emitOpError(
+          "Presburger relation requires a clause or default plan ordinal");
+    for (Operation &child : getBody().front())
+      if (!isa<mapping::ServicePlanPresburgerClauseOp>(child))
+        return child.emitOpError("is not a service-plan Presburger clause");
+  } else {
+    if (defaultTarget)
+      return emitOpError(
+          "StableKeyLookup does not admit a default plan ordinal");
+    if (getBody().front().empty())
+      return emitOpError("StableKeyLookup requires an exact key entry");
+    for (Operation &child : getBody().front())
+      if (!isa<mapping::ServicePlanStableKeyEntryOp>(child))
+        return child.emitOpError("is not a service-plan stable-key entry");
+  }
 
   auto root = (*this)->getParentOfType<mapping::SystemOp>();
   if (!root)
@@ -497,6 +510,17 @@ LogicalResult mapping::ServicePlanSelectionOp::verify() {
       return emitOpError(
           "transfer obligation requires its singleton MessageTransfer anchor");
   }
+  return success();
+}
+
+LogicalResult mapping::ServicePlanStableKeyEntryOp::verify() {
+  if (failed(rejectUnknownAttributes(*this,
+                                     {"stable_key", "target_plan_ordinal"})))
+    return failure();
+  if (getStableKey().empty())
+    return emitOpError("requires a non-empty stable key");
+  if (getTargetPlanOrdinal() < 0)
+    return emitOpError("target plan ordinal must be nonnegative");
   return success();
 }
 

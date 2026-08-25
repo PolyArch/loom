@@ -47,6 +47,11 @@ std::string recordKey(DenseI8ArrayAttr attribute) {
   return result;
 }
 
+std::string recordKey(llvm::ArrayRef<std::int8_t> bytes) {
+  return std::string(reinterpret_cast<const char *>(bytes.data()),
+                     bytes.size());
+}
+
 void appendU32(std::string &result, std::uint32_t value) {
   for (unsigned byte = 0; byte < 4; ++byte)
     result.push_back(static_cast<char>(value >> (8 * (3 - byte))));
@@ -583,8 +588,32 @@ std::string systemCellKey(::mapping::SystemPresburgerCellAttr cell) {
   return result;
 }
 
-template <typename BindingOp, typename ClauseOp>
+template <typename BindingOp, typename ClauseOp, typename StableEntryOp>
 llvm::Error canonicalizeSystemBinding(BindingOp binding) {
+  if (binding.getRelationKind() ==
+      ::mapping::SystemBindingRelationKind::StableKeyLookup) {
+    SmallVector<StableEntryOp> entries;
+    for (auto entry :
+         binding.getBody().front().template getOps<StableEntryOp>())
+      entries.push_back(entry);
+    llvm::sort(entries, [](StableEntryOp lhs, StableEntryOp rhs) {
+      const std::string lhsKey = recordKey(lhs.getStableKey());
+      const std::string rhsKey = recordKey(rhs.getStableKey());
+      if (lhsKey != rhsKey)
+        return lhsKey < rhsKey;
+      if constexpr (std::is_same_v<StableEntryOp,
+                                   ::mapping::ThreadStableKeyEntryOp>)
+        return recordKey(lhs.getTarget().getRecord()) <
+               recordKey(rhs.getTarget().getRecord());
+      else
+        return lhs.getTarget().getOrdinal() < rhs.getTarget().getOrdinal();
+    });
+    Block &body = binding.getBody().front();
+    for (StableEntryOp entry : entries)
+      entry->moveBefore(&body, body.end());
+    return llvm::Error::success();
+  }
+
   struct Group final {
     Attribute target;
     SmallVector<::mapping::SystemPresburgerCellAttr> cells;
@@ -888,6 +917,31 @@ canonicalizeServiceRealization(::mapping::ServiceRealizationOp service,
                          builder.getI64IntegerAttr(*rewritten));
     }
 
+    if (selection.getRelationKind() ==
+        ::mapping::SystemBindingRelationKind::StableKeyLookup) {
+      SmallVector<::mapping::ServicePlanStableKeyEntryOp> entries;
+      for (auto entry : selection.getBody()
+                            .front()
+                            .getOps<::mapping::ServicePlanStableKeyEntryOp>()) {
+        auto rewritten = rewrittenPlanOrdinal(entry.getTargetPlanOrdinal());
+        if (!rewritten)
+          return rewritten.takeError();
+        entry.setTargetPlanOrdinalAttr(builder.getI64IntegerAttr(*rewritten));
+        entries.push_back(entry);
+      }
+      llvm::sort(entries, [](auto lhs, auto rhs) {
+        const std::string lhsKey = recordKey(lhs.getStableKey());
+        const std::string rhsKey = recordKey(rhs.getStableKey());
+        return std::make_tuple(lhsKey, lhs.getTargetPlanOrdinal()) <
+               std::make_tuple(rhsKey, rhs.getTargetPlanOrdinal());
+      });
+      Block &selectionBody = selection.getBody().front();
+      for (auto entry : entries)
+        entry->moveBefore(&selectionBody, selectionBody.end());
+      selections.push_back(selection);
+      continue;
+    }
+
     struct Group final {
       std::uint64_t target = 0;
       SmallVector<::mapping::SystemPresburgerCellAttr> cells;
@@ -1002,9 +1056,16 @@ llvm::Error canonicalizeSystem(::mapping::SystemOp root) {
             "target", ::mapping::SpatialMappingImportRefAttr::get(
                           root.getContext(),
                           importRenumbering[clause.getTarget().getOrdinal()]));
+      for (auto entry :
+           graph.getBody().front().getOps<::mapping::GraphStableKeyEntryOp>())
+        entry->setAttr("target",
+                       ::mapping::SpatialMappingImportRefAttr::get(
+                           root.getContext(),
+                           importRenumbering[entry.getTarget().getOrdinal()]));
       if (llvm::Error error =
               canonicalizeSystemBinding<::mapping::GraphExecutionBindingOp,
-                                        ::mapping::GraphPresburgerClauseOp>(
+                                        ::mapping::GraphPresburgerClauseOp,
+                                        ::mapping::GraphStableKeyEntryOp>(
                   graph))
         return error;
       graphBindings.push_back(graph);
@@ -1012,7 +1073,8 @@ llvm::Error canonicalizeSystem(::mapping::SystemOp root) {
                    dyn_cast<::mapping::ThreadExecutionBindingOp>(operation)) {
       if (llvm::Error error =
               canonicalizeSystemBinding<::mapping::ThreadExecutionBindingOp,
-                                        ::mapping::ThreadPresburgerClauseOp>(
+                                        ::mapping::ThreadPresburgerClauseOp,
+                                        ::mapping::ThreadStableKeyEntryOp>(
                   thread))
         return error;
       threadBindings.push_back(thread);

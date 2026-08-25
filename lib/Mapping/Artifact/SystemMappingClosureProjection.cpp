@@ -246,6 +246,16 @@ llvm::Expected<std::vector<SystemPresburgerCell>>
 selectedPlanCells(const SystemServicePlanSelectionView &selection,
                   std::uint64_t planOrdinal,
                   llvm::ArrayRef<SystemPresburgerCell> contextDomain) {
+  if (selection.relationKind ==
+      ::mapping::SystemBindingRelationKind::StableKeyLookup) {
+    const bool selected =
+        llvm::any_of(selection.stableKeyEntries, [&](const auto &entry) {
+          return entry.target == planOrdinal;
+        });
+    return selected ? std::vector<SystemPresburgerCell>(contextDomain.begin(),
+                                                        contextDomain.end())
+                    : std::vector<SystemPresburgerCell>{};
+  }
   std::vector<SystemPresburgerCell> explicitCells;
   std::vector<SystemPresburgerCell> selected;
   for (const auto &clause : selection.clauses) {

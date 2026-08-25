@@ -61,3 +61,26 @@ target_link_libraries(loom-runtime-deployment-loader-test PRIVATE
   LoomDeploymentTestSupport
   LoomRuntimeDeploymentLoader
 )
+
+add_executable(loom-runtime-dynamic-work-test
+  DynamicWorkExecutionTest.cpp
+)
+
+target_include_directories(loom-runtime-dynamic-work-test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../dse
+)
+
+target_link_libraries(loom-runtime-dynamic-work-test PRIVATE
+  LoomDeploymentTestSupport
+  LoomDSE
+  LoomDSEMappingGenerator
+  LoomRootCompleteSpatialPnrTestSupport
+  LoomRuntimeDynamicWork
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)

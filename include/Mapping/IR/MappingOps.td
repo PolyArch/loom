@@ -310,6 +310,17 @@ def Mapping_ThreadPresburgerClauseOp
   let hasVerifier = 1;
 }
 
+def Mapping_ThreadStableKeyEntryOp
+    : Mapping_Op<"thread_stable_key_entry",
+                 [HasParent<"ThreadExecutionBindingOp">]> {
+  let summary = "one Dataflow-owned stable item key and AccCore target";
+  let arguments = (ins DenseI8ArrayAttr:$stable_key,
+      Mapping_FabricAccCoreOccurrenceRefAttr:$target);
+  let assemblyFormat = [{`key` `(` $stable_key `)` `target` `(` $target `)`
+                         attr-dict}];
+  let hasVerifier = 1;
+}
+
 def Mapping_GraphExecutionBindingOp
     : Mapping_Op<"graph_execution_binding",
                  [HasParent<"SystemOp">, SingleBlock, NoTerminator]> {
@@ -331,6 +342,17 @@ def Mapping_GraphPresburgerClauseOp
   let arguments = (ins ArrayAttr:$cells,
       Mapping_SpatialMappingImportRefAttr:$target);
   let assemblyFormat = [{`cells` `(` $cells `)` `target` `(` $target `)`
+                         attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_GraphStableKeyEntryOp
+    : Mapping_Op<"graph_stable_key_entry",
+                 [HasParent<"GraphExecutionBindingOp">]> {
+  let summary = "one Dataflow-owned stable item key and SpatialMapping target";
+  let arguments = (ins DenseI8ArrayAttr:$stable_key,
+      Mapping_SpatialMappingImportRefAttr:$target);
+  let assemblyFormat = [{`key` `(` $stable_key `)` `target` `(` $target `)`
                          attr-dict}];
   let hasVerifier = 1;
 }
@@ -417,6 +439,17 @@ def Mapping_ServicePlanPresburgerClauseOp
   let arguments = (ins ArrayAttr:$cells, I64Attr:$target_plan_ordinal);
   let assemblyFormat = [{`cells` `(` $cells `)`
                          `target` $target_plan_ordinal attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_ServicePlanStableKeyEntryOp
+    : Mapping_Op<"service_plan_stable_key_entry",
+                 [HasParent<"ServicePlanSelectionOp">]> {
+  let summary = "one Dataflow-owned stable item key and service plan";
+  let arguments = (ins DenseI8ArrayAttr:$stable_key,
+      I64Attr:$target_plan_ordinal);
+  let assemblyFormat = [{`key` `(` $stable_key `)`
+                         `target` `(` $target_plan_ordinal `)` attr-dict}];
   let hasVerifier = 1;
 }
 

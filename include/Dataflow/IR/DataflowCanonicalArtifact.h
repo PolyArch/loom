@@ -24,6 +24,8 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <string>
+#include <system_error>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -76,6 +78,63 @@ struct CanonicalRootThreadLogicalDomainView {
   std::uint32_t coordinateRank = 0;
   std::vector<mlir::Value> launchParameters;
 };
+
+/// Canonical stable key for the first finite DynamicWork profile. The root
+/// key is independent of the execution-local dispatch occurrence. Child paths
+/// are deliberately absent until Dataflow owns a spawn operation and its
+/// source correspondence.
+struct DynamicWorkStableItemKey final {
+  friend constexpr bool operator==(DynamicWorkStableItemKey,
+                                   DynamicWorkStableItemKey) {
+    return true;
+  }
+};
+
+enum class DynamicWorkProjectionUnsupportedReason : std::uint8_t {
+  PayloadTransportUnavailable,
+  LaunchCapturesUnavailable,
+  NestedGraphLaunchUnavailable,
+  MultipleGraphLaunchesUnavailable,
+};
+
+class DynamicWorkProjectionUnsupported final
+    : public llvm::ErrorInfo<DynamicWorkProjectionUnsupported> {
+public:
+  static char ID;
+
+  DynamicWorkProjectionUnsupported(
+      DynamicWorkProjectionUnsupportedReason reason, std::string message)
+      : reason_(reason), message_(std::move(message)) {}
+
+  DynamicWorkProjectionUnsupportedReason reason() const { return reason_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  DynamicWorkProjectionUnsupportedReason reason_;
+  std::string message_;
+};
+
+/// Dataflow-owned finite projection for the admitted root-only DynamicWork
+/// profile. Values and types borrow the imported canonical program. Mapping
+/// consumes `stableItemKeys`; Runtime combines the same root key with its
+/// separate execution-local WorkItemId.
+struct CanonicalDynamicWorkProjection final {
+  RootThreadLaunchRef root;
+  std::uint64_t workItemArgumentOrdinal = 0;
+  mlir::Type workItemType;
+  mlir::Value rootWorkItem;
+  std::vector<RootedGraphLaunchRef> directGraphLaunches;
+  std::vector<DynamicWorkStableItemKey> stableItemKeys;
+  std::uint32_t payloadByteWidth = 0;
+};
+
+/// Stable comparison bytes owned by Dataflow. The root-only key is a closed
+/// zero-field variant, encoded by its u32 discriminator.
+std::vector<std::uint8_t>
+encodeDynamicWorkStableItemKey(DynamicWorkStableItemKey key);
+llvm::Expected<DynamicWorkStableItemKey>
+decodeDynamicWorkStableItemKey(llvm::ArrayRef<std::uint8_t> bytes);
 
 /// One root-to-leaf direct-call path from an application ABI entry to the
 /// LLVM callable that owns a root thread launch. Operations borrow the
@@ -168,6 +227,14 @@ public:
   resolve(RootThreadLaunchRef ref) const;
   llvm::Expected<CanonicalRootThreadLogicalDomainView>
   projectRootThreadLogicalDomain(RootThreadLaunchRef ref) const;
+
+  /// Projects the first finite DynamicWork profile. It admits one root item,
+  /// no launch captures, and at most one direct graph launch. Child
+  /// publication is absent until Dataflow owns its canonical operation and
+  /// lineage. Representable extensions retain their typed reason instead of
+  /// becoming a generic logical-domain failure.
+  llvm::Expected<CanonicalDynamicWorkProjection>
+  projectDynamicWork(RootThreadLaunchRef ref) const;
 
   /// Project the root launch's complete logical domain for one rooted graph
   /// launch only when the graph invocation is a direct operation in the

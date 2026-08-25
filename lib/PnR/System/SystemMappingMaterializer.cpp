@@ -118,8 +118,7 @@ requiresExplicitTransformPaths(const SystemCandidateState &candidate,
   auto domain = candidate.serviceTargetDomain(context);
   if (!domain)
     return domain.takeError();
-  const auto *memory =
-      std::get_if<SystemMemoryServiceTargetDomain>(&*domain);
+  const auto *memory = std::get_if<SystemMemoryServiceTargetDomain>(&*domain);
   if (!memory || subject >= memory->plansBySubject.size())
     return invalid("memory target has a non-memory target domain");
   const auto selectedRegions = targetRegionKey(selected);
@@ -216,6 +215,33 @@ llvm::Expected<BindingOp> createBinding(
   return binding;
 }
 
+template <typename BindingOp, typename KeyAttr, typename StableEntryOp,
+          typename TargetAttr>
+llvm::Expected<BindingOp>
+createStableBinding(mlir::OpBuilder &builder, mlir::Location location,
+                    mlir::Block &parent, KeyAttr key, TargetAttr target) {
+  mlir::OperationState bindingState(location, BindingOp::getOperationName());
+  bindingState.addAttribute("key", key);
+  bindingState.addAttribute(
+      "relation_kind",
+      ::mapping::SystemBindingRelationKindAttr::get(
+          builder.getContext(),
+          ::mapping::SystemBindingRelationKind::StableKeyLookup));
+  bindingState.addRegion();
+  builder.setInsertionPointToEnd(&parent);
+  auto binding = mlir::cast<BindingOp>(builder.create(bindingState));
+  binding.getBody().emplaceBlock();
+  builder.setInsertionPointToEnd(&binding.getBody().front());
+  mlir::OperationState entryState(location, StableEntryOp::getOperationName());
+  entryState.addAttribute(
+      "stable_key", bytesAttr(builder.getContext(),
+                              ::dataflow::encodeDynamicWorkStableItemKey(
+                                  ::dataflow::DynamicWorkStableItemKey{})));
+  entryState.addAttribute("target", target);
+  builder.create(entryState);
+  return binding;
+}
+
 } // namespace
 
 llvm::Expected<mlir::OwningOpRef<mlir::Operation *>>
@@ -271,6 +297,8 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
            std::vector<std::pair<::loom::mapping::SystemPresburgerCell,
                                  ::mapping::FabricAccCoreOccurrenceRefAttr>>>
       threadClauses;
+  std::map<std::vector<std::uint8_t>, ::mapping::SystemBindingRelationKind>
+      threadRelationKinds;
   std::map<std::vector<std::uint8_t>, ::dataflow::RootThreadLaunchRef>
       threadKeys;
   for (const auto &[decision, frozen] :
@@ -280,6 +308,10 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
     if (!key)
       return key.takeError();
     threadKeys.emplace(*key, frozen.root);
+    auto [kind, inserted] =
+        threadRelationKinds.emplace(*key, frozen.relationKind);
+    if (!inserted && kind->second != frozen.relationKind)
+      return invalid("thread binding mixes relation kinds");
     threadClauses[*key].push_back(
         {frozen.cell,
          accCoreAttr(&context, candidate.selectedAccCore(
@@ -293,11 +325,28 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         &context, problem.dataflowIdentity(), reference->second);
     if (!key)
       return key.takeError();
-    auto binding = createBinding<::mapping::ThreadExecutionBindingOp,
-                                 ::mapping::RootThreadLaunchRefAttr,
-                                 ::mapping::ThreadPresburgerClauseOp,
-                                 ::mapping::FabricAccCoreOccurrenceRefAttr>(
-        builder, location, root.getBody().front(), *key, clauses);
+    auto relationKind = threadRelationKinds.find(keyBytes);
+    if (relationKind == threadRelationKinds.end())
+      return invalid("thread binding lost its relation kind");
+    llvm::Expected<::mapping::ThreadExecutionBindingOp> binding =
+        relationKind->second ==
+                ::mapping::SystemBindingRelationKind::StableKeyLookup
+            ? (clauses.size() == 1
+                   ? createStableBinding<
+                         ::mapping::ThreadExecutionBindingOp,
+                         ::mapping::RootThreadLaunchRefAttr,
+                         ::mapping::ThreadStableKeyEntryOp,
+                         ::mapping::FabricAccCoreOccurrenceRefAttr>(
+                         builder, location, root.getBody().front(), *key,
+                         clauses.front().second)
+                   : llvm::Expected<::mapping::ThreadExecutionBindingOp>(
+                         invalid("DynamicWork thread binding is not a "
+                                 "singleton stable-key relation")))
+            : createBinding<::mapping::ThreadExecutionBindingOp,
+                            ::mapping::RootThreadLaunchRefAttr,
+                            ::mapping::ThreadPresburgerClauseOp,
+                            ::mapping::FabricAccCoreOccurrenceRefAttr>(
+                  builder, location, root.getBody().front(), *key, clauses);
     if (!binding)
       return binding.takeError();
   }
@@ -306,6 +355,8 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
            std::vector<std::pair<::loom::mapping::SystemPresburgerCell,
                                  ::mapping::SpatialMappingImportRefAttr>>>
       graphClauses;
+  std::map<std::vector<std::uint8_t>, ::mapping::SystemBindingRelationKind>
+      graphRelationKinds;
   std::map<std::vector<std::uint8_t>, ::dataflow::RootedGraphLaunchRef>
       graphKeys;
   for (const auto &[decision, frozen] :
@@ -315,6 +366,10 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
     if (!key)
       return key.takeError();
     graphKeys.emplace(*key, frozen.launch);
+    auto [kind, inserted] =
+        graphRelationKinds.emplace(*key, frozen.relationKind);
+    if (!inserted && kind->second != frozen.relationKind)
+      return invalid("graph binding mixes relation kinds");
     const ArtifactRootReference &selected =
         candidate.selectedSpatialMapping(static_cast<PnrIndex>(decision));
     auto imported = importOrdinals.find(selected);
@@ -332,11 +387,28 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         &context, problem.dataflowIdentity(), reference->second);
     if (!key)
       return key.takeError();
-    auto binding = createBinding<::mapping::GraphExecutionBindingOp,
-                                 ::mapping::RootedGraphLaunchRefAttr,
-                                 ::mapping::GraphPresburgerClauseOp,
-                                 ::mapping::SpatialMappingImportRefAttr>(
-        builder, location, root.getBody().front(), *key, clauses);
+    auto relationKind = graphRelationKinds.find(keyBytes);
+    if (relationKind == graphRelationKinds.end())
+      return invalid("graph binding lost its relation kind");
+    llvm::Expected<::mapping::GraphExecutionBindingOp> binding =
+        relationKind->second ==
+                ::mapping::SystemBindingRelationKind::StableKeyLookup
+            ? (clauses.size() == 1
+                   ? createStableBinding<
+                         ::mapping::GraphExecutionBindingOp,
+                         ::mapping::RootedGraphLaunchRefAttr,
+                         ::mapping::GraphStableKeyEntryOp,
+                         ::mapping::SpatialMappingImportRefAttr>(
+                         builder, location, root.getBody().front(), *key,
+                         clauses.front().second)
+                   : llvm::Expected<::mapping::GraphExecutionBindingOp>(
+                         invalid("DynamicWork graph binding is not a "
+                                 "singleton stable-key relation")))
+            : createBinding<::mapping::GraphExecutionBindingOp,
+                            ::mapping::RootedGraphLaunchRefAttr,
+                            ::mapping::GraphPresburgerClauseOp,
+                            ::mapping::SpatialMappingImportRefAttr>(
+                  builder, location, root.getBody().front(), *key, clauses);
     if (!binding)
       return binding.takeError();
   }
@@ -348,9 +420,9 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
     ::loom::mapping::SystemServiceObligationKey key;
     std::map<std::pair<PnrIndex, PnrIndex>, PlanGroup> plans;
   };
-  std::map<std::pair<PnrIndex, PnrIndex>,
-           std::pair<::loom::mapping::SystemServiceObligationKey,
-                     std::uint64_t>>
+  std::map<
+      std::pair<PnrIndex, PnrIndex>,
+      std::pair<::loom::mapping::SystemServiceObligationKey, std::uint64_t>>
       persistentPlanBySubject;
   std::map<std::vector<std::uint8_t>, ServiceGroup> serviceGroups;
   for (const auto &[contextOrdinal, context] :
@@ -366,8 +438,8 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         serviceGroups.try_emplace(*keyBytes, ServiceGroup{obligation, {}})
             .first;
     const PnrIndex frozenContext = static_cast<PnrIndex>(contextOrdinal);
-    if (std::holds_alternative<
-            ::loom::mapping::TransferObligationFamilyKey>(obligation)) {
+    if (std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+            obligation)) {
       service->second.plans.try_emplace(
           std::make_pair(frozenContext, getInvalidPnrIndex()), PlanGroup{});
       continue;
@@ -376,8 +448,7 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
          llvm::enumerate(context.subjects)) {
       (void)subject;
       service->second.plans.try_emplace(
-          std::make_pair(frozenContext,
-                         static_cast<PnrIndex>(subjectOrdinal)),
+          std::make_pair(frozenContext, static_cast<PnrIndex>(subjectOrdinal)),
           PlanGroup{});
     }
   }
@@ -398,8 +469,8 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         serviceGroups.try_emplace(*keyBytes, ServiceGroup{leg.obligation, {}})
             .first;
     PnrIndex subject = getInvalidPnrIndex();
-    if (!std::holds_alternative<
-            ::loom::mapping::TransferObligationFamilyKey>(leg.obligation)) {
+    if (!std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+            leg.obligation)) {
       const auto &subjects = problem.serviceContexts()[serviceContext].subjects;
       const auto matching = llvm::find_if(subjects, [&](const auto &candidate) {
         const auto *member =
@@ -410,10 +481,10 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         return invalid("service route has no matching target subject");
       subject = static_cast<PnrIndex>(matching - subjects.begin());
     }
-    auto plan = found->second.plans
-                    .try_emplace(std::make_pair(serviceContext, subject),
-                                 PlanGroup{})
-                    .first;
+    auto plan =
+        found->second.plans
+            .try_emplace(std::make_pair(serviceContext, subject), PlanGroup{})
+            .first;
     plan->second.routes.push_back(static_cast<PnrIndex>(routeOrdinal));
   }
   for (const auto &[keyBytes, group] : serviceGroups) {
@@ -519,8 +590,7 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         if (subjectOrdinal >= serviceContext.subjects.size() ||
             subjectOrdinal >= targetSelection->domainsBySubject.size())
           return invalid("consistency service plan subject is out of range");
-        const auto domain =
-            targetSelection->domainsBySubject[subjectOrdinal];
+        const auto domain = targetSelection->domainsBySubject[subjectOrdinal];
         const auto *operation =
             std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
                 &group.key);
@@ -600,9 +670,12 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
     }
 
     struct SelectionDraft final {
+      ::mapping::SystemBindingRelationKind relationKind =
+          ::mapping::SystemBindingRelationKind::PresburgerPartition;
       std::vector<
           std::pair<::loom::mapping::SystemPresburgerCell, std::uint64_t>>
           clauses;
+      std::optional<std::uint64_t> stableTarget;
     };
     std::map<std::vector<std::uint8_t>, SelectionDraft> selections;
     for (const auto &[planKey, authoredOrdinal] : planOrdinals) {
@@ -655,10 +728,23 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
             problem.dataflowIdentity(), selectionKey);
         if (!selectionBytes)
           return selectionBytes.takeError();
-        auto selection =
-            selections.try_emplace(*selectionBytes, SelectionDraft{}).first;
-        for (const auto &cell : serviceContext.cells)
-          selection->second.clauses.push_back({cell, authoredOrdinal});
+        const auto relationKind =
+            problem.threadDecisions()[serviceContext.threadDecision]
+                .relationKind;
+        auto [selection, inserted] = selections.try_emplace(
+            *selectionBytes, SelectionDraft{relationKind, {}, std::nullopt});
+        if (!inserted && selection->second.relationKind != relationKind)
+          return invalid("service selection mixes relation kinds");
+        if (relationKind ==
+            ::mapping::SystemBindingRelationKind::StableKeyLookup) {
+          if (selection->second.stableTarget &&
+              *selection->second.stableTarget != authoredOrdinal)
+            return invalid("DynamicWork stable key selects multiple plans");
+          selection->second.stableTarget = authoredOrdinal;
+        } else {
+          for (const auto &cell : serviceContext.cells)
+            selection->second.clauses.push_back({cell, authoredOrdinal});
+        }
       }
     }
     for (const auto &[selectionBytes, selection] : selections) {
@@ -668,20 +754,30 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
       selectionState.addAttribute(
           "key", ::mapping::ServicePlanSelectionKeyAttr::get(
                      &context, bytesAttr(&context, selectionBytes)));
-      selectionState.addAttribute(
-          "relation_kind",
-          ::mapping::SystemBindingRelationKindAttr::get(
-              &context,
-              ::mapping::SystemBindingRelationKind::PresburgerPartition));
+      selectionState.addAttribute("relation_kind",
+                                  ::mapping::SystemBindingRelationKindAttr::get(
+                                      &context, selection.relationKind));
       selectionState.addRegion();
       auto selectionOp = mlir::cast<::mapping::ServicePlanSelectionOp>(
           builder.create(selectionState));
       selectionOp.getBody().emplaceBlock();
       builder.setInsertionPointToEnd(&selectionOp.getBody().front());
-      for (const auto &[cell, target] : selection.clauses)
-        ::mapping::ServicePlanPresburgerClauseOp::create(
+      if (selection.relationKind ==
+          ::mapping::SystemBindingRelationKind::StableKeyLookup) {
+        if (!selection.stableTarget)
+          return invalid("DynamicWork service selection has no stable target");
+        ::mapping::ServicePlanStableKeyEntryOp::create(
             builder, location,
-            mlir::ArrayAttr::get(&context, {cellAttr(&context, cell)}), target);
+            bytesAttr(&context, ::dataflow::encodeDynamicWorkStableItemKey(
+                                    ::dataflow::DynamicWorkStableItemKey{})),
+            *selection.stableTarget);
+      } else {
+        for (const auto &[cell, target] : selection.clauses)
+          ::mapping::ServicePlanPresburgerClauseOp::create(
+              builder, location,
+              mlir::ArrayAttr::get(&context, {cellAttr(&context, cell)}),
+              target);
+      }
     }
   }
 
@@ -769,7 +865,8 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
       if (!explicitPaths)
         return explicitPaths.takeError();
       if (*explicitPaths)
-        for (const auto transform : plan.branches[selected.branch].transformPath)
+        for (const auto transform :
+             plan.branches[selected.branch].transformPath)
           transforms.push_back(
               fabricRefAttr<::mapping::SystemServiceTransformRefAttr>(
                   &context, transform));

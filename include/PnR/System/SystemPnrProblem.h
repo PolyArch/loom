@@ -72,6 +72,8 @@ struct FrozenSystemThreadExecutionDecision final {
   PnrIndex choiceOffset = 0;
   PnrIndex choiceCount = 0;
   PnrIndex relationDecision = 0;
+  ::mapping::SystemBindingRelationKind relationKind =
+      ::mapping::SystemBindingRelationKind::PresburgerPartition;
 };
 
 struct FrozenSystemGraphExecutionDecision final {
@@ -80,6 +82,8 @@ struct FrozenSystemGraphExecutionDecision final {
   PnrIndex choiceOffset = 0;
   PnrIndex choiceCount = 0;
   PnrIndex relationDecision = 0;
+  ::mapping::SystemBindingRelationKind relationKind =
+      ::mapping::SystemBindingRelationKind::PresburgerPartition;
 };
 
 struct FrozenSystemTransferTerminal final {

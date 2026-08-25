@@ -1,14 +1,17 @@
 #ifndef LOOM_SIMULATOR_THREADDISPATCHIDENTITY_H
 #define LOOM_SIMULATOR_THREADDISPATCHIDENTITY_H
 
-#include "Dataflow/IR/DataflowCanonicalEntity.h"
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Error.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <variant>
 
@@ -82,6 +85,27 @@ private:
   ThreadDispatchOccurrenceId domainInstance_;
   llvm::SmallVector<std::uint64_t, 4> ordinals_;
 };
+
+class DynamicWorkStableItemProjectionError final
+    : public llvm::ErrorInfo<DynamicWorkStableItemProjectionError> {
+public:
+  static char ID;
+
+  explicit DynamicWorkStableItemProjectionError(std::string message)
+      : message_(std::move(message)) {}
+
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  std::string message_;
+};
+
+/// Removes the execution-local dispatch occurrence from an admitted root
+/// WorkItemId. Child items remain typed unavailable until Dataflow owns their
+/// publication operation and canonical ordinal-path projection.
+llvm::Expected<dataflow::DynamicWorkStableItemKey>
+projectDynamicWorkStableItemKey(const WorkItemId &item);
 
 /// One point in a dense logical domain. Root launch identity distinguishes
 /// otherwise equal coordinates belonging to different static launch sites.

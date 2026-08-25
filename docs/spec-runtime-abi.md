@@ -159,13 +159,38 @@ The worker set and queued capacity are bounded; retained replay history grows
 with committed transitions. Bounded trace retention is not part of this
 standalone kernel.
 
-This scheduler kernel does not define a `ThreadDispatchImage` field, lower
-`dataflow.work.spawn`, evaluate a thread binding for a dynamic item, or connect
-a selected binary to a Runtime provider. It is currently a standalone
-Runtime/Simulator primitive, not production DynamicWork Mapping or execution.
-A path without those adapters remains typed Unsupported. Active safe-point
-migration and remapping are separate contracts and are not inferred from
-queued-item stealing.
+The scheduler kernel itself does not read Mapping. The root-only execution
+adapter composes it with Canonical Dataflow and verified SystemMapping. The
+adapter admits one byte-addressable root payload, no launch captures, and at
+most one direct graph launch. It allocates a nonzero dispatch occurrence,
+admits the root through the bounded scheduler, removes that occurrence to
+recover the Dataflow-owned root stable key, and evaluates the exact stable-key
+thread, graph, and service-plan bindings. The generic synchronous executor
+boundary supplies these selections to an external execution owner; its
+completion report is not independent execution evidence. Requested
+cancellation and executor failure still retire the assignment through
+`DynamicWorkDomain` before returning. Repeated calls reuse persistent Mapping
+while receiving distinct occurrence IDs.
+
+The concrete CGRA entry is the first closed execution profile. It requires one
+signless scalar integer work item forwarded unchanged to the sole value input
+of one direct graph. The thread body may contain only that graph launch and its
+yield, and the graph boundary has no stream or memory ports. Runtime derives
+the graph input token from the assigned little-endian payload bytes, prepares
+the CGRA engine from the SpatialMapping selected by SystemMapping, and reports
+success only after CGRA retirement and collective DynamicWork completion.
+Event-frame exhaustion or a halted engine returns the original typed CGRA
+outcome and counters as incomplete evidence; it is never reclassified as
+Mapping infeasibility.
+
+The adapter does not define a child-publication operation or lineage, carry
+launch captures, or connect StableKeyLookup through the version-1.0 Thread
+Dispatch and Spatial Launch images to a hardware provider. Representable
+out-of-profile cases retain typed projection, execution, or runtime-image
+reasons; they are not collapsed into a generic unsupported domain. Provider
+image transport remains unavailable.
+Active safe-point migration and remapping are separate contracts and are not
+inferred from queued-item stealing.
 
 The Thread Dispatch provider maintains one bounded transient record per exact
 Deployment target. Target selection addresses that record for submission and
@@ -195,9 +220,10 @@ once: those occurrences are ordered, mutually exclusive uses of one compiled
 context, not additional resident contexts. Each occurrence rebuilds its
 invocation wire and memory snapshot after the preceding occurrence completes;
 no mutable wire, queue, CPU, bridge, or engine state is reused as a derived
-fact. A dynamic-bound, nested, over-bound, or non-dense domain, including
-DynamicWork without the required adapters, remains typed Unsupported rather
-than being truncated or assigned an inferred coordinate.
+fact. A dynamic-bound, nested, over-bound, or non-dense domain remains typed
+Unsupported rather than being truncated or assigned an inferred coordinate.
+The root-only DynamicWork adapter follows the separate stable-key contract
+above and never invents a coordinate.
 
 Reachable selected roots need not share one source callable. Generated host
 glue groups the flat rooted-launch set by its exact callable owner while

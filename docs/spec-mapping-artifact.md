@@ -876,6 +876,17 @@ entries, rejects overlap or conflicting keys, merges canonical sets with the
 same target, and sorts by canonical set or key bytes plus the complete target
 semantic key.
 
+A `StableKeyLookup` binding contains only exact key entries and has no
+Presburger clause or default. Thread entries map the Dataflow-owned key bytes
+to an `AccCoreOccurrenceRef`; graph entries map the same key bytes to a
+SpatialMapping import. Service-plan selections use the same closed entry form
+with a plan ordinal target. Strict import decodes every key through Dataflow,
+requires exact coverage of the published key set, and verifies that graph and
+thread targets selected by each key belong to the same AccCore class. The
+first admitted DynamicWork projection publishes only the distinguished root
+key. A dispatch occurrence, worker ordinal, queue position, or payload byte
+sequence cannot appear in the persistent lookup key.
+
 `B_thread` and `B_graph` remain separate typed functions. For every graph
 event point, the selected SpatialMapping must cover the callee graph and its
 target SpatialCore parent must belong to the AccCore selected by `B_thread`.

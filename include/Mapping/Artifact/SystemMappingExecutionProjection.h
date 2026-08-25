@@ -14,6 +14,9 @@ struct SystemInstructionContextDomain final {
   ::dataflow::RootThreadLaunchRef root;
   InstructionExecutionContextKey context;
   std::vector<SystemPresburgerCell> cells;
+  ::mapping::SystemBindingRelationKind relationKind =
+      ::mapping::SystemBindingRelationKind::PresburgerPartition;
+  std::vector<::dataflow::DynamicWorkStableItemKey> stableItemKeys;
 };
 
 struct SystemSpatialContextDomain final {
@@ -21,6 +24,9 @@ struct SystemSpatialContextDomain final {
   ArtifactRootReference spatialMapping;
   SpatialExecutionContextKey context;
   std::vector<SystemPresburgerCell> cells;
+  ::mapping::SystemBindingRelationKind relationKind =
+      ::mapping::SystemBindingRelationKind::PresburgerPartition;
+  std::vector<::dataflow::DynamicWorkStableItemKey> stableItemKeys;
 };
 
 /// The unique nonpersistent execution-context projection of one already
@@ -39,6 +45,23 @@ struct SelectedSystemSpatialContext final {
 llvm::Expected<SystemExecutionContextProjection> projectSystemExecutionContexts(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const SystemExecutionBindingView &execution);
+
+/// Resolves the unique Instruction execution context for one DynamicWork
+/// stable item. The execution-local dispatch occurrence and worker assignment
+/// are absent from this persistent selection.
+llvm::Expected<InstructionExecutionContextKey>
+selectSystemDynamicWorkInstructionExecutionContext(
+    const SystemExecutionContextProjection &projection,
+    ::dataflow::RootThreadLaunchRef root,
+    ::dataflow::DynamicWorkStableItemKey stableItem);
+
+/// Resolves the unique Spatial execution context for a direct graph launch in
+/// the same DynamicWork stable-item domain.
+llvm::Expected<SelectedSystemSpatialContext>
+selectSystemDynamicWorkSpatialExecutionContext(
+    const SystemExecutionContextProjection &projection,
+    ::dataflow::RootedGraphLaunchRef graph,
+    ::dataflow::DynamicWorkStableItemKey stableItem);
 
 /// Projects the canonical set of SpatialCore occurrences required by the
 /// instruction and spatial domains of one execution binding. The result is
@@ -67,6 +90,12 @@ llvm::Expected<std::uint64_t> selectSystemServicePlanOrdinal(
     const ExecutionContextKey &context,
     llvm::ArrayRef<SystemPresburgerCell> contextDomain,
     llvm::ArrayRef<std::uint64_t> denseCoordinates);
+
+llvm::Expected<std::uint64_t> selectSystemDynamicWorkServicePlanOrdinal(
+    const SystemServiceRealizationView &realization,
+    const ServicePlanSelectionAnchor &anchor,
+    const ExecutionContextKey &context,
+    ::dataflow::DynamicWorkStableItemKey stableItem);
 
 } // namespace loom::mapping
 

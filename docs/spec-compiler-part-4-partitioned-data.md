@@ -274,9 +274,22 @@ must preserve the same `WorkItemId` across assignments and delegate every
 root admission, spawn, and retirement transaction to `DynamicWorkDomain`.
 Queue pressure, worker idleness, cancellation requests, and scheduling trace
 state cannot complete the domain. The scheduler does not read SystemMapping;
-worker or deque selection cannot evaluate or replace `B_thread`. Connecting
-dynamic items to selected production execution remains an independent Runtime
-and Mapping integration obligation.
+worker or deque selection cannot evaluate or replace `B_thread`.
+
+The admitted execution adapter is narrower than the complete DynamicWork
+model. It accepts one root payload, no launch captures, and at most one direct
+graph launch. Dataflow projects the distinguished root stable key; verified
+SystemMapping uses that key to select `B_thread`, `B_graph`, and contextual
+service plans. The concrete CGRA entry further requires one byte-addressable
+scalar integer forwarded unchanged to the sole graph value input and a thread
+body containing only that launch and its yield. It derives graph runtime input
+from the scheduled payload, executes the selected SpatialMapping, and retires
+or cancels the root responsibility only after the selected execution returns.
+Captures, missing or non-direct graph bodies, nested or multiple graph
+launches, and incompatible payloads retain distinct typed capability reasons.
+Child publication has no canonical operation yet and therefore cannot enter a
+finalized program. Deployment image and hardware-provider transport for the
+stable-key relation remain a separately capability-gated contract.
 
 ## 8. Deferred Semantics
 

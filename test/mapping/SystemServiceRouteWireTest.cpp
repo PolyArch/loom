@@ -157,15 +157,31 @@ void testSpatialExecutionContextPointSelection(const Fixture &fixture) {
       1, 1, 0, {{1, 0, -4}}, {{0, -1, -1}}};
   const loom::mapping::SystemExecutionContextProjection ambiguous{
       {},
-      {{graph, firstMapping, firstContext, {nonnegativeSymbol}},
-       {graph, secondMapping, secondContext, {negativeSymbol}}}};
+      {{graph,
+        firstMapping,
+        firstContext,
+        {nonnegativeSymbol},
+        ::mapping::SystemBindingRelationKind::PresburgerPartition,
+        {}},
+       {graph,
+        secondMapping,
+        secondContext,
+        {negativeSymbol},
+        ::mapping::SystemBindingRelationKind::PresburgerPartition,
+        {}}}};
   requireError(
       loom::mapping::selectSystemSpatialExecutionContext(ambiguous, graph, {4}),
       "Spatial context selection fixed launch symbols instead of preserving "
       "their legal valuations");
 
   const loom::mapping::SystemExecutionContextProjection unique{
-      {}, {{graph, firstMapping, firstContext, {nonnegativeSymbol}}}};
+      {},
+      {{graph,
+        firstMapping,
+        firstContext,
+        {nonnegativeSymbol},
+        ::mapping::SystemBindingRelationKind::PresburgerPartition,
+        {}}}};
   const auto selected = take(
       loom::mapping::selectSystemSpatialExecutionContext(unique, graph, {4}));
   require(selected.spatialMapping == firstMapping &&

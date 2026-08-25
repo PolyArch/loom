@@ -99,11 +99,23 @@ select Mapping. Serializing those transitions with a host mutex makes queued
 payloads visible to host workers without inventing program-visible memory
 ordering.
 
-This does not admit a program-visible or device-side shared queue, channel
-correspondence, active-item migration, remapping, or compiler/provider
-integration. Those capabilities need their exact semantic and execution
-owners, not weaker ordered channel semantics, recursive-thread ownership, or a
-second DynamicWork completion rule.
+The first execution adapter intentionally closes only the root singleton. Its
+stable key is a Dataflow projection of the distinguished root, independent of
+the Runtime dispatch occurrence. SystemMapping selects the persistent
+Instruction, Spatial, and service-plan contexts from that key; the bounded
+scheduler still owns only transient worker placement. The concrete CGRA entry
+admits the narrower case where one scalar root payload is forwarded unchanged
+to one direct graph and the thread body contains only that launch and its
+yield. CGRA retirement is observed before the existing responsibility owner
+completes the item. The generic synchronous executor boundary remains an
+integration hook and cannot establish body execution by itself.
+
+This does not admit a program-visible or device-side shared queue, child
+publication lineage, channel correspondence, active-item migration,
+remapping, launch captures, or provider image transport. Those capabilities
+need their exact semantic and execution owners, not weaker ordered channel
+semantics, recursive-thread ownership, or a second DynamicWork completion
+rule.
 
 ## Why Channel Is A Separate Ordered Carrier
 

@@ -27,6 +27,21 @@ add_library(LoomRuntimeDeploymentLoader
   Providers/InProcessPlatform.cpp
 )
 
+add_library(LoomRuntimeDynamicWork
+  DynamicWorkExecution.cpp
+)
+
+target_include_directories(LoomRuntimeDynamicWork PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomRuntimeDynamicWork PUBLIC
+  LoomMappingArtifact
+  LoomSimulator
+  MLIRDataflow
+  LLVMSupport
+)
+
 target_include_directories(LoomRuntimeDeploymentLoader PUBLIC
   $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
 )

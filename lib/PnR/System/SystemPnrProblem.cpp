@@ -930,6 +930,13 @@ buildDecisions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
     if (!std::holds_alternative<::dataflow::RootThreadLaunchRef>(binding.key))
       continue;
     const auto root = std::get<::dataflow::RootThreadLaunchRef>(binding.key);
+    auto logicalDomain = dataflow.projectRootThreadLogicalDomain(root);
+    if (!logicalDomain)
+      return logicalDomain.takeError();
+    const auto relationKind =
+        logicalDomain->kind == ::dataflow::ThreadDomainKind::DynamicWork
+            ? ::mapping::SystemBindingRelationKind::StableKeyLookup
+            : ::mapping::SystemBindingRelationKind::PresburgerPartition;
     for (const SystemSearchAtom &atom : binding.atoms) {
       const auto *domain = std::get_if<SystemThreadBindingDomain>(&atom.domain);
       if (!domain)
@@ -952,7 +959,8 @@ buildDecisions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
           return invalid("thread atom names an AccCore outside F");
         result.threadChoices.push_back(found->second);
       }
-      result.threads.push_back({root, atom.cell, *offset, *count, *decision});
+      result.threads.push_back(
+          {root, atom.cell, *offset, *count, *decision, relationKind});
     }
   }
 
@@ -960,6 +968,14 @@ buildDecisions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
     if (!std::holds_alternative<::dataflow::RootedGraphLaunchRef>(binding.key))
       continue;
     const auto launch = std::get<::dataflow::RootedGraphLaunchRef>(binding.key);
+    auto logicalDomain =
+        dataflow.projectRootThreadLogicalDomain(launch.rootThreadLaunch);
+    if (!logicalDomain)
+      return logicalDomain.takeError();
+    const auto relationKind =
+        logicalDomain->kind == ::dataflow::ThreadDomainKind::DynamicWork
+            ? ::mapping::SystemBindingRelationKind::StableKeyLookup
+            : ::mapping::SystemBindingRelationKind::PresburgerPartition;
     for (const SystemSearchAtom &atom : binding.atoms) {
       const auto *domain =
           std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain);
@@ -994,7 +1010,8 @@ buildDecisions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
           return invalid("graph atom names a SpatialMapping outside H");
         result.graphChoices.push_back(found->second);
       }
-      result.graphs.push_back({launch, atom.cell, *offset, *count, *decision});
+      result.graphs.push_back(
+          {launch, atom.cell, *offset, *count, *decision, relationKind});
     }
   }
   return result;

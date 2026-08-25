@@ -556,8 +556,7 @@ LogicalResult mapping::SpatialOp::verify() {
             static_cast<std::uint64_t>(integerValue(node, "node_ordinal")));
       continue;
     }
-    if (auto transfer =
-            dyn_cast<mapping::RegisterFifoTransferOp>(child)) {
+    if (auto transfer = dyn_cast<mapping::RegisterFifoTransferOp>(child)) {
       if (!transferDispositions.insert(transfer.getLogicalNet()).second)
         return transfer.emitOpError("duplicates a logical-net disposition");
       continue;
@@ -845,8 +844,7 @@ LogicalResult mapping::RouteTreeOp::verify() {
 
 LogicalResult mapping::RegisterFifoTransferOp::verify() {
   if (failed(rejectUnknownAttributes(
-          *this, {"logical_net", "sink", "write_traversal",
-                  "read_traversal"})))
+          *this, {"logical_net", "sink", "write_traversal", "read_traversal"})))
     return failure();
   if (getWriteTraversal() == getReadTraversal())
     return emitOpError("requires distinct write and read traversals");
@@ -956,16 +954,23 @@ LogicalResult mapping::ThreadExecutionBindingOp::verify() {
   if (getBody().empty() || !llvm::hasSingleElement(getBody()) ||
       getBody().front().getNumArguments() != 0)
     return emitOpError("must contain one argument-free declarative block");
-  if (getRelationKind() !=
-      mapping::SystemBindingRelationKind::PresburgerPartition)
-    return emitOpError(
-        "StableKeyLookup is unavailable without a Dataflow stable-key owner");
-  if (getBody().front().empty() && !getDefaultTarget())
-    return emitOpError(
-        "Presburger relation requires a clause or default target");
-  for (Operation &child : getBody().front())
-    if (!isa<mapping::ThreadPresburgerClauseOp>(child))
-      return child.emitOpError("is not a thread Presburger clause");
+  if (getRelationKind() ==
+      mapping::SystemBindingRelationKind::PresburgerPartition) {
+    if (getBody().front().empty() && !getDefaultTarget())
+      return emitOpError(
+          "Presburger relation requires a clause or default target");
+    for (Operation &child : getBody().front())
+      if (!isa<mapping::ThreadPresburgerClauseOp>(child))
+        return child.emitOpError("is not a thread Presburger clause");
+  } else {
+    if (getDefaultTarget())
+      return emitOpError("StableKeyLookup does not admit a default target");
+    if (getBody().front().empty())
+      return emitOpError("StableKeyLookup requires an exact key entry");
+    for (Operation &child : getBody().front())
+      if (!isa<mapping::ThreadStableKeyEntryOp>(child))
+        return child.emitOpError("is not a thread stable-key entry");
+  }
   return success();
 }
 
@@ -980,6 +985,14 @@ LogicalResult mapping::ThreadPresburgerClauseOp::verify() {
   return success();
 }
 
+LogicalResult mapping::ThreadStableKeyEntryOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"stable_key", "target"})))
+    return failure();
+  if (getStableKey().empty())
+    return emitOpError("requires a non-empty stable key");
+  return success();
+}
+
 LogicalResult mapping::GraphExecutionBindingOp::verify() {
   if (failed(rejectUnknownAttributes(
           *this, {"key", "relation_kind", "default_target"})))
@@ -987,24 +1000,39 @@ LogicalResult mapping::GraphExecutionBindingOp::verify() {
   if (getBody().empty() || !llvm::hasSingleElement(getBody()) ||
       getBody().front().getNumArguments() != 0)
     return emitOpError("must contain one argument-free declarative block");
-  if (getRelationKind() !=
-      mapping::SystemBindingRelationKind::PresburgerPartition)
-    return emitOpError(
-        "StableKeyLookup is unavailable without a Dataflow stable-key owner");
-  if (getBody().front().empty() && !getDefaultTarget())
-    return emitOpError(
-        "Presburger relation requires a clause or default target");
+  if (getRelationKind() ==
+      mapping::SystemBindingRelationKind::PresburgerPartition) {
+    if (getBody().front().empty() && !getDefaultTarget())
+      return emitOpError(
+          "Presburger relation requires a clause or default target");
+  } else {
+    if (getDefaultTarget())
+      return emitOpError("StableKeyLookup does not admit a default target");
+    if (getBody().front().empty())
+      return emitOpError("StableKeyLookup requires an exact key entry");
+  }
   const auto importCount = cast<mapping::SystemOp>((*this)->getParentOp())
                                .getSpatialMappingImports()
                                .size();
   if (getDefaultTarget() && getDefaultTarget()->getOrdinal() >= importCount)
     return emitOpError("default target names an absent SpatialMapping import");
   for (Operation &child : getBody().front()) {
-    auto clause = dyn_cast<mapping::GraphPresburgerClauseOp>(child);
-    if (!clause)
-      return child.emitOpError("is not a graph Presburger clause");
-    if (clause.getTarget().getOrdinal() >= importCount)
-      return clause.emitOpError("target names an absent SpatialMapping import");
+    if (getRelationKind() ==
+        mapping::SystemBindingRelationKind::PresburgerPartition) {
+      auto clause = dyn_cast<mapping::GraphPresburgerClauseOp>(child);
+      if (!clause)
+        return child.emitOpError("is not a graph Presburger clause");
+      if (clause.getTarget().getOrdinal() >= importCount)
+        return clause.emitOpError(
+            "target names an absent SpatialMapping import");
+    } else {
+      auto entry = dyn_cast<mapping::GraphStableKeyEntryOp>(child);
+      if (!entry)
+        return child.emitOpError("is not a graph stable-key entry");
+      if (entry.getTarget().getOrdinal() >= importCount)
+        return entry.emitOpError(
+            "target names an absent SpatialMapping import");
+    }
   }
   return success();
 }
@@ -1017,6 +1045,14 @@ LogicalResult mapping::GraphPresburgerClauseOp::verify() {
   for (Attribute cell : getCells())
     if (!isa<mapping::SystemPresburgerCellAttr>(cell))
       return emitOpError("cells contains a non-Presburger value");
+  return success();
+}
+
+LogicalResult mapping::GraphStableKeyEntryOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"stable_key", "target"})))
+    return failure();
+  if (getStableKey().empty())
+    return emitOpError("requires a non-empty stable key");
   return success();
 }
 

@@ -592,6 +592,14 @@ missing, extra, or duplicate case is invalid. `instruction_core_entry_ref` is
 a typed reference into the exact executable closure; it cannot be replaced by
 a source symbol, emitted symbol, address, or runtime handle.
 
+Version 1.0 of Thread Dispatch and Spatial Launch images represents only the
+`PresburgerPartition` binding variant. A verified SystemMapping containing a
+`StableKeyLookup` remains valid Mapping, but Deployment runtime-image
+derivation returns the typed `StableKeyLookup` unsupported reason. It never
+serializes the key as an empty Presburger cell or silently drops the relation.
+A future image schema must define one tagged stable-key wire and a consuming
+provider before this gate can be removed.
+
 For every target case, the referenced InstructionCoreBinary must bind the row's
 exact `RootThreadLaunchRef` to the selected `thread_entry_ordinal`. Deployment
 does not infer this correspondence from a shared callee definition and cannot

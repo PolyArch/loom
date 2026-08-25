@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <type_traits>
 #include <variant>
 #include <vector>
@@ -274,6 +275,33 @@ enumerateDenseCoordinates(
 
 } // namespace
 
+char DynamicWorkProjectionUnsupported::ID = 0;
+
+void DynamicWorkProjectionUnsupported::log(llvm::raw_ostream &stream) const {
+  stream << "dataflow_dynamic_work_projection_unsupported: " << message_;
+}
+
+std::error_code DynamicWorkProjectionUnsupported::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
+
+std::vector<std::uint8_t>
+encodeDynamicWorkStableItemKey(DynamicWorkStableItemKey key) {
+  (void)key;
+  return {0, 0, 0, 0};
+}
+
+llvm::Expected<DynamicWorkStableItemKey>
+decodeDynamicWorkStableItemKey(llvm::ArrayRef<std::uint8_t> bytes) {
+  const auto root = encodeDynamicWorkStableItemKey(DynamicWorkStableItemKey{});
+  if (bytes != llvm::ArrayRef<std::uint8_t>(root))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "dataflow_dynamic_work_projection_invalid: stable item key is not "
+        "the canonical root key");
+  return DynamicWorkStableItemKey{};
+}
+
 llvm::Expected<CanonicalRootThreadLogicalDomainView>
 CanonicalDataflowProgramView::projectRootThreadLogicalDomain(
     RootThreadLaunchRef ref) const {
@@ -327,6 +355,89 @@ CanonicalDataflowProgramView::projectRootThreadLogicalDomain(
   return CanonicalRootThreadLogicalDomainView{ref, thread.getDomain().getKind(),
                                               static_cast<std::uint32_t>(rank),
                                               std::move(parameters)};
+}
+
+llvm::Expected<CanonicalDynamicWorkProjection>
+CanonicalDataflowProgramView::projectDynamicWork(
+    RootThreadLaunchRef ref) const {
+  auto resolved = resolve(ref);
+  if (!resolved)
+    return resolved.takeError();
+  auto launch = llvm::dyn_cast<ThreadLaunchOp>(resolved->op);
+  auto thread = llvm::dyn_cast<ThreadOp>(resolved->callee);
+  if (!launch || !thread || thread.isExternal())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "dataflow_dynamic_work_projection_invalid: root launch does not "
+        "resolve a body-owning thread");
+  if (thread.getDomain().getKind() != ThreadDomainKind::DynamicWork)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "dataflow_dynamic_work_projection_invalid: root launch is not "
+        "DynamicWork");
+
+  const std::optional<std::uint64_t> ordinal =
+      thread.getDomain().getWorkItemArgOrdinal();
+  if (!ordinal || *ordinal >= launch.getBodyOperands().size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "dataflow_dynamic_work_projection_invalid: work-item ordinal is "
+        "outside the launch operand list");
+
+  const mlir::Value rootWorkItem = launch.getBodyOperands()[*ordinal];
+  auto payloadBits = transportPayloadBitWidth(rootWorkItem.getType());
+  if (!payloadBits || *payloadBits == 0 || (*payloadBits % 8) != 0) {
+    if (!payloadBits)
+      llvm::consumeError(payloadBits.takeError());
+    return llvm::make_error<DynamicWorkProjectionUnsupported>(
+        DynamicWorkProjectionUnsupportedReason::PayloadTransportUnavailable,
+        "work-item payload has no fixed byte-addressable transport width");
+  }
+  if ((*payloadBits / 8) > std::numeric_limits<std::uint32_t>::max())
+    return llvm::make_error<DynamicWorkProjectionUnsupported>(
+        DynamicWorkProjectionUnsupportedReason::PayloadTransportUnavailable,
+        "work-item payload byte width exceeds u32");
+
+  if (launch.getBodyOperands().size() != 1)
+    return llvm::make_error<DynamicWorkProjectionUnsupported>(
+        DynamicWorkProjectionUnsupportedReason::LaunchCapturesUnavailable,
+        "the admitted DynamicWork profile does not carry launch captures");
+
+  std::vector<RootedGraphLaunchRef> directGraphs;
+  llvm::Error graphError = llvm::Error::success();
+  forEachRootedGraphLaunch([&](RootedGraphLaunchRef graph) {
+    if (graphError || graph.rootThreadLaunch != ref)
+      return;
+    auto domain = projectWholeRootedGraphLogicalDomain(graph);
+    if (!domain) {
+      graphError = domain.takeError();
+      return;
+    }
+    if (!*domain) {
+      graphError = llvm::make_error<DynamicWorkProjectionUnsupported>(
+          DynamicWorkProjectionUnsupportedReason::NestedGraphLaunchUnavailable,
+          "DynamicWork graph launch is nested or repeated");
+      return;
+    }
+    directGraphs.push_back(graph);
+  });
+  if (graphError)
+    return std::move(graphError);
+  if (directGraphs.size() > 1)
+    return llvm::make_error<DynamicWorkProjectionUnsupported>(
+        DynamicWorkProjectionUnsupportedReason::
+            MultipleGraphLaunchesUnavailable,
+        "the admitted DynamicWork profile allows at most one direct graph "
+        "launch");
+
+  return CanonicalDynamicWorkProjection{
+      ref,
+      *ordinal,
+      rootWorkItem.getType(),
+      rootWorkItem,
+      std::move(directGraphs),
+      {DynamicWorkStableItemKey{}},
+      static_cast<std::uint32_t>(*payloadBits / 8)};
 }
 
 llvm::Expected<std::optional<CanonicalRootThreadLogicalDomainView>>

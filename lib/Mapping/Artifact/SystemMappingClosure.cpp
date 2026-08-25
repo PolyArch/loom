@@ -38,6 +38,14 @@ std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr record) {
   return result;
 }
 
+std::vector<std::uint8_t> unsignedBytes(llvm::ArrayRef<std::int8_t> record) {
+  std::vector<std::uint8_t> result;
+  result.reserve(record.size());
+  for (std::int8_t byte : record)
+    result.push_back(static_cast<std::uint8_t>(byte));
+  return result;
+}
+
 std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
   return std::string(reinterpret_cast<const char *>(bytes.data()),
                      bytes.size());
@@ -449,16 +457,6 @@ importPlans(::mapping::ServiceRealizationOp service,
   return result;
 }
 
-bool anchorBelongsTo(const ServicePlanSelectionAnchor &anchor,
-                     const SystemServiceObligationProjection &projection) {
-  if (const auto *member =
-          std::get_if<ServiceMemberPlanSelectionAnchor>(&anchor))
-    return llvm::is_contained(projection.members, member->member);
-  return llvm::is_contained(
-      projection.exposures,
-      std::get<MemoryExposurePlanSelectionAnchor>(anchor).exposure);
-}
-
 using SelectionOwner = std::variant<::dataflow::RootThreadLaunchRef,
                                     ::dataflow::RootedGraphLaunchRef>;
 
@@ -524,6 +522,9 @@ selectionOwner(const SystemServiceObligationProjection &projection,
 struct SelectionRequirement final {
   ServicePlanSelectionKey key;
   std::vector<SystemPresburgerCell> domain;
+  ::mapping::SystemBindingRelationKind relationKind =
+      ::mapping::SystemBindingRelationKind::PresburgerPartition;
+  std::vector<::dataflow::DynamicWorkStableItemKey> stableItemKeys;
 };
 
 llvm::Expected<std::map<std::string, SelectionRequirement>>
@@ -555,7 +556,9 @@ selectionRequirements(const SystemServiceObligationProjection &projection,
           return encoded.takeError();
         if (!result
                  .emplace(byteKey(*encoded),
-                          SelectionRequirement{std::move(key), domain.cells})
+                          SelectionRequirement{std::move(key), domain.cells,
+                                               domain.relationKind,
+                                               domain.stableItemKeys})
                  .second)
           return invalid("duplicate derived Instruction selection context");
       }
@@ -571,7 +574,9 @@ selectionRequirements(const SystemServiceObligationProjection &projection,
           return encoded.takeError();
         if (!result
                  .emplace(byteKey(*encoded),
-                          SelectionRequirement{std::move(key), domain.cells})
+                          SelectionRequirement{std::move(key), domain.cells,
+                                               domain.relationKind,
+                                               domain.stableItemKeys})
                  .second)
           return invalid("duplicate derived Spatial selection context");
       }
@@ -582,10 +587,38 @@ selectionRequirements(const SystemServiceObligationProjection &projection,
   return result;
 }
 
-llvm::Error
-verifySelectionRelation(const SystemServicePlanSelectionView &selection,
-                        llvm::ArrayRef<SystemPresburgerCell> contextDomain,
-                        const std::set<std::uint64_t> &planOrdinals) {
+llvm::Error verifySelectionRelation(
+    const SystemServicePlanSelectionView &selection,
+    llvm::ArrayRef<SystemPresburgerCell> contextDomain,
+    ::mapping::SystemBindingRelationKind expectedKind,
+    llvm::ArrayRef<::dataflow::DynamicWorkStableItemKey> expectedStableKeys,
+    const std::set<std::uint64_t> &planOrdinals) {
+  if (selection.relationKind != expectedKind)
+    return invalid("ServicePlanSelection relation kind differs from its "
+                   "execution context");
+  if (selection.relationKind ==
+      ::mapping::SystemBindingRelationKind::StableKeyLookup) {
+    if (!selection.clauses.empty() || selection.defaultPlanOrdinal)
+      return invalid("DynamicWork service selection has a Presburger branch");
+    std::vector<std::vector<std::uint8_t>> actual;
+    for (const auto &entry : selection.stableKeyEntries) {
+      if (planOrdinals.count(entry.target) == 0)
+        return invalid("stable service selection names an absent plan");
+      actual.push_back(::dataflow::encodeDynamicWorkStableItemKey(entry.key));
+    }
+    std::vector<std::vector<std::uint8_t>> expected;
+    for (const auto &key : expectedStableKeys)
+      expected.push_back(::dataflow::encodeDynamicWorkStableItemKey(key));
+    llvm::sort(actual);
+    llvm::sort(expected);
+    if (std::adjacent_find(actual.begin(), actual.end()) != actual.end())
+      return invalid("stable service selection contains a duplicate key");
+    if (actual != expected)
+      return invalid("stable service selection does not cover its context");
+    return llvm::Error::success();
+  }
+  if (!selection.stableKeyEntries.empty())
+    return invalid("Presburger service selection contains a stable-key entry");
   std::vector<SystemPresburgerCell> relationCells;
   for (const auto &clause : selection.clauses) {
     if (planOrdinals.count(clause.target) == 0)
@@ -652,12 +685,15 @@ llvm::Error verifySelectionClosure(
       return invalid(
           "ServicePlanSelection closure is incomplete or unreachable");
     if (llvm::Error error = verifySelectionRelation(
-            selection, expected->second.domain, planOrdinals))
+            selection, expected->second.domain, expected->second.relationKind,
+            expected->second.stableItemKeys, planOrdinals))
       return error;
     if (selection.defaultPlanOrdinal)
       selected.insert(*selection.defaultPlanOrdinal);
     for (const auto &clause : selection.clauses)
       selected.insert(clause.target);
+    for (const auto &entry : selection.stableKeyEntries)
+      selected.insert(entry.target);
   }
   if (seen.size() != required->size())
     return invalid("ServicePlanSelection closure is incomplete");
@@ -675,6 +711,10 @@ selectedPlanOrdinals(::mapping::ServicePlanSelectionOp selection) {
                          .front()
                          .getOps<::mapping::ServicePlanPresburgerClauseOp>())
     result.insert(clause.getTargetPlanOrdinal());
+  for (auto entry : selection.getBody()
+                        .front()
+                        .getOps<::mapping::ServicePlanStableKeyEntryOp>())
+    result.insert(entry.getTargetPlanOrdinal());
   return result;
 }
 
@@ -806,6 +846,8 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
       cores.push_back(clause.target);
     if (thread.defaultTarget)
       cores.push_back(*thread.defaultTarget);
+    for (const auto &entry : thread.stableKeyEntries)
+      cores.push_back(entry.target);
     llvm::sort(cores, [](const auto &lhs, const auto &rhs) {
       return ::loom::fabric::canonicalFabricBytes(lhs) <
              ::loom::fabric::canonicalFabricBytes(rhs);
@@ -866,10 +908,16 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
           unsignedBytes(selection.getKey().getRecord()), dataflow.identity());
       if (!key)
         return key.takeError();
-      if (!anchorBelongsTo(key->anchor, *projection->second))
+      if (!systemServiceSelectionAnchorBelongsTo(key->anchor,
+                                                 *projection->second))
         return invalid("ServicePlanSelection anchor is foreign to its service");
       SystemServicePlanSelectionView selectionView{
-          *key, {}, selection.getDefaultPlanOrdinal()};
+          *key,
+          {},
+          selection.getDefaultPlanOrdinal(),
+          ::mapping::SystemBindingRelationKind::PresburgerPartition,
+          {}};
+      selectionView.relationKind = selection.getRelationKind();
       for (auto clause :
            selection.getBody()
                .front()
@@ -884,6 +932,16 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
           clauseView.cells.push_back(std::move(*cell));
         }
         selectionView.clauses.push_back(std::move(clauseView));
+      }
+      for (auto entry : selection.getBody()
+                            .front()
+                            .getOps<::mapping::ServicePlanStableKeyEntryOp>()) {
+        auto stableKey = ::dataflow::decodeDynamicWorkStableItemKey(
+            unsignedBytes(entry.getStableKey()));
+        if (!stableKey)
+          return stableKey.takeError();
+        selectionView.stableKeyEntries.push_back(
+            {*stableKey, entry.getTargetPlanOrdinal()});
       }
       selectionViews.push_back(std::move(selectionView));
       const auto *member =

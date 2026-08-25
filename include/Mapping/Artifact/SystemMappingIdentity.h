@@ -185,6 +185,10 @@ struct SystemServiceObligationProjection final {
   std::vector<CanonicalServiceLegKey> legs;
 };
 
+bool systemServiceSelectionAnchorBelongsTo(
+    const ServicePlanSelectionAnchor &anchor,
+    const SystemServiceObligationProjection &projection);
+
 llvm::Expected<std::vector<SystemServiceObligationProjection>>
 projectSystemServiceObligations(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,

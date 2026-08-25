@@ -27,13 +27,21 @@ llvm::Error invalid(const llvm::Twine &message) {
                                      message);
 }
 
-llvm::Expected<SystemPresburgerCell>
-denseMayDomain(const ::dataflow::CanonicalRootThreadLogicalDomainView &domain) {
-  if (domain.kind == ::dataflow::ThreadDomainKind::DynamicWork)
-    return llvm::make_error<UnsupportedSystemPnrSearchDomain>(
-        UnsupportedSystemPnrSearchDomainReason::
-            DynamicWorkStableKeyProjectionUnavailable,
-        "Dataflow has no exact DynamicWork stable-key projection");
+llvm::Expected<SystemPresburgerCell> logicalMayDomain(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::dataflow::CanonicalRootThreadLogicalDomainView &domain) {
+  if (domain.kind == ::dataflow::ThreadDomainKind::DynamicWork) {
+    auto projection = dataflow.projectDynamicWork(domain.launch);
+    if (!projection)
+      return projection.takeError();
+    if (projection->stableItemKeys.size() != 1)
+      return llvm::make_error<UnsupportedSystemPnrSearchDomain>(
+          UnsupportedSystemPnrSearchDomainReason::
+              DynamicWorkStableKeyProjectionUnavailable,
+          "Dataflow DynamicWork stable-key domain is not the admitted "
+          "singleton profile");
+    return canonicalizeSystemPresburgerCell(SystemPresburgerCell{});
+  }
   if (domain.launchParameters.size() >
       std::numeric_limits<std::uint32_t>::max())
     return invalid("logical launch-parameter count exceeds u32");
@@ -111,7 +119,7 @@ llvm::Expected<std::vector<ExpectedBinding>> collectExpectedBindings(
     auto logical = dataflow.projectRootThreadLogicalDomain(root);
     if (!logical)
       return logical.takeError();
-    auto legalDomain = denseMayDomain(*logical);
+    auto legalDomain = logicalMayDomain(dataflow, *logical);
     if (!legalDomain)
       return legalDomain.takeError();
     auto threadKey =

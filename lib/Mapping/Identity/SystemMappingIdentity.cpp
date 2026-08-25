@@ -494,6 +494,17 @@ decodeSystemTransferTerminalKey(llvm::ArrayRef<std::uint8_t> bytes,
   return std::move(decoded->key);
 }
 
+bool systemServiceSelectionAnchorBelongsTo(
+    const ServicePlanSelectionAnchor &anchor,
+    const SystemServiceObligationProjection &projection) {
+  if (const auto *member =
+          std::get_if<ServiceMemberPlanSelectionAnchor>(&anchor))
+    return llvm::is_contained(projection.members, member->member);
+  return llvm::is_contained(
+      projection.exposures,
+      std::get<MemoryExposurePlanSelectionAnchor>(anchor).exposure);
+}
+
 llvm::Expected<std::vector<SystemServiceObligationProjection>>
 projectSystemServiceObligations(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,

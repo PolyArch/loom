@@ -38,6 +38,20 @@
 #include <variant>
 #include <vector>
 
+namespace loom::deployment {
+
+char RuntimeImageUnsupported::ID = 0;
+
+void RuntimeImageUnsupported::log(llvm::raw_ostream &stream) const {
+  stream << "deployment_runtime_image_unsupported: " << message_;
+}
+
+std::error_code RuntimeImageUnsupported::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
+
+} // namespace loom::deployment
+
 namespace loom::deployment::detail {
 namespace {
 
@@ -1338,6 +1352,35 @@ llvm::Expected<DerivedRuntimeImages> deriveRuntimeImages(
   if (!system)
     return system.takeError();
   const auto *closure = &systemMapping->verifiedClosure();
+
+  const bool hasStableKeyBinding =
+      llvm::any_of(
+          closure->executionContexts.instructionDomains,
+          [](const mapping::SystemInstructionContextDomain &domain) {
+            return domain.relationKind ==
+                   ::mapping::SystemBindingRelationKind::StableKeyLookup;
+          }) ||
+      llvm::any_of(
+          closure->executionContexts.spatialDomains,
+          [](const mapping::SystemSpatialContextDomain &domain) {
+            return domain.relationKind ==
+                   ::mapping::SystemBindingRelationKind::StableKeyLookup;
+          }) ||
+      llvm::any_of(
+          closure->serviceRealizations,
+          [](const mapping::SystemServiceRealizationView &realization) {
+            return llvm::any_of(
+                realization.selections,
+                [](const mapping::SystemServicePlanSelectionView &selection) {
+                  return selection.relationKind ==
+                         ::mapping::SystemBindingRelationKind::StableKeyLookup;
+                });
+          });
+  if (hasStableKeyBinding)
+    return llvm::make_error<RuntimeImageUnsupported>(
+        RuntimeImageUnsupportedReason::StableKeyLookup,
+        "StableKeyLookup has no versioned Thread Dispatch or Spatial Launch "
+        "image contract");
 
   ReferenceEncoder encoder(dataflowView->identity());
   auto groups = buildActivationGroups(*closure, encoder);

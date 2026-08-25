@@ -88,17 +88,29 @@ template <typename Target> struct SystemPresburgerClauseView final {
   Target target;
 };
 
+template <typename Target> struct SystemStableKeyEntryView final {
+  ::dataflow::DynamicWorkStableItemKey key;
+  Target target;
+};
+
 struct SystemThreadExecutionBindingView final {
   ::dataflow::RootThreadLaunchRef key;
   std::vector<SystemPresburgerClauseView<::loom::fabric::AccCoreOccurrenceRef>>
       clauses;
   std::optional<::loom::fabric::AccCoreOccurrenceRef> defaultTarget;
+  ::mapping::SystemBindingRelationKind relationKind =
+      ::mapping::SystemBindingRelationKind::PresburgerPartition;
+  std::vector<SystemStableKeyEntryView<::loom::fabric::AccCoreOccurrenceRef>>
+      stableKeyEntries;
 };
 
 struct SystemGraphExecutionBindingView final {
   ::dataflow::RootedGraphLaunchRef key;
   std::vector<SystemPresburgerClauseView<ArtifactRootReference>> clauses;
   std::optional<ArtifactRootReference> defaultTarget;
+  ::mapping::SystemBindingRelationKind relationKind =
+      ::mapping::SystemBindingRelationKind::PresburgerPartition;
+  std::vector<SystemStableKeyEntryView<ArtifactRootReference>> stableKeyEntries;
 };
 
 /// Strictly reconstructed execution portion of one mapping.system root.
@@ -197,6 +209,9 @@ struct SystemServicePlanSelectionView final {
   ServicePlanSelectionKey key;
   std::vector<SystemPresburgerClauseView<std::uint64_t>> clauses;
   std::optional<std::uint64_t> defaultPlanOrdinal;
+  ::mapping::SystemBindingRelationKind relationKind =
+      ::mapping::SystemBindingRelationKind::PresburgerPartition;
+  std::vector<SystemStableKeyEntryView<std::uint64_t>> stableKeyEntries;
 };
 
 struct SystemServiceRealizationView final {

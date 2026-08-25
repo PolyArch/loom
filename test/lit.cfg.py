@@ -280,6 +280,18 @@ _loom_cc_dir = os.path.join(config.loom_obj_root, "bin")
 config.substitutions.insert(
     0,
     (
+        "%loom-runtime-dynamic-work-test\\b",
+        os.path.join(
+            config.loom_obj_root,
+            "test",
+            "runtime",
+            "loom-runtime-dynamic-work-test",
+        ),
+    ),
+)
+config.substitutions.insert(
+    0,
+    (
         "%loom-runtime-deployment-loader-test\\b",
         os.path.join(
             config.loom_obj_root,

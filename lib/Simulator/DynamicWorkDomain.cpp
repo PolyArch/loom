@@ -65,6 +65,26 @@ WorkItemId WorkItemId::root(ThreadDispatchOccurrenceId domainInstance) {
   return WorkItemId(domainInstance, rootOrdinal);
 }
 
+char DynamicWorkStableItemProjectionError::ID = 0;
+
+void DynamicWorkStableItemProjectionError::log(
+    llvm::raw_ostream &stream) const {
+  stream << "dynamic_work_stable_item_projection_unavailable: " << message_;
+}
+
+std::error_code
+DynamicWorkStableItemProjectionError::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
+
+llvm::Expected<dataflow::DynamicWorkStableItemKey>
+projectDynamicWorkStableItemKey(const WorkItemId &item) {
+  if (!item.isRoot())
+    return llvm::make_error<DynamicWorkStableItemProjectionError>(
+        "child WorkItemId has no Dataflow-owned publication lineage");
+  return dataflow::DynamicWorkStableItemKey{};
+}
+
 WorkItemId WorkItemId::child(const WorkItemId &parent, std::uint64_t ordinal) {
   llvm::SmallVector<std::uint64_t, 4> ordinals(parent.ordinals_.begin(),
                                                parent.ordinals_.end());
