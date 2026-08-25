@@ -275,9 +275,8 @@ llvm::Expected<ObjectiveProgram> ObjectiveProgram::getCandidateMeasures(
        catalogs.dimensions) {
     resolved.dimensions.push_back(
         {ResolvedEvaluationMetricObjectiveSource{0, dimension.measureOrdinal},
-         dimension.direction, resolvedObjectiveInteger(0),
-         resolvedObjectiveInteger(1), dimension.lowerIndex,
-         dimension.upperIndex});
+         dimension.direction, dimension.origin, dimension.quantum,
+         dimension.lowerIndex, dimension.upperIndex});
   }
   resolved.weightedLevels = catalogs.weightedLevels;
   resolved.totalOrderings = catalogs.totalOrderings;
@@ -355,13 +354,22 @@ llvm::Error ObjectiveProgram::evaluate(ObjectiveSourceValues sources,
 
 llvm::Error ObjectiveProgram::evaluateCandidateMeasures(
     llvm::ArrayRef<std::uint64_t> measures, ObjectiveVector &result) const {
+  std::vector<ResolvedObjectiveScalar> scalars;
+  scalars.reserve(measures.size());
+  for (std::uint64_t measure : measures)
+    scalars.push_back(resolvedObjectiveInteger(measure));
+  return evaluateCandidateMeasures(scalars, result);
+}
+
+llvm::Error ObjectiveProgram::evaluateCandidateMeasures(
+    llvm::ArrayRef<ResolvedObjectiveScalar> measures,
+    ObjectiveVector &result) const {
   if (!candidateMeasureProgram_)
     return invalid("candidate measures require a candidate-measure program");
   std::vector<EvaluationMetricObjectiveValue> values;
   values.reserve(measures.size());
   for (auto indexed : llvm::enumerate(measures))
-    values.push_back({0, indexed.index(),
-                      resolvedObjectiveInteger(indexed.value())});
+    values.push_back({0, indexed.index(), indexed.value()});
   return evaluate({{}, {}, values}, result);
 }
 

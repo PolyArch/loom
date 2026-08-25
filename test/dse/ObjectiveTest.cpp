@@ -7,6 +7,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -156,12 +157,10 @@ void builtinOrderingEnergyAndParetoUseOneVector() {
           .objectiveSelection.selectedSearchEnergy;
   const loom::dse::ObjectiveWideValue leftEnergy =
       take(program.weightedLevelValue(left, searchEnergyLevel));
-  require(leftEnergy.high == 0 &&
-              leftEnergy.low == UINT64_C(281474976710656),
+  require(leftEnergy.high == 0 && leftEnergy.low == UINT64_C(281474976710656),
           "search energy did not use the selected fixed weight");
-  const loom::dse::ObjectiveSignedDifference delta =
-      take(program.signedWeightedLevelDifference(left, right,
-                                                 searchEnergyLevel));
+  const loom::dse::ObjectiveSignedDifference delta = take(
+      program.signedWeightedLevelDifference(left, right, searchEnergyLevel));
   require(delta.sign == loom::dse::ObjectiveDifferenceSign::Negative,
           "energy difference has the wrong sign");
 
@@ -243,6 +242,37 @@ void transientCandidateMeasuresDoNotBorrowMappingOrdinals() {
                   "objective_unavailable");
 }
 
+void mixedCandidateScalarsRetainExactDecimalOrder() {
+  loom::dse::CandidateMeasureObjectiveCatalogs catalogs;
+  catalogs.dimensions = {
+      {0, loom::ResolvedObjectiveDirection::Minimize, 0, 100},
+      {1, loom::ResolvedObjectiveDirection::Maximize, 0, 100,
+       loom::resolvedObjectiveDecimal(0, 0),
+       loom::resolvedObjectiveDecimal(5, -2)}};
+  catalogs.weightedLevels = {{{{0, 1}}}, {{{1, 1}}}};
+  catalogs.totalOrderings = {{{0, 1}}};
+  const loom::dse::ObjectiveProgram program =
+      take(loom::dse::ObjectiveProgram::getCandidateMeasures(catalogs));
+  loom::dse::ObjectiveVector first = program.makeVector();
+  loom::dse::ObjectiveVector second = program.makeVector();
+  const std::array<loom::ResolvedObjectiveScalar, 2> firstValues = {
+      loom::resolvedObjectiveInteger(7),
+      loom::resolvedObjectiveDecimal(125, -2)};
+  const std::array<loom::ResolvedObjectiveScalar, 2> secondValues = {
+      loom::resolvedObjectiveInteger(7),
+      loom::resolvedObjectiveDecimal(115, -2)};
+  requireSuccess(program.evaluateCandidateMeasures(firstValues, first));
+  requireSuccess(program.evaluateCandidateMeasures(secondValues, second));
+  require(first.codes() == llvm::ArrayRef<std::uint64_t>({7, 75}) &&
+              second.codes() == llvm::ArrayRef<std::uint64_t>({7, 77}),
+          "mixed candidate scalar quantization changed exact decimal order");
+  const std::array<std::uint8_t, 1> firstKey = {0x01};
+  const std::array<std::uint8_t, 1> secondKey = {0x02};
+  require(take(program.compareTotalOrdering(first, firstKey, second, secondKey,
+                                            0)) < 0,
+          "maximized Decimal candidate measure ranked in the wrong order");
+}
+
 } // namespace
 
 int main() {
@@ -252,5 +282,6 @@ int main() {
   completeDeclaredLevelDomainMustFitUint128();
   malformedOwnerReferencesFailAtPreflight();
   transientCandidateMeasuresDoNotBorrowMappingOrdinals();
+  mixedCandidateScalarsRetainExactDecimalOrder();
   return 0;
 }

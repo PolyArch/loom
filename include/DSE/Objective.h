@@ -47,10 +47,11 @@ struct ObjectiveSourceValues final {
 /// ordinals are owned by the caller that constructs the program.
 struct CandidateMeasureObjectiveDimension final {
   std::uint32_t measureOrdinal = 0;
-  ResolvedObjectiveDirection direction =
-      ResolvedObjectiveDirection::Minimize;
+  ResolvedObjectiveDirection direction = ResolvedObjectiveDirection::Minimize;
   std::uint64_t lowerIndex = 0;
   std::uint64_t upperIndex = 0;
+  ResolvedObjectiveScalar origin = resolvedObjectiveInteger(0);
+  ResolvedObjectiveScalar quantum = resolvedObjectiveInteger(1);
 };
 
 struct CandidateMeasureObjectiveCatalogs final {
@@ -130,8 +131,12 @@ public:
   llvm::Error evaluate(ObjectiveSourceValues sources,
                        ObjectiveVector &result) const;
 
-  llvm::Error evaluateCandidateMeasures(
-      llvm::ArrayRef<std::uint64_t> measures, ObjectiveVector &result) const;
+  llvm::Error evaluateCandidateMeasures(llvm::ArrayRef<std::uint64_t> measures,
+                                        ObjectiveVector &result) const;
+
+  llvm::Error
+  evaluateCandidateMeasures(llvm::ArrayRef<ResolvedObjectiveScalar> measures,
+                            ObjectiveVector &result) const;
 
   llvm::Expected<ObjectiveWideValue>
   weightedLevelValue(const ObjectiveVector &vector,
