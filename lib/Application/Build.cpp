@@ -281,6 +281,7 @@ using build_detail::makePreAdmissionFailurePairDecision;
 using build_detail::makePreparationPairDecision;
 using build_detail::makeSourceSimulationInputs;
 using build_detail::mapIncompleteReasonToPairDisposition;
+using build_detail::mapResourceTimeFrontierReasonToPairDisposition;
 using build_detail::MonotonicClock;
 using build_detail::publishApplicationWorkloads;
 
@@ -597,16 +598,17 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           resourceTimeFunnel->accounting))
     return std::move(error);
   if (resourceTimeFunnel->incompleteReason ==
-      dse::ResourceTimeFrontierIncompleteReason::CancelledOrTimeout)
-    emitApplicationResourceTimeFunnelTerminalDiagnostics(
-        *resourceTimeFunnel, "cancelled_or_timeout");
-  if (resourceTimeFunnel->incompleteReason ==
       dse::ResourceTimeFrontierIncompleteReason::CancelledOrTimeout) {
+    emitApplicationResourceTimeFunnelTerminalDiagnostics(
+        *resourceTimeFunnel, dse::resourceTimeFrontierIncompleteReasonSpelling(
+                                 *resourceTimeFunnel->incompleteReason));
     auto decision = makePreparationPairDecision(
         completed.sourceProgram, completed.fabric, completed.workload,
         completed.runtimeInput, completed.candidateInventory,
-        ApplicationPairDecisionDisposition::CancelledOrTimeout,
-        "resource-time funnel cancelled or timed out",
+        mapResourceTimeFrontierReasonToPairDisposition(
+            *resourceTimeFunnel->incompleteReason),
+        dse::resourceTimeFrontierIncompleteReasonSpelling(
+            *resourceTimeFunnel->incompleteReason),
         completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
         request.portfolioInput);
     emitApplicationPairDecisionDiagnostics(decision);
@@ -620,16 +622,16 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
   }
   if (resourceTimeFunnel->finalists.empty())
     emitApplicationResourceTimeFunnelTerminalDiagnostics(
-        *resourceTimeFunnel, resourceTimeFunnel->incompleteReason
-                                 ? "incomplete"
-                                 : "no_mapping_finalist");
+        *resourceTimeFunnel,
+        resourceTimeFunnel->incompleteReason
+            ? dse::resourceTimeFrontierIncompleteReasonSpelling(
+                  *resourceTimeFunnel->incompleteReason)
+            : "no_mapping_finalist");
   if (resourceTimeFunnel->finalists.empty() &&
       resourceTimeFunnel->incompleteReason) {
-    const auto disposition =
-        *resourceTimeFunnel->incompleteReason ==
-                dse::ResourceTimeFrontierIncompleteReason::Unsupported
-            ? ApplicationPairDecisionDisposition::UnsupportedSemantic
-            : ApplicationPairDecisionDisposition::BudgetExhausted;
+    const ApplicationPairDecisionDisposition disposition =
+        mapResourceTimeFrontierReasonToPairDisposition(
+            *resourceTimeFunnel->incompleteReason);
     auto decision = makePreparationPairDecision(
         completed.sourceProgram, completed.fabric, completed.workload,
         completed.runtimeInput, completed.candidateInventory, disposition,
@@ -873,6 +875,25 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
   if (mappingAlternatives.empty()) {
     emitApplicationResourceTimeFunnelTerminalDiagnostics(
         *resourceTimeFunnel, "all_finalists_rejected_before_mapping");
+    if (resourceTimeFunnel->incompleteReason) {
+      auto decision = makePreparationPairDecision(
+          completed.sourceProgram, completed.fabric, completed.workload,
+          completed.runtimeInput, completed.candidateInventory,
+          mapResourceTimeFrontierReasonToPairDisposition(
+              *resourceTimeFunnel->incompleteReason),
+          dse::resourceTimeFrontierIncompleteReasonSpelling(
+              *resourceTimeFunnel->incompleteReason),
+          completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
+          request.portfolioInput);
+      emitApplicationPairDecisionDiagnostics(decision);
+      return ApplicationBuildPreparationOutcome{
+          IncompleteApplicationResourceTimePlanning{
+              *resourceTimeFunnel->incompleteReason,
+              std::move(*resourceTimeFunnel),
+              std::move(completed.candidateInventory), completed.sourceProgram,
+              completed.fabric, completed.workload, completed.runtimeInput,
+              completed.frontierPolicyDigest, completed.sourceHostOnlyWork}};
+    }
     if (firstUnsupported) {
       auto decision = makePreparationPairDecision(
           completed.sourceProgram, completed.fabric, completed.workload,

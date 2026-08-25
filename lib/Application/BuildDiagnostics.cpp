@@ -464,6 +464,12 @@ llvm::json::Object encodePairDecision(
           observation.verifiedSpectrum
               ? llvm::json::Value(dse::toString(*observation.verifiedSpectrum))
               : llvm::json::Value(nullptr);
+      mapping["resource_time_verification_incomplete_reason"] =
+          observation.resourceTimeSpectrumIncompleteReason
+              ? llvm::json::Value(
+                    dse::resourceTimeSpectrumIncompleteReasonSpelling(
+                        *observation.resourceTimeSpectrumIncompleteReason))
+              : llvm::json::Value(nullptr);
       llvm::json::Array mappings;
       for (const ArtifactRootReference &reference : observation.systemMappings)
         mappings.push_back(encodeRoot(reference));
@@ -1776,11 +1782,16 @@ void emitApplicationMappingDiagnostics(
                 accounting.elapsedNanoseconds;
             if (const auto *incomplete =
                     std::get_if<dse::IncompleteResourceTimeSpectrum>(
-                        &outcome.resourceTimeSpectrum->verification))
+                        &outcome.resourceTimeSpectrum->verification)) {
               payload["resource_time_verification_incomplete_reason"] =
+                  dse::resourceTimeSpectrumIncompleteReasonSpelling(
+                      incomplete->reason);
+              payload["resource_time_verification_diagnostic"] =
                   incomplete->diagnostic;
-            else
+            } else {
               payload["resource_time_verification_incomplete_reason"] = nullptr;
+              payload["resource_time_verification_diagnostic"] = nullptr;
+            }
           }
           addOptionalUnsigned(payload, "incomplete_node_ordinal",
                               outcome.incompleteNodeOrdinal);

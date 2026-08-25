@@ -130,6 +130,118 @@ ApplicationPairDecisionDisposition mapIncompleteReasonToPairDisposition(
   return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
 }
 
+ApplicationPairDecisionDisposition
+mapResourceTimeFrontierReasonToPairDisposition(
+    dse::ResourceTimeFrontierIncompleteReason reason) {
+  switch (reason) {
+  case dse::ResourceTimeFrontierIncompleteReason::BudgetExhausted:
+    return ApplicationPairDecisionDisposition::BudgetExhausted;
+  case dse::ResourceTimeFrontierIncompleteReason::CancelledOrTimeout:
+    return ApplicationPairDecisionDisposition::CancelledOrTimeout;
+  case dse::ResourceTimeFrontierIncompleteReason::ProofNotEstablished:
+    return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+  case dse::ResourceTimeFrontierIncompleteReason::Unsupported:
+    return ApplicationPairDecisionDisposition::UnsupportedSemantic;
+  }
+  llvm_unreachable("unknown resource-time frontier incomplete reason");
+}
+
+std::optional<ApplicationPairDecisionDisposition>
+mapRuntimeDispositionToPairDisposition(
+    ApplicationMappingRuntimeDisposition disposition) {
+  switch (disposition) {
+  case ApplicationMappingRuntimeDisposition::Completed:
+    return std::nullopt;
+  case ApplicationMappingRuntimeDisposition::Unsupported:
+    return ApplicationPairDecisionDisposition::UnsupportedSemantic;
+  case ApplicationMappingRuntimeDisposition::ProofNotEstablished:
+  case ApplicationMappingRuntimeDisposition::NotRequested:
+    return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+  case ApplicationMappingRuntimeDisposition::ExecutionFailed:
+    return ApplicationPairDecisionDisposition::ImplementationFailure;
+  case ApplicationMappingRuntimeDisposition::CancelledOrTimeout:
+    return ApplicationPairDecisionDisposition::CancelledOrTimeout;
+  }
+  llvm_unreachable("unknown application runtime disposition");
+}
+
+std::optional<dse::PreMappingSpectrumClass>
+requestedResourceTimeSpectrumClass(dse::PreMappingSpectrumEndpoint endpoint) {
+  switch (endpoint) {
+  case dse::PreMappingSpectrumEndpoint::Automatic:
+    return std::nullopt;
+  case dse::PreMappingSpectrumEndpoint::MaxTemporal:
+    return dse::PreMappingSpectrumClass::MaxTemporal;
+  case dse::PreMappingSpectrumEndpoint::MaxSpatial:
+    return dse::PreMappingSpectrumClass::MaxSpatial;
+  case dse::PreMappingSpectrumEndpoint::Intermediate:
+    return dse::PreMappingSpectrumClass::Intermediate;
+  }
+  llvm_unreachable("unknown resource-time spectrum endpoint");
+}
+
+std::optional<ApplicationPairDecisionDisposition>
+classifyResourceTimeSelectionOutcome(
+    const std::optional<dse::ResourceTimeSpectrumFunnelResult> &spectrum,
+    std::optional<dse::PreMappingSpectrumClass> requestedClass) {
+  if (!requestedClass)
+    return std::nullopt;
+  if (!spectrum)
+    return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+  if (const auto *incomplete = std::get_if<dse::IncompleteResourceTimeSpectrum>(
+          &spectrum->verification)) {
+    switch (incomplete->reason) {
+    case dse::ResourceTimeSpectrumIncompleteReason::Unsupported:
+      return ApplicationPairDecisionDisposition::UnsupportedSemantic;
+    case dse::ResourceTimeSpectrumIncompleteReason::ProofNotEstablished:
+      return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+    case dse::ResourceTimeSpectrumIncompleteReason::CancelledOrTimeout:
+      return ApplicationPairDecisionDisposition::CancelledOrTimeout;
+    }
+    llvm_unreachable("unknown resource-time spectrum incomplete reason");
+  }
+  const auto &verified =
+      std::get<dse::VerifiedResourceTimeSpectrum>(spectrum->verification);
+  if (llvm::any_of(verified.scenarios, [&](const auto &scenario) {
+        return scenario.spectrumClass == *requestedClass;
+      }))
+    return std::nullopt;
+  return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+}
+
+ApplicationPairDecisionDisposition prioritizeIncompletePairDisposition(
+    llvm::ArrayRef<ApplicationPairDecisionDisposition> causes,
+    bool declaredWorkExhausted) {
+  const auto priority = [](ApplicationPairDecisionDisposition disposition) {
+    switch (disposition) {
+    case ApplicationPairDecisionDisposition::BudgetExhausted:
+      return 0U;
+    case ApplicationPairDecisionDisposition::UnsupportedSemantic:
+      return 1U;
+    case ApplicationPairDecisionDisposition::MappingProofNotEstablished:
+      return 2U;
+    case ApplicationPairDecisionDisposition::ImplementationFailure:
+      return 3U;
+    case ApplicationPairDecisionDisposition::CancelledOrTimeout:
+      return 4U;
+    case ApplicationPairDecisionDisposition::VerifiedAcceleration:
+    case ApplicationPairDecisionDisposition::VerifiedFeasibleButNotBeneficial:
+    case ApplicationPairDecisionDisposition::NoPromisingCandidate:
+    case ApplicationPairDecisionDisposition::ExactHardwareIncompatible:
+    case ApplicationPairDecisionDisposition::HardwareDseAlternative:
+      llvm_unreachable("complete disposition is not an incomplete cause");
+    }
+    llvm_unreachable("unknown application pair disposition");
+  };
+  if (causes.empty())
+    return declaredWorkExhausted
+               ? ApplicationPairDecisionDisposition::BudgetExhausted
+               : ApplicationPairDecisionDisposition::ImplementationFailure;
+  return *llvm::max_element(causes, [&](auto lhs, auto rhs) {
+    return priority(lhs) < priority(rhs);
+  });
+}
+
 ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const PreparedApplicationBuild &prepared,
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,
@@ -206,6 +318,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
       summary.hardwarePromotionObservations;
   result.qualityInvocations.assign(qualityInvocations.begin(),
                                    qualityInvocations.end());
+  const std::optional<dse::PreMappingSpectrumClass> requestedSpectrumClass =
+      requestedResourceTimeSpectrumClass(
+          prepared.resourceTimePolicy.spectrumEndpoint);
   result.candidates.reserve(prepared.candidateInventory.size());
   for (std::size_t ordinal = 0; ordinal != prepared.candidateInventory.size();
        ++ordinal) {
@@ -258,6 +373,7 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           outcome.dfgCycles,
           outcome.cgraCycles,
           outcome.resourceCoreCost,
+          std::nullopt,
           std::nullopt};
       if (outcome.resourceTimeSpectrum) {
         if (const auto *verification =
@@ -265,12 +381,20 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
                     &outcome.resourceTimeSpectrum->verification)) {
           for (const dse::VerifiedResourceTimeSpectrumScenario &scenario :
                verification->scenarios) {
-            if (!candidate.verifiedSpectrum)
+            if (!candidate.verifiedSpectrum ||
+                (requestedSpectrumClass &&
+                 scenario.spectrumClass == *requestedSpectrumClass))
               candidate.verifiedSpectrum = scenario.spectrumClass;
-            if (!mappingObservation.verifiedSpectrum)
+            if (!mappingObservation.verifiedSpectrum ||
+                (requestedSpectrumClass &&
+                 scenario.spectrumClass == *requestedSpectrumClass))
               mappingObservation.verifiedSpectrum = scenario.spectrumClass;
           }
-        }
+        } else
+          mappingObservation.resourceTimeSpectrumIncompleteReason =
+              std::get<dse::IncompleteResourceTimeSpectrum>(
+                  outcome.resourceTimeSpectrum->verification)
+                  .reason;
       }
       candidate.mappingObservations.push_back(std::move(mappingObservation));
       if (isSelectedOutcome) {
@@ -321,7 +445,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           outcome.planOrdinal == *summary.selectedPlanOrdinal &&
           summary.selectedMapping &&
           llvm::is_contained(outcome.systemMappings,
-                             *summary.selectedMapping)) {
+                             *summary.selectedMapping) &&
+          !classifyResourceTimeSelectionOutcome(outcome.resourceTimeSpectrum,
+                                                requestedSpectrumClass)) {
         result.selectedSystem = outcome.system;
         result.selectedSystemMapping = summary.selectedMapping;
         const auto &objective = selected->objective;
@@ -439,40 +565,100 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
                                       ProvenNoFeasibleCandidate &&
                               attempt.systemMappings.empty();
                      }) &&
-        !summary.jointFrontierTruncated;
+        !summary.jointFrontierTruncated &&
+        prepared.preMappingCompleteness.exactComplete() &&
+        !prepared.resourceTimeFunnel.truncated &&
+        !prepared.resourceTimeFunnel.incompleteReason;
     if (exactHardwareIncompatibility) {
       result.disposition =
           ApplicationPairDecisionDisposition::ExactHardwareIncompatible;
       result.detail = "all admitted System candidates published typed "
                       "ProvenNoFeasibleCandidate witnesses";
-    }
-    for (const dse::JointDesignAttemptRecord &attempt : summary.attempts)
-      if (attempt.incompleteReason) {
-        result.disposition =
-            mapIncompleteReasonToPairDisposition(*attempt.incompleteReason);
-        result.detail = dse::toString(*attempt.incompleteReason).str();
-        break;
+    } else {
+      std::vector<ApplicationPairDecisionDisposition> incompleteCauses;
+      if (prepared.resourceTimeFunnel.incompleteReason)
+        incompleteCauses.push_back(
+            mapResourceTimeFrontierReasonToPairDisposition(
+                *prepared.resourceTimeFunnel.incompleteReason));
+      for (const dse::JointDesignAttemptRecord &attempt : summary.attempts)
+        if (attempt.incompleteReason)
+          incompleteCauses.push_back(
+              mapIncompleteReasonToPairDisposition(*attempt.incompleteReason));
+      for (const ApplicationMappingCandidateOutcome &outcome : outcomes) {
+        if (outcome.runtimeDisposition !=
+            ApplicationMappingRuntimeDisposition::Completed) {
+          if (outcome.runtimeDisposition !=
+                  ApplicationMappingRuntimeDisposition::NotRequested ||
+              (outcome.disposition ==
+                   dse::JointDesignAttemptDisposition::Verified &&
+               !outcome.systemMappings.empty()))
+            if (auto disposition = mapRuntimeDispositionToPairDisposition(
+                    outcome.runtimeDisposition))
+              incompleteCauses.push_back(*disposition);
+          continue;
+        }
+        if (auto disposition = classifyResourceTimeSelectionOutcome(
+                outcome.resourceTimeSpectrum, requestedSpectrumClass))
+          incompleteCauses.push_back(*disposition);
       }
-    if (result.disposition ==
-            ApplicationPairDecisionDisposition::ImplementationFailure &&
-        summary.declaredWorkExhausted) {
-      result.disposition = ApplicationPairDecisionDisposition::BudgetExhausted;
-      result.detail =
-          "declared joint-design work was exhausted without a selected Mapping";
+      for (const ApplicationPairQualityInvocationRecord &invocation :
+           qualityInvocations) {
+        switch (invocation.qualityDisposition) {
+        case dse::JointDesignQualityDisposition::NotRequested:
+        case dse::JointDesignQualityDisposition::Complete:
+          break;
+        case dse::JointDesignQualityDisposition::Unsupported:
+          incompleteCauses.push_back(
+              ApplicationPairDecisionDisposition::UnsupportedSemantic);
+          break;
+        case dse::JointDesignQualityDisposition::ProofNotEstablished:
+          incompleteCauses.push_back(
+              ApplicationPairDecisionDisposition::MappingProofNotEstablished);
+          break;
+        case dse::JointDesignQualityDisposition::ExecutionFailed:
+          incompleteCauses.push_back(
+              ApplicationPairDecisionDisposition::ImplementationFailure);
+          break;
+        case dse::JointDesignQualityDisposition::CancelledOrTimeout:
+          incompleteCauses.push_back(
+              ApplicationPairDecisionDisposition::CancelledOrTimeout);
+          break;
+        }
+      }
+      result.disposition = prioritizeIncompletePairDisposition(
+          incompleteCauses, summary.declaredWorkExhausted ||
+                                summary.jointFrontierTruncated ||
+                                prepared.resourceTimeFunnel.truncated);
+      if (!result.detail) {
+        switch (result.disposition) {
+        case ApplicationPairDecisionDisposition::CancelledOrTimeout:
+          result.detail = "application Mapping or runtime execution was "
+                          "cancelled or timed out";
+          break;
+        case ApplicationPairDecisionDisposition::ImplementationFailure:
+          result.detail = "application Mapping or runtime provider failed";
+          break;
+        case ApplicationPairDecisionDisposition::MappingProofNotEstablished:
+          result.detail = "application Mapping, spectrum, or runtime proof was "
+                          "not established";
+          break;
+        case ApplicationPairDecisionDisposition::UnsupportedSemantic:
+          result.detail = "application Mapping or runtime semantics were "
+                          "unsupported";
+          break;
+        case ApplicationPairDecisionDisposition::BudgetExhausted:
+          result.detail = "bounded application Mapping work was exhausted";
+          break;
+        case ApplicationPairDecisionDisposition::VerifiedAcceleration:
+        case ApplicationPairDecisionDisposition::
+            VerifiedFeasibleButNotBeneficial:
+        case ApplicationPairDecisionDisposition::NoPromisingCandidate:
+        case ApplicationPairDecisionDisposition::ExactHardwareIncompatible:
+        case ApplicationPairDecisionDisposition::HardwareDseAlternative:
+          llvm_unreachable("complete disposition has no incomplete detail");
+        }
+      }
     }
-    if (summary.declaredWorkExhausted &&
-        result.disposition ==
-            ApplicationPairDecisionDisposition::MappingProofNotEstablished) {
-      result.disposition = ApplicationPairDecisionDisposition::BudgetExhausted;
-      result.detail =
-          "declared joint-design work was exhausted before Mapping proof";
-    }
-    if (result.disposition ==
-            ApplicationPairDecisionDisposition::ImplementationFailure &&
-        !result.detail)
-      result.detail =
-          "joint design summary has no selected Mapping checkpoint or typed "
-          "incomplete witness";
   }
   return result;
 }

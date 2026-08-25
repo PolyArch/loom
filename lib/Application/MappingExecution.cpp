@@ -91,7 +91,8 @@ verifyResourceTimeAlternative(
     llvm::ArrayRef<ArtifactRootReference> systemMappings,
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const ComponentViewDigest &scheduleHintDigest,
-    llvm::ArrayRef<dse::ResourceTimeMappingDeploymentEndpoint> endpoints) {
+    llvm::ArrayRef<dse::ResourceTimeMappingDeploymentEndpoint> endpoints,
+    ExecutionControlView executionControl) {
   const auto evaluation =
       llvm::find_if(funnel.evaluations, [&](const auto &candidate) {
         return candidate.candidateIdentity == alternative.candidateIdentity;
@@ -104,8 +105,8 @@ verifyResourceTimeAlternative(
   auto verified = dse::verifyResourceTimeMappingFinalists(
       llvm::ArrayRef<dse::ResourceTimeScheduleHint>(*hint, 1),
       alternative.resourceTimeRegions, alternative.resourceTimeRegionBounds,
-      systemMappings, artifacts, {}, evaluation->concurrencyBounds, &blobs,
-      endpoints);
+      systemMappings, artifacts, executionControl,
+      evaluation->concurrencyBounds, &blobs, endpoints);
   if (!verified)
     return verified.takeError();
   return std::optional<dse::ResourceTimeSpectrumFunnelResult>(
@@ -115,9 +116,11 @@ verifyResourceTimeAlternative(
 } // namespace build_detail
 
 using build_detail::ApplicationBuildOperationTimer;
+using build_detail::classifyResourceTimeSelectionOutcome;
 using build_detail::deriveApplicationPairDecision;
 using build_detail::deriveApplicationPartitionDelta;
 using build_detail::invalid;
+using build_detail::requestedResourceTimeSpectrumClass;
 using build_detail::verifyResourceTimeAlternative;
 
 llvm::Expected<ApplicationMappingExecution>
@@ -212,35 +215,16 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::uint64_t systemPnrDispatches = 0;
   std::vector<ApplicationIncrementalMappingObservation>
       incrementalMappingObservations;
-  const auto requestedSpectrumClass =
-      [&]() -> std::optional<dse::PreMappingSpectrumClass> {
-    switch (prepared.resourceTimePolicy.spectrumEndpoint) {
-    case dse::PreMappingSpectrumEndpoint::Automatic:
-      return std::nullopt;
-    case dse::PreMappingSpectrumEndpoint::MaxTemporal:
-      return dse::PreMappingSpectrumClass::MaxTemporal;
-    case dse::PreMappingSpectrumEndpoint::MaxSpatial:
-      return dse::PreMappingSpectrumClass::MaxSpatial;
-    case dse::PreMappingSpectrumEndpoint::Intermediate:
-      return dse::PreMappingSpectrumClass::Intermediate;
-    }
-    llvm_unreachable("unknown resource-time spectrum endpoint");
-  }();
+  const auto requestedSpectrumClass = requestedResourceTimeSpectrumClass(
+      prepared.resourceTimePolicy.spectrumEndpoint);
   const auto outcomeMatchesRequestedSpectrum =
       [&](std::uint64_t planOrdinal, const ArtifactRootReference &mapping) {
-        if (!requestedSpectrumClass)
-          return true;
         return llvm::any_of(outcomes, [&](const auto &outcome) {
           if (outcome.planOrdinal != planOrdinal ||
-              !llvm::is_contained(outcome.systemMappings, mapping) ||
-              !outcome.resourceTimeSpectrum)
+              !llvm::is_contained(outcome.systemMappings, mapping))
             return false;
-          const auto *verified = std::get_if<dse::VerifiedResourceTimeSpectrum>(
-              &outcome.resourceTimeSpectrum->verification);
-          return verified &&
-                 llvm::any_of(verified->scenarios, [&](const auto &scenario) {
-                   return scenario.spectrumClass == *requestedSpectrumClass;
-                 });
+          return !classifyResourceTimeSelectionOutcome(
+              outcome.resourceTimeSpectrum, requestedSpectrumClass);
         });
       };
   const std::size_t mappingImportEntryLimit =
@@ -290,7 +274,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         if (!attempt.systemMappings.empty()) {
           auto verified = verifyResourceTimeAlternative(
               prepared.resourceTimeFunnel, alternative, attempt.systemMappings,
-              artifacts, blobs, scheduleHintDigest);
+              artifacts, blobs, scheduleHintDigest, {},
+              request.executionControl);
           if (!verified)
             return verified.takeError();
           resourceTimeSpectrum = std::move(*verified);
@@ -595,7 +580,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             prepared.mappingAlternatives[selectedPlanOrdinal], childMappings,
             artifacts, blobs,
             prepared.mappingAlternatives[selectedPlanOrdinal]
-                .resourceTimeScheduleHintDigest);
+                .resourceTimeScheduleHintDigest,
+            {}, request.executionControl);
         if (!childSpectrum)
           return childSpectrum.takeError();
         outcomes.push_back(ApplicationMappingCandidateOutcome{
@@ -725,7 +711,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             prepared.mappingAlternatives[selectedPlanOrdinal], childMappings,
             artifacts, blobs,
             prepared.mappingAlternatives[selectedPlanOrdinal]
-                .resourceTimeScheduleHintDigest);
+                .resourceTimeScheduleHintDigest,
+            {}, request.executionControl);
         if (!childSpectrum)
           return childSpectrum.takeError();
         outcomes.push_back(ApplicationMappingCandidateOutcome{
@@ -914,8 +901,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             return childRuntime.takeError();
           auto childSpectrum = verifyResourceTimeAlternative(
               prepared.resourceTimeFunnel, childAlternative, childMappings,
-              artifacts, blobs,
-              childAlternative.resourceTimeScheduleHintDigest);
+              artifacts, blobs, childAlternative.resourceTimeScheduleHintDigest,
+              {}, request.executionControl);
           if (!childSpectrum)
             return childSpectrum.takeError();
           bool coldVerified = false;
@@ -939,7 +926,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             auto coldSpectrum = verifyResourceTimeAlternative(
                 prepared.resourceTimeFunnel, childAlternative, coldMappings,
                 artifacts, blobs,
-                childAlternative.resourceTimeScheduleHintDigest);
+                childAlternative.resourceTimeScheduleHintDigest, {},
+                request.executionControl);
             if (!coldSpectrum)
               return coldSpectrum.takeError();
             observation.coldDfgCycles = coldRuntime->dfgCycles;
@@ -1151,10 +1139,6 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   selectedExecution->summary.spatialPnrDispatchCount = spatialPnrDispatches;
   selectedExecution->summary.systemPnrDispatchCount = systemPnrDispatches;
   selectedExecution->summary.attempts = std::move(attempts);
-  if (!selectedExecution->summary.selectedMapping)
-    selectedExecution->summary.declaredWorkExhausted =
-        firstPlan >= plans.size();
-
   ApplicationMappingProvenance provenance;
   provenance.sourceProgram = prepared.preMappingSourceProgram;
   provenance.fabric = prepared.preMappingFabric;

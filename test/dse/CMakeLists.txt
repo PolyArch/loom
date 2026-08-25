@@ -65,6 +65,10 @@ add_executable(loom-dse-joint-design-exploration-test
   JointDesignExplorationTest.cpp
 )
 
+add_executable(loom-application-pair-outcome-test
+  ApplicationPairOutcomeTest.cpp
+)
+
 add_executable(loom-dse-resource-time-frontier-test
   ResourceTimeFrontierTest.cpp
 )
@@ -220,6 +224,15 @@ target_link_libraries(loom-dse-joint-design-exploration-test PRIVATE
   MLIRFuncDialect
   MLIRIR
   MLIRParser
+  LLVMSupport
+)
+
+target_include_directories(loom-application-pair-outcome-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Application
+)
+
+target_link_libraries(loom-application-pair-outcome-test PRIVATE
+  LoomApplicationBuild
   LLVMSupport
 )
 

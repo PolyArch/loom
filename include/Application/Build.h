@@ -219,6 +219,10 @@ struct ApplicationMappingExecutionRequest final {
   /// loop without changing Mapping legality or candidate identity.
   dse::JointHardwareExplorationScope hardwareExplorationScope =
       dse::JointHardwareExplorationScope::BoundedHardwareReopen;
+  /// Cooperative application deadline shared with Spectrum verification.
+  /// PlanExecutionPolicy remains the Mapping-dispatch owner; this view keeps
+  /// verifier work inside the same invocation boundary.
+  ExecutionControlView executionControl;
 };
 
 enum class ApplicationMappingRuntimeDisposition : std::uint8_t {
@@ -331,6 +335,8 @@ struct ApplicationPairMappingObservation final {
   std::optional<std::uint64_t> cgraCycles;
   std::optional<std::uint64_t> resourceCoreCost;
   std::optional<dse::PreMappingSpectrumClass> verifiedSpectrum;
+  std::optional<dse::ResourceTimeSpectrumIncompleteReason>
+      resourceTimeSpectrumIncompleteReason;
 };
 
 /// Quality facts from one exact joint-design invocation. Application runtime
