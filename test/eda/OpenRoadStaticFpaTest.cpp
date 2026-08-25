@@ -561,6 +561,35 @@ void authoredLifecycleSeparatesAllOutcomes(const std::filesystem::path &root) {
                         OutcomeReason::AdapterFailure);
 }
 
+void evaluateRealOpenRoadFpa(const std::filesystem::path &root,
+                             llvm::StringRef executable,
+                             llvm::StringRef version,
+                             const OpenRoadGateFixture &fixture,
+                             const FinalizedHardwareImplementation &routed,
+                             const ArtifactStore &artifacts,
+                             const BlobStore &blobs) {
+  requireSuccess(__func__, registerOpenRoadStaticFpaEvaluationProvider());
+  const RequestFixture request =
+      makeRequest(routed, fixture.platform, version, artifacts, blobs, 1000);
+  const LocalToolConfig realLocal =
+      makeOpenRoadLocalToolConfig(fixture, executable.str());
+  EvaluationModelPreparation preparation =
+      prepareAt(request, root, "fpa", realLocal, artifacts, blobs);
+  const auto *prepared =
+      std::get_if<PreparedExternalToolInvocation>(&preparation);
+  require(__func__, prepared, "real FPA request did not prepare an invocation");
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(*prepared)) == 0,
+          "real OpenROAD FPA invocation did not complete");
+  const EvaluationEvidence evidence =
+      take(__func__,
+           importEvaluationModelInvocation(request.request, request.resolution,
+                                           *prepared, artifacts, blobs));
+  const auto *completed = std::get_if<CompletedEvidence>(&evidence.outcome());
+  require(__func__, completed && completed->metricResults.size() == 4,
+          "real OpenROAD FPA did not finalize four metrics");
+}
+
 void realOpenRoadFpaSmoke(const std::filesystem::path &root,
                           llvm::StringRef executable, llvm::StringRef version,
                           const std::filesystem::path &technologyLef,
@@ -594,27 +623,8 @@ void realOpenRoadFpaSmoke(const std::filesystem::path &root,
                                         makeOpenRoadResolvedExecution(
                                             routeTool.string(), version, false),
                                         artifacts, blobs));
-
-  requireSuccess(__func__, registerOpenRoadStaticFpaEvaluationProvider());
-  const RequestFixture request =
-      makeRequest(routed, fixture.platform, version, artifacts, blobs, 1000);
-  const LocalToolConfig realLocal =
-      makeOpenRoadLocalToolConfig(fixture, executable.str());
-  EvaluationModelPreparation preparation =
-      prepareAt(request, root, "fpa", realLocal, artifacts, blobs);
-  const auto *prepared =
-      std::get_if<PreparedExternalToolInvocation>(&preparation);
-  require(__func__, prepared, "real FPA request did not prepare an invocation");
-  require(__func__,
-          take(__func__, executeExternalToolInvocationBundle(*prepared)) == 0,
-          "real OpenROAD FPA invocation did not complete");
-  const EvaluationEvidence evidence =
-      take(__func__,
-           importEvaluationModelInvocation(request.request, request.resolution,
-                                           *prepared, artifacts, blobs));
-  const auto *completed = std::get_if<CompletedEvidence>(&evidence.outcome());
-  require(__func__, completed && completed->metricResults.size() == 4,
-          "real OpenROAD FPA did not finalize four metrics");
+  evaluateRealOpenRoadFpa(root, executable, version, fixture, routed, artifacts,
+                          blobs);
 }
 
 } // namespace
