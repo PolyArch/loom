@@ -796,6 +796,7 @@ void EndpointRouteSearchScratch::storeCachedHeuristic(
   entry.lastUse = heuristicCacheUseEpoch_;
   entry.populated = true;
   const bool indexed = heuristicCacheIndex_.emplace(digest, selected).second;
+  (void)indexed;
   assert(indexed);
 }
 

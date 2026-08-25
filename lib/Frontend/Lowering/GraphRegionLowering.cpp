@@ -578,8 +578,7 @@ private:
   void eraseTransientChannelArguments() {
     size_t canonicalArgumentCount = graph.getFunctionType().getNumInputs() + 1;
     while (entry.getNumArguments() > canonicalArgumentCount) {
-      ::mlir::BlockArgument argument = entry.getArguments().back();
-      assert(argument.use_empty() &&
+      assert(entry.getArguments().back().use_empty() &&
              "stream endpoint lowering must remove every channel use");
       entry.eraseArgument(entry.getNumArguments() - 1);
     }
