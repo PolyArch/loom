@@ -1196,17 +1196,34 @@ runExternal(llvm::StringRef test, const evaluation::EvaluationRequest &request,
       std::get_if<external_tool::PreparedExternalToolInvocation>(&preparation);
   require(test, prepared != nullptr,
           "available external provider returned terminal Evidence at prepare");
-  const int status =
-      take(test, external_tool::executeExternalToolInvocationBundle(*prepared));
-  if (status != 0) {
+  const external_tool::ExternalToolInvocationExecutionObservation execution =
+      take(test,
+           external_tool::executeExternalToolInvocationBundleObserved(
+               *prepared, {},
+               external_tool::ExternalToolResultReusePolicy::RequireFresh));
+  require(
+      test,
+      execution.reusePolicy ==
+              external_tool::ExternalToolResultReusePolicy::RequireFresh &&
+          execution.cacheAvailability ==
+              external_tool::ExternalToolResultCacheAvailability::Disabled &&
+          execution.cacheLookup ==
+              external_tool::ExternalToolResultCacheLookup::NotAttempted &&
+          execution.cacheDiscard ==
+              external_tool::ExternalToolResultCacheDiscard::NotAttempted &&
+          execution.cachePublication ==
+              external_tool::ExternalToolResultCachePublication::NotAttempted &&
+          !execution.waitedForCacheKeyLock && execution.invokedExternalTool,
+      "conformance execution did not use a fresh external attempt");
+  if (execution.exitCode != 0) {
     const std::filesystem::path stderrPath =
         std::filesystem::path(prepared->bundleRoot) / "outputs/stderr.log";
     auto buffer =
         llvm::MemoryBuffer::getFile(stderrPath.string(), false, false);
     const std::string diagnostic =
         buffer ? (*buffer)->getBuffer().str() : std::string();
-    fail(test, "external matrix cell exited with " + std::to_string(status) +
-                   ": " + diagnostic);
+    fail(test, "external matrix cell exited with " +
+                   std::to_string(execution.exitCode) + ": " + diagnostic);
   }
   auto evidence =
       take(test, evaluation::importEvaluationModelInvocation(
