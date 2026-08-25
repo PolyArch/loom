@@ -11,12 +11,14 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "PnR/System/SystemMappingMigration.h"
+#include "Runtime/ResourceTimeTransitionSelection.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,34 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value,
   const std::string message = llvm::toString(value.takeError());
   deployment::test::require(test, llvm::StringRef(message).contains(marker),
                             message);
+}
+
+void expectSelectionError(
+    llvm::StringRef test, llvm::Error error,
+    runtime::ResourceTimeSelectionErrorReason expectedReason) {
+  if (!error)
+    deployment::test::fail(test, "accepted invalid resource-time selection");
+  std::optional<runtime::ResourceTimeSelectionErrorReason> observedReason;
+  error = llvm::handleErrors(
+      std::move(error),
+      [&](const runtime::ResourceTimeSelectionError &error) -> llvm::Error {
+        observedReason = error.reason();
+        return llvm::Error::success();
+      });
+  if (error)
+    deployment::test::fail(test, llvm::toString(std::move(error)));
+  deployment::test::require(
+      test, observedReason && *observedReason == expectedReason,
+      "resource-time selector returned another typed rejection reason");
+}
+
+template <typename T>
+void expectSelectionError(
+    llvm::StringRef test, llvm::Expected<T> value,
+    runtime::ResourceTimeSelectionErrorReason expectedReason) {
+  if (value)
+    deployment::test::fail(test, "accepted invalid resource-time selection");
+  expectSelectionError(test, value.takeError(), expectedReason);
 }
 
 void exactClosureRoundTripsAndRejectsStaleChild() {
@@ -208,6 +238,79 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   deployment::test::require(test, static_cast<bool>(duplicateEdgeError),
                             "transition graph accepted a duplicate edge");
   llvm::consumeError(std::move(duplicateEdgeError));
+
+  auto wrongEntry = runtime::ResourceTimeTransitionSelectionSession::create(
+      transitionGraph, child, artifacts, blobs);
+  expectSelectionError(
+      test, std::move(wrongEntry),
+      runtime::ResourceTimeSelectionErrorReason::EntryDeploymentMismatch);
+
+  auto premature =
+      take(test, runtime::ResourceTimeTransitionSelectionSession::create(
+                     transitionGraph, parent, artifacts, blobs));
+  expectSelectionError(
+      test, premature.completeRoot(root, transition.child),
+      runtime::ResourceTimeSelectionErrorReason::TransitionUnavailable);
+  expectSelectionError(
+      test, premature.joinMappedRoots(),
+      runtime::ResourceTimeSelectionErrorReason::IncompleteMappedRootJoin);
+  deployment::test::require(test,
+                            premature.currentEndpoint() == transition.parent &&
+                                premature.completedRoots().empty() &&
+                                premature.replay().empty(),
+                            "rejected transition mutated selector state");
+
+  auto selector =
+      take(test, runtime::ResourceTimeTransitionSelectionSession::create(
+                     transitionGraph, parent, artifacts, blobs));
+  auto stayed = take(test, selector.completeRoot(precedingRoot, std::nullopt));
+  deployment::test::require(
+      test,
+      !stayed && selector.currentEndpoint() == transition.parent &&
+          selector.completedRoots().size() == 1 &&
+          selector.completedRoots().front() == precedingRoot,
+      "explicit stay changed the Mapping endpoint or completion frontier");
+  auto selected = take(test, selector.completeRoot(root, transition.child));
+  deployment::test::require(
+      test,
+      selected && selected->parent == transition.parent &&
+          selected->child == transition.child &&
+          selector.currentEndpoint() == transition.child,
+      "selector did not choose the exact preverified edge");
+  if (llvm::Error error = selector.joinMappedRoots())
+    deployment::test::fail(test, llvm::toString(std::move(error)));
+  deployment::test::require(
+      test, selector.mappedRootsJoined() && selector.replay().size() == 3,
+      "selector did not join the complete mapped-root inventory");
+
+  auto replayed = take(
+      test, runtime::ResourceTimeTransitionSelectionSession::replay(
+                transitionGraph, parent, artifacts, blobs, selector.replay()));
+  deployment::test::require(
+      test,
+      replayed.mappedRootsJoined() &&
+          replayed.currentEndpoint() == transition.child &&
+          replayed.completedRoots() == selector.completedRoots(),
+      "selector replay diverged from the accepted transition sequence");
+
+  auto cancelled =
+      take(test, runtime::ResourceTimeTransitionSelectionSession::create(
+                     transitionGraph, parent, artifacts, blobs));
+  if (llvm::Error error = cancelled.cancel())
+    deployment::test::fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = cancelled.cancel())
+    deployment::test::fail(test, llvm::toString(std::move(error)));
+  deployment::test::require(
+      test, cancelled.cancelled() && cancelled.replay().size() == 1,
+      "selector cancellation was not idempotent");
+  expectSelectionError(
+      test, cancelled.completeRoot(precedingRoot, std::nullopt),
+      runtime::ResourceTimeSelectionErrorReason::InvalidLifecycle);
+  auto cancelledReplay = take(
+      test, runtime::ResourceTimeTransitionSelectionSession::replay(
+                transitionGraph, parent, artifacts, blobs, cancelled.replay()));
+  deployment::test::require(test, cancelledReplay.cancelled(),
+                            "selector cancellation replay was not terminal");
 
   dse::ResourceTimeScheduleHint applicationHint;
   applicationHint.actions = {

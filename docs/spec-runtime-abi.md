@@ -249,6 +249,49 @@ image transport remains unavailable.
 Active safe-point migration and remapping are separate contracts and are not
 inferred from queued-item stealing.
 
+#### Finite Resource-Time Selection
+
+`ResourceTimeTransitionSelectionSession` consumes one immutable
+`ResourceTimeTransitionGraph` only after the PnR-owned independent verifier
+has imported every Mapping and Deployment endpoint and replayed every edge.
+The caller also supplies the finalized entry Deployment; its exact reference
+and SystemMapping must equal the graph entry. The graph remains caller-owned
+invocation input. Runtime does not persist it in a Deployment image, recover it
+from vector order, or make it a second Mapping authority.
+
+The session begins at the exact entry endpoint and records collective root
+completions in caller commit order. Its root inventory comes from the imported
+entry SystemMapping. A completion derives its trigger from Canonical Dataflow,
+and an optional child is an explicit selection request. Selection succeeds
+only when one verified edge matches the current parent, full child endpoint,
+completion trigger, completion safe point, and exact canonical
+`completedBefore` subset. An absent child is an explicit stay decision. Edge
+and endpoint ordinals are never priority or replay identity.
+
+The graph verifier currently proves exact endpoint closure, individual edge
+closure, and directed endpoint reachability. It does not yet prove that every
+endpoint path has a monotonically realizable `completedBefore` frontier. The
+selector therefore rechecks the exact completed-root set at each call and
+leaves an unrealizable edge unselected without mutating session state. This
+fail-closed behavior does not upgrade the graph into an executable migration
+schedule; frontier-path realizability remains a PnR graph-owner obligation.
+
+Rejected calls do not change the endpoint, completed-root subset, lifecycle,
+or replay. Replay uses typed roots and full endpoints and re-executes every
+accepted completion, stay, join, and cancellation decision. Cancellation is
+idempotent for the selector but does not cancel provider, channel, or
+DynamicWork responsibilities. `joinMappedRoots` proves only that every root in
+the entry Mapping has collectively completed; host residual work and process
+termination remain separate runtime owners.
+
+The admitted selector profile is narrower than live migration: every edge is
+a verified completion edge with no before/after live work, no token-state
+correspondence, and exact zero reprogramming and migration cost. The selector
+does not program or activate the child Deployment, snapshot a scheduler, move
+tokens or payloads, or resume execution under the child. A graph with live
+state, an explicit safe point, or nonzero transition work remains typed
+unsupported until those execution and persistence owners exist.
+
 The Thread Dispatch provider maintains one bounded transient record per exact
 Deployment target. Target selection addresses that record for submission and
 status queries; it is not the completion identity. A successful submission

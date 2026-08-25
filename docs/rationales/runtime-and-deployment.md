@@ -207,6 +207,23 @@ message would contaminate the payload type and multicast sequence. Resetting
 only after join or cancellation lets a physical service be reused without
 making its generation ordinal a new channel, route, or Mapping identity.
 
+A resource-time decision similarly cannot infer a Mapping from runtime queue
+state. Keeping a finite graph with PnR lets its independent verifier remain the
+only legality authority; Runtime supplies only an explicit exact child choice
+at a canonical completion frontier. Requiring the full child endpoint avoids
+turning graph container order into an undocumented policy when several child
+states share one trigger. Recording an explicit stay preserves the equally
+important decision not to transition.
+
+Selection is intentionally separate from execution. The current provider
+lifecycle has no endpoint preload, safe-point activation swap, live-state
+snapshot, or continuation operation, and the transition graph is not a
+Deployment runtime image. Calling a selected edge a completed migration would
+therefore erase missing owners. The bounded session records and replays only
+completion-frontier choices and joins the entry Mapping's root inventory;
+provider execution, DynamicWork cancellation, host residual work, and process
+termination keep their existing authorities.
+
 The same separation applies to control progress. A channel consumer may be the
 first mapped thread submitted, so Host glue must preserve launch handles and
 defer its join to the source wait. Each target has independent transient

@@ -31,6 +31,10 @@ add_library(LoomRuntimeDynamicWork
   DynamicWorkExecution.cpp
 )
 
+add_library(LoomRuntimeResourceTime
+  ResourceTimeTransitionSelection.cpp
+)
+
 target_include_directories(LoomRuntimeDynamicWork PUBLIC
   $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
 )
@@ -39,6 +43,16 @@ target_link_libraries(LoomRuntimeDynamicWork PUBLIC
   LoomMappingArtifact
   LoomSimulator
   MLIRDataflow
+  LLVMSupport
+)
+
+target_include_directories(LoomRuntimeResourceTime PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomRuntimeResourceTime PUBLIC
+  LoomDeployment
+  LoomPnR
   LLVMSupport
 )
 
