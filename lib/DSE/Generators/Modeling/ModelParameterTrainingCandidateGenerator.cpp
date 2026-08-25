@@ -195,7 +195,7 @@ const CandidateGeneratorDescriptor &fpaDescriptor() {
   static const CandidateGeneratorDescriptor descriptor{
       fpaGbdtTrainingCandidateGeneratorKind,
       "fpa_gbdt_training",
-      "loom.fpa.gbdt_training.generator.v1",
+      "loom.fpa.gbdt_training.generator.v2",
       fpaInputSlots(),
       fpaOutputSlots(),
       ResolvedDseConfigViewContract{configSchemaBytes(),

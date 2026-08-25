@@ -17,9 +17,6 @@ struct ResolvedConfig;
 
 namespace loom::dse {
 
-inline constexpr PromotionAcquisitionKind
-    spatialMappingEvaluationPromotionAcquisitionKind(2);
-
 const PromotionAcquisitionDescriptor &
 spatialMappingEvaluationPromotionAcquisitionDescriptor();
 llvm::Error registerSpatialMappingEvaluationPromotionAcquisition();

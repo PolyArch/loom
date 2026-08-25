@@ -3,10 +3,12 @@
 
 #include "Config/ResolvedConfig.h"
 #include "DSE/ModelParameterTrainingCandidateGenerator.h"
+#include "Fabric/Identity/FabricRefs.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -88,6 +90,30 @@ private:
 
 llvm::Expected<ResolvedGroundTruthPlan>
 buildGroundTruthPlan(ResolvedConfig baseConfig, GroundTruthPlanInputs inputs);
+
+struct FpaLeafCharacterizationTarget final {
+  ArtifactRootReference hardwareImplementation;
+  fabric::FabricModuleDomainMemberRef leaf;
+};
+
+enum class FpaCharacterizationUnavailableReason : std::uint8_t {
+  RoutedAsicImplementationUnavailable = 0,
+  IndependentlyRoutedLeafUnavailable = 1,
+};
+
+struct FpaCharacterizationUnavailable final {
+  FpaLeafCharacterizationTarget target;
+  FpaCharacterizationUnavailableReason reason;
+};
+
+/// Strictly assesses one exact occurrence-local leaf inside the SpatialCore
+/// closure represented by HardwareImplementation. The current implementation
+/// domain has no independently routed leaf product. Malformed or foreign owner
+/// data is an error rather than unavailability.
+llvm::Expected<FpaCharacterizationUnavailable>
+assessFpaLeafCharacterizationTarget(const FpaLeafCharacterizationTarget &target,
+                                    const ArtifactStore &artifactStore,
+                                    const BlobStore &blobStore);
 
 /// Exact routed HardwareImplementation members assigned to one calibration
 /// partition. The roots remain ordinary Hardware Artifacts; this record owns

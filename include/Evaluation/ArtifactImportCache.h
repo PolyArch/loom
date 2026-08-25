@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <typeindex>
 #include <utility>
@@ -68,14 +69,35 @@ public:
   llvm::Expected<std::shared_ptr<const Value>>
   import(const ArtifactStore &artifacts, const BlobStore *blobs,
          llvm::ArrayRef<ArtifactRootReference> references, Loader &&loader) {
+    return import <Value>(
+        artifacts, blobs, references, std::forward<Loader>(loader),
+        [](const Value &) -> llvm::Expected<std::uint64_t> { return 0; });
+  }
+
+  /// Revalidates owner-declared indirect immutable dependencies before a hit
+  /// can return its typed value. The callback returns the exact additional
+  /// byte count it verified; a failure rejects the import.
+  template <typename Value, typename Loader, typename HitRevalidator>
+  llvm::Expected<std::shared_ptr<const Value>>
+  import(const ArtifactStore &artifacts, const BlobStore *blobs,
+         llvm::ArrayRef<ArtifactRootReference> references, Loader &&loader,
+         HitRevalidator &&hitRevalidator) {
     auto found = lookup(typeid(Value), references);
     if (found.value) {
       auto revalidated = revalidate(artifacts, references);
       if (!revalidated)
         return revalidated.takeError();
-      recordHit(*revalidated, found.constructionNanoseconds,
+      auto sealed = std::static_pointer_cast<const Value>(found.value);
+      auto additional = hitRevalidator(*sealed);
+      if (!additional)
+        return additional.takeError();
+      const std::uint64_t revalidatedBytes =
+          *additional > std::numeric_limits<std::uint64_t>::max() - *revalidated
+              ? std::numeric_limits<std::uint64_t>::max()
+              : *revalidated + *additional;
+      recordHit(revalidatedBytes, found.constructionNanoseconds,
                 found.minimumRetainedBytes);
-      return std::static_pointer_cast<const Value>(std::move(found.value));
+      return sealed;
     }
     const auto begin = std::chrono::steady_clock::now();
     auto imported = loader();
@@ -153,6 +175,22 @@ importCachedArtifact(const ArtifactStore &artifacts, const BlobStore *blobs,
     if (cache->owns(artifacts, blobs))
       return cache->import <Value>(artifacts, blobs, references,
                                    std::forward<Loader>(loader));
+  auto imported = loader();
+  if (!imported)
+    return imported.takeError();
+  return std::make_shared<const Value>(std::move(*imported));
+}
+
+template <typename Value, typename Loader, typename HitRevalidator>
+llvm::Expected<std::shared_ptr<const Value>>
+importCachedArtifact(const ArtifactStore &artifacts, const BlobStore *blobs,
+                     llvm::ArrayRef<ArtifactRootReference> references,
+                     Loader &&loader, HitRevalidator &&hitRevalidator) {
+  if (ArtifactImportCache *cache = currentArtifactImportCache())
+    if (cache->owns(artifacts, blobs))
+      return cache->import <Value>(
+          artifacts, blobs, references, std::forward<Loader>(loader),
+          std::forward<HitRevalidator>(hitRevalidator));
   auto imported = loader();
   if (!imported)
     return imported.takeError();

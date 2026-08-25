@@ -224,6 +224,17 @@ void storedLogicalBytesRoundTrip() {
       takeExpected(__func__, store.get(digest));
   require(__func__, loaded == bytes,
           "BlobStore returned different logical bytes");
+  require(__func__,
+          takeExpected(__func__, store.get(digest, bytes.size())) == bytes,
+          "bounded BlobStore read changed logical bytes");
+  require(__func__,
+          takeExpected(__func__, store.verify(digest, bytes.size())) ==
+              bytes.size(),
+          "bounded BlobStore verification changed the logical-byte count");
+  expectErrorContains(__func__, store.get(digest, bytes.size() - 1),
+                      "blob_store_size_limit");
+  expectErrorContains(__func__, store.verify(digest, bytes.size() - 1),
+                      "blob_store_size_limit");
 
   const BlobDigest emptyDigest = takeExpected(__func__, store.put({}));
   require(__func__, emptyDigest == computeBlobDigest({}),

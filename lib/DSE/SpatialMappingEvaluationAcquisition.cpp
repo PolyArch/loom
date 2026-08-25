@@ -55,7 +55,8 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 const PromotionAcquisitionDescriptor descriptor{
-    spatialMappingEvaluationPromotionAcquisitionKind,
+    builtinPromotionAcquisitionKind(
+        BuiltinPromotionAcquisition::SpatialMappingEvaluation),
     "mapping.spatial_cgra_evaluation",
     "loom.mapping.spatial_cgra_evaluation.acquisition.v1",
     inputSlots,

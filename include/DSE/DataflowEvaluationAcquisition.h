@@ -17,9 +17,6 @@ struct ResolvedConfig;
 
 namespace loom::dse {
 
-inline constexpr PromotionAcquisitionKind
-    dataflowEvaluationPromotionAcquisitionKind(1);
-
 const PromotionAcquisitionDescriptor &
 dataflowEvaluationPromotionAcquisitionDescriptor();
 llvm::Error registerDataflowEvaluationPromotionAcquisition();

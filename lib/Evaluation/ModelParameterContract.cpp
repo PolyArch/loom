@@ -139,6 +139,9 @@ validateDescriptor(const ModelParameterContractDescriptor &descriptor) {
               ModelParameterDecimalRounding::RoundToNearestTiesToEven))
     return evaluationError(
         "model parameter contract has invalid decimal finalization");
+  if (descriptor.maximumPayloadBytes && *descriptor.maximumPayloadBytes == 0)
+    return evaluationError(
+        "model parameter contract has an invalid payload bound");
   if (!descriptor.adopt || !descriptor.encode ||
       !descriptor.parameterGroundTruthTargetKey ||
       !descriptor.projectFeatures || !descriptor.infer ||

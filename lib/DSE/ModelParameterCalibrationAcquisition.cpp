@@ -171,7 +171,8 @@ resolveRuntimeHeldOut(const ResolvedPromotionAcquisitionBinding &binding,
 
 const std::array<PromotionAcquisitionDescriptor, 4> &descriptors() {
   static const std::array<PromotionAcquisitionDescriptor, 4> values = {{
-      {PromotionAcquisitionKind(3),
+      {builtinPromotionAcquisitionKind(
+           BuiltinPromotionAcquisition::FpaValidation),
        "model.fpa_validation",
        "loom.model.fpa_validation.acquisition.v1",
        fpaValidationInputs(),
@@ -180,7 +181,7 @@ const std::array<PromotionAcquisitionDescriptor, 4> &descriptors() {
        {resolvedEvidenceObligationSetConfigSchemaBytes(),
         validateResolvedEvidenceObligationSetConfigView},
        &resolveEvidenceObligationSetConfig},
-      {PromotionAcquisitionKind(4),
+      {builtinPromotionAcquisitionKind(BuiltinPromotionAcquisition::FpaHeldOut),
        "model.fpa_held_out",
        "loom.model.fpa_held_out.acquisition.v1",
        fpaHeldOutInputs(),
@@ -189,7 +190,8 @@ const std::array<PromotionAcquisitionDescriptor, 4> &descriptors() {
        {resolvedEvidenceObligationSetConfigSchemaBytes(),
         validateResolvedEvidenceObligationSetConfigView},
        &resolveEvidenceObligationSetConfig},
-      {PromotionAcquisitionKind(5),
+      {builtinPromotionAcquisitionKind(
+           BuiltinPromotionAcquisition::SystemRuntimeValidation),
        "model.system_runtime_validation",
        "loom.model.system_runtime_validation.acquisition.v1",
        runtimeValidationInputs(),
@@ -198,7 +200,8 @@ const std::array<PromotionAcquisitionDescriptor, 4> &descriptors() {
        {resolvedEvidenceObligationSetConfigSchemaBytes(),
         validateResolvedEvidenceObligationSetConfigView},
        &resolveEvidenceObligationSetConfig},
-      {PromotionAcquisitionKind(6),
+      {builtinPromotionAcquisitionKind(
+           BuiltinPromotionAcquisition::SystemRuntimeHeldOut),
        "model.system_runtime_held_out",
        "loom.model.system_runtime_held_out.acquisition.v1",
        runtimeHeldOutInputs(),

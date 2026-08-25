@@ -429,8 +429,11 @@ projectFeatureView(const EvaluationCase &evaluationCase,
         hardwareImplementationPhysicalSubjectRole());
     if (subjects.size() != 1)
       return invalid("physical case does not bind exactly one implementation");
+    auto externalContracts = eda::makeKnownAsicStandardCellContractCatalog();
+    if (!externalContracts)
+      return externalContracts.takeError();
     auto implementation = hardware::importHardwareImplementation(
-        subjects.front(), artifactStore, blobStore);
+        subjects.front(), *externalContracts, artifactStore, blobStore);
     if (!implementation)
       return implementation.takeError();
     fabricReference = implementation->implementation().fabric();
@@ -569,8 +572,11 @@ resolveGroundTruthRequest(const ArtifactRootReference &requestReference,
       implementations.push_back(reference);
   if (implementations.size() != 1)
     return invalid("ground-truth Request must name one HardwareImplementation");
+  auto externalContracts = eda::makeKnownAsicStandardCellContractCatalog();
+  if (!externalContracts)
+    return externalContracts.takeError();
   auto implementation = hardware::importHardwareImplementation(
-      implementations.front(), artifactStore, blobStore);
+      implementations.front(), *externalContracts, artifactStore, blobStore);
   if (!implementation)
     return implementation.takeError();
 
@@ -859,6 +865,7 @@ const ModelParameterContractDescriptor &descriptor() {
       conditionTable(),
       fpaMetricPredictionViewSchemaDescriptorBytes(),
       {18, ModelParameterDecimalRounding::RoundToNearestTiesToEven},
+      maximumFpaModelParameterPayloadBytes,
       &adoptParameters,
       &encodeParameters,
       &parameterTargetKey,
@@ -891,7 +898,7 @@ llvm::ArrayRef<std::uint8_t> FpaGbdtParameters::groundTruthTargetKey() const {
 
 const ModelParameterContractRef &fpaModelParameterContractRef() {
   static const ModelParameterContractRef reference =
-      llvm::cantFail(ModelParameterContractRef::get("loom.fpa", {3, 0}, 0));
+      llvm::cantFail(ModelParameterContractRef::get("loom.fpa", {4, 0}, 0));
   return reference;
 }
 
@@ -1078,6 +1085,9 @@ trainFpaGbdtParameters(llvm::ArrayRef<FpaTrainingEvidenceSample> training,
 
 llvm::Expected<FpaGbdtParameters>
 adoptFpaGbdtParameters(llvm::ArrayRef<std::uint8_t> canonicalPayloadBytes) {
+  if (llvm::Error error =
+          validateFpaModelParameterPayloadSize(canonicalPayloadBytes.size()))
+    return std::move(error);
   auto parameters = detail::decodeFixedTabularGbdt(
       canonicalPayloadBytes, parameterSchemaBytes(), kIntegralFeatureCount,
       kDecimalFeatureCount, kCategoricalFeatureCount, kPresenceFeatureCount,
@@ -1089,12 +1099,23 @@ adoptFpaGbdtParameters(llvm::ArrayRef<std::uint8_t> canonicalPayloadBytes) {
   return FpaGbdtParameters(std::move(storage));
 }
 
+llvm::Error validateFpaModelParameterPayloadSize(std::uint64_t byteCount) {
+  if (byteCount > maximumFpaModelParameterPayloadBytes)
+    return invalid("parameter payload exceeds the 10 GB artifact bound");
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::vector<std::uint8_t>>
 encodeFpaGbdtParameters(const FpaGbdtParameters &parameters) {
   if (!parameters.storage_)
     return invalid("parameter storage is empty");
-  return detail::encodeFixedTabularGbdt(parameters.storage_->parameters,
-                                        parameterSchemaBytes());
+  auto encoded = detail::encodeFixedTabularGbdt(parameters.storage_->parameters,
+                                                parameterSchemaBytes());
+  if (!encoded)
+    return encoded.takeError();
+  if (llvm::Error error = validateFpaModelParameterPayloadSize(encoded->size()))
+    return std::move(error);
+  return encoded;
 }
 
 llvm::Expected<ModelParameterInferenceOutcome>
@@ -1110,7 +1131,7 @@ inferFpaGbdtParameters(const FpaGbdtParameters &parameters,
   if (!prediction)
     return prediction.takeError();
   if (!*prediction)
-    return ModelParameterInferenceOutcome{UnsupportedModelParameterInference{}};
+    return ModelParameterInferenceOutcome{OutOfDomainModelParameterInference{}};
   if ((**prediction).size() != kTargetCount)
     return invalid("inference returned the wrong target count");
   FpaMetricPredictionView view{(**prediction)[0], (**prediction)[1],

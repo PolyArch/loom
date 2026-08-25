@@ -52,7 +52,8 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 const PromotionAcquisitionDescriptor descriptor{
-    structuredEvaluationPromotionAcquisitionKind,
+    builtinPromotionAcquisitionKind(
+        BuiltinPromotionAcquisition::StructuredEvaluation),
     "compiler.structured_evaluation",
     "loom.compiler.structured_evaluation.acquisition.v1",
     inputSlots,

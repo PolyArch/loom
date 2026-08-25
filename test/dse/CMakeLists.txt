@@ -181,6 +181,7 @@ target_link_libraries(loom-dse-ground-truth-campaign-integration-test PRIVATE
 target_link_libraries(loom-dse-fpa-ground-truth-collection-test PRIVATE
   LoomConfig
   LoomDSE
+  LoomDSEModelingGenerator
   LoomEDAOpenSource
   LoomHardwareConfigurationTestSupport
   LLVMSupport

@@ -31,6 +31,19 @@ public:
 
   llvm::Expected<std::vector<std::uint8_t>> get(const BlobDigest &digest) const;
 
+  /// Reads and verifies one object only when its stored size does not exceed
+  /// the caller-owned admission bound. The bound is checked before mapping or
+  /// copying object contents.
+  llvm::Expected<std::vector<std::uint8_t>>
+  get(const BlobDigest &digest, std::uint64_t maximumLogicalBytes) const;
+
+  /// Reads and verifies one object without copying its logical bytes into a
+  /// returned buffer. The result is the exact validated logical-byte count.
+  llvm::Expected<std::uint64_t> verify(const BlobDigest &digest) const;
+
+  llvm::Expected<std::uint64_t> verify(const BlobDigest &digest,
+                                       std::uint64_t maximumLogicalBytes) const;
+
 private:
   std::string root_;
 };

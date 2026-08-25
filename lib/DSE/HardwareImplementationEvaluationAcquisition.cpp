@@ -36,7 +36,8 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 const PromotionAcquisitionDescriptor descriptor{
-    hardwareImplementationEvaluationPromotionAcquisitionKind,
+    builtinPromotionAcquisitionKind(
+        BuiltinPromotionAcquisition::HardwareImplementationEvaluation),
     "hardware.implementation_evaluation",
     "loom.hardware.implementation_evaluation.acquisition.v1",
     inputSlots,

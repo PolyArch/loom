@@ -1,4 +1,5 @@
 #include "DSE/CampaignRunner.h"
+#include "DSE/CandidateGeneratorRecovery.h"
 #include "DSE/GroundTruthPlan.h"
 #include "EDA/Adapters/AsicStandardCellContracts.h"
 #include "EDA/Adapters/OpenSource/OpenRoadRouted.h"
@@ -10,7 +11,11 @@
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Evaluation/Evidence.h"
+#include "Evaluation/ModelParameterBundle.h"
+#include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/Request.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 
 #include "llvm/Support/Error.h"
 
@@ -120,6 +125,32 @@ SubjectTargetRef rootTarget(const ArtifactRootReference &hardware) {
           SubjectTarget{hardware}};
 }
 
+loom::fabric::FabricModuleDomainMemberRef
+transportCharacterizationLeaf(const RoutedFixture &fixture,
+                              const ArtifactStore &artifacts) {
+  auto fabricRoot = take(loom::fabric::importEntireFabricRoot(
+      fixture.routed.implementation().fabric(), artifacts));
+  auto system = take(loom::fabric::requireSystemRoot(fabricRoot.view()));
+  const auto selected =
+      system.spatialCoreTarget(fixture.routed.implementation().subject().core);
+  if (!selected ||
+      selected->dependencyOrdinal >= system.artifact().importedModules().size())
+    fail("routed fixture subject has no imported SpatialCore Module");
+  const loom::fabric::FabricArtifactView &module =
+      system.artifact().importedModules()[selected->dependencyOrdinal];
+  const auto moduleTemplate = module.moduleRootTemplate();
+  if (!moduleTemplate ||
+      module.moduleBoundaryEndpointCount(
+          *moduleTemplate, loom::fabric::FabricPortDirection::Input) == 0)
+    fail("routed fixture Module has no transport input boundary");
+  const loom::fabric::FabricModuleBoundaryEndpointRef boundary{
+      *moduleTemplate, loom::fabric::FabricPortDirection::Input, 0};
+  if (module.moduleBoundaryEndpointPlane(boundary) !=
+      loom::fabric::FabricSpatialAttachmentEndpointRef::Plane::Transport)
+    fail("routed fixture input boundary is not transport");
+  return loom::fabric::FabricModuleDomainMemberRef::of(boundary);
+}
+
 std::vector<EvaluationCondition>
 operatingConditions(const RoutedFixture &prototype) {
   const ArtifactRootReference &hardware = prototype.routed.reference();
@@ -210,6 +241,22 @@ void verifyEvidence(const ArtifactRootReference &evidenceReference,
     }
 }
 
+void verifyCalibrationEvidence(const ArtifactRootReference &calibrationEvidence,
+                               const ArtifactRootReference &parameterBundle,
+                               const ArtifactRootReference &sourceEvidence,
+                               const ArtifactStore &artifacts,
+                               const BlobStore &blobs) {
+  const std::array sources = {sourceEvidence};
+  CaseArtifactResolution resolution =
+      take(resolveFpaCalibrationCaseArtifactResolution(parameterBundle, sources,
+                                                       artifacts, blobs));
+  EvaluationEvidence evidence = take(importEvaluationEvidence(
+      calibrationEvidence, resolution, artifacts, blobs));
+  const auto *completed = std::get_if<CompletedEvidence>(&evidence.outcome());
+  if (!completed || completed->metricResults.size() != 4)
+    fail("calibration Evidence did not contain four completed FPA errors");
+}
+
 void exerciseGroundTruthCampaign() {
   TemporaryDirectory temporary;
   const std::filesystem::path artifactsPath = temporary.path() / "artifacts";
@@ -280,25 +327,82 @@ void exerciseGroundTruthCampaign() {
   ExecutionJournal journal =
       take(openExecutionJournal(runPath.string(), closure, view));
 
+  CampaignExecutionPolicy campaignPolicy =
+      take(CampaignExecutionPolicy::get(1, 1));
+
+  SiteScheduler unavailableScheduler = scheduler({});
+  PlanExecutionPolicy unavailableExecution =
+      take(PlanExecutionPolicy::get(1, take(SiteResourceClaim::get(1, 0, 0))));
+  CampaignExecutionResult unavailable = take(runGroundTruthCampaign(
+      view, closure, campaignPolicy, unavailableExecution, unavailableScheduler,
+      journal, artifacts, blobs));
+  const auto *unavailableRefusal =
+      std::get_if<CampaignAdmissionRefusal>(&unavailable);
+  const auto *unavailablePlan = unavailableRefusal
+                                    ? std::get_if<IncompleteDsePlanExecution>(
+                                          &unavailableRefusal->outcome)
+                                    : nullptr;
+  const auto *unavailableReason =
+      unavailablePlan ? std::get_if<PromotionAcquisitionIncompleteReason>(
+                            &unavailablePlan->reason())
+                      : nullptr;
+  if (!unavailableRefusal ||
+      unavailableRefusal->reason !=
+          CampaignAdmissionFailureReason::InsufficientPilotObservations ||
+      !unavailableReason ||
+      *unavailableReason !=
+          PromotionAcquisitionIncompleteReason::ProviderUnavailable)
+    fail("missing OpenROAD execution site was not typed unavailable");
+
   const std::filesystem::path fpaTool =
       take(writeAuthoredOpenRoadStaticFpaTool(temporary.path()));
   const LocalToolConfig local =
       makeOpenRoadLocalToolConfig(training.gate, fpaTool);
   SiteScheduler prepareScheduler = scheduler({});
-  DsePlanExecutionOutcome prepared = take(resumeDsePlan(
+  DsePlanExecutionOutcome preparedOutcome = take(resumeDsePlan(
       view, closure, journal, prepareScheduler,
       executionPolicy(local, ExternalAttemptDisposition::PrepareOnly, 1),
       artifacts, blobs));
-  if (!std::holds_alternative<IncompleteDsePlanExecution>(prepared))
+  if (!std::holds_alternative<IncompleteDsePlanExecution>(preparedOutcome))
     fail("prepare-only prefix unexpectedly completed the campaign");
   const std::vector<BlobDigest> bindings = preparedBindings(journal);
   if (bindings.size() != 1)
     fail("authored campaign did not derive one exact execution binding");
 
+  const loom::fabric::FabricModuleDomainMemberRef transportLeaf =
+      transportCharacterizationLeaf(training, artifacts);
+  FpaCharacterizationUnavailable leafUnavailable =
+      take(assessFpaLeafCharacterizationTarget(
+          {training.routed.reference(), transportLeaf}, artifacts, blobs));
+  if (leafUnavailable.target.hardwareImplementation !=
+          training.routed.reference() ||
+      leafUnavailable.target.leaf != transportLeaf ||
+      leafUnavailable.reason != FpaCharacterizationUnavailableReason::
+                                    IndependentlyRoutedLeafUnavailable)
+    fail("routed SpatialCore boundary was admitted as an independent leaf");
+  FpaCharacterizationUnavailable gateUnavailable =
+      take(assessFpaLeafCharacterizationTarget(
+          {training.gate.gate.reference(), transportLeaf}, artifacts, blobs));
+  if (gateUnavailable.reason !=
+      FpaCharacterizationUnavailableReason::RoutedAsicImplementationUnavailable)
+    fail("unrouted FPA target was not typed unavailable");
+  const auto moduleTemplate =
+      std::get<loom::fabric::FabricModuleBoundaryEndpointRef>(
+          transportLeaf.payload)
+          .module;
+  requireErrorContains(
+      assessFpaLeafCharacterizationTarget(
+          {training.routed.reference(),
+           loom::fabric::FabricModuleDomainMemberRef::of(
+               loom::fabric::FabricModuleBoundaryEndpointRef{
+                   moduleTemplate, loom::fabric::FabricPortDirection::Input,
+                   1'000'000})},
+          artifacts, blobs),
+      "outside");
+
   SiteScheduler executionScheduler = scheduler(bindings);
-  CampaignExecutionPolicy campaign = take(CampaignExecutionPolicy::get(1, 1));
   CampaignExecutionResult result = take(runGroundTruthCampaign(
-      view, closure, campaign,
+      view, closure, campaignPolicy,
       executionPolicy(local, ExternalAttemptDisposition::ExecutePrepared,
                       std::nullopt),
       executionScheduler, journal, artifacts, blobs));
@@ -320,12 +424,120 @@ void exerciseGroundTruthCampaign() {
       {{{plan.trainingEvidence, training.routed.reference()},
         {plan.validationEvidence, validation.routed.reference()},
         {plan.heldOutEvidence, heldOut.routed.reference()}}};
+  std::vector<ArtifactRootReference> evidence;
+  evidence.reserve(outputs.size());
   for (const auto &[output, candidate] : outputs) {
-    const auto evidence = completed->resolve(output);
-    if (evidence.size() != 1)
+    const auto partitionEvidence = completed->resolve(output);
+    if (partitionEvidence.size() != 1)
       fail("ground-truth partition did not publish exactly one Evidence");
-    verifyEvidence(evidence.front(), candidate, artifacts, blobs);
+    evidence.push_back(partitionEvidence.front());
+    verifyEvidence(partitionEvidence.front(), candidate, artifacts, blobs);
   }
+
+  GroundTruthPlanInputs modelInputs;
+  modelInputs.fpa = GroundTruthModelTrack{
+      GroundTruthEvidencePartitions{
+          {evidence[0]}, {evidence[1]}, {evidence[2]}, std::nullopt},
+      DeterministicGbdtTrainingConfig{7, 1, 1, 1, 1, 2},
+      take(ExactRatio::get(9, 10)), take(DecimalValue::get(0, 0)),
+      take(DecimalValue::get(0, 0))};
+  ResolvedGroundTruthPlan modelPlan = take(
+      buildGroundTruthPlan(defaultResolvedConfig(), std::move(modelInputs)));
+  const ArtifactIdentity storedModelConfig = take(
+      artifacts.put(ResolvedConfig::artifactSchema,
+                    canonicalResolvedConfigBytes(modelPlan.resolvedConfig())));
+  if (storedModelConfig != resolvedConfigIdentity(modelPlan.resolvedConfig()))
+    fail("model ResolvedConfig publication changed identity");
+
+  DseProducerSemanticBuildIdentity modelProducer =
+      take(DseProducerSemanticBuildIdentity::get("loom.test.fpa_model.v1"));
+  DseRunClosure modelClosure = take(DseRunClosure::get(
+      std::move(modelProducer), modelPlan.semanticInputs(),
+      modelPlan.resolvedConfig(), modelPlan.preexistingEvidence(), artifacts));
+  const std::filesystem::path modelRunPath = temporary.path() / "model-run";
+  std::filesystem::create_directories(modelRunPath);
+  ExecutionJournal modelJournal = take(openExecutionJournal(
+      modelRunPath.string(), modelClosure, modelPlan.view()));
+  SiteScheduler modelScheduler = scheduler({});
+  const PlanExecutionPolicy modelPolicy =
+      take(PlanExecutionPolicy::get(1, take(SiteResourceClaim::get(1, 0, 0))));
+  DsePlanExecutionOutcome modelOutcome =
+      take(resumeDsePlan(modelPlan.view(), modelClosure, modelJournal,
+                         modelScheduler, modelPolicy, artifacts, blobs));
+  const auto *modelCompleted =
+      std::get_if<CompletedDsePlanExecution>(&modelOutcome);
+  if (!modelCompleted || modelCompleted->generateInvocations().size() != 1 ||
+      !modelCompleted->generateInvocationWasDispatched(0))
+    fail("FPA model plan did not dispatch and complete one trainer");
+  if (!modelPlan.fpaOutputs())
+    fail("FPA model plan omitted its typed output table");
+  const GroundTruthTrackOutputs &modelOutputs = *modelPlan.fpaOutputs();
+  const auto trainedBundles =
+      modelCompleted->resolve(modelOutputs.trainedBundle);
+  const auto validationEvidence =
+      modelCompleted->resolve(modelOutputs.validationEvidence);
+  const auto releasedBundles =
+      modelCompleted->resolve(modelOutputs.releasedBundle);
+  const auto heldOutEvidence =
+      modelCompleted->resolve(modelOutputs.heldOutEvidence);
+  if (trainedBundles.size() != 1 || validationEvidence.size() != 1 ||
+      releasedBundles.size() != 1 || heldOutEvidence.size() != 1 ||
+      trainedBundles.front() != releasedBundles.front())
+    fail("FPA model plan lost its exact calibration output closure");
+  const ArtifactRootReference releasedBundle = releasedBundles.front();
+  verifyCalibrationEvidence(validationEvidence.front(), releasedBundle,
+                            evidence[1], artifacts, blobs);
+  verifyCalibrationEvidence(heldOutEvidence.front(), releasedBundle,
+                            evidence[2], artifacts, blobs);
+
+  const std::vector<JournalWorkUnitRecord> modelRecords =
+      take(modelJournal.workUnits());
+  const auto trainerRecord =
+      llvm::find_if(modelRecords, [](const JournalWorkUnitRecord &record) {
+        return record.key.planNodeOrdinal() == 0;
+      });
+  if (trainerRecord == modelRecords.end() ||
+      trainerRecord->status != JournalWorkUnitStatus::Completed ||
+      !trainerRecord->finalizedWorkRecord ||
+      trainerRecord->finalizedWorkRecord->schemaIdentity !=
+          candidateGeneratorFinalizedWorkRecordSchemaIdentity ||
+      trainerRecord->finalizedWorkRecord->schemaVersion !=
+          candidateGeneratorFinalizedWorkRecordSchemaVersion)
+    fail("FPA trainer did not retain its exact finalized recovery record");
+
+  ExecutionJournal replayJournal = take(openExecutionJournal(
+      modelRunPath.string(), modelClosure, modelPlan.view()));
+  SiteScheduler replayScheduler = scheduler({});
+  DsePlanExecutionOutcome replayed =
+      take(resumeDsePlan(modelPlan.view(), modelClosure, replayJournal,
+                         replayScheduler, modelPolicy, artifacts, blobs));
+  const auto *replayedCompleted =
+      std::get_if<CompletedDsePlanExecution>(&replayed);
+  if (!replayedCompleted ||
+      replayedCompleted->generateInvocations().size() != 1 ||
+      replayedCompleted->generateInvocationWasDispatched(0) ||
+      replayedCompleted->resolve(modelOutputs.releasedBundle).size() != 1 ||
+      replayedCompleted->resolve(modelOutputs.releasedBundle).front() !=
+          releasedBundle)
+    fail("FPA model journal replay changed or redispatched the trainer");
+
+  FinalizedModelParameterBundle bundle =
+      take(importModelParameterBundle(releasedBundle, artifacts, blobs));
+  FpaTrainingEvidenceSample heldOutSample =
+      take(importFpaTrainingEvidenceSample(evidence.back(), artifacts, blobs));
+  ModelParameterInferenceOutcome heldOutInference = take(
+      inferModelParameters(bundle, OwnerValue::get(heldOutSample.features)));
+  if (!std::holds_alternative<ModelParameterPrediction>(heldOutInference))
+    fail("released FPA bundle rejected its completed held-out feature view");
+  FpaFeatureView outOfDomain = heldOutSample.features;
+  const DecimalValue outsideVoltage = take(DecimalValue::get(1200, -3));
+  outOfDomain.conditions.minimumSupplyVoltage = outsideVoltage;
+  outOfDomain.conditions.maximumSupplyVoltage = outsideVoltage;
+  ModelParameterInferenceOutcome outOfDomainInference = take(
+      inferModelParameters(bundle, OwnerValue::get(std::move(outOfDomain))));
+  if (!std::holds_alternative<OutOfDomainModelParameterInference>(
+          outOfDomainInference))
+    fail("released FPA bundle did not preserve typed OOD refusal");
 }
 
 } // namespace

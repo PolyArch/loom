@@ -174,7 +174,7 @@ evaluateFpa(const EvaluationRequest &request,
     auto inference = inferFpaGbdtParameters(*parameters, sample->features);
     if (!inference)
       return inference.takeError();
-    if (std::holds_alternative<UnsupportedModelParameterInference>(*inference))
+    if (std::holds_alternative<OutOfDomainModelParameterInference>(*inference))
       return EvaluationModelResult{
           {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
     const auto *prediction = std::get<ModelParameterPrediction>(*inference)
@@ -253,7 +253,7 @@ llvm::Expected<EvaluationModelResult> evaluateRuntime(
         inferSystemRuntimeGbdtParameters(*parameters, sample->features);
     if (!inference)
       return inference.takeError();
-    if (std::holds_alternative<UnsupportedModelParameterInference>(*inference))
+    if (std::holds_alternative<OutOfDomainModelParameterInference>(*inference))
       return EvaluationModelResult{
           {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
     const auto *prediction = std::get<ModelParameterPrediction>(*inference)

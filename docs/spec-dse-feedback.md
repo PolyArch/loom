@@ -2771,7 +2771,7 @@ kinds 0 through 11:
 | 14 | `spatial_microarchitecture_rewrite` | finalized `fabric.module` children |
 | 15 | `system_composition_rewrite` | finalized `fabric.system` children |
 | 16 | `portable_spatial_core_rtl` | one finalized portable RTL `loom.hardware_implementation 4.1` child per AccCore occurrence in the input System, architecture-only when the optional ImplementationPlatform input is absent and exact-platform-bound when present |
-| 17 | `fpa_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.fpa", 3.0, 0)` |
+| 17 | `fpa_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.fpa", 4.0, 0)` |
 | 18 | `system_runtime_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.system_runtime", 1.0, 0)` |
 | 19 | `joint_dataflow_frontier` | finalized Canonical Dataflow children produced for an explicit bounded Dataflow/System frontier |
 | 20 | `joint_mapping_frontier` | finalized System children, TechMapping, SpatialMapping, and SystemMapping roots plus the exact successfully mapped Dataflow and System roots |
@@ -3671,6 +3671,7 @@ ModelParameterContractDescriptor {
                 canonical set<ConditionApplicabilityPattern>>
   prediction_schema_descriptor_bytes
   prediction_decimal_finalization_contract
+  maximum_payload_bytes: optional positive uint64
   adopt(canonical payload bytes) -> owner-typed immutable parameters
   encode(owner-typed immutable parameters) -> canonical payload bytes
   parameter_ground_truth_target_key(owner-typed immutable parameters)
@@ -3696,7 +3697,7 @@ ModelParameterContractDescriptor {
 
 ModelParameterInferenceOutcome =
     Prediction(owner-typed immutable prediction view)
-  | Unsupported
+  | OutOfDomain
 
 ModelParameterBundle {
   parameter_contract_ref: ModelParameterContractRef
@@ -3722,7 +3723,8 @@ registry reference framing with `owner_local_contract_kind` as its final
 field. Registry admission requires a known owner and local kind, nonempty
 prediction-case and ground-truth-model sets, a total condition-pattern table
 over the prediction cases and the ground-truth models' derived case set,
-nonempty prediction-schema descriptor bytes, and all typed operations above.
+nonempty prediction-schema descriptor bytes, a positive payload bound when
+present, and all typed operations above.
 Duplicate references or an
 owner whose registered descriptor changes under one exact version are
 incompatible registry errors. Sample-group keys compare by the returned
@@ -3746,12 +3748,12 @@ matching metric names or case shape cannot silently merge targets.
 An optional prior bundle must expose the same target key as every Training
 sample before it can initialize fitting.
 
-`infer` returns `Unsupported` when a structurally valid prediction case lies
+`infer` returns `OutOfDomain` when a structurally valid prediction case lies
 outside the admitted training-support region encoded by the exact parameters.
 The bundle stores no diagnostic string, confidence label, or mutable support
 state; the contract derives support from its canonical payload and feature
 view. An invalid case, malformed payload, or unavailable required owner remains
-an error rather than `Unsupported`. A predictor maps this outcome to typed
+an error rather than `OutOfDomain`. A predictor maps this outcome to typed
 `Unsupported(RuntimeCapabilityUnavailable)` Evidence and cannot extrapolate a
 numeric result. An Unsupported Validation or HeldOut case cannot satisfy
 promotion or release.
@@ -3767,10 +3769,12 @@ fields are invalid. Authoring receives trainer-produced owner-typed parameters,
 encodes them through the resolved contract, adopts those canonical bytes, then
 re-encodes and requires exact byte equality. Only then may it publish the
 validated payload through `BlobStore` and publish the bundle root.
-Import resolves the contract before reading the blob, relies on the Blob Store
+Import resolves the contract before reading the blob, applies any descriptor
+payload bound before mapping or copying the object, relies on the Blob Store
 read contract to rehash the logical bytes, performs the same typed adopt and
-re-encode check, and rejects an unknown contract owner or kind, noncanonical
-payload, missing blob, or corrupt blob without repair. A failed root
+re-encode check, and rejects an unknown contract owner or kind, an over-bound
+or noncanonical payload, a missing blob, or a corrupt blob without repair. A
+failed root
 publication may leave a complete canonical unreferenced blob; known-invalid
 bytes are never published, and no transaction or cleanup manifest is added.
 
@@ -3792,8 +3796,8 @@ authorization, readiness, semantic work, and the calibration partition check
 below. The generic plan does not acquire a parameter-specific type-refinement
 DSL.
 
-The initial FPA contract is
-`ModelParameterContractRef("loom.fpa", 3.0, 0)`. Its prediction case set is
+The current FPA contract is
+`ModelParameterContractRef("loom.fpa", 4.0, 0)`. Its prediction case set is
 exactly case kinds 0, 1, and 10, and its ground-truth model set contains exactly
 model kind 20. For all four derived signatures, its feature projector consumes every
 result-affecting Base condition: process corner, supply voltage, temperature,
@@ -3824,6 +3828,12 @@ ground-truth-model target relation, support-region outcome, and target-key
 payload requirement. Its prediction payload schema remains
 `FpaMetricPredictionView 1.0`; unchanged output fields do not permit an older
 contract ref to acquire those new admission and inference semantics.
+
+FPA contract major 4.0 adds the positive decimal 10 GB canonical parameter
+payload bound. Rejecting a larger payload is incompatible with 3.0, so no 3.x
+bundle is reinterpreted under the new contract. The kind-0 GBDT payload codec
+is unchanged; bundle import checks the bound before reading the payload into
+memory.
 
 The first kind-0 payload is a deterministic gradient-boosted decision-tree
 ensemble over the contract-owned typed tabular feature view, support-region

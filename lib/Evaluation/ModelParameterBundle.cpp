@@ -1,6 +1,7 @@
 #include "Evaluation/ModelParameterBundle.h"
 
 #include "CanonicalSupport.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/ModelParameter.h"
 
 #include "Common/ArtifactStore.h"
@@ -12,6 +13,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -108,6 +110,9 @@ decodeCanonicalBundle(llvm::ArrayRef<std::uint8_t> bytes) {
 llvm::Expected<OwnerValue>
 adoptCanonicalParameters(const ModelParameterContractDescriptor &contract,
                          llvm::ArrayRef<std::uint8_t> payload) {
+  if (contract.maximumPayloadBytes &&
+      payload.size() > *contract.maximumPayloadBytes)
+    return invalid("parameter payload exceeds its contract byte bound");
   auto parameters = contract.adopt(payload);
   if (!parameters)
     return parameters.takeError();
@@ -248,33 +253,56 @@ llvm::Expected<FinalizedModelParameterBundle>
 importModelParameterBundle(const ArtifactRootReference &reference,
                            const ArtifactStore &artifactStore,
                            const BlobStore &blobStore) {
-  if (reference.schemaIdentity != modelParameterBundleSchema.identity ||
-      reference.schemaVersion != modelParameterBundleSchema.version)
-    return invalid("reference has the wrong Artifact schema");
-  auto canonical =
-      artifactStore.get(modelParameterBundleSchema, reference.artifact);
-  if (!canonical)
-    return canonical.takeError();
-  auto decoded = decodeCanonicalBundle(canonical->bytes());
-  if (!decoded)
-    return decoded.takeError();
-  ModelParameterBundle bundle(std::move(decoded->reference),
-                              std::move(decoded->digest));
-  CanonicalSemanticBytes reencoded = canonicalModelParameterBundleBytes(bundle);
-  if (!std::equal(reencoded.bytes().begin(), reencoded.bytes().end(),
-                  canonical->bytes().begin(), canonical->bytes().end()))
-    return invalid("stored bundle root is not canonical");
-  const ModelParameterContractDescriptor *contract =
-      findModelParameterContract(bundle.parameterContract());
-  auto payload = blobStore.get(bundle.payloadDigest());
-  if (!payload)
-    return payload.takeError();
-  auto parameters = adoptCanonicalParameters(*contract, *payload);
-  if (!parameters)
-    return parameters.takeError();
-  return FinalizedModelParameterBundle(reference, std::move(*canonical),
-                                       std::move(bundle),
-                                       std::move(*parameters));
+  const std::array<ArtifactRootReference, 1> references{reference};
+  auto imported = importCachedArtifact<FinalizedModelParameterBundle>(
+      artifactStore, &blobStore, references,
+      [&]() -> llvm::Expected<FinalizedModelParameterBundle> {
+        if (reference.schemaIdentity != modelParameterBundleSchema.identity ||
+            reference.schemaVersion != modelParameterBundleSchema.version)
+          return invalid("reference has the wrong Artifact schema");
+        auto canonical =
+            artifactStore.get(modelParameterBundleSchema, reference.artifact);
+        if (!canonical)
+          return canonical.takeError();
+        auto decoded = decodeCanonicalBundle(canonical->bytes());
+        if (!decoded)
+          return decoded.takeError();
+        ModelParameterBundle bundle(std::move(decoded->reference),
+                                    std::move(decoded->digest));
+        CanonicalSemanticBytes reencoded =
+            canonicalModelParameterBundleBytes(bundle);
+        if (!std::equal(reencoded.bytes().begin(), reencoded.bytes().end(),
+                        canonical->bytes().begin(), canonical->bytes().end()))
+          return invalid("stored bundle root is not canonical");
+        const ModelParameterContractDescriptor *contract =
+            findModelParameterContract(bundle.parameterContract());
+        auto payload = contract->maximumPayloadBytes
+                           ? blobStore.get(bundle.payloadDigest(),
+                                           *contract->maximumPayloadBytes)
+                           : blobStore.get(bundle.payloadDigest());
+        if (!payload)
+          return payload.takeError();
+        auto parameters = adoptCanonicalParameters(*contract, *payload);
+        if (!parameters)
+          return parameters.takeError();
+        return FinalizedModelParameterBundle(reference, std::move(*canonical),
+                                             std::move(bundle),
+                                             std::move(*parameters));
+      },
+      [&](const FinalizedModelParameterBundle &cached)
+          -> llvm::Expected<std::uint64_t> {
+        const ModelParameterContractDescriptor *contract =
+            findModelParameterContract(cached.bundle().parameterContract());
+        if (!contract)
+          return invalid("parameter contract is unregistered");
+        return contract->maximumPayloadBytes
+                   ? blobStore.verify(cached.bundle().payloadDigest(),
+                                      *contract->maximumPayloadBytes)
+                   : blobStore.verify(cached.bundle().payloadDigest());
+      });
+  if (!imported)
+    return imported.takeError();
+  return **imported;
 }
 
 } // namespace loom::evaluation

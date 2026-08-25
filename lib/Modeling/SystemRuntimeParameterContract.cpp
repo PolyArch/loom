@@ -1037,6 +1037,7 @@ const ModelParameterContractDescriptor &descriptor() {
       conditionTable(),
       systemRuntimePredictionViewSchemaDescriptorBytes(),
       {18, ModelParameterDecimalRounding::RoundToNearestTiesToEven},
+      std::nullopt,
       &adoptParameters,
       &encodeParameters,
       &parameterTargetKey,
@@ -1280,7 +1281,7 @@ inferSystemRuntimeGbdtParameters(const SystemRuntimeGbdtParameters &parameters,
   if (!prediction)
     return prediction.takeError();
   if (!*prediction)
-    return ModelParameterInferenceOutcome{UnsupportedModelParameterInference{}};
+    return ModelParameterInferenceOutcome{OutOfDomainModelParameterInference{}};
   if ((**prediction).size() != kTargetCount)
     return invalid("inference returned the wrong target count");
   return ModelParameterInferenceOutcome{ModelParameterPrediction{

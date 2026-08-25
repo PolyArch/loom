@@ -14,6 +14,9 @@
 
 namespace loom::evaluation::models {
 
+inline constexpr std::uint64_t maximumFpaModelParameterPayloadBytes =
+    10'000'000'000ULL;
+
 struct FpaFabricStructureFeatureView final {
   std::uint64_t entityCount = 0;
   std::uint64_t peOccurrenceCount = 0;
@@ -156,6 +159,8 @@ trainFpaGbdtParameters(llvm::ArrayRef<FpaTrainingEvidenceSample> training,
 
 llvm::Expected<FpaGbdtParameters>
 adoptFpaGbdtParameters(llvm::ArrayRef<std::uint8_t> canonicalPayloadBytes);
+
+llvm::Error validateFpaModelParameterPayloadSize(std::uint64_t byteCount);
 
 llvm::Expected<std::vector<std::uint8_t>>
 encodeFpaGbdtParameters(const FpaGbdtParameters &parameters);

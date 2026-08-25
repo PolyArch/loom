@@ -116,6 +116,16 @@ payload digest. `InvocationManifest` owns training provenance, and
 Expensive raw tool products remain owner-attempt or scratch material with no
 current Artifact schema and are never committed as test fixtures.
 
+A `HardwareImplementation` represents one exact SpatialCore occurrence closure,
+not a complete System shell. Offline leaf assessment binds an exact
+occurrence-local PE, FU, memory, switch, or transport boundary through that
+owner. It returns `IndependentlyRoutedLeafUnavailable` because the current
+implementation domain has no independently routed leaf product, or
+`RoutedAsicImplementationUnavailable` when the enclosing implementation is not
+a routed ASIC product. A malformed, foreign, or non-leaf local reference is an
+error. These dispositions do not invalidate routed SpatialCore FPA Evidence
+and are not physical Evidence or signoff claims.
+
 An EDA-derived parameter bundle remains the same canonical
 `ModelParameterBundle` in its machine-local Artifact Store; Loom does not
 define a public-weight projection or a second serialization. The canonical
@@ -127,8 +137,8 @@ Analytical parameters authored without direct EDA lineage follow their own
 source and licensing disclosure rules, but the FPA schema does not grant them
 repository eligibility.
 
-The initial FPA parameter contract is exactly
-`ModelParameterContractRef("loom.fpa", 3.0, 0)`. Its prediction case signatures
+The current FPA parameter contract is exactly
+`ModelParameterContractRef("loom.fpa", 4.0, 0)`. Its prediction case signatures
 are `structured_program_with_fabric`, `canonical_dataflow_with_fabric`, and
 `fabric_hardware_analysis`; its sole ground-truth model descriptor is
 `openroad_routed_static_fpa` over `hardware_implementation_physical`. It projects
@@ -148,6 +158,12 @@ ground-truth-model target relation, support-region outcome, and target key.
 `FpaMetricPredictionView 1.0` remains the output payload schema because its
 metric tuple and codec do not change; the versioned contract ref, not the
 payload shape, owns subject admission.
+
+Contract major 4.0 caps the canonical parameter payload at decimal 10 GB.
+Rejecting a larger payload is incompatible with 3.0, so no 3.x bundle is
+reinterpreted under the new contract. Bundle import rejects a larger stored
+object before mapping or copying it; the kind-0 GBDT payload codec and
+prediction view remain unchanged.
 
 For every accepted source case, the projector consumes process corner, supply
 voltage, temperature, activity binding, and any present required-clock or

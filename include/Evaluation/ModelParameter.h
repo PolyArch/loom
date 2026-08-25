@@ -10,6 +10,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -34,10 +35,10 @@ struct ModelParameterPrediction final {
   OwnerValue view;
 };
 
-struct UnsupportedModelParameterInference final {};
+struct OutOfDomainModelParameterInference final {};
 
 using ModelParameterInferenceOutcome =
-    std::variant<ModelParameterPrediction, UnsupportedModelParameterInference>;
+    std::variant<ModelParameterPrediction, OutOfDomainModelParameterInference>;
 
 struct ModelParameterContractDescriptor final {
   ModelParameterContractRef reference;
@@ -48,6 +49,7 @@ struct ModelParameterContractDescriptor final {
       consumedBaseConditionPatterns;
   llvm::ArrayRef<std::uint8_t> predictionSchemaDescriptorBytes;
   ModelParameterDecimalFinalizationContract predictionDecimalFinalization;
+  std::optional<std::uint64_t> maximumPayloadBytes;
 
   llvm::Expected<OwnerValue> (*adopt)(
       llvm::ArrayRef<std::uint8_t> canonicalPayloadBytes);

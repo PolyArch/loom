@@ -18,9 +18,6 @@ struct ResolvedConfig;
 
 namespace loom::dse {
 
-inline constexpr PromotionAcquisitionKind
-    hardwareImplementationEvaluationPromotionAcquisitionKind(3);
-
 const PromotionAcquisitionDescriptor &
 hardwareImplementationEvaluationPromotionAcquisitionDescriptor();
 llvm::Error registerHardwareImplementationEvaluationPromotionAcquisition();

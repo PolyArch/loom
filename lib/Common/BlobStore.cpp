@@ -16,6 +16,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <fcntl.h>
+#include <limits>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -63,10 +64,16 @@ regularFileStatus(int file, llvm::StringRef nonRegularErrorCode,
 
 llvm::Expected<OpenedBlobObject>
 readOpenedObject(int file, llvm::StringRef description,
-                 llvm::StringRef objectErrorCode) {
+                 llvm::StringRef objectErrorCode,
+                 std::uint64_t maximumLogicalBytes =
+                     std::numeric_limits<std::uint64_t>::max()) {
   auto status = regularFileStatus(file, objectErrorCode, description);
   if (!status)
     return status.takeError();
+  if (status->getSize() > maximumLogicalBytes)
+    return storeError("blob_store_size_limit",
+                      llvm::Twine(description) +
+                          " exceeds the caller-owned logical-byte bound");
 
   auto buffer = llvm::MemoryBuffer::getOpenFile(file, description,
                                                 status->getSize(), false, true);
@@ -148,6 +155,44 @@ llvm::Expected<int> openStoreDirectory(llvm::StringRef root) {
     return storeErrno("blob_store_io",
                       "unable to open required store root directory");
   return directory;
+}
+
+llvm::Expected<OpenedBlobObject>
+readStoredObject(llvm::StringRef root, const BlobDigest &digest,
+                 std::uint64_t maximumLogicalBytes) {
+  auto directoryOrError = openStoreDirectory(root);
+  if (!directoryOrError)
+    return directoryOrError.takeError();
+  int directory = *directoryOrError;
+  llvm::scope_exit closeDirectory([&] {
+    if (directory != -1)
+      llvm::consumeError(closeFile(directory, "store directory"));
+  });
+
+  const std::string objectName = formatBlobDigestHex(digest);
+  auto fileOrError = openStoredObject(directory, objectName);
+  if (!fileOrError)
+    return fileOrError.takeError();
+  int file = *fileOrError;
+  llvm::scope_exit closeObject([&] {
+    if (file != -1)
+      llvm::consumeError(closeFile(file, "stored object"));
+  });
+
+  auto object = readOpenedObject(file, "stored object", "blob_store_corruption",
+                                 maximumLogicalBytes);
+  if (!object)
+    return object.takeError();
+  if (llvm::Error error = validateStoredObject(*object, "stored object", digest,
+                                               "blob_store_corruption"))
+    return std::move(error);
+  if (llvm::Error error = closeFile(file, "stored object"))
+    return std::move(error);
+  closeObject.release();
+  if (llvm::Error error = closeFile(directory, "store directory"))
+    return std::move(error);
+  closeDirectory.release();
+  return std::move(*object);
 }
 
 llvm::Error syncFile(int file, llvm::StringRef description) {
@@ -305,43 +350,33 @@ BlobStore::put(llvm::ArrayRef<std::uint8_t> logicalBytes) const {
 
 llvm::Expected<std::vector<std::uint8_t>>
 BlobStore::get(const BlobDigest &digest) const {
-  auto directoryOrError = openStoreDirectory(root_);
-  if (!directoryOrError)
-    return directoryOrError.takeError();
-  int directory = *directoryOrError;
-  llvm::scope_exit closeDirectory([&] {
-    if (directory != -1)
-      llvm::consumeError(closeFile(directory, "store directory"));
-  });
+  return get(digest, std::numeric_limits<std::uint64_t>::max());
+}
 
-  const std::string objectName = formatBlobDigestHex(digest);
-  auto fileOrError = openStoredObject(directory, objectName);
-  if (!fileOrError)
-    return fileOrError.takeError();
-  int file = *fileOrError;
-  llvm::scope_exit closeObject([&] {
-    if (file != -1)
-      llvm::consumeError(closeFile(file, "stored object"));
-  });
-
-  auto object =
-      readOpenedObject(file, "stored object", "blob_store_corruption");
+llvm::Expected<std::vector<std::uint8_t>>
+BlobStore::get(const BlobDigest &digest,
+               std::uint64_t maximumLogicalBytes) const {
+  auto object = readStoredObject(root_, digest, maximumLogicalBytes);
   if (!object)
     return object.takeError();
-  if (llvm::Error error = validateStoredObject(*object, "stored object", digest,
-                                               "blob_store_corruption"))
-    return std::move(error);
 
   const llvm::ArrayRef<std::uint8_t> validatedBytes = object->logicalBytes();
-  std::vector<std::uint8_t> logicalBytes(validatedBytes.begin(),
-                                         validatedBytes.end());
-  if (llvm::Error error = closeFile(file, "stored object"))
-    return std::move(error);
-  closeObject.release();
-  if (llvm::Error error = closeFile(directory, "store directory"))
-    return std::move(error);
-  closeDirectory.release();
-  return logicalBytes;
+  return std::vector<std::uint8_t>(validatedBytes.begin(),
+                                   validatedBytes.end());
+}
+
+llvm::Expected<std::uint64_t>
+BlobStore::verify(const BlobDigest &digest) const {
+  return verify(digest, std::numeric_limits<std::uint64_t>::max());
+}
+
+llvm::Expected<std::uint64_t>
+BlobStore::verify(const BlobDigest &digest,
+                  std::uint64_t maximumLogicalBytes) const {
+  auto object = readStoredObject(root_, digest, maximumLogicalBytes);
+  if (!object)
+    return object.takeError();
+  return object->logicalBytes().size();
 }
 
 } // namespace loom

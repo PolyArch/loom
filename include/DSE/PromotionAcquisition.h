@@ -42,6 +42,22 @@ private:
   std::uint32_t ordinal_;
 };
 
+enum class BuiltinPromotionAcquisition : std::uint32_t {
+  StructuredEvaluation = 0,
+  DataflowEvaluation = 1,
+  SpatialMappingEvaluation = 2,
+  HardwareImplementationEvaluation = 3,
+  FpaHeldOut = 4,
+  SystemRuntimeValidation = 5,
+  SystemRuntimeHeldOut = 6,
+  FpaValidation = 7,
+};
+
+constexpr PromotionAcquisitionKind
+builtinPromotionAcquisitionKind(BuiltinPromotionAcquisition acquisition) {
+  return PromotionAcquisitionKind(static_cast<std::uint32_t>(acquisition));
+}
+
 class PromotionAcquisitionInputSlotRef final {
 public:
   explicit constexpr PromotionAcquisitionInputSlotRef(std::uint32_t ordinal)

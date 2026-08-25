@@ -57,7 +57,8 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 const PromotionAcquisitionDescriptor descriptor{
-    dataflowEvaluationPromotionAcquisitionKind,
+    builtinPromotionAcquisitionKind(
+        BuiltinPromotionAcquisition::DataflowEvaluation),
     "compiler.dataflow_evaluation",
     "loom.compiler.dataflow_evaluation.acquisition.v1",
     inputSlots,

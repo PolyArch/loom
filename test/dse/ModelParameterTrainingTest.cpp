@@ -1,12 +1,14 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "DSE/ModelParameterTrainingCandidateGenerator.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/ModelParameter.h"
 #include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/Models/SystemRuntimeParameterContract.h"
 #include "Evaluation/ProductionRegistry.h"
 
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -144,6 +146,8 @@ void exactContractAndTrainingKernel() {
           "production registry did not install the FPA parameter contract");
   require(contract->predictionCaseSignatures.size() == 3 &&
               contract->groundTruthModelDescriptors.size() == 1 &&
+              contract->maximumPayloadBytes ==
+                  maximumFpaModelParameterPayloadBytes &&
               contract->predictionDecimalFinalization.significantDigits == 18,
           "FPA contract has the wrong closed capability shape");
 
@@ -165,8 +169,13 @@ void exactContractAndTrainingKernel() {
   FpaFeatureView outside = feature(4);
   auto unsupported = take(inferFpaGbdtParameters(first, outside));
   require(
-      std::holds_alternative<UnsupportedModelParameterInference>(unsupported),
-      "out-of-envelope inference returned a numeric extrapolation");
+      std::holds_alternative<OutOfDomainModelParameterInference>(unsupported),
+      "out-of-envelope inference did not return typed OOD refusal");
+  requireSuccess(validateFpaModelParameterPayloadSize(
+      maximumFpaModelParameterPayloadBytes));
+  requireError(validateFpaModelParameterPayloadSize(
+                   maximumFpaModelParameterPayloadBytes + 1),
+               "10 GB artifact bound");
 
   auto warm = take(trainFpaGbdtParameters(rows, trainingConfig(), &first));
   const std::vector<std::uint8_t> warmBytes =
@@ -200,12 +209,38 @@ void strictBundleAndGeneratorContracts() {
   OwnerValue owner = OwnerValue::get(parameters);
   auto finalized = take(finalizeModelParameterBundle(
       fpaModelParameterContractRef(), owner, store, blobs));
+  ArtifactImportCacheScope cacheScope(store, &blobs);
   auto imported =
       take(importModelParameterBundle(finalized.reference(), store, blobs));
-  require(imported.bundle().parameterContract() ==
-                  fpaModelParameterContractRef() &&
-              imported.parametersIf<FpaGbdtParameters>(),
-          "strict bundle import lost its exact contract or owner type");
+  auto reused =
+      take(importModelParameterBundle(finalized.reference(), store, blobs));
+  const ArtifactImportCacheStatistics cacheStatistics = cacheScope.statistics();
+  require(cacheStatistics.importRequests == 2 &&
+              cacheStatistics.cacheMisses == 1 &&
+              cacheStatistics.cacheHits == 1 &&
+              cacheStatistics.uniqueConstructions == 1,
+          "frozen model bundle did not use the exact invocation cache");
+  require(
+      imported.bundle().parameterContract() == fpaModelParameterContractRef() &&
+          imported.parametersIf<FpaGbdtParameters>() &&
+          reused.reference() == imported.reference() &&
+          reused.bundle().payloadDigest() == imported.bundle().payloadDigest(),
+      "strict bundle import lost its exact contract or owner type");
+  llvm::SmallString<128> payloadPath(directory.blobPath());
+  llvm::sys::path::append(
+      payloadPath, formatBlobDigestHex(finalized.bundle().payloadDigest()));
+  llvm::SmallString<128> hiddenPayload(payloadPath);
+  hiddenPayload.append(".hidden");
+  if (std::error_code error = llvm::sys::fs::rename(payloadPath, hiddenPayload))
+    fail("cannot hide the cached model payload: " + error.message());
+  auto missing =
+      importModelParameterBundle(finalized.reference(), store, blobs);
+  if (missing)
+    fail("cached model import ignored its missing payload");
+  requireError(missing.takeError(), "blob_store_missing");
+  if (std::error_code error = llvm::sys::fs::rename(hiddenPayload, payloadPath))
+    fail("cannot restore the cached model payload: " + error.message());
+  take(importModelParameterBundle(finalized.reference(), store, blobs));
   require(take(encodeFpaGbdtParameters(
               *imported.parametersIf<FpaGbdtParameters>())) ==
               take(encodeFpaGbdtParameters(parameters)),
@@ -291,7 +326,7 @@ void systemRuntimeIndependentCore() {
   auto unsupported =
       take(inferSystemRuntimeGbdtParameters(first, systemRuntimeFeature(4)));
   require(
-      std::holds_alternative<UnsupportedModelParameterInference>(unsupported),
+      std::holds_alternative<OutOfDomainModelParameterInference>(unsupported),
       "System Runtime inference extrapolated outside Training support");
   requireError(adoptSystemRuntimeGbdtParameters(
                    llvm::ArrayRef<std::uint8_t>(firstBytes).drop_back())

@@ -5,6 +5,8 @@
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/Models/OpenRoadStaticFpa.h"
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -15,6 +17,7 @@
 #include <map>
 #include <optional>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::dse {
@@ -81,7 +84,88 @@ llvm::Error validatePartitionRequests(
   return llvm::Error::success();
 }
 
+llvm::Error
+validateCharacterizationLeaf(const fabric::FabricModuleDomainMemberRef &leaf,
+                             const fabric::FabricArtifactView &module) {
+  switch (leaf.kind()) {
+  case fabric::FabricModuleDomainMemberKind::Boundary: {
+    const auto &boundary =
+        std::get<fabric::FabricModuleBoundaryEndpointRef>(leaf.payload);
+    if (llvm::Error error = fabric::validateFabricRef(module, boundary))
+      return error;
+    if (module.moduleBoundaryEndpointPlane(boundary) !=
+        fabric::FabricSpatialAttachmentEndpointRef::Plane::Transport)
+      return invalid("characterization boundary is not a transport leaf");
+    return llvm::Error::success();
+  }
+  case fabric::FabricModuleDomainMemberKind::Internal: {
+    const auto &owner =
+        std::get<fabric::FabricModulePhysicalOwnerRef>(leaf.payload);
+    switch (owner.kind()) {
+    case fabric::FabricModulePhysicalOwnerKind::PeOccurrence:
+    case fabric::FabricModulePhysicalOwnerKind::FuOccurrence:
+    case fabric::FabricModulePhysicalOwnerKind::MemoryOccurrence:
+    case fabric::FabricModulePhysicalOwnerKind::SwitchOccurrence:
+      break;
+    default:
+      return invalid("characterization owner is not a PE, FU, memory, or "
+                     "switch leaf");
+    }
+    return std::visit(
+        [&](const auto &value) {
+          return fabric::validateFabricRef(module, value);
+        },
+        owner.payload());
+  }
+  }
+  llvm_unreachable("unknown Module domain member kind");
+}
+
 } // namespace
+
+llvm::Expected<FpaCharacterizationUnavailable>
+assessFpaLeafCharacterizationTarget(const FpaLeafCharacterizationTarget &target,
+                                    const ArtifactStore &artifactStore,
+                                    const BlobStore &blobStore) {
+  auto contracts = eda::makeKnownAsicStandardCellContractCatalog();
+  if (!contracts)
+    return contracts.takeError();
+  auto imported = hardware::importHardwareImplementation(
+      target.hardwareImplementation, *contracts, artifactStore, blobStore);
+  if (!imported)
+    return imported.takeError();
+  const hardware::HardwareImplementation &implementation =
+      imported->implementation();
+  auto fabricRoot =
+      fabric::importEntireFabricRoot(implementation.fabric(), artifactStore);
+  if (!fabricRoot)
+    return fabricRoot.takeError();
+  auto system = fabric::requireSystemRoot(fabricRoot->view());
+  if (!system)
+    return system.takeError();
+  const auto selected =
+      system->spatialCoreTarget(implementation.subject().core);
+  if (!selected || selected->dependencyOrdinal >=
+                       system->artifact().importedModules().size())
+    return invalid("implementation subject has no imported SpatialCore Module");
+  const fabric::FabricArtifactView &module =
+      system->artifact().importedModules()[selected->dependencyOrdinal];
+  if (llvm::Error error = validateCharacterizationLeaf(target.leaf, module))
+    return std::move(error);
+
+  const hardware::ImplementationRepresentationRoot &representation =
+      implementation.representationRoot();
+  if (representation.variant !=
+          hardware::RepresentationRootVariant::AsicPhysical ||
+      representation.stage != hardware::RepresentationPhysicalStage::Routed ||
+      !implementation.implementationPlatform())
+    return FpaCharacterizationUnavailable{
+        target, FpaCharacterizationUnavailableReason::
+                    RoutedAsicImplementationUnavailable};
+  return FpaCharacterizationUnavailable{
+      target,
+      FpaCharacterizationUnavailableReason::IndependentlyRoutedLeafUnavailable};
+}
 
 llvm::Expected<FpaGroundTruthCollectionPlan> buildFpaGroundTruthCollectionPlan(
     FpaGroundTruthPlanInputs inputs, const ResolvedConfig &baseConfig,
