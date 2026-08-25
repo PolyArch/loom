@@ -98,6 +98,9 @@ private:
   importModelParameterBundle(const ArtifactRootReference &reference,
                              const ArtifactStore &artifactStore,
                              const BlobStore &blobStore);
+  friend llvm::Expected<ModelParameterBundle>
+  importModelParameterBundleRoot(const ArtifactRootReference &reference,
+                                 const ArtifactStore &artifactStore);
 };
 
 class FinalizedModelParameterBundle final {
@@ -151,6 +154,13 @@ llvm::Expected<FinalizedModelParameterBundle>
 importModelParameterBundle(const ArtifactRootReference &reference,
                            const ArtifactStore &artifactStore,
                            const BlobStore &blobStore);
+
+/// Imports and validates only the canonical bundle root. This exposes the
+/// referenced payload digest for bounded transport; it does not verify or
+/// adopt the payload and therefore is not a usable model weight by itself.
+llvm::Expected<ModelParameterBundle>
+importModelParameterBundleRoot(const ArtifactRootReference &reference,
+                               const ArtifactStore &artifactStore);
 
 } // namespace loom::evaluation
 

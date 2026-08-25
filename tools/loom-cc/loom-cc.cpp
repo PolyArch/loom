@@ -98,6 +98,10 @@ struct LoomDriverOptions final {
   std::string portfolioCacheRoot;
   std::string portfolioApplicationIdentity;
   std::string portfolioInputName;
+  std::string fpaWeightRootPath;
+  std::string fpaArtifactStorePath;
+  std::string fpaBlobStorePath;
+  std::string fpaConditionsPath;
   std::vector<std::string> operatorProtocolSymbols;
 
   bool requestsProductFlow() const {
@@ -109,7 +113,9 @@ struct LoomDriverOptions final {
            !portfolioManifestPath.empty() || !portfolioRepositoryRoot.empty() ||
            !portfolioCacheRoot.empty() ||
            !portfolioApplicationIdentity.empty() ||
-           !portfolioInputName.empty() || !operatorProtocolSymbols.empty();
+           !portfolioInputName.empty() || !fpaWeightRootPath.empty() ||
+           !fpaArtifactStorePath.empty() || !fpaBlobStorePath.empty() ||
+           !fpaConditionsPath.empty() || !operatorProtocolSymbols.empty();
   }
 };
 
@@ -247,6 +253,34 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
       return portfolioInput.takeError();
     if (*portfolioInput)
       continue;
+    auto fpaWeight =
+        consumeLoomOption(argument, "--loom-fpa-weight-root", index, arguments,
+                          seen, options.fpaWeightRootPath);
+    if (!fpaWeight)
+      return fpaWeight.takeError();
+    if (*fpaWeight)
+      continue;
+    auto fpaArtifacts =
+        consumeLoomOption(argument, "--loom-fpa-artifact-store", index,
+                          arguments, seen, options.fpaArtifactStorePath);
+    if (!fpaArtifacts)
+      return fpaArtifacts.takeError();
+    if (*fpaArtifacts)
+      continue;
+    auto fpaBlobs =
+        consumeLoomOption(argument, "--loom-fpa-blob-store", index, arguments,
+                          seen, options.fpaBlobStorePath);
+    if (!fpaBlobs)
+      return fpaBlobs.takeError();
+    if (*fpaBlobs)
+      continue;
+    auto fpaConditions =
+        consumeLoomOption(argument, "--loom-fpa-conditions", index, arguments,
+                          seen, options.fpaConditionsPath);
+    if (!fpaConditions)
+      return fpaConditions.takeError();
+    if (*fpaConditions)
+      continue;
     std::string protocolSymbol;
     std::set<std::string> protocolOptionSeen;
     auto protocol =
@@ -345,7 +379,11 @@ makeProductBuildOptions(const LoomDriverOptions &options) {
       options.portfolioRepositoryRoot,
       options.portfolioCacheRoot,
       options.portfolioApplicationIdentity,
-      options.portfolioInputName};
+      options.portfolioInputName,
+      options.fpaWeightRootPath,
+      options.fpaArtifactStorePath,
+      options.fpaBlobStorePath,
+      options.fpaConditionsPath};
 }
 
 llvm::StringRef projectedValue(llvm::ArrayRef<std::string> projection,

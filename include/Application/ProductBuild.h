@@ -37,6 +37,10 @@ struct ProductBuildOptions final {
   std::string portfolioCacheRoot;
   std::string portfolioApplicationIdentity;
   std::string portfolioInputName;
+  std::string fpaWeightRootPath;
+  std::string fpaArtifactStorePath;
+  std::string fpaBlobStorePath;
+  std::string fpaConditionsPath;
 };
 
 llvm::Expected<dse::JointDesignStoppingPolicy>

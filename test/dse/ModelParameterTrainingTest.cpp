@@ -226,6 +226,11 @@ void strictBundleAndGeneratorContracts() {
           reused.reference() == imported.reference() &&
           reused.bundle().payloadDigest() == imported.bundle().payloadDigest(),
       "strict bundle import lost its exact contract or owner type");
+  auto rootOnly =
+      take(importModelParameterBundleRoot(finalized.reference(), store));
+  require(rootOnly.parameterContract() == fpaModelParameterContractRef() &&
+              rootOnly.payloadDigest() == finalized.bundle().payloadDigest(),
+          "bundle root import changed its contract or payload identity");
   llvm::SmallString<128> payloadPath(directory.blobPath());
   llvm::sys::path::append(
       payloadPath, formatBlobDigestHex(finalized.bundle().payloadDigest()));
@@ -238,6 +243,9 @@ void strictBundleAndGeneratorContracts() {
   if (missing)
     fail("cached model import ignored its missing payload");
   requireError(missing.takeError(), "blob_store_missing");
+  rootOnly = take(importModelParameterBundleRoot(finalized.reference(), store));
+  require(rootOnly.payloadDigest() == finalized.bundle().payloadDigest(),
+          "bundle root transport incorrectly required the payload");
   if (std::error_code error = llvm::sys::fs::rename(hiddenPayload, payloadPath))
     fail("cannot restore the cached model payload: " + error.message());
   take(importModelParameterBundle(finalized.reference(), store, blobs));

@@ -7,11 +7,16 @@
 #include "Application/ProductVisualization.h"
 #include "Application/SourceAdmission.h"
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Common/ExecutionControl.h"
 #include "Config/ResolvedConfig.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Deployment/Package.h"
+#include "Evaluation/ModelParameterBundle.h"
+#include "Evaluation/Models/FpaParameterContract.h"
+#include "Evaluation/ProductionRegistry.h"
+#include "Evaluation/Request.h"
 #include "ExternalTool/LocalConfig.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -251,7 +256,79 @@ struct PreparedProductTarget final {
   CompilerTargetPolicy compilerPolicy;
   CompilerTargetCommandLineProjection commandLine;
   std::optional<PortfolioInput> portfolioInput;
+  std::optional<ArtifactRootReference> fpaWeight;
+  std::vector<evaluation::EvaluationCondition> fpaConditions;
 };
+
+struct PreparedProductFpaInputs final {
+  std::optional<ArtifactRootReference> weight;
+  std::vector<evaluation::EvaluationCondition> conditions;
+};
+
+llvm::Expected<PreparedProductFpaInputs>
+prepareProductFpaInputs(const ProductBuildOptions &options,
+                        const ProductWorkspace &workspace) {
+  if (options.fpaWeightRootPath.empty())
+    return PreparedProductFpaInputs{};
+  if (llvm::Error error = evaluation::registerProductionEvaluationRegistry())
+    return std::move(error);
+
+  auto reference = loadArtifactRootReferenceJsonFile(options.fpaWeightRootPath);
+  if (!reference)
+    return productError("loom_fpa_weight_invalid",
+                        llvm::toString(reference.takeError()));
+  const ArtifactStore sourceArtifacts(options.fpaArtifactStorePath);
+  const BlobStore sourceBlobs(options.fpaBlobStorePath);
+  auto bundle =
+      evaluation::importModelParameterBundleRoot(*reference, sourceArtifacts);
+  if (!bundle)
+    return productError("loom_fpa_weight_invalid",
+                        llvm::toString(bundle.takeError()));
+  if (bundle->parameterContract() !=
+      evaluation::models::fpaModelParameterContractRef())
+    return productError("loom_fpa_weight_invalid",
+                        "model bundle does not use the FPA contract");
+
+  std::vector<evaluation::EvaluationCondition> conditions;
+  if (!options.fpaConditionsPath.empty()) {
+    auto buffer =
+        llvm::MemoryBuffer::getFile(options.fpaConditionsPath, false, false);
+    if (!buffer)
+      return productError("loom_fpa_conditions_invalid",
+                          "cannot read FPA conditions: " +
+                              buffer.getError().message());
+    auto parsed = evaluation::parseEvaluationConditions((*buffer)->getBuffer());
+    if (!parsed)
+      return productError("loom_fpa_conditions_invalid",
+                          llvm::toString(parsed.takeError()));
+    conditions = std::move(*parsed);
+  }
+
+  auto canonical = sourceArtifacts.get(evaluation::modelParameterBundleSchema,
+                                       reference->artifact);
+  if (!canonical)
+    return productError("loom_fpa_weight_invalid",
+                        llvm::toString(canonical.takeError()));
+  auto copiedRoot = workspace.artifacts().put(
+      evaluation::modelParameterBundleSchema, *canonical);
+  if (!copiedRoot)
+    return copiedRoot.takeError();
+  if (*copiedRoot != reference->artifact)
+    return productError("loom_fpa_weight_invalid",
+                        "bundle root identity changed during import");
+  auto copiedBytes = workspace.blobs().importVerified(
+      bundle->payloadDigest(), sourceBlobs,
+      evaluation::models::maximumFpaModelParameterPayloadBytes);
+  if (!copiedBytes)
+    return productError("loom_fpa_weight_invalid",
+                        llvm::toString(copiedBytes.takeError()));
+  auto weight = evaluation::models::importEdaPredictionModelWeight(
+      *reference, workspace.artifacts(), workspace.blobs());
+  if (!weight)
+    return productError("loom_fpa_weight_invalid",
+                        llvm::toString(weight.takeError()));
+  return PreparedProductFpaInputs{weight->reference(), std::move(conditions)};
+}
 
 llvm::Error validatePortfolioBuildOptions(const BuildSelection &build) {
   const auto isProductOwned = [](llvm::StringRef option) {
@@ -411,6 +488,9 @@ prepareProductTarget(const ProductBuildOptions &options) {
   auto workspace = ProductWorkspace::create(options.deploymentOutput);
   if (!workspace)
     return workspace.takeError();
+  auto fpa = prepareProductFpaInputs(options, **workspace);
+  if (!fpa)
+    return fpa.takeError();
   auto config = resolveConfigProfile(options.accelerationProfile);
   if (!config)
     return config.takeError();
@@ -495,10 +575,11 @@ prepareProductTarget(const ProductBuildOptions &options) {
           "target cohort");
   }
   return PreparedProductTarget{
-      std::move(*workspace),     std::move(*config),
-      std::move(*system),        std::move(timingReferences),
-      std::move(compilerPolicy), std::move(*commandLine),
-      std::move(*portfolioInput)};
+      std::move(*workspace),      std::move(*config),
+      std::move(*system),         std::move(timingReferences),
+      std::move(compilerPolicy),  std::move(*commandLine),
+      std::move(*portfolioInput), std::move(fpa->weight),
+      std::move(fpa->conditions)};
 }
 
 std::vector<std::string> projectDriverArguments(
@@ -631,8 +712,7 @@ llvm::Expected<PreparedApplicationBuild> prepareMappedApplication(
        target.portfolioInput ? std::optional<SelectedApplicationInput>(
                                    target.portfolioInput->selection)
                              : std::nullopt,
-       std::nullopt,
-       {}},
+       target.fpaWeight, target.fpaConditions},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!outcome)
     return outcome.takeError();
@@ -885,6 +965,24 @@ llvm::Error validateProductOptions(const ProductBuildOptions &options) {
   if (options.mappingWallTimeLimitMilliseconds == 0)
     return productError("loom_product_option_invalid",
                         "Mapping wall-time limit must be positive");
+  const unsigned fpaStorageCount =
+      static_cast<unsigned>(!options.fpaWeightRootPath.empty()) +
+      static_cast<unsigned>(!options.fpaArtifactStorePath.empty()) +
+      static_cast<unsigned>(!options.fpaBlobStorePath.empty());
+  if (fpaStorageCount != 0 && fpaStorageCount != 3)
+    return productError(
+        "loom_product_option_invalid",
+        "FPA weight root, ArtifactStore, and BlobStore must be selected "
+        "together");
+  if (!options.fpaConditionsPath.empty() && fpaStorageCount != 3)
+    return productError("loom_product_option_invalid",
+                        "FPA conditions require a frozen model weight");
+  if (fpaStorageCount == 3 &&
+      options.mappingStoppingPolicy !=
+          dse::JointDesignStoppingPolicy::BoundedQuality)
+    return productError(
+        "loom_product_option_invalid",
+        "a frozen FPA weight requires bounded_quality Mapping selection");
   const unsigned portfolioSelectorCount =
       static_cast<unsigned>(!options.portfolioManifestPath.empty()) +
       static_cast<unsigned>(!options.portfolioRepositoryRoot.empty()) +

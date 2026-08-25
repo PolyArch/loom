@@ -85,6 +85,21 @@ llvm::cl::opt<std::string>
     portfolioInput("portfolio-input",
                    llvm::cl::desc("Select one named application input profile"),
                    llvm::cl::value_desc("name"));
+llvm::cl::opt<std::string>
+    fpaWeightRoot("fpa-weight-root",
+                  llvm::cl::desc("Frozen FPA ModelParameterBundle root"),
+                  llvm::cl::value_desc("path"));
+llvm::cl::opt<std::string>
+    fpaArtifactStore("fpa-artifact-store",
+                     llvm::cl::desc("Frozen FPA ArtifactStore root"),
+                     llvm::cl::value_desc("path"));
+llvm::cl::opt<std::string>
+    fpaBlobStore("fpa-blob-store", llvm::cl::desc("Frozen FPA BlobStore root"),
+                 llvm::cl::value_desc("path"));
+llvm::cl::opt<std::string>
+    fpaConditions("fpa-conditions",
+                  llvm::cl::desc("Canonical FPA operating conditions"),
+                  llvm::cl::value_desc("path"));
 
 llvm::Expected<loom::application::ProductBuildOptions> productOptions() {
   auto stoppingPolicy = loom::application::parseProductMappingStoppingPolicy(
@@ -112,7 +127,11 @@ llvm::Expected<loom::application::ProductBuildOptions> productOptions() {
       portfolioRepositoryRoot,
       portfolioCacheRoot,
       portfolioApplication,
-      portfolioInput};
+      portfolioInput,
+      fpaWeightRoot,
+      fpaArtifactStore,
+      fpaBlobStore,
+      fpaConditions};
 }
 
 llvm::Error writeDriverArguments(llvm::ArrayRef<std::string> arguments) {

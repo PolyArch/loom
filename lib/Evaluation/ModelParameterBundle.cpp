@@ -305,4 +305,27 @@ importModelParameterBundle(const ArtifactRootReference &reference,
   return **imported;
 }
 
+llvm::Expected<ModelParameterBundle>
+importModelParameterBundleRoot(const ArtifactRootReference &reference,
+                               const ArtifactStore &artifactStore) {
+  if (reference.schemaIdentity != modelParameterBundleSchema.identity ||
+      reference.schemaVersion != modelParameterBundleSchema.version)
+    return invalid("reference has the wrong Artifact schema");
+  auto canonical =
+      artifactStore.get(modelParameterBundleSchema, reference.artifact);
+  if (!canonical)
+    return canonical.takeError();
+  auto decoded = decodeCanonicalBundle(canonical->bytes());
+  if (!decoded)
+    return decoded.takeError();
+  ModelParameterBundle bundle(std::move(decoded->reference),
+                              std::move(decoded->digest));
+  const CanonicalSemanticBytes reencoded =
+      canonicalModelParameterBundleBytes(bundle);
+  if (!std::equal(reencoded.bytes().begin(), reencoded.bytes().end(),
+                  canonical->bytes().begin(), canonical->bytes().end()))
+    return invalid("stored bundle root is not canonical");
+  return bundle;
+}
+
 } // namespace loom::evaluation
