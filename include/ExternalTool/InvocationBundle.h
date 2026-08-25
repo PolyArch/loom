@@ -152,12 +152,20 @@ enum class ExternalToolResultCachePublication {
   Failed,
 };
 
+/// The caller-owned reuse policy for one external-tool attempt. Requiring a
+/// fresh result bypasses all persistent-cache keying and state transitions.
+enum class ExternalToolResultReusePolicy {
+  AllowExactReuse,
+  RequireFresh,
+};
+
 /// The exact cache and execution disposition of one invocation attempt. Cache
 /// infrastructure failures remain non-fatal to the external tool, but are no
 /// longer erased into diagnostics. A cache hit never invokes the external
 /// tool; unsuccessful tool attempts are never published.
 struct ExternalToolInvocationExecutionObservation final {
   int exitCode;
+  ExternalToolResultReusePolicy reusePolicy;
   ExternalToolResultCacheAvailability cacheAvailability;
   ExternalToolResultCacheLookup cacheLookup;
   ExternalToolResultCacheDiscard cacheDiscard;
@@ -328,12 +336,14 @@ finalizeExternalToolInvocationBundle(
 llvm::Expected<int> executeExternalToolInvocationBundle(
     const PreparedExternalToolInvocation &prepared);
 
-/// Executes through the same persistent cache owner while preserving the
+/// Executes according to the caller-owned reuse policy while preserving the
 /// exact cache and external-tool disposition for journals and manifests.
 llvm::Expected<ExternalToolInvocationExecutionObservation>
 executeExternalToolInvocationBundleObserved(
     const PreparedExternalToolInvocation &prepared,
-    ExecutionControlView executionControl = {});
+    ExecutionControlView executionControl = {},
+    ExternalToolResultReusePolicy reusePolicy =
+        ExternalToolResultReusePolicy::AllowExactReuse);
 
 /// Derives the exact persistent-result cache key from one verified prepared
 /// invocation. This reads and validates the key-bearing generated files and
