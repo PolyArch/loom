@@ -1135,9 +1135,10 @@ executeExternalToolInvocationBundleObserved(
     ExecutionControlView executionControl,
     ExternalToolResultReusePolicy reusePolicy) {
   const auto stopped =
-      [reusePolicy](ExternalToolResultCacheAvailability availability,
-                    bool waited, bool invoked) {
+      [&prepared, reusePolicy](ExternalToolResultCacheAvailability availability,
+                               bool waited, bool invoked) {
         return ExternalToolInvocationExecutionObservation{
+            prepared.manifestDigest,
             externalToolExecutionStoppedExitCode,
             reusePolicy,
             availability,
@@ -1168,6 +1169,7 @@ executeExternalToolInvocationBundleObserved(
             "fresh invocation inputs or tool changed during execution");
     }
     return ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest,
         execution->exitCode,
         reusePolicy,
         availability,
@@ -1245,6 +1247,7 @@ executeExternalToolInvocationBundleObserved(
                      waitedForCacheKeyLock, preflight->invoked);
     if (preflight->exitCode != 0)
       return ExternalToolInvocationExecutionObservation{
+          prepared.manifestDigest,
           preflight->exitCode,
           reusePolicy,
           ExternalToolResultCacheAvailability::Available,
@@ -1257,6 +1260,7 @@ executeExternalToolInvocationBundleObserved(
     if (restored && *restored) {
       cacheDiagnostic(DiagnosticVerbosity::Summary, "hit", keySpelling);
       return ExternalToolInvocationExecutionObservation{
+          prepared.manifestDigest,
           0,
           reusePolicy,
           ExternalToolResultCacheAvailability::Available,
@@ -1281,6 +1285,7 @@ executeExternalToolInvocationBundleObserved(
     return execution.takeError();
   if (execution->exitCode == externalToolExecutionStoppedExitCode)
     return ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest,
         execution->exitCode,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1291,6 +1296,7 @@ executeExternalToolInvocationBundleObserved(
         execution->invoked};
   if (execution->exitCode != 0)
     return ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest,
         execution->exitCode,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1301,6 +1307,7 @@ executeExternalToolInvocationBundleObserved(
         true};
   if (discard == ExternalToolResultCacheDiscard::Failed)
     return ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest,
         0,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1315,6 +1322,7 @@ executeExternalToolInvocationBundleObserved(
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     llvm::toString(postflight.takeError()));
     return ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest,
         0,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1326,6 +1334,7 @@ executeExternalToolInvocationBundleObserved(
   }
   if (postflight->exitCode == externalToolExecutionStoppedExitCode)
     return ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest,
         externalToolExecutionStoppedExitCode,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1338,6 +1347,7 @@ executeExternalToolInvocationBundleObserved(
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     "invocation inputs or tool changed during execution");
     return ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest,
         0,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1356,6 +1366,7 @@ executeExternalToolInvocationBundleObserved(
       cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                       "cache-key material changed during execution");
     return ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest,
         0,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1375,6 +1386,7 @@ executeExternalToolInvocationBundleObserved(
     cacheDiagnostic(DiagnosticVerbosity::Decision, "published", entry.string());
   }
   return ExternalToolInvocationExecutionObservation{
+      prepared.manifestDigest,
       0,
       reusePolicy,
       ExternalToolResultCacheAvailability::Available,

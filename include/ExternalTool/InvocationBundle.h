@@ -164,6 +164,7 @@ enum class ExternalToolResultReusePolicy {
 /// longer erased into diagnostics. A cache hit never invokes the external
 /// tool; unsuccessful tool attempts are never published.
 struct ExternalToolInvocationExecutionObservation final {
+  BlobDigest manifestDigest;
   int exitCode;
   ExternalToolResultReusePolicy reusePolicy;
   ExternalToolResultCacheAvailability cacheAvailability;

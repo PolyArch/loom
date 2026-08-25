@@ -1861,7 +1861,8 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
       __func__, executeExternalToolInvocationBundleObserved(
                     fresh, {}, ExternalToolResultReusePolicy::RequireFresh));
   require(__func__,
-          freshExecution.exitCode == 0 &&
+          freshExecution.manifestDigest == fresh.manifestDigest &&
+              freshExecution.exitCode == 0 &&
               freshExecution.reusePolicy ==
                   ExternalToolResultReusePolicy::RequireFresh &&
               freshExecution.cacheAvailability ==

@@ -339,11 +339,13 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
       take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
 
   const WorkUnitKey missKey = makeKey(4, 0);
-  prepare(journal, missKey, makePrepared(runRoot, "miss", 0x61));
+  const auto missPrepared = makePrepared(runRoot, "miss", 0x61);
+  prepare(journal, missKey, missPrepared);
   requireSuccess(journal.recordPreparedExecutionInterval(
       missKey, 0, unixNanosecondsNow(),
       external_tool::ExternalToolInvocationExecutionObservation{
-          0, external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
+          missPrepared.manifestDigest, 0,
+          external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
           external_tool::ExternalToolResultCacheAvailability::Available,
           external_tool::ExternalToolResultCacheLookup::Miss,
           external_tool::ExternalToolResultCacheDiscard::Discarded,
@@ -351,11 +353,13 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
           true}));
 
   const WorkUnitKey hitKey = makeKey(4, 1);
-  prepare(journal, hitKey, makePrepared(runRoot, "hit", 0x62));
+  const auto hitPrepared = makePrepared(runRoot, "hit", 0x62);
+  prepare(journal, hitKey, hitPrepared);
   requireSuccess(journal.recordPreparedExecutionInterval(
       hitKey, 0, unixNanosecondsNow(),
       external_tool::ExternalToolInvocationExecutionObservation{
-          0, external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
+          hitPrepared.manifestDigest, 0,
+          external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
           external_tool::ExternalToolResultCacheAvailability::Available,
           external_tool::ExternalToolResultCacheLookup::Hit,
           external_tool::ExternalToolResultCacheDiscard::NotAttempted,
@@ -381,6 +385,39 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
       summary.total() !=
           ExternalToolWorkLedger{2, 2, 1, 1, 0, 2, 0, 1, 1, 1, 1, 0, 1, 0})
     fail("Journal external-tool work did not aggregate by plan node");
+
+  const WorkUnitKey foreignKey = makeKey(4, 2);
+  const auto foreignPrepared = makePrepared(runRoot, "foreign", 0x63);
+  prepare(reopened, foreignKey, foreignPrepared);
+  const auto beforeForeign = take(reopened.find(foreignKey));
+  if (!beforeForeign)
+    fail("foreign manifest fixture was not prepared");
+  external_tool::ExternalToolInvocationExecutionObservation foreignObservation{
+      hitPrepared.manifestDigest,
+      0,
+      external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
+      external_tool::ExternalToolResultCacheAvailability::Available,
+      external_tool::ExternalToolResultCacheLookup::Hit,
+      external_tool::ExternalToolResultCacheDiscard::NotAttempted,
+      external_tool::ExternalToolResultCachePublication::NotAttempted,
+      true,
+      false};
+  requireErrorContains(
+      reopened.recordPreparedExecutionInterval(
+          foreignKey, 99, unixNanosecondsNow(), foreignObservation),
+      "manifest differs");
+  const auto afterForeign = take(reopened.find(foreignKey));
+  if (!afterForeign || afterForeign->status != beforeForeign->status ||
+      afterForeign->activeWallIntervals != beforeForeign->activeWallIntervals ||
+      afterForeign->activeAttemptStartUnixTimeNanoseconds !=
+          beforeForeign->activeAttemptStartUnixTimeNanoseconds ||
+      afterForeign->terminalUnixTimeNanoseconds !=
+          beforeForeign->terminalUnixTimeNanoseconds ||
+      afterForeign->externalToolWork != beforeForeign->externalToolWork ||
+      !afterForeign->preparedInvocation || !beforeForeign->preparedInvocation ||
+      afterForeign->preparedInvocation->manifestDigest !=
+          beforeForeign->preparedInvocation->manifestDigest)
+    fail("foreign manifest rejection mutated the journal record");
 }
 
 void rewriteSnapshotAsHistorical(llvm::StringRef runRoot,
