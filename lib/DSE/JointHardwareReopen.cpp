@@ -566,6 +566,16 @@ tryHardwareFeedbackReopen(
               fields["diagnostic"] =
                   llvm::toString(boundedTechMappings.takeError());
             });
+        // The Tech gate is a real DSE occurrence even when its bounded
+        // frontier cannot preserve graph coverage. Keep it as the terminal
+        // typed failure so callers retain its manifest and ancestry instead
+        // of silently falling back to the original parent attempt.
+        currentConfig = system->config;
+        latestFailed = std::move(gate->execution);
+        latestFailedPlan = std::move(*reopenPlan);
+        currentFailure = &*latestFailed;
+        currentPlan = &*latestFailedPlan;
+        currentFailureIsTechGate = true;
         break;
       }
       gateSeed.techMappings = std::move(*boundedTechMappings);

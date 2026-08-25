@@ -404,22 +404,27 @@ runGroundTruthCampaign(const ResolvedDseConfigView &view,
       pilotPolicy(executionPolicy, *active, campaignPolicy, consumedDispatches);
   if (!pilotExecutionPolicy)
     return pilotExecutionPolicy.takeError();
-  auto pilot = resumeDsePlan(view, closure, journal, scheduler,
-                             *pilotExecutionPolicy, store, blobs);
+  auto pilot =
+      resumeDsePlan(view, closure, journal, scheduler, *pilotExecutionPolicy,
+                    store, blobs, InvocationManifestRetention::Retain);
   if (!pilot)
     return pilot.takeError();
+  const auto releaseWith = [&](llvm::Error error) {
+    return llvm::joinErrors(std::move(error),
+                            journal.releaseInvocationOccurrence());
+  };
   records = journal.workUnits();
   if (!records)
-    return records.takeError();
+    return releaseWith(records.takeError());
   auto projection = projectDseOperationalState(journal, scheduler,
                                                executionPolicy.workerCount());
   if (!projection)
-    return projection.takeError();
+    return releaseWith(projection.takeError());
 
   auto limitFailure =
       validateObservedLimits(view.plan(), *records, campaignPolicy);
   if (!limitFailure)
-    return limitFailure.takeError();
+    return releaseWith(limitFailure.takeError());
   if (*limitFailure)
     return refuse(**limitFailure, std::move(*pilot), std::move(*projection));
 
@@ -436,13 +441,13 @@ runGroundTruthCampaign(const ResolvedDseConfigView &view,
     auto estimate = conservativeRemainingEstimate(view.plan(), *pilot, *records,
                                                   *projection);
     if (!estimate)
-      return estimate.takeError();
+      return releaseWith(estimate.takeError());
     projection->estimatedRemainingNanoseconds = *estimate;
   }
 
   active = campaignActiveNanoseconds(*records);
   if (!active)
-    return active.takeError();
+    return releaseWith(active.takeError());
   if (!projection->estimatedRemainingNanoseconds) {
     return refuse(CampaignAdmissionFailureReason::ThroughputUnavailable,
                   std::move(*pilot), std::move(*projection));
@@ -455,21 +460,21 @@ runGroundTruthCampaign(const ResolvedDseConfigView &view,
   auto fullExecutionPolicy =
       admittedPolicy(executionPolicy, *active, campaignPolicy);
   if (!fullExecutionPolicy)
-    return fullExecutionPolicy.takeError();
-  auto outcome = resumeDsePlan(view, closure, journal, scheduler,
-                               *fullExecutionPolicy, store, blobs);
+    return releaseWith(fullExecutionPolicy.takeError());
+  auto outcome = executeDsePlan(view, closure, journal, scheduler,
+                                *fullExecutionPolicy, store, blobs);
   if (!outcome)
-    return outcome.takeError();
+    return releaseWith(outcome.takeError());
   records = journal.workUnits();
   if (!records)
-    return records.takeError();
+    return releaseWith(records.takeError());
   projection = projectDseOperationalState(journal, scheduler,
                                           executionPolicy.workerCount());
   if (!projection)
-    return projection.takeError();
+    return releaseWith(projection.takeError());
   limitFailure = validateObservedLimits(view.plan(), *records, campaignPolicy);
   if (!limitFailure)
-    return limitFailure.takeError();
+    return releaseWith(limitFailure.takeError());
   if (*limitFailure)
     return refuse(**limitFailure, std::move(*outcome), std::move(*projection));
   return CampaignExecutionResult{

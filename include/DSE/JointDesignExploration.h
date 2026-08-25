@@ -1,7 +1,6 @@
 #ifndef LOOM_DSE_JOINTDESIGNEXPLORATION_H
 #define LOOM_DSE_JOINTDESIGNEXPLORATION_H
 
-#include "Common/BlobDigest.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/JointDesignPolicy.h"
 #include "DSE/PlanExecutor.h"
@@ -313,33 +312,7 @@ struct JointDesignExecutionSummary final {
   std::vector<JointDesignAttemptRecord> attempts;
 };
 
-/// Strict content reference to one canonical InvocationManifest. Production
-/// occurrence allocation and commit remain owned by ExecutionJournal; this
-/// value proves the imported manifest content and its embedded occurrence.
-class JointDesignInvocationManifestReference final {
-public:
-  static llvm::Expected<JointDesignInvocationManifestReference>
-  get(ArtifactRootReference resolvedConfig, BlobDigest blob,
-      InvocationOccurrenceRef occurrence, const ArtifactStore &artifacts,
-      const BlobStore &blobs);
-
-  const ArtifactRootReference &resolvedConfig() const {
-    return resolvedConfig_;
-  }
-  const BlobDigest &blob() const { return blob_; }
-  const InvocationOccurrenceRef &occurrence() const { return occurrence_; }
-
-private:
-  JointDesignInvocationManifestReference(ArtifactRootReference resolvedConfig,
-                                         BlobDigest blob,
-                                         InvocationOccurrenceRef occurrence)
-      : resolvedConfig_(std::move(resolvedConfig)), blob_(std::move(blob)),
-        occurrence_(std::move(occurrence)) {}
-
-  ArtifactRootReference resolvedConfig_;
-  BlobDigest blob_;
-  InvocationOccurrenceRef occurrence_;
-};
+using JointDesignInvocationManifestReference = InvocationManifestReference;
 
 llvm::Expected<JointDesignInvocationManifestReference>
 publishJointDesignInvocationManifest(const InvocationManifest &manifest,

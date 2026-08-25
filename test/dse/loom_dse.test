@@ -9,4 +9,6 @@
 # RUN: FileCheck %s --check-prefix=RESULT < %t/result
 
 # PROGRESS: "status":{"completed":0,"failed":0,"prepared":0,"queued":0,"running":0,"timed_out":0,"unsupported":0}
+# RESULT: invocation_manifest resolved_config_schema=
+# RESULT-SAME: occurrence=0 blob=
 # RESULT: campaign_result=completed

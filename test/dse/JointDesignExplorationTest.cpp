@@ -9,6 +9,7 @@
 #include "DSE/JointMappingMigration.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
+#include "JointHardwareReopenExecution.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/Evidence.h"
@@ -624,6 +625,22 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       fail("bounded hardware promotion lost its production DSE occurrences");
     take(loom::dse::importJointDesignInvocationManifest(
         *promoted.invocationManifest(), store, blobs));
+    auto contentOnly = take(loom::dse::InvocationManifestReference::get(
+        promoted.invocationManifest()->resolvedConfig(),
+        promoted.invocationManifest()->blob(),
+        promoted.invocationManifest()->occurrence(), store, blobs));
+    if (contentOnly.journalReceipt())
+      fail("strict manifest import forged an ExecutionJournal receipt");
+    llvm::Error foreignBinding =
+        loom::dse::appendJointDesignSupportingInvocationManifest(
+            promoted, std::move(contentOnly));
+    if (!foreignBinding)
+      fail("joint execution accepted a manifest without its journal receipt");
+    const std::string foreignBindingMessage =
+        llvm::toString(std::move(foreignBinding));
+    if (foreignBindingMessage.find("no ExecutionJournal receipt") ==
+        std::string::npos)
+      fail("foreign manifest rejection lost its journal ownership reason");
     for (const auto &supporting : promoted.supportingInvocationManifests())
       take(loom::dse::importJointDesignInvocationManifest(supporting, store,
                                                           blobs));
@@ -2018,15 +2035,96 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     fail("frontier-bound rejection lost its diagnostic");
 }
 
+void probeTechFrontierBoundFailure() {
+  TemporaryDirectory temporary;
+  llvm::SmallString<128> blobPath(temporary.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create Tech-bound BlobStore directory: " + error.message());
+  loom::ArtifactStore store(temporary.path());
+  loom::BlobStore blobs(blobPath);
+  mlir::MLIRContext context = makeContext();
+  auto dataflow = buildDataflow(context, 7);
+  take(dataflow::publishCanonicalDataflow(dataflow, store));
+  const auto workload = publishApplicationWorkload(dataflow, store);
+  auto builtin = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  const auto system = builtin.roots().front().reference();
+  auto systemArtifact =
+      take(loom::fabric::importEntireFabricRoot(system, store));
+  auto systemView = take(loom::fabric::requireSystemRoot(systemArtifact.view()));
+  auto timing = take(
+      loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(systemView));
+  std::vector<loom::ArtifactRootReference> timingRoots;
+  for (const auto &profile : timing)
+    timingRoots.push_back(
+        take(loom::fabric::publishFabricPhysicalTimingProfile(profile, store)));
+
+  loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  config.dse.techMapping.matchRowAttemptLimit = 1;
+  config.dse.techMapping.candidatePublicationLimit = 8;
+  const auto policy = take(loom::dse::JointDesignPolicy::get(2, 1, 1, 1, 32));
+  auto plan = take(loom::dse::buildJointDesignExplorationPlan(
+      {{{workload}}, {system}}, timingRoots, policy, config, store));
+  llvm::SmallString<128> journal(temporary.path());
+  llvm::sys::path::append(journal, "tech-bound");
+  auto request = loom::dse::JointHardwareReopenRequest{
+      take(loom::dse::DseProducerSemanticBuildIdentity::get(
+          "loom.test.tech_frontier_bound.v1")),
+      journal.str().str(),
+      {},
+      loom::dse::JointDesignStoppingPolicy::FirstVerified,
+      std::nullopt,
+      std::nullopt,
+      take(loom::dse::SiteCapacity::get(2, 0, 0)),
+      take(loom::dse::PlanExecutionPolicy::get(
+          2, take(loom::dse::SiteResourceClaim::get(1, 0, 0)))),
+      loom::dse::PreMappingSpectrumEndpoint::MaxTemporal};
+  const std::array plans = {&plan};
+  auto result = loom::dse::executeJointDesignWithHardwareReopen(
+      plans, policy, std::move(request), store, blobs);
+  if (!result) {
+    llvm::outs() << "tech-bound error: " << llvm::toString(result.takeError())
+                 << '\n';
+    return;
+  }
+  llvm::outs() << "tech-bound result mappings=";
+  std::size_t mappingCount = 0;
+  for (const auto &pair : result->mappedPairs)
+    mappingCount += pair.systemMappings.size();
+  llvm::outs() << mappingCount << " incomplete="
+               << std::holds_alternative<loom::dse::IncompleteDsePlanExecution>(
+                      result->planExecution)
+               << " primary=" << result->invocationManifest().has_value()
+               << " supporting=" << result->supportingInvocationManifests().size()
+               << " attempted=" << result->summary.attemptedSoftwarePlans
+               << " reopen=" << result->summary.hardwareReopenSearches
+               << " planned=" << result->summary.hardwareRepairProbesPlanned
+               << " rejected=" << result->summary.hardwareRepairProbesRejected
+               << " consumed=" << result->summary.hardwareRepairProbesConsumed
+               << " attempts=" << result->summary.attempts.size()
+               << '\n';
+  for (const auto &attempt : result->summary.attempts)
+    llvm::outs() << "attempt ordinal=" << attempt.planOrdinal
+                 << " disposition="
+                 << static_cast<unsigned>(attempt.disposition)
+                 << " mappings=" << attempt.systemMappings.size() << '\n';
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   const llvm::StringRef mode = argc == 2 ? argv[1] : "";
   if (argc > 2 || (argc == 2 && mode != "fifo-feedback" &&
                    mode != "operand-feedback" && mode != "transport-feedback" &&
-                   mode != "quality-promotion" && mode != "mutation-matrix"))
+                   mode != "quality-promotion" && mode != "mutation-matrix" &&
+                   mode != "tech-bound-probe"))
     fail("expected no workflow, fifo-feedback, operand-feedback, or "
          "transport-feedback, quality-promotion, or mutation-matrix");
+  if (mode == "tech-bound-probe") {
+    probeTechFrontierBoundFailure();
+    return 0;
+  }
   exerciseJointExploration(mode == "fifo-feedback", mode == "operand-feedback",
                            mode == "transport-feedback",
                            mode == "quality-promotion",
