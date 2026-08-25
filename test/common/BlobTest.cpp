@@ -277,6 +277,49 @@ void equalBytesDeduplicate() {
           "deduplicated object has unexpected contents");
 }
 
+void verifiedImportIsBoundedAndContentAddressed() {
+  TemporaryDirectory sourceDirectory(__func__);
+  TemporaryDirectory destinationDirectory(__func__);
+  BlobStore source(sourceDirectory.path());
+  BlobStore destination(destinationDirectory.path());
+
+  std::vector<std::uint8_t> bytes(192 * 1024 + 17);
+  for (std::size_t index = 0; index < bytes.size(); ++index)
+    bytes[index] = static_cast<std::uint8_t>((index * 131) & 0xff);
+  const BlobDigest digest = takeExpected(__func__, source.put(bytes));
+
+  expectErrorContains(
+      __func__, destination.importVerified(digest, source, bytes.size() - 1),
+      "blob_store_size_limit");
+  require(__func__, regularFiles(__func__, destinationDirectory.path()).empty(),
+          "rejected import published a destination object");
+
+  require(__func__,
+          takeExpected(__func__, destination.importVerified(
+                                     digest, source, bytes.size())) ==
+              bytes.size(),
+          "verified import returned a different logical-byte count");
+  require(__func__, takeExpected(__func__, destination.get(digest)) == bytes,
+          "verified import changed logical bytes");
+  require(__func__,
+          takeExpected(__func__, destination.importVerified(
+                                     digest, source, bytes.size())) ==
+              bytes.size(),
+          "deduplicated verified import changed the logical-byte count");
+  require(__func__, regularFiles(__func__, destinationDirectory.path()).size() ==
+                        1,
+          "verified import did not deduplicate by exact digest");
+
+  std::vector<std::uint8_t> tampered = bytes;
+  tampered.back() ^= 0xff;
+  writeFile(__func__, objectPath(sourceDirectory.path(), digest), tampered);
+  expectErrorContains(
+      __func__, destination.importVerified(digest, source, bytes.size()),
+      "blob_store_corruption");
+  require(__func__, takeExpected(__func__, destination.get(digest)) == bytes,
+          "failed import changed the published destination object");
+}
+
 void concurrentIdenticalPublishDeduplicates() {
   TemporaryDirectory directory(__func__);
   BlobStore store(directory.path());
@@ -390,6 +433,7 @@ int main() {
   storedLogicalBytesRoundTrip();
   missingStoredObjectIsRejected();
   equalBytesDeduplicate();
+  verifiedImportIsBoundedAndContentAddressed();
   concurrentIdenticalPublishDeduplicates();
   tamperedStoredObjectIsRejected();
   wrongKeyObjectIsRejected();

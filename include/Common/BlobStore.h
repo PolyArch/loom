@@ -44,6 +44,14 @@ public:
   llvm::Expected<std::uint64_t> verify(const BlobDigest &digest,
                                        std::uint64_t maximumLogicalBytes) const;
 
+  /// Copies one exact object from another BlobStore without buffering the
+  /// complete logical byte sequence. The source is verified against digest,
+  /// the bound is checked before copying, and publication retains put()'s
+  /// atomic no-replace and collision semantics. Returns the copied byte count.
+  llvm::Expected<std::uint64_t>
+  importVerified(const BlobDigest &digest, const BlobStore &source,
+                 std::uint64_t maximumLogicalBytes) const;
+
 private:
   std::string root_;
 };
