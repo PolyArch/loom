@@ -14,7 +14,10 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -107,6 +110,20 @@ WorkUnitKey makeKey(std::uint64_t node, std::uint64_t ordinal) {
       take(WorkUnitDescriptorRef::get("loom.test.execution_registry",
                                       SchemaVersion{1, 0}, 9)),
       ordinal));
+}
+
+external_tool::PreparedExternalToolInvocation
+makePrepared(llvm::StringRef runRoot, llvm::StringRef name,
+             std::uint8_t digestByte) {
+  return {(runRoot + "/" + name).str(), computeBlobDigest({digestByte})};
+}
+
+void prepare(ExecutionJournal &journal, const WorkUnitKey &key,
+             const external_tool::PreparedExternalToolInvocation &prepared) {
+  requireSuccess(journal.queue(key));
+  requireSuccess(journal.markRunning(key));
+  requireSuccess(journal.recordPrepared(key, prepared));
+  requireSuccess(journal.beginPreparedExecution(key));
 }
 
 std::uint64_t unixNanosecondsNow() {
@@ -214,6 +231,107 @@ void testStrictAdmission(const ArtifactStore &store,
   requireErrorContains(std::move(unordered), "canonical and unique");
 }
 
+void testExternalToolWorkLedger(const ArtifactStore &store,
+                                llvm::StringRef runRoot) {
+  Fixture fixture =
+      makeFixture(store, 0x51, "loom.test.execution.external_tool.v1");
+  ExecutionJournal journal =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+
+  const WorkUnitKey missKey = makeKey(4, 0);
+  prepare(journal, missKey, makePrepared(runRoot, "miss", 0x61));
+  requireSuccess(journal.recordPreparedExecutionInterval(
+      missKey, 0, unixNanosecondsNow(),
+      external_tool::ExternalToolInvocationExecutionObservation{
+          0, external_tool::ExternalToolResultCacheAvailability::Available,
+          external_tool::ExternalToolResultCacheLookup::Miss,
+          external_tool::ExternalToolResultCacheDiscard::Discarded,
+          external_tool::ExternalToolResultCachePublication::Published, false,
+          true}));
+
+  const WorkUnitKey hitKey = makeKey(4, 1);
+  prepare(journal, hitKey, makePrepared(runRoot, "hit", 0x62));
+  requireSuccess(journal.recordPreparedExecutionInterval(
+      hitKey, 0, unixNanosecondsNow(),
+      external_tool::ExternalToolInvocationExecutionObservation{
+          0, external_tool::ExternalToolResultCacheAvailability::Available,
+          external_tool::ExternalToolResultCacheLookup::Hit,
+          external_tool::ExternalToolResultCacheDiscard::NotAttempted,
+          external_tool::ExternalToolResultCachePublication::NotAttempted, true,
+          false}));
+
+  ExecutionJournal reopened =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  const auto miss = take(reopened.find(missKey));
+  const auto hit = take(reopened.find(hitKey));
+  if (!miss ||
+      miss->externalToolWork !=
+          ExternalToolWorkLedger{1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0})
+    fail("reopen changed external-tool cache-miss work accounting");
+  if (!hit ||
+      hit->externalToolWork !=
+          ExternalToolWorkLedger{1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0})
+    fail("reopen changed external-tool cache-hit work accounting");
+}
+
+void rewriteSingleRecordSnapshotAsLegacy(llvm::StringRef runRoot) {
+  const std::filesystem::path path =
+      std::filesystem::path(runRoot.str()) / "execution-journal.snapshot";
+  std::ifstream input(path, std::ios::binary);
+  std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                  std::istreambuf_iterator<char>());
+  constexpr std::size_t ledgerBytes =
+      externalToolWorkLedgerCounterCount * sizeof(std::uint64_t);
+  if (input.bad() || bytes.size() < sizeof(std::uint64_t) + ledgerBytes)
+    fail("cannot read the generated journal snapshot");
+  std::uint64_t identityBytes = 0;
+  for (std::size_t index = 0; index != sizeof(std::uint64_t); ++index)
+    identityBytes = (identityBytes << 8) | bytes[index];
+  const std::size_t minorOffset = sizeof(std::uint64_t) +
+                                  static_cast<std::size_t>(identityBytes) +
+                                  sizeof(std::uint32_t);
+  if (minorOffset + sizeof(std::uint32_t) > bytes.size() ||
+      bytes[minorOffset + 3] != 2)
+    fail("generated journal snapshot has an unexpected schema version");
+  bytes[minorOffset + 3] = 1;
+  bytes.resize(bytes.size() - ledgerBytes);
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+  if (!output)
+    fail("cannot write the legacy journal snapshot fixture");
+}
+
+void testLegacyPreparedLedgerAdoption(const ArtifactStore &store,
+                                      llvm::StringRef runRoot) {
+  Fixture fixture =
+      makeFixture(store, 0x71, "loom.test.execution.legacy_external_tool.v1");
+  const WorkUnitKey key = makeKey(5, 0);
+  {
+    ExecutionJournal journal =
+        take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+    requireSuccess(journal.queue(key));
+    requireSuccess(journal.markRunning(key));
+    requireSuccess(
+        journal.recordPrepared(key, makePrepared(runRoot, "legacy", 0x72)));
+  }
+  rewriteSingleRecordSnapshotAsLegacy(runRoot);
+  ExecutionJournal adopted =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  auto prepared = take(adopted.find(key));
+  if (!prepared || prepared->externalToolWork.planned != 1 ||
+      prepared->externalToolWork.reserved != 0)
+    fail("legacy prepared work did not derive its planned ledger entry");
+  requireSuccess(adopted.beginPreparedExecution(key));
+  requireSuccess(adopted.recordPreparedExecutionInterval(
+      key, 0, unixNanosecondsNow(),
+      external_tool::ExternalToolInvocationExecutionObservation{
+          0, external_tool::ExternalToolResultCacheAvailability::Disabled,
+          external_tool::ExternalToolResultCacheLookup::NotAttempted,
+          external_tool::ExternalToolResultCacheDiscard::NotAttempted,
+          external_tool::ExternalToolResultCachePublication::NotAttempted,
+          false, true}));
+}
+
 } // namespace
 
 int main() {
@@ -221,8 +339,13 @@ int main() {
   const std::string storeRoot = directory.makeDirectory("artifacts");
   const std::string recoveryRun = directory.makeDirectory("recovery-run");
   const std::string admissionRun = directory.makeDirectory("admission-run");
+  const std::string externalToolRun =
+      directory.makeDirectory("external-tool-run");
+  const std::string legacyRun = directory.makeDirectory("legacy-run");
   ArtifactStore store(storeRoot);
   testRecoveryAndTerminalAdmission(store, recoveryRun);
   testStrictAdmission(store, admissionRun);
+  testExternalToolWorkLedger(store, externalToolRun);
+  testLegacyPreparedLedgerAdoption(store, legacyRun);
   return 0;
 }

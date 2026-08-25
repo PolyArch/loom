@@ -34,7 +34,8 @@ namespace {
 
 constexpr llvm::StringLiteral kSnapshotName = "execution-journal.snapshot";
 constexpr llvm::StringLiteral kSnapshotIdentity = "loom.dse.execution_journal";
-constexpr SchemaVersion kSnapshotVersion{1, 1};
+constexpr SchemaVersion kLegacySnapshotVersion{1, 1};
+constexpr SchemaVersion kSnapshotVersion{1, 2};
 constexpr std::uint64_t kMaximumSnapshotBytes = 64ULL * 1024ULL * 1024ULL;
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -311,7 +312,66 @@ llvm::Error validateRecord(const JournalWorkUnitRecord &record) {
   if (record.finalizedWorkRecord &&
       !canonicalAscii(record.finalizedWorkRecord->schemaIdentity))
     return invalid("finalized-work record schema is not canonical ASCII");
+  const ExternalToolWorkLedger &ledger = record.externalToolWork;
+  if (ledger.consumed > ledger.reserved ||
+      ledger.avoided > ledger.reserved - ledger.consumed ||
+      ledger.reserved > ledger.planned)
+    return invalid("external-tool work exceeds its planned reservation");
+  if (ledger.avoided != ledger.cacheHits)
+    return invalid("external-tool avoided work differs from cache hits");
+  if (ledger.cacheHits > ledger.cacheAvailable ||
+      ledger.cacheMisses > ledger.cacheAvailable - ledger.cacheHits)
+    return invalid("external-tool cache lookups exceed availability");
+  if (ledger.cacheDiscards > ledger.cacheMisses ||
+      ledger.cacheDiscardFailures > ledger.cacheMisses - ledger.cacheDiscards)
+    return invalid("external-tool cache discards exceed misses");
+  if (ledger.cachePublications > ledger.cacheMisses ||
+      ledger.cachePublicationFailures >
+          ledger.cacheMisses - ledger.cachePublications)
+    return invalid("external-tool cache publications exceed misses");
+  if (ledger.cacheDisabled > ledger.reserved ||
+      ledger.cacheAvailable > ledger.reserved - ledger.cacheDisabled ||
+      ledger.cacheUnavailable >
+          ledger.reserved - ledger.cacheDisabled - ledger.cacheAvailable)
+    return invalid("external-tool cache observations exceed reservations");
+  if (ledger.cacheLockWaits > ledger.reserved)
+    return invalid("external-tool cache waits exceed reservations");
+  if (!record.preparedInvocation && ledger.planned != 0)
+    return invalid("work without a prepared invocation has external-tool work");
   return llvm::Error::success();
+}
+
+void encodeExternalToolWorkLedger(Encoder &encoder,
+                                  const ExternalToolWorkLedger &ledger) {
+  encoder.u64(ledger.planned);
+  encoder.u64(ledger.reserved);
+  encoder.u64(ledger.consumed);
+  encoder.u64(ledger.avoided);
+  encoder.u64(ledger.cacheDisabled);
+  encoder.u64(ledger.cacheAvailable);
+  encoder.u64(ledger.cacheUnavailable);
+  encoder.u64(ledger.cacheHits);
+  encoder.u64(ledger.cacheMisses);
+  encoder.u64(ledger.cacheLockWaits);
+  encoder.u64(ledger.cacheDiscards);
+  encoder.u64(ledger.cacheDiscardFailures);
+  encoder.u64(ledger.cachePublications);
+  encoder.u64(ledger.cachePublicationFailures);
+}
+
+llvm::Expected<ExternalToolWorkLedger>
+decodeExternalToolWorkLedger(Decoder &decoder) {
+  std::array<std::uint64_t, externalToolWorkLedgerCounterCount> values{};
+  for (std::uint64_t &value : values) {
+    auto decoded = decoder.u64("external-tool work ledger value");
+    if (!decoded)
+      return decoded.takeError();
+    value = *decoded;
+  }
+  return ExternalToolWorkLedger{values[0],  values[1], values[2],  values[3],
+                                values[4],  values[5], values[6],  values[7],
+                                values[8],  values[9], values[10], values[11],
+                                values[12], values[13]};
 }
 
 void encodeRecord(Encoder &encoder, const JournalWorkUnitRecord &record) {
@@ -343,9 +403,11 @@ void encodeRecord(Encoder &encoder, const JournalWorkUnitRecord &record) {
     encoder.u32(record.finalizedWorkRecord->schemaVersion.minor);
     encoder.bytes(record.finalizedWorkRecord->payloadDigest.bytes());
   }
+  encodeExternalToolWorkLedger(encoder, record.externalToolWork);
 }
 
-llvm::Expected<JournalWorkUnitRecord> decodeRecord(Decoder &decoder) {
+llvm::Expected<JournalWorkUnitRecord>
+decodeRecord(Decoder &decoder, SchemaVersion snapshotVersion) {
   auto key = decodeKey(decoder);
   if (!key)
     return key.takeError();
@@ -448,11 +510,21 @@ llvm::Expected<JournalWorkUnitRecord> decodeRecord(Decoder &decoder) {
     finalizedWork = OwnerFinalizedWorkRecordRef{
         std::move(*schema), {*major, *minor}, std::move(*digest)};
   }
+  ExternalToolWorkLedger externalToolWork;
+  if (snapshotVersion == kSnapshotVersion) {
+    auto decoded = decodeExternalToolWorkLedger(decoder);
+    if (!decoded)
+      return decoded.takeError();
+    externalToolWork = *decoded;
+  } else if (prepared) {
+    externalToolWork.planned = 1;
+  }
   JournalWorkUnitRecord record{
       std::move(*key),      static_cast<JournalWorkUnitStatus>(*rawStatus),
       std::move(intervals), *activeStart,
       *terminalTime,        std::move(outputs),
-      std::move(prepared),  std::move(finalizedWork)};
+      std::move(prepared),  std::move(finalizedWork),
+      externalToolWork};
   if (llvm::Error error = validateRecord(record))
     return error;
   return record;
@@ -670,8 +742,10 @@ decodeState(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
   auto minor = decoder.u32("journal minor version");
   if (!minor)
     return minor.takeError();
-  if (*identity != kSnapshotIdentity || *major != kSnapshotVersion.major ||
-      *minor != kSnapshotVersion.minor)
+  const SchemaVersion snapshotVersion{*major, *minor};
+  if (*identity != kSnapshotIdentity ||
+      (snapshotVersion != kLegacySnapshotVersion &&
+       snapshotVersion != kSnapshotVersion))
     return invalid("snapshot schema is unsupported");
   auto runKeyBytes = decoder.bytes(DseRunKey::byteSize, "run key");
   if (!runKeyBytes)
@@ -705,7 +779,7 @@ decodeState(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
   std::vector<JournalWorkUnitRecord> records;
   records.reserve(static_cast<std::size_t>(*count));
   for (std::uint64_t index = 0; index != *count; ++index) {
-    auto record = decodeRecord(decoder);
+    auto record = decodeRecord(decoder, snapshotVersion);
     if (!record)
       return record.takeError();
     if (!records.empty() && !(records.back().key < record->key))
@@ -820,6 +894,7 @@ llvm::Error ExecutionJournal::queue(const WorkUnitKey &key) {
     found->finalizedOutputs.clear();
     found->preparedInvocation.reset();
     found->finalizedWorkRecord.reset();
+    found->externalToolWork = {};
   } else {
     state_->workUnits.insert(
         found, JournalWorkUnitRecord{key,
@@ -829,7 +904,8 @@ llvm::Error ExecutionJournal::queue(const WorkUnitKey &key) {
                                      0,
                                      {},
                                      std::nullopt,
-                                     std::nullopt});
+                                     std::nullopt,
+                                     {}});
   }
   return flushLocked(*state_);
 }
@@ -883,6 +959,7 @@ llvm::Error ExecutionJournal::recordPrepared(
   }
   updated.status = JournalWorkUnitStatus::Prepared;
   updated.preparedInvocation = prepared;
+  updated.externalToolWork.planned = 1;
   if (llvm::Error error = validateRecord(updated))
     return error;
   *found = std::move(updated);
@@ -899,16 +976,24 @@ llvm::Error ExecutionJournal::beginPreparedExecution(const WorkUnitKey &key) {
     return invalid("only prepared work can enter external execution");
   if (found->activeAttemptStartUnixTimeNanoseconds != 0)
     return invalid("prepared work already has an active execution interval");
+  if (found->externalToolWork.reserved != 0 &&
+      (found->externalToolWork.consumed != 0 ||
+       found->externalToolWork.avoided != 0))
+    return invalid("prepared external work is already settled");
   auto now = unixNanosecondsNow();
   if (!now)
     return now.takeError();
+  if (found->externalToolWork.reserved == 0)
+    found->externalToolWork.reserved = 1;
   found->activeAttemptStartUnixTimeNanoseconds = *now;
   return flushLocked(*state_);
 }
 
 llvm::Error ExecutionJournal::recordPreparedExecutionInterval(
     const WorkUnitKey &key, std::uint64_t activeWallTimeNanoseconds,
-    std::uint64_t observedUnixTimeNanoseconds) {
+    std::uint64_t observedUnixTimeNanoseconds,
+    std::optional<external_tool::ExternalToolInvocationExecutionObservation>
+        executionObservation) {
   if (observedUnixTimeNanoseconds == 0)
     return invalid("prepared execution interval requires an observation time");
   std::lock_guard<std::mutex> lock(state_->mutex);
@@ -922,6 +1007,57 @@ llvm::Error ExecutionJournal::recordPreparedExecutionInterval(
   if (llvm::Error error = addInterval(updated, activeWallTimeNanoseconds,
                                       observedUnixTimeNanoseconds))
     return error;
+  if (executionObservation) {
+    ExternalToolWorkLedger &ledger = updated.externalToolWork;
+    if (executionObservation->invokedExternalTool)
+      ++ledger.consumed;
+    if (executionObservation->cacheLookup ==
+        external_tool::ExternalToolResultCacheLookup::Hit)
+      ++ledger.avoided;
+    switch (executionObservation->cacheAvailability) {
+    case external_tool::ExternalToolResultCacheAvailability::Disabled:
+      ++ledger.cacheDisabled;
+      break;
+    case external_tool::ExternalToolResultCacheAvailability::Available:
+      ++ledger.cacheAvailable;
+      break;
+    case external_tool::ExternalToolResultCacheAvailability::Unavailable:
+      ++ledger.cacheUnavailable;
+      break;
+    }
+    switch (executionObservation->cacheLookup) {
+    case external_tool::ExternalToolResultCacheLookup::NotAttempted:
+      break;
+    case external_tool::ExternalToolResultCacheLookup::Hit:
+      ++ledger.cacheHits;
+      break;
+    case external_tool::ExternalToolResultCacheLookup::Miss:
+      ++ledger.cacheMisses;
+      break;
+    }
+    if (executionObservation->waitedForCacheKeyLock)
+      ++ledger.cacheLockWaits;
+    switch (executionObservation->cacheDiscard) {
+    case external_tool::ExternalToolResultCacheDiscard::NotAttempted:
+      break;
+    case external_tool::ExternalToolResultCacheDiscard::Discarded:
+      ++ledger.cacheDiscards;
+      break;
+    case external_tool::ExternalToolResultCacheDiscard::Failed:
+      ++ledger.cacheDiscardFailures;
+      break;
+    }
+    switch (executionObservation->cachePublication) {
+    case external_tool::ExternalToolResultCachePublication::NotAttempted:
+      break;
+    case external_tool::ExternalToolResultCachePublication::Published:
+      ++ledger.cachePublications;
+      break;
+    case external_tool::ExternalToolResultCachePublication::Failed:
+      ++ledger.cachePublicationFailures;
+      break;
+    }
+  }
   if (llvm::Error error = validateRecord(updated))
     return error;
   *found = std::move(updated);

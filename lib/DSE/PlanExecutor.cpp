@@ -335,7 +335,9 @@ private:
   llvm::Expected<SiteResourceClaim>
   resourceClaim(const WorkUnitKey &key,
                 const BlobDigest *externalBinding) const;
-  llvm::Expected<bool> executePreparedInvocation(
+  llvm::Expected<
+      std::optional<external_tool::ExternalToolInvocationExecutionObservation>>
+  executePreparedInvocation(
       const WorkUnitKey &key,
       const external_tool::PreparedExternalToolInvocation &prepared,
       bool reserveNewDispatch);
@@ -479,7 +481,9 @@ llvm::Expected<SiteResourceClaim> RecoverablePlanWorkExecutor::resourceClaim(
                                 site.scratchBytes, {tool}, licenses);
 }
 
-llvm::Expected<bool> RecoverablePlanWorkExecutor::executePreparedInvocation(
+llvm::Expected<
+    std::optional<external_tool::ExternalToolInvocationExecutionObservation>>
+RecoverablePlanWorkExecutor::executePreparedInvocation(
     const WorkUnitKey &key,
     const external_tool::PreparedExternalToolInvocation &prepared,
     bool reserveNewDispatch) {
@@ -487,7 +491,8 @@ llvm::Expected<bool> RecoverablePlanWorkExecutor::executePreparedInvocation(
       policy_.externalSite()->disposition !=
           ExternalAttemptDisposition::ExecutePrepared ||
       (reserveNewDispatch && !reserveDispatch()))
-    return false;
+    return std::optional<
+        external_tool::ExternalToolInvocationExecutionObservation>{};
   auto bindingDigest =
       external_tool::deriveExternalToolExecutionBindingDigest(prepared);
   if (!bindingDigest)
@@ -501,21 +506,27 @@ llvm::Expected<bool> RecoverablePlanWorkExecutor::executePreparedInvocation(
   if (llvm::Error error = journal_.beginPreparedExecution(key))
     return std::move(error);
   const auto begin = std::chrono::steady_clock::now();
-  auto exitCode = external_tool::executeExternalToolInvocationBundle(prepared);
+  auto execution =
+      external_tool::executeExternalToolInvocationBundleObserved(prepared);
   auto active = activeNanoseconds(begin);
   if (!active)
     return active.takeError();
   auto end = terminalUnixNanoseconds();
   if (!end)
     return end.takeError();
-  llvm::Error intervalError =
-      journal_.recordPreparedExecutionInterval(key, *active, *end);
-  if (!exitCode)
-    return llvm::joinErrors(exitCode.takeError(), std::move(intervalError));
+  llvm::Error intervalError = journal_.recordPreparedExecutionInterval(
+      key, *active, *end,
+      execution
+          ? std::optional<
+                external_tool::ExternalToolInvocationExecutionObservation>(
+                *execution)
+          : std::nullopt);
+  if (!execution)
+    return llvm::joinErrors(execution.takeError(), std::move(intervalError));
   if (intervalError)
     return std::move(intervalError);
-  (void)*exitCode;
-  return true;
+  return std::optional<
+      external_tool::ExternalToolInvocationExecutionObservation>(*execution);
 }
 
 llvm::Expected<CandidateGeneratorProviderResult>
@@ -563,7 +574,7 @@ RecoverablePlanWorkExecutor::executeGenerate(
         return makeIncompleteCandidateResult(
             *descriptor,
             CandidateGeneratorIncompleteReason::CancelledOrTimeout);
-      (**imported).dispatched = true;
+      (**imported).dispatched = (*executed)->invokedExternalTool;
     }
     std::vector<ArtifactRootReference> roots = candidateResultRoots(**imported);
     auto terminalTime = terminalUnixNanoseconds();
@@ -749,7 +760,7 @@ RecoverablePlanWorkExecutor::executeGenerate(
   if (!*imported)
     return makeIncompleteCandidateResult(
         *descriptor, CandidateGeneratorIncompleteReason::CancelledOrTimeout);
-  (**imported).dispatched = true;
+  (**imported).dispatched = (*executed)->invokedExternalTool;
   auto terminalTime = terminalUnixNanoseconds();
   if (!terminalTime)
     return terminalTime.takeError();

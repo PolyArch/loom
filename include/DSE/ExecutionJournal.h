@@ -2,6 +2,7 @@
 #define LOOM_DSE_EXECUTIONJOURNAL_H
 
 #include "Common/Artifact.h"
+#include "DSE/ExternalToolWorkLedger.h"
 #include "DSE/InvocationManifest.h"
 #include "ExternalTool/InvocationBundle.h"
 
@@ -133,6 +134,7 @@ struct JournalWorkUnitRecord final {
   std::optional<external_tool::PreparedExternalToolInvocation>
       preparedInvocation;
   std::optional<OwnerFinalizedWorkRecordRef> finalizedWorkRecord;
+  ExternalToolWorkLedger externalToolWork;
 
   std::uint64_t activeWallTimeNanoseconds() const;
 };
@@ -161,10 +163,11 @@ public:
                  std::uint64_t activeWallTimeNanoseconds = 0,
                  std::uint64_t observedUnixTimeNanoseconds = 0);
   llvm::Error beginPreparedExecution(const WorkUnitKey &key);
-  llvm::Error
-  recordPreparedExecutionInterval(const WorkUnitKey &key,
-                                  std::uint64_t activeWallTimeNanoseconds,
-                                  std::uint64_t observedUnixTimeNanoseconds);
+  llvm::Error recordPreparedExecutionInterval(
+      const WorkUnitKey &key, std::uint64_t activeWallTimeNanoseconds,
+      std::uint64_t observedUnixTimeNanoseconds,
+      std::optional<external_tool::ExternalToolInvocationExecutionObservation>
+          executionObservation = std::nullopt);
   llvm::Error
   markTerminal(const WorkUnitKey &key, JournalWorkUnitStatus status,
                std::uint64_t activeWallTimeNanoseconds,
