@@ -276,16 +276,17 @@ bool activeDemandRankLess(const PreparedTechCandidate &lhs,
   assert(lhs.activeProblem && rhs.activeProblem);
   const auto &lhsStatistics = lhs.activeProblem->statistics();
   const auto &rhsStatistics = rhs.activeProblem->statistics();
+  // Only frozen semantic demand participates in formal candidate order.
+  // Diagnostic context contains construction timing and accounting counters;
+  // neither is a replay or identity input.
   const auto lhsDemand = std::tie(
       lhsStatistics.logicalSinkCount, lhsStatistics.logicalNetCount,
       lhsStatistics.handshakePotentialContributionCount,
-      lhsStatistics.attachmentOptionCount, lhsStatistics.computePlacementCount,
-      lhsStatistics.context.deterministicWork);
+      lhsStatistics.attachmentOptionCount, lhsStatistics.computePlacementCount);
   const auto rhsDemand = std::tie(
       rhsStatistics.logicalSinkCount, rhsStatistics.logicalNetCount,
       rhsStatistics.handshakePotentialContributionCount,
-      rhsStatistics.attachmentOptionCount, rhsStatistics.computePlacementCount,
-      rhsStatistics.context.deterministicWork);
+      rhsStatistics.attachmentOptionCount, rhsStatistics.computePlacementCount);
   if (lhsDemand != rhsDemand)
     return lhsDemand < rhsDemand;
   return artifactRootReferenceLess(lhs.reference, rhs.reference);
