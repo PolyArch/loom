@@ -4,6 +4,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/NumericValue.h"
 #include "Fabric/IR/ResourceContract.h"
+#include "Simulator/CGRASimulator.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -1006,15 +1007,8 @@ void graphActivationExecutesExactMemoryInternalConnections() {
 void graphActivationRejectsUnsupportedMemoryContracts() {
   auto artifact = unsupportedMemoryProgram();
   auto view = take(artifact.view());
-  enum class UnsupportedKind : std::uint8_t {
-    Volatile,
-    AtomicAccess,
-    AtomicRmw,
-    CompareExchange,
-    Fence,
-    Count,
-  };
-  std::array<bool, static_cast<std::size_t>(UnsupportedKind::Count)> seen{};
+  using UnsupportedKind = loom::sim::CgraUnsupportedMemoryContractKind;
+  std::array<bool, 5> seen{};
   require(view.graphs().size() == seen.size(),
           "unsupported CGRA memory fixture lost a graph");
 
@@ -1025,6 +1019,7 @@ void graphActivationRejectsUnsupportedMemoryContracts() {
     auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
     require(prepared, "unsupported CGRA memory graph preparation failed");
     std::optional<UnsupportedKind> kind;
+    std::optional<dataflow::ActorRef> actorRef;
     llvm::StringRef actorName;
     for (const ActorExecutionPlan &actor : prepared->actorPlans) {
       const auto *memory = std::get_if<dataflow::MemoryContractPayload>(
@@ -1051,8 +1046,14 @@ void graphActivationRejectsUnsupportedMemoryContracts() {
         kind = UnsupportedKind::Fence;
       }
       actorName = actor.operation->getName().getStringRef();
+      auto canonical = llvm::find_if(view.actors(), [&](const auto &candidate) {
+        return candidate.op == actor.operation;
+      });
+      require(canonical != view.actors().end(),
+              "unsupported memory actor has no canonical reference");
+      actorRef = canonical->ref;
     }
-    require(kind.has_value(),
+    require(kind.has_value() && actorRef.has_value(),
             "unsupported CGRA memory graph lacks its contract actor");
     const std::size_t kindIndex = static_cast<std::size_t>(*kind);
     require(!seen[kindIndex],
@@ -1071,17 +1072,26 @@ void graphActivationRejectsUnsupportedMemoryContracts() {
         /*captureMicroarchitecture=*/false);
     require(!rejected,
             "CGRA activation accepted an unsupported memory contract");
+    llvm::Error rejection = rejected.takeError();
+    require(rejection.isA<loom::sim::CgraExecutionUnsupported>(),
+            "CGRA memory contract rejection lost its typed payload");
     std::error_code code;
     std::string diagnostic;
-    llvm::handleAllErrors(rejected.takeError(),
-                          [&](const llvm::ErrorInfoBase &failure) {
-                            code = failure.convertToErrorCode();
-                            diagnostic = failure.message();
-                          });
+    std::optional<loom::sim::CgraUnsupportedMemoryContract> contract;
+    llvm::handleAllErrors(
+        std::move(rejection),
+        [&](const loom::sim::CgraExecutionUnsupported &failure) {
+          code = failure.convertToErrorCode();
+          llvm::raw_string_ostream stream(diagnostic);
+          failure.log(stream);
+          contract = failure.memoryContract();
+        });
     require(code == std::make_error_code(std::errc::not_supported),
             "CGRA memory contract rejection was not typed Unsupported");
     require(llvm::StringRef(diagnostic).contains(actorName),
             "CGRA memory contract rejection named the wrong actor");
+    require(contract && contract->kind == *kind && contract->actor == *actorRef,
+            "CGRA memory contract rejection lost its kind or actor identity");
   }
   require(llvm::all_of(seen, [](bool value) { return value; }),
           "CGRA activation rejection did not cover every memory contract");

@@ -40,6 +40,7 @@ struct CgraSimulationAttemptLimits final {
 struct CgraSimulationEvaluation final {
   EvaluationEvidence evidence;
   std::optional<sim::CgraClosedWaitSetDiagnostic> closedWait;
+  std::optional<sim::CgraUnsupportedMemoryContract> unsupportedMemoryContract;
 };
 
 llvm::Error registerCgraSimulationModel();

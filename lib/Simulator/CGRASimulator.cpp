@@ -7,6 +7,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <functional>
@@ -17,6 +18,17 @@
 #include <vector>
 
 namespace loom::sim {
+
+char CgraExecutionUnsupported::ID = 0;
+
+void CgraExecutionUnsupported::log(llvm::raw_ostream &stream) const {
+  stream << message_;
+}
+
+std::error_code CgraExecutionUnsupported::convertToErrorCode() const {
+  return std::make_error_code(std::errc::not_supported);
+}
+
 namespace {
 
 llvm::Error invalid(llvm::Twine message) {

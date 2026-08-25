@@ -247,6 +247,15 @@ Application retains an ordinary loaded Deployment and no resource-time
 selector is invented. This invocation-local composition does not by itself
 persist the graph or its endpoint Deployment closures in a deployment package.
 
+Memory capability failure is narrower than generic execution failure. The CGRA
+provider reports the exact unsupported contract kind and canonical actor, so
+Application can distinguish a fixed incapable Fabric from an adapter failure.
+That typed refusal is necessary evidence for a possible source-backed host
+execution, but it is not sufficient to select or deploy one. Application must
+still prove the host execution and preserve it as a distinct runtime path; it
+must never relabel an atomic operation as Plain, invent accelerator cycles, or
+treat a diagnostic string as capability evidence.
+
 The same separation applies to control progress. A channel consumer may be the
 first mapped thread submitted, so Host glue must preserve launch handles and
 defer its join to the source wait. Each target has independent transient

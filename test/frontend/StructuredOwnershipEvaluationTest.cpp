@@ -1630,9 +1630,17 @@ void runEvaluationAnchor() {
                    loom::evaluation::MetricKind::Runtime) !=
       spatialEvaluation.value)
     fail("source-activity projection changed the exact analytical result");
+  const auto sourceFunctionalBefore = evaluationCache.statistics();
   EvaluatedFunctional baselineFunctional =
       evaluateStructuredFunctional(baselineRef, inputs.workloadReference,
                                    inputs.runtimeInputReference, store, blobs);
+  const auto sourceFunctionalAfter = evaluationCache.statistics();
+  if (sourceFunctionalAfter.sourceObservationHitCount +
+          sourceFunctionalAfter.sourceObservationMissCount !=
+      sourceFunctionalBefore.sourceObservationHitCount +
+          sourceFunctionalBefore.sourceObservationMissCount + 1)
+    fail("exact-source functional Evidence did not consume native source "
+         "observations");
   EvaluatedFunctional spatialFunctional =
       evaluateStructuredFunctional(spatialRef, inputs.workloadReference,
                                    inputs.runtimeInputReference, store, blobs);

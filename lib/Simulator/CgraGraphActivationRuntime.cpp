@@ -1,5 +1,7 @@
 #include "CgraGraphActivationRuntime.h"
 
+#include "Simulator/CGRASimulator.h"
+
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -17,8 +19,9 @@ llvm::Error invalid(llvm::Twine message) {
       std::make_error_code(std::errc::invalid_argument), message);
 }
 
-llvm::Error
-rejectUnsupportedMemoryContracts(const PreparedGraphExecution &execution) {
+llvm::Error rejectUnsupportedMemoryContracts(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const PreparedGraphExecution &execution) {
   for (const ActorExecutionPlan &actor : execution.actorPlans) {
     const auto *memory = std::get_if<::dataflow::MemoryContractPayload>(
         &actor.projection.payload);
@@ -27,11 +30,35 @@ rejectUnsupportedMemoryContracts(const PreparedGraphExecution &execution) {
     const auto *plain = std::get_if<::dataflow::PlainAccessProjection>(memory);
     if (plain && !plain->isVolatile)
       continue;
-    return llvm::createStringError(
-        std::errc::not_supported,
-        "CGRA graph activation does not model atomic, volatile, or fence "
-        "actor '%s'",
-        actor.operation->getName().getStringRef().str().c_str());
+
+    auto canonical = llvm::find_if(dataflow.actors(), [&](const auto &view) {
+      return view.op == actor.operation;
+    });
+    if (canonical == dataflow.actors().end())
+      return invalid("CGRA memory actor has no canonical identity");
+
+    CgraUnsupportedMemoryContractKind kind;
+    if (plain)
+      kind = CgraUnsupportedMemoryContractKind::Volatile;
+    else if (std::holds_alternative<::dataflow::AtomicAccessProjection>(
+                 *memory))
+      kind = CgraUnsupportedMemoryContractKind::AtomicAccess;
+    else if (std::holds_alternative<::dataflow::AtomicRmwProjection>(*memory))
+      kind = CgraUnsupportedMemoryContractKind::AtomicRmw;
+    else if (std::holds_alternative<::dataflow::CompareExchangeProjection>(
+                 *memory))
+      kind = CgraUnsupportedMemoryContractKind::CompareExchange;
+    else {
+      assert(std::holds_alternative<::dataflow::FenceProjection>(*memory) &&
+             "closed memory contract payload");
+      kind = CgraUnsupportedMemoryContractKind::Fence;
+    }
+    return llvm::make_error<CgraExecutionUnsupported>(
+        CgraUnsupportedMemoryContract{kind, canonical->ref},
+        (llvm::Twine("CGRA graph activation does not model atomic, volatile, "
+                     "or fence actor '") +
+         actor.operation->getName().getStringRef() + "'")
+            .str());
   }
   return llvm::Error::success();
 }
@@ -60,7 +87,7 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
     const PreparedGraphExecution &execution, SimulatorState &state,
     bool captureMicroarchitecture,
     CgraExternalMemoryProvider *externalMemoryProvider) {
-  if (llvm::Error error = rejectUnsupportedMemoryContracts(execution))
+  if (llvm::Error error = rejectUnsupportedMemoryContracts(dataflow, execution))
     return std::move(error);
   auto physicalRuntime = CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings);

@@ -436,7 +436,12 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       inputs->structuredProgram.identity()};
   bool mismatch = false;
   std::shared_ptr<const CachedReplayResult> replay;
-  if (candidate->identity() != inputs->structuredProgram.identity()) {
+  if (candidate->identity() == inputs->structuredProgram.identity()) {
+    auto sourceObservations = sourceObservationsFor(
+        source, *request.workload(), *request.runtimeInput(), *inputs);
+    if (!sourceObservations)
+      return classifyNativeFailure(sourceObservations.takeError());
+  } else {
     const detail::StructuredFunctionalCacheKey key = replayCacheKey(
         candidates.front(), *request.workload(), *request.runtimeInput());
     StructuredEvaluationInvocationCache *cache =

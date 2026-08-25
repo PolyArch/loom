@@ -844,6 +844,14 @@ it neither synthesizes a Spatial launch path nor interprets an absent one as a
 failed attempt. Runtime also cannot omit a selected programmable transport or
 other configuration unit from the owner-validated Deployment closure.
 
+The CGRA provider must preserve an incapable-memory refusal as a typed payload
+carrying the exact volatile, atomic access, atomic RMW, compare-exchange, or
+fence kind and its canonical actor reference. A generic unsupported diagnostic
+is not capability evidence. This payload alone does not authorize a host
+fallback: Application must additionally establish real host execution, the
+stopping-policy selection rule, an exact host-only Deployment path, and the
+associated Evidence before recording a fallback disposition.
+
 A graph mapped to SpatialCore execution has no implicit InstructionCore
 substitute. Any explicit alternative execution must be a separately compiled,
 mapped, and packaged disposition selected before runtime.

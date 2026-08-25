@@ -1,13 +1,14 @@
 #ifndef LOOM_SIMULATOR_CGRASIMULATOR_H
 #define LOOM_SIMULATOR_CGRASIMULATOR_H
 
+#include "Common/ComponentViewDigest.h"
+#include "Dataflow/IR/DataflowCanonicalEntity.h"
+#include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Simulator/CGRAAdmission.h"
 #include "Simulator/CgraExternalMemoryProvider.h"
 #include "Simulator/SimulationExecution.h"
 #include "Simulator/SpatialExecutionSession.h"
 #include "Simulator/SpatialTrace.h"
-#include "Common/ComponentViewDigest.h"
-#include "Fabric/IR/TemporalOperandBuffer.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
@@ -17,10 +18,48 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 namespace loom::sim {
+
+enum class CgraUnsupportedMemoryContractKind : std::uint8_t {
+  Volatile,
+  AtomicAccess,
+  AtomicRmw,
+  CompareExchange,
+  Fence,
+};
+
+struct CgraUnsupportedMemoryContract final {
+  CgraUnsupportedMemoryContractKind kind;
+  dataflow::ActorRef actor;
+};
+
+/// Typed refusal from the exact CGRA execution provider. Generic unsupported
+/// errors cannot authorize a host fallback.
+class CgraExecutionUnsupported final
+    : public llvm::ErrorInfo<CgraExecutionUnsupported> {
+public:
+  static char ID;
+
+  CgraExecutionUnsupported(CgraUnsupportedMemoryContract memoryContract,
+                           std::string message)
+      : memoryContract_(std::move(memoryContract)),
+        message_(std::move(message)) {}
+
+  const CgraUnsupportedMemoryContract &memoryContract() const {
+    return memoryContract_;
+  }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  CgraUnsupportedMemoryContract memoryContract_;
+  std::string message_;
+};
 
 struct CgraSimulationCounters final {
   std::uint64_t eventFrameCount = 0;

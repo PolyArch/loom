@@ -209,15 +209,31 @@ const EvaluationModelDescriptor kModelDescriptor{
     {},
     ProviderForm::InProcess};
 
-llvm::Expected<EvaluationModelResult>
-classifyExecutionFailure(llvm::Error error) {
+llvm::Expected<EvaluationModelResult> classifyExecutionFailure(
+    llvm::Error error,
+    std::optional<sim::CgraUnsupportedMemoryContract> *unsupportedMemory =
+        nullptr) {
+  if (unsupportedMemory)
+    unsupportedMemory->reset();
   std::error_code code;
   std::string diagnostic;
-  llvm::handleAllErrors(std::move(error), [&](const llvm::ErrorInfoBase &info) {
-    code = info.convertToErrorCode();
-    llvm::raw_string_ostream stream(diagnostic);
-    info.log(stream);
-  });
+  if (error.isA<sim::CgraExecutionUnsupported>()) {
+    llvm::handleAllErrors(std::move(error),
+                          [&](const sim::CgraExecutionUnsupported &info) {
+                            code = info.convertToErrorCode();
+                            llvm::raw_string_ostream stream(diagnostic);
+                            info.log(stream);
+                            if (unsupportedMemory)
+                              *unsupportedMemory = info.memoryContract();
+                          });
+  } else {
+    llvm::handleAllErrors(std::move(error),
+                          [&](const llvm::ErrorInfoBase &info) {
+                            code = info.convertToErrorCode();
+                            llvm::raw_string_ostream stream(diagnostic);
+                            info.log(stream);
+                          });
+  }
   emitInvocationDiagnostic(DiagnosticVerbosity::Summary,
                            InvocationDiagnosticStage::SystemPnr,
                            InvocationDiagnosticEvent::MappingFailure, [&] {
@@ -335,9 +351,13 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
     const BlobStore &blobStore,
-    std::optional<sim::CgraClosedWaitSetDiagnostic> *closedWait = nullptr) {
+    std::optional<sim::CgraClosedWaitSetDiagnostic> *closedWait = nullptr,
+    std::optional<sim::CgraUnsupportedMemoryContract> *unsupportedMemory =
+        nullptr) {
   if (closedWait)
     closedWait->reset();
+  if (unsupportedMemory)
+    unsupportedMemory->reset();
   if (request.modelBinding().descriptorRef() != kModelDescriptor.reference())
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -359,7 +379,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
       execution, workload, runtimeInput, limits.maxEventFrames,
       limits.executionDeadline, &externalMemory);
   if (!outcome)
-    return classifyExecutionFailure(outcome.takeError());
+    return classifyExecutionFailure(outcome.takeError(), unsupportedMemory);
   if (outcome->state == sim::SpatialExecutionSessionState::StoppedByLimit)
     return EvaluationModelResult{
         {{kExecutionOutputSlot, {}}},
@@ -1045,10 +1065,11 @@ evaluateCgraSimulationWithDiagnostics(
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
   std::optional<sim::CgraClosedWaitSetDiagnostic> closedWait;
+  std::optional<sim::CgraUnsupportedMemoryContract> unsupportedMemory;
   auto result = evaluateWithPrepared(
       prepared.request, prepared.resolution, prepared.execution,
       prepared.workload, prepared.runtimeInput, std::move(limits),
-      artifactStore, blobStore, &closedWait);
+      artifactStore, blobStore, &closedWait, &unsupportedMemory);
   if (!result)
     return result.takeError();
   auto evidence = EvaluationEvidence::get(
@@ -1057,8 +1078,8 @@ evaluateCgraSimulationWithDiagnostics(
       blobStore);
   if (!evidence)
     return evidence.takeError();
-  return CgraSimulationEvaluation{std::move(*evidence),
-                                  std::move(closedWait)};
+  return CgraSimulationEvaluation{std::move(*evidence), std::move(closedWait),
+                                  unsupportedMemory};
 }
 
 } // namespace loom::evaluation::models
