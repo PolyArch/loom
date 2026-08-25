@@ -42,6 +42,9 @@ enum class StructuredScopRefusalKind : std::uint32_t {
   NonLocalMemoryRoot = 21,
   VectorLoweringUnavailable = 22,
   UnsupportedPhysicalOffset = 23,
+  ProviderDomainNotAdmitted = 24,
+  ProviderScheduleNotEstablished = 25,
+  ProviderScheduleBudgetExhausted = 26,
 };
 
 enum class StructuredScopAccessKind : std::uint32_t {
@@ -53,6 +56,21 @@ enum class StructuredReductionSchedule : std::uint32_t {
   None = 0,
   IntegerAssociative = 1,
   FloatingReassociated = 2,
+};
+
+enum class StructuredPolyhedralProviderKind : std::uint32_t {
+  PinnedPollyIsl = 0,
+};
+
+struct StructuredPolyhedralScheduleView final {
+  StructuredPolyhedralProviderKind provider =
+      StructuredPolyhedralProviderKind::PinnedPollyIsl;
+  std::uint64_t parameterCount = 0;
+  std::uint64_t dependenceCount = 0;
+  std::uint64_t scheduleMapCount = 0;
+  std::uint64_t scheduleBandCount = 0;
+  std::uint64_t scheduleDimensionCount = 0;
+  std::uint64_t coincidentDimensionCount = 0;
 };
 
 struct StructuredScopAccessView final {
@@ -94,6 +112,7 @@ struct ExactStructuredScopView final {
       StructuredReductionSchedule::None;
   std::uint64_t reductionCount = 0;
   std::optional<mlir::arith::AtomicRMWKind> reductionKind;
+  StructuredPolyhedralScheduleView polyhedralSchedule;
   std::uint64_t minimumAlignmentBytes = 0;
   std::uint64_t maximumElementBytes = 0;
   std::optional<std::uint64_t> constantTripCount;
@@ -108,10 +127,9 @@ using StructuredScopAnalysisOutcome =
     std::variant<ExactStructuredScopView, StructuredScopRefusal>;
 
 /// Projects one exact affine loop through MLIR Affine/Presburger dependence
-/// and access analysis plus MLIR alias analysis. The admitted domain is a
-/// rank-one, zero-based, unit-stride SCoP with direct contiguous affine memory
-/// accesses, explicit alignment, no nested control, and only provider-proven
-/// parallel dependences or supported reductions.
+/// and access analysis, MLIR alias analysis, and the pinned Polly/ISL schedule
+/// provider. ISL objects remain invocation-local; this frozen view is the
+/// schedule-analysis owner consumed by candidate generation.
 llvm::Expected<StructuredScopAnalysisOutcome>
 analyzeExactStructuredScop(const StructuredProgramCandidate &parent,
                            const StructuredEntityRef &loop);

@@ -1,5 +1,7 @@
 #include "Frontend/Compilation/StructuredScop.h"
 
+#include "StructuredPolyhedralProvider.h"
+
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/OperationSchema.h"
 
@@ -435,6 +437,9 @@ llvm::Expected<StructuredScopAnalysisOutcome> analyzeProjectedScop(
   }
   if (projectedStatements != sourceStatementOps.size())
     return invalid("SCF-to-Affine projection changed statement cardinality");
+  if (sourceStatementOps.size() > detail::maximumPinnedIslStatementCount)
+    return refuse(loopReference,
+                  StructuredScopRefusalKind::ProviderDomainNotAdmitted);
   if (accesses.empty())
     return refuse(loopReference,
                   StructuredScopRefusalKind::AccessRelationProofNotEstablished);
@@ -459,6 +464,12 @@ llvm::Expected<StructuredScopAnalysisOutcome> analyzeProjectedScop(
 
   const unsigned dependenceDepth =
       mlir::affine::getNestingDepth(loop.getOperation()) + 1;
+  struct MemoryDependence final {
+    std::uint64_t sourceStatementOrdinal = 0;
+    std::uint64_t destinationStatementOrdinal = 0;
+    mlir::affine::FlatAffineValueConstraints relation;
+  };
+  std::vector<MemoryDependence> memoryDependences;
   for (const AccessProof &source : accesses) {
     for (const AccessProof &destination : accesses) {
       if (!source.writes && !destination.writes)
@@ -472,6 +483,20 @@ llvm::Expected<StructuredScopAnalysisOutcome> analyzeProjectedScop(
       if (dependence.value == mlir::affine::DependenceResult::HasDependence)
         return refuse(loopReference,
                       StructuredScopRefusalKind::LoopCarriedMemoryDependence);
+
+      mlir::affine::FlatAffineValueConstraints statementRelation;
+      const mlir::affine::DependenceResult statementDependence =
+          mlir::affine::checkMemrefAccessDependence(
+              source.access, destination.access, dependenceDepth + 1,
+              &statementRelation);
+      if (statementDependence.value == mlir::affine::DependenceResult::Failure)
+        return refuse(loopReference,
+                      StructuredScopRefusalKind::DependenceProofNotEstablished);
+      if (statementDependence.value ==
+          mlir::affine::DependenceResult::HasDependence)
+        memoryDependences.push_back({source.view.statementOrdinal,
+                                     destination.view.statementOrdinal,
+                                     std::move(statementRelation)});
     }
   }
 
@@ -515,6 +540,70 @@ llvm::Expected<StructuredScopAnalysisOutcome> analyzeProjectedScop(
                     StructuredScopRefusalKind::UnsupportedReduction);
   }
 
+  std::vector<mlir::affine::FlatAffineValueConstraints> providerDomains(
+      sourceStatementOps.size(), domain);
+  std::vector<detail::PolyhedralStatementDomain> providerStatements;
+  providerStatements.reserve(providerDomains.size());
+  for (auto [ordinal, statementDomain] : llvm::enumerate(providerDomains))
+    providerStatements.push_back({ordinal, &statementDomain});
+  std::vector<detail::PolyhedralDependenceRelation> providerDependences;
+  providerDependences.reserve(memoryDependences.size());
+  for (const MemoryDependence &dependence : memoryDependences)
+    providerDependences.push_back(
+        {dependence.sourceStatementOrdinal,
+         dependence.destinationStatementOrdinal, domain.getNumDimVars(),
+         domain.getNumDimVars(), &dependence.relation});
+  const auto appendPrecedence = [&](std::uint64_t source,
+                                    std::uint64_t destination) {
+    if (source == destination)
+      return;
+    const bool duplicate =
+        llvm::any_of(providerDependences, [&](const auto &dependence) {
+          return dependence.sourceStatementOrdinal == source &&
+                 dependence.destinationStatementOrdinal == destination &&
+                 dependence.relation == nullptr;
+        });
+    if (!duplicate)
+      providerDependences.push_back({source, destination,
+                                     domain.getNumDimVars(),
+                                     domain.getNumDimVars(), nullptr});
+  };
+  for (const StructuredScopComputeView &compute : computes)
+    for (const std::optional<std::uint64_t> &operand :
+         compute.operandStatements)
+      if (operand)
+        appendPrecedence(*operand, compute.statementOrdinal);
+  for (const AccessProof &access : accesses)
+    if (access.view.storedStatementOrdinal)
+      appendPrecedence(*access.view.storedStatementOrdinal,
+                       access.view.statementOrdinal);
+  auto providerOutcome =
+      detail::computePinnedIslSchedule(providerStatements, providerDependences);
+  if (!providerOutcome)
+    return providerOutcome.takeError();
+  if (auto *providerRefusal =
+          std::get_if<detail::PolyhedralScheduleProviderRefusalKind>(
+              &*providerOutcome)) {
+    StructuredScopRefusalKind refusal =
+        StructuredScopRefusalKind::ProviderScheduleNotEstablished;
+    switch (*providerRefusal) {
+    case detail::PolyhedralScheduleProviderRefusalKind::DomainNotAdmitted:
+      refusal = StructuredScopRefusalKind::ProviderDomainNotAdmitted;
+      break;
+    case detail::PolyhedralScheduleProviderRefusalKind::ScheduleNotEstablished:
+      break;
+    case detail::PolyhedralScheduleProviderRefusalKind::
+        OperationBudgetExhausted:
+      refusal = StructuredScopRefusalKind::ProviderScheduleBudgetExhausted;
+      break;
+    }
+    return refuse(loopReference, refusal);
+  }
+  const detail::PolyhedralScheduleProviderView &providerSchedule =
+      std::get<detail::PolyhedralScheduleProviderView>(*providerOutcome);
+  if (providerSchedule.scheduleMapCount != sourceStatementOps.size())
+    return invalid("Polly/ISL schedule changed statement cardinality");
+
   ExactStructuredScopView result(loopReference);
   mlir::Operation *symbolOwner = sourceLoop->getParentOp();
   while (symbolOwner && !symbolOwner->getAttrOfType<mlir::StringAttr>(
@@ -549,6 +638,13 @@ llvm::Expected<StructuredScopAnalysisOutcome> analyzeProjectedScop(
   result.reductionCount = reductions.size();
   if (!reductions.empty())
     result.reductionKind = reductions.front().kind;
+  result.polyhedralSchedule = {StructuredPolyhedralProviderKind::PinnedPollyIsl,
+                               providerSchedule.parameterCount,
+                               providerDependences.size(),
+                               providerSchedule.scheduleMapCount,
+                               providerSchedule.scheduleBandCount,
+                               providerSchedule.scheduleDimensionCount,
+                               providerSchedule.coincidentDimensionCount};
   result.minimumAlignmentBytes = std::numeric_limits<std::uint64_t>::max();
   result.maximumElementBytes = elementWidth;
   for (AccessProof &access : accesses) {

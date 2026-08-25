@@ -684,7 +684,16 @@ a second Structured representation. The body is a flat, multi-statement
 sequence of registered pure scalar compute and direct rank-one, unit-physical-
 stride, zero-offset loads or stores indexed only by the induction variable.
 Every access relation and iteration domain must be constructed by MLIR
-Affine/Presburger analysis. Different memory bases must be proved `NoAlias` by
+Affine/Presburger analysis. The frozen statement domains and exact dependence
+polyhedra are passed to the pinned Polly/ISL schedule provider. ISL schedule
+maps and trees are invocation-local summaries only: they cannot become a
+second dependence owner or a persistent Schedule Artifact. The provider is
+bounded by a fixed operation quota and rejects a changed statement domain or
+missing finite schedule band. Domain admission, unavailable schedule, and
+operation-quota exhaustion are distinct local refusals; provider corruption
+remains an error. Same-iteration RAW, WAR, and WAW relations come directly
+from the MLIR dependence polyhedra and join the scalar SSA precedence graph
+before scheduling. Different memory bases must be proved `NoAlias` by
 MLIR alias analysis, and every accessed base must carry an explicit
 `memref.assume_alignment` proof and trace locally to a block argument at the
 loop boundary. Nested control, non-contiguous or multidimensional accesses,
@@ -867,7 +876,7 @@ or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v7`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v8`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator

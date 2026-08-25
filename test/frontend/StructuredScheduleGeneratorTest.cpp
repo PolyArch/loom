@@ -961,6 +961,12 @@ module attributes {dlti.dl_spec = #layout} {
   if (!scop || scop->statementCount != 4 || scop->accesses.size() != 3 ||
       scop->minimumAlignmentBytes != 64 || scop->maximumElementBytes != 4 ||
       scop->constantTripCount != 16 ||
+      scop->polyhedralSchedule.provider !=
+          loom::frontend::StructuredPolyhedralProviderKind::PinnedPollyIsl ||
+      scop->polyhedralSchedule.dependenceCount != 4 ||
+      scop->polyhedralSchedule.scheduleMapCount != 4 ||
+      scop->polyhedralSchedule.scheduleBandCount == 0 ||
+      scop->polyhedralSchedule.scheduleDimensionCount == 0 ||
       scop->reductionSchedule !=
           loom::frontend::StructuredReductionSchedule::None)
     fail("exact vector SCoP analysis lost a provider-proven fact");
@@ -1085,6 +1091,38 @@ module {
   llvm::sys::fs::remove_directories(directory);
 }
 
+void symbolicScopUsesExactParameterIdentity() {
+  auto parent = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+module attributes {dlti.dl_spec = #layout} {
+  func.func @kernel(%input: memref<?xi32>, %output: memref<?xi32>, %n: index) {
+    %input_distinct, %output_distinct =
+        memref.distinct_objects %input, %output
+        : memref<?xi32>, memref<?xi32>
+    %input_aligned = memref.assume_alignment %input_distinct, 64
+        : memref<?xi32>
+    %output_aligned = memref.assume_alignment %output_distinct, 64
+        : memref<?xi32>
+    affine.for %i = 0 to %n {
+      %value = affine.load %input_aligned[%i] : memref<?xi32>
+      %doubled = arith.addi %value, %value : i32
+      affine.store %doubled, %output_aligned[%i] : memref<?xi32>
+    }
+    return
+  }
+}
+)mlir");
+  const auto loop = structuredLoopReference(parent, "kernel");
+  auto analysis =
+      take(loom::frontend::analyzeExactStructuredScop(parent, loop));
+  const auto *scop =
+      std::get_if<loom::frontend::ExactStructuredScopView>(&analysis);
+  if (!scop || scop->statementCount != 3 || scop->parameterCount != 1 ||
+      scop->polyhedralSchedule.parameterCount != 1 ||
+      scop->polyhedralSchedule.scheduleMapCount != 3 || scop->constantTripCount)
+    fail("symbolic SCoP lost its exact provider parameter domain");
+}
+
 void exactScopRefusalsAreLocalAndTyped() {
   auto unregisteredSupport = parseProgram(R"mlir(
 #identity = affine_map<(d0) -> (d0)>
@@ -1108,6 +1146,28 @@ module {
       supportRefusal->kind !=
           loom::frontend::StructuredScopRefusalKind::UnsupportedOperation)
     fail("unregistered affine support lost its typed local refusal");
+
+  auto localPresburgerDomain = parseProgram(R"mlir(
+#half = affine_map<(d0) -> (d0 floordiv 2)>
+module {
+  func.func @kernel(%input: memref<?xi32>, %n: index) {
+    %aligned = memref.assume_alignment %input, 32 : memref<?xi32>
+    affine.for %i = 0 to #half(%n) {
+      %value = affine.load %aligned[%i] : memref<?xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto localDomainOutcome = take(loom::frontend::analyzeExactStructuredScop(
+      localPresburgerDomain,
+      structuredLoopReference(localPresburgerDomain, "kernel")));
+  const auto *localDomainRefusal =
+      std::get_if<loom::frontend::StructuredScopRefusal>(&localDomainOutcome);
+  if (!localDomainRefusal ||
+      localDomainRefusal->kind !=
+          loom::frontend::StructuredScopRefusalKind::ProviderDomainNotAdmitted)
+    fail("local Presburger domain lost its typed provider refusal");
 
   auto unresolvedAlias = parseProgram(R"mlir(
 module {
@@ -1713,6 +1773,7 @@ int main() {
   lineageRejectsAValidForeignChild();
   transformationsAreTypedCapacityBoundAndDependenceChecked();
   exactScopVectorCoordinateIsCanonicalAndVerified();
+  symbolicScopUsesExactParameterIdentity();
   exactScopRefusalsAreLocalAndTyped();
   reassociatedReductionOwnsItsMaskedTail();
   productionVectorScheduleLowersToCanonicalDataflow();

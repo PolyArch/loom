@@ -13,6 +13,7 @@ add_library(LoomFrontendCompilation
   StructuredSpecialMathAccuracy.cpp
   StructuredMemoryChannelPromotion.cpp
   StructuredMemoryCommunication.cpp
+  StructuredPolyhedralProvider.cpp
   StructuredSchedule.cpp
   StructuredScop.cpp
   StructuredVectorScheduleVerifier.cpp
@@ -30,6 +31,7 @@ target_link_libraries(LoomFrontendCompilation PUBLIC
   LoomFrontendLowering
   LoomFrontendRaising
   MLIRDataflow
+  PollyISL
 )
 
 mlir_target_link_libraries(LoomFrontendCompilation PUBLIC

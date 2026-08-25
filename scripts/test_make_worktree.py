@@ -158,6 +158,9 @@ def build_paths(root: Path):
         mlir_dir=llvm_build / "lib" / "cmake" / "mlir",
         cmake_llvm_dir=llvm_build / "lib" / "cmake" / "llvm",
         cmake_clang_dir=llvm_build / "lib" / "cmake" / "clang",
+        cmake_polly_dir=(
+            llvm_build / "tools" / "polly" / "lib" / "cmake" / "polly"
+        ),
         llvm_lit=llvm_build / "bin" / "llvm-lit",
         circt_root=circt_root,
         circt_build=circt_build,
@@ -196,6 +199,20 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertEqual(self.module.bounded_job_count(8, cpu_count=32), 8)
 
     def test_shared_llvm_build_includes_corpus_targets(self) -> None:
+        paths = build_paths(REPO_TEMP_ROOT / "polly-layout")
+        self.assertEqual(
+            paths.cmake_polly_dir.relative_to(paths.llvm_build),
+            Path("tools/polly/lib/cmake/polly"),
+        )
+        projects = next(
+            argument
+            for argument in self.module.LLVM_SEMANTIC_CMAKE_ARGS
+            if argument.startswith("-DLLVM_ENABLE_PROJECTS=")
+        )
+        self.assertIn(
+            "polly",
+            projects.removeprefix("-DLLVM_ENABLE_PROJECTS=").split(";"),
+        )
         targets = next(
             argument
             for argument in self.module.LLVM_SEMANTIC_CMAKE_ARGS
@@ -240,10 +257,12 @@ class MakeWorktreeTest(unittest.TestCase):
             (paths.mlir_dir, "MLIRConfig.cmake"),
             (paths.cmake_llvm_dir, "LLVMConfig.cmake"),
             (paths.cmake_clang_dir, "ClangConfig.cmake"),
+            (paths.cmake_polly_dir, "PollyConfig.cmake"),
         ):
             directory.mkdir(parents=True, exist_ok=True)
             (directory / name).write_text("ready\n")
         (paths.llvm_build / "build.ninja").write_text("ninja\n")
+        (paths.llvm_build / "lib" / "libPollyISL.a").write_text("archive\n")
         paths.llvm_lit.parent.mkdir(parents=True, exist_ok=True)
         paths.llvm_lit.write_text("#!/bin/sh\nexit 0\n")
         paths.llvm_lit.chmod(0o755)
@@ -282,9 +301,11 @@ class MakeWorktreeTest(unittest.TestCase):
             (paths.loom_build / "CMakeCache.txt").write_text(
                 "CMAKE_C_COMPILER:FILEPATH=/usr/bin/clang\n"
                 "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++\n"
+                f"Polly_DIR:PATH={shared.cmake_polly_dir}\n"
                 f"ortools_DIR:PATH={shared.or_tools_cmake_dir}\n"
                 "LOOM_ORTOOLS_SOURCE_COMMIT:STRING="
                 f"{self.state.or_tools_commit}\n"
+                f"LOOM_EXTERNAL_SOURCE_DIR:PATH={shared.externals_root}\n"
             )
         return paths
 

@@ -189,7 +189,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v7",
+    "loom.compiler.structured_schedule.generator.v8",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -260,9 +260,13 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
   std::uint64_t nonFinalizableLogicalDomainCount = 0;
   std::uint64_t exactFabricRejectedLogicalDomainCount = 0;
   bool stopGeneration = truncated;
+  bool proofIncomplete = false;
   const auto recordScopRefusal = [&](const frontend::StructuredEntityRef &loop,
                                      frontend::StructuredScopRefusalKind kind) {
     ++scopRefusalCount;
+    proofIncomplete |=
+        kind ==
+        frontend::StructuredScopRefusalKind::ProviderScheduleBudgetExhausted;
     mapping_debug::emit(
         mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
         mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
@@ -487,6 +491,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       : truncated
           ? CandidateGeneratorProviderOutcome{IncompleteCandidateGeneratorResult{
                 CandidateGeneratorIncompleteReason::SemanticLimitReached,
+                std::move(outputBindings), std::move(lineageEdges)}}
+      : proofIncomplete
+          ? CandidateGeneratorProviderOutcome{IncompleteCandidateGeneratorResult{
+                CandidateGeneratorIncompleteReason::ProofNotEstablished,
                 std::move(outputBindings), std::move(lineageEdges)}}
           : CandidateGeneratorProviderOutcome{CompletedCandidateGeneratorResult{
                 std::move(outputBindings), std::move(lineageEdges)}};

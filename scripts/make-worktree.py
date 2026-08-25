@@ -135,7 +135,7 @@ _TURNSTILE_RECORD_SIZE = 17
 _TURNSTILE_MUTEX_OFFSET = 0
 LLVM_SEMANTIC_CMAKE_ARGS = (
     "-DCMAKE_BUILD_TYPE=Release",
-    "-DLLVM_ENABLE_PROJECTS=mlir;clang;lld",
+    "-DLLVM_ENABLE_PROJECTS=mlir;clang;lld;polly",
     "-DLLVM_TARGETS_TO_BUILD=host;RISCV;ARM;AArch64",
     "-DLLVM_ENABLE_ASSERTIONS=ON",
     "-DLLVM_ENABLE_RTTI=ON",
@@ -311,6 +311,9 @@ class Paths:
         self.mlir_dir = self.llvm_build / "lib" / "cmake" / "mlir"
         self.cmake_llvm_dir = self.llvm_build / "lib" / "cmake" / "llvm"
         self.cmake_clang_dir = self.llvm_build / "lib" / "cmake" / "clang"
+        self.cmake_polly_dir = (
+            self.llvm_build / "tools" / "polly" / "lib" / "cmake" / "polly"
+        )
         self.llvm_lit = self.llvm_build / "bin" / "llvm-lit"
 
     @property
@@ -1088,6 +1091,7 @@ def configure_loom(
         f"-DMLIR_DIR={paths.mlir_dir}",
         f"-DLLVM_DIR={paths.cmake_llvm_dir}",
         f"-DClang_DIR={paths.cmake_clang_dir}",
+        f"-DPolly_DIR={paths.cmake_polly_dir}",
         f"-DLLVM_EXTERNAL_LIT={paths.llvm_lit}",
         f"-Dortools_DIR={or_tools_dir}",
         f"-DLOOM_ORTOOLS_SOURCE_COMMIT={or_tools_commit}",
@@ -1107,6 +1111,8 @@ def llvm_artifacts_present(paths: Paths) -> bool:
         and (paths.mlir_dir / "MLIRConfig.cmake").exists()
         and (paths.cmake_llvm_dir / "LLVMConfig.cmake").exists()
         and (paths.cmake_clang_dir / "ClangConfig.cmake").exists()
+        and (paths.cmake_polly_dir / "PollyConfig.cmake").exists()
+        and (paths.llvm_build / "lib" / "libPollyISL.a").exists()
         and paths.llvm_lit.is_file()
         and os.access(paths.llvm_lit, os.X_OK)
     )
@@ -1429,7 +1435,11 @@ def loom_build_is_stale(paths: Paths) -> bool:
         return True
     if not (paths.cmake_llvm_dir / "LLVMConfig.cmake").exists():
         return True
-    return not (paths.cmake_clang_dir / "ClangConfig.cmake").exists()
+    if not (paths.cmake_clang_dir / "ClangConfig.cmake").exists():
+        return True
+    if not (paths.cmake_polly_dir / "PollyConfig.cmake").exists():
+        return True
+    return not (paths.llvm_build / "lib" / "libPollyISL.a").exists()
 
 
 def inspect_llvm_readiness(
@@ -1584,6 +1594,8 @@ def _build_loom_with_lease(
         die("validated OR-Tools reader lease has no matching installed package")
     package_changed = (
         read_cmake_cache_entry(paths.loom_build, "CIRCT_DIR") != (circt_dir or "")
+        or read_cmake_cache_entry(paths.loom_build, "Polly_DIR")
+        != str(paths.cmake_polly_dir)
         or read_cmake_cache_entry(paths.loom_build, "ortools_DIR") != or_tools_dir
         or read_cmake_cache_entry(paths.loom_build, "LOOM_ORTOOLS_SOURCE_COMMIT") != state.or_tools_commit
         or read_cmake_cache_entry(paths.loom_build, "LOOM_EXTERNAL_SOURCE_DIR")
