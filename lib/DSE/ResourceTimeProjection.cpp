@@ -261,12 +261,6 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
                                       logicalEpochCounts[ordinal], false, {}};
     feature.allocationDomainExhaustive = true;
     feature.analyticFeatures = analyticFeatures[ordinal];
-    feature.analyticFeatures.launchSynchronizationCost =
-        feature.dependencies.size();
-    feature.analyticFeatures.parallelismLowerBound =
-        std::max<std::uint64_t>(1, logicalEpochCounts[ordinal]);
-    feature.analyticFeatures.topologyCongestionProxy =
-        feature.analyticFeatures.actorCount + feature.dependencies.size();
     for (std::size_t producer = 0; producer != reachable->size(); ++producer) {
       if (producer == ordinal)
         continue;
@@ -296,6 +290,12 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
     llvm::sort(feature.dependencies, [](const auto &lhs, const auto &rhs) {
       return rootLess(lhs.producer, rhs.producer);
     });
+    feature.analyticFeatures.launchSynchronizationCost =
+        feature.dependencies.size();
+    feature.analyticFeatures.parallelismLowerBound =
+        std::max<std::uint64_t>(1, logicalEpochCounts[ordinal]);
+    feature.analyticFeatures.topologyCongestionProxy =
+        feature.analyticFeatures.actorCount + feature.dependencies.size();
     const unsigned __int128 scaled =
         static_cast<unsigned __int128>(
             estimatedRuntimePicoseconds.value_or(totalWeight)) *

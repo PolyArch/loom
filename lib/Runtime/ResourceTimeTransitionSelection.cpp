@@ -55,9 +55,11 @@ bool sameDecision(const ResourceTimeCompletionDecision &lhs,
 bool sameRecord(const ResourceTimeSelectionReplayRecord &lhs,
                 const ResourceTimeSelectionReplayRecord &rhs) {
   if (lhs.action != rhs.action ||
+      lhs.startedRoot.has_value() != rhs.startedRoot.has_value() ||
       lhs.completion.has_value() != rhs.completion.has_value())
     return false;
-  return !lhs.completion || sameDecision(*lhs.completion, *rhs.completion);
+  return (!lhs.startedRoot || lhs.startedRoot == rhs.startedRoot) &&
+         (!lhs.completion || sameDecision(*lhs.completion, *rhs.completion));
 }
 
 } // namespace
@@ -130,6 +132,51 @@ ResourceTimeTransitionSelectionSession::createPrepared(
   return session;
 }
 
+std::vector<dataflow::RootThreadLaunchRef>
+ResourceTimeTransitionSelectionSession::activeRoots() const {
+  std::vector<dataflow::RootThreadLaunchRef> roots;
+  for (auto [index, root] : llvm::enumerate(mappedRoots_))
+    if (rootStates_[index] == RootState::Active)
+      roots.push_back(root);
+  return roots;
+}
+
+std::vector<dataflow::RootThreadLaunchRef>
+ResourceTimeTransitionSelectionSession::completedRoots() const {
+  std::vector<dataflow::RootThreadLaunchRef> roots;
+  for (auto [index, root] : llvm::enumerate(mappedRoots_))
+    if (rootStates_[index] == RootState::Completed)
+      roots.push_back(root);
+  return roots;
+}
+
+llvm::Error ResourceTimeTransitionSelectionSession::startRoot(
+    dataflow::RootThreadLaunchRef startedRoot) {
+  if (state_ != State::Running)
+    return reject(ResourceTimeSelectionErrorReason::InvalidLifecycle,
+                  "resource-time selector is not running");
+  const auto root = llvm::find(mappedRoots_, startedRoot);
+  if (root == mappedRoots_.end())
+    return reject(ResourceTimeSelectionErrorReason::UnknownMappedRoot,
+                  "start does not name a root imported from the entry "
+                  "SystemMapping");
+  const std::size_t rootIndex =
+      static_cast<std::size_t>(std::distance(mappedRoots_.begin(), root));
+  if (rootStates_[rootIndex] != RootState::NotStarted)
+    return reject(ResourceTimeSelectionErrorReason::DuplicateStart,
+                  "mapped root was already started");
+  if (!requiredStarts_.empty() &&
+      !llvm::is_contained(requiredStarts_, startedRoot))
+    return reject(ResourceTimeSelectionErrorReason::ActiveSetMismatch,
+                  "root is absent from the selected child active set");
+  rootStates_[rootIndex] = RootState::Active;
+  if (!requiredStarts_.empty())
+    requiredStarts_.erase(llvm::find(requiredStarts_, startedRoot));
+  replay_.push_back(ResourceTimeSelectionReplayRecord{
+      ResourceTimeSelectionAction::StartRoot, startedRoot, std::nullopt});
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::optional<pnr::ResourceTimeTransition>>
 ResourceTimeTransitionSelectionSession::completeRoot(
     dataflow::RootThreadLaunchRef completedRoot,
@@ -144,22 +191,39 @@ ResourceTimeTransitionSelectionSession::completeRoot(
                   "SystemMapping");
   const std::size_t rootIndex =
       static_cast<std::size_t>(std::distance(mappedRoots_.begin(), root));
-  if (completedMarks_[rootIndex])
+  if (rootStates_[rootIndex] == RootState::Completed)
     return reject(ResourceTimeSelectionErrorReason::DuplicateCompletion,
                   "mapped root completion was already accepted");
+  if (rootStates_[rootIndex] != RootState::Active)
+    return reject(ResourceTimeSelectionErrorReason::CompletionBeforeStart,
+                  "mapped root completion preceded its start");
+  if (!requiredStarts_.empty())
+    return reject(ResourceTimeSelectionErrorReason::ActiveSetMismatch,
+                  "selected child active roots have not all started");
 
   const pnr::ResourceTimeTransitionEndpointReference parent = current_;
+  const std::vector<dataflow::RootThreadLaunchRef> completed = completedRoots();
+  const std::vector<dataflow::RootThreadLaunchRef> active = activeRoots();
   std::optional<pnr::ResourceTimeTransition> selected;
   if (child) {
     const dataflow::EventFamilyKey trigger =
         dataflow::rootThreadCompletionEventFamily(completedRoot);
+    bool matchedCompletionFrontier = false;
     for (const pnr::ResourceTimeTransition &transition : graph_.transitions) {
       if (transition.parent != parent || transition.child != *child ||
           transition.trigger != trigger || !transition.safePoint ||
           transition.safePoint->kind !=
               pnr::ResourceTimeSafePointKind::Completion ||
           transition.safePoint->artifact != dataflow_ ||
-          !sameRootSet(transition.completedBefore, completedRoots_))
+          !sameRootSet(transition.completedBefore, completed))
+        continue;
+      matchedCompletionFrontier = true;
+      std::vector<dataflow::RootThreadLaunchRef> expectedActive;
+      expectedActive.reserve(transition.beforeActive.size());
+      for (const pnr::ResourceTimeRegionAllocation &allocation :
+           transition.beforeActive)
+        expectedActive.push_back(allocation.region);
+      if (!sameRootSet(expectedActive, active))
         continue;
       if (selected)
         return reject(ResourceTimeSelectionErrorReason::TransitionUnavailable,
@@ -167,21 +231,27 @@ ResourceTimeTransitionSelectionSession::completeRoot(
       selected = transition;
     }
     if (!selected)
-      return reject(ResourceTimeSelectionErrorReason::TransitionUnavailable,
-                    "selected child has no exact verified edge at the current "
-                    "completion frontier");
+      return reject(
+          matchedCompletionFrontier
+              ? ResourceTimeSelectionErrorReason::ActiveSetMismatch
+              : ResourceTimeSelectionErrorReason::TransitionUnavailable,
+          matchedCompletionFrontier
+              ? "actual active roots differ from the preverified edge"
+              : "selected child has no exact verified edge at the current "
+                "completion frontier");
   }
 
-  completedMarks_[rootIndex] = true;
-  completedRoots_.clear();
-  completedRoots_.reserve(mappedRoots_.size());
-  for (auto [index, mappedRoot] : llvm::enumerate(mappedRoots_))
-    if (completedMarks_[index])
-      completedRoots_.push_back(mappedRoot);
-  if (selected)
+  rootStates_[rootIndex] = RootState::Completed;
+  if (selected) {
     current_ = selected->child;
+    requiredStarts_.clear();
+    requiredStarts_.reserve(selected->afterActive.size());
+    for (const pnr::ResourceTimeRegionAllocation &allocation :
+         selected->afterActive)
+      requiredStarts_.push_back(allocation.region);
+  }
   replay_.push_back(ResourceTimeSelectionReplayRecord{
-      ResourceTimeSelectionAction::CompleteRoot,
+      ResourceTimeSelectionAction::CompleteRoot, std::nullopt,
       ResourceTimeCompletionDecision{completedRoot, parent, std::move(child)}});
   return selected;
 }
@@ -198,9 +268,9 @@ ResourceTimeTransitionSelectionSession::completeRootAndActivate(
                   "endpoint");
 
   const pnr::ResourceTimeTransitionEndpointReference priorCurrent = current_;
-  const std::vector<bool> priorCompletedMarks = completedMarks_;
-  const std::vector<dataflow::RootThreadLaunchRef> priorCompletedRoots =
-      completedRoots_;
+  const std::vector<RootState> priorRootStates = rootStates_;
+  const std::vector<dataflow::RootThreadLaunchRef> priorRequiredStarts =
+      requiredStarts_;
   const std::size_t priorReplaySize = replay_.size();
   auto selected = completeRoot(completedRoot, std::move(child));
   if (!selected)
@@ -210,8 +280,8 @@ ResourceTimeTransitionSelectionSession::completeRootAndActivate(
   if (llvm::Error error = loaded.activatePreparedTransition(
           **selected, preparedActivationToken_)) {
     current_ = priorCurrent;
-    completedMarks_ = priorCompletedMarks;
-    completedRoots_ = priorCompletedRoots;
+    rootStates_ = priorRootStates;
+    requiredStarts_ = priorRequiredStarts;
     replay_.resize(priorReplaySize);
     return std::move(error);
   }
@@ -224,13 +294,15 @@ llvm::Error ResourceTimeTransitionSelectionSession::joinMappedRoots() {
   if (state_ == State::Cancelled)
     return reject(ResourceTimeSelectionErrorReason::InvalidLifecycle,
                   "cancelled resource-time selector cannot join mapped roots");
-  if (completedRoots_.size() != mappedRoots_.size())
+  if (!requiredStarts_.empty() ||
+      completedRoots().size() != mappedRoots_.size())
     return reject(ResourceTimeSelectionErrorReason::IncompleteMappedRootJoin,
                   "resource-time selector cannot join before every mapped "
                   "root completes");
   state_ = State::Joined;
   replay_.push_back(ResourceTimeSelectionReplayRecord{
-      ResourceTimeSelectionAction::JoinMappedRoots, std::nullopt});
+      ResourceTimeSelectionAction::JoinMappedRoots, std::nullopt,
+      std::nullopt});
   return llvm::Error::success();
 }
 
@@ -242,7 +314,7 @@ llvm::Error ResourceTimeTransitionSelectionSession::cancel() {
                   "joined resource-time selector cannot be cancelled");
   state_ = State::Cancelled;
   replay_.push_back(ResourceTimeSelectionReplayRecord{
-      ResourceTimeSelectionAction::Cancel, std::nullopt});
+      ResourceTimeSelectionAction::Cancel, std::nullopt, std::nullopt});
   return llvm::Error::success();
 }
 
@@ -250,8 +322,16 @@ llvm::Error ResourceTimeTransitionSelectionSession::applyReplayRecord(
     const ResourceTimeSelectionReplayRecord &record) {
   const std::size_t priorSize = replay_.size();
   switch (record.action) {
+  case ResourceTimeSelectionAction::StartRoot:
+    if (!record.startedRoot || record.completion)
+      return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
+                    "root-start replay has an invalid payload");
+    if (llvm::Error error = startRoot(*record.startedRoot))
+      return error;
+    break;
   case ResourceTimeSelectionAction::CompleteRoot: {
-    if (!record.completion || record.completion->parent != current_)
+    if (record.startedRoot || !record.completion ||
+        record.completion->parent != current_)
       return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
                     "completion replay does not match the current endpoint");
     auto selected = completeRoot(record.completion->completedRoot,
@@ -261,14 +341,14 @@ llvm::Error ResourceTimeTransitionSelectionSession::applyReplayRecord(
     break;
   }
   case ResourceTimeSelectionAction::JoinMappedRoots:
-    if (record.completion)
+    if (record.startedRoot || record.completion)
       return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
                     "mapped-root join replay carries a completion decision");
     if (llvm::Error error = joinMappedRoots())
       return error;
     break;
   case ResourceTimeSelectionAction::Cancel:
-    if (record.completion)
+    if (record.startedRoot || record.completion)
       return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
                     "cancellation replay carries a completion decision");
     if (llvm::Error error = cancel())

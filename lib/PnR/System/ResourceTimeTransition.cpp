@@ -6,12 +6,14 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Deployment/Deployment.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -285,8 +287,36 @@ struct DerivedTransitionDigests final {
   ComponentViewDigest routes;
   bool hardwareProgrammingChanged = false;
   bool noPersistentLiveState = false;
-  bool completionFrontierIsCanonicalSubset = false;
+  bool completionFrontierIsCausallyAdmissible = false;
 };
+
+bool sameRootSet(
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> lhs,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> rhs) {
+  return lhs.size() == rhs.size() && llvm::all_of(lhs, [&](const auto root) {
+           return llvm::is_contained(rhs, root);
+         });
+}
+
+llvm::Expected<bool> completionFrontierIsCausallyAdmissible(
+    const ResourceTimeTransition &transition,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> mappedRoots) {
+  if (transition.beforeActive.size() != 1)
+    return false;
+  const ::dataflow::RootThreadLaunchRef completing =
+      transition.beforeActive.front().region;
+  if (transition.trigger !=
+      ::dataflow::rootThreadCompletionEventFamily(completing))
+    return false;
+  std::vector<::dataflow::RootThreadLaunchRef> activeAfter;
+  activeAfter.reserve(transition.afterActive.size());
+  for (const ResourceTimeRegionAllocation &allocation : transition.afterActive)
+    activeAfter.push_back(allocation.region);
+  return ::loom::mapping::mappingCompletionFrontierIsAdmissible(
+      dataflow, mappedRoots, transition.completedBefore, completing,
+      activeAfter);
+}
 
 llvm::Expected<DerivedTransitionDigests>
 deriveTransitionDigests(const ResourceTimeTransition &transition,
@@ -320,6 +350,10 @@ deriveTransitionDigests(const ResourceTimeTransition &transition,
       parentMapping->view().fabricIdentity() !=
           childMapping->view().fabricIdentity())
     return invalid("transition endpoints do not share Dataflow and Fabric");
+  if (!sameRootSet(
+          parentMapping->view().executionBindings().rootThreadLaunches(),
+          childMapping->view().executionBindings().rootThreadLaunches()))
+    return invalid("transition endpoint Mapping root scopes differ");
 
   const ArtifactRootReference dataflowReference{
       ::dataflow::canonicalDataflowSchema.identity.str(),
@@ -380,6 +414,11 @@ deriveTransitionDigests(const ResourceTimeTransition &transition,
     return configuration.takeError();
   if (!routes)
     return routes.takeError();
+  auto completionFrontier = completionFrontierIsCausallyAdmissible(
+      transition, *dataflow,
+      parentMapping->view().executionBindings().rootThreadLaunches());
+  if (!completionFrontier)
+    return completionFrontier.takeError();
   return DerivedTransitionDigests{
       *resources,
       *configuration,
@@ -387,30 +426,7 @@ deriveTransitionDigests(const ResourceTimeTransition &transition,
       beforeConfiguration->hardwareProgramming !=
           afterConfiguration->hardwareProgramming,
       hasNoPersistentLiveState(*dataflowArtifact, *dataflow),
-      [&] {
-        if (transition.beforeActive.size() != 1)
-          return false;
-        std::vector<::dataflow::RootThreadLaunchRef> canonical;
-        canonical.reserve(dataflow->rootThreadLaunches().size());
-        for (const auto &root : dataflow->rootThreadLaunches())
-          canonical.push_back(root.ref);
-        std::vector<::dataflow::RootThreadLaunchRef> observed =
-            transition.completedBefore;
-        observed.push_back(transition.beforeActive.front().region);
-        const auto less = [](const auto &lhs, const auto &rhs) {
-          if (lhs.artifact != rhs.artifact)
-            return lhs.artifact.bytes() < rhs.artifact.bytes();
-          return lhs.entity.value() < rhs.entity.value();
-        };
-        llvm::sort(canonical, less);
-        llvm::sort(observed, less);
-        if (std::adjacent_find(observed.begin(), observed.end()) !=
-            observed.end())
-          return false;
-        return llvm::all_of(observed, [&](const auto &root) {
-          return llvm::binary_search(canonical, root, less);
-        });
-      }()};
+      *completionFrontier};
 }
 
 llvm::Error
@@ -486,12 +502,14 @@ finalizeResourceTimeTransition(ResourceTimeTransition draft,
     return invalid("transition draft has authored cost components");
   if (llvm::Error error = requireCompletionSafePointDraft(draft))
     return std::move(error);
+  if (llvm::Error error = validateResourceTimeTransition(draft))
+    return std::move(error);
   auto digests = deriveTransitionDigests(draft, artifacts, blobs);
   if (!digests)
     return digests.takeError();
-  if (!digests->completionFrontierIsCanonicalSubset)
-    return invalid("completion frontier is not a canonical root-launch "
-                   "subset");
+  if (!digests->completionFrontierIsCausallyAdmissible)
+    return invalid("completion frontier is not causally admissible under the "
+                   "canonical Dataflow event relation");
   if (!digests->noPersistentLiveState)
     return invalid("Canonical Dataflow has persistent live state without a "
                    "migration proof owner");
@@ -518,9 +536,9 @@ llvm::Error verifyResourceTimeTransitionDeltaDigests(
   auto expected = deriveTransitionDigests(transition, artifacts, blobs);
   if (!expected)
     return expected.takeError();
-  if (!expected->completionFrontierIsCanonicalSubset)
-    return invalid("completion frontier is not a canonical root-launch "
-                   "subset");
+  if (!expected->completionFrontierIsCausallyAdmissible)
+    return invalid("completion frontier is not causally admissible under the "
+                   "canonical Dataflow event relation");
   if (!expected->noPersistentLiveState)
     return invalid("Canonical Dataflow has persistent live state without a "
                    "migration proof owner");

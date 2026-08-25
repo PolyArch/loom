@@ -7,6 +7,7 @@
 #include "PnR/System/SystemMappingMigration.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -81,6 +82,9 @@ enum class ResourceTimeSpectrumIncompleteReason : std::uint8_t {
   CancelledOrTimeout,
 };
 
+llvm::StringRef resourceTimeSpectrumIncompleteReasonSpelling(
+    ResourceTimeSpectrumIncompleteReason reason);
+
 struct IncompleteResourceTimeSpectrum final {
   ResourceTimeSpectrumIncompleteReason reason =
       ResourceTimeSpectrumIncompleteReason::ProofNotEstablished;
@@ -98,6 +102,7 @@ struct ResourceTimeSpectrumFunnelAccounting final {
   std::uint64_t materializedScenarios = 0;
   std::uint64_t unmatchedHints = 0;
   std::uint64_t transitionUnsupportedHints = 0;
+  std::uint64_t transitionProofFailures = 0;
   std::uint64_t verifiedScenarios = 0;
   std::uint64_t mappingImportRequests = 0;
   std::uint64_t mappingImportCacheHits = 0;
@@ -115,8 +120,10 @@ struct ResourceTimeSpectrumFunnelResult final {
 
 /// One state in an ordered finite Mapping/Deployment path. The path is
 /// invocation-local compiler output; it is never inferred from allocation
-/// counts or discovered by scanning the ArtifactStore. Path advancement is
-/// allowed only at a compiler-known completion action.
+/// counts or discovered by scanning the ArtifactStore. A nonempty path must
+/// cover every Mapping finalist exactly once. Every Deployment is strictly
+/// imported and must select its paired Mapping before schedule materialization.
+/// Path advancement is allowed only at a compiler-known completion action.
 struct ResourceTimeMappingDeploymentEndpoint final {
   ArtifactRootReference mapping;
   ArtifactRootReference deployment;

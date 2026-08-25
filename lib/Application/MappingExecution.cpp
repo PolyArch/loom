@@ -91,7 +91,8 @@ verifyResourceTimeAlternative(
     llvm::ArrayRef<ArtifactRootReference> systemMappings,
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const ComponentViewDigest &scheduleHintDigest,
-    llvm::ArrayRef<dse::ResourceTimeMappingDeploymentEndpoint> endpoints) {
+    llvm::ArrayRef<dse::ResourceTimeMappingDeploymentEndpoint> endpoints,
+    ExecutionControlView executionControl) {
   const auto evaluation =
       llvm::find_if(funnel.evaluations, [&](const auto &candidate) {
         return candidate.candidateIdentity == alternative.candidateIdentity;
@@ -104,8 +105,8 @@ verifyResourceTimeAlternative(
   auto verified = dse::verifyResourceTimeMappingFinalists(
       llvm::ArrayRef<dse::ResourceTimeScheduleHint>(*hint, 1),
       alternative.resourceTimeRegions, alternative.resourceTimeRegionBounds,
-      systemMappings, artifacts, {}, evaluation->concurrencyBounds, &blobs,
-      endpoints);
+      systemMappings, artifacts, executionControl,
+      evaluation->concurrencyBounds, &blobs, endpoints);
   if (!verified)
     return verified.takeError();
   return std::optional<dse::ResourceTimeSpectrumFunnelResult>(
@@ -115,9 +116,11 @@ verifyResourceTimeAlternative(
 } // namespace build_detail
 
 using build_detail::ApplicationBuildOperationTimer;
+using build_detail::classifyResourceTimeSelectionOutcome;
 using build_detail::deriveApplicationPairDecision;
 using build_detail::deriveApplicationPartitionDelta;
 using build_detail::invalid;
+using build_detail::requestedResourceTimeSpectrumClass;
 using build_detail::verifyResourceTimeAlternative;
 
 llvm::Expected<ApplicationMappingExecution>
@@ -207,40 +210,52 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::uint64_t preservedServiceLegCount = 0;
   std::uint64_t reopenedServiceLegCount = 0;
   std::uint64_t verifiedAlternatives = 0;
+  std::uint64_t techMappingInvocations = 0;
+  std::uint64_t spatialPnrInvocations = 0;
+  std::uint64_t systemPnrInvocations = 0;
   std::uint64_t techMappingDispatches = 0;
   std::uint64_t spatialPnrDispatches = 0;
   std::uint64_t systemPnrDispatches = 0;
+  std::uint64_t techMappingJournalReplays = 0;
+  std::uint64_t spatialPnrJournalReplays = 0;
+  std::uint64_t systemPnrJournalReplays = 0;
+  const auto providerWork = [](const dse::JointDesignExecutionSummary &summary) {
+    return ApplicationMappingProviderWorkObservation{
+        summary.techMappingInvocationCount,
+        summary.spatialPnrInvocationCount,
+        summary.systemPnrInvocationCount,
+        summary.techMappingDispatchCount,
+        summary.spatialPnrDispatchCount,
+        summary.systemPnrDispatchCount,
+        summary.techMappingJournalReplayCount,
+        summary.spatialPnrJournalReplayCount,
+        summary.systemPnrJournalReplayCount};
+  };
+  const auto accumulateProviderWork =
+      [&](const dse::JointDesignExecutionSummary &summary) {
+        techMappingInvocations += summary.techMappingInvocationCount;
+        spatialPnrInvocations += summary.spatialPnrInvocationCount;
+        systemPnrInvocations += summary.systemPnrInvocationCount;
+        techMappingDispatches += summary.techMappingDispatchCount;
+        spatialPnrDispatches += summary.spatialPnrDispatchCount;
+        systemPnrDispatches += summary.systemPnrDispatchCount;
+        techMappingJournalReplays += summary.techMappingJournalReplayCount;
+        spatialPnrJournalReplays += summary.spatialPnrJournalReplayCount;
+        systemPnrJournalReplays += summary.systemPnrJournalReplayCount;
+      };
   std::vector<ApplicationIncrementalMappingObservation>
       incrementalMappingObservations;
-  const auto requestedSpectrumClass =
-      [&]() -> std::optional<dse::PreMappingSpectrumClass> {
-    switch (prepared.resourceTimePolicy.spectrumEndpoint) {
-    case dse::PreMappingSpectrumEndpoint::Automatic:
-      return std::nullopt;
-    case dse::PreMappingSpectrumEndpoint::MaxTemporal:
-      return dse::PreMappingSpectrumClass::MaxTemporal;
-    case dse::PreMappingSpectrumEndpoint::MaxSpatial:
-      return dse::PreMappingSpectrumClass::MaxSpatial;
-    case dse::PreMappingSpectrumEndpoint::Intermediate:
-      return dse::PreMappingSpectrumClass::Intermediate;
-    }
-    llvm_unreachable("unknown resource-time spectrum endpoint");
-  }();
+  std::optional<ApplicationResourceTimeMappingPath> resourceTimeMappingPath;
+  const auto requestedSpectrumClass = requestedResourceTimeSpectrumClass(
+      prepared.resourceTimePolicy.spectrumEndpoint);
   const auto outcomeMatchesRequestedSpectrum =
       [&](std::uint64_t planOrdinal, const ArtifactRootReference &mapping) {
-        if (!requestedSpectrumClass)
-          return true;
         return llvm::any_of(outcomes, [&](const auto &outcome) {
           if (outcome.planOrdinal != planOrdinal ||
-              !llvm::is_contained(outcome.systemMappings, mapping) ||
-              !outcome.resourceTimeSpectrum)
+              !llvm::is_contained(outcome.systemMappings, mapping))
             return false;
-          const auto *verified = std::get_if<dse::VerifiedResourceTimeSpectrum>(
-              &outcome.resourceTimeSpectrum->verification);
-          return verified &&
-                 llvm::any_of(verified->scenarios, [&](const auto &scenario) {
-                   return scenario.spectrumClass == *requestedSpectrumClass;
-                 });
+          return !classifyResourceTimeSelectionOutcome(
+              outcome.resourceTimeSpectrum, requestedSpectrumClass);
         });
       };
   const std::size_t mappingImportEntryLimit =
@@ -253,6 +268,16 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   // active-set and endpoint verifier.
   mapping::SystemMappingImportSession mappingImportSession(
       artifacts, mappingImportEntryLimit);
+
+  const auto alternativeScheduleHintDigests =
+      [](const PreparedApplicationMappingAlternative &alternative) {
+        std::vector<ComponentViewDigest> result =
+            alternative.equivalentScheduleHintDigests;
+        if (!llvm::is_contained(result,
+                                alternative.resourceTimeScheduleHintDigest))
+          result.push_back(alternative.resourceTimeScheduleHintDigest);
+        return result;
+      };
 
   const auto appendOutcomes = [&](const dse::JointDesignExecution &execution,
                                   std::size_t planOrdinalBase) -> llvm::Error {
@@ -281,16 +306,15 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       if (alternative.preMappingCandidateRecordOrdinal >=
           prepared.candidateInventory.size())
         return invalid("Mapping outcome has a foreign planning-record ordinal");
-      std::optional<dse::ResourceTimeSpectrumFunnelResult>
-          emptyScheduleSpectrum;
       for (const ComponentViewDigest &scheduleHintDigest :
-           alternative.equivalentScheduleHintDigests) {
+           alternativeScheduleHintDigests(alternative)) {
         std::optional<dse::ResourceTimeSpectrumFunnelResult>
             resourceTimeSpectrum;
         if (!attempt.systemMappings.empty()) {
           auto verified = verifyResourceTimeAlternative(
               prepared.resourceTimeFunnel, alternative, attempt.systemMappings,
-              artifacts, blobs, scheduleHintDigest);
+              artifacts, blobs, scheduleHintDigest, {},
+              request.executionControl);
           if (!verified)
             return verified.takeError();
           resourceTimeSpectrum = std::move(*verified);
@@ -317,28 +341,6 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             std::nullopt,
             {}});
       }
-      if (alternative.equivalentScheduleHintDigests.empty())
-        outcomes.push_back(ApplicationMappingCandidateOutcome{
-            alternative.preMappingCandidateRecordOrdinal,
-            planOrdinal,
-            alternative.resourceTimeScheduleHintDigest,
-            alternative.dataflow,
-            attempt.system,
-            attempt.disposition,
-            attempt.incompleteNodeOrdinal,
-            attempt.incompleteReason,
-            attempt.systemMappings,
-            prepared.candidateInventory[alternative
-                                            .preMappingCandidateRecordOrdinal],
-            alternative.plan.systemBindingPartitions,
-            ApplicationMappingRuntimeDisposition::NotRequested,
-            {},
-            {},
-            std::move(emptyScheduleSpectrum),
-            std::nullopt,
-            std::nullopt,
-            std::nullopt,
-            {}});
       dse::JointDesignAttemptRecord adjusted = attempt;
       adjusted.planOrdinal = planOrdinal;
       attempts.push_back(std::move(adjusted));
@@ -500,9 +502,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     preservedServiceLegCount += execution->summary.preservedServiceLegCount;
     reopenedServiceLegCount += execution->summary.reopenedServiceLegCount;
     verifiedAlternatives += execution->summary.verifiedAlternatives;
-    techMappingDispatches += execution->summary.techMappingDispatchCount;
-    spatialPnrDispatches += execution->summary.spatialPnrDispatchCount;
-    systemPnrDispatches += execution->summary.systemPnrDispatchCount;
+    accumulateProviderWork(execution->summary);
 
     if (!execution->summary.selectedPlanOrdinal ||
         !execution->summary.selectedMapping) {
@@ -559,10 +559,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             repaired->executions[childOrdinal];
         if (childOrdinal >= repaired->childSystems.size())
           return invalid("hardware repair lost its child System");
-        techMappingDispatches +=
-            childExecution.summary.techMappingDispatchCount;
-        spatialPnrDispatches += childExecution.summary.spatialPnrDispatchCount;
-        systemPnrDispatches += childExecution.summary.systemPnrDispatchCount;
+        accumulateProviderWork(childExecution.summary);
         std::vector<ArtifactRootReference> childMappings;
         for (const dse::JointMappedPair &pair : childExecution.mappedPairs)
           childMappings.insert(childMappings.end(), pair.systemMappings.begin(),
@@ -590,39 +587,38 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             childExecution, request.executionPolicy, artifacts, blobs);
         if (!childRuntime)
           return childRuntime.takeError();
-        auto childSpectrum = verifyResourceTimeAlternative(
-            prepared.resourceTimeFunnel,
-            prepared.mappingAlternatives[selectedPlanOrdinal], childMappings,
-            artifacts, blobs,
-            prepared.mappingAlternatives[selectedPlanOrdinal]
-                .resourceTimeScheduleHintDigest);
-        if (!childSpectrum)
-          return childSpectrum.takeError();
-        outcomes.push_back(ApplicationMappingCandidateOutcome{
-            prepared.mappingAlternatives[selectedPlanOrdinal]
-                .preMappingCandidateRecordOrdinal,
-            selectedPlanOrdinal,
-            prepared.mappingAlternatives[selectedPlanOrdinal]
-                .resourceTimeScheduleHintDigest,
-            prepared.mappingAlternatives[selectedPlanOrdinal].dataflow,
-            repaired->childSystems[childOrdinal],
-            dse::JointDesignAttemptDisposition::Verified,
-            std::nullopt,
-            std::nullopt,
-            childMappings,
-            prepared.candidateInventory
-                [prepared.mappingAlternatives[selectedPlanOrdinal]
-                     .preMappingCandidateRecordOrdinal],
-            prepared.mappingAlternatives[selectedPlanOrdinal]
-                .plan.systemBindingPartitions,
-            childRuntime->disposition,
-            childRuntime->evidence,
-            {},
-            std::move(*childSpectrum),
-            childRuntime->dfgCycles,
-            childRuntime->cgraCycles,
-            std::nullopt,
-            childRuntime->oracleEvidence});
+        const PreparedApplicationMappingAlternative &alternative =
+            prepared.mappingAlternatives[selectedPlanOrdinal];
+        for (const ComponentViewDigest &scheduleHintDigest :
+             alternativeScheduleHintDigests(alternative)) {
+          auto childSpectrum = verifyResourceTimeAlternative(
+              prepared.resourceTimeFunnel, alternative, childMappings,
+              artifacts, blobs, scheduleHintDigest, {},
+              request.executionControl);
+          if (!childSpectrum)
+            return childSpectrum.takeError();
+          outcomes.push_back(ApplicationMappingCandidateOutcome{
+              alternative.preMappingCandidateRecordOrdinal,
+              selectedPlanOrdinal,
+              scheduleHintDigest,
+              alternative.dataflow,
+              repaired->childSystems[childOrdinal],
+              dse::JointDesignAttemptDisposition::Verified,
+              std::nullopt,
+              std::nullopt,
+              childMappings,
+              prepared.candidateInventory
+                  [alternative.preMappingCandidateRecordOrdinal],
+              alternative.plan.systemBindingPartitions,
+              childRuntime->disposition,
+              childRuntime->evidence,
+              {},
+              std::move(*childSpectrum),
+              childRuntime->dfgCycles,
+              childRuntime->cgraCycles,
+              std::nullopt,
+              childRuntime->oracleEvidence});
+        }
         if (childRuntime->disposition ==
                 ApplicationMappingRuntimeDisposition::Completed &&
             outcomeMatchesRequestedSpectrum(
@@ -689,10 +685,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             repaired->executions[childOrdinal];
         if (childOrdinal >= repaired->childSystems.size())
           return invalid("FIFO hardware repair lost its child System");
-        techMappingDispatches +=
-            childExecution.summary.techMappingDispatchCount;
-        spatialPnrDispatches += childExecution.summary.spatialPnrDispatchCount;
-        systemPnrDispatches += childExecution.summary.systemPnrDispatchCount;
+        accumulateProviderWork(childExecution.summary);
         std::vector<ArtifactRootReference> childMappings;
         for (const dse::JointMappedPair &pair : childExecution.mappedPairs)
           childMappings.insert(childMappings.end(), pair.systemMappings.begin(),
@@ -720,39 +713,38 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             childExecution, request.executionPolicy, artifacts, blobs);
         if (!childRuntime)
           return childRuntime.takeError();
-        auto childSpectrum = verifyResourceTimeAlternative(
-            prepared.resourceTimeFunnel,
-            prepared.mappingAlternatives[selectedPlanOrdinal], childMappings,
-            artifacts, blobs,
-            prepared.mappingAlternatives[selectedPlanOrdinal]
-                .resourceTimeScheduleHintDigest);
-        if (!childSpectrum)
-          return childSpectrum.takeError();
-        outcomes.push_back(ApplicationMappingCandidateOutcome{
-            prepared.mappingAlternatives[selectedPlanOrdinal]
-                .preMappingCandidateRecordOrdinal,
-            selectedPlanOrdinal,
-            prepared.mappingAlternatives[selectedPlanOrdinal]
-                .resourceTimeScheduleHintDigest,
-            prepared.mappingAlternatives[selectedPlanOrdinal].dataflow,
-            repaired->childSystems[childOrdinal],
-            dse::JointDesignAttemptDisposition::Verified,
-            std::nullopt,
-            std::nullopt,
-            childMappings,
-            prepared.candidateInventory
-                [prepared.mappingAlternatives[selectedPlanOrdinal]
-                     .preMappingCandidateRecordOrdinal],
-            prepared.mappingAlternatives[selectedPlanOrdinal]
-                .plan.systemBindingPartitions,
-            childRuntime->disposition,
-            childRuntime->evidence,
-            {},
-            std::move(*childSpectrum),
-            childRuntime->dfgCycles,
-            childRuntime->cgraCycles,
-            std::nullopt,
-            childRuntime->oracleEvidence});
+        const PreparedApplicationMappingAlternative &alternative =
+            prepared.mappingAlternatives[selectedPlanOrdinal];
+        for (const ComponentViewDigest &scheduleHintDigest :
+             alternativeScheduleHintDigests(alternative)) {
+          auto childSpectrum = verifyResourceTimeAlternative(
+              prepared.resourceTimeFunnel, alternative, childMappings,
+              artifacts, blobs, scheduleHintDigest, {},
+              request.executionControl);
+          if (!childSpectrum)
+            return childSpectrum.takeError();
+          outcomes.push_back(ApplicationMappingCandidateOutcome{
+              alternative.preMappingCandidateRecordOrdinal,
+              selectedPlanOrdinal,
+              scheduleHintDigest,
+              alternative.dataflow,
+              repaired->childSystems[childOrdinal],
+              dse::JointDesignAttemptDisposition::Verified,
+              std::nullopt,
+              std::nullopt,
+              childMappings,
+              prepared.candidateInventory
+                  [alternative.preMappingCandidateRecordOrdinal],
+              alternative.plan.systemBindingPartitions,
+              childRuntime->disposition,
+              childRuntime->evidence,
+              {},
+              std::move(*childSpectrum),
+              childRuntime->dfgCycles,
+              childRuntime->cgraCycles,
+              std::nullopt,
+              childRuntime->oracleEvidence});
+        }
         if (childRuntime->disposition !=
             ApplicationMappingRuntimeDisposition::Completed)
           continue;
@@ -799,25 +791,44 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     if (runtime->disposition ==
         ApplicationMappingRuntimeDisposition::Completed) {
       // Exercise every already-retained resource-time state for this exact
-      // Dataflow through the application owner while the parent Mapping is
-      // live. The frontier has already supplied the finite bound; this loop
-      // does not enumerate a new candidate domain. Walking both directions
-      // matters when the selected quality winner is the last retained plan.
-      // Each child remains subject to the ordinary System verifier and is
-      // recorded even when it cannot close.
-      for (std::size_t childOrdinal = 0;
-           childOrdinal != prepared.mappingAlternatives.size();
-           ++childOrdinal) {
-        if (childOrdinal == selectedPlanOrdinal)
-          continue;
+      // Dataflow through the application owner while one verified parent
+      // Mapping is live. Each retained plan is attempted at most once. A
+      // child becomes the next parent only after its independent cold and
+      // incremental checks, runtime validation, and Spectrum verification all
+      // close, so the resulting path is a finite chain of actual Mapping
+      // executions rather than a relabeled selected-parent star.
+      std::vector<std::size_t> transitionPlanOrdinals;
+      transitionPlanOrdinals.reserve(prepared.mappingAlternatives.size() - 1);
+      for (std::size_t offset = 1;
+           offset != prepared.mappingAlternatives.size(); ++offset)
+        transitionPlanOrdinals.push_back(
+            (static_cast<std::size_t>(selectedPlanOrdinal) + offset) %
+            prepared.mappingAlternatives.size());
+      std::optional<dse::JointDesignExecution> chainedParentExecution;
+      const PreparedApplicationMappingAlternative &scheduleOwner =
+          prepared.mappingAlternatives[selectedPlanOrdinal];
+      std::optional<dse::JointDesignExplorationPlan> chainedParentPlan;
+      const dse::JointDesignExplorationPlan *parentPlan = &scheduleOwner.plan;
+      const dse::JointDesignExecution *parentExecution = &*execution;
+      std::size_t parentPlanOrdinal = selectedPlanOrdinal;
+      ApplicationResourceTimeMappingPath candidatePath{
+          selectedPlanOrdinal, scheduleOwner.resourceTimeScheduleHintDigest,
+          {}};
+      std::vector<ArtifactRootReference> pathMappings = {
+          *execution->summary.selectedMapping};
+      for (const std::size_t childOrdinal : transitionPlanOrdinals) {
         const PreparedApplicationMappingAlternative &childAlternative =
             prepared.mappingAlternatives[childOrdinal];
-        if (childAlternative.dataflow.artifact !=
-            prepared.mappingAlternatives[selectedPlanOrdinal].dataflow.artifact)
+        if (childAlternative.candidateIdentity !=
+                scheduleOwner.candidateIdentity ||
+            childAlternative.dataflow != scheduleOwner.dataflow ||
+            childAlternative.plan.pairOutputs.size() != 1 ||
+            scheduleOwner.plan.pairOutputs.size() != 1 ||
+            childAlternative.plan.pairOutputs.front().pair.system !=
+                scheduleOwner.plan.pairOutputs.front().pair.system)
           continue;
         auto reopenedRoots = deriveApplicationPartitionDelta(
-            prepared.mappingAlternatives[selectedPlanOrdinal].plan,
-            childAlternative.plan);
+            *parentPlan, childAlternative.plan);
         if (!reopenedRoots)
           return reopenedRoots.takeError();
         if (reopenedRoots->empty())
@@ -825,23 +836,22 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         llvm::SmallString<256> adjacentJournal(request.journalRoot);
         llvm::sys::path::append(adjacentJournal,
                                 "application-resource-time-adjacent-" +
-                                    std::to_string(selectedPlanOrdinal) + "-" +
+                                    std::to_string(parentPlanOrdinal) + "-" +
                                     std::to_string(childOrdinal));
         dse::JointHardwareReopenRequest adjacentRequest =
             makeRepairRequest(adjacentJournal.str().str());
         adjacentRequest.spectrumEndpoint =
             prepared.resourceTimePolicy.spectrumEndpoint;
         auto adjacent = dse::executeResourceTimeAdjacentMappingRepair(
-            prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
-            prepared.jointPolicy, childAlternative.plan.systemBindingPartitions,
-            *reopenedRoots, std::move(adjacentRequest), artifacts, blobs);
+            *parentPlan, *parentExecution, prepared.jointPolicy,
+            childAlternative.plan.systemBindingPartitions, *reopenedRoots,
+            std::move(adjacentRequest), artifacts, blobs);
         if (!adjacent)
           return adjacent.takeError();
         const dse::JointDesignExecutionSummary &childSummary =
             adjacent->execution.summary;
-        techMappingDispatches += childSummary.techMappingDispatchCount;
-        spatialPnrDispatches += childSummary.spatialPnrDispatchCount;
-        systemPnrDispatches += childSummary.systemPnrDispatchCount;
+        accumulateProviderWork(adjacent->coldExecution.summary);
+        accumulateProviderWork(childSummary);
         std::vector<ArtifactRootReference> childMappings;
         for (const dse::JointMappedPair &pair : adjacent->execution.mappedPairs)
           childMappings.insert(childMappings.end(), pair.systemMappings.begin(),
@@ -871,13 +881,13 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 dse::CandidateGeneratorIncompleteReason::ProofNotEstablished;
         }
         ApplicationIncrementalMappingObservation observation{
-            *execution->summary.selectedMapping,
+            *parentExecution->summary.selectedMapping,
             childAlternative.plan.pairOutputs.front().pair.system,
             childSummary.selectedMapping,
             adjacent->coldMapping,
-            static_cast<std::uint64_t>(selectedPlanOrdinal),
+            static_cast<std::uint64_t>(parentPlanOrdinal),
             static_cast<std::uint64_t>(childOrdinal),
-            prepared.mappingAlternatives[selectedPlanOrdinal]
+            prepared.mappingAlternatives[parentPlanOrdinal]
                 .resourceTimeScheduleHintDigest,
             childAlternative.resourceTimeScheduleHintDigest,
             *reopenedRoots,
@@ -896,6 +906,12 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             childSummary.incrementalReopenWallTimeNanoseconds,
             adjacent->coldExecution.summary.executionWallTimeNanoseconds +
                 childSummary.incrementalReopenWallTimeNanoseconds,
+            adjacent->coldVerification.retainedBytes,
+            adjacent->incrementalVerification.retainedBytes,
+            adjacent->coldVerification.deterministicWork,
+            adjacent->incrementalVerification.deterministicWork,
+            providerWork(adjacent->coldExecution.summary),
+            providerWork(childSummary),
             std::nullopt,
             std::nullopt,
             std::nullopt,
@@ -908,12 +924,43 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               request.executionPolicy, artifacts, blobs);
           if (!childRuntime)
             return childRuntime.takeError();
-          auto childSpectrum = verifyResourceTimeAlternative(
-              prepared.resourceTimeFunnel, childAlternative, childMappings,
-              artifacts, blobs,
-              childAlternative.resourceTimeScheduleHintDigest);
-          if (!childSpectrum)
-            return childSpectrum.takeError();
+          bool incrementalSpectrumVerified = false;
+          for (const ComponentViewDigest &scheduleHintDigest :
+               alternativeScheduleHintDigests(childAlternative)) {
+            auto childSpectrum = verifyResourceTimeAlternative(
+                prepared.resourceTimeFunnel, childAlternative, childMappings,
+                artifacts, blobs, scheduleHintDigest, {},
+                request.executionControl);
+            if (!childSpectrum)
+              return childSpectrum.takeError();
+            if (scheduleHintDigest ==
+                childAlternative.resourceTimeScheduleHintDigest)
+              incrementalSpectrumVerified =
+                  childSpectrum->has_value() &&
+                  std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
+                      (*childSpectrum)->verification);
+            outcomes.push_back(ApplicationMappingCandidateOutcome{
+                childAlternative.preMappingCandidateRecordOrdinal,
+                childOrdinal,
+                scheduleHintDigest,
+                childAlternative.dataflow,
+                childAlternative.plan.pairOutputs.front().pair.system,
+                childDisposition,
+                std::nullopt,
+                std::nullopt,
+                childMappings,
+                prepared.candidateInventory
+                    [childAlternative.preMappingCandidateRecordOrdinal],
+                childAlternative.plan.systemBindingPartitions,
+                childRuntime->disposition,
+                childRuntime->evidence,
+                {},
+                std::move(*childSpectrum),
+                childRuntime->dfgCycles,
+                childRuntime->cgraCycles,
+                std::nullopt,
+                childRuntime->oracleEvidence});
+          }
           bool coldVerified = false;
           if (adjacent->coldMapping) {
             adjacent->coldExecution.summary.selectedPlanOrdinal = childOrdinal;
@@ -935,7 +982,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             auto coldSpectrum = verifyResourceTimeAlternative(
                 prepared.resourceTimeFunnel, childAlternative, coldMappings,
                 artifacts, blobs,
-                childAlternative.resourceTimeScheduleHintDigest);
+                childAlternative.resourceTimeScheduleHintDigest, {},
+                request.executionControl);
             if (!coldSpectrum)
               return coldSpectrum.takeError();
             observation.coldDfgCycles = coldRuntime->dfgCycles;
@@ -953,59 +1001,44 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               coldVerified &&
               childRuntime->disposition ==
                   ApplicationMappingRuntimeDisposition::Completed &&
-              childSpectrum->has_value() &&
-              std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
-                  (*childSpectrum)->verification);
-          outcomes.push_back(ApplicationMappingCandidateOutcome{
-              childAlternative.preMappingCandidateRecordOrdinal,
-              childOrdinal,
-              childAlternative.resourceTimeScheduleHintDigest,
-              childAlternative.dataflow,
-              childAlternative.plan.pairOutputs.front().pair.system,
-              childDisposition,
-              std::nullopt,
-              std::nullopt,
-              childMappings,
-              prepared.candidateInventory
-                  [childAlternative.preMappingCandidateRecordOrdinal],
-              childAlternative.plan.systemBindingPartitions,
-              childRuntime->disposition,
-              childRuntime->evidence,
-              {},
-              std::move(*childSpectrum),
-              childRuntime->dfgCycles,
-              childRuntime->cgraCycles,
-              std::nullopt,
-              childRuntime->oracleEvidence});
+              incrementalSpectrumVerified;
         } else {
-          outcomes.push_back(ApplicationMappingCandidateOutcome{
-              childAlternative.preMappingCandidateRecordOrdinal,
-              childOrdinal,
-              childAlternative.resourceTimeScheduleHintDigest,
-              childAlternative.dataflow,
-              childAlternative.plan.pairOutputs.front().pair.system,
-              childDisposition,
-              std::nullopt,
-              childIncompleteReason,
-              {},
-              prepared.candidateInventory
-                  [childAlternative.preMappingCandidateRecordOrdinal],
-              childAlternative.plan.systemBindingPartitions,
-              ApplicationMappingRuntimeDisposition::NotRequested,
-              {},
-              {},
-              std::nullopt,
-              std::nullopt,
-              std::nullopt,
-              std::nullopt,
-              {}});
+          for (const ComponentViewDigest &scheduleHintDigest :
+               alternativeScheduleHintDigests(childAlternative))
+            outcomes.push_back(ApplicationMappingCandidateOutcome{
+                childAlternative.preMappingCandidateRecordOrdinal,
+                childOrdinal,
+                scheduleHintDigest,
+                childAlternative.dataflow,
+                childAlternative.plan.pairOutputs.front().pair.system,
+                childDisposition,
+                std::nullopt,
+                childIncompleteReason,
+                {},
+                prepared.candidateInventory
+                    [childAlternative.preMappingCandidateRecordOrdinal],
+                childAlternative.plan.systemBindingPartitions,
+                ApplicationMappingRuntimeDisposition::NotRequested,
+                {},
+                {},
+                std::nullopt,
+                std::nullopt,
+                std::nullopt,
+                std::nullopt,
+                {}});
         }
+        const std::uint64_t observationOrdinal =
+            incrementalMappingObservations.size();
+        const bool promoteChild =
+            observation.verified && observation.childMapping &&
+            *observation.childMapping != observation.parentMapping &&
+            !llvm::is_contained(pathMappings, *observation.childMapping);
         incrementalMappingObservations.push_back(std::move(observation));
         mapping_debug::emit(
             mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
             mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
               fields["operation"] = "application_resource_time_incremental";
-              fields["parent_plan_ordinal"] = selectedPlanOrdinal;
+              fields["parent_plan_ordinal"] = parentPlanOrdinal;
               fields["child_plan_ordinal"] = childOrdinal;
               fields["reopened_root_count"] = reopenedRoots->size();
               fields["mapping_reuse_disposition"] =
@@ -1022,7 +1055,18 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               fields["wall_time_ns"] =
                   childSummary.incrementalReopenWallTimeNanoseconds;
             });
+        if (promoteChild) {
+          candidatePath.observationOrdinals.push_back(observationOrdinal);
+          pathMappings.push_back(*observation.childMapping);
+          chainedParentPlan.emplace(std::move(adjacent->plan));
+          chainedParentExecution.emplace(std::move(adjacent->execution));
+          parentPlan = &*chainedParentPlan;
+          parentExecution = &*chainedParentExecution;
+          parentPlanOrdinal = childOrdinal;
+        }
       }
+      if (!candidatePath.observationOrdinals.empty())
+        resourceTimeMappingPath.emplace(std::move(candidatePath));
       execution->summary.selectedPlanOrdinal = selectedPlanOrdinal;
       selectedExecution.emplace(std::move(*execution));
       break;
@@ -1143,14 +1187,23 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       preservedServiceLegCount;
   selectedExecution->summary.reopenedServiceLegCount = reopenedServiceLegCount;
   selectedExecution->summary.verifiedAlternatives = verifiedAlternatives;
+  selectedExecution->summary.techMappingInvocationCount =
+      techMappingInvocations;
+  selectedExecution->summary.spatialPnrInvocationCount = spatialPnrInvocations;
+  selectedExecution->summary.systemPnrInvocationCount = systemPnrInvocations;
   selectedExecution->summary.techMappingDispatchCount = techMappingDispatches;
   selectedExecution->summary.spatialPnrDispatchCount = spatialPnrDispatches;
   selectedExecution->summary.systemPnrDispatchCount = systemPnrDispatches;
+  selectedExecution->summary.techMappingJournalReplayCount =
+      techMappingJournalReplays;
+  selectedExecution->summary.spatialPnrJournalReplayCount =
+      spatialPnrJournalReplays;
+  selectedExecution->summary.systemPnrJournalReplayCount =
+      systemPnrJournalReplays;
   selectedExecution->summary.attempts = std::move(attempts);
   if (!selectedExecution->summary.selectedMapping)
-    selectedExecution->summary.declaredWorkExhausted =
+    selectedExecution->summary.declaredWorkExhausted |=
         firstPlan >= plans.size();
-
   ApplicationMappingProvenance provenance;
   provenance.sourceProgram = prepared.preMappingSourceProgram;
   provenance.fabric = prepared.preMappingFabric;
@@ -1168,6 +1221,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   provenance.resolvedPlannerMode = prepared.preMappingResolvedPlannerMode;
   provenance.incrementalMappingObservations =
       std::move(incrementalMappingObservations);
+  provenance.resourceTimeMappingPath = std::move(resourceTimeMappingPath);
   provenance.pairDecision = deriveApplicationPairDecision(
       prepared, outcomes, selectedExecution->summary, qualityInvocations);
   ApplicationMappingExecution result{std::move(*selectedExecution),

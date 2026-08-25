@@ -215,6 +215,7 @@ tools = [
     "loom-hardware-configuration-diagnostics-test",
     "loom-constant-callback-specialization-test",
     "loom-candidate-hint-test",
+    "loom-application-pair-outcome-test",
     "loom-frontend-dfg-integration-test",
     "loom-static-global-memory-test",
     "loom-lower",

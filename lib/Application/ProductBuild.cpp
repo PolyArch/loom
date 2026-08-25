@@ -762,7 +762,8 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
                       PreparedProductTarget &target,
                       const ProductBuildOptions &options,
                       const external_tool::LocalToolConfig &localToolConfig,
-                      std::uint64_t dispatchNotAfterUnixNanoseconds) {
+                      std::uint64_t dispatchNotAfterUnixNanoseconds,
+                      ExecutionControlView executionControl) {
   auto producer = dse::DseProducerSemanticBuildIdentity::get(
       applicationBuildProducerIdentity);
   if (!producer)
@@ -807,7 +808,8 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
        std::move(*policy),
        options.externalHardwarePath.empty()
            ? dse::JointHardwareExplorationScope::BoundedHardwareReopen
-           : dse::JointHardwareExplorationScope::FixedSystemFrontier},
+           : dse::JointHardwareExplorationScope::FixedSystemFrontier,
+       executionControl},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!execution)
     return execution.takeError();
@@ -904,9 +906,9 @@ llvm::Error publishProductDeployment(
                                            options, executionControl);
   if (!prepared)
     return prepared.takeError();
-  auto mapping =
-      executeProductMapping(*prepared, target, options, localToolConfig,
-                            deadline->notAfterUnixNanoseconds);
+  auto mapping = executeProductMapping(
+      *prepared, target, options, localToolConfig,
+      deadline->notAfterUnixNanoseconds, executionControl);
   if (!mapping)
     return mapping.takeError();
   mapping::SystemMappingImportSession systemMappingImportSession(
@@ -915,7 +917,9 @@ llvm::Error publishProductDeployment(
       target.workspace->artifacts(), 1);
   auto deployment = buildApplicationDeployment(
       *prepared, *mapping, *finalLink.linkedModule,
-      {target.compilerPolicy, {target.workspace->linkerPath().str()}},
+      {target.compilerPolicy,
+       {target.workspace->linkerPath().str()},
+       executionControl},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!deployment) {
     deployment::emitConfigurationImageProjectionSessionStatistics(

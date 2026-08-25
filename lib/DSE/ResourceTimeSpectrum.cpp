@@ -192,7 +192,8 @@ materializeHint(
     llvm::ArrayRef<ImportedMappingProjection> mappings,
     llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> mappingPath,
     const ArtifactStore &store, const BlobStore *blobs,
-    ResourceTimeSpectrumFunnelAccounting &accounting) {
+    ResourceTimeSpectrumFunnelAccounting &accounting,
+    std::optional<std::string> &firstTransitionProofDiagnostic) {
   if (hint.states.size() != hint.actions.size() + 1)
     return invalid("resource-time hint action/state lineage is incomplete");
   // A resource-time schedule may change allocation at an event boundary.
@@ -413,8 +414,12 @@ materializeHint(
             transition, store, *blobs);
         if (finalized)
           transition = std::move(*finalized);
-        else
-          llvm::consumeError(finalized.takeError());
+        else {
+          ++accounting.transitionProofFailures;
+          std::string diagnostic = llvm::toString(finalized.takeError());
+          if (!firstTransitionProofDiagnostic)
+            firstTransitionProofDiagnostic = std::move(diagnostic);
+        }
       }
     }
     scenario.transitions.transitions.push_back(std::move(transition));
@@ -460,6 +465,19 @@ bool hasExplicitTemporalActiveSet(
 }
 
 } // namespace
+
+llvm::StringRef resourceTimeSpectrumIncompleteReasonSpelling(
+    ResourceTimeSpectrumIncompleteReason reason) {
+  switch (reason) {
+  case ResourceTimeSpectrumIncompleteReason::Unsupported:
+    return "unsupported";
+  case ResourceTimeSpectrumIncompleteReason::ProofNotEstablished:
+    return "proof_not_established";
+  case ResourceTimeSpectrumIncompleteReason::CancelledOrTimeout:
+    return "cancelled_or_timeout";
+  }
+  llvm_unreachable("unknown resource-time Spectrum incomplete reason");
+}
 
 llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
     const ::loom::pnr::ResourceTimeScheduleWitness &witness,
@@ -783,6 +801,7 @@ verifyResourceTimeMappingFinalists(
     llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> mappingPath) {
   const auto begin = std::chrono::steady_clock::now();
   ResourceTimeSpectrumFunnelAccounting accounting;
+  std::optional<std::string> firstTransitionProofDiagnostic;
   accounting.hintCandidates = hints.size();
   if (hints.empty() || regions.empty() || bounds.size() != regions.size() ||
       systemMappings.empty())
@@ -821,6 +840,12 @@ verifyResourceTimeMappingFinalists(
       canonicalMappings.end());
   std::vector<ArtifactRootReference> endpointMappings;
   endpointMappings.reserve(mappingPath.size());
+  if (!mappingPath.empty() && !blobs)
+    return invalid(
+        "resource-time Mapping path requires a Deployment BlobStore");
+  if (!mappingPath.empty() && mappingPath.size() != canonicalMappings.size())
+    return invalid("resource-time Mapping path must cover every Mapping "
+                   "finalist exactly once");
   for (const ResourceTimeMappingDeploymentEndpoint &endpoint : mappingPath) {
     if (!llvm::is_contained(canonicalMappings, endpoint.mapping))
       return invalid("resource-time Mapping path names a foreign "
@@ -870,6 +895,27 @@ verifyResourceTimeMappingFinalists(
     else
       ++accounting.mappingProgressProofNotEstablished;
     imported.push_back(std::move(*projection));
+  }
+  if (!mappingPath.empty()) {
+    const ArtifactRootReference &endpointDataflow = imported.front().dataflow;
+    const ArtifactRootReference &endpointFabric = imported.front().fabric;
+    for (const ImportedMappingProjection &mapping : imported) {
+      if (mapping.dataflow != endpointDataflow)
+        return invalid("resource-time Mapping path changes Canonical Dataflow "
+                       "without a typed correspondence owner");
+      if (mapping.fabric != endpointFabric)
+        return invalid("resource-time Mapping path changes the immutable "
+                       "Fabric");
+    }
+    for (const ResourceTimeMappingDeploymentEndpoint &endpoint : mappingPath) {
+      auto deployment = ::loom::deployment::importDeployment(
+          endpoint.deployment, store, *blobs);
+      if (!deployment)
+        return deployment.takeError();
+      if (deployment->deployment().systemMapping() != endpoint.mapping)
+        return invalid("resource-time Deployment endpoint does not select its "
+                       "paired SystemMapping");
+    }
   }
   const auto importStats = importSession.statistics();
   accounting.mappingImportRequests = importStats.importRequests;
@@ -947,8 +993,9 @@ verifyResourceTimeMappingFinalists(
       ++accounting.transitionUnsupportedHints;
       continue;
     }
-    auto scenario = materializeHint(hint, regions, imported, mappingPath, store,
-                                    blobs, accounting);
+    auto scenario =
+        materializeHint(hint, regions, imported, mappingPath, store, blobs,
+                        accounting, firstTransitionProofDiagnostic);
     if (!scenario)
       return scenario.takeError();
     if (*scenario) {
@@ -980,6 +1027,11 @@ verifyResourceTimeMappingFinalists(
                                              executionControl, blobs);
   if (!verified)
     return verified.takeError();
+  if (firstTransitionProofDiagnostic)
+    if (auto *incomplete =
+            std::get_if<IncompleteResourceTimeSpectrum>(&*verified))
+      incomplete->diagnostic += ": transition finalization failed: " +
+                                *firstTransitionProofDiagnostic;
   // The independent verifier reuses the same invocation-owned immutable
   // SystemMapping session. Refresh the accounting after it runs so the
   // evidence covers both finalist projection and verifier imports.

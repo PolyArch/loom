@@ -154,12 +154,57 @@ struct PreparedApplicationBuild final {
 struct ApplicationDeploymentRequest final {
   CompilerTargetPolicy compilerTargetPolicy;
   CompilerTargetLinkWorkspace linkerWorkspace;
+  ExecutionControlView executionControl;
+};
+
+/// Exact provider ledger projection for one Mapping execution. Invocation is
+/// reconciled as either a provider dispatch or an execution-journal replay;
+/// the three provider domains remain distinct.
+struct ApplicationMappingProviderWorkObservation final {
+  std::uint64_t techMappingInvocations = 0;
+  std::uint64_t spatialPnrInvocations = 0;
+  std::uint64_t systemPnrInvocations = 0;
+  std::uint64_t techMappingDispatches = 0;
+  std::uint64_t spatialPnrDispatches = 0;
+  std::uint64_t systemPnrDispatches = 0;
+  std::uint64_t techMappingJournalReplays = 0;
+  std::uint64_t spatialPnrJournalReplays = 0;
+  std::uint64_t systemPnrJournalReplays = 0;
+};
+
+/// Immutable Deployment-bound snapshot of the Mapping repair observation.
+/// The compiler-side observation remains the semantic owner; this derived
+/// record makes the exact repair cone and paired evidence replayable with the
+/// preverified runtime transition.
+struct ApplicationResourceTimeRepairEvidence final {
+  std::vector<dataflow::RootThreadLaunchRef> reopenedRoots;
+  dse::JointMappingReuseDisposition reuseDisposition =
+      dse::JointMappingReuseDisposition::ColdFallback;
+  std::uint64_t preservedTechMappings = 0;
+  std::uint64_t preservedSpatialMappings = 0;
+  std::uint64_t repairedTechMappings = 0;
+  std::uint64_t repairedSpatialMappings = 0;
+  std::uint64_t preservedSystemBindings = 0;
+  std::uint64_t reopenedSystemBindings = 0;
+  std::uint64_t coldWallTimeNanoseconds = 0;
+  std::uint64_t incrementalWallTimeNanoseconds = 0;
+  std::uint64_t coldVerifierRetainedBytes = 0;
+  std::uint64_t incrementalVerifierRetainedBytes = 0;
+  std::uint64_t coldVerifierWork = 0;
+  std::uint64_t incrementalVerifierWork = 0;
+  ApplicationMappingProviderWorkObservation coldProviderWork;
+  ApplicationMappingProviderWorkObservation incrementalProviderWork;
+  std::optional<std::uint64_t> coldDfgCycles;
+  std::optional<std::uint64_t> coldCgraCycles;
+  std::optional<std::uint64_t> incrementalDfgCycles;
+  std::optional<std::uint64_t> incrementalCgraCycles;
 };
 
 struct ApplicationResourceTimeTransitionEvidence final {
   pnr::ResourceTimeTransition transition;
   dse::ResourceTimeSpectrumFunnelResult parentSpectrum;
   dse::ResourceTimeSpectrumFunnelResult childSpectrum;
+  ApplicationResourceTimeRepairEvidence repair;
 };
 
 struct ApplicationDeploymentArtifacts final {
@@ -192,6 +237,10 @@ struct ApplicationMappingExecutionRequest final {
   /// loop without changing Mapping legality or candidate identity.
   dse::JointHardwareExplorationScope hardwareExplorationScope =
       dse::JointHardwareExplorationScope::BoundedHardwareReopen;
+  /// Cooperative application deadline shared with Spectrum verification.
+  /// PlanExecutionPolicy remains the Mapping-dispatch owner; this view keeps
+  /// verifier work inside the same invocation boundary.
+  ExecutionControlView executionControl;
 };
 
 enum class ApplicationMappingRuntimeDisposition : std::uint8_t {
@@ -304,6 +353,8 @@ struct ApplicationPairMappingObservation final {
   std::optional<std::uint64_t> cgraCycles;
   std::optional<std::uint64_t> resourceCoreCost;
   std::optional<dse::PreMappingSpectrumClass> verifiedSpectrum;
+  std::optional<dse::ResourceTimeSpectrumIncompleteReason>
+      resourceTimeSpectrumIncompleteReason;
 };
 
 /// Quality facts from one exact joint-design invocation. Application runtime
@@ -477,11 +528,27 @@ struct ApplicationIncrementalMappingObservation final {
   std::uint64_t coldWallTimeNanoseconds = 0;
   std::uint64_t incrementalWallTimeNanoseconds = 0;
   std::uint64_t wallTimeNanoseconds = 0;
+  std::uint64_t coldVerifierRetainedBytes = 0;
+  std::uint64_t incrementalVerifierRetainedBytes = 0;
+  std::uint64_t coldVerifierWork = 0;
+  std::uint64_t incrementalVerifierWork = 0;
+  ApplicationMappingProviderWorkObservation coldProviderWork;
+  ApplicationMappingProviderWorkObservation incrementalProviderWork;
   std::optional<std::uint64_t> coldDfgCycles;
   std::optional<std::uint64_t> coldCgraCycles;
   std::optional<std::uint64_t> incrementalDfgCycles;
   std::optional<std::uint64_t> incrementalCgraCycles;
   bool verified = false;
+};
+
+/// Ordered join from one selected schedule to its bounded adjacent Mapping
+/// repairs. Observation ordinals are the canonical edge lineage; a Deployment
+/// may publish only the longest prefix which closes as one independently
+/// verified spectrum scenario.
+struct ApplicationResourceTimeMappingPath final {
+  std::uint64_t scheduleOwnerPlanOrdinal = 0;
+  ComponentViewDigest scheduleHintDigest;
+  std::vector<std::uint64_t> observationOrdinals;
 };
 
 struct ApplicationMappingProvenance final {
@@ -502,6 +569,7 @@ struct ApplicationMappingProvenance final {
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
   std::vector<ApplicationIncrementalMappingObservation>
       incrementalMappingObservations;
+  std::optional<ApplicationResourceTimeMappingPath> resourceTimeMappingPath;
   /// Derived application decision view. All detailed evidence remains owned by
   /// the records referenced above; this field only closes the pair-level join.
   std::optional<ApplicationPairDecisionRecord> pairDecision;

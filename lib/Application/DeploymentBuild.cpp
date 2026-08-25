@@ -437,51 +437,64 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     return invalid("selected resource-time plan ordinal is out of range");
 
   std::vector<const ApplicationIncrementalMappingObservation *>
-      transitionCandidates;
-  if (selectedPlan) {
-    for (const ApplicationIncrementalMappingObservation &observation :
-         mappingExecution.provenance.incrementalMappingObservations) {
-      if (!observation.verified || !observation.childMapping ||
-          observation.parentPlanOrdinal != *selectedPlan ||
-          observation.parentMapping != imported->mapping.reference() ||
-          *observation.childMapping == observation.parentMapping)
-        continue;
-      if (observation.childPlanOrdinal >= prepared.mappingAlternatives.size())
-        return invalid("resource-time adjacency has a foreign child plan");
-      transitionCandidates.push_back(&observation);
-    }
-  }
-  llvm::sort(transitionCandidates, [](const auto *lhs, const auto *rhs) {
-    if (*lhs->childMapping != *rhs->childMapping)
-      return artifactRootReferenceLess(*lhs->childMapping, *rhs->childMapping);
-    if (lhs->childPlanOrdinal != rhs->childPlanOrdinal)
-      return lhs->childPlanOrdinal < rhs->childPlanOrdinal;
-    if (lhs->childScheduleHintDigest != rhs->childScheduleHintDigest)
-      return lhs->childScheduleHintDigest.bytes() <
-             rhs->childScheduleHintDigest.bytes();
-    return lhs->parentScheduleHintDigest.bytes() <
-           rhs->parentScheduleHintDigest.bytes();
-  });
-  transitionCandidates.erase(
-      std::unique(transitionCandidates.begin(), transitionCandidates.end(),
-                  [](const auto *lhs, const auto *rhs) {
-                    return lhs->childMapping == rhs->childMapping &&
-                           lhs->parentScheduleHintDigest ==
-                               rhs->parentScheduleHintDigest &&
-                           lhs->childScheduleHintDigest ==
-                               rhs->childScheduleHintDigest;
-                  }),
-      transitionCandidates.end());
-
+      pathObservations;
   std::vector<ArtifactRootReference> endpointMappings = {
       imported->mapping.reference()};
-  for (const ApplicationIncrementalMappingObservation *candidate :
-       transitionCandidates)
-    endpointMappings.push_back(*candidate->childMapping);
-  llvm::sort(endpointMappings, artifactRootReferenceLess);
-  endpointMappings.erase(
-      std::unique(endpointMappings.begin(), endpointMappings.end()),
-      endpointMappings.end());
+  if (mappingExecution.provenance.resourceTimeMappingPath) {
+    if (!selectedPlan)
+      return invalid("resource-time Mapping path has no selected entry plan");
+    const ApplicationResourceTimeMappingPath &path =
+        *mappingExecution.provenance.resourceTimeMappingPath;
+    if (path.scheduleOwnerPlanOrdinal != *selectedPlan ||
+        path.scheduleOwnerPlanOrdinal >= prepared.mappingAlternatives.size())
+      return invalid("resource-time Mapping path has a foreign schedule owner");
+    const PreparedApplicationMappingAlternative &scheduleOwner =
+        prepared.mappingAlternatives[path.scheduleOwnerPlanOrdinal];
+    if (path.scheduleHintDigest !=
+        scheduleOwner.resourceTimeScheduleHintDigest)
+      return invalid("resource-time Mapping path lost its schedule digest");
+    std::uint64_t parentPlanOrdinal = path.scheduleOwnerPlanOrdinal;
+    ArtifactRootReference parentMapping = imported->mapping.reference();
+    for (const std::uint64_t observationOrdinal : path.observationOrdinals) {
+      if (observationOrdinal >=
+          mappingExecution.provenance.incrementalMappingObservations.size())
+        return invalid("resource-time Mapping path has a foreign observation");
+      const ApplicationIncrementalMappingObservation &observation =
+          mappingExecution.provenance
+              .incrementalMappingObservations[observationOrdinal];
+      if (!observation.verified || !observation.childMapping ||
+          observation.parentMapping != parentMapping ||
+          observation.parentPlanOrdinal != parentPlanOrdinal ||
+          observation.parentPlanOrdinal >=
+              prepared.mappingAlternatives.size() ||
+          observation.childPlanOrdinal >=
+              prepared.mappingAlternatives.size() ||
+          observation.parentScheduleHintDigest !=
+              prepared.mappingAlternatives[observation.parentPlanOrdinal]
+                  .resourceTimeScheduleHintDigest ||
+          observation.childScheduleHintDigest !=
+              prepared.mappingAlternatives[observation.childPlanOrdinal]
+                  .resourceTimeScheduleHintDigest ||
+          llvm::is_contained(endpointMappings, *observation.childMapping))
+        return invalid("resource-time Mapping path is not one exact verified "
+                       "repair chain");
+      const PreparedApplicationMappingAlternative &childAlternative =
+          prepared.mappingAlternatives[observation.childPlanOrdinal];
+      if (childAlternative.candidateIdentity !=
+              scheduleOwner.candidateIdentity ||
+          childAlternative.dataflow != scheduleOwner.dataflow ||
+          childAlternative.plan.pairOutputs.size() != 1 ||
+          scheduleOwner.plan.pairOutputs.size() != 1 ||
+          childAlternative.plan.pairOutputs.front().pair.system !=
+              scheduleOwner.plan.pairOutputs.front().pair.system)
+        return invalid("resource-time Mapping path changes its schedule "
+                       "candidate or immutable System");
+      pathObservations.push_back(&observation);
+      endpointMappings.push_back(*observation.childMapping);
+      parentMapping = *observation.childMapping;
+      parentPlanOrdinal = observation.childPlanOrdinal;
+    }
+  }
 
   std::vector<dse::ResourceTimeMappingDeploymentEndpoint> endpoints;
   endpoints.reserve(endpointMappings.size());
@@ -516,12 +529,12 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     auto bindings = deriveHardwareBindings(*mapping);
     if (!bindings) {
       reportEndpointIncomplete(mappingReference, bindings.takeError());
-      continue;
+      break;
     }
     auto endpointBinaries = buildInstructionBinaries(*mapping);
     if (!endpointBinaries) {
       reportEndpointIncomplete(mappingReference, endpointBinaries.takeError());
-      continue;
+      break;
     }
     auto endpointDeployment = deployment::buildDeploymentFromLinkedProgram(
         {mappingReference, *hostProgram, *endpointBinaries, *bindings},
@@ -529,54 +542,141 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     if (!endpointDeployment) {
       reportEndpointIncomplete(mappingReference,
                                endpointDeployment.takeError());
-      continue;
+      break;
     }
     endpoints.push_back({mappingReference, endpointDeployment->reference()});
   }
-  llvm::sort(endpoints, [](const auto &lhs, const auto &rhs) {
-    return artifactRootReferenceLess(lhs.mapping, rhs.mapping);
-  });
-
   std::optional<dse::ResourceTimeSpectrumFunnelResult> resourceTimeSpectrum;
   std::vector<ApplicationResourceTimeTransitionEvidence>
       resourceTimeTransitions;
-  if (selectedPlan) {
+  std::optional<pnr::ResourceTimeTransitionGraph> resourceTimeTransitionGraph;
+  if (selectedPlan && endpoints.size() > 1) {
+    const ApplicationResourceTimeMappingPath &path =
+        *mappingExecution.provenance.resourceTimeMappingPath;
+    const PreparedApplicationMappingAlternative &scheduleOwner =
+        prepared.mappingAlternatives[path.scheduleOwnerPlanOrdinal];
+    std::optional<dse::ResourceTimeSpectrumFunnelResult> longestIncomplete;
+    for (std::size_t prefixLength = endpoints.size(); prefixLength > 1;
+         --prefixLength) {
+      auto verified = verifyResourceTimeAlternative(
+          prepared.resourceTimeFunnel, scheduleOwner,
+          llvm::ArrayRef(endpointMappings).take_front(prefixLength), artifacts,
+          blobs, path.scheduleHintDigest,
+          llvm::ArrayRef(endpoints).take_front(prefixLength),
+          request.executionControl);
+      if (!verified)
+        return verified.takeError();
+      if (!*verified)
+        continue;
+      if (!longestIncomplete)
+        longestIncomplete = **verified;
+      const auto *spectrum =
+          std::get_if<dse::VerifiedResourceTimeSpectrum>(
+              &(*verified)->verification);
+      if (!spectrum)
+        continue;
+      const dse::VerifiedResourceTimeSpectrumScenario *pathScenario = nullptr;
+      for (const dse::VerifiedResourceTimeSpectrumScenario &scenario :
+           spectrum->scenarios) {
+        if (!scenario.transitionGraph ||
+            scenario.transitionGraph->entry.mapping !=
+                endpoints.front().mapping ||
+            scenario.transitionGraph->entry.deployment !=
+                endpoints.front().deployment ||
+            scenario.transitionGraph->transitions.size() != prefixLength - 1)
+          continue;
+        bool exactPath =
+            scenario.transitionGraph->endpoints.size() == prefixLength;
+        for (std::size_t index = 0; exactPath && index + 1 < prefixLength;
+             ++index) {
+          const pnr::ResourceTimeTransition &edge =
+              scenario.transitionGraph->transitions[index];
+          exactPath = edge.parent.mapping == endpoints[index].mapping &&
+                      edge.parent.deployment == endpoints[index].deployment &&
+                      edge.child.mapping == endpoints[index + 1].mapping &&
+                      edge.child.deployment == endpoints[index + 1].deployment;
+        }
+        if (!exactPath)
+          continue;
+        if (pathScenario)
+          return invalid("resource-time schedule produced more than one exact "
+                         "Mapping path");
+        pathScenario = &scenario;
+      }
+      if (!pathScenario)
+        return invalid("verified resource-time spectrum lost its exact ordered "
+                       "Mapping path");
+
+      resourceTimeTransitionGraph = *pathScenario->transitionGraph;
+      resourceTimeSpectrum = **verified;
+      for (std::size_t edgeOrdinal = 0;
+           edgeOrdinal != pathScenario->transitions.transitions.size();
+           ++edgeOrdinal) {
+        const ApplicationIncrementalMappingObservation &candidate =
+            *pathObservations[edgeOrdinal];
+        const pnr::ResourceTimeTransition &edge =
+            pathScenario->transitions.transitions[edgeOrdinal];
+        if (edge.parent.mapping != candidate.parentMapping ||
+            !candidate.childMapping ||
+            edge.child.mapping != *candidate.childMapping ||
+            edge.status != pnr::ResourceTimeTransitionStatus::Verified)
+          return invalid("resource-time Mapping path edge lost its exact repair "
+                         "observation");
+        const PreparedApplicationMappingAlternative &childAlternative =
+            prepared.mappingAlternatives[candidate.childPlanOrdinal];
+        auto childVerified = verifyResourceTimeAlternative(
+            prepared.resourceTimeFunnel, childAlternative,
+            {*candidate.childMapping}, artifacts, blobs,
+            candidate.childScheduleHintDigest, {}, request.executionControl);
+        if (!childVerified)
+          return childVerified.takeError();
+        if (!*childVerified ||
+            !std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
+                (*childVerified)->verification))
+          return invalid("resource-time path child lost its independently "
+                         "verified Mapping spectrum");
+        resourceTimeTransitions.push_back(
+            {edge,
+             **verified,
+             std::move(**childVerified),
+             {candidate.reopenedRoots, candidate.reuseDisposition,
+              candidate.preservedTechMappings,
+              candidate.preservedSpatialMappings,
+              candidate.repairedTechMappings,
+              candidate.repairedSpatialMappings,
+              candidate.preservedSystemBindings,
+              candidate.reopenedSystemBindings,
+              candidate.coldWallTimeNanoseconds,
+              candidate.incrementalWallTimeNanoseconds,
+              candidate.coldVerifierRetainedBytes,
+              candidate.incrementalVerifierRetainedBytes,
+              candidate.coldVerifierWork, candidate.incrementalVerifierWork,
+              candidate.coldProviderWork,
+              candidate.incrementalProviderWork,
+              candidate.coldDfgCycles, candidate.coldCgraCycles,
+              candidate.incrementalDfgCycles,
+              candidate.incrementalCgraCycles}});
+      }
+      break;
+    }
+    if (!resourceTimeSpectrum && longestIncomplete)
+      resourceTimeSpectrum = std::move(*longestIncomplete);
+  }
+
+  if (selectedPlan && !resourceTimeTransitionGraph) {
     const PreparedApplicationMappingAlternative &alternative =
         prepared.mappingAlternatives[*selectedPlan];
-    for (const ApplicationIncrementalMappingObservation *candidate :
-         transitionCandidates) {
-      const PreparedApplicationMappingAlternative &childAlternative =
-          prepared.mappingAlternatives[candidate->childPlanOrdinal];
-      const ArtifactRootReference childMapping = *candidate->childMapping;
-      auto childVerified = verifyResourceTimeAlternative(
-          prepared.resourceTimeFunnel, childAlternative, {childMapping},
-          artifacts, blobs, candidate->childScheduleHintDigest);
-      if (!childVerified)
-        return childVerified.takeError();
-      if (!*childVerified)
+    for (const ApplicationMappingCandidateOutcome &outcome :
+         mappingExecution.candidateOutcomes) {
+      if (outcome.planOrdinal != *selectedPlan ||
+          outcome.systemMappings.empty() ||
+          !llvm::is_contained(outcome.systemMappings,
+                              imported->mapping.reference()))
         continue;
-      if (!std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
-              (*childVerified)->verification)) {
-        if (!resourceTimeSpectrum)
-          resourceTimeSpectrum = std::move(**childVerified);
-        continue;
-      }
-
-      std::array<ArtifactRootReference, 2> transitionMappings = {
-          imported->mapping.reference(), childMapping};
-      std::vector<dse::ResourceTimeMappingDeploymentEndpoint>
-          transitionEndpoints;
-      for (const ArtifactRootReference &mappingReference : transitionMappings) {
-        const auto endpoint = llvm::find_if(endpoints, [&](const auto &row) {
-          return row.mapping == mappingReference;
-        });
-        if (endpoint != endpoints.end())
-          transitionEndpoints.push_back(*endpoint);
-      }
       auto verified = verifyResourceTimeAlternative(
-          prepared.resourceTimeFunnel, alternative, transitionMappings,
-          artifacts, blobs, candidate->parentScheduleHintDigest,
-          transitionEndpoints);
+          prepared.resourceTimeFunnel, alternative,
+          {imported->mapping.reference()}, artifacts, blobs,
+          outcome.resourceTimeScheduleHintDigest, {}, request.executionControl);
       if (!verified)
         return verified.takeError();
       if (!*verified)
@@ -584,83 +684,23 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       const bool completed =
           std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
               (*verified)->verification);
-      if (completed) {
-        const auto &spectrum = std::get<dse::VerifiedResourceTimeSpectrum>(
-            (*verified)->verification);
-        const pnr::ResourceTimeTransition *verifiedEdge = nullptr;
-        for (const dse::VerifiedResourceTimeSpectrumScenario &scenario :
-             spectrum.scenarios)
-          for (const pnr::ResourceTimeTransition &candidateEdge :
-               scenario.transitions.transitions) {
-            if (candidateEdge.parent.mapping != transitionMappings[0] ||
-                candidateEdge.child.mapping != transitionMappings[1])
-              continue;
-            if (verifiedEdge)
-              return invalid("resource-time application evidence repeats one "
-                             "verified edge");
-            verifiedEdge = &candidateEdge;
-          }
-        if (!verifiedEdge ||
-            verifiedEdge->status != pnr::ResourceTimeTransitionStatus::Verified)
-          return invalid("resource-time application evidence lost its exact "
-                         "verified edge");
-        resourceTimeTransitions.push_back(
-            {*verifiedEdge, std::move(**verified), std::move(**childVerified)});
-        continue;
-      }
-      if (!resourceTimeSpectrum)
+      if (!resourceTimeSpectrum || completed)
         resourceTimeSpectrum = std::move(**verified);
-    }
-
-    if (!resourceTimeTransitions.empty())
-      resourceTimeSpectrum = resourceTimeTransitions.front().parentSpectrum;
-
-    if (resourceTimeTransitions.empty() && !resourceTimeSpectrum) {
-      for (const ApplicationMappingCandidateOutcome &outcome :
-           mappingExecution.candidateOutcomes) {
-        if (outcome.planOrdinal != *selectedPlan ||
-            outcome.systemMappings.empty() ||
-            !llvm::is_contained(outcome.systemMappings,
-                                imported->mapping.reference()))
-          continue;
-        auto verified = verifyResourceTimeAlternative(
-            prepared.resourceTimeFunnel, alternative,
-            {imported->mapping.reference()}, artifacts, blobs,
-            outcome.resourceTimeScheduleHintDigest);
-        if (!verified)
-          return verified.takeError();
-        if (!*verified)
-          continue;
-        const bool completed =
-            std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
-                (*verified)->verification);
-        if (!resourceTimeSpectrum || completed)
-          resourceTimeSpectrum = std::move(**verified);
-        if (completed)
-          break;
-      }
+      if (completed)
+        break;
     }
   }
-  std::optional<pnr::ResourceTimeTransitionGraph> resourceTimeTransitionGraph;
-  if (selectedPlan) {
+
+  if (selectedPlan && !resourceTimeTransitionGraph) {
     resourceTimeTransitionGraph.emplace(pnr::ResourceTimeTransitionGraph{
         {imported->mapping.reference(), deployment->reference()}, {}, {}});
     resourceTimeTransitionGraph->endpoints.push_back(
         resourceTimeTransitionGraph->entry);
-    const auto appendEndpoint = [&](const auto &endpoint) {
-      if (!llvm::is_contained(resourceTimeTransitionGraph->endpoints, endpoint))
-        resourceTimeTransitionGraph->endpoints.push_back(endpoint);
-    };
-    for (const ApplicationResourceTimeTransitionEvidence &evidence :
-         resourceTimeTransitions) {
-      appendEndpoint(evidence.transition.parent);
-      appendEndpoint(evidence.transition.child);
-      resourceTimeTransitionGraph->transitions.push_back(evidence.transition);
-    }
+  }
+  if (resourceTimeTransitionGraph)
     if (llvm::Error error = pnr::verifyResourceTimeTransitionGraph(
             *resourceTimeTransitionGraph, artifacts, blobs))
       return std::move(error);
-  }
   emitElapsed(ApplicationBuildOperation::DeclarativeDeploymentFinalization,
               operationBegin);
   return ApplicationDeploymentArtifacts{abi->reference(),

@@ -588,6 +588,73 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
       "partitioned temporal epoch was incorrectly rejected before Mapping");
 }
 
+void outOfDomainScreeningRemainsMeasuredButInadmissible() {
+  auto regions = fiveRegionFeatures(2);
+  for (auto &region : regions)
+    for (auto &candidate : region.speedupCurve)
+      candidate.support = loom::dse::ResourceTimeEstimateSupport::OutOfDomain;
+  loom::dse::ResourceTimeMappingCandidateInput candidate{
+      digest(102),       0, 5, 5, 50, 2, invocation(), {reference(20)},
+      std::move(regions)};
+  auto bounded = policy();
+  bounded.maximumMappingFinalists = 1;
+  const auto selected =
+      take(loom::dse::selectResourceTimeMappingFinalists({candidate}, bounded));
+  require(selected.accounting.screeningComparisonCandidates == 1 &&
+              selected.accounting.screeningOutOfDomainCandidates == 1 &&
+              selected.accounting.screeningAdmissibleCandidates == 0 &&
+              selected.accounting.screeningDetailedFeasibleIntersection == 0 &&
+              !loom::dse::validateResourceTimeMappingFunnelAccounting(
+                  selected.accounting),
+          "out-of-domain screening was presented as admissible evidence");
+}
+
+void screeningCombinesIndependentLowerBoundSupport() {
+  const auto screeningPoint =
+      [](std::uint64_t resources, std::uint64_t execution,
+         loom::dse::ResourceTimeEstimateSupport support) {
+        return loom::dse::ResourceTimeSpeedupPoint{
+            {resources}, execution, std::nullopt, std::nullopt, 0,
+            0,           0,         support};
+      };
+  std::vector<loom::dse::ResourceTimeRegionFeature> regions{
+      {root(120),
+       {},
+       {screeningPoint(2, 2, loom::dse::ResourceTimeEstimateSupport::Analytic),
+        screeningPoint(1, 3,
+                       loom::dse::ResourceTimeEstimateSupport::Unsupported)},
+       0,
+       false,
+       {}},
+      {root(121),
+       {},
+       {screeningPoint(2, 2, loom::dse::ResourceTimeEstimateSupport::Analytic),
+        screeningPoint(1, 3,
+                       loom::dse::ResourceTimeEstimateSupport::Unsupported)},
+       0,
+       false,
+       {}}};
+  loom::dse::ResourceTimeMappingCandidateInput candidate{
+      digest(120),       0, 2, 2, 2, 2, invocation(), {reference(20)},
+      std::move(regions)};
+  auto bounded = policy();
+  bounded.availableResourceUnits = {2};
+  bounded.maximumMappingFinalists = 1;
+  const auto selected =
+      take(loom::dse::selectResourceTimeMappingFinalists({candidate}, bounded));
+  require(
+      selected.evaluations.size() == 1 &&
+          selected.evaluations.front().screeningLowerBoundPicoseconds == 3 &&
+          selected.evaluations.front().screeningSupport ==
+              loom::dse::ResourceTimeEstimateSupport::Unsupported &&
+          selected.evaluations.front().screeningConfidence ==
+              loom::dse::ResourceTimeEstimateConfidence::None &&
+          selected.accounting.screeningComparisonCandidates == 1 &&
+          selected.accounting.screeningAdmissibleCandidates == 0,
+      "mixed-support screening presented an unsupported work bound as "
+      "analytic");
+}
+
 void exactMemoSupportsWarmAndConcurrentReuse() {
   auto bounded = policy();
   bounded.maximumMappingFinalists = 1;
@@ -709,6 +776,8 @@ int main() {
   dependencyCyclesRemainTyped();
   replayIsDeterministic();
   mappingFunnelAdmitsOnlyBoundedFinalists();
+  outOfDomainScreeningRemainsMeasuredButInadmissible();
+  screeningCombinesIndependentLowerBoundSupport();
   exactMemoSupportsWarmAndConcurrentReuse();
   return 0;
 }

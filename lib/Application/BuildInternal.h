@@ -47,6 +47,30 @@ llvm::Error invalid(const llvm::Twine &message);
 ApplicationPairDecisionDisposition mapIncompleteReasonToPairDisposition(
     const dse::DsePlanIncompleteReason &reason);
 
+ApplicationPairDecisionDisposition
+mapResourceTimeFrontierReasonToPairDisposition(
+    dse::ResourceTimeFrontierIncompleteReason reason);
+
+std::optional<ApplicationPairDecisionDisposition>
+mapRuntimeDispositionToPairDisposition(
+    ApplicationMappingRuntimeDisposition disposition);
+
+std::optional<dse::PreMappingSpectrumClass>
+requestedResourceTimeSpectrumClass(dse::PreMappingSpectrumEndpoint endpoint);
+
+llvm::Expected<std::vector<dataflow::RootThreadLaunchRef>>
+deriveApplicationPartitionDelta(const dse::JointDesignExplorationPlan &parent,
+                                const dse::JointDesignExplorationPlan &child);
+
+std::optional<ApplicationPairDecisionDisposition>
+classifyResourceTimeSelectionOutcome(
+    const std::optional<dse::ResourceTimeSpectrumFunnelResult> &spectrum,
+    std::optional<dse::PreMappingSpectrumClass> requestedClass);
+
+ApplicationPairDecisionDisposition prioritizeIncompletePairDisposition(
+    llvm::ArrayRef<ApplicationPairDecisionDisposition> causes,
+    bool declaredWorkExhausted);
+
 ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const PreparedApplicationBuild &prepared,
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,
@@ -83,7 +107,8 @@ verifyResourceTimeAlternative(
     llvm::ArrayRef<ArtifactRootReference> systemMappings,
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const ComponentViewDigest &scheduleHintDigest,
-    llvm::ArrayRef<dse::ResourceTimeMappingDeploymentEndpoint> endpoints = {});
+    llvm::ArrayRef<dse::ResourceTimeMappingDeploymentEndpoint> endpoints = {},
+    ExecutionControlView executionControl = {});
 
 } // namespace loom::application::build_detail
 

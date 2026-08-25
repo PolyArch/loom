@@ -73,6 +73,21 @@ mappingEventPrecedes(const FrozenMappingProgressModel &model,
                      const ::dataflow::EventFamilyKey &predecessor,
                      const ::dataflow::EventFamilyKey &dependent);
 
+/// Verifies that one completion frontier is a legal linear extension of the
+/// canonical Dataflow event relation over the exact Mapping root scope.
+/// Independent roots may be ordered by the resource-time schedule. Every
+/// completed, completing, or newly active root must nevertheless have all of
+/// its canonical causal root predecessors satisfied at the declared boundary;
+/// a predecessor outside the Mapping scope is not implicit completion proof.
+/// Explicit stored-program thread waits remain outside this profile because
+/// their host control-flow order has no frozen event correspondence here.
+llvm::Expected<bool> mappingCompletionFrontierIsAdmissible(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> mappedRoots,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> completedBefore,
+    ::dataflow::RootThreadLaunchRef completing,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> activeAfter);
+
 /// Derives the progress-only projection of the strict System closure. This is
 /// the adapter used by final verification; System PnR constructs the same
 /// projection directly from its frozen selection domains.
