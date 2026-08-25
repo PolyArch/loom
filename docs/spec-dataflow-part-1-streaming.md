@@ -317,9 +317,26 @@ loaded, stored, nested in another channel, or sent as a message.
 
 Each dynamic execution of `dataflow.channel.create` creates a fresh logical
 channel instance. Creation occurs outside `loom.spatial_region` and
-`dataflow.graph`; it cannot be CSE'd as a pure value. The initial profile has no
-channel-level session, epoch, open, close, reset, or built-in EOS operation.
-Known logical domains or an explicit payload protocol own termination.
+`dataflow.graph`; it cannot be CSE'd as a pure value. Dataflow has no
+channel-level open, close, reset, or EOS operation. Known logical domains or an
+explicit payload protocol own program termination.
+
+Runtime may reuse one already admitted channel service through the bounded
+generation profile in `docs/spec-runtime-abi.md`. Its session is the transient
+execution of this exact logical channel lineage; its generation spans one
+complete logical channel invocation and preserves the endpoint membership,
+`source_map`, service, and route already selected for that lineage. A
+generation cannot split one endpoint-instance contribution, group messages by
+arrival order, add an endpoint, allocate a route, or create a Mapping identity.
+The optional terminal marker is an ABI lifecycle result after the declared
+flat event counts retire. It is not a message, a Dataflow value, or an EOS
+operation in the program.
+
+The reusable profile is available only when the selected execution owner can
+derive finite producer and per-consumer flat event counts from the existing
+launch and endpoint correspondence. A missing or inconsistent derivation is a
+typed Runtime refusal; it does not authorize an inferred count or hidden
+payload sentinel.
 `DynamicWorkDomain` quiescence is owned by
 `docs/spec-compiler-part-4-partitioned-data.md` and may retire its launch token;
 it does not close a channel or manufacture an EOS message. A concurrently
@@ -397,9 +414,12 @@ no activation-owned message segment.
 Conceptually, an event position is the total cardinality of all preceding
 endpoint-instance contributions plus the event's local ordinal. This position
 is derived semantics, not an IR value, Artifact record, payload sideband,
-Physical Tag, session, or epoch. A static proof may represent the position
-symbolically. Runtime may maintain transient counters and ordered-commit state,
-but those values do not become program identity.
+Physical Tag, session, or generation. A static proof may represent the
+position symbolically. Runtime may maintain transient counters and
+ordered-commit state, but those values do not become program identity. A new
+Runtime generation restarts the transient counters for a new complete logical
+channel invocation; it never inserts a boundary into this invocation's event
+sequence.
 
 Overlapping endpoint instances may execute physically out of order, but their
 messages must commit in the defined sequence. A physical implementation may
@@ -434,9 +454,11 @@ keys and cannot encode launch or message identity.
 Stable verification anchors cover payload-type rejection, fresh creation,
 send/receive placement and type agreement, one-producer/multi-consumer source
 mapping, repeated-launch event ordering, rate conversion, ordered blocking
-behavior, and the absence of hidden EOS or capacity-visible behavior. Tests do
-not enumerate physical transports, message types, activation-count matrices,
-or report formatting.
+behavior, generation terminal counts, cancellation, reset, and rejection of
+stale generation tickets. EOS remains a lifecycle result rather than a hidden
+payload or graph-stream close, and logical code still cannot observe physical
+capacity. Tests do not enumerate physical transports, message types,
+activation-count matrices, or report formatting.
 
 ## 9. References
 

@@ -87,6 +87,51 @@ The exact persistent carrier, unique resolution rule, and binary relation are
 owned by `docs/spec-executable-closure.md`. Runtime imports those artifacts and
 cannot author another target tuple or compatibility cache.
 
+## Ordered Channel Session ABI
+
+`OrderedChannelABI` is the direct transient owner of one ordered channel
+session. It owns the producer send sequence, one receive sequence and at most
+one reservation per consumer branch, acknowledgement, multicast retention,
+and the selected bounded message capacity. The caller commits producer events
+in the canonical order defined by Dataflow; concurrent arrival never selects
+sequence order. One accepted send receives the next sequence exactly once, a
+consumer reserves only its oldest unacknowledged message, and storage is
+reclaimed only after every branch acknowledges that message. A full capacity
+returns `WouldBlock` without consuming a sequence.
+
+The optional reusable profile binds finite flat producer and per-consumer
+event counts to one transient generation. The exact Dataflow launch/channel
+lineage and already admitted service envelope remain the session authority;
+the ABI's generation ordinal only distinguishes consecutive uses of that same
+session. It is not persistent identity and cannot select endpoints, Mapping,
+route, capacity, or hardware state. Opening a generation changes none of those
+facts.
+
+The producer may finish only after accepting its declared count. Each consumer
+may finish only after producer finish, acknowledgement of its declared count,
+and release of any live reservation. At that boundary, receive returns a
+generation-bound `EndOfGeneration` lifecycle ticket rather than a payload.
+Collective join requires the producer and every consumer to finish, no live
+reservation, and no retained message. Cancellation invalidates reservations
+and discards retained transient messages; it neither completes a
+`DynamicWorkDomain` nor manufactures program-visible data. Reset is legal only
+after collective join or cancellation and increments the generation before
+reopening pristine counters.
+
+Deficit, excess static rate, pending consumer, outstanding reservation,
+cancelled generation, stale ticket, lifecycle misuse, and identity exhaustion
+remain distinct typed outcomes. Rejected operations do not consume sequence,
+acknowledgement, reservation, or generation state. A one-shot caller that does
+not bind finite rates retains the original ordered send/receive ABI, but it
+cannot claim reusable-session or lifecycle conformance.
+
+This lifecycle spans one complete logical channel invocation. It does not
+segment producer or consumer activations, reinterpret rate conversion, or use
+queue emptiness as EOS. A production path claims this profile only when its
+finite counts and endpoint membership are derived from the same canonical
+launch correspondence that created the channel and it uses the existing
+pre-admitted service/route envelope.
+
 ## Deployment Runtime Images
 
 `docs/spec-configuration-deployment.md` is the sole owner of Deployment
@@ -502,17 +547,19 @@ outcome and never overwrites an unacknowledged message. A graph stream's
 does not implicitly close the thread-level channel.
 
 `OrderedChannelABI` is the direct in-process Runtime call boundary for that
-same sequence owner. `send` reports `Accepted`, `WouldBlock`, or
-`SequenceExhausted` and exposes the candidate `SendSeq` without advancing it on
-a blocked call. `receive` returns the next message or `WouldBlock` together
-with the consumer branch and `RecvSeq`; acknowledgement or cancellation must
-match that currently live reservation. Native compiler-generated endpoint
-calls and the gem5 multi-Bridge provider use this owner rather than maintaining
-parallel cursor, reservation, or acknowledgement state. The ABI creates no
-persistent channel identity and adds no session, epoch, open, reset, or EOS
-semantics. It does not schedule endpoint occurrences: its caller must submit
-sends in Dataflow's canonical event commit order rather than arrival-race
-order, and each execution adapter owns blocking and retry around `WouldBlock`.
+same sequence owner. `send` exposes the candidate `SendSeq` without advancing
+it on a blocked, rate-exceeding, cancelled, or invalid-lifecycle call.
+`receive` returns the next message, `WouldBlock`, or the optional generation
+terminal together with the consumer branch, `RecvSeq`, and generation;
+acknowledgement or cancellation must match that currently live reservation.
+Native compiler-generated endpoint calls and the gem5 multi-Bridge provider
+use this owner rather than maintaining parallel cursor, reservation, or
+acknowledgement state. The optional lifecycle described above adds no
+persistent channel identity and is conforming only for adapters that bind the
+finite lineage-derived rate table. The ABI does not schedule endpoint
+occurrences: its caller must submit sends in Dataflow's canonical event commit
+order rather than arrival-race order, and each execution adapter owns blocking
+and retry around `WouldBlock`.
 
 The native selected-program adapter is not a thread scheduler. Its dense-thread
 ownership projection erases launch and wait carriers, then invokes channel

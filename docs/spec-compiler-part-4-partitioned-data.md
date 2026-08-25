@@ -321,7 +321,10 @@ bulk copies lower to existing memory and channel semantics and use their exact
 completion tokens.
 
 General device-side runtime spawn, spawn-then-feed of an independently blocked
-consumer, channel sessions or EOS, and arbitrary DynamicWork channel
-correspondence are also deferred. They require independent observable
-semantics; they are not inferred from `dataflow.work.spawn` or responsibility
-termination.
+consumer, program-visible channel session/EOS operations, and arbitrary
+DynamicWork channel correspondence are also deferred. The bounded transient
+generation lifecycle in `docs/spec-runtime-abi.md` is permitted only for a
+complete finite dense channel invocation whose flat counts and endpoint
+membership are derived from existing launch correspondence. It does not add a
+Dataflow operation and is not inferred from `dataflow.work.spawn` or
+responsibility termination.

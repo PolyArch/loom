@@ -198,6 +198,15 @@ ordinary bounded transport wait. Replaying the computation would duplicate
 memory effects, while requiring all activation messages to fit at once would
 deadlock whenever a legal stream is longer than the channel capacity.
 
+A reusable channel service needs a terminal boundary without turning control
+state into data. Runtime therefore binds a generation to one complete logical
+channel invocation, derives its flat endpoint counts from the existing
+Dataflow correspondence, and exposes EOS only as an ABI lifecycle result.
+Per-activation epochs would break legal rate conversion, while a sentinel
+message would contaminate the payload type and multicast sequence. Resetting
+only after join or cancellation lets a physical service be reused without
+making its generation ordinal a new channel, route, or Mapping identity.
+
 The same separation applies to control progress. A channel consumer may be the
 first mapped thread submitted, so Host glue must preserve launch handles and
 defer its join to the source wait. Each target has independent transient
