@@ -58,6 +58,10 @@ mapRuntimeDispositionToPairDisposition(
 std::optional<dse::PreMappingSpectrumClass>
 requestedResourceTimeSpectrumClass(dse::PreMappingSpectrumEndpoint endpoint);
 
+llvm::Expected<std::vector<dataflow::RootThreadLaunchRef>>
+deriveApplicationPartitionDelta(const dse::JointDesignExplorationPlan &parent,
+                                const dse::JointDesignExplorationPlan &child);
+
 std::optional<ApplicationPairDecisionDisposition>
 classifyResourceTimeSelectionOutcome(
     const std::optional<dse::ResourceTimeSpectrumFunnelResult> &spectrum,

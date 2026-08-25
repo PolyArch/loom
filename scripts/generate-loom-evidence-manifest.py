@@ -679,6 +679,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                         "resource_time_screening_out_of_domain_candidates",
                         "resource_time_maximum_screening_lower_bound_gap_picoseconds",
                         "application_incremental_mapping_transitions",
+                        "application_resource_time_mapping_path",
                         "resource_time_actual_tech_mapping_dispatch_count",
                         "resource_time_actual_spatial_pnr_dispatch_count",
                         "resource_time_actual_system_pnr_dispatch_count",

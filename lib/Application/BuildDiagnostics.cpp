@@ -526,6 +526,20 @@ llvm::json::Object workCounter(const Counter &counter) {
       {"elapsed_nanoseconds", counter.elapsedNanoseconds}};
 }
 
+llvm::json::Object mappingProviderWork(
+    const ApplicationMappingProviderWorkObservation &work) {
+  return llvm::json::Object{
+      {"tech_mapping_invocations", work.techMappingInvocations},
+      {"spatial_pnr_invocations", work.spatialPnrInvocations},
+      {"system_pnr_invocations", work.systemPnrInvocations},
+      {"tech_mapping_dispatches", work.techMappingDispatches},
+      {"spatial_pnr_dispatches", work.spatialPnrDispatches},
+      {"system_pnr_dispatches", work.systemPnrDispatches},
+      {"tech_mapping_journal_replays", work.techMappingJournalReplays},
+      {"spatial_pnr_journal_replays", work.spatialPnrJournalReplays},
+      {"system_pnr_journal_replays", work.systemPnrJournalReplays}};
+}
+
 llvm::json::Object
 resourceTimeFunnelObject(const dse::ResourceTimeMappingFunnel &funnel) {
   const dse::ResourceTimeMappingFunnelAccounting &accounting =
@@ -1466,9 +1480,12 @@ void emitApplicationMappingDiagnostics(
             {"reopened_service_realization_count",
              summary.reopenedServiceRealizationCount}};
         llvm::json::Array incrementalTransitions;
-        for (const ApplicationIncrementalMappingObservation &observation :
-             execution.provenance.incrementalMappingObservations) {
+        for (const auto indexed : llvm::enumerate(
+                 execution.provenance.incrementalMappingObservations)) {
+          const ApplicationIncrementalMappingObservation &observation =
+              indexed.value();
           llvm::json::Object transition;
+          transition["observation_ordinal"] = indexed.index();
           transition["parent_mapping"] = encodeRoot(observation.parentMapping);
           transition["child_system"] = encodeRoot(observation.childSystem);
           if (observation.childMapping)
@@ -1519,6 +1536,10 @@ void emitApplicationMappingDiagnostics(
           transition["cold_verifier_work"] = observation.coldVerifierWork;
           transition["incremental_verifier_work"] =
               observation.incrementalVerifierWork;
+          transition["cold_provider_work"] =
+              mappingProviderWork(observation.coldProviderWork);
+          transition["incremental_provider_work"] =
+              mappingProviderWork(observation.incrementalProviderWork);
           transition["cold_dfg_cycles"] =
               observation.coldDfgCycles
                   ? llvm::json::Value(*observation.coldDfgCycles)
@@ -1540,6 +1561,22 @@ void emitApplicationMappingDiagnostics(
         }
         payload["application_incremental_mapping_transitions"] =
             std::move(incrementalTransitions);
+        if (execution.provenance.resourceTimeMappingPath) {
+          const ApplicationResourceTimeMappingPath &path =
+              *execution.provenance.resourceTimeMappingPath;
+          llvm::json::Array observationOrdinals;
+          for (const std::uint64_t ordinal : path.observationOrdinals)
+            observationOrdinals.push_back(ordinal);
+          payload["application_resource_time_mapping_path"] =
+              llvm::json::Object{
+                  {"schedule_owner_plan_ordinal",
+                   path.scheduleOwnerPlanOrdinal},
+                  {"schedule_hint_digest",
+                   formatComponentViewDigestHex(path.scheduleHintDigest)},
+                  {"observation_ordinals", std::move(observationOrdinals)}};
+        } else {
+          payload["application_resource_time_mapping_path"] = nullptr;
+        }
         payload["verified_alternatives"] = summary.verifiedAlternatives;
         payload["quality_disposition"] = spelling(summary.qualityDisposition);
         payload["declared_work_exhausted"] = summary.declaredWorkExhausted;

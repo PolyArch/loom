@@ -210,11 +210,42 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::uint64_t preservedServiceLegCount = 0;
   std::uint64_t reopenedServiceLegCount = 0;
   std::uint64_t verifiedAlternatives = 0;
+  std::uint64_t techMappingInvocations = 0;
+  std::uint64_t spatialPnrInvocations = 0;
+  std::uint64_t systemPnrInvocations = 0;
   std::uint64_t techMappingDispatches = 0;
   std::uint64_t spatialPnrDispatches = 0;
   std::uint64_t systemPnrDispatches = 0;
+  std::uint64_t techMappingJournalReplays = 0;
+  std::uint64_t spatialPnrJournalReplays = 0;
+  std::uint64_t systemPnrJournalReplays = 0;
+  const auto providerWork = [](const dse::JointDesignExecutionSummary &summary) {
+    return ApplicationMappingProviderWorkObservation{
+        summary.techMappingInvocationCount,
+        summary.spatialPnrInvocationCount,
+        summary.systemPnrInvocationCount,
+        summary.techMappingDispatchCount,
+        summary.spatialPnrDispatchCount,
+        summary.systemPnrDispatchCount,
+        summary.techMappingJournalReplayCount,
+        summary.spatialPnrJournalReplayCount,
+        summary.systemPnrJournalReplayCount};
+  };
+  const auto accumulateProviderWork =
+      [&](const dse::JointDesignExecutionSummary &summary) {
+        techMappingInvocations += summary.techMappingInvocationCount;
+        spatialPnrInvocations += summary.spatialPnrInvocationCount;
+        systemPnrInvocations += summary.systemPnrInvocationCount;
+        techMappingDispatches += summary.techMappingDispatchCount;
+        spatialPnrDispatches += summary.spatialPnrDispatchCount;
+        systemPnrDispatches += summary.systemPnrDispatchCount;
+        techMappingJournalReplays += summary.techMappingJournalReplayCount;
+        spatialPnrJournalReplays += summary.spatialPnrJournalReplayCount;
+        systemPnrJournalReplays += summary.systemPnrJournalReplayCount;
+      };
   std::vector<ApplicationIncrementalMappingObservation>
       incrementalMappingObservations;
+  std::optional<ApplicationResourceTimeMappingPath> resourceTimeMappingPath;
   const auto requestedSpectrumClass = requestedResourceTimeSpectrumClass(
       prepared.resourceTimePolicy.spectrumEndpoint);
   const auto outcomeMatchesRequestedSpectrum =
@@ -471,9 +502,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     preservedServiceLegCount += execution->summary.preservedServiceLegCount;
     reopenedServiceLegCount += execution->summary.reopenedServiceLegCount;
     verifiedAlternatives += execution->summary.verifiedAlternatives;
-    techMappingDispatches += execution->summary.techMappingDispatchCount;
-    spatialPnrDispatches += execution->summary.spatialPnrDispatchCount;
-    systemPnrDispatches += execution->summary.systemPnrDispatchCount;
+    accumulateProviderWork(execution->summary);
 
     if (!execution->summary.selectedPlanOrdinal ||
         !execution->summary.selectedMapping) {
@@ -530,10 +559,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             repaired->executions[childOrdinal];
         if (childOrdinal >= repaired->childSystems.size())
           return invalid("hardware repair lost its child System");
-        techMappingDispatches +=
-            childExecution.summary.techMappingDispatchCount;
-        spatialPnrDispatches += childExecution.summary.spatialPnrDispatchCount;
-        systemPnrDispatches += childExecution.summary.systemPnrDispatchCount;
+        accumulateProviderWork(childExecution.summary);
         std::vector<ArtifactRootReference> childMappings;
         for (const dse::JointMappedPair &pair : childExecution.mappedPairs)
           childMappings.insert(childMappings.end(), pair.systemMappings.begin(),
@@ -659,10 +685,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             repaired->executions[childOrdinal];
         if (childOrdinal >= repaired->childSystems.size())
           return invalid("FIFO hardware repair lost its child System");
-        techMappingDispatches +=
-            childExecution.summary.techMappingDispatchCount;
-        spatialPnrDispatches += childExecution.summary.spatialPnrDispatchCount;
-        systemPnrDispatches += childExecution.summary.systemPnrDispatchCount;
+        accumulateProviderWork(childExecution.summary);
         std::vector<ArtifactRootReference> childMappings;
         for (const dse::JointMappedPair &pair : childExecution.mappedPairs)
           childMappings.insert(childMappings.end(), pair.systemMappings.begin(),
@@ -768,25 +791,44 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     if (runtime->disposition ==
         ApplicationMappingRuntimeDisposition::Completed) {
       // Exercise every already-retained resource-time state for this exact
-      // Dataflow through the application owner while the parent Mapping is
-      // live. The frontier has already supplied the finite bound; this loop
-      // does not enumerate a new candidate domain. Walking both directions
-      // matters when the selected quality winner is the last retained plan.
-      // Each child remains subject to the ordinary System verifier and is
-      // recorded even when it cannot close.
-      for (std::size_t childOrdinal = 0;
-           childOrdinal != prepared.mappingAlternatives.size();
-           ++childOrdinal) {
-        if (childOrdinal == selectedPlanOrdinal)
-          continue;
+      // Dataflow through the application owner while one verified parent
+      // Mapping is live. Each retained plan is attempted at most once. A
+      // child becomes the next parent only after its independent cold and
+      // incremental checks, runtime validation, and Spectrum verification all
+      // close, so the resulting path is a finite chain of actual Mapping
+      // executions rather than a relabeled selected-parent star.
+      std::vector<std::size_t> transitionPlanOrdinals;
+      transitionPlanOrdinals.reserve(prepared.mappingAlternatives.size() - 1);
+      for (std::size_t offset = 1;
+           offset != prepared.mappingAlternatives.size(); ++offset)
+        transitionPlanOrdinals.push_back(
+            (static_cast<std::size_t>(selectedPlanOrdinal) + offset) %
+            prepared.mappingAlternatives.size());
+      std::optional<dse::JointDesignExecution> chainedParentExecution;
+      const PreparedApplicationMappingAlternative &scheduleOwner =
+          prepared.mappingAlternatives[selectedPlanOrdinal];
+      std::optional<dse::JointDesignExplorationPlan> chainedParentPlan;
+      const dse::JointDesignExplorationPlan *parentPlan = &scheduleOwner.plan;
+      const dse::JointDesignExecution *parentExecution = &*execution;
+      std::size_t parentPlanOrdinal = selectedPlanOrdinal;
+      ApplicationResourceTimeMappingPath candidatePath{
+          selectedPlanOrdinal, scheduleOwner.resourceTimeScheduleHintDigest,
+          {}};
+      std::vector<ArtifactRootReference> pathMappings = {
+          *execution->summary.selectedMapping};
+      for (const std::size_t childOrdinal : transitionPlanOrdinals) {
         const PreparedApplicationMappingAlternative &childAlternative =
             prepared.mappingAlternatives[childOrdinal];
-        if (childAlternative.dataflow.artifact !=
-            prepared.mappingAlternatives[selectedPlanOrdinal].dataflow.artifact)
+        if (childAlternative.candidateIdentity !=
+                scheduleOwner.candidateIdentity ||
+            childAlternative.dataflow != scheduleOwner.dataflow ||
+            childAlternative.plan.pairOutputs.size() != 1 ||
+            scheduleOwner.plan.pairOutputs.size() != 1 ||
+            childAlternative.plan.pairOutputs.front().pair.system !=
+                scheduleOwner.plan.pairOutputs.front().pair.system)
           continue;
         auto reopenedRoots = deriveApplicationPartitionDelta(
-            prepared.mappingAlternatives[selectedPlanOrdinal].plan,
-            childAlternative.plan);
+            *parentPlan, childAlternative.plan);
         if (!reopenedRoots)
           return reopenedRoots.takeError();
         if (reopenedRoots->empty())
@@ -794,23 +836,22 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         llvm::SmallString<256> adjacentJournal(request.journalRoot);
         llvm::sys::path::append(adjacentJournal,
                                 "application-resource-time-adjacent-" +
-                                    std::to_string(selectedPlanOrdinal) + "-" +
+                                    std::to_string(parentPlanOrdinal) + "-" +
                                     std::to_string(childOrdinal));
         dse::JointHardwareReopenRequest adjacentRequest =
             makeRepairRequest(adjacentJournal.str().str());
         adjacentRequest.spectrumEndpoint =
             prepared.resourceTimePolicy.spectrumEndpoint;
         auto adjacent = dse::executeResourceTimeAdjacentMappingRepair(
-            prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
-            prepared.jointPolicy, childAlternative.plan.systemBindingPartitions,
-            *reopenedRoots, std::move(adjacentRequest), artifacts, blobs);
+            *parentPlan, *parentExecution, prepared.jointPolicy,
+            childAlternative.plan.systemBindingPartitions, *reopenedRoots,
+            std::move(adjacentRequest), artifacts, blobs);
         if (!adjacent)
           return adjacent.takeError();
         const dse::JointDesignExecutionSummary &childSummary =
             adjacent->execution.summary;
-        techMappingDispatches += childSummary.techMappingDispatchCount;
-        spatialPnrDispatches += childSummary.spatialPnrDispatchCount;
-        systemPnrDispatches += childSummary.systemPnrDispatchCount;
+        accumulateProviderWork(adjacent->coldExecution.summary);
+        accumulateProviderWork(childSummary);
         std::vector<ArtifactRootReference> childMappings;
         for (const dse::JointMappedPair &pair : adjacent->execution.mappedPairs)
           childMappings.insert(childMappings.end(), pair.systemMappings.begin(),
@@ -840,13 +881,13 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 dse::CandidateGeneratorIncompleteReason::ProofNotEstablished;
         }
         ApplicationIncrementalMappingObservation observation{
-            *execution->summary.selectedMapping,
+            *parentExecution->summary.selectedMapping,
             childAlternative.plan.pairOutputs.front().pair.system,
             childSummary.selectedMapping,
             adjacent->coldMapping,
-            static_cast<std::uint64_t>(selectedPlanOrdinal),
+            static_cast<std::uint64_t>(parentPlanOrdinal),
             static_cast<std::uint64_t>(childOrdinal),
-            prepared.mappingAlternatives[selectedPlanOrdinal]
+            prepared.mappingAlternatives[parentPlanOrdinal]
                 .resourceTimeScheduleHintDigest,
             childAlternative.resourceTimeScheduleHintDigest,
             *reopenedRoots,
@@ -869,6 +910,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             adjacent->incrementalVerification.retainedBytes,
             adjacent->coldVerification.deterministicWork,
             adjacent->incrementalVerification.deterministicWork,
+            providerWork(adjacent->coldExecution.summary),
+            providerWork(childSummary),
             std::nullopt,
             std::nullopt,
             std::nullopt,
@@ -984,12 +1027,18 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 std::nullopt,
                 {}});
         }
+        const std::uint64_t observationOrdinal =
+            incrementalMappingObservations.size();
+        const bool promoteChild =
+            observation.verified && observation.childMapping &&
+            *observation.childMapping != observation.parentMapping &&
+            !llvm::is_contained(pathMappings, *observation.childMapping);
         incrementalMappingObservations.push_back(std::move(observation));
         mapping_debug::emit(
             mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
             mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
               fields["operation"] = "application_resource_time_incremental";
-              fields["parent_plan_ordinal"] = selectedPlanOrdinal;
+              fields["parent_plan_ordinal"] = parentPlanOrdinal;
               fields["child_plan_ordinal"] = childOrdinal;
               fields["reopened_root_count"] = reopenedRoots->size();
               fields["mapping_reuse_disposition"] =
@@ -1006,7 +1055,18 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               fields["wall_time_ns"] =
                   childSummary.incrementalReopenWallTimeNanoseconds;
             });
+        if (promoteChild) {
+          candidatePath.observationOrdinals.push_back(observationOrdinal);
+          pathMappings.push_back(*observation.childMapping);
+          chainedParentPlan.emplace(std::move(adjacent->plan));
+          chainedParentExecution.emplace(std::move(adjacent->execution));
+          parentPlan = &*chainedParentPlan;
+          parentExecution = &*chainedParentExecution;
+          parentPlanOrdinal = childOrdinal;
+        }
       }
+      if (!candidatePath.observationOrdinals.empty())
+        resourceTimeMappingPath.emplace(std::move(candidatePath));
       execution->summary.selectedPlanOrdinal = selectedPlanOrdinal;
       selectedExecution.emplace(std::move(*execution));
       break;
@@ -1127,9 +1187,19 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       preservedServiceLegCount;
   selectedExecution->summary.reopenedServiceLegCount = reopenedServiceLegCount;
   selectedExecution->summary.verifiedAlternatives = verifiedAlternatives;
+  selectedExecution->summary.techMappingInvocationCount =
+      techMappingInvocations;
+  selectedExecution->summary.spatialPnrInvocationCount = spatialPnrInvocations;
+  selectedExecution->summary.systemPnrInvocationCount = systemPnrInvocations;
   selectedExecution->summary.techMappingDispatchCount = techMappingDispatches;
   selectedExecution->summary.spatialPnrDispatchCount = spatialPnrDispatches;
   selectedExecution->summary.systemPnrDispatchCount = systemPnrDispatches;
+  selectedExecution->summary.techMappingJournalReplayCount =
+      techMappingJournalReplays;
+  selectedExecution->summary.spatialPnrJournalReplayCount =
+      spatialPnrJournalReplays;
+  selectedExecution->summary.systemPnrJournalReplayCount =
+      systemPnrJournalReplays;
   selectedExecution->summary.attempts = std::move(attempts);
   if (!selectedExecution->summary.selectedMapping)
     selectedExecution->summary.declaredWorkExhausted |=
@@ -1151,6 +1221,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   provenance.resolvedPlannerMode = prepared.preMappingResolvedPlannerMode;
   provenance.incrementalMappingObservations =
       std::move(incrementalMappingObservations);
+  provenance.resourceTimeMappingPath = std::move(resourceTimeMappingPath);
   provenance.pairDecision = deriveApplicationPairDecision(
       prepared, outcomes, selectedExecution->summary, qualityInvocations);
   ApplicationMappingExecution result{std::move(*selectedExecution),
