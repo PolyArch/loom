@@ -142,15 +142,14 @@ include(AddMLIR)
 include(HandleLLVMOptions)
 
 # LLVM's package can be built with assertions enabled even when Loom itself is
-# configured as Release. Keep that choice explicit at the Loom boundary so a
-# benchmark build does not accidentally pay for LLVM and Loom container
-# checks, while developer builds retain the useful default.
+# configured as Release. Keep Loom translation units explicit at that package
+# boundary; this option cannot change checks already compiled into LLVM.
 option(LOOM_ENABLE_ASSERTIONS
-  "Enable Loom and LLVM assertion checks in this build" ON)
+  "Enable assertions in Loom translation units" ON)
 if(LOOM_ENABLE_ASSERTIONS)
   add_compile_options(-UNDEBUG -D_DEBUG)
 else()
-  add_compile_options(-DNDEBUG -U_DEBUG)
+  add_compile_options(-DNDEBUG -U_DEBUG -U_GLIBCXX_ASSERTIONS)
 endif()
 
 include_directories(${LLVM_INCLUDE_DIRS})
