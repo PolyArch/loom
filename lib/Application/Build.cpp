@@ -596,141 +596,10 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
   if (llvm::Error error = dse::validateResourceTimeMappingFunnelAccounting(
           resourceTimeFunnel->accounting))
     return std::move(error);
-  const auto emitResourceTimeFunnelTerminal = [&](llvm::StringRef status) {
-    const auto &accounting = resourceTimeFunnel->accounting;
-    const auto counterObject = [](const dse::ResourceTimeWorkCounter &counter) {
-      return llvm::json::Object{
-          {"limit", counter.limit},
-          {"planned", counter.planned},
-          {"reserved", counter.reserved},
-          {"consumed", counter.consumed},
-          {"rejected", counter.rejected},
-          {"cancelled", counter.cancelled},
-          {"elapsed_nanoseconds", counter.elapsedNanoseconds}};
-    };
-    mapping_debug::emit(
-        mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
-        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
-          fields["context_kind"] = "resource_time_application_funnel";
-          fields["status"] = status;
-          llvm::json::Object frontierWork{
-              {"source_projections",
-               counterObject(accounting.frontierAccounting.sourceProjections)},
-              {"actions", counterObject(accounting.frontierAccounting.actions)},
-              {"states", counterObject(accounting.frontierAccounting.states)},
-              {"estimates",
-               counterObject(accounting.frontierAccounting.estimates)},
-              {"finalists",
-               counterObject(accounting.frontierAccounting.finalists)},
-              {"state_memo_hits", accounting.frontierAccounting.stateMemoHits},
-              {"state_memo_misses",
-               accounting.frontierAccounting.stateMemoMisses},
-              {"state_memo_pareto_insertions",
-               accounting.frontierAccounting.stateMemoParetoInsertions},
-              {"state_memo_dominated_states",
-               accounting.frontierAccounting.stateMemoDominatedStates},
-              {"state_memo_hit_capacity_rejections",
-               accounting.frontierAccounting.stateMemoHitCapacityRejections},
-              {"state_memo_miss_capacity_rejections",
-               accounting.frontierAccounting.stateMemoMissCapacityRejections},
-              {"states_pruned_by_beam",
-               accounting.frontierAccounting.statesPrunedByBeam},
-              {"terminal_hints_generated",
-               accounting.frontierAccounting.terminalHintsGenerated},
-              {"terminal_hints_retained",
-               accounting.frontierAccounting.terminalHintsRetained},
-              {"terminal_hints_pruned",
-               accounting.frontierAccounting.terminalHintsPruned},
-              {"incremental_lower_bound_updates",
-               accounting.frontierAccounting.incrementalLowerBoundUpdates},
-              {"maximum_retained_bytes",
-               accounting.frontierAccounting.maximumRetainedBytes}};
-          llvm::json::Object funnel{
-              {"generated_candidates", accounting.generatedCandidates},
-              {"screened_candidates", accounting.screenedCandidates},
-              {"detailed_frontier_candidates",
-               accounting.detailedFrontierCandidates},
-              {"successive_halving_deferred_candidates",
-               accounting.successiveHalvingDeferredCandidates},
-              {"sound_gate_rejected_candidates",
-               accounting.soundGateRejectedCandidates},
-              {"estimated_candidates", accounting.estimatedCandidates},
-              {"incomplete_candidates", accounting.incompleteCandidates},
-              {"mapping_eligible_schedule_hints",
-               accounting.mappingEligibleScheduleHints},
-              {"screening_comparison_candidates",
-               accounting.screeningComparisonCandidates},
-              {"detailed_schedule_feasible_candidates",
-               accounting.detailedScheduleFeasibleCandidates},
-              {"screening_admissible_candidates",
-               accounting.screeningAdmissibleCandidates},
-              {"screening_detailed_feasible_intersection",
-               accounting.screeningDetailedFeasibleIntersection},
-              {"screening_detailed_best_rank_matches",
-               accounting.screeningDetailedBestRankMatches},
-              {"screening_out_of_domain_candidates",
-               accounting.screeningOutOfDomainCandidates},
-              {"maximum_screening_lower_bound_gap_picoseconds",
-               accounting.maximumScreeningLowerBoundGapPicoseconds},
-              {"mapping_finalists", accounting.mappingFinalists},
-              {"dataflow_projection_requests",
-               accounting.dataflowProjectionRequests},
-              {"dataflow_projection_cache_hits",
-               accounting.dataflowProjectionCacheHits},
-              {"dataflow_projection_cache_misses",
-               accounting.dataflowProjectionCacheMisses},
-              {"dataflow_projection_cache_capacity_bypasses",
-               accounting.dataflowProjectionCacheCapacityBypasses},
-              {"dataflow_projection_cache_entries",
-               accounting.dataflowProjectionCacheEntries},
-              {"dataflow_projection_cache_retained_bytes",
-               accounting.dataflowProjectionCacheRetainedBytes},
-              {"dataflow_projection_elapsed_nanoseconds",
-               accounting.dataflowProjectionElapsedNanoseconds},
-              {"dataflow_materialized_candidates",
-               accounting.dataflowMaterializedCandidates},
-              {"mapping_plan_candidates", accounting.mappingPlanCandidates},
-              {"unsupported_before_mapping_candidates",
-               accounting.unsupportedBeforeMappingCandidates},
-              {"unsupported_before_mapping_schedule_hints",
-               accounting.unsupportedBeforeMappingScheduleHints},
-              {"application_promotion_accounting_complete",
-               accounting.applicationPromotionAccountingComplete},
-              {"mapping_calls_deferred_by_model",
-               accounting.mappingCallsDeferredByModel},
-              {"mapping_plan_constructions_avoided_by_exact_memo",
-               accounting.mappingPlanConstructionsAvoidedByExactMemo},
-              {"mapping_calls_withheld_by_incomplete",
-               accounting.mappingCallsWithheldByIncomplete},
-              {"exact_invocation_memo_hits",
-               accounting.exactInvocationMemoHits},
-              {"exact_invocation_memo_misses",
-               accounting.exactInvocationMemoMisses},
-              {"exact_invocation_memo_single_flight_waits",
-               accounting.exactInvocationMemoSingleFlightWaits},
-              {"exact_invocation_memo_coalesced_uncached_results",
-               accounting.exactInvocationMemoCoalescedUncachedResults},
-              {"exact_invocation_memo_cancelled_waits",
-               accounting.exactInvocationMemoCancelledWaits},
-              {"exact_invocation_memo_capacity_bypasses",
-               accounting.exactInvocationMemoCapacityBypasses},
-              {"exact_invocation_memo_entries",
-               accounting.exactInvocationMemoEntries},
-              {"exact_invocation_memo_retained_bytes",
-               accounting.exactInvocationMemoRetainedBytes},
-              {"frontier_work", std::move(frontierWork)},
-              {"elapsed_nanoseconds", accounting.elapsedNanoseconds},
-              {"truncated", resourceTimeFunnel->truncated}};
-          if (resourceTimeFunnel->incompleteReason)
-            funnel["incomplete_reason"] =
-                dse::resourceTimeFrontierIncompleteReasonSpelling(
-                    *resourceTimeFunnel->incompleteReason);
-          fields["resource_time_funnel"] = std::move(funnel);
-        });
-  };
   if (resourceTimeFunnel->incompleteReason ==
       dse::ResourceTimeFrontierIncompleteReason::CancelledOrTimeout)
-    emitResourceTimeFunnelTerminal("cancelled_or_timeout");
+    emitApplicationResourceTimeFunnelTerminalDiagnostics(
+        *resourceTimeFunnel, "cancelled_or_timeout");
   if (resourceTimeFunnel->incompleteReason ==
       dse::ResourceTimeFrontierIncompleteReason::CancelledOrTimeout) {
     auto decision = makePreparationPairDecision(
@@ -750,9 +619,10 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
             completed.frontierPolicyDigest, completed.sourceHostOnlyWork}};
   }
   if (resourceTimeFunnel->finalists.empty())
-    emitResourceTimeFunnelTerminal(resourceTimeFunnel->incompleteReason
-                                       ? "incomplete"
-                                       : "no_mapping_finalist");
+    emitApplicationResourceTimeFunnelTerminalDiagnostics(
+        *resourceTimeFunnel, resourceTimeFunnel->incompleteReason
+                                 ? "incomplete"
+                                 : "no_mapping_finalist");
   if (resourceTimeFunnel->finalists.empty() &&
       resourceTimeFunnel->incompleteReason) {
     const auto disposition =
@@ -1001,7 +871,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           resourceTimeFunnel->accounting))
     return std::move(error);
   if (mappingAlternatives.empty()) {
-    emitResourceTimeFunnelTerminal("all_finalists_rejected_before_mapping");
+    emitApplicationResourceTimeFunnelTerminalDiagnostics(
+        *resourceTimeFunnel, "all_finalists_rejected_before_mapping");
     if (firstUnsupported) {
       auto decision = makePreparationPairDecision(
           completed.sourceProgram, completed.fabric, completed.workload,

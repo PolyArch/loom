@@ -403,11 +403,21 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
                   selected.accounting.mappingEligibleScheduleHints - 3 &&
               selected.finalists.size() == 3 && selected.truncated,
           "resource-time funnel did not bound real Mapping finalists");
-  require(selected.accounting.frontierAccounting.states.consumed != 0 &&
-              selected.accounting.screeningComparisonCandidates != 0 &&
-              selected.accounting.screeningLowerBoundViolations == 0 &&
-              selected.accounting.screeningDetailedFeasibleIntersection <=
-                  selected.accounting.detailedScheduleFeasibleCandidates &&
+  require(
+      selected.accounting.frontierAccounting.states.consumed != 0 &&
+          selected.accounting.screeningCalibration.comparedCandidates != 0 &&
+          selected.accounting.screeningCalibration.lowerBoundViolations == 0 &&
+          selected.accounting.screeningCalibration.feasibleIntersection <=
+              selected.accounting.screeningCalibration
+                  .exactFeasibleCandidates &&
+          selected.accounting.screeningCalibration.errorSamples ==
+              selected.accounting.screeningCalibration
+                  .exactFeasibleCandidates &&
+          selected.accounting.screeningCalibration.feasibilityRecallPermille ==
+              1000 &&
+          selected.accounting.screeningCalibration
+                  .feasibilityPrecisionPermille == 1000 &&
+          selected.accounting.screeningCalibration.bestRecallPermille == 1000 &&
               selected.accounting.frontierAccounting.stateMemoMisses -
                       selected.accounting.frontierAccounting
                           .stateMemoMissCapacityRejections +
@@ -588,6 +598,32 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
       "partitioned temporal epoch was incorrectly rejected before Mapping");
 }
 
+void outOfDomainScreeningRemainsMeasuredButInadmissible() {
+  auto regions = fiveRegionFeatures(2);
+  for (auto &region : regions)
+    for (auto &candidate : region.speedupCurve)
+      candidate.support = loom::dse::ResourceTimeEstimateSupport::OutOfDomain;
+  loom::dse::ResourceTimeMappingCandidateInput candidate{
+      digest(102),       0, 5, 5, 50, 2, invocation(), {reference(20)},
+      std::move(regions)};
+  auto bounded = policy();
+  bounded.maximumMappingFinalists = 1;
+  const auto selected =
+      take(loom::dse::selectResourceTimeMappingFinalists({candidate}, bounded));
+  const auto &calibration = selected.accounting.screeningCalibration;
+  require(calibration.comparedCandidates == 1 &&
+              calibration.exactFeasibleCandidates == 1 &&
+              calibration.outOfDomainCandidates == 1 &&
+              calibration.outOfDomainConfidenceCandidates == 1 &&
+              calibration.screeningAdmissibleCandidates == 0 &&
+              calibration.feasibleIntersection == 0 &&
+              calibration.feasibilityRecallPermille == 0 &&
+              calibration.outOfDomainPermille == 1000 &&
+              !loom::dse::validateResourceTimeMappingFunnelAccounting(
+                  selected.accounting),
+          "out-of-domain screening was presented as admissible evidence");
+}
+
 void exactMemoSupportsWarmAndConcurrentReuse() {
   auto bounded = policy();
   bounded.maximumMappingFinalists = 1;
@@ -709,6 +745,7 @@ int main() {
   dependencyCyclesRemainTyped();
   replayIsDeterministic();
   mappingFunnelAdmitsOnlyBoundedFinalists();
+  outOfDomainScreeningRemainsMeasuredButInadmissible();
   exactMemoSupportsWarmAndConcurrentReuse();
   return 0;
 }

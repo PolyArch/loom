@@ -156,10 +156,37 @@ struct ApplicationDeploymentRequest final {
   CompilerTargetLinkWorkspace linkerWorkspace;
 };
 
+/// Immutable Deployment-bound snapshot of the Mapping repair observation.
+/// The compiler-side observation remains the semantic owner; this derived
+/// record makes the exact repair cone and paired evidence replayable with the
+/// preverified runtime transition.
+struct ApplicationResourceTimeRepairEvidence final {
+  std::vector<dataflow::RootThreadLaunchRef> reopenedRoots;
+  dse::JointMappingReuseDisposition reuseDisposition =
+      dse::JointMappingReuseDisposition::ColdFallback;
+  std::uint64_t preservedTechMappings = 0;
+  std::uint64_t preservedSpatialMappings = 0;
+  std::uint64_t repairedTechMappings = 0;
+  std::uint64_t repairedSpatialMappings = 0;
+  std::uint64_t preservedSystemBindings = 0;
+  std::uint64_t reopenedSystemBindings = 0;
+  std::uint64_t coldWallTimeNanoseconds = 0;
+  std::uint64_t incrementalWallTimeNanoseconds = 0;
+  std::uint64_t coldVerifierRetainedBytes = 0;
+  std::uint64_t incrementalVerifierRetainedBytes = 0;
+  std::uint64_t coldVerifierWork = 0;
+  std::uint64_t incrementalVerifierWork = 0;
+  std::optional<std::uint64_t> coldDfgCycles;
+  std::optional<std::uint64_t> coldCgraCycles;
+  std::optional<std::uint64_t> incrementalDfgCycles;
+  std::optional<std::uint64_t> incrementalCgraCycles;
+};
+
 struct ApplicationResourceTimeTransitionEvidence final {
   pnr::ResourceTimeTransition transition;
   dse::ResourceTimeSpectrumFunnelResult parentSpectrum;
   dse::ResourceTimeSpectrumFunnelResult childSpectrum;
+  ApplicationResourceTimeRepairEvidence repair;
 };
 
 struct ApplicationDeploymentArtifacts final {
@@ -477,6 +504,10 @@ struct ApplicationIncrementalMappingObservation final {
   std::uint64_t coldWallTimeNanoseconds = 0;
   std::uint64_t incrementalWallTimeNanoseconds = 0;
   std::uint64_t wallTimeNanoseconds = 0;
+  std::uint64_t coldVerifierRetainedBytes = 0;
+  std::uint64_t incrementalVerifierRetainedBytes = 0;
+  std::uint64_t coldVerifierWork = 0;
+  std::uint64_t incrementalVerifierWork = 0;
   std::optional<std::uint64_t> coldDfgCycles;
   std::optional<std::uint64_t> coldCgraCycles;
   std::optional<std::uint64_t> incrementalDfgCycles;

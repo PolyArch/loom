@@ -20,7 +20,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fabric-root", type=Path, required=True)
     parser.add_argument("--bundle", type=Path, required=True)
+    parser.add_argument(
+        "--expected-spectrum-class",
+        choices=("intermediate", "max_spatial", "max_temporal"),
+    )
+    parser.add_argument("--minimum-region-count", type=int, default=1)
+    parser.add_argument("--require-transition", action="store_true")
     arguments = parser.parse_args()
+    if arguments.minimum_region_count < 1:
+        raise ValueError("minimum region count must be positive")
 
     fabric = read_object(arguments.fabric_root)
     bundle = read_object(arguments.bundle)
@@ -83,6 +91,119 @@ def main() -> int:
     for field in ("resource_time_endpoints", "resource_time_transitions"):
         if not isinstance(bundle.get(field), list):
             raise ValueError(f"visualization bundle has no {field} array")
+    if not bundle["resource_time_endpoints"]:
+        raise ValueError("visualization bundle has no resource-time endpoint")
+    spectrum = bundle.get("resource_time_spectrum")
+    if not isinstance(spectrum, dict) or spectrum.get("status") != "verified":
+        raise ValueError("visualization bundle has no verified resource-time spectrum")
+    scenarios = spectrum.get("scenarios")
+    if not isinstance(scenarios, list) or not scenarios:
+        raise ValueError("resource-time spectrum has no scenario")
+    active_allocations = 0
+    active_regions: set[tuple[str, int]] = set()
+    spectrum_classes: set[str] = set()
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            raise ValueError("resource-time scenario is not an object")
+        spectrum_class = scenario.get("spectrum_class")
+        if not isinstance(spectrum_class, str):
+            raise ValueError("resource-time scenario has no spectrum class")
+        spectrum_classes.add(spectrum_class)
+        if not isinstance(
+            scenario.get("analytic_schedule_makespan_picoseconds"), int
+        ):
+            raise ValueError("resource-time scenario has no analytic makespan")
+        mappings = scenario.get("system_mappings")
+        states = scenario.get("states")
+        if not isinstance(mappings, list) or not mappings:
+            raise ValueError("resource-time scenario has no SystemMapping")
+        if not isinstance(states, list) or not states:
+            raise ValueError("resource-time scenario has no event-relative state")
+        for state in states:
+            if (
+                not isinstance(state, dict)
+                or not isinstance(state.get("event"), str)
+                or not isinstance(state.get("time_picoseconds"), int)
+                or not isinstance(state.get("mapping"), dict)
+                or not isinstance(state.get("active"), list)
+            ):
+                raise ValueError("resource-time state is incomplete")
+            for allocation in state["active"]:
+                resources = (
+                    allocation.get("resources")
+                    if isinstance(allocation, dict)
+                    else None
+                )
+                if not isinstance(resources, list) or not resources:
+                    raise ValueError("resource-time allocation has no resource")
+                artifact = allocation.get("region_artifact")
+                entity = allocation.get("region_entity")
+                if not isinstance(artifact, str) or not isinstance(entity, int):
+                    raise ValueError("resource-time allocation has no region")
+                active_regions.add((artifact, entity))
+                active_allocations += 1
+    if active_allocations == 0:
+        raise ValueError("resource-time spectrum has no active allocation")
+    if len(active_regions) < arguments.minimum_region_count:
+        raise ValueError("resource-time spectrum covers too few active regions")
+    if (
+        arguments.expected_spectrum_class
+        and arguments.expected_spectrum_class not in spectrum_classes
+    ):
+        raise ValueError("resource-time spectrum has the wrong endpoint class")
+
+    transitions = bundle["resource_time_transitions"]
+    if arguments.require_transition and not transitions:
+        raise ValueError("visualization bundle has no resource-time transition")
+    for transition in transitions:
+        if not isinstance(transition, dict) or transition.get("status") != "verified":
+            raise ValueError("resource-time transition is not verified")
+        for field in (
+            "trigger",
+            "safe_point",
+            "parent",
+            "child",
+            "before_active",
+            "after_active",
+            "completed_before",
+            "before_live_work",
+            "after_live_work",
+            "resource_delta",
+            "configuration_delta",
+            "route_delta",
+        ):
+            if field not in transition:
+                raise ValueError(f"resource-time transition has no {field}")
+        repair = transition.get("repair")
+        if not isinstance(repair, dict):
+            raise ValueError("resource-time transition has no repair evidence")
+        roots = repair.get("reopened_roots")
+        if not isinstance(roots, list) or not roots:
+            raise ValueError("resource-time transition has no repair roots")
+        for field in (
+            "cold_wall_time_ns",
+            "incremental_wall_time_ns",
+            "cold_verifier_retained_bytes",
+            "incremental_verifier_retained_bytes",
+            "cold_verifier_work",
+            "incremental_verifier_work",
+        ):
+            if not isinstance(repair.get(field), int) or repair[field] <= 0:
+                raise ValueError(f"resource-time repair has no {field}")
+        if repair.get("mapping_reuse_disposition") not in {
+            "preserved",
+            "local_repair",
+            "cold_fallback",
+        }:
+            raise ValueError("resource-time repair has no typed disposition")
+        if repair.get("cold_dfg_cycles") is None and repair.get(
+            "cold_cgra_cycles"
+        ) is None:
+            raise ValueError("resource-time cold replay has no QoR")
+        if repair.get("incremental_dfg_cycles") is None and repair.get(
+            "incremental_cgra_cycles"
+        ) is None:
+            raise ValueError("resource-time incremental replay has no QoR")
     return 0
 
 

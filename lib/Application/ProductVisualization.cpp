@@ -81,10 +81,9 @@ void writeAllocations(
 }
 
 void writeSpectrumSummary(llvm::json::OStream &json, llvm::StringRef name,
-                          const dse::ResourceTimeSpectrumFunnelResult &result) {
-  const auto &spectrum =
-      std::get<dse::VerifiedResourceTimeSpectrum>(result.verification);
+                          const dse::VerifiedResourceTimeSpectrum &spectrum) {
   json.attributeObject(name, [&] {
+    json.attribute("status", "verified");
     writeReference(json, "dataflow", spectrum.dataflow);
     writeReference(json, "fabric", spectrum.fabric);
     json.attributeArray("scenarios", [&] {
@@ -96,16 +95,45 @@ void writeSpectrumSummary(llvm::json::OStream &json, llvm::StringRef name,
                          dse::toString(scenario.spectrumClass));
           json.attribute("peak_concurrent_regions",
                          scenario.peakConcurrentRegions);
-          json.attribute("makespan_picoseconds", scenario.makespanPicoseconds);
+          json.attribute("analytic_schedule_makespan_picoseconds",
+                         scenario.makespanPicoseconds);
           writeReferenceArray(json, "system_mappings", scenario.systemMappings);
-          json.attribute("state_count", scenario.states.size());
-          json.attribute("active_state_count",
-                         llvm::count_if(scenario.states, [](const auto &state) {
-                           return !state.active.empty();
-                         }));
+          json.attributeArray("states", [&] {
+            for (const pnr::ResourceTimeScheduleState &state :
+                 scenario.states) {
+              const std::vector<std::uint8_t> event =
+                  llvm::cantFail(dataflow::encodeDataflowReference(
+                      spectrum.dataflow.artifact, state.event));
+              json.object([&] {
+                json.attribute("event", llvm::toHex(event, /*LowerCase=*/true));
+                json.attribute("time_picoseconds", state.timePicoseconds);
+                writeReference(json, "mapping", state.mapping);
+                writeAllocations(json, "active", state.active);
+              });
+            }
+          });
         });
       }
     });
+  });
+}
+
+void writeSpectrumResult(llvm::json::OStream &json, llvm::StringRef name,
+                         const dse::ResourceTimeSpectrumFunnelResult &result) {
+  if (const auto *spectrum = std::get_if<dse::VerifiedResourceTimeSpectrum>(
+          &result.verification)) {
+    writeSpectrumSummary(json, name, *spectrum);
+    return;
+  }
+  const auto &incomplete =
+      std::get<dse::IncompleteResourceTimeSpectrum>(result.verification);
+  json.attributeObject(name, [&] {
+    json.attribute("status", "incomplete");
+    json.attribute("reason", dse::resourceTimeSpectrumIncompleteReasonSpelling(
+                                 incomplete.reason));
+    json.attribute("diagnostic", incomplete.diagnostic);
+    json.attribute("independently_imported_mapping_count",
+                   incomplete.independentlyImportedMappingCount);
   });
 }
 
@@ -183,6 +211,40 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
     if (!evidence.transition.safePoint)
       return visualizationError("verified resource-time transition lost its "
                                 "safe point");
+    if (evidence.repair.reopenedRoots.empty())
+      return visualizationError("verified resource-time transition lost its "
+                                "typed repair roots");
+    if (std::adjacent_find(evidence.repair.reopenedRoots.begin(),
+                           evidence.repair.reopenedRoots.end()) !=
+        evidence.repair.reopenedRoots.end())
+      return visualizationError("verified resource-time transition repeats a "
+                                "repair root");
+    if (evidence.repair.coldWallTimeNanoseconds == 0 ||
+        evidence.repair.incrementalWallTimeNanoseconds == 0 ||
+        evidence.repair.coldVerifierRetainedBytes == 0 ||
+        evidence.repair.incrementalVerifierRetainedBytes == 0 ||
+        evidence.repair.coldVerifierWork == 0 ||
+        evidence.repair.incrementalVerifierWork == 0)
+      return visualizationError("verified resource-time transition has no "
+                                "paired cold/incremental measurement");
+    if ((!evidence.repair.coldDfgCycles && !evidence.repair.coldCgraCycles) ||
+        (!evidence.repair.incrementalDfgCycles &&
+         !evidence.repair.incrementalCgraCycles))
+      return visualizationError("verified resource-time transition has no "
+                                "paired runtime QoR measurement");
+    for (const dataflow::RootThreadLaunchRef root :
+         evidence.repair.reopenedRoots) {
+      const auto allocationNamesRoot = [&](const auto &allocations) {
+        return llvm::any_of(allocations, [&](const auto &allocation) {
+          return allocation.region == root;
+        });
+      };
+      if (!allocationNamesRoot(evidence.transition.beforeActive) &&
+          !allocationNamesRoot(evidence.transition.afterActive) &&
+          !llvm::is_contained(evidence.transition.completedBefore, root))
+        return visualizationError("resource-time repair root is outside its "
+                                  "event-relative transition cone");
+    }
     auto trigger = dataflow::encodeDataflowReference(
         evidence.transition.safePoint->artifact.artifact,
         evidence.transition.trigger);
@@ -316,6 +378,11 @@ llvm::Error writeBundle(llvm::StringRef destination,
         writeArtifactRootReferenceJsonFields(json,
                                              deployment.deployment.reference());
       });
+      if (deployment.resourceTimeSpectrum)
+        writeSpectrumResult(json, "resource_time_spectrum",
+                            *deployment.resourceTimeSpectrum);
+      else
+        json.attribute("resource_time_spectrum", nullptr);
       json.attributeArray("resource_time_endpoints", [&] {
         if (deployment.resourceTimeTransitionGraph)
           for (const pnr::ResourceTimeTransitionEndpointReference &endpoint :
@@ -380,10 +447,61 @@ llvm::Error writeBundle(llvm::StringRef destination,
                            *transition.migrationTimePicoseconds);
             json.attribute("status", pnr::resourceTimeTransitionStatusSpelling(
                                          transition.status));
-            writeSpectrumSummary(json, "parent_spectrum",
+            json.attributeObject("repair", [&] {
+              json.attribute("mapping_reuse_disposition",
+                             dse::jointMappingReuseDispositionSpelling(
+                                 evidence.repair.reuseDisposition));
+              json.attributeArray("reopened_roots", [&] {
+                for (const dataflow::RootThreadLaunchRef root :
+                     evidence.repair.reopenedRoots) {
+                  json.object([&] {
+                    json.attribute("artifact",
+                                   formatArtifactIdentityHex(root.artifact));
+                    json.attribute("entity", root.entity.value());
+                  });
+                }
+              });
+              json.attribute("preserved_tech_mappings",
+                             evidence.repair.preservedTechMappings);
+              json.attribute("preserved_spatial_mappings",
+                             evidence.repair.preservedSpatialMappings);
+              json.attribute("repaired_tech_mappings",
+                             evidence.repair.repairedTechMappings);
+              json.attribute("repaired_spatial_mappings",
+                             evidence.repair.repairedSpatialMappings);
+              json.attribute("preserved_system_bindings",
+                             evidence.repair.preservedSystemBindings);
+              json.attribute("reopened_system_bindings",
+                             evidence.repair.reopenedSystemBindings);
+              json.attribute("cold_wall_time_ns",
+                             evidence.repair.coldWallTimeNanoseconds);
+              json.attribute("incremental_wall_time_ns",
+                             evidence.repair.incrementalWallTimeNanoseconds);
+              json.attribute("cold_verifier_retained_bytes",
+                             evidence.repair.coldVerifierRetainedBytes);
+              json.attribute("incremental_verifier_retained_bytes",
+                             evidence.repair.incrementalVerifierRetainedBytes);
+              json.attribute("cold_verifier_work",
+                             evidence.repair.coldVerifierWork);
+              json.attribute("incremental_verifier_work",
+                             evidence.repair.incrementalVerifierWork);
+              const auto optional = [&](llvm::StringRef name,
+                                        std::optional<std::uint64_t> value) {
+                if (value)
+                  json.attribute(name, *value);
+                else
+                  json.attribute(name, nullptr);
+              };
+              optional("cold_dfg_cycles", evidence.repair.coldDfgCycles);
+              optional("cold_cgra_cycles", evidence.repair.coldCgraCycles);
+              optional("incremental_dfg_cycles",
+                       evidence.repair.incrementalDfgCycles);
+              optional("incremental_cgra_cycles",
+                       evidence.repair.incrementalCgraCycles);
+            });
+            writeSpectrumResult(json, "parent_spectrum",
                                  evidence.parentSpectrum);
-            writeSpectrumSummary(json, "child_spectrum",
-                                 evidence.childSpectrum);
+            writeSpectrumResult(json, "child_spectrum", evidence.childSpectrum);
           });
         }
       });

@@ -1,12 +1,14 @@
 #ifndef LOOM_APPLICATION_BUILDDIAGNOSTICS_H
 #define LOOM_APPLICATION_BUILDDIAGNOSTICS_H
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/JSON.h"
 
 #include <cstdint>
 
 namespace loom::dse {
 struct IncompletePreMappingExploration;
+struct ResourceTimeMappingFunnel;
 } // namespace loom::dse
 
 namespace loom::application {
@@ -56,6 +58,11 @@ void emitApplicationMappingExecutionPolicyStatistics(
 /// presentation boundary.
 void emitApplicationPlanningDiagnostics(
     const PreparedApplicationBuild &prepared);
+
+/// Emits a terminal resource-time funnel checkpoint through the same JSON
+/// projection used by the completed application-planning record.
+void emitApplicationResourceTimeFunnelTerminalDiagnostics(
+    const dse::ResourceTimeMappingFunnel &funnel, llvm::StringRef status);
 
 void emitApplicationPreMappingIncompleteDiagnostics(
     const dse::IncompletePreMappingExploration &incomplete);

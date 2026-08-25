@@ -605,7 +605,24 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
           return invalid("resource-time application evidence lost its exact "
                          "verified edge");
         resourceTimeTransitions.push_back(
-            {*verifiedEdge, std::move(**verified), std::move(**childVerified)});
+            {*verifiedEdge,
+             std::move(**verified),
+             std::move(**childVerified),
+             {candidate->reopenedRoots, candidate->reuseDisposition,
+              candidate->preservedTechMappings,
+              candidate->preservedSpatialMappings,
+              candidate->repairedTechMappings,
+              candidate->repairedSpatialMappings,
+              candidate->preservedSystemBindings,
+              candidate->reopenedSystemBindings,
+              candidate->coldWallTimeNanoseconds,
+              candidate->incrementalWallTimeNanoseconds,
+              candidate->coldVerifierRetainedBytes,
+              candidate->incrementalVerifierRetainedBytes,
+              candidate->coldVerifierWork, candidate->incrementalVerifierWork,
+              candidate->coldDfgCycles, candidate->coldCgraCycles,
+              candidate->incrementalDfgCycles,
+              candidate->incrementalCgraCycles}});
         continue;
       }
       if (!resourceTimeSpectrum)

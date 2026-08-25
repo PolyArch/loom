@@ -461,6 +461,19 @@ bool hasExplicitTemporalActiveSet(
 
 } // namespace
 
+llvm::StringRef resourceTimeSpectrumIncompleteReasonSpelling(
+    ResourceTimeSpectrumIncompleteReason reason) {
+  switch (reason) {
+  case ResourceTimeSpectrumIncompleteReason::Unsupported:
+    return "unsupported";
+  case ResourceTimeSpectrumIncompleteReason::ProofNotEstablished:
+    return "proof_not_established";
+  case ResourceTimeSpectrumIncompleteReason::CancelledOrTimeout:
+    return "cancelled_or_timeout";
+  }
+  llvm_unreachable("unknown resource-time Spectrum incomplete reason");
+}
+
 llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
     const ::loom::pnr::ResourceTimeScheduleWitness &witness,
     llvm::ArrayRef<ResourceTimeRegionMapping> regions,
