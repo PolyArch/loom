@@ -142,6 +142,64 @@
       ]
     },
     {
+      "identity": "mlperf-tiny-anomaly-detection",
+      "source": {
+        "kind": "repository",
+        "root": "test/applications/mlperf-tiny-anomaly"
+      },
+      "build": {
+        "entry": "runner.cpp",
+        "language": "c++",
+        "sources": [
+          "runner.cpp"
+        ],
+        "compiler_options": [
+          "-std=c++17",
+          "-O1",
+          "-ffp-contract=off",
+          "-fno-exceptions",
+          "-fno-rtti"
+        ],
+        "link_options": []
+      },
+      "cached_inputs": [
+        {
+          "logical_name": "model",
+          "path": "externals/mlperf-tiny/benchmark/training/anomaly_detection/trained_models/ad01_int8.tflite",
+          "sha256": "87cf24194ef93d1d9b11a591d805526b98008e351655d29883c825c9c106ba24"
+        },
+        {
+          "logical_name": "smoke-dataset",
+          "path": "externals/mlperf-tiny/benchmark/reference_submissions/anomaly_detection/datasets/dcase01/normal_id_01_00000000_hist_librosa.bin",
+          "sha256": "31bc130d27e3732e1c09db946ccc7bfa130f98739bcd90cfa39d590f61f4d6fa"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "smoke",
+          "workload": "mlperf-tiny-anomaly-smoke",
+          "runtime_input": "mlperf-tiny-anomaly-smoke-input",
+          "cached_inputs": [
+            "model",
+            "smoke-dataset"
+          ],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/mlperf-tiny-anomaly/expected-smoke.txt"
+          },
+          "profile": {
+            "warmup_samples": 1,
+            "measured_samples": 4,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 10000
+          }
+        }
+      ],
+      "selections": [
+        "smoke"
+      ]
+    },
+    {
       "identity": "vecadd-memory",
       "source": {
         "kind": "repository",

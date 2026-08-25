@@ -16,6 +16,13 @@
 # RUN:   -include %S/llama2c-kernels-smoke.h \
 # RUN:   %loom_external/llama2.c/run.c -lm -o %t.llama2c
 # RUN: %t.llama2c | diff -u %S/llama2c-kernels-expected-smoke.txt -
+# RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
+# RUN:   %S/mlperf-tiny-anomaly/runner.cpp -o %t.tinyml
+# RUN: timeout 10s %t.tinyml \
+# RUN:   %loom_external/mlperf-tiny/benchmark/training/anomaly_detection/trained_models/ad01_int8.tflite \
+# RUN:   %loom_external/mlperf-tiny/benchmark/reference_submissions/anomaly_detection/datasets/dcase01/normal_id_01_00000000_hist_librosa.bin \
+# RUN:   1 4 > %t.tinyml.out
+# RUN: diff -u %S/mlperf-tiny-anomaly/expected-smoke.txt %t.tinyml.out
 # RUN: %loom-application-build --driver-arguments-output=%t.portfolio.args \
 # RUN:   --deployment-output=%t.portfolio-deployment \
 # RUN:   --portfolio-manifest=%S/manifest.json \
@@ -45,13 +52,13 @@
 # RUN:   --portfolio-repository-root=%S/../.. \
 # RUN:   --portfolio-application=gapbs-pagerank --portfolio-input=smoke \
 # RUN:   2>&1 | FileCheck %s --check-prefix=TARGET-CONFLICT
-# RUN: sed '0,/"measured_samples": 1/s//"measured_samples": 2/' \
-# RUN:   %S/manifest.json > %t.unsupported-profile.json
 # RUN: not %loom-application-build --driver-arguments-output=%t.profile.args \
 # RUN:   --deployment-output=%t.profile-deployment \
-# RUN:   --portfolio-manifest=%t.unsupported-profile.json \
+# RUN:   --portfolio-manifest=%S/manifest.json \
 # RUN:   --portfolio-repository-root=%S/../.. \
-# RUN:   --portfolio-application=gapbs-pagerank --portfolio-input=smoke \
+# RUN:   --portfolio-cache-root=%loom_external/.. \
+# RUN:   --portfolio-application=mlperf-tiny-anomaly-detection \
+# RUN:   --portfolio-input=smoke \
 # RUN:   2>&1 | FileCheck %s --check-prefix=PROFILE
 
 # PORTFOLIO: -working-directory={{.*}}

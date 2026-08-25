@@ -28,6 +28,7 @@ The current portfolio has exactly these stable application identities:
 gapbs-pagerank
 llama2c-kernels
 loom-multisensor-attention
+mlperf-tiny-anomaly-detection
 vecadd-memory
 ```
 
@@ -39,9 +40,19 @@ The multisensor attention application is Loom-owned and reifies the complete
 conformance anchor. The repository-owned `vecadd-memory` row is the regular
 contiguous-memory witness paired with the irregular PageRank row.
 
-TinyML applications are not portfolio members while this checkout has no real
-inference provider that establishes bounded sample/oracle Evidence. TinyML
-rows may be added only with a non-placeholder provider and bounded profiles.
+The repository-owned `mlperf-tiny-anomaly-detection` runner consumes the exact
+int8 anomaly-detection model and DCASE feature dataset from the pinned
+`mlperf-tiny` Gitlink. It validates the model's ten-layer fully connected
+TFLite topology, executes every quantized layer, and exposes one warm-up plus
+four measured samples under a ten-second deadline. Its exact oracle records
+all 2,560 measured output bytes independently reproduced with both the
+`ai-edge-litert` 2.2.0 `BUILTIN_REF` kernel and its default XNNPACK delegate,
+using one thread. The host runner uses real-valued requantization compatible
+with those reference semantics; it does not claim bit equivalence to optimized
+fixed-point builtin or TFLite Micro kernels, or complete MLPerf anomaly MSE
+reporting. This is bounded host inference with admitted source, model, dataset,
+profile, and oracle provenance. It is not a TFLite product frontend and does
+not establish canonical Simulation or Evaluation Evidence.
 
 ## Manifest Contract
 
@@ -145,7 +156,10 @@ input link was produced from that selection.
 The current product source binding admits exactly zero warm-up samples and one
 measured sample. A profile with any other sample count is typed unsupported
 until an application runner executes the declared counts; the product path
-does not silently reinterpret or ignore a larger profile.
+does not silently reinterpret or ignore a larger profile. Consequently, the
+TinyML member's one-warm-up/four-measured profile is directly executable by
+its bounded host runner but returns `loom_portfolio_profile_unsupported` from
+the current product source-binding path.
 
 The pair decision projects the resolved application identity, input name,
 source/build selection, declared workload and runtime-input names, declared
@@ -296,8 +310,9 @@ which files happen to exist.
 Stable tests currently validate manifest schema and uniqueness, source-root
 and Gitlink resolution, selected-input cache and oracle admission, bounded
 profile parsing, deterministic smoke inventory, native host output for the
-four admitted rows, product-driver argument projection, and rejection of
-partial, injected, replayed, or target-conflicting selections.
+five admitted rows, byte-exact bounded TinyML inference under its declared
+deadline, product-driver argument projection, and rejection of partial,
+injected, replayed, target-conflicting, or unsupported-profile selections.
 
 Portfolio closure additionally requires a runner that binds every selected
 profile to canonical Simulation workload/runtime-input roots, enforces its

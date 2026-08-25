@@ -440,7 +440,8 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
 }
 
 void exerciseRepositoryManifest(llvm::StringRef manifestPath,
-                                llvm::StringRef repositoryRoot) {
+                                llvm::StringRef repositoryRoot,
+                                llvm::StringRef sharedRepositoryRoot) {
   ApplicationManifest manifest = take(loadApplicationManifest(manifestPath));
   const std::vector<std::string> smoke =
       selectApplicationIdentities(manifest, ExecutionSelection::Smoke);
@@ -450,31 +451,80 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
       selectApplicationIdentities(manifest, ExecutionSelection::ScaleEda);
   if (smoke != std::vector<std::string>{"gapbs-pagerank", "llama2c-kernels",
                                         "loom-multisensor-attention",
+                                        "mlperf-tiny-anomaly-detection",
                                         "vecadd-memory"} ||
       !validation.empty() || !scale.empty())
     fail("repository manifest execution selections do not match real rows");
   for (const ApplicationDefinition &application : manifest.applications()) {
-    if (application.inputs.size() != 1 ||
-        application.inputs[0].profile.warmupSamples != 0 ||
-        application.inputs[0].profile.measuredSamples != 1 ||
-        application.inputs[0].profile.oracleCoverage !=
-            OracleCoverage::AllMeasuredSamples ||
-        application.inputs[0].profile.deadlineMilliseconds != 120000 ||
-        application.inputs[0].profile.totalSamples() != 1)
+    if (application.inputs.size() != 1)
+      fail("repository manifest application has an unexpected input count");
+    const WorkloadExecutionProfile &profile = application.inputs[0].profile;
+    const bool isTinyMl =
+        application.identity == "mlperf-tiny-anomaly-detection";
+    if (profile.warmupSamples != (isTinyMl ? 1u : 0u) ||
+        profile.measuredSamples != (isTinyMl ? 4u : 1u) ||
+        profile.oracleCoverage != OracleCoverage::AllMeasuredSamples ||
+        profile.deadlineMilliseconds != (isTinyMl ? 10000u : 120000u) ||
+        profile.totalSamples() != (isTinyMl ? 5u : 1u))
       fail("repository manifest changed its bounded smoke input profiles");
   }
 
-  auto outcomes =
-      take(admitApplicationSources(manifest, smoke, repositoryRoot));
+  SelectedApplicationInput tinyMl = take(selectApplicationInput(
+      manifest, "mlperf-tiny-anomaly-detection", "smoke"));
+  if (tinyMl.source.kind != SourceKind::Repository ||
+      tinyMl.source.root != "test/applications/mlperf-tiny-anomaly" ||
+      tinyMl.build.entry != "runner.cpp" ||
+      tinyMl.build.language != LanguageMode::Cxx ||
+      tinyMl.build.sources != std::vector<std::string>{"runner.cpp"} ||
+      tinyMl.build.compilerOptions !=
+          std::vector<std::string>{"-std=c++17", "-O1", "-ffp-contract=off",
+                                   "-fno-exceptions", "-fno-rtti"} ||
+      !tinyMl.build.linkOptions.empty() || tinyMl.cachedInputs.size() != 2 ||
+      tinyMl.cachedInputs[0].logicalName != "model" ||
+      tinyMl.cachedInputs[0].path !=
+          "externals/mlperf-tiny/benchmark/training/anomaly_detection/"
+          "trained_models/ad01_int8.tflite" ||
+      tinyMl.cachedInputs[1].logicalName != "smoke-dataset" ||
+      tinyMl.cachedInputs[1].path !=
+          "externals/mlperf-tiny/benchmark/reference_submissions/"
+          "anomaly_detection/datasets/dcase01/"
+          "normal_id_01_00000000_hist_librosa.bin" ||
+      tinyMl.input.workload != "mlperf-tiny-anomaly-smoke" ||
+      tinyMl.input.runtimeInput != "mlperf-tiny-anomaly-smoke-input" ||
+      tinyMl.input.oracle.kind != OracleKind::Exact ||
+      tinyMl.input.oracle.entry !=
+          "test/applications/mlperf-tiny-anomaly/expected-smoke.txt" ||
+      formatBlobDigestHex(tinyMl.cachedInputs[0].digest) !=
+          "87cf24194ef93d1d9b11a591d805526b98008e351655d29883c825c9c106ba24" ||
+      formatBlobDigestHex(tinyMl.cachedInputs[1].digest) !=
+          "31bc130d27e3732e1c09db946ccc7bfa130f98739bcd90cfa39d590f61f4d6fa")
+    fail("repository manifest changed the TinyML inference selection");
+
+  const std::vector<std::string> existingApplications = {
+      "gapbs-pagerank", "llama2c-kernels", "loom-multisensor-attention",
+      "vecadd-memory"};
+  auto outcomes = take(admitApplicationSources(
+      manifest, existingApplications, sharedRepositoryRoot));
   if (outcomes.size() != 4)
     fail("repository manifest source admission changed cardinality");
-  for (auto [index, identity] : llvm::enumerate(smoke)) {
+  for (auto [index, identity] : llvm::enumerate(existingApplications)) {
     const auto *admitted =
         std::get_if<AdmittedApplicationSource>(&outcomes[index]);
     if (!admitted || admitted->applicationIdentity != identity ||
         !std::filesystem::path(admitted->sourceRoot).is_absolute())
       fail("repository application source was not admitted");
   }
+
+  ApplicationSourceAdmissionOutcome tinyMlAdmission =
+      take(admitApplicationSource(manifest,
+                                  "mlperf-tiny-anomaly-detection", "smoke",
+                                  repositoryRoot, sharedRepositoryRoot));
+  const auto *admittedTinyMl =
+      std::get_if<AdmittedApplicationSource>(&tinyMlAdmission);
+  if (!admittedTinyMl || admittedTinyMl->applicationIdentity !=
+                             "mlperf-tiny-anomaly-detection" ||
+      !std::filesystem::path(admittedTinyMl->sourceRoot).is_absolute())
+    fail("TinyML source, oracle, model, or dataset was not admitted");
 }
 
 } // namespace
@@ -483,9 +533,9 @@ int main(int argc, char **argv) {
   if (argc != 4)
     fail("expected <temporary-directory> <manifest> <repository-root>");
   exerciseManifestAndAdmission(argv[1]);
-  const llvm::StringRef configuredRepositoryRoot = LOOM_TEST_REPOSITORY_ROOT;
-  exerciseRepositoryManifest(argv[2], configuredRepositoryRoot.empty()
-                                          ? argv[3]
-                                          : configuredRepositoryRoot);
+  const llvm::StringRef configuredSharedRoot = LOOM_TEST_REPOSITORY_ROOT;
+  exerciseRepositoryManifest(argv[2], argv[3], configuredSharedRoot.empty()
+                                                    ? argv[3]
+                                                    : configuredSharedRoot);
   return 0;
 }
