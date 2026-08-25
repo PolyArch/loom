@@ -5,16 +5,22 @@
 #include "Application/BuildDiagnostics.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
+#include "Common/ComponentViewDigest.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Deployment/Deployment.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/IR/MappingSchema.h"
+#include "PnR/System/SystemMappingMigration.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
@@ -49,14 +55,158 @@ void writeReferenceArray(llvm::json::OStream &json, llvm::StringRef name,
   });
 }
 
+void writeReference(llvm::json::OStream &json, llvm::StringRef name,
+                    const ArtifactRootReference &reference) {
+  json.attributeObject(
+      name, [&] { writeArtifactRootReferenceJsonFields(json, reference); });
+}
+
+void writeAllocations(
+    llvm::json::OStream &json, llvm::StringRef name,
+    llvm::ArrayRef<pnr::ResourceTimeRegionAllocation> allocations) {
+  json.attributeArray(name, [&] {
+    for (const pnr::ResourceTimeRegionAllocation &allocation : allocations) {
+      json.object([&] {
+        json.attribute("region_artifact",
+                       formatArtifactIdentityHex(allocation.region.artifact));
+        json.attribute("region_entity", allocation.region.entity.value());
+        json.attributeArray("resources", [&] {
+          for (const auto &resource : allocation.resources)
+            json.value(llvm::toHex(fabric::canonicalFabricBytes(resource),
+                                   /*LowerCase=*/true));
+        });
+      });
+    }
+  });
+}
+
+void writeSpectrumSummary(llvm::json::OStream &json, llvm::StringRef name,
+                          const dse::ResourceTimeSpectrumFunnelResult &result) {
+  const auto &spectrum =
+      std::get<dse::VerifiedResourceTimeSpectrum>(result.verification);
+  json.attributeObject(name, [&] {
+    writeReference(json, "dataflow", spectrum.dataflow);
+    writeReference(json, "fabric", spectrum.fabric);
+    json.attributeArray("scenarios", [&] {
+      for (const dse::VerifiedResourceTimeSpectrumScenario &scenario :
+           spectrum.scenarios) {
+        json.object([&] {
+          json.attribute("ordinal", scenario.scenarioOrdinal);
+          json.attribute("spectrum_class",
+                         dse::toString(scenario.spectrumClass));
+          json.attribute("peak_concurrent_regions",
+                         scenario.peakConcurrentRegions);
+          json.attribute("makespan_picoseconds", scenario.makespanPicoseconds);
+          writeReferenceArray(json, "system_mappings", scenario.systemMappings);
+          json.attribute("state_count", scenario.states.size());
+          json.attribute("active_state_count",
+                         llvm::count_if(scenario.states, [](const auto &state) {
+                           return !state.active.empty();
+                         }));
+        });
+      }
+    });
+  });
+}
+
+llvm::Expected<std::vector<std::string>>
+verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
+                           const ArtifactStore &artifacts,
+                           const BlobStore &blobs) {
+  for (std::size_t index = 0; index != application.resourceTimeEndpoints.size();
+       ++index) {
+    const auto &endpoint = application.resourceTimeEndpoints[index];
+    for (std::size_t prior = 0; prior != index; ++prior)
+      if (application.resourceTimeEndpoints[prior].mapping == endpoint.mapping)
+        return visualizationError("resource-time endpoint catalog repeats one "
+                                  "Mapping");
+    auto imported = ::loom::deployment::importDeployment(endpoint.deployment,
+                                                         artifacts, blobs);
+    if (!imported)
+      return visualizationError("cannot strictly import a resource-time "
+                                "Deployment endpoint: " +
+                                llvm::toString(imported.takeError()));
+    if (imported->deployment().systemMapping() != endpoint.mapping)
+      return visualizationError("resource-time Deployment endpoint selects "
+                                "another Mapping");
+  }
+
+  std::vector<std::string> triggers;
+  triggers.reserve(application.resourceTimeTransitions.size());
+  for (const ApplicationResourceTimeTransitionEvidence &evidence :
+       application.resourceTimeTransitions) {
+    if (llvm::Error error = pnr::verifyResourceTimeTransitionClosure(
+            evidence.transition, artifacts, blobs))
+      return visualizationError("resource-time transition evidence failed "
+                                "independent closure: " +
+                                llvm::toString(std::move(error)));
+    for (const pnr::ResourceTimeTransitionEndpointReference *endpoint :
+         {&evidence.transition.parent, &evidence.transition.child}) {
+      const auto found = llvm::find_if(
+          application.resourceTimeEndpoints, [&](const auto &candidate) {
+            return endpoint->deployment &&
+                   candidate.mapping == endpoint->mapping &&
+                   candidate.deployment == *endpoint->deployment;
+          });
+      if (found == application.resourceTimeEndpoints.end())
+        return visualizationError("resource-time transition lost an exact "
+                                  "endpoint catalog member");
+    }
+    const auto *parent = std::get_if<dse::VerifiedResourceTimeSpectrum>(
+        &evidence.parentSpectrum.verification);
+    const auto *child = std::get_if<dse::VerifiedResourceTimeSpectrum>(
+        &evidence.childSpectrum.verification);
+    if (!parent || !child)
+      return visualizationError("resource-time transition retained an "
+                                "unverified endpoint spectrum");
+    const bool parentContainsEdge =
+        llvm::any_of(parent->scenarios, [&](const auto &scenario) {
+          return llvm::any_of(
+              scenario.transitions.transitions, [&](const auto &candidate) {
+                return candidate.parent == evidence.transition.parent &&
+                       candidate.child == evidence.transition.child &&
+                       candidate.status == evidence.transition.status;
+              });
+        });
+    if (!parentContainsEdge)
+      return visualizationError("parent spectrum does not contain its exact "
+                                "resource-time transition");
+    const bool childCarriesActiveWork =
+        llvm::any_of(child->scenarios, [](const auto &scenario) {
+          return llvm::any_of(scenario.states, [](const auto &state) {
+            return !state.active.empty();
+          });
+        });
+    if (!childCarriesActiveWork)
+      return visualizationError("child spectrum carries no active Mapping "
+                                "evidence");
+    if (!evidence.transition.safePoint)
+      return visualizationError("verified resource-time transition lost its "
+                                "safe point");
+    auto trigger = dataflow::encodeDataflowReference(
+        evidence.transition.safePoint->artifact.artifact,
+        evidence.transition.trigger);
+    if (!trigger)
+      return visualizationError("cannot encode a resource-time trigger: " +
+                                llvm::toString(trigger.takeError()));
+    triggers.push_back(llvm::toHex(*trigger, /*LowerCase=*/true));
+  }
+  return triggers;
+}
+
 llvm::Error writeBundle(llvm::StringRef destination,
                         const fabric::FinalizedFabricRoot &system,
                         const PreparedApplicationBuild &prepared,
                         const ApplicationMappingExecution &execution,
                         const ApplicationDeploymentArtifacts &deployment,
-                        const ArtifactStore &artifacts) {
+                        const ArtifactStore &artifacts,
+                        const BlobStore &blobs) {
   if (!execution.provenance.pairDecision)
     return visualizationError("completed Mapping has no pair decision");
+  auto transitionTriggers =
+      verifyResourceTimeEvidence(deployment, artifacts, blobs);
+  if (!transitionTriggers)
+    return transitionTriggers.takeError();
 
   std::vector<ArtifactRootReference> structuredPrograms;
   std::vector<ArtifactRootReference> dataflows;
@@ -144,7 +294,7 @@ llvm::Error writeBundle(llvm::StringRef destination,
     llvm::json::OStream json(output, 2);
     json.object([&] {
       json.attribute("schema", "loom.visualization_bundle");
-      json.attribute("version", "1.0");
+      json.attribute("version", "1.1");
       json.attributeObject("fabric", [&] {
         writeArtifactRootReferenceJsonFields(json, system.reference());
       });
@@ -166,6 +316,77 @@ llvm::Error writeBundle(llvm::StringRef destination,
         writeArtifactRootReferenceJsonFields(json,
                                              deployment.deployment.reference());
       });
+      json.attributeArray("resource_time_endpoints", [&] {
+        for (const dse::ResourceTimeMappingDeploymentEndpoint &endpoint :
+             deployment.resourceTimeEndpoints) {
+          json.object([&] {
+            writeReference(json, "mapping", endpoint.mapping);
+            writeReference(json, "deployment", endpoint.deployment);
+          });
+        }
+      });
+      json.attributeArray("resource_time_transitions", [&] {
+        for (const auto indexed :
+             llvm::enumerate(deployment.resourceTimeTransitions)) {
+          const ApplicationResourceTimeTransitionEvidence &evidence =
+              indexed.value();
+          const pnr::ResourceTimeTransition &transition = evidence.transition;
+          json.object([&] {
+            json.attribute("trigger", (*transitionTriggers)[indexed.index()]);
+            json.attributeObject("safe_point", [&] {
+              writeReference(json, "artifact", transition.safePoint->artifact);
+              json.attribute("kind", pnr::resourceTimeSafePointKindSpelling(
+                                         transition.safePoint->kind));
+            });
+            json.attributeObject("parent", [&] {
+              writeReference(json, "mapping", transition.parent.mapping);
+              writeReference(json, "deployment", *transition.parent.deployment);
+            });
+            json.attributeObject("child", [&] {
+              writeReference(json, "mapping", transition.child.mapping);
+              writeReference(json, "deployment", *transition.child.deployment);
+            });
+            writeAllocations(json, "before_active", transition.beforeActive);
+            writeAllocations(json, "after_active", transition.afterActive);
+            json.attributeArray("completed_before", [&] {
+              for (const auto root : transition.completedBefore) {
+                json.object([&] {
+                  json.attribute("artifact",
+                                 formatArtifactIdentityHex(root.artifact));
+                  json.attribute("entity", root.entity.value());
+                });
+              }
+            });
+            writeReferenceArray(json, "before_live_work",
+                                transition.beforeLiveWork);
+            writeReferenceArray(json, "after_live_work",
+                                transition.afterLiveWork);
+            if (transition.tokenLiveStateCorrespondence)
+              writeReference(json, "token_live_state_correspondence",
+                             *transition.tokenLiveStateCorrespondence);
+            else
+              json.attribute("token_live_state_correspondence", nullptr);
+            json.attribute(
+                "resource_delta",
+                formatComponentViewDigestHex(*transition.resourceDeltaDigest));
+            json.attribute("configuration_delta",
+                           formatComponentViewDigestHex(
+                               *transition.configurationDeltaDigest));
+            json.attribute("route_delta", formatComponentViewDigestHex(
+                                              *transition.routeDeltaDigest));
+            json.attribute("reprogramming_time_picoseconds",
+                           *transition.reprogrammingTimePicoseconds);
+            json.attribute("migration_time_picoseconds",
+                           *transition.migrationTimePicoseconds);
+            json.attribute("status", pnr::resourceTimeTransitionStatusSpelling(
+                                         transition.status));
+            writeSpectrumSummary(json, "parent_spectrum",
+                                 evidence.parentSpectrum);
+            writeSpectrumSummary(json, "child_spectrum",
+                                 evidence.childSpectrum);
+          });
+        }
+      });
     });
     output.flush();
     if (std::error_code error = output.error()) {
@@ -183,13 +404,12 @@ llvm::Error writeBundle(llvm::StringRef destination,
 
 } // namespace
 
-llvm::Error
-exportProductVisualization(llvm::StringRef destination,
-                           const fabric::FinalizedFabricRoot &system,
-                           const PreparedApplicationBuild &prepared,
-                           const ApplicationMappingExecution &mapping,
-                           const ApplicationDeploymentArtifacts &deployment,
-                           const ArtifactStore &artifacts, const BlobStore &) {
+llvm::Error exportProductVisualization(
+    llvm::StringRef destination, const fabric::FinalizedFabricRoot &system,
+    const PreparedApplicationBuild &prepared,
+    const ApplicationMappingExecution &mapping,
+    const ApplicationDeploymentArtifacts &deployment,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (destination.empty())
     return visualizationError("destination is empty");
   if (std::error_code error = llvm::sys::fs::create_directories(destination))
@@ -203,7 +423,7 @@ exportProductVisualization(llvm::StringRef destination,
           adg::exportFabricDesign(system, artifacts, fabricBase))
     return visualizationError(llvm::toString(std::move(error)));
   return writeBundle(destination, system, prepared, mapping, deployment,
-                     artifacts);
+                     artifacts, blobs);
 }
 
 } // namespace loom::application

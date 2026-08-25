@@ -42,8 +42,8 @@ struct ResourceTimeInvocationKey final {
 /// Exact semantic context for removable transition-result memoization. The
 /// transition itself supplies the parent/child Mapping and Deployment, safe
 /// point, trigger, active/live state, and resource/configuration/route deltas.
-/// Result status and measured migration time are deliberately excluded from
-/// the key.
+/// Result status and measured reprogramming and migration times are
+/// deliberately excluded from the key.
 struct ResourceTimeTransitionCacheKeyInput final {
   ArtifactRootReference constraints;
   ComponentViewDigest algorithmIdentity;

@@ -106,11 +106,14 @@ void verifyResourceTimeSpectrumWorkflow(
   ResourceTimeScheduleScenario spatial;
   spatial.executions = {{scheduleRegions[0], {}, 0, 0, 10},
                         {scheduleRegions[1], {}, 0, 0, 10}};
-  spatial.states = {{mapping.reference(),
-                     startEvent(roots[0]),
-                     0,
-                     {allocation(0), allocation(1)}},
-                    {mapping.reference(), completionEvent(roots[0]), 10, {}}};
+  spatial.states = {
+      {mapping.reference(), startEvent(roots[0]), 0, {allocation(0)}},
+      {mapping.reference(),
+       startEvent(roots[1]),
+       0,
+       {allocation(0), allocation(1)}},
+      {mapping.reference(), completionEvent(roots[0]), 10, {allocation(1)}},
+      {mapping.reference(), completionEvent(roots[1]), 10, {}}};
   spatial.makespanPicoseconds = 10;
 
   ResourceTimeScheduleScenario temporal;
@@ -123,6 +126,7 @@ void verifyResourceTimeSpectrumWorkflow(
        20}};
   temporal.states = {
       {mapping.reference(), startEvent(roots[0]), 0, {allocation(0)}},
+      {mapping.reference(), completionEvent(roots[0]), 10, {}},
       {mapping.reference(), startEvent(roots[1]), 10, {allocation(1)}},
       {mapping.reference(), completionEvent(roots[1]), 20, {}}};
   temporal.makespanPicoseconds = 20;
@@ -151,6 +155,59 @@ void verifyResourceTimeSpectrumWorkflow(
               verified->scenarios[1].spectrumClass ==
                   dse::PreMappingSpectrumClass::MaxTemporal,
           "real SystemMapping allocations did not establish both endpoints");
+
+  auto omittedBoundary = witness;
+  omittedBoundary.scenarios[0].states.erase(
+      omittedBoundary.scenarios[0].states.begin() + 2);
+  auto omittedResult =
+      dse::verifyResourceTimeSpectrum(omittedBoundary, correspondence, store);
+  require(!omittedResult,
+          "same-time schedule accepted an omitted completion boundary");
+  const std::string omittedMessage = llvm::toString(omittedResult.takeError());
+  require(llvm::StringRef(omittedMessage).contains("omits or repeats"),
+          omittedMessage);
+
+  auto omittedTimestamp = witness;
+  omittedTimestamp.scenarios[1].states.erase(
+      omittedTimestamp.scenarios[1].states.begin() + 1,
+      omittedTimestamp.scenarios[1].states.begin() + 3);
+  auto omittedTimestampResult =
+      dse::verifyResourceTimeSpectrum(omittedTimestamp, correspondence, store);
+  require(!omittedTimestampResult,
+          "schedule accepted an entirely omitted boundary timestamp");
+  const std::string omittedTimestampMessage =
+      llvm::toString(omittedTimestampResult.takeError());
+  require(llvm::StringRef(omittedTimestampMessage).contains("omits or repeats"),
+          omittedTimestampMessage);
+
+  auto emptyInterval = witness;
+  emptyInterval.scenarios[0].executions.front().completionPicoseconds =
+      emptyInterval.scenarios[0].executions.front().startPicoseconds;
+  auto emptyIntervalResult =
+      dse::verifyResourceTimeSpectrum(emptyInterval, correspondence, store);
+  require(!emptyIntervalResult,
+          "resource-time schedule accepted a zero-duration execution");
+  const std::string emptyIntervalMessage =
+      llvm::toString(emptyIntervalResult.takeError());
+  require(llvm::StringRef(emptyIntervalMessage).contains("not nonempty"),
+          emptyIntervalMessage);
+
+  auto misorderedBoundary = witness;
+  misorderedBoundary.scenarios[1].states[1] = {mapping.reference(),
+                                               startEvent(roots[1]),
+                                               10,
+                                               {allocation(0), allocation(1)}};
+  misorderedBoundary.scenarios[1].states[2] = {
+      mapping.reference(), completionEvent(roots[0]), 10, {allocation(1)}};
+  auto misorderedResult = dse::verifyResourceTimeSpectrum(
+      misorderedBoundary, correspondence, store);
+  require(!misorderedResult,
+          "same-time schedule accepted admission before completion");
+  const std::string misorderedMessage =
+      llvm::toString(misorderedResult.takeError());
+  require(
+      llvm::StringRef(misorderedMessage).contains("after same-time admission"),
+      misorderedMessage);
 
   auto unprovenBounds = witness;
   unprovenBounds.concurrencyBoundStatus =

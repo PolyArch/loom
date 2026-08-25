@@ -151,12 +151,21 @@ struct ResourceTimeTransition final {
   ResourceTimeTransitionEndpointReference child;
   std::vector<ResourceTimeRegionAllocation> beforeActive;
   std::vector<ResourceTimeRegionAllocation> afterActive;
+  /// Canonical roots already complete immediately before `trigger`. Together
+  /// with the one completing active root, this frontier must cover the entire
+  /// Dataflow root inventory before exact zero live-state migration is valid.
+  std::vector<::dataflow::RootThreadLaunchRef> completedBefore;
   std::vector<ArtifactRootReference> beforeLiveWork;
   std::vector<ArtifactRootReference> afterLiveWork;
   std::optional<ArtifactRootReference> tokenLiveStateCorrespondence;
   std::optional<ComponentViewDigest> resourceDeltaDigest;
   std::optional<ComponentViewDigest> configurationDeltaDigest;
   std::optional<ComponentViewDigest> routeDeltaDigest;
+  /// Exact compiler-owned cost of programming the changed Deployment
+  /// configuration. This remains distinct from live-state migration.
+  std::optional<std::uint64_t> reprogrammingTimePicoseconds;
+  /// Exact compiler-owned live-state migration cost. A quiescent completion
+  /// edge may establish the exact value zero without fabricating live work.
   std::optional<std::uint64_t> migrationTimePicoseconds;
   ResourceTimeTransitionStatus status =
       ResourceTimeTransitionStatus::ProofNotEstablished;
@@ -227,6 +236,17 @@ llvm::Error
 verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
                                     const ArtifactStore &artifacts,
                                     const BlobStore &blobs);
+
+/// Derives the resource, Deployment-configuration, and Mapping-route deltas
+/// from exact endpoint closures, marks the edge verified, and immediately
+/// replays the independent closure verifier. The draft must carry an exact
+/// compiler-owned completion safe point; the bounded profile derives its exact
+/// zero cost components here. This function neither discovers a Mapping nor
+/// invents live-state evidence.
+llvm::Expected<ResourceTimeTransition>
+finalizeResourceTimeTransition(ResourceTimeTransition draft,
+                               const ArtifactStore &artifacts,
+                               const BlobStore &blobs);
 
 llvm::Error validateResourceTimeTransitionSequence(
     const ResourceTimeTransitionSequence &sequence);

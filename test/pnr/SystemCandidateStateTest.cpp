@@ -1232,9 +1232,11 @@ void graphBindingWorkflow() {
       {finalizedParentMapping.reference(), transitionDeployment},
       {{pressureRoots.front(), {transitionResource}}},
       {{pressureRoots.front(), {transitionResource}}},
+      {},
       {pressureDataflowReference},
       {pressureDataflowReference},
       pressureDataflowReference,
+      std::nullopt,
       std::nullopt,
       std::nullopt,
       std::nullopt,
@@ -1245,6 +1247,7 @@ void graphBindingWorkflow() {
     fail(llvm::toString(std::move(error)));
   structuralTransition.status =
       loom::pnr::ResourceTimeTransitionStatus::Verified;
+  structuralTransition.reprogrammingTimePicoseconds = 1;
   structuralTransition.migrationTimePicoseconds = 1;
   structuralTransition.resourceDeltaDigest = config.digest();
   structuralTransition.configurationDeltaDigest = config.digest();
@@ -1269,11 +1272,23 @@ void graphBindingWorkflow() {
   require(transitionCacheKey != changedTransitionCacheKey,
           "resource-time transition cache key ignored an allocation delta");
   changedTransition = structuralTransition;
+  changedTransition.completedBefore = {pressureRoots.back()};
+  require(transitionCacheKey !=
+              take(loom::dse::deriveResourceTimeTransitionCacheKey(
+                  changedTransition, transitionCacheInput)),
+          "resource-time transition cache key ignored its completion frontier");
+  changedTransition = structuralTransition;
   changedTransition.migrationTimePicoseconds = 2;
   require(transitionCacheKey ==
               take(loom::dse::deriveResourceTimeTransitionCacheKey(
                   changedTransition, transitionCacheInput)),
           "resource-time transition result changed its semantic cache key");
+  changedTransition = structuralTransition;
+  changedTransition.reprogrammingTimePicoseconds = 2;
+  require(transitionCacheKey ==
+              take(loom::dse::deriveResourceTimeTransitionCacheKey(
+                  changedTransition, transitionCacheInput)),
+          "resource-time reprogramming result changed its semantic cache key");
   changedTransition = structuralTransition;
   changedTransition.status =
       loom::pnr::ResourceTimeTransitionStatus::ProofNotEstablished;
@@ -1932,24 +1947,19 @@ void graphBindingWorkflow() {
                                                                 Completion}},
          fifo ? 20 : r4Completion, r5Start, r5Completion}};
     std::vector<std::uint64_t> times;
-    if (fifo)
-      times = {0, 10, 20, 25, 30};
-    else if (expand)
-      times = {0, 10, 20, 25, 35, 45};
-    else
-      times = {0, 10, 20, 40, 50};
-    for (std::uint64_t time : times) {
-      const bool migrated = expand && time >= 10;
-      auto &mapping = migratedMapping.reference();
-      loom::ArtifactRootReference stateMapping =
-          migrated ? mapping : finalizedParentMapping.reference();
+    for (const auto &execution : scenario.executions) {
+      times.push_back(execution.startPicoseconds);
+      times.push_back(execution.completionPicoseconds);
+    }
+    llvm::sort(times);
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+    std::vector<std::size_t> activeRegions;
+    bool migrated = false;
+    const auto appendState = [&](std::size_t boundaryRegion, bool completion,
+                                 std::uint64_t time) {
       std::vector<loom::pnr::ResourceTimeRegionAllocation> active;
-      for (std::size_t region = 0; region != scenario.executions.size();
-           ++region) {
+      for (std::size_t region : activeRegions) {
         const auto &execution = scenario.executions[region];
-        if (execution.startPicoseconds > time ||
-            time >= execution.completionPicoseconds)
-          continue;
         if (region == 0)
           active.push_back(allocate(execution.region, {0}));
         else if (region == 1)
@@ -1963,16 +1973,36 @@ void graphBindingWorkflow() {
           active.push_back(fifo ? allocate(execution.region, {0})
                                 : allocate(execution.region, {4}));
       }
-      const dataflow::EventFamilyKey stateEvent =
-          time == 0    ? dataflow::rootThreadStartEventFamily(r1)
-          : time == 10 ? dataflow::rootThreadCompletionEventFamily(r1)
-          : time == 20 ? dataflow::rootThreadCompletionEventFamily(r2)
-          : time == 25 ? dataflow::rootThreadCompletionEventFamily(r4)
-          : time == 35 ? dataflow::rootThreadStartEventFamily(r5)
-          : time == 40 ? dataflow::rootThreadCompletionEventFamily(r4)
-                       : dataflow::rootThreadCompletionEventFamily(r5);
-      scenario.states.push_back(
-          {stateMapping, stateEvent, time, std::move(active)});
+      const auto region = scenario.executions[boundaryRegion].region;
+      const dataflow::EventFamilyKey event =
+          completion ? dataflow::rootThreadCompletionEventFamily(region)
+                     : dataflow::rootThreadStartEventFamily(region);
+      scenario.states.push_back({migrated ? migratedMapping.reference()
+                                          : finalizedParentMapping.reference(),
+                                 event, time, std::move(active)});
+    };
+    for (std::uint64_t time : times) {
+      for (std::size_t region = 0; region != scenario.executions.size();
+           ++region) {
+        const auto &execution = scenario.executions[region];
+        if (execution.completionPicoseconds != time)
+          continue;
+        auto active = llvm::find(activeRegions, region);
+        require(active != activeRegions.end(),
+                "resource-time fixture completes an inactive region");
+        activeRegions.erase(active);
+        if (expand && region == 0)
+          migrated = true;
+        appendState(region, true, time);
+      }
+      for (std::size_t region = 0; region != scenario.executions.size();
+           ++region) {
+        const auto &execution = scenario.executions[region];
+        if (execution.startPicoseconds != time)
+          continue;
+        activeRegions.push_back(region);
+        appendState(region, false, time);
+      }
     }
     if (expand) {
       auto transition = structuralTransition;
@@ -1983,13 +2013,13 @@ void graphBindingWorkflow() {
       transition.child.mapping = migratedMapping.reference();
       transition.beforeActive = {allocate(r1, {0}), allocate(r2, {1}),
                                  allocate(r3, {2})};
-      transition.afterActive = {allocate(r2, {1}), allocate(r3, {2}),
-                                allocate(r4, {3, 4})};
+      transition.afterActive = {allocate(r2, {1}), allocate(r3, {2})};
       transition.beforeLiveWork = {pressureSpatialMappings[0],
                                    pressureSpatialMappings[1],
                                    finalizedParentMapping.reference()};
       transition.afterLiveWork = transition.beforeLiveWork;
       transition.tokenLiveStateCorrespondence = pressureDataflowReference;
+      transition.reprogrammingTimePicoseconds = migrationCost;
       transition.migrationTimePicoseconds = migrationCost;
       scenario.transitions.transitions.push_back(std::move(transition));
     }

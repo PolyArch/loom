@@ -455,14 +455,20 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
 
 dataflow::CanonicalDataflowArtifact buildDataflow(llvm::StringRef test,
                                                   ArtifactStore &artifacts) {
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+  constexpr llvm::StringLiteral source = R"mlir(
 module {
   dataflow.thread private @worker_a domain(#dataflow.thread_domain<dense>)()
       ctrl (%ctrl: none) {
+    %lhs = arith.constant 1 : i32
+    %rhs = arith.constant 2 : i32
+    %sum = arith.addi %lhs, %rhs : i32
     dataflow.thread.yield
   }
   dataflow.thread private @worker_b domain(#dataflow.thread_domain<dense>)()
       ctrl (%ctrl: none) {
+    %lhs = arith.constant 3 : i32
+    %rhs = arith.constant 4 : i32
+    %sum = arith.addi %lhs, %rhs : i32
     dataflow.thread.yield
   }
   func.func private @host() {
@@ -473,8 +479,8 @@ module {
     return
   }
 }
-)mlir",
-                                                        &context());
+)mlir";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context());
   require(test, static_cast<bool>(module), "cannot parse Dataflow fixture");
   auto dataflow = take(test, dataflow::finalizeCanonicalDataflow(*module));
   (void)take(test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
@@ -751,7 +757,7 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
     llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
     const TemporaryTree &tree, llvm::StringRef finalLinkedTriple,
     bool trustedIdentity, bool shareProgrammingEndpoint,
-    bool systemArtifactInterfaces,
+    bool systemArtifactInterfaces, bool reverseRootTargets,
     const runtime::RuntimeProviderDescriptor &runtimeProvider) {
   const auto module = buildModule(test, artifacts);
   const auto system = buildSystem(test, module, artifacts);
@@ -759,10 +765,21 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
   auto dataflow = take(test, dataflowArtifact.view());
   auto systemView = take(test, fabric::requireSystemRoot(system.view()));
   const auto cores = systemView.artifact().accCoreOccurrences();
-  require(test, cores.size() == dataflow.rootThreadLaunches().size(),
-          "minimal fixture requires one AccCore per root thread");
-  const auto systemMapping = buildSystemMapping(test, dataflow, system,
-                                                artifacts, {}, cores);
+  require(test, cores.size() >= dataflow.rootThreadLaunches().size(),
+          "minimal fixture has fewer AccCores than root threads");
+  std::vector<fabric::AccCoreOccurrenceRef> rootTargets;
+  rootTargets.reserve(dataflow.rootThreadLaunches().size());
+  if (reverseRootTargets)
+    rootTargets.insert(rootTargets.end(),
+                       cores.end() - dataflow.rootThreadLaunches().size(),
+                       cores.end());
+  else
+    rootTargets.insert(rootTargets.end(), cores.begin(),
+                       cores.begin() + dataflow.rootThreadLaunches().size());
+  if (reverseRootTargets)
+    std::reverse(rootTargets.begin(), rootTargets.end());
+  const auto systemMapping =
+      buildSystemMapping(test, dataflow, system, artifacts, {}, rootTargets);
   auto abiDraft = take(
       test, hardware::derivePackedConfigurationABIDraft(system, context()));
   const auto abi = take(
@@ -780,8 +797,8 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
                   attestation.size())));
   }
   std::vector<DeploymentHardwareBinding> hardwareBindings;
-  hardwareBindings.reserve(cores.size());
-  for (const auto indexedCore : llvm::enumerate(cores)) {
+  hardwareBindings.reserve(rootTargets.size());
+  for (const auto indexedCore : llvm::enumerate(rootTargets)) {
     const fabric::SpatialCoreOccurrenceRef subject{indexedCore.value()};
     std::vector<hardware::ImplementationInterface> interfaces;
     for (const hardware::ProgrammingUnit &unit : abi.abi().programmingUnits()) {
@@ -831,7 +848,7 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
                   runtime::HardwareReportedIdentity{
                       runtime::inProcessRuntimeEndpoint(
                           runtime::RuntimeEndpointClass::Identity,
-                          indexedCore.index())});
+                          indexedCore.value().id())});
     const auto runtimeBinding =
         take(test, runtime::finalizeRuntimePlatformBinding(
                        runtime::RuntimePlatformBindingDraft{
@@ -1098,7 +1115,7 @@ tryBuildMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,
                           llvm::StringRef finalLinkedTriple) {
   return tryBuildMinimalDeploymentImpl(
       test, artifacts, blobs, tree, finalLinkedTriple, false, false, false,
-      runtime::inProcessRuntimeProviderDescriptor());
+      false, runtime::inProcessRuntimeProviderDescriptor());
 }
 
 FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
@@ -1109,6 +1126,24 @@ FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
                                               llvm::StringRef()));
 }
 
+FinalizedDeployment
+buildRetargetedMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,
+                                 BlobStore &blobs, const TemporaryTree &tree) {
+  return take(test,
+              tryBuildMinimalDeploymentImpl(
+                  test, artifacts, blobs, tree, llvm::StringRef(), false, false,
+                  false, true, runtime::inProcessRuntimeProviderDescriptor()));
+}
+
+FinalizedDeployment buildRetargetedSharedProgrammingEndpointDeployment(
+    llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
+    const TemporaryTree &tree) {
+  return take(test,
+              tryBuildMinimalDeploymentImpl(
+                  test, artifacts, blobs, tree, llvm::StringRef(), false, true,
+                  false, true, runtime::inProcessRuntimeProviderDescriptor()));
+}
+
 FinalizedDeployment buildSystemArtifactDeployment(llvm::StringRef test,
                                                   ArtifactStore &artifacts,
                                                   BlobStore &blobs,
@@ -1116,7 +1151,7 @@ FinalizedDeployment buildSystemArtifactDeployment(llvm::StringRef test,
   return take(test,
               tryBuildMinimalDeploymentImpl(
                   test, artifacts, blobs, tree, llvm::StringRef(), false, false,
-                  true, runtime::inProcessRuntimeProviderDescriptor()));
+                  true, false, runtime::inProcessRuntimeProviderDescriptor()));
 }
 
 FinalizedDeployment buildTrustedIdentityDeployment(llvm::StringRef test,
@@ -1126,7 +1161,7 @@ FinalizedDeployment buildTrustedIdentityDeployment(llvm::StringRef test,
   return take(test,
               tryBuildMinimalDeploymentImpl(
                   test, artifacts, blobs, tree, llvm::StringRef(), true, false,
-                  false, runtime::inProcessRuntimeProviderDescriptor()));
+                  false, false, runtime::inProcessRuntimeProviderDescriptor()));
 }
 
 FinalizedDeployment buildSharedProgrammingEndpointDeployment(
@@ -1135,16 +1170,16 @@ FinalizedDeployment buildSharedProgrammingEndpointDeployment(
   return take(test,
               tryBuildMinimalDeploymentImpl(
                   test, artifacts, blobs, tree, llvm::StringRef(), false, true,
-                  false, runtime::inProcessRuntimeProviderDescriptor()));
+                  false, false, runtime::inProcessRuntimeProviderDescriptor()));
 }
 
 FinalizedDeployment buildRuntimeProviderDeployment(
     llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
     const TemporaryTree &tree,
     const runtime::RuntimeProviderDescriptor &provider) {
-  return take(test, tryBuildMinimalDeploymentImpl(test, artifacts, blobs, tree,
-                                                  llvm::StringRef(), false,
-                                                  false, false, provider));
+  return take(test, tryBuildMinimalDeploymentImpl(
+                        test, artifacts, blobs, tree, llvm::StringRef(), false,
+                        false, false, false, provider));
 }
 
 } // namespace loom::deployment::test

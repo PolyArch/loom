@@ -1354,6 +1354,10 @@ void emitApplicationMappingDiagnostics(
           llvm::json::Object transition;
           transition["parent_mapping"] = encodeRoot(observation.parentMapping);
           transition["child_system"] = encodeRoot(observation.childSystem);
+          if (observation.childMapping)
+            transition["child_mapping"] = encodeRoot(*observation.childMapping);
+          else
+            transition["child_mapping"] = nullptr;
           transition["parent_plan_ordinal"] = observation.parentPlanOrdinal;
           transition["child_plan_ordinal"] = observation.childPlanOrdinal;
           transition["parent_schedule_hint_digest"] =

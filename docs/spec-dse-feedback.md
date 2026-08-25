@@ -3338,22 +3338,67 @@ defining a second legality model:
 ResourceTimeTransition {
   trigger_event: canonical completion or safe-point event
   safe_point: compiler-owned safe-point artifact
-  before_mapping: verified SystemMapping reference
-  after_mapping: verified SystemMapping reference
+  parent_endpoint: exact SystemMapping and Deployment references
+  child_endpoint: exact SystemMapping and Deployment references
   before_active_regions: Canonical Dataflow RootThreadLaunchRef values
   after_active_regions: Canonical Dataflow RootThreadLaunchRef values
   before_resource_allocation: canonical per-region allocation
   after_resource_allocation: canonical per-region allocation
+  completed_before: canonical root-completion frontier
   before_live_work: canonical live-work identities
   after_live_work: canonical live-work identities
   token_live_state_correspondence: typed correspondence or empty
   resource_delta: typed Fabric occurrence/capacity delta
   configuration_delta: Deployment configuration delta
-  route_delta: Deployment route delta
-  migration_time: exact or typed unsupported
+  route_delta: Mapping route delta
+  reprogramming_time: exact or typed unsupported
+  live_state_migration_time: exact or typed unsupported
   status: Verified | Unsupported | ProofNotEstablished | CancelledOrTimeout
 }
 ```
+
+The bounded completion profile derives all three delta digests from the exact
+endpoint closures; callers cannot author a digest and thereby earn
+`Verified`. Resource deltas combine event-relative active roots with the full
+canonical SystemMapping and every imported SpatialMapping, so capacity,
+ResourceUse, memory, FIFO, service, and execution-binding semantics cannot be
+omitted by a hand-written projection. Route deltas pair those same complete
+Mapping closures. Configuration deltas bind the exact host program,
+InstructionCore binaries, hardware bindings, configuration-image references
+and payloads, static memory, thread-dispatch image, spatial-launch image, and
+admission image. Reprogramming cost has the narrower physical meaning: it
+compares exact hardware bindings and ConfigurationABI/ProgrammingUnit payloads.
+Changed runtime images therefore change the configuration delta without
+inventing hardware programming work. Measured time is not inferred from a
+digest or a changed bit count.
+
+A verified completion edge is globally quiescent: the compiler-owned
+`completed_before` frontier plus the one active root named by the trigger
+covers the complete Canonical Dataflow root inventory, that root completes,
+and the child active set is empty. Static thread and graph computation is
+permitted because canonical root completion closes it. Exact zero live-state
+migration still rejects logical memory, channel-typed state, and DynamicWork,
+whose persistent state needs a separate correspondence owner. Caller-authored
+empty active vectors are not proof. Unchanged hardware-programming state has
+exact zero reprogramming time. A changed programming state remains
+`ProofNotEstablished` until an exact programming-time owner exists. Surviving
+work, token publication, composite completion, and explicit safe points
+likewise remain typed incomplete until their respective proof artifacts exist.
+
+Application Mapping verification runs before Deployment construction and may
+therefore retain an incomplete edge. After selecting the bounded Mapping
+alternative, Deployment construction follows only exact parent/child Mapping
+adjacencies already recorded by application-level incremental repair, builds
+each endpoint's own binaries and Deployment, and replays the same resource-time
+alternative verifier. Every resulting edge is retained by
+ApplicationDeploymentArtifacts together with both the parent completion
+spectrum and the independently verified child spectrum that carries active
+work. The optional visualization bundle independently replays each closure and
+publishes the exact endpoints, edge, costs, active allocations, and endpoint
+spectrum summaries as removable application evidence. The current Deployment
+package and runtime do not yet import this graph; runtime selection therefore
+remains unavailable rather than adding a Mapping, synthesizing an endpoint, or
+running PnR.
 
 The initial implementation is a compiler-precomputed finite transition
 sequence. It does not run online DSE or PnR and does not add a second

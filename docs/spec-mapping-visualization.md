@@ -152,6 +152,13 @@ only. They may reference or cache canonical facts for efficient presentation,
 but they are never semantic inputs to another projection and never become
 schema authorities.
 
+Visualization bundle version 1.1 adds removable resource-time evidence. The
+exporter independently verifies every exact Mapping/Deployment endpoint and
+transition closure, then projects trigger, safe point, active allocations,
+owner-derived deltas and costs, and parent/child spectrum summaries. An empty
+array means the application produced no verified finite edge; visualization
+never upgrades an incomplete edge or supplies runtime selection semantics.
+
 Scripts, stdout, stderr, vendor warnings, tool-native reports, diagnostic
 traces, and other raw execution material remain attempt or scratch material
 associated with the exact Request. No current raw-bundle Artifact or trace

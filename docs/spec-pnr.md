@@ -403,6 +403,30 @@ the cold Mapping verifier, and MappingConstraintSet admission before
 publication. A missing or ambiguous correspondence produces one typed
 cold-fallback record; it cannot be treated as a preserved seed.
 
+The resource-time transition owner is separate from the migration seed. A
+seed may prefer and repair a child SystemMapping, but only
+`finalizeResourceTimeTransition` can publish a compiler-preverified edge. It
+strictly imports both SystemMapping and Deployment endpoints, derives resource,
+complete Deployment configuration, and route delta digests from their canonical
+owners, and then replays the independent closure verifier. Resource and route
+digests bind the complete SystemMapping plus every imported SpatialMapping;
+the configuration digest additionally binds exact executable,
+hardware-binding, configuration-image, static-memory, dispatch, launch, and
+admission semantics. Reprogramming cost separately compares the physical
+hardware-binding and configuration-payload state. An authored digest, authored
+cost, or successful child PnR is not transition proof.
+
+The admitted completion profile requires `completed_before` plus the one
+active completing root to equal the complete Canonical Dataflow root inventory,
+an empty child active set, no logical memory, channel-typed state, or
+DynamicWork, unchanged hardware-programming state, and owner-derived exact zero
+reprogramming and migration time. Ordinary completed thread and graph
+computation is allowed. Explicit safe points, changed hardware programming,
+surviving active work, and composite or token boundaries fail closed until
+typed proof owners are available. These restrictions prevent the transition
+contract from becoming an online PnR or arbitrary in-flight preemption
+mechanism.
+
 Hardware-impact reuse reports one closed disposition: `preserved`,
 `local_repair`, or `cold_fallback`. `Unchanged` and `Rebase` Tech/Spatial
 layers may retain exact Mapping frontiers after child reimport. A `Reopen`

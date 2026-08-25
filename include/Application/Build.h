@@ -151,11 +151,27 @@ struct ApplicationDeploymentRequest final {
   CompilerTargetLinkWorkspace linkerWorkspace;
 };
 
+struct ApplicationResourceTimeTransitionEvidence final {
+  pnr::ResourceTimeTransition transition;
+  dse::ResourceTimeSpectrumFunnelResult parentSpectrum;
+  dse::ResourceTimeSpectrumFunnelResult childSpectrum;
+};
+
 struct ApplicationDeploymentArtifacts final {
   ArtifactRootReference configurationAbi;
   hardware::ConfigurationABIConstructionStatistics configurationAbiConstruction;
   std::vector<deployment::DeploymentHardwareBinding> hardwareBindings;
   std::vector<ArtifactRootReference> instructionCoreBinaries;
+  /// Exact compiler-built Deployment endpoint catalog for the selected
+  /// finite resource-time Mapping graph.
+  std::vector<dse::ResourceTimeMappingDeploymentEndpoint> resourceTimeEndpoints;
+  /// Every compiler-preverified adjacency together with the parent completion
+  /// schedule and the child schedule which carries real active work.
+  std::vector<ApplicationResourceTimeTransitionEvidence>
+      resourceTimeTransitions;
+  /// Independent replay of the selected schedule after endpoint Deployment
+  /// construction. A missing closure remains typed incomplete here.
+  std::optional<dse::ResourceTimeSpectrumFunnelResult> resourceTimeSpectrum;
   deployment::FinalizedDeployment deployment;
 };
 
@@ -371,6 +387,7 @@ struct ApplicationMappingCandidateOutcome final {
 struct ApplicationIncrementalMappingObservation final {
   ArtifactRootReference parentMapping;
   ArtifactRootReference childSystem;
+  std::optional<ArtifactRootReference> childMapping;
   std::uint64_t parentPlanOrdinal = 0;
   std::uint64_t childPlanOrdinal = 0;
   ComponentViewDigest parentScheduleHintDigest;

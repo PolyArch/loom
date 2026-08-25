@@ -1,5 +1,7 @@
 #include "PnR/System/SystemMappingMigration.h"
 
+#include "ResourceTimeTransitionInternal.h"
+
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
@@ -77,37 +79,6 @@ void canonicalizeResources(
   });
   resources.erase(std::unique(resources.begin(), resources.end()),
                   resources.end());
-}
-
-llvm::Expected<::loom::fabric::FabricPhysicalOccurrenceOwnerRef>
-physicalAccCore(::loom::fabric::AccCoreOccurrenceRef core) {
-  return ::loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(
-      ::loom::fabric::FabricInventoryOwnerRef::of(core));
-}
-
-llvm::Expected<std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef>>
-mappingResourcesForRoot(
-    const ::loom::mapping::SystemExecutionContextProjection &contexts,
-    ::dataflow::RootThreadLaunchRef root) {
-  std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef> resources;
-  for (const auto &domain : contexts.instructionDomains) {
-    if (domain.root != root)
-      continue;
-    auto physical = physicalAccCore(domain.context.accCore);
-    if (!physical)
-      return physical.takeError();
-    resources.push_back(std::move(*physical));
-  }
-  for (const auto &domain : contexts.spatialDomains) {
-    if (domain.graph.rootThreadLaunch != root)
-      continue;
-    auto physical = physicalAccCore(domain.context.accCore);
-    if (!physical)
-      return physical.takeError();
-    resources.push_back(std::move(*physical));
-  }
-  canonicalizeResources(resources);
-  return resources;
 }
 
 void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
@@ -752,6 +723,29 @@ validateResourceTimeTransition(const ResourceTimeTransition &transition) {
                        "identities without typed correspondence");
       activeDataflow = allocation.region.artifact;
     }
+  for (std::size_t index = 0; index != transition.completedBefore.size();
+       ++index) {
+    const ::dataflow::RootThreadLaunchRef completed =
+        transition.completedBefore[index];
+    if (activeDataflow && *activeDataflow != completed.artifact)
+      return invalid("resource-time completion frontier names a foreign "
+                     "Dataflow root");
+    activeDataflow = completed.artifact;
+    const auto containsCompleted =
+        [&](llvm::ArrayRef<ResourceTimeRegionAllocation> allocations) {
+          return llvm::any_of(allocations, [&](const auto &allocation) {
+            return allocation.region == completed;
+          });
+        };
+    if (containsCompleted(transition.beforeActive) ||
+        containsCompleted(transition.afterActive))
+      return invalid("resource-time completion frontier contains an active "
+                     "region");
+    for (std::size_t prior = 0; prior != index; ++prior)
+      if (transition.completedBefore[prior] == completed)
+        return invalid("resource-time completion frontier contains a duplicate "
+                       "region");
+  }
   const auto validateRoots = [](llvm::ArrayRef<ArtifactRootReference> roots,
                                 llvm::StringRef name) -> llvm::Error {
     for (std::size_t index = 0; index != roots.size(); ++index) {
@@ -780,10 +774,10 @@ validateResourceTimeTransition(const ResourceTimeTransition &transition) {
     if (!transition.parent.deployment || !transition.child.deployment)
       return invalid("verified resource-time transition has no exact parent "
                      "and child Deployment references");
-    if (!transition.migrationTimePicoseconds ||
-        *transition.migrationTimePicoseconds == 0)
-      return invalid("verified resource-time transition has no migration "
-                     "time");
+    if (!transition.reprogrammingTimePicoseconds ||
+        !transition.migrationTimePicoseconds)
+      return invalid("verified resource-time transition has no exact "
+                     "reprogramming and migration costs");
     if (!transition.resourceDeltaDigest ||
         !transition.configurationDeltaDigest || !transition.routeDeltaDigest)
       return invalid("verified resource-time transition lacks derived delta "
@@ -919,7 +913,8 @@ verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
       auto root = dataflow->resolve(allocation.region);
       if (!root)
         return root.takeError();
-      auto expected = mappingResourcesForRoot(contexts, allocation.region);
+      auto expected =
+          projectResourceTimeMappingResources(contexts, allocation.region);
       if (!expected)
         return expected.takeError();
       std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef> observed =
@@ -959,6 +954,9 @@ verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
                      "available: " +
                      llvm::toString(stored.takeError()));
   }
+  if (llvm::Error error = verifyResourceTimeTransitionDeltaDigests(
+          transition, artifacts, blobs))
+    return error;
   return llvm::Error::success();
 }
 
@@ -1029,8 +1027,9 @@ llvm::Error validateResourceTimeScheduleWitness(
       if (!hasRegion(execution.region))
         return invalid("resource-time execution references a foreign region");
       if (execution.readyPicoseconds > execution.startPicoseconds ||
-          execution.startPicoseconds > execution.completionPicoseconds)
-        return invalid("resource-time execution interval is not ordered");
+          execution.startPicoseconds >= execution.completionPicoseconds)
+        return invalid(
+            "resource-time execution interval is not nonempty and ordered");
       for (const ResourceTimeRegionPrerequisite &prerequisite :
            execution.prerequisites) {
         if (!hasRegion(prerequisite.region) ||
@@ -1059,7 +1058,11 @@ llvm::Error validateResourceTimeScheduleWitness(
           std::max(maximumCompletion, execution.completionPicoseconds);
 
     std::optional<std::uint64_t> previousTime;
-    for (const ResourceTimeScheduleState &state : scenario.states) {
+    std::vector<::dataflow::RootThreadLaunchRef> orderedActive;
+    bool orderedSawAdmission = false;
+    for (std::size_t stateOrdinal = 0; stateOrdinal != scenario.states.size();
+         ++stateOrdinal) {
+      const ResourceTimeScheduleState &state = scenario.states[stateOrdinal];
       if (!mappingReference(state.mapping))
         return invalid("resource-time state has a non-Mapping reference");
       if (previousTime && *previousTime > state.timePicoseconds)
@@ -1070,27 +1073,77 @@ llvm::Error validateResourceTimeScheduleWitness(
       if (state.active.size() > witness.maximumConcurrentRegions)
         return invalid("resource-time state exceeds the concurrency bound");
 
-      const bool hasBoundaryEvent = llvm::any_of(
-          scenario.executions,
-          [&](const ResourceTimeRegionExecution &execution) {
-            return (execution.startPicoseconds == state.timePicoseconds &&
-                    state.event == ::dataflow::rootThreadStartEventFamily(
-                                       execution.region)) ||
-                   (execution.completionPicoseconds == state.timePicoseconds &&
-                    state.event == ::dataflow::rootThreadCompletionEventFamily(
-                                       execution.region));
-          });
-      if (!hasBoundaryEvent)
+      const ResourceTimeRegionExecution *boundaryExecution = nullptr;
+      bool boundaryIsStart = false;
+      for (const ResourceTimeRegionExecution &execution : scenario.executions) {
+        const bool isStart =
+            execution.startPicoseconds == state.timePicoseconds &&
+            state.event ==
+                ::dataflow::rootThreadStartEventFamily(execution.region);
+        const bool isCompletion =
+            execution.completionPicoseconds == state.timePicoseconds &&
+            state.event ==
+                ::dataflow::rootThreadCompletionEventFamily(execution.region);
+        if (!isStart && !isCompletion)
+          continue;
+        if (boundaryExecution)
+          return invalid("resource-time state event matches multiple "
+                         "execution boundaries");
+        boundaryExecution = &execution;
+        boundaryIsStart = isStart;
+      }
+      if (!boundaryExecution)
         return invalid("resource-time state event is not a start or completion "
                        "boundary at its timestamp");
 
       std::vector<::dataflow::RootThreadLaunchRef> expectedActive;
-      for (const ResourceTimeRegionExecution &execution : scenario.executions) {
-        const bool active =
-            execution.startPicoseconds <= state.timePicoseconds &&
-            state.timePicoseconds < execution.completionPicoseconds;
-        if (active)
-          expectedActive.push_back(execution.region);
+      const bool orderedTimestamp =
+          (stateOrdinal != 0 &&
+           scenario.states[stateOrdinal - 1].timePicoseconds ==
+               state.timePicoseconds) ||
+          (stateOrdinal + 1 != scenario.states.size() &&
+           scenario.states[stateOrdinal + 1].timePicoseconds ==
+               state.timePicoseconds);
+      const bool firstAtTimestamp =
+          stateOrdinal == 0 ||
+          scenario.states[stateOrdinal - 1].timePicoseconds !=
+              state.timePicoseconds;
+      if (orderedTimestamp) {
+        if (firstAtTimestamp) {
+          orderedActive.clear();
+          orderedSawAdmission = false;
+          for (const ResourceTimeRegionExecution &execution :
+               scenario.executions)
+            if (execution.startPicoseconds < state.timePicoseconds &&
+                state.timePicoseconds <= execution.completionPicoseconds)
+              orderedActive.push_back(execution.region);
+        }
+        if (boundaryIsStart) {
+          if (llvm::is_contained(orderedActive, boundaryExecution->region))
+            return invalid("resource-time ordered boundary starts an active "
+                           "region");
+          orderedActive.push_back(boundaryExecution->region);
+          orderedSawAdmission = true;
+        } else {
+          if (orderedSawAdmission)
+            return invalid("resource-time ordered timestamp completes a "
+                           "region after same-time admission");
+          auto active = llvm::find(orderedActive, boundaryExecution->region);
+          if (active == orderedActive.end())
+            return invalid("resource-time ordered boundary completes an "
+                           "inactive region");
+          orderedActive.erase(active);
+        }
+        expectedActive = orderedActive;
+      } else {
+        for (const ResourceTimeRegionExecution &execution :
+             scenario.executions) {
+          const bool active =
+              execution.startPicoseconds <= state.timePicoseconds &&
+              state.timePicoseconds < execution.completionPicoseconds;
+          if (active)
+            expectedActive.push_back(execution.region);
+        }
       }
       std::vector<::dataflow::RootThreadLaunchRef> observedActive;
       std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef>
@@ -1121,6 +1174,40 @@ llvm::Error validateResourceTimeScheduleWitness(
                        llvm::Twine(state.timePicoseconds) + " (expected " +
                        llvm::Twine(expectedActive.size()) + ", observed " +
                        llvm::Twine(observedActive.size()) + ")");
+      const bool lastAtTimestamp =
+          stateOrdinal + 1 == scenario.states.size() ||
+          scenario.states[stateOrdinal + 1].timePicoseconds !=
+              state.timePicoseconds;
+      if (lastAtTimestamp && orderedTimestamp) {
+        std::vector<::dataflow::RootThreadLaunchRef> rightOpenActive;
+        for (const ResourceTimeRegionExecution &execution : scenario.executions)
+          if (execution.startPicoseconds <= state.timePicoseconds &&
+              state.timePicoseconds < execution.completionPicoseconds)
+            rightOpenActive.push_back(execution.region);
+        auto orderedFinal = orderedActive;
+        llvm::sort(orderedFinal, rootLess);
+        llvm::sort(rightOpenActive, rootLess);
+        if (orderedFinal != rightOpenActive)
+          return invalid("resource-time ordered timestamp does not close to "
+                         "the right-open execution state");
+      }
+    }
+    for (const ResourceTimeRegionExecution &execution : scenario.executions) {
+      const std::uint64_t starts = llvm::count_if(
+          scenario.states, [&](const ResourceTimeScheduleState &state) {
+            return state.timePicoseconds == execution.startPicoseconds &&
+                   state.event ==
+                       ::dataflow::rootThreadStartEventFamily(execution.region);
+          });
+      const std::uint64_t completions = llvm::count_if(
+          scenario.states, [&](const ResourceTimeScheduleState &state) {
+            return state.timePicoseconds == execution.completionPicoseconds &&
+                   state.event == ::dataflow::rootThreadCompletionEventFamily(
+                                      execution.region);
+          });
+      if (starts != 1 || completions != 1)
+        return invalid("resource-time schedule omits or repeats an execution "
+                       "boundary");
     }
     if (scenario.makespanPicoseconds < maximumCompletion)
       return invalid("resource-time makespan precedes execution completion");

@@ -26,6 +26,8 @@ def main() -> int:
     bundle = read_object(arguments.bundle)
     if bundle.get("schema") != "loom.visualization_bundle":
         raise ValueError("visualization bundle has the wrong schema")
+    if bundle.get("version") != "1.1":
+        raise ValueError("visualization bundle has the wrong version")
     if bundle.get("fabric") != fabric:
         raise ValueError("visualization bundle names a different Fabric root")
     for field in ("tech_mappings", "spatial_mappings", "system_mappings"):
@@ -44,6 +46,9 @@ def main() -> int:
     }
     if not isinstance(pair, dict) or pair.get("disposition") not in successful:
         raise ValueError("visualization bundle has no successful pair decision")
+    for field in ("resource_time_endpoints", "resource_time_transitions"):
+        if not isinstance(bundle.get(field), list):
+            raise ValueError(f"visualization bundle has no {field} array")
     return 0
 
 

@@ -64,6 +64,22 @@ void appendAllocations(
     appendBlob(bytes, allocation);
 }
 
+void appendDataflowRoots(
+    std::vector<std::uint8_t> &bytes,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots) {
+  std::vector<std::vector<std::uint8_t>> encoded;
+  encoded.reserve(roots.size());
+  for (const auto root : roots) {
+    std::vector<std::uint8_t> value;
+    appendDataflowRoot(value, root);
+    encoded.push_back(std::move(value));
+  }
+  llvm::sort(encoded);
+  appendU64(bytes, encoded.size());
+  for (const auto &root : encoded)
+    appendBlob(bytes, root);
+}
+
 void appendRoots(std::vector<std::uint8_t> &bytes,
                  llvm::ArrayRef<ArtifactRootReference> roots) {
   std::vector<ArtifactRootReference> canonical(roots.begin(), roots.end());
@@ -380,6 +396,7 @@ llvm::Expected<ComponentViewDigest> deriveResourceTimeTransitionCacheKey(
   appendRoot(bytes, *transition.child.deployment);
   appendAllocations(bytes, transition.beforeActive);
   appendAllocations(bytes, transition.afterActive);
+  appendDataflowRoots(bytes, transition.completedBefore);
   appendRoots(bytes, transition.beforeLiveWork);
   appendRoots(bytes, transition.afterLiveWork);
   appendOptionalRoot(bytes, transition.tokenLiveStateCorrespondence);

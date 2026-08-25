@@ -62,6 +62,15 @@ FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
                                            BlobStore &blobs,
                                            const TemporaryTree &tree);
 
+FinalizedDeployment buildRetargetedMinimalDeployment(llvm::StringRef test,
+                                                     ArtifactStore &artifacts,
+                                                     BlobStore &blobs,
+                                                     const TemporaryTree &tree);
+
+FinalizedDeployment buildRetargetedSharedProgrammingEndpointDeployment(
+    llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
+    const TemporaryTree &tree);
+
 FinalizedDeployment buildSystemArtifactDeployment(llvm::StringRef test,
                                                   ArtifactStore &artifacts,
                                                   BlobStore &blobs,

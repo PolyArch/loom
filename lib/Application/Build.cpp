@@ -732,9 +732,11 @@ verifyResourceTimeAlternative(
     const dse::ResourceTimeMappingFunnel &funnel,
     const PreparedApplicationMappingAlternative &alternative,
     llvm::ArrayRef<ArtifactRootReference> systemMappings,
-    const ArtifactStore &artifacts,
-    const BlobStore &blobs,
-    const ComponentViewDigest &scheduleHintDigest) {
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ComponentViewDigest &scheduleHintDigest,
+    llvm::ArrayRef<dse::ResourceTimeMappingDeploymentEndpoint> endpoints = {},
+    std::optional<dse::ResourceTimeMappingTransitionCandidate> transition =
+        std::nullopt) {
   const auto evaluation =
       llvm::find_if(funnel.evaluations, [&](const auto &candidate) {
         return candidate.candidateIdentity == alternative.candidateIdentity;
@@ -748,7 +750,8 @@ verifyResourceTimeAlternative(
   auto verified = dse::verifyResourceTimeMappingFinalists(
       llvm::ArrayRef<dse::ResourceTimeScheduleHint>(*hint, 1),
       alternative.resourceTimeRegions, alternative.resourceTimeRegionBounds,
-      systemMappings, artifacts, {}, evaluation->concurrencyBounds, &blobs);
+      systemMappings, artifacts, {}, evaluation->concurrencyBounds, &blobs,
+      endpoints, transition);
   if (!verified)
     return verified.takeError();
   return std::optional<dse::ResourceTimeSpectrumFunnelResult>(
@@ -2630,7 +2633,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               std::unique(childMappings.begin(), childMappings.end()),
               childMappings.end());
           const bool childHasMapping =
-              !childMappings.empty() && childSummary.selectedMapping;
+              childSummary.selectedMapping &&
+              llvm::is_contained(childMappings, *childSummary.selectedMapping);
           dse::JointDesignAttemptDisposition childDisposition =
               childHasMapping ? dse::JointDesignAttemptDisposition::Verified
                               : dse::JointDesignAttemptDisposition::Incomplete;
@@ -2651,6 +2655,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
           ApplicationIncrementalMappingObservation observation{
               *execution->summary.selectedMapping,
               childAlternative.plan.pairOutputs.front().pair.system,
+              childSummary.selectedMapping,
               static_cast<std::uint64_t>(selectedPlanOrdinal),
               static_cast<std::uint64_t>(childOrdinal),
               prepared.mappingAlternatives[selectedPlanOrdinal]
@@ -2731,7 +2736,6 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 std::nullopt,
                 std::nullopt});
           }
-          observation.verified = childHasMapping;
           incrementalMappingObservations.push_back(std::move(observation));
           mapping_debug::emit(
               mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
@@ -3021,26 +3025,34 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
               operationBegin);
 
   operationBegin = MonotonicClock::now();
-  auto subjects = mapping::projectSystemExecutionSpatialCoreSubjects(
-      imported->dataflowView, imported->mapping.view().executionBindings());
-  if (!subjects)
-    return subjects.takeError();
-  std::vector<deployment::DeploymentHardwareBinding> hardwareBindings;
-  hardwareBindings.reserve(subjects->size());
-  for (fabric::SpatialCoreOccurrenceRef subject : *subjects) {
-    auto implementation = hardware::finalizeFabricModelHardwareImplementation(
-        *abi, subject, artifacts, blobs);
-    if (!implementation)
-      return implementation.takeError();
-    auto runtimeBinding = runtime::finalizeFabricModelRuntimePlatformBinding(
-        *implementation, artifacts, blobs);
-    if (!runtimeBinding)
-      return runtimeBinding.takeError();
-    hardwareBindings.push_back(
-        {implementation->reference(), runtimeBinding->reference()});
-  }
+  const auto deriveHardwareBindings =
+      [&](const mapping::FinalizedSystemMapping &systemMapping)
+      -> llvm::Expected<std::vector<deployment::DeploymentHardwareBinding>> {
+    auto subjects = mapping::projectSystemExecutionSpatialCoreSubjects(
+        imported->dataflowView, systemMapping.view().executionBindings());
+    if (!subjects)
+      return subjects.takeError();
+    std::vector<deployment::DeploymentHardwareBinding> bindings;
+    bindings.reserve(subjects->size());
+    for (fabric::SpatialCoreOccurrenceRef subject : *subjects) {
+      auto implementation = hardware::finalizeFabricModelHardwareImplementation(
+          *abi, subject, artifacts, blobs);
+      if (!implementation)
+        return implementation.takeError();
+      auto runtimeBinding = runtime::finalizeFabricModelRuntimePlatformBinding(
+          *implementation, artifacts, blobs);
+      if (!runtimeBinding)
+        return runtimeBinding.takeError();
+      bindings.push_back(
+          {implementation->reference(), runtimeBinding->reference()});
+    }
+    return bindings;
+  };
+  auto selectedHardwareBindings = deriveHardwareBindings(imported->mapping);
+  if (!selectedHardwareBindings)
+    return selectedHardwareBindings.takeError();
   emitElapsed(ApplicationBuildOperation::HardwareBindingDerivation,
-              operationBegin, hardwareBindings.size());
+              operationBegin, selectedHardwareBindings->size());
 
   operationBegin = MonotonicClock::now();
   auto targets = resolveSystemCompilerTargetBindings(
@@ -3052,14 +3064,6 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
   if (llvm::Error error = validateModuleCompilerTarget(
           finalLinkedModule, targets->host().binding()))
     return std::move(error);
-  auto contexts = mapping::projectSystemExecutionContexts(
-      imported->dataflowView, imported->mapping.view().executionBindings());
-  if (!contexts)
-    return contexts.takeError();
-  auto roots = projectTargetGroupRoots(*contexts, *targets,
-                                       imported->system.reference().artifact);
-  if (!roots)
-    return roots.takeError();
   const ArtifactRootReference dataflowReference{
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version,
@@ -3068,14 +3072,6 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       imported->dataflowView, prepared.sourceInvocation.entrySymbol);
   if (!invocationPlan)
     return invocationPlan.takeError();
-  std::vector<dataflow::RootThreadLaunchRef> mappedRoots;
-  for (llvm::ArrayRef<dataflow::RootThreadLaunchRef> groupRoots : *roots)
-    mappedRoots.insert(mappedRoots.end(), groupRoots.begin(), groupRoots.end());
-  llvm::sort(mappedRoots, [](const auto &lhs, const auto &rhs) {
-    return lhs.entity.value() < rhs.entity.value();
-  });
-  mappedRoots.erase(std::unique(mappedRoots.begin(), mappedRoots.end()),
-                    mappedRoots.end());
   std::vector<dataflow::RootThreadLaunchRef> invocationRoots;
   invocationRoots.reserve(invocationPlan->launches.size());
   for (const detail::ApplicationSpatialInvocationPlan::Launch &launch :
@@ -3084,13 +3080,9 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
   llvm::sort(invocationRoots, [](const auto &lhs, const auto &rhs) {
     return lhs.entity.value() < rhs.entity.value();
   });
-  if (mappedRoots.empty())
-    return invalid("SystemMapping selects no InstructionCore binary target");
   if (std::adjacent_find(invocationRoots.begin(), invocationRoots.end()) !=
-          invocationRoots.end() ||
-      mappedRoots != invocationRoots)
-    return invalid(
-        "SystemMapping roots differ from the dynamic invocation roots");
+      invocationRoots.end())
+    return invalid("dynamic invocation repeats one root");
 
   operationBegin = MonotonicClock::now();
   auto hostEntry = deriveHostProgramEntry(
@@ -3137,50 +3129,301 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
               operationBegin);
 
   operationBegin = MonotonicClock::now();
-  std::vector<ArtifactRootReference> binaries;
-  for (const auto indexed : llvm::enumerate(targets->instructionGroups())) {
-    if ((*roots)[indexed.index()].empty())
-      continue;
-    std::vector<dataflow::RootedGraphLaunchRef> invocationGraphs;
-    invocationGraphs.reserve((*roots)[indexed.index()].size());
-    for (const detail::ApplicationSpatialInvocationPlan::Launch &launch :
-         invocationPlan->launches)
-      if (llvm::is_contained((*roots)[indexed.index()], launch.root))
-        invocationGraphs.push_back(launch.graph);
-    if (invocationGraphs.size() != (*roots)[indexed.index()].size())
-      return invalid("InstructionCore target omits a dynamic invocation graph");
-    auto binary = buildInstructionBinary(
-        finalLinkedModule, dataflowReference, indexed.value().binding(),
-        (*roots)[indexed.index()], invocationGraphs, instructionImageBase,
-        request.linkerWorkspace, artifacts, blobs);
-    if (!binary)
-      return binary.takeError();
-    std::uint64_t imageEnd = 0;
-    for (const InstructionLoadSegment &segment :
-         binary->binary().loadSegments())
-      imageEnd =
-          std::max(imageEnd, segment.virtualAddress + segment.memorySize);
-    auto nextImageBase = nextExecutableImageBase(imageEnd);
-    if (!nextImageBase)
-      return nextImageBase.takeError();
-    instructionImageBase = *nextImageBase;
-    binaries.push_back(binary->reference());
-  }
+  const auto buildInstructionBinaries =
+      [&](const mapping::FinalizedSystemMapping &systemMapping)
+      -> llvm::Expected<std::vector<ArtifactRootReference>> {
+    auto contexts = mapping::projectSystemExecutionContexts(
+        imported->dataflowView, systemMapping.view().executionBindings());
+    if (!contexts)
+      return contexts.takeError();
+    auto roots = projectTargetGroupRoots(*contexts, *targets,
+                                         imported->system.reference().artifact);
+    if (!roots)
+      return roots.takeError();
+    std::vector<dataflow::RootThreadLaunchRef> mappedRoots;
+    for (llvm::ArrayRef<dataflow::RootThreadLaunchRef> groupRoots : *roots)
+      mappedRoots.insert(mappedRoots.end(), groupRoots.begin(),
+                         groupRoots.end());
+    llvm::sort(mappedRoots, [](const auto &lhs, const auto &rhs) {
+      return lhs.entity.value() < rhs.entity.value();
+    });
+    mappedRoots.erase(std::unique(mappedRoots.begin(), mappedRoots.end()),
+                      mappedRoots.end());
+    if (mappedRoots.empty())
+      return invalid("SystemMapping selects no InstructionCore binary target");
+    if (mappedRoots != invocationRoots)
+      return invalid(
+          "SystemMapping roots differ from the dynamic invocation roots");
+
+    std::vector<ArtifactRootReference> result;
+    std::uint64_t imageBase = instructionImageBase;
+    for (const auto indexed : llvm::enumerate(targets->instructionGroups())) {
+      if ((*roots)[indexed.index()].empty())
+        continue;
+      std::vector<dataflow::RootedGraphLaunchRef> invocationGraphs;
+      invocationGraphs.reserve((*roots)[indexed.index()].size());
+      for (const detail::ApplicationSpatialInvocationPlan::Launch &launch :
+           invocationPlan->launches)
+        if (llvm::is_contained((*roots)[indexed.index()], launch.root))
+          invocationGraphs.push_back(launch.graph);
+      if (invocationGraphs.size() != (*roots)[indexed.index()].size())
+        return invalid(
+            "InstructionCore target omits a dynamic invocation graph");
+      auto binary = buildInstructionBinary(
+          finalLinkedModule, dataflowReference, indexed.value().binding(),
+          (*roots)[indexed.index()], invocationGraphs, imageBase,
+          request.linkerWorkspace, artifacts, blobs);
+      if (!binary)
+        return binary.takeError();
+      std::uint64_t imageEnd = 0;
+      for (const InstructionLoadSegment &segment :
+           binary->binary().loadSegments())
+        imageEnd =
+            std::max(imageEnd, segment.virtualAddress + segment.memorySize);
+      auto nextImageBase = nextExecutableImageBase(imageEnd);
+      if (!nextImageBase)
+        return nextImageBase.takeError();
+      imageBase = *nextImageBase;
+      result.push_back(binary->reference());
+    }
+    return result;
+  };
+  auto selectedBinaries = buildInstructionBinaries(imported->mapping);
+  if (!selectedBinaries)
+    return selectedBinaries.takeError();
   emitElapsed(ApplicationBuildOperation::InstructionBinaryFinalization,
-              operationBegin, binaries.size());
+              operationBegin, selectedBinaries->size());
 
   operationBegin = MonotonicClock::now();
   auto deployment = deployment::buildDeploymentFromLinkedProgram(
-      {imported->mapping.reference(), std::move(*hostProgram), binaries,
-       hardwareBindings},
+      {imported->mapping.reference(), *hostProgram, *selectedBinaries,
+       *selectedHardwareBindings},
       finalLinkedModule, artifacts, blobs);
   if (!deployment)
     return deployment.takeError();
+
+  const std::optional<std::uint64_t> selectedPlan =
+      mappingExecution.execution.summary.selectedPlanOrdinal;
+  if (selectedPlan && *selectedPlan >= prepared.mappingAlternatives.size())
+    return invalid("selected resource-time plan ordinal is out of range");
+
+  std::vector<const ApplicationIncrementalMappingObservation *>
+      transitionCandidates;
+  if (selectedPlan) {
+    for (const ApplicationIncrementalMappingObservation &observation :
+         mappingExecution.provenance.incrementalMappingObservations) {
+      if (!observation.verified || !observation.childMapping ||
+          observation.parentPlanOrdinal != *selectedPlan ||
+          observation.parentMapping != imported->mapping.reference() ||
+          *observation.childMapping == observation.parentMapping)
+        continue;
+      if (observation.childPlanOrdinal >= prepared.mappingAlternatives.size())
+        return invalid("resource-time adjacency has a foreign child plan");
+      transitionCandidates.push_back(&observation);
+    }
+  }
+  llvm::sort(transitionCandidates, [](const auto *lhs, const auto *rhs) {
+    if (*lhs->childMapping != *rhs->childMapping)
+      return artifactRootReferenceLess(*lhs->childMapping, *rhs->childMapping);
+    if (lhs->childPlanOrdinal != rhs->childPlanOrdinal)
+      return lhs->childPlanOrdinal < rhs->childPlanOrdinal;
+    if (lhs->childScheduleHintDigest != rhs->childScheduleHintDigest)
+      return lhs->childScheduleHintDigest.bytes() <
+             rhs->childScheduleHintDigest.bytes();
+    return lhs->parentScheduleHintDigest.bytes() <
+           rhs->parentScheduleHintDigest.bytes();
+  });
+  transitionCandidates.erase(
+      std::unique(transitionCandidates.begin(), transitionCandidates.end(),
+                  [](const auto *lhs, const auto *rhs) {
+                    return lhs->childMapping == rhs->childMapping &&
+                           lhs->parentScheduleHintDigest ==
+                               rhs->parentScheduleHintDigest &&
+                           lhs->childScheduleHintDigest ==
+                               rhs->childScheduleHintDigest;
+                  }),
+      transitionCandidates.end());
+
+  std::vector<ArtifactRootReference> endpointMappings = {
+      imported->mapping.reference()};
+  for (const ApplicationIncrementalMappingObservation *candidate :
+       transitionCandidates)
+    endpointMappings.push_back(*candidate->childMapping);
+  llvm::sort(endpointMappings, artifactRootReferenceLess);
+  endpointMappings.erase(
+      std::unique(endpointMappings.begin(), endpointMappings.end()),
+      endpointMappings.end());
+
+  std::vector<dse::ResourceTimeMappingDeploymentEndpoint> endpoints;
+  endpoints.reserve(endpointMappings.size());
+  endpoints.push_back({imported->mapping.reference(), deployment->reference()});
+  const auto reportEndpointIncomplete =
+      [&](const ArtifactRootReference &mappingReference, llvm::Error error) {
+        const std::string diagnostic = llvm::toString(std::move(error));
+        mapping_debug::emit(
+            mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+            mapping_debug::Event::MappingFailure,
+            [&](llvm::json::Object &fields) {
+              fields["operation"] =
+                  "application_resource_time_deployment_endpoint";
+              fields["mapping"] =
+                  formatArtifactRootReferenceJson(mappingReference);
+              fields["disposition"] = "proof_not_established";
+              fields["diagnostic"] = diagnostic;
+            });
+      };
+  for (const ArtifactRootReference &mappingReference : endpointMappings) {
+    if (mappingReference == imported->mapping.reference())
+      continue;
+    auto mapping = mapping::importSystemMapping(mappingReference, artifacts);
+    if (!mapping)
+      return mapping.takeError();
+    if (mapping->view().dataflowIdentity() !=
+            imported->mapping.view().dataflowIdentity() ||
+        mapping->view().fabricIdentity() !=
+            imported->mapping.view().fabricIdentity())
+      return invalid("resource-time endpoint Mapping changes its application "
+                     "or immutable System");
+    auto bindings = deriveHardwareBindings(*mapping);
+    if (!bindings) {
+      reportEndpointIncomplete(mappingReference, bindings.takeError());
+      continue;
+    }
+    auto endpointBinaries = buildInstructionBinaries(*mapping);
+    if (!endpointBinaries) {
+      reportEndpointIncomplete(mappingReference, endpointBinaries.takeError());
+      continue;
+    }
+    auto endpointDeployment = deployment::buildDeploymentFromLinkedProgram(
+        {mappingReference, *hostProgram, *endpointBinaries, *bindings},
+        finalLinkedModule, artifacts, blobs);
+    if (!endpointDeployment) {
+      reportEndpointIncomplete(mappingReference,
+                               endpointDeployment.takeError());
+      continue;
+    }
+    endpoints.push_back({mappingReference, endpointDeployment->reference()});
+  }
+  llvm::sort(endpoints, [](const auto &lhs, const auto &rhs) {
+    return artifactRootReferenceLess(lhs.mapping, rhs.mapping);
+  });
+
+  std::optional<dse::ResourceTimeSpectrumFunnelResult> resourceTimeSpectrum;
+  std::vector<ApplicationResourceTimeTransitionEvidence>
+      resourceTimeTransitions;
+  if (selectedPlan) {
+    const PreparedApplicationMappingAlternative &alternative =
+        prepared.mappingAlternatives[*selectedPlan];
+    for (const ApplicationIncrementalMappingObservation *candidate :
+         transitionCandidates) {
+      const PreparedApplicationMappingAlternative &childAlternative =
+          prepared.mappingAlternatives[candidate->childPlanOrdinal];
+      const ArtifactRootReference childMapping = *candidate->childMapping;
+      auto childVerified = verifyResourceTimeAlternative(
+          prepared.resourceTimeFunnel, childAlternative, {childMapping},
+          artifacts, blobs, candidate->childScheduleHintDigest);
+      if (!childVerified)
+        return childVerified.takeError();
+      if (!*childVerified)
+        continue;
+      if (!std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
+              (*childVerified)->verification)) {
+        if (!resourceTimeSpectrum)
+          resourceTimeSpectrum = std::move(**childVerified);
+        continue;
+      }
+
+      std::array<ArtifactRootReference, 2> transitionMappings = {
+          imported->mapping.reference(), childMapping};
+      std::vector<dse::ResourceTimeMappingDeploymentEndpoint>
+          transitionEndpoints;
+      for (const ArtifactRootReference &mappingReference : transitionMappings) {
+        const auto endpoint = llvm::find_if(endpoints, [&](const auto &row) {
+          return row.mapping == mappingReference;
+        });
+        if (endpoint != endpoints.end())
+          transitionEndpoints.push_back(*endpoint);
+      }
+      const dse::ResourceTimeMappingTransitionCandidate edge{
+          transitionMappings[0], transitionMappings[1]};
+      auto verified = verifyResourceTimeAlternative(
+          prepared.resourceTimeFunnel, alternative, transitionMappings,
+          artifacts, blobs, candidate->parentScheduleHintDigest,
+          transitionEndpoints, edge);
+      if (!verified)
+        return verified.takeError();
+      if (!*verified)
+        continue;
+      const bool completed =
+          std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
+              (*verified)->verification);
+      if (completed) {
+        const auto &spectrum = std::get<dse::VerifiedResourceTimeSpectrum>(
+            (*verified)->verification);
+        const pnr::ResourceTimeTransition *verifiedEdge = nullptr;
+        for (const dse::VerifiedResourceTimeSpectrumScenario &scenario :
+             spectrum.scenarios)
+          for (const pnr::ResourceTimeTransition &candidateEdge :
+               scenario.transitions.transitions) {
+            if (candidateEdge.parent.mapping != edge.parentMapping ||
+                candidateEdge.child.mapping != edge.childMapping)
+              continue;
+            if (verifiedEdge)
+              return invalid("resource-time application evidence repeats one "
+                             "verified edge");
+            verifiedEdge = &candidateEdge;
+          }
+        if (!verifiedEdge ||
+            verifiedEdge->status != pnr::ResourceTimeTransitionStatus::Verified)
+          return invalid("resource-time application evidence lost its exact "
+                         "verified edge");
+        resourceTimeTransitions.push_back(
+            {*verifiedEdge, std::move(**verified), std::move(**childVerified)});
+        continue;
+      }
+      if (!resourceTimeSpectrum)
+        resourceTimeSpectrum = std::move(**verified);
+    }
+
+    if (!resourceTimeTransitions.empty())
+      resourceTimeSpectrum = resourceTimeTransitions.front().parentSpectrum;
+
+    if (resourceTimeTransitions.empty() && !resourceTimeSpectrum) {
+      for (const ApplicationMappingCandidateOutcome &outcome :
+           mappingExecution.candidateOutcomes) {
+        if (outcome.planOrdinal != *selectedPlan ||
+            outcome.systemMappings.empty() ||
+            !llvm::is_contained(outcome.systemMappings,
+                                imported->mapping.reference()))
+          continue;
+        auto verified = verifyResourceTimeAlternative(
+            prepared.resourceTimeFunnel, alternative,
+            {imported->mapping.reference()}, artifacts, blobs,
+            outcome.resourceTimeScheduleHintDigest);
+        if (!verified)
+          return verified.takeError();
+        if (!*verified)
+          continue;
+        const bool completed =
+            std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
+                (*verified)->verification);
+        if (!resourceTimeSpectrum || completed)
+          resourceTimeSpectrum = std::move(**verified);
+        if (completed)
+          break;
+      }
+    }
+  }
   emitElapsed(ApplicationBuildOperation::DeclarativeDeploymentFinalization,
               operationBegin);
-  return ApplicationDeploymentArtifacts{
-      abi->reference(), abi->constructionStatistics(),
-      std::move(hardwareBindings), std::move(binaries), std::move(*deployment)};
+  return ApplicationDeploymentArtifacts{abi->reference(),
+                                        abi->constructionStatistics(),
+                                        std::move(*selectedHardwareBindings),
+                                        std::move(*selectedBinaries),
+                                        std::move(endpoints),
+                                        std::move(resourceTimeTransitions),
+                                        std::move(resourceTimeSpectrum),
+                                        std::move(*deployment)};
 }
 
 } // namespace loom::application
