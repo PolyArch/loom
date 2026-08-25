@@ -9,6 +9,7 @@
 #include "DSE/SystemCompositionCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Deployment/Deployment.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -1215,18 +1216,20 @@ void graphBindingWorkflow() {
           "capacity-pressure fixture does not have two execution roots");
 
   const auto transitionTrigger = [&]() {
-    const dataflow::RootThreadBoundaryTransferRef startTransfer(
-        dataflow::RootThreadStartTransferRef{pressureRoots.front()});
-    return dataflow::EventFamilyKey(dataflow::StaticTransferEventRef(
-        dataflow::ConsumedTransferEventRef{dataflow::CanonicalSinkTerminalRef{
-            dataflow::RootThreadBoundarySinkRef{startTransfer}}}));
+    return dataflow::rootThreadCompletionEventFamily(pressureRoots.front());
   };
   const loom::fabric::FabricPhysicalOccurrenceOwnerRef transitionResource;
+  const loom::ArtifactRootReference transitionDeployment{
+      loom::deployment::deploymentSchema.identity.str(),
+      loom::deployment::deploymentSchema.version,
+      finalizedParentMapping.reference().artifact};
   loom::pnr::ResourceTimeTransition structuralTransition{
       transitionTrigger(),
-      pressureDataflowReference,
-      finalizedParentMapping.reference(),
-      finalizedParentMapping.reference(),
+      loom::pnr::ResourceTimeSafePointReference{
+          pressureDataflowReference,
+          loom::pnr::ResourceTimeSafePointKind::Completion},
+      {finalizedParentMapping.reference(), transitionDeployment},
+      {finalizedParentMapping.reference(), transitionDeployment},
       {{pressureRoots.front(), {transitionResource}}},
       {{pressureRoots.front(), {transitionResource}}},
       {pressureDataflowReference},
@@ -1249,14 +1252,9 @@ void graphBindingWorkflow() {
   if (llvm::Error error =
           loom::pnr::validateResourceTimeTransition(structuralTransition))
     fail(llvm::toString(std::move(error)));
-  const loom::ArtifactRootReference transitionDeployment{
-      loom::deployment::deploymentSchema.identity.str(),
-      loom::deployment::deploymentSchema.version,
-      finalizedParentMapping.reference().artifact};
   const loom::dse::ResourceTimeTransitionCacheKeyInput transitionCacheInput{
-      transitionDeployment, transitionDeployment,   constraints.reference(),
-      config.digest(),      systemRoot.reference(), config.digest(),
-      config.digest()};
+      constraints.reference(), config.digest(), systemRoot.reference(),
+      config.digest(), config.digest()};
   const auto transitionCacheKey =
       take(loom::dse::deriveResourceTimeTransitionCacheKey(
           structuralTransition, transitionCacheInput));
@@ -1276,6 +1274,22 @@ void graphBindingWorkflow() {
               take(loom::dse::deriveResourceTimeTransitionCacheKey(
                   changedTransition, transitionCacheInput)),
           "resource-time transition result changed its semantic cache key");
+  changedTransition = structuralTransition;
+  changedTransition.status =
+      loom::pnr::ResourceTimeTransitionStatus::ProofNotEstablished;
+  require(transitionCacheKey ==
+              take(loom::dse::deriveResourceTimeTransitionCacheKey(
+                  changedTransition, transitionCacheInput)),
+          "resource-time transition status changed its semantic cache key");
+  changedTransition = structuralTransition;
+  changedTransition.child.deployment = loom::ArtifactRootReference{
+      loom::deployment::deploymentSchema.identity.str(),
+      loom::deployment::deploymentSchema.version,
+      pressureDataflowReference.artifact};
+  require(transitionCacheKey !=
+              take(loom::dse::deriveResourceTimeTransitionCacheKey(
+                  changedTransition, transitionCacheInput)),
+          "resource-time transition cache key ignored its child Deployment");
   loom::pnr::ResourceTimeTransitionSequence transitionSequence{
       {structuralTransition, structuralTransition}};
   if (llvm::Error error =
@@ -1288,7 +1302,7 @@ void graphBindingWorkflow() {
     const std::string message = llvm::toString(std::move(error));
     require(llvm::StringRef(message).contains(fragment), message);
   };
-  transitionSequence.transitions[1].beforeMapping =
+  transitionSequence.transitions[1].parent.mapping =
       pressureSpatialMappings.front();
   requireTransitionFailure(
       loom::pnr::validateResourceTimeTransitionSequence(transitionSequence),
@@ -1299,6 +1313,17 @@ void graphBindingWorkflow() {
   requireTransitionFailure(
       loom::pnr::validateResourceTimeTransition(duplicateResource),
       "assigns one physical resource");
+  auto missingDeployment = structuralTransition;
+  missingDeployment.child.deployment.reset();
+  requireTransitionFailure(
+      loom::pnr::validateResourceTimeTransition(missingDeployment),
+      "no exact parent and child Deployment references");
+  auto nonCompletionSafePoint = structuralTransition;
+  nonCompletionSafePoint.trigger =
+      dataflow::rootThreadStartEventFamily(pressureRoots.front());
+  requireTransitionFailure(
+      loom::pnr::validateResourceTimeTransition(nonCompletionSafePoint),
+      "not the completion event of an active parent region");
 
   std::optional<loom::fabric::AccCoreOccurrenceRef> pressureCore;
   for (const auto core : system.artifact().accCoreOccurrences()) {
@@ -1640,18 +1665,19 @@ void graphBindingWorkflow() {
     if (binding.defaultTarget)
       parentScheduleTargets.push_back(*binding.defaultTarget);
   }
-  llvm::sort(parentScheduleTargets,
-             [](const auto lhs, const auto rhs) { return lhs.id() < rhs.id(); });
+  llvm::sort(parentScheduleTargets, [](const auto lhs, const auto rhs) {
+    return lhs.id() < rhs.id();
+  });
   parentScheduleTargets.erase(
       std::unique(parentScheduleTargets.begin(), parentScheduleTargets.end()),
       parentScheduleTargets.end());
   require(parentScheduleTargets.size() == 1,
           "schedule migration fixture has no exact parent AccCore");
   const auto parentScheduleTarget = parentScheduleTargets.front();
-  const auto parentModuleTarget = system.spatialCoreTarget(parentScheduleTarget);
-  require(parentModuleTarget &&
-              parentModuleTarget->dependencyOrdinal <
-                  systemRoot.directDependencies().size(),
+  const auto parentModuleTarget =
+      system.spatialCoreTarget(parentScheduleTarget);
+  require(parentModuleTarget && parentModuleTarget->dependencyOrdinal <
+                                    systemRoot.directDependencies().size(),
           "schedule migration parent has no exact Module target");
   const auto parentModuleReference =
       systemRoot.directDependencies()[parentModuleTarget->dependencyOrdinal]
@@ -1661,8 +1687,8 @@ void graphBindingWorkflow() {
     if (core == parentScheduleTarget)
       continue;
     const auto target = system.spatialCoreTarget(core);
-    if (!target || target->dependencyOrdinal >=
-                       systemRoot.directDependencies().size())
+    if (!target ||
+        target->dependencyOrdinal >= systemRoot.directDependencies().size())
       continue;
     if (systemRoot.directDependencies()[target->dependencyOrdinal].root ==
         parentModuleReference) {
@@ -1719,19 +1745,19 @@ void graphBindingWorkflow() {
               importedScheduleMigrationSeed.correspondence().parentSystem() ==
                   importedScheduleMigrationSeed.correspondence().childSystem(),
           "schedule migration seed lost its typed root delta");
-  const auto scheduleRepair = loom::pnr::generateSystemMappings(
-      {dataflow,
-       system,
-       physicalTimingProfiles,
-       scheduleSearchDomain,
-       config,
-       scheduleConstraints,
-       store,
-       {},
-       nullptr,
-       nullptr,
-       &importedScheduleMigrationSeed,
-       nullptr});
+  const auto scheduleRepair =
+      loom::pnr::generateSystemMappings({dataflow,
+                                         system,
+                                         physicalTimingProfiles,
+                                         scheduleSearchDomain,
+                                         config,
+                                         scheduleConstraints,
+                                         store,
+                                         {},
+                                         nullptr,
+                                         nullptr,
+                                         &importedScheduleMigrationSeed,
+                                         nullptr});
   const auto *scheduleMappings =
       std::get_if<loom::pnr::GeneratedSystemMappings>(&scheduleRepair);
   require(
@@ -1741,7 +1767,8 @@ void graphBindingWorkflow() {
           scheduleMappings->accounting.migrationReopenedThreadBindings != 0 &&
           scheduleMappings->accounting.migrationReopenedGraphBindings != 0 &&
           scheduleMappings->accounting.migrationPreservedThreadBindings +
-                  scheduleMappings->accounting.migrationReopenedThreadBindings ==
+                  scheduleMappings->accounting
+                      .migrationReopenedThreadBindings ==
               scheduleProblem->threadDecisions().size() &&
           scheduleMappings->accounting.migrationPreservedGraphBindings +
                   scheduleMappings->accounting.migrationReopenedGraphBindings ==
@@ -1763,12 +1790,12 @@ void graphBindingWorkflow() {
     if (binding.defaultTarget)
       repairedScheduleTargets.push_back(*binding.defaultTarget);
   }
-  llvm::sort(repairedScheduleTargets,
-             [](const auto lhs, const auto rhs) { return lhs.id() < rhs.id(); });
-  repairedScheduleTargets.erase(
-      std::unique(repairedScheduleTargets.begin(),
-                  repairedScheduleTargets.end()),
-      repairedScheduleTargets.end());
+  llvm::sort(repairedScheduleTargets, [](const auto lhs, const auto rhs) {
+    return lhs.id() < rhs.id();
+  });
+  repairedScheduleTargets.erase(std::unique(repairedScheduleTargets.begin(),
+                                            repairedScheduleTargets.end()),
+                                repairedScheduleTargets.end());
   require(repairedScheduleTargets.size() == 1 &&
               repairedScheduleTargets.front() == *alternateScheduleTarget,
           "resource-time repair did not realize the requested allocation");
@@ -1936,14 +1963,26 @@ void graphBindingWorkflow() {
           active.push_back(fifo ? allocate(execution.region, {0})
                                 : allocate(execution.region, {4}));
       }
+      const dataflow::EventFamilyKey stateEvent =
+          time == 0    ? dataflow::rootThreadStartEventFamily(r1)
+          : time == 10 ? dataflow::rootThreadCompletionEventFamily(r1)
+          : time == 20 ? dataflow::rootThreadCompletionEventFamily(r2)
+          : time == 25 ? dataflow::rootThreadCompletionEventFamily(r4)
+          : time == 35 ? dataflow::rootThreadStartEventFamily(r5)
+          : time == 40 ? dataflow::rootThreadCompletionEventFamily(r4)
+                       : dataflow::rootThreadCompletionEventFamily(r5);
       scenario.states.push_back(
-          {stateMapping, transitionTrigger(), time, std::move(active)});
+          {stateMapping, stateEvent, time, std::move(active)});
     }
     if (expand) {
       auto transition = structuralTransition;
-      transition.afterMapping = migratedMapping.reference();
-      transition.beforeActive = {allocate(r2, {1}), allocate(r3, {2}),
-                                 allocate(r4, {3})};
+      transition.trigger = dataflow::rootThreadCompletionEventFamily(r1);
+      transition.safePoint = loom::pnr::ResourceTimeSafePointReference{
+          pressureDataflowReference,
+          loom::pnr::ResourceTimeSafePointKind::Completion};
+      transition.child.mapping = migratedMapping.reference();
+      transition.beforeActive = {allocate(r1, {0}), allocate(r2, {1}),
+                                 allocate(r3, {2})};
       transition.afterActive = {allocate(r2, {1}), allocate(r3, {2}),
                                 allocate(r4, {3, 4})};
       transition.beforeLiveWork = {pressureSpatialMappings[0],
@@ -1975,6 +2014,25 @@ void graphBindingWorkflow() {
   require(static_cast<bool>(malformedError),
           "resource-time witness accepted an interval-inconsistent active set");
   llvm::consumeError(std::move(malformedError));
+  auto mismatchedTransitionEvidence = witness;
+  mismatchedTransitionEvidence.scenarios[0]
+      .transitions.transitions.front()
+      .beforeActive = {allocate(witnessRegions[1], {1}),
+                       allocate(witnessRegions[2], {2})};
+  llvm::Error transitionEvidenceError =
+      loom::pnr::validateResourceTimeScheduleWitness(
+          mismatchedTransitionEvidence);
+  require(static_cast<bool>(transitionEvidenceError),
+          "resource-time witness accepted transition allocations that differ "
+          "from adjacent states");
+  llvm::consumeError(std::move(transitionEvidenceError));
+  auto staleStateEvent = witness;
+  staleStateEvent.scenarios[0].states[2].event = transitionTrigger();
+  llvm::Error staleStateEventError =
+      loom::pnr::validateResourceTimeScheduleWitness(staleStateEvent);
+  require(static_cast<bool>(staleStateEventError),
+          "resource-time witness accepted a stale event label");
+  llvm::consumeError(std::move(staleStateEventError));
   require(witness.scenarios[0].makespanPicoseconds <
                   witness.scenarios[2].makespanPicoseconds &&
               witness.scenarios[1].makespanPicoseconds >

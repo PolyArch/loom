@@ -730,6 +730,7 @@ verifyResourceTimeAlternative(
     const PreparedApplicationMappingAlternative &alternative,
     llvm::ArrayRef<ArtifactRootReference> systemMappings,
     const ArtifactStore &artifacts,
+    const BlobStore &blobs,
     const ComponentViewDigest &scheduleHintDigest) {
   const auto evaluation =
       llvm::find_if(funnel.evaluations, [&](const auto &candidate) {
@@ -744,7 +745,7 @@ verifyResourceTimeAlternative(
   auto verified = dse::verifyResourceTimeMappingFinalists(
       llvm::ArrayRef<dse::ResourceTimeScheduleHint>(*hint, 1),
       alternative.resourceTimeRegions, alternative.resourceTimeRegionBounds,
-      systemMappings, artifacts, {}, evaluation->concurrencyBounds);
+      systemMappings, artifacts, {}, evaluation->concurrencyBounds, &blobs);
   if (!verified)
     return verified.takeError();
   return std::optional<dse::ResourceTimeSpectrumFunnelResult>(
@@ -2100,7 +2101,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         if (!attempt.systemMappings.empty()) {
           auto verified = verifyResourceTimeAlternative(
               prepared.resourceTimeFunnel, alternative, attempt.systemMappings,
-              artifacts, scheduleHintDigest);
+              artifacts, blobs, scheduleHintDigest);
           if (!verified)
             return verified.takeError();
           resourceTimeSpectrum = std::move(*verified);
@@ -2339,7 +2340,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         auto childSpectrum = verifyResourceTimeAlternative(
             prepared.resourceTimeFunnel,
             prepared.mappingAlternatives[selectedPlanOrdinal], childMappings,
-            artifacts,
+            artifacts, blobs,
             prepared.mappingAlternatives[selectedPlanOrdinal]
                 .resourceTimeScheduleHintDigest);
         if (!childSpectrum)
@@ -2474,7 +2475,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         auto childSpectrum = verifyResourceTimeAlternative(
             prepared.resourceTimeFunnel,
             prepared.mappingAlternatives[selectedPlanOrdinal], childMappings,
-            artifacts,
+            artifacts, blobs,
             prepared.mappingAlternatives[selectedPlanOrdinal]
                 .resourceTimeScheduleHintDigest);
         if (!childSpectrum)
@@ -2666,7 +2667,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               return childRuntime.takeError();
             auto childSpectrum = verifyResourceTimeAlternative(
                 prepared.resourceTimeFunnel, childAlternative, childMappings,
-                artifacts, childAlternative.resourceTimeScheduleHintDigest);
+                artifacts, blobs,
+                childAlternative.resourceTimeScheduleHintDigest);
             if (!childSpectrum)
               return childSpectrum.takeError();
             observation.verified =

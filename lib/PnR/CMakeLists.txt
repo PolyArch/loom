@@ -93,6 +93,7 @@ add_mlir_library(LoomPnR
 
   LINK_LIBS PUBLIC
   LoomConfig
+  LoomDeployment
   LoomFabricIdentity
   LoomFabricPhysicalTag
   LoomFabricTemporalOperandBuffer

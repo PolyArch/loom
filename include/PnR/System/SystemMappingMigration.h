@@ -20,6 +20,11 @@
 #include <variant>
 #include <vector>
 
+namespace loom {
+class ArtifactStore;
+class BlobStore;
+} // namespace loom
+
 namespace loom::pnr {
 
 class FrozenSystemPnrProblem;
@@ -75,6 +80,40 @@ enum class ResourceTimeTransitionStatus : std::uint8_t {
 llvm::StringRef
 resourceTimeTransitionStatusSpelling(ResourceTimeTransitionStatus status);
 
+/// The compiler-owned event boundary that makes a finite Mapping transition
+/// causally selectable. A completion safe point is derived from a canonical
+/// Dataflow completion event; an explicit safe point is a compiler artifact
+/// carrying an event that the compiler proved quiescent.
+enum class ResourceTimeSafePointKind : std::uint8_t {
+  Completion,
+  Explicit,
+};
+
+llvm::StringRef
+resourceTimeSafePointKindSpelling(ResourceTimeSafePointKind kind);
+
+struct ResourceTimeSafePointReference final {
+  ArtifactRootReference artifact;
+  ResourceTimeSafePointKind kind = ResourceTimeSafePointKind::Explicit;
+};
+
+/// One typed endpoint of a resource-time edge. Deployment is absent only for
+/// an incomplete candidate edge; a verified edge always names both exact
+/// Deployment closures alongside their SystemMappings.
+struct ResourceTimeTransitionEndpointReference final {
+  ArtifactRootReference mapping;
+  std::optional<ArtifactRootReference> deployment;
+
+  friend bool operator==(const ResourceTimeTransitionEndpointReference &lhs,
+                         const ResourceTimeTransitionEndpointReference &rhs) {
+    return lhs.mapping == rhs.mapping && lhs.deployment == rhs.deployment;
+  }
+  friend bool operator!=(const ResourceTimeTransitionEndpointReference &lhs,
+                         const ResourceTimeTransitionEndpointReference &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 enum class ResourceTimeReadinessKind : std::uint8_t {
   Completion,
   FifoToken,
@@ -105,10 +144,11 @@ struct ResourceTimeRegionAllocation final {
 struct ResourceTimeTransition final {
   ::dataflow::EventFamilyKey trigger;
   /// A compiler-known completion or safe-point root. Runtime preemption is
-  /// outside this contract.
-  ArtifactRootReference safePoint;
-  ArtifactRootReference beforeMapping;
-  ArtifactRootReference afterMapping;
+  /// outside this contract. An incomplete candidate edge may retain no safe
+  /// point rather than fabricating one.
+  std::optional<ResourceTimeSafePointReference> safePoint;
+  ResourceTimeTransitionEndpointReference parent;
+  ResourceTimeTransitionEndpointReference child;
   std::vector<ResourceTimeRegionAllocation> beforeActive;
   std::vector<ResourceTimeRegionAllocation> afterActive;
   std::vector<ArtifactRootReference> beforeLiveWork;
@@ -178,6 +218,15 @@ struct ResourceTimeScheduleWitness final {
 /// Deployment legality remain owned by their existing import/verifier paths.
 llvm::Error
 validateResourceTimeTransition(const ResourceTimeTransition &transition);
+
+/// Independently imports both Mapping/Deployment endpoints and verifies the
+/// exact event-relative allocation evidence. Structural validation alone can
+/// describe an incomplete candidate edge; only this closure check authorizes
+/// a preverified edge for later runtime selection.
+llvm::Error
+verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
+                                    const ArtifactStore &artifacts,
+                                    const BlobStore &blobs);
 
 llvm::Error validateResourceTimeTransitionSequence(
     const ResourceTimeTransitionSequence &sequence);
@@ -286,8 +335,8 @@ private:
       : reference_(std::move(reference)),
         parentMapping_(std::move(parentMapping)),
         correspondence_(std::move(correspondence)),
-        context_(std::move(context)),
-        reopenedRoots_(std::move(reopenedRoots)) {}
+        context_(std::move(context)), reopenedRoots_(std::move(reopenedRoots)) {
+  }
 
   ArtifactRootReference reference_;
   ::loom::mapping::FinalizedSystemMapping parentMapping_;

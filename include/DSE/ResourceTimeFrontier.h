@@ -40,12 +40,11 @@ struct ResourceTimeInvocationKey final {
 };
 
 /// Exact semantic context for removable transition-result memoization. The
-/// transition itself supplies the parent/child Mapping, safe point, trigger,
-/// active/live state, and resource/configuration/route deltas. Result status
-/// and measured migration time are deliberately excluded from the key.
+/// transition itself supplies the parent/child Mapping and Deployment, safe
+/// point, trigger, active/live state, and resource/configuration/route deltas.
+/// Result status and measured migration time are deliberately excluded from
+/// the key.
 struct ResourceTimeTransitionCacheKeyInput final {
-  ArtifactRootReference parentDeployment;
-  ArtifactRootReference childDeployment;
   ArtifactRootReference constraints;
   ComponentViewDigest algorithmIdentity;
   ArtifactRootReference childTarget;
@@ -136,6 +135,12 @@ struct ResourceTimeRegionResourceBound final {
   std::uint64_t maximumUsefulResourceUnits = 0;
   ResourceTimeEstimateSupport support =
       ResourceTimeEstimateSupport::Unsupported;
+  /// The provider-owned exact lower feasibility boundary. Zero with
+  /// Unsupported support means the projection has no lower-bound proof; an
+  /// observed one-core Mapping must not manufacture one.
+  std::uint64_t minimumFeasibleResourceUnits = 0;
+  ResourceTimeEstimateSupport minimumSupport =
+      ResourceTimeEstimateSupport::Unsupported;
 };
 
 /// One immutable, Dataflow-owned projection shared by every schedule state in
@@ -155,8 +160,8 @@ llvm::Expected<ComponentViewDigest> resourceTimeAnalyticModelSnapshotDigest();
 /// Derives the invocation-local key for the immutable Dataflow-to-resource-
 /// time projection. The key binds the complete semantic invocation context;
 /// it is a removable derived-cache key, not a candidate identity.
-llvm::Expected<ComponentViewDigest>
-deriveResourceTimeProjectionCacheKey(const ResourceTimeInvocationKey &invocation);
+llvm::Expected<ComponentViewDigest> deriveResourceTimeProjectionCacheKey(
+    const ResourceTimeInvocationKey &invocation);
 
 /// Returns a saturating estimate of the retained bytes of one immutable
 /// projection. The estimate is used only for deterministic invocation-local
@@ -168,8 +173,7 @@ std::uint64_t resourceTimeProjectionRetainedBytes(
 /// analytic speedup curve once for one canonical Dataflow. Completion
 /// dependencies are exact; an earlier token relation without a completion
 /// proof remains a FIFO dependency whose latency is unsupported.
-llvm::Expected<ResourceTimeDataflowProjection>
-projectResourceTimeDataflow(
+llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &system,
     llvm::StringRef entrySymbol,
@@ -254,8 +258,7 @@ struct ResourceTimeActionDelta final {
 
   friend bool operator==(const ResourceTimeActionDelta &lhs,
                          const ResourceTimeActionDelta &rhs) {
-    return lhs.kind == rhs.kind &&
-           lhs.admittedRegion == rhs.admittedRegion &&
+    return lhs.kind == rhs.kind && lhs.admittedRegion == rhs.admittedRegion &&
            lhs.speedupPointOrdinal == rhs.speedupPointOrdinal &&
            lhs.beforeTimePicoseconds == rhs.beforeTimePicoseconds &&
            lhs.afterTimePicoseconds == rhs.afterTimePicoseconds &&
@@ -343,8 +346,7 @@ struct ProvenInfeasibleResourceTimeFrontier final {
 };
 
 using ResourceTimeFrontierOutcome =
-    std::variant<CompletedResourceTimeFrontier,
-                 IncompleteResourceTimeFrontier,
+    std::variant<CompletedResourceTimeFrontier, IncompleteResourceTimeFrontier,
                  ProvenInfeasibleResourceTimeFrontier>;
 
 struct ResourceTimeMappingCandidateInput;
@@ -389,8 +391,7 @@ private:
     bool capacityBypass = false;
   };
 
-  using Compute =
-      std::function<llvm::Expected<ResourceTimeFrontierOutcome>()>;
+  using Compute = std::function<llvm::Expected<ResourceTimeFrontierOutcome>()>;
 
   llvm::Expected<LookupResult>
   lookupOrCompute(std::string key, Compute compute,

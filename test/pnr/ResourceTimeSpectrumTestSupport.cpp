@@ -104,9 +104,8 @@ void verifyResourceTimeSpectrumWorkflow(
   };
 
   ResourceTimeScheduleScenario spatial;
-  spatial.executions = {
-      {scheduleRegions[0], {}, 0, 0, 10},
-      {scheduleRegions[1], {}, 0, 0, 10}};
+  spatial.executions = {{scheduleRegions[0], {}, 0, 0, 10},
+                        {scheduleRegions[1], {}, 0, 0, 10}};
   spatial.states = {{mapping.reference(),
                      startEvent(roots[0]),
                      0,
@@ -129,14 +128,17 @@ void verifyResourceTimeSpectrumWorkflow(
   temporal.makespanPicoseconds = 20;
 
   const ResourceTimeScheduleWitness witness{
-      scheduleRegions, {spatial, temporal}, 1, 2,
+      scheduleRegions,
+      {spatial, temporal},
+      1,
+      2,
       ResourceTimeConcurrencyBoundStatus::Exact};
   const std::vector<dse::ResourceTimeRegionMapping> correspondence = {
-      {roots[0], firstResources.size(),
-       firstResources.size(), dse::ResourceTimeEstimateSupport::Exact,
+      {roots[0], firstResources.size(), firstResources.size(),
+       dse::ResourceTimeEstimateSupport::Exact,
        dse::ResourceTimeEstimateSupport::Exact, 1},
-      {roots[1], secondResources.size(),
-       secondResources.size(), dse::ResourceTimeEstimateSupport::Exact,
+      {roots[1], secondResources.size(), secondResources.size(),
+       dse::ResourceTimeEstimateSupport::Exact,
        dse::ResourceTimeEstimateSupport::Exact, 1}};
   const auto result =
       take(dse::verifyResourceTimeSpectrum(witness, correspondence, store));
@@ -153,15 +155,16 @@ void verifyResourceTimeSpectrumWorkflow(
   auto unprovenBounds = witness;
   unprovenBounds.concurrencyBoundStatus =
       ResourceTimeConcurrencyBoundStatus::ProofNotEstablished;
-  const auto unprovenResult = take(dse::verifyResourceTimeSpectrum(
-      unprovenBounds, correspondence, store));
+  const auto unprovenResult = take(
+      dse::verifyResourceTimeSpectrum(unprovenBounds, correspondence, store));
   const auto *unprovenVerified =
       std::get_if<dse::VerifiedResourceTimeSpectrum>(&unprovenResult);
   require(unprovenVerified &&
-              llvm::all_of(unprovenVerified->scenarios, [](const auto &row) {
-                return row.spectrumClass ==
-                       dse::PreMappingSpectrumClass::Intermediate;
-              }),
+              llvm::all_of(unprovenVerified->scenarios,
+                           [](const auto &row) {
+                             return row.spectrumClass ==
+                                    dse::PreMappingSpectrumClass::Intermediate;
+                           }),
           "unproven concurrency bounds produced an endpoint label");
 
   ResourceTimeScheduleScenario singleton;
@@ -171,7 +174,10 @@ void verifyResourceTimeSpectrumWorkflow(
       {mapping.reference(), completionEvent(roots[0]), 10, {}}};
   singleton.makespanPicoseconds = 10;
   const ResourceTimeScheduleWitness singletonWitness{
-      {scheduleRegions[0]}, {singleton}, 1, 1,
+      {scheduleRegions[0]},
+      {singleton},
+      1,
+      1,
       ResourceTimeConcurrencyBoundStatus::Exact};
   const auto singletonResult = take(dse::verifyResourceTimeSpectrum(
       singletonWitness, {correspondence.front()}, store));
@@ -214,25 +220,45 @@ void verifyResourceTimeSpectrumWorkflow(
       mapping.view().fabricIdentity()};
   const auto modelDigest = take(dse::resourceTimeAnalyticModelSnapshotDigest());
   const dse::ResourceTimeInvocationKey invocation{
-      mapping.reference(), dataflowReference, fabricReference,
-      mapping.reference(), mapping.reference(), modelDigest, modelDigest,
-      "main", std::nullopt};
+      mapping.reference(), dataflowReference,
+      fabricReference,     mapping.reference(),
+      mapping.reference(), modelDigest,
+      modelDigest,         "main",
+      std::nullopt};
   const std::vector<dse::ResourceTimeRegionFeature> features = {
       dse::ResourceTimeRegionFeature{
-          roots[0], {},
+          roots[0],
+          {},
           {dse::ResourceTimeSpeedupPoint{
-              {firstResources.size()}, 10, std::nullopt, std::nullopt, 0, 0,
-              0, dse::ResourceTimeEstimateSupport::Exact}},
-          1, true, {}},
+              {firstResources.size()},
+              10,
+              std::nullopt,
+              std::nullopt,
+              0,
+              0,
+              0,
+              dse::ResourceTimeEstimateSupport::Exact}},
+          1,
+          true,
+          {}},
       dse::ResourceTimeRegionFeature{
-          roots[1], {},
+          roots[1],
+          {},
           {dse::ResourceTimeSpeedupPoint{
-              {secondResources.size()}, 10, std::nullopt, std::nullopt, 0, 0,
-              0, dse::ResourceTimeEstimateSupport::Exact}},
-          1, true, {}}};
+              {secondResources.size()},
+              10,
+              std::nullopt,
+              std::nullopt,
+              0,
+              0,
+              0,
+              dse::ResourceTimeEstimateSupport::Exact}},
+          1,
+          true,
+          {}}};
   dse::ResourceTimeFrontierPolicy frontierPolicy;
-  frontierPolicy.availableResourceUnits = {
-      firstResources.size() + secondResources.size()};
+  frontierPolicy.availableResourceUnits = {firstResources.size() +
+                                           secondResources.size()};
   frontierPolicy.maximumStatesGenerated = 256;
   frontierPolicy.maximumActionsGenerated = 1024;
   frontierPolicy.maximumStateCacheEntries = 256;
@@ -245,13 +271,14 @@ void verifyResourceTimeSpectrumWorkflow(
   require(completed && !completed->finalists.empty(),
           "real Mapping fixture produced no schedule finalists");
   const std::vector<dse::ResourceTimeRegionResourceBound> bounds = {
-      {roots[0], firstResources.size(),
-       dse::ResourceTimeEstimateSupport::Exact},
+      {roots[0], firstResources.size(), dse::ResourceTimeEstimateSupport::Exact,
+       firstResources.size(), dse::ResourceTimeEstimateSupport::Exact},
       {roots[1], secondResources.size(),
+       dse::ResourceTimeEstimateSupport::Exact, secondResources.size(),
        dse::ResourceTimeEstimateSupport::Exact}};
   const auto funnel = take(dse::verifyResourceTimeMappingFinalists(
-      completed->finalists, features, bounds, {mapping.reference()}, store,
-      {}, completed->concurrencyBounds));
+      completed->finalists, features, bounds, {mapping.reference()}, store, {},
+      completed->concurrencyBounds));
   const auto *funnelVerified =
       std::get_if<dse::VerifiedResourceTimeSpectrum>(&funnel.verification);
   require(funnelVerified && funnel.accounting.materializedScenarios != 0 &&
@@ -263,14 +290,33 @@ void verifyResourceTimeSpectrumWorkflow(
           "bounded schedule funnel did not reach the independent Mapping "
           "verifier through its shared import session");
 
+  auto unprovenMinimumBounds = bounds;
+  for (auto &bound : unprovenMinimumBounds) {
+    bound.minimumFeasibleResourceUnits = 0;
+    bound.minimumSupport = dse::ResourceTimeEstimateSupport::Exact;
+  }
+  const auto unprovenMinimum = take(dse::verifyResourceTimeMappingFinalists(
+      completed->finalists, features, unprovenMinimumBounds,
+      {mapping.reference()}, store, {}, completed->concurrencyBounds));
+  const auto *unprovenMinimumSpectrum =
+      std::get_if<dse::VerifiedResourceTimeSpectrum>(
+          &unprovenMinimum.verification);
+  require(unprovenMinimumSpectrum &&
+              llvm::none_of(unprovenMinimumSpectrum->scenarios,
+                            [](const auto &scenario) {
+                              return scenario.spectrumClass ==
+                                     dse::PreMappingSpectrumClass::MaxSpatial;
+                            }),
+          "observed one-core Mapping fabricated an exact minimum bound");
+
   ::loom::mapping::SystemMappingImportSession applicationSession(store, 8);
   const auto firstJoin = take(dse::verifyResourceTimeMappingFinalists(
-      completed->finalists, features, bounds, {mapping.reference()}, store,
-      {}, completed->concurrencyBounds));
+      completed->finalists, features, bounds, {mapping.reference()}, store, {},
+      completed->concurrencyBounds));
   const auto firstStats = applicationSession.statistics();
   const auto secondJoin = take(dse::verifyResourceTimeMappingFinalists(
-      completed->finalists, features, bounds, {mapping.reference()}, store,
-      {}, completed->concurrencyBounds));
+      completed->finalists, features, bounds, {mapping.reference()}, store, {},
+      completed->concurrencyBounds));
   const auto secondStats = applicationSession.statistics();
   require(std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
               firstJoin.verification) &&

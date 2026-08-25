@@ -303,7 +303,8 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
            estimateSupport});
     result.regions.push_back(std::move(feature));
     result.regionBounds.push_back(
-        {(*reachable)[ordinal], maximumUseful[ordinal], boundSupport[ordinal]});
+        {(*reachable)[ordinal], maximumUseful[ordinal], boundSupport[ordinal],
+         0, ResourceTimeEstimateSupport::Unsupported});
   }
   return result;
 }
@@ -350,11 +351,12 @@ llvm::Expected<ComponentViewDigest> deriveResourceTimeTransitionCacheKey(
     return reference.schemaIdentity == schema.identity &&
            reference.schemaVersion == schema.version;
   };
-  if (!hasSchema(transition.beforeMapping, mapping::mappingArtifactSchema) ||
-      !hasSchema(transition.afterMapping, mapping::mappingArtifactSchema))
+  if (!hasSchema(transition.parent.mapping, mapping::mappingArtifactSchema) ||
+      !hasSchema(transition.child.mapping, mapping::mappingArtifactSchema))
     return invalid("transition cache key has a non-Mapping endpoint");
-  if (!hasSchema(input.parentDeployment, deployment::deploymentSchema) ||
-      !hasSchema(input.childDeployment, deployment::deploymentSchema))
+  if (!transition.parent.deployment || !transition.child.deployment ||
+      !hasSchema(*transition.parent.deployment, deployment::deploymentSchema) ||
+      !hasSchema(*transition.child.deployment, deployment::deploymentSchema))
     return invalid("transition cache key has a non-Deployment endpoint");
   if (!hasSchema(input.constraints, mapping::mappingConstraintSetSchema))
     return invalid("transition cache key has a non-constraint root");
@@ -363,17 +365,19 @@ llvm::Expected<ComponentViewDigest> deriveResourceTimeTransitionCacheKey(
   if (!transition.resourceDeltaDigest || !transition.configurationDeltaDigest ||
       !transition.routeDeltaDigest)
     return invalid("transition cache key requires every derived delta");
+  if (!transition.safePoint)
+    return invalid("transition cache key requires a compiler-known safe point");
   auto trigger = dataflow::encodeDataflowReference(transition.trigger);
   if (!trigger)
     return trigger.takeError();
-
   std::vector<std::uint8_t> bytes;
   appendBlob(bytes, *trigger);
-  appendRoot(bytes, transition.safePoint);
-  appendRoot(bytes, transition.beforeMapping);
-  appendRoot(bytes, transition.afterMapping);
-  appendRoot(bytes, input.parentDeployment);
-  appendRoot(bytes, input.childDeployment);
+  appendRoot(bytes, transition.safePoint->artifact);
+  appendU64(bytes, static_cast<std::uint64_t>(transition.safePoint->kind));
+  appendRoot(bytes, transition.parent.mapping);
+  appendRoot(bytes, transition.child.mapping);
+  appendRoot(bytes, *transition.parent.deployment);
+  appendRoot(bytes, *transition.child.deployment);
   appendAllocations(bytes, transition.beforeActive);
   appendAllocations(bytes, transition.afterActive);
   appendRoots(bytes, transition.beforeLiveWork);

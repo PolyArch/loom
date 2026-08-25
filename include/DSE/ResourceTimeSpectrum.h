@@ -17,7 +17,8 @@
 
 namespace loom {
 class ArtifactStore;
-}
+class BlobStore;
+} // namespace loom
 
 namespace loom::dse {
 
@@ -27,7 +28,10 @@ namespace loom::dse {
 /// only Exact bounds can establish a spectrum endpoint.
 struct ResourceTimeRegionMapping final {
   ::dataflow::RootThreadLaunchRef root;
-  std::uint64_t minimumFeasibleAccCoreCount = 0;
+  /// Absent means the provider did not establish an exact lower feasibility
+  /// boundary. Unknown lower bounds remain valid for intermediate evidence,
+  /// but cannot establish a spectrum endpoint.
+  std::optional<std::uint64_t> minimumFeasibleAccCoreCount;
   std::uint64_t maximumUsefulAccCoreCount = 0;
   ResourceTimeEstimateSupport minimumBoundSupport =
       ResourceTimeEstimateSupport::Unsupported;
@@ -42,11 +46,15 @@ struct ResourceTimeRegionMapping final {
 
 struct VerifiedResourceTimeSpectrumScenario final {
   std::uint64_t scenarioOrdinal = 0;
-  PreMappingSpectrumClass spectrumClass =
-      PreMappingSpectrumClass::Intermediate;
+  PreMappingSpectrumClass spectrumClass = PreMappingSpectrumClass::Intermediate;
   std::uint64_t peakConcurrentRegions = 0;
   std::uint64_t makespanPicoseconds = 0;
   std::vector<ArtifactRootReference> systemMappings;
+  /// Replayable event-relative evidence retained after independent Mapping
+  /// verification. Transition endpoints retain exact Deployment lineage when
+  /// the scenario changes Mapping state.
+  std::vector<::loom::pnr::ResourceTimeScheduleState> states;
+  ::loom::pnr::ResourceTimeTransitionSequence transitions;
 };
 
 /// Every named Mapping has passed the ordinary independent SystemMapping
@@ -77,8 +85,7 @@ struct IncompleteResourceTimeSpectrum final {
 };
 
 using ResourceTimeSpectrumVerification =
-    std::variant<VerifiedResourceTimeSpectrum,
-                 IncompleteResourceTimeSpectrum>;
+    std::variant<VerifiedResourceTimeSpectrum, IncompleteResourceTimeSpectrum>;
 
 struct ResourceTimeSpectrumFunnelAccounting final {
   std::uint64_t hintCandidates = 0;
@@ -105,12 +112,11 @@ struct ResourceTimeSpectrumFunnelResult final {
 /// Independently imports every SystemMapping used by the schedule and proves
 /// its event-relative allocation correspondence. It creates no Mapping
 /// legality, cache, or candidate identity of its own.
-llvm::Expected<ResourceTimeSpectrumVerification>
-verifyResourceTimeSpectrum(
+llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
     const ::loom::pnr::ResourceTimeScheduleWitness &witness,
     llvm::ArrayRef<ResourceTimeRegionMapping> regions,
-    const ArtifactStore &store,
-    ExecutionControlView executionControl = {});
+    const ArtifactStore &store, ExecutionControlView executionControl = {},
+    const BlobStore *blobs = nullptr);
 
 /// Materializes only schedule hints whose per-state allocations are realized
 /// by one already verified SystemMapping, then invokes the independent
@@ -122,10 +128,10 @@ verifyResourceTimeMappingFinalists(
     llvm::ArrayRef<ResourceTimeRegionFeature> regions,
     llvm::ArrayRef<ResourceTimeRegionResourceBound> bounds,
     llvm::ArrayRef<ArtifactRootReference> systemMappings,
-    const ArtifactStore &store,
-    ExecutionControlView executionControl = {},
+    const ArtifactStore &store, ExecutionControlView executionControl = {},
     std::optional<ResourceTimeConcurrencyBounds> concurrencyBounds =
-        std::nullopt);
+        std::nullopt,
+    const BlobStore *blobs = nullptr);
 
 } // namespace loom::dse
 

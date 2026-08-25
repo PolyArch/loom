@@ -52,15 +52,17 @@ loom::ComponentViewDigest digest(std::uint8_t fill) {
 
 loom::dse::ResourceTimeInvocationKey invocation() {
   return {reference(1), reference(2), reference(3), reference(4), reference(5),
-          digest(6), digest(7), "main", std::nullopt};
+          digest(6),    digest(7),    "main",       std::nullopt};
 }
 
-loom::dse::ResourceTimeSpeedupPoint point(
-    std::uint64_t resources, std::uint64_t execution,
-    std::uint64_t transition = 0,
-    std::optional<std::uint64_t> firstToken = std::nullopt) {
-  return {{resources}, execution, firstToken, std::nullopt, 0, transition, 0,
-          loom::dse::ResourceTimeEstimateSupport::Calibrated};
+loom::dse::ResourceTimeSpeedupPoint
+point(std::uint64_t resources, std::uint64_t execution,
+      std::uint64_t transition = 0,
+      std::optional<std::uint64_t> firstToken = std::nullopt) {
+  return {{resources}, execution,
+          firstToken,  std::nullopt,
+          0,           transition,
+          0,           loom::dse::ResourceTimeEstimateSupport::Calibrated};
 }
 
 std::vector<loom::dse::ResourceTimeRegionFeature>
@@ -77,15 +79,32 @@ fiveRegionFeatures(std::uint64_t expandedTransitionCost,
       {r3, {}, {point(1, 15)}, 0, false, {}},
       {r4,
        {{r1, loom::pnr::ResourceTimeReadinessKind::Completion}},
-       {point(1, 30), point(2, 15, expandedTransitionCost)}, 0, false, {}},
+       {point(1, 30), point(2, 15, expandedTransitionCost)},
+       0,
+       false,
+       {}},
       {r5,
        fifoConsumer
-           ? std::vector<loom::dse::ResourceTimeDependencyFeature>{
-                 {r2, loom::pnr::ResourceTimeReadinessKind::FifoToken}}
-           : std::vector<loom::dse::ResourceTimeDependencyFeature>{
-                 {r2, loom::pnr::ResourceTimeReadinessKind::Completion},
-                 {r4, loom::pnr::ResourceTimeReadinessKind::Completion}},
-       {point(1, 10)}, 0, false, {}}};
+           ? std::vector<
+                 loom::dse::
+                     ResourceTimeDependencyFeature>{{r2,
+                                                     loom::pnr::
+                                                         ResourceTimeReadinessKind::
+                                                             FifoToken}}
+           : std::vector<
+                 loom::dse::
+                     ResourceTimeDependencyFeature>{{r2,
+                                                     loom::pnr::
+                                                         ResourceTimeReadinessKind::
+                                                             Completion},
+                                                    {r4,
+                                                     loom::pnr::
+                                                         ResourceTimeReadinessKind::
+                                                             Completion}},
+       {point(1, 10)},
+       0,
+       false,
+       {}}};
 }
 
 loom::dse::ResourceTimeFrontierPolicy policy() {
@@ -100,9 +119,9 @@ loom::dse::ResourceTimeFrontierPolicy policy() {
   return result;
 }
 
-const loom::dse::ResourceTimeScheduleHint &hintUsingR4Point(
-    const loom::dse::CompletedResourceTimeFrontier &completed,
-    std::uint64_t pointOrdinal) {
+const loom::dse::ResourceTimeScheduleHint &
+hintUsingR4Point(const loom::dse::CompletedResourceTimeFrontier &completed,
+                 std::uint64_t pointOrdinal) {
   const auto r4 = root(14);
   const loom::dse::ResourceTimeScheduleHint *best = nullptr;
   for (const auto &hint : completed.finalists) {
@@ -111,7 +130,7 @@ const loom::dse::ResourceTimeScheduleHint &hintUsingR4Point(
              action.speedupPointOrdinal == pointOrdinal;
     });
     if (usesPoint && (!best || hint.estimatedMakespanPicoseconds <
-                                  best->estimatedMakespanPicoseconds))
+                                   best->estimatedMakespanPicoseconds))
       best = &hint;
   }
   if (!best)
@@ -136,9 +155,10 @@ void fiveRegionCostAndReadinessAreEventDriven() {
                   loom::dse::ResourceTimeEstimateSupport::Exact &&
               low->concurrencyBounds->minimumPeakConcurrentRegions == 1 &&
               low->concurrencyBounds->maximumPeakConcurrentRegions == 3 &&
-              llvm::any_of(low->finalists, [](const auto &hint) {
-                return hint.peakConcurrentRegions == 3;
-              }),
+              llvm::any_of(low->finalists,
+                           [](const auto &hint) {
+                             return hint.peakConcurrentRegions == 3;
+                           }),
           "five-region witness lost its exact concurrency extrema");
   require(low->domainExhaustive,
           "unpruned five-region search was not marked exhaustive");
@@ -201,15 +221,23 @@ void budgetsAndExactRejectionsRemainTyped() {
   const std::array resourceClasses = {reference(20)};
   auto singleFinalistPolicy = policy();
   singleFinalistPolicy.maximumFinalists = 1;
-  const auto singleFinalistOutcome = take(loom::dse::exploreResourceTimeFrontier(
-      invocation(), resourceClasses, fiveRegionFeatures(2),
-      singleFinalistPolicy));
-  require(!std::holds_alternative<loom::dse::ProvenInfeasibleResourceTimeFrontier>(
-              singleFinalistOutcome) &&
+  const auto singleFinalistOutcome =
+      take(loom::dse::exploreResourceTimeFrontier(invocation(), resourceClasses,
+                                                  fiveRegionFeatures(2),
+                                                  singleFinalistPolicy));
+  const auto *singleFinalist =
+      std::get_if<loom::dse::CompletedResourceTimeFrontier>(
+          &singleFinalistOutcome);
+  require(singleFinalist && singleFinalist->finalists.size() == 1 &&
+              singleFinalist->concurrencyBounds &&
+              singleFinalist->concurrencyBounds->support ==
+                  loom::dse::ResourceTimeEstimateSupport::Exact &&
+              singleFinalist->concurrencyBounds->minimumPeakConcurrentRegions ==
+                  1 &&
+              singleFinalist->concurrencyBounds->maximumPeakConcurrentRegions ==
+                  3 &&
               !loom::dse::validateResourceTimeFrontierAccounting(
-                  std::visit(
-                      [](const auto &value) { return value.accounting; },
-                      singleFinalistOutcome)) ,
+                  singleFinalist->accounting),
           "single-finalist terminal inventory exceeded its hard bound");
   auto bounded = policy();
   bounded.maximumStatesGenerated = 1;
@@ -217,11 +245,11 @@ void budgetsAndExactRejectionsRemainTyped() {
       invocation(), resourceClasses, fiveRegionFeatures(2), bounded));
   const auto *incomplete =
       std::get_if<loom::dse::IncompleteResourceTimeFrontier>(&boundedOutcome);
-  require(incomplete &&
-              incomplete->reason ==
-                  loom::dse::ResourceTimeFrontierIncompleteReason::
-                      BudgetExhausted,
-          "state budget was not reported as typed incomplete");
+  require(
+      incomplete &&
+          incomplete->reason ==
+              loom::dse::ResourceTimeFrontierIncompleteReason::BudgetExhausted,
+      "state budget was not reported as typed incomplete");
   require(!loom::dse::validateResourceTimeFrontierAccounting(
               incomplete->accounting),
           "incomplete work accounting is not closed");
@@ -242,11 +270,11 @@ void budgetsAndExactRejectionsRemainTyped() {
   const auto *proven =
       std::get_if<loom::dse::ProvenInfeasibleResourceTimeFrontier>(
           &impossibleOutcome);
-  require(proven &&
-              proven->reason ==
-                  loom::dse::ResourceTimeFrontierInfeasibleReason::
-                      ResourceCapacity,
-          "fixed resource-capacity failure was not proven infeasible");
+  require(
+      proven &&
+          proven->reason ==
+              loom::dse::ResourceTimeFrontierInfeasibleReason::ResourceCapacity,
+      "fixed resource-capacity failure was not proven infeasible");
 
   auto unknownCapacity = fiveRegionFeatures(2);
   unknownCapacity.front().speedupCurve = {point(5, 10)};
@@ -254,23 +282,20 @@ void budgetsAndExactRejectionsRemainTyped() {
       invocation(), resourceClasses, unknownCapacity, policy()));
   const auto *unknown =
       std::get_if<loom::dse::IncompleteResourceTimeFrontier>(&unknownOutcome);
-  require(unknown &&
-              unknown->reason ==
-                  loom::dse::ResourceTimeFrontierIncompleteReason::
-                      ProofNotEstablished,
+  require(unknown && unknown->reason ==
+                         loom::dse::ResourceTimeFrontierIncompleteReason::
+                             ProofNotEstablished,
           "incomplete allocation domain was misclassified as infeasible");
 
   const auto alwaysStop = [](const void *) { return true; };
   const loom::ExecutionControlView stopped(nullptr, alwaysStop);
   const auto stoppedOutcome = take(loom::dse::exploreResourceTimeFrontier(
-      invocation(), resourceClasses, fiveRegionFeatures(2), policy(),
-      stopped));
+      invocation(), resourceClasses, fiveRegionFeatures(2), policy(), stopped));
   const auto *cancelled =
       std::get_if<loom::dse::IncompleteResourceTimeFrontier>(&stoppedOutcome);
-  require(cancelled &&
-              cancelled->reason ==
-                  loom::dse::ResourceTimeFrontierIncompleteReason::
-                      CancelledOrTimeout,
+  require(cancelled && cancelled->reason ==
+                           loom::dse::ResourceTimeFrontierIncompleteReason::
+                               CancelledOrTimeout,
           "deadline stop was not reported as typed incomplete");
 
   auto pruned = policy();
@@ -291,19 +316,24 @@ void dependencyCyclesRemainTyped() {
   std::vector<loom::dse::ResourceTimeRegionFeature> completionCycle{
       {r1,
        {{r2, loom::pnr::ResourceTimeReadinessKind::Completion}},
-       {point(1, 10)}, 0, false, {}},
+       {point(1, 10)},
+       0,
+       false,
+       {}},
       {r2,
        {{r1, loom::pnr::ResourceTimeReadinessKind::Completion}},
-       {point(1, 10)}, 0, false, {}}};
+       {point(1, 10)},
+       0,
+       false,
+       {}}};
   const auto completionOutcome = take(loom::dse::exploreResourceTimeFrontier(
       invocation(), resourceClasses, completionCycle, policy()));
   const auto *proven =
       std::get_if<loom::dse::ProvenInfeasibleResourceTimeFrontier>(
           &completionOutcome);
-  require(proven &&
-              proven->reason ==
-                  loom::dse::ResourceTimeFrontierInfeasibleReason::
-                      CompletionDependencyCycle,
+  require(proven && proven->reason ==
+                        loom::dse::ResourceTimeFrontierInfeasibleReason::
+                            CompletionDependencyCycle,
           "completion-only dependency deadlock was not proven infeasible");
 
   completionCycle.front().dependencies.front().readiness =
@@ -336,13 +366,11 @@ void replayIsDeterministic() {
                 first.finalists[index].estimatedMakespanPicoseconds ==
                     second.finalists[index].estimatedMakespanPicoseconds,
             "deterministic replay changed schedule selection");
-  require(first.accounting.actions.planned ==
-                  second.accounting.actions.planned &&
-              first.accounting.states.planned ==
-                  second.accounting.states.planned &&
-              first.accounting.stateMemoHits ==
-                  second.accounting.stateMemoHits,
-          "deterministic replay changed formal work");
+  require(
+      first.accounting.actions.planned == second.accounting.actions.planned &&
+          first.accounting.states.planned == second.accounting.states.planned &&
+          first.accounting.stateMemoHits == second.accounting.stateMemoHits,
+      "deterministic replay changed formal work");
 }
 
 void mappingFunnelAdmitsOnlyBoundedFinalists() {
@@ -352,16 +380,18 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
   for (std::uint8_t ordinal = 0; ordinal != 6; ++ordinal) {
     auto key = invocation();
     key.sourceLineage = reference(static_cast<std::uint8_t>(30 + ordinal));
-    candidates.push_back(
-        {digest(static_cast<std::uint8_t>(40 + ordinal)), ordinal,
-         static_cast<std::uint64_t>((ordinal % 3) + 1),
-         static_cast<std::uint64_t>(ordinal + 1),
-         static_cast<std::uint64_t>((ordinal + 1) * 10),
-         static_cast<std::uint64_t>(ordinal + 1), key,
-         {reference(20)}, fiveRegionFeatures(ordinal + 1)});
+    candidates.push_back({digest(static_cast<std::uint8_t>(40 + ordinal)),
+                          ordinal,
+                          static_cast<std::uint64_t>((ordinal % 3) + 1),
+                          static_cast<std::uint64_t>(ordinal + 1),
+                          static_cast<std::uint64_t>((ordinal + 1) * 10),
+                          static_cast<std::uint64_t>(ordinal + 1),
+                          key,
+                          {reference(20)},
+                          fiveRegionFeatures(ordinal + 1)});
   }
-  const auto selected = take(loom::dse::selectResourceTimeMappingFinalists(
-      candidates, bounded));
+  const auto selected =
+      take(loom::dse::selectResourceTimeMappingFinalists(candidates, bounded));
   require(selected.accounting.generatedCandidates == candidates.size() &&
               selected.accounting.screenedCandidates == candidates.size() &&
               selected.accounting.detailedFrontierCandidates == 3 &&
@@ -379,8 +409,8 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
               selected.accounting.analyticShadowFeasibleIntersection <=
                   selected.accounting.analyticShadowExactFeasibleCandidates &&
               selected.accounting.frontierAccounting.stateMemoMisses -
-                          selected.accounting.frontierAccounting
-                              .stateMemoMissCapacityRejections +
+                      selected.accounting.frontierAccounting
+                          .stateMemoMissCapacityRejections +
                       selected.accounting.frontierAccounting
                           .stateMemoParetoInsertions ==
                   selected.accounting.frontierAccounting.states.consumed &&
@@ -416,8 +446,8 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
   impossible.regions.front().speedupCurve = {point(5, 10)};
   impossible.regions.front().allocationDomainExhaustive = true;
   candidates.push_back(std::move(impossible));
-  const auto gated = take(loom::dse::selectResourceTimeMappingFinalists(
-      candidates, bounded));
+  const auto gated =
+      take(loom::dse::selectResourceTimeMappingFinalists(candidates, bounded));
   require(gated.accounting.soundGateRejectedCandidates == 1 &&
               gated.accounting.mappingCallsAvoidedBySoundGate == 1 &&
               gated.accounting.mappingFinalists == 3 &&
@@ -431,8 +461,7 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
   require(cancelled.incompleteReason ==
                   loom::dse::ResourceTimeFrontierIncompleteReason::
                       CancelledOrTimeout &&
-              cancelled.finalists.empty() &&
-              cancelled.evaluations.empty(),
+              cancelled.finalists.empty() && cancelled.evaluations.empty(),
           "resource-time funnel dispatched work after cancellation");
 
   auto slow = candidates.front();
@@ -440,23 +469,32 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
   slow.inputPreferenceRank = 0;
   slow.invocation.sourceLineage = reference(70);
   const auto slowRoot = root(71);
-  slow.regions = {{slowRoot, {}, {{{1}, 100, std::nullopt, std::nullopt, 0,
-                                   0, 0,
-                                   loom::dse::ResourceTimeEstimateSupport::Exact}},
-                                  0, false, {}}};
+  slow.regions = {{slowRoot,
+                   {},
+                   {{{1},
+                     100,
+                     std::nullopt,
+                     std::nullopt,
+                     0,
+                     0,
+                     0,
+                     loom::dse::ResourceTimeEstimateSupport::Exact}},
+                   0,
+                   false,
+                   {}}};
   auto fast = slow;
   fast.candidateIdentity = digest(71);
   fast.inputPreferenceRank = 1;
   fast.invocation.sourceLineage = reference(71);
   fast.regions.front().speedupCurve.front().executionTimePicoseconds = 1;
-  const auto ranked = take(loom::dse::selectResourceTimeMappingFinalists(
-      {slow, fast}, bounded));
+  const auto ranked = take(
+      loom::dse::selectResourceTimeMappingFinalists({slow, fast}, bounded));
   require(ranked.finalists.size() == 2 &&
               ranked.finalists.front().candidateIdentity ==
                   fast.candidateIdentity,
           "analytic resource-time order was overwritten by input rank");
-  const auto reordered = take(loom::dse::selectResourceTimeMappingFinalists(
-      {fast, slow}, bounded));
+  const auto reordered = take(
+      loom::dse::selectResourceTimeMappingFinalists({fast, slow}, bounded));
   require(reordered.finalists == ranked.finalists &&
               reordered.accounting.mappingFinalists ==
                   ranked.accounting.mappingFinalists,
@@ -474,7 +512,8 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
   std::uint64_t maximumMappedConcurrency = 0;
   std::vector<loom::ComponentViewDigest> mappedScheduleDigests;
   for (const auto &finalist : single.finalists) {
-    require(finalist.candidateIdentity == candidates.front().candidateIdentity &&
+    require(finalist.candidateIdentity ==
+                    candidates.front().candidateIdentity &&
                 !llvm::is_contained(mappedScheduleDigests,
                                     finalist.scheduleHintDigest),
             "one software candidate lost distinct schedule provenance");
@@ -510,8 +549,8 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
   invalidated.candidateIdentity = digest(91);
   invalidated.inputPreferenceRank = 91;
   invalidated.invocation.modelSnapshotDigest = digest(92);
-  const auto invalidatedMemo = take(
-      loom::dse::selectResourceTimeMappingFinalists(
+  const auto invalidatedMemo =
+      take(loom::dse::selectResourceTimeMappingFinalists(
           {candidates.front(), invalidated}, bounded));
   require(invalidatedMemo.accounting.exactInvocationMemoMisses == 2 &&
               invalidatedMemo.accounting.exactInvocationMemoHits == 0,
@@ -536,9 +575,8 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
   temporalEndpointPolicy.spectrumEndpoint =
       loom::dse::PreMappingSpectrumEndpoint::MaxTemporal;
   temporalEndpointPolicy.maximumMappingFinalists = 1;
-  const auto temporalGated = take(
-      loom::dse::selectResourceTimeMappingFinalists(
-          {temporalEpochGate}, temporalEndpointPolicy));
+  const auto temporalGated = take(loom::dse::selectResourceTimeMappingFinalists(
+      {temporalEpochGate}, temporalEndpointPolicy));
   require(
       temporalGated.accounting.detailedFrontierCandidates != 0 &&
           temporalGated.accounting.incompleteCandidates == 0 &&
@@ -555,11 +593,10 @@ void exactMemoSupportsWarmAndConcurrentReuse() {
   auto bounded = policy();
   bounded.maximumMappingFinalists = 1;
   loom::dse::ResourceTimeMappingCandidateInput candidate{
-      digest(100), 0, 5, 5, 50, 2, invocation(), {reference(20)},
+      digest(100),          0, 5, 5, 50, 2, invocation(), {reference(20)},
       fiveRegionFeatures(2)};
   loom::dse::ResourceTimeFrontierSession warmSession(
-      bounded.maximumInvocationMemoEntries,
-      bounded.maximumInvocationMemoBytes);
+      bounded.maximumInvocationMemoEntries, bounded.maximumInvocationMemoBytes);
   const auto cold = take(loom::dse::selectResourceTimeMappingFinalists(
       {candidate}, bounded, {}, &warmSession));
   const auto warm = take(loom::dse::selectResourceTimeMappingFinalists(
@@ -574,8 +611,7 @@ void exactMemoSupportsWarmAndConcurrentReuse() {
           "warm exact memo changed selection or repeated frontier work");
   const auto warmStatistics = warmSession.statistics();
   require(warmStatistics.requests == 2 && warmStatistics.cacheMisses == 1 &&
-              warmStatistics.cacheHits == 1 &&
-              warmStatistics.entryCount == 1 &&
+              warmStatistics.cacheHits == 1 && warmStatistics.entryCount == 1 &&
               warmStatistics.retainedBytes != 0,
           "warm exact memo session accounting is not closed");
   auto endpointPolicy = bounded;
@@ -591,8 +627,12 @@ void exactMemoSupportsWarmAndConcurrentReuse() {
   std::vector<loom::dse::ResourceTimeRegionFeature> concurrentRegions;
   for (std::uint64_t ordinal = 0; ordinal != 7; ++ordinal)
     concurrentRegions.push_back(
-        {root(100 + ordinal), {},
-         {point(1, 10 + ordinal), point(2, 6 + ordinal)}, 0, false, {}});
+        {root(100 + ordinal),
+         {},
+         {point(1, 10 + ordinal), point(2, 6 + ordinal)},
+         0,
+         false,
+         {}});
   auto concurrentPolicy = policy();
   concurrentPolicy.maximumStatesGenerated = 50000;
   concurrentPolicy.maximumActionsGenerated = 200000;
@@ -600,7 +640,14 @@ void exactMemoSupportsWarmAndConcurrentReuse() {
   concurrentPolicy.beamWidth = 1024;
   concurrentPolicy.maximumMappingFinalists = 1;
   loom::dse::ResourceTimeMappingCandidateInput concurrentCandidate{
-      digest(101), 0, 7, 7, 70, 2, invocation(), {reference(20)},
+      digest(101),
+      0,
+      7,
+      7,
+      70,
+      2,
+      invocation(),
+      {reference(20)},
       std::move(concurrentRegions)};
   loom::dse::ResourceTimeFrontierSession concurrentSession(
       concurrentPolicy.maximumInvocationMemoEntries,

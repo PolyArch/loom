@@ -7,9 +7,9 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
-#include "Mapping/Artifact/MappingProgressAnalysis.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -111,8 +111,10 @@ importProjection(const ArtifactRootReference &reference,
           *mapping, *dataflow, *system);
   if (!resourceTimeProgress)
     return resourceTimeProgress.takeError();
-  ImportedMappingProjection result{reference, dataflowReference,
-                                   fabricReference, {},
+  ImportedMappingProjection result{reference,
+                                   dataflowReference,
+                                   fabricReference,
+                                   {},
                                    std::move(*resourceTimeProgress)};
   for (const ResourceTimeRegionMapping &region : regions) {
     if (region.root.artifact != dataflowReference.artifact)
@@ -182,14 +184,6 @@ bool mappingMatchesState(const ImportedMappingProjection &mapping,
   return true;
 }
 
-bool mappingMatchesHint(const ImportedMappingProjection &mapping,
-                        const ResourceTimeScheduleHint &hint,
-                        ResourceTimeSpectrumFunnelAccounting &accounting) {
-  return llvm::all_of(hint.states, [&](const auto &state) {
-    return mappingMatchesState(mapping, state, accounting);
-  });
-}
-
 llvm::Expected<std::optional<::loom::pnr::ResourceTimeScheduleScenario>>
 materializeHint(const ResourceTimeScheduleHint &hint,
                 llvm::ArrayRef<ResourceTimeRegionFeature> regions,
@@ -197,17 +191,32 @@ materializeHint(const ResourceTimeScheduleHint &hint,
                 ResourceTimeSpectrumFunnelAccounting &accounting) {
   if (hint.states.size() != hint.actions.size() + 1)
     return invalid("resource-time hint action/state lineage is incomplete");
-  const ImportedMappingProjection *selected = nullptr;
-  for (const ImportedMappingProjection &mapping : mappings)
-    if (mappingMatchesHint(mapping, hint, accounting)) {
-      selected = &mapping;
-      break;
+  // A resource-time schedule may change allocation at an event boundary.
+  // Select the already imported Mapping independently for each state; a
+  // single Mapping is only a valid shortcut when every state matches it.
+  std::vector<const ImportedMappingProjection *> selectedStates;
+  selectedStates.reserve(hint.states.size());
+  const ImportedMappingProjection *previous = nullptr;
+  for (const ResourceTimeHintState &state : hint.states) {
+    if (previous && mappingMatchesState(*previous, state, accounting)) {
+      selectedStates.push_back(previous);
+      continue;
     }
-  if (!selected)
-    return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
+    std::vector<const ImportedMappingProjection *> candidates;
+    for (const ImportedMappingProjection &mapping : mappings)
+      if (mappingMatchesState(mapping, state, accounting))
+        candidates.push_back(&mapping);
+    if (candidates.empty())
+      return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
+    if (candidates.size() != 1)
+      return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
+    previous = candidates.front();
+    selectedStates.push_back(previous);
+  }
 
   ::loom::pnr::ResourceTimeScheduleScenario scenario;
   scenario.makespanPicoseconds = hint.estimatedMakespanPicoseconds;
+  std::vector<const ImportedMappingProjection *> scenarioMappings;
   scenario.executions.reserve(regions.size());
   for (const ResourceTimeRegionFeature &region : regions) {
     std::optional<std::uint64_t> start;
@@ -265,6 +274,22 @@ materializeHint(const ResourceTimeScheduleHint &hint,
     execution.readyPicoseconds = ready;
   }
 
+  auto materializeAllocations = [&](const ImportedMappingProjection &mapping,
+                                    const ResourceTimeHintState &state)
+      -> llvm::Expected<
+          std::vector<::loom::pnr::ResourceTimeRegionAllocation>> {
+    std::vector<::loom::pnr::ResourceTimeRegionAllocation> active;
+    active.reserve(state.active.size());
+    for (const ResourceTimeHintAllocation &allocation : state.active) {
+      const auto resources =
+          mapping.resourcesByRoot.find(allocation.region.entity.value());
+      if (resources == mapping.resourcesByRoot.end())
+        return invalid("matched Mapping lost a resource-time region");
+      active.push_back({allocation.region, resources->second});
+    }
+    return active;
+  };
+
   for (std::size_t snapshot = 1; snapshot != hint.states.size(); ++snapshot) {
     const ResourceTimeActionDelta &action = hint.actions[snapshot - 1];
     if (action.kind != ResourceTimeActionKind::AdmitRegion &&
@@ -276,26 +301,54 @@ materializeHint(const ResourceTimeScheduleHint &hint,
             ? ::dataflow::rootThreadStartEventFamily(*action.admittedRegion)
             : ::dataflow::rootThreadCompletionEventFamily(
                   action.completedRegions.front());
-    std::vector<::loom::pnr::ResourceTimeRegionAllocation> active;
-    active.reserve(state.active.size());
-    for (const ResourceTimeHintAllocation &allocation : state.active) {
-      const auto resources =
-          selected->resourcesByRoot.find(allocation.region.entity.value());
-      if (resources == selected->resourcesByRoot.end())
-        return invalid("matched Mapping lost a resource-time region");
-      active.push_back({allocation.region, resources->second});
-    }
+    auto active = materializeAllocations(*selectedStates[snapshot], state);
+    if (!active)
+      return active.takeError();
     ::loom::pnr::ResourceTimeScheduleState materialized{
-        selected->reference, std::move(event), state.timePicoseconds,
-        std::move(active)};
+        selectedStates[snapshot]->reference, std::move(event),
+        state.timePicoseconds, std::move(*active)};
     if (!scenario.states.empty() &&
-        scenario.states.back().timePicoseconds == state.timePicoseconds)
+        scenario.states.back().timePicoseconds == state.timePicoseconds) {
       scenario.states.back() = std::move(materialized);
-    else
+      scenarioMappings.back() = selectedStates[snapshot];
+    } else {
       scenario.states.push_back(std::move(materialized));
+      scenarioMappings.push_back(selectedStates[snapshot]);
+    }
   }
   if (scenario.states.empty())
     return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
+
+  // The schedule planner does not own Mapping legality. When it selects two
+  // distinct imported states but no compiler-proven edge was attached, keep a
+  // typed proof-not-established edge so the independent verifier reports the
+  // causal gap instead of relabeling it as an unmatched application.
+  for (std::size_t index = 1; index != scenario.states.size(); ++index) {
+    const auto &before = scenario.states[index - 1];
+    const auto &after = scenario.states[index];
+    if (before.mapping == after.mapping)
+      continue;
+    ::loom::pnr::ResourceTimeTransition transition{
+        after.event,
+        std::nullopt,
+        {before.mapping, std::nullopt},
+        {after.mapping, std::nullopt},
+        {},
+        {},
+        {},
+        {},
+        {},
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        ::loom::pnr::ResourceTimeTransitionStatus::ProofNotEstablished};
+    transition.beforeActive = before.active;
+    transition.afterActive = after.active;
+    transition.status =
+        ::loom::pnr::ResourceTimeTransitionStatus::ProofNotEstablished;
+    scenario.transitions.transitions.push_back(std::move(transition));
+  }
   return std::optional<::loom::pnr::ResourceTimeScheduleScenario>(
       std::move(scenario));
 }
@@ -340,7 +393,8 @@ bool hasExplicitTemporalActiveSet(
 llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
     const ::loom::pnr::ResourceTimeScheduleWitness &witness,
     llvm::ArrayRef<ResourceTimeRegionMapping> regions,
-    const ArtifactStore &store, ExecutionControlView executionControl) {
+    const ArtifactStore &store, ExecutionControlView executionControl,
+    const BlobStore *blobs) {
   if (llvm::Error error =
           ::loom::pnr::validateResourceTimeScheduleWitness(witness))
     return std::move(error);
@@ -355,8 +409,10 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
     if (!llvm::is_contained(witness.regions, region.root) ||
         !regionByIdentity.emplace(region.root, &region).second)
       return invalid("region correspondence is foreign or duplicated");
-    if (region.minimumFeasibleAccCoreCount == 0 ||
-        region.minimumFeasibleAccCoreCount > region.maximumUsefulAccCoreCount)
+    if (region.minimumFeasibleAccCoreCount &&
+        (*region.minimumFeasibleAccCoreCount == 0 ||
+         *region.minimumFeasibleAccCoreCount >
+             region.maximumUsefulAccCoreCount))
       return invalid("region allocation bounds are invalid");
     if (dataflowIdentity && *dataflowIdentity != region.root.artifact)
       return ResourceTimeSpectrumVerification{incomplete(
@@ -462,8 +518,7 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
       if (mapping == imported.end())
         return invalid("resource-time state lost its imported Mapping");
       if (mapping->second.resourceTimeProgress.kind !=
-          ::loom::mapping::MappingProgressClosureKind::
-              ProvenNoClosedWaitSet)
+          ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
         return ResourceTimeSpectrumVerification{incomplete(
             ResourceTimeSpectrumIncompleteReason::ProofNotEstablished,
             "resource-time Mapping progress is not established: " +
@@ -508,16 +563,20 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
               "SystemMapping execution bindings",
               imported.size())};
         const std::uint64_t count = observed.size();
-        if (count < region.minimumFeasibleAccCoreCount ||
+        if ((region.minimumFeasibleAccCoreCount &&
+             count < *region.minimumFeasibleAccCoreCount) ||
             count > region.maximumUsefulAccCoreCount)
           return ResourceTimeSpectrumVerification{incomplete(
               ResourceTimeSpectrumIncompleteReason::ProofNotEstablished,
               "verified Mapping allocation is outside the region resource "
               "bounds",
               imported.size())};
-        everyAllocationAtMinimum &= count == region.minimumFeasibleAccCoreCount;
+        everyAllocationAtMinimum &=
+            region.minimumFeasibleAccCoreCount &&
+            count == *region.minimumFeasibleAccCoreCount;
         everyAllocationAtMaximum &= count == region.maximumUsefulAccCoreCount;
         everyMinimumBoundExact &=
+            region.minimumFeasibleAccCoreCount &&
             region.minimumBoundSupport == ResourceTimeEstimateSupport::Exact;
         everyMaximumBoundExact &=
             region.maximumBoundSupport == ResourceTimeEstimateSupport::Exact;
@@ -551,14 +610,28 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
          llvm::zip(mappingChanges, scenario.transitions.transitions)) {
       const auto &change = std::get<0>(paired);
       const auto &transition = std::get<1>(paired);
-      if (transition.beforeMapping != change.first ||
-          transition.afterMapping != change.second)
+      if (transition.parent.mapping != change.first ||
+          transition.child.mapping != change.second)
         return ResourceTimeSpectrumVerification{incomplete(
             ResourceTimeSpectrumIncompleteReason::ProofNotEstablished,
             "resource-time transition does not match its adjacent states",
             imported.size())};
       switch (transition.status) {
       case ::loom::pnr::ResourceTimeTransitionStatus::Verified:
+        if (!blobs)
+          return ResourceTimeSpectrumVerification{incomplete(
+              ResourceTimeSpectrumIncompleteReason::ProofNotEstablished,
+              "resource-time Mapping transition has no independently "
+              "verified Deployment closure",
+              imported.size())};
+        if (llvm::Error error =
+                ::loom::pnr::verifyResourceTimeTransitionClosure(transition,
+                                                                 store, *blobs))
+          return ResourceTimeSpectrumVerification{incomplete(
+              ResourceTimeSpectrumIncompleteReason::ProofNotEstablished,
+              "resource-time transition closure is not established: " +
+                  llvm::toString(std::move(error)),
+              imported.size())};
         break;
       case ::loom::pnr::ResourceTimeTransitionStatus::Unsupported:
         return ResourceTimeSpectrumVerification{
@@ -583,19 +656,18 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
         witness.concurrencyBoundStatus ==
         ::loom::pnr::ResourceTimeConcurrencyBoundStatus::Exact;
     if (witness.regions.size() > 1 && exactConcurrencyBounds &&
-             everyMinimumBoundExact &&
-             everyAllocationAtMinimum &&
-             peakConcurrentRegions == witness.maximumConcurrentRegions)
+        everyMinimumBoundExact && everyAllocationAtMinimum &&
+        peakConcurrentRegions == witness.maximumConcurrentRegions)
       spectrumClass = PreMappingSpectrumClass::MaxSpatial;
     else if (witness.regions.size() > 1 && exactConcurrencyBounds &&
              hasExplicitTemporalActiveSet(scenario, witness.regions.size()) &&
-             everyMaximumBoundExact &&
-             everyAllocationAtMaximum &&
+             everyMaximumBoundExact && everyAllocationAtMaximum &&
              peakConcurrentRegions == witness.minimumConcurrentRegions)
       spectrumClass = PreMappingSpectrumClass::MaxTemporal;
     verified.scenarios.push_back(
         {indexedScenario.index(), spectrumClass, peakConcurrentRegions,
-         scenario.makespanPicoseconds, std::move(scenarioMappings)});
+         scenario.makespanPicoseconds, std::move(scenarioMappings),
+         scenario.states, scenario.transitions});
   }
   return ResourceTimeSpectrumVerification{std::move(verified)};
 }
@@ -607,7 +679,8 @@ verifyResourceTimeMappingFinalists(
     llvm::ArrayRef<ResourceTimeRegionResourceBound> bounds,
     llvm::ArrayRef<ArtifactRootReference> systemMappings,
     const ArtifactStore &store, ExecutionControlView executionControl,
-    std::optional<ResourceTimeConcurrencyBounds> concurrencyBounds) {
+    std::optional<ResourceTimeConcurrencyBounds> concurrencyBounds,
+    const BlobStore *blobs) {
   const auto begin = std::chrono::steady_clock::now();
   ResourceTimeSpectrumFunnelAccounting accounting;
   accounting.hintCandidates = hints.size();
@@ -627,11 +700,17 @@ verifyResourceTimeMappingFinalists(
     });
     if (bound == bounds.end() || bound->maximumUsefulResourceUnits == 0)
       return invalid("resource-time region has no resource bound");
-    correspondence.push_back({region.region, 1,
-                              bound->maximumUsefulResourceUnits,
-                              ResourceTimeEstimateSupport::Unsupported,
-                              ResourceTimeEstimateSupport::Unsupported,
-                              region.logicalEpochCount});
+    const std::optional<std::uint64_t> minimumFeasible =
+        bound->minimumFeasibleResourceUnits == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>(bound->minimumFeasibleResourceUnits);
+    if (minimumFeasible && *minimumFeasible > bound->maximumUsefulResourceUnits)
+      return invalid("resource-time region minimum allocation exceeds its "
+                     "maximum useful allocation");
+    correspondence.push_back(
+        {region.region, minimumFeasible, bound->maximumUsefulResourceUnits,
+         bound->minimumSupport, ResourceTimeEstimateSupport::Unsupported,
+         region.logicalEpochCount});
   }
 
   std::vector<ArtifactRootReference> canonicalMappings(systemMappings.begin(),
@@ -705,13 +784,16 @@ verifyResourceTimeMappingFinalists(
                 imported.size())},
             accounting};
       }
-      sawMinimum |= resources->second.size() == 1;
+      sawMinimum |= correspondence[ordinal].minimumFeasibleAccCoreCount &&
+                    resources->second.size() ==
+                        *correspondence[ordinal].minimumFeasibleAccCoreCount;
       sawMaximum |=
           resources->second.size() == bound.maximumUsefulResourceUnits;
     }
     correspondence[ordinal].minimumBoundSupport =
-        sawMinimum ? ResourceTimeEstimateSupport::Exact
-                   : ResourceTimeEstimateSupport::Unsupported;
+        sawMinimum && bound.minimumSupport == ResourceTimeEstimateSupport::Exact
+            ? ResourceTimeEstimateSupport::Exact
+            : ResourceTimeEstimateSupport::Unsupported;
     correspondence[ordinal].maximumBoundSupport =
         sawMaximum && bound.support == ResourceTimeEstimateSupport::Exact
             ? ResourceTimeEstimateSupport::Exact
@@ -788,7 +870,7 @@ verifyResourceTimeMappingFinalists(
         accounting};
   }
   auto verified = verifyResourceTimeSpectrum(witness, correspondence, store,
-                                             executionControl);
+                                             executionControl, blobs);
   if (!verified)
     return verified.takeError();
   // The independent verifier reuses the same invocation-owned immutable

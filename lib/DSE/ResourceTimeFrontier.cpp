@@ -471,21 +471,20 @@ void retainBoundedTerminalHint(std::vector<ResourceTimeScheduleHint> &retained,
     bounded.push_back(*candidate);
   };
   append(objective.front());
-  const auto temporal = *std::min_element(
-      objective.begin(), objective.end(), [](const auto *lhs, const auto *rhs) {
-        return temporalHintLess(*lhs, *rhs);
-      });
-  const auto spatial = *std::min_element(
-      objective.begin(), objective.end(), [](const auto *lhs, const auto *rhs) {
-        return spatialHintLess(*lhs, *rhs);
-      });
+  const auto temporal = *std::min_element(objective.begin(), objective.end(),
+                                          [](const auto *lhs, const auto *rhs) {
+                                            return temporalHintLess(*lhs, *rhs);
+                                          });
+  const auto spatial = *std::min_element(objective.begin(), objective.end(),
+                                         [](const auto *lhs, const auto *rhs) {
+                                           return spatialHintLess(*lhs, *rhs);
+                                         });
   if (maximumFinalists > 1)
     append(temporal);
   if (maximumFinalists > 2)
     append(spatial);
   for (std::size_t index = 1;
-       index != objective.size() && bounded.size() < maximumFinalists;
-       ++index)
+       index != objective.size() && bounded.size() < maximumFinalists; ++index)
     append(objective[index]);
   retained = std::move(bounded);
 }
@@ -935,6 +934,8 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
   }
 
   std::vector<ResourceTimeScheduleHint> terminal;
+  std::optional<std::uint64_t> generatedMinimumPeakConcurrentRegions;
+  std::optional<std::uint64_t> generatedMaximumPeakConcurrentRegions;
   bool budgetExhausted = false;
   bool cancelled = false;
   while (!frontier.empty()) {
@@ -947,8 +948,19 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
       }
       if (llvm::all_of(state.completed, [](bool value) { return value; })) {
         ++accounting.terminalHintsGenerated;
+        ResourceTimeScheduleHint terminalHint = makeHint(state);
+        generatedMinimumPeakConcurrentRegions =
+            generatedMinimumPeakConcurrentRegions
+                ? std::min(*generatedMinimumPeakConcurrentRegions,
+                           terminalHint.peakConcurrentRegions)
+                : terminalHint.peakConcurrentRegions;
+        generatedMaximumPeakConcurrentRegions =
+            generatedMaximumPeakConcurrentRegions
+                ? std::max(*generatedMaximumPeakConcurrentRegions,
+                           terminalHint.peakConcurrentRegions)
+                : terminalHint.peakConcurrentRegions;
         std::vector<ResourceTimeScheduleHint> retained = terminal;
-        retainBoundedTerminalHint(retained, makeHint(state),
+        retainBoundedTerminalHint(retained, std::move(terminalHint),
                                   policy.maximumFinalists);
         const std::uint64_t retainedBytes = retainedHintBytes(retained);
         std::uint64_t prospectiveRetained = memoBytes;
@@ -1173,16 +1185,13 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
   accounting.terminalHintsRetained = terminal.size();
   accounting.terminalHintsPruned =
       accounting.terminalHintsGenerated - accounting.terminalHintsRetained;
-  if (!terminal.empty() && !budgetExhausted && !cancelled &&
+  if (generatedMinimumPeakConcurrentRegions &&
+      generatedMaximumPeakConcurrentRegions && !budgetExhausted && !cancelled &&
       accounting.statesPrunedByBeam == 0) {
-    std::uint64_t minimum = std::numeric_limits<std::uint64_t>::max();
-    std::uint64_t maximum = 0;
-    for (const ResourceTimeScheduleHint &hint : terminal) {
-      minimum = std::min(minimum, hint.peakConcurrentRegions);
-      maximum = std::max(maximum, hint.peakConcurrentRegions);
-    }
-    concurrencyBounds = ResourceTimeConcurrencyBounds{
-        minimum, maximum, ResourceTimeEstimateSupport::Exact};
+    concurrencyBounds =
+        ResourceTimeConcurrencyBounds{*generatedMinimumPeakConcurrentRegions,
+                                      *generatedMaximumPeakConcurrentRegions,
+                                      ResourceTimeEstimateSupport::Exact};
   }
   std::vector<ResourceTimeScheduleHint> finalists =
       selectFinalists(std::move(terminal), policy.maximumFinalists);

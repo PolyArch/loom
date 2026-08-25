@@ -2,12 +2,16 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Deployment/Deployment.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemReferenceRemapper.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "PnR/System/SystemPnrProblem.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -33,6 +37,77 @@ bool rootLess(::dataflow::RootThreadLaunchRef lhs,
   if (lhs.artifact != rhs.artifact)
     return lhs.artifact.bytes() < rhs.artifact.bytes();
   return lhs.entity.value() < rhs.entity.value();
+}
+
+std::vector<std::uint8_t> canonicalResourceBytes(
+    const ::loom::fabric::FabricPhysicalOccurrenceOwnerRef &resource) {
+  return ::loom::fabric::canonicalFabricBytes(resource);
+}
+
+bool allocationsEquivalent(llvm::ArrayRef<ResourceTimeRegionAllocation> lhs,
+                           llvm::ArrayRef<ResourceTimeRegionAllocation> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (const ResourceTimeRegionAllocation &left : lhs) {
+    const auto right = llvm::find_if(rhs, [&](const auto &candidate) {
+      return candidate.region == left.region;
+    });
+    if (right == rhs.end() || left.resources.size() != right->resources.size())
+      return false;
+    std::vector<std::vector<std::uint8_t>> leftResources;
+    std::vector<std::vector<std::uint8_t>> rightResources;
+    leftResources.reserve(left.resources.size());
+    rightResources.reserve(right->resources.size());
+    for (const auto &resource : left.resources)
+      leftResources.push_back(canonicalResourceBytes(resource));
+    for (const auto &resource : right->resources)
+      rightResources.push_back(canonicalResourceBytes(resource));
+    llvm::sort(leftResources);
+    llvm::sort(rightResources);
+    if (leftResources != rightResources)
+      return false;
+  }
+  return true;
+}
+
+void canonicalizeResources(
+    std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef> &resources) {
+  llvm::sort(resources, [](const auto &lhs, const auto &rhs) {
+    return canonicalResourceBytes(lhs) < canonicalResourceBytes(rhs);
+  });
+  resources.erase(std::unique(resources.begin(), resources.end()),
+                  resources.end());
+}
+
+llvm::Expected<::loom::fabric::FabricPhysicalOccurrenceOwnerRef>
+physicalAccCore(::loom::fabric::AccCoreOccurrenceRef core) {
+  return ::loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(
+      ::loom::fabric::FabricInventoryOwnerRef::of(core));
+}
+
+llvm::Expected<std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef>>
+mappingResourcesForRoot(
+    const ::loom::mapping::SystemExecutionContextProjection &contexts,
+    ::dataflow::RootThreadLaunchRef root) {
+  std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef> resources;
+  for (const auto &domain : contexts.instructionDomains) {
+    if (domain.root != root)
+      continue;
+    auto physical = physicalAccCore(domain.context.accCore);
+    if (!physical)
+      return physical.takeError();
+    resources.push_back(std::move(*physical));
+  }
+  for (const auto &domain : contexts.spatialDomains) {
+    if (domain.graph.rootThreadLaunch != root)
+      continue;
+    auto physical = physicalAccCore(domain.context.accCore);
+    if (!physical)
+      return physical.takeError();
+    resources.push_back(std::move(*physical));
+  }
+  canonicalizeResources(resources);
+  return resources;
 }
 
 void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
@@ -132,8 +207,7 @@ llvm::Expected<std::vector<std::uint8_t>> canonicalFinalizedSeedBytes(
     const SystemExecutionBindingCorrespondence &correspondence,
     const SystemMappingMigrationContext &context,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> reopenedRoots) {
-  std::vector<std::uint8_t> bytes =
-      encodeArtifactRootReference(parentMapping);
+  std::vector<std::uint8_t> bytes = encodeArtifactRootReference(parentMapping);
   const auto child = encodeArtifactRootReference(correspondence.childSystem());
   bytes.insert(bytes.end(), child.begin(), child.end());
   const auto constraints =
@@ -157,8 +231,7 @@ llvm::Expected<std::vector<std::uint8_t>> canonicalFinalizedSeedBytes(
 }
 
 llvm::Expected<SystemMappingMigrationContext>
-readMigrationContext(llvm::ArrayRef<std::uint8_t> bytes,
-                     std::size_t &offset) {
+readMigrationContext(llvm::ArrayRef<std::uint8_t> bytes, std::size_t &offset) {
   auto constraints = readRootReference(bytes, offset);
   if (!constraints)
     return constraints.takeError();
@@ -205,8 +278,8 @@ readCorrespondence(llvm::ArrayRef<std::uint8_t> bytes, std::size_t &offset) {
     auto rawKind = readU64(bytes, offset);
     if (!rawKind)
       return rawKind.takeError();
-    if (*rawKind >= ::loom::fabric::fabricClosedBound(
-                       ::loom::fabric::FabricEntityKind()))
+    if (*rawKind >=
+        ::loom::fabric::fabricClosedBound(::loom::fabric::FabricEntityKind()))
       return invalid("migration entity has an unknown kind");
     auto source = readU64(bytes, offset);
     if (!source)
@@ -214,8 +287,7 @@ readCorrespondence(llvm::ArrayRef<std::uint8_t> bytes, std::size_t &offset) {
     auto target = readU64(bytes, offset);
     if (!target)
       return target.takeError();
-    const auto kind =
-        static_cast<::loom::fabric::FabricEntityKind>(*rawKind);
+    const auto kind = static_cast<::loom::fabric::FabricEntityKind>(*rawKind);
     entities.push_back({{kind, *source}, {kind, *target}});
   }
   auto patternCount = readU64(bytes, offset);
@@ -259,8 +331,7 @@ readCorrespondence(llvm::ArrayRef<std::uint8_t> bytes, std::size_t &offset) {
       return child.takeError();
     modules.push_back({std::move(*parent), std::move(*child)});
   }
-  return DecodedCorrespondence{std::move(entities),
-                               std::move(transferPatterns),
+  return DecodedCorrespondence{std::move(entities), std::move(transferPatterns),
                                std::move(modules)};
 }
 
@@ -400,9 +471,9 @@ mapAccCore(const SystemExecutionBindingCorrespondence &correspondence,
   return result;
 }
 
-std::optional<PnrIndex> endpointOrdinal(
-    const FrozenEndpointRoutingTopology &topology,
-    const ::loom::fabric::FabricTransportEndpointRef &reference) {
+std::optional<PnrIndex>
+endpointOrdinal(const FrozenEndpointRoutingTopology &topology,
+                const ::loom::fabric::FabricTransportEndpointRef &reference) {
   const auto found = llvm::find_if(topology.endpoints(), [&](const auto &row) {
     return row.reference == reference;
   });
@@ -411,9 +482,9 @@ std::optional<PnrIndex> endpointOrdinal(
   return static_cast<PnrIndex>(found - topology.endpoints().begin());
 }
 
-std::optional<PnrIndex> traversalOrdinal(
-    const FrozenEndpointRoutingTopology &topology,
-    const ::loom::fabric::FabricPhysicalTraversalRef &reference) {
+std::optional<PnrIndex>
+traversalOrdinal(const FrozenEndpointRoutingTopology &topology,
+                 const ::loom::fabric::FabricPhysicalTraversalRef &reference) {
   const auto found = llvm::find_if(topology.traversals(), [&](const auto &row) {
     return row.reference == reference;
   });
@@ -422,21 +493,20 @@ std::optional<PnrIndex> traversalOrdinal(
   return static_cast<PnrIndex>(found - topology.traversals().begin());
 }
 
-std::optional<PnrIndex> terminalOrdinal(
-    const FrozenSystemPnrProblem &problem,
-    const ::loom::mapping::SystemTransferTerminalKey &key) {
-  const auto found = llvm::find_if(problem.serviceTerminals(),
-                                   [&](const auto &row) {
-                                     return row.key == key;
-                                   });
+std::optional<PnrIndex>
+terminalOrdinal(const FrozenSystemPnrProblem &problem,
+                const ::loom::mapping::SystemTransferTerminalKey &key) {
+  const auto found =
+      llvm::find_if(problem.serviceTerminals(),
+                    [&](const auto &row) { return row.key == key; });
   if (found == problem.serviceTerminals().end())
     return std::nullopt;
   return static_cast<PnrIndex>(found - problem.serviceTerminals().begin());
 }
 
-const ::loom::mapping::SystemTransferLegView *findParentRoute(
-    const ::loom::mapping::SystemMappingView &mapping,
-    const ::loom::mapping::CanonicalServiceLegKey &key) {
+const ::loom::mapping::SystemTransferLegView *
+findParentRoute(const ::loom::mapping::SystemMappingView &mapping,
+                const ::loom::mapping::CanonicalServiceLegKey &key) {
   const ::loom::mapping::SystemTransferLegView *result = nullptr;
   for (const auto &service : mapping.serviceRealizations())
     for (const auto &plan : service.plans)
@@ -470,8 +540,7 @@ std::optional<ProjectedRoute> projectParentRoute(
     return std::nullopt;
   ProjectedRoute result;
   result.rootEndpoint = *root;
-  result.nodes.push_back(
-      {*root, getInvalidPnrIndex(), getInvalidPnrIndex()});
+  result.nodes.push_back({*root, getInvalidPnrIndex(), getInvalidPnrIndex()});
 
   std::vector<const ::loom::mapping::SystemTransferRouteNodeView *> nodes;
   nodes.reserve(parent.nodes.size());
@@ -508,8 +577,8 @@ std::optional<ProjectedRoute> projectParentRoute(
     }
     if (!target)
       return std::nullopt;
-    result.nodes.push_back({*target, static_cast<PnrIndex>(node->parentOrdinal),
-                            *traversal});
+    result.nodes.push_back(
+        {*target, static_cast<PnrIndex>(node->parentOrdinal), *traversal});
   }
   result.sinks.reserve(parent.sinks.size());
   for (const auto &sink : parent.sinks) {
@@ -520,8 +589,7 @@ std::optional<ProjectedRoute> projectParentRoute(
         {*terminal, static_cast<PnrIndex>(sink.nodeOrdinal)});
   }
   llvm::sort(result.sinks, [](const auto &lhs, const auto &rhs) {
-    return std::tie(lhs.terminal, lhs.node) <
-           std::tie(rhs.terminal, rhs.node);
+    return std::tie(lhs.terminal, lhs.node) < std::tie(rhs.terminal, rhs.node);
   });
   return result;
 }
@@ -537,15 +605,16 @@ llvm::Expected<SystemCandidateRouteSeed> projectFinalizedRoutes(
   SystemCandidateRouteSeed seed;
   seed.routes.reserve(problem.serviceLegs().size());
   for (PnrIndex leg = 0; leg < problem.serviceLegs().size(); ++leg) {
-    const auto *parent = findParentRoute(mapping, problem.serviceLegs()[leg].key);
+    const auto *parent =
+        findParentRoute(mapping, problem.serviceLegs()[leg].key);
     std::optional<ProjectedRoute> projected;
     if (parent)
       projected = projectParentRoute(*parent, *remapper, problem);
     const PnrIndex nodeOffset = static_cast<PnrIndex>(seed.nodes.size());
     const PnrIndex sinkOffset = static_cast<PnrIndex>(seed.sinks.size());
     if (!projected) {
-      seed.routes.push_back({leg, getInvalidPnrIndex(), nodeOffset, 0,
-                             sinkOffset, 0});
+      seed.routes.push_back(
+          {leg, getInvalidPnrIndex(), nodeOffset, 0, sinkOffset, 0});
       seed.reroutedLegs.push_back(leg);
       continue;
     }
@@ -553,18 +622,18 @@ llvm::Expected<SystemCandidateRouteSeed> projectFinalizedRoutes(
                       projected->nodes.end());
     seed.sinks.insert(seed.sinks.end(), projected->sinks.begin(),
                       projected->sinks.end());
-    seed.routes.push_back(
-        {leg, projected->rootEndpoint, nodeOffset,
-         static_cast<PnrIndex>(projected->nodes.size()), sinkOffset,
-         static_cast<PnrIndex>(projected->sinks.size())});
+    seed.routes.push_back({leg, projected->rootEndpoint, nodeOffset,
+                           static_cast<PnrIndex>(projected->nodes.size()),
+                           sinkOffset,
+                           static_cast<PnrIndex>(projected->sinks.size())});
   }
   return seed;
 }
 
 } // namespace
 
-llvm::StringRef resourceTimeTransitionStatusSpelling(
-    ResourceTimeTransitionStatus status) {
+llvm::StringRef
+resourceTimeTransitionStatusSpelling(ResourceTimeTransitionStatus status) {
   switch (status) {
   case ResourceTimeTransitionStatus::Verified:
     return "verified";
@@ -576,6 +645,17 @@ llvm::StringRef resourceTimeTransitionStatusSpelling(
     return "cancelled_or_timeout";
   }
   llvm_unreachable("unknown resource-time transition status");
+}
+
+llvm::StringRef
+resourceTimeSafePointKindSpelling(ResourceTimeSafePointKind kind) {
+  switch (kind) {
+  case ResourceTimeSafePointKind::Completion:
+    return "completion";
+  case ResourceTimeSafePointKind::Explicit:
+    return "explicit";
+  }
+  llvm_unreachable("unknown resource-time safe-point kind");
 }
 
 llvm::StringRef
@@ -600,14 +680,11 @@ llvm::StringRef resourceTimeConcurrencyBoundStatusSpelling(
   llvm_unreachable("unknown resource-time concurrency bound status");
 }
 
-llvm::Error validateResourceTimeTransition(
-    const ResourceTimeTransition &transition) {
-  if (transition.safePoint.schemaIdentity.empty())
-    return invalid("resource-time transition requires a compiler-known "
-                   "safe point");
-  const auto validateMappingReference = [](const ArtifactRootReference &root,
-                                            llvm::StringRef name)
-      -> llvm::Error {
+llvm::Error
+validateResourceTimeTransition(const ResourceTimeTransition &transition) {
+  const auto validateMappingReference =
+      [](const ArtifactRootReference &root,
+         llvm::StringRef name) -> llvm::Error {
     if (root.schemaIdentity !=
             ::loom::mapping::mappingArtifactSchema.identity ||
         root.schemaVersion != ::loom::mapping::mappingArtifactSchema.version)
@@ -615,16 +692,31 @@ llvm::Error validateResourceTimeTransition(
     return llvm::Error::success();
   };
   if (llvm::Error error =
-          validateMappingReference(transition.beforeMapping, "before_mapping"))
+          validateMappingReference(transition.parent.mapping, "parent_mapping"))
     return error;
   if (llvm::Error error =
-          validateMappingReference(transition.afterMapping, "after_mapping"))
+          validateMappingReference(transition.child.mapping, "child_mapping"))
     return error;
-  const auto validateAllocations = [](llvm::ArrayRef<
-                                          ResourceTimeRegionAllocation> values,
-                                      llvm::StringRef name) -> llvm::Error {
-    std::vector<
-        ::loom::fabric::FabricPhysicalOccurrenceOwnerRef> usedResources;
+  const auto validateDeploymentReference =
+      [](const std::optional<ArtifactRootReference> &root,
+         llvm::StringRef name) -> llvm::Error {
+    if (root &&
+        (root->schemaIdentity !=
+             ::loom::deployment::deploymentSchema.identity ||
+         root->schemaVersion != ::loom::deployment::deploymentSchema.version))
+      return invalid(name + " is not a Deployment artifact reference");
+    return llvm::Error::success();
+  };
+  if (llvm::Error error = validateDeploymentReference(
+          transition.parent.deployment, "parent_deployment"))
+    return error;
+  if (llvm::Error error = validateDeploymentReference(
+          transition.child.deployment, "child_deployment"))
+    return error;
+  const auto validateAllocations =
+      [](llvm::ArrayRef<ResourceTimeRegionAllocation> values,
+         llvm::StringRef name) -> llvm::Error {
+    std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef> usedResources;
     for (std::size_t index = 0; index != values.size(); ++index) {
       const auto &allocation = values[index];
       if (allocation.resources.empty())
@@ -632,18 +724,16 @@ llvm::Error validateResourceTimeTransition(
       for (std::size_t prior = 0; prior != index; ++prior)
         if (values[prior].region == allocation.region)
           return invalid(name + " contains a duplicate region");
-      for (std::size_t resource = 0;
-           resource != allocation.resources.size(); ++resource)
-        {
-          for (std::size_t prior = 0; prior != resource; ++prior)
-            if (allocation.resources[prior] == allocation.resources[resource])
-              return invalid(name + " contains a duplicate resource");
-          if (llvm::is_contained(usedResources,
-                                 allocation.resources[resource]))
-            return invalid(name + " assigns one physical resource to "
-                           "multiple active regions");
-          usedResources.push_back(allocation.resources[resource]);
-        }
+      for (std::size_t resource = 0; resource != allocation.resources.size();
+           ++resource) {
+        for (std::size_t prior = 0; prior != resource; ++prior)
+          if (allocation.resources[prior] == allocation.resources[resource])
+            return invalid(name + " contains a duplicate resource");
+        if (llvm::is_contained(usedResources, allocation.resources[resource]))
+          return invalid(name + " assigns one physical resource to "
+                                "multiple active regions");
+        usedResources.push_back(allocation.resources[resource]);
+      }
     }
     return llvm::Error::success();
   };
@@ -654,8 +744,8 @@ llvm::Error validateResourceTimeTransition(
           validateAllocations(transition.afterActive, "after_active"))
     return error;
   std::optional<ArtifactIdentity> activeDataflow;
-  for (const auto *allocations : {&transition.beforeActive,
-                                  &transition.afterActive})
+  for (const auto *allocations :
+       {&transition.beforeActive, &transition.afterActive})
     for (const ResourceTimeRegionAllocation &allocation : *allocations) {
       if (activeDataflow && *activeDataflow != allocation.region.artifact)
         return invalid("resource-time transition spans multiple Dataflow "
@@ -684,6 +774,12 @@ llvm::Error validateResourceTimeTransition(
     return invalid("resource-time live work changed without typed token or "
                    "live-state correspondence");
   if (transition.status == ResourceTimeTransitionStatus::Verified) {
+    if (!transition.safePoint)
+      return invalid("verified resource-time transition has no compiler-known "
+                     "safe point");
+    if (!transition.parent.deployment || !transition.child.deployment)
+      return invalid("verified resource-time transition has no exact parent "
+                     "and child Deployment references");
     if (!transition.migrationTimePicoseconds ||
         *transition.migrationTimePicoseconds == 0)
       return invalid("verified resource-time transition has no migration "
@@ -692,6 +788,176 @@ llvm::Error validateResourceTimeTransition(
         !transition.configurationDeltaDigest || !transition.routeDeltaDigest)
       return invalid("verified resource-time transition lacks derived delta "
                      "or route digests");
+  }
+  if (transition.safePoint) {
+    if (transition.safePoint->artifact.schemaIdentity.empty())
+      return invalid("resource-time transition has an empty safe-point "
+                     "artifact");
+    if (transition.safePoint->kind == ResourceTimeSafePointKind::Completion) {
+      if (transition.safePoint->artifact.schemaIdentity !=
+              ::dataflow::canonicalDataflowSchema.identity ||
+          transition.safePoint->artifact.schemaVersion !=
+              ::dataflow::canonicalDataflowSchema.version)
+        return invalid("completion safe point must be owned by Canonical "
+                       "Dataflow");
+      const auto completing =
+          llvm::find_if(transition.beforeActive,
+                        [&](const ResourceTimeRegionAllocation &allocation) {
+                          return allocation.region.artifact ==
+                                     transition.safePoint->artifact.artifact &&
+                                 ::dataflow::rootThreadCompletionEventFamily(
+                                     allocation.region) == transition.trigger;
+                        });
+      if (completing == transition.beforeActive.end())
+        return invalid("completion safe point is not the completion event of "
+                       "an active parent region (active region count " +
+                       llvm::Twine(transition.beforeActive.size()) + ")");
+    } else if (transition.safePoint->artifact.schemaIdentity ==
+                   ::dataflow::canonicalDataflowSchema.identity &&
+               transition.safePoint->artifact.schemaVersion ==
+                   ::dataflow::canonicalDataflowSchema.version) {
+      return invalid("explicit safe point requires a compiler proof artifact, "
+                     "not only a Canonical Dataflow root");
+    }
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error
+verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
+                                    const ArtifactStore &artifacts,
+                                    const BlobStore &blobs) {
+  if (llvm::Error error = validateResourceTimeTransition(transition))
+    return error;
+  if (transition.status != ResourceTimeTransitionStatus::Verified)
+    return invalid("resource-time transition closure requires a verified "
+                   "edge status");
+  if (!transition.safePoint || !transition.parent.deployment ||
+      !transition.child.deployment)
+    return invalid("verified resource-time transition lost required closure "
+                   "references");
+
+  auto parentDeployment = ::loom::deployment::importDeployment(
+      *transition.parent.deployment, artifacts, blobs);
+  if (!parentDeployment)
+    return parentDeployment.takeError();
+  auto childDeployment = ::loom::deployment::importDeployment(
+      *transition.child.deployment, artifacts, blobs);
+  if (!childDeployment)
+    return childDeployment.takeError();
+  if (parentDeployment->deployment().systemMapping() !=
+      transition.parent.mapping)
+    return invalid("parent Deployment does not select the parent "
+                   "SystemMapping");
+  if (childDeployment->deployment().systemMapping() != transition.child.mapping)
+    return invalid("child Deployment does not select the child "
+                   "SystemMapping");
+
+  auto parentMapping = ::loom::mapping::importSystemMapping(
+      transition.parent.mapping, artifacts);
+  if (!parentMapping)
+    return parentMapping.takeError();
+  auto childMapping =
+      ::loom::mapping::importSystemMapping(transition.child.mapping, artifacts);
+  if (!childMapping)
+    return childMapping.takeError();
+  if (parentMapping->view().dataflowIdentity() !=
+      childMapping->view().dataflowIdentity())
+    return invalid("resource-time transition changes Canonical Dataflow "
+                   "without a typed live-state correspondence owner");
+  if (parentMapping->view().fabricIdentity() !=
+      childMapping->view().fabricIdentity())
+    return invalid("resource-time transition changes the immutable Fabric");
+
+  const ArtifactRootReference dataflowReference{
+      ::dataflow::canonicalDataflowSchema.identity.str(),
+      ::dataflow::canonicalDataflowSchema.version,
+      parentMapping->view().dataflowIdentity()};
+  auto dataflowArtifact =
+      ::dataflow::importCanonicalDataflow(dataflowReference, artifacts);
+  if (!dataflowArtifact)
+    return dataflowArtifact.takeError();
+  auto dataflow = dataflowArtifact->view();
+  if (!dataflow)
+    return dataflow.takeError();
+  if (llvm::Error error = dataflow->validate(transition.trigger))
+    return invalid("resource-time transition trigger is not owned by the "
+                   "endpoint "
+                   "Dataflow: " +
+                   llvm::toString(std::move(error)));
+  if (transition.safePoint->kind == ResourceTimeSafePointKind::Explicit)
+    return invalid("explicit resource-time safe-point closure is not "
+                   "established by a typed compiler proof importer");
+
+  const ArtifactRootReference fabricReference{
+      ::loom::fabric::fabricArtifactSchema.identity.str(),
+      ::loom::fabric::fabricArtifactSchema.version,
+      parentMapping->view().fabricIdentity()};
+  auto fabricArtifact =
+      ::loom::fabric::importEntireFabricRoot(fabricReference, artifacts);
+  if (!fabricArtifact)
+    return fabricArtifact.takeError();
+  auto system = ::loom::fabric::requireSystemRoot(fabricArtifact->view());
+  if (!system)
+    return system.takeError();
+  auto parentContexts = ::loom::mapping::projectSystemExecutionContexts(
+      *dataflow, parentMapping->view().executionBindings());
+  if (!parentContexts)
+    return parentContexts.takeError();
+  auto childContexts = ::loom::mapping::projectSystemExecutionContexts(
+      *dataflow, childMapping->view().executionBindings());
+  if (!childContexts)
+    return childContexts.takeError();
+
+  const auto verifyAllocations =
+      [&](llvm::ArrayRef<ResourceTimeRegionAllocation> allocations,
+          const ::loom::mapping::SystemExecutionContextProjection &contexts,
+          llvm::StringRef name) -> llvm::Error {
+    for (const ResourceTimeRegionAllocation &allocation : allocations) {
+      if (allocation.region.artifact != dataflowReference.artifact)
+        return invalid(name + " names a foreign Dataflow region");
+      auto root = dataflow->resolve(allocation.region);
+      if (!root)
+        return root.takeError();
+      auto expected = mappingResourcesForRoot(contexts, allocation.region);
+      if (!expected)
+        return expected.takeError();
+      std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef> observed =
+          allocation.resources;
+      canonicalizeResources(observed);
+      if (observed != *expected)
+        return invalid(name + " disagrees with the independently imported "
+                              "SystemMapping execution binding");
+      for (const auto &resource : observed) {
+        auto resolved = system->resolvePhysicalOwner(resource);
+        if (!resolved)
+          return invalid(name + " names a resource outside the endpoint "
+                                "Fabric");
+      }
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error error = verifyAllocations(
+          transition.beforeActive, *parentContexts, "parent allocation"))
+    return error;
+  if (llvm::Error error = verifyAllocations(transition.afterActive,
+                                            *childContexts, "child allocation"))
+    return error;
+
+  for (const auto *roots :
+       {&transition.beforeLiveWork, &transition.afterLiveWork})
+    for (const ArtifactRootReference &root : *roots) {
+      auto stored = artifacts.get(root);
+      if (!stored)
+        return invalid("resource-time live-work artifact is not available: " +
+                       llvm::toString(stored.takeError()));
+    }
+  if (transition.tokenLiveStateCorrespondence) {
+    auto stored = artifacts.get(*transition.tokenLiveStateCorrespondence);
+    if (!stored)
+      return invalid("resource-time live-state correspondence is not "
+                     "available: " +
+                     llvm::toString(stored.takeError()));
   }
   return llvm::Error::success();
 }
@@ -703,10 +969,9 @@ llvm::Error validateResourceTimeTransitionSequence(
     if (llvm::Error error = validateResourceTimeTransition(transition))
       return error;
     if (index != 0 &&
-        sequence.transitions[index - 1].afterMapping !=
-            transition.beforeMapping)
+        sequence.transitions[index - 1].child != transition.parent)
       return invalid("resource-time transition sequence is not chained by "
-                     "Mapping reference");
+                     "Mapping and Deployment reference");
   }
   return llvm::Error::success();
 }
@@ -728,8 +993,8 @@ llvm::Error validateResourceTimeScheduleWitness(
     return llvm::is_contained(witness.regions, reference);
   };
   for (std::size_t index = 0; index != witness.regions.size(); ++index) {
-    if (index != 0 && witness.regions[index].artifact !=
-                          witness.regions.front().artifact)
+    if (index != 0 &&
+        witness.regions[index].artifact != witness.regions.front().artifact)
       return invalid("resource-time schedule witness spans multiple Dataflow "
                      "identities without typed correspondence");
     for (std::size_t prior = 0; prior != index; ++prior)
@@ -760,8 +1025,7 @@ llvm::Error validateResourceTimeScheduleWitness(
       return nullptr;
     };
     for (std::size_t index = 0; index != scenario.executions.size(); ++index) {
-      const ResourceTimeRegionExecution &execution =
-          scenario.executions[index];
+      const ResourceTimeRegionExecution &execution = scenario.executions[index];
       if (!hasRegion(execution.region))
         return invalid("resource-time execution references a foreign region");
       if (execution.readyPicoseconds > execution.startPicoseconds ||
@@ -806,13 +1070,25 @@ llvm::Error validateResourceTimeScheduleWitness(
       if (state.active.size() > witness.maximumConcurrentRegions)
         return invalid("resource-time state exceeds the concurrency bound");
 
+      const bool hasBoundaryEvent = llvm::any_of(
+          scenario.executions,
+          [&](const ResourceTimeRegionExecution &execution) {
+            return (execution.startPicoseconds == state.timePicoseconds &&
+                    state.event == ::dataflow::rootThreadStartEventFamily(
+                                       execution.region)) ||
+                   (execution.completionPicoseconds == state.timePicoseconds &&
+                    state.event == ::dataflow::rootThreadCompletionEventFamily(
+                                       execution.region));
+          });
+      if (!hasBoundaryEvent)
+        return invalid("resource-time state event is not a start or completion "
+                       "boundary at its timestamp");
+
       std::vector<::dataflow::RootThreadLaunchRef> expectedActive;
-      for (const ResourceTimeRegionExecution &execution :
-           scenario.executions) {
-        const bool active = execution.startPicoseconds <=
-                                state.timePicoseconds &&
-                            state.timePicoseconds <
-                                execution.completionPicoseconds;
+      for (const ResourceTimeRegionExecution &execution : scenario.executions) {
+        const bool active =
+            execution.startPicoseconds <= state.timePicoseconds &&
+            state.timePicoseconds < execution.completionPicoseconds;
         if (active)
           expectedActive.push_back(execution.region);
       }
@@ -855,12 +1131,36 @@ llvm::Error validateResourceTimeScheduleWitness(
     if (llvm::Error error =
             validateResourceTimeTransitionSequence(scenario.transitions))
       return error;
-    for (const ResourceTimeTransition &transition :
-         scenario.transitions.transitions) {
-      if (!llvm::is_contained(mappingReferences, transition.beforeMapping) ||
-          !llvm::is_contained(mappingReferences, transition.afterMapping))
+    std::vector<std::pair<const ResourceTimeScheduleState *,
+                          const ResourceTimeScheduleState *>>
+        mappingChanges;
+    for (std::size_t index = 1; index != scenario.states.size(); ++index)
+      if (scenario.states[index - 1].mapping != scenario.states[index].mapping)
+        mappingChanges.emplace_back(&scenario.states[index - 1],
+                                    &scenario.states[index]);
+    if (mappingChanges.size() != scenario.transitions.transitions.size())
+      return invalid("resource-time Mapping changes do not match the finite "
+                     "transition sequence");
+    for (auto paired :
+         llvm::zip(mappingChanges, scenario.transitions.transitions)) {
+      const auto &change = std::get<0>(paired);
+      const ResourceTimeTransition &transition = std::get<1>(paired);
+      if (!llvm::is_contained(mappingReferences, transition.parent.mapping) ||
+          !llvm::is_contained(mappingReferences, transition.child.mapping))
         return invalid("resource-time transition is absent from its schedule "
                        "states");
+      if (transition.parent.mapping != change.first->mapping ||
+          transition.child.mapping != change.second->mapping)
+        return invalid("resource-time transition endpoints disagree with "
+                       "their adjacent schedule states");
+      if (transition.trigger != change.second->event)
+        return invalid("resource-time transition trigger disagrees with its "
+                       "child schedule event");
+      if (!allocationsEquivalent(transition.beforeActive,
+                                 change.first->active) ||
+          !allocationsEquivalent(transition.afterActive, change.second->active))
+        return invalid("resource-time transition allocation evidence "
+                       "disagrees with its adjacent schedule states");
     }
   }
   return llvm::Error::success();
@@ -881,16 +1181,15 @@ SystemMappingMigrationContext::get(
   for (const ArtifactRootReference &mapping : spatialMappings)
     if (mapping.schemaIdentity !=
             ::loom::mapping::mappingArtifactSchema.identity ||
-        mapping.schemaVersion !=
-            ::loom::mapping::mappingArtifactSchema.version)
+        mapping.schemaVersion != ::loom::mapping::mappingArtifactSchema.version)
       return invalid("migration context has a non-Mapping frontier member");
   llvm::sort(spatialMappings, artifactRootReferenceLess);
   if (std::adjacent_find(spatialMappings.begin(), spatialMappings.end()) !=
       spatialMappings.end())
     return invalid("migration context has duplicate SpatialMappings");
-  return SystemMappingMigrationContext(
-      std::move(childConstraints), std::move(spatialMappings),
-      std::move(resolvedPnrConfigDigest));
+  return SystemMappingMigrationContext(std::move(childConstraints),
+                                       std::move(spatialMappings),
+                                       std::move(resolvedPnrConfigDigest));
 }
 
 llvm::Expected<SystemExecutionBindingCorrespondence>
@@ -983,7 +1282,8 @@ SystemExecutionBindingCorrespondence::get(
         ::loom::fabric::importEntireFabricRoot(entry.parent, store);
     if (!parentModule)
       return parentModule.takeError();
-    auto childModule = ::loom::fabric::importEntireFabricRoot(entry.child, store);
+    auto childModule =
+        ::loom::fabric::importEntireFabricRoot(entry.child, store);
     if (!childModule)
       return childModule.takeError();
     if (parentModule->view().rootKind() !=
@@ -1046,10 +1346,9 @@ llvm::Expected<FinalizedSystemMappingMigrationSeed>
 finalizeSystemMappingMigrationSeed(
     const ArtifactRootReference &parentMappingReference,
     const SystemExecutionBindingCorrespondence &correspondence,
-    const SystemMappingMigrationContext &context,
-    const ArtifactStore &store) {
+    const SystemMappingMigrationContext &context, const ArtifactStore &store) {
   return finalizeSystemMappingMigrationSeed(parentMappingReference,
-                                             correspondence, context, {}, store);
+                                            correspondence, context, {}, store);
 }
 
 llvm::Expected<FinalizedSystemMappingMigrationSeed>
@@ -1059,8 +1358,8 @@ finalizeSystemMappingMigrationSeed(
     const SystemMappingMigrationContext &context,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> reopenedRoots,
     const ArtifactStore &store) {
-  auto parentMapping = ::loom::mapping::importSystemMapping(
-      parentMappingReference, store);
+  auto parentMapping =
+      ::loom::mapping::importSystemMapping(parentMappingReference, store);
   if (!parentMapping)
     return parentMapping.takeError();
   if (parentMapping->view().fabricIdentity() !=
@@ -1102,8 +1401,8 @@ finalizeSystemMappingMigrationSeed(
     return invalid("migration context omits a finalized SpatialMapping");
   for (const ArtifactRootReference &mappingReference :
        context.spatialMappings()) {
-    auto mapping = ::loom::mapping::importSpatialMapping(mappingReference,
-                                                         store);
+    auto mapping =
+        ::loom::mapping::importSpatialMapping(mappingReference, store);
     if (!mapping)
       return mapping.takeError();
     if (mapping->view().dataflowIdentity() !=
@@ -1111,8 +1410,7 @@ finalizeSystemMappingMigrationSeed(
       return invalid("migration SpatialMapping binds a foreign Dataflow");
   }
   auto canonicalBytes = canonicalFinalizedSeedBytes(
-      parentMappingReference, correspondence, context,
-      canonicalReopenedRoots);
+      parentMappingReference, correspondence, context, canonicalReopenedRoots);
   if (!canonicalBytes)
     return canonicalBytes.takeError();
   CanonicalSemanticBytes canonical(std::move(*canonicalBytes));
@@ -1149,8 +1447,8 @@ importSystemMappingMigrationSeed(const ArtifactRootReference &reference,
   auto context = readMigrationContext(bytes, offset);
   if (!context)
     return context.takeError();
-  auto parentMapping = ::loom::mapping::importSystemMapping(
-      *parentMappingReference, store);
+  auto parentMapping =
+      ::loom::mapping::importSystemMapping(*parentMappingReference, store);
   if (!parentMapping)
     return parentMapping.takeError();
   auto reopenedRootCount = readU64(bytes, offset);
@@ -1226,14 +1524,15 @@ finalizeSystemMappingCheckpointMigrationSeed(
       context.childConstraints(), store);
   if (!constraints)
     return constraints.takeError();
-  if (constraints->view().dataflowIdentity() != checkpoint->dataflow().artifact ||
+  if (constraints->view().dataflowIdentity() !=
+          checkpoint->dataflow().artifact ||
       constraints->view().fabricIdentity() !=
           correspondence.childSystem().artifact)
     return invalid("migration context constraints bind foreign owners");
   for (const ArtifactRootReference &mappingReference :
        context.spatialMappings()) {
-    auto mapping = ::loom::mapping::importSpatialMapping(mappingReference,
-                                                         store);
+    auto mapping =
+        ::loom::mapping::importSpatialMapping(mappingReference, store);
     if (!mapping)
       return mapping.takeError();
     if (mapping->view().dataflowIdentity() != checkpoint->dataflow().artifact)
@@ -1314,10 +1613,9 @@ importSystemMappingCheckpointMigrationSeed(
         return binding.target == *reopenedParentAccCore;
       }))
     return invalid("reopened AccCore owns no checkpoint thread binding");
-  if (llvm::ArrayRef<std::uint8_t>(canonicalSeedBytes(
-          *checkpointReference, *correspondence, *context,
-          *reopenedParentAccCore)) !=
-      bytes)
+  if (llvm::ArrayRef<std::uint8_t>(
+          canonicalSeedBytes(*checkpointReference, *correspondence, *context,
+                             *reopenedParentAccCore)) != bytes)
     return invalid("migration seed payload is not canonical");
   return FinalizedSystemMappingCheckpointMigrationSeed(
       reference, std::move(*checkpoint), std::move(*correspondence),
@@ -1331,8 +1629,7 @@ SystemMappingMigrationProjectionOutcome projectSystemMappingMigrationSeed(
   if (mapping.dataflowIdentity() != childProblem.dataflowIdentity())
     return SystemMappingMigrationFallback{
         SystemMappingMigrationFallbackReason::ParentMappingDataflowMismatch};
-  if (mapping.fabricIdentity() !=
-      seed.correspondence().parentSystem().artifact)
+  if (mapping.fabricIdentity() != seed.correspondence().parentSystem().artifact)
     return SystemMappingMigrationFallback{
         SystemMappingMigrationFallbackReason::ParentMappingFabricMismatch};
   if (childProblem.fabricIdentity() !=
@@ -1390,8 +1687,8 @@ SystemMappingMigrationProjectionOutcome projectSystemMappingMigrationSeed(
     if (llvm::is_contained(seed.reopenedRoots(),
                            frozen.launch.rootThreadLaunch)) {
       result.fixedChoices.push_back(getInvalidPnrIndex());
-      result.releasedChoices.push_back(
-          childProblem.threadDecisions().size() + decision);
+      result.releasedChoices.push_back(childProblem.threadDecisions().size() +
+                                       decision);
       continue;
     }
     llvm::SmallVector<::loom::mapping::SystemGraphExecutionBindingView, 1>
@@ -1417,8 +1714,8 @@ SystemMappingMigrationProjectionOutcome projectSystemMappingMigrationSeed(
         static_cast<PnrIndex>(choice - domain.begin()));
     ++result.preservedGraphBindings;
   }
-  auto routeSeed = projectFinalizedRoutes(
-      mapping, seed.correspondence(), childProblem);
+  auto routeSeed =
+      projectFinalizedRoutes(mapping, seed.correspondence(), childProblem);
   if (!routeSeed) {
     llvm::consumeError(routeSeed.takeError());
     return SystemMappingMigrationFallback{
