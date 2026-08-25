@@ -303,6 +303,25 @@ struct ApplicationPairMappingObservation final {
   std::optional<dse::PreMappingSpectrumClass> verifiedSpectrum;
 };
 
+/// Quality facts from one exact joint-design invocation. Application runtime
+/// retries may execute distinct tail plans, so their facts retain their own
+/// InvocationManifest key and local plan-ordinal base instead of being folded
+/// into the final JointDesignExecutionSummary.
+struct ApplicationPairQualityInvocationRecord final {
+  std::uint64_t planOrdinalBase = 0;
+  std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
+  dse::JointDesignQualityDisposition qualityDisposition =
+      dse::JointDesignQualityDisposition::NotRequested;
+  std::optional<ArtifactRootReference> qualityIncompleteCandidate;
+  std::vector<std::string> qualityObjectiveDimensionLabels;
+  std::vector<dse::JointDesignQualityObservation> qualityObservations;
+  std::vector<std::string> hardwarePromotionObjectiveDimensionLabels;
+  std::vector<dse::JointHardwarePromotionObservation>
+      hardwarePromotionObservations;
+  std::optional<std::uint64_t> selectedPlanOrdinal;
+  std::optional<ArtifactRootReference> selectedMapping;
+};
+
 /// One identity-based reference into the existing candidate inventory and
 /// Mapping outcome vectors. It intentionally stores only derived application
 /// evidence; the planning record and JointDesignAttemptRecord remain the
@@ -357,11 +376,26 @@ struct ApplicationPairDecisionRecord final {
   /// list contains only records with a complete stable candidate identity.
   std::uint64_t planningRecordCount = 0;
   std::uint64_t nonCandidatePlanningRecordCount = 0;
+  /// Exact final-invocation quality state. ObjectiveProgram remains the
+  /// ordering owner; codes retain their SystemMapping and Evidence joins.
+  std::vector<std::string> qualityObjectiveDimensionLabels;
+  dse::JointDesignQualityDisposition qualityDisposition =
+      dse::JointDesignQualityDisposition::NotRequested;
+  std::optional<ArtifactRootReference> qualityIncompleteCandidate;
+  std::vector<dse::JointDesignQualityObservation> qualityObservations;
+  /// Exact labels and observations from pre-Mapping hardware promotion. The
+  /// promoted bit identifies the bounded finalist set that entered ordinary
+  /// Mapping/PnR work; it is not a physical feasibility claim.
+  std::vector<std::string> hardwarePromotionObjectiveDimensionLabels;
+  std::vector<dse::JointHardwarePromotionObservation>
+      hardwarePromotionObservations;
+  std::vector<ApplicationPairQualityInvocationRecord> qualityInvocations;
   std::vector<ApplicationObjectiveObservation> hostOnlyBaseline;
   std::vector<ApplicationPairCandidateRecord> candidates;
   std::vector<ApplicationObjectiveObservation> selectedObjective;
   std::optional<ComponentViewDigest> selectedCandidateIdentity;
   std::optional<ArtifactRootReference> selectedSystem;
+  std::optional<ArtifactRootReference> selectedSystemMapping;
   bool hostOnlyBaselineComplete = false;
   bool finalApplicationQorComplete = false;
   std::optional<std::string> detail;

@@ -152,7 +152,7 @@ only. They may reference or cache canonical facts for efficient presentation,
 but they are never semantic inputs to another projection and never become
 schema authorities.
 
-Visualization bundle version 1.1 adds removable resource-time evidence. The
+Visualization bundle version 1.1 added removable resource-time evidence. The
 exporter first verifies the compiler-built finite transition graph, including
 entry reachability and every exact Mapping/Deployment endpoint, then replays
 each transition closure and projects trigger, safe point, active allocations,
@@ -161,6 +161,14 @@ endpoint array is derived from the graph rather than retained as another
 catalog. An empty array means the application produced no verified finite
 edge; visualization never upgrades an incomplete edge or supplies runtime
 selection semantics.
+
+Version 1.2 extends the derived application pair decision with the exact
+bounded-quality disposition, SystemMapping-keyed objective observations,
+pre-Mapping hardware-promotion observations, and runtime-qualified invocation
+groups. Each group retains its own InvocationManifest run key and local plan
+ordinal base. Objective codes remain opaque inputs to the shared
+`ObjectiveProgram`; visualization does not reinterpret them as physical
+measurements or combine observations from different invocation keys.
 
 Scripts, stdout, stderr, vendor warnings, tool-native reports, diagnostic
 traces, and other raw execution material remain attempt or scratch material

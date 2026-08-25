@@ -264,7 +264,9 @@ mapIncompleteReasonToPairDisposition(const dse::DsePlanIncompleteReason &reason)
 ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const PreparedApplicationBuild &prepared,
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,
-    const dse::JointDesignExecutionSummary &summary) {
+    const dse::JointDesignExecutionSummary &summary,
+    llvm::ArrayRef<ApplicationPairQualityInvocationRecord>
+        qualityInvocations) {
   ApplicationPairDecisionRecord result;
   result.portfolioInput = prepared.portfolioInput;
   if (result.portfolioInput)
@@ -326,6 +328,17 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     break;
   }
   result.planningRecordCount = prepared.candidateInventory.size();
+  result.qualityObjectiveDimensionLabels =
+      summary.qualityObjectiveDimensionLabels;
+  result.qualityDisposition = summary.qualityDisposition;
+  result.qualityIncompleteCandidate = summary.qualityIncompleteCandidate;
+  result.qualityObservations = summary.qualityObservations;
+  result.hardwarePromotionObjectiveDimensionLabels =
+      summary.hardwarePromotionObjectiveDimensionLabels;
+  result.hardwarePromotionObservations =
+      summary.hardwarePromotionObservations;
+  result.qualityInvocations.assign(qualityInvocations.begin(),
+                                   qualityInvocations.end());
   result.candidates.reserve(prepared.candidateInventory.size());
   for (std::size_t ordinal = 0; ordinal != prepared.candidateInventory.size();
        ++ordinal) {
@@ -394,26 +407,20 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
         candidate.selected = true;
       const auto setObservedDimension =
           [&](ApplicationObjectiveDimension dimension,
-              const std::optional<std::uint64_t> &raw,
-              std::size_t objectiveCodeOrdinal) {
+              const std::optional<std::uint64_t> &raw) {
             if (raw) {
               setObjective(
                   candidate.objective[static_cast<std::size_t>(dimension)],
                   *raw, ApplicationObjectiveEvidence::RuntimeMeasured);
               return;
             }
-            if (outcome.qualityObjectiveCodes.size() > objectiveCodeOrdinal)
-              setObjective(
-                  candidate.objective[static_cast<std::size_t>(dimension)],
-                  outcome.qualityObjectiveCodes[objectiveCodeOrdinal],
-                  ApplicationObjectiveEvidence::Exact);
           };
       setObservedDimension(ApplicationObjectiveDimension::DfgCycles,
-                           outcome.dfgCycles, 0);
+                           outcome.dfgCycles);
       setObservedDimension(ApplicationObjectiveDimension::CgraCycles,
-                           outcome.cgraCycles, 1);
+                           outcome.cgraCycles);
       setObservedDimension(ApplicationObjectiveDimension::ResourceCoreCost,
-                           outcome.resourceCoreCost, 2);
+                           outcome.resourceCoreCost);
     }
     // The current JointDesign summary owns invocation-wide Mapping work, not
     // a candidate-local split. Keep this dimension explicitly unsupported on
@@ -438,6 +445,7 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           summary.selectedMapping &&
           llvm::is_contained(outcome.systemMappings, *summary.selectedMapping)) {
         result.selectedSystem = outcome.system;
+        result.selectedSystemMapping = summary.selectedMapping;
         const auto &objective = selected->objective;
         const auto dfg = objective[static_cast<std::size_t>(
             ApplicationObjectiveDimension::DfgCycles)];
@@ -2070,6 +2078,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     plans.push_back(&alternative.plan);
   std::vector<ApplicationMappingCandidateOutcome> outcomes;
   std::vector<dse::JointDesignAttemptRecord> attempts;
+  std::vector<ApplicationPairQualityInvocationRecord> qualityInvocations;
   std::uint64_t attemptedSoftwarePlans = 0;
   std::uint64_t hardwareReopenSearches = 0;
   std::uint64_t hardwareParentPromotions = 0;
@@ -2332,6 +2341,17 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     auto execution = executeTail(firstPlan);
     if (!execution)
       return execution.takeError();
+    qualityInvocations.push_back(ApplicationPairQualityInvocationRecord{
+        static_cast<std::uint64_t>(firstPlan),
+        execution->summary.invocationRunKey,
+        execution->summary.qualityDisposition,
+        execution->summary.qualityIncompleteCandidate,
+        execution->summary.qualityObjectiveDimensionLabels,
+        execution->summary.qualityObservations,
+        execution->summary.hardwarePromotionObjectiveDimensionLabels,
+        execution->summary.hardwarePromotionObservations,
+        execution->summary.selectedPlanOrdinal,
+        execution->summary.selectedMapping});
     for (dse::JointHardwarePromotionObservation &observation :
          execution->summary.hardwarePromotionObservations) {
       if (observation.planOrdinal >
@@ -2957,16 +2977,34 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         }
         llvm_unreachable("unknown application quality disposition");
       };
-  for (ApplicationMappingCandidateOutcome &outcome : outcomes)
+  for (ApplicationMappingCandidateOutcome &outcome : outcomes) {
+    const dse::JointDesignQualityObservation *projected = nullptr;
+    std::size_t matchingObservationCount = 0;
     for (const dse::JointDesignQualityObservation &observation :
-         selectedExecution->summary.qualityObservations)
-      if (llvm::is_contained(outcome.systemMappings, observation.candidate)) {
-        outcome.qualityObjectiveCodes = observation.objectiveCodes;
-        if (outcome.runtimeDisposition ==
-            ApplicationMappingRuntimeDisposition::NotRequested)
-          outcome.runtimeDisposition =
-              qualityRuntimeDisposition(observation.incompleteReason);
-      }
+         selectedExecution->summary.qualityObservations) {
+      if (!llvm::is_contained(outcome.systemMappings, observation.candidate))
+        continue;
+      ++matchingObservationCount;
+      if (selectedExecution->summary.selectedPlanOrdinal ==
+              outcome.planOrdinal &&
+          selectedExecution->summary.selectedMapping == observation.candidate)
+        projected = &observation;
+      else if (!projected)
+        projected = &observation;
+    }
+    if (!projected ||
+        (matchingObservationCount != 1 &&
+         !(selectedExecution->summary.selectedPlanOrdinal ==
+               outcome.planOrdinal &&
+           selectedExecution->summary.selectedMapping ==
+               projected->candidate)))
+      continue;
+    outcome.qualityObjectiveCodes = projected->objectiveCodes;
+    if (outcome.runtimeDisposition ==
+        ApplicationMappingRuntimeDisposition::NotRequested)
+      outcome.runtimeDisposition =
+          qualityRuntimeDisposition(projected->incompleteReason);
+  }
   selectedExecution->summary.attemptedSoftwarePlans = attemptedSoftwarePlans;
   selectedExecution->summary.hardwareReopenSearches = hardwareReopenSearches;
   selectedExecution->summary.hardwareParentPromotions =
@@ -3048,7 +3086,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   provenance.incrementalMappingObservations =
       std::move(incrementalMappingObservations);
   provenance.pairDecision = deriveApplicationPairDecision(
-      prepared, outcomes, selectedExecution->summary);
+      prepared, outcomes, selectedExecution->summary, qualityInvocations);
   ApplicationMappingExecution result{std::move(*selectedExecution),
                                      std::move(outcomes),
                                      std::move(provenance)};

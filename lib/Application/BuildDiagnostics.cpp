@@ -234,6 +234,36 @@ encodePortfolioInput(const SelectedApplicationInput &selection,
 
 llvm::json::Object encodePairDecision(
     const ApplicationPairDecisionRecord &decision) {
+  const auto encodeQualityObservation = [](const auto &observation) {
+    llvm::json::Array codes;
+    for (std::uint64_t code : observation.objectiveCodes)
+      codes.push_back(code);
+    llvm::json::Object result{
+        {"system_mapping", encodeRoot(observation.candidate)},
+        {"objective_codes", std::move(codes)},
+        {"incomplete_reason",
+         observation.incompleteReason
+             ? llvm::json::Value(spelling(*observation.incompleteReason))
+             : llvm::json::Value(nullptr)}};
+    addOptionalRoot(result, "evidence", observation.evidence);
+    return result;
+  };
+  const auto encodeHardwarePromotion = [](const auto &observation) {
+    llvm::json::Array codes;
+    for (std::uint64_t code : observation.objectiveCodes)
+      codes.push_back(code);
+    llvm::json::Object result{
+        {"plan_ordinal", observation.planOrdinal},
+        {"system", encodeRoot(observation.system)},
+        {"objective_codes", std::move(codes)},
+        {"incomplete_reason",
+         observation.incompleteReason
+             ? llvm::json::Value(spelling(*observation.incompleteReason))
+             : llvm::json::Value(nullptr)},
+        {"promoted_to_exact_mapping", observation.promotedToExactMapping}};
+    addOptionalRoot(result, "evidence", observation.evidence);
+    return result;
+  };
   llvm::json::Object result;
   if (decision.portfolioInput)
     result["portfolio_input"] = encodePortfolioInput(
@@ -271,6 +301,77 @@ llvm::json::Object encodePairDecision(
   result["planning_record_count"] = decision.planningRecordCount;
   result["non_candidate_planning_record_count"] =
       decision.nonCandidatePlanningRecordCount;
+  llvm::json::Array qualityLabels;
+  for (const std::string &label : decision.qualityObjectiveDimensionLabels)
+    qualityLabels.push_back(label);
+  result["quality_objective_dimension_labels"] = std::move(qualityLabels);
+  result["quality_disposition"] = spelling(decision.qualityDisposition);
+  addOptionalRoot(result, "quality_incomplete_candidate",
+                  decision.qualityIncompleteCandidate);
+  llvm::json::Array qualityObservations;
+  for (const dse::JointDesignQualityObservation &observation :
+       decision.qualityObservations)
+    qualityObservations.push_back(encodeQualityObservation(observation));
+  result["quality_observations"] = std::move(qualityObservations);
+  llvm::json::Array hardwarePromotionLabels;
+  for (const std::string &label :
+       decision.hardwarePromotionObjectiveDimensionLabels)
+    hardwarePromotionLabels.push_back(label);
+  result["hardware_promotion_objective_dimension_labels"] =
+      std::move(hardwarePromotionLabels);
+  llvm::json::Array hardwarePromotions;
+  for (const dse::JointHardwarePromotionObservation &observation :
+       decision.hardwarePromotionObservations)
+    hardwarePromotions.push_back(encodeHardwarePromotion(observation));
+  result["hardware_promotion_observations"] = std::move(hardwarePromotions);
+  llvm::json::Array qualityInvocations;
+  for (const ApplicationPairQualityInvocationRecord &invocation :
+       decision.qualityInvocations) {
+    llvm::json::Object encoded;
+    encoded["plan_ordinal_base"] = invocation.planOrdinalBase;
+    if (invocation.invocationRunKey)
+      encoded["invocation_manifest_run_key"] = llvm::toHex(
+          llvm::ArrayRef<std::uint8_t>(*invocation.invocationRunKey),
+          /*LowerCase=*/true);
+    else
+      encoded["invocation_manifest_run_key"] = nullptr;
+    encoded["quality_disposition"] =
+        spelling(invocation.qualityDisposition);
+    addOptionalRoot(encoded, "quality_incomplete_candidate",
+                    invocation.qualityIncompleteCandidate);
+    addOptionalUnsigned(encoded, "selected_plan_ordinal",
+                        invocation.selectedPlanOrdinal);
+    addOptionalRoot(encoded, "selected_system_mapping",
+                    invocation.selectedMapping);
+    llvm::json::Array invocationQualityLabels;
+    for (const std::string &label :
+         invocation.qualityObjectiveDimensionLabels)
+      invocationQualityLabels.push_back(label);
+    encoded["quality_objective_dimension_labels"] =
+        std::move(invocationQualityLabels);
+    llvm::json::Array invocationQualityObservations;
+    for (const dse::JointDesignQualityObservation &observation :
+         invocation.qualityObservations)
+      invocationQualityObservations.push_back(
+          encodeQualityObservation(observation));
+    encoded["quality_observations"] =
+        std::move(invocationQualityObservations);
+    llvm::json::Array invocationHardwareLabels;
+    for (const std::string &label :
+         invocation.hardwarePromotionObjectiveDimensionLabels)
+      invocationHardwareLabels.push_back(label);
+    encoded["hardware_promotion_objective_dimension_labels"] =
+        std::move(invocationHardwareLabels);
+    llvm::json::Array invocationHardwareObservations;
+    for (const dse::JointHardwarePromotionObservation &observation :
+         invocation.hardwarePromotionObservations)
+      invocationHardwareObservations.push_back(
+          encodeHardwarePromotion(observation));
+    encoded["hardware_promotion_observations"] =
+        std::move(invocationHardwareObservations);
+    qualityInvocations.push_back(std::move(encoded));
+  }
+  result["quality_invocations"] = std::move(qualityInvocations);
   result["host_only_baseline_complete"] = decision.hostOnlyBaselineComplete;
   result["final_application_qor_complete"] =
       decision.finalApplicationQorComplete;
@@ -288,6 +389,8 @@ llvm::json::Object encodePairDecision(
        decision.selectedObjective)
     selectedObjective.push_back(encodeObjectiveObservation(observation));
   result["selected_objective"] = std::move(selectedObjective);
+  addOptionalRoot(result, "selected_system_mapping",
+                  decision.selectedSystemMapping);
   llvm::json::Array candidates;
   for (const ApplicationPairCandidateRecord &candidate : decision.candidates) {
     llvm::json::Object encoded;

@@ -26,7 +26,7 @@ def main() -> int:
     bundle = read_object(arguments.bundle)
     if bundle.get("schema") != "loom.visualization_bundle":
         raise ValueError("visualization bundle has the wrong schema")
-    if bundle.get("version") != "1.1":
+    if bundle.get("version") != "1.2":
         raise ValueError("visualization bundle has the wrong version")
     if bundle.get("fabric") != fabric:
         raise ValueError("visualization bundle names a different Fabric root")
@@ -46,6 +46,40 @@ def main() -> int:
     }
     if not isinstance(pair, dict) or pair.get("disposition") not in successful:
         raise ValueError("visualization bundle has no successful pair decision")
+    if pair.get("quality_disposition") not in {
+        "not_requested",
+        "complete",
+        "unsupported",
+        "proof_not_established",
+        "execution_failed",
+        "cancelled_or_timeout",
+    }:
+        raise ValueError("pair decision has no typed quality disposition")
+    for field in (
+        "quality_observations",
+        "hardware_promotion_observations",
+        "quality_invocations",
+    ):
+        if not isinstance(pair.get(field), list):
+            raise ValueError(f"pair decision has no {field} array")
+    selected_mapping = pair.get("selected_system_mapping")
+    if not isinstance(selected_mapping, str) or not selected_mapping:
+        raise ValueError("pair decision has no selected SystemMapping")
+    selected_candidates = [
+        candidate
+        for candidate in pair.get("candidates", [])
+        if isinstance(candidate, dict) and candidate.get("selected") is True
+    ]
+    selected_attempt_mappings = {
+        mapping
+        for candidate in selected_candidates
+        for observation in candidate.get("mapping_observations", [])
+        if isinstance(observation, dict)
+        for mapping in observation.get("system_mappings", [])
+        if isinstance(mapping, str)
+    }
+    if selected_mapping not in selected_attempt_mappings:
+        raise ValueError("selected SystemMapping has no exact attempt join")
     for field in ("resource_time_endpoints", "resource_time_transitions"):
         if not isinstance(bundle.get(field), list):
             raise ValueError(f"visualization bundle has no {field} array")

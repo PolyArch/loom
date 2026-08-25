@@ -324,6 +324,18 @@ Pareto selection, and model-training orchestration. Mapping may query an exact
 resolved model through its shared Evaluation adapter, but Mapping does not own
 area, frequency, power, energy, or fallback formulas.
 
+Application bounded-quality selection imports a frozen
+`EdaPredictionModelWeight` and evaluates its parameter-backed descriptor
+in-process. The pair decision derives its quality dimension labels, quantized
+objective codes, and Evidence roots from the shared `ObjectiveProgram` and
+`JointDesignExecutionSummary`; it does not reinterpret a code as a physical
+unit. Pre-Mapping hardware-promotion observations retain every assessed System
+and identify the bounded finalist set that entered ordinary Mapping/PnR work.
+That promoted disposition is work provenance, not a feasibility or signoff
+claim. Runtime-qualified tail invocations retain their own InvocationManifest
+run key and local plan-ordinal base; their observations are never folded into
+the final invocation's `JointDesignExecutionSummary`.
+
 ## Anchor Verification
 
 Stable tests cover exact implementation coupling, separation of implementation
