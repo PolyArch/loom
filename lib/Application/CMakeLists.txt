@@ -28,6 +28,7 @@ target_link_libraries(LoomApplicationHostRunner PUBLIC
 )
 
 add_library(LoomApplicationRuntimeManifest
+  Package.cpp
   RuntimeManifest.cpp
 )
 

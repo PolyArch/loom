@@ -4,6 +4,7 @@
 #include "Application/Build.h"
 #include "Application/BuildDiagnostics.h"
 #include "Application/Manifest.h"
+#include "Application/Package.h"
 #include "Application/ProductVisualization.h"
 #include "Application/SourceAdmission.h"
 #include "Common/ArtifactStore.h"
@@ -12,7 +13,6 @@
 #include "Common/ExecutionControl.h"
 #include "Config/ResolvedConfig.h"
 #include "Deployment/HardwareConfigurationImage.h"
-#include "Deployment/Package.h"
 #include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/ProductionRegistry.h"
@@ -909,15 +909,15 @@ llvm::Error publishProductDeployment(
                             deadline->notAfterUnixNanoseconds);
   if (!mapping)
     return mapping.takeError();
-  mapping::SystemMappingImportSession systemMappingImportSession(
-      target.workspace->artifacts(), 1);
-  deployment::ConfigurationImageProjectionSession projectionSession(
-      target.workspace->artifacts(), 1);
-  auto deployment = buildApplicationDeployment(
-      *prepared, *mapping, *finalLink.linkedModule,
-      {target.compilerPolicy, {target.workspace->linkerPath().str()}},
-      target.workspace->artifacts(), target.workspace->blobs());
-  if (!deployment) {
+  auto deployment = [&]() -> llvm::Expected<ApplicationDeploymentArtifacts> {
+    mapping::SystemMappingImportSession systemMappingImportSession(
+        target.workspace->artifacts(), 1);
+    deployment::ConfigurationImageProjectionSession projectionSession(
+        target.workspace->artifacts(), 1);
+    auto built = buildApplicationDeployment(
+        *prepared, *mapping, *finalLink.linkedModule,
+        {target.compilerPolicy, {target.workspace->linkerPath().str()}},
+        target.workspace->artifacts(), target.workspace->blobs());
     deployment::emitConfigurationImageProjectionSessionStatistics(
         deployment::ConfigurationImageProjectionVerificationDomain::
             SourceInvocation,
@@ -925,8 +925,10 @@ llvm::Error publishProductDeployment(
     mapping::emitSystemMappingImportSessionStatistics(
         mapping::SystemMappingImportVerificationDomain::SourceInvocation,
         systemMappingImportSession.statistics());
+    return built;
+  }();
+  if (!deployment)
     return deployment.takeError();
-  }
   if (!options.visualizationPath.empty())
     if (llvm::Error error = exportProductVisualization(
             options.visualizationPath, target.system, *prepared, *mapping,
@@ -934,19 +936,12 @@ llvm::Error publishProductDeployment(
             target.workspace->blobs()))
       return error;
   const auto packageBegin = MonotonicClock::now();
-  llvm::Error packageError = deployment::publishDeploymentPackage(
-      deployment->deployment, target.workspace->deploymentPath(),
+  llvm::Error packageError = publishApplicationPackage(
+      *deployment, target.workspace->deploymentPath(),
       target.workspace->artifacts(), target.workspace->blobs());
   emitApplicationBuildOperationStatistics(
       {ApplicationBuildOperation::PackagePublication,
        elapsedNanoseconds(packageBegin), 1});
-  deployment::emitConfigurationImageProjectionSessionStatistics(
-      deployment::ConfigurationImageProjectionVerificationDomain::
-          SourceInvocation,
-      projectionSession.statistics());
-  mapping::emitSystemMappingImportSessionStatistics(
-      mapping::SystemMappingImportVerificationDomain::SourceInvocation,
-      systemMappingImportSession.statistics());
   return packageError;
 }
 
