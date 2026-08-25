@@ -10,6 +10,18 @@
 // RUN: FileCheck %s --check-prefix=DEPENDENT-TRUE < %t.dependent-true.json
 // RUN: loom-dfg-sim %t.lowered.mlir --graph dependent_consumer_graph --arg 0=0 --memref 1=5,6 --output %t.dependent-false.json
 // RUN: FileCheck %s --check-prefix=DEPENDENT-FALSE < %t.dependent-false.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph while_producer_graph --arg 0=3 --arg 1=29 --output %t.while.json
+// RUN: FileCheck %s --check-prefix=WHILE < %t.while.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph index_switch_producer_graph --arg 0=3 --arg 1=11 --arg 2=13 --arg 3=17 --output %t.switch-first.json
+// RUN: FileCheck %s --check-prefix=SWITCH-FIRST < %t.switch-first.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph index_switch_producer_graph --arg 0=7 --arg 1=11 --arg 2=13 --arg 3=17 --output %t.switch-second.json
+// RUN: FileCheck %s --check-prefix=SWITCH-SECOND < %t.switch-second.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph index_switch_producer_graph --arg 0=9 --arg 1=11 --arg 2=13 --arg 3=17 --output %t.switch-default.json
+// RUN: FileCheck %s --check-prefix=SWITCH-DEFAULT < %t.switch-default.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph index_switch_single_case_producer_graph --arg 0=5 --arg 1=19 --arg 2=23 --output %t.switch-single-case.json
+// RUN: FileCheck %s --check-prefix=SWITCH-SINGLE-CASE < %t.switch-single-case.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph index_switch_single_case_producer_graph --arg 0=4 --arg 1=19 --arg 2=23 --output %t.switch-single-default.json
+// RUN: FileCheck %s --check-prefix=SWITCH-SINGLE-DEFAULT < %t.switch-single-default.json
 
 // BRANCH-TRUE: "final_stream_outputs": [
 // BRANCH-TRUE-NEXT: [
@@ -48,6 +60,32 @@
 // DEPENDENT-FALSE-NEXT: "i32:0",
 // DEPENDENT-FALSE-NEXT: "i32:6"
 // DEPENDENT-FALSE: "status": "pass"
+// WHILE: "final_stream_outputs": [
+// WHILE-NEXT: [
+// WHILE-NEXT: "i32:29",
+// WHILE-NEXT: "i32:29",
+// WHILE-NEXT: "i32:29"
+// WHILE: "status": "pass"
+// SWITCH-FIRST: "final_stream_outputs": [
+// SWITCH-FIRST-NEXT: [
+// SWITCH-FIRST-NEXT: "i32:13"
+// SWITCH-FIRST: "status": "pass"
+// SWITCH-SECOND: "final_stream_outputs": [
+// SWITCH-SECOND-NEXT: [
+// SWITCH-SECOND-NEXT: "i32:17"
+// SWITCH-SECOND: "status": "pass"
+// SWITCH-DEFAULT: "final_stream_outputs": [
+// SWITCH-DEFAULT-NEXT: [
+// SWITCH-DEFAULT-NEXT: "i32:11"
+// SWITCH-DEFAULT: "status": "pass"
+// SWITCH-SINGLE-CASE: "final_stream_outputs": [
+// SWITCH-SINGLE-CASE-NEXT: [
+// SWITCH-SINGLE-CASE-NEXT: "i32:23"
+// SWITCH-SINGLE-CASE: "status": "pass"
+// SWITCH-SINGLE-DEFAULT: "final_stream_outputs": [
+// SWITCH-SINGLE-DEFAULT-NEXT: [
+// SWITCH-SINGLE-DEFAULT-NEXT: "i32:19"
+// SWITCH-SINGLE-DEFAULT: "status": "pass"
 
 // CHECK: #[[SOURCE_MAP:.*]] = affine_map<() -> ()>
 // CHECK-LABEL: dataflow.thread private @stream_producer domain(#dataflow.thread_domain<dense>)
@@ -81,6 +119,12 @@
 // CHECK-LABEL: dataflow.thread private @dependent_stream_consumer domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @dependent_consumer_graph
 // CHECK-SAME: stream_inputs(%arg0 source_map #[[SOURCE_MAP]])
+// CHECK-LABEL: dataflow.thread private @index_switch_stream_producer domain(#dataflow.thread_domain<dense>)
+// CHECK: dataflow.graph.launch @index_switch_producer_graph
+// CHECK-SAME: stream_outputs(%arg0)
+// CHECK-LABEL: dataflow.thread private @while_stream_producer domain(#dataflow.thread_domain<dense>)
+// CHECK: dataflow.graph.launch @while_producer_graph
+// CHECK-SAME: stream_outputs(%arg0)
 // CHECK-LABEL: dataflow.graph private @producer_graph(
 // CHECK-SAME: %{{.*}}: none, %[[PRODUCER_PAYLOAD:[[:alnum:]_]+]]: i32, %{{.*}}: memref<1xi32> {llvm.noalias}) -> i32
 // CHECK-SAME: input_segments = array<i32: 1, 0, 1>
@@ -177,6 +221,23 @@
 // CHECK: %[[FIRST_SYNC]]:2 = dataflow.sync %{{.*}}, %[[DEPENDENT_LANES]]#0 : (none, i32) -> (none, i32)
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return
+// CHECK-LABEL: dataflow.graph private @index_switch_producer_graph(
+// CHECK-SAME: %{{.*}}: none, %[[SWITCH_SELECTOR:[[:alnum:]_]+]]: index
+// CHECK: dataflow.stream
+// CHECK: dataflow.sync %{{.*}}, %{{.*}} : (index, none) -> (index, none)
+// CHECK: arith.cmpi eq, %{{.*}}, %{{.*}} : index
+// CHECK: dataflow.mux
+// CHECK-NOT: dataflow.channel
+// CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
+// CHECK-LABEL: dataflow.graph private @while_producer_graph(
+// CHECK-SAME: -> i32
+// CHECK: dataflow.carry
+// CHECK-NOT: dataflow.channel
+// CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
+// CHECK-LABEL: dataflow.graph private @index_switch_single_case_producer_graph(
+// CHECK: dataflow.sync %{{.*}}, %{{.*}} : (i1, none) -> (i1, none)
+// CHECK-NOT: dataflow.channel
+// CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
 // CHECK-NOT: loom.spatial_region
 
 module {
@@ -405,6 +466,87 @@ module {
       graph_name = "dependent_consumer_graph",
       source_maps = [affine_map<() -> ()>]
     } : (!dataflow.channel<i32>, memref<2xi32>) -> ()
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @index_switch_stream_producer domain(#dataflow.thread_domain<dense>)(
+      %output: !dataflow.channel<i32>, %selector: index,
+      %default_message: i32, %first_message: i32, %second_message: i32)
+      ctrl (%ctrl: none) {
+    "loom.spatial_region"(%selector, %default_message, %first_message,
+                          %second_message, %output)
+        <{operandSegmentSizes = array<i32: 4, 0, 0, 1>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%select: index, %on_default: i32, %on_first: i32,
+           %on_second: i32, %sink: !dataflow.channel<i32>):
+        scf.index_switch %select
+        case 3 {
+          dataflow.channel.send %sink, %on_first : !dataflow.channel<i32>
+          scf.yield
+        }
+        case 7 {
+          dataflow.channel.send %sink, %on_second : !dataflow.channel<i32>
+          scf.yield
+        }
+        default {
+          dataflow.channel.send %sink, %on_default : !dataflow.channel<i32>
+          scf.yield
+        }
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "index_switch_producer_graph", source_maps = []} :
+        (index, i32, i32, i32, !dataflow.channel<i32>) -> ()
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @while_stream_producer domain(#dataflow.thread_domain<dense>)(
+      %output: !dataflow.channel<i32>, %limit: i32, %message: i32)
+      ctrl (%ctrl: none) {
+    "loom.spatial_region"(%limit, %message, %output)
+        <{operandSegmentSizes = array<i32: 2, 0, 0, 1>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%bound: i32, %payload: i32,
+           %sink: !dataflow.channel<i32>):
+        %zero = arith.constant 0 : i32
+        %one = arith.constant 1 : i32
+        %result = scf.while (%iv = %zero) : (i32) -> i32 {
+          %continue = arith.cmpi slt, %iv, %bound : i32
+          scf.condition(%continue) %iv : i32
+        } do {
+        ^bb0(%iv: i32):
+          dataflow.channel.send %sink, %payload : !dataflow.channel<i32>
+          %next = arith.addi %iv, %one : i32
+          scf.yield %next : i32
+        }
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "while_producer_graph", source_maps = []} :
+        (i32, i32, !dataflow.channel<i32>) -> ()
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @index_switch_single_case_stream_producer domain(#dataflow.thread_domain<dense>)(
+      %output: !dataflow.channel<i32>, %selector: index,
+      %default_message: i32, %case_message: i32)
+      ctrl (%ctrl: none) {
+    "loom.spatial_region"(%selector, %default_message, %case_message, %output)
+        <{operandSegmentSizes = array<i32: 3, 0, 0, 1>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%select: index, %on_default: i32, %on_case: i32,
+           %sink: !dataflow.channel<i32>):
+        scf.index_switch %select
+        case 5 {
+          dataflow.channel.send %sink, %on_case : !dataflow.channel<i32>
+          scf.yield
+        }
+        default {
+          dataflow.channel.send %sink, %on_default : !dataflow.channel<i32>
+          scf.yield
+        }
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "index_switch_single_case_producer_graph", source_maps = []} :
+        (index, i32, i32, !dataflow.channel<i32>) -> ()
     dataflow.thread.yield
   }
 

@@ -43,7 +43,14 @@
 
 namespace {
 
+using loom::raising::carryCandidateLoopHint;
 using loom::raising::carryLoopAnnotation;
+
+void carryHints(::mlir::Operation *target, ::mlir::Attribute annotation,
+                ::mlir::Attribute candidate) {
+  carryLoopAnnotation(annotation, target);
+  carryCandidateLoopHint(candidate, target);
+}
 
 struct LLVMBrToCfBr : public ::mlir::OpRewritePattern<::mlir::LLVM::BrOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -52,9 +59,11 @@ struct LLVMBrToCfBr : public ::mlir::OpRewritePattern<::mlir::LLVM::BrOp> {
   matchAndRewrite(::mlir::LLVM::BrOp op,
                   ::mlir::PatternRewriter &rewriter) const override {
     ::mlir::Attribute annotation = op.getLoopAnnotationAttr();
+    ::mlir::Attribute candidate =
+        op->getAttr(loom::raising::candidateLoopHintName);
     auto replacement = rewriter.replaceOpWithNewOp<::mlir::cf::BranchOp>(
         op, op.getDest(), op.getDestOperands());
-    carryLoopAnnotation(annotation, replacement);
+    carryHints(replacement, annotation, candidate);
     return ::mlir::success();
   }
 };
@@ -67,13 +76,15 @@ struct LLVMCondBrToCfCondBr
   matchAndRewrite(::mlir::LLVM::CondBrOp op,
                   ::mlir::PatternRewriter &rewriter) const override {
     ::mlir::Attribute annotation = op.getLoopAnnotationAttr();
+    ::mlir::Attribute candidate =
+        op->getAttr(loom::raising::candidateLoopHintName);
     ::mlir::DenseI32ArrayAttr weights = op.getBranchWeightsAttr();
     auto replacement = rewriter.replaceOpWithNewOp<::mlir::cf::CondBranchOp>(
         op, op.getCondition(), op.getTrueDest(), op.getTrueDestOperands(),
         op.getFalseDest(), op.getFalseDestOperands());
     if (weights)
       replacement.setBranchWeightsAttr(weights);
-    carryLoopAnnotation(annotation, replacement);
+    carryHints(replacement, annotation, candidate);
     return ::mlir::success();
   }
 };
@@ -111,10 +122,12 @@ struct LLVMSwitchToCfSwitch
     // branch it describes.
     ::mlir::Attribute annotation =
         op->getAttr(loom::raising::loopAnnotationName);
+    ::mlir::Attribute candidate =
+        op->getAttr(loom::raising::candidateLoopHintName);
     auto replacement = rewriter.replaceOpWithNewOp<::mlir::cf::SwitchOp>(
         op, op.getValue(), defaultDest, defaultOperands, caseValuesAttr,
         caseDests, caseOperands);
-    carryLoopAnnotation(annotation, replacement);
+    carryHints(replacement, annotation, candidate);
     return ::mlir::success();
   }
 };
@@ -132,8 +145,8 @@ struct LLVMCfToCfPass
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
-    registry.insert<::mlir::cf::ControlFlowDialect,
-                    ::mlir::LLVM::LLVMDialect>();
+    registry
+        .insert<::mlir::cf::ControlFlowDialect, ::mlir::LLVM::LLVMDialect>();
   }
 
   void runOnOperation() final {

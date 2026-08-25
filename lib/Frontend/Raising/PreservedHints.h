@@ -1,6 +1,8 @@
 #ifndef LOOM_LIB_FRONTEND_RAISING_PRESERVEDHINTS_H
 #define LOOM_LIB_FRONTEND_RAISING_PRESERVEDHINTS_H
 
+#include "Frontend/IR/StructuredProgramArtifact.h"
+
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/StringRef.h"
@@ -19,6 +21,8 @@ namespace raising {
 // handled as an orphan by the structuring pass.
 inline constexpr ::llvm::StringLiteral loopAnnotationName =
     "llvm.loop_annotation";
+inline constexpr ::llvm::StringLiteral candidateLoopHintName =
+    ::loom::frontend::structuredCandidateLoopHintAttrName;
 
 // Attach `annotation`, if any, to the operation that now owns the branch or
 // loop it describes.
@@ -26,6 +30,12 @@ inline void carryLoopAnnotation(::mlir::Attribute annotation,
                                 ::mlir::Operation *owner) {
   if (annotation)
     owner->setAttr(loopAnnotationName, annotation);
+}
+
+inline void carryCandidateLoopHint(::mlir::Attribute hint,
+                                   ::mlir::Operation *owner) {
+  if (hint)
+    owner->setAttr(candidateLoopHintName, hint);
 }
 
 } // namespace raising

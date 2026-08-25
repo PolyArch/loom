@@ -38,6 +38,8 @@ inline constexpr ArtifactSchemaDescriptor structuredProgramArtifactSchema{
     "loom.structured_program", {1, 0}};
 inline constexpr llvm::StringLiteral structuredCandidateHintAttrName =
     "loom.candidate_hint";
+inline constexpr llvm::StringLiteral structuredCandidateLoopHintAttrName =
+    "loom.candidate_loop_hint";
 
 enum class StructuredEntityKind : std::uint32_t {
   Operation = 0,
@@ -62,14 +64,6 @@ struct StructuredEntityRef {
   }
 };
 
-/// Invocation-local source provenance projected from standard MLIR locations
-/// and imported LLVM debug scopes before canonical serialization erases them.
-/// The exact Structured Program remains the only persistent owner.
-struct StructuredOperationSourceProvenance final {
-  StructuredEntityRef operation;
-  std::vector<std::string> sourceFiles;
-};
-
 struct StructuredSourcePosition final {
   std::uint32_t line = 0;
   std::uint32_t column = 0;
@@ -78,6 +72,44 @@ struct StructuredSourcePosition final {
                          const StructuredSourcePosition &rhs) {
     return lhs.line == rhs.line && lhs.column == rhs.column;
   }
+};
+
+struct StructuredSourceLineageFrame final {
+  std::string sourceFile;
+  StructuredSourcePosition position;
+
+  friend bool operator==(const StructuredSourceLineageFrame &lhs,
+                         const StructuredSourceLineageFrame &rhs) {
+    return lhs.sourceFile == rhs.sourceFile && lhs.position == rhs.position;
+  }
+};
+
+/// One exact source location path. The first frame identifies the operation's
+/// source location; each remaining frame identifies its successively enclosing
+/// inline call site.
+struct StructuredSourceCallLineage final {
+  std::vector<StructuredSourceLineageFrame> frames;
+
+  friend bool operator==(const StructuredSourceCallLineage &lhs,
+                         const StructuredSourceCallLineage &rhs) {
+    return lhs.frames == rhs.frames;
+  }
+};
+
+/// Invocation-local source provenance projected from standard MLIR locations
+/// and imported LLVM debug scopes before canonical serialization erases them.
+/// `sourceFiles` retains the complete debug-file inventory; `callLineages`
+/// retains exact file/line/column paths where the location representation has
+/// them. The exact Structured Program remains the only persistent owner.
+struct StructuredOperationSourceProvenance final {
+  StructuredEntityRef operation;
+  std::vector<std::string> sourceFiles;
+  std::vector<StructuredSourceCallLineage> callLineages;
+};
+
+enum class StructuredCandidateHintTargetKind : std::uint8_t {
+  Function,
+  Loop,
 };
 
 /// Invocation-local projection of one nonbinding source candidate hint.
@@ -89,12 +121,14 @@ struct StructuredFunctionCandidateHintProjection final {
   StructuredSourcePosition pragma;
   StructuredSourcePosition targetBegin;
   StructuredSourcePosition targetEnd;
+  StructuredCandidateHintTargetKind targetKind =
+      StructuredCandidateHintTargetKind::Function;
 
   friend bool operator==(const StructuredFunctionCandidateHintProjection &lhs,
                          const StructuredFunctionCandidateHintProjection &rhs) {
     return lhs.target == rhs.target && lhs.sourceFile == rhs.sourceFile &&
            lhs.pragma == rhs.pragma && lhs.targetBegin == rhs.targetBegin &&
-           lhs.targetEnd == rhs.targetEnd;
+           lhs.targetEnd == rhs.targetEnd && lhs.targetKind == rhs.targetKind;
   }
 };
 

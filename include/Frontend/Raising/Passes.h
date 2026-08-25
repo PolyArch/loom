@@ -5,8 +5,8 @@
 
 #include "llvm/ADT/ArrayRef.h"
 
-#include <memory>
 #include <cstdint>
+#include <memory>
 
 namespace mlir {
 class Operation;
@@ -30,12 +30,11 @@ namespace raising {
 // owns the imported profile is exact where respelling it is not.
 std::unique_ptr<::mlir::Pass> createLLVMCfToCfPass();
 
-// Structure the cf-shaped control flow of each callable region with the
-// upstream region-level mlir::transformCFGToSCF utility. An imported
-// llvm.func is structured in place and keeps its complete ABI envelope;
-// undefined values are spelled llvm.mlir.undef and unreachable continuations
-// llvm.unreachable there, and each imported loop annotation moves to the
-// structured loop that owns its cycle.
+// Structure each locally maximal, exactly provable cf-shaped subgraph with the
+// upstream mlir::transformCFGToSCF utility. An imported llvm.func keeps its
+// complete ABI envelope; undefined values are spelled llvm.mlir.undef and
+// unreachable continuations llvm.unreachable there, and each imported loop
+// annotation moves to the structured loop that owns its cycle.
 //
 // A region that cannot be structured exactly -- weighted control no structured
 // operation can own, a terminator whose transfer would not be restated
@@ -44,7 +43,8 @@ std::unique_ptr<::mlir::Pass> createLLVMCfToCfPass();
 // is preserved with its complete original semantics. Unstructured cf control
 // is legal S0, so this never fails the module; rejection belongs to a
 // candidate that selects a loom.spatial_region and needs structured control
-// there. Preservation is per region: sibling callables are still structured.
+// there. Preservation is local: independent subgraphs in the same callable are
+// still considered.
 std::unique_ptr<::mlir::Pass> createLiftCFToSCFPass();
 
 // Rewrite each llvm computation whose complete semantics an arith or math
@@ -79,7 +79,7 @@ std::unique_ptr<::mlir::Pass> createDeduplicateSCFWhileStatePass();
 
 // Uplift an exactly proven counted scf.while loop inside a callable region into
 // scf.for, keeping the imported loop annotation. The upstream utility owns the
-// pre-tested shape and is gated by dead results plus a positive constant step.
+// pre-tested shape and is gated by dead results plus a unit step.
 // The shared exact post-tested projection owns the finite latch-tested subset:
 // constant nonnegative lower bound, positive constant step, exact landing on a
 // greater constant upper bound, next != upper, and ordinal identity feedback
@@ -152,11 +152,10 @@ enum class ParallelDependenceResult : std::uint8_t {
 /// facts are deliberately distinct from a proven dependence so callers can
 /// preserve serial semantics without treating conservative rejection as an
 /// error.
-ParallelDependenceResult
-proveIndependentIterations(::mlir::scf::ForOp loop);
+ParallelDependenceResult proveIndependentIterations(::mlir::scf::ForOp loop);
 
-ParallelDependenceResult proveIndependentIterations(
-    ::llvm::ArrayRef<::mlir::scf::ForOp> nest);
+ParallelDependenceResult
+proveIndependentIterations(::llvm::ArrayRef<::mlir::scf::ForOp> nest);
 
 /// Compatibility predicate for callers that only need the positive admission
 /// bit. The typed `proveIndependentIterations` result remains authoritative.

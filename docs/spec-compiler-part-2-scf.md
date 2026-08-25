@@ -60,6 +60,19 @@ pipeline operate on `FunctionOpInterface`, a callable region, or the upstream
 region utility. They must not copy a function into another dialect to obtain a
 particular pass wrapper.
 
+The whole callable is the preferred exact CFG-to-SCF projection. When a local
+obstacle makes that projection inadmissible, raising may instead recover a
+maximal dominance- and post-dominance-closed region with one external entry
+and one continuation. The boundary carries continuation arguments and every
+SSA value used outside the region; the rewrite is attempted on a detached
+callable clone and is published only after the upstream transformation
+succeeds. Any transient structured region used to establish that boundary is
+inlined before publication. Profile-bearing control, an unsupported
+terminator, or an unproved loop-hint association prevents only a region whose
+boundary contains that obstacle. A candidate with no common continuation or
+no exact live-out boundary remains in `cf` form without preventing independent
+regions in the same callable from being recovered.
+
 CFG structuring may preserve multiple PHI lanes for one recurrence. Mechanical
 raising removes a duplicate `scf.while` lane only when it has the same SSA
 initial value and the same SSA `scf.condition` value as an earlier lane, and
@@ -335,6 +348,26 @@ hint never enters canonical bytes or identity. A hint can affect identity only
 indirectly when a typed decision materializes different semantic IR in the
 resulting candidate. Two candidates with identical canonical semantic content
 deduplicate even if one derivation observed a hint and the other did not.
+For a source loop hint, the mutable raising workspace requires one exact
+carrier-manifest-to-LLVM-loop relation. The LLVM pipeline-start projection
+binds the source marker before ordinary optimization; raising then preserves
+the surviving loop target through mechanical LLVM-to-CF and CF-to-SCF
+rewrites. The projected source range names the original source loop; it is
+provenance rather than canonical operation identity. If the loop is erased,
+split, cloned, or cannot be matched uniquely, raising returns a typed
+unsupported or unproven projection instead of attaching the hint to a
+different operation.
+
+Before finalization, standard locations are projected into the existing
+`StructuredOperationSourceProvenance` sidecar. Each available call-site path
+retains exact file, line, and column frames ordered from the operation's source
+location through successively enclosing inline call sites. The source-file
+inventory also retains debug-scope files that have no precise location frame.
+Structured child materializers rebuild these locations on their private clones
+from the sidecar, so an inline lineage is not discarded merely because source
+locations do not enter canonical bytes. Candidate hints and source provenance
+remain invocation-local projections of the same Structured owner, not another
+program representation.
 
 ### Parent-Local References
 

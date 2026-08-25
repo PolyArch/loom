@@ -20,14 +20,16 @@
 // A loom-c++ symlink to loom-cc is produced at build time so that the same
 // binary covers both languages.
 //
-// Object-producing frontend jobs embed the frontend-owned relocatable
-// accelerator payload through Loom's LLVM module pass. Preprocessing, syntax
-// checking, LLVM IR output, and assembly output retain their ordinary forms.
+// Compilation jobs project source candidate annotations to nonsemantic LLVM
+// metadata before optimization. Object-producing jobs additionally embed the
+// frontend-owned relocatable accelerator payload. Preprocessing, syntax
+// checking, and dependency-only jobs retain their ordinary forms.
 //
 //===----------------------------------------------------------------------===//
 
 #include "Application/ProductBuild.h"
 
+#include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/Stack.h"
 #include "clang/Config/config.h"
@@ -60,6 +62,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <set>
@@ -308,17 +311,13 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
   return options;
 }
 
-bool preventsFinalLink(llvm::ArrayRef<const char *> arguments) {
-  for (const char *raw : arguments.drop_front()) {
-    if (!raw)
-      continue;
-    const llvm::StringRef argument(raw);
-    if (argument == "-E" || argument == "-S" || argument == "-c" ||
-        argument == "-emit-llvm" || argument == "-fsyntax-only" ||
-        argument == "-M" || argument == "-MM" || argument == "-###")
-      return true;
-  }
-  return false;
+bool preventsFinalLink(const llvm::opt::ArgList &arguments) {
+  return arguments.hasArg(options::OPT_E) || arguments.hasArg(options::OPT_S) ||
+         arguments.hasArg(options::OPT_c) ||
+         arguments.hasArg(options::OPT_emit_llvm) ||
+         arguments.hasArg(options::OPT_fsyntax_only) ||
+         arguments.hasArg(options::OPT_M, options::OPT_MM) ||
+         arguments.hasArg(options::OPT__HASH_HASH_HASH);
 }
 
 llvm::Expected<std::uint64_t>
@@ -543,26 +542,128 @@ static void insertTargetAndModeArgs(const ParsedClangName &NameParts,
   }
 }
 
-static bool shouldEmbedRelocatablePayload(llvm::ArrayRef<const char *> args) {
-  for (const char *rawArg : llvm::ArrayRef(args).drop_front()) {
-    if (rawArg == nullptr)
-      continue;
-    const llvm::StringRef arg(rawArg);
-    if (arg == "-E" || arg == "-S" || arg == "-emit-llvm" ||
-        arg == "-fsyntax-only" || arg == "-M" || arg == "-MM" || arg == "-###")
-      return false;
-  }
-  return true;
+enum class CC1ProgramAction : std::uint8_t {
+  Other,
+  Assembly,
+  LLVM,
+  Object,
+};
+
+struct CC1CommandSemantics final {
+  CC1ProgramAction action = CC1ProgramAction::Other;
+  bool llvmPassesDisabled = false;
+};
+
+bool isCC1Command(const Command &command) {
+  return !command.getArguments().empty() && command.getArguments().front() &&
+         llvm::StringRef(command.getArguments().front()) == "-cc1";
 }
 
-static void
-insertRelocatablePayloadPass(llvm::SmallVectorImpl<const char *> &args,
-                             llvm::StringSet<> &saved) {
-  if (!shouldEmbedRelocatablePayload(args))
-    return;
-  const std::string option =
-      std::string("-fpass-plugin=") + LOOM_RELOCATABLE_PAYLOAD_PASS_PATH;
-  args.insert(args.begin() + 1, GetStableCStr(saved, option));
+std::optional<CC1CommandSemantics> cc1CommandSemantics(const Command &command) {
+  if (!isCC1Command(command))
+    return CC1CommandSemantics{};
+  DiagnosticOptions options;
+  IgnoringDiagConsumer consumer;
+  DiagnosticsEngine diagnostics(DiagnosticIDs::create(), options, &consumer,
+                                /*ShouldOwnClient=*/false);
+  CompilerInvocation invocation;
+  if (!CompilerInvocation::CreateFromArgs(invocation, command.getArguments(),
+                                          diagnostics))
+    return std::nullopt;
+  CC1CommandSemantics semantics;
+  semantics.llvmPassesDisabled = invocation.getCodeGenOpts().DisableLLVMPasses;
+  switch (invocation.getFrontendOpts().ProgramAction) {
+  case frontend::EmitAssembly:
+    semantics.action = CC1ProgramAction::Assembly;
+    break;
+  case frontend::EmitBC:
+  case frontend::EmitLLVM:
+    semantics.action = CC1ProgramAction::LLVM;
+    break;
+  case frontend::EmitObj:
+    semantics.action = CC1ProgramAction::Object;
+    break;
+  default:
+    break;
+  }
+  return semantics;
+}
+
+bool feedsAssemblerAction(const Compilation &compilation,
+                          const Command &producer) {
+  for (const std::string &output : producer.getOutputFilenames()) {
+    if (output.empty())
+      continue;
+    for (const Command &consumer : compilation.getJobs()) {
+      if (&consumer == &producer ||
+          consumer.getSource().getKind() != Action::AssembleJobClass ||
+          isCC1Command(consumer))
+        continue;
+      if (llvm::any_of(consumer.getInputInfos(), [&](const InputInfo &input) {
+            return input.isFilename() && input.getFilename() == output;
+          }))
+        return true;
+    }
+  }
+  return false;
+}
+
+bool feedsAnotherFrontendAction(const Compilation &compilation,
+                                const Command &producer) {
+  for (const std::string &output : producer.getOutputFilenames()) {
+    if (output.empty())
+      continue;
+    for (const Command &consumer : compilation.getJobs()) {
+      if (&consumer == &producer || !isCC1Command(consumer))
+        continue;
+      if (llvm::any_of(consumer.getInputInfos(), [&](const InputInfo &input) {
+            return input.isFilename() && input.getFilename() == output;
+          }))
+        return true;
+    }
+  }
+  return false;
+}
+
+llvm::Error validateFrontendPassPipelines(const Compilation &compilation) {
+  for (const Command &command : compilation.getJobs()) {
+    auto semantics = cc1CommandSemantics(command);
+    if (!semantics || semantics->action == CC1ProgramAction::Other ||
+        !semantics->llvmPassesDisabled)
+      continue;
+    if (semantics->action == CC1ProgramAction::LLVM &&
+        feedsAnotherFrontendAction(compilation, command))
+      continue;
+    return productError("loom_frontend_projection_unsupported",
+                        "the final LLVM pass pipeline cannot be disabled");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error appendFrontendPassPlugins(Compilation &compilation,
+                                      llvm::StringSet<> &saved) {
+  const std::string payloadOption =
+      (llvm::Twine("-fpass-plugin=") + LOOM_RELOCATABLE_PAYLOAD_PASS_PATH)
+          .str();
+  const std::string candidateOption =
+      (llvm::Twine("-fpass-plugin=") + LOOM_CANDIDATE_PROJECTION_PASS_PATH)
+          .str();
+  for (Command &command : compilation.getJobs()) {
+    auto semantics = cc1CommandSemantics(command);
+    if (!semantics || semantics->action == CC1ProgramAction::Other)
+      continue;
+    llvm::opt::ArgStringList arguments(command.getArguments().begin(),
+                                       command.getArguments().end());
+    if (semantics->action == CC1ProgramAction::Object ||
+        (semantics->action == CC1ProgramAction::Assembly &&
+         feedsAssemblerAction(compilation, command)) ||
+        (semantics->action == CC1ProgramAction::LLVM &&
+         command.getSource().getType() == types::TY_LTO_BC))
+      arguments.push_back(GetStableCStr(saved, payloadOption));
+    arguments.push_back(GetStableCStr(saved, candidateOption));
+    command.replaceArguments(std::move(arguments));
+  }
+  return llvm::Error::success();
 }
 
 static void
@@ -609,6 +710,56 @@ static void SetBackdoorDriverOutputsFromEnvVars(Driver &D) {
                         D.CCPrintInternalStatReportFilename);
 }
 
+constexpr llvm::StringLiteral candidatePragmaReplayArgument =
+    "-loom-internal-candidate-replay=";
+
+bool containsReservedCandidateReplayArgument(
+    llvm::ArrayRef<const char *> arguments) {
+  unsigned missingArgumentIndex = 0;
+  unsigned missingArgumentCount = 0;
+  llvm::opt::InputArgList parsed = clang::getDriverOptTable().ParseArgs(
+      arguments, missingArgumentIndex, missingArgumentCount,
+      llvm::opt::Visibility(clang::options::CC1Option));
+  return llvm::any_of(parsed.filtered(clang::options::OPT_UNKNOWN),
+                      [&](const llvm::opt::Arg *argument) {
+                        return llvm::StringRef(argument->getAsString(parsed))
+                            .starts_with(candidatePragmaReplayArgument);
+                      });
+}
+
+llvm::Error
+rejectReservedCandidateReplayArguments(const Compilation &compilation) {
+  for (const Command &command : compilation.getJobs())
+    if (containsReservedCandidateReplayArgument(command.getArguments()))
+      return productError("loom_internal_invocation_invalid",
+                          "candidate replay argument is unsupported");
+  return llvm::Error::success();
+}
+
+llvm::Error normalizeCC1ResponseArguments(Compilation &compilation,
+                                          llvm::BumpPtrAllocator &allocator,
+                                          llvm::vfs::FileSystem &fileSystem) {
+  for (Command &command : compilation.getJobs()) {
+    llvm::opt::ArgStringList arguments(command.getArguments().begin(),
+                                       command.getArguments().end());
+    if (arguments.empty() || llvm::StringRef(arguments.front()) != "-cc1")
+      continue;
+    if (llvm::none_of(arguments, [](const char *argument) {
+          return argument && llvm::StringRef(argument).starts_with("@") &&
+                 llvm::StringRef(argument).size() > 1;
+        }))
+      continue;
+    llvm::cl::ExpansionContext context(
+        allocator, llvm::cl::TokenizeGNUCommandLine, &fileSystem);
+    if (llvm::Error error = context.expandResponseFiles(arguments))
+      return productError("loom_internal_invocation_invalid",
+                          "cc1 response arguments cannot be normalized: " +
+                              llvm::toString(std::move(error)));
+    command.replaceArguments(std::move(arguments));
+  }
+  return llvm::Error::success();
+}
+
 static int ExecuteCC1Tool(llvm::SmallVectorImpl<const char *> &ArgV,
                           const llvm::ToolContext &Ctx,
                           llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS) {
@@ -625,15 +776,26 @@ static int ExecuteCC1Tool(llvm::SmallVectorImpl<const char *> &ArgV,
   }
   llvm::StringRef Tool = ArgV[1];
   void *GetExecutablePathVP = (void *)(intptr_t)GetExecutablePath;
-  if (Tool == "-cc1")
+  if (Tool == "-cc1") {
+    if (containsReservedCandidateReplayArgument(ArgV)) {
+      llvm::errs() << "loom-cc: error: loom_internal_invocation_invalid: "
+                      "candidate replay argument is unsupported\n";
+      return 1;
+    }
+    auto enableSandbox = llvm::sys::sandbox::scopedEnable();
     return cc1_main(llvm::ArrayRef(ArgV).slice(1), ArgV[0],
                     GetExecutablePathVP);
-  if (Tool == "-cc1as")
+  }
+  if (Tool == "-cc1as") {
+    auto enableSandbox = llvm::sys::sandbox::scopedEnable();
     return cc1as_main(llvm::ArrayRef(ArgV).slice(2), ArgV[0],
                       GetExecutablePathVP);
-  if (Tool == "-cc1gen-reproducer")
+  }
+  if (Tool == "-cc1gen-reproducer") {
+    auto enableSandbox = llvm::sys::sandbox::scopedEnable();
     return cc1gen_reproducer_main(llvm::ArrayRef(ArgV).slice(2), ArgV[0],
                                   GetExecutablePathVP, Ctx);
+  }
   llvm::errs() << "error: unknown integrated tool '" << Tool << "'. "
                << "Valid tools include '-cc1', '-cc1as' and "
                   "'-cc1gen-reproducer'.\n";
@@ -669,20 +831,13 @@ static int loom_main(int Argc, char **Argv,
   }
 
   // -cc1 family: fast path through the integrated tool dispatcher.
-  if (Args.size() >= 2 && llvm::StringRef(Args[1]).starts_with("-cc1")) {
-    auto EnableSandbox = llvm::sys::sandbox::scopedEnable();
+  if (Args.size() >= 2 && llvm::StringRef(Args[1]).starts_with("-cc1"))
     return ExecuteCC1Tool(Args, ToolContext, VFS);
-  }
 
   auto LoomOptions = extractLoomDriverOptions(Args);
   if (!LoomOptions) {
     llvm::errs() << "loom-cc: error: "
                  << llvm::toString(LoomOptions.takeError()) << '\n';
-    return 1;
-  }
-  if (!LoomOptions->deploymentPath.empty() && preventsFinalLink(Args)) {
-    llvm::errs() << "loom-cc: error: Deployment output requires a final "
-                    "link invocation\n";
     return 1;
   }
   bool CanonicalPrefixes = true;
@@ -773,7 +928,6 @@ static int loom_main(int Argc, char **Argv,
   insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);
   if (!ProductTargetArguments.empty())
     insertProductTargetArguments(Args, SavedStrings, ProductTargetArguments);
-  insertRelocatablePayloadPass(Args, SavedStrings);
   SetBackdoorDriverOutputsFromEnvVars(TheDriver);
 
   auto ExecuteCC1WithContext =
@@ -787,7 +941,39 @@ static int loom_main(int Argc, char **Argv,
   }
 
   std::unique_ptr<Compilation> C(TheDriver.BuildCompilation(Args));
-
+  const bool printsCommands =
+      C && C->getArgs().hasArg(options::OPT__HASH_HASH_HASH);
+  if (C && !C->containsError()) {
+    if (!printsCommands) {
+      if (llvm::Error error = normalizeCC1ResponseArguments(*C, A, *VFS)) {
+        llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(error))
+                     << '\n';
+        return 1;
+      }
+      if (llvm::Error error = rejectReservedCandidateReplayArguments(*C)) {
+        llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(error))
+                     << '\n';
+        return 1;
+      }
+      if (llvm::Error error = validateFrontendPassPipelines(*C)) {
+        llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(error))
+                     << '\n';
+        return 1;
+      }
+    }
+    if (!LoomOptions->deploymentPath.empty() &&
+        preventsFinalLink(C->getArgs())) {
+      llvm::errs() << "loom-cc: error: Deployment output requires a final "
+                      "link invocation\n";
+      return 1;
+    }
+    if (!printsCommands)
+      if (llvm::Error error = appendFrontendPassPlugins(*C, SavedStrings)) {
+        llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(error))
+                     << '\n';
+        return 1;
+      }
+  }
   std::optional<std::string> ProductLinkOutput;
   if (LoomOptions->requestsProductFlow() && C && !C->containsError()) {
     auto Output = findProductLinkOutput(*C);
