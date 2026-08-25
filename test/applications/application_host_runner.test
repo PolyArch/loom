@@ -5,16 +5,28 @@
 # RUN:   --repository-root=%S/../.. --application=vecadd-memory --input=smoke \
 # RUN:   > %t.vecadd.json
 # RUN: FileCheck %s --check-prefix=REPORT < %t.vecadd.json
+# RUN: %loom-application-host-run --manifest=%S/manifest.json \
+# RUN:   --repository-root=%S/../.. --selection=scale_eda \
+# RUN:   > %t.scale.json
+# RUN: FileCheck %s --check-prefix=SELECTION < %t.scale.json
 
-# REPORT: "schema": "loom.application_host_run"
-# REPORT: "version": "1.0"
-# REPORT: "application_identity": "vecadd-memory"
-# REPORT: "input_name": "smoke"
-# REPORT: "warmup_samples": 0
-# REPORT: "measured_samples": 1
-# REPORT: "deadline_milliseconds": 120000
-# REPORT: "status": "succeeded"
-# REPORT: "exit_status": 0
-# REPORT: "host_wall_time_nanoseconds": [[WALL:[0-9]+]]
-# REPORT: "status": "matched"
-# REPORT: "outcome": "succeeded"
+# REPORT-DAG: "schema": "loom.application_host_run"
+# REPORT-DAG: "version": "1.0"
+# REPORT-DAG: "application_identity": "vecadd-memory"
+# REPORT-DAG: "input_name": "smoke"
+# REPORT-DAG: "warmup_samples": 0
+# REPORT-DAG: "measured_samples": 1
+# REPORT-DAG: "deadline_milliseconds": 120000
+# REPORT-DAG: "status": "succeeded"
+# REPORT-DAG: "exit_status": 0
+# REPORT-DAG: "host_wall_time_nanoseconds": [[WALL:[0-9]+]]
+# REPORT-DAG: "status": "matched"
+# REPORT-DAG: "outcome": "succeeded"
+
+# SELECTION-DAG: "schema": "loom.application_host_selection_run"
+# SELECTION-DAG: "version": "1.0"
+# SELECTION-DAG: "execution_selection": "scale_eda"
+# SELECTION-DAG: "application_identity": "gapbs-pagerank"
+# SELECTION-DAG: "application_identity": "loom-multisensor-attention"
+# SELECTION-DAG: "application_identity": "vecadd-memory"
+# SELECTION-DAG: "outcome": "succeeded"

@@ -1,0 +1,6 @@
+attention checksum: 46.72024
+projection energy: 21.65625
+attention sum: 7.68096
+attention max: 2.02760
+combined checksum: 187.75932
+PASSED

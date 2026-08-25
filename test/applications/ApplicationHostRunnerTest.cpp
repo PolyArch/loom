@@ -107,7 +107,7 @@ std::string fixtureManifest(llvm::StringRef oracleKind,
                             std::uint64_t measuredSamples) {
   return R"json({
   "schema": "loom.application_portfolio",
-  "version": "2.0",
+  "version": "3.0",
   "applications": [{
     "identity": "host-fixture",
     "source": {"kind": "repository", "root": "source"},
@@ -116,7 +116,8 @@ std::string fixtureManifest(llvm::StringRef oracleKind,
       "language": "c",
       "sources": ["main.c"],
       "compiler_options": ["-std=c11", "-O0"],
-      "link_options": []
+      "link_options": [],
+      "operator_protocol_symbols": []
     },
     "cached_inputs": [],
     "inputs": [{
@@ -124,6 +125,7 @@ std::string fixtureManifest(llvm::StringRef oracleKind,
       "workload": "host-fixture-workload",
       "runtime_input": "host-fixture-input",
       "cached_inputs": [],
+      "compiler_options": [],
       "oracle": {"kind": ")json" +
          oracleKind.str() + R"json(", "entry": "expected.txt"},
       "profile": {
@@ -136,7 +138,7 @@ std::string fixtureManifest(llvm::StringRef oracleKind,
          std::to_string(deadlineMilliseconds) + R"json(
       }
     }],
-    "selections": ["smoke"]
+    "selection_inputs": {"smoke": ["fixture"]}
   }]
 })json";
 }
@@ -146,7 +148,7 @@ std::string cachedFixtureManifest(llvm::StringRef digestHex,
                                   std::uint64_t measuredSamples) {
   return R"json({
   "schema": "loom.application_portfolio",
-  "version": "2.0",
+  "version": "3.0",
   "applications": [{
     "identity": "host-fixture",
     "source": {"kind": "repository", "root": "source"},
@@ -155,7 +157,8 @@ std::string cachedFixtureManifest(llvm::StringRef digestHex,
       "language": "c",
       "sources": ["main.c"],
       "compiler_options": ["-std=c11", "-O0"],
-      "link_options": []
+      "link_options": [],
+      "operator_protocol_symbols": []
     },
     "cached_inputs": [{
       "logical_name": "payload",
@@ -168,6 +171,7 @@ std::string cachedFixtureManifest(llvm::StringRef digestHex,
       "workload": "host-fixture-workload",
       "runtime_input": "host-fixture-input",
       "cached_inputs": ["payload"],
+      "compiler_options": [],
       "oracle": {"kind": "exact", "entry": "expected.txt"},
       "profile": {
         "warmup_samples": )json" +
@@ -178,7 +182,7 @@ std::string cachedFixtureManifest(llvm::StringRef digestHex,
         "deadline_milliseconds": 500
       }
     }],
-    "selections": ["smoke"]
+    "selection_inputs": {"smoke": ["fixture"]}
   }]
 })json";
 }
@@ -202,6 +206,14 @@ std::string serialize(const ApplicationHostRunReport &report) {
   std::string text;
   llvm::raw_string_ostream output(text);
   writeApplicationHostRunReportJson(output, report);
+  output.flush();
+  return text;
+}
+
+std::string serialize(const ApplicationHostSelectionRunReport &report) {
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  writeApplicationHostSelectionRunReportJson(output, report);
   output.flush();
   return text;
 }
@@ -350,6 +362,41 @@ void exerciseTypedOutcomes(const TemporaryTree &tree,
               !compilerSignaled.compileExitStatus &&
               !compilerSignaled.executionExitStatus,
           "compiler signal termination was projected as an exit status");
+}
+
+void exerciseSelectionRun(const TemporaryTree &tree, llvm::StringRef compiler) {
+  writeFile(tree.path("source/main.c"),
+            "#include <stdio.h>\nint main(void) { puts(\"expected\"); "
+            "return 0; }\n");
+  writeFile(tree.path("expected.txt"), "expected\n");
+  ApplicationManifest manifest =
+      take(parseApplicationManifest(fixtureManifest("exact", 500, 0, 1)));
+  ApplicationHostSelectionRunReport report = take(runApplicationSelectionOnHost(
+      manifest, ApplicationHostSelectionRunRequest{
+                    ExecutionSelection::Smoke, tree.path().string(),
+                    std::nullopt, compiler.str()}));
+  require(applicationHostSelectionRunSucceeded(report) &&
+              report.reports.size() == 1 &&
+              report.reports.front().selection.applicationIdentity ==
+                  "host-fixture",
+          "host selection runner did not execute its exact manifest row");
+
+  auto parsed = take(llvm::json::parse(serialize(report)));
+  const llvm::json::Object *root = parsed.getAsObject();
+  const llvm::json::Array *reports = root ? root->getArray("reports") : nullptr;
+  require(root &&
+              root->getString("schema") ==
+                  ApplicationHostSelectionRunReport::schemaIdentity &&
+              root->getString("execution_selection") == "smoke" && reports &&
+              reports->size() == 1,
+          "host selection report lost its tier or member report");
+
+  ApplicationHostSelectionRunReport empty = take(runApplicationSelectionOnHost(
+      manifest, ApplicationHostSelectionRunRequest{
+                    ExecutionSelection::ScaleEda, tree.path().string(),
+                    std::nullopt, compiler.str()}));
+  require(empty.reports.empty() && !applicationHostSelectionRunSucceeded(empty),
+          "an empty manifest tier was reported as a successful run");
 }
 
 void exerciseSourceUnavailable(const TemporaryTree &tree) {
@@ -513,6 +560,7 @@ int main(int argc, char **argv) {
     fail("clang is required by the application host runner anchor");
   TemporaryTree tree(argv[1]);
   exerciseTypedOutcomes(tree, *compiler);
+  exerciseSelectionRun(tree, *compiler);
   exerciseSourceUnavailable(tree);
   exerciseAdmittedCacheAbi(tree, *compiler);
   exerciseDescendantContainment(tree, *compiler);

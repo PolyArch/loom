@@ -1,0 +1,2 @@
+pagerank iterations: 8
+pagerank sum: 1.012032

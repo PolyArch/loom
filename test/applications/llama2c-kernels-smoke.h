@@ -4,6 +4,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if defined(LOOM_APPLICATION_HOST_EXECUTION)
+#include <stdio.h>
+#endif
+
+#if !defined(LOOM_LLAMA_INPUT_VARIANT)
+#define LOOM_LLAMA_INPUT_VARIANT 0
+#endif
+
 __attribute__((noinline)) void rmsnorm(float *output, float *input,
                                        float *weight, int size);
 __attribute__((noinline)) void softmax(float *values, int size);
@@ -13,7 +21,11 @@ __attribute__((noinline)) void matmul(float *output, float *input,
 static float llama2cAbs(float value) { return value < 0.0f ? -value : value; }
 
 int main(void) {
+#if LOOM_LLAMA_INPUT_VARIANT == 1
+  float input[4] = {2.0f, 1.0f, 3.0f, 3.0f};
+#else
   float input[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+#endif
   float weight[4] = {1.0f, 1.0f, 1.0f, 1.0f};
   float normalized[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   rmsnorm(normalized, input, weight, 4);
@@ -38,10 +50,20 @@ int main(void) {
   float matrix[8] = {1.0f, 0.0f, 0.0f, 1.0f, 0.5f, 0.5f, 0.5f, 0.5f};
   float product[2] = {0.0f, 0.0f};
   matmul(product, input, matrix, 4, 2);
-  return llama2cAbs(product[0] - 5.0f) <= 1.0e-6f &&
-                 llama2cAbs(product[1] - 5.0f) <= 1.0e-6f
-             ? 0
-             : 3;
+#if LOOM_LLAMA_INPUT_VARIANT == 1
+  const float expectedFirst = 5.0f;
+  const float expectedSecond = 4.5f;
+#else
+  const float expectedFirst = 5.0f;
+  const float expectedSecond = 5.0f;
+#endif
+  if (llama2cAbs(product[0] - expectedFirst) > 1.0e-6f ||
+      llama2cAbs(product[1] - expectedSecond) > 1.0e-6f)
+    return 3;
+#if defined(LOOM_APPLICATION_HOST_EXECUTION)
+  printf("llama kernels variant: %d\n", LOOM_LLAMA_INPUT_VARIANT);
+#endif
+  return 0;
 }
 
 #define main llama2c_upstream_main

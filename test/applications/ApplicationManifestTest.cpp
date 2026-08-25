@@ -171,7 +171,7 @@ std::string replaceOnce(std::string text, llvm::StringRef from,
 std::string manifestText(llvm::StringRef digest) {
   return R"json({
   "schema": "loom.application_portfolio",
-  "version": "2.0",
+  "version": "3.0",
   "applications": [
     {
       "identity": "repository-app",
@@ -181,7 +181,8 @@ std::string manifestText(llvm::StringRef digest) {
         "language": "c++",
         "sources": ["main.cpp"],
         "compiler_options": ["-O2"],
-        "link_options": []
+        "link_options": [],
+        "operator_protocol_symbols": []
       },
       "cached_inputs": [],
       "inputs": [
@@ -190,6 +191,7 @@ std::string manifestText(llvm::StringRef digest) {
           "workload": "local-workload",
           "runtime_input": "local-runtime",
           "cached_inputs": [],
+          "compiler_options": [],
           "oracle": {"kind": "typed_invariant", "entry": "test/oracles/local.oracle"},
           "profile": {
             "warmup_samples": 2,
@@ -199,7 +201,7 @@ std::string manifestText(llvm::StringRef digest) {
           }
         }
       ],
-      "selections": ["smoke"]
+      "selection_inputs": {"smoke": ["local-input"]}
     },
     {
       "identity": "upstream-app",
@@ -209,7 +211,8 @@ std::string manifestText(llvm::StringRef digest) {
         "language": "c",
         "sources": ["main.c"],
         "compiler_options": ["-O3"],
-        "link_options": []
+        "link_options": [],
+        "operator_protocol_symbols": ["upstream_kernel"]
       },
       "cached_inputs": [
         {"logical_name": "weights", "path": "weights.bin", "sha256": ")json" +
@@ -221,6 +224,7 @@ std::string manifestText(llvm::StringRef digest) {
           "workload": "cache-free-workload",
           "runtime_input": "cache-free-runtime",
           "cached_inputs": [],
+          "compiler_options": [],
           "oracle": {"kind": "exact", "entry": "test/oracles/upstream-free.oracle"},
           "profile": {
             "warmup_samples": 0,
@@ -234,6 +238,7 @@ std::string manifestText(llvm::StringRef digest) {
           "workload": "wakeword-workload",
           "runtime_input": "wakeword-runtime",
           "cached_inputs": ["weights"],
+          "compiler_options": ["-DWAKEWORD_INPUT=1"],
           "oracle": {"kind": "exact", "entry": "test/oracles/upstream.oracle"},
           "profile": {
             "warmup_samples": 0,
@@ -243,7 +248,10 @@ std::string manifestText(llvm::StringRef digest) {
           }
         }
       ],
-      "selections": ["smoke", "validation"]
+      "selection_inputs": {
+        "smoke": ["cache-free-input", "wakeword-input"],
+        "validation": ["wakeword-input"]
+      }
     }
   ]
 })json";
@@ -306,6 +314,10 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
       selected.source.kind != SourceKind::Gitlink ||
       selected.source.root != "externals/upstream" ||
       selected.build.entry != "main.c" || selected.cachedInputs.size() != 1 ||
+      selected.build.compilerOptions !=
+          std::vector<std::string>{"-O3", "-DWAKEWORD_INPUT=1"} ||
+      selected.build.operatorProtocolSymbols !=
+          std::vector<std::string>{"upstream_kernel"} ||
       selected.cachedInputs[0].logicalName != "weights" ||
       selected.input.name != "wakeword-input" ||
       selected.input.profile.warmupSamples != 0 ||
@@ -324,15 +336,27 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
       selectApplicationInput(manifest, "upstream-app", "missing-input"),
       "has no input named");
 
-  const std::vector<std::string> smoke =
-      selectApplicationIdentities(manifest, ExecutionSelection::Smoke);
-  const std::vector<std::string> validation =
-      selectApplicationIdentities(manifest, ExecutionSelection::Validation);
-  const std::vector<std::string> scale =
-      selectApplicationIdentities(manifest, ExecutionSelection::ScaleEda);
-  if (smoke != std::vector<std::string>{"repository-app", "upstream-app"} ||
-      validation != std::vector<std::string>{"upstream-app"} || !scale.empty())
-    fail("execution selection did not derive a canonical manifest subset");
+  const std::vector<SelectedApplicationInput> smokeInputs =
+      selectApplicationInputs(manifest, ExecutionSelection::Smoke);
+  const std::vector<SelectedApplicationInput> validationInputs =
+      selectApplicationInputs(manifest, ExecutionSelection::Validation);
+  const std::vector<SelectedApplicationInput> scaleInputs =
+      selectApplicationInputs(manifest, ExecutionSelection::ScaleEda);
+  std::vector<std::string> smoke;
+  for (const SelectedApplicationInput &selection : smokeInputs)
+    if (smoke.empty() || smoke.back() != selection.applicationIdentity)
+      smoke.push_back(selection.applicationIdentity);
+  if (smokeInputs.size() != 3 ||
+      smokeInputs[0].applicationIdentity != "repository-app" ||
+      smokeInputs[0].input.name != "local-input" ||
+      smokeInputs[1].applicationIdentity != "upstream-app" ||
+      smokeInputs[1].input.name != "cache-free-input" ||
+      smokeInputs[2].input.name != "wakeword-input" ||
+      validationInputs.size() != 1 ||
+      validationInputs[0].applicationIdentity != "upstream-app" ||
+      validationInputs[0].input.name != "wakeword-input" ||
+      !scaleInputs.empty())
+    fail("execution selection did not derive exact application/input rows");
 
   const std::filesystem::path manifestPath = tree.path("manifest.json");
   writeFile(manifestPath, text);
@@ -392,9 +416,19 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
   requireErrorContains(parseApplicationManifest(copiedRevision),
                        "unknown field 'revision'");
   const std::string oldSchema =
-      replaceOnce(text, "\"version\": \"2.0\"", "\"version\": \"1.0\"");
+      replaceOnce(text, "\"version\": \"3.0\"", "\"version\": \"2.0\"");
   requireErrorContains(parseApplicationManifest(oldSchema),
                        "unsupported schema or version");
+  const std::string unknownSelectedInput = replaceOnce(
+      text, "\"smoke\": [\"local-input\"]", "\"smoke\": [\"missing-input\"]");
+  requireErrorContains(parseApplicationManifest(unknownSelectedInput),
+                       "selection_inputs references unknown input");
+  const std::string duplicatedProtocolSymbol =
+      replaceOnce(text, "\"operator_protocol_symbols\": [\"upstream_kernel\"]",
+                  "\"operator_protocol_symbols\": [\"upstream_kernel\", "
+                  "\"upstream_kernel\"]");
+  requireErrorContains(parseApplicationManifest(duplicatedProtocolSymbol),
+                       "operator_protocol_symbols must be unique");
   const std::string invalidCoverage =
       replaceOnce(text, "\"oracle_coverage\": \"all_measured_samples\"",
                   "\"oracle_coverage\": \"sampled\"");
@@ -443,31 +477,74 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
                                 llvm::StringRef repositoryRoot,
                                 llvm::StringRef sharedRepositoryRoot) {
   ApplicationManifest manifest = take(loadApplicationManifest(manifestPath));
-  const std::vector<std::string> smoke =
-      selectApplicationIdentities(manifest, ExecutionSelection::Smoke);
-  const std::vector<std::string> validation =
-      selectApplicationIdentities(manifest, ExecutionSelection::Validation);
-  const std::vector<std::string> scale =
-      selectApplicationIdentities(manifest, ExecutionSelection::ScaleEda);
-  if (smoke != std::vector<std::string>{"gapbs-pagerank", "llama2c-kernels",
-                                        "loom-multisensor-attention",
-                                        "mlperf-tiny-anomaly-detection",
-                                        "vecadd-memory"} ||
-      !validation.empty() || !scale.empty())
+  const auto smokeInputs =
+      selectApplicationInputs(manifest, ExecutionSelection::Smoke);
+  const auto validationInputs =
+      selectApplicationInputs(manifest, ExecutionSelection::Validation);
+  const auto scaleInputs =
+      selectApplicationInputs(manifest, ExecutionSelection::ScaleEda);
+  const auto identities = [](const auto &selections) {
+    std::vector<std::string> result;
+    for (const SelectedApplicationInput &selection : selections)
+      result.push_back(selection.applicationIdentity);
+    return result;
+  };
+  const auto inputNames = [](const auto &selections) {
+    std::vector<std::string> result;
+    for (const SelectedApplicationInput &selection : selections)
+      result.push_back(selection.input.name);
+    return result;
+  };
+  const std::vector<std::string> expectedSmoke = {
+      "gapbs-pagerank", "llama2c-kernels", "loom-multisensor-attention",
+      "mlperf-tiny-anomaly-detection", "vecadd-memory"};
+  if (identities(smokeInputs) != expectedSmoke ||
+      identities(validationInputs) != expectedSmoke ||
+      identities(scaleInputs) !=
+          std::vector<std::string>{"gapbs-pagerank",
+                                   "loom-multisensor-attention",
+                                   "vecadd-memory"} ||
+      inputNames(smokeInputs) !=
+          std::vector<std::string>(expectedSmoke.size(), "smoke") ||
+      inputNames(validationInputs) !=
+          std::vector<std::string>(expectedSmoke.size(), "validation") ||
+      inputNames(scaleInputs) !=
+          std::vector<std::string>(3, "validation-scale-eda"))
     fail("repository manifest execution selections do not match real rows");
   for (const ApplicationDefinition &application : manifest.applications()) {
-    if (application.inputs.size() != 1)
+    const std::size_t expectedInputCount =
+        application.identity == "llama2c-kernels" ||
+                application.identity == "mlperf-tiny-anomaly-detection"
+            ? 2
+            : 3;
+    if (application.inputs.size() != expectedInputCount)
       fail("repository manifest application has an unexpected input count");
-    const WorkloadExecutionProfile &profile = application.inputs[0].profile;
-    const bool isTinyMl =
-        application.identity == "mlperf-tiny-anomaly-detection";
-    if (profile.warmupSamples != (isTinyMl ? 1u : 0u) ||
-        profile.measuredSamples != (isTinyMl ? 4u : 1u) ||
-        profile.oracleCoverage != OracleCoverage::AllMeasuredSamples ||
-        profile.deadlineMilliseconds != (isTinyMl ? 10000u : 120000u) ||
-        profile.totalSamples() != (isTinyMl ? 5u : 1u))
-      fail("repository manifest changed its bounded smoke input profiles");
+    for (const WorkloadInputSelection &input : application.inputs) {
+      const bool isTinyMl =
+          application.identity == "mlperf-tiny-anomaly-detection";
+      const bool isTinyValidation = isTinyMl && input.name == "validation";
+      const std::uint64_t expectedWarmup =
+          isTinyValidation ? 2u : (isTinyMl ? 1u : 0u);
+      const std::uint64_t expectedMeasured =
+          isTinyValidation ? 2u : (isTinyMl ? 4u : 1u);
+      const WorkloadExecutionProfile &profile = input.profile;
+      if (profile.warmupSamples != expectedWarmup ||
+          profile.measuredSamples != expectedMeasured ||
+          profile.oracleCoverage != OracleCoverage::AllMeasuredSamples ||
+          profile.deadlineMilliseconds != (isTinyMl ? 10000u : 120000u) ||
+          profile.totalSamples() != expectedWarmup + expectedMeasured)
+        fail("repository manifest changed a bounded input profile");
+    }
   }
+
+  const SelectedApplicationInput pageRankValidation =
+      take(selectApplicationInput(manifest, "gapbs-pagerank", "validation"));
+  if (pageRankValidation.input.compilerOptions !=
+          std::vector<std::string>{"-DLOOM_PAGERANK_ITERATIONS=12"} ||
+      pageRankValidation.build.compilerOptions.empty() ||
+      pageRankValidation.build.compilerOptions.back() !=
+          "-DLOOM_PAGERANK_ITERATIONS=12")
+    fail("input-specific compiler options were not derived into the build");
 
   SelectedApplicationInput tinyMl = take(selectApplicationInput(
       manifest, "mlperf-tiny-anomaly-detection", "smoke"));
@@ -479,7 +556,9 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
       tinyMl.build.compilerOptions !=
           std::vector<std::string>{"-std=c++17", "-O1", "-ffp-contract=off",
                                    "-fno-exceptions", "-fno-rtti"} ||
-      !tinyMl.build.linkOptions.empty() || tinyMl.cachedInputs.size() != 2 ||
+      !tinyMl.build.linkOptions.empty() ||
+      !tinyMl.build.operatorProtocolSymbols.empty() ||
+      tinyMl.cachedInputs.size() != 2 ||
       tinyMl.cachedInputs[0].logicalName != "model" ||
       tinyMl.cachedInputs[0].path !=
           "externals/mlperf-tiny/benchmark/training/anomaly_detection/"
@@ -502,8 +581,8 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
 
   const std::vector<std::string> gitlinkApplications = {"gapbs-pagerank",
                                                         "llama2c-kernels"};
-  auto gitlinkOutcomes = take(admitApplicationSources(
-      manifest, gitlinkApplications, sharedRepositoryRoot));
+  auto gitlinkOutcomes = take(
+      admitApplicationSources(manifest, gitlinkApplications, repositoryRoot));
   if (gitlinkOutcomes.size() != gitlinkApplications.size())
     fail("repository manifest Gitlink admission changed cardinality");
   for (auto [index, identity] : llvm::enumerate(gitlinkApplications)) {

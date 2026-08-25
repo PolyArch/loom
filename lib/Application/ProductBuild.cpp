@@ -1092,6 +1092,15 @@ ProductBuildInvocation::create(ProductBuildOptions options) {
   auto target = prepareProductTarget(options);
   if (!target)
     return target.takeError();
+  if (target->portfolioInput) {
+    if (!options.operatorProtocolSymbols.empty())
+      return productError(
+          "loom_portfolio_build_invalid",
+          "a portfolio selection derives operator protocol symbols from the "
+          "manifest");
+    options.operatorProtocolSymbols =
+        target->portfolioInput->selection.build.operatorProtocolSymbols;
+  }
   if (target->portfolioInput &&
       (target->portfolioInput->selection.input.profile.warmupSamples != 0 ||
        target->portfolioInput->selection.input.profile.measuredSamples != 1)) {

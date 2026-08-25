@@ -300,6 +300,9 @@ struct ApplicationPairMappingObservation final {
   /// Completed SimulationComparison Evidence against the source-backed native
   /// oracle. Runtime Evidence remains the owner; this is its typed subset.
   std::vector<ArtifactRootReference> oracleEvidence;
+  std::optional<std::uint64_t> dfgCycles;
+  std::optional<std::uint64_t> cgraCycles;
+  std::optional<std::uint64_t> resourceCoreCost;
   std::optional<dse::PreMappingSpectrumClass> verifiedSpectrum;
 };
 
@@ -338,6 +341,9 @@ struct ApplicationPairCandidateRecord final {
   std::optional<dse::DsePlanIncompleteReason> planningIncompleteReason;
   std::optional<dse::PreMappingSpectrumClass> verifiedSpectrum;
   std::size_t planningRecordOrdinal = 0;
+  /// Selected Mapping plan for this candidate. Mapping observations own the
+  /// complete per-plan inventory when one candidate is evaluated more than
+  /// once.
   std::optional<std::uint64_t> planOrdinal;
   bool enteredMapping = false;
   bool selected = false;
@@ -392,6 +398,7 @@ struct ApplicationPairDecisionRecord final {
   std::vector<ApplicationPairQualityInvocationRecord> qualityInvocations;
   std::vector<ApplicationObjectiveObservation> hostOnlyBaseline;
   std::vector<ApplicationPairCandidateRecord> candidates;
+  /// Causal decisions retain every dimension as an explicit null residual.
   std::vector<ApplicationObjectiveObservation> selectedObjective;
   std::optional<ComponentViewDigest> selectedCandidateIdentity;
   std::optional<ArtifactRootReference> selectedSystem;

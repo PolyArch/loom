@@ -1,6 +1,6 @@
 {
   "schema": "loom.application_portfolio",
-  "version": "2.0",
+  "version": "3.0",
   "applications": [
     {
       "identity": "gapbs-pagerank",
@@ -26,7 +26,8 @@
           "-include",
           "test/applications/gapbs-pagerank-smoke.h"
         ],
-        "link_options": []
+        "link_options": [],
+        "operator_protocol_symbols": ["gapbs_pagerank_kernel"]
       },
       "cached_inputs": [],
       "inputs": [
@@ -35,6 +36,7 @@
           "workload": "gapbs-pagerank-smoke",
           "runtime_input": "gapbs-pagerank-smoke-input",
           "cached_inputs": [],
+          "compiler_options": [],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/gapbs-pagerank-expected-smoke.txt"
@@ -45,11 +47,47 @@
             "oracle_coverage": "all_measured_samples",
             "deadline_milliseconds": 120000
           }
+        },
+        {
+          "name": "validation",
+          "workload": "gapbs-pagerank-validation",
+          "runtime_input": "gapbs-pagerank-validation-input",
+          "cached_inputs": [],
+          "compiler_options": ["-DLOOM_PAGERANK_ITERATIONS=12"],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/gapbs-pagerank-expected-validation.txt"
+          },
+          "profile": {
+            "warmup_samples": 0,
+            "measured_samples": 1,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 120000
+          }
+        },
+        {
+          "name": "validation-scale-eda",
+          "workload": "gapbs-pagerank-scale-eda",
+          "runtime_input": "gapbs-pagerank-scale-eda-input",
+          "cached_inputs": [],
+          "compiler_options": ["-DLOOM_PAGERANK_ITERATIONS=16"],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/gapbs-pagerank-expected-scale.txt"
+          },
+          "profile": {
+            "warmup_samples": 0,
+            "measured_samples": 1,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 120000
+          }
         }
       ],
-      "selections": [
-        "smoke"
-      ]
+      "selection_inputs": {
+        "smoke": ["smoke"],
+        "validation": ["validation"],
+        "scale_eda": ["validation-scale-eda"]
+      }
     },
     {
       "identity": "llama2c-kernels",
@@ -74,7 +112,8 @@
         ],
         "link_options": [
           "-lm"
-        ]
+        ],
+        "operator_protocol_symbols": ["rmsnorm", "softmax", "matmul"]
       },
       "cached_inputs": [],
       "inputs": [
@@ -83,6 +122,7 @@
           "workload": "llama2c-kernels-smoke",
           "runtime_input": "llama2c-kernels-smoke-input",
           "cached_inputs": [],
+          "compiler_options": [],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/llama2c-kernels-expected-smoke.txt"
@@ -93,11 +133,29 @@
             "oracle_coverage": "all_measured_samples",
             "deadline_milliseconds": 120000
           }
+        },
+        {
+          "name": "validation",
+          "workload": "llama2c-kernels-validation",
+          "runtime_input": "llama2c-kernels-validation-input",
+          "cached_inputs": [],
+          "compiler_options": ["-DLOOM_LLAMA_INPUT_VARIANT=1"],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/llama2c-kernels-expected-validation.txt"
+          },
+          "profile": {
+            "warmup_samples": 0,
+            "measured_samples": 1,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 120000
+          }
         }
       ],
-      "selections": [
-        "smoke"
-      ]
+      "selection_inputs": {
+        "smoke": ["smoke"],
+        "validation": ["validation"]
+      }
     },
     {
       "identity": "loom-multisensor-attention",
@@ -120,6 +178,12 @@
         ],
         "link_options": [
           "-lm"
+        ],
+        "operator_protocol_symbols": [
+          "project_audio",
+          "project_imu",
+          "fuse_attention",
+          "reduce_statistics"
         ]
       },
       "cached_inputs": [],
@@ -129,6 +193,7 @@
           "workload": "loom-multisensor-attention-smoke",
           "runtime_input": "loom-multisensor-attention-smoke-input",
           "cached_inputs": [],
+          "compiler_options": [],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/loom-multisensor-attention/expected-smoke.txt"
@@ -139,11 +204,47 @@
             "oracle_coverage": "all_measured_samples",
             "deadline_milliseconds": 120000
           }
+        },
+        {
+          "name": "validation",
+          "workload": "loom-multisensor-attention-validation",
+          "runtime_input": "loom-multisensor-attention-validation-input",
+          "cached_inputs": [],
+          "compiler_options": ["-DLOOM_ATTENTION_INPUT_VARIANT=1"],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/loom-multisensor-attention/expected-validation.txt"
+          },
+          "profile": {
+            "warmup_samples": 0,
+            "measured_samples": 1,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 120000
+          }
+        },
+        {
+          "name": "validation-scale-eda",
+          "workload": "loom-multisensor-attention-scale-eda",
+          "runtime_input": "loom-multisensor-attention-scale-eda-input",
+          "cached_inputs": [],
+          "compiler_options": ["-DLOOM_ATTENTION_INPUT_VARIANT=2"],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/loom-multisensor-attention/expected-scale.txt"
+          },
+          "profile": {
+            "warmup_samples": 0,
+            "measured_samples": 1,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 120000
+          }
         }
       ],
-      "selections": [
-        "smoke"
-      ]
+      "selection_inputs": {
+        "smoke": ["smoke"],
+        "validation": ["validation"],
+        "scale_eda": ["validation-scale-eda"]
+      }
     },
     {
       "identity": "mlperf-tiny-anomaly-detection",
@@ -164,7 +265,8 @@
           "-fno-exceptions",
           "-fno-rtti"
         ],
-        "link_options": []
+        "link_options": [],
+        "operator_protocol_symbols": []
       },
       "cached_inputs": [
         {
@@ -187,6 +289,7 @@
             "model",
             "smoke-dataset"
           ],
+          "compiler_options": [],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/mlperf-tiny-anomaly/expected-smoke.txt"
@@ -197,11 +300,32 @@
             "oracle_coverage": "all_measured_samples",
             "deadline_milliseconds": 10000
           }
+        },
+        {
+          "name": "validation",
+          "workload": "mlperf-tiny-anomaly-validation",
+          "runtime_input": "mlperf-tiny-anomaly-validation-input",
+          "cached_inputs": [
+            "model",
+            "smoke-dataset"
+          ],
+          "compiler_options": [],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/mlperf-tiny-anomaly/expected-validation.txt"
+          },
+          "profile": {
+            "warmup_samples": 2,
+            "measured_samples": 2,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 10000
+          }
         }
       ],
-      "selections": [
-        "smoke"
-      ]
+      "selection_inputs": {
+        "smoke": ["smoke"],
+        "validation": ["validation"]
+      }
     },
     {
       "identity": "vecadd-memory",
@@ -220,7 +344,8 @@
           "-ffp-contract=off",
           "-fno-math-errno"
         ],
-        "link_options": []
+        "link_options": [],
+        "operator_protocol_symbols": ["vecadd_memory"]
       },
       "cached_inputs": [],
       "inputs": [
@@ -229,6 +354,7 @@
           "workload": "vecadd-memory-smoke",
           "runtime_input": "vecadd-memory-smoke-input",
           "cached_inputs": [],
+          "compiler_options": [],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/vecadd-memory/expected-smoke.txt"
@@ -239,11 +365,55 @@
             "oracle_coverage": "all_measured_samples",
             "deadline_milliseconds": 120000
           }
+        },
+        {
+          "name": "validation",
+          "workload": "vecadd-memory-validation",
+          "runtime_input": "vecadd-memory-validation-input",
+          "cached_inputs": [],
+          "compiler_options": [
+            "-DLOOM_VECADD_BIAS=1",
+            "-DLOOM_VECADD_MULTIPLIER=3",
+            "-DLOOM_VECADD_VECTOR_LENGTH=96"
+          ],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/vecadd-memory/expected-validation.txt"
+          },
+          "profile": {
+            "warmup_samples": 0,
+            "measured_samples": 1,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 120000
+          }
+        },
+        {
+          "name": "validation-scale-eda",
+          "workload": "vecadd-memory-scale-eda",
+          "runtime_input": "vecadd-memory-scale-eda-input",
+          "cached_inputs": [],
+          "compiler_options": [
+            "-DLOOM_VECADD_BIAS=7",
+            "-DLOOM_VECADD_MULTIPLIER=5",
+            "-DLOOM_VECADD_VECTOR_LENGTH=128"
+          ],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/vecadd-memory/expected-scale.txt"
+          },
+          "profile": {
+            "warmup_samples": 0,
+            "measured_samples": 1,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 120000
+          }
         }
       ],
-      "selections": [
-        "smoke"
-      ]
+      "selection_inputs": {
+        "smoke": ["smoke"],
+        "validation": ["validation"],
+        "scale_eda": ["validation-scale-eda"]
+      }
     }
   ]
 }

@@ -203,10 +203,18 @@ encodePortfolioInput(const SelectedApplicationInput &selection,
   for (const std::string &option : selection.build.compilerOptions)
     compilerOptions.push_back(option);
   result["compiler_options"] = std::move(compilerOptions);
+  llvm::json::Array inputCompilerOptions;
+  for (const std::string &option : selection.input.compilerOptions)
+    inputCompilerOptions.push_back(option);
+  result["input_compiler_options"] = std::move(inputCompilerOptions);
   llvm::json::Array linkOptions;
   for (const std::string &option : selection.build.linkOptions)
     linkOptions.push_back(option);
   result["link_options"] = std::move(linkOptions);
+  llvm::json::Array operatorProtocolSymbols;
+  for (const std::string &symbol : selection.build.operatorProtocolSymbols)
+    operatorProtocolSymbols.push_back(symbol);
+  result["operator_protocol_symbols"] = std::move(operatorProtocolSymbols);
   result["declared_workload"] = selection.input.workload;
   result["declared_runtime_input"] = selection.input.runtimeInput;
   result["declared_oracle"] =
@@ -264,7 +272,8 @@ llvm::json::Object encodePairDecision(
     addOptionalRoot(result, "evidence", observation.evidence);
     return result;
   };
-  llvm::json::Object result;
+  llvm::json::Object result{{"schema", "loom.application_pair_decision"},
+                            {"version", "1.0"}};
   if (decision.portfolioInput)
     result["portfolio_input"] = encodePortfolioInput(
         *decision.portfolioInput, decision.portfolioExecutionBinding);
@@ -473,6 +482,10 @@ llvm::json::Object encodePairDecision(
       for (const ArtifactRootReference &reference : observation.oracleEvidence)
         oracleEvidence.push_back(encodeRoot(reference));
       mapping["oracle_evidence"] = std::move(oracleEvidence);
+      addOptionalUnsigned(mapping, "dfg_cycles", observation.dfgCycles);
+      addOptionalUnsigned(mapping, "cgra_cycles", observation.cgraCycles);
+      addOptionalUnsigned(mapping, "resource_core_cost",
+                          observation.resourceCoreCost);
       mappingObservations.push_back(std::move(mapping));
     }
     encoded["mapping_observations"] = std::move(mappingObservations);
@@ -1206,6 +1219,8 @@ void emitApplicationMappingDiagnostics(
         const dse::JointDesignExecutionSummary &summary =
             execution.execution.summary;
         llvm::json::Object payload;
+        payload["schema"] = "loom.application_pair_evidence";
+        payload["version"] = "1.0";
         payload["domain"] = "application_mapping_join";
         if (execution.provenance.pairDecision)
           payload["pair_decision"] =
@@ -1843,6 +1858,8 @@ void emitApplicationPairDecisionDiagnostics(
       DiagnosticVerbosity::Summary, InvocationDiagnosticStage::DataflowLowering,
       InvocationDiagnosticEvent::Statistics, [&] {
         llvm::json::Object payload;
+        payload["schema"] = "loom.application_pair_disposition";
+        payload["version"] = "1.0";
         payload["domain"] = "application_pair_decision";
         payload["pair_decision"] = encodePairDecision(decision);
         return llvm::json::Value(std::move(payload));

@@ -134,9 +134,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const PreparedApplicationBuild &prepared,
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,
     const dse::JointDesignExecutionSummary &summary,
-    llvm::ArrayRef<ApplicationPairQualityInvocationRecord>
-        qualityInvocations) {
+    llvm::ArrayRef<ApplicationPairQualityInvocationRecord> qualityInvocations) {
   ApplicationPairDecisionRecord result;
+  result.selectedObjective = makeUnsupportedObjectiveVector();
   result.portfolioInput = prepared.portfolioInput;
   if (result.portfolioInput)
     result.portfolioExecutionBinding =
@@ -240,7 +240,11 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
       if (outcome.preMappingCandidateRecordOrdinal != ordinal)
         continue;
       candidate.enteredMapping = true;
-      candidate.planOrdinal = outcome.planOrdinal;
+      const bool isSelectedOutcome =
+          summary.selectedPlanOrdinal &&
+          *summary.selectedPlanOrdinal == outcome.planOrdinal &&
+          summary.selectedMapping &&
+          llvm::is_contained(outcome.systemMappings, *summary.selectedMapping);
       ApplicationPairMappingObservation mappingObservation{
           outcome.planOrdinal,
           outcome.resourceTimeScheduleHintDigest,
@@ -251,6 +255,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           outcome.systemMappings,
           outcome.runtimeEvidence,
           outcome.oracleEvidence,
+          outcome.dfgCycles,
+          outcome.cgraCycles,
+          outcome.resourceCoreCost,
           std::nullopt};
       if (outcome.resourceTimeSpectrum) {
         if (const auto *verification =
@@ -266,11 +273,10 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
         }
       }
       candidate.mappingObservations.push_back(std::move(mappingObservation));
-      if (summary.selectedPlanOrdinal &&
-          *summary.selectedPlanOrdinal == outcome.planOrdinal &&
-          summary.selectedMapping &&
-          llvm::is_contained(outcome.systemMappings, *summary.selectedMapping))
+      if (isSelectedOutcome) {
         candidate.selected = true;
+        candidate.planOrdinal = outcome.planOrdinal;
+      }
       const auto setObservedDimension =
           [&](ApplicationObjectiveDimension dimension,
               const std::optional<std::uint64_t> &raw) {
@@ -281,12 +287,14 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
               return;
             }
           };
-      setObservedDimension(ApplicationObjectiveDimension::DfgCycles,
-                           outcome.dfgCycles);
-      setObservedDimension(ApplicationObjectiveDimension::CgraCycles,
-                           outcome.cgraCycles);
-      setObservedDimension(ApplicationObjectiveDimension::ResourceCoreCost,
-                           outcome.resourceCoreCost);
+      if (isSelectedOutcome) {
+        setObservedDimension(ApplicationObjectiveDimension::DfgCycles,
+                             outcome.dfgCycles);
+        setObservedDimension(ApplicationObjectiveDimension::CgraCycles,
+                             outcome.cgraCycles);
+        setObservedDimension(ApplicationObjectiveDimension::ResourceCoreCost,
+                             outcome.resourceCoreCost);
+      }
     }
     // The current JointDesign summary owns invocation-wide Mapping work, not
     // a candidate-local split. Keep this dimension explicitly unsupported on
@@ -307,7 +315,10 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
   if (selected) {
     result.selectedCandidateIdentity = selected->candidateIdentity;
     for (const ApplicationMappingCandidateOutcome &outcome : outcomes)
-      if (outcome.planOrdinal == selected->planOrdinal &&
+      if (outcome.preMappingCandidateRecordOrdinal ==
+              selected->planningRecordOrdinal &&
+          summary.selectedPlanOrdinal &&
+          outcome.planOrdinal == *summary.selectedPlanOrdinal &&
           summary.selectedMapping &&
           llvm::is_contained(outcome.systemMappings,
                              *summary.selectedMapping)) {
@@ -334,7 +345,10 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
         result.finalApplicationQorComplete = result.hostOnlyBaselineComplete &&
                                              dfg.value.has_value() &&
                                              cgra.value.has_value();
-        if (result.portfolioInput && !outcome.runtimeEvidence.empty())
+        if (result.portfolioInput &&
+            outcome.runtimeDisposition ==
+                ApplicationMappingRuntimeDisposition::Completed &&
+            !outcome.runtimeEvidence.empty())
           result.portfolioExecutionBinding =
               ApplicationPortfolioExecutionBinding::CanonicalSimulation;
         if (result.portfolioInput &&
@@ -342,7 +356,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
             result.portfolioInput->input.profile.measuredSamples == 1 &&
             outcome.runtimeDisposition ==
                 ApplicationMappingRuntimeDisposition::Completed &&
-            !outcome.oracleEvidence.empty())
+            !outcome.runtimeEvidence.empty() &&
+            !outcome.oracleEvidence.empty() && outcome.dfgCycles &&
+            outcome.cgraCycles)
           result.portfolioExecutionBinding =
               ApplicationPortfolioExecutionBinding::
                   CanonicalSimulationAndOracle;
@@ -354,23 +370,34 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
             result.finalApplicationQorComplete && portfolioExecutionComplete;
         if (outcome.runtimeDisposition !=
             ApplicationMappingRuntimeDisposition::Completed) {
+          const auto setRuntimeDetail = [&](llvm::StringRef fallback) {
+            result.detail = outcome.incompleteReason
+                                ? dse::toString(*outcome.incompleteReason).str()
+                                : fallback.str();
+          };
           switch (outcome.runtimeDisposition) {
           case ApplicationMappingRuntimeDisposition::Unsupported:
             result.disposition =
                 ApplicationPairDecisionDisposition::UnsupportedSemantic;
+            setRuntimeDetail("selected application runtime is unsupported");
             break;
           case ApplicationMappingRuntimeDisposition::ProofNotEstablished:
           case ApplicationMappingRuntimeDisposition::NotRequested:
             result.disposition =
                 ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+            setRuntimeDetail(
+                "selected application runtime proof was not established");
             break;
           case ApplicationMappingRuntimeDisposition::ExecutionFailed:
             result.disposition =
                 ApplicationPairDecisionDisposition::ImplementationFailure;
+            setRuntimeDetail("selected application runtime execution failed");
             break;
           case ApplicationMappingRuntimeDisposition::CancelledOrTimeout:
             result.disposition =
                 ApplicationPairDecisionDisposition::CancelledOrTimeout;
+            setRuntimeDetail(
+                "selected application runtime was cancelled or timed out");
             break;
           case ApplicationMappingRuntimeDisposition::Completed:
             llvm_unreachable("completed runtime disposition handled above");
@@ -378,6 +405,8 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
         } else if (!portfolioExecutionComplete) {
           result.disposition =
               ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+          result.detail = "selected Mapping lacks completed runtime and "
+                          "comparison evidence";
         } else if (outcome.system != prepared.preMappingFabric) {
           result.disposition =
               ApplicationPairDecisionDisposition::HardwareDseAlternative;
@@ -390,9 +419,15 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
         } else {
           result.disposition =
               ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+          result.detail =
+              "selected Mapping lacks measured DFG or CGRA cycle evidence";
         }
         break;
       }
+    if (!result.selectedSystemMapping && !result.detail)
+      result.detail =
+          "selected JointDesign checkpoint has no exact application Mapping "
+          "outcome";
   }
   if (!selected) {
     const bool exactHardwareIncompatibility =
@@ -415,16 +450,29 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
       if (attempt.incompleteReason) {
         result.disposition =
             mapIncompleteReasonToPairDisposition(*attempt.incompleteReason);
+        result.detail = dse::toString(*attempt.incompleteReason).str();
         break;
       }
     if (result.disposition ==
             ApplicationPairDecisionDisposition::ImplementationFailure &&
-        summary.declaredWorkExhausted)
+        summary.declaredWorkExhausted) {
       result.disposition = ApplicationPairDecisionDisposition::BudgetExhausted;
+      result.detail =
+          "declared joint-design work was exhausted without a selected Mapping";
+    }
     if (summary.declaredWorkExhausted &&
         result.disposition ==
-            ApplicationPairDecisionDisposition::MappingProofNotEstablished)
+            ApplicationPairDecisionDisposition::MappingProofNotEstablished) {
       result.disposition = ApplicationPairDecisionDisposition::BudgetExhausted;
+      result.detail =
+          "declared joint-design work was exhausted before Mapping proof";
+    }
+    if (result.disposition ==
+            ApplicationPairDecisionDisposition::ImplementationFailure &&
+        !result.detail)
+      result.detail =
+          "joint design summary has no selected Mapping checkpoint or typed "
+          "incomplete witness";
   }
   return result;
 }
@@ -441,6 +489,7 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
     bool ownerVerifiedPreAdmission,
     std::optional<SelectedApplicationInput> portfolioInput) {
   ApplicationPairDecisionRecord result;
+  result.selectedObjective = makeUnsupportedObjectiveVector();
   result.portfolioInput = std::move(portfolioInput);
   if (result.portfolioInput)
     result.portfolioExecutionBinding =
@@ -530,6 +579,7 @@ ApplicationPairDecisionRecord makePreAdmissionFailurePairDecision(
     const ArtifactRootReference &requestedSystem,
     ApplicationPairDecisionDisposition disposition, llvm::StringRef detail) {
   ApplicationPairDecisionRecord decision;
+  decision.selectedObjective = makeUnsupportedObjectiveVector();
   decision.portfolioInput = std::move(portfolioInput);
   decision.manifestJoinStatus =
       ApplicationPairManifestJoinStatus::OwnerVerifiedPreAdmission;

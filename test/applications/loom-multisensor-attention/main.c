@@ -1,4 +1,5 @@
-#if !defined(LOOM_ATTENTION_PRODUCT_EXECUTION)
+#if !defined(LOOM_ATTENTION_PRODUCT_EXECUTION) || \
+    defined(LOOM_APPLICATION_HOST_EXECUTION)
 #include <stdio.h>
 #endif
 
@@ -8,6 +9,20 @@ enum {
   FEATURE_LANE_COUNT = 4,
   STATISTIC_COUNT = 4,
 };
+
+#if !defined(LOOM_ATTENTION_INPUT_VARIANT)
+#define LOOM_ATTENTION_INPUT_VARIANT 0
+#endif
+
+#if LOOM_ATTENTION_INPUT_VARIANT == 1
+#define LOOM_ATTENTION_INPUT_SCALE 0.5f
+#elif LOOM_ATTENTION_INPUT_VARIANT == 2
+#define LOOM_ATTENTION_INPUT_SCALE 1.5f
+#else
+#define LOOM_ATTENTION_INPUT_SCALE 1.0f
+#endif
+
+#define LOOM_ATTENTION_SCALED(value) ((value) * LOOM_ATTENTION_INPUT_SCALE)
 
 #if defined(__clang__) && !defined(LOOM_ATTENTION_RETAIN_LOOPS)
 #define LOOM_UNROLL_FULL _Pragma("clang loop unroll(full)")
@@ -152,16 +167,24 @@ __attribute__((noinline)) void loom_multisensor_attention(
 
 int main(void) {
   static const float audio[TOKEN_COUNT][SENSOR_LANE_COUNT] = {
-      {1.0f, 0.0f, 0.5f},
-      {0.5f, 1.0f, -0.5f},
-      {-1.0f, 0.5f, 1.0f},
-      {0.25f, -0.75f, 0.5f},
+      {LOOM_ATTENTION_SCALED(1.0f), LOOM_ATTENTION_SCALED(0.0f),
+       LOOM_ATTENTION_SCALED(0.5f)},
+      {LOOM_ATTENTION_SCALED(0.5f), LOOM_ATTENTION_SCALED(1.0f),
+       LOOM_ATTENTION_SCALED(-0.5f)},
+      {LOOM_ATTENTION_SCALED(-1.0f), LOOM_ATTENTION_SCALED(0.5f),
+       LOOM_ATTENTION_SCALED(1.0f)},
+      {LOOM_ATTENTION_SCALED(0.25f), LOOM_ATTENTION_SCALED(-0.75f),
+       LOOM_ATTENTION_SCALED(0.5f)},
   };
   static const float imu[TOKEN_COUNT][SENSOR_LANE_COUNT] = {
-      {0.5f, 1.0f, 0.0f},
-      {-0.5f, 0.25f, 1.0f},
-      {1.0f, -0.5f, 0.5f},
-      {0.0f, 0.75f, -1.0f},
+      {LOOM_ATTENTION_SCALED(0.5f), LOOM_ATTENTION_SCALED(1.0f),
+       LOOM_ATTENTION_SCALED(0.0f)},
+      {LOOM_ATTENTION_SCALED(-0.5f), LOOM_ATTENTION_SCALED(0.25f),
+       LOOM_ATTENTION_SCALED(1.0f)},
+      {LOOM_ATTENTION_SCALED(1.0f), LOOM_ATTENTION_SCALED(-0.5f),
+       LOOM_ATTENTION_SCALED(0.5f)},
+      {LOOM_ATTENTION_SCALED(0.0f), LOOM_ATTENTION_SCALED(0.75f),
+       LOOM_ATTENTION_SCALED(-1.0f)},
   };
   float output[TOKEN_COUNT][FEATURE_LANE_COUNT];
   float statistics[STATISTIC_COUNT];
@@ -169,21 +192,50 @@ int main(void) {
   loom_multisensor_attention(audio, imu, output, statistics);
   const float combined = statistics[2] + 3.0f * statistics[0] +
                          7.0f * statistics[1] + 11.0f * statistics[3];
-  if (outside_tolerance(statistics[0], 9.62500f) ||
-      outside_tolerance(statistics[1], 3.93196f) ||
-      outside_tolerance(statistics[2], 24.58165f) ||
-      outside_tolerance(statistics[3], 0.73098f) ||
-      outside_tolerance(combined, 89.02110f))
-    return 1;
-#if defined(LOOM_ATTENTION_PRODUCT_EXECUTION)
-  return 0;
+#if LOOM_ATTENTION_INPUT_VARIANT == 1
+  const float expectedProjectionEnergy = 2.40625f;
+  const float expectedAttentionSum = 1.41390f;
+  const float expectedWeightedSum = 9.86055f;
+  const float expectedMaximumMagnitude = 0.20238f;
+  const float expectedCombined = 29.20270f;
+#elif LOOM_ATTENTION_INPUT_VARIANT == 2
+  const float expectedProjectionEnergy = 21.65625f;
+  const float expectedAttentionSum = 7.68096f;
+  const float expectedWeightedSum = 46.72024f;
+  const float expectedMaximumMagnitude = 2.02760f;
+  const float expectedCombined = 187.75932f;
 #else
+  const float expectedProjectionEnergy = 9.62500f;
+  const float expectedAttentionSum = 3.93196f;
+  const float expectedWeightedSum = 24.58165f;
+  const float expectedMaximumMagnitude = 0.73098f;
+  const float expectedCombined = 89.02110f;
+#endif
+  if (outside_tolerance(statistics[0], expectedProjectionEnergy) ||
+      outside_tolerance(statistics[1], expectedAttentionSum) ||
+      outside_tolerance(statistics[2], expectedWeightedSum) ||
+      outside_tolerance(statistics[3], expectedMaximumMagnitude) ||
+      outside_tolerance(combined, expectedCombined))
+    return 1;
+#if defined(LOOM_APPLICATION_HOST_EXECUTION)
   printf("attention checksum: %.5f\n", statistics[2]);
   printf("projection energy: %.5f\n", statistics[0]);
   printf("attention sum: %.5f\n", statistics[1]);
   printf("attention max: %.5f\n", statistics[3]);
   printf("combined checksum: %.5f\n", combined);
   printf("PASSED\n");
+#endif
+#if defined(LOOM_ATTENTION_PRODUCT_EXECUTION)
+  return 0;
+#else
+#if !defined(LOOM_APPLICATION_HOST_EXECUTION)
+  printf("attention checksum: %.5f\n", statistics[2]);
+  printf("projection energy: %.5f\n", statistics[0]);
+  printf("attention sum: %.5f\n", statistics[1]);
+  printf("attention max: %.5f\n", statistics[3]);
+  printf("combined checksum: %.5f\n", combined);
+  printf("PASSED\n");
+#endif
   return 0;
 #endif
 }

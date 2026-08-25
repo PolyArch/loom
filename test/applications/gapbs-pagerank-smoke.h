@@ -4,6 +4,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if defined(LOOM_APPLICATION_HOST_EXECUTION)
+#include <stdio.h>
+#endif
+
+#if !defined(LOOM_PAGERANK_ITERATIONS)
+#define LOOM_PAGERANK_ITERATIONS 8
+#endif
+
 #define BENCHMARK_H_
 #define BUILDER_H_
 #define COMMAND_LINE_H_
@@ -188,16 +196,34 @@ __attribute__((noinline)) static int gapbsPagerankSmoke() {
   static constexpr NodeID inOffsets[nodeCount + 1] = {0, 2, 3, 6, 6};
   static constexpr NodeID inNeighbors[6] = {2, 3, 0, 0, 1, 3};
   Graph graph(nodeCount, outOffsets, outNeighbors, inOffsets, inNeighbors);
-  pvector<float> scores = gapbs_pagerank_kernel(graph, 8, 0.0, false);
+  pvector<float> scores =
+      gapbs_pagerank_kernel(graph, LOOM_PAGERANK_ITERATIONS, 0.0, false);
+#if LOOM_PAGERANK_ITERATIONS == 12
+  constexpr float expected[nodeCount] = {0.380819827f, 0.199348420f,
+                                         0.384732097f, 0.037499994f};
+  constexpr float expectedSum = 1.00240040f;
+#elif LOOM_PAGERANK_ITERATIONS == 16
+  constexpr float expected[nodeCount] = {0.379950851f, 0.198979110f,
+                                         0.384048849f, 0.037499994f};
+  constexpr float expectedSum = 1.00047886f;
+#else
   constexpr float expected[nodeCount] = {0.385175735f, 0.201199681f,
                                          0.388156950f, 0.037499994f};
+  constexpr float expectedSum = 1.01203236f;
+#endif
   float sum = 0.0f;
   for (NodeID node = 0; node < nodeCount; ++node) {
     if (gapbsAbsoluteValue(scores[node] - expected[node]) > 1.0e-6f)
       return 1;
     sum += scores[node];
   }
-  return gapbsAbsoluteValue(sum - 1.01203236f) <= 1.0e-6f ? 0 : 1;
+  if (gapbsAbsoluteValue(sum - expectedSum) > 1.0e-6f)
+    return 1;
+#if defined(LOOM_APPLICATION_HOST_EXECUTION)
+  printf("pagerank iterations: %d\n", LOOM_PAGERANK_ITERATIONS);
+  printf("pagerank sum: %.6f\n", (double)sum);
+#endif
+  return 0;
 }
 
 int main() { return gapbsPagerankSmoke(); }

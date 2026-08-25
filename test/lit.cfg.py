@@ -122,6 +122,7 @@ tool_dirs = [
 tools = [
     "loom",
     "loom-adg",
+    "loom-application-manifest-inspect",
     "loom-backend-tool-catalog",
     "loom-tblgen",
     "loom-config-test",
