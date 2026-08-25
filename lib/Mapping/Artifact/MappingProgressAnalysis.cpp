@@ -393,6 +393,10 @@ relationDomainsIntersect(const ProgressActivationGroup &lhs,
     return true;
   for (const SystemPresburgerCell &left : lhs.relationDomain)
     for (const SystemPresburgerCell &right : rhs.relationDomain) {
+      // Frozen relation domains are canonical. Identical cells are a common
+      // single-partition case and are necessarily non-empty here.
+      if (left == right)
+        return true;
       auto intersects = systemPresburgerCellsIntersect(left, right);
       if (!intersects)
         return intersects.takeError();
