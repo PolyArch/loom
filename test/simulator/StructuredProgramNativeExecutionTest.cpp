@@ -1,6 +1,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Frontend/IR/LoomDialect.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Runtime/OrderedChannelABI.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
 
@@ -447,8 +448,10 @@ module {
   auto selected = parse(R"mlir(
 module {
   dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
-      %channel: !dataflow.channel<i32>, %message: i32) ctrl (%ctrl: none) {
-    dataflow.channel.send %channel, %message : !dataflow.channel<i32>
+      %channel: !dataflow.channel<i32>, %first: i32, %second: i32)
+      ctrl (%ctrl: none) {
+    dataflow.channel.send %channel, %first : !dataflow.channel<i32>
+    dataflow.channel.send %channel, %second : !dataflow.channel<i32>
     dataflow.thread.yield
   }
 
@@ -469,12 +472,9 @@ module {
     %channel = dataflow.channel.create : !dataflow.channel<i32>
     %seven = llvm.mlir.constant(7 : i32) : i32
     %eleven = llvm.mlir.constant(11 : i32) : i32
-    %producer0 = dataflow.thread.launch @producer(%channel, %seven)
-        : (!dataflow.channel<i32>, i32) -> !dataflow.thread_token
-    dataflow.thread.wait %producer0 : !dataflow.thread_token
-    %producer1 = dataflow.thread.launch @producer(%channel, %eleven)
-        : (!dataflow.channel<i32>, i32) -> !dataflow.thread_token
-    dataflow.thread.wait %producer1 : !dataflow.thread_token
+    %producer = dataflow.thread.launch @producer(%channel, %seven, %eleven)
+        : (!dataflow.channel<i32>, i32, i32) -> !dataflow.thread_token
+    dataflow.thread.wait %producer : !dataflow.thread_token
     %consumer0 = dataflow.thread.launch @consumer(%channel, %left)
         : (!dataflow.channel<i32>, !llvm.ptr) -> !dataflow.thread_token
     dataflow.thread.wait %consumer0 : !dataflow.thread_token
@@ -550,6 +550,56 @@ module {
       llvm::errorToErrorCode(blocked.takeError());
   require(test, blockedCode == std::make_error_code(std::errc::not_supported),
           "consumer-first serial projection was not typed Unsupported");
+
+  auto rateMismatch = parse(R"mlir(
+module {
+  dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
+      %channel: !dataflow.channel<i32>, %message: i32) ctrl (%ctrl: none) {
+    dataflow.channel.send %channel, %message : !dataflow.channel<i32>
+    dataflow.channel.send %channel, %message : !dataflow.channel<i32>
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @consumer domain(#dataflow.thread_domain<dense>)(
+      %channel: !dataflow.channel<i32>, %output: !llvm.ptr)
+      ctrl (%ctrl: none) {
+    %message = dataflow.channel.receive %channel : !dataflow.channel<i32>
+    llvm.store %message, %output : i32, !llvm.ptr
+    dataflow.thread.yield
+  }
+
+  llvm.func @kernel() -> i32 {
+    %one = llvm.mlir.constant(1 : i64) : i64
+    %output = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
+    %channel = dataflow.channel.create : !dataflow.channel<i32>
+    %seven = llvm.mlir.constant(7 : i32) : i32
+    %producer = dataflow.thread.launch @producer(%channel, %seven)
+        : (!dataflow.channel<i32>, i32) -> !dataflow.thread_token
+    dataflow.thread.wait %producer : !dataflow.thread_token
+    %consumer = dataflow.thread.launch @consumer(%channel, %output)
+        : (!dataflow.channel<i32>, !llvm.ptr) -> !dataflow.thread_token
+    dataflow.thread.wait %consumer : !dataflow.thread_token
+    %result = llvm.load %output : !llvm.ptr -> i32
+    llvm.return %result : i32
+  }
+}
+)mlir",
+                            "logical-channel rate mismatch");
+  auto mismatched = loom::sim::executeSelectedStructuredProgram(
+      rateMismatch, source, workload, input);
+  require(test, !mismatched,
+          "mismatched ordered-channel rates reached collective join");
+  bool typedPendingConsumer = false;
+  llvm::handleAllErrors(
+      mismatched.takeError(),
+      [&](const loom::runtime::OrderedChannelABIError &error) {
+        typedPendingConsumer =
+            error.kind() ==
+            loom::runtime::OrderedChannelABIError::Kind::PendingConsumer;
+      },
+      [](const llvm::ErrorInfoBase &) {});
+  require(test, typedPendingConsumer,
+          "mismatched ordered-channel rates lost their typed rejection");
 }
 
 void forallAggregationRegionsAreNotProfileBlocks() {

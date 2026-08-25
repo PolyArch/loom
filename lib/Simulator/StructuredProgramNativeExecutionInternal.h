@@ -55,6 +55,10 @@ struct MemoryTargetPlan final {
 struct NativeExecutionContext final {
   struct LogicalChannel final {
     std::optional<loom::runtime::OrderedChannelABI> abi;
+    std::optional<std::uint64_t> producerMessageCount;
+    std::vector<std::optional<std::uint64_t>> consumerMessageCounts;
+    bool generationOpened = false;
+    bool generationJoined = false;
   };
 
   std::vector<AlignedByteStorage> objects;
@@ -69,11 +73,12 @@ struct NativeExecutionContext final {
   std::vector<bool> sawGlobalAfter;
   std::vector<frontend::StructuredEntityRef> profileBlocks;
   std::vector<std::uint64_t> blockActivationCounts;
-  std::optional<std::string> error;
+  std::optional<llvm::Error> error;
 };
 
 struct NativeChannelCallbackNames final {
   std::string create;
+  std::string rate;
   std::string send;
   std::string receive;
 };

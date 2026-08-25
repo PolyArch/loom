@@ -74,9 +74,8 @@ ApplicationPairDecisionDisposition prioritizeIncompletePairDisposition(
 ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const PreparedApplicationBuild &prepared,
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,
-    const dse::JointDesignExecutionSummary &summary,
-    llvm::ArrayRef<ApplicationPairQualityInvocationRecord>
-        qualityInvocations);
+    const dse::JointDesignExecution &execution,
+    llvm::ArrayRef<ApplicationPairQualityInvocationRecord> qualityInvocations);
 
 ApplicationPairDecisionRecord makePreparationPairDecision(
     const std::optional<ArtifactRootReference> &sourceProgram,

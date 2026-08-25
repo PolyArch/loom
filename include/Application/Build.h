@@ -2,6 +2,7 @@
 #define LOOM_APPLICATION_BUILD_H
 
 #include "Application/Manifest.h"
+#include "Application/RuntimeManifest.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/InvocationManifest.h"
 #include "DSE/JointDesignExploration.h"
@@ -212,9 +213,6 @@ struct ApplicationDeploymentArtifacts final {
   hardware::ConfigurationABIConstructionStatistics configurationAbiConstruction;
   std::vector<deployment::DeploymentHardwareBinding> hardwareBindings;
   std::vector<ArtifactRootReference> instructionCoreBinaries;
-  /// Exact compiler-built finite Mapping/Deployment graph. Runtime selection
-  /// is restricted to this catalog and cannot synthesize Mapping work.
-  std::optional<pnr::ResourceTimeTransitionGraph> resourceTimeTransitionGraph;
   /// Every compiler-preverified adjacency together with the parent completion
   /// schedule and the child schedule which carries real active work.
   std::vector<ApplicationResourceTimeTransitionEvidence>
@@ -222,6 +220,7 @@ struct ApplicationDeploymentArtifacts final {
   /// Independent replay of the selected schedule after endpoint Deployment
   /// construction. A missing closure remains typed incomplete here.
   std::optional<dse::ResourceTimeSpectrumFunnelResult> resourceTimeSpectrum;
+  FinalizedApplicationRuntimeManifest runtimeManifest;
   deployment::FinalizedDeployment deployment;
 };
 

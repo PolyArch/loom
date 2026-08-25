@@ -58,6 +58,7 @@ namespace {
 
 struct FinalizedMappingHardwareSpectrum final {
   std::vector<JointDesignExecution> verified;
+  std::vector<JointDesignInvocationManifestReference> invocations;
   std::uint64_t attemptedSystems = 0;
   bool incomplete = false;
 };
@@ -167,6 +168,9 @@ exploreFinalizedMappingHardwareSpectrum(
                          blobs, &effectiveExecutionPolicy);
     if (!execution)
       return execution.takeError();
+    if (llvm::Error error = retainJointDesignExecutionInvocations(
+            result.invocations, *execution))
+      return error;
     ++result.attemptedSystems;
     const std::size_t count = mappingCount(*execution);
     mapping_debug::emit(
@@ -203,6 +207,7 @@ tryHardwareFeedbackReopen(
     std::uint64_t planOrdinal,
     std::vector<dse::JointDesignAttemptRecord> &attemptRecords,
     dse::JointDesignExecutionSummary &accounting,
+    std::vector<JointDesignInvocationManifestReference> &encounteredInvocations,
     llvm::ArrayRef<ArtifactRootReference> evidence,
     const JointHardwareReopenRequest &request, dse::SiteScheduler &scheduler,
     const ArtifactStore &artifacts, const BlobStore &blobs,
@@ -243,6 +248,35 @@ tryHardwareFeedbackReopen(
   std::optional<dse::JointDesignExecution> latestFailed;
   std::optional<dse::JointDesignExplorationPlan> latestFailedPlan;
   std::optional<std::vector<ArtifactRootReference>> reusableSpatialMappings;
+  std::vector<JointDesignInvocationManifestReference> supportingInvocations;
+  const auto retainObservedInvocation =
+      [&](const JointDesignInvocationManifestReference &reference)
+      -> llvm::Error {
+    if (llvm::Error error = retainJointDesignInvocationManifest(
+            supportingInvocations, reference))
+      return error;
+    return retainJointDesignInvocationManifest(encounteredInvocations,
+                                               reference);
+  };
+  const auto retainObservedExecution =
+      [&](const JointDesignExecution &value) -> llvm::Error {
+    if (value.invocationManifest())
+      if (llvm::Error error =
+              retainObservedInvocation(*value.invocationManifest()))
+        return error;
+    for (const JointDesignInvocationManifestReference &reference :
+         value.supportingInvocationManifests())
+      if (llvm::Error error = retainObservedInvocation(reference))
+        return error;
+    return llvm::Error::success();
+  };
+  const auto attachSupportingInvocations =
+      [&](JointDesignExecution &value) -> llvm::Error {
+    return attachJointDesignSupportingInvocationManifests(
+        value, supportingInvocations);
+  };
+  if (llvm::Error error = retainObservedExecution(failedExecution))
+    return error;
   struct HallProgressObservation final {
     std::uint64_t deficit = 0;
     std::uint64_t demand = 0;
@@ -338,6 +372,10 @@ tryHardwareFeedbackReopen(
                                               blobs);
     if (!system)
       return system.takeError();
+    if (system->constructionInvocation)
+      if (llvm::Error error =
+              retainObservedInvocation(*system->constructionInvocation))
+        return error;
     auto timing = normalizedTimingProfiles(system->reference, artifacts);
     if (!timing)
       return timing.takeError();
@@ -458,6 +496,8 @@ tryHardwareFeedbackReopen(
               .count());
       if (!gate)
         return gate.takeError();
+      if (llvm::Error error = retainObservedExecution(gate->execution))
+        return error;
       saturatingAdd(accounting.techMappingInvocationCount,
                     gate->execution.summary.techMappingInvocationCount);
       saturatingAdd(accounting.techMappingDispatchCount,
@@ -489,9 +529,12 @@ tryHardwareFeedbackReopen(
         ++accounting.hardwareRepairProbesConsumed;
         if (const auto *incomplete = std::get_if<IncompleteDsePlanExecution>(
                 &gate->execution.planExecution);
-            incomplete && incomplete->executionStopped())
+            incomplete && incomplete->executionStopped()) {
+          if (llvm::Error error = attachSupportingInvocations(gate->execution))
+            return std::move(error);
           return std::optional<dse::JointDesignExecution>{
               std::move(gate->execution)};
+        }
         currentConfig = system->config;
         latestFailed = std::move(gate->execution);
         latestFailedPlan = std::move(*reopenPlan);
@@ -664,6 +707,8 @@ tryHardwareFeedbackReopen(
       saturatingAdd(accounting.coldReopenWallTimeNanoseconds, pnrNanoseconds);
     if (!execution)
       return execution.takeError();
+    if (llvm::Error error = retainObservedExecution(*execution))
+      return error;
     ++accounting.hardwareRepairProbesConsumed;
     saturatingAdd(accounting.techMappingInvocationCount,
                   execution->summary.techMappingInvocationCount);
@@ -732,12 +777,18 @@ tryHardwareFeedbackReopen(
               formatArtifactIdentityHex(system->reference.artifact);
           fields["system_mapping_count"] = systemMappingCount;
         });
-    if (systemMappingCount != 0)
+    if (systemMappingCount != 0) {
+      if (llvm::Error error = attachSupportingInvocations(*execution))
+        return std::move(error);
       return std::optional<dse::JointDesignExecution>{std::move(*execution)};
+    }
     if (const auto *incomplete =
             std::get_if<IncompleteDsePlanExecution>(&execution->planExecution);
-        incomplete && incomplete->executionStopped())
+        incomplete && incomplete->executionStopped()) {
+      if (llvm::Error error = attachSupportingInvocations(*execution))
+        return std::move(error);
       return std::optional<dse::JointDesignExecution>{std::move(*execution)};
+    }
 
     currentConfig = std::move(system->config);
     latestFailed = std::move(*execution);
@@ -746,8 +797,11 @@ tryHardwareFeedbackReopen(
     currentPlan = &*latestFailedPlan;
     currentFailureIsTechGate = false;
   }
-  if (latestFailed)
+  if (latestFailed) {
+    if (llvm::Error error = attachSupportingInvocations(*latestFailed))
+      return std::move(error);
     lastFailedExecution = std::move(*latestFailed);
+  }
   return std::optional<dse::JointDesignExecution>{};
 }
 
@@ -787,6 +841,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
   verifiedAlternatives.reserve(plans.size());
   std::optional<JointDesignExecution> firstIncomplete;
   std::optional<JointDesignExecution> lastNoFeasible;
+  std::vector<JointDesignInvocationManifestReference> encounteredInvocations;
   std::uint64_t attemptedSoftwarePlans = 0;
   std::uint64_t hardwareReopenSearches = 0;
   std::uint64_t hardwareParentPromotions = 0;
@@ -925,13 +980,16 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     if (observation != hardwarePromotionObservations.end())
       observation->promotedToExactMapping = true;
   };
-  const auto finish = [&](JointDesignExecution execution,
-                          std::optional<std::uint64_t> selectedPlanOrdinal,
-                          std::optional<ArtifactRootReference> selectedMapping,
-                          JointDesignQualityDisposition qualityDisposition,
-                          std::optional<ArtifactRootReference>
-                              qualityIncompleteCandidate,
-                          bool declaredWorkExhausted) {
+  const auto finish =
+      [&](JointDesignExecution execution,
+          std::optional<std::uint64_t> selectedPlanOrdinal,
+          std::optional<ArtifactRootReference> selectedMapping,
+          JointDesignQualityDisposition qualityDisposition,
+          std::optional<ArtifactRootReference> qualityIncompleteCandidate,
+          bool declaredWorkExhausted) -> llvm::Expected<JointDesignExecution> {
+    if (llvm::Error error = attachJointDesignSupportingInvocationManifests(
+            execution, encounteredInvocations))
+      return std::move(error);
     if (accounting.hardwareRepairProbesReserved >=
         accounting.hardwareRepairProbesConsumed) {
       const std::uint64_t accounted = accounting.hardwareRepairProbesConsumed +
@@ -948,7 +1006,6 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       }
     }
     JointDesignExecutionSummary summary;
-    summary.invocationRunKey = accounting.invocationRunKey;
     summary.stoppingPolicy = request.stoppingPolicy;
     if (!plans.empty() && plans.front()) {
       const BoundedJointFrontier &frontier = plans.front()->frontier;
@@ -1203,6 +1260,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         planExecutionPolicy ? &*planExecutionPolicy : nullptr);
     if (!initial)
       return initial.takeError();
+    if (llvm::Error error = retainJointDesignExecutionInvocations(
+            encounteredInvocations, *initial))
+      return std::move(error);
     // The initial parent execution is outside tryHardwareFeedbackReopen, so
     // carry its invocation-local accounting into the stopping summary here.
     // Reopen attempts are accounted at their dispatch boundary below.
@@ -1224,8 +1284,6 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                   initial->summary.spatialPnrJournalReplayCount);
     saturatingAdd(accounting.systemPnrJournalReplayCount,
                   initial->summary.systemPnrJournalReplayCount);
-    if (!accounting.invocationRunKey && initial->summary.invocationRunKey)
-      accounting.invocationRunKey = initial->summary.invocationRunKey;
     saturatingAdd(accounting.coldReopenWallTimeNanoseconds,
                   initial->summary.executionWallTimeNanoseconds);
     saturatingAdd(accounting.incrementalReopenWallTimeNanoseconds,
@@ -1520,12 +1578,15 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     std::optional<JointDesignExecution> lastReopenedFailure;
     auto reopened = tryHardwareFeedbackReopen(
         policy, *attempt.plan, attempt.execution, lastReopenedFailure,
-        attempt.planOrdinal, attemptRecords, accounting, request.evidence,
-        request, *scheduler, artifacts, blobs,
+        attempt.planOrdinal, attemptRecords, accounting, encounteredInvocations,
+        request.evidence, request, *scheduler, artifacts, blobs,
         feedbackExecutionPolicy ? &*feedbackExecutionPolicy : nullptr);
     if (!reopened)
       return reopened.takeError();
     if (*reopened) {
+      if (llvm::Error error = retainJointDesignExecutionInvocations(
+              encounteredInvocations, **reopened))
+        return std::move(error);
       if (mappingCount(**reopened) == 0) {
         if (std::holds_alternative<IncompleteDsePlanExecution>(
                 (*reopened)->planExecution)) {
@@ -1560,6 +1621,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     }
     JointDesignExecution &failed =
         lastReopenedFailure ? *lastReopenedFailure : attempt.execution;
+    if (llvm::Error error = retainJointDesignExecutionInvocations(
+            encounteredInvocations, failed))
+      return std::move(error);
     if (std::holds_alternative<IncompleteDsePlanExecution>(
             failed.planExecution)) {
       if (!firstIncomplete)
@@ -1657,6 +1721,11 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           request, *scheduler, artifacts, blobs, &*spectrumPolicy);
       if (!spectrum)
         return spectrum.takeError();
+      for (const JointDesignInvocationManifestReference &invocation :
+           spectrum->invocations)
+        if (llvm::Error error = retainJointDesignInvocationManifest(
+                encounteredInvocations, invocation))
+          return std::move(error);
       hardwareReopenSearches += spectrum->attemptedSystems;
       boundedQualitySearchIncomplete |= spectrum->incomplete;
       for (JointDesignExecution &execution : spectrum->verified) {

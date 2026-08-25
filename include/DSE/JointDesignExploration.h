@@ -1,6 +1,7 @@
 #ifndef LOOM_DSE_JOINTDESIGNEXPLORATION_H
 #define LOOM_DSE_JOINTDESIGNEXPLORATION_H
 
+#include "Common/BlobDigest.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/JointDesignPolicy.h"
 #include "DSE/PlanExecutor.h"
@@ -153,10 +154,6 @@ struct JointPairAnalyticObservation final {
 };
 
 struct JointDesignExecutionSummary final {
-  /// Exact InvocationManifest run key for this joint execution. It is a
-  /// provenance join only; application decisions must not derive identity
-  /// from mutable ranking or cache state.
-  std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
   JointDesignStoppingPolicy stoppingPolicy =
       JointDesignStoppingPolicy::FirstVerified;
   /// Frontier accounting is kept separate from Mapping outcomes. Deferred
@@ -253,10 +250,78 @@ struct JointDesignExecutionSummary final {
   std::vector<JointDesignAttemptRecord> attempts;
 };
 
-struct JointDesignExecution final {
+/// Strict content reference to one canonical InvocationManifest. Production
+/// occurrence allocation and commit remain owned by ExecutionJournal; this
+/// value proves the imported manifest content and its embedded occurrence.
+class JointDesignInvocationManifestReference final {
+public:
+  static llvm::Expected<JointDesignInvocationManifestReference>
+  get(ArtifactRootReference resolvedConfig, BlobDigest blob,
+      InvocationOccurrenceRef occurrence, const ArtifactStore &artifacts,
+      const BlobStore &blobs);
+
+  const ArtifactRootReference &resolvedConfig() const {
+    return resolvedConfig_;
+  }
+  const BlobDigest &blob() const { return blob_; }
+  const InvocationOccurrenceRef &occurrence() const { return occurrence_; }
+
+private:
+  JointDesignInvocationManifestReference(ArtifactRootReference resolvedConfig,
+                                         BlobDigest blob,
+                                         InvocationOccurrenceRef occurrence)
+      : resolvedConfig_(std::move(resolvedConfig)), blob_(std::move(blob)),
+        occurrence_(std::move(occurrence)) {}
+
+  ArtifactRootReference resolvedConfig_;
+  BlobDigest blob_;
+  InvocationOccurrenceRef occurrence_;
+};
+
+llvm::Expected<JointDesignInvocationManifestReference>
+publishJointDesignInvocationManifest(const InvocationManifest &manifest,
+                                     const ResolvedConfig &resolvedConfig,
+                                     const ArtifactStore &artifacts,
+                                     const BlobStore &blobs);
+
+llvm::Expected<InvocationManifest> importJointDesignInvocationManifest(
+    const JointDesignInvocationManifestReference &reference,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
+class JointDesignExecutionManifestBinder;
+
+class JointDesignExecution final {
+public:
+  JointDesignExecution(DsePlanExecutionResult planExecution,
+                       std::vector<JointMappedPair> mappedPairs,
+                       JointDesignExecutionSummary summary)
+      : planExecution(std::move(planExecution)),
+        mappedPairs(std::move(mappedPairs)), summary(std::move(summary)) {}
+
   DsePlanExecutionResult planExecution;
   std::vector<JointMappedPair> mappedPairs;
   JointDesignExecutionSummary summary;
+
+  const std::optional<JointDesignInvocationManifestReference> &
+  invocationManifest() const {
+    return invocationManifest_;
+  }
+  llvm::ArrayRef<JointDesignInvocationManifestReference>
+  supportingInvocationManifests() const {
+    return supportingInvocationManifests_;
+  }
+  std::optional<std::array<std::uint8_t, 32>> invocationRunKey() const {
+    if (!invocationManifest_)
+      return std::nullopt;
+    return invocationManifest_->occurrence().runKey.bytes();
+  }
+
+private:
+  std::optional<JointDesignInvocationManifestReference> invocationManifest_;
+  std::vector<JointDesignInvocationManifestReference>
+      supportingInvocationManifests_;
+
+  friend class JointDesignExecutionManifestBinder;
 };
 
 struct IncompleteJointDesignQuality final {

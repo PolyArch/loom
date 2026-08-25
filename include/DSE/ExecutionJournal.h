@@ -151,6 +151,13 @@ public:
   const ComponentViewDigest &resolvedDseConfigViewDigest() const;
   llvm::StringRef localRunRoot() const;
 
+  /// The occurrence opened by the most recent beginResume transaction and
+  /// its durable predecessor, if any. A journal is the sole ordinal owner for
+  /// repeated executions of one DseRunKey.
+  llvm::Expected<std::pair<InvocationOccurrenceRef,
+                           std::optional<InvocationOccurrenceRef>>>
+  currentInvocationOccurrence() const;
+
   llvm::Expected<std::vector<JournalWorkUnitRecord>> workUnits() const;
   llvm::Expected<InvocationExternalToolWorkLedger>
   externalToolWorkLedger() const;
@@ -180,6 +187,10 @@ public:
 
   llvm::Error requestGracefulStop();
   llvm::Error beginResume();
+  llvm::Error releaseInvocationOccurrence();
+  llvm::Error
+  commitInvocationManifest(const InvocationOccurrenceRef &occurrence,
+                           const BlobDigest &manifestDigest);
   bool gracefulStopRequested() const;
   llvm::Error flush() const;
 
@@ -187,6 +198,8 @@ private:
   struct State;
   explicit ExecutionJournal(std::shared_ptr<State> state)
       : state_(std::move(state)) {}
+
+  llvm::Error validateProcessOwner() const;
 
   std::shared_ptr<State> state_;
 };

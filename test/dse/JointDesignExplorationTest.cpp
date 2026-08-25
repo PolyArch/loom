@@ -597,6 +597,14 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         promoted.summary.hardwareReopensDeferredByQuality == 0 ||
         promoted.summary.hardwarePromotionObservations.size() != 2)
       fail("bounded hardware promotion lost its exact work ledger");
+    if (!promoted.invocationManifest() ||
+        promoted.supportingInvocationManifests().empty())
+      fail("bounded hardware promotion lost its production DSE occurrences");
+    take(loom::dse::importJointDesignInvocationManifest(
+        *promoted.invocationManifest(), store, blobs));
+    for (const auto &supporting : promoted.supportingInvocationManifests())
+      take(loom::dse::importJointDesignInvocationManifest(supporting, store,
+                                                          blobs));
     for (const auto &observation :
          promoted.summary.hardwarePromotionObservations) {
       const bool expectedPromotion = observation.planOrdinal == 1;
@@ -661,8 +669,9 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       plan, parentExecution, system, identityModuleCorrespondence,
       rootlessTechImpact, store);
   if (rootlessTech ||
-      llvm::toString(rootlessTech.takeError()).find(
-          "typed Tech impact has no realization root") == std::string::npos)
+      llvm::toString(rootlessTech.takeError())
+              .find("typed Tech impact has no realization root") ==
+          std::string::npos)
     fail("rootless Tech reopen was not rejected");
 
   auto rootlessSpatialImpact = systemOnlyImpact;
@@ -672,8 +681,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       plan, parentExecution, system, identityModuleCorrespondence,
       rootlessSpatialImpact, store);
   if (rootlessSpatial ||
-      llvm::toString(rootlessSpatial.takeError()).find(
-          "typed Spatial impact has no placement or route root") ==
+      llvm::toString(rootlessSpatial.takeError())
+              .find("typed Spatial impact has no placement or route root") ==
           std::string::npos)
     fail("rootless Spatial reopen was not rejected");
 
@@ -1505,8 +1514,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       take(loom::dse::DseProducerSemanticBuildIdentity::get(
           "loom.test.resource_time_adjacent.v1")),
       adjacentSemanticInputs, adjacentRepair.plan.resolvedConfig, {}, store));
-  if (!adjacentRepair.execution.summary.invocationRunKey ||
-      *adjacentRepair.execution.summary.invocationRunKey !=
+  if (!adjacentRepair.execution.invocationRunKey() ||
+      *adjacentRepair.execution.invocationRunKey() !=
           adjacentClosure.runKey().bytes())
     fail("adjacent repair closure omitted its invocation semantic input");
   const auto adjacentSeed = take(loom::pnr::importSystemMappingMigrationSeed(

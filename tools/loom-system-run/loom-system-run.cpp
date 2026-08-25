@@ -1,8 +1,10 @@
+#include "Application/Package.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Deployment/Deployment.h"
 #include "Deployment/DeploymentSpatialLaunchSelection.h"
@@ -25,6 +27,7 @@
 #include "Runtime/FabricModelPlatform.h"
 #include "Runtime/Gem5BridgeWire.h"
 #include "Runtime/Gem5SimulationBinding.h"
+#include "Runtime/ResourceTimeTransitionSelection.h"
 #include "Runtime/SpatialInvocationWire.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
@@ -47,7 +50,6 @@
 #include <filesystem>
 #include <map>
 #include <memory>
-#include <numeric>
 #include <optional>
 #include <set>
 #include <string>
@@ -64,7 +66,7 @@ constexpr std::size_t invocationArtifactImportEntries = 16;
 
 llvm::cl::opt<std::string>
     deploymentPackage("deployment-package",
-                      llvm::cl::desc("Input Deployment package"),
+                      llvm::cl::desc("Input Application package"),
                       llvm::cl::value_desc("path"), llvm::cl::Required);
 llvm::cl::opt<std::string>
     outputWorkspace("output", llvm::cl::desc("New execution workspace"),
@@ -73,10 +75,6 @@ llvm::cl::opt<std::string>
     gem5Readiness("gem5-readiness",
                   llvm::cl::desc("Pinned gem5 readiness JSON"),
                   llvm::cl::value_desc("path"), llvm::cl::Required);
-llvm::cl::opt<std::uint64_t>
-    programEntry("program-entry",
-                 llvm::cl::desc("Deployment program entry ordinal"),
-                 llvm::cl::init(0));
 llvm::cl::opt<std::int64_t>
     expectedI32("expected-i32",
                 llvm::cl::desc("Independent expected i32 result"));
@@ -148,10 +146,18 @@ llvm::Error copyRegularDirectory(llvm::StringRef source,
   return llvm::Error::success();
 }
 
-llvm::Expected<std::string> initializeWorkspace() {
+struct InitializedWorkspace final {
+  std::string path;
+  loom::application::ImportedApplicationPackage package;
+};
+
+llvm::Expected<InitializedWorkspace> initializeWorkspace() {
   auto source = canonicalPath(deploymentPackage, true);
   if (!source)
     return source.takeError();
+  auto sourcePackage = loom::application::importApplicationPackage(*source);
+  if (!sourcePackage)
+    return sourcePackage.takeError();
   std::filesystem::path output(outputWorkspace.getValue());
   std::error_code error;
   output = std::filesystem::absolute(output, error).lexically_normal();
@@ -172,75 +178,29 @@ llvm::Expected<std::string> initializeWorkspace() {
                                   std::filesystem::copy_options::none, error) ||
       error)
     return ioError("cannot copy Deployment package root");
+  const std::filesystem::path sourceApplication =
+      std::filesystem::path(*source) / "application";
+  const auto applicationStatus =
+      std::filesystem::symlink_status(sourceApplication, error);
+  if (error || !std::filesystem::is_regular_file(applicationStatus) ||
+      std::filesystem::is_symlink(applicationStatus))
+    return invalid("Application package root is not a regular file");
+  if (!std::filesystem::copy_file(sourceApplication, output / "application",
+                                  std::filesystem::copy_options::none, error) ||
+      error)
+    return ioError("cannot copy Application package root");
   if (llvm::Error copyError = copyRegularDirectory(
           child(*source, "objects"), (output / "objects").string()))
     return std::move(copyError);
   if (llvm::Error copyError = copyRegularDirectory(child(*source, "blobs"),
                                                    (output / "blobs").string()))
     return std::move(copyError);
-  if (!std::filesystem::create_directory(output / "bundles", error) || error)
-    return ioError("cannot create bundle directory");
-  return output.string();
-}
-
-llvm::Expected<std::shared_ptr<const loom::deployment::FinalizedDeployment>>
-importPackagedDeployment(llvm::StringRef workspace,
-                         const loom::ArtifactStore &artifacts,
-                         const loom::BlobStore &blobs) {
-  auto rootText = readText(child(workspace, "root"));
-  if (!rootText)
-    return rootText.takeError();
-  if (rootText->size() != 64)
-    return invalid("Deployment package root is not one SHA-256 identity");
-  auto identity = loom::parseArtifactIdentityHex(*rootText);
-  if (!identity)
-    return identity.takeError();
-  loom::ArtifactRootReference reference{
-      loom::deployment::deploymentSchema.identity.str(),
-      loom::deployment::deploymentSchema.version, *identity};
-  const std::array<loom::ArtifactRootReference, 1> references{reference};
-  auto deployment = loom::evaluation::importCachedArtifact<
-      loom::deployment::FinalizedDeployment>(
-      artifacts, &blobs, references, [&] {
-        return loom::deployment::importDeployment(reference, artifacts, blobs);
-      });
-  if (!deployment)
-    return deployment.takeError();
-  auto closure = loom::deployment::deriveDeploymentPackageClosure(
-      **deployment, artifacts, blobs);
-  if (!closure)
-    return closure.takeError();
-
-  std::set<std::string> expectedArtifacts;
-  for (const loom::ArtifactRootReference &root : closure->artifacts())
-    expectedArtifacts.insert(loom::formatArtifactIdentityHex(root.artifact));
-  std::set<std::string> expectedBlobs;
-  for (const loom::BlobDigest &blob : closure->blobs())
-    expectedBlobs.insert(loom::formatBlobDigestHex(blob));
-  auto requireEntries =
-      [](llvm::StringRef directory,
-         const std::set<std::string> &expected) -> llvm::Error {
-    std::error_code error;
-    std::set<std::string> actual;
-    for (const std::filesystem::directory_entry &entry :
-         std::filesystem::directory_iterator(directory.str(), error)) {
-      if (error || !entry.is_regular_file(error) || entry.is_symlink(error))
-        return invalid("execution store contains a non-regular package entry");
-      actual.insert(entry.path().filename().string());
-    }
-    if (error)
-      return ioError("cannot enumerate execution store");
-    if (actual != expected)
-      return invalid("Deployment package has missing or unreferenced entries");
-    return llvm::Error::success();
-  };
-  if (llvm::Error error =
-          requireEntries(child(workspace, "objects"), expectedArtifacts))
-    return std::move(error);
-  if (llvm::Error error =
-          requireEntries(child(workspace, "blobs"), expectedBlobs))
-    return std::move(error);
-  return std::move(*deployment);
+  auto workspacePackage =
+      loom::application::importApplicationPackage(output.string());
+  if (!workspacePackage)
+    return invalid("copied Application package failed independent import: " +
+                   llvm::toString(workspacePackage.takeError()));
+  return InitializedWorkspace{output.string(), std::move(*workspacePackage)};
 }
 
 struct Readiness final {
@@ -286,38 +246,71 @@ struct PublishedInputs final {
 };
 
 llvm::Expected<PublishedInputs>
-publishInputs(const loom::deployment::FinalizedDeployment &deployment,
-              const loom::ArtifactStore &artifacts) {
-  const loom::deployment::DeploymentProgramEntryRef entry{
-      deployment.reference().artifact, programEntry};
-  auto shapes = loom::sim::projectSystemSimulationBoundaryShapes(
-      deployment, entry, artifacts);
-  if (!shapes)
-    return shapes.takeError();
-  if (!shapes->valueArguments.empty())
-    return invalid("program entry value arguments require explicit inputs");
-  loom::sim::SystemSimulationWorkload draft{entry};
-  draft.observableContract.valueResults.resize(shapes->valueResults.size());
-  std::iota(draft.observableContract.valueResults.begin(),
-            draft.observableContract.valueResults.end(), 0);
-  auto workload =
-      loom::sim::finalizeSimulationWorkload(draft, deployment, artifacts);
-  if (!workload)
-    return workload.takeError();
-  loom::sim::SystemSimulationRuntimeInputDraft runtimeDraft{
-      workload->identity()};
-  auto runtime = loom::sim::finalizeSimulationRuntimeInput(
-      runtimeDraft, *workload, deployment, artifacts);
-  if (!runtime)
-    return runtime.takeError();
-  auto workloadRef = loom::sim::publishSimulationWorkload(*workload, artifacts);
-  if (!workloadRef)
-    return workloadRef.takeError();
-  auto runtimeRef =
-      loom::sim::publishSimulationRuntimeInput(*runtime, artifacts);
-  if (!runtimeRef)
-    return runtimeRef.takeError();
-  return PublishedInputs{std::move(*workloadRef), std::move(*runtimeRef)};
+loadInputs(const loom::application::ApplicationRuntimeManifest &manifest,
+           const loom::deployment::FinalizedDeployment &deployment,
+           const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
+  auto imported = loom::sim::importSystemSimulationInputs(
+      manifest.activationWorkload(), manifest.activationRuntimeInput(),
+      artifacts, blobs);
+  if (!imported)
+    return imported.takeError();
+  if (imported->deployment.reference() != deployment.reference())
+    return invalid("Application activation inputs name a foreign Deployment");
+  return PublishedInputs{manifest.activationWorkload(),
+                         manifest.activationRuntimeInput()};
+}
+
+llvm::Error consumeTransitionGraph(
+    const loom::application::ApplicationRuntimeManifest &manifest,
+    const loom::deployment::FinalizedDeployment &deployment,
+    const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
+  if (!manifest.transitionGraph())
+    return llvm::Error::success();
+  auto session = loom::runtime::ResourceTimeTransitionSelectionSession::create(
+      *manifest.transitionGraph(), deployment, artifacts, blobs);
+  if (!session)
+    return invalid("resource-time transition graph failed runtime selection: " +
+                   llvm::toString(session.takeError()));
+  auto mapping = loom::mapping::importSystemMapping(
+      manifest.transitionGraph()->entry.mapping, artifacts);
+  if (!mapping)
+    return invalid("resource-time entry Mapping failed runtime import: " +
+                   llvm::toString(mapping.takeError()));
+  const auto roots = mapping->view().executionBindings().rootThreadLaunches();
+  const loom::ArtifactRootReference dataflow{
+      ::dataflow::canonicalDataflowSchema.identity.str(),
+      ::dataflow::canonicalDataflowSchema.version,
+      mapping->view().dataflowIdentity()};
+  for (const ::dataflow::RootThreadLaunchRef root : roots) {
+    const ::dataflow::EventFamilyKey trigger =
+        ::dataflow::rootThreadCompletionEventFamily(root);
+    std::optional<loom::pnr::ResourceTimeTransitionEndpointReference> child;
+    for (const loom::pnr::ResourceTimeTransition &transition :
+         manifest.transitionGraph()->transitions) {
+      if (transition.parent != session->currentEndpoint() ||
+          transition.trigger != trigger || !transition.safePoint ||
+          transition.safePoint->kind !=
+              loom::pnr::ResourceTimeSafePointKind::Completion ||
+          transition.safePoint->artifact != dataflow ||
+          !llvm::equal(transition.completedBefore,
+                       session->completedRoots()))
+        continue;
+      if (child)
+        return invalid("resource-time runtime selection has ambiguous verified "
+                       "completion edges");
+      child = transition.child;
+    }
+    auto selected = session->completeRoot(root, std::move(child));
+    if (!selected)
+      return invalid(
+          "resource-time runtime selection rejected root completion: " +
+          llvm::toString(selected.takeError()));
+  }
+  if (llvm::Error error = session->joinMappedRoots())
+    return invalid(
+        "resource-time runtime selection could not join mapped roots: " +
+        llvm::toString(std::move(error)));
+  return llvm::Error::success();
 }
 
 llvm::Expected<loom::evaluation::CaseArtifactResolution>
@@ -710,17 +703,15 @@ bool sameRuntimeMemoryBinding(const loom::sim::MemoryRootBindingEntry &lhs,
 
 bool sameMemoryBytes(llvm::ArrayRef<loom::sim::SemanticMemoryByte> lhs,
                      llvm::ArrayRef<loom::sim::SemanticMemoryByte> rhs) {
-  return lhs.size() == rhs.size() && llvm::equal(
-                                        lhs, rhs, [](const auto &left,
-                                                     const auto &right) {
-                                          return left.state == right.state &&
-                                                 left.value == right.value;
-                                        });
+  return lhs.size() == rhs.size() &&
+         llvm::equal(lhs, rhs, [](const auto &left, const auto &right) {
+           return left.state == right.state && left.value == right.value;
+         });
 }
 
-llvm::Expected<std::set<std::uint64_t>> readMemoryRoots(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    ::dataflow::RootedGraphLaunchRef launch) {
+llvm::Expected<std::set<std::uint64_t>>
+readMemoryRoots(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                ::dataflow::RootedGraphLaunchRef launch) {
   std::set<std::uint64_t> roots;
   llvm::Error error = dataflow.forEachContextualServiceActor(
       launch.rootThreadLaunch,
@@ -768,15 +759,13 @@ bool sameRuntimeInputSemantics(
       !llvm::equal(lhs.memoryRootBindings, rhs.memoryRootBindings,
                    sameRuntimeMemoryBinding))
     return false;
-  for (std::size_t ordinal = 0; ordinal != lhs.runtimeValues.size();
-       ++ordinal)
+  for (std::size_t ordinal = 0; ordinal != lhs.runtimeValues.size(); ++ordinal)
     if (lhs.runtimeValues[ordinal].valueInputOrdinal !=
             rhs.runtimeValues[ordinal].valueInputOrdinal ||
         !sameValueSequence(lhs.runtimeValues[ordinal].value,
                            rhs.runtimeValues[ordinal].value))
       return false;
-  for (std::size_t ordinal = 0; ordinal != lhs.runtimeStreams.size();
-       ++ordinal)
+  for (std::size_t ordinal = 0; ordinal != lhs.runtimeStreams.size(); ++ordinal)
     if (!sameStreamSequence(lhs.runtimeStreams[ordinal],
                             rhs.runtimeStreams[ordinal]))
       return false;
@@ -866,7 +855,7 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   loom::runtime::SpatialInvocationWire cgraWire;
   diagnostic.clear();
   if (!loom::runtime::decodeSpatialInvocationWire(cgra.invocation, cgraWire,
-                                                   diagnostic))
+                                                  diagnostic))
     return invalid("cannot decode CGRA System Spatial invocation: " +
                    llvm::Twine(diagnostic));
   auto dataflowIdentity =
@@ -904,8 +893,8 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   if (!dfgRuntimeIdentity)
     return dfgRuntimeIdentity.takeError();
   auto dfgRuntime = loom::sim::importSimulationRuntimeInput(
-      dfg.runtimeInput.canonicalBytes, dfgWorkload->workload,
-      *dfgDataflowView, *dfgRuntimeIdentity);
+      dfg.runtimeInput.canonicalBytes, dfgWorkload->workload, *dfgDataflowView,
+      *dfgRuntimeIdentity);
   if (!dfgRuntime)
     return dfgRuntime.takeError();
   auto cgraRuntimeIdentity =
@@ -929,9 +918,9 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   const auto *cgraSpatialRuntime = cgraRuntime->spatial();
   if (!dfgSpatialRuntime || !cgraSpatialRuntime)
     return invalid("System invocation runtime is not Spatial");
-  auto invocationSemantics = sameInvocationSemantics(
-      dfgWire, cgraWire, *dfgSpatialRuntime, *cgraSpatialRuntime,
-      *dfgDataflowView, graph);
+  auto invocationSemantics =
+      sameInvocationSemantics(dfgWire, cgraWire, *dfgSpatialRuntime,
+                              *cgraSpatialRuntime, *dfgDataflowView, graph);
   if (!invocationSemantics)
     return invocationSemantics.takeError();
   if (!*invocationSemantics)
@@ -943,9 +932,8 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   loom::sim::ImportedSpatialSimulationInputs cgraInputs{
       std::move(cgraWorkload->dataflow), std::move(cgraWorkload->workload),
       std::move(*cgraRuntime)};
-  auto runtimeReference =
-      loom::sim::publishSimulationRuntimeInput(dfgInputs.runtimeInput,
-                                                artifacts);
+  auto runtimeReference = loom::sim::publishSimulationRuntimeInput(
+      dfgInputs.runtimeInput, artifacts);
   if (!runtimeReference)
     return runtimeReference.takeError();
   auto selection = loom::deployment::resolveDeploymentSpatialLaunchSelection(
@@ -971,14 +959,12 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   if (cgraCase->canonicalDataflow != dataflowReference)
     return invalid("Deployment selected a foreign Dataflow owner");
 
-  auto dfgBoundary =
-      loom::sim::decodeSpatialEngineBoundaryResult(dfg.boundaryResult,
-                                                   dfgInputs);
+  auto dfgBoundary = loom::sim::decodeSpatialEngineBoundaryResult(
+      dfg.boundaryResult, dfgInputs);
   if (!dfgBoundary)
     return dfgBoundary.takeError();
-  auto cgraBoundary =
-      loom::sim::decodeSpatialEngineBoundaryResult(cgra.boundaryResult,
-                                                   cgraInputs);
+  auto cgraBoundary = loom::sim::decodeSpatialEngineBoundaryResult(
+      cgra.boundaryResult, cgraInputs);
   if (!cgraBoundary)
     return cgraBoundary.takeError();
   if (!std::holds_alternative<loom::sim::RetiredExecution>(
@@ -1297,8 +1283,9 @@ llvm::Error run() {
   auto workspace = initializeWorkspace();
   if (!workspace)
     return workspace.takeError();
-  loom::ArtifactStore artifacts(child(*workspace, "objects"));
-  loom::BlobStore blobs(child(*workspace, "blobs"));
+  const std::string &workspacePath = workspace->path;
+  loom::ArtifactStore artifacts(child(workspacePath, "objects"));
+  loom::BlobStore blobs(child(workspacePath, "blobs"));
   loom::evaluation::ArtifactImportCacheScope artifactImportSession(
       artifacts, &blobs, invocationArtifactImportEntries);
   loom::fabric::FabricArtifactImportSession fabricImportSession;
@@ -1309,40 +1296,41 @@ llvm::Error run() {
       artifacts, invocationConfigurationProjectionEntries);
 
   llvm::Error result = [&]() -> llvm::Error {
-    auto deployment = importPackagedDeployment(*workspace, artifacts, blobs);
-    if (!deployment)
-      return deployment.takeError();
+    const loom::deployment::FinalizedDeployment &deployment =
+        workspace->package.deployment();
+    const loom::application::ApplicationRuntimeManifest &manifest =
+        workspace->package.manifest().manifest();
+    std::error_code directoryError;
+    if (!std::filesystem::create_directory(
+            std::filesystem::path(workspacePath) / "bundles", directoryError) ||
+        directoryError)
+      return ioError("cannot create bundle directory");
     auto readiness = readReadiness();
     if (!readiness)
       return readiness.takeError();
-    auto systemMapping = loom::mapping::importSystemMapping(
-        (*deployment)->deployment().systemMapping(), artifacts);
-    if (!systemMapping)
-      return systemMapping.takeError();
-    const loom::ArtifactRootReference system{
-        loom::fabric::fabricArtifactSchema.identity.str(),
-        loom::fabric::fabricArtifactSchema.version,
-        systemMapping->view().fabricIdentity()};
     auto binding = loom::runtime::finalizeBuiltinGem5SimulationBinding(
-        system, readiness->identity, {}, artifacts);
+        manifest.selectedSystem(), readiness->identity, {}, artifacts);
     if (!binding)
       return binding.takeError();
-    auto inputs = publishInputs(**deployment, artifacts);
+    auto inputs = loadInputs(manifest, deployment, artifacts, blobs);
     if (!inputs)
       return inputs.takeError();
     auto resolution =
-        buildResolution(**deployment, *binding, *inputs, artifacts, blobs);
+        buildResolution(deployment, *binding, *inputs, artifacts, blobs);
     if (!resolution)
       return resolution.takeError();
-    auto dfg = execute(Engine::Dfg, *workspace, **deployment, *binding, *inputs,
-                       *resolution, *readiness, artifacts, blobs);
+    auto dfg = execute(Engine::Dfg, workspacePath, deployment, *binding,
+                       *inputs, *resolution, *readiness, artifacts, blobs);
     if (!dfg)
       return dfg.takeError();
-    auto cgra = execute(Engine::Cgra, *workspace, **deployment, *binding,
+    auto cgra = execute(Engine::Cgra, workspacePath, deployment, *binding,
                         *inputs, *resolution, *readiness, artifacts, blobs);
     if (!cgra)
       return cgra.takeError();
     if (llvm::Error error = validateSystemResults(*dfg, *cgra))
+      return error;
+    if (llvm::Error error =
+            consumeTransitionGraph(manifest, deployment, artifacts, blobs))
       return error;
     if (dfg->spatialInvocations.size() != cgra->spatialInvocations.size())
       return invalid("System engines observed different launch counts");
@@ -1352,7 +1340,7 @@ llvm::Error run() {
          ++ordinal) {
       auto invocation = materializeSpatialInvocationCase(
           ordinal, dfg->spatialInvocations[ordinal],
-          cgra->spatialInvocations[ordinal], **deployment, artifacts, blobs);
+          cgra->spatialInvocations[ordinal], deployment, artifacts, blobs);
       if (!invocation)
         return invocation.takeError();
       spatialInvocations.push_back(std::move(*invocation));
@@ -1374,7 +1362,7 @@ llvm::Error run() {
       spatialRuns.push_back(std::move(*spatialDfg));
       spatialRuns.push_back(std::move(*spatialCgra));
     }
-    return writeManifest(*workspace, **deployment, *binding, *inputs, *dfg,
+    return writeManifest(workspacePath, deployment, *binding, *inputs, *dfg,
                          *cgra, spatialInvocations, spatialRuns);
   }();
 

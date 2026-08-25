@@ -13,6 +13,8 @@ set_target_properties(loom-system-run PROPERTIES
 )
 
 target_link_libraries(loom-system-run PRIVATE
+  LoomApplicationRuntimeManifest
+  LoomRuntimeResourceTime
   LoomRuntimePlatformBinding
   LoomStructuredFabricAnalyticModel
 )

@@ -330,14 +330,15 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
                            const ApplicationMappingExecution &execution,
                            const ArtifactStore &artifacts,
                            const BlobStore &blobs) {
-  if (!application.resourceTimeTransitionGraph) {
+  const auto &manifestGraph =
+      application.runtimeManifest.manifest().transitionGraph();
+  if (!manifestGraph) {
     if (!application.resourceTimeTransitions.empty())
       return visualizationError("resource-time edge evidence has no finite "
                                 "transition graph");
     return std::vector<std::string>{};
   }
-  const pnr::ResourceTimeTransitionGraph &graph =
-      *application.resourceTimeTransitionGraph;
+  const pnr::ResourceTimeTransitionGraph &graph = *manifestGraph;
   if (llvm::Error error =
           pnr::verifyResourceTimeTransitionGraph(graph, artifacts, blobs))
     return visualizationError("resource-time transition graph failed "
@@ -923,10 +924,15 @@ llvm::Error writeBundle(llvm::StringRef destination,
                             *deployment.resourceTimeSpectrum);
       else
         json.attribute("resource_time_spectrum", nullptr);
+      json.attributeObject("runtime_manifest", [&] {
+        writeArtifactRootReferenceJsonFields(
+            json, deployment.runtimeManifest.reference());
+      });
       json.attributeArray("resource_time_endpoints", [&] {
-        if (deployment.resourceTimeTransitionGraph)
+        if (const auto &graph =
+                deployment.runtimeManifest.manifest().transitionGraph())
           for (const pnr::ResourceTimeTransitionEndpointReference &endpoint :
-               deployment.resourceTimeTransitionGraph->endpoints)
+               graph->endpoints)
             json.object([&] {
               writeReference(json, "mapping", endpoint.mapping);
               writeReference(json, "deployment", *endpoint.deployment);

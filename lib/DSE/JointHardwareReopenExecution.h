@@ -5,6 +5,33 @@
 
 namespace loom::dse {
 
+llvm::Expected<JointDesignInvocationManifestReference>
+publishJointPlanInvocationManifest(
+    DseRunClosure closure, const ResolvedConfig &config,
+    const DsePlanGenerateInvocationRecords &generateRecords,
+    InvocationControllerOutcome outcome, ExecutionJournal &journal,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
+llvm::Error bindJointDesignInvocationManifest(
+    JointDesignExecution &execution,
+    JointDesignInvocationManifestReference invocationManifest);
+
+llvm::Error appendJointDesignSupportingInvocationManifest(
+    JointDesignExecution &execution,
+    JointDesignInvocationManifestReference invocationManifest);
+
+llvm::Error retainJointDesignInvocationManifest(
+    std::vector<JointDesignInvocationManifestReference> &retained,
+    const JointDesignInvocationManifestReference &invocationManifest);
+
+llvm::Error retainJointDesignExecutionInvocations(
+    std::vector<JointDesignInvocationManifestReference> &retained,
+    const JointDesignExecution &execution);
+
+llvm::Error attachJointDesignSupportingInvocationManifests(
+    JointDesignExecution &execution,
+    llvm::ArrayRef<JointDesignInvocationManifestReference> retained);
+
 llvm::Expected<JointDesignExecution>
 executeJointPlan(const JointDesignExplorationPlan &plan,
                  llvm::ArrayRef<ArtifactRootReference> evidence,

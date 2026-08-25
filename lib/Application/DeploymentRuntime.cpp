@@ -9,16 +9,26 @@ loadApplicationDeployment(const ApplicationDeploymentArtifacts &application,
                           runtime::RuntimeProviderSelection selection,
                           const ArtifactStore &artifacts,
                           const BlobStore &blobs) {
+  auto importedManifest = importApplicationRuntimeManifest(
+      application.runtimeManifest.reference(), artifacts, blobs);
+  if (!importedManifest)
+    return importedManifest.takeError();
+  if (importedManifest->manifest().deployment() !=
+      application.deployment.reference())
+    return llvm::make_error<ApplicationRuntimeManifestError>(
+        ApplicationRuntimeManifestErrorReason::DeploymentMismatch,
+        "Application runtime manifest names a foreign entry Deployment");
+
   auto loaded = runtime::loadDeployment(application.deployment,
                                         std::move(selection), artifacts, blobs);
   if (!loaded)
     return loaded.takeError();
 
   std::optional<runtime::ResourceTimeTransitionSelectionSession> resourceTime;
-  if (application.resourceTimeTransitionGraph) {
+  if (importedManifest->manifest().transitionGraph()) {
     auto prepared =
         runtime::ResourceTimeTransitionSelectionSession::createPrepared(
-            *application.resourceTimeTransitionGraph, *loaded, artifacts,
+            *importedManifest->manifest().transitionGraph(), *loaded, artifacts,
             blobs);
     if (!prepared)
       return prepared.takeError();

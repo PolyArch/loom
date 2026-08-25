@@ -213,9 +213,8 @@ llvm::Error resolveInputBindings(std::vector<PlanInputBinding> &bindings,
     if (joined && !compatible(*joined, expected[inputIndex]))
       return invalid("bounded output join role, artifact schema, or "
                      "cardinality does not match its slot");
-    if (!joined &&
-        !planCardinalityContains(expected[inputIndex].cardinality,
-                                 join.exactArtifacts.size()))
+    if (!joined && !planCardinalityContains(expected[inputIndex].cardinality,
+                                            join.exactArtifacts.size()))
       return invalid("exact-only bounded output join violates its slot "
                      "cardinality");
   }
@@ -712,15 +711,13 @@ public:
     return CompletedDsePlanExecution(digest);
   }
 
-  static llvm::Error appendGenerate(CompletedDsePlanExecution &completed,
-                                    GenerateInvocationRecord invocation,
-                                    GenerateInvocationWorkSummary workSummary,
-                                    std::optional<std::vector<std::uint8_t>>
-                                        feedback,
-                                    bool dispatched) {
+  static llvm::Error appendGenerate(
+      CompletedDsePlanExecution &completed, GenerateInvocationRecord invocation,
+      GenerateInvocationWorkSummary workSummary,
+      std::optional<std::vector<std::uint8_t>> feedback, bool dispatched) {
     return completed.appendGenerate(std::move(invocation),
-                                    std::move(workSummary),
-                                    std::move(feedback), dispatched);
+                                    std::move(workSummary), std::move(feedback),
+                                    dispatched);
   }
 
   static void
@@ -785,6 +782,37 @@ public:
       } else {
         completed.push_back(std::move(invocation));
         completedWork.push_back(std::move(work));
+      }
+    }
+    return DsePlanGenerateInvocationRecords{
+        execution->resolvedDseConfigViewDigest_, std::move(completed),
+        std::move(completedWork), std::move(incomplete),
+        std::move(incompleteWork)};
+  }
+
+  static DsePlanGenerateInvocationRecords
+  projectGenerateInvocationRecords(const DsePlanExecutionOutcome &outcome) {
+    const CompletedDsePlanExecution *execution =
+        std::get_if<CompletedDsePlanExecution>(&outcome);
+    if (!execution)
+      execution =
+          &std::get<IncompleteDsePlanExecution>(outcome).availableExecution_;
+    std::vector<GenerateInvocationRecord> completed;
+    std::vector<GenerateInvocationWorkSummary> completedWork;
+    std::vector<GenerateInvocationRecord> incomplete;
+    std::vector<GenerateInvocationWorkSummary> incompleteWork;
+    for (std::size_t ordinal = 0;
+         ordinal < execution->generateInvocations_.size(); ++ordinal) {
+      const GenerateInvocationRecord &invocation =
+          execution->generateInvocations_[ordinal];
+      const GenerateInvocationWorkSummary &work =
+          execution->generateWorkSummaries_[ordinal];
+      if (invocation.incompleteReason) {
+        incomplete.push_back(invocation);
+        incompleteWork.push_back(work);
+      } else {
+        completed.push_back(invocation);
+        completedWork.push_back(work);
       }
     }
     return DsePlanGenerateInvocationRecords{
@@ -1028,8 +1056,7 @@ llvm::Error CompletedDsePlanExecution::appendGenerate(
   generateWorkSummaries_.push_back(std::move(workSummary));
   generateDispatched_.push_back(dispatched);
   if (feedback)
-    generateFeedback_.push_back(
-        {planNodeOrdinal, std::move(*feedback)});
+    generateFeedback_.push_back({planNodeOrdinal, std::move(*feedback)});
   nodeOutputs_.push_back(GenerateNodeOutputs{invocationOrdinal});
   return llvm::Error::success();
 }
@@ -1086,6 +1113,11 @@ DsePlanGenerateInvocationRecords
 takeDsePlanGenerateInvocationRecords(DsePlanExecutionOutcome outcome) {
   return DsePlanExecutionBuilder::takeGenerateInvocationRecords(
       std::move(outcome));
+}
+
+DsePlanGenerateInvocationRecords projectDsePlanGenerateInvocationRecords(
+    const DsePlanExecutionOutcome &outcome) {
+  return DsePlanExecutionBuilder::projectGenerateInvocationRecords(outcome);
 }
 
 llvm::Expected<DsePlanGenerateInvocationSummary>
@@ -1413,10 +1445,9 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
               ? executor->executeGenerate(static_cast<std::uint64_t>(nodeIndex),
                                           inputs, outputDemands, *binding,
                                           store, blobs)
-              : invokeCandidateGenerator(
-                    inputs, *binding, store, blobs,
-                    CandidateGeneratorInvocationView(executionControl,
-                                                     outputDemands));
+              : invokeCandidateGenerator(inputs, *binding, store, blobs,
+                                         CandidateGeneratorInvocationView(
+                                             executionControl, outputDemands));
       if (!result)
         return result.takeError();
       if (auto *incomplete = std::get_if<IncompleteCandidateGeneratorResult>(

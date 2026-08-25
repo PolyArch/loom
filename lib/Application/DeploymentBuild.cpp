@@ -1,3 +1,4 @@
+#include "Application/ActivationDecision.h"
 #include "Application/BuildDiagnostics.h"
 #include "ApplicationRuntimeValidationInternal.h"
 #include "BuildInternal.h"
@@ -50,6 +51,80 @@ namespace {
 
 constexpr std::uint64_t kPortableRiscVHostImageBase = 0x80000000;
 constexpr std::uint64_t kExecutablePageBytes = 4096;
+constexpr std::uint64_t kApplicationHostProgramEntryOrdinal = 0;
+
+struct FinalizedApplicationActivationInputs final {
+  ArtifactRootReference workload;
+  ArtifactRootReference runtimeInput;
+};
+
+llvm::Expected<FinalizedApplicationActivationInputs>
+finalizeApplicationActivationInputs(
+    const PreparedApplicationBuild &prepared,
+    const deployment::FinalizedDeployment &deployment,
+    const ArtifactStore &artifacts) {
+  auto source = sim::importStructuredProgramSimulationInputs(
+      prepared.preMappingWorkload, prepared.preMappingRuntimeInput, artifacts);
+  if (!source)
+    return source.takeError();
+  if (source->structuredProgram.identity() !=
+      prepared.preMappingSourceProgram.artifact)
+    return invalid(
+        "application source inputs name a foreign StructuredProgram");
+  const sim::StructuredProgramSimulationWorkload *sourceWorkload =
+      source->workload.structuredProgram();
+  const sim::StructuredProgramSimulationRuntimeInput *sourceRuntime =
+      source->runtimeInput.structuredProgram();
+  if (!sourceWorkload || !sourceRuntime)
+    return invalid(
+        "application source inputs are not StructuredProgram inputs");
+  if (!sourceWorkload->observableContract.memories.empty() ||
+      !sourceRuntime->memoryObjects.empty() ||
+      !sourceRuntime->pointerBindings.empty())
+    return invalid("Deployment activation memory ingress is unsupported");
+
+  sim::SystemSimulationWorkload activation{
+      {deployment.reference().artifact, kApplicationHostProgramEntryOrdinal}};
+  activation.valueInputPlan.reserve(sourceWorkload->argumentPlan.size());
+  for (const sim::StructuredProgramArgumentSource &argument :
+       sourceWorkload->argumentPlan) {
+    if (const auto *fixed =
+            std::get_if<sim::CanonicalValueSequence>(&argument)) {
+      activation.valueInputPlan.push_back(*fixed);
+      continue;
+    }
+    if (std::holds_alternative<sim::StructuredRuntimeValueInput>(argument)) {
+      activation.valueInputPlan.push_back(sim::RuntimeValueInput{});
+      continue;
+    }
+    return invalid("Deployment activation pointer ingress is unsupported");
+  }
+  if (sourceWorkload->observableContract.returnValue)
+    activation.observableContract.valueResults.push_back(0);
+  auto workload =
+      sim::finalizeSimulationWorkload(activation, deployment, artifacts);
+  if (!workload)
+    return workload.takeError();
+
+  sim::SystemSimulationRuntimeInputDraft runtime{workload->identity()};
+  runtime.runtimeEntryValues.reserve(sourceRuntime->runtimeValues.size());
+  for (const sim::StructuredRuntimeValueEntry &value :
+       sourceRuntime->runtimeValues)
+    runtime.runtimeEntryValues.push_back({value.argumentOrdinal, value.value});
+  auto runtimeInput = sim::finalizeSimulationRuntimeInput(
+      runtime, *workload, deployment, artifacts);
+  if (!runtimeInput)
+    return runtimeInput.takeError();
+  auto workloadReference = sim::publishSimulationWorkload(*workload, artifacts);
+  if (!workloadReference)
+    return workloadReference.takeError();
+  auto runtimeReference =
+      sim::publishSimulationRuntimeInput(*runtimeInput, artifacts);
+  if (!runtimeReference)
+    return runtimeReference.takeError();
+  return FinalizedApplicationActivationInputs{std::move(*workloadReference),
+                                              std::move(*runtimeReference)};
+}
 
 llvm::Expected<std::uint64_t> nextExecutableImageBase(std::uint64_t end) {
   if (end >
@@ -65,6 +140,229 @@ canonicalTypeBytes(mlir::Type type) {
     return encoded.takeError();
   return deployment::CanonicalTypeBytes(encoded->bytes().begin(),
                                         encoded->bytes().end());
+}
+
+llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
+    const PreparedApplicationBuild &prepared,
+    const PreparedApplicationSoftware &software,
+    const ApplicationMappingExecution &mappingExecution,
+    std::uint64_t selectedPlan, const ArtifactRootReference &selectedMapping,
+    const deployment::FinalizedDeployment &deployment,
+    const FinalizedApplicationActivationInputs &activationInputs,
+    const std::optional<pnr::ResourceTimeTransitionGraph> &transitionGraph,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  if (!mappingExecution.execution.summary.selectedPlanOrdinal ||
+      *mappingExecution.execution.summary.selectedPlanOrdinal != selectedPlan ||
+      !mappingExecution.execution.summary.selectedMapping ||
+      *mappingExecution.execution.summary.selectedMapping != selectedMapping)
+    return invalid("Deployment selection differs from its Mapping summary");
+  const auto invocationRunKey = mappingExecution.execution.invocationRunKey();
+  if (!invocationRunKey)
+    return invalid("Deployment selection has no Mapping invocation run key");
+
+  if (!mappingExecution.provenance.pairDecision)
+    return invalid("Deployment selection has no application pair decision");
+  const ApplicationPairDecisionRecord &pair =
+      *mappingExecution.provenance.pairDecision;
+  if (pair.manifestJoinStatus !=
+          ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure ||
+      !pair.invocationRunKey || !pair.pairIdentity || !pair.sourceProgram ||
+      !pair.fabric || !pair.workload || !pair.runtimeInput ||
+      !pair.selectedCandidateIdentity || !pair.selectedSystem)
+    return invalid("Deployment selection lacks an exact pair manifest join");
+  if (*pair.invocationRunKey != *invocationRunKey)
+    return invalid("Deployment pair run key differs from Mapping execution");
+  if (mappingExecution.provenance.sourceProgram != pair.sourceProgram ||
+      mappingExecution.provenance.fabric != pair.fabric ||
+      mappingExecution.provenance.workload != pair.workload ||
+      mappingExecution.provenance.runtimeInput != pair.runtimeInput)
+    return invalid("Deployment pair roots differ from Mapping provenance");
+  if (*pair.sourceProgram != prepared.preMappingSourceProgram ||
+      *pair.fabric != prepared.preMappingFabric ||
+      *pair.workload != prepared.preMappingWorkload ||
+      *pair.runtimeInput != prepared.preMappingRuntimeInput)
+    return invalid("Deployment pair roots differ from application preparation");
+
+  auto expectedPair = deriveApplicationPairIdentity(
+      *pair.sourceProgram, *pair.fabric, *pair.workload, *pair.runtimeInput);
+  if (!expectedPair)
+    return expectedPair.takeError();
+  if (*expectedPair != *pair.pairIdentity)
+    return invalid("Deployment pair identity differs from its exact roots");
+
+  const ApplicationMappingCandidateOutcome *selectedOutcome = nullptr;
+  std::vector<ComponentViewDigest> selectedScheduleHints;
+  for (const ApplicationMappingCandidateOutcome &outcome :
+       mappingExecution.candidateOutcomes) {
+    if (outcome.planOrdinal != selectedPlan ||
+        !llvm::is_contained(outcome.systemMappings, selectedMapping))
+      continue;
+    if (!selectedOutcome) {
+      selectedOutcome = &outcome;
+    } else if (outcome.system != selectedOutcome->system ||
+               outcome.disposition != selectedOutcome->disposition ||
+               outcome.runtimeDisposition !=
+                   selectedOutcome->runtimeDisposition ||
+               outcome.systemMappings != selectedOutcome->systemMappings ||
+               outcome.runtimeEvidence != selectedOutcome->runtimeEvidence ||
+               outcome.oracleEvidence != selectedOutcome->oracleEvidence) {
+      return invalid(
+          "equivalent selected Mapping outcomes have different evidence");
+    }
+    selectedScheduleHints.push_back(outcome.resourceTimeScheduleHintDigest);
+  }
+  if (!selectedOutcome ||
+      selectedOutcome->runtimeDisposition !=
+          ApplicationMappingRuntimeDisposition::Completed ||
+      selectedOutcome->runtimeEvidence.empty() ||
+      selectedOutcome->oracleEvidence.empty())
+    return invalid("Deployment selection lacks completed runtime evidence");
+  const PreparedApplicationMappingAlternative &selectedAlternative =
+      prepared.mappingAlternatives[selectedPlan];
+  if (selectedOutcome->preMappingCandidateRecordOrdinal !=
+          selectedAlternative.preMappingCandidateRecordOrdinal ||
+      selectedOutcome->dataflow != selectedAlternative.dataflow ||
+      !selectedOutcome->planningRecord ||
+      !selectedOutcome->planningRecord->candidateIdentity ||
+      *selectedOutcome->planningRecord->candidateIdentity !=
+          selectedAlternative.candidateIdentity)
+    return invalid("Deployment selection differs from its planning record");
+  if (selectedOutcome->system != *pair.selectedSystem)
+    return invalid("Deployment selection differs from the pair System");
+
+  const ApplicationPairCandidateRecord *selectedCandidate = nullptr;
+  for (const ApplicationPairCandidateRecord &candidate : pair.candidates) {
+    if (!candidate.selected)
+      continue;
+    if (selectedCandidate)
+      return invalid(
+          "Application pair decision repeats its selected candidate");
+    selectedCandidate = &candidate;
+  }
+  if (!selectedCandidate || !selectedCandidate->candidateIdentity ||
+      *selectedCandidate->candidateIdentity !=
+          *pair.selectedCandidateIdentity ||
+      *selectedCandidate->candidateIdentity !=
+          selectedAlternative.candidateIdentity ||
+      selectedCandidate->planningRecordOrdinal !=
+          selectedAlternative.preMappingCandidateRecordOrdinal ||
+      !selectedCandidate->planOrdinal ||
+      *selectedCandidate->planOrdinal != selectedPlan)
+    return invalid("Deployment selection differs from the selected candidate");
+
+  std::vector<ComponentViewDigest> observedScheduleHints;
+  for (const ApplicationPairMappingObservation &observation :
+       selectedCandidate->mappingObservations) {
+    if (observation.planOrdinal != selectedPlan ||
+        !llvm::is_contained(observation.systemMappings, selectedMapping))
+      continue;
+    if (observation.system != selectedOutcome->system ||
+        observation.mappingDisposition != selectedOutcome->disposition ||
+        observation.runtimeDisposition != selectedOutcome->runtimeDisposition ||
+        observation.runtimeEvidence != selectedOutcome->runtimeEvidence ||
+        observation.oracleEvidence != selectedOutcome->oracleEvidence)
+      return invalid("Deployment selection differs from its pair observation");
+    observedScheduleHints.push_back(observation.scheduleHintDigest);
+  }
+  const auto canonicalizeHints = [](auto &digests) {
+    llvm::sort(digests, [](const auto &lhs, const auto &rhs) {
+      return lhs.bytes() < rhs.bytes();
+    });
+  };
+  canonicalizeHints(selectedScheduleHints);
+  canonicalizeHints(observedScheduleHints);
+  std::vector<ComponentViewDigest> preparedScheduleHints =
+      selectedAlternative.equivalentScheduleHintDigests;
+  canonicalizeHints(preparedScheduleHints);
+  if (selectedScheduleHints.empty() ||
+      selectedScheduleHints != observedScheduleHints ||
+      selectedScheduleHints != preparedScheduleHints ||
+      std::adjacent_find(selectedScheduleHints.begin(),
+                         selectedScheduleHints.end()) !=
+          selectedScheduleHints.end())
+    return invalid(
+        "Deployment selection differs from its equivalent schedule hints");
+
+  const dse::PreMappingCandidatePlanningRecord &planning =
+      *selectedOutcome->planningRecord;
+  if (!planning.structuredProgram || !planning.canonicalDataflow ||
+      !planning.projection || planning.ownedProtocolRoots.empty() ||
+      *planning.canonicalDataflow != selectedAlternative.dataflow)
+    return invalid("Deployment selection has no exact planning preimage");
+  const auto evaluation = llvm::find_if(
+      prepared.resourceTimeFunnel.evaluations, [&](const auto &candidate) {
+        return candidate.candidateIdentity ==
+               selectedAlternative.candidateIdentity;
+      });
+  if (evaluation == prepared.resourceTimeFunnel.evaluations.end())
+    return invalid("Deployment selection has no resource-time owner");
+  std::vector<dse::ResourceTimeScheduleHint> exactScheduleHints;
+  exactScheduleHints.reserve(selectedScheduleHints.size());
+  for (const ComponentViewDigest &digest : selectedScheduleHints) {
+    auto hint = build_detail::findResourceTimeScheduleHint(*evaluation, digest);
+    if (!hint)
+      return hint.takeError();
+    exactScheduleHints.push_back(**hint);
+  }
+  if (!mappingExecution.execution.invocationManifest())
+    return invalid("Deployment selection has no exact DSE occurrence");
+  std::vector<dse::JointDesignInvocationManifestReference>
+      supportingInvocations(
+          mappingExecution.execution.supportingInvocationManifests().begin(),
+          mappingExecution.execution.supportingInvocationManifests().end());
+  auto activationDecision = ApplicationActivationDecision::get(
+      {*pair.sourceProgram,
+       *pair.fabric,
+       *pair.workload,
+       *pair.runtimeInput,
+       software.replayCases,
+       *mappingExecution.execution.invocationManifest(),
+       std::move(supportingInvocations),
+       {*planning.structuredProgram, *planning.canonicalDataflow,
+        planning.ownedProtocolRoots, planning.projection->identity,
+        prepared.preMappingFrontierPolicyDigest},
+       selectedAlternative.candidateIdentity,
+       selectedPlan,
+       std::move(exactScheduleHints),
+       *pair.selectedSystem,
+       selectedMapping,
+       pair.disposition,
+       selectedOutcome->runtimeEvidence,
+       selectedOutcome->oracleEvidence},
+      artifacts, blobs);
+  if (!activationDecision)
+    return activationDecision.takeError();
+  auto finalizedActivationDecision = publishApplicationActivationDecision(
+      std::move(*activationDecision), artifacts);
+  if (!finalizedActivationDecision)
+    return finalizedActivationDecision.takeError();
+
+  auto manifest =
+      ApplicationRuntimeManifest::get({*pair.sourceProgram,
+                                       *pair.fabric,
+                                       *pair.workload,
+                                       *pair.runtimeInput,
+                                       software.replayCases,
+                                       finalizedActivationDecision->reference(),
+                                       *pair.pairIdentity,
+                                       *pair.invocationRunKey,
+                                       pair.disposition,
+                                       *pair.selectedCandidateIdentity,
+                                       selectedPlan,
+                                       selectedScheduleHints,
+                                       *pair.selectedSystem,
+                                       selectedMapping,
+                                       deployment.reference(),
+                                       activationInputs.workload,
+                                       activationInputs.runtimeInput,
+                                       {},
+                                       selectedOutcome->runtimeEvidence,
+                                       selectedOutcome->oracleEvidence,
+                                       transitionGraph},
+                                      artifacts, blobs);
+  if (!manifest)
+    return manifest.takeError();
+  return publishApplicationRuntimeManifest(std::move(*manifest), artifacts);
 }
 
 llvm::Expected<deployment::HostProgramEntry>
@@ -430,6 +728,10 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       finalLinkedModule, artifacts, blobs);
   if (!deployment)
     return deployment.takeError();
+  auto activationInputs =
+      finalizeApplicationActivationInputs(prepared, *deployment, artifacts);
+  if (!activationInputs)
+    return activationInputs.takeError();
 
   const std::optional<std::uint64_t> selectedPlan =
       mappingExecution.execution.summary.selectedPlanOrdinal;
@@ -701,15 +1003,23 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     if (llvm::Error error = pnr::verifyResourceTimeTransitionGraph(
             *resourceTimeTransitionGraph, artifacts, blobs))
       return std::move(error);
+  if (!selectedPlan)
+    return invalid("Deployment selection has no selected plan ordinal");
+  auto runtimeManifest = finalizeRuntimeManifest(
+      prepared, **software, mappingExecution, *selectedPlan,
+      imported->mapping.reference(), *deployment, *activationInputs,
+      resourceTimeTransitionGraph, artifacts, blobs);
+  if (!runtimeManifest)
+    return runtimeManifest.takeError();
   emitElapsed(ApplicationBuildOperation::DeclarativeDeploymentFinalization,
               operationBegin);
   return ApplicationDeploymentArtifacts{abi->reference(),
                                         abi->constructionStatistics(),
                                         std::move(*selectedHardwareBindings),
                                         std::move(*selectedBinaries),
-                                        std::move(resourceTimeTransitionGraph),
                                         std::move(resourceTimeTransitions),
                                         std::move(resourceTimeSpectrum),
+                                        std::move(*runtimeManifest),
                                         std::move(*deployment)};
 }
 

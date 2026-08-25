@@ -32,7 +32,22 @@ shapes remain as specified below; no prior-version reference is reinterpreted
 with a different accepted dependency schema.
 
 Concrete device handles, leases, addresses, queues, and process state remain
-transient. There is no generic runtime manifest or public manual-launch schema.
+transient. There is no generic runtime-owned manifest or public manual-launch
+schema. The Application layer does publish the incompatible
+`loom.application.runtime_manifest 2.0` activation closure. It references one
+strictly imported StructuredProgram source workload/runtime pair, the exact
+source-backed Spatial replay cases, one completed pair decision, the selected
+SystemMapping and Deployment, completed runtime/oracle Evidence, the exact
+Deployment-owned System workload/runtime pair, and an optional finite verified
+resource-time transition graph. These references authorize no new Mapping,
+route, entry, or input construction at runtime.
+
+An Application package contains the exact object/blob closure of that
+manifest and every endpoint Deployment. Execution first validates the source
+package, copies its immutable stores into a new workspace, and strictly imports
+the workspace copy in isolated import sessions. The System runner consumes the
+manifest's Deployment-owned activation roots. A command-line program-entry or
+freshly published workload/runtime pair cannot override the package.
 
 ## Immutable Mapping Contract
 
@@ -677,6 +692,22 @@ sends or only top-level receives. For each receiver branch, all of its receive
 events must already be covered by earlier complete producer launches. A mixed,
 nested, dynamic-grid, or insufficiently supplied launch is typed Unsupported
 before any callback can expose an unwritten receive slot.
+
+That proof also derives the finite flat producer and per-branch consumer event
+counts for the complete logical channel invocation. The generated adapter
+opens the `OrderedChannelABI` generation with those counts before the first
+endpoint call and requires producer finish, every consumer terminal, and
+collective join after the selected entry returns. Runtime does not infer these
+counts from queue occupancy or observed execution.
+
+The adapter transports every rejected ABI outcome as its original typed
+`OrderedChannelABIError`; it does not flatten backpressure, sequence
+exhaustion, rate excess, cancellation, or lifecycle misuse into a generic
+execution string. Any failure after entry cancels every generation that has
+not joined, including failures while finishing endpoints or deinitializing the
+native image. A fully terminal path alone joins. Each native execution owns a
+fresh transient ABI instance; reset and reuse of one direct ABI session are
+separate conformance evidence rather than an adapter lifecycle guarantee.
 
 The Spatial Bridge binding's `maximumMessageBytes` is a separate provider wire
 and staging limit. It may reject an unrepresentable invocation or message with

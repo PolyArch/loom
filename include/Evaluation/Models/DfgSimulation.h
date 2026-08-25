@@ -29,6 +29,12 @@ struct DfgSimulationAttemptLimits final {
 
 llvm::Error registerDfgSimulationModel();
 
+llvm::Expected<CaseArtifactResolution>
+resolveDfgSimulationCase(const ArtifactRootReference &canonicalDataflow,
+                         const ArtifactRootReference &workload,
+                         const ArtifactRootReference &runtimeInput,
+                         const ArtifactStore &artifactStore);
+
 llvm::Expected<PreparedDfgSimulationEvaluation> prepareDfgSimulationEvaluation(
     const ArtifactRootReference &canonicalDataflow,
     const ArtifactRootReference &workload,
