@@ -256,9 +256,6 @@ public:
     if (llvm::Error error = detail::SpatialPnrProblemIdentity::validateInputs(
             dataflow, techMapping, fabric, config, constraintSet))
       return std::move(error);
-    if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
-            fabric, physicalTiming))
-      return std::move(error);
 
     std::optional<FabricDerivedContextBundle> ownedContexts;
     if (!derivedContexts) {
@@ -1106,9 +1103,6 @@ public:
       DerivedContextCacheAccess *timingAccess) {
     if (fabric.rootKind() != FabricRootKind::Module)
       return invalid("FabricStaticContext requires one Module root");
-    if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
-            fabric, physicalTiming))
-      return std::move(error);
 
     if (staticAccess)
       *staticAccess = {};
@@ -1268,6 +1262,10 @@ public:
       timingAccess->misses = 1;
     }
     if (!timingContext) {
+      if (llvm::Error error =
+              ::loom::fabric::validateFabricPhysicalTimingProfile(
+                  fabric, physicalTiming))
+        return std::move(error);
       auto routing = buildRouting(fabric, physicalTiming, *resourcesOwner,
                                   topologyOwner,
                                   staticContext->tagContinuity);
@@ -1332,12 +1330,10 @@ public:
     if (!bundle.storage_ || !bundle.storage_->staticContext ||
         !bundle.storage_->timingContext)
       return invalid("Fabric derived context bundle is incomplete");
-    if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
-            fabric, physicalTiming))
-      return error;
     const auto &staticContext = *bundle.storage_->staticContext;
     const auto &timingContext = *bundle.storage_->timingContext;
-    if (staticContext.fabricIdentity != fabric.identity() ||
+    if (physicalTiming.fabricIdentity() != fabric.identity() ||
+        staticContext.fabricIdentity != fabric.identity() ||
         timingContext.fabricIdentity != fabric.identity() ||
         timingContext.staticContext.get() != &staticContext)
       return invalid("Fabric derived context binds another Fabric identity");
