@@ -4,6 +4,7 @@
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Deployment/Deployment.h"
 #include "Deployment/DeploymentSpatialLaunchSelection.h"
@@ -26,6 +27,7 @@
 #include "Runtime/FabricModelPlatform.h"
 #include "Runtime/Gem5BridgeWire.h"
 #include "Runtime/Gem5SimulationBinding.h"
+#include "Runtime/ResourceTimeTransitionSelection.h"
 #include "Runtime/SpatialInvocationWire.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
@@ -256,6 +258,59 @@ loadInputs(const loom::application::ApplicationRuntimeManifest &manifest,
     return invalid("Application activation inputs name a foreign Deployment");
   return PublishedInputs{manifest.activationWorkload(),
                          manifest.activationRuntimeInput()};
+}
+
+llvm::Error consumeTransitionGraph(
+    const loom::application::ApplicationRuntimeManifest &manifest,
+    const loom::deployment::FinalizedDeployment &deployment,
+    const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
+  if (!manifest.transitionGraph())
+    return llvm::Error::success();
+  auto session = loom::runtime::ResourceTimeTransitionSelectionSession::create(
+      *manifest.transitionGraph(), deployment, artifacts, blobs);
+  if (!session)
+    return invalid("resource-time transition graph failed runtime selection: " +
+                   llvm::toString(session.takeError()));
+  auto mapping = loom::mapping::importSystemMapping(
+      manifest.transitionGraph()->entry.mapping, artifacts);
+  if (!mapping)
+    return invalid("resource-time entry Mapping failed runtime import: " +
+                   llvm::toString(mapping.takeError()));
+  const auto roots = mapping->view().executionBindings().rootThreadLaunches();
+  const loom::ArtifactRootReference dataflow{
+      ::dataflow::canonicalDataflowSchema.identity.str(),
+      ::dataflow::canonicalDataflowSchema.version,
+      mapping->view().dataflowIdentity()};
+  for (const ::dataflow::RootThreadLaunchRef root : roots) {
+    const ::dataflow::EventFamilyKey trigger =
+        ::dataflow::rootThreadCompletionEventFamily(root);
+    std::optional<loom::pnr::ResourceTimeTransitionEndpointReference> child;
+    for (const loom::pnr::ResourceTimeTransition &transition :
+         manifest.transitionGraph()->transitions) {
+      if (transition.parent != session->currentEndpoint() ||
+          transition.trigger != trigger || !transition.safePoint ||
+          transition.safePoint->kind !=
+              loom::pnr::ResourceTimeSafePointKind::Completion ||
+          transition.safePoint->artifact != dataflow ||
+          llvm::ArrayRef<::dataflow::RootThreadLaunchRef>(
+              transition.completedBefore) != session->completedRoots())
+        continue;
+      if (child)
+        return invalid("resource-time runtime selection has ambiguous verified "
+                       "completion edges");
+      child = transition.child;
+    }
+    auto selected = session->completeRoot(root, std::move(child));
+    if (!selected)
+      return invalid(
+          "resource-time runtime selection rejected root completion: " +
+          llvm::toString(selected.takeError()));
+  }
+  if (llvm::Error error = session->joinMappedRoots())
+    return invalid(
+        "resource-time runtime selection could not join mapped roots: " +
+        llvm::toString(std::move(error)));
+  return llvm::Error::success();
 }
 
 llvm::Expected<loom::evaluation::CaseArtifactResolution>
@@ -648,17 +703,15 @@ bool sameRuntimeMemoryBinding(const loom::sim::MemoryRootBindingEntry &lhs,
 
 bool sameMemoryBytes(llvm::ArrayRef<loom::sim::SemanticMemoryByte> lhs,
                      llvm::ArrayRef<loom::sim::SemanticMemoryByte> rhs) {
-  return lhs.size() == rhs.size() && llvm::equal(
-                                        lhs, rhs, [](const auto &left,
-                                                     const auto &right) {
-                                          return left.state == right.state &&
-                                                 left.value == right.value;
-                                        });
+  return lhs.size() == rhs.size() &&
+         llvm::equal(lhs, rhs, [](const auto &left, const auto &right) {
+           return left.state == right.state && left.value == right.value;
+         });
 }
 
-llvm::Expected<std::set<std::uint64_t>> readMemoryRoots(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    ::dataflow::RootedGraphLaunchRef launch) {
+llvm::Expected<std::set<std::uint64_t>>
+readMemoryRoots(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                ::dataflow::RootedGraphLaunchRef launch) {
   std::set<std::uint64_t> roots;
   llvm::Error error = dataflow.forEachContextualServiceActor(
       launch.rootThreadLaunch,
@@ -706,15 +759,13 @@ bool sameRuntimeInputSemantics(
       !llvm::equal(lhs.memoryRootBindings, rhs.memoryRootBindings,
                    sameRuntimeMemoryBinding))
     return false;
-  for (std::size_t ordinal = 0; ordinal != lhs.runtimeValues.size();
-       ++ordinal)
+  for (std::size_t ordinal = 0; ordinal != lhs.runtimeValues.size(); ++ordinal)
     if (lhs.runtimeValues[ordinal].valueInputOrdinal !=
             rhs.runtimeValues[ordinal].valueInputOrdinal ||
         !sameValueSequence(lhs.runtimeValues[ordinal].value,
                            rhs.runtimeValues[ordinal].value))
       return false;
-  for (std::size_t ordinal = 0; ordinal != lhs.runtimeStreams.size();
-       ++ordinal)
+  for (std::size_t ordinal = 0; ordinal != lhs.runtimeStreams.size(); ++ordinal)
     if (!sameStreamSequence(lhs.runtimeStreams[ordinal],
                             rhs.runtimeStreams[ordinal]))
       return false;
@@ -804,7 +855,7 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   loom::runtime::SpatialInvocationWire cgraWire;
   diagnostic.clear();
   if (!loom::runtime::decodeSpatialInvocationWire(cgra.invocation, cgraWire,
-                                                   diagnostic))
+                                                  diagnostic))
     return invalid("cannot decode CGRA System Spatial invocation: " +
                    llvm::Twine(diagnostic));
   auto dataflowIdentity =
@@ -842,8 +893,8 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   if (!dfgRuntimeIdentity)
     return dfgRuntimeIdentity.takeError();
   auto dfgRuntime = loom::sim::importSimulationRuntimeInput(
-      dfg.runtimeInput.canonicalBytes, dfgWorkload->workload,
-      *dfgDataflowView, *dfgRuntimeIdentity);
+      dfg.runtimeInput.canonicalBytes, dfgWorkload->workload, *dfgDataflowView,
+      *dfgRuntimeIdentity);
   if (!dfgRuntime)
     return dfgRuntime.takeError();
   auto cgraRuntimeIdentity =
@@ -867,9 +918,9 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   const auto *cgraSpatialRuntime = cgraRuntime->spatial();
   if (!dfgSpatialRuntime || !cgraSpatialRuntime)
     return invalid("System invocation runtime is not Spatial");
-  auto invocationSemantics = sameInvocationSemantics(
-      dfgWire, cgraWire, *dfgSpatialRuntime, *cgraSpatialRuntime,
-      *dfgDataflowView, graph);
+  auto invocationSemantics =
+      sameInvocationSemantics(dfgWire, cgraWire, *dfgSpatialRuntime,
+                              *cgraSpatialRuntime, *dfgDataflowView, graph);
   if (!invocationSemantics)
     return invocationSemantics.takeError();
   if (!*invocationSemantics)
@@ -881,9 +932,8 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   loom::sim::ImportedSpatialSimulationInputs cgraInputs{
       std::move(cgraWorkload->dataflow), std::move(cgraWorkload->workload),
       std::move(*cgraRuntime)};
-  auto runtimeReference =
-      loom::sim::publishSimulationRuntimeInput(dfgInputs.runtimeInput,
-                                                artifacts);
+  auto runtimeReference = loom::sim::publishSimulationRuntimeInput(
+      dfgInputs.runtimeInput, artifacts);
   if (!runtimeReference)
     return runtimeReference.takeError();
   auto selection = loom::deployment::resolveDeploymentSpatialLaunchSelection(
@@ -909,14 +959,12 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   if (cgraCase->canonicalDataflow != dataflowReference)
     return invalid("Deployment selected a foreign Dataflow owner");
 
-  auto dfgBoundary =
-      loom::sim::decodeSpatialEngineBoundaryResult(dfg.boundaryResult,
-                                                   dfgInputs);
+  auto dfgBoundary = loom::sim::decodeSpatialEngineBoundaryResult(
+      dfg.boundaryResult, dfgInputs);
   if (!dfgBoundary)
     return dfgBoundary.takeError();
-  auto cgraBoundary =
-      loom::sim::decodeSpatialEngineBoundaryResult(cgra.boundaryResult,
-                                                   cgraInputs);
+  auto cgraBoundary = loom::sim::decodeSpatialEngineBoundaryResult(
+      cgra.boundaryResult, cgraInputs);
   if (!cgraBoundary)
     return cgraBoundary.takeError();
   if (!std::holds_alternative<loom::sim::RetiredExecution>(
@@ -1280,6 +1328,9 @@ llvm::Error run() {
     if (!cgra)
       return cgra.takeError();
     if (llvm::Error error = validateSystemResults(*dfg, *cgra))
+      return error;
+    if (llvm::Error error =
+            consumeTransitionGraph(manifest, deployment, artifacts, blobs))
       return error;
     if (dfg->spatialInvocations.size() != cgra->spatialInvocations.size())
       return invalid("System engines observed different launch counts");

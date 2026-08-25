@@ -4,6 +4,7 @@
 #include "Common/BlobStore.h"
 #include "Common/ComponentViewDigest.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/JointDesignExploration.h"
 #include "DSE/ResolvedConfigView.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelDescriptor.h"
@@ -292,7 +293,6 @@ Fixture makeFixture(const ArtifactStore &store, const BlobStore &blobs,
   ResolvedConfig config = defaultResolvedConfig();
   config.dse.modelAuthorizations.clear();
   config.dse.evidenceObligationTemplates.clear();
-  config.dse.objectiveCatalogs = {};
   config.dse.qualityGatePolicies.clear();
   ArtifactRootReference source = publish(store, sourceSchema, 0x11);
   config.dse.planNodes.reserve(planNodeCount);
@@ -372,6 +372,24 @@ void testRunKeyAndRoundTrip(const ArtifactStore &store,
       adopted.generateRecords().size() != 1 ||
       !adopted.generateRecords().front().completed)
     fail("canonical manifest roundtrip changed the record");
+  JointDesignInvocationManifestReference reference =
+      take(publishJointDesignInvocationManifest(manifest, fixture.config, store,
+                                                blobs));
+  InvocationManifest imported =
+      take(importJointDesignInvocationManifest(reference, store, blobs));
+  if (reference.occurrence() != manifest.occurrence() ||
+      reference.resolvedConfig().artifact !=
+          resolvedConfigIdentity(fixture.config) ||
+      imported.canonicalBytes() != manifest.canonicalBytes())
+    fail("validated joint invocation reference changed its manifest owner");
+  InvocationOccurrenceRef wrongOccurrence = manifest.occurrence();
+  ++wrongOccurrence.occurrenceOrdinal;
+  auto mismatched = JointDesignInvocationManifestReference::get(
+      reference.resolvedConfig(), reference.blob(), std::move(wrongOccurrence),
+      store, blobs);
+  if (mismatched)
+    fail("joint invocation reference accepted a mismatched occurrence");
+  requireErrorContains(mismatched.takeError(), "occurrence differs");
   auto totals = [](const InvocationManifest &value) {
     std::pair<std::uint64_t, std::uint64_t> result{0, 0};
     for (const InvocationGenerateRecord &record : value.generateRecords())
@@ -477,8 +495,7 @@ constexpr std::size_t encodedEmptyExternalToolWorkWidth =
 
 InvocationExternalToolWorkLedger externalToolWork() {
   return take(InvocationExternalToolWorkLedger::get(
-      {{0, ExternalToolWorkLedger{2, 2, 1, 1, 0, 2, 0, 1, 1, 1, 1, 0, 1,
-                                  0}}}));
+      {{0, ExternalToolWorkLedger{2, 2, 1, 1, 0, 2, 0, 1, 1, 1, 1, 0, 1, 0}}}));
 }
 
 void testOperationalObservationCompatibility(const ArtifactStore &store,
@@ -521,8 +538,8 @@ void testOperationalObservationCompatibility(const ArtifactStore &store,
       absentSelection->satisfiedEvidence != presentSelection->satisfiedEvidence)
     fail("operational observations changed formal invocation semantics");
 
-  std::vector<std::uint8_t> preExternalToolWork(
-      absent.canonicalBytes().begin(), absent.canonicalBytes().end());
+  std::vector<std::uint8_t> preExternalToolWork(absent.canonicalBytes().begin(),
+                                                absent.canonicalBytes().end());
   if (preExternalToolWork.size() < encodedEmptyExternalToolWorkWidth)
     fail("current absent manifest is unexpectedly short");
   const std::size_t minorOffset =
@@ -530,8 +547,8 @@ void testOperationalObservationCompatibility(const ArtifactStore &store,
   preExternalToolWork.resize(preExternalToolWork.size() -
                              encodedEmptyExternalToolWorkWidth);
   writeU32(preExternalToolWork, minorOffset, 3);
-  InvocationManifest adoptedPreExternalToolWork = take(
-      adoptInvocationManifest(preExternalToolWork, fixture.config, store));
+  InvocationManifest adoptedPreExternalToolWork =
+      take(adoptInvocationManifest(preExternalToolWork, fixture.config, store));
   if (adoptedPreExternalToolWork.canonicalBytes() != absent.canonicalBytes() ||
       !adoptedPreExternalToolWork.externalToolWork().planNodes().empty())
     fail("schema 1.3 import did not derive an empty external-tool ledger");
@@ -584,31 +601,29 @@ void testExternalToolWorkRoundTrip(const ArtifactStore &store,
                                          manifest.canonicalBytes().end());
   const std::size_t suffix = inconsistent.size() - encodedLedgerWidth;
   writeU64(inconsistent, suffix, 3);
-  auto rejected =
-      adoptInvocationManifest(inconsistent, fixture.config, store);
+  auto rejected = adoptInvocationManifest(inconsistent, fixture.config, store);
   if (rejected)
     fail("manifest importer accepted an external-tool total unlike its rows");
   requireErrorContains(rejected.takeError(), "differs from plan-node rows");
 
   auto duplicate = InvocationExternalToolWorkLedger::get(
-      {{0, work.planNodes().front().work},
-       {0, work.planNodes().front().work}});
+      {{0, work.planNodes().front().work}, {0, work.planNodes().front().work}});
   if (duplicate)
     fail("external-tool ledger accepted duplicate plan-node rows");
   requireErrorContains(duplicate.takeError(), "strictly increasing");
 
-  auto zero = InvocationExternalToolWorkLedger::get(
-      {{0, ExternalToolWorkLedger{}}});
+  auto zero =
+      InvocationExternalToolWorkLedger::get({{0, ExternalToolWorkLedger{}}});
   if (zero)
     fail("external-tool ledger accepted a zero plan-node row");
   requireErrorContains(zero.takeError(), "no planned work");
 
   auto unknownWork = take(InvocationExternalToolWorkLedger::get(
       {{1, work.planNodes().front().work}}));
-  auto unknown = InvocationManifest::get(
-      makeClosure(fixture, store, {fixture.source}), 12, std::nullopt,
-      fixture.config, fixture.records, outcome, store, std::nullopt,
-      unknownWork);
+  auto unknown =
+      InvocationManifest::get(makeClosure(fixture, store, {fixture.source}), 12,
+                              std::nullopt, fixture.config, fixture.records,
+                              outcome, store, std::nullopt, unknownWork);
   if (unknown)
     fail("manifest accepted external-tool work for an unknown plan node");
   requireErrorContains(unknown.takeError(), "unknown plan node");

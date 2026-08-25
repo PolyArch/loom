@@ -1,5 +1,6 @@
 #include "Application/RuntimeManifest.h"
 
+#include "Application/ActivationDecision.h"
 #include "Application/Build.h"
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactLocalReference.h"
@@ -822,6 +823,7 @@ std::string serializeDraft(const ApplicationRuntimeManifestDraft &draft) {
     writeRoot(json, "workload", draft.workload);
     writeRoot(json, "runtime_input", draft.runtimeInput);
     writeReplayCases(json, draft.sourceBackedReplayCases);
+    writeRoot(json, "activation_decision", draft.activationDecision);
     json.attribute("pair_identity",
                    formatComponentViewDigestHex(draft.pairIdentity));
     json.attribute("invocation_run_key",
@@ -868,6 +870,7 @@ parseDraft(llvm::StringRef text) {
                                                "workload",
                                                "runtime_input",
                                                "source_backed_replay_cases",
+                                               "activation_decision",
                                                "pair_identity",
                                                "invocation_run_key",
                                                "pair_disposition",
@@ -915,6 +918,10 @@ parseDraft(llvm::StringRef text) {
   auto replayCases = parseReplayCases(*root);
   if (!replayCases)
     return replayCases.takeError();
+  auto activationDecision =
+      parseRoot(*root, "activation_decision", "runtime manifest");
+  if (!activationDecision)
+    return activationDecision.takeError();
   auto pairSpelling = requireString(*root, "pair_identity", "runtime manifest");
   if (!pairSpelling)
     return pairSpelling.takeError();
@@ -1004,6 +1011,7 @@ parseDraft(llvm::StringRef text) {
                                          std::move(*workload),
                                          std::move(*runtimeInput),
                                          std::move(*replayCases),
+                                         std::move(*activationDecision),
                                          *pairIdentity,
                                          runKey,
                                          *disposition,
@@ -1069,6 +1077,58 @@ bool contains(llvm::ArrayRef<ArtifactRootReference> references,
 llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
                                 const ArtifactStore &artifacts,
                                 const BlobStore &blobs) {
+  auto activation = importApplicationActivationDecision(
+      draft.activationDecision, artifacts, blobs);
+  if (!activation)
+    return reject(
+        ApplicationRuntimeManifestErrorReason::ActivationDecisionMismatch,
+        "activation decision failed strict import: " +
+            llvm::toString(activation.takeError()));
+  const ApplicationActivationDecision &decision = activation->decision();
+  if (decision.sourceProgram() != draft.sourceProgram ||
+      decision.fabric() != draft.fabric ||
+      decision.workload() != draft.workload ||
+      decision.runtimeInput() != draft.runtimeInput ||
+      decision.sourceBackedReplayCases() !=
+          llvm::ArrayRef<sim::SourceBackedDfgReplayCaseReference>(
+              draft.sourceBackedReplayCases))
+    return reject(
+        ApplicationRuntimeManifestErrorReason::ActivationDecisionMismatch,
+        "activation decision differs from the runtime source lineage");
+  if (decision.dseInvocation().occurrence().runKey.bytes() !=
+          draft.invocationRunKey ||
+      decision.disposition() != draft.pairDisposition ||
+      decision.selectedCandidateIdentity() != draft.selectedCandidateIdentity ||
+      decision.selectedPlanOrdinal() != draft.selectedPlanOrdinal ||
+      decision.selectedSystem() != draft.selectedSystem ||
+      decision.selectedMapping() != draft.selectedMapping ||
+      decision.runtimeEvidence() !=
+          llvm::ArrayRef<ArtifactRootReference>(draft.runtimeEvidence) ||
+      decision.oracleEvidence() !=
+          llvm::ArrayRef<ArtifactRootReference>(draft.oracleEvidence))
+    return reject(
+        ApplicationRuntimeManifestErrorReason::ActivationDecisionMismatch,
+        "activation decision differs from the selected runtime execution");
+  std::vector<ComponentViewDigest> decisionScheduleHints;
+  decisionScheduleHints.reserve(decision.selectedScheduleHints().size());
+  for (const dse::ResourceTimeScheduleHint &hint :
+       decision.selectedScheduleHints()) {
+    auto digest = dse::deriveResourceTimeScheduleHintDigest(hint);
+    if (!digest)
+      return reject(
+          ApplicationRuntimeManifestErrorReason::ActivationDecisionMismatch,
+          "activation decision schedule hint cannot be derived: " +
+              llvm::toString(digest.takeError()));
+    decisionScheduleHints.push_back(*digest);
+  }
+  if (llvm::Error error = canonicalizeDigestSet(
+          decisionScheduleHints, "activation decision schedule hints"))
+    return error;
+  if (decisionScheduleHints != draft.selectedScheduleHintDigests)
+    return reject(
+        ApplicationRuntimeManifestErrorReason::ActivationDecisionMismatch,
+        "activation decision differs from the selected schedule hints");
+
   auto expectedPair = deriveApplicationPairIdentity(
       draft.sourceProgram, draft.fabric, draft.workload, draft.runtimeInput);
   if (!expectedPair)

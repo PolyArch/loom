@@ -79,6 +79,7 @@ struct MaterializedHardwareCandidate final {
   std::uint64_t resultingGateways = 0;
   std::uint64_t addedAccCores = 0;
   std::uint64_t resultingAccCores = 0;
+  std::optional<JointDesignInvocationManifestReference> constructionInvocation;
 };
 
 struct TechGateExecution final {

@@ -100,19 +100,21 @@ ApplicationPairDecisionDisposition mapIncompleteReasonToPairDisposition(
 ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const PreparedApplicationBuild &prepared,
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,
-    const dse::JointDesignExecutionSummary &summary,
+    const dse::JointDesignExecution &execution,
     llvm::ArrayRef<ApplicationPairQualityInvocationRecord> qualityInvocations) {
+  const dse::JointDesignExecutionSummary &summary = execution.summary;
+  const auto invocationRunKey = execution.invocationRunKey();
   ApplicationPairDecisionRecord result;
   result.selectedObjective = makeUnsupportedObjectiveVector();
   result.portfolioInput = prepared.portfolioInput;
   if (result.portfolioInput)
     result.portfolioExecutionBinding =
         ApplicationPortfolioExecutionBinding::DeclaredOnly;
-  result.invocationRunKey = summary.invocationRunKey
-                                ? summary.invocationRunKey
-                                : prepared.preMappingInvocationRunKey;
+  result.invocationRunKey =
+      invocationRunKey ? invocationRunKey : prepared.preMappingInvocationRunKey;
   result.manifestJoinStatus =
-      summary.invocationRunKey ? ApplicationPairManifestJoinStatus::Exact
+      invocationRunKey
+          ? ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure
       : prepared.preMappingInvocationRunKey
           ? ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure
       : summary.attempts.empty()
@@ -169,8 +171,7 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
   result.qualityObservations = summary.qualityObservations;
   result.hardwarePromotionObjectiveDimensionLabels =
       summary.hardwarePromotionObjectiveDimensionLabels;
-  result.hardwarePromotionObservations =
-      summary.hardwarePromotionObservations;
+  result.hardwarePromotionObservations = summary.hardwarePromotionObservations;
   result.qualityInvocations.assign(qualityInvocations.begin(),
                                    qualityInvocations.end());
   result.candidates.reserve(prepared.candidateInventory.size());

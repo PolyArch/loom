@@ -28,12 +28,13 @@ namespace loom::application {
 enum class ApplicationPairDecisionDisposition : std::uint8_t;
 
 inline constexpr ArtifactSchemaDescriptor applicationRuntimeManifestSchema{
-    "loom.application.runtime_manifest", SchemaVersion{2, 0}};
+    "loom.application.runtime_manifest", SchemaVersion{3, 0}};
 
 enum class ApplicationRuntimeManifestErrorReason : std::uint8_t {
   ForeignSchema,
   MalformedEncoding,
   NonCanonicalEncoding,
+  ActivationDecisionMismatch,
   PairIdentityMismatch,
   PairDecisionIncomplete,
   MappingMismatch,
@@ -66,6 +67,7 @@ struct ApplicationRuntimeManifestDraft final {
   ArtifactRootReference workload;
   ArtifactRootReference runtimeInput;
   std::vector<sim::SourceBackedDfgReplayCaseReference> sourceBackedReplayCases;
+  ArtifactRootReference activationDecision;
   ComponentViewDigest pairIdentity;
   std::array<std::uint8_t, 32> invocationRunKey;
   ApplicationPairDecisionDisposition pairDisposition;
@@ -96,6 +98,9 @@ public:
   llvm::ArrayRef<sim::SourceBackedDfgReplayCaseReference>
   sourceBackedReplayCases() const {
     return sourceBackedReplayCases_;
+  }
+  const ArtifactRootReference &activationDecision() const {
+    return activationDecision_;
   }
   const ComponentViewDigest &pairIdentity() const { return pairIdentity_; }
   const std::array<std::uint8_t, 32> &invocationRunKey() const {
@@ -148,6 +153,7 @@ private:
         fabric_(std::move(draft.fabric)), workload_(std::move(draft.workload)),
         runtimeInput_(std::move(draft.runtimeInput)),
         sourceBackedReplayCases_(std::move(draft.sourceBackedReplayCases)),
+        activationDecision_(std::move(draft.activationDecision)),
         pairIdentity_(draft.pairIdentity),
         invocationRunKey_(draft.invocationRunKey),
         pairDisposition_(draft.pairDisposition),
@@ -172,6 +178,7 @@ private:
   ArtifactRootReference workload_;
   ArtifactRootReference runtimeInput_;
   std::vector<sim::SourceBackedDfgReplayCaseReference> sourceBackedReplayCases_;
+  ArtifactRootReference activationDecision_;
   ComponentViewDigest pairIdentity_;
   std::array<std::uint8_t, 32> invocationRunKey_;
   ApplicationPairDecisionDisposition pairDisposition_;

@@ -357,6 +357,11 @@ private:
 DsePlanGenerateInvocationRecords
 takeDsePlanGenerateInvocationRecords(DsePlanExecutionOutcome outcome);
 
+/// Projects immutable InvocationManifest records without consuming the plan
+/// result retained by higher-level selection and runtime validation.
+DsePlanGenerateInvocationRecords
+projectDsePlanGenerateInvocationRecords(const DsePlanExecutionOutcome &outcome);
+
 /// Derived diagnostics produced while strictly consuming immutable Generate
 /// invocation records. The records and referenced Artifacts remain the only
 /// semantic authority.

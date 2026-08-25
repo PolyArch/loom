@@ -187,6 +187,10 @@ public:
 
   llvm::Error requestGracefulStop();
   llvm::Error beginResume();
+  llvm::Error releaseInvocationOccurrence();
+  llvm::Error
+  commitInvocationManifest(const InvocationOccurrenceRef &occurrence,
+                           const BlobDigest &manifestDigest);
   bool gracefulStopRequested() const;
   llvm::Error flush() const;
 
@@ -194,6 +198,8 @@ private:
   struct State;
   explicit ExecutionJournal(std::shared_ptr<State> state)
       : state_(std::move(state)) {}
+
+  llvm::Error validateProcessOwner() const;
 
   std::shared_ptr<State> state_;
 };

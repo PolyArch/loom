@@ -219,11 +219,11 @@ providerExecutionRemainingTime(const void *opaque) {
   const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
   const auto now =
       std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
-  if (now <= 0 || static_cast<std::uint64_t>(now) >=
-                      *context.notAfterUnixNanoseconds)
+  if (now <= 0 ||
+      static_cast<std::uint64_t>(now) >= *context.notAfterUnixNanoseconds)
     return std::chrono::steady_clock::duration::zero();
-  const auto remaining = *context.notAfterUnixNanoseconds -
-                         static_cast<std::uint64_t>(now);
+  const auto remaining =
+      *context.notAfterUnixNanoseconds - static_cast<std::uint64_t>(now);
   return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
       std::chrono::nanoseconds(remaining));
 }
@@ -868,9 +868,8 @@ RecoverablePlanWorkExecutor::executeGenerateBatch(
         importSession = std::make_unique<fabric::FabricArtifactImportSession>(
             fabricImportAttachment_);
       if (derivedContextAttachment_)
-        derivedContextSession =
-            std::make_unique<pnr::PnrDerivedContextSession>(
-                derivedContextAttachment_);
+        derivedContextSession = std::make_unique<pnr::PnrDerivedContextSession>(
+            derivedContextAttachment_);
       while (true) {
         const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
         if (index >= tasks.size())
@@ -1188,9 +1187,8 @@ RecoverablePlanWorkExecutor::execute(
         importSession = std::make_unique<fabric::FabricArtifactImportSession>(
             fabricImportAttachment_);
       if (derivedContextAttachment_)
-        derivedContextSession =
-            std::make_unique<pnr::PnrDerivedContextSession>(
-                derivedContextAttachment_);
+        derivedContextSession = std::make_unique<pnr::PnrDerivedContextSession>(
+            derivedContextAttachment_);
       while (true) {
         const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
         if (index >= tasks.size())
@@ -1268,15 +1266,24 @@ llvm::Expected<DsePlanExecutionResult>
 resumeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
               ExecutionJournal &journal, SiteScheduler &scheduler,
               const PlanExecutionPolicy &policy, const ArtifactStore &store,
-              const BlobStore &blobs) {
+              const BlobStore &blobs,
+              InvocationManifestRetention manifestRetention) {
   if (journal.runKey() != closure.runKey())
     return invalid("ExecutionJournal belongs to another run closure");
   if (journal.resolvedDseConfigViewDigest() != view.digest())
     return invalid("ExecutionJournal belongs to another resolved DSE plan");
   if (llvm::Error error = journal.beginResume())
     return std::move(error);
-  return executeDsePlan(view, closure, journal, scheduler, policy, store,
-                        blobs);
+  auto execution =
+      executeDsePlan(view, closure, journal, scheduler, policy, store, blobs);
+  if (manifestRetention == InvocationManifestRetention::Release) {
+    llvm::Error releaseError = journal.releaseInvocationOccurrence();
+    if (!execution)
+      return llvm::joinErrors(execution.takeError(), std::move(releaseError));
+    if (releaseError)
+      return std::move(releaseError);
+  }
+  return execution;
 }
 
 } // namespace loom::dse

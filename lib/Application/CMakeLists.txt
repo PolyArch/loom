@@ -28,6 +28,7 @@ target_link_libraries(LoomApplicationHostRunner PUBLIC
 )
 
 add_library(LoomApplicationRuntimeManifest
+  ActivationDecision.cpp
   Package.cpp
   RuntimeManifest.cpp
 )
@@ -39,7 +40,12 @@ target_include_directories(LoomApplicationRuntimeManifest PUBLIC
 target_link_libraries(LoomApplicationRuntimeManifest PUBLIC
   LoomCommon
   LoomDeployment
+  LoomDSE
+  LoomDSECompilerGenerator
   LoomEvaluation
+  LoomFabricArtifact
+  LoomFrontendCompilation
+  LoomMappingArtifact
   LoomPnR
   LoomSimulator
   LoomStructuredFabricAnalyticModel

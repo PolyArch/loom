@@ -19,6 +19,8 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -46,8 +48,7 @@ void requireSuccess(llvm::Error error) {
 void requireErrorContains(llvm::Error error, llvm::StringRef needle) {
   const std::string message = llvm::toString(std::move(error));
   if (message.find(needle.str()) == std::string::npos)
-    fail("expected error containing '" + needle.str() + "', got: " +
-         message);
+    fail("expected error containing '" + needle.str() + "', got: " + message);
 }
 
 class TemporaryDirectory final {
@@ -97,9 +98,9 @@ Fixture makeFixture(const ArtifactStore &store, std::uint8_t sourceByte,
     fail("resolved config publication changed its identity");
   ResolvedDseConfigView view = take(projectResolvedDseConfigView(config));
   ArtifactRootReference source = publish(store, sourceByte);
-  DseRunClosure closure = take(DseRunClosure::get(
-      take(DseProducerSemanticBuildIdentity::get(producer)), {source}, config,
-      {}, store));
+  DseRunClosure closure = take(
+      DseRunClosure::get(take(DseProducerSemanticBuildIdentity::get(producer)),
+                         {source}, config, {}, store));
   return {std::move(config), std::move(view), std::move(closure),
           std::move(source)};
 }
@@ -151,14 +152,13 @@ void testRecoveryAndTerminalAdmission(const ArtifactStore &store,
   auto running = take(recovered.find(runningKey));
   if (!running || running->status != JournalWorkUnitStatus::Queued)
     fail("reopen did not return interrupted work to its stable queued key");
-  const std::uint64_t recoveredActive =
-      running->activeWallTimeNanoseconds();
+  const std::uint64_t recoveredActive = running->activeWallTimeNanoseconds();
 
   requireSuccess(recovered.markRunning(runningKey));
   const std::uint64_t terminalTime = unixNanosecondsNow();
-  requireSuccess(recovered.markTerminal(
-      runningKey, JournalWorkUnitStatus::Completed, 17, terminalTime,
-      {fixture.source}));
+  requireSuccess(recovered.markTerminal(runningKey,
+                                        JournalWorkUnitStatus::Completed, 17,
+                                        terminalTime, {fixture.source}));
   auto completed = take(recovered.find(runningKey));
   if (!completed || completed->status != JournalWorkUnitStatus::Completed ||
       completed->activeWallTimeNanoseconds() < recoveredActive + 17 ||
@@ -167,9 +167,9 @@ void testRecoveryAndTerminalAdmission(const ArtifactStore &store,
           std::vector<ArtifactRootReference>{fixture.source})
     fail("terminal work record lost its exact observations or roots");
 
-  llvm::Error overwrite = recovered.markTerminal(
-      runningKey, JournalWorkUnitStatus::Failed, 17, terminalTime,
-      {fixture.source});
+  llvm::Error overwrite =
+      recovered.markTerminal(runningKey, JournalWorkUnitStatus::Failed, 17,
+                             terminalTime, {fixture.source});
   requireErrorContains(std::move(overwrite), "cannot be overwritten");
 
   const WorkUnitKey preparedKey = makeKey(3, 1);
@@ -198,16 +198,14 @@ void testRecoveryAndTerminalAdmission(const ArtifactStore &store,
   if (stopped.gracefulStopRequested())
     fail("resume did not clear the durable graceful-stop flag");
 
-  Fixture foreign =
-      makeFixture(store, 0x12, "loom.test.execution.build.v1");
+  Fixture foreign = makeFixture(store, 0x12, "loom.test.execution.build.v1");
   auto rejected = openExecutionJournal(runRoot, foreign.closure, foreign.view);
   if (rejected)
     fail("journal accepted a different semantic run closure");
   requireErrorContains(rejected.takeError(), "another semantic run");
 }
 
-void testStrictAdmission(const ArtifactStore &store,
-                         llvm::StringRef runRoot) {
+void testStrictAdmission(const ArtifactStore &store, llvm::StringRef runRoot) {
   Fixture fixture = makeFixture(store, 0x31, "loom.test.execution.build.v2");
   auto badDescriptor =
       WorkUnitDescriptorRef::get("bad owner", SchemaVersion{1, 0}, 0);
@@ -215,29 +213,112 @@ void testStrictAdmission(const ArtifactStore &store,
     fail("work descriptor accepted noncanonical owner spelling");
   requireErrorContains(badDescriptor.takeError(), "canonical ASCII");
 
-  ExecutionJournal journal =
-      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
-  auto unopened = journal.currentInvocationOccurrence();
-  if (unopened)
-    fail("journal exposed an occurrence before execution began");
-  requireErrorContains(unopened.takeError(), "has not opened");
-  requireSuccess(journal.beginResume());
-  auto initialOccurrence = take(journal.currentInvocationOccurrence());
-  if (initialOccurrence.first.occurrenceOrdinal != 0 ||
-      initialOccurrence.second)
-    fail("initial journal occurrence has incorrect resume provenance");
-  const WorkUnitKey key = makeKey(0, 0);
-  llvm::Error unqueued = journal.markRunning(key);
-  requireErrorContains(std::move(unqueued), "unqueued");
-  requireSuccess(journal.queue(key));
-  requireSuccess(journal.markRunning(key));
-  llvm::Error nonterminal = journal.markTerminal(
-      key, JournalWorkUnitStatus::Running, 1, 2, {});
-  requireErrorContains(std::move(nonterminal), "terminal status");
-  llvm::Error unordered = journal.markTerminal(
-      key, JournalWorkUnitStatus::Completed, 1, 2,
-      {publish(store, 0x42), publish(store, 0x41)});
-  requireErrorContains(std::move(unordered), "canonical and unique");
+  {
+    ExecutionJournal journal =
+        take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+    auto unopened = journal.currentInvocationOccurrence();
+    if (unopened)
+      fail("journal exposed an occurrence before execution began");
+    requireErrorContains(unopened.takeError(), "has not opened");
+
+    const std::filesystem::path snapshot =
+        std::filesystem::path(runRoot.str()) / "execution-journal.snapshot";
+    const std::filesystem::path saved =
+        std::filesystem::path(runRoot.str()) / "execution-journal.saved";
+    std::error_code filesystemError;
+    std::filesystem::rename(snapshot, saved, filesystemError);
+    if (filesystemError ||
+        !std::filesystem::create_directory(snapshot, filesystemError) ||
+        filesystemError)
+      fail("cannot prepare the failed occurrence publication fixture");
+    requireErrorContains(journal.beginResume(), "publish snapshot atomically");
+    auto unpublished = journal.currentInvocationOccurrence();
+    if (unpublished)
+      fail("failed snapshot publication exposed an invocation occurrence");
+    requireErrorContains(unpublished.takeError(), "has not opened");
+    if (!std::filesystem::remove(snapshot, filesystemError) || filesystemError)
+      fail("cannot remove the failed occurrence publication fixture");
+    std::filesystem::rename(saved, snapshot, filesystemError);
+    if (filesystemError)
+      fail("cannot restore the occurrence snapshot fixture");
+
+    const std::filesystem::path lock =
+        std::filesystem::path(runRoot.str()) / "execution-journal.lock";
+    const std::filesystem::path savedLock =
+        std::filesystem::path(runRoot.str()) / "execution-journal.saved-lock";
+    std::filesystem::rename(lock, savedLock, filesystemError);
+    std::ofstream(lock).close();
+    requireErrorContains(journal.flush(), "lock inode changed");
+    if (!std::filesystem::remove(lock, filesystemError) || filesystemError)
+      fail("cannot remove the replacement journal lock");
+    std::filesystem::rename(savedLock, lock, filesystemError);
+    if (filesystemError)
+      fail("cannot restore the owned journal lock");
+
+    ExecutionJournal concurrent =
+        take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+    requireSuccess(journal.beginResume());
+    auto initialOccurrence = take(journal.currentInvocationOccurrence());
+    if (initialOccurrence.first.occurrenceOrdinal != 0 ||
+        initialOccurrence.second)
+      fail("initial journal occurrence has incorrect resume provenance");
+    requireErrorContains(concurrent.beginResume(), "already opened");
+    if (take(concurrent.currentInvocationOccurrence()) != initialOccurrence)
+      fail("journal aliases exposed different active occurrences");
+
+    const pid_t child = ::fork();
+    if (child < 0)
+      fail("cannot fork the inherited-journal fixture");
+    if (child == 0) {
+      llvm::Error inherited = concurrent.beginResume();
+      const std::string detail = llvm::toString(std::move(inherited));
+      ::_exit(detail.find("inherited across a process fork") !=
+                      std::string::npos
+                  ? 0
+                  : 1);
+    }
+    int childStatus = 0;
+    if (::waitpid(child, &childStatus, 0) != child || !WIFEXITED(childStatus) ||
+        WEXITSTATUS(childStatus) != 0)
+      fail("forked process used an inherited journal handle");
+
+    const WorkUnitKey key = makeKey(0, 0);
+    llvm::Error unqueued = journal.markRunning(key);
+    requireErrorContains(std::move(unqueued), "unqueued");
+    requireSuccess(journal.queue(key));
+    requireSuccess(journal.markRunning(key));
+    llvm::Error nonterminal =
+        journal.markTerminal(key, JournalWorkUnitStatus::Running, 1, 2, {});
+    requireErrorContains(std::move(nonterminal), "terminal status");
+    llvm::Error unordered =
+        journal.markTerminal(key, JournalWorkUnitStatus::Completed, 1, 2,
+                             {publish(store, 0x42), publish(store, 0x41)});
+    requireErrorContains(std::move(unordered), "canonical and unique");
+
+    const BlobDigest firstManifest = computeBlobDigest({0x32});
+    std::filesystem::rename(snapshot, saved, filesystemError);
+    if (filesystemError ||
+        !std::filesystem::create_directory(snapshot, filesystemError) ||
+        filesystemError)
+      fail("cannot prepare the failed manifest commit fixture");
+    requireErrorContains(journal.commitInvocationManifest(
+                             initialOccurrence.first, firstManifest),
+                         "publish snapshot atomically");
+    if (!std::filesystem::remove(snapshot, filesystemError) || filesystemError)
+      fail("cannot remove the failed manifest commit fixture");
+    std::filesystem::rename(saved, snapshot, filesystemError);
+    if (filesystemError)
+      fail("cannot restore the manifest commit snapshot");
+    requireSuccess(journal.commitInvocationManifest(initialOccurrence.first,
+                                                    firstManifest));
+    requireSuccess(concurrent.commitInvocationManifest(initialOccurrence.first,
+                                                       firstManifest));
+    requireErrorContains(journal.queue(makeKey(1, 0)), "immutable");
+    requireErrorContains(
+        journal.commitInvocationManifest(initialOccurrence.first,
+                                         computeBlobDigest({0x33})),
+        "already owns");
+  }
 
   ExecutionJournal resumed =
       take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
@@ -300,15 +381,14 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
     fail("Journal external-tool work did not aggregate by plan node");
 }
 
-void rewriteSingleRecordSnapshotAsLegacy(llvm::StringRef runRoot) {
+void rewriteSnapshotAsHistorical(llvm::StringRef runRoot,
+                                 std::uint8_t targetMinor) {
   const std::filesystem::path path =
       std::filesystem::path(runRoot.str()) / "execution-journal.snapshot";
   std::ifstream input(path, std::ios::binary);
   std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)),
                                   std::istreambuf_iterator<char>());
-  constexpr std::size_t ledgerBytes =
-      externalToolWorkLedgerCounterCount * sizeof(std::uint64_t);
-  if (input.bad() || bytes.size() < sizeof(std::uint64_t) + ledgerBytes)
+  if (input.bad() || bytes.size() < sizeof(std::uint64_t))
     fail("cannot read the generated journal snapshot");
   std::uint64_t identityBytes = 0;
   for (std::size_t index = 0; index != sizeof(std::uint64_t); ++index)
@@ -317,26 +397,20 @@ void rewriteSingleRecordSnapshotAsLegacy(llvm::StringRef runRoot) {
                                   static_cast<std::size_t>(identityBytes) +
                                   sizeof(std::uint32_t);
   if (minorOffset + sizeof(std::uint32_t) > bytes.size() ||
-      bytes[minorOffset + 3] != 3)
+      bytes[minorOffset + 3] != 4)
     fail("generated journal snapshot has an unexpected schema version");
-  bytes[minorOffset + 3] = 1;
-  const std::size_t occurrenceOrdinalOffset =
-      minorOffset + sizeof(std::uint32_t) + DseRunKey::byteSize +
-      ComponentViewDigest::byteSize + sizeof(std::uint32_t);
-  if (occurrenceOrdinalOffset + sizeof(std::uint64_t) > bytes.size())
-    fail("generated journal snapshot has no occurrence ordinal");
-  bytes.erase(bytes.begin() + occurrenceOrdinalOffset,
-              bytes.begin() + occurrenceOrdinalOffset +
-                  sizeof(std::uint64_t));
-  bytes.resize(bytes.size() - ledgerBytes);
+  if (targetMinor < 1 || targetMinor > 3)
+    fail("historical journal fixture requested an unsupported version");
+  bytes[minorOffset + 3] = targetMinor;
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   output.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
   if (!output)
     fail("cannot write the legacy journal snapshot fixture");
 }
 
-void testLegacyPreparedLedgerAdoption(const ArtifactStore &store,
-                                      llvm::StringRef runRoot) {
+void testHistoricalSnapshotRejection(const ArtifactStore &store,
+                                     llvm::StringRef runRoot,
+                                     std::uint8_t targetMinor) {
   Fixture fixture =
       makeFixture(store, 0x71, "loom.test.execution.legacy_external_tool.v1");
   const WorkUnitKey key = makeKey(5, 0);
@@ -348,22 +422,12 @@ void testLegacyPreparedLedgerAdoption(const ArtifactStore &store,
     requireSuccess(
         journal.recordPrepared(key, makePrepared(runRoot, "legacy", 0x72)));
   }
-  rewriteSingleRecordSnapshotAsLegacy(runRoot);
-  ExecutionJournal adopted =
-      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
-  auto prepared = take(adopted.find(key));
-  if (!prepared || prepared->externalToolWork.planned != 1 ||
-      prepared->externalToolWork.reserved != 0)
-    fail("legacy prepared work did not derive its planned ledger entry");
-  requireSuccess(adopted.beginPreparedExecution(key));
-  requireSuccess(adopted.recordPreparedExecutionInterval(
-      key, 0, unixNanosecondsNow(),
-      external_tool::ExternalToolInvocationExecutionObservation{
-          0, external_tool::ExternalToolResultCacheAvailability::Disabled,
-          external_tool::ExternalToolResultCacheLookup::NotAttempted,
-          external_tool::ExternalToolResultCacheDiscard::NotAttempted,
-          external_tool::ExternalToolResultCachePublication::NotAttempted,
-          false, true}));
+  rewriteSnapshotAsHistorical(runRoot, targetMinor);
+  auto adopted = openExecutionJournal(runRoot, fixture.closure, fixture.view);
+  if (adopted)
+    fail("historical journal was assigned a fabricated occurrence ordinal");
+  requireErrorContains(adopted.takeError(),
+                       "predates committed invocation manifest ownership");
 }
 
 } // namespace
@@ -376,10 +440,15 @@ int main() {
   const std::string externalToolRun =
       directory.makeDirectory("external-tool-run");
   const std::string legacyRun = directory.makeDirectory("legacy-run");
+  const std::string externalLedgerRun =
+      directory.makeDirectory("external-ledger-run");
+  const std::string occurrenceRun = directory.makeDirectory("occurrence-run");
   ArtifactStore store(storeRoot);
   testRecoveryAndTerminalAdmission(store, recoveryRun);
   testStrictAdmission(store, admissionRun);
   testExternalToolWorkLedger(store, externalToolRun);
-  testLegacyPreparedLedgerAdoption(store, legacyRun);
+  testHistoricalSnapshotRejection(store, legacyRun, 1);
+  testHistoricalSnapshotRejection(store, externalLedgerRun, 2);
+  testHistoricalSnapshotRejection(store, occurrenceRun, 3);
   return 0;
 }

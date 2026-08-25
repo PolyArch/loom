@@ -1,5 +1,6 @@
 #include "Application/Package.h"
 
+#include "Application/ActivationDecision.h"
 #include "Application/Build.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
@@ -7,6 +8,7 @@
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Deployment/Package.h"
 #include "Evaluation/Evidence.h"
+#include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/Request.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
@@ -127,6 +129,24 @@ void addBlob(std::vector<BlobDigest> &digests, const BlobDigest &digest) {
     digests.push_back(digest);
 }
 
+llvm::Error addRequestPayloadBlobs(
+    std::vector<BlobDigest> &blobs,
+    llvm::ArrayRef<ArtifactRootReference> requestDependencies,
+    const ArtifactStore &artifacts) {
+  for (const ArtifactRootReference &root : requestDependencies) {
+    if (root.schemaIdentity !=
+            evaluation::modelParameterBundleSchema.identity ||
+        root.schemaVersion != evaluation::modelParameterBundleSchema.version)
+      continue;
+    auto bundle = evaluation::importModelParameterBundleRoot(root, artifacts);
+    if (!bundle)
+      return invalid("model parameter bundle failed strict root import: " +
+                     llvm::toString(bundle.takeError()));
+    addBlob(blobs, bundle->payloadDigest());
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error addFabricClosure(std::vector<ArtifactRootReference> &roots,
                              std::vector<ArtifactRootReference> &expanded,
                              const ArtifactRootReference &root,
@@ -184,9 +204,24 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
        {&manifest.reference(), &runtime.sourceProgram(), &runtime.fabric(),
         &runtime.workload(), &runtime.runtimeInput(), &runtime.selectedSystem(),
         &runtime.selectedMapping(), &runtime.deployment(),
-        &runtime.activationWorkload(), &runtime.activationRuntimeInput()})
+        &runtime.activationWorkload(), &runtime.activationRuntimeInput(),
+        &runtime.activationDecision()})
     if (llvm::Error error = addArtifact(result.artifacts, *root, artifacts))
       return std::move(error);
+  auto activation = importApplicationActivationDecision(
+      runtime.activationDecision(), artifacts, blobs);
+  if (!activation)
+    return activation.takeError();
+  auto activationDependencies =
+      projectApplicationActivationDecisionDependencies(activation->decision(),
+                                                       artifacts, blobs);
+  if (!activationDependencies)
+    return activationDependencies.takeError();
+  for (const ArtifactRootReference &root : activationDependencies->artifacts)
+    if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
+      return std::move(error);
+  for (const BlobDigest &digest : activationDependencies->blobs)
+    addBlob(result.blobs, digest);
   for (const sim::SourceBackedDfgReplayCaseReference &replay :
        runtime.sourceBackedReplayCases())
     for (const ArtifactRootReference *root :
@@ -241,6 +276,9 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
     for (const ArtifactRootReference &root : *requestDependencies)
       if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
         return std::move(error);
+    if (llvm::Error error = addRequestPayloadBlobs(
+            result.blobs, *requestDependencies, artifacts))
+      return std::move(error);
     for (const evaluation::ModelOutputBinding &binding :
          projection->outputBindings)
       for (const ArtifactRootReference &root : binding.artifacts)

@@ -1,3 +1,4 @@
+#include "Application/ActivationDecision.h"
 #include "Application/BuildDiagnostics.h"
 #include "ApplicationRuntimeValidationInternal.h"
 #include "BuildInternal.h"
@@ -155,20 +156,21 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
       !mappingExecution.execution.summary.selectedMapping ||
       *mappingExecution.execution.summary.selectedMapping != selectedMapping)
     return invalid("Deployment selection differs from its Mapping summary");
-  if (!mappingExecution.execution.summary.invocationRunKey)
+  const auto invocationRunKey = mappingExecution.execution.invocationRunKey();
+  if (!invocationRunKey)
     return invalid("Deployment selection has no Mapping invocation run key");
 
   if (!mappingExecution.provenance.pairDecision)
     return invalid("Deployment selection has no application pair decision");
   const ApplicationPairDecisionRecord &pair =
       *mappingExecution.provenance.pairDecision;
-  if (pair.manifestJoinStatus != ApplicationPairManifestJoinStatus::Exact ||
+  if (pair.manifestJoinStatus !=
+          ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure ||
       !pair.invocationRunKey || !pair.pairIdentity || !pair.sourceProgram ||
       !pair.fabric || !pair.workload || !pair.runtimeInput ||
       !pair.selectedCandidateIdentity || !pair.selectedSystem)
     return invalid("Deployment selection lacks an exact pair manifest join");
-  if (*pair.invocationRunKey !=
-      *mappingExecution.execution.summary.invocationRunKey)
+  if (*pair.invocationRunKey != *invocationRunKey)
     return invalid("Deployment pair run key differs from Mapping execution");
   if (mappingExecution.provenance.sourceProgram != pair.sourceProgram ||
       mappingExecution.provenance.fabric != pair.fabric ||
@@ -281,12 +283,67 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
     return invalid(
         "Deployment selection differs from its equivalent schedule hints");
 
+  const dse::PreMappingCandidatePlanningRecord &planning =
+      *selectedOutcome->planningRecord;
+  if (!planning.structuredProgram || !planning.canonicalDataflow ||
+      !planning.projection || planning.ownedProtocolRoots.empty() ||
+      *planning.canonicalDataflow != selectedAlternative.dataflow)
+    return invalid("Deployment selection has no exact planning preimage");
+  const auto evaluation = llvm::find_if(
+      prepared.resourceTimeFunnel.evaluations, [&](const auto &candidate) {
+        return candidate.candidateIdentity ==
+               selectedAlternative.candidateIdentity;
+      });
+  if (evaluation == prepared.resourceTimeFunnel.evaluations.end())
+    return invalid("Deployment selection has no resource-time owner");
+  std::vector<dse::ResourceTimeScheduleHint> exactScheduleHints;
+  exactScheduleHints.reserve(selectedScheduleHints.size());
+  for (const ComponentViewDigest &digest : selectedScheduleHints) {
+    auto hint = build_detail::findResourceTimeScheduleHint(*evaluation, digest);
+    if (!hint)
+      return hint.takeError();
+    exactScheduleHints.push_back(**hint);
+  }
+  if (!mappingExecution.execution.invocationManifest())
+    return invalid("Deployment selection has no exact DSE occurrence");
+  std::vector<dse::JointDesignInvocationManifestReference>
+      supportingInvocations(
+          mappingExecution.execution.supportingInvocationManifests().begin(),
+          mappingExecution.execution.supportingInvocationManifests().end());
+  auto activationDecision = ApplicationActivationDecision::get(
+      {*pair.sourceProgram,
+       *pair.fabric,
+       *pair.workload,
+       *pair.runtimeInput,
+       software.replayCases,
+       *mappingExecution.execution.invocationManifest(),
+       std::move(supportingInvocations),
+       {*planning.structuredProgram, *planning.canonicalDataflow,
+        planning.ownedProtocolRoots, planning.projection->identity,
+        prepared.preMappingFrontierPolicyDigest},
+       selectedAlternative.candidateIdentity,
+       selectedPlan,
+       std::move(exactScheduleHints),
+       *pair.selectedSystem,
+       selectedMapping,
+       pair.disposition,
+       selectedOutcome->runtimeEvidence,
+       selectedOutcome->oracleEvidence},
+      artifacts, blobs);
+  if (!activationDecision)
+    return activationDecision.takeError();
+  auto finalizedActivationDecision = publishApplicationActivationDecision(
+      std::move(*activationDecision), artifacts);
+  if (!finalizedActivationDecision)
+    return finalizedActivationDecision.takeError();
+
   auto manifest =
       ApplicationRuntimeManifest::get({*pair.sourceProgram,
                                        *pair.fabric,
                                        *pair.workload,
                                        *pair.runtimeInput,
                                        software.replayCases,
+                                       finalizedActivationDecision->reference(),
                                        *pair.pairIdentity,
                                        *pair.invocationRunKey,
                                        pair.disposition,

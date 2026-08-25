@@ -160,6 +160,10 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::vector<ArtifactRootReference> qualitySemanticInputs;
   if (request.boundedQuality)
     qualitySemanticInputs = request.boundedQuality->semanticInputs;
+  qualitySemanticInputs.insert(
+      qualitySemanticInputs.end(),
+      {prepared.preMappingSourceProgram, prepared.preMappingFabric,
+       prepared.preMappingWorkload, prepared.preMappingRuntimeInput});
   llvm::sort(qualitySemanticInputs, artifactRootReferenceLess);
   qualitySemanticInputs.erase(
       std::unique(qualitySemanticInputs.begin(), qualitySemanticInputs.end()),
@@ -432,8 +436,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     if (!execution)
       return execution.takeError();
     qualityInvocations.push_back(ApplicationPairQualityInvocationRecord{
-        static_cast<std::uint64_t>(firstPlan),
-        execution->summary.invocationRunKey,
+        static_cast<std::uint64_t>(firstPlan), execution->invocationRunKey(),
         execution->summary.qualityDisposition,
         execution->summary.qualityIncompleteCandidate,
         execution->summary.qualityObjectiveDimensionLabels,
@@ -1079,8 +1082,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         (matchingObservationCount != 1 &&
          !(selectedExecution->summary.selectedPlanOrdinal ==
                outcome.planOrdinal &&
-           selectedExecution->summary.selectedMapping ==
-               projected->candidate)))
+           selectedExecution->summary.selectedMapping == projected->candidate)))
       continue;
     outcome.qualityObjectiveCodes = projected->objectiveCodes;
     if (outcome.runtimeDisposition ==
@@ -1169,7 +1171,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   provenance.incrementalMappingObservations =
       std::move(incrementalMappingObservations);
   provenance.pairDecision = deriveApplicationPairDecision(
-      prepared, outcomes, selectedExecution->summary, qualityInvocations);
+      prepared, outcomes, *selectedExecution, qualityInvocations);
   ApplicationMappingExecution result{std::move(*selectedExecution),
                                      std::move(outcomes),
                                      std::move(provenance)};
