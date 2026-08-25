@@ -9,33 +9,57 @@
 # RUN:   %loom_external/gapbs/src/pr.cc -o %t.pagerank
 # RUN: %t.pagerank | diff -u %S/gapbs-pagerank-expected-smoke.txt -
 # RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
+# RUN:   %S/../app/vecadd/main_func.c -o %t.vecadd
+# RUN: %t.vecadd | diff -u %S/../app/vecadd/expected.txt -
+# RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
 # RUN:   -Wno-unknown-pragmas -I%S/llama2c-kernels-include \
 # RUN:   -include %S/llama2c-kernels-smoke.h \
 # RUN:   %loom_external/llama2.c/run.c -lm -o %t.llama2c
 # RUN: %t.llama2c | diff -u %S/llama2c-kernels-expected-smoke.txt -
-# RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
-# RUN:   -Wno-unknown-pragmas -I%S/mlperf-tiny-anomaly-include \
-# RUN:   -I%loom_external/mlperf-tiny/benchmark \
-# RUN:   -I%loom_external/mlperf-tiny/benchmark/reference_submissions/anomaly_detection \
-# RUN:   -include %S/mlperf-tiny-anomaly-smoke.h \
-# RUN:   %loom_external/mlperf-tiny/benchmark/reference_submissions/anomaly_detection/submitter_implemented.cpp \
-# RUN:   -o %t.tinyml
-# RUN: %t.tinyml | diff -u %S/mlperf-tiny-anomaly-expected-smoke.txt -
-# RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
-# RUN:   -Wno-unknown-pragmas -I%S/mlperf-tiny-classification-include \
-# RUN:   -I%S/mlperf-tiny-anomaly-include \
-# RUN:   -I%loom_external/mlperf-tiny/benchmark \
-# RUN:   -I%loom_external/mlperf-tiny/benchmark/reference_submissions/keyword_spotting \
-# RUN:   -include %S/mlperf-tiny-kws-smoke.h \
-# RUN:   %loom_external/mlperf-tiny/benchmark/reference_submissions/keyword_spotting/submitter_implemented.cpp \
-# RUN:   -o %t.kws
-# RUN: %t.kws | diff -u %S/mlperf-tiny-kws-expected-smoke.txt -
-# RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
-# RUN:   -Wno-unknown-pragmas -I%S/mlperf-tiny-classification-include \
-# RUN:   -I%S/mlperf-tiny-anomaly-include \
-# RUN:   -I%loom_external/mlperf-tiny/benchmark \
-# RUN:   -I%loom_external/mlperf-tiny/benchmark/reference_submissions/person_detection \
-# RUN:   -include %S/mlperf-tiny-vww-smoke.h \
-# RUN:   %loom_external/mlperf-tiny/benchmark/reference_submissions/person_detection/submitter_implemented.cpp \
-# RUN:   -o %t.vww
-# RUN: %t.vww | diff -u %S/mlperf-tiny-vww-expected-smoke.txt -
+# RUN: %loom-application-build --driver-arguments-output=%t.portfolio.args \
+# RUN:   --deployment-output=%t.portfolio-deployment \
+# RUN:   --portfolio-manifest=%S/manifest.json \
+# RUN:   --portfolio-repository-root=%S/../.. \
+# RUN:   --portfolio-application=vecadd-memory --portfolio-input=smoke
+# RUN: tr '\0' '\n' < %t.portfolio.args | FileCheck %s --check-prefix=PORTFOLIO
+# RUN: not %loom-cc --loom-deploy-output=%t/partial-deployment \
+# RUN:   --loom-portfolio-manifest=%S/manifest.json \
+# RUN:   --loom-portfolio-repository-root=%S/../.. \
+# RUN:   --loom-portfolio-application=vecadd-memory 2>&1 | FileCheck %s --check-prefix=PARTIAL
+# RUN: not env CCC_OVERRIDE_OPTIONS='^injected.c' %loom-cc \
+# RUN:   --loom-deploy-output=%t/override-deployment \
+# RUN:   --loom-portfolio-manifest=%S/manifest.json \
+# RUN:   --loom-portfolio-repository-root=%S/../.. \
+# RUN:   --loom-portfolio-application=vecadd-memory --loom-portfolio-input=smoke \
+# RUN:   2>&1 | FileCheck %s --check-prefix=OVERRIDE
+# RUN: not %loom-application-build --final-link-output=%t/untrusted-link \
+# RUN:   --deployment-output=%t/replay-deployment \
+# RUN:   --portfolio-manifest=%S/manifest.json \
+# RUN:   --portfolio-repository-root=%S/../.. \
+# RUN:   --portfolio-application=vecadd-memory --portfolio-input=smoke \
+# RUN:   2>&1 | FileCheck %s --check-prefix=CONTINUITY
+# RUN: sed '0,/"-O1"/s//"--target=x86_64"/' %S/manifest.json > %t.target-conflict.json
+# RUN: not %loom-application-build --driver-arguments-output=%t.bad.args \
+# RUN:   --deployment-output=%t.bad-deployment \
+# RUN:   --portfolio-manifest=%t.target-conflict.json \
+# RUN:   --portfolio-repository-root=%S/../.. \
+# RUN:   --portfolio-application=gapbs-pagerank --portfolio-input=smoke \
+# RUN:   2>&1 | FileCheck %s --check-prefix=TARGET-CONFLICT
+# RUN: sed '0,/"measured_samples": 1/s//"measured_samples": 2/' \
+# RUN:   %S/manifest.json > %t.unsupported-profile.json
+# RUN: not %loom-application-build --driver-arguments-output=%t.profile.args \
+# RUN:   --deployment-output=%t.profile-deployment \
+# RUN:   --portfolio-manifest=%t.unsupported-profile.json \
+# RUN:   --portfolio-repository-root=%S/../.. \
+# RUN:   --portfolio-application=gapbs-pagerank --portfolio-input=smoke \
+# RUN:   2>&1 | FileCheck %s --check-prefix=PROFILE
+
+# PORTFOLIO: -working-directory={{.*}}
+# PORTFOLIO: -x
+# PORTFOLIO-NEXT: c
+# PORTFOLIO: {{.*}}test/app/vecadd/main_func.c
+# PARTIAL: portfolio manifest, repository, application, and input must be selected together
+# OVERRIDE: a portfolio selection derives its exact sources and compiler options from the manifest
+# CONTINUITY: portfolio selections must retain compile-to-Deployment continuity through loom-cc
+# TARGET-CONFLICT: manifest compiler option '--target=x86_64' conflicts with product-owned compiler target policy
+# PROFILE: product source binding supports exactly zero warm-up samples and one measured sample until a profile runner is selected

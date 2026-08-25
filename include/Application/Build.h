@@ -1,6 +1,7 @@
 #ifndef LOOM_APPLICATION_BUILD_H
 #define LOOM_APPLICATION_BUILD_H
 
+#include "Application/Manifest.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/InvocationManifest.h"
 #include "DSE/JointDesignExploration.h"
@@ -22,6 +23,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -69,6 +71,7 @@ struct ApplicationBuildRequest final {
   frontend::PreMappingCompilationOptions compilationOptions;
   dse::PreMappingExplorationOptions preMappingOptions;
   dse::ResourceTimeFrontierPolicy resourceTimePolicy;
+  std::optional<SelectedApplicationInput> portfolioInput;
 };
 
 struct PreparedApplicationSoftware final {
@@ -140,6 +143,7 @@ struct PreparedApplicationBuild final {
   /// before a Mapping provider is dispatched, so the pair decision never
   /// loses its provenance join.
   std::optional<std::array<std::uint8_t, 32>> preMappingInvocationRunKey;
+  std::optional<SelectedApplicationInput> portfolioInput;
 };
 
 struct ApplicationDeploymentRequest final {
@@ -295,6 +299,7 @@ struct ApplicationPairCandidateRecord final {
 /// remain in ApplicationMappingCandidateOutcome, JointDesignAttemptRecord,
 /// PreMappingCandidatePlanningRecord, checkpoints, and their ledgers.
 struct ApplicationPairDecisionRecord final {
+  std::optional<SelectedApplicationInput> portfolioInput;
   std::optional<ComponentViewDigest> pairIdentity;
   /// Exact DSE InvocationManifest run-key join for the Mapping attempt.
   std::optional<std::array<std::uint8_t, 32>> invocationRunKey;

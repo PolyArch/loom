@@ -48,6 +48,13 @@ admitApplicationSources(
     llvm::StringRef repositoryRoot,
     std::optional<llvm::StringRef> cacheRoot = std::nullopt);
 
+/// Resolves one application and one named input. Only that input's oracle and
+/// cached-input references participate in admission.
+llvm::Expected<ApplicationSourceAdmissionOutcome> admitApplicationSource(
+    const ApplicationManifest &manifest, llvm::StringRef applicationIdentity,
+    llvm::StringRef inputName, llvm::StringRef repositoryRoot,
+    std::optional<llvm::StringRef> cacheRoot = std::nullopt);
+
 } // namespace loom::application
 
 #endif // LOOM_APPLICATION_SOURCEADMISSION_H

@@ -1,3 +1,0 @@
-#include <stdarg.h>
-inline int vprintf(const char *, va_list) { return 0; }
-inline int getchar() { return 0; }

@@ -65,6 +65,26 @@ llvm::cl::opt<std::string> mappingSpectrumEndpoint(
     llvm::cl::desc("Spectrum ranking focus: automatic, max_temporal, "
                    "max_spatial, or intermediate"),
     llvm::cl::init("automatic"));
+llvm::cl::opt<std::string> portfolioManifest(
+    "portfolio-manifest",
+    llvm::cl::desc("Select the repository application portfolio manifest"),
+    llvm::cl::value_desc("path"));
+llvm::cl::opt<std::string> portfolioRepositoryRoot(
+    "portfolio-repository-root",
+    llvm::cl::desc("Resolve portfolio sources from this repository root"),
+    llvm::cl::value_desc("path"));
+llvm::cl::opt<std::string> portfolioCacheRoot(
+    "portfolio-cache-root",
+    llvm::cl::desc("Resolve declared cached inputs from this cache root"),
+    llvm::cl::value_desc("path"));
+llvm::cl::opt<std::string> portfolioApplication(
+    "portfolio-application",
+    llvm::cl::desc("Select one application identity from the portfolio"),
+    llvm::cl::value_desc("identity"));
+llvm::cl::opt<std::string>
+    portfolioInput("portfolio-input",
+                   llvm::cl::desc("Select one named application input profile"),
+                   llvm::cl::value_desc("name"));
 
 llvm::Expected<loom::application::ProductBuildOptions> productOptions() {
   auto stoppingPolicy = loom::application::parseProductMappingStoppingPolicy(
@@ -87,7 +107,12 @@ llvm::Expected<loom::application::ProductBuildOptions> productOptions() {
       mappingTechCandidateLimit,
       mappingWallTimeLimitMilliseconds,
       *stoppingPolicy,
-      *spectrumEndpoint};
+      *spectrumEndpoint,
+      portfolioManifest,
+      portfolioRepositoryRoot,
+      portfolioCacheRoot,
+      portfolioApplication,
+      portfolioInput};
 }
 
 llvm::Error writeDriverArguments(llvm::ArrayRef<std::string> arguments) {
@@ -129,6 +154,12 @@ int main(int argc, char **argv) {
   if (projectsArguments == buildsDeployment) {
     llvm::errs() << "loom-application-build: error: select exactly one "
                     "product action\n";
+    return 1;
+  }
+  if (buildsDeployment && !portfolioManifest.empty()) {
+    llvm::errs() << "loom-application-build: error: portfolio selections "
+                    "must retain compile-to-Deployment continuity through "
+                    "loom-cc\n";
     return 1;
   }
 

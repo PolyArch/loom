@@ -32,6 +32,11 @@ struct ProductBuildOptions final {
       dse::JointDesignStoppingPolicy::FirstVerified;
   dse::PreMappingSpectrumEndpoint mappingSpectrumEndpoint =
       dse::PreMappingSpectrumEndpoint::Automatic;
+  std::string portfolioManifestPath;
+  std::string portfolioRepositoryRoot;
+  std::string portfolioCacheRoot;
+  std::string portfolioApplicationIdentity;
+  std::string portfolioInputName;
 };
 
 llvm::Expected<dse::JointDesignStoppingPolicy>

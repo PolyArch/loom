@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string>
@@ -59,6 +60,20 @@ requireArray(const llvm::json::Object &object, llvm::StringRef field,
   if (!value)
     return invalid(context + " requires array field '" + field + "'");
   return value;
+}
+
+llvm::Expected<std::uint64_t> requireUnsigned(const llvm::json::Object &object,
+                                              llvm::StringRef field,
+                                              llvm::StringRef context) {
+  const llvm::json::Value *value = object.get(field);
+  if (!value)
+    return invalid(context + " requires unsigned integer field '" + field +
+                   "'");
+  std::optional<std::uint64_t> integer = value->getAsUINT64();
+  if (!integer)
+    return invalid(context + " field '" + field +
+                   "' must be an unsigned integer");
+  return *integer;
 }
 
 bool validLogicalName(llvm::StringRef value) {
@@ -140,6 +155,12 @@ llvm::Expected<OracleKind> parseOracleKind(llvm::StringRef value) {
   if (value == "typed_invariant")
     return OracleKind::TypedInvariant;
   return invalid("oracle kind must be 'exact' or 'typed_invariant'");
+}
+
+llvm::Expected<OracleCoverage> parseOracleCoverage(llvm::StringRef value) {
+  if (value == "all_measured_samples")
+    return OracleCoverage::AllMeasuredSamples;
+  return invalid("oracle coverage must be 'all_measured_samples'");
 }
 
 llvm::Expected<ExecutionSelection>
@@ -306,12 +327,48 @@ llvm::Expected<OracleSelection> parseOracle(const llvm::json::Object &object,
   return OracleSelection{*kind, entry->str()};
 }
 
+llvm::Expected<WorkloadExecutionProfile>
+parseWorkloadExecutionProfile(const llvm::json::Object &object,
+                              const std::string &context) {
+  if (llvm::Error error =
+          rejectUnknownFields(object, context,
+                              {"warmup_samples", "measured_samples",
+                               "oracle_coverage", "deadline_milliseconds"}))
+    return std::move(error);
+  auto warmupSamples = requireUnsigned(object, "warmup_samples", context);
+  if (!warmupSamples)
+    return warmupSamples.takeError();
+  auto measuredSamples = requireUnsigned(object, "measured_samples", context);
+  if (!measuredSamples)
+    return measuredSamples.takeError();
+  auto coverageText = requireString(object, "oracle_coverage", context);
+  if (!coverageText)
+    return coverageText.takeError();
+  auto deadline = requireUnsigned(object, "deadline_milliseconds", context);
+  if (!deadline)
+    return deadline.takeError();
+  auto coverage = parseOracleCoverage(*coverageText);
+  if (!coverage)
+    return coverage.takeError();
+  if (*measuredSamples == 0)
+    return invalid(context + " measured_samples must be greater than zero");
+  if (*deadline == 0)
+    return invalid(context +
+                   " deadline_milliseconds must be greater than zero");
+  if (*warmupSamples >
+      std::numeric_limits<std::uint64_t>::max() - *measuredSamples)
+    return invalid(context + " total sample count overflows uint64");
+  return WorkloadExecutionProfile{*warmupSamples, *measuredSamples, *coverage,
+                                  *deadline};
+}
+
 llvm::Expected<WorkloadInputSelection>
 parseWorkloadInput(const llvm::json::Object &object,
                    const std::string &context) {
-  if (llvm::Error error = rejectUnknownFields(
-          object, context,
-          {"name", "workload", "runtime_input", "cached_inputs", "oracle"}))
+  if (llvm::Error error =
+          rejectUnknownFields(object, context,
+                              {"name", "workload", "runtime_input",
+                               "cached_inputs", "oracle", "profile"}))
     return std::move(error);
   auto name = requireString(object, "name", context);
   if (!name)
@@ -328,6 +385,9 @@ parseWorkloadInput(const llvm::json::Object &object,
   auto oracleObject = requireObject(object, "oracle", context);
   if (!oracleObject)
     return oracleObject.takeError();
+  auto profileObject = requireObject(object, "profile", context);
+  if (!profileObject)
+    return profileObject.takeError();
   if (llvm::Error error = validateLogicalName(*name, context + " name"))
     return std::move(error);
   if (llvm::Error error = validateLogicalName(*workload, context + " workload"))
@@ -346,9 +406,13 @@ parseWorkloadInput(const llvm::json::Object &object,
   auto oracle = parseOracle(**oracleObject, context + " oracle");
   if (!oracle)
     return oracle.takeError();
-  return WorkloadInputSelection{name->str(), workload->str(),
+  auto profile =
+      parseWorkloadExecutionProfile(**profileObject, context + " profile");
+  if (!profile)
+    return profile.takeError();
+  return WorkloadInputSelection{name->str(),         workload->str(),
                                 runtimeInput->str(), std::move(*cached),
-                                std::move(*oracle)};
+                                std::move(*oracle),  std::move(*profile)};
 }
 
 llvm::Expected<ApplicationDefinition>
@@ -504,6 +568,14 @@ llvm::StringRef toString(OracleKind kind) {
   llvm_unreachable("unknown OracleKind");
 }
 
+llvm::StringRef toString(OracleCoverage coverage) {
+  switch (coverage) {
+  case OracleCoverage::AllMeasuredSamples:
+    return "all_measured_samples";
+  }
+  llvm_unreachable("unknown OracleCoverage");
+}
+
 llvm::StringRef toString(ExecutionSelection selection) {
   switch (selection) {
   case ExecutionSelection::Smoke:
@@ -582,6 +654,42 @@ selectApplicationIdentities(const ApplicationManifest &manifest,
     if (llvm::is_contained(application.selections, selection))
       identities.push_back(application.identity);
   return identities;
+}
+
+llvm::Expected<SelectedApplicationInput>
+selectApplicationInput(const ApplicationManifest &manifest,
+                       llvm::StringRef applicationIdentity,
+                       llvm::StringRef inputName) {
+  const auto applications = manifest.applications();
+  const auto application = std::lower_bound(
+      applications.begin(), applications.end(), applicationIdentity,
+      [](const ApplicationDefinition &value, llvm::StringRef identity) {
+        return value.identity < identity;
+      });
+  if (application == applications.end() ||
+      application->identity != applicationIdentity)
+    return invalid("unknown application identity '" + applicationIdentity +
+                   "'");
+
+  const auto input = std::lower_bound(
+      application->inputs.begin(), application->inputs.end(), inputName,
+      [](const WorkloadInputSelection &value, llvm::StringRef name) {
+        return value.name < name;
+      });
+  if (input == application->inputs.end() || input->name != inputName)
+    return invalid("application '" + applicationIdentity +
+                   "' has no input named '" + inputName + "'");
+
+  std::vector<CachedInput> cachedInputs;
+  cachedInputs.reserve(input->cachedInputs.size());
+  for (const CachedInput &cached : application->cachedInputs)
+    if (std::binary_search(input->cachedInputs.begin(),
+                           input->cachedInputs.end(), cached.logicalName))
+      cachedInputs.push_back(cached);
+
+  return SelectedApplicationInput{application->identity, application->source,
+                                  application->build, std::move(cachedInputs),
+                                  *input};
 }
 
 } // namespace loom::application

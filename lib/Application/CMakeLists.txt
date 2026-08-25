@@ -108,6 +108,7 @@ target_link_libraries(LoomApplicationBuild PUBLIC
 
 target_link_libraries(LoomApplicationBuild PRIVATE
   LoomADGBuilder
+  LoomApplicationPortfolio
   LoomExternalTool
 )
 

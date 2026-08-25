@@ -28,17 +28,20 @@ The current portfolio has exactly these stable application identities:
 gapbs-pagerank
 llama2c-kernels
 loom-multisensor-attention
-mlperf-tiny-anomaly-detection
-mlperf-tiny-keyword-spotting
-mlperf-tiny-visual-wake-words
+vecadd-memory
 ```
 
-The five Gitlink-backed rows consume pinned upstream source packages. Their
+The two Gitlink-backed rows consume pinned upstream source packages. Their
 Gitlink entries own the exact upstream revisions; the application manifest
 references the source roots but never copies a commit hash or version alias.
 The multisensor attention application is Loom-owned and reifies the complete
 `project`/`attention`/`stats` workload used by the heterogeneous system
-conformance anchor.
+conformance anchor. The repository-owned `vecadd-memory` row is the regular
+contiguous-memory witness paired with the irregular PageRank row.
+
+TinyML applications are not portfolio members while this checkout has no real
+inference provider that establishes bounded sample/oracle Evidence. TinyML
+rows may be added only with a non-placeholder provider and bounded profiles.
 
 ## Manifest Contract
 
@@ -49,17 +52,19 @@ application:
 * the exact build entry, language mode, source selection, and compiler and link
   options;
 * named workload and runtime-input selections;
-* the independent oracle or typed invariant bound to each selection; and
+* the independent oracle or typed invariant bound to each selection;
+* the bounded warm-up, measured-sample, oracle-coverage, and execution-deadline
+  profile bound to each input; and
 * membership in the `smoke`, `validation`, and `scale_eda` execution
   selections.
 
 The tracked JSON contract is schema `loom.application_portfolio` version
-`1.0`. Its exact structural shape is:
+`2.0`. Its exact structural shape is:
 
 ```text
 {
   "schema": "loom.application_portfolio",
-  "version": "1.0",
+  "version": "2.0",
   "applications": [{
     "identity": <stable logical name>,
     "source": {"kind": "gitlink" | "repository", "root": <repo path>},
@@ -78,7 +83,13 @@ The tracked JSON contract is schema `loom.application_portfolio` version
       "workload": <logical workload selection>,
       "runtime_input": <logical runtime-input selection>,
       "cached_inputs": [<cached logical name>],
-      "oracle": {"kind": "exact" | "typed_invariant", "entry": <repo path>}
+      "oracle": {"kind": "exact" | "typed_invariant", "entry": <repo path>},
+      "profile": {
+        "warmup_samples": <unsigned integer>,
+        "measured_samples": <positive unsigned integer>,
+        "oracle_coverage": "all_measured_samples",
+        "deadline_milliseconds": <positive unsigned integer>
+      }
     }],
     "selections": ["smoke" | "validation" | "scale_eda"]
   }]
@@ -98,6 +109,14 @@ alias, tolerance, or untyped property into the manifest. Workload and
 runtime-input names are repository selections for their existing owners, not
 new Artifact identities.
 
+The profile owns no duplicated total or oracle sample count. Its exact input
+budget is derived as `warmup_samples + measured_samples`; the sum must fit in
+an unsigned 64-bit integer. Warm-up samples establish execution state but do
+not contribute correctness or performance observations. `measured_samples`
+and `deadline_milliseconds` must both be nonzero. The only admitted
+`oracle_coverage` is `all_measured_samples`, so every measured sample is gated
+by the selected oracle while no warm-up sample is misreported as evidence.
+
 Source admission resolves a Gitlink only from its mode `160000` repository
 index entry, requires the checkout `HEAD` to equal that entry, and verifies
 that selected translation units are tracked and unchanged at that commit.
@@ -107,6 +126,38 @@ program translation unit. Cache bytes must match their declared SHA-256.
 Missing Gitlink checkout or cache content is typed unavailable; a wrong mode,
 revision mismatch, modified selected source, path escape, or digest mismatch
 is invalid. Admission never initializes a submodule or substitutes content.
+
+The selected-input admission entry point validates only the named input's
+oracle and cached-input references. The multi-application admission entry
+point retains its all-input behavior for corpus-level validation.
+
+The public product compiler accepts one exact portfolio input through the
+co-required manifest, repository-root, application-identity, and input-name
+selectors. A cache root is optional unless the selected input references
+cached content. In this mode the admitted manifest row is the sole owner of
+the source list and compiler/link options; additional user compiler inputs are
+invalid. The driver resolves and admits the row before compilation, derives
+absolute selected source paths, and retains the same resolved selection in its
+in-process compile-to-Deployment invocation. The standalone final-link replay
+helper cannot attach a portfolio selection because it cannot prove that the
+input link was produced from that selection.
+
+The current product source binding admits exactly zero warm-up samples and one
+measured sample. A profile with any other sample count is typed unsupported
+until an application runner executes the declared counts; the product path
+does not silently reinterpret or ignore a larger profile.
+
+The pair decision projects the resolved application identity, input name,
+source/build selection, declared workload and runtime-input names, declared
+oracle and bounded profile, and referenced cache digests. Until a portfolio
+runner binds those declarations to canonical Simulation inputs and oracle
+results, the projection publishes `execution_binding_established: false`; it
+must not be interpreted as sample or correctness Evidence. The manifest and
+repository paths are operational inputs and never enter pair, candidate,
+Mapping, workload, or runtime-input identity. The canonical source program,
+workload, runtime input, Fabric, Mapping, and execution Evidence remain owned
+by their existing Artifacts; the portfolio projection is repository
+provenance, not a second copy of those payloads.
 
 The referenced source package owns program sources and build semantics. Existing
 Loom owners produce the linked LLVM module, Structured Program Candidate,
@@ -242,15 +293,19 @@ which files happen to exist.
 
 ## Anchor Verification
 
-Stable tests validate manifest schema and uniqueness, source-root and Gitlink
-resolution, digest verification for cached inputs, deterministic inventory and
-selection derivation, exact binding to existing workload/input/oracle owners,
-and rejection of duplicated revisions or alternate runner inventories. They
-also prove member-local correctness and acceleration gates, reject aggregate
-masking, and require every released AccCore occurrence to have at least one
-selected SystemMapping user. At least one anchor traverses every cell of the
-Spatial-only/System-with-gem5 by DFG/CGRA/RTL execution matrix. Reproducible
-release anchors cover one exact single-application set, one exact domain set,
-and the exact declared complete supported cross-domain set without introducing
-scope identities. Tests do not snapshot reports, require private EDA material,
-or duplicate application semantics in the harness.
+Stable tests currently validate manifest schema and uniqueness, source-root
+and Gitlink resolution, selected-input cache and oracle admission, bounded
+profile parsing, deterministic smoke inventory, native host output for the
+four admitted rows, product-driver argument projection, and rejection of
+partial, injected, replayed, or target-conflicting selections.
+
+Portfolio closure additionally requires a runner that binds every selected
+profile to canonical Simulation workload/runtime-input roots, enforces its
+warm-up, measured-sample, oracle-coverage, and execution-deadline contract,
+and publishes the resulting correctness and performance Evidence. Release
+anchors must then prove member-local acceleration gates, reject aggregate
+masking, cover the supported execution matrix, require every released AccCore
+occurrence to have a selected SystemMapping user, and cover the declared
+single-application, domain, and complete cross-domain sets. Those gates do not
+exist until their owning runtime and evidence paths publish the required
+typed outcomes.

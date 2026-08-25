@@ -171,7 +171,7 @@ std::string replaceOnce(std::string text, llvm::StringRef from,
 std::string manifestText(llvm::StringRef digest) {
   return R"json({
   "schema": "loom.application_portfolio",
-  "version": "1.0",
+  "version": "2.0",
   "applications": [
     {
       "identity": "repository-app",
@@ -190,7 +190,13 @@ std::string manifestText(llvm::StringRef digest) {
           "workload": "local-workload",
           "runtime_input": "local-runtime",
           "cached_inputs": [],
-          "oracle": {"kind": "typed_invariant", "entry": "test/oracles/local.oracle"}
+          "oracle": {"kind": "typed_invariant", "entry": "test/oracles/local.oracle"},
+          "profile": {
+            "warmup_samples": 2,
+            "measured_samples": 3,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 5000
+          }
         }
       ],
       "selections": ["smoke"]
@@ -211,11 +217,30 @@ std::string manifestText(llvm::StringRef digest) {
       ],
       "inputs": [
         {
+          "name": "cache-free-input",
+          "workload": "cache-free-workload",
+          "runtime_input": "cache-free-runtime",
+          "cached_inputs": [],
+          "oracle": {"kind": "exact", "entry": "test/oracles/upstream-free.oracle"},
+          "profile": {
+            "warmup_samples": 0,
+            "measured_samples": 1,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 10000
+          }
+        },
+        {
           "name": "wakeword-input",
           "workload": "wakeword-workload",
           "runtime_input": "wakeword-runtime",
           "cached_inputs": ["weights"],
-          "oracle": {"kind": "exact", "entry": "test/oracles/upstream.oracle"}
+          "oracle": {"kind": "exact", "entry": "test/oracles/upstream.oracle"},
+          "profile": {
+            "warmup_samples": 0,
+            "measured_samples": 1,
+            "oracle_coverage": "all_measured_samples",
+            "deadline_milliseconds": 30000
+          }
         }
       ],
       "selections": ["smoke", "validation"]
@@ -254,6 +279,8 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
   writeFile(tree.path("repository/test/apps/local/main.cpp"),
             "int main() { return 0; }\n");
   writeFile(tree.path("repository/test/oracles/local.oracle"), "local\n");
+  writeFile(tree.path("repository/test/oracles/upstream-free.oracle"),
+            "upstream-free\n");
   writeFile(tree.path("repository/test/oracles/upstream.oracle"), "upstream\n");
   git.run({"-C", repository, "add", "test/apps/local/main.cpp"});
   git.run({"-C", repository, "update-index", "--add", "--cacheinfo",
@@ -267,8 +294,35 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
   const std::string text = manifestText(formatBlobDigestHex(digest));
   ApplicationManifest manifest = take(parseApplicationManifest(text));
   if (manifest.applications().size() != 2 ||
-      toString(manifest.applications()[1].build.language) != "c")
+      toString(manifest.applications()[1].build.language) != "c" ||
+      manifest.applications()[0].inputs[0].profile.totalSamples() != 5 ||
+      toString(manifest.applications()[0].inputs[0].profile.oracleCoverage) !=
+          "all_measured_samples")
     fail("manifest parser changed the typed inventory");
+
+  SelectedApplicationInput selected =
+      take(selectApplicationInput(manifest, "upstream-app", "wakeword-input"));
+  if (selected.applicationIdentity != "upstream-app" ||
+      selected.source.kind != SourceKind::Gitlink ||
+      selected.source.root != "externals/upstream" ||
+      selected.build.entry != "main.c" || selected.cachedInputs.size() != 1 ||
+      selected.cachedInputs[0].logicalName != "weights" ||
+      selected.input.name != "wakeword-input" ||
+      selected.input.profile.warmupSamples != 0 ||
+      selected.input.profile.measuredSamples != 1 ||
+      selected.input.profile.totalSamples() != 1 ||
+      selected.input.profile.deadlineMilliseconds != 30000)
+    fail("application input resolver changed the selected production copy");
+  selected.input.name = "mutated-copy";
+  if (take(selectApplicationInput(manifest, "upstream-app", "wakeword-input"))
+          .input.name != "wakeword-input")
+    fail("application input resolver did not return an independent copy");
+  requireErrorContains(
+      selectApplicationInput(manifest, "missing-app", "wakeword-input"),
+      "unknown application identity");
+  requireErrorContains(
+      selectApplicationInput(manifest, "upstream-app", "missing-input"),
+      "has no input named");
 
   const std::vector<std::string> smoke =
       selectApplicationIdentities(manifest, ExecutionSelection::Smoke);
@@ -297,6 +351,12 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
   std::filesystem::create_directories(tree.path("repository/externals"));
   git.run({"clone", "--quiet", upstream,
            tree.path("repository/externals/upstream").string()});
+  std::filesystem::remove(tree.path("repository/test/oracles/upstream.oracle"));
+  auto selectedWithoutCache = take(admitApplicationSource(
+      manifest, "upstream-app", "cache-free-input", repository));
+  if (!std::holds_alternative<AdmittedApplicationSource>(selectedWithoutCache))
+    fail("selected input admission required an unrelated cache or oracle");
+  writeFile(tree.path("repository/test/oracles/upstream.oracle"), "upstream\n");
   auto missingCacheRoot =
       take(admitApplicationSources(manifest, smoke, repository));
   requireUnavailable(missingCacheRoot[1], SourceUnavailableReason::CacheRoot);
@@ -331,6 +391,28 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
       "\"root\": \"externals/upstream\", \"revision\": \"deadbeef\"");
   requireErrorContains(parseApplicationManifest(copiedRevision),
                        "unknown field 'revision'");
+  const std::string oldSchema =
+      replaceOnce(text, "\"version\": \"2.0\"", "\"version\": \"1.0\"");
+  requireErrorContains(parseApplicationManifest(oldSchema),
+                       "unsupported schema or version");
+  const std::string invalidCoverage =
+      replaceOnce(text, "\"oracle_coverage\": \"all_measured_samples\"",
+                  "\"oracle_coverage\": \"sampled\"");
+  requireErrorContains(parseApplicationManifest(invalidCoverage),
+                       "oracle coverage must be 'all_measured_samples'");
+  const std::string zeroMeasured =
+      replaceOnce(text, "\"measured_samples\": 3", "\"measured_samples\": 0");
+  requireErrorContains(parseApplicationManifest(zeroMeasured),
+                       "measured_samples must be greater than zero");
+  const std::string zeroDeadline = replaceOnce(
+      text, "\"deadline_milliseconds\": 5000", "\"deadline_milliseconds\": 0");
+  requireErrorContains(parseApplicationManifest(zeroDeadline),
+                       "deadline_milliseconds must be greater than zero");
+  const std::string overflowingSamples =
+      replaceOnce(text, "\"warmup_samples\": 2",
+                  "\"warmup_samples\": 18446744073709551615");
+  requireErrorContains(parseApplicationManifest(overflowingSamples),
+                       "total sample count overflows uint64");
   const std::string escapingCache = replaceOnce(
       text, "\"path\": \"weights.bin\"", "\"path\": \"../weights.bin\"");
   requireErrorContains(parseApplicationManifest(escapingCache),
@@ -362,16 +444,29 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
   ApplicationManifest manifest = take(loadApplicationManifest(manifestPath));
   const std::vector<std::string> smoke =
       selectApplicationIdentities(manifest, ExecutionSelection::Smoke);
+  const std::vector<std::string> validation =
+      selectApplicationIdentities(manifest, ExecutionSelection::Validation);
+  const std::vector<std::string> scale =
+      selectApplicationIdentities(manifest, ExecutionSelection::ScaleEda);
   if (smoke != std::vector<std::string>{"gapbs-pagerank", "llama2c-kernels",
                                         "loom-multisensor-attention",
-                                        "mlperf-tiny-anomaly-detection",
-                                        "mlperf-tiny-keyword-spotting",
-                                        "mlperf-tiny-visual-wake-words"})
-    fail("repository manifest changed the admitted smoke inventory");
+                                        "vecadd-memory"} ||
+      !validation.empty() || !scale.empty())
+    fail("repository manifest execution selections do not match real rows");
+  for (const ApplicationDefinition &application : manifest.applications()) {
+    if (application.inputs.size() != 1 ||
+        application.inputs[0].profile.warmupSamples != 0 ||
+        application.inputs[0].profile.measuredSamples != 1 ||
+        application.inputs[0].profile.oracleCoverage !=
+            OracleCoverage::AllMeasuredSamples ||
+        application.inputs[0].profile.deadlineMilliseconds != 120000 ||
+        application.inputs[0].profile.totalSamples() != 1)
+      fail("repository manifest changed its bounded smoke input profiles");
+  }
 
   auto outcomes =
       take(admitApplicationSources(manifest, smoke, repositoryRoot));
-  if (outcomes.size() != 6)
+  if (outcomes.size() != 4)
     fail("repository manifest source admission changed cardinality");
   for (auto [index, identity] : llvm::enumerate(smoke)) {
     const auto *admitted =
@@ -389,8 +484,8 @@ int main(int argc, char **argv) {
     fail("expected <temporary-directory> <manifest> <repository-root>");
   exerciseManifestAndAdmission(argv[1]);
   const llvm::StringRef configuredRepositoryRoot = LOOM_TEST_REPOSITORY_ROOT;
-  exerciseRepositoryManifest(
-      argv[2], configuredRepositoryRoot.empty() ? argv[3]
-                                                 : configuredRepositoryRoot);
+  exerciseRepositoryManifest(argv[2], configuredRepositoryRoot.empty()
+                                          ? argv[3]
+                                          : configuredRepositoryRoot);
   return 0;
 }

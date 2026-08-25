@@ -185,9 +185,56 @@ void addOptionalRoot(
     const std::optional<ArtifactRootReference> &value);
 std::string encodeRoot(const ArtifactRootReference &reference);
 
+llvm::json::Object
+encodePortfolioInput(const SelectedApplicationInput &selection) {
+  llvm::json::Object result;
+  result["application_identity"] = selection.applicationIdentity;
+  result["input_name"] = selection.input.name;
+  result["source_kind"] = toString(selection.source.kind);
+  result["source_root"] = selection.source.root;
+  result["build_entry"] = selection.build.entry;
+  result["language"] = toString(selection.build.language);
+  llvm::json::Array sources;
+  for (const std::string &source : selection.build.sources)
+    sources.push_back(source);
+  result["sources"] = std::move(sources);
+  llvm::json::Array compilerOptions;
+  for (const std::string &option : selection.build.compilerOptions)
+    compilerOptions.push_back(option);
+  result["compiler_options"] = std::move(compilerOptions);
+  llvm::json::Array linkOptions;
+  for (const std::string &option : selection.build.linkOptions)
+    linkOptions.push_back(option);
+  result["link_options"] = std::move(linkOptions);
+  result["declared_workload"] = selection.input.workload;
+  result["declared_runtime_input"] = selection.input.runtimeInput;
+  result["declared_oracle"] =
+      llvm::json::Object{{"kind", toString(selection.input.oracle.kind)},
+                         {"entry", selection.input.oracle.entry}};
+  result["declared_profile"] = llvm::json::Object{
+      {"warmup_samples", selection.input.profile.warmupSamples},
+      {"measured_samples", selection.input.profile.measuredSamples},
+      {"total_samples", selection.input.profile.totalSamples()},
+      {"oracle_coverage", toString(selection.input.profile.oracleCoverage)},
+      {"deadline_milliseconds", selection.input.profile.deadlineMilliseconds}};
+  llvm::json::Array cachedInputs;
+  for (const CachedInput &input : selection.cachedInputs)
+    cachedInputs.push_back(
+        llvm::json::Object{{"logical_name", input.logicalName},
+                           {"path", input.path},
+                           {"sha256", formatBlobDigestHex(input.digest)}});
+  result["cached_inputs"] = std::move(cachedInputs);
+  result["execution_binding_established"] = false;
+  return result;
+}
+
 llvm::json::Object encodePairDecision(
     const ApplicationPairDecisionRecord &decision) {
   llvm::json::Object result;
+  if (decision.portfolioInput)
+    result["portfolio_input"] = encodePortfolioInput(*decision.portfolioInput);
+  else
+    result["portfolio_input"] = nullptr;
   if (decision.pairIdentity)
     result["pair_identity"] =
         formatComponentViewDigestHex(*decision.pairIdentity);

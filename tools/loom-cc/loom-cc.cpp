@@ -93,6 +93,11 @@ struct LoomDriverOptions final {
   std::string mappingWallTimeLimitMilliseconds;
   std::string mappingStoppingPolicy;
   std::string mappingSpectrumEndpoint;
+  std::string portfolioManifestPath;
+  std::string portfolioRepositoryRoot;
+  std::string portfolioCacheRoot;
+  std::string portfolioApplicationIdentity;
+  std::string portfolioInputName;
   std::vector<std::string> operatorProtocolSymbols;
 
   bool requestsProductFlow() const {
@@ -101,7 +106,10 @@ struct LoomDriverOptions final {
            !mappingTechCandidateLimit.empty() ||
            !mappingWallTimeLimitMilliseconds.empty() ||
            !mappingStoppingPolicy.empty() || !mappingSpectrumEndpoint.empty() ||
-           !operatorProtocolSymbols.empty();
+           !portfolioManifestPath.empty() || !portfolioRepositoryRoot.empty() ||
+           !portfolioCacheRoot.empty() ||
+           !portfolioApplicationIdentity.empty() ||
+           !portfolioInputName.empty() || !operatorProtocolSymbols.empty();
   }
 };
 
@@ -204,6 +212,41 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
       return mappingSpectrumEndpoint.takeError();
     if (*mappingSpectrumEndpoint)
       continue;
+    auto portfolioManifest =
+        consumeLoomOption(argument, "--loom-portfolio-manifest", index,
+                          arguments, seen, options.portfolioManifestPath);
+    if (!portfolioManifest)
+      return portfolioManifest.takeError();
+    if (*portfolioManifest)
+      continue;
+    auto portfolioRepositoryRoot =
+        consumeLoomOption(argument, "--loom-portfolio-repository-root", index,
+                          arguments, seen, options.portfolioRepositoryRoot);
+    if (!portfolioRepositoryRoot)
+      return portfolioRepositoryRoot.takeError();
+    if (*portfolioRepositoryRoot)
+      continue;
+    auto portfolioCacheRoot =
+        consumeLoomOption(argument, "--loom-portfolio-cache-root", index,
+                          arguments, seen, options.portfolioCacheRoot);
+    if (!portfolioCacheRoot)
+      return portfolioCacheRoot.takeError();
+    if (*portfolioCacheRoot)
+      continue;
+    auto portfolioApplication = consumeLoomOption(
+        argument, "--loom-portfolio-application", index, arguments, seen,
+        options.portfolioApplicationIdentity);
+    if (!portfolioApplication)
+      return portfolioApplication.takeError();
+    if (*portfolioApplication)
+      continue;
+    auto portfolioInput =
+        consumeLoomOption(argument, "--loom-portfolio-input", index, arguments,
+                          seen, options.portfolioInputName);
+    if (!portfolioInput)
+      return portfolioInput.takeError();
+    if (*portfolioInput)
+      continue;
     std::string protocolSymbol;
     std::set<std::string> protocolOptionSeen;
     auto protocol =
@@ -287,16 +330,22 @@ makeProductBuildOptions(const LoomDriverOptions &options) {
               : options.mappingSpectrumEndpoint);
   if (!spectrumEndpoint)
     return spectrumEndpoint.takeError();
-  return loom::application::ProductBuildOptions{options.deploymentPath,
-                                                options.accelerationProfile,
-                                                options.hardwarePath,
-                                                options.visualizationPath,
-                                                options.localToolConfigPath,
-                                                options.operatorProtocolSymbols,
-                                                techCandidateLimit,
-                                                wallTimeLimit,
-                                                *stoppingPolicy,
-                                                *spectrumEndpoint};
+  return loom::application::ProductBuildOptions{
+      options.deploymentPath,
+      options.accelerationProfile,
+      options.hardwarePath,
+      options.visualizationPath,
+      options.localToolConfigPath,
+      options.operatorProtocolSymbols,
+      techCandidateLimit,
+      wallTimeLimit,
+      *stoppingPolicy,
+      *spectrumEndpoint,
+      options.portfolioManifestPath,
+      options.portfolioRepositoryRoot,
+      options.portfolioCacheRoot,
+      options.portfolioApplicationIdentity,
+      options.portfolioInputName};
 }
 
 llvm::StringRef projectedValue(llvm::ArrayRef<std::string> projection,
@@ -598,7 +647,6 @@ static int loom_main(int Argc, char **Argv,
                     "link invocation\n";
     return 1;
   }
-
   bool CanonicalPrefixes = true;
   for (int i = 1, size = Args.size(); i < size; ++i) {
     if (Args[i] == nullptr)
@@ -613,6 +661,11 @@ static int loom_main(int Argc, char **Argv,
   if (const char *Override = ::getenv("CCC_OVERRIDE_OPTIONS")) {
     driver::applyOverrideOptions(Args, Override, SavedStrings,
                                  "CCC_OVERRIDE_OPTIONS", &llvm::errs());
+  }
+  if (!LoomOptions->portfolioManifestPath.empty() && Args.size() != 1) {
+    llvm::errs() << "loom-cc: error: a portfolio selection derives its exact "
+                    "sources and compiler options from the manifest\n";
+    return 1;
   }
 
   std::vector<std::string> ProductTargetArguments;

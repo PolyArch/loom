@@ -263,6 +263,7 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,
     const dse::JointDesignExecutionSummary &summary) {
   ApplicationPairDecisionRecord result;
+  result.portfolioInput = prepared.portfolioInput;
   result.invocationRunKey = summary.invocationRunKey
                                 ? summary.invocationRunKey
                                 : prepared.preMappingInvocationRunKey;
@@ -534,9 +535,11 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
     llvm::ArrayRef<dse::PreMappingCandidatePlanningRecord> inventory,
     ApplicationPairDecisionDisposition disposition, llvm::StringRef detail,
     std::optional<std::uint64_t> sourceHostOnlyWork = std::nullopt,
-    std::optional<std::array<std::uint8_t, 32>> invocationRunKey =
-        std::nullopt, bool ownerVerifiedPreAdmission = false) {
+    std::optional<std::array<std::uint8_t, 32>> invocationRunKey = std::nullopt,
+    bool ownerVerifiedPreAdmission = false,
+    std::optional<SelectedApplicationInput> portfolioInput = std::nullopt) {
   ApplicationPairDecisionRecord result;
+  result.portfolioInput = std::move(portfolioInput);
   result.invocationRunKey = std::move(invocationRunKey);
   if (result.invocationRunKey)
     result.manifestJoinStatus =
@@ -1153,14 +1156,14 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           checkpoint.runtimeInput, checkpoint.candidateInventory,
           mapIncompleteReasonToPairDisposition(incomplete->reason),
           dse::toString(incomplete->reason), incomplete->sourceHostOnlyWork,
-          *invocationRunKey);
+          *invocationRunKey, false, request.portfolioInput);
       emitApplicationPairDecisionDiagnostics(decision);
     } else {
       auto decision = makePreparationPairDecision(
           std::nullopt, std::nullopt, std::nullopt, std::nullopt, {},
           mapIncompleteReasonToPairDisposition(incomplete->reason),
           dse::toString(incomplete->reason), incomplete->sourceHostOnlyWork,
-          std::nullopt, true);
+          std::nullopt, true, request.portfolioInput);
       emitApplicationPairDecisionDiagnostics(decision);
     }
     return ApplicationBuildPreparationOutcome{std::move(*incomplete)};
@@ -1180,7 +1183,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         noFeasible->completeness.exactComplete()
             ? "bounded front-end retained no candidate"
             : "front-end terminated before a complete candidate-domain proof",
-        noFeasible->sourceHostOnlyWork, *invocationRunKey);
+        noFeasible->sourceHostOnlyWork, *invocationRunKey, false,
+        request.portfolioInput);
     emitApplicationPairDecisionDiagnostics(decision);
     return ApplicationBuildPreparationOutcome{std::move(*noFeasible)};
   }
@@ -1531,7 +1535,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           completed.runtimeInput, completed.candidateInventory,
           ApplicationPairDecisionDisposition::CancelledOrTimeout,
           "resource-time funnel cancelled or timed out",
-          completed.sourceHostOnlyWork, *completedInvocationRunKey);
+          completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
+          request.portfolioInput);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{
           IncompleteApplicationResourceTimePlanning{
@@ -1558,7 +1563,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           completed.runtimeInput, completed.candidateInventory, disposition,
           dse::resourceTimeFrontierIncompleteReasonSpelling(
               *resourceTimeFunnel->incompleteReason),
-          completed.sourceHostOnlyWork, *completedInvocationRunKey);
+          completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
+          request.portfolioInput);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{
           IncompleteApplicationResourceTimePlanning{
@@ -1579,10 +1585,11 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           completeNoPromisingProof
               ? ApplicationPairDecisionDisposition::NoPromisingCandidate
               : ApplicationPairDecisionDisposition::BudgetExhausted,
-        completeNoPromisingProof
-            ? "resource-time funnel retained no Mapping finalist"
-            : "resource-time funnel ended without a complete candidate proof",
-        completed.sourceHostOnlyWork, *completedInvocationRunKey);
+          completeNoPromisingProof
+              ? "resource-time funnel retained no Mapping finalist"
+              : "resource-time funnel ended without a complete candidate proof",
+          completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
+          request.portfolioInput);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{
           dse::CompletedPreMappingNoFeasibleCandidate{
@@ -1805,7 +1812,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           completed.runtimeInput, completed.candidateInventory,
           ApplicationPairDecisionDisposition::UnsupportedSemantic,
           "all retained finalists were rejected at the application boundary",
-          completed.sourceHostOnlyWork, *completedInvocationRunKey);
+          completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
+          request.portfolioInput);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{std::move(*firstUnsupported)};
     }
@@ -1817,7 +1825,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
             completed.runtimeInput, completed.candidateInventory,
             ApplicationPairDecisionDisposition::UnsupportedSemantic,
             "resource-time finalists were unsupported before Mapping",
-            completed.sourceHostOnlyWork, *completedInvocationRunKey);
+            completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
+            request.portfolioInput);
         emitApplicationPairDecisionDiagnostics(decision);
         return ApplicationBuildPreparationOutcome{
             IncompleteApplicationResourceTimePlanning{
@@ -1840,7 +1849,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         completeNoPromisingProof
             ? "bounded resource-time funnel retained no Mapping finalist"
             : "resource-time funnel did not close its bounded candidate domain",
-        completed.sourceHostOnlyWork, *completedInvocationRunKey);
+        completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
+        request.portfolioInput);
     emitApplicationPairDecisionDiagnostics(decision);
     return ApplicationBuildPreparationOutcome{
         dse::CompletedPreMappingNoFeasibleCandidate{
@@ -1896,7 +1906,9 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       completed.workload,
       completed.runtimeInput,
       completed.frontierPolicyDigest,
-      systemView->artifact().accCoreOccurrences().size(), std::nullopt};
+      systemView->artifact().accCoreOccurrences().size(),
+      std::nullopt,
+      std::move(request.portfolioInput)};
   prepared.preMappingInvocationRunKey = *completedInvocationRunKey;
   emitApplicationPlanningDiagnostics(prepared);
   return ApplicationBuildPreparationOutcome{std::move(prepared)};
@@ -1909,6 +1921,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
   // InvocationManifest run-key to publish.  Close that narrow boundary with
   // an explicit owner-level status instead of emitting a bare Missing join.
   const ArtifactRootReference requestedSystem = request.system;
+  std::optional<SelectedApplicationInput> portfolioInput =
+      request.portfolioInput;
   const ExecutionControlView executionControl =
       request.preMappingOptions.executionControl;
   auto outcome = prepareApplicationBuildImpl(
@@ -1919,6 +1933,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
   llvm::Error error = outcome.takeError();
   const std::string diagnostic = llvm::toString(std::move(error));
   ApplicationPairDecisionRecord decision;
+  decision.portfolioInput = std::move(portfolioInput);
   decision.manifestJoinStatus =
       ApplicationPairManifestJoinStatus::OwnerVerifiedPreAdmission;
   decision.manifestJoinOwner = preAdmissionManifestJoinOwner.str();

@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #define N 64
+#define EXPECTED_CHECKSUM 3024.0f
 
 __attribute__((noinline))
 static void vecadd(const float *a, const float *b, float *c, int n) {
@@ -34,5 +35,5 @@ int main(void) {
 
     float checksum = reduce_sum(c, N);
     printf("%.6f\n", checksum);
-    return 0;
+    return checksum == EXPECTED_CHECKSUM ? 0 : 1;
 }

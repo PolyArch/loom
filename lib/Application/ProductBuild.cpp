@@ -3,7 +3,9 @@
 #include "ADG/Builtin.h"
 #include "Application/Build.h"
 #include "Application/BuildDiagnostics.h"
+#include "Application/Manifest.h"
 #include "Application/ProductVisualization.h"
+#include "Application/SourceAdmission.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Common/ExecutionControl.h"
@@ -234,13 +236,102 @@ private:
 };
 
 struct PreparedProductTarget final {
+  struct PortfolioInput final {
+    SelectedApplicationInput selection;
+    AdmittedApplicationSource source;
+    std::string repositoryRoot;
+  };
+
   std::unique_ptr<ProductWorkspace> workspace;
   ResolvedConfig config;
   fabric::FinalizedFabricRoot system;
   std::vector<ArtifactRootReference> physicalTimingProfiles;
   CompilerTargetPolicy compilerPolicy;
   CompilerTargetCommandLineProjection commandLine;
+  std::optional<PortfolioInput> portfolioInput;
 };
+
+llvm::Error validatePortfolioBuildOptions(const BuildSelection &build) {
+  const auto isProductOwned = [](llvm::StringRef option) {
+    return option == "-target" || option == "--target" || option == "-march" ||
+           option == "-mabi" || option == "-mcmodel" || option == "-mcpu" ||
+           option == "-B" || option == "-o" || option == "-x" ||
+           option == "-Xlinker" || option == "-nostdlib" ||
+           option.starts_with("-target=") || option.starts_with("--target=") ||
+           option.starts_with("-march=") || option.starts_with("-mabi=") ||
+           option.starts_with("-mcmodel=") || option.starts_with("-mcpu=") ||
+           option.starts_with("-B") || option.starts_with("-o") ||
+           option.starts_with("-working-directory") ||
+           option.starts_with("-fuse-ld=") || option.starts_with("-flto") ||
+           option.starts_with("-fno-lto") ||
+           option.starts_with("-ffat-lto-objects") ||
+           option.starts_with("-fno-fat-lto-objects") ||
+           option.starts_with("-Wl,--entry") ||
+           option.starts_with("-Wl,--fat-lto-objects") ||
+           option.starts_with("-Wl,--save-temps") ||
+           option.starts_with("-Wl,--unresolved-symbols") ||
+           option.starts_with("-Wl,--lto-O") ||
+           option.starts_with("-Wl,--plugin-opt=-mattr=");
+  };
+  for (const std::string &option : build.compilerOptions)
+    if (isProductOwned(option))
+      return productError(
+          "loom_portfolio_build_invalid",
+          "manifest compiler option '" + option +
+              "' conflicts with product-owned compiler target policy");
+  for (const std::string &option : build.linkOptions)
+    if (isProductOwned(option))
+      return productError(
+          "loom_portfolio_build_invalid",
+          "manifest link option '" + option +
+              "' conflicts with product-owned compiler target policy");
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::optional<PreparedProductTarget::PortfolioInput>>
+resolvePortfolioInput(const ProductBuildOptions &options) {
+  if (options.portfolioManifestPath.empty())
+    return std::optional<PreparedProductTarget::PortfolioInput>{};
+  auto manifest = loadApplicationManifest(options.portfolioManifestPath);
+  if (!manifest)
+    return productError("loom_portfolio_manifest_invalid",
+                        llvm::toString(manifest.takeError()));
+  auto selection =
+      selectApplicationInput(*manifest, options.portfolioApplicationIdentity,
+                             options.portfolioInputName);
+  if (!selection)
+    return productError("loom_portfolio_selection_invalid",
+                        llvm::toString(selection.takeError()));
+  if (llvm::Error error = validatePortfolioBuildOptions(selection->build))
+    return std::move(error);
+  if (selection->input.profile.warmupSamples != 0 ||
+      selection->input.profile.measuredSamples != 1)
+    return productError(
+        "loom_portfolio_profile_unsupported",
+        "product source binding supports exactly zero warm-up samples and "
+        "one measured sample until a profile runner is selected");
+  std::optional<llvm::StringRef> cacheRoot;
+  if (!options.portfolioCacheRoot.empty())
+    cacheRoot = options.portfolioCacheRoot;
+  auto outcome = admitApplicationSource(
+      *manifest, options.portfolioApplicationIdentity,
+      options.portfolioInputName, options.portfolioRepositoryRoot, cacheRoot);
+  if (!outcome)
+    return productError("loom_portfolio_source_invalid",
+                        llvm::toString(outcome.takeError()));
+  if (const auto *unavailable =
+          std::get_if<UnavailableApplicationSource>(&*outcome))
+    return productError("loom_portfolio_source_unavailable",
+                        llvm::Twine("application '") +
+                            unavailable->applicationIdentity + "' requires " +
+                            toString(unavailable->reason) + " at '" +
+                            unavailable->path + "'");
+  auto source = std::get<AdmittedApplicationSource>(std::move(*outcome));
+  return std::optional<PreparedProductTarget::PortfolioInput>{
+      PreparedProductTarget::PortfolioInput{std::move(*selection),
+                                            std::move(source),
+                                            options.portfolioRepositoryRoot}};
+}
 
 bool sameCommandLineTarget(const CompilerTargetCommandLineProjection &lhs,
                            const CompilerTargetCommandLineProjection &rhs) {
@@ -311,6 +402,9 @@ llvm::Expected<PreparedProductTarget>
 prepareProductTarget(const ProductBuildOptions &options) {
   ApplicationBuildOperationTimer timer(
       ApplicationBuildOperation::ProductTargetPreparation);
+  auto portfolioInput = resolvePortfolioInput(options);
+  if (!portfolioInput)
+    return portfolioInput.takeError();
   auto workspace = ProductWorkspace::create(options.deploymentOutput);
   if (!workspace)
     return workspace.takeError();
@@ -400,11 +494,14 @@ prepareProductTarget(const ProductBuildOptions &options) {
   return PreparedProductTarget{
       std::move(*workspace),     std::move(*config),
       std::move(*system),        std::move(timingReferences),
-      std::move(compilerPolicy), std::move(*commandLine)};
+      std::move(compilerPolicy), std::move(*commandLine),
+      std::move(*portfolioInput)};
 }
 
-std::vector<std::string>
-projectDriverArguments(const CompilerTargetCommandLineProjection &target) {
+std::vector<std::string> projectDriverArguments(
+    const CompilerTargetCommandLineProjection &target,
+    const std::optional<PreparedProductTarget::PortfolioInput>
+        &portfolioInput) {
   std::vector<std::string> result;
   result.push_back("--target=" + target.targetTriple);
   result.push_back("-march=" + target.architecture);
@@ -428,6 +525,21 @@ projectDriverArguments(const CompilerTargetCommandLineProjection &target) {
   }
   if (target.positionIndependent)
     result.push_back("-fPIC");
+  if (portfolioInput) {
+    result.push_back("-working-directory=" + portfolioInput->repositoryRoot);
+    result.insert(result.end(),
+                  portfolioInput->selection.build.compilerOptions.begin(),
+                  portfolioInput->selection.build.compilerOptions.end());
+    result.push_back("-x");
+    result.push_back(toString(portfolioInput->selection.build.language).str());
+    for (const std::string &source : portfolioInput->selection.build.sources)
+      result.push_back(
+          (std::filesystem::path(portfolioInput->source.sourceRoot) / source)
+              .string());
+    result.insert(result.end(),
+                  portfolioInput->selection.build.linkOptions.begin(),
+                  portfolioInput->selection.build.linkOptions.end());
+  }
   return result;
 }
 
@@ -507,7 +619,10 @@ llvm::Expected<PreparedApplicationBuild> prepareMappedApplication(
       {std::move(sourceInvocation), options.operatorProtocolSymbols,
        target.system.reference(), target.physicalTimingProfiles, target.config,
        std::move(*jointPolicy), std::move(compilationOptions),
-       std::move(preMappingOptions), std::move(resourceTimePolicy)},
+       std::move(preMappingOptions), std::move(resourceTimePolicy),
+       target.portfolioInput ? std::optional<SelectedApplicationInput>(
+                                   target.portfolioInput->selection)
+                             : std::nullopt},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!outcome)
     return outcome.takeError();
@@ -760,6 +875,17 @@ llvm::Error validateProductOptions(const ProductBuildOptions &options) {
   if (options.mappingWallTimeLimitMilliseconds == 0)
     return productError("loom_product_option_invalid",
                         "Mapping wall-time limit must be positive");
+  const unsigned portfolioSelectorCount =
+      static_cast<unsigned>(!options.portfolioManifestPath.empty()) +
+      static_cast<unsigned>(!options.portfolioRepositoryRoot.empty()) +
+      static_cast<unsigned>(!options.portfolioApplicationIdentity.empty()) +
+      static_cast<unsigned>(!options.portfolioInputName.empty());
+  if ((portfolioSelectorCount != 0 && portfolioSelectorCount != 4) ||
+      (!options.portfolioCacheRoot.empty() && portfolioSelectorCount != 4))
+    return productError(
+        "loom_product_option_invalid",
+        "portfolio manifest, repository, application, and input must be "
+        "selected together");
   for (auto indexed : llvm::enumerate(options.operatorProtocolSymbols)) {
     if (indexed.value().empty())
       return productError("loom_product_option_invalid",
@@ -792,7 +918,7 @@ public:
         target_(std::move(target)) {}
 
   std::vector<std::string> compilerArguments() const {
-    return projectDriverArguments(target_.commandLine);
+    return projectDriverArguments(target_.commandLine, target_.portfolioInput);
   }
 
   llvm::Error buildFromFinalLink(llvm::StringRef finalLinkOutput) {

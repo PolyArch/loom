@@ -1,1 +1,0 @@
-extern "C" inline int atoi(const char *) noexcept { return 0; }

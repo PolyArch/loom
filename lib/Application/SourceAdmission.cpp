@@ -308,9 +308,11 @@ validateRepositorySource(const std::filesystem::path &repositoryRoot,
                             repositoryRoot, "repository source root");
 }
 
-llvm::Error validateBuildAndOracles(const std::filesystem::path &repositoryRoot,
-                                    const std::filesystem::path &sourceRoot,
-                                    const ApplicationDefinition &application) {
+llvm::Error
+validateBuildAndOracles(const std::filesystem::path &repositoryRoot,
+                        const std::filesystem::path &sourceRoot,
+                        const ApplicationDefinition &application,
+                        const WorkloadInputSelection *selectedInput = nullptr) {
   std::vector<std::filesystem::path> selectedSources;
   selectedSources.reserve(application.build.sources.size());
   for (const std::string &source : application.build.sources) {
@@ -320,7 +322,8 @@ llvm::Error validateBuildAndOracles(const std::filesystem::path &repositoryRoot,
       return resolved.takeError();
     selectedSources.push_back(std::move(*resolved));
   }
-  for (const WorkloadInputSelection &input : application.inputs) {
+  const auto validateOracle =
+      [&](const WorkloadInputSelection &input) -> llvm::Error {
     auto oracle = canonicalFile(repositoryRoot, input.oracle.entry,
                                 repositoryRoot, "oracle entry");
     if (!oracle)
@@ -328,14 +331,23 @@ llvm::Error validateBuildAndOracles(const std::filesystem::path &repositoryRoot,
     if (llvm::is_contained(selectedSources, *oracle))
       return invalid("oracle entry for '" + application.identity +
                      "' is also a selected program source");
+    return llvm::Error::success();
+  };
+  if (selectedInput)
+    return validateOracle(*selectedInput);
+  for (const WorkloadInputSelection &input : application.inputs) {
+    if (llvm::Error error = validateOracle(input))
+      return error;
   }
   return llvm::Error::success();
 }
 
 llvm::Expected<std::optional<UnavailableApplicationSource>>
 validateCachedInputs(const std::filesystem::path &cacheRoot,
-                     const ApplicationDefinition &application) {
-  for (const CachedInput &input : application.cachedInputs) {
+                     const ApplicationDefinition &application,
+                     const WorkloadInputSelection *selectedInput = nullptr) {
+  const auto validateInput = [&](const CachedInput &input)
+      -> llvm::Expected<std::optional<UnavailableApplicationSource>> {
     const std::filesystem::path path = cacheRoot / input.path;
     auto exists = pathExists(path, "cached input");
     if (!exists)
@@ -361,6 +373,28 @@ validateCachedInputs(const std::filesystem::path &cacheRoot,
                      application.identity + "' has digest " +
                      formatBlobDigestHex(actual) + " instead of " +
                      formatBlobDigestHex(input.digest));
+    return std::optional<UnavailableApplicationSource>{};
+  };
+  if (selectedInput) {
+    for (const std::string &logicalName : selectedInput->cachedInputs) {
+      const auto found = llvm::find_if(
+          application.cachedInputs, [&](const CachedInput &input) {
+            return input.logicalName == logicalName;
+          });
+      if (found == application.cachedInputs.end())
+        return invalid("input '" + selectedInput->name +
+                       "' references unknown cached input '" + logicalName +
+                       "'");
+      auto unavailable = validateInput(*found);
+      if (!unavailable || *unavailable)
+        return unavailable;
+    }
+    return std::optional<UnavailableApplicationSource>{};
+  }
+  for (const CachedInput &input : application.cachedInputs) {
+    auto unavailable = validateInput(input);
+    if (!unavailable || *unavailable)
+      return unavailable;
   }
   return std::optional<UnavailableApplicationSource>{};
 }
@@ -381,11 +415,12 @@ llvm::StringRef toString(SourceUnavailableReason reason) {
   llvm_unreachable("unknown SourceUnavailableReason");
 }
 
-llvm::Expected<std::vector<ApplicationSourceAdmissionOutcome>>
-admitApplicationSources(const ApplicationManifest &manifest,
-                        llvm::ArrayRef<std::string> applicationIdentities,
-                        llvm::StringRef repositoryRootText,
-                        std::optional<llvm::StringRef> cacheRootText) {
+static llvm::Expected<std::vector<ApplicationSourceAdmissionOutcome>>
+admitApplicationSourcesImpl(const ApplicationManifest &manifest,
+                            llvm::ArrayRef<std::string> applicationIdentities,
+                            llvm::StringRef repositoryRootText,
+                            std::optional<llvm::StringRef> cacheRootText,
+                            std::optional<llvm::StringRef> inputName) {
   if (applicationIdentities.empty())
     return invalid("explicit application selection is empty");
   for (std::size_t index = 1; index < applicationIdentities.size(); ++index)
@@ -418,7 +453,18 @@ admitApplicationSources(const ApplicationManifest &manifest,
     if (!application)
       return invalid("explicit selection names unknown application '" +
                      identity + "'");
-    requiresCache |= !application->cachedInputs.empty();
+    if (inputName) {
+      const auto input = llvm::find_if(
+          application->inputs, [&](const WorkloadInputSelection &candidate) {
+            return candidate.name == *inputName;
+          });
+      if (input == application->inputs.end())
+        return invalid("application '" + identity + "' has no input named '" +
+                       *inputName + "'");
+      requiresCache |= !input->cachedInputs.empty();
+    } else {
+      requiresCache |= !application->cachedInputs.empty();
+    }
     selected.push_back(application);
   }
 
@@ -492,17 +538,29 @@ admitApplicationSources(const ApplicationManifest &manifest,
       sourceRoot = std::move(*repositorySource);
     }
 
-    if (llvm::Error error =
-            validateBuildAndOracles(repositoryRoot, sourceRoot, *application))
+    const WorkloadInputSelection *selectedInput = nullptr;
+    if (inputName) {
+      const auto input = llvm::find_if(
+          application->inputs, [&](const WorkloadInputSelection &candidate) {
+            return candidate.name == *inputName;
+          });
+      selectedInput = &*input;
+    }
+    if (llvm::Error error = validateBuildAndOracles(
+            repositoryRoot, sourceRoot, *application, selectedInput))
       return std::move(error);
-    if (!application->cachedInputs.empty()) {
+    const bool selectedCache = selectedInput
+                                   ? !selectedInput->cachedInputs.empty()
+                                   : !application->cachedInputs.empty();
+    if (selectedCache) {
       if (cacheUnavailable) {
         outcomes.emplace_back(UnavailableApplicationSource{
             SourceUnavailableReason::CacheRoot, application->identity,
             cacheRootText ? cacheRootText->str() : std::string{}});
         continue;
       }
-      auto unavailable = validateCachedInputs(*cacheRoot, *application);
+      auto unavailable =
+          validateCachedInputs(*cacheRoot, *application, selectedInput);
       if (!unavailable)
         return unavailable.takeError();
       if (*unavailable) {
@@ -514,6 +572,30 @@ admitApplicationSources(const ApplicationManifest &manifest,
         application->identity, sourceRoot.generic_string()});
   }
   return outcomes;
+}
+
+llvm::Expected<std::vector<ApplicationSourceAdmissionOutcome>>
+admitApplicationSources(const ApplicationManifest &manifest,
+                        llvm::ArrayRef<std::string> applicationIdentities,
+                        llvm::StringRef repositoryRootText,
+                        std::optional<llvm::StringRef> cacheRootText) {
+  return admitApplicationSourcesImpl(manifest, applicationIdentities,
+                                     repositoryRootText, cacheRootText,
+                                     std::nullopt);
+}
+
+llvm::Expected<ApplicationSourceAdmissionOutcome> admitApplicationSource(
+    const ApplicationManifest &manifest, llvm::StringRef applicationIdentity,
+    llvm::StringRef inputName, llvm::StringRef repositoryRootText,
+    std::optional<llvm::StringRef> cacheRootText) {
+  auto outcomes =
+      admitApplicationSourcesImpl(manifest, {applicationIdentity.str()},
+                                  repositoryRootText, cacheRootText, inputName);
+  if (!outcomes)
+    return outcomes.takeError();
+  if (outcomes->size() != 1)
+    return invalid("selected application admission changed cardinality");
+  return std::move(outcomes->front());
 }
 
 } // namespace loom::application
