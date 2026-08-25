@@ -817,6 +817,11 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
         auto replayCase = publishReplayCase(*replayWorkload, *replayInput);
         if (!replayCase)
           return replayCase.takeError();
+        if (result.replayCaseOccurrences ==
+            std::numeric_limits<std::uint64_t>::max())
+          return executionFailed(
+              "source-backed replay case occurrence count overflowed");
+        ++result.replayCaseOccurrences;
         result.replayCases.push_back(std::move(*replayCase));
       }
       auto nativeFinalObjects = canonicalizeNativeFinalObjects(

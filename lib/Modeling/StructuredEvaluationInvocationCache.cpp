@@ -102,6 +102,7 @@ bool loom::evaluation::models::detail::operator==(
          left.wavefrontSteps == right.wavefrontSteps &&
          left.eventCount == right.eventCount &&
          left.operationFireCounts == right.operationFireCounts &&
+         left.replayCaseOccurrences == right.replayCaseOccurrences &&
          left.replayCases == right.replayCases;
 }
 
