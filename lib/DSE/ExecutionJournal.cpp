@@ -1319,6 +1319,10 @@ llvm::Error ExecutionJournal::recordPreparedExecutionInterval(
   if (found->status != JournalWorkUnitStatus::Prepared ||
       !found->preparedInvocation)
     return invalid("only prepared work can record an execution interval");
+  if (executionObservation && executionObservation->manifestDigest !=
+                                  found->preparedInvocation->manifestDigest)
+    return invalid("execution observation manifest differs from prepared "
+                   "invocation");
   JournalWorkUnitRecord updated = *found;
   if (llvm::Error error = addInterval(updated, activeWallTimeNanoseconds,
                                       observedUnixTimeNanoseconds))
