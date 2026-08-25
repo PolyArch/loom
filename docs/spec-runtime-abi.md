@@ -313,6 +313,19 @@ Loaded Deployment teardown explicitly discards every retained handle before
 the ordinary quiesce/reset and lease release. Reset invalidates all prepared
 handles even when an earlier discard failed.
 
+`loadApplicationDeployment` is the invocation-local Application-owned join
+from a retained `ApplicationDeploymentArtifacts` result into this runtime
+lifecycle. It first loads the exact `FinalizedDeployment` through the ordinary
+loader. If and only if the compiler result carries a
+`ResourceTimeTransitionGraph`, it then creates the prepared selector against
+that same loaded object. The Deployment and verified graph remain the
+operational sources of truth; build-time hardware, binary, Spectrum, and
+transition-evidence projections do not independently authorize runtime state.
+An absent graph produces an ordinary loaded Deployment with no selector, never
+a runtime-derived entry graph. This API does not define deployment-package
+serialization; a package consumer must recover the exact graph and every
+endpoint Deployment closure before invoking it.
+
 Rejected calls do not change the endpoint, completed-root subset, lifecycle,
 or replay. Replay uses typed roots and full endpoints and re-executes every
 accepted completion, stay, join, and cancellation decision. Cancellation is

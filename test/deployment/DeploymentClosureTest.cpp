@@ -1,5 +1,7 @@
 #include "DeploymentTestSupport.h"
 
+#include "Application/Build.h"
+#include "Application/DeploymentRuntime.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Common/ComponentViewDigest.h"
@@ -446,6 +448,91 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
           replayed.currentEndpoint() == transition.child &&
           replayed.completedRoots() == selector.completedRoots(),
       "selector replay diverged from the accepted transition sequence");
+
+  const auto applicationImplementation = take(
+      test,
+      hardware::importHardwareImplementation(
+          parent.deployment().hardwareBindings().front().hardwareImplementation,
+          artifacts, blobs));
+  application::ApplicationDeploymentArtifacts applicationDeployment{
+      applicationImplementation.implementation().configurationAbi(),
+      {},
+      std::vector<DeploymentHardwareBinding>(
+          parent.deployment().hardwareBindings().begin(),
+          parent.deployment().hardwareBindings().end()),
+      std::vector<ArtifactRootReference>(
+          parent.deployment().instructionCoreBinaries().begin(),
+          parent.deployment().instructionCoreBinaries().end()),
+      transitionGraph,
+      {},
+      std::nullopt,
+      parent};
+  auto applicationProvider =
+      take(test, runtime::createInProcessRuntimeProvider(
+                     {{implementations, std::nullopt, {}}}));
+  auto loadedApplication =
+      take(test, application::loadApplicationDeployment(
+                     applicationDeployment, {applicationProvider, 0}, artifacts,
+                     blobs));
+  auto *applicationSelector = loadedApplication.resourceTimeSelection();
+  deployment::test::require(
+      test,
+      applicationSelector &&
+          loadedApplication.loadedDeployment().deployment().reference() ==
+              parent.reference() &&
+          applicationProvider->statistics().activationPreparationCount == 1,
+      "Application runtime dropped the verified resource-time graph");
+  (void)take(test, applicationSelector->completeRootAndActivate(
+                       precedingRoot, std::nullopt,
+                       loadedApplication.loadedDeployment()));
+  (void)take(test,
+             applicationSelector->completeRootAndActivate(
+                 root, transition.child, loadedApplication.loadedDeployment()));
+  if (llvm::Error error = applicationSelector->joinMappedRoots())
+    deployment::test::fail(test, llvm::toString(std::move(error)));
+  deployment::test::require(
+      test,
+      applicationSelector->mappedRootsJoined() &&
+          loadedApplication.loadedDeployment().deployment().reference() ==
+              child.reference() &&
+          applicationProvider->activeDeployment(0) == child.reference(),
+      "Application runtime did not join the exact loaded Deployment session");
+
+  auto staticApplicationDeployment = applicationDeployment;
+  staticApplicationDeployment.resourceTimeTransitionGraph.reset();
+  auto staticProvider = take(test, runtime::createInProcessRuntimeProvider(
+                                       {{implementations, std::nullopt, {}}}));
+  auto staticApplication =
+      take(test, application::loadApplicationDeployment(
+                     staticApplicationDeployment, {staticProvider, 0},
+                     artifacts, blobs));
+  deployment::test::require(
+      test,
+      !staticApplication.resourceTimeSelection() &&
+          staticApplication.loadedDeployment().deployment().reference() ==
+              parent.reference() &&
+          staticProvider->statistics().activationPreparationCount == 0,
+      "static Application runtime synthesized a resource-time session");
+
+  auto mismatchedApplicationDeployment = applicationDeployment;
+  mismatchedApplicationDeployment.deployment = child;
+  auto mismatchedProvider =
+      take(test, runtime::createInProcessRuntimeProvider(
+                     {{implementations, std::nullopt, {}}}));
+  expectSelectionError(
+      test,
+      application::loadApplicationDeployment(mismatchedApplicationDeployment,
+                                             {mismatchedProvider, 0}, artifacts,
+                                             blobs),
+      runtime::ResourceTimeSelectionErrorReason::EntryDeploymentMismatch);
+  deployment::test::require(
+      test,
+      !mismatchedProvider->activeDeployment(0) &&
+          mismatchedProvider->statistics().activationPreparationCount == 0 &&
+          mismatchedProvider->statistics().resetCount == 2 &&
+          mismatchedProvider->statistics().leaseReleaseCount == 1 &&
+          !mismatchedProvider->isQuarantined(0),
+      "failed Application graph join did not restore the loaded device");
 
   auto firstCycleDraft = draft;
   firstCycleDraft.trigger =

@@ -238,6 +238,15 @@ records and replays the canonical completion choices and joins the entry
 Mapping's root inventory. Provider execution, DynamicWork cancellation, host
 residual work, and process termination keep their existing authorities.
 
+An invocation which retains a completed Application build result may hand this
+pair to Runtime through one composition point: the exact finalized Deployment
+is loaded first, and its optional compiler-built transition graph is prepared
+against that same lease. This composition owns no new schema and does not
+reconcile the build result's reporting projections. Without a graph, the
+Application retains an ordinary loaded Deployment and no resource-time
+selector is invented. This invocation-local composition does not by itself
+persist the graph or its endpoint Deployment closures in a deployment package.
+
 The same separation applies to control progress. A channel consumer may be the
 first mapped thread submitted, so Host glue must preserve launch handles and
 defer its join to the source wait. Each target has independent transient

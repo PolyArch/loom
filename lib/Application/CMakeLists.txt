@@ -88,6 +88,19 @@ add_library(LoomApplicationBuild
   "${LOOM_FREESTANDING_MATH_HEADER}"
 )
 
+add_library(LoomApplicationDeploymentRuntime
+  DeploymentRuntime.cpp
+)
+
+target_include_directories(LoomApplicationDeploymentRuntime PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomApplicationDeploymentRuntime PUBLIC
+  LoomRuntimeResourceTime
+  LLVMSupport
+)
+
 target_include_directories(LoomApplicationBuild PUBLIC
   $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
 )
