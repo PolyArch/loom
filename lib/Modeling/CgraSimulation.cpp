@@ -351,6 +351,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
     const BlobStore &blobStore,
+    const sim::PreparedCgraWorkloadExecution *workloadExecution = nullptr,
     std::optional<sim::CgraClosedWaitSetDiagnostic> *closedWait = nullptr,
     std::optional<sim::CgraUnsupportedMemoryContract> *unsupportedMemory =
         nullptr) {
@@ -375,9 +376,16 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
         std::errc::invalid_argument,
         "cgra_simulation_model_invalid: runtime input is not Spatial");
   RuntimeInputCgraMemoryProvider externalMemory(*spatialInput);
-  auto outcome = sim::simulateCgraWorkload(
-      execution, workload, runtimeInput, limits.maxEventFrames,
-      limits.executionDeadline, &externalMemory);
+  auto outcome =
+      workloadExecution
+          ? sim::simulateCgraWorkload(
+                *workloadExecution, workload, runtimeInput,
+                limits.maxEventFrames, limits.executionDeadline,
+                &externalMemory)
+          : sim::simulateCgraWorkload(execution, workload, runtimeInput,
+                                      limits.maxEventFrames,
+                                      limits.executionDeadline,
+                                      &externalMemory);
   if (!outcome)
     return classifyExecutionFailure(outcome.takeError(), unsupportedMemory);
   if (outcome->state == sim::SpatialExecutionSessionState::StoppedByLimit)
@@ -1039,9 +1047,14 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
   auto published = publishEvaluationRequest(*request, artifactStore);
   if (!published)
     return published.takeError();
+  auto workloadExecution = sim::prepareCgraWorkloadExecution(
+      *execution, inputs->workload, inputs->runtimeInput);
+  if (!workloadExecution)
+    return workloadExecution.takeError();
   return PreparedCgraSimulationEvaluation{
       std::move(*request), std::move(*resolution), std::move(*execution),
-      std::move(inputs->workload), std::move(inputs->runtimeInput)};
+      std::move(inputs->workload), std::move(inputs->runtimeInput),
+      std::move(*workloadExecution)};
 }
 
 llvm::Expected<EvaluationEvidence>
@@ -1069,7 +1082,8 @@ evaluateCgraSimulationWithDiagnostics(
   auto result = evaluateWithPrepared(
       prepared.request, prepared.resolution, prepared.execution,
       prepared.workload, prepared.runtimeInput, std::move(limits),
-      artifactStore, blobStore, &closedWait, &unsupportedMemory);
+      artifactStore, blobStore, &prepared.workloadExecution, &closedWait,
+      &unsupportedMemory);
   if (!result)
     return result.takeError();
   auto evidence = EvaluationEvidence::get(

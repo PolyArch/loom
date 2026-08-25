@@ -30,6 +30,7 @@ struct PreparedCgraSimulationEvaluation final {
   sim::PreparedCgraExecution execution;
   sim::CanonicalSimulationWorkload workload;
   sim::CanonicalSimulationRuntimeInput runtimeInput;
+  sim::PreparedCgraWorkloadExecution workloadExecution;
 };
 
 struct CgraSimulationAttemptLimits final {

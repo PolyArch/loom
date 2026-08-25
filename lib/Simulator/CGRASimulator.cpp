@@ -380,7 +380,33 @@ deriveActorWaitCycle(
 
 } // namespace
 
+struct PreparedCgraWorkloadExecution::Impl final {
+  std::shared_ptr<const PreparedCgraExecution::Impl> prepared;
+  const detail::PreparedCgraGraph *graphExecution = nullptr;
+  detail::ResolvedLaunchContext context;
+  ArtifactIdentity workload;
+  ArtifactIdentity runtimeInput;
+
+  Impl(std::shared_ptr<const PreparedCgraExecution::Impl> prepared,
+       const detail::PreparedCgraGraph &graphExecution,
+       detail::ResolvedLaunchContext context, ArtifactIdentity workload,
+       ArtifactIdentity runtimeInput)
+      : prepared(std::move(prepared)), graphExecution(&graphExecution),
+        context(std::move(context)), workload(workload),
+        runtimeInput(runtimeInput) {}
+};
+
+PreparedCgraWorkloadExecution::PreparedCgraWorkloadExecution(
+    std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+PreparedCgraWorkloadExecution::PreparedCgraWorkloadExecution(
+    PreparedCgraWorkloadExecution &&) noexcept = default;
+PreparedCgraWorkloadExecution &PreparedCgraWorkloadExecution::operator=(
+    PreparedCgraWorkloadExecution &&) noexcept = default;
+PreparedCgraWorkloadExecution::~PreparedCgraWorkloadExecution() = default;
+
 struct CgraExecutionSession::Impl final {
+  std::shared_ptr<const PreparedCgraExecution::Impl> preparedOwner;
   const PreparedCgraExecution::Impl *prepared = nullptr;
   const CanonicalSimulationWorkload *workload = nullptr;
   const CanonicalSimulationRuntimeInput *runtimeInput = nullptr;
@@ -401,13 +427,14 @@ struct CgraExecutionSession::Impl final {
       physicalGrantCoordinates;
   bool resultTaken = false;
 
-  Impl(const PreparedCgraExecution::Impl &prepared,
+  Impl(std::shared_ptr<const PreparedCgraExecution::Impl> prepared,
        const CanonicalSimulationWorkload &workload,
        const CanonicalSimulationRuntimeInput &runtimeInput,
        const detail::PreparedCgraGraph &graphExecution,
        detail::ResolvedLaunchContext context,
        std::optional<TraceCaptureLevel> traceLevel)
-      : prepared(&prepared), workload(&workload), runtimeInput(&runtimeInput),
+      : preparedOwner(std::move(prepared)), prepared(preparedOwner.get()),
+        workload(&workload), runtimeInput(&runtimeInput),
         graphExecution(&graphExecution), context(std::move(context)) {
     if (traceLevel)
       trace.emplace(SpatialDiagnosticTrace{*traceLevel, {}});
@@ -935,12 +962,11 @@ CgraExecutionSession::takeRetiredSimulation() {
       impl_->counters};
 }
 
-llvm::Expected<CgraExecutionSession>
-startCgraExecutionSession(const PreparedCgraExecution &prepared,
-                          const CanonicalSimulationWorkload &workload,
-                          const CanonicalSimulationRuntimeInput &runtimeInput,
-                          std::optional<TraceCaptureLevel> traceLevel,
-                          CgraExternalMemoryProvider *externalMemoryProvider) {
+llvm::Expected<PreparedCgraWorkloadExecution>
+prepareCgraWorkloadExecution(
+    const PreparedCgraExecution &prepared,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput) {
   if (!prepared.impl_)
     return invalid("prepared CGRA execution is empty");
   const SpatialSimulationWorkload *spatial = workload.spatial();
@@ -966,24 +992,63 @@ startCgraExecutionSession(const PreparedCgraExecution &prepared,
     return llvm::createStringError(std::errc::not_supported, "%s",
                                    reason->c_str());
 
+  return PreparedCgraWorkloadExecution(
+      std::make_unique<PreparedCgraWorkloadExecution::Impl>(
+          prepared.impl_, *graphExecution, std::move(*context),
+          workload.identity(), runtimeInput.identity()));
+}
+
+llvm::Expected<CgraExecutionSession>
+startCgraExecutionSession(const PreparedCgraExecution &prepared,
+                          const CanonicalSimulationWorkload &workload,
+                          const CanonicalSimulationRuntimeInput &runtimeInput,
+                          std::optional<TraceCaptureLevel> traceLevel,
+                          CgraExternalMemoryProvider *externalMemoryProvider) {
+  auto preparedWorkload =
+      prepareCgraWorkloadExecution(prepared, workload, runtimeInput);
+  if (!preparedWorkload)
+    return preparedWorkload.takeError();
+  return startCgraExecutionSession(*preparedWorkload, workload, runtimeInput,
+                                   traceLevel, externalMemoryProvider);
+}
+
+llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
+    const PreparedCgraWorkloadExecution &prepared,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::optional<TraceCaptureLevel> traceLevel,
+    CgraExternalMemoryProvider *externalMemoryProvider) {
+  if (!prepared.impl_ || !prepared.impl_->prepared ||
+      !prepared.impl_->graphExecution)
+    return invalid("prepared CGRA workload execution is empty");
+  if (prepared.impl_->workload != workload.identity() ||
+      prepared.impl_->runtimeInput != runtimeInput.identity())
+    return invalid("prepared CGRA workload execution has foreign inputs");
+  const SpatialSimulationWorkload *spatial = workload.spatial();
+  if (!spatial)
+    return invalid("prepared CGRA workload execution is not Spatial");
+  const detail::PreparedCgraGraph &graphExecution =
+      *prepared.impl_->graphExecution;
+
   auto impl = std::make_unique<CgraExecutionSession::Impl>(
-      *prepared.impl_, workload, runtimeInput, *graphExecution,
-      std::move(*context), traceLevel);
+      prepared.impl_->prepared, workload, runtimeInput, graphExecution,
+      prepared.impl_->context, traceLevel);
 
   llvm::SmallVector<detail::GraphIngressEmission, 4> ingress;
   impl->dynamicState.graphIngressCapture = &ingress;
   llvm::scope_exit clearCapture(
       [&] { impl->dynamicState.graphIngressCapture = nullptr; });
   if (llvm::Error error = detail::initializeTypedGraphExecutionState(
-          impl->dynamicState, graphExecution->execution, impl->context.graphOp,
+          impl->dynamicState, graphExecution.execution, impl->context.graphOp,
           workload, runtimeInput, impl->context))
     return std::move(error);
   clearCapture.release();
   impl->dynamicState.graphIngressCapture = nullptr;
 
   auto runtime = detail::CgraGraphActivationRuntime::create(
-      prepared.impl_->executionPlan, prepared.impl_->dataflowView,
-      spatial->launchRef, *graph, graphExecution->execution, impl->dynamicState,
+      prepared.impl_->prepared->executionPlan,
+      prepared.impl_->prepared->dataflowView, spatial->launchRef,
+      graphExecution.graph, graphExecution.execution, impl->dynamicState,
       traceLevel == TraceCaptureLevel::Microarchitecture,
       externalMemoryProvider);
   if (!runtime)
@@ -1001,6 +1066,24 @@ startCgraExecutionSession(const PreparedCgraExecution &prepared,
 
 llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     const PreparedCgraExecution &prepared,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t maxEventFrames,
+    std::optional<std::chrono::steady_clock::time_point> executionDeadline,
+    CgraExternalMemoryProvider *externalMemoryProvider) {
+  if (maxEventFrames == 0)
+    return invalid("CGRA simulation requires a positive event-frame limit");
+  auto preparedWorkload =
+      prepareCgraWorkloadExecution(prepared, workload, runtimeInput);
+  if (!preparedWorkload)
+    return preparedWorkload.takeError();
+  return simulateCgraWorkload(*preparedWorkload, workload, runtimeInput,
+                              maxEventFrames, executionDeadline,
+                              externalMemoryProvider);
+}
+
+llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
+    const PreparedCgraWorkloadExecution &prepared,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
     std::uint64_t maxEventFrames,
