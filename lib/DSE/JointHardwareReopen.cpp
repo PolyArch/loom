@@ -43,6 +43,7 @@
 #include <chrono>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <system_error>
 #include <utility>
@@ -802,6 +803,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
   };
   std::vector<JointDesignAttemptRecord> attemptRecords;
   std::vector<JointDesignQualityObservation> qualityObservations;
+  std::vector<JointHardwarePromotionObservation> hardwarePromotionObservations;
   if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality) {
     if (!request.boundedQuality || !request.boundedQuality->objectiveProgram ||
         !request.boundedQuality->acquire ||
@@ -820,10 +822,82 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         return invalid("bounded-quality objective labels must be non-empty "
                        "and unique");
     }
+    if (quality.hardwarePromotion) {
+      const auto &promotion = *quality.hardwarePromotion;
+      if (!promotion.objectiveProgram || !promotion.acquire ||
+          promotion.totalOrdering >=
+              promotion.objectiveProgram->totalOrderingCount() ||
+          promotion.objectiveDimensionLabels.size() !=
+              promotion.objectiveProgram->dimensionCount())
+        return invalid("bounded-quality hardware promotion is incomplete");
+      for (const std::string &label : promotion.objectiveDimensionLabels)
+        if (label.empty() ||
+            llvm::count(promotion.objectiveDimensionLabels, label) != 1)
+          return invalid("bounded-quality hardware-promotion labels must be "
+                         "non-empty and unique");
+    }
   } else if (request.boundedQuality) {
     return invalid("FirstVerified stopping cannot carry a bounded-quality "
                    "policy");
   }
+  struct HardwarePromotionAssessment final {
+    std::optional<CandidateObjectiveVector> objective;
+    std::optional<IncompleteJointDesignQuality> incomplete;
+  };
+  std::map<std::uint64_t, HardwarePromotionAssessment>
+      hardwarePromotionAssessments;
+  const auto acquireHardwarePromotion =
+      [&](const JointDesignExplorationPlan &plan, std::uint64_t planOrdinal)
+      -> llvm::Expected<const CandidateObjectiveVector *> {
+    if (!request.boundedQuality || !request.boundedQuality->hardwarePromotion)
+      return static_cast<const CandidateObjectiveVector *>(nullptr);
+    if (plan.frontier.systemFrontier.size() != 1)
+      return invalid("hardware promotion plan has no exact System");
+    const ArtifactRootReference &system = plan.frontier.systemFrontier.front();
+    auto [position, inserted] = hardwarePromotionAssessments.try_emplace(
+        planOrdinal, HardwarePromotionAssessment{});
+    HardwarePromotionAssessment &assessment = position->second;
+    if (!inserted)
+      return assessment.objective ? &*assessment.objective : nullptr;
+    auto acquired =
+        request.boundedQuality->hardwarePromotion->acquire(plan, planOrdinal);
+    if (!acquired)
+      return acquired.takeError();
+    if (auto *incomplete =
+            std::get_if<IncompleteJointDesignQuality>(&*acquired)) {
+      if (incomplete->candidate && *incomplete->candidate != system)
+        return invalid("hardware promotion incomplete result names a foreign "
+                       "System");
+      if (!incomplete->candidate)
+        incomplete->candidate = system;
+      assessment.incomplete = std::move(*incomplete);
+      hardwarePromotionObservations.push_back(
+          {planOrdinal, system, {}, assessment.incomplete->reason, false});
+      boundedQualitySearchIncomplete = true;
+      return static_cast<const CandidateObjectiveVector *>(nullptr);
+    }
+    auto objectives =
+        std::get<std::vector<CandidateObjectiveVector>>(std::move(*acquired));
+    if (objectives.size() != 1 || objectives.front().candidate != system)
+      return invalid("hardware promotion acquisition must return exactly one "
+                     "objective for its System");
+    hardwarePromotionObservations.push_back(
+        {planOrdinal, system,
+         std::vector<std::uint64_t>(
+             objectives.front().objective.codes().begin(),
+             objectives.front().objective.codes().end()),
+         std::nullopt, false});
+    assessment.objective = std::move(objectives.front());
+    return &*assessment.objective;
+  };
+  const auto markHardwarePromotion = [&](std::uint64_t planOrdinal) {
+    auto observation = llvm::find_if(
+        hardwarePromotionObservations, [&](const auto &candidate) {
+          return candidate.planOrdinal == planOrdinal;
+        });
+    if (observation != hardwarePromotionObservations.end())
+      observation->promotedToExactMapping = true;
+  };
   const auto finish = [&](JointDesignExecution execution,
                           std::optional<std::uint64_t> selectedPlanOrdinal,
                           std::optional<ArtifactRootReference> selectedMapping,
@@ -951,6 +1025,14 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       summary.qualityObjectiveDimensionLabels =
           request.boundedQuality->objectiveDimensionLabels;
     summary.qualityObservations = qualityObservations;
+    if (request.boundedQuality && request.boundedQuality->hardwarePromotion)
+      summary.hardwarePromotionObjectiveDimensionLabels =
+          request.boundedQuality->hardwarePromotion->objectiveDimensionLabels;
+    summary.hardwarePromotionObservations = hardwarePromotionObservations;
+    llvm::sort(summary.hardwarePromotionObservations,
+               [](const auto &lhs, const auto &rhs) {
+                 return lhs.planOrdinal < rhs.planOrdinal;
+               });
     summary.declaredWorkExhausted = declaredWorkExhausted;
     summary.attempts = attemptRecords;
     execution.summary = std::move(summary);
@@ -1297,8 +1379,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
   std::vector<FailedSoftwareAttempt *> hardwareFeedbackFrontier;
   if (request.hardwareExplorationScope ==
           JointHardwareExplorationScope::BoundedHardwareReopen &&
-      (request.stoppingPolicy != JointDesignStoppingPolicy::BoundedQuality ||
-       verifiedAlternatives.empty())) {
+      request.stoppingPolicy != JointDesignStoppingPolicy::BoundedQuality) {
     for (FailedSoftwareAttempt &attempt : failedSoftwareAttempts)
       hardwareFeedbackFrontier.push_back(&attempt);
   } else if (request.hardwareExplorationScope ==
@@ -1334,6 +1415,42 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       return lhs->planOrdinal < rhs->planOrdinal;
     });
     const std::size_t actionableFeedbackCount = hardwareFeedbackFrontier.size();
+    if (request.boundedQuality->hardwarePromotion) {
+      std::vector<FailedSoftwareAttempt *> ranked;
+      ranked.reserve(hardwareFeedbackFrontier.size());
+      const auto &promotion = *request.boundedQuality->hardwarePromotion;
+      for (FailedSoftwareAttempt *candidate : hardwareFeedbackFrontier) {
+        auto candidateObjective =
+            acquireHardwarePromotion(*candidate->plan, candidate->planOrdinal);
+        if (!candidateObjective)
+          return candidateObjective.takeError();
+        if (!*candidateObjective)
+          continue;
+        auto insertion = ranked.begin();
+        for (; insertion != ranked.end(); ++insertion) {
+          auto existingObjective = acquireHardwarePromotion(
+              *(*insertion)->plan, (*insertion)->planOrdinal);
+          if (!existingObjective)
+            return existingObjective.takeError();
+          if (!*existingObjective)
+            return invalid("ranked hardware promotion lost its objective");
+          auto comparison = promotion.objectiveProgram->compareTotalOrdering(
+              (*candidateObjective)->objective,
+              encodeArtifactRootReference(
+                  candidate->plan->frontier.systemFrontier.front()),
+              (*existingObjective)->objective,
+              encodeArtifactRootReference(
+                  (*insertion)->plan->frontier.systemFrontier.front()),
+              promotion.totalOrdering);
+          if (!comparison)
+            return comparison.takeError();
+          if (*comparison < 0)
+            break;
+        }
+        ranked.insert(insertion, candidate);
+      }
+      hardwareFeedbackFrontier = std::move(ranked);
+    }
     const std::size_t limit = static_cast<std::size_t>(std::min<std::uint64_t>(
         request.boundedQuality->maximumHardwareSpectrumParents,
         hardwareFeedbackFrontier.size()));
@@ -1359,6 +1476,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         return fair.takeError();
       feedbackExecutionPolicy.emplace(std::move(*fair));
       ++hardwareParentPromotions;
+      markHardwarePromotion(attempt.planOrdinal);
     }
     ++hardwareReopenSearches;
     mapping_debug::emit(
@@ -1434,14 +1552,61 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality &&
       !verifiedAlternatives.empty()) {
     const std::size_t baseAlternativeCount = verifiedAlternatives.size();
+    std::vector<std::size_t> hardwareParentOrder;
+    hardwareParentOrder.reserve(baseAlternativeCount);
+    if (request.boundedQuality->hardwarePromotion) {
+      const auto &promotion = *request.boundedQuality->hardwarePromotion;
+      for (std::size_t candidateIndex = 0;
+           candidateIndex != baseAlternativeCount; ++candidateIndex) {
+        VerifiedAlternative &candidate = verifiedAlternatives[candidateIndex];
+        if (candidate.planOrdinal >= plans.size() ||
+            !plans[candidate.planOrdinal])
+          return invalid("bounded-quality hardware parent lost its plan");
+        auto candidateObjective = acquireHardwarePromotion(
+            *plans[candidate.planOrdinal], candidate.planOrdinal);
+        if (!candidateObjective)
+          return candidateObjective.takeError();
+        if (!*candidateObjective)
+          continue;
+        auto insertion = hardwareParentOrder.begin();
+        for (; insertion != hardwareParentOrder.end(); ++insertion) {
+          VerifiedAlternative &existing = verifiedAlternatives[*insertion];
+          auto existingObjective = acquireHardwarePromotion(
+              *plans[existing.planOrdinal], existing.planOrdinal);
+          if (!existingObjective)
+            return existingObjective.takeError();
+          if (!*existingObjective)
+            return invalid("ranked hardware parent lost its objective");
+          auto comparison = promotion.objectiveProgram->compareTotalOrdering(
+              (*candidateObjective)->objective,
+              encodeArtifactRootReference(
+                  plans[candidate.planOrdinal]
+                      ->frontier.systemFrontier.front()),
+              (*existingObjective)->objective,
+              encodeArtifactRootReference(
+                  plans[existing.planOrdinal]->frontier.systemFrontier.front()),
+              promotion.totalOrdering);
+          if (!comparison)
+            return comparison.takeError();
+          if (*comparison < 0)
+            break;
+        }
+        hardwareParentOrder.insert(insertion, candidateIndex);
+      }
+    } else {
+      hardwareParentOrder.resize(baseAlternativeCount);
+      std::iota(hardwareParentOrder.begin(), hardwareParentOrder.end(), 0);
+    }
     const std::uint64_t remainingParentBudget =
         request.boundedQuality->maximumHardwareSpectrumParents >
                 hardwareParentPromotions
             ? request.boundedQuality->maximumHardwareSpectrumParents -
                   hardwareParentPromotions
             : 0;
-    const std::uint64_t parentLimit =
-        std::min<std::uint64_t>(remainingParentBudget, baseAlternativeCount);
+    const std::uint64_t parentLimit = std::min<std::uint64_t>(
+        remainingParentBudget, hardwareParentOrder.size());
+    saturatingAdd(hardwareReopensDeferredByQuality,
+                  baseAlternativeCount - parentLimit);
     for (std::uint64_t parentOrdinal = 0; parentOrdinal != parentLimit;
          ++parentOrdinal) {
       if (dispatchDeadlineReached(request.executionPolicy)) {
@@ -1449,11 +1614,13 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         boundedQualitySearchIncomplete = true;
         break;
       }
-      VerifiedAlternative &parent = verifiedAlternatives[parentOrdinal];
+      VerifiedAlternative &parent =
+          verifiedAlternatives[hardwareParentOrder[parentOrdinal]];
       if (parent.planOrdinal >= plans.size() || !plans[parent.planOrdinal])
         return invalid("bounded-quality hardware parent lost its plan");
       const std::uint64_t parentPlanOrdinal = parent.planOrdinal;
       ++hardwareParentPromotions;
+      markHardwarePromotion(parentPlanOrdinal);
       auto spectrumPolicy = fairBoundedQualityPlanPolicy(
           request.executionPolicy, parentLimit - parentOrdinal);
       if (!spectrumPolicy)

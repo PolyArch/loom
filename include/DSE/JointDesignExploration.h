@@ -117,6 +117,17 @@ struct JointDesignQualityObservation final {
   std::optional<JointDesignQualityIncompleteReason> incompleteReason;
 };
 
+/// Pre-Mapping quality observation for one exact software/System plan. The
+/// promoted bit records admission to additional exact Mapping/PnR work; it is
+/// never a feasibility claim for the parent or any generated child.
+struct JointHardwarePromotionObservation final {
+  std::uint64_t planOrdinal = 0;
+  ArtifactRootReference system;
+  std::vector<std::uint64_t> objectiveCodes;
+  std::optional<JointDesignQualityIncompleteReason> incompleteReason;
+  bool promotedToExactMapping = false;
+};
+
 /// One exact software-plan outcome retained independently of the final
 /// stopping-policy winner. The plan ordinal joins mechanically to the
 /// caller's bounded software frontier.
@@ -234,6 +245,8 @@ struct JointDesignExecutionSummary final {
   std::optional<ArtifactRootReference> qualityIncompleteCandidate;
   std::vector<std::string> qualityObjectiveDimensionLabels;
   std::vector<JointDesignQualityObservation> qualityObservations;
+  std::vector<std::string> hardwarePromotionObjectiveDimensionLabels;
+  std::vector<JointHardwarePromotionObservation> hardwarePromotionObservations;
   bool declaredWorkExhausted = false;
   std::vector<JointDesignAttemptRecord> attempts;
 };
@@ -258,6 +271,20 @@ using JointDesignQualityAcquirer =
     std::function<llvm::Expected<JointDesignQualityAcquisition>(
         const JointDesignExecution &, std::uint64_t planOrdinal)>;
 
+using JointHardwarePromotionQualityAcquirer =
+    std::function<llvm::Expected<JointDesignQualityAcquisition>(
+        const JointDesignExplorationPlan &, std::uint64_t planOrdinal)>;
+
+/// In-process, pre-Mapping objective used only to rank which bounded hardware
+/// parents may consume additional exact Mapping/PnR work. Candidate identity
+/// and Mapping legality remain owned by the plan and Mapping providers.
+struct JointHardwarePromotionQualityPolicy final {
+  std::shared_ptr<const ObjectiveProgram> objectiveProgram;
+  std::vector<std::string> objectiveDimensionLabels;
+  std::uint32_t totalOrdering = 0;
+  JointHardwarePromotionQualityAcquirer acquire;
+};
+
 /// Invocation-local adapter to the shared Objective/Pareto owner. The
 /// The acquirer is invoked once per selected SystemMapping (the invocation
 /// summary temporarily names that mapping) and must return exactly one
@@ -272,6 +299,7 @@ struct JointBoundedQualityPolicy final {
   std::vector<std::uint32_t> paretoDimensions;
   std::uint32_t finalTotalOrdering = 0;
   JointDesignQualityAcquirer acquire;
+  std::optional<JointHardwarePromotionQualityPolicy> hardwarePromotion;
   /// Maximum verified base mappings promoted to hardware-spectrum expansion
   /// after the bounded software frontier has completed. Base application QoR
   /// and final selection remain owned by this policy; zero is invalid.

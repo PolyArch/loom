@@ -198,7 +198,8 @@ bool everyCoreIsUsed(const loom::ArtifactRootReference &systemReference,
 
 void exerciseJointExploration(bool runFifoHardwareRepair,
                               bool runOperandHardwareRepair,
-                              bool runTransportRepair) {
+                              bool runTransportRepair,
+                              bool runHardwareQualityPromotion) {
   TemporaryDirectory temporary;
   llvm::SmallString<128> blobPath(temporary.path());
   llvm::sys::path::append(blobPath, "blobs");
@@ -307,6 +308,107 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
             plan.frontier.pairs.front().software.dataflow.artifact ||
         mapping.view().fabricIdentity() != system.artifact)
       fail("joint Mapping output lost its exact pair owners");
+  }
+
+  if (runHardwareQualityPromotion) {
+    const loom::dse::JointDesignPolicy promotionPolicy =
+        take(loom::dse::JointDesignPolicy::get(2, 2, 1, 2, 32));
+    auto firstPlan = take(loom::dse::buildJointDesignExplorationPlan(
+        {{{firstWorkload}}, {system}}, timingProfileRoots, promotionPolicy,
+        config, store));
+    auto secondPlan = take(loom::dse::buildJointDesignExplorationPlan(
+        {{{secondWorkload}}, {system}}, timingProfileRoots, promotionPolicy,
+        config, store));
+    const std::array promotionPlans = {&firstPlan, &secondPlan};
+
+    loom::dse::CandidateMeasureObjectiveCatalogs objectiveCatalogs;
+    objectiveCatalogs.dimensions = {
+        {0, loom::ResolvedObjectiveDirection::Minimize, 0, 100}};
+    objectiveCatalogs.weightedLevels = {{{{0, 1}}}};
+    objectiveCatalogs.totalOrderings = {{{0}}};
+    auto objectiveProgram = take(
+        loom::dse::ObjectiveProgram::getCandidateMeasures(objectiveCatalogs));
+    auto sharedObjectiveProgram =
+        std::make_shared<const loom::dse::ObjectiveProgram>(
+            std::move(objectiveProgram));
+
+    loom::dse::JointBoundedQualityPolicy quality;
+    quality.objectiveProgram = sharedObjectiveProgram;
+    quality.objectiveDimensionLabels = {"mapping_quality"};
+    quality.paretoDimensions = {0};
+    quality.finalTotalOrdering = 0;
+    quality.acquire =
+        [sharedObjectiveProgram](const loom::dse::JointDesignExecution &result,
+                                 std::uint64_t)
+        -> llvm::Expected<loom::dse::JointDesignQualityAcquisition> {
+      if (!result.summary.selectedMapping)
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "quality fixture has no Mapping");
+      loom::dse::ObjectiveVector objective =
+          sharedObjectiveProgram->makeVector();
+      const std::array<std::uint64_t, 1> measures = {0};
+      if (llvm::Error error = sharedObjectiveProgram->evaluateCandidateMeasures(
+              measures, objective))
+        return std::move(error);
+      return loom::dse::JointDesignQualityAcquisition{
+          std::vector<loom::dse::CandidateObjectiveVector>{
+              {*result.summary.selectedMapping, std::move(objective)}}};
+    };
+    quality.hardwarePromotion = loom::dse::JointHardwarePromotionQualityPolicy{
+        sharedObjectiveProgram,
+        {"predicted_mapping_quality"},
+        0,
+        [sharedObjectiveProgram](
+            const loom::dse::JointDesignExplorationPlan &candidate,
+            std::uint64_t planOrdinal)
+            -> llvm::Expected<loom::dse::JointDesignQualityAcquisition> {
+          if (candidate.frontier.systemFrontier.size() != 1)
+            return llvm::createStringError(
+                llvm::inconvertibleErrorCode(),
+                "promotion fixture has no exact System");
+          loom::dse::ObjectiveVector objective =
+              sharedObjectiveProgram->makeVector();
+          const std::array<std::uint64_t, 1> measures = {
+              planOrdinal == 1 ? UINT64_C(0) : UINT64_C(1)};
+          if (llvm::Error error =
+                  sharedObjectiveProgram->evaluateCandidateMeasures(measures,
+                                                                    objective))
+            return std::move(error);
+          return loom::dse::JointDesignQualityAcquisition{
+              std::vector<loom::dse::CandidateObjectiveVector>{
+                  {candidate.frontier.systemFrontier.front(),
+                   std::move(objective)}}};
+        }};
+    quality.maximumHardwareSpectrumParents = 1;
+    quality.maximumHardwareRepairProbes = 1;
+
+    llvm::SmallString<128> promotionJournal(temporary.path());
+    llvm::sys::path::append(promotionJournal, "hardware-quality-promotion");
+    auto promoted = take(loom::dse::executeJointDesignWithHardwareReopen(
+        promotionPlans, promotionPolicy,
+        {take(loom::dse::DseProducerSemanticBuildIdentity::get(
+             "loom.test.hardware_quality_promotion.v1")),
+         promotionJournal.str().str(),
+         {},
+         loom::dse::JointDesignStoppingPolicy::BoundedQuality,
+         std::move(quality),
+         5,
+         take(loom::dse::SiteCapacity::get(2, 0, 0)),
+         take(loom::dse::PlanExecutionPolicy::get(
+             32, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+        store, blobs));
+    if (promoted.summary.hardwareParentPromotions != 1 ||
+        promoted.summary.hardwareReopensDeferredByQuality == 0 ||
+        promoted.summary.hardwarePromotionObservations.size() != 2)
+      fail("bounded hardware promotion lost its exact work ledger");
+    for (const auto &observation :
+         promoted.summary.hardwarePromotionObservations) {
+      const bool expectedPromotion = observation.planOrdinal == 1;
+      if (observation.promotedToExactMapping != expectedPromotion ||
+          observation.incompleteReason ||
+          observation.objectiveCodes.size() != 1)
+        fail("bounded hardware promotion ignored its objective order");
+    }
   }
 
   auto mappedDataflow = take(dataflow::importCanonicalDataflow(
@@ -976,11 +1078,13 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
 
 int main(int argc, char **argv) {
   const llvm::StringRef mode = argc == 2 ? argv[1] : "";
-  if (argc > 2 || (argc == 2 && mode != "fifo-feedback" &&
-                   mode != "operand-feedback" && mode != "transport-feedback"))
+  if (argc > 2 ||
+      (argc == 2 && mode != "fifo-feedback" && mode != "operand-feedback" &&
+       mode != "transport-feedback" && mode != "quality-promotion"))
     fail("expected no workflow, fifo-feedback, operand-feedback, or "
-         "transport-feedback");
+         "transport-feedback, or quality-promotion");
   exerciseJointExploration(mode == "fifo-feedback", mode == "operand-feedback",
-                           mode == "transport-feedback");
+                           mode == "transport-feedback",
+                           mode == "quality-promotion");
   return 0;
 }
