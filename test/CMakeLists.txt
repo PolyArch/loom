@@ -237,6 +237,7 @@ set(LOOM_TEST_DEPENDS
   loom-runtime-gem5-bridge-test
   loom-runtime-gem5-simulation-binding-test
   loom-runtime-gem5-spatial-channel-test
+  loom-runtime-ordered-channel-abi-test
   loom-runtime-deployment-loader-test
   loom-system-execution-matrix-test
   loom-heterogeneous-system-anchor-test

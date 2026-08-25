@@ -1,0 +1,135 @@
+#ifndef LOOM_RUNTIME_ORDEREDCHANNELABI_H
+#define LOOM_RUNTIME_ORDEREDCHANNELABI_H
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <deque>
+#include <memory>
+#include <optional>
+#include <string>
+#include <system_error>
+#include <vector>
+
+namespace loom::runtime {
+
+enum class OrderedChannelSendKind : std::uint8_t {
+  Accepted,
+  WouldBlock,
+  SequenceExhausted,
+};
+
+struct OrderedChannelSend final {
+  OrderedChannelSendKind kind = OrderedChannelSendKind::WouldBlock;
+  std::uint64_t sequence = 0;
+};
+
+enum class OrderedChannelReceiveKind : std::uint8_t {
+  Message,
+  WouldBlock,
+};
+
+/// A receive reservation and its acknowledgement coordinates. Private
+/// transient identity binds copies to the exact live reservation and owner.
+struct OrderedChannelReceiveTicket final {
+  OrderedChannelReceiveKind kind = OrderedChannelReceiveKind::WouldBlock;
+  std::uint32_t consumerOrdinal = 0;
+  std::uint64_t sequence = 0;
+  std::vector<std::uint8_t> payload;
+
+private:
+  friend class OrderedChannelABI;
+
+  std::shared_ptr<const void> ownerIdentity_;
+  std::uint64_t reservationIdentity_ = 0;
+};
+
+class OrderedChannelABIError final
+    : public llvm::ErrorInfo<OrderedChannelABIError> {
+public:
+  enum class Kind {
+    InvalidConfiguration,
+    InvalidConsumer,
+    OutstandingReservation,
+    ReservationIdentityExhausted,
+    InvalidTicket,
+  };
+
+  static char ID;
+
+  OrderedChannelABIError(Kind kind, std::string message);
+
+  Kind kind() const { return kind_; }
+
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  Kind kind_;
+  std::string message_;
+};
+
+/// Direct invocation-local ordered-channel ABI and sequence owner. It owns the
+/// FIFO cursors, reservations, acknowledgements, multicast retention, and
+/// bounded capacity without creating persistent channel or session identity.
+/// The caller must submit sends in the canonical event commit order; this
+/// owner does not choose ordering from concurrent arrival.
+class OrderedChannelABI final {
+public:
+  static llvm::Expected<OrderedChannelABI>
+  create(std::uint64_t capacityMessages, std::uint32_t consumerCount);
+
+  OrderedChannelABI(OrderedChannelABI &&) noexcept = default;
+  OrderedChannelABI &operator=(OrderedChannelABI &&) noexcept = default;
+  OrderedChannelABI(const OrderedChannelABI &) = delete;
+  OrderedChannelABI &operator=(const OrderedChannelABI &) = delete;
+
+  OrderedChannelSend send(llvm::ArrayRef<std::uint8_t> payload);
+
+  llvm::Expected<OrderedChannelReceiveTicket>
+  receive(std::uint32_t consumerOrdinal);
+
+  llvm::Error acknowledge(const OrderedChannelReceiveTicket &ticket);
+  llvm::Error cancel(const OrderedChannelReceiveTicket &ticket);
+
+  std::uint32_t consumerCount() const {
+    return static_cast<std::uint32_t>(nextReceiveSequences_.size());
+  }
+  std::uint64_t nextSendSequence() const { return nextSendSequence_; }
+  llvm::Expected<std::uint64_t>
+  nextReceiveSequence(std::uint32_t consumerOrdinal) const;
+
+private:
+  struct Message final {
+    std::uint64_t sequence = 0;
+    std::vector<std::uint8_t> payload;
+  };
+
+  struct Reservation final {
+    std::uint64_t sequence = 0;
+    std::uint64_t identity = 0;
+  };
+
+  OrderedChannelABI(std::uint64_t capacityMessages, std::uint32_t consumerCount)
+      : capacityMessages_(capacityMessages),
+        ownerIdentity_(std::make_shared<const std::uint8_t>(0)),
+        nextReceiveSequences_(consumerCount, 0), reservations_(consumerCount) {}
+
+  llvm::Error validateConsumer(std::uint32_t consumerOrdinal) const;
+  llvm::Error validateTicket(const OrderedChannelReceiveTicket &ticket) const;
+  Message *findMessage(std::uint64_t sequence);
+  void reclaimAcknowledgedPrefix();
+
+  std::uint64_t capacityMessages_ = 0;
+  std::shared_ptr<const void> ownerIdentity_;
+  std::uint64_t nextReservationIdentity_ = 1;
+  std::uint64_t nextSendSequence_ = 0;
+  std::vector<std::uint64_t> nextReceiveSequences_;
+  std::vector<std::optional<Reservation>> reservations_;
+  std::deque<Message> messages_;
+};
+
+} // namespace loom::runtime
+
+#endif // LOOM_RUNTIME_ORDEREDCHANNELABI_H

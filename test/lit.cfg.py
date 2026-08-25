@@ -327,12 +327,12 @@ config.substitutions.insert(
 config.substitutions.insert(
     0,
     (
-        "%loom-runtime-ordered-channel-sequence-test\\b",
+        "%loom-runtime-ordered-channel-abi-test\\b",
         os.path.join(
             config.loom_obj_root,
             "test",
             "runtime",
-            "loom-runtime-ordered-channel-sequence-test",
+            "loom-runtime-ordered-channel-abi-test",
         ),
     ),
 )

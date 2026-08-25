@@ -5,7 +5,7 @@ add_library(LoomRuntimePlatformBinding
   Gem5SimulationBinding.cpp
   Gem5SimulationBindingCodec.cpp
   Gem5SpatialChannel.cpp
-  OrderedChannelSequence.cpp
+  OrderedChannelABI.cpp
   RuntimePlatformBinding.cpp
   RuntimeProvider.cpp
 )

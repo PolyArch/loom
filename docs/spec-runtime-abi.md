@@ -411,6 +411,19 @@ outcome and never overwrites an unacknowledged message. A graph stream's
 `ClosedAfterLast` observation is only the horizon of that graph activation and
 does not implicitly close the thread-level channel.
 
+`OrderedChannelABI` is the direct in-process Runtime call boundary for that
+same sequence owner. `send` reports `Accepted`, `WouldBlock`, or
+`SequenceExhausted` and exposes the candidate `SendSeq` without advancing it on
+a blocked call. `receive` returns the next message or `WouldBlock` together
+with the consumer branch and `RecvSeq`; acknowledgement or cancellation must
+match that currently live reservation. Native compiler-generated endpoint
+calls and the gem5 multi-Bridge provider use this owner rather than maintaining
+parallel cursor, reservation, or acknowledgement state. The ABI creates no
+persistent channel identity and adds no session, epoch, open, reset, or EOS
+semantics. It does not schedule endpoint occurrences: its caller must submit
+sends in Dataflow's canonical event commit order rather than arrival-race
+order, and each execution adapter owns blocking and retry around `WouldBlock`.
+
 The Spatial Bridge binding's `maximumMessageBytes` is a separate provider wire
 and staging limit. It may reject an unrepresentable invocation or message with
 a typed provider outcome, but it cannot change logical capacity, split one

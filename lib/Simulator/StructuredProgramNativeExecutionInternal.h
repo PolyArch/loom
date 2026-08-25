@@ -1,7 +1,7 @@
 #ifndef LOOM_SIMULATOR_STRUCTUREDPROGRAMNATIVEEXECUTIONINTERNAL_H
 #define LOOM_SIMULATOR_STRUCTUREDPROGRAMNATIVEEXECUTIONINTERNAL_H
 
-#include "Runtime/OrderedChannelSequence.h"
+#include "Runtime/OrderedChannelABI.h"
 #include "Simulator/NativeSimulationOracle.h"
 
 #include "SimulationWireInternal.h"
@@ -54,7 +54,7 @@ struct MemoryTargetPlan final {
 
 struct NativeExecutionContext final {
   struct LogicalChannel final {
-    std::optional<loom::runtime::OrderedChannelSequence> sequence;
+    std::optional<loom::runtime::OrderedChannelABI> abi;
   };
 
   std::vector<AlignedByteStorage> objects;

@@ -7,7 +7,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Runtime/Gem5BridgeWire.h"
 #include "Runtime/Gem5SpatialChannel.h"
-#include "Runtime/OrderedChannelSequence.h"
+#include "Runtime/OrderedChannelABI.h"
 #include "Simulator/CGRAAdmission.h"
 #include "Simulator/CGRASimulator.h"
 #include "Simulator/DFGSimulator.h"
@@ -122,12 +122,11 @@ struct SpatialSessionEntry final {
 
 struct ChannelReservation final {
   std::uint64_t channelOrdinal = 0;
-  std::uint32_t consumerOrdinal = 0;
-  std::uint64_t sequence = 0;
+  loom::runtime::OrderedChannelReceiveTicket ticket;
 };
 
 struct ChannelSequenceState final {
-  loom::runtime::OrderedChannelSequence sequence;
+  loom::runtime::OrderedChannelABI abi;
   std::map<std::string, std::uint32_t> consumerOrdinals;
 };
 
@@ -491,17 +490,16 @@ bindChannelInputs(
     auto branch = state->second.consumerOrdinals.find(*key);
     if (branch == state->second.consumerOrdinals.end())
       return invalid("channel input has no deterministic consumer branch");
-    auto received = state->second.sequence.reserve(branch->second);
+    auto received = state->second.abi.receive(branch->second);
     if (!received)
       return received.takeError();
     if (received->kind == loom::runtime::OrderedChannelReceiveKind::WouldBlock)
       return std::optional<loom::sim::CanonicalSimulationRuntimeInput>{};
-    if (received->kind == loom::runtime::OrderedChannelReceiveKind::Closed)
-      return invalid("ordered channel input reached channel close");
-    reservations.push_back(
-        {channel.channelOrdinal, branch->second, received->sequence});
+    reservations.push_back({channel.channelOrdinal, std::move(*received)});
+    const loom::runtime::OrderedChannelReceiveTicket &reservation =
+        reservations.back().ticket;
     auto stream = loom::sim::decodeSpatialChannelStream(
-        received->payload, *view, spatialWorkload->launchRef,
+        reservation.payload, *view, spatialWorkload->launchRef,
         channel.consumerStreamInputOrdinal, draft.memoryObjects.size());
     if (!stream)
       return stream.takeError();
@@ -524,10 +522,8 @@ llvm::Expected<bool> settleChannelReservations(
     auto state = channelSequences.find(it->channelOrdinal);
     if (state == channelSequences.end())
       return invalid("channel reservation lost its sequence state");
-    llvm::Error error =
-        commit
-            ? state->second.sequence.commit(it->consumerOrdinal, it->sequence)
-            : state->second.sequence.cancel(it->consumerOrdinal, it->sequence);
+    llvm::Error error = commit ? state->second.abi.acknowledge(it->ticket)
+                               : state->second.abi.cancel(it->ticket);
     if (error)
       return std::move(error);
   }
@@ -620,12 +616,13 @@ llvm::Expected<ChannelPublicationProgress> publishAvailableChannelOutputs(
     auto state = channelSequences.find(publication.channelOrdinal);
     if (state == channelSequences.end())
       return invalid("pending channel output lost its sequence state");
-    while (publication.nextPayload < publication.payloads.size() &&
-           state->second.sequence.canPublish(1)) {
-      auto published = state->second.sequence.publish(
-          publication.payloads[publication.nextPayload]);
-      if (!published)
-        return published.takeError();
+    while (publication.nextPayload < publication.payloads.size()) {
+      const auto sent =
+          state->second.abi.send(publication.payloads[publication.nextPayload]);
+      if (sent.kind == loom::runtime::OrderedChannelSendKind::WouldBlock)
+        break;
+      if (sent.kind == loom::runtime::OrderedChannelSendKind::SequenceExhausted)
+        return invalid("ordered channel SendSeq is exhausted");
       ++publication.nextPayload;
       progress.advanced = true;
     }
@@ -1191,12 +1188,12 @@ int main(int argc, char **argv) {
         static_cast<std::uint32_t>(keys->second.size());
     if (consumers == 0)
       return report(invalid("ordered channel has no consumer branch"));
-    auto sequence = loom::runtime::OrderedChannelSequence::create(
-        capacityMessages, consumers);
-    if (!sequence)
-      return report(sequence.takeError());
+    auto abi =
+        loom::runtime::OrderedChannelABI::create(capacityMessages, consumers);
+    if (!abi)
+      return report(abi.takeError());
     channelSequences.emplace(channelOrdinal,
-                             ChannelSequenceState{std::move(*sequence), {}});
+                             ChannelSequenceState{std::move(*abi), {}});
     auto &ordinals =
         channelSequences.find(channelOrdinal)->second.consumerOrdinals;
     std::uint32_t ordinal = 0;
