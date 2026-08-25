@@ -35,7 +35,8 @@ namespace {
 constexpr llvm::StringLiteral kSnapshotName = "execution-journal.snapshot";
 constexpr llvm::StringLiteral kSnapshotIdentity = "loom.dse.execution_journal";
 constexpr SchemaVersion kLegacySnapshotVersion{1, 1};
-constexpr SchemaVersion kSnapshotVersion{1, 2};
+constexpr SchemaVersion kExternalToolWorkSnapshotVersion{1, 2};
+constexpr SchemaVersion kSnapshotVersion{1, 3};
 constexpr std::uint64_t kMaximumSnapshotBytes = 64ULL * 1024ULL * 1024ULL;
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -475,7 +476,8 @@ decodeRecord(Decoder &decoder, SchemaVersion snapshotVersion) {
         std::move(*schema), {*major, *minor}, std::move(*digest)};
   }
   ExternalToolWorkLedger externalToolWork;
-  if (snapshotVersion == kSnapshotVersion) {
+  if (snapshotVersion == kExternalToolWorkSnapshotVersion ||
+      snapshotVersion == kSnapshotVersion) {
     auto decoded = decodeExternalToolWorkLedger(decoder);
     if (!decoded)
       return decoded.takeError();
@@ -615,6 +617,9 @@ struct ExecutionJournal::State final {
   DseRunKey runKey;
   ComponentViewDigest viewDigest;
   bool stopRequested = false;
+  std::uint64_t nextOccurrenceOrdinal = 0;
+  std::optional<InvocationOccurrenceRef> currentOccurrence;
+  std::optional<InvocationOccurrenceRef> resumedFrom;
   std::vector<JournalWorkUnitRecord> workUnits;
   mutable std::mutex mutex;
 };
@@ -675,6 +680,7 @@ std::vector<std::uint8_t> encodeState(const StateT &state) {
   encoder.bytes(state.runKey.bytes());
   encoder.bytes(state.viewDigest.bytes());
   encoder.u32(state.stopRequested ? 1 : 0);
+  encoder.u64(state.nextOccurrenceOrdinal);
   encoder.u64(state.workUnits.size());
   for (const JournalWorkUnitRecord &record : state.workUnits)
     encodeRecord(encoder, record);
@@ -693,7 +699,13 @@ template <typename StateT> llvm::Error flushLocked(const StateT &state) {
                           closeDescriptor(*directory, "run directory"));
 }
 
-llvm::Expected<std::pair<bool, std::vector<JournalWorkUnitRecord>>>
+struct DecodedState final {
+  bool stopRequested = false;
+  std::uint64_t nextOccurrenceOrdinal = 0;
+  std::vector<JournalWorkUnitRecord> workUnits;
+};
+
+llvm::Expected<DecodedState>
 decodeState(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
             const ComponentViewDigest &viewDigest) {
   Decoder decoder(bytes);
@@ -709,6 +721,7 @@ decodeState(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
   const SchemaVersion snapshotVersion{*major, *minor};
   if (*identity != kSnapshotIdentity ||
       (snapshotVersion != kLegacySnapshotVersion &&
+       snapshotVersion != kExternalToolWorkSnapshotVersion &&
        snapshotVersion != kSnapshotVersion))
     return invalid("snapshot schema is unsupported");
   auto runKeyBytes = decoder.bytes(DseRunKey::byteSize, "run key");
@@ -733,6 +746,13 @@ decodeState(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
     return stopRequested.takeError();
   if (*stopRequested > 1)
     return invalid("graceful stop flag is not boolean");
+  std::uint64_t nextOccurrenceOrdinal = 0;
+  if (snapshotVersion == kSnapshotVersion) {
+    auto decoded = decoder.u64("next invocation occurrence ordinal");
+    if (!decoded)
+      return decoded.takeError();
+    nextOccurrenceOrdinal = *decoded;
+  }
   auto count = decoder.u64("work record count");
   if (!count)
     return count.takeError();
@@ -752,7 +772,8 @@ decodeState(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
   }
   if (!decoder.empty())
     return invalid("snapshot has trailing bytes");
-  return std::make_pair(*stopRequested == 1, std::move(records));
+  return DecodedState{*stopRequested == 1, nextOccurrenceOrdinal,
+                      std::move(records)};
 }
 
 auto findRecord(std::vector<JournalWorkUnitRecord> &records,
@@ -786,8 +807,9 @@ ExecutionJournal::open(llvm::StringRef localRunRoot,
     auto decoded = decodeState(**snapshot, closure.runKey(), view.digest());
     if (!decoded)
       return decoded.takeError();
-    state->stopRequested = decoded->first;
-    state->workUnits = std::move(decoded->second);
+    state->stopRequested = decoded->stopRequested;
+    state->nextOccurrenceOrdinal = decoded->nextOccurrenceOrdinal;
+    state->workUnits = std::move(decoded->workUnits);
     bool recoveredActiveWork = false;
     for (JournalWorkUnitRecord &record : state->workUnits) {
       if (record.activeAttemptStartUnixTimeNanoseconds != 0) {
@@ -821,6 +843,15 @@ ExecutionJournal::resolvedDseConfigViewDigest() const {
 
 llvm::StringRef ExecutionJournal::localRunRoot() const {
   return state_->localRunRoot;
+}
+
+llvm::Expected<std::pair<InvocationOccurrenceRef,
+                         std::optional<InvocationOccurrenceRef>>>
+ExecutionJournal::currentInvocationOccurrence() const {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if (!state_->currentOccurrence)
+    return invalid("journal has not opened an invocation occurrence");
+  return std::make_pair(*state_->currentOccurrence, state_->resumedFrom);
 }
 
 llvm::Expected<std::vector<JournalWorkUnitRecord>>
@@ -1105,6 +1136,16 @@ llvm::Error ExecutionJournal::requestGracefulStop() {
 
 llvm::Error ExecutionJournal::beginResume() {
   std::lock_guard<std::mutex> lock(state_->mutex);
+  if (state_->nextOccurrenceOrdinal ==
+      std::numeric_limits<std::uint64_t>::max())
+    return invalid("invocation occurrence ordinal is exhausted");
+  state_->resumedFrom =
+      state_->nextOccurrenceOrdinal == 0
+          ? std::optional<InvocationOccurrenceRef>{}
+          : std::optional<InvocationOccurrenceRef>{InvocationOccurrenceRef{
+                state_->runKey, state_->nextOccurrenceOrdinal - 1}};
+  state_->currentOccurrence = InvocationOccurrenceRef{
+      state_->runKey, state_->nextOccurrenceOrdinal++};
   state_->stopRequested = false;
   for (JournalWorkUnitRecord &record : state_->workUnits) {
     if (record.activeAttemptStartUnixTimeNanoseconds != 0) {

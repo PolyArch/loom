@@ -151,6 +151,13 @@ public:
   const ComponentViewDigest &resolvedDseConfigViewDigest() const;
   llvm::StringRef localRunRoot() const;
 
+  /// The occurrence opened by the most recent beginResume transaction and
+  /// its durable predecessor, if any. A journal is the sole ordinal owner for
+  /// repeated executions of one DseRunKey.
+  llvm::Expected<std::pair<InvocationOccurrenceRef,
+                           std::optional<InvocationOccurrenceRef>>>
+  currentInvocationOccurrence() const;
+
   llvm::Expected<std::vector<JournalWorkUnitRecord>> workUnits() const;
   llvm::Expected<InvocationExternalToolWorkLedger>
   externalToolWorkLedger() const;

@@ -217,6 +217,15 @@ void testStrictAdmission(const ArtifactStore &store,
 
   ExecutionJournal journal =
       take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  auto unopened = journal.currentInvocationOccurrence();
+  if (unopened)
+    fail("journal exposed an occurrence before execution began");
+  requireErrorContains(unopened.takeError(), "has not opened");
+  requireSuccess(journal.beginResume());
+  auto initialOccurrence = take(journal.currentInvocationOccurrence());
+  if (initialOccurrence.first.occurrenceOrdinal != 0 ||
+      initialOccurrence.second)
+    fail("initial journal occurrence has incorrect resume provenance");
   const WorkUnitKey key = makeKey(0, 0);
   llvm::Error unqueued = journal.markRunning(key);
   requireErrorContains(std::move(unqueued), "unqueued");
@@ -229,6 +238,16 @@ void testStrictAdmission(const ArtifactStore &store,
       key, JournalWorkUnitStatus::Completed, 1, 2,
       {publish(store, 0x42), publish(store, 0x41)});
   requireErrorContains(std::move(unordered), "canonical and unique");
+
+  ExecutionJournal resumed =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  requireSuccess(resumed.beginResume());
+  auto resumedOccurrence = take(resumed.currentInvocationOccurrence());
+  if (resumedOccurrence.first.occurrenceOrdinal != 1 ||
+      !resumedOccurrence.second ||
+      resumedOccurrence.second->occurrenceOrdinal != 0 ||
+      resumedOccurrence.second->runKey != resumedOccurrence.first.runKey)
+    fail("resumed journal occurrence lost its durable predecessor");
 }
 
 void testExternalToolWorkLedger(const ArtifactStore &store,
@@ -298,9 +317,17 @@ void rewriteSingleRecordSnapshotAsLegacy(llvm::StringRef runRoot) {
                                   static_cast<std::size_t>(identityBytes) +
                                   sizeof(std::uint32_t);
   if (minorOffset + sizeof(std::uint32_t) > bytes.size() ||
-      bytes[minorOffset + 3] != 2)
+      bytes[minorOffset + 3] != 3)
     fail("generated journal snapshot has an unexpected schema version");
   bytes[minorOffset + 3] = 1;
+  const std::size_t occurrenceOrdinalOffset =
+      minorOffset + sizeof(std::uint32_t) + DseRunKey::byteSize +
+      ComponentViewDigest::byteSize + sizeof(std::uint32_t);
+  if (occurrenceOrdinalOffset + sizeof(std::uint64_t) > bytes.size())
+    fail("generated journal snapshot has no occurrence ordinal");
+  bytes.erase(bytes.begin() + occurrenceOrdinalOffset,
+              bytes.begin() + occurrenceOrdinalOffset +
+                  sizeof(std::uint64_t));
   bytes.resize(bytes.size() - ledgerBytes);
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   output.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
