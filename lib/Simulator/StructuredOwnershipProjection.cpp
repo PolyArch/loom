@@ -73,6 +73,80 @@ struct DenseThreadProjection final {
   llvm::DenseMap<mlir::Value, std::uint64_t> receiverCounts;
 };
 
+llvm::Expected<mlir::Value>
+resolveDirectChannelActual(dataflow::ThreadLaunchOp launch, mlir::Block &body,
+                           std::size_t inputCount, mlir::Value channel,
+                           llvm::StringRef endpointKind) {
+  auto formal = llvm::dyn_cast<mlir::BlockArgument>(channel);
+  if (!formal || formal.getOwner() != &body ||
+      formal.getArgNumber() >= inputCount)
+    return invalid("thread channel " + endpointKind +
+                   " is not bound to an input formal");
+  mlir::Value actual = launch.getBodyOperands()[formal.getArgNumber()];
+  auto create = actual.getDefiningOp<dataflow::ChannelCreateOp>();
+  if (!llvm::isa<dataflow::ChannelType>(actual.getType()) || !create)
+    return unsupported("native selected execution requires a direct logical "
+                       "channel instance");
+  if (create->getBlock() != launch->getBlock() ||
+      !create->isBeforeInBlock(launch))
+    return unsupported("native selected execution requires channel creation "
+                       "and launch in one ordered block");
+  return actual;
+}
+
+llvm::Error proveSerializedChannelLaunch(
+    dataflow::ThreadLaunchOp launch, dataflow::ThreadOp thread,
+    mlir::Block &body, std::size_t inputCount,
+    llvm::DenseMap<mlir::Value, std::uint64_t> &producedMessages) {
+  llvm::SmallVector<dataflow::ChannelSendOp> sends;
+  llvm::SmallVector<dataflow::ChannelReceiveOp> receives;
+  thread.walk([&](dataflow::ChannelSendOp send) { sends.push_back(send); });
+  thread.walk(
+      [&](dataflow::ChannelReceiveOp receive) { receives.push_back(receive); });
+  if (sends.empty() && receives.empty())
+    return llvm::Error::success();
+  if (!launch.getGridUpperBounds().empty())
+    return unsupported("native selected channel execution requires a "
+                       "rank-zero thread launch");
+  if (!sends.empty() && !receives.empty())
+    return unsupported("native selected execution cannot serialize a thread "
+                       "that both sends and receives channels");
+
+  for (dataflow::ChannelSendOp send : sends) {
+    if (send->getBlock() != &body)
+      return unsupported("native selected execution cannot prove nested "
+                         "channel send control flow nonblocking");
+    auto actual = resolveDirectChannelActual(launch, body, inputCount,
+                                             send.getChannel(), "send");
+    if (!actual)
+      return actual.takeError();
+    ++producedMessages[*actual];
+  }
+
+  llvm::DenseMap<unsigned, std::uint64_t> receivesByFormal;
+  for (dataflow::ChannelReceiveOp receive : receives) {
+    if (receive->getBlock() != &body)
+      return unsupported("native selected execution cannot prove nested "
+                         "channel receive control flow nonblocking");
+    auto actual = resolveDirectChannelActual(launch, body, inputCount,
+                                             receive.getChannel(), "receive");
+    if (!actual)
+      return actual.takeError();
+    auto formal = llvm::cast<mlir::BlockArgument>(receive.getChannel());
+    ++receivesByFormal[formal.getArgNumber()];
+  }
+  for (const auto &[formalOrdinal, receiveCount] : receivesByFormal) {
+    auto actual = resolveDirectChannelActual(
+        launch, body, inputCount, body.getArgument(formalOrdinal), "receive");
+    if (!actual)
+      return actual.takeError();
+    if (producedMessages.lookup(*actual) < receiveCount)
+      return unsupported("native selected channel launch can block under its "
+                         "serial projection");
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<DenseThreadProjection>
 inlineDenseThreadOwnershipCarriers(mlir::ModuleOp module) {
   llvm::SmallVector<dataflow::ThreadLaunchOp> launches;
@@ -111,6 +185,7 @@ inlineDenseThreadOwnershipCarriers(mlir::ModuleOp module) {
     if (erasedWaits.insert(wait.getOperation()).second)
       wait.erase();
 
+  llvm::DenseMap<mlir::Value, std::uint64_t> producedMessages;
   for (dataflow::ThreadLaunchOp launch : launches) {
     auto thread =
         mlir::SymbolTable::lookupNearestSymbolFrom<dataflow::ThreadOp>(
@@ -141,6 +216,9 @@ inlineDenseThreadOwnershipCarriers(mlir::ModuleOp module) {
     thread.walk([&](dataflow::ChannelReceiveOp receive) {
       sourceReceives.push_back(receive);
     });
+    if (llvm::Error error = proveSerializedChannelLaunch(
+            launch, thread, body, inputCount, producedMessages))
+      return std::move(error);
     for (dataflow::ChannelReceiveOp receive : sourceReceives) {
       auto formal = llvm::dyn_cast<mlir::BlockArgument>(receive.getChannel());
       if (!formal || formal.getOwner() != &body ||

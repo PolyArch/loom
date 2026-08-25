@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 
 namespace {
@@ -507,6 +508,48 @@ module {
   require(test,
           loom::sim::haveEquivalentFunctionalObservations(reference, candidate),
           "ordered multicast changed whole-program observations");
+
+  auto consumerFirst = parse(R"mlir(
+module {
+  dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
+      %channel: !dataflow.channel<i32>, %message: i32) ctrl (%ctrl: none) {
+    dataflow.channel.send %channel, %message : !dataflow.channel<i32>
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @consumer domain(#dataflow.thread_domain<dense>)(
+      %channel: !dataflow.channel<i32>, %output: !llvm.ptr)
+      ctrl (%ctrl: none) {
+    %message = dataflow.channel.receive %channel : !dataflow.channel<i32>
+    llvm.store %message, %output : i32, !llvm.ptr
+    dataflow.thread.yield
+  }
+
+  llvm.func @kernel() -> i32 {
+    %one = llvm.mlir.constant(1 : i64) : i64
+    %output = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
+    %channel = dataflow.channel.create : !dataflow.channel<i32>
+    %seven = llvm.mlir.constant(7 : i32) : i32
+    %consumer = dataflow.thread.launch @consumer(%channel, %output)
+        : (!dataflow.channel<i32>, !llvm.ptr) -> !dataflow.thread_token
+    %producer = dataflow.thread.launch @producer(%channel, %seven)
+        : (!dataflow.channel<i32>, i32) -> !dataflow.thread_token
+    dataflow.thread.wait %consumer : !dataflow.thread_token
+    dataflow.thread.wait %producer : !dataflow.thread_token
+    %result = llvm.load %output : !llvm.ptr -> i32
+    llvm.return %result : i32
+  }
+}
+)mlir",
+                             "consumer-first logical-channel program");
+  auto blocked = loom::sim::executeSelectedStructuredProgram(
+      consumerFirst, source, workload, input);
+  require(test, !blocked,
+          "consumer-first serial projection executed an unwritten receive");
+  const std::error_code blockedCode =
+      llvm::errorToErrorCode(blocked.takeError());
+  require(test, blockedCode == std::make_error_code(std::errc::not_supported),
+          "consumer-first serial projection was not typed Unsupported");
 }
 
 void forallAggregationRegionsAreNotProfileBlocks() {

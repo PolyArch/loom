@@ -485,6 +485,14 @@ adapter. Supporting it requires an execution owner that schedules and resumes
 thread occurrences while preserving source waits, rather than a retry loop in
 the channel callback.
 
+Before JIT lowering, this adapter proves nonblocking execution for its closed
+serial channel profile. Every channel launch is rank zero, names a direct
+channel instance created earlier in the same block, and contains only top-level
+sends or only top-level receives. For each receiver branch, all of its receive
+events must already be covered by earlier complete producer launches. A mixed,
+nested, dynamic-grid, or insufficiently supplied launch is typed Unsupported
+before any callback can expose an unwritten receive slot.
+
 The Spatial Bridge binding's `maximumMessageBytes` is a separate provider wire
 and staging limit. It may reject an unrepresentable invocation or message with
 a typed provider outcome, but it cannot change logical capacity, split one
