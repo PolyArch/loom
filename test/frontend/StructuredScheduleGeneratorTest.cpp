@@ -11,6 +11,7 @@
 #include "Frontend/Compilation/StructuredSchedule.h"
 #include "Frontend/Compilation/StructuredScop.h"
 #include "Frontend/IR/LoomDialect.h"
+#include "Frontend/IR/LoomOps.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
 
@@ -35,6 +36,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <limits>
 #include <optional>
@@ -110,14 +112,14 @@ loom::frontend::StructuredEntityRef structuredLoopReference(
 
 std::optional<loom::frontend::StructuredScheduleDecision> firstVectorDecision(
     const loom::frontend::StructuredScheduleDecisionDomain &domain) {
-  auto decision = llvm::find_if(domain.decisions, [](const auto &candidate) {
-    return candidate.kind ==
+  auto decision = llvm::find_if(domain.proposals, [](const auto &candidate) {
+    return candidate.decision().kind ==
            loom::frontend::StructuredScheduleDecisionKind::Vectorize;
   });
-  return decision == domain.decisions.end()
+  return decision == domain.proposals.end()
              ? std::nullopt
              : std::optional<loom::frontend::StructuredScheduleDecision>(
-                   *decision);
+                   decision->decision());
 }
 
 std::uint64_t tripCount(mlir::scf::ForOp loop) {
@@ -244,7 +246,12 @@ operationCapacity(const loom::frontend::StructuredProgramCandidate &candidate,
   loop.getRegion().walk([&](mlir::Operation *operation) {
     if (!dataflow::operationSchemaOf(operation))
       return;
-    auto count = take(index.admittingOperationResourceCount(operation));
+    auto kind = dataflow::classifyCanonicalDataflowActor(operation);
+    if (!kind)
+      fail("registered actor lost its canonical kind");
+    auto count = *kind == dataflow::CanonicalDataflowActorKind::Memory
+                     ? take(index.admittingMemoryResourceCount(operation))
+                     : take(index.admittingOperationResourceCount(operation));
     capacity = std::min(capacity, count);
   });
   if (capacity == std::numeric_limits<std::uint64_t>::max())
@@ -275,8 +282,9 @@ generated(const loom::frontend::StructuredProgramCandidate &program,
        completed->lineageEdges) {
     if (edge.kind !=
             loom::dse::CandidateGeneratorLineageEdgeKind::CandidateDecision ||
-        edge.parents !=
-            std::vector<loom::ArtifactRootReference>{programReference})
+        edge.parents.size() != 2 ||
+        !llvm::is_contained(edge.parents, programReference) ||
+        !llvm::is_contained(edge.parents, fabric.reference()))
       fail("schedule generator changed its parent lineage");
     take(loom::frontend::adoptStructuredScheduleDecision(edge.ownerPayload));
   }
@@ -288,14 +296,21 @@ void configRoundTripsAndRejectsMalformedBytes() {
   resolved.dse.schedule.scopeExpansionLimit = 7;
   auto projected =
       take(loom::dse::projectResolvedStructuredScheduleGeneratorConfigView(
-          resolved));
+          resolved, loom::dse::StructuredScheduleGenerationIntent::Balanced,
+          11));
   auto adopted =
       take(loom::dse::adoptResolvedStructuredScheduleGeneratorConfigView(
           loom::dse::resolvedStructuredScheduleGeneratorConfigSchemaBytes(),
           projected.canonicalViewBytes(), projected.digest()));
   if (adopted.scopeExpansionLimit() != 7 ||
+      adopted.maximumMaterializationAttempts() != 11 ||
       adopted.canonicalViewBytes() != projected.canonicalViewBytes())
     fail("schedule config did not round-trip exactly");
+  requireErrorContains(
+      loom::dse::projectResolvedStructuredScheduleGeneratorConfigView(
+          resolved, loom::dse::StructuredScheduleGenerationIntent::Balanced,
+          std::uint64_t{0}),
+      "positive");
 
   std::vector<std::uint8_t> malformed(projected.canonicalViewBytes().begin(),
                                       projected.canonicalViewBytes().end());
@@ -356,6 +371,15 @@ module {
   if (oversized)
     fail("schedule decision encoder accepted an oversized vector factor");
   llvm::consumeError(oversized.takeError());
+  const loom::frontend::StructuredScheduleDecision oversizedTile{
+      *loop, loom::frontend::StructuredScheduleDecisionKind::Tile,
+      loom::frontend::maximumCanonicalStructuredScheduleFactor + 1,
+      std::nullopt};
+  auto oversizedScalar =
+      loom::frontend::encodeStructuredScheduleDecision(oversizedTile);
+  if (oversizedScalar)
+    fail("schedule decision encoder accepted an oversized scalar factor");
+  llvm::consumeError(oversizedScalar.takeError());
 }
 
 void invalidInMemoryDecisionFailsClosed() {
@@ -404,6 +428,9 @@ void lineageCodecRejectsAnOutOfRangeLoop() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  const loom::fabric::FinalizedFabricRoot &fabric = design.roots().front();
   auto program = parseProgram(R"mlir(
 module {
   func.func @loop(%out: memref<4xi32>) {
@@ -434,10 +461,82 @@ module {
   if (!contract)
     fail("schedule generator has no owner lineage contract");
   llvm::Error validation = contract->validateCanonical(
-      encoded, parentReference, {parentReference}, store);
+      encoded, parentReference, {parentReference, fabric.reference()}, store);
   if (!validation)
     fail("schedule lineage accepted an out-of-range parent-local loop");
   llvm::consumeError(std::move(validation));
+  error = llvm::sys::fs::remove_directories(directory);
+  if (error)
+    fail("cannot remove ArtifactStore directory: " + error.message());
+}
+
+void lineageRejectsAValidForeignChild() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-schedule-lineage-child", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  const loom::fabric::FinalizedFabricRoot &fabric = design.roots().front();
+  auto parent = parseProgram(R"mlir(
+module {
+  func.func @loop(%out: memref<8xi32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    scf.for %i = %c0 to %c8 step %c1 {
+      %value = arith.index_cast %i : index to i32
+      memref.store %value, %out[%i] : memref<8xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto parentReference =
+      take(loom::frontend::publishStructuredProgram(parent, store));
+  const auto loop = structuredLoopReference(parent, "loop");
+  const loom::frontend::StructuredScheduleDecision declared{
+      loop, loom::frontend::StructuredScheduleDecisionKind::Tile, 2,
+      std::nullopt};
+  const loom::frontend::StructuredScheduleDecision foreignDecision{
+      loop, loom::frontend::StructuredScheduleDecisionKind::Tile, 4,
+      std::nullopt};
+  auto foreignChild =
+      take(loom::frontend::materializeStructuredScheduleDecision(
+          parent, foreignDecision));
+  auto foreignReference = take(loom::frontend::publishStructuredProgram(
+      foreignChild.structuredProgram, store));
+  auto encoded =
+      take(loom::frontend::encodeStructuredScheduleDecision(declared));
+  const auto *contract =
+      loom::dse::structuredScheduleCandidateGeneratorDescriptor()
+          .ownerLineagePayload;
+  if (!contract)
+    fail("schedule generator has no owner lineage contract");
+  llvm::Error validation = contract->validateCanonical(
+      encoded, foreignReference, {parentReference, fabric.reference()}, store);
+  if (!validation)
+    fail("schedule lineage accepted another decision's valid child");
+  llvm::consumeError(std::move(validation));
+
+  const loom::frontend::StructuredScheduleDecision forgedDecision{
+      loop, loom::frontend::StructuredScheduleDecisionKind::Tile, 3,
+      std::nullopt};
+  auto forgedChild = take(loom::frontend::materializeStructuredScheduleDecision(
+      parent, forgedDecision));
+  auto forgedReference = take(loom::frontend::publishStructuredProgram(
+      forgedChild.structuredProgram, store));
+  auto forgedPayload =
+      take(loom::frontend::encodeStructuredScheduleDecision(forgedDecision));
+  llvm::Error forgedValidation =
+      contract->validateCanonical(forgedPayload, forgedReference,
+                                  {parentReference, fabric.reference()}, store);
+  if (!forgedValidation)
+    fail("schedule lineage accepted a replayable out-of-domain decision");
+  llvm::consumeError(std::move(forgedValidation));
+
   error = llvm::sys::fs::remove_directories(directory);
   if (error)
     fail("cannot remove ArtifactStore directory: " + error.message());
@@ -458,6 +557,13 @@ void transformationsAreTypedCapacityBoundAndDependenceChecked() {
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
   const loom::fabric::FinalizedFabricRoot &fabric = design.roots().front();
+  loom::adg::BuiltinTargetScale constrainedScale =
+      loom::adg::builtinSmallTarget.scale;
+  constrainedScale.accCoreCount = 1;
+  auto constrainedDesign =
+      take(loom::adg::buildBuiltinTarget(store, constrainedScale));
+  const loom::fabric::FinalizedFabricRoot &constrainedFabric =
+      constrainedDesign.roots().front();
 
   auto scoped = parseProgram(R"mlir(
 #layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
@@ -500,11 +606,123 @@ module attributes {dlti.dl_spec = #layout} {
   auto scopedDomain = take(loom::frontend::enumerateStructuredScheduleDecisions(
       scoped, fabric, 1, *selectedFunction));
   if (scopedDomain.inspectedLoopScopes != 1 ||
-      !llvm::any_of(scopedDomain.decisions, [](const auto &decision) {
-        return decision.kind ==
+      !llvm::any_of(scopedDomain.proposals, [](const auto &proposal) {
+        return proposal.decision().kind ==
                loom::frontend::StructuredScheduleDecisionKind::Parallelize;
       }))
     fail("loops outside an exact schedule scope consumed its bound");
+
+  auto identityNoOp = parseProgram(R"mlir(
+module {
+  func.func @kernel() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %i = %c0 to %c3 step %c1 {
+      scf.for %j = %c0 to %c3 step %c1 {
+      }
+    }
+    return
+  }
+}
+)mlir");
+  auto identityDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(identityNoOp,
+                                                                fabric, 2));
+  auto identityProposal =
+      llvm::find_if(identityDomain.proposals, [](const auto &proposal) {
+        return proposal.decision().kind ==
+               loom::frontend::StructuredScheduleDecisionKind::Interchange;
+      });
+  if (identityProposal == identityDomain.proposals.end())
+    fail("symmetric perfect nest lost its interchange proposal");
+  auto identityChild =
+      take(loom::frontend::materializeStructuredScheduleProposal(
+          identityNoOp, *identityProposal, fabric));
+  if (identityChild.structuredProgram.identity() != identityNoOp.identity())
+    fail("symmetric interchange did not produce its exact identity child");
+  auto identityReference =
+      take(loom::frontend::publishStructuredProgram(identityNoOp, store));
+  auto identityInputs =
+      take(loom::dse::bindStructuredScheduleCandidateGeneratorInputs(
+          {identityReference}, fabric.reference()));
+  auto identityConfig =
+      take(loom::dse::projectResolvedStructuredScheduleGeneratorConfigView(
+          loom::defaultResolvedConfig(),
+          loom::dse::StructuredScheduleGenerationIntent::
+              ForbidLogicalThreadDomain,
+          1));
+  auto identityBinding =
+      take(loom::dse::resolveStructuredScheduleCandidateGeneratorBinding(
+          identityConfig));
+  auto identityResult = take(loom::dse::invokeCandidateGenerator(
+      identityInputs, identityBinding, store, blobs));
+  const auto *identityCompleted =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &identityResult.outcome);
+  if (!identityCompleted || identityCompleted->outputBindings.size() != 1 ||
+      identityCompleted->outputBindings.front().artifacts !=
+          std::vector<loom::ArtifactRootReference>{identityReference} ||
+      !identityCompleted->lineageEdges.empty() ||
+      identityResult.workSummary.size() != 4 ||
+      identityResult.workSummary[1].planned != 1 ||
+      identityResult.workSummary[1].consumed != 1 ||
+      identityResult.workSummary[3].planned != 1 ||
+      identityResult.workSummary[3].consumed != 1)
+    fail("identity schedule materialization produced a self edge or output");
+
+  auto capacityBound = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+module attributes {dlti.dl_spec = #layout} {
+  func.func @kernel(%out: memref<8x4xi32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c8 = arith.constant 8 : index
+    scf.for %i = %c0 to %c8 step %c1 {
+      scf.for %j = %c0 to %c4 step %c1 {
+        %row = arith.muli %i, %c4 : index
+        %row1 = arith.muli %row, %c4 : index
+        %row2 = arith.muli %row1, %c4 : index
+        %row3 = arith.muli %row2, %c4 : index
+        %row4 = arith.muli %row3, %c4 : index
+        %index = arith.addi %row4, %j : index
+        %value = arith.index_cast %index : index to i32
+        memref.store %value, %out[%i, %j] : memref<8x4xi32>
+      }
+    }
+    return
+  }
+}
+)mlir");
+  auto exactFabricDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(capacityBound,
+                                                                fabric, 8));
+  auto constrainedFabricDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(
+          capacityBound, constrainedFabric, 8));
+  for (loom::frontend::StructuredScheduleDecisionKind kind :
+       {loom::frontend::StructuredScheduleDecisionKind::Unroll,
+        loom::frontend::StructuredScheduleDecisionKind::UnrollAndJam}) {
+    auto proposal =
+        llvm::find_if(exactFabricDomain.proposals, [&](const auto &candidate) {
+          return candidate.decision().kind == kind &&
+                 candidate.decision().factor == 2;
+        });
+    if (proposal == exactFabricDomain.proposals.end())
+      fail("larger Fabric lost a factor-two scalar proposal");
+    if (llvm::any_of(constrainedFabricDomain.proposals,
+                     [&](const auto &candidate) {
+                       return candidate.decision().kind == kind &&
+                              candidate.decision().factor == 2;
+                     }))
+      fail("constrained Fabric admitted an over-capacity scalar proposal");
+    auto crossFabric = loom::frontend::materializeStructuredScheduleProposal(
+        capacityBound, *proposal, constrainedFabric);
+    if (crossFabric)
+      fail("scalar proposal escaped its exact enumerating Fabric");
+    llvm::consumeError(crossFabric.takeError());
+  }
 
   auto safe = parseProgram(R"mlir(
 #layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
@@ -599,19 +817,28 @@ module attributes {dlti.dl_spec = #layout} {
   auto unroll = parseProgram(R"mlir(
 #layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
 module attributes {dlti.dl_spec = #layout} {
-  func.func @kernel(%out: memref<128xi32>) {
+  func.func @kernel(%out: memref<1024xi32>) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c128 = arith.constant 128 : index
-    scf.for %i = %c0 to %c128 step %c1 {
+    %c1024 = arith.constant 1024 : index
+    scf.for %i = %c0 to %c1024 step %c1 {
       %value = arith.addi %i, %i : index
       %stored = arith.index_cast %value : index to i32
-      memref.store %stored, %out[%i] : memref<128xi32>
+      memref.store %stored, %out[%i] : memref<1024xi32>
     }
     return
   }
 }
 )mlir");
+  auto unrollDomain = take(
+      loom::frontend::enumerateStructuredScheduleDecisions(unroll, fabric, 1));
+  if (unrollDomain.inspectedDecisionCoordinates >
+      4 * loom::frontend::maximumCanonicalStructuredScheduleFactor)
+    fail("one loop exceeded the canonical bounded schedule domain");
+  for (const auto &proposal : unrollDomain.proposals)
+    if (proposal.decision().factor >
+        loom::frontend::maximumCanonicalStructuredScheduleFactor)
+      fail("static trip count escaped the canonical schedule-factor bound");
   const std::uint64_t admittedCapacity =
       operationCapacity(unroll, fabric, "kernel");
   std::size_t maximumReplication = 0;
@@ -626,6 +853,43 @@ module attributes {dlti.dl_spec = #layout} {
     fail("Fabric-admitted loop produced no unroll child");
   if (maximumReplication > admittedCapacity)
     fail("unroll replication exceeded exact aggregate Fabric capacity");
+
+  auto unrollReference =
+      take(loom::frontend::publishStructuredProgram(unroll, store));
+  auto boundedConfig =
+      take(loom::dse::projectResolvedStructuredScheduleGeneratorConfigView(
+          loom::defaultResolvedConfig()));
+  auto boundedInputs =
+      take(loom::dse::bindStructuredScheduleCandidateGeneratorInputs(
+          {unrollReference}, fabric.reference()));
+  auto boundedBinding =
+      take(loom::dse::resolveStructuredScheduleCandidateGeneratorBinding(
+          boundedConfig));
+  const std::array<loom::dse::CandidateGeneratorOutputDemand, 1> demands = {{
+      {loom::dse::CandidateGeneratorOutputSlotRef(0), 2},
+  }};
+  const loom::dse::CandidateGeneratorInvocationView boundedInvocation(
+      loom::ExecutionControlView{}, demands);
+  auto bounded = take(loom::dse::invokeCandidateGenerator(
+      boundedInputs, boundedBinding, store, blobs, boundedInvocation));
+  const auto *incomplete =
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &bounded.outcome);
+  if (!incomplete ||
+      incomplete->reason !=
+          loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
+      incomplete->retainedOutputBindings.size() != 1 ||
+      incomplete->retainedOutputBindings.front().artifacts.size() != 2 ||
+      incomplete->lineageEdges.size() != 1 || bounded.workSummary.size() != 4 ||
+      bounded.workSummary[0].planned != 1 ||
+      bounded.workSummary[0].consumed != 1 ||
+      bounded.workSummary[1].planned != 1 ||
+      bounded.workSummary[1].consumed != 1 ||
+      bounded.workSummary[2].planned == 0 ||
+      bounded.workSummary[2].consumed != bounded.workSummary[2].planned ||
+      bounded.workSummary[3].planned <= bounded.workSummary[3].consumed ||
+      bounded.workSummary[3].consumed != 1)
+    fail("bounded schedule generation lost exact work accounting");
 
   auto unresolvedSpecialMath = parseProgram(R"mlir(
 #layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
@@ -822,6 +1086,29 @@ module {
 }
 
 void exactScopRefusalsAreLocalAndTyped() {
+  auto unregisteredSupport = parseProgram(R"mlir(
+#identity = affine_map<(d0) -> (d0)>
+module {
+  func.func @kernel(%input: memref<8xi32>) {
+    %aligned = memref.assume_alignment %input, 32 : memref<8xi32>
+    affine.for %i = 0 to 8 {
+      %unused = affine.apply #identity(%i)
+      %value = affine.load %aligned[%i] : memref<8xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto supportOutcome = take(loom::frontend::analyzeExactStructuredScop(
+      unregisteredSupport,
+      structuredLoopReference(unregisteredSupport, "kernel")));
+  const auto *supportRefusal =
+      std::get_if<loom::frontend::StructuredScopRefusal>(&supportOutcome);
+  if (!supportRefusal ||
+      supportRefusal->kind !=
+          loom::frontend::StructuredScopRefusalKind::UnsupportedOperation)
+    fail("unregistered affine support lost its typed local refusal");
+
   auto unresolvedAlias = parseProgram(R"mlir(
 module {
   func.func @kernel(%lhs: memref<8xi32>, %rhs: memref<8xi32>) {
@@ -936,6 +1223,11 @@ void reassociatedReductionOwnsItsMaskedTail() {
   if (error)
     fail("cannot create ArtifactStore directory: " + error.message());
   loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Coverage));
   const loom::fabric::FinalizedFabricRoot &fabric = design.roots().front();
@@ -959,14 +1251,152 @@ module {
 )mlir");
   auto domain = take(
       loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 4));
-  if (firstVectorDecision(domain))
+  auto maskedProposal =
+      llvm::find_if(domain.proposals, [](const auto &proposal) {
+        const auto &decision = proposal.decision();
+        return decision.kind ==
+                   loom::frontend::StructuredScheduleDecisionKind::Vectorize &&
+               decision.vector &&
+               decision.vector->shape == std::vector<std::uint64_t>{2} &&
+               decision.vector->tailPolicy ==
+                   loom::frontend::StructuredVectorTailPolicy::ReductionMask;
+      });
+  if (maskedProposal == domain.proposals.end())
+    fail("masked-tail coordinate was not represented as a bounded proposal");
+  auto refused = loom::frontend::materializeStructuredScheduleProposal(
+      parent, *maskedProposal, fabric);
+  if (refused)
     fail("Fabric admitted an unavailable masked-tail implementation");
-  auto refusal = llvm::find_if(domain.refusals, [](const auto &candidate) {
-    return candidate.kind ==
-           loom::frontend::StructuredScopRefusalKind::VectorLoweringUnavailable;
-  });
-  if (refusal == domain.refusals.end())
+  bool sawTypedRefusal = false;
+  llvm::Error unhandled = llvm::handleErrors(
+      refused.takeError(),
+      [&](const loom::frontend::StructuredScheduleProposalRefusal &error) {
+        sawTypedRefusal = error.kind() ==
+                          loom::frontend::StructuredScopRefusalKind::
+                              VectorLoweringUnavailable;
+      });
+  if (unhandled)
+    fail("masked-tail proposal returned an untyped error: " +
+         llvm::toString(std::move(unhandled)));
+  if (!sawTypedRefusal)
     fail("masked-tail lowering rejection lost its typed local refusal");
+
+  loom::adg::BuiltinTargetScale scalarOnlyScale =
+      loom::adg::builtinSmallTarget.scale;
+  scalarOnlyScale.spatialFuOccurrences.vectorCompute = 0;
+  scalarOnlyScale.spatialFuOccurrences.vectorAdapter = 0;
+  scalarOnlyScale.spatialFuOccurrences.vectorStructural = 0;
+  scalarOnlyScale.temporalFuOccurrences.vectorCompute = 0;
+  scalarOnlyScale.temporalFuOccurrences.vectorAdapter = 0;
+  scalarOnlyScale.temporalFuOccurrences.vectorStructural = 0;
+  auto attemptDesign =
+      take(loom::adg::buildBuiltinTarget(store, scalarOnlyScale));
+  const loom::fabric::FinalizedFabricRoot &attemptFabric =
+      attemptDesign.roots().front();
+  auto attemptParent = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+module attributes {dlti.dl_spec = #layout} {
+  func.func @kernel(%lhs: memref<16xi32>, %rhs: memref<16xi32>) {
+    %lhs_distinct, %rhs_distinct = memref.distinct_objects %lhs, %rhs
+        : memref<16xi32>, memref<16xi32>
+    %lhs_aligned = memref.assume_alignment %lhs_distinct, 64
+        : memref<16xi32>
+    %rhs_aligned = memref.assume_alignment %rhs_distinct, 64
+        : memref<16xi32>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    scf.for %i = %c0 to %c16 step %c1 {
+      %left = memref.load %lhs_aligned[%i] : memref<16xi32>
+      %right = memref.load %rhs_aligned[%i] : memref<16xi32>
+      %sum = arith.addi %left, %right : i32
+      memref.store %sum, %rhs_aligned[%i] : memref<16xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto attemptDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(
+          attemptParent, attemptFabric, 4));
+  if (attemptDomain.proposals.empty() ||
+      attemptDomain.proposals.front().decision().kind !=
+          loom::frontend::StructuredScheduleDecisionKind::Vectorize)
+    fail("attempt-ledger fixture lost its leading typed refusal");
+  auto firstAttempt = loom::frontend::materializeStructuredScheduleProposal(
+      attemptParent, attemptDomain.proposals.front(), attemptFabric);
+  if (firstAttempt)
+    fail("scalar-only Fabric admitted the leading vector proposal");
+  bool sawFabricRefusal = false;
+  llvm::Error firstAttemptUnhandled = llvm::handleErrors(
+      firstAttempt.takeError(),
+      [&](const loom::frontend::StructuredScheduleProposalRefusal &error) {
+        sawFabricRefusal = error.kind() ==
+                           loom::frontend::StructuredScopRefusalKind::
+                               FabricCapabilityUnavailable;
+      });
+  if (firstAttemptUnhandled)
+    fail("scalar-only Fabric returned an untyped vector error: " +
+         llvm::toString(std::move(firstAttemptUnhandled)));
+  if (!sawFabricRefusal)
+    fail("scalar-only Fabric lost its typed vector capability refusal");
+  auto parentReference =
+      take(loom::frontend::publishStructuredProgram(attemptParent, store));
+  auto inputs = take(loom::dse::bindStructuredScheduleCandidateGeneratorInputs(
+      {parentReference}, attemptFabric.reference()));
+  const std::array<loom::dse::CandidateGeneratorOutputDemand, 1> demands = {{
+      {loom::dse::CandidateGeneratorOutputSlotRef(0), 2},
+  }};
+  const loom::dse::CandidateGeneratorInvocationView invocation(
+      loom::ExecutionControlView{}, demands);
+
+  auto limitedConfig =
+      take(loom::dse::projectResolvedStructuredScheduleGeneratorConfigView(
+          loom::defaultResolvedConfig(),
+          loom::dse::StructuredScheduleGenerationIntent::Balanced, 1));
+  auto limitedBinding =
+      take(loom::dse::resolveStructuredScheduleCandidateGeneratorBinding(
+          limitedConfig));
+  auto limited = take(loom::dse::invokeCandidateGenerator(
+      inputs, limitedBinding, store, blobs, invocation));
+  const auto *limitedIncomplete =
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &limited.outcome);
+  if (!limitedIncomplete ||
+      limitedIncomplete->reason !=
+          loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
+      limitedIncomplete->retainedOutputBindings.size() != 1 ||
+      limitedIncomplete->retainedOutputBindings.front().artifacts.size() != 1 ||
+      !limitedIncomplete->lineageEdges.empty() ||
+      limited.workSummary.size() != 4 || limited.workSummary[1].planned != 1 ||
+      limited.workSummary[1].consumed != 1 ||
+      limited.workSummary[3].planned != 2 ||
+      limited.workSummary[3].consumed != 1)
+    fail("schedule attempt grant did not retain its exact refusal ledger");
+
+  auto refillConfig =
+      take(loom::dse::projectResolvedStructuredScheduleGeneratorConfigView(
+          loom::defaultResolvedConfig(),
+          loom::dse::StructuredScheduleGenerationIntent::Balanced, 32));
+  auto refillBinding =
+      take(loom::dse::resolveStructuredScheduleCandidateGeneratorBinding(
+          refillConfig));
+  auto refill = take(loom::dse::invokeCandidateGenerator(
+      inputs, refillBinding, store, blobs, invocation));
+  const auto *refillIncomplete =
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &refill.outcome);
+  if (!refillIncomplete ||
+      refillIncomplete->reason !=
+          loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
+      refillIncomplete->retainedOutputBindings.size() != 1 ||
+      refillIncomplete->retainedOutputBindings.front().artifacts.size() != 2 ||
+      refillIncomplete->lineageEdges.size() != 1 ||
+      refill.workSummary.size() != 4 || refill.workSummary[1].planned <= 1 ||
+      refill.workSummary[1].planned != refill.workSummary[1].consumed ||
+      refill.workSummary[3].planned <= refill.workSummary[3].consumed ||
+      refill.workSummary[3].consumed != refill.workSummary[1].consumed)
+    fail("typed schedule refusal consumed the distinct publication slot");
 
   const auto loop = structuredLoopReference(parent, "kernel");
   auto analysis =
@@ -1177,6 +1607,9 @@ module attributes {dlti.dl_spec = #layout} {
           %sum = arith.addi %left, %right : i32
           memref.store %sum, %right_aligned[%i] : memref<16xi32>
         }
+        scf.for %j = %c0 to %c16 step %c1 {
+          %doubled = arith.addi %j, %j : index
+        }
         "loom.spatial_yield"()
             <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
     }) {graph_name = "vector_graph", source_maps = []} :
@@ -1196,11 +1629,56 @@ module attributes {dlti.dl_spec = #layout} {
 )mlir");
   auto domain = take(
       loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 8));
-  auto decision = firstVectorDecision(domain);
-  if (!decision)
+  auto vectorProposal =
+      llvm::find_if(domain.proposals, [](const auto &proposal) {
+        return proposal.decision().kind ==
+               loom::frontend::StructuredScheduleDecisionKind::Vectorize;
+      });
+  if (vectorProposal == domain.proposals.end())
     fail("production vector fixture produced no admitted coordinate");
+  const loom::frontend::StructuredScheduleDecision &decision =
+      vectorProposal->decision();
   auto child = take(
-      loom::frontend::materializeStructuredScheduleDecision(parent, *decision));
+      loom::frontend::materializeStructuredScheduleDecision(parent, decision));
+  auto frozenChild = take(loom::frontend::materializeStructuredScheduleProposal(
+      parent, *vectorProposal, fabric));
+  if (frozenChild.structuredProgram.identity() !=
+      child.structuredProgram.identity())
+    fail("frozen SCoP proposal changed the exact materialized child");
+  if (llvm::Error verification =
+          loom::frontend::verifyStructuredScheduleDerivation(
+              parent, fabric, decision, frozenChild.structuredProgram))
+    fail("schedule derivation replay rejected its exact child: " +
+         llvm::toString(std::move(verification)));
+
+  auto parallelProposal =
+      llvm::find_if(domain.proposals, [](const auto &proposal) {
+        return proposal.decision().kind ==
+               loom::frontend::StructuredScheduleDecisionKind::Parallelize;
+      });
+  if (parallelProposal == domain.proposals.end())
+    fail("production Spatial fixture produced no parallel proposal");
+  auto view = take(parent.view());
+  std::optional<loom::frontend::StructuredEntityRef> spatial;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation))
+    if (llvm::isa_and_nonnull<loom::SpatialRegionOp>(entity.operation)) {
+      spatial = entity.reference;
+      break;
+    }
+  if (!spatial)
+    fail("production Spatial fixture lost its exact region reference");
+  auto untrackedParallel =
+      take(loom::frontend::materializeStructuredScheduleProposal(
+          parent, *parallelProposal, fabric));
+  auto trackedParallel =
+      take(loom::frontend::materializeStructuredScheduleProposal(
+          parent, *parallelProposal, fabric, *spatial));
+  if (untrackedParallel.structuredProgram.identity() !=
+          trackedParallel.structuredProgram.identity() ||
+      untrackedParallel.trackedSpatialRegion ||
+      !trackedParallel.trackedSpatialRegion)
+    fail("tracked Spatial projection changed schedule child semantics");
   auto lowered = take(loom::lowering::lowerStructuredProgramToCanonicalDataflow(
       child.structuredProgram));
 
@@ -1232,6 +1710,7 @@ int main() {
   decisionCodecRejectsFactorOne();
   invalidInMemoryDecisionFailsClosed();
   lineageCodecRejectsAnOutOfRangeLoop();
+  lineageRejectsAValidForeignChild();
   transformationsAreTypedCapacityBoundAndDependenceChecked();
   exactScopVectorCoordinateIsCanonicalAndVerified();
   exactScopRefusalsAreLocalAndTyped();

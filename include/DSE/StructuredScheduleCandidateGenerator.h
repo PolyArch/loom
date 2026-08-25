@@ -8,6 +8,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace loom {
@@ -28,6 +29,9 @@ enum class StructuredScheduleGenerationIntent : std::uint8_t {
 class ResolvedStructuredScheduleGeneratorConfigView final {
 public:
   std::uint64_t scopeExpansionLimit() const { return scopeExpansionLimit_; }
+  std::optional<std::uint64_t> maximumMaterializationAttempts() const {
+    return maximumMaterializationAttempts_;
+  }
   StructuredScheduleGenerationIntent generationIntent() const {
     return generationIntent_;
   }
@@ -39,20 +43,24 @@ public:
 private:
   ResolvedStructuredScheduleGeneratorConfigView(
       std::uint64_t scopeExpansionLimit,
+      std::optional<std::uint64_t> maximumMaterializationAttempts,
       StructuredScheduleGenerationIntent generationIntent,
       std::vector<std::uint8_t> canonicalBytes, ComponentViewDigest digest)
       : scopeExpansionLimit_(scopeExpansionLimit),
+        maximumMaterializationAttempts_(maximumMaterializationAttempts),
         generationIntent_(generationIntent),
         canonicalBytes_(std::move(canonicalBytes)), digest_(digest) {}
 
   std::uint64_t scopeExpansionLimit_;
+  std::optional<std::uint64_t> maximumMaterializationAttempts_;
   StructuredScheduleGenerationIntent generationIntent_;
   std::vector<std::uint8_t> canonicalBytes_;
   ComponentViewDigest digest_;
 
   friend llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
   projectResolvedStructuredScheduleGeneratorConfigView(
-      const ResolvedConfig &, StructuredScheduleGenerationIntent);
+      const ResolvedConfig &, StructuredScheduleGenerationIntent,
+      std::optional<std::uint64_t>);
   friend llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
   adoptResolvedStructuredScheduleGeneratorConfigView(
       llvm::ArrayRef<std::uint8_t>, llvm::ArrayRef<std::uint8_t>,
@@ -66,7 +74,8 @@ llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
 projectResolvedStructuredScheduleGeneratorConfigView(
     const ResolvedConfig &config,
     StructuredScheduleGenerationIntent intent =
-        StructuredScheduleGenerationIntent::Balanced);
+        StructuredScheduleGenerationIntent::Balanced,
+    std::optional<std::uint64_t> maximumMaterializationAttempts = std::nullopt);
 
 llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
 adoptResolvedStructuredScheduleGeneratorConfigView(

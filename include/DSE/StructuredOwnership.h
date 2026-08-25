@@ -92,11 +92,14 @@ struct StructuredOwnershipDerivation final {
 
 struct StructuredScheduleDerivation final {
   ArtifactRootReference parent;
+  ArtifactRootReference child;
+  ArtifactRootReference fabric;
   frontend::StructuredScheduleDecision decision;
 
   friend bool operator==(const StructuredScheduleDerivation &lhs,
                          const StructuredScheduleDerivation &rhs) {
-    return lhs.parent == rhs.parent && lhs.decision == rhs.decision;
+    return lhs.parent == rhs.parent && lhs.child == rhs.child &&
+           lhs.fabric == rhs.fabric && lhs.decision == rhs.decision;
   }
 };
 

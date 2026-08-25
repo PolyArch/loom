@@ -98,7 +98,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 }
 
 llvm::Error validateDecisionPayload(
-    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &,
+    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &output,
     llvm::ArrayRef<ArtifactRootReference> parents, const ArtifactStore &store) {
   auto adopted = dataflow::adoptDataflowRewriteDecision(bytes);
   if (!adopted)
@@ -118,13 +118,15 @@ llvm::Error validateDecisionPayload(
     return materialized.takeError();
   if (!*materialized)
     return invalid("rewrite lineage payload is an identity decision");
+  if ((*materialized)->identity() != output.artifact)
+    return invalid("rewrite lineage does not replay to its exact child");
   return llvm::Error::success();
 }
 
 const CandidateGeneratorDescriptor descriptor{
     dataflowRewriteCandidateGeneratorKind,
     "compiler.dataflow_rewrite",
-    "loom.compiler.dataflow_rewrite.generator.v3",
+    "loom.compiler.dataflow_rewrite.generator.v4",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},

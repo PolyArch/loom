@@ -394,15 +394,18 @@ llvm::Expected<StructuredScopAnalysisOutcome> analyzeProjectedScop(
     if (!mlir::isMemoryEffectFree(&operation))
       return refuse(loopReference,
                     StructuredScopRefusalKind::UnsupportedEffect);
+    if (!dataflow::isCanonicalDataflowActor(sourceOperation) ||
+        !dataflow::isCanonicalDataflowActor(&operation))
+      return refuse(loopReference,
+                    StructuredScopRefusalKind::UnsupportedOperation);
     auto sourceProjection =
         dataflow::projectRegisteredActorSchemaProjection(sourceOperation);
     if (!sourceProjection)
-      return refuse(loopReference,
-                    StructuredScopRefusalKind::UnsupportedOperation);
+      return sourceProjection.takeError();
     auto providerProjection =
         dataflow::projectRegisteredActorSchemaProjection(&operation);
     if (!providerProjection)
-      return invalid("SCF-to-Affine projection lost a registered actor");
+      return providerProjection.takeError();
     if (sourceProjection->schema != providerProjection->schema ||
         !(sourceProjection->payload == providerProjection->payload))
       return invalid("SCF-to-Affine projection changed actor semantics");

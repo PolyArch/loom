@@ -7,8 +7,13 @@
 
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
+#include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 namespace loom::frontend {
@@ -31,6 +36,8 @@ enum class StructuredVectorTailPolicy : std::uint32_t {
 enum class StructuredVectorAliasPolicy : std::uint32_t {
   ProviderProvenNoAlias = 0,
 };
+
+inline constexpr std::uint64_t maximumCanonicalStructuredScheduleFactor = 64;
 
 struct StructuredVectorScheduleCoordinate final {
   std::vector<std::uint64_t> shape;
@@ -69,14 +76,78 @@ struct StructuredScheduleDecision final {
 struct MaterializedStructuredScheduleCandidate final {
   StructuredProgramCandidate structuredProgram;
   std::optional<StructuredEntityRef> trackedSpatialRegion;
-  std::optional<StructuredEntityRef> transformedLoop;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
+/// An expected local refusal after a proposal reaches its provider or exact
+/// Fabric gate. Malformed decisions and implementation failures remain errors.
+class StructuredScheduleProposalRefusal final
+    : public llvm::ErrorInfo<StructuredScheduleProposalRefusal> {
+public:
+  static char ID;
+
+  StructuredScheduleProposalRefusal(StructuredEntityRef loop,
+                                    StructuredScopRefusalKind kind)
+      : loop_(std::move(loop)), kind_(kind) {}
+
+  const StructuredEntityRef &loop() const { return loop_; }
+  StructuredScopRefusalKind kind() const { return kind_; }
+  std::string message() const override;
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  StructuredEntityRef loop_;
+  StructuredScopRefusalKind kind_;
+};
+
+struct StructuredScheduleDecisionDomain;
+
+/// One canonical atomic decision bound to the exact Fabric and any removable
+/// exact-SCoP view used to construct it. Construction remains owned by the
+/// enumerator, so a selected materializer can reuse the frozen provider proof
+/// without accepting caller-authored dependence or capacity summaries.
+/// Provider/Fabric refusal remains local.
+class StructuredScheduleProposal final {
+public:
+  StructuredScheduleProposal(const StructuredScheduleProposal &) = default;
+  StructuredScheduleProposal(StructuredScheduleProposal &&) = default;
+  StructuredScheduleProposal &
+  operator=(const StructuredScheduleProposal &) = default;
+  StructuredScheduleProposal &
+  operator=(StructuredScheduleProposal &&) = default;
+
+  const StructuredScheduleDecision &decision() const { return decision_; }
+
+private:
+  StructuredScheduleProposal(
+      StructuredScheduleDecision decision,
+      std::shared_ptr<const ExactStructuredScopView> exactScop,
+      ArtifactRootReference fabric)
+      : decision_(std::move(decision)), exactScop_(std::move(exactScop)),
+        fabric_(std::move(fabric)) {}
+
+  StructuredScheduleDecision decision_;
+  std::shared_ptr<const ExactStructuredScopView> exactScop_;
+  ArtifactRootReference fabric_;
+
+  friend llvm::Expected<StructuredScheduleDecisionDomain>
+  enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &,
+                                       const fabric::FinalizedFabricRoot &,
+                                       std::uint64_t,
+                                       std::optional<StructuredEntityRef>);
+  friend llvm::Expected<MaterializedStructuredScheduleCandidate>
+  materializeStructuredScheduleProposal(
+      const StructuredProgramCandidate &, const StructuredScheduleProposal &,
+      const fabric::FinalizedFabricRoot &, std::optional<StructuredEntityRef>,
+      llvm::ArrayRef<StructuredOperationSourceProvenance>);
+};
+
 struct StructuredScheduleDecisionDomain final {
-  std::vector<StructuredScheduleDecision> decisions;
+  std::vector<StructuredScheduleProposal> proposals;
   std::vector<StructuredScopRefusal> refusals;
   std::uint64_t inspectedLoopScopes = 0;
+  std::uint64_t inspectedDecisionCoordinates = 0;
 };
 
 llvm::ArrayRef<std::uint8_t> structuredScheduleDecisionSchemaBytes();
@@ -92,10 +163,10 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
     const StructuredVectorScheduleCoordinate &coordinate,
     mlir::ModuleOp materialized);
 
-/// Enumerates the finite legal schedule domain in canonical loop order. The
-/// Fabric is consumed only for proved aggregate-capacity pruning; a surviving
-/// decision is not a Mapping feasibility claim. When `schedulingScope` is
-/// present, only loops nested in that exact operation consume the scope bound.
+/// Enumerates the finite canonical proposal domain in loop order. Scalar
+/// replication uses proved aggregate Fabric-capacity pruning; vector provider
+/// and Fabric gates run only for selected proposals. No proposal is a Mapping
+/// feasibility claim. A scope restricts work to that operation and descendants.
 llvm::Expected<StructuredScheduleDecisionDomain>
 enumerateStructuredScheduleDecisions(
     const StructuredProgramCandidate &parent,
@@ -111,6 +182,25 @@ materializeStructuredScheduleDecision(
     const StructuredScheduleDecision &decision,
     std::optional<StructuredEntityRef> trackedSpatialRegion = std::nullopt,
     llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance = {});
+
+/// Applies one enumerated proposal while reusing its frozen exact-SCoP proof.
+/// A provider or exact-Fabric negative is a typed proposal refusal.
+llvm::Expected<MaterializedStructuredScheduleCandidate>
+materializeStructuredScheduleProposal(
+    const StructuredProgramCandidate &parent,
+    const StructuredScheduleProposal &proposal,
+    const fabric::FinalizedFabricRoot &fabric,
+    std::optional<StructuredEntityRef> trackedSpatialRegion = std::nullopt,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance = {});
+
+/// Re-enumerates the exact parent/Fabric domain, replays the production
+/// materializer, and requires the immutable child. Downstream Dataflow and
+/// event owners derive their own identity and invalidation facts.
+llvm::Error
+verifyStructuredScheduleDerivation(const StructuredProgramCandidate &parent,
+                                   const fabric::FinalizedFabricRoot &fabric,
+                                   const StructuredScheduleDecision &decision,
+                                   const StructuredProgramCandidate &child);
 
 } // namespace loom::frontend
 

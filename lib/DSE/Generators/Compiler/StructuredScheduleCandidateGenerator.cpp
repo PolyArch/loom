@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -26,7 +27,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.structured_schedule_generator.config.2.0";
+    "loom.structured_schedule_generator.config.3.0";
 
 enum InputSlot : std::uint32_t {
   StructuredProgramsInput,
@@ -51,9 +52,11 @@ constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
      PlanValueCardinality::FiniteSet},
 }};
 
-constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 2> workUnits = {{
+constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 4> workUnits = {{
     {CandidateGeneratorWorkUnitRef(0), "loop_scope"},
-    {CandidateGeneratorWorkUnitRef(1), "schedule_decision"},
+    {CandidateGeneratorWorkUnitRef(1), "candidate_materialization"},
+    {CandidateGeneratorWorkUnitRef(2), "schedule_coordinate"},
+    {CandidateGeneratorWorkUnitRef(3), "bounded_candidate"},
 }};
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -68,36 +71,52 @@ llvm::ArrayRef<std::uint8_t> descriptorBytes() {
 }
 
 std::vector<std::uint8_t>
-encodeConfig(std::uint64_t limit, StructuredScheduleGenerationIntent intent) {
+encodeConfig(std::uint64_t limit,
+             std::optional<std::uint64_t> maximumMaterializationAttempts,
+             StructuredScheduleGenerationIntent intent) {
   std::vector<std::uint8_t> bytes;
-  bytes.reserve(9);
-  for (unsigned shift = 56; shift != 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(limit >> shift));
-  bytes.push_back(static_cast<std::uint8_t>(limit));
+  bytes.reserve(17);
+  const auto appendU64 = [&](std::uint64_t value) {
+    for (unsigned shift = 56; shift != 0; shift -= 8)
+      bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+    bytes.push_back(static_cast<std::uint8_t>(value));
+  };
+  appendU64(limit);
+  appendU64(maximumMaterializationAttempts.value_or(0));
   bytes.push_back(static_cast<std::uint8_t>(intent));
   return bytes;
 }
 
 struct DecodedConfig final {
   std::uint64_t limit;
+  std::optional<std::uint64_t> maximumMaterializationAttempts;
   StructuredScheduleGenerationIntent intent;
 };
 
 llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
-  if (bytes.size() < 9)
-    return invalid("truncated scope expansion limit");
-  std::uint64_t limit = 0;
-  for (std::uint8_t byte : bytes.take_front(8))
-    limit = (limit << 8) | byte;
-  if (bytes.size() != 9)
+  if (bytes.size() < 17)
+    return invalid("truncated schedule generator config");
+  if (bytes.size() != 17)
     return invalid("config has trailing bytes");
+  const auto readU64 = [&](std::size_t offset) {
+    std::uint64_t value = 0;
+    for (std::uint8_t byte : bytes.slice(offset, 8))
+      value = (value << 8) | byte;
+    return value;
+  };
+  const std::uint64_t limit = readU64(0);
   if (limit == 0)
     return invalid("scope expansion limit must be positive");
+  const std::uint64_t materializationLimit = readU64(8);
   const auto intent =
       static_cast<StructuredScheduleGenerationIntent>(bytes.back());
   if (intent > StructuredScheduleGenerationIntent::ForbidLogicalThreadDomain)
     return invalid("config has an unknown generation intent");
-  return DecodedConfig{limit, intent};
+  return DecodedConfig{limit,
+                       materializationLimit == 0
+                           ? std::nullopt
+                           : std::optional<std::uint64_t>(materializationLimit),
+                       intent};
 }
 
 llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
@@ -110,21 +129,40 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 }
 
 llvm::Error validateDecisionPayload(
-    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &,
+    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &output,
     llvm::ArrayRef<ArtifactRootReference> parents, const ArtifactStore &store) {
   auto adopted = frontend::adoptStructuredScheduleDecision(bytes);
   if (!adopted)
     return adopted.takeError();
-  if (parents.size() != 1 ||
-      parents.front().schemaIdentity !=
-          frontend::structuredProgramArtifactSchema.identity ||
-      parents.front().schemaVersion !=
-          frontend::structuredProgramArtifactSchema.version ||
-      adopted->loop.parent != parents.front().artifact)
-    return invalid("schedule decision does not belong to its exact parent");
-  auto parent = frontend::importStructuredProgram(parents.front(), store);
+  const ArtifactRootReference *structuredParent = nullptr;
+  const ArtifactRootReference *fabricParent = nullptr;
+  for (const ArtifactRootReference &parent : parents) {
+    if (parent.schemaIdentity ==
+            frontend::structuredProgramArtifactSchema.identity &&
+        parent.schemaVersion ==
+            frontend::structuredProgramArtifactSchema.version) {
+      if (structuredParent)
+        return invalid("schedule lineage has multiple Structured parents");
+      structuredParent = &parent;
+      continue;
+    }
+    if (parent.schemaIdentity == fabric::fabricArtifactSchema.identity &&
+        parent.schemaVersion == fabric::fabricArtifactSchema.version) {
+      if (fabricParent)
+        return invalid("schedule lineage has multiple Fabric parents");
+      fabricParent = &parent;
+    }
+  }
+  if (parents.size() != 2 || !structuredParent || !fabricParent ||
+      adopted->loop.parent != structuredParent->artifact)
+    return invalid(
+        "schedule decision does not bind one exact Structured/Fabric pair");
+  auto parent = frontend::importStructuredProgram(*structuredParent, store);
   if (!parent)
     return parent.takeError();
+  auto lineageFabric = fabric::importEntireFabricRoot(*fabricParent, store);
+  if (!lineageFabric)
+    return lineageFabric.takeError();
   auto view = parent->view();
   if (!view)
     return view.takeError();
@@ -138,7 +176,11 @@ llvm::Error validateDecisionPayload(
           : llvm::isa_and_nonnull<mlir::scf::ForOp>(loop->operation);
   if (!exactLoop)
     return invalid("schedule decision does not reference its exact loop kind");
-  return llvm::Error::success();
+  auto child = frontend::importStructuredProgram(output, store);
+  if (!child)
+    return child.takeError();
+  return frontend::verifyStructuredScheduleDerivation(*parent, *lineageFabric,
+                                                      *adopted, *child);
 }
 
 const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
@@ -147,7 +189,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v6",
+    "loom.compiler.structured_schedule.generator.v7",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -197,23 +239,46 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
   const std::optional<std::uint64_t> maximumOutputs =
       invocationView.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
   bool truncated = false;
+  bool cancelled = false;
   if (maximumOutputs && outputs.size() > *maximumOutputs) {
     outputs.erase(outputs.begin() + static_cast<std::size_t>(*maximumOutputs),
                   outputs.end());
     truncated = true;
   }
+  std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)>
+      seenOutputs(outputs.begin(), outputs.end(), &artifactRootReferenceLess);
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
   std::uint64_t inspectedLoopScopes = 0;
-  std::uint64_t decisionAttempts = 0;
-  std::uint64_t consumedDecisionAttempts = 0;
+  std::uint64_t inspectedDecisionCoordinates = 0;
+  std::uint64_t generatedProposalCount = 0;
+  std::uint64_t selectedProposalCount = 0;
+  std::uint64_t materializationAttempts = 0;
   std::uint64_t scopRefusalCount = 0;
   std::uint64_t logicalDomainDecisionCount = 0;
   std::uint64_t ownedLogicalDomainDecisionCount = 0;
   std::uint64_t materializedLogicalDomainCount = 0;
   std::uint64_t nonFinalizableLogicalDomainCount = 0;
   std::uint64_t exactFabricRejectedLogicalDomainCount = 0;
+  bool stopGeneration = truncated;
+  const auto recordScopRefusal = [&](const frontend::StructuredEntityRef &loop,
+                                     frontend::StructuredScopRefusalKind kind) {
+    ++scopRefusalCount;
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+          fields["context_kind"] = "structured_scop_refusal";
+          fields["loop_ordinal"] = loop.ordinal;
+          fields["refusal_kind"] = static_cast<std::uint64_t>(kind);
+        });
+  };
   for (const ArtifactRootReference &reference :
        inputBindings[StructuredProgramsInput].artifacts) {
+    if (stopGeneration)
+      break;
+    if (invocationView.stopRequested()) {
+      cancelled = true;
+      break;
+    }
     auto parent = frontend::importStructuredProgram(reference, store);
     if (!parent)
       return parent.takeError();
@@ -231,17 +296,18 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       if (*hasLogicalDomain) {
         if (maximumOutputs && outputs.size() == *maximumOutputs) {
           truncated = true;
-          break;
+          stopGeneration = true;
+        } else {
+          if (seenOutputs.insert(reference).second)
+            outputs.push_back(reference);
+          ++ownedLogicalDomainDecisionCount;
+          ++materializedLogicalDomainCount;
         }
-        outputs.push_back(reference);
-        ++ownedLogicalDomainDecisionCount;
-        ++materializedLogicalDomainCount;
         continue;
       }
     }
     std::optional<frontend::StructuredEntityRef> trackedSpatialRegion;
-    llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
-        sourceProvenance;
+    std::vector<frontend::StructuredOperationSourceProvenance> sourceProvenance;
     if (invocation) {
       auto tracked =
           detail::StructuredOwnershipInvocationAccess::ownedSpatialRegion(
@@ -254,7 +320,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
               *invocation, reference);
       if (!provenance)
         return provenance.takeError();
-      sourceProvenance = *provenance;
+      sourceProvenance.assign(provenance->begin(), provenance->end());
     }
     if (config->generationIntent() ==
             StructuredScheduleGenerationIntent::RequireLogicalThreadDomain &&
@@ -273,24 +339,22 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
         std::numeric_limits<std::uint64_t>::max() - inspectedLoopScopes)
       return invalid("loop-scope accounting overflows u64");
     inspectedLoopScopes += decisions->inspectedLoopScopes;
-    for (const frontend::StructuredScopRefusal &refusal : decisions->refusals) {
-      ++scopRefusalCount;
-      mapping_debug::emit(
-          mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
-          mapping_debug::Event::DerivedContext,
-          [&](llvm::json::Object &fields) {
-            fields["context_kind"] = "structured_scop_refusal";
-            fields["loop_ordinal"] = refusal.loop.ordinal;
-            fields["refusal_kind"] = static_cast<std::uint64_t>(refusal.kind);
-          });
-    }
-    if (decisions->decisions.size() >
-        std::numeric_limits<std::uint64_t>::max() - decisionAttempts)
-      return invalid("schedule-decision accounting overflows u64");
-    decisionAttempts += decisions->decisions.size();
-    outputs.reserve(outputs.size() + decisions->decisions.size());
-    for (const frontend::StructuredScheduleDecision &decision :
-         decisions->decisions) {
+    for (const frontend::StructuredScopRefusal &refusal : decisions->refusals)
+      recordScopRefusal(refusal.loop, refusal.kind);
+    if (decisions->inspectedDecisionCoordinates >
+        std::numeric_limits<std::uint64_t>::max() -
+            inspectedDecisionCoordinates)
+      return invalid("schedule-coordinate accounting overflows u64");
+    inspectedDecisionCoordinates += decisions->inspectedDecisionCoordinates;
+    for (const frontend::StructuredScheduleProposal &proposal :
+         decisions->proposals) {
+      if (invocationView.stopRequested()) {
+        cancelled = true;
+        stopGeneration = true;
+        break;
+      }
+      const frontend::StructuredScheduleDecision &decision =
+          proposal.decision();
       const bool producesLogicalThreadDomain =
           decision.kind ==
               frontend::StructuredScheduleDecisionKind::Parallelize ||
@@ -307,16 +371,30 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       if (config->generationIntent() ==
           StructuredScheduleGenerationIntent::RequireLogicalThreadDomain)
         ++ownedLogicalDomainDecisionCount;
-      if (maximumOutputs && outputs.size() == *maximumOutputs) {
+      if (generatedProposalCount == std::numeric_limits<std::uint64_t>::max())
+        return invalid("generated proposal accounting overflows u64");
+      ++generatedProposalCount;
+      if ((maximumOutputs && outputs.size() == *maximumOutputs) ||
+          (config->maximumMaterializationAttempts() &&
+           materializationAttempts ==
+               *config->maximumMaterializationAttempts())) {
         truncated = true;
+        stopGeneration = true;
         break;
       }
-      auto child = frontend::materializeStructuredScheduleDecision(
-          *parent, decision, trackedSpatialRegion, sourceProvenance);
+      ++selectedProposalCount;
+      ++materializationAttempts;
+      auto child = frontend::materializeStructuredScheduleProposal(
+          *parent, proposal, *exactFabric, trackedSpatialRegion,
+          sourceProvenance);
       if (!child) {
         bool rejected = false;
         llvm::Error unhandled = llvm::handleErrors(
             child.takeError(),
+            [&](const frontend::StructuredScheduleProposalRefusal &error) {
+              rejected = true;
+              recordScopRefusal(error.loop(), error.kind());
+            },
             [&](const frontend::SpatialOwnershipCandidateRejection &error) {
               rejected = true;
               if (producesLogicalThreadDomain)
@@ -338,10 +416,25 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
                          "outcome");
         continue;
       }
+      if (child->structuredProgram.identity() == parent->identity()) {
+        if (child->structuredProgram.canonicalBytes().bytes() !=
+            parent->canonicalBytes().bytes())
+          return invalid("schedule materialization produced an identity "
+                         "collision with changed canonical bytes");
+        continue;
+      }
+      const ArtifactRootReference childReference{
+          frontend::structuredProgramArtifactSchema.identity.str(),
+          frontend::structuredProgramArtifactSchema.version,
+          child->structuredProgram.identity()};
+      if (seenOutputs.find(childReference) != seenOutputs.end())
+        continue;
       auto published =
           frontend::publishStructuredProgram(child->structuredProgram, store);
       if (!published)
         return published.takeError();
+      if (*published != childReference)
+        return invalid("published schedule child changed its exact reference");
       if (invocation)
         if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
                 recordScheduleCandidate(*invocation, reference, *published,
@@ -354,10 +447,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           CandidateGeneratorLineageEdgeKind::CandidateDecision,
           CandidateGeneratorOutputSlotRef(0),
           *published,
-          {reference},
+          {reference, exactFabric->reference()},
           std::move(*ownerPayload)});
+      seenOutputs.insert(*published);
       outputs.push_back(std::move(*published));
-      ++consumedDecisionAttempts;
       materializedLogicalDomainCount += producesLogicalThreadDomain ? 1 : 0;
     }
   }
@@ -387,7 +480,11 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
   std::vector<CandidateGeneratorOutputBinding> outputBindings = {
       {CandidateGeneratorOutputSlotRef(0), std::move(outputs)}};
   CandidateGeneratorProviderOutcome outcome =
-      truncated
+      cancelled
+          ? CandidateGeneratorProviderOutcome{IncompleteCandidateGeneratorResult{
+                CandidateGeneratorIncompleteReason::CancelledOrTimeout,
+                std::move(outputBindings), std::move(lineageEdges)}}
+      : truncated
           ? CandidateGeneratorProviderOutcome{IncompleteCandidateGeneratorResult{
                 CandidateGeneratorIncompleteReason::SemanticLimitReached,
                 std::move(outputBindings), std::move(lineageEdges)}}
@@ -397,8 +494,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       std::move(outcome),
       {{CandidateGeneratorWorkUnitRef(0), inspectedLoopScopes,
         inspectedLoopScopes},
-       {CandidateGeneratorWorkUnitRef(1), decisionAttempts,
-        consumedDecisionAttempts}}};
+       {CandidateGeneratorWorkUnitRef(1), selectedProposalCount,
+        materializationAttempts},
+       {CandidateGeneratorWorkUnitRef(2), inspectedDecisionCoordinates,
+        inspectedDecisionCoordinates},
+       {CandidateGeneratorWorkUnitRef(3), generatedProposalCount,
+        selectedProposalCount}}};
 }
 
 const CandidateGeneratorProvider provider{
@@ -414,18 +515,23 @@ resolvedStructuredScheduleGeneratorConfigSchemaBytes() {
 
 llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
 projectResolvedStructuredScheduleGeneratorConfigView(
-    const ResolvedConfig &config, StructuredScheduleGenerationIntent intent) {
+    const ResolvedConfig &config, StructuredScheduleGenerationIntent intent,
+    std::optional<std::uint64_t> maximumMaterializationAttempts) {
   const std::uint64_t limit = config.dse.schedule.scopeExpansionLimit;
   if (limit == 0)
     return invalid("scope expansion limit must be positive");
   if (intent > StructuredScheduleGenerationIntent::ForbidLogicalThreadDomain)
     return invalid("generation intent is unknown");
-  std::vector<std::uint8_t> bytes = encodeConfig(limit, intent);
+  if (maximumMaterializationAttempts && *maximumMaterializationAttempts == 0)
+    return invalid("materialization attempt limit must be positive");
+  std::vector<std::uint8_t> bytes =
+      encodeConfig(limit, maximumMaterializationAttempts, intent);
   auto digest = computeComponentViewDigest(descriptorBytes(), bytes);
   if (!digest)
     return digest.takeError();
   return ResolvedStructuredScheduleGeneratorConfigView(
-      limit, intent, std::move(bytes), std::move(*digest));
+      limit, maximumMaterializationAttempts, intent, std::move(bytes),
+      std::move(*digest));
 }
 
 llvm::Expected<ResolvedStructuredScheduleGeneratorConfigView>
@@ -441,12 +547,13 @@ adoptResolvedStructuredScheduleGeneratorConfigView(
   auto config = decodeConfig(canonicalViewBytes);
   if (!config)
     return config.takeError();
-  std::vector<std::uint8_t> reencoded =
-      encodeConfig(config->limit, config->intent);
+  std::vector<std::uint8_t> reencoded = encodeConfig(
+      config->limit, config->maximumMaterializationAttempts, config->intent);
   if (llvm::ArrayRef<std::uint8_t>(reencoded) != canonicalViewBytes)
     return invalid("decoded config does not re-encode to the source bytes");
   return ResolvedStructuredScheduleGeneratorConfigView(
-      config->limit, config->intent, std::move(reencoded), digest);
+      config->limit, config->maximumMaterializationAttempts, config->intent,
+      std::move(reencoded), digest);
 }
 
 const CandidateGeneratorDescriptor &

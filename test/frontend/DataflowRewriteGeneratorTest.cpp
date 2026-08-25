@@ -731,6 +731,42 @@ void lineageCodecRejectsAnOutOfRangeActor() {
     fail("cannot remove ArtifactStore directory: " + error.message());
 }
 
+void lineageRejectsAValidForeignChild() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-dataflow-lineage-child", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto parent = roundTripProgram();
+  auto parentReference =
+      take(dataflow::publishCanonicalDataflow(parent, store));
+  auto decisions =
+      take(dataflow::enumerateFixedDataflowRewriteDecisions(parent));
+  if (decisions.empty())
+    fail("Dataflow lineage fixture has no legal rewrite decision");
+  auto encoded =
+      take(dataflow::encodeDataflowRewriteDecision(decisions.front()));
+
+  auto foreign = wideVectorAddProgram();
+  auto foreignReference =
+      take(dataflow::publishCanonicalDataflow(foreign, store));
+  const auto *contract =
+      loom::dse::dataflowRewriteCandidateGeneratorDescriptor()
+          .ownerLineagePayload;
+  if (!contract)
+    fail("Dataflow generator has no owner lineage contract");
+  llvm::Error validation = contract->validateCanonical(
+      encoded, foreignReference, {parentReference}, store);
+  if (!validation)
+    fail("Dataflow lineage accepted another decision's valid child");
+  llvm::consumeError(std::move(validation));
+
+  error = llvm::sys::fs::remove_directories(directory);
+  if (error)
+    fail("cannot remove ArtifactStore directory: " + error.message());
+}
+
 void wideVectorActorIsChunkedForExactNarrowComputeFabric() {
   llvm::SmallString<128> directory;
   std::error_code error = llvm::sys::fs::createUniqueDirectory(
@@ -1051,6 +1087,7 @@ int main() {
   configRoundTripsAndRejectsZeroLimit();
   invalidInMemoryDecisionFailsClosed();
   lineageCodecRejectsAnOutOfRangeActor();
+  lineageRejectsAValidForeignChild();
   exactParentAndOneAtomicChildArePublished();
   inverseCycleChargesWorkWithoutPublishingCyclicLineage();
   workerSchedulingPreservesFormalResult();

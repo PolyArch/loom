@@ -1585,11 +1585,18 @@ Dataflow actor order, so Fabric affects candidate generation but never the
 rewrite's software legality.
 
 The provider for catalog and decision schema 2.0 has implementation semantic
-identity `loom.compiler.dataflow_rewrite.generator.v3`. The existing
-`loom.compiler.dataflow_rewrite.generator.v2` identity remains bound to the
-incompatible decision-1.0 behavior and cannot be reinterpreted. Registry,
-binding, manifest, cache, and lineage validation therefore distinguish the two
-providers without a compatibility flag or cache invalidation exception.
+identity `loom.compiler.dataflow_rewrite.generator.v4`. Its lineage validator
+replays the typed decision and requires the declared output's exact child
+identity; a legal child from another decision cannot borrow the payload. The
+existing `loom.compiler.dataflow_rewrite.generator.v2` and v3 identities remain
+bound to their earlier behavior and cannot be reinterpreted. Registry, binding,
+manifest, cache, and lineage validation therefore distinguish the providers
+without a compatibility flag or cache invalidation exception.
+
+The Spatial Mapping feedback provider shares this exact rewrite-lineage
+contract. Its implementation semantic identity is therefore
+`loom.mapping.spatial_feedback.generator.v3`; the earlier v2 identity cannot
+reuse lineage validated under this contract.
 
 The actor's typed decomposition domain is the one owned by
 [Explicit Elementwise Decomposition](spec-dataflow-vectorization.md#explicit-elementwise-decomposition):

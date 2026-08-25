@@ -1436,7 +1436,8 @@ detail::StructuredOwnershipInvocationAccess::recordScheduleCandidate(
   auto payload = frontend::encodeStructuredScheduleDecision(decision);
   if (!payload)
     return payload.takeError();
-  StructuredScheduleDerivation derivation{parent, decision};
+  StructuredScheduleDerivation derivation{parent, child,
+                                          impl.fabric.reference(), decision};
   auto [lineage, inserted] = impl.scheduleLineage[child].try_emplace(
       CanonicalDerivationKey{parent, std::move(*payload)}, derivation);
   if (!inserted && !(lineage->second == derivation))

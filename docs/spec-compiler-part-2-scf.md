@@ -651,12 +651,20 @@ backend advice.
 ### Structured Schedule Generator
 
 The current Structured Schedule generator consumes a finite set of exact
-Structured Program references and one exact finalized Fabric. It emits the
-input set plus every distinct child obtained by one legal atomic schedule
-decision. An empty input set produces an empty output set, so an ordered
+Structured Program references and one exact finalized Fabric. It derives one
+invocation-local proposal for every canonical atomic schedule coordinate that
+passes the cheap exact analysis gates and emits the input set plus every
+distinct materialized child allowed by the central plan's output demand. A
+proposal is not an Artifact or another Schedule representation: it binds the
+typed decision and any frozen exact-SCoP view already produced for that loop to
+the exact enumerating Fabric reference. Provider materialization and exact
+Fabric capability may still return a typed local refusal. An empty input set
+produces an empty output set, so an ordered
 central plan remains total when an earlier generator has no candidates. Its
-resolved component view contains only the positive `scope_expansion_limit`
-owned by the Resolved Configuration View.
+resolved component view contains the positive `scope_expansion_limit` and an
+optional positive `maximum_materialization_attempts`; the latter is an
+independent grant, not an alias for the output Artifact bound. The component
+view schema is `loom.structured_schedule_generator.config.3.0`.
 
 Loop scopes are `scf.for` and `affine.for` operations in the parent's canonical
 Structured operation order. The first `scope_expansion_limit` loop scopes form
@@ -701,15 +709,17 @@ compute statement. Multiple recurrences, mapped reductions, non-neutral
 initializers, writes, and reductions with another result consumer are outside
 this domain and receive a typed local refusal.
 
-Generation first applies the pinned MLIR Affine vectorizer to a private clone
-and lowers its loop and reduction image through pinned upstream conversions.
+Selected proposal materialization applies the pinned MLIR Affine vectorizer to
+a private clone and lowers its loop and reduction image through pinned upstream
+conversions.
 An exact-tail image then requires every vector-typed memory or compute actor in
 the transformed closure to have a concrete admitting resource in the exact
 Fabric. A reduction-mask image is semantically materializable and independently
 verified, but is not a generated production candidate until Graph lowering can
 prove its active boundary lanes; generation records
-`VectorLoweringUnavailable` locally. Publication repeats the provider transform
-and an independent verifier checks the exact source loop, stride, vector shape,
+`VectorLoweringUnavailable` locally. Lineage validation re-enumerates the exact
+parent/Fabric domain and replays the selected transform, while an independent
+vector verifier checks the exact source loop, stride, vector shape,
 transfer and statement correspondence, tail-mask DAG, reduction kind, neutral
 arm, lowered combiner tree, alias roots, and alignment equation. Exact Graph
 lowering turns only statically all-lanes-in-bounds rank-one transfers into
@@ -797,16 +807,43 @@ ordinary unroll. It is one atomic decision implemented by the pinned upstream
 SCF utility; the shared inner control and replicated body are materialized in
 the child IR and no jam flag is persisted. Arbitrary permutations and compound
 non-atomic schedules are composed through immutable lineage rather than
-enumerated factorially. Tile, unroll, and unroll-and-jam use the pinned upstream
-SCF utilities; interchange preserves the exact loop bounds, comparison
-convention, attributes, body, and induction-variable uses while exchanging
-dimensions.
+enumerated factorially. Every vector, tile, unroll, and unroll-and-jam factor
+belongs to the same canonical finite range `2..64`; a static trip count does
+not expand the coordinate domain beyond that bound. Tile, unroll, and
+unroll-and-jam use the pinned upstream SCF utilities; interchange preserves the
+exact loop bounds, comparison convention, attributes, body, and
+induction-variable uses while exchanging dimensions.
 
-Each generated decision resolves its parent-local `StructuredEntityRef`,
+Each materialized proposal resolves its parent-local `StructuredEntityRef`,
 clones the complete parent, applies one transform, verifies the result, and
-passes it through the sole Structured Program finalizer. Equal children
-deduplicate by Artifact identity. No schedule tree, factor table, hidden pass
-state, or persisted analysis view exists.
+passes it through the sole Structured Program finalizer. For each exact-vector
+proposal, the SCoP analysis and dependence view is frozen once during proposal
+enumeration and reused by the selected materializer; direct untrusted decision
+materialization repeats the same analysis. Equal children deduplicate by
+Artifact identity. No schedule tree, factor table, hidden pass state, or
+persisted analysis view exists.
+
+The canonical lineage-payload schema is
+`loom.structured_schedule.decision.4.0`. The earlier 3.0 schema admitted
+unbounded scalar factors and cannot be reinterpreted as this finite coordinate
+domain.
+
+The exact schedule derivation is the typed edge
+`(parent, child, fabric, decision)`.
+The Spatial ancestor that changes a parallel loop into a logical thread domain
+is derived mechanically from the selected loop in the immutable parent;
+invocation-local tracked projections and source provenance cannot change child
+semantic bytes. Lineage validation requires the decision to be present in the
+enumerator-owned transformation domain for that exact parent and Fabric,
+replays the production materializer, and requires the exact child identity and
+canonical bytes. This is an edge-level correspondence proof. It does not
+reconstruct the invocation-specific prefix selected by generation intent,
+scope and attempt grants, earlier typed refusals, or central output demand; a
+batch-level invocation replay would be required to certify that separate fact.
+A changed Structured child is lowered independently: only equal
+Canonical Dataflow identity permits reuse of Dataflow, token/event, Mapping,
+or PnR state. A schedule edge alone is never a live-state migration
+correspondence.
 
 The generator may use exact aggregate Fabric capacity to reject a schedule
 decision that is already impossible, but it does not lower the complete child
@@ -817,10 +854,20 @@ five-lane `dataflow.sync` created by tiling is rejected there when it survives
 to the final child and the selected Fabric admits at most four lanes, while an
 intermediate pointer operation later consumed by channel promotion is not a
 hardware requirement. This is hard-negative capability pruning, not a
-placement, routing, contention, or QoR conclusion.
+placement, routing, contention, or QoR conclusion. The frontend does not own a
+heuristic ranking. Hardware-aware runtime measures, Pareto/TopK selection,
+diversity, and bounded Mapping finalists remain with the central PreMapping
+objective and Promote owners. Generator work accounting separately records
+inspected loop scopes, every syntactically present schedule coordinate before
+its exact legality/capability gate, generated proposals selected by the
+independent bounds, and actual materialization attempts. A typed refusal
+consumes its attempt but no distinct output slot; a later proposal may fill
+that slot until the attempt grant is exhausted. A materialized identity no-op
+or a child identity already present in the output set likewise consumes its
+attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v6`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v7`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator

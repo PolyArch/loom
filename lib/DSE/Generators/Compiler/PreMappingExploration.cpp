@@ -816,9 +816,8 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
       projectResolvedEvidenceObligationSetConfigView({obligations->analytic});
   if (!analyticAcquisitionConfig)
     return analyticAcquisitionConfig.takeError();
-  auto scheduleConfig =
-      projectResolvedStructuredScheduleGeneratorConfigView(config,
-                                                           scheduleIntent);
+  auto scheduleConfig = projectResolvedStructuredScheduleGeneratorConfigView(
+      config, scheduleIntent, expansionLimit);
   if (!scheduleConfig)
     return scheduleConfig.takeError();
   auto executionShapeConfig =

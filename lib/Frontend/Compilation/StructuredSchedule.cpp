@@ -37,16 +37,28 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::frontend {
-namespace {
+char StructuredScheduleProposalRefusal::ID = 0;
 
-constexpr std::uint64_t maximumCanonicalVectorFactor = 64;
+std::string StructuredScheduleProposalRefusal::message() const {
+  return "structured schedule proposal refused with kind " +
+         std::to_string(static_cast<std::uint32_t>(kind_));
+}
 
-} // namespace
+void StructuredScheduleProposalRefusal::log(llvm::raw_ostream &stream) const {
+  stream << "structured_schedule_proposal_refused: loop=" << loop_.ordinal
+         << " kind=" << static_cast<std::uint32_t>(kind_);
+}
+
+std::error_code StructuredScheduleProposalRefusal::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
 
 namespace detail {
 
@@ -57,7 +69,7 @@ llvm::Error validateStructuredVectorScheduleCoordinate(
                                    "structured_schedule_invalid: " + message);
   };
   if (coordinate.shape.size() != 1 || coordinate.shape.front() <= 1 ||
-      coordinate.shape.front() > maximumCanonicalVectorFactor)
+      coordinate.shape.front() > maximumCanonicalStructuredScheduleFactor)
     return invalidCoordinate(
         "vector coordinate has no supported rank-one shape");
   if (coordinate.requiredAlignmentBytes == 0)
@@ -80,7 +92,7 @@ llvm::Error validateStructuredVectorScheduleCoordinate(
 namespace {
 
 constexpr llvm::StringLiteral decisionSchema =
-    "loom.structured_schedule.decision.3.0";
+    "loom.structured_schedule.decision.4.0";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -94,19 +106,15 @@ std::optional<std::uint64_t> staticTripCount(mlir::scf::ForOp loop) {
   return count->getZExtValue();
 }
 
-std::vector<std::uint64_t> properDivisors(std::uint64_t value) {
+std::vector<std::uint64_t> canonicalProperDivisors(std::uint64_t value) {
   std::vector<std::uint64_t> factors;
   if (value <= 2)
     return factors;
-  for (std::uint64_t divisor = 2; divisor <= value / divisor; ++divisor) {
-    if (value % divisor != 0)
-      continue;
-    factors.push_back(divisor);
-    const std::uint64_t paired = value / divisor;
-    if (paired != divisor && paired != value)
-      factors.push_back(paired);
-  }
-  llvm::sort(factors);
+  const std::uint64_t maximumFactor =
+      std::min(maximumCanonicalStructuredScheduleFactor, value - 1);
+  for (std::uint64_t factor = 2; factor <= maximumFactor; ++factor)
+    if (value % factor == 0)
+      factors.push_back(factor);
   return factors;
 }
 
@@ -140,8 +148,7 @@ bool hasInvariantNestedLoopBounds(mlir::scf::ForOp outer) {
   return !result.wasInterrupted();
 }
 
-llvm::SmallVector<mlir::scf::ForOp>
-rectangularParallelNest(mlir::scf::ForOp root) {
+llvm::SmallVector<mlir::scf::ForOp> rectangularNest(mlir::scf::ForOp root) {
   llvm::SmallVector<mlir::scf::ForOp> result;
   mlir::scf::ForOp current = root;
   while (current) {
@@ -159,6 +166,12 @@ rectangularParallelNest(mlir::scf::ForOp root) {
       break;
     current = child;
   }
+  return result;
+}
+
+llvm::SmallVector<mlir::scf::ForOp>
+rectangularParallelNest(mlir::scf::ForOp root) {
+  llvm::SmallVector<mlir::scf::ForOp> result = rectangularNest(root);
   return raising::proveIndependentIterations(result) ==
                  raising::ParallelDependenceResult::ProvenIndependent
              ? result
@@ -437,7 +450,8 @@ llvm::Expected<
     std::variant<StructuredVectorScheduleCoordinate, StructuredScopRefusalKind>>
 coordinateFor(const ExactStructuredScopView &scop, std::uint64_t factor) {
   if (!scop.constantTripCount || *scop.constantTripCount <= 1 ||
-      factor > *scop.constantTripCount || factor > maximumCanonicalVectorFactor)
+      factor > *scop.constantTripCount ||
+      factor > maximumCanonicalStructuredScheduleFactor)
     return StructuredScopRefusalKind::NonCanonicalIterationDomain;
   const std::optional<std::uint64_t> requiredAlignment =
       llvm::checkedMulUnsigned(scop.maximumElementBytes, factor);
@@ -464,7 +478,10 @@ coordinateFor(const ExactStructuredScopView &scop, std::uint64_t factor) {
       scop.reductionSchedule};
 }
 
-llvm::Expected<mlir::affine::AffineForOp>
+using VectorizationAttempt =
+    std::variant<mlir::affine::AffineForOp, StructuredScopRefusalKind>;
+
+llvm::Expected<VectorizationAttempt>
 applyVectorize(mlir::affine::AffineForOp loop,
                const StructuredVectorScheduleCoordinate &coordinate) {
   if (llvm::Error error =
@@ -472,7 +489,7 @@ applyVectorize(mlir::affine::AffineForOp loop,
     return std::move(error);
   llvm::SmallVector<mlir::affine::LoopReduction> reductions;
   if (!mlir::affine::isLoopParallel(loop, &reductions))
-    return invalid("Affine provider no longer proves the selected loop legal");
+    return StructuredScopRefusalKind::ProviderMaterializationRejected;
   if ((coordinate.reductionSchedule == StructuredReductionSchedule::None) !=
       reductions.empty())
     return invalid("vector reduction coordinate differs from the source loop");
@@ -489,7 +506,7 @@ applyVectorize(mlir::affine::AffineForOp loop,
   mlir::Operation *successor = loop->getNextNode();
   std::vector<llvm::SmallVector<mlir::affine::AffineForOp, 2>> loops = {{loop}};
   if (mlir::failed(mlir::affine::vectorizeAffineLoopNest(loops, strategy)))
-    return invalid("MLIR Affine vectorizer rejected the selected coordinate");
+    return StructuredScopRefusalKind::ProviderMaterializationRejected;
 
   mlir::affine::AffineForOp replacement;
   mlir::Operation *operation =
@@ -597,7 +614,10 @@ llvm::Error lowerTailMask(mlir::affine::AffineForOp loop) {
 
 llvm::SmallVector<mlir::Operation *> vectorizedClosure(mlir::Operation *root);
 
-llvm::Expected<mlir::scf::ForOp>
+using VectorLoweringAttempt =
+    std::variant<mlir::scf::ForOp, StructuredScopRefusalKind>;
+
+llvm::Expected<VectorLoweringAttempt>
 lowerVectorizedScop(mlir::affine::AffineForOp loop,
                     const StructuredVectorScheduleCoordinate &coordinate) {
   if (coordinate.tailPolicy == StructuredVectorTailPolicy::ReductionMask) {
@@ -628,7 +648,7 @@ lowerVectorizedScop(mlir::affine::AffineForOp loop,
   mlir::FrozenRewritePatternSet frozenAffinePatterns(std::move(affinePatterns));
   if (mlir::failed(mlir::applyOpPatternsGreedily(
           affineClosure, frozenAffinePatterns, rewriteConfig)))
-    return invalid("Affine lowering rejected the vectorized loop");
+    return StructuredScopRefusalKind::VectorLoweringUnavailable;
 
   mlir::scf::ForOp lowered;
   mlir::Operation *operation =
@@ -653,11 +673,11 @@ lowerVectorizedScop(mlir::affine::AffineForOp loop,
     if (mlir::failed(mlir::applyOpPatternsGreedily(
             llvm::ArrayRef<mlir::Operation *>{reduction.getOperation()},
             frozenReductionPatterns, rewriteConfig)))
-      return invalid("Vector provider could not lower a reduction image");
+      return StructuredScopRefusalKind::VectorLoweringUnavailable;
   }
   for (mlir::Operation *closureOperation : vectorizedClosure(lowered)) {
     if (llvm::isa<mlir::vector::ReductionOp>(closureOperation))
-      return invalid("Vector provider left an unsupported reduction image");
+      return StructuredScopRefusalKind::VectorLoweringUnavailable;
   }
   return lowered;
 }
@@ -815,51 +835,6 @@ fabricAdmitsVectorizedClosure(mlir::Operation *root,
   return admitted;
 }
 
-llvm::Expected<std::optional<StructuredScopRefusalKind>>
-preflightVectorize(const StructuredProgramCandidate &parent,
-                   const ExactStructuredScopView &scop,
-                   const StructuredVectorScheduleCoordinate &coordinate,
-                   const FabricCapabilityIndex &fabric) {
-  mlir::Operation *clonedLoop = nullptr;
-  mlir::Operation *clonedSpatialRegion = nullptr;
-  auto clone = cloneAndResolveLoop(parent, scop.loop, std::nullopt, {},
-                                   clonedLoop, clonedSpatialRegion);
-  if (!clone)
-    return clone.takeError();
-  auto affineLoop = projectExactStructuredScopToAffine(clonedLoop);
-  if (!affineLoop)
-    return affineLoop.takeError();
-  auto materialized = applyVectorize(*affineLoop, coordinate);
-  if (!materialized) {
-    llvm::consumeError(materialized.takeError());
-    return StructuredScopRefusalKind::ProviderMaterializationRejected;
-  }
-  if (coordinate.tailPolicy == StructuredVectorTailPolicy::ReductionMask)
-    if (llvm::Error error = attachTailMask(*materialized)) {
-      llvm::consumeError(std::move(error));
-      return StructuredScopRefusalKind::ProviderMaterializationRejected;
-    }
-  if (llvm::Error error = verifyStructuredVectorScheduleMaterialization(
-          scop, coordinate, clone->get())) {
-    llvm::consumeError(std::move(error));
-    return StructuredScopRefusalKind::ProviderMaterializationRejected;
-  }
-  auto lowered = lowerVectorizedScop(*materialized, coordinate);
-  if (!lowered) {
-    llvm::consumeError(lowered.takeError());
-    return StructuredScopRefusalKind::VectorLoweringUnavailable;
-  }
-  if (coordinate.tailPolicy == StructuredVectorTailPolicy::ReductionMask)
-    return StructuredScopRefusalKind::VectorLoweringUnavailable;
-  auto admitted =
-      fabricAdmitsVectorizedClosure(lowered->getOperation(), fabric);
-  if (!admitted)
-    return admitted.takeError();
-  if (!*admitted)
-    return StructuredScopRefusalKind::FabricCapabilityUnavailable;
-  return std::optional<StructuredScopRefusalKind>{};
-}
-
 } // namespace
 llvm::ArrayRef<std::uint8_t> structuredScheduleDecisionSchemaBytes() {
   return {reinterpret_cast<const std::uint8_t *>(decisionSchema.data()),
@@ -879,7 +854,9 @@ encodeStructuredScheduleDecision(const StructuredScheduleDecision &decision) {
       decision.kind == StructuredScheduleDecisionKind::ParallelizeNest ||
       decision.kind == StructuredScheduleDecisionKind::Vectorize;
   if ((factorless && decision.factor != 0) ||
-      (!factorless && decision.factor <= 1))
+      (!factorless &&
+       (decision.factor <= 1 ||
+        decision.factor > maximumCanonicalStructuredScheduleFactor)))
     return invalid("decision has an invalid factor");
   if (decision.kind == StructuredScheduleDecisionKind::Vectorize) {
     if (!decision.vector)
@@ -1030,9 +1007,18 @@ enumerateStructuredScheduleDecisions(
     scopeOperation = resolved->operation;
   }
   FabricCapabilityIndex capabilityIndex(fabric.view());
-  std::vector<StructuredScheduleDecision> decisions;
+  std::vector<StructuredScheduleProposal> proposals;
   std::vector<StructuredScopRefusal> refusals;
   std::uint64_t expanded = 0;
+  std::uint64_t inspectedCoordinates = 0;
+  const auto recordCoordinates = [&](std::uint64_t count) -> llvm::Error {
+    const std::optional<std::uint64_t> next =
+        llvm::checkedAddUnsigned(inspectedCoordinates, count);
+    if (!next)
+      return invalid("schedule-coordinate accounting overflows u64");
+    inspectedCoordinates = *next;
+    return llvm::Error::success();
+  };
   for (const StructuredEntity &entity :
        view->entities(StructuredEntityKind::Operation)) {
     auto scfLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(entity.operation);
@@ -1040,7 +1026,8 @@ enumerateStructuredScheduleDecisions(
         llvm::dyn_cast_or_null<mlir::affine::AffineForOp>(entity.operation);
     if (!scfLoop && !affineLoop)
       continue;
-    if (scopeOperation && !scopeOperation->isAncestor(entity.operation))
+    if (scopeOperation && scopeOperation != entity.operation &&
+        !scopeOperation->isAncestor(entity.operation))
       continue;
     if (expanded == scopeExpansionLimit)
       break;
@@ -1054,15 +1041,17 @@ enumerateStructuredScheduleDecisions(
     } else {
       const ExactStructuredScopView &scop =
           std::get<ExactStructuredScopView>(*analysis);
+      auto frozenScop = std::make_shared<const ExactStructuredScopView>(scop);
       if (!scop.constantTripCount || *scop.constantTripCount <= 1) {
         refusals.push_back(
             {entity.reference,
              StructuredScopRefusalKind::NonCanonicalIterationDomain});
       } else {
-        const std::uint64_t maximumFactor =
-            std::min(maximumCanonicalVectorFactor, *scop.constantTripCount);
+        const std::uint64_t maximumFactor = std::min(
+            maximumCanonicalStructuredScheduleFactor, *scop.constantTripCount);
+        if (llvm::Error error = recordCoordinates(maximumFactor - 1))
+          return std::move(error);
         bool admitted = false;
-        std::optional<StructuredScopRefusalKind> candidateRefusal;
         std::optional<StructuredScopRefusalKind> coordinateRefusal;
         for (std::uint64_t factor = 2; factor <= maximumFactor; ++factor) {
           auto coordinate = coordinateFor(scop, factor);
@@ -1071,18 +1060,12 @@ enumerateStructuredScheduleDecisions(
           if (auto *admittedCoordinate =
                   std::get_if<StructuredVectorScheduleCoordinate>(
                       &*coordinate)) {
-            auto preflight = preflightVectorize(
-                parent, scop, *admittedCoordinate, capabilityIndex);
-            if (!preflight)
-              return preflight.takeError();
-            if (*preflight) {
-              candidateRefusal = **preflight;
-            } else {
-              decisions.push_back({entity.reference,
-                                   StructuredScheduleDecisionKind::Vectorize, 0,
-                                   std::move(*admittedCoordinate)});
-              admitted = true;
-            }
+            StructuredScheduleDecision decision{
+                entity.reference, StructuredScheduleDecisionKind::Vectorize, 0,
+                std::move(*admittedCoordinate)};
+            proposals.push_back(StructuredScheduleProposal(decision, frozenScop,
+                                                           fabric.reference()));
+            admitted = true;
           } else {
             const StructuredScopRefusalKind refusal =
                 std::get<StructuredScopRefusalKind>(*coordinate);
@@ -1092,22 +1075,28 @@ enumerateStructuredScheduleDecisions(
           }
         }
         if (!admitted)
-          refusals.push_back(
-              {entity.reference,
-               candidateRefusal.value_or(coordinateRefusal.value_or(
-                   StructuredScopRefusalKind::UnsupportedTail))});
+          refusals.push_back({entity.reference,
+                              coordinateRefusal.value_or(
+                                  StructuredScopRefusalKind::UnsupportedTail)});
       }
     }
     if (affineLoop)
       continue;
 
+    const auto appendScfProposal = [&](StructuredScheduleDecision decision) {
+      proposals.push_back(
+          StructuredScheduleProposal(decision, nullptr, fabric.reference()));
+    };
+
     std::optional<std::uint64_t> tripCount = staticTripCount(scfLoop);
     if (tripCount && *tripCount > 1 && scfLoop.getInitArgs().empty()) {
-      std::vector<std::uint64_t> factors = properDivisors(*tripCount);
+      std::vector<std::uint64_t> factors = canonicalProperDivisors(*tripCount);
+      if (llvm::Error error = recordCoordinates(factors.size() * 2))
+        return std::move(error);
       for (std::uint64_t factor : factors)
-        decisions.push_back({entity.reference,
-                             StructuredScheduleDecisionKind::Tile, factor,
-                             std::nullopt});
+        appendScfProposal({entity.reference,
+                           StructuredScheduleDecisionKind::Tile, factor,
+                           std::nullopt});
 
       auto capacity = aggregateUnrollCapacity(scfLoop, capabilityIndex);
       if (!capacity)
@@ -1115,70 +1104,101 @@ enumerateStructuredScheduleDecisions(
       for (std::uint64_t factor : factors) {
         if (factor > *capacity)
           break;
-        decisions.push_back({entity.reference,
-                             StructuredScheduleDecisionKind::Unroll, factor,
-                             std::nullopt});
+        appendScfProposal({entity.reference,
+                           StructuredScheduleDecisionKind::Unroll, factor,
+                           std::nullopt});
       }
     }
 
     mlir::scf::ForOp inner;
-    if (isPerfectAdjacentNest(scfLoop, inner) &&
-        raising::proveIndependentIterations(scfLoop) ==
-            raising::ParallelDependenceResult::ProvenIndependent &&
-        raising::proveIndependentIterations(inner) ==
-            raising::ParallelDependenceResult::ProvenIndependent) {
-      decisions.push_back({entity.reference,
+    const bool perfectAdjacentNest = isPerfectAdjacentNest(scfLoop, inner);
+    if (perfectAdjacentNest) {
+      if (llvm::Error error = recordCoordinates(1))
+        return std::move(error);
+      const bool independentNest =
+          raising::proveIndependentIterations(scfLoop) ==
+              raising::ParallelDependenceResult::ProvenIndependent &&
+          raising::proveIndependentIterations(inner) ==
+              raising::ParallelDependenceResult::ProvenIndependent;
+      if (independentNest)
+        appendScfProposal({entity.reference,
                            StructuredScheduleDecisionKind::Interchange, 0,
                            std::nullopt});
-      if (tripCount && *tripCount > 1 &&
-          hasInvariantNestedLoopBounds(scfLoop)) {
-        auto capacity = aggregateUnrollCapacity(scfLoop, capabilityIndex);
-        if (!capacity)
-          return capacity.takeError();
-        for (std::uint64_t factor : properDivisors(*tripCount)) {
-          if (factor > *capacity)
-            break;
-          decisions.push_back({entity.reference,
+      if (tripCount && *tripCount > 1) {
+        std::vector<std::uint64_t> factors =
+            canonicalProperDivisors(*tripCount);
+        if (llvm::Error error = recordCoordinates(factors.size()))
+          return std::move(error);
+        if (independentNest && hasInvariantNestedLoopBounds(scfLoop)) {
+          auto capacity = aggregateUnrollCapacity(scfLoop, capabilityIndex);
+          if (!capacity)
+            return capacity.takeError();
+          for (std::uint64_t factor : factors) {
+            if (factor > *capacity)
+              break;
+            appendScfProposal({entity.reference,
                                StructuredScheduleDecisionKind::UnrollAndJam,
                                factor, std::nullopt});
+          }
         }
       }
     }
-    if (scfLoop.getInitArgs().empty() &&
-        raising::proveIndependentIterations(scfLoop) ==
-            raising::ParallelDependenceResult::ProvenIndependent)
-      decisions.push_back({entity.reference,
+    if (scfLoop.getInitArgs().empty()) {
+      if (llvm::Error error = recordCoordinates(1))
+        return std::move(error);
+      if (raising::proveIndependentIterations(scfLoop) ==
+          raising::ParallelDependenceResult::ProvenIndependent)
+        appendScfProposal({entity.reference,
                            StructuredScheduleDecisionKind::Parallelize, 0,
                            std::nullopt});
-    if (rectangularParallelNest(scfLoop).size() >= 2)
-      decisions.push_back({entity.reference,
+    }
+    const llvm::SmallVector<mlir::scf::ForOp> rectangular =
+        rectangularNest(scfLoop);
+    if (rectangular.size() >= 2) {
+      if (llvm::Error error = recordCoordinates(1))
+        return std::move(error);
+      if (raising::proveIndependentIterations(rectangular) ==
+          raising::ParallelDependenceResult::ProvenIndependent)
+        appendScfProposal({entity.reference,
                            StructuredScheduleDecisionKind::ParallelizeNest, 0,
                            std::nullopt});
+    }
   }
-  return StructuredScheduleDecisionDomain{std::move(decisions),
-                                          std::move(refusals), expanded};
+  return StructuredScheduleDecisionDomain{std::move(proposals),
+                                          std::move(refusals), expanded,
+                                          inspectedCoordinates};
 }
 
+namespace {
+
 llvm::Expected<MaterializedStructuredScheduleCandidate>
-materializeStructuredScheduleDecision(
+materializeStructuredScheduleImpl(
     const StructuredProgramCandidate &parent,
     const StructuredScheduleDecision &decision,
+    const ExactStructuredScopView *frozenScop,
+    const FabricCapabilityIndex *fabric,
     std::optional<StructuredEntityRef> trackedSpatialRegion,
     llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
   auto encoded = encodeStructuredScheduleDecision(decision);
   if (!encoded)
     return encoded.takeError();
   std::optional<ExactStructuredScopView> vectorSource;
+  const ExactStructuredScopView *exactVectorSource = frozenScop;
   if (decision.kind == StructuredScheduleDecisionKind::Vectorize) {
-    auto analysis = analyzeExactStructuredScop(parent, decision.loop);
-    if (!analysis)
-      return analysis.takeError();
-    if (auto *refusal = std::get_if<StructuredScopRefusal>(&*analysis))
-      return invalid("selected vector SCoP is locally refused with kind " +
-                     llvm::Twine(static_cast<std::uint32_t>(refusal->kind)));
-    vectorSource.emplace(std::get<ExactStructuredScopView>(*analysis));
+    if (!exactVectorSource) {
+      auto analysis = analyzeExactStructuredScop(parent, decision.loop);
+      if (!analysis)
+        return analysis.takeError();
+      if (auto *refusal = std::get_if<StructuredScopRefusal>(&*analysis))
+        return invalid("selected vector SCoP is locally refused with kind " +
+                       llvm::Twine(static_cast<std::uint32_t>(refusal->kind)));
+      vectorSource.emplace(std::get<ExactStructuredScopView>(*analysis));
+      exactVectorSource = &*vectorSource;
+    }
+    if (exactVectorSource->loop != decision.loop)
+      return invalid("frozen vector SCoP belongs to another source loop");
     auto expected =
-        coordinateFor(*vectorSource, decision.vector->shape.front());
+        coordinateFor(*exactVectorSource, decision.vector->shape.front());
     if (!expected)
       return expected.takeError();
     const auto *canonical =
@@ -1195,7 +1215,8 @@ materializeStructuredScheduleDecision(
   if (!clone)
     return clone.takeError();
   auto scfLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(selectedLoop);
-  mlir::Operation *transformedLoop = nullptr;
+  const bool insideSpatialRegion =
+      static_cast<bool>(selectedLoop->getParentOfType<loom::SpatialRegionOp>());
 
   switch (decision.kind) {
   case StructuredScheduleDecisionKind::Tile:
@@ -1232,9 +1253,6 @@ materializeStructuredScheduleDecision(
     {
       mlir::Block *parentBlock = scfLoop->getBlock();
       mlir::Operation *successor = scfLoop->getNextNode();
-      const bool insideTrackedSpatial =
-          clonedSpatialRegion &&
-          clonedSpatialRegion->isAncestor(scfLoop.getOperation());
       if (mlir::failed(raising::materializeIndependentLoopAsForall(scfLoop)))
         return invalid("SCF parallelization rejected the selected decision");
       mlir::Operation *replacement =
@@ -1242,7 +1260,7 @@ materializeStructuredScheduleDecision(
       auto parallel = llvm::dyn_cast_or_null<mlir::scf::ForallOp>(replacement);
       if (!parallel)
         return invalid("SCF parallelization did not produce one forall");
-      if (insideTrackedSpatial)
+      if (insideSpatialRegion)
         if (llvm::Error error =
                 materializeOwnedSpatialForallThreadDomain(parallel))
           return std::move(error);
@@ -1254,10 +1272,7 @@ materializeStructuredScheduleDecision(
     if (decision.factor != 0)
       return invalid("parallel-nest decision carries a factor");
     if (auto parallel = applyParallelizeNest(scfLoop)) {
-      const bool insideTrackedSpatial =
-          clonedSpatialRegion &&
-          clonedSpatialRegion->isAncestor(parallel->getOperation());
-      if (insideTrackedSpatial)
+      if (insideSpatialRegion)
         if (llvm::Error error =
                 materializeOwnedSpatialForallThreadDomain(*parallel))
           return std::move(error);
@@ -1266,7 +1281,7 @@ materializeStructuredScheduleDecision(
     }
     break;
   case StructuredScheduleDecisionKind::Vectorize:
-    if (!vectorSource || !decision.vector)
+    if (!exactVectorSource || !decision.vector)
       return invalid("vector decision has no exact SCoP coordinate");
     {
       auto projected = projectExactStructuredScopToAffine(selectedLoop);
@@ -1275,20 +1290,51 @@ materializeStructuredScheduleDecision(
       auto vectorized = applyVectorize(*projected, *decision.vector);
       if (!vectorized)
         return vectorized.takeError();
+      if (const auto *refusal =
+              std::get_if<StructuredScopRefusalKind>(&*vectorized)) {
+        if (fabric)
+          return llvm::make_error<StructuredScheduleProposalRefusal>(
+              decision.loop, *refusal);
+        return invalid("Affine provider rejected the selected coordinate");
+      }
+      mlir::affine::AffineForOp vectorizedLoop =
+          std::get<mlir::affine::AffineForOp>(*vectorized);
       if (decision.vector->tailPolicy ==
           StructuredVectorTailPolicy::ReductionMask)
-        if (llvm::Error error = attachTailMask(*vectorized))
+        if (llvm::Error error = attachTailMask(vectorizedLoop))
           return std::move(error);
       if (llvm::Error error = verifyStructuredVectorScheduleMaterialization(
-              *vectorSource, *decision.vector, clone->get()))
+              *exactVectorSource, *decision.vector, clone->get()))
         return std::move(error);
-      auto lowered = lowerVectorizedScop(*vectorized, *decision.vector);
+      auto lowered = lowerVectorizedScop(vectorizedLoop, *decision.vector);
       if (!lowered)
         return lowered.takeError();
-      transformedLoop = lowered->getOperation();
+      if (const auto *refusal =
+              std::get_if<StructuredScopRefusalKind>(&*lowered)) {
+        if (fabric)
+          return llvm::make_error<StructuredScheduleProposalRefusal>(
+              decision.loop, *refusal);
+        return invalid("vector lowering rejected the selected coordinate");
+      }
+      mlir::scf::ForOp loweredLoop = std::get<mlir::scf::ForOp>(*lowered);
+      if (fabric && decision.vector->tailPolicy ==
+                        StructuredVectorTailPolicy::ReductionMask)
+        return llvm::make_error<StructuredScheduleProposalRefusal>(
+            decision.loop,
+            StructuredScopRefusalKind::VectorLoweringUnavailable);
+      if (fabric) {
+        auto admitted =
+            fabricAdmitsVectorizedClosure(loweredLoop.getOperation(), *fabric);
+        if (!admitted)
+          return admitted.takeError();
+        if (!*admitted)
+          return llvm::make_error<StructuredScheduleProposalRefusal>(
+              decision.loop,
+              StructuredScopRefusalKind::FabricCapabilityUnavailable);
+      }
     }
     if (llvm::Error error = verifyStructuredVectorScheduleMaterialization(
-            *vectorSource, *decision.vector, clone->get()))
+            *exactVectorSource, *decision.vector, clone->get()))
       return std::move(error);
     break;
   }
@@ -1304,27 +1350,88 @@ materializeStructuredScheduleDecision(
         std::move(*parallelRejection));
   if (mlir::failed(mlir::verify(**clone)))
     return invalid("materialized schedule candidate does not verify");
-  llvm::SmallVector<mlir::Operation *, 2> trackedOperations;
+  llvm::SmallVector<mlir::Operation *, 1> trackedOperations;
   if (clonedSpatialRegion)
     trackedOperations.push_back(clonedSpatialRegion);
-  if (transformedLoop)
-    trackedOperations.push_back(transformedLoop);
   auto finalized = finalizeStructuredProgramWithTrackedEntities(
       clone->get(), {}, trackedOperations);
   if (!finalized)
     return finalized.takeError();
   if (finalized->trackedOperations.size() != trackedOperations.size())
     return invalid("tracked schedule projection changed cardinality");
-  std::size_t trackedOrdinal = 0;
   std::optional<StructuredEntityRef> projectedSpatial;
-  std::optional<StructuredEntityRef> projectedLoop;
   if (clonedSpatialRegion)
-    projectedSpatial = finalized->trackedOperations[trackedOrdinal++];
-  if (transformedLoop)
-    projectedLoop = finalized->trackedOperations[trackedOrdinal++];
+    projectedSpatial = finalized->trackedOperations.front();
   return MaterializedStructuredScheduleCandidate{
       std::move(finalized->artifact), std::move(projectedSpatial),
-      std::move(projectedLoop), std::move(finalized->sourceProvenance)};
+      std::move(finalized->sourceProvenance)};
+}
+
+} // namespace
+
+llvm::Expected<MaterializedStructuredScheduleCandidate>
+materializeStructuredScheduleDecision(
+    const StructuredProgramCandidate &parent,
+    const StructuredScheduleDecision &decision,
+    std::optional<StructuredEntityRef> trackedSpatialRegion,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
+  return materializeStructuredScheduleImpl(parent, decision, nullptr, nullptr,
+                                           trackedSpatialRegion,
+                                           sourceProvenance);
+}
+
+llvm::Expected<MaterializedStructuredScheduleCandidate>
+materializeStructuredScheduleProposal(
+    const StructuredProgramCandidate &parent,
+    const StructuredScheduleProposal &proposal,
+    const fabric::FinalizedFabricRoot &fabric,
+    std::optional<StructuredEntityRef> trackedSpatialRegion,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
+  if (proposal.decision_.loop.parent != parent.identity())
+    return invalid("schedule proposal belongs to another parent");
+  if (proposal.fabric_ != fabric.reference())
+    return invalid("schedule proposal belongs to another Fabric");
+  if ((proposal.decision_.kind == StructuredScheduleDecisionKind::Vectorize) !=
+      static_cast<bool>(proposal.exactScop_))
+    return invalid("schedule proposal has an inconsistent frozen SCoP");
+  FabricCapabilityIndex capabilityIndex(fabric.view());
+  return materializeStructuredScheduleImpl(
+      parent, proposal.decision_, proposal.exactScop_.get(), &capabilityIndex,
+      trackedSpatialRegion, sourceProvenance);
+}
+
+llvm::Error
+verifyStructuredScheduleDerivation(const StructuredProgramCandidate &parent,
+                                   const fabric::FinalizedFabricRoot &fabric,
+                                   const StructuredScheduleDecision &decision,
+                                   const StructuredProgramCandidate &child) {
+  if (decision.loop.parent != parent.identity())
+    return invalid("schedule derivation decision belongs to another parent");
+  if (parent.identity() == child.identity())
+    return invalid("schedule derivation is a self edge");
+  auto domain = enumerateStructuredScheduleDecisions(
+      parent, fabric, std::numeric_limits<std::uint64_t>::max(), decision.loop);
+  if (!domain)
+    return domain.takeError();
+  auto admitted = llvm::find_if(
+      domain->proposals, [&](const StructuredScheduleProposal &proposal) {
+        return proposal.decision() == decision;
+      });
+  if (admitted == domain->proposals.end())
+    return invalid("schedule derivation decision is outside the admitted "
+                   "domain: loop=" +
+                   llvm::Twine(decision.loop.ordinal) + " kind=" +
+                   llvm::Twine(static_cast<std::uint32_t>(decision.kind)) +
+                   " factor=" + llvm::Twine(decision.factor));
+  auto replayed =
+      materializeStructuredScheduleProposal(parent, *admitted, fabric);
+  if (!replayed)
+    return replayed.takeError();
+  if (replayed->structuredProgram.identity() != child.identity() ||
+      replayed->structuredProgram.canonicalBytes().bytes() !=
+          child.canonicalBytes().bytes())
+    return invalid("schedule derivation does not replay to its exact child");
+  return llvm::Error::success();
 }
 
 } // namespace loom::frontend

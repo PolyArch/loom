@@ -610,6 +610,22 @@ void centralPlanEvaluatesScheduleChildren() {
        selection->selected) {
     if (selected.scheduleDerivations.empty())
       continue;
+    for (const loom::dse::StructuredScheduleDerivation &derivation :
+         selected.scheduleDerivations) {
+      if (derivation.parent == derivation.child)
+        fail("selected schedule lineage retained a self edge");
+      auto parent = take(
+          loom::frontend::importStructuredProgram(derivation.parent, store));
+      auto child = take(
+          loom::frontend::importStructuredProgram(derivation.child, store));
+      auto fabric =
+          take(loom::fabric::importEntireFabricRoot(derivation.fabric, store));
+      if (llvm::Error error =
+              loom::frontend::verifyStructuredScheduleDerivation(
+                  parent, fabric, derivation.decision, child))
+        fail("selected schedule lineage lost its exact child: " +
+             llvm::toString(std::move(error)));
+    }
     if (!selected.functionalReplay ||
         selected.functionalReplay->status !=
             loom::sim::SourceBackedDfgValidationStatus::Equivalent)

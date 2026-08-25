@@ -99,7 +99,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialMappingFeedbackCandidateGeneratorKind,
     "mapping.spatial_feedback",
-    "loom.mapping.spatial_feedback.generator.v2",
+    "loom.mapping.spatial_feedback.generator.v3",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
