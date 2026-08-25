@@ -552,9 +552,10 @@ explicit multi-source contract whose features own source identity.
 
 Ground-truth collection uses the central finite DSE plan and Journal. Every
 model-data sample's complete newly required dependency slice is limited to ten
-active minutes, and one complete Training/Validation/HeldOut collection is
-limited to twenty-three active hours. Uncached Mapping, RTL, implementation,
-and EDA prerequisites remain visible and charged in that plan. A timeout,
+active minutes. The FPA entry point rejects a campaign policy above four
+active hours and propagates the remaining budget as the same absolute dispatch
+deadline used by the plan executor. Uncached Mapping, RTL, implementation, and
+EDA prerequisites remain visible and charged in that plan. A timeout,
 incomplete attempt, or typed Unsupported outcome produces no training sample.
 
 ## Anchor Verification

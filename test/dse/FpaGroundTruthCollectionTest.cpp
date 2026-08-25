@@ -328,12 +328,21 @@ void exerciseGroundTruthCampaign() {
       take(openExecutionJournal(runPath.string(), closure, view));
 
   CampaignExecutionPolicy campaignPolicy =
-      take(CampaignExecutionPolicy::get(1, 1));
+      take(makeFpaGroundTruthCampaignPolicy(1, 1));
+  if (campaignPolicy.campaignActiveWallTimeLimitNanoseconds() !=
+      maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds)
+    fail("FPA campaign policy lost the four-hour offline bound");
 
   SiteScheduler unavailableScheduler = scheduler({});
   PlanExecutionPolicy unavailableExecution =
       take(PlanExecutionPolicy::get(1, take(SiteResourceClaim::get(1, 0, 0))));
-  CampaignExecutionResult unavailable = take(runGroundTruthCampaign(
+  CampaignExecutionPolicy genericCampaign =
+      take(CampaignExecutionPolicy::get(1, 1));
+  requireErrorContains(runFpaGroundTruthCampaign(
+                           view, closure, genericCampaign, unavailableExecution,
+                           unavailableScheduler, journal, artifacts, blobs),
+                       "four-hour offline bound");
+  CampaignExecutionResult unavailable = take(runFpaGroundTruthCampaign(
       view, closure, campaignPolicy, unavailableExecution, unavailableScheduler,
       journal, artifacts, blobs));
   const auto *unavailableRefusal =
@@ -401,7 +410,7 @@ void exerciseGroundTruthCampaign() {
       "outside");
 
   SiteScheduler executionScheduler = scheduler(bindings);
-  CampaignExecutionResult result = take(runGroundTruthCampaign(
+  CampaignExecutionResult result = take(runFpaGroundTruthCampaign(
       view, closure, campaignPolicy,
       executionPolicy(local, ExternalAttemptDisposition::ExecutePrepared,
                       std::nullopt),
@@ -521,20 +530,24 @@ void exerciseGroundTruthCampaign() {
           releasedBundle)
     fail("FPA model journal replay changed or redispatched the trainer");
 
-  FinalizedModelParameterBundle bundle =
-      take(importModelParameterBundle(releasedBundle, artifacts, blobs));
+  EdaPredictionModelWeight weight =
+      take(importEdaPredictionModelWeight(releasedBundle, artifacts, blobs));
+  if (weight.reference() != releasedBundle ||
+      weight.bundle().bundle().parameterContract() !=
+          fpaModelParameterContractRef())
+    fail("released FPA weight lost its immutable bundle identity");
   FpaTrainingEvidenceSample heldOutSample =
       take(importFpaTrainingEvidenceSample(evidence.back(), artifacts, blobs));
-  ModelParameterInferenceOutcome heldOutInference = take(
-      inferModelParameters(bundle, OwnerValue::get(heldOutSample.features)));
+  ModelParameterInferenceOutcome heldOutInference =
+      take(inferEdaPredictionModelWeight(weight, heldOutSample.features));
   if (!std::holds_alternative<ModelParameterPrediction>(heldOutInference))
     fail("released FPA bundle rejected its completed held-out feature view");
   FpaFeatureView outOfDomain = heldOutSample.features;
   const DecimalValue outsideVoltage = take(DecimalValue::get(1200, -3));
   outOfDomain.conditions.minimumSupplyVoltage = outsideVoltage;
   outOfDomain.conditions.maximumSupplyVoltage = outsideVoltage;
-  ModelParameterInferenceOutcome outOfDomainInference = take(
-      inferModelParameters(bundle, OwnerValue::get(std::move(outOfDomain))));
+  ModelParameterInferenceOutcome outOfDomainInference =
+      take(inferEdaPredictionModelWeight(weight, outOfDomain));
   if (!std::holds_alternative<OutOfDomainModelParameterInference>(
           outOfDomainInference))
     fail("released FPA bundle did not preserve typed OOD refusal");

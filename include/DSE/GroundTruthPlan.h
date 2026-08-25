@@ -2,6 +2,7 @@
 #define LOOM_DSE_GROUNDTRUTHPLAN_H
 
 #include "Config/ResolvedConfig.h"
+#include "DSE/CampaignRunner.h"
 #include "DSE/ModelParameterTrainingCandidateGenerator.h"
 #include "Fabric/Identity/FabricRefs.h"
 
@@ -139,6 +140,24 @@ struct FpaGroundTruthCollectionPlan final {
 llvm::Expected<FpaGroundTruthCollectionPlan> buildFpaGroundTruthCollectionPlan(
     FpaGroundTruthPlanInputs inputs, const ResolvedConfig &baseConfig,
     const ArtifactStore &artifactStore, const BlobStore &blobStore);
+
+inline constexpr std::uint64_t
+    maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds =
+        4ULL * 60ULL * 60ULL * 1000ULL * 1000ULL * 1000ULL;
+
+llvm::Expected<CampaignExecutionPolicy> makeFpaGroundTruthCampaignPolicy(
+    std::uint64_t pilotDispatchCount,
+    std::uint64_t minimumObservedPilotWorkUnits,
+    std::uint64_t sampleActiveWallTimeLimitNanoseconds =
+        CampaignExecutionPolicy::maximumSampleActiveWallTimeNanoseconds);
+
+llvm::Expected<CampaignExecutionResult>
+runFpaGroundTruthCampaign(const ResolvedDseConfigView &view,
+                          const DseRunClosure &closure,
+                          const CampaignExecutionPolicy &campaignPolicy,
+                          const PlanExecutionPolicy &executionPolicy,
+                          SiteScheduler &scheduler, ExecutionJournal &journal,
+                          const ArtifactStore &store, const BlobStore &blobs);
 
 } // namespace loom::dse
 

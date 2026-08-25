@@ -116,6 +116,11 @@ payload digest. `InvocationManifest` owns training provenance, and
 Expensive raw tool products remain owner-attempt or scratch material with no
 current Artifact schema and are never committed as test fixtures.
 
+`EdaPredictionModelWeight` is the immutable in-process FPA view of one such
+bundle. Import admits only the exact `loom.fpa` parameter contract and its
+owner-typed `FpaGbdtParameters`; inference consumes that view without another
+payload, codec, artifact identity, registry, or mutable latest-weight state.
+
 A `HardwareImplementation` represents one exact SpatialCore occurrence closure,
 not a complete System shell. Offline leaf assessment binds an exact
 occurrence-local PE, FU, memory, switch, or transport boundary through that
@@ -127,8 +132,9 @@ error. These dispositions do not invalidate routed SpatialCore FPA Evidence
 and are not physical Evidence or signoff claims.
 
 An EDA-derived parameter bundle remains the same canonical
-`ModelParameterBundle` in its machine-local Artifact Store; Loom does not
-define a public-weight projection or a second serialization. The canonical
+`ModelParameterBundle` in its machine-local Artifact Store;
+`EdaPredictionModelWeight` is only its validated typed view and not a public
+projection or second serialization. The canonical
 bundle root, its payload, source Evidence, partition membership, calibration
 Evidence, training invocation manifests, EDA-produced selection bindings and
 provenance, and all direct EDA products remain local under the disclosure

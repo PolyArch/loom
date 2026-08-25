@@ -122,6 +122,26 @@ private:
   inferFpaGbdtParameters(const FpaGbdtParameters &, const FpaFeatureView &);
 };
 
+/// Immutable, content-addressed FPA parameters admitted under the exact FPA
+/// model contract. This is a typed view of ModelParameterBundle rather than a
+/// second weight artifact or payload schema.
+class EdaPredictionModelWeight final {
+public:
+  const ArtifactRootReference &reference() const { return bundle_.reference(); }
+  const FinalizedModelParameterBundle &bundle() const { return bundle_; }
+  const FpaGbdtParameters &parameters() const;
+
+private:
+  explicit EdaPredictionModelWeight(FinalizedModelParameterBundle bundle)
+      : bundle_(std::move(bundle)) {}
+
+  FinalizedModelParameterBundle bundle_;
+
+  friend llvm::Expected<EdaPredictionModelWeight>
+  importEdaPredictionModelWeight(const ArtifactRootReference &,
+                                 const ArtifactStore &, const BlobStore &);
+};
+
 const ModelParameterContractRef &fpaModelParameterContractRef();
 const ModelParameterContractDescriptor &fpaModelParameterContractDescriptor();
 llvm::ArrayRef<std::uint8_t> fpaMetricPredictionViewSchemaDescriptorBytes();
@@ -168,6 +188,15 @@ encodeFpaGbdtParameters(const FpaGbdtParameters &parameters);
 llvm::Expected<ModelParameterInferenceOutcome>
 inferFpaGbdtParameters(const FpaGbdtParameters &parameters,
                        const FpaFeatureView &features);
+
+llvm::Expected<EdaPredictionModelWeight>
+importEdaPredictionModelWeight(const ArtifactRootReference &reference,
+                               const ArtifactStore &artifactStore,
+                               const BlobStore &blobStore);
+
+llvm::Expected<ModelParameterInferenceOutcome>
+inferEdaPredictionModelWeight(const EdaPredictionModelWeight &weight,
+                              const FpaFeatureView &features);
 
 } // namespace loom::evaluation::models
 

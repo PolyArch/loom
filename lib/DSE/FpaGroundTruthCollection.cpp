@@ -283,4 +283,29 @@ llvm::Expected<FpaGroundTruthCollectionPlan> buildFpaGroundTruthCollectionPlan(
                                       PlanOutputRef{2, 1}};
 }
 
+llvm::Expected<CampaignExecutionPolicy> makeFpaGroundTruthCampaignPolicy(
+    std::uint64_t pilotDispatchCount,
+    std::uint64_t minimumObservedPilotWorkUnits,
+    std::uint64_t sampleActiveWallTimeLimitNanoseconds) {
+  return CampaignExecutionPolicy::get(
+      pilotDispatchCount, minimumObservedPilotWorkUnits,
+      sampleActiveWallTimeLimitNanoseconds,
+      maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds);
+}
+
+llvm::Expected<CampaignExecutionResult>
+runFpaGroundTruthCampaign(const ResolvedDseConfigView &view,
+                          const DseRunClosure &closure,
+                          const CampaignExecutionPolicy &campaignPolicy,
+                          const PlanExecutionPolicy &executionPolicy,
+                          SiteScheduler &scheduler, ExecutionJournal &journal,
+                          const ArtifactStore &store, const BlobStore &blobs) {
+  if (campaignPolicy.campaignActiveWallTimeLimitNanoseconds() >
+      maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds)
+    return invalid("FPA campaign active-time limit exceeds the four-hour "
+                   "offline bound");
+  return runGroundTruthCampaign(view, closure, campaignPolicy, executionPolicy,
+                                scheduler, journal, store, blobs);
+}
+
 } // namespace loom::dse

@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -1138,6 +1139,32 @@ inferFpaGbdtParameters(const FpaGbdtParameters &parameters,
                                (**prediction)[2], (**prediction)[3]};
   return ModelParameterInferenceOutcome{
       ModelParameterPrediction{OwnerValue::get(std::move(view))}};
+}
+
+const FpaGbdtParameters &EdaPredictionModelWeight::parameters() const {
+  const auto *parameters = bundle_.parametersIf<FpaGbdtParameters>();
+  assert(parameters && "validated FPA weight lost its owner value");
+  return *parameters;
+}
+
+llvm::Expected<EdaPredictionModelWeight>
+importEdaPredictionModelWeight(const ArtifactRootReference &reference,
+                               const ArtifactStore &artifactStore,
+                               const BlobStore &blobStore) {
+  auto bundle = importModelParameterBundle(reference, artifactStore, blobStore);
+  if (!bundle)
+    return bundle.takeError();
+  if (bundle->bundle().parameterContract() != fpaModelParameterContractRef())
+    return invalid("model weight does not use the FPA parameter contract");
+  if (!bundle->parametersIf<FpaGbdtParameters>())
+    return invalid("model weight has a foreign parameter owner type");
+  return EdaPredictionModelWeight(std::move(*bundle));
+}
+
+llvm::Expected<ModelParameterInferenceOutcome>
+inferEdaPredictionModelWeight(const EdaPredictionModelWeight &weight,
+                              const FpaFeatureView &features) {
+  return inferFpaGbdtParameters(weight.parameters(), features);
 }
 
 } // namespace loom::evaluation::models
