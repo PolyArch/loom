@@ -19,6 +19,7 @@ namespace loom::sim {
 
 class CgraExecutionSession;
 class CgraExternalMemoryProvider;
+class PreparedCgraWorkloadExecution;
 enum class TraceCaptureLevel : std::uint32_t;
 
 struct CgraExecutionPlanSummary final {
@@ -95,11 +96,12 @@ public:
 
 private:
   struct Impl;
-  explicit PreparedCgraExecution(std::unique_ptr<Impl> impl);
+  explicit PreparedCgraExecution(std::shared_ptr<Impl> impl);
 
-  std::unique_ptr<Impl> impl_;
+  std::shared_ptr<Impl> impl_;
 
   friend class CgraExecutionSession;
+  friend class PreparedCgraWorkloadExecution;
   friend llvm::Expected<PreparedCgraExecution>
   prepareCgraExecution(const ArtifactRootReference &,
                        const ArtifactRootReference &,
@@ -108,6 +110,10 @@ private:
   admitCgraSpatialSimulation(const PreparedCgraExecution &,
                              const CanonicalSimulationWorkload &,
                              const CanonicalSimulationRuntimeInput &);
+  friend llvm::Expected<PreparedCgraWorkloadExecution>
+  prepareCgraWorkloadExecution(const PreparedCgraExecution &,
+                               const CanonicalSimulationWorkload &,
+                               const CanonicalSimulationRuntimeInput &);
   friend llvm::Expected<CgraExecutionSession>
   startCgraExecutionSession(const PreparedCgraExecution &,
                             const CanonicalSimulationWorkload &,
