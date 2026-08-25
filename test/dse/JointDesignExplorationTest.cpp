@@ -120,6 +120,70 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
+dataflow::CanonicalDataflowArtifact
+buildIndependentIntegerAddsDataflow(mlir::MLIRContext &context,
+                                    std::size_t actorCount) {
+  std::string source;
+  llvm::raw_string_ostream stream(source);
+  stream << "module attributes {dlti.dl_spec = "
+            "#dlti.dl_spec<#dlti.dl_entry<index, 64>>} {\n"
+            "  dataflow.graph private @independent_adds(\n"
+            "      %start: none, %lhs: i32, %rhs: i32) -> (";
+  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
+    if (ordinal != 0)
+      stream << ", ";
+    stream << "i32";
+  }
+  stream << ") attributes {input_segments = array<i32: 2, 0, 0>, "
+            "result_segments = array<i32: "
+         << actorCount << ", 0, 0>} {\n";
+  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal)
+    stream << "    %sum" << ordinal << " = arith.addi %lhs, %rhs : i32\n";
+  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal)
+    stream << "    %retire" << ordinal << ":2 = dataflow.sync %"
+           << (ordinal == 0 ? std::string("start")
+                            : "retire" + std::to_string(ordinal - 1) + "#0")
+           << ", %sum" << ordinal
+           << " : (none, i32) -> (none, i32)\n";
+  stream << "    dataflow.graph.return values(";
+  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
+    if (ordinal != 0)
+      stream << ", ";
+    stream << "%retire" << ordinal << "#1";
+  }
+  stream << " : ";
+  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
+    if (ordinal != 0)
+      stream << ", ";
+    stream << "i32";
+  }
+  stream << ") streams() memories() complete(%retire" << actorCount - 1
+         << "#0 : none)\n  }\n"
+            "  dataflow.thread private @worker "
+            "domain(#dataflow.thread_domain<dense>)(%lhs: i32, %rhs: i32) "
+            "ctrl (%ctrl: none) {\n"
+            "    %result = dataflow.graph.launch @independent_adds "
+            "deps(%ctrl) values(%lhs, %rhs) stream_inputs() "
+            "memories() stream_outputs() : (none, i32, i32) -> (";
+  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
+    if (ordinal != 0)
+      stream << ", ";
+    stream << "i32";
+  }
+  stream << ")\n    dataflow.thread.yield %ctrl : none\n  }\n"
+            "  func.func private @host() {\n"
+            "    %lhs = arith.constant 7 : i32\n"
+            "    %rhs = arith.constant 11 : i32\n"
+            "    %thread = dataflow.thread.launch @worker(%lhs, %rhs) "
+            ": (i32, i32) -> !dataflow.thread_token\n"
+            "    return\n  }\n}\n";
+  stream.flush();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+  if (!module)
+    fail("cannot parse independent-add Tech-bound fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
 loom::ArtifactRootReference
 publishApplicationWorkload(const dataflow::CanonicalDataflowArtifact &artifact,
                            const loom::ArtifactStore &store) {
@@ -2044,7 +2108,7 @@ void probeTechFrontierBoundFailure() {
   loom::ArtifactStore store(temporary.path());
   loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  auto dataflow = buildDataflow(context, 7);
+  auto dataflow = buildIndependentIntegerAddsDataflow(context, 32);
   take(dataflow::publishCanonicalDataflow(dataflow, store));
   const auto workload = publishApplicationWorkload(dataflow, store);
   auto builtin = take(loom::adg::buildBuiltinTarget(
@@ -2062,7 +2126,7 @@ void probeTechFrontierBoundFailure() {
 
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
   config.dse.techMapping.matchRowAttemptLimit = 1;
-  config.dse.techMapping.candidatePublicationLimit = 8;
+  config.dse.techMapping.candidatePublicationLimit = 1;
   const auto policy = take(loom::dse::JointDesignPolicy::get(2, 1, 1, 1, 32));
   auto plan = take(loom::dse::buildJointDesignExplorationPlan(
       {{{workload}}, {system}}, timingRoots, policy, config, store));
