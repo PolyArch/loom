@@ -4,9 +4,13 @@
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
+#include "Deployment/HardwareConfigurationImage.h"
 #include "Deployment/Package.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Request.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Hardware/Configuration/ConfigurationABI.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -123,6 +127,26 @@ void addBlob(std::vector<BlobDigest> &digests, const BlobDigest &digest) {
     digests.push_back(digest);
 }
 
+llvm::Error addFabricClosure(std::vector<ArtifactRootReference> &roots,
+                             std::vector<ArtifactRootReference> &expanded,
+                             const ArtifactRootReference &root,
+                             const ArtifactStore &artifacts) {
+  if (llvm::is_contained(expanded, root))
+    return llvm::Error::success();
+  if (llvm::Error error = addArtifact(roots, root, artifacts))
+    return error;
+  auto imported = fabric::importEntireFabricRoot(root, artifacts);
+  if (!imported)
+    return imported.takeError();
+  expanded.push_back(root);
+  for (const fabric::FabricDirectDependency &dependency :
+       imported->directDependencies())
+    if (llvm::Error error =
+            addFabricClosure(roots, expanded, dependency.root, artifacts))
+      return error;
+  return llvm::Error::success();
+}
+
 llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
     const FinalizedApplicationRuntimeManifest &manifest,
     const deployment::FinalizedDeployment &entryDeployment,
@@ -162,6 +186,32 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
         &runtime.selectedMapping(), &runtime.deployment()})
     if (llvm::Error error = addArtifact(result.artifacts, *root, artifacts))
       return std::move(error);
+  std::vector<ArtifactRootReference> expandedFabrics;
+  if (llvm::Error error = addFabricClosure(result.artifacts, expandedFabrics,
+                                           runtime.fabric(), artifacts))
+    return std::move(error);
+  if (llvm::Error error = addFabricClosure(result.artifacts, expandedFabrics,
+                                           runtime.selectedSystem(), artifacts))
+    return std::move(error);
+  if (runtime.transitionGraph())
+    for (const pnr::ResourceTimeTransition &transition :
+         runtime.transitionGraph()->transitions) {
+      if (transition.safePoint)
+        if (llvm::Error error = addArtifact(
+                result.artifacts, transition.safePoint->artifact, artifacts))
+          return std::move(error);
+      for (const auto *liveWork :
+           {&transition.beforeLiveWork, &transition.afterLiveWork})
+        for (const ArtifactRootReference &root : *liveWork)
+          if (llvm::Error error =
+                  addArtifact(result.artifacts, root, artifacts))
+            return std::move(error);
+      if (transition.tokenLiveStateCorrespondence)
+        if (llvm::Error error = addArtifact(
+                result.artifacts, *transition.tokenLiveStateCorrespondence,
+                artifacts))
+          return std::move(error);
+    }
   for (const ArtifactRootReference &root : runtime.runtimeRequestDependencies())
     if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
       return std::move(error);
@@ -270,6 +320,13 @@ importApplicationPackage(llvm::StringRef packagePath) {
     return std::move(error);
   const ArtifactStore artifacts(childPath(packagePath, "objects"));
   const BlobStore blobs(childPath(packagePath, "blobs"));
+  fabric::FabricArtifactImportSession fabricImportSession(
+      fabric::FabricArtifactImportSessionMode::Isolated);
+  hardware::ConfigurationABIImportSession configurationAbiImportSession(
+      hardware::ConfigurationABIImportSessionMode::Isolated);
+  mapping::SystemMappingImportSession systemMappingImportSession(artifacts, 64);
+  deployment::ConfigurationImageProjectionSession projectionSession(artifacts,
+                                                                    64);
   auto deploymentIdentity =
       readIdentity(childPath(packagePath, "root"), "Deployment package root");
   if (!deploymentIdentity)

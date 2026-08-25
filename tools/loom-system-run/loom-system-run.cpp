@@ -198,7 +198,12 @@ llvm::Expected<InitializedWorkspace> initializeWorkspace() {
   if (llvm::Error copyError = copyRegularDirectory(child(*source, "blobs"),
                                                    (output / "blobs").string()))
     return std::move(copyError);
-  return InitializedWorkspace{output.string(), std::move(*sourcePackage)};
+  auto workspacePackage =
+      loom::application::importApplicationPackage(output.string());
+  if (!workspacePackage)
+    return invalid("copied Application package failed independent import: " +
+                   llvm::toString(workspacePackage.takeError()));
+  return InitializedWorkspace{output.string(), std::move(*workspacePackage)};
 }
 
 struct Readiness final {
