@@ -120,72 +120,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-dataflow::CanonicalDataflowArtifact
-buildIndependentIntegerAddsDataflow(mlir::MLIRContext &context,
-                                    std::size_t actorCount) {
-  std::string source;
-  llvm::raw_string_ostream stream(source);
-  stream << "module attributes {dlti.dl_spec = "
-            "#dlti.dl_spec<#dlti.dl_entry<index, 64>>} {\n"
-            "  dataflow.graph private @independent_adds(\n"
-            "      %start: none, %lhs: i32, %rhs: i32) -> (";
-  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
-    if (ordinal != 0)
-      stream << ", ";
-    stream << "i32";
-  }
-  stream << ") attributes {input_segments = array<i32: 2, 0, 0>, "
-            "result_segments = array<i32: "
-         << actorCount << ", 0, 0>} {\n";
-  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal)
-    stream << "    %sum" << ordinal << " = arith.addi %lhs, %rhs : i32\n";
-  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal)
-    stream << "    %retire" << ordinal << ":2 = dataflow.sync %"
-           << (ordinal == 0 ? std::string("start")
-                            : "retire" + std::to_string(ordinal - 1) + "#0")
-           << ", %sum" << ordinal
-           << " : (none, i32) -> (none, i32)\n";
-  stream << "    dataflow.graph.return values(";
-  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
-    if (ordinal != 0)
-      stream << ", ";
-    stream << "%retire" << ordinal << "#1";
-  }
-  stream << " : ";
-  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
-    if (ordinal != 0)
-      stream << ", ";
-    stream << "i32";
-  }
-  stream << ") streams() memories() complete(%retire" << actorCount - 1
-         << "#0 : none)\n  }\n"
-            "  dataflow.thread private @worker "
-            "domain(#dataflow.thread_domain<dense>)(%lhs: i32, %rhs: i32) "
-            "ctrl (%ctrl: none) {\n"
-            "    %result:" + std::to_string(actorCount + 1) +
-            " = dataflow.graph.launch @independent_adds "
-            "deps(%ctrl) values(%lhs, %rhs) stream_inputs() "
-            "memories() stream_outputs() : (none, i32, i32) -> (";
-  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
-    if (ordinal != 0)
-      stream << ", ";
-    stream << "i32";
-  }
-  stream << ", none)\n    dataflow.thread.yield %result#" << actorCount
-         << " : none\n  }\n"
-            "  func.func private @host() {\n"
-            "    %lhs = arith.constant 7 : i32\n"
-            "    %rhs = arith.constant 11 : i32\n"
-            "    %thread = dataflow.thread.launch @worker(%lhs, %rhs) "
-            ": (i32, i32) -> !dataflow.thread_token\n"
-            "    return\n  }\n}\n";
-  stream.flush();
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
-  if (!module)
-    fail("cannot parse independent-add Tech-bound fixture");
-  return take(dataflow::finalizeCanonicalDataflow(*module));
-}
-
 loom::ArtifactRootReference
 publishApplicationWorkload(const dataflow::CanonicalDataflowArtifact &artifact,
                            const loom::ArtifactStore &store) {
@@ -196,7 +130,9 @@ publishApplicationWorkload(const dataflow::CanonicalDataflowArtifact &artifact,
   dataflow::RootedGraphLaunchRef launch{view.rootThreadLaunches().front().ref,
                                         view.staticGraphLaunches().front().ref};
   loom::sim::SpatialSimulationWorkload draft{launch};
-  draft.denseCoordinates = {0};
+  auto logicalDomain =
+      take(view.projectRootThreadLogicalDomain(launch.rootThreadLaunch));
+  draft.denseCoordinates.assign(logicalDomain.coordinateRank, 0);
   auto shapes =
       take(loom::sim::projectSpatialSimulationBoundaryShapes(view, launch));
   draft.valueInputPlan.assign(shapes.valueInputs.size(),
@@ -2101,96 +2037,15 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     fail("frontier-bound rejection lost its diagnostic");
 }
 
-void probeTechFrontierBoundFailure() {
-  TemporaryDirectory temporary;
-  llvm::SmallString<128> blobPath(temporary.path());
-  llvm::sys::path::append(blobPath, "blobs");
-  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
-    fail("cannot create Tech-bound BlobStore directory: " + error.message());
-  loom::ArtifactStore store(temporary.path());
-  loom::BlobStore blobs(blobPath);
-  mlir::MLIRContext context = makeContext();
-  auto dataflow = buildIndependentIntegerAddsDataflow(context, 32);
-  take(dataflow::publishCanonicalDataflow(dataflow, store));
-  const auto workload = publishApplicationWorkload(dataflow, store);
-  auto builtin = take(loom::adg::buildBuiltinTarget(
-      store, loom::adg::BuiltinTargetPreset::Small));
-  const auto system = builtin.roots().front().reference();
-  auto systemArtifact =
-      take(loom::fabric::importEntireFabricRoot(system, store));
-  auto systemView = take(loom::fabric::requireSystemRoot(systemArtifact.view()));
-  auto timing = take(
-      loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(systemView));
-  std::vector<loom::ArtifactRootReference> timingRoots;
-  for (const auto &profile : timing)
-    timingRoots.push_back(
-        take(loom::fabric::publishFabricPhysicalTimingProfile(profile, store)));
-
-  loom::ResolvedConfig config = loom::defaultResolvedConfig();
-  config.dse.techMapping.matchRowAttemptLimit = 1;
-  config.dse.techMapping.candidatePublicationLimit = 1;
-  const auto policy = take(loom::dse::JointDesignPolicy::get(2, 1, 1, 1, 32));
-  auto plan = take(loom::dse::buildJointDesignExplorationPlan(
-      {{{workload}}, {system}}, timingRoots, policy, config, store));
-  llvm::SmallString<128> journal(temporary.path());
-  llvm::sys::path::append(journal, "tech-bound");
-  auto request = loom::dse::JointHardwareReopenRequest{
-      take(loom::dse::DseProducerSemanticBuildIdentity::get(
-          "loom.test.tech_frontier_bound.v1")),
-      journal.str().str(),
-      {},
-      loom::dse::JointDesignStoppingPolicy::FirstVerified,
-      std::nullopt,
-      std::nullopt,
-      take(loom::dse::SiteCapacity::get(2, 0, 0)),
-      take(loom::dse::PlanExecutionPolicy::get(
-          2, take(loom::dse::SiteResourceClaim::get(1, 0, 0)))),
-      loom::dse::PreMappingSpectrumEndpoint::MaxTemporal};
-  const std::array plans = {&plan};
-  auto result = loom::dse::executeJointDesignWithHardwareReopen(
-      plans, policy, std::move(request), store, blobs);
-  if (!result) {
-    llvm::outs() << "tech-bound error: " << llvm::toString(result.takeError())
-                 << '\n';
-    return;
-  }
-  llvm::outs() << "tech-bound result mappings=";
-  std::size_t mappingCount = 0;
-  for (const auto &pair : result->mappedPairs)
-    mappingCount += pair.systemMappings.size();
-  llvm::outs() << mappingCount << " incomplete="
-               << std::holds_alternative<loom::dse::IncompleteDsePlanExecution>(
-                      result->planExecution)
-               << " primary=" << result->invocationManifest().has_value()
-               << " supporting=" << result->supportingInvocationManifests().size()
-               << " attempted=" << result->summary.attemptedSoftwarePlans
-               << " reopen=" << result->summary.hardwareReopenSearches
-               << " planned=" << result->summary.hardwareRepairProbesPlanned
-               << " rejected=" << result->summary.hardwareRepairProbesRejected
-               << " consumed=" << result->summary.hardwareRepairProbesConsumed
-               << " attempts=" << result->summary.attempts.size()
-               << '\n';
-  for (const auto &attempt : result->summary.attempts)
-    llvm::outs() << "attempt ordinal=" << attempt.planOrdinal
-                 << " disposition="
-                 << static_cast<unsigned>(attempt.disposition)
-                 << " mappings=" << attempt.systemMappings.size() << '\n';
-}
-
 } // namespace
 
 int main(int argc, char **argv) {
   const llvm::StringRef mode = argc == 2 ? argv[1] : "";
   if (argc > 2 || (argc == 2 && mode != "fifo-feedback" &&
                    mode != "operand-feedback" && mode != "transport-feedback" &&
-                   mode != "quality-promotion" && mode != "mutation-matrix" &&
-                   mode != "tech-bound-probe"))
+                   mode != "quality-promotion" && mode != "mutation-matrix"))
     fail("expected no workflow, fifo-feedback, operand-feedback, or "
          "transport-feedback, quality-promotion, or mutation-matrix");
-  if (mode == "tech-bound-probe") {
-    probeTechFrontierBoundFailure();
-    return 0;
-  }
   exerciseJointExploration(mode == "fifo-feedback", mode == "operand-feedback",
                            mode == "transport-feedback",
                            mode == "quality-promotion",

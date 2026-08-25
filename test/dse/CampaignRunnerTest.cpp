@@ -241,6 +241,9 @@ void testRefusalManifest(const ArtifactStore &store, const BlobStore &blobs,
   SiteScheduler scheduler =
       take(SiteScheduler::create(take(SiteCapacity::get(1, 0, 0))));
   resetPlanExecutionProviderObservations();
+  take(executeDsePlan(fixture.view, fixture.closure, journal, scheduler,
+                      makeBoundedExecutionPolicy(1, 1), store, blobs));
+  resetPlanExecutionProviderObservations();
 
   CampaignExecutionResult result = take(runGroundTruthCampaign(
       fixture.view, fixture.closure,
@@ -280,6 +283,9 @@ void testCompletedRefusalManifest(const ArtifactStore &store,
       take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
   SiteScheduler scheduler =
       take(SiteScheduler::create(take(SiteCapacity::get(1, 0, 0))));
+  resetPlanExecutionProviderObservations();
+  take(executeDsePlan(fixture.view, fixture.closure, journal, scheduler,
+                      makeBoundedExecutionPolicy(1, 1), store, blobs));
   resetPlanExecutionProviderObservations();
 
   CampaignExecutionResult result = take(runGroundTruthCampaign(
