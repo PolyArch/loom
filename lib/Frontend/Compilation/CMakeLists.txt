@@ -14,6 +14,8 @@ add_library(LoomFrontendCompilation
   StructuredMemoryChannelPromotion.cpp
   StructuredMemoryCommunication.cpp
   StructuredSchedule.cpp
+  StructuredScop.cpp
+  StructuredVectorScheduleVerifier.cpp
 )
 
 target_include_directories(LoomFrontendCompilation PUBLIC
@@ -32,10 +34,19 @@ target_link_libraries(LoomFrontendCompilation PUBLIC
 
 mlir_target_link_libraries(LoomFrontendCompilation PUBLIC
   MLIRArithDialect
+  MLIRAffineAnalysis
+  MLIRAffineDialect
+  MLIRAffineTransforms
+  MLIRAffineToStandard
+  MLIRAnalysis
   MLIRDLTIDialect
   MLIRIR
   MLIRLLVMDialect
+  MLIRMemRefDialect
   MLIRSCFDialect
   MLIRSCFTransforms
+  MLIRSCFToAffine
   MLIRTransforms
+  MLIRVectorDialect
+  MLIRVectorTransforms
 )

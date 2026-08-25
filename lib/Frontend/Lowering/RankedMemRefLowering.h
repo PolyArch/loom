@@ -2,6 +2,7 @@
 #define LOOM_FRONTEND_LOWERING_RANKED_MEMREF_LOWERING_H
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -16,6 +17,14 @@ namespace detail {
 
 ::mlir::LogicalResult checkRankedMemRefCopy(::mlir::memref::CopyOp copy,
                                             unsigned indexBits);
+
+::mlir::LogicalResult
+checkRankedVectorTransferRead(::mlir::vector::TransferReadOp read,
+                              unsigned indexBits);
+
+::mlir::LogicalResult
+checkRankedVectorTransferWrite(::mlir::vector::TransferWriteOp write,
+                               unsigned indexBits);
 
 ::mlir::Value buildExactLinearIndex(::mlir::OpBuilder &builder,
                                     ::mlir::Location loc,

@@ -9,6 +9,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -101,10 +102,12 @@ GraphLeafLowering classifyGraphLoweringLeaf(mlir::Operation *operation) {
       (dataflow::isCanonicalDataflowActor(operation) ||
        isGraphMemoryAddressLeaf(operation)))
     return GraphLeafLowering::Movable;
-  if (llvm::isa<mlir::memref::LoadOp, mlir::memref::StoreOp,
-                mlir::memref::DeallocOp, dataflow::LoadOp, dataflow::StoreOp,
-                dataflow::AtomicRmwOp, dataflow::CmpXchgOp,
-                dataflow::FenceOp, dataflow::ChannelSendOp,
+  if (llvm::isa<mlir::memref::AssumeAlignmentOp,
+                mlir::memref::DistinctObjectsOp, mlir::memref::LoadOp,
+                mlir::memref::StoreOp, mlir::vector::TransferReadOp,
+                mlir::vector::TransferWriteOp, mlir::memref::DeallocOp,
+                dataflow::LoadOp, dataflow::StoreOp, dataflow::AtomicRmwOp,
+                dataflow::CmpXchgOp, dataflow::FenceOp, dataflow::ChannelSendOp,
                 dataflow::ChannelReceiveOp>(operation))
     return GraphLeafLowering::Implemented;
   if (detail::isGraphRegionRepresentationBitcast(operation))

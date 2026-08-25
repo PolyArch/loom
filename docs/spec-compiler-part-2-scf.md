@@ -658,14 +658,65 @@ central plan remains total when an earlier generator has no candidates. Its
 resolved component view contains only the positive `scope_expansion_limit`
 owned by the Resolved Configuration View.
 
-Loop scopes are `scf.for` operations in the parent's canonical Structured
-operation order. The first `scope_expansion_limit` loop scopes form the finite
-Generate domain; later loops are outside that invocation domain. Static tile,
-unroll, and unroll-and-jam factors are the sorted proper divisors of the exact
-static trip count. Factor one is a no-op and the full trip count is not emitted
-by this generator. Dynamic, non-host-representable, prime, and unit trip counts
-have no such factor decision in the current contract; other generator
-families or later invocations may still transform their enclosing structure.
+Loop scopes are `scf.for` and `affine.for` operations in the parent's canonical
+Structured operation order. The first `scope_expansion_limit` loop scopes form
+the finite Generate domain; later loops are outside that invocation domain.
+Static SCF tile, unroll, and unroll-and-jam factors are the sorted proper
+divisors of the exact static trip count. Factor one is a no-op and the full
+trip count is not emitted by this generator. Dynamic, non-host-representable,
+prime, and unit trip counts have no such SCF factor decision in the current
+contract; other generator families or later invocations may still transform
+their enclosing structure.
+
+The exact vector SCoP domain is deliberately closed. Its root is one `scf.for`
+or `affine.for` with zero lower bound, unit stride, and a static trip count. A
+selected SCF loop is projected on a private clone through the pinned upstream
+SCF-to-Affine conversion; that Affine spelling is transient provider input, not
+a second Structured representation. The body is a flat, multi-statement
+sequence of registered pure scalar compute and direct rank-one, unit-physical-
+stride, zero-offset loads or stores indexed only by the induction variable.
+Every access relation and iteration domain must be constructed by MLIR
+Affine/Presburger analysis. Different memory bases must be proved `NoAlias` by
+MLIR alias analysis, and every accessed base must carry an explicit
+`memref.assume_alignment` proof and trace locally to a block argument at the
+loop boundary. Nested control, non-contiguous or multidimensional accesses,
+nonlocal memory roots, unknown effects, atomics, volatile memory, sparse forms,
+and failed provider relations receive a typed local refusal. They do not
+suppress an unrelated exact SCoP.
+
+One vector decision records its rank-one shape, exact or reduction-mask tail
+policy, required byte alignment, provider-proven alias policy, and integer or
+explicitly reassociated floating reduction schedule. Candidate factors are
+the canonical integers from two through the lesser of 64 and the static trip
+count. Each factor survives only when every access alignment is divisible by
+the exact vector byte width. Ordinary loops require an exact divisible tail. A
+supported reduction may use the pinned MLIR Affine vectorizer's masked tail.
+Integer reductions with an overflow contract and floating reductions without
+`reassoc` receive typed refusals; the upstream reduction matcher alone is not
+permission to change evaluation order. The exact reduction subset contains one
+recurrence whose source initializer is the upstream reduction kind's neutral
+element and whose sole result is the function's sole direct return operand.
+The reduced value is one direct contiguous load and the combiner is the only
+compute statement. Multiple recurrences, mapped reductions, non-neutral
+initializers, writes, and reductions with another result consumer are outside
+this domain and receive a typed local refusal.
+
+Generation first applies the pinned MLIR Affine vectorizer to a private clone
+and lowers its loop and reduction image through pinned upstream conversions.
+An exact-tail image then requires every vector-typed memory or compute actor in
+the transformed closure to have a concrete admitting resource in the exact
+Fabric. A reduction-mask image is semantically materializable and independently
+verified, but is not a generated production candidate until Graph lowering can
+prove its active boundary lanes; generation records
+`VectorLoweringUnavailable` locally. Publication repeats the provider transform
+and an independent verifier checks the exact source loop, stride, vector shape,
+transfer and statement correspondence, tail-mask DAG, reduction kind, neutral
+arm, lowered combiner tree, alias roots, and alignment equation. Exact Graph
+lowering turns only statically all-lanes-in-bounds rank-one transfers into
+vector Dataflow memory actors and consumes the alignment and distinct-object
+proof operations after their facts have served analysis. The transient
+Presburger relations and vectorization strategy never become a persistent
+Schedule representation.
 
 Unroll is hard-pruned only when exact aggregate Fabric capacity proves the
 replicated body impossible. Actor instances are grouped by the canonical
@@ -769,7 +820,7 @@ hardware requirement. This is hard-negative capability pruning, not a
 placement, routing, contention, or QoR conclusion.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v3`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v6`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator

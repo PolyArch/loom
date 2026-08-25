@@ -36,4 +36,5 @@ mlir_target_link_libraries(LoomFrontendLowering PUBLIC
   MLIRSupport
   MLIRTransforms
   MLIRUBDialect
+  MLIRVectorDialect
 )

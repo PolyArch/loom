@@ -9,6 +9,7 @@
 #include "Frontend/Compilation/StructuredSchedule.h"
 
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 
 #include "llvm/Support/Error.h"
@@ -130,8 +131,13 @@ llvm::Error validateDecisionPayload(
   auto loop = view->resolve(adopted->loop);
   if (!loop)
     return loop.takeError();
-  if (!llvm::isa_and_nonnull<mlir::scf::ForOp>(loop->operation))
-    return invalid("schedule decision does not reference an exact SCF loop");
+  const bool exactLoop =
+      adopted->kind == frontend::StructuredScheduleDecisionKind::Vectorize
+          ? llvm::isa_and_nonnull<mlir::scf::ForOp, mlir::affine::AffineForOp>(
+                loop->operation)
+          : llvm::isa_and_nonnull<mlir::scf::ForOp>(loop->operation);
+  if (!exactLoop)
+    return invalid("schedule decision does not reference its exact loop kind");
   return llvm::Error::success();
 }
 
@@ -141,7 +147,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v4",
+    "loom.compiler.structured_schedule.generator.v6",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -200,6 +206,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
   std::uint64_t inspectedLoopScopes = 0;
   std::uint64_t decisionAttempts = 0;
   std::uint64_t consumedDecisionAttempts = 0;
+  std::uint64_t scopRefusalCount = 0;
   std::uint64_t logicalDomainDecisionCount = 0;
   std::uint64_t ownedLogicalDomainDecisionCount = 0;
   std::uint64_t materializedLogicalDomainCount = 0;
@@ -266,6 +273,17 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
         std::numeric_limits<std::uint64_t>::max() - inspectedLoopScopes)
       return invalid("loop-scope accounting overflows u64");
     inspectedLoopScopes += decisions->inspectedLoopScopes;
+    for (const frontend::StructuredScopRefusal &refusal : decisions->refusals) {
+      ++scopRefusalCount;
+      mapping_debug::emit(
+          mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Event::DerivedContext,
+          [&](llvm::json::Object &fields) {
+            fields["context_kind"] = "structured_scop_refusal";
+            fields["loop_ordinal"] = refusal.loop.ordinal;
+            fields["refusal_kind"] = static_cast<std::uint64_t>(refusal.kind);
+          });
+    }
     if (decisions->decisions.size() >
         std::numeric_limits<std::uint64_t>::max() - decisionAttempts)
       return invalid("schedule-decision accounting overflows u64");
@@ -274,7 +292,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     for (const frontend::StructuredScheduleDecision &decision :
          decisions->decisions) {
       const bool producesLogicalThreadDomain =
-          decision.kind == frontend::StructuredScheduleDecisionKind::Parallelize ||
+          decision.kind ==
+              frontend::StructuredScheduleDecisionKind::Parallelize ||
           decision.kind ==
               frontend::StructuredScheduleDecisionKind::ParallelizeNest;
       logicalDomainDecisionCount += producesLogicalThreadDomain ? 1 : 0;
@@ -345,13 +364,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
   if (config->generationIntent() ==
       StructuredScheduleGenerationIntent::RequireLogicalThreadDomain)
     mapping_debug::emit(
-        mapping_debug::Level::Detail,
-        mapping_debug::Stage::DataflowLowering,
-        mapping_debug::Event::DerivedContext,
-        [&](llvm::json::Object &fields) {
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
           fields["context_kind"] = "structured_schedule_generation";
-          fields["logical_domain_decision_count"] =
-              logicalDomainDecisionCount;
+          fields["logical_domain_decision_count"] = logicalDomainDecisionCount;
           fields["owned_logical_domain_decision_count"] =
               ownedLogicalDomainDecisionCount;
           fields["materialized_logical_domain_count"] =
@@ -361,17 +377,22 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           fields["exact_fabric_rejected_logical_domain_count"] =
               exactFabricRejectedLogicalDomainCount;
         });
+  if (scopRefusalCount != 0)
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+          fields["context_kind"] = "structured_scop_refusal_summary";
+          fields["refusal_count"] = scopRefusalCount;
+        });
   std::vector<CandidateGeneratorOutputBinding> outputBindings = {
       {CandidateGeneratorOutputSlotRef(0), std::move(outputs)}};
   CandidateGeneratorProviderOutcome outcome =
       truncated
-          ? CandidateGeneratorProviderOutcome{
-                IncompleteCandidateGeneratorResult{
-                    CandidateGeneratorIncompleteReason::SemanticLimitReached,
-                    std::move(outputBindings), std::move(lineageEdges)}}
-          : CandidateGeneratorProviderOutcome{
-                CompletedCandidateGeneratorResult{
-                    std::move(outputBindings), std::move(lineageEdges)}};
+          ? CandidateGeneratorProviderOutcome{IncompleteCandidateGeneratorResult{
+                CandidateGeneratorIncompleteReason::SemanticLimitReached,
+                std::move(outputBindings), std::move(lineageEdges)}}
+          : CandidateGeneratorProviderOutcome{CompletedCandidateGeneratorResult{
+                std::move(outputBindings), std::move(lineageEdges)}};
   return CandidateGeneratorProviderResult{
       std::move(outcome),
       {{CandidateGeneratorWorkUnitRef(0), inspectedLoopScopes,

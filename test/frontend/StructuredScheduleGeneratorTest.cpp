@@ -4,17 +4,25 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/CandidateGenerator.h"
 #include "DSE/StructuredScheduleCandidateGenerator.h"
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
+#include "Frontend/Compilation/StructuredScop.h"
+#include "Frontend/IR/LoomDialect.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Frontend/Lowering/CanonicalDataflowLowering.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -62,9 +70,12 @@ void requireErrorContains(
 mlir::MLIRContext &context() {
   static mlir::MLIRContext *result = [] {
     mlir::DialectRegistry registry;
-    registry.insert<mlir::arith::ArithDialect, mlir::DLTIDialect,
-                    mlir::func::FuncDialect, mlir::math::MathDialect,
-                    mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+    registry.insert<dataflow::DataflowDialect, loom::LoomDialect,
+                    mlir::affine::AffineDialect, mlir::arith::ArithDialect,
+                    mlir::DLTIDialect, mlir::func::FuncDialect,
+                    mlir::math::MathDialect, mlir::LLVM::LLVMDialect,
+                    mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
+                    mlir::vector::VectorDialect>();
     auto *created =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     created->loadAllAvailableDialects();
@@ -78,6 +89,35 @@ loom::frontend::StructuredProgramCandidate parseProgram(llvm::StringRef text) {
   if (!module)
     fail("cannot parse Structured Program fixture");
   return take(loom::frontend::finalizeStructuredProgram(module.get()));
+}
+
+loom::frontend::StructuredEntityRef structuredLoopReference(
+    const loom::frontend::StructuredProgramCandidate &candidate,
+    llvm::StringRef functionName) {
+  auto view = take(candidate.view());
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    mlir::Operation *loop = entity.operation;
+    if (!llvm::isa_and_nonnull<mlir::scf::ForOp, mlir::affine::AffineForOp>(
+            loop))
+      continue;
+    auto function = loop->getParentOfType<mlir::func::FuncOp>();
+    if (function && function.getSymName() == functionName)
+      return entity.reference;
+  }
+  fail("candidate has no selected structured loop");
+}
+
+std::optional<loom::frontend::StructuredScheduleDecision> firstVectorDecision(
+    const loom::frontend::StructuredScheduleDecisionDomain &domain) {
+  auto decision = llvm::find_if(domain.decisions, [](const auto &candidate) {
+    return candidate.kind ==
+           loom::frontend::StructuredScheduleDecisionKind::Vectorize;
+  });
+  return decision == domain.decisions.end()
+             ? std::nullopt
+             : std::optional<loom::frontend::StructuredScheduleDecision>(
+                   *decision);
 }
 
 std::uint64_t tripCount(mlir::scf::ForOp loop) {
@@ -296,11 +336,26 @@ module {
   if (!loop)
     fail("factor-one codec fixture has no loop");
   const loom::frontend::StructuredScheduleDecision decision{
-      *loop, loom::frontend::StructuredScheduleDecisionKind::Tile, 1};
+      *loop, loom::frontend::StructuredScheduleDecisionKind::Tile, 1,
+      std::nullopt};
   auto encoded = loom::frontend::encodeStructuredScheduleDecision(decision);
   if (encoded)
     fail("schedule decision encoder accepted factor one");
   llvm::consumeError(encoded.takeError());
+
+  const loom::frontend::StructuredScheduleDecision oversizedVector{
+      *loop, loom::frontend::StructuredScheduleDecisionKind::Vectorize, 0,
+      loom::frontend::StructuredVectorScheduleCoordinate{
+          {65},
+          loom::frontend::StructuredVectorTailPolicy::Exact,
+          260,
+          loom::frontend::StructuredVectorAliasPolicy::ProviderProvenNoAlias,
+          loom::frontend::StructuredReductionSchedule::None}};
+  auto oversized =
+      loom::frontend::encodeStructuredScheduleDecision(oversizedVector);
+  if (oversized)
+    fail("schedule decision encoder accepted an oversized vector factor");
+  llvm::consumeError(oversized.takeError());
 }
 
 void invalidInMemoryDecisionFailsClosed() {
@@ -329,8 +384,8 @@ module {
   if (!loop)
     fail("invalid-decision fixture has no loop");
   const loom::frontend::StructuredScheduleDecision decision{
-      *loop, static_cast<loom::frontend::StructuredScheduleDecisionKind>(99),
-      0};
+      *loop, static_cast<loom::frontend::StructuredScheduleDecisionKind>(99), 0,
+      std::nullopt};
   auto encoded = loom::frontend::encodeStructuredScheduleDecision(decision);
   if (encoded)
     fail("schedule encoder accepted an unknown in-memory decision kind");
@@ -369,7 +424,8 @@ module {
       {program.identity(), loom::frontend::StructuredEntityKind::Operation,
        999999},
       loom::frontend::StructuredScheduleDecisionKind::Tile,
-      2};
+      2,
+      std::nullopt};
   auto encoded =
       take(loom::frontend::encodeStructuredScheduleDecision(decision));
   const auto *contract =
@@ -432,7 +488,8 @@ module attributes {dlti.dl_spec = #layout} {
   std::optional<loom::frontend::StructuredEntityRef> selectedFunction;
   for (const loom::frontend::StructuredEntity &entity :
        scopedView.entities(loom::frontend::StructuredEntityKind::Operation)) {
-    auto function = llvm::dyn_cast_or_null<mlir::func::FuncOp>(entity.operation);
+    auto function =
+        llvm::dyn_cast_or_null<mlir::func::FuncOp>(entity.operation);
     if (function && function.getSymName() == "selected") {
       selectedFunction = entity.reference;
       break;
@@ -440,9 +497,8 @@ module attributes {dlti.dl_spec = #layout} {
   }
   if (!selectedFunction)
     fail("scoped schedule fixture lost its selected function");
-  auto scopedDomain = take(
-      loom::frontend::enumerateStructuredScheduleDecisions(
-          scoped, fabric, 1, *selectedFunction));
+  auto scopedDomain = take(loom::frontend::enumerateStructuredScheduleDecisions(
+      scoped, fabric, 1, *selectedFunction));
   if (scopedDomain.inspectedLoopScopes != 1 ||
       !llvm::any_of(scopedDomain.decisions, [](const auto &decision) {
         return decision.kind ==
@@ -594,6 +650,581 @@ module attributes {dlti.dl_spec = #layout} {
   llvm::sys::fs::remove_directories(directory);
 }
 
+void exactScopVectorCoordinateIsCanonicalAndVerified() {
+  llvm::SmallString<128> directory;
+  std::error_code error =
+      llvm::sys::fs::createUniqueDirectory("loom-schedule-vector", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  const loom::fabric::FinalizedFabricRoot &fabric = design.roots().front();
+
+  auto parent = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+module attributes {dlti.dl_spec = #layout} {
+  func.func @kernel(%lhs: memref<16xi32>, %rhs: memref<16xi32>) {
+    %lhs_distinct, %rhs_distinct = memref.distinct_objects %lhs, %rhs
+        : memref<16xi32>, memref<16xi32>
+    %lhs_aligned = memref.assume_alignment %lhs_distinct, 64
+        : memref<16xi32>
+    %rhs_aligned = memref.assume_alignment %rhs_distinct, 64
+        : memref<16xi32>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    scf.for %i = %c0 to %c16 step %c1 {
+      %left = memref.load %lhs_aligned[%i] : memref<16xi32>
+      %right = memref.load %rhs_aligned[%i] : memref<16xi32>
+      %sum = arith.addi %left, %right : i32
+      memref.store %sum, %rhs_aligned[%i] : memref<16xi32>
+    }
+    return
+  }
+}
+)mlir");
+  const auto loop = structuredLoopReference(parent, "kernel");
+  auto analysis =
+      take(loom::frontend::analyzeExactStructuredScop(parent, loop));
+  const auto *scop =
+      std::get_if<loom::frontend::ExactStructuredScopView>(&analysis);
+  if (!scop || scop->statementCount != 4 || scop->accesses.size() != 3 ||
+      scop->minimumAlignmentBytes != 64 || scop->maximumElementBytes != 4 ||
+      scop->constantTripCount != 16 ||
+      scop->reductionSchedule !=
+          loom::frontend::StructuredReductionSchedule::None)
+    fail("exact vector SCoP analysis lost a provider-proven fact");
+
+  auto domain = take(
+      loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 8));
+  auto decision = firstVectorDecision(domain);
+  if (!decision || !decision->vector || decision->factor != 0 ||
+      decision->vector->shape != std::vector<std::uint64_t>{2} ||
+      decision->vector->tailPolicy !=
+          loom::frontend::StructuredVectorTailPolicy::Exact ||
+      decision->vector->requiredAlignmentBytes != 8 ||
+      decision->vector->reductionSchedule !=
+          loom::frontend::StructuredReductionSchedule::None)
+    fail("exact vector SCoP produced no canonical hardware-aware coordinate");
+
+  auto encoded =
+      take(loom::frontend::encodeStructuredScheduleDecision(*decision));
+  auto adopted = take(loom::frontend::adoptStructuredScheduleDecision(encoded));
+  if (!(adopted == *decision))
+    fail("vector schedule coordinate did not round-trip canonically");
+
+  auto child = take(
+      loom::frontend::materializeStructuredScheduleDecision(parent, *decision));
+  if (llvm::Error verification =
+          loom::frontend::verifyStructuredVectorScheduleMaterialization(
+              *scop, *decision->vector, child.structuredProgram.module()))
+    fail("independent vector verifier rejected the materialized child: " +
+         llvm::toString(std::move(verification)));
+  std::size_t vectorAdds = 0;
+  std::size_t vectorReads = 0;
+  child.structuredProgram.module().walk([&](mlir::Operation *operation) {
+    if (auto add = llvm::dyn_cast<mlir::arith::AddIOp>(operation))
+      vectorAdds += llvm::isa<mlir::VectorType>(add.getType()) ? 1 : 0;
+    vectorReads += llvm::isa<mlir::vector::TransferReadOp>(operation) ? 1 : 0;
+  });
+  if (vectorAdds != 1 || vectorReads != 2)
+    fail("Affine provider did not materialize the selected vector shape");
+
+  mlir::OwningOpRef<mlir::ModuleOp> mutated(
+      llvm::cast<mlir::ModuleOp>(child.structuredProgram.module()->clone()));
+  bool changed = false;
+  mutated->walk([&](mlir::scf::ForOp candidate) {
+    if (!changed && mlir::getConstantIntValue(candidate.getStep()) == 2) {
+      mlir::OpBuilder builder(candidate);
+      mlir::Value replacement =
+          mlir::arith::ConstantIndexOp::create(builder, candidate.getLoc(), 4);
+      candidate.getStepMutable().assign(replacement);
+      changed = true;
+    }
+  });
+  llvm::Error mutation =
+      loom::frontend::verifyStructuredVectorScheduleMaterialization(
+          *scop, *decision->vector, mutated.get());
+  if (!changed || !mutation)
+    fail("independent vector verifier accepted a changed schedule coordinate");
+  llvm::consumeError(std::move(mutation));
+
+  mlir::OwningOpRef<mlir::ModuleOp> changedBounds(
+      llvm::cast<mlir::ModuleOp>(child.structuredProgram.module()->clone()));
+  bool changedUpperBound = false;
+  changedBounds->walk([&](mlir::scf::ForOp candidate) {
+    if (!changedUpperBound &&
+        mlir::getConstantIntValue(candidate.getStep()) == 2) {
+      mlir::OpBuilder builder(candidate);
+      mlir::Value replacement =
+          mlir::arith::ConstantIndexOp::create(builder, candidate.getLoc(), 14);
+      candidate.getUpperBoundMutable().assign(replacement);
+      changedUpperBound = true;
+    }
+  });
+  llvm::Error boundMutation =
+      loom::frontend::verifyStructuredVectorScheduleMaterialization(
+          *scop, *decision->vector, changedBounds.get());
+  if (!changedUpperBound || !boundMutation)
+    fail("independent vector verifier accepted a changed iteration domain");
+  llvm::consumeError(std::move(boundMutation));
+
+  bool productionVectorChild = false;
+  for (const loom::ArtifactRootReference &reference :
+       generated(parent, fabric, store, blobs)) {
+    auto candidate =
+        take(loom::frontend::importStructuredProgram(reference, store));
+    candidate.module().walk(
+        [&](mlir::vector::TransferReadOp) { productionVectorChild = true; });
+  }
+  if (!productionVectorChild)
+    fail("production schedule provider published no vectorized child");
+
+  auto mixedParent = parseProgram(R"mlir(
+module {
+  func.func @kernel(%input: memref<16xi32>, %output: memref<16xi32>) {
+    %input_distinct, %output_distinct = memref.distinct_objects %input, %output
+        : memref<16xi32>, memref<16xi32>
+    %input_aligned = memref.assume_alignment %input_distinct, 64
+        : memref<16xi32>
+    %output_aligned = memref.assume_alignment %output_distinct, 64
+        : memref<16xi32>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    scf.for %i = %c0 to %c16 step %c1 {
+      %unused = memref.load %input_aligned[%i] : memref<16xi32>
+    }
+    scf.for %i = %c0 to %c16 step %c1 {
+      %value = memref.load %input_aligned[%i] : memref<16xi32>
+      memref.store %value, %output_aligned[%i] : memref<16xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto mixedDomain = take(loom::frontend::enumerateStructuredScheduleDecisions(
+      mixedParent, fabric, 2));
+  if (!firstVectorDecision(mixedDomain) ||
+      llvm::none_of(mixedDomain.refusals, [](const auto &refusal) {
+        return refusal.kind == loom::frontend::StructuredScopRefusalKind::
+                                   ProviderMaterializationRejected;
+      }))
+    fail("one refused SCoP suppressed an unrelated exact SCoP");
+
+  llvm::sys::fs::remove_directories(directory);
+}
+
+void exactScopRefusalsAreLocalAndTyped() {
+  auto unresolvedAlias = parseProgram(R"mlir(
+module {
+  func.func @kernel(%lhs: memref<8xi32>, %rhs: memref<8xi32>) {
+    %lhs_aligned = memref.assume_alignment %lhs, 32 : memref<8xi32>
+    %rhs_aligned = memref.assume_alignment %rhs, 32 : memref<8xi32>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    scf.for %i = %c0 to %c8 step %c1 {
+      %value = memref.load %lhs_aligned[%i] : memref<8xi32>
+      memref.store %value, %rhs_aligned[%i] : memref<8xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto aliasOutcome = take(loom::frontend::analyzeExactStructuredScop(
+      unresolvedAlias, structuredLoopReference(unresolvedAlias, "kernel")));
+  const auto *aliasRefusal =
+      std::get_if<loom::frontend::StructuredScopRefusal>(&aliasOutcome);
+  if (!aliasRefusal ||
+      aliasRefusal->kind !=
+          loom::frontend::StructuredScopRefusalKind::AliasProofNotEstablished)
+    fail("unresolved memref alias did not retain its typed local refusal");
+
+  auto strictReduction = parseProgram(R"mlir(
+module {
+  func.func @kernel(%input: memref<15xf32>) -> f32 {
+    %aligned = memref.assume_alignment %input, 64 : memref<15xf32>
+    %zero = arith.constant 0.0 : f32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c15 = arith.constant 15 : index
+    %sum = scf.for %i = %c0 to %c15 step %c1
+        iter_args(%acc = %zero) -> f32 {
+      %value = memref.load %aligned[%i] : memref<15xf32>
+      %next = arith.addf %acc, %value : f32
+      scf.yield %next : f32
+    }
+    return %sum : f32
+  }
+}
+)mlir");
+  auto strictOutcome = take(loom::frontend::analyzeExactStructuredScop(
+      strictReduction, structuredLoopReference(strictReduction, "kernel")));
+  const auto *strictRefusal =
+      std::get_if<loom::frontend::StructuredScopRefusal>(&strictOutcome);
+  if (!strictRefusal ||
+      strictRefusal->kind !=
+          loom::frontend::StructuredScopRefusalKind::StrictFloatingReduction)
+    fail("strict floating reduction did not retain its typed local refusal");
+
+  auto nonNeutralReduction = parseProgram(R"mlir(
+module {
+  func.func @kernel(%input: memref<15xf32>) -> f32 {
+    %aligned = memref.assume_alignment %input, 64 : memref<15xf32>
+    %one = arith.constant 1.0 : f32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c15 = arith.constant 15 : index
+    %sum = scf.for %i = %c0 to %c15 step %c1
+        iter_args(%acc = %one) -> f32 {
+      %value = memref.load %aligned[%i] : memref<15xf32>
+      %next = arith.addf %acc, %value fastmath<reassoc> : f32
+      scf.yield %next : f32
+    }
+    return %sum : f32
+  }
+}
+)mlir");
+  auto nonNeutralOutcome = take(loom::frontend::analyzeExactStructuredScop(
+      nonNeutralReduction,
+      structuredLoopReference(nonNeutralReduction, "kernel")));
+  const auto *nonNeutralRefusal =
+      std::get_if<loom::frontend::StructuredScopRefusal>(&nonNeutralOutcome);
+  if (!nonNeutralRefusal ||
+      nonNeutralRefusal->kind !=
+          loom::frontend::StructuredScopRefusalKind::UnsupportedReduction)
+    fail("non-neutral reduction did not retain its typed local refusal");
+
+  auto offsetLayout = parseProgram(R"mlir(
+module {
+  func.func @kernel(
+      %input: memref<8xi32, strided<[1], offset: 1>>) {
+    %aligned = memref.assume_alignment %input, 32
+        : memref<8xi32, strided<[1], offset: 1>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    scf.for %i = %c0 to %c8 step %c1 {
+      %value = memref.load %aligned[%i]
+          : memref<8xi32, strided<[1], offset: 1>>
+    }
+    return
+  }
+}
+)mlir");
+  auto offsetOutcome = take(loom::frontend::analyzeExactStructuredScop(
+      offsetLayout, structuredLoopReference(offsetLayout, "kernel")));
+  const auto *offsetRefusal =
+      std::get_if<loom::frontend::StructuredScopRefusal>(&offsetOutcome);
+  if (!offsetRefusal ||
+      offsetRefusal->kind !=
+          loom::frontend::StructuredScopRefusalKind::UnsupportedPhysicalOffset)
+    fail("nonzero layout offset did not retain its typed local refusal");
+}
+
+void reassociatedReductionOwnsItsMaskedTail() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-schedule-reduction", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Coverage));
+  const loom::fabric::FinalizedFabricRoot &fabric = design.roots().front();
+  auto parent = parseProgram(R"mlir(
+module {
+  func.func @kernel(%input: memref<15xf32>) -> f32 {
+    %aligned = memref.assume_alignment %input, 64 : memref<15xf32>
+    %zero = arith.constant 0.0 : f32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c15 = arith.constant 15 : index
+    %sum = scf.for %i = %c0 to %c15 step %c1
+        iter_args(%acc = %zero) -> f32 {
+      %value = memref.load %aligned[%i] : memref<15xf32>
+      %next = arith.addf %acc, %value fastmath<reassoc> : f32
+      scf.yield %next : f32
+    }
+    return %sum : f32
+  }
+}
+)mlir");
+  auto domain = take(
+      loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 4));
+  if (firstVectorDecision(domain))
+    fail("Fabric admitted an unavailable masked-tail implementation");
+  auto refusal = llvm::find_if(domain.refusals, [](const auto &candidate) {
+    return candidate.kind ==
+           loom::frontend::StructuredScopRefusalKind::VectorLoweringUnavailable;
+  });
+  if (refusal == domain.refusals.end())
+    fail("masked-tail lowering rejection lost its typed local refusal");
+
+  const auto loop = structuredLoopReference(parent, "kernel");
+  auto analysis =
+      take(loom::frontend::analyzeExactStructuredScop(parent, loop));
+  const auto *scop =
+      std::get_if<loom::frontend::ExactStructuredScopView>(&analysis);
+  if (!scop)
+    fail("reassociated reduction lost its exact SCoP analysis");
+  const loom::frontend::StructuredScheduleDecision decision{
+      loop, loom::frontend::StructuredScheduleDecisionKind::Vectorize, 0,
+      loom::frontend::StructuredVectorScheduleCoordinate{
+          {2},
+          loom::frontend::StructuredVectorTailPolicy::ReductionMask,
+          8,
+          loom::frontend::StructuredVectorAliasPolicy::ProviderProvenNoAlias,
+          loom::frontend::StructuredReductionSchedule::FloatingReassociated}};
+  auto child = take(
+      loom::frontend::materializeStructuredScheduleDecision(parent, decision));
+  if (llvm::Error verification =
+          loom::frontend::verifyStructuredVectorScheduleMaterialization(
+              *scop, *decision.vector, child.structuredProgram.module()))
+    fail("independent verifier rejected the masked-tail image: " +
+         llvm::toString(std::move(verification)));
+  std::size_t maskedReads = 0;
+  std::size_t reductions = 0;
+  std::size_t extracts = 0;
+  std::size_t inserts = 0;
+  child.structuredProgram.module().walk([&](mlir::Operation *operation) {
+    if (auto read = llvm::dyn_cast<mlir::vector::TransferReadOp>(operation))
+      maskedReads += read.getMask() ? 1 : 0;
+    reductions += llvm::isa<mlir::vector::ReductionOp>(operation) ? 1 : 0;
+    extracts += llvm::isa<mlir::vector::ExtractOp>(operation) ? 1 : 0;
+    inserts += llvm::isa<mlir::vector::InsertOp>(operation) ? 1 : 0;
+  });
+  const std::size_t factor = decision.vector->shape.front();
+  if (maskedReads != 1 || reductions != 0 || extracts != factor ||
+      inserts != factor)
+    fail("reassociated reduction lost its exact masked-tail materialization");
+
+  mlir::OwningOpRef<mlir::ModuleOp> missingMask(
+      llvm::cast<mlir::ModuleOp>(child.structuredProgram.module()->clone()));
+  mlir::vector::TransferReadOp maskedRead;
+  missingMask->walk([&](mlir::vector::TransferReadOp read) {
+    if (!maskedRead && read.getMask())
+      maskedRead = read;
+  });
+  if (!maskedRead)
+    fail("masked-tail mutation found no transfer mask");
+  {
+    mlir::OpBuilder builder(maskedRead);
+    auto replacement = mlir::vector::TransferReadOp::create(
+        builder, maskedRead.getLoc(), maskedRead.getVectorType(),
+        maskedRead.getBase(), maskedRead.getIndices(),
+        maskedRead.getPermutationMapAttr(), maskedRead.getPadding(),
+        mlir::Value{}, maskedRead.getInBoundsAttr());
+    maskedRead.getResult().replaceAllUsesWith(replacement.getResult());
+    maskedRead.erase();
+  }
+  llvm::Error missingMaskError =
+      loom::frontend::verifyStructuredVectorScheduleMaterialization(
+          *scop, *decision.vector, missingMask.get());
+  if (!missingMaskError)
+    fail("independent verifier accepted a missing tail mask");
+  llvm::consumeError(std::move(missingMaskError));
+
+  mlir::OwningOpRef<mlir::ModuleOp> swappedNeutral(
+      llvm::cast<mlir::ModuleOp>(child.structuredProgram.module()->clone()));
+  mlir::arith::SelectOp tailSelect;
+  swappedNeutral->walk([&](mlir::arith::SelectOp select) {
+    if (!tailSelect && llvm::isa<mlir::VectorType>(select.getType()))
+      tailSelect = select;
+  });
+  if (!tailSelect)
+    fail("masked-tail mutation found no neutral select");
+  {
+    mlir::OpBuilder builder(tailSelect);
+    auto replacement = mlir::arith::SelectOp::create(
+        builder, tailSelect.getLoc(), tailSelect.getCondition(),
+        tailSelect.getFalseValue(), tailSelect.getTrueValue());
+    tailSelect.getResult().replaceAllUsesWith(replacement.getResult());
+    tailSelect.erase();
+  }
+  llvm::Error swappedNeutralError =
+      loom::frontend::verifyStructuredVectorScheduleMaterialization(
+          *scop, *decision.vector, swappedNeutral.get());
+  if (!swappedNeutralError)
+    fail("independent verifier accepted a changed neutral arm");
+  llvm::consumeError(std::move(swappedNeutralError));
+
+  mlir::OwningOpRef<mlir::ModuleOp> changedCombiner(
+      llvm::cast<mlir::ModuleOp>(child.structuredProgram.module()->clone()));
+  mlir::arith::AddFOp horizontalAdd;
+  changedCombiner->walk([&](mlir::arith::AddFOp add) {
+    if (!horizontalAdd && !llvm::isa<mlir::VectorType>(add.getType()))
+      horizontalAdd = add;
+  });
+  if (!horizontalAdd)
+    fail("reduction mutation found no horizontal combiner");
+  {
+    mlir::OpBuilder builder(horizontalAdd);
+    auto replacement = mlir::arith::MulFOp::create(
+        builder, horizontalAdd.getLoc(), horizontalAdd.getLhs(),
+        horizontalAdd.getRhs(), horizontalAdd.getFastMathFlagsAttr());
+    horizontalAdd.getResult().replaceAllUsesWith(replacement.getResult());
+    horizontalAdd.erase();
+  }
+  llvm::Error changedCombinerError =
+      loom::frontend::verifyStructuredVectorScheduleMaterialization(
+          *scop, *decision.vector, changedCombiner.get());
+  if (!changedCombinerError)
+    fail("independent verifier accepted a changed horizontal combiner");
+  llvm::consumeError(std::move(changedCombinerError));
+
+  mlir::OwningOpRef<mlir::ModuleOp> changedResult(
+      llvm::cast<mlir::ModuleOp>(child.structuredProgram.module()->clone()));
+  mlir::arith::AddFOp reductionRoot;
+  mlir::vector::ExtractOp firstLane;
+  mlir::func::ReturnOp returned;
+  changedResult->walk([&](mlir::Operation *operation) {
+    if (auto add = llvm::dyn_cast<mlir::arith::AddFOp>(operation))
+      if (!reductionRoot && !llvm::isa<mlir::VectorType>(add.getType()))
+        reductionRoot = add;
+    if (auto extract = llvm::dyn_cast<mlir::vector::ExtractOp>(operation))
+      if (!firstLane &&
+          extract.getStaticPosition() == llvm::ArrayRef<std::int64_t>{0})
+        firstLane = extract;
+    if (auto candidate = llvm::dyn_cast<mlir::func::ReturnOp>(operation))
+      returned = candidate;
+  });
+  if (!reductionRoot || !firstLane || !returned)
+    fail("reduction result mutation found no exact result chain");
+  {
+    mlir::OpBuilder builder(returned);
+    mlir::arith::NegFOp::create(builder, returned.getLoc(),
+                                reductionRoot.getResult());
+    returned->setOperand(0, firstLane.getResult());
+  }
+  llvm::Error changedResultError =
+      loom::frontend::verifyStructuredVectorScheduleMaterialization(
+          *scop, *decision.vector, changedResult.get());
+  if (!changedResultError)
+    fail("independent verifier accepted a foreign reduction result");
+  llvm::consumeError(std::move(changedResultError));
+
+  auto primeParent = parseProgram(R"mlir(
+module {
+  func.func @kernel(%input: memref<67xi32>) {
+    %aligned = memref.assume_alignment %input, 256 : memref<67xi32>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c67 = arith.constant 67 : index
+    scf.for %i = %c0 to %c67 step %c1 {
+      %value = memref.load %aligned[%i] : memref<67xi32>
+      memref.store %value, %aligned[%i] : memref<67xi32>
+    }
+    return
+  }
+}
+)mlir");
+  auto primeDomain = take(loom::frontend::enumerateStructuredScheduleDecisions(
+      primeParent, fabric, 2));
+  auto tailRefusal =
+      llvm::find_if(primeDomain.refusals, [](const auto &candidate) {
+        return candidate.kind ==
+               loom::frontend::StructuredScopRefusalKind::UnsupportedTail;
+      });
+  if (tailRefusal == primeDomain.refusals.end())
+    fail("non-reduction tail rejection lost its typed local refusal");
+  llvm::sys::fs::remove_directories(directory);
+}
+
+void productionVectorScheduleLowersToCanonicalDataflow() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-schedule-vector-lowering", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  const loom::fabric::FinalizedFabricRoot &fabric = design.roots().front();
+
+  auto parent = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+module attributes {dlti.dl_spec = #layout} {
+  memref.global constant @vector_lhs : memref<16xi32> = dense<1>
+  memref.global @vector_rhs : memref<16xi32> = dense<0>
+
+  dataflow.thread private @vector_thread
+      domain(#dataflow.thread_domain<dense>)(
+      %lhs: memref<16xi32>, %rhs: memref<16xi32>) ctrl (%start: none) {
+    "loom.spatial_region"(%lhs, %rhs)
+        <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%left_input: memref<16xi32>, %right_input: memref<16xi32>):
+        %left_distinct, %right_distinct = memref.distinct_objects
+            %left_input, %right_input : memref<16xi32>, memref<16xi32>
+        %left_aligned = memref.assume_alignment %left_distinct, 64
+            : memref<16xi32>
+        %right_aligned = memref.assume_alignment %right_distinct, 64
+            : memref<16xi32>
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c16 = arith.constant 16 : index
+        scf.for %i = %c0 to %c16 step %c1 {
+          %left = memref.load %left_aligned[%i] : memref<16xi32>
+          %right = memref.load %right_aligned[%i] : memref<16xi32>
+          %sum = arith.addi %left, %right : i32
+          memref.store %sum, %right_aligned[%i] : memref<16xi32>
+        }
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "vector_graph", source_maps = []} :
+        (memref<16xi32>, memref<16xi32>) -> ()
+    dataflow.thread.yield
+  }
+
+  llvm.func @entry() {
+    %lhs = memref.get_global @vector_lhs : memref<16xi32>
+    %rhs = memref.get_global @vector_rhs : memref<16xi32>
+    %token = dataflow.thread.launch @vector_thread(%lhs, %rhs) :
+        (memref<16xi32>, memref<16xi32>) -> !dataflow.thread_token
+    dataflow.thread.wait %token : !dataflow.thread_token
+    llvm.return
+  }
+}
+)mlir");
+  auto domain = take(
+      loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 8));
+  auto decision = firstVectorDecision(domain);
+  if (!decision)
+    fail("production vector fixture produced no admitted coordinate");
+  auto child = take(
+      loom::frontend::materializeStructuredScheduleDecision(parent, *decision));
+  auto lowered = take(loom::lowering::lowerStructuredProgramToCanonicalDataflow(
+      child.structuredProgram));
+
+  std::size_t vectorLoads = 0;
+  std::size_t vectorStores = 0;
+  std::size_t vectorAdds = 0;
+  std::size_t transfers = 0;
+  lowered.module().walk([&](mlir::Operation *operation) {
+    if (auto load = llvm::dyn_cast<dataflow::LoadOp>(operation))
+      vectorLoads += llvm::isa<mlir::VectorType>(load.getData().getType());
+    if (auto store = llvm::dyn_cast<dataflow::StoreOp>(operation))
+      vectorStores += llvm::isa<mlir::VectorType>(store.getData().getType());
+    if (auto add = llvm::dyn_cast<mlir::arith::AddIOp>(operation))
+      vectorAdds += llvm::isa<mlir::VectorType>(add.getType());
+    transfers +=
+        llvm::isa<mlir::vector::TransferReadOp, mlir::vector::TransferWriteOp>(
+            operation);
+  });
+  if (vectorLoads != 2 || vectorStores != 1 || vectorAdds != 1 ||
+      transfers != 0)
+    fail("production lowering did not preserve the admitted vector actors");
+  llvm::sys::fs::remove_directories(directory);
+}
+
 } // namespace
 
 int main() {
@@ -602,5 +1233,9 @@ int main() {
   invalidInMemoryDecisionFailsClosed();
   lineageCodecRejectsAnOutOfRangeLoop();
   transformationsAreTypedCapacityBoundAndDependenceChecked();
+  exactScopVectorCoordinateIsCanonicalAndVerified();
+  exactScopRefusalsAreLocalAndTyped();
+  reassociatedReductionOwnsItsMaskedTail();
+  productionVectorScheduleLowersToCanonicalDataflow();
   return EXIT_SUCCESS;
 }

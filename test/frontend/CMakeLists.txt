@@ -183,14 +183,20 @@ target_link_libraries(loom-structured-schedule-generator-test PRIVATE
   LoomCommon
   LoomDSECompilerGenerator
   LoomFrontendCompilation
+  LoomFrontendLowering
+  MLIRAffineDialect
   MLIRArithDialect
+  MLIRDataflow
   MLIRDLTIDialect
   MLIRFuncDialect
   MLIRIR
+  MLIRLLVMDialect
+  MLIRLoom
   MLIRMemRefDialect
   MLIRParser
   MLIRSCFDialect
   MLIRSupport
+  MLIRVectorDialect
   LLVMSupport
 )
 

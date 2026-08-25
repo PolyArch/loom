@@ -18,6 +18,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -162,6 +163,18 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
     } else if (auto store = ::llvm::dyn_cast<::mlir::memref::StoreOp>(op)) {
       if (::mlir::failed(::loom::lowering::detail::checkRankedMemRefAccess(
               store, store.getMemRefType(), store.getIndices(), indexBits)))
+        return ::mlir::WalkResult::interrupt();
+    } else if (auto read =
+                   ::llvm::dyn_cast<::mlir::vector::TransferReadOp>(op)) {
+      if (::mlir::failed(
+              ::loom::lowering::detail::checkRankedVectorTransferRead(
+                  read, indexBits)))
+        return ::mlir::WalkResult::interrupt();
+    } else if (auto write =
+                   ::llvm::dyn_cast<::mlir::vector::TransferWriteOp>(op)) {
+      if (::mlir::failed(
+              ::loom::lowering::detail::checkRankedVectorTransferWrite(
+                  write, indexBits)))
         return ::mlir::WalkResult::interrupt();
     } else if (auto dealloc = ::llvm::dyn_cast<::mlir::memref::DeallocOp>(op)) {
       auto allocation =
@@ -685,6 +698,10 @@ private:
       return load.getMemref();
     if (auto store = ::llvm::dyn_cast<::mlir::memref::StoreOp>(op))
       return store.getMemref();
+    if (auto read = ::llvm::dyn_cast<::mlir::vector::TransferReadOp>(op))
+      return read.getBase();
+    if (auto write = ::llvm::dyn_cast<::mlir::vector::TransferWriteOp>(op))
+      return write.getBase();
     return {};
   }
 
@@ -1096,12 +1113,34 @@ private:
         send.erase();
         continue;
       }
+      if (auto alignment =
+              ::llvm::dyn_cast<::mlir::memref::AssumeAlignmentOp>(op)) {
+        alignment.getResult().replaceAllUsesWith(alignment.getMemref());
+        alignment.erase();
+        continue;
+      }
+      if (auto distinct =
+              ::llvm::dyn_cast<::mlir::memref::DistinctObjectsOp>(op)) {
+        for (auto [result, operand] :
+             ::llvm::zip_equal(distinct.getResults(), distinct.getOperands()))
+          result.replaceAllUsesWith(operand);
+        distinct.erase();
+        continue;
+      }
       if (auto load = ::llvm::dyn_cast<::mlir::memref::LoadOp>(op)) {
         lowerMemrefLoad(load, execution, memory);
         continue;
       }
       if (auto store = ::llvm::dyn_cast<::mlir::memref::StoreOp>(op)) {
         lowerMemrefStore(store, execution, memory);
+        continue;
+      }
+      if (auto read = ::llvm::dyn_cast<::mlir::vector::TransferReadOp>(op)) {
+        lowerVectorRead(read, execution, memory);
+        continue;
+      }
+      if (auto write = ::llvm::dyn_cast<::mlir::vector::TransferWriteOp>(op)) {
+        lowerVectorWrite(write, execution, memory);
         continue;
       }
       if (auto dealloc = ::llvm::dyn_cast<::mlir::memref::DeallocOp>(op)) {
@@ -1340,6 +1379,42 @@ private:
     store.erase();
   }
 
+  void lowerVectorRead(::mlir::vector::TransferReadOp read,
+                       ::mlir::Value execution, MemoryState &memory) {
+    ::llvm::SmallVector<unsigned, 4> membership = partitionsFor(read);
+    ::mlir::Value ctrl = readControl(read, execution, memory);
+    setInsertionPoint(read.getLoc());
+    auto memoryType =
+        ::llvm::cast<::mlir::MemRefType>(read.getBase().getType());
+    ::mlir::Value address = ::loom::lowering::detail::buildExactLinearIndex(
+        builder, read.getLoc(), memoryType, read.getIndices(), execution);
+    auto lowered = ::dataflow::LoadOp::create(
+        builder, read.getLoc(), read.getVectorType(), builder.getNoneType(),
+        read.getBase(), address, ctrl, read.getMask(), ::mlir::Attribute{});
+    partitionsByAccess.try_emplace(lowered, std::move(membership));
+    read.getResult().replaceAllUsesWith(lowered.getData());
+    updateReadFrontiers(lowered, lowered.getDone(), memory);
+    read.erase();
+  }
+
+  void lowerVectorWrite(::mlir::vector::TransferWriteOp write,
+                        ::mlir::Value execution, MemoryState &memory) {
+    ::llvm::SmallVector<unsigned, 4> membership = partitionsFor(write);
+    ::mlir::Value ctrl = writeControl(write, execution, memory);
+    setInsertionPoint(write.getLoc());
+    auto memoryType =
+        ::llvm::cast<::mlir::MemRefType>(write.getBase().getType());
+    ::mlir::Value address = ::loom::lowering::detail::buildExactLinearIndex(
+        builder, write.getLoc(), memoryType, write.getIndices(), execution);
+    auto lowered = ::dataflow::StoreOp::create(
+        builder, write.getLoc(), builder.getNoneType(), write.getBase(),
+        address, write.getValueToStore(), ctrl, write.getMask(),
+        ::mlir::Attribute{});
+    partitionsByAccess.try_emplace(lowered, std::move(membership));
+    updateWriteFrontiers(lowered, lowered.getDone(), memory);
+    write.erase();
+  }
+
   void lowerDataflowLoad(::dataflow::LoadOp load, ::mlir::Value execution,
                          MemoryState &memory) {
     load.getCtrlMutable().assign(readControl(load, execution, memory));
@@ -1356,8 +1431,7 @@ private:
       store->moveBefore(anchor);
   }
 
-  ::mlir::Value atomicControl(::mlir::Operation *op,
-                              ::mlir::Value execution,
+  ::mlir::Value atomicControl(::mlir::Operation *op, ::mlir::Value execution,
                               const MemoryState &memory) {
     ::llvm::SmallVector<::mlir::Value, 8> inputs{execution};
     for (const MemoryFrontier &frontier : memory) {
@@ -1368,16 +1442,15 @@ private:
   }
 
   void lowerDataflowAtomicRmw(::dataflow::AtomicRmwOp rmw,
-                              ::mlir::Value execution,
-                              MemoryState &memory) {
+                              ::mlir::Value execution, MemoryState &memory) {
     rmw.getCtrlMutable().assign(atomicControl(rmw, execution, memory));
     updateWriteFrontiers(rmw, rmw.getDone(), memory);
     if (rmw->getBlock() != &entry)
       rmw->moveBefore(anchor);
   }
 
-  void lowerDataflowCmpXchg(::dataflow::CmpXchgOp cmp,
-                            ::mlir::Value execution, MemoryState &memory) {
+  void lowerDataflowCmpXchg(::dataflow::CmpXchgOp cmp, ::mlir::Value execution,
+                            MemoryState &memory) {
     cmp.getCtrlMutable().assign(atomicControl(cmp, execution, memory));
     updateWriteFrontiers(cmp, cmp.getDone(), memory);
     if (cmp->getBlock() != &entry)
