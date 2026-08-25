@@ -601,12 +601,12 @@ restartInterrupted(SpatialPnrInterruptionStage stage,
 SpatialRestartResult runSpatialRestartImpl(
     const FrozenSpatialPnrProblemHandle &problem, std::uint32_t attempt,
     ExecutionControlView executionControl, SpatialRestartScratch &scratch,
-    SpatialPathFinderSeedHandoffHandle preparedSeedHandoff = nullptr) {
+  SpatialPathFinderSeedHandoffHandle preparedSeedHandoff = nullptr) {
   SpatialPnrGenerationAccounting accounting;
-  accounting.seedAttemptSlots = 1;
   if (!preparedSeedHandoff && executionControl.stopRequested())
     return restartInterrupted(SpatialPnrInterruptionStage::SeedConstruction,
                               std::move(accounting));
+  accounting.seedAttemptSlots = 1;
   const auto &search = problem->config().policy().search;
   SpatialAnnealingSearchScratch &annealing = scratch.annealing;
   SpatialExactRepairScratch &repair = scratch.repair;
