@@ -116,7 +116,8 @@ llvm::Expected<std::uint64_t> readU64(llvm::ArrayRef<std::uint8_t> bytes,
 }
 
 bool isTransientAttribute(StringRef name) {
-  return name == "loom.source_hint" || name == "loom.candidate_hint" ||
+  return name == "loom.source_hint" ||
+         name == structuredCandidateHintAttrName ||
          name == "loom.visual_metadata" || name == "graph_name";
 }
 
@@ -1213,8 +1214,10 @@ finalizeStructuredProgramWithTrackedEntities(
       StructuredProgramCandidate(identity, std::move(semantic),
                                  std::move(canonical->context),
                                  std::move(canonical->module), std::move(view)),
-      std::move(trackedReferences), std::move(trackedOperationReferences),
-      std::move(sourceProvenance)};
+      std::move(trackedReferences),
+      std::move(trackedOperationReferences),
+      std::move(sourceProvenance),
+      {}};
 }
 
 llvm::Expected<StructuredProgramCandidate>

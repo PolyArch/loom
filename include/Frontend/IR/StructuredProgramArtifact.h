@@ -5,6 +5,7 @@
 #include "Common/ArtifactStore.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -35,6 +36,8 @@ struct FinalizedStructuredProgramProjection;
 
 inline constexpr ArtifactSchemaDescriptor structuredProgramArtifactSchema{
     "loom.structured_program", {1, 0}};
+inline constexpr llvm::StringLiteral structuredCandidateHintAttrName =
+    "loom.candidate_hint";
 
 enum class StructuredEntityKind : std::uint32_t {
   Operation = 0,
@@ -65,6 +68,34 @@ struct StructuredEntityRef {
 struct StructuredOperationSourceProvenance final {
   StructuredEntityRef operation;
   std::vector<std::string> sourceFiles;
+};
+
+struct StructuredSourcePosition final {
+  std::uint32_t line = 0;
+  std::uint32_t column = 0;
+
+  friend bool operator==(const StructuredSourcePosition &lhs,
+                         const StructuredSourcePosition &rhs) {
+    return lhs.line == rhs.line && lhs.column == rhs.column;
+  }
+};
+
+/// Invocation-local projection of one nonbinding source candidate hint.
+/// Source ranges and target references are lineage; none enter Artifact
+/// identity.
+struct StructuredFunctionCandidateHintProjection final {
+  StructuredEntityRef target;
+  std::string sourceFile;
+  StructuredSourcePosition pragma;
+  StructuredSourcePosition targetBegin;
+  StructuredSourcePosition targetEnd;
+
+  friend bool operator==(const StructuredFunctionCandidateHintProjection &lhs,
+                         const StructuredFunctionCandidateHintProjection &rhs) {
+    return lhs.target == rhs.target && lhs.sourceFile == rhs.sourceFile &&
+           lhs.pragma == rhs.pragma && lhs.targetBegin == rhs.targetBegin &&
+           lhs.targetEnd == rhs.targetEnd;
+  }
 };
 
 /// Clones one exact parent and restores its invocation-local source locations.
@@ -186,6 +217,7 @@ struct FinalizedStructuredProgramProjection final {
   std::vector<StructuredEntityRef> trackedBlocks;
   std::vector<StructuredEntityRef> trackedOperations;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
+  std::vector<StructuredFunctionCandidateHintProjection> candidateHints;
 };
 
 /// Finalizes a private clone of one complete mixed-dialect S0/Sn module.

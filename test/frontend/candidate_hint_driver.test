@@ -1,0 +1,39 @@
+// RUN: %loom-cc -O0 -S -emit-llvm %S/Inputs/candidate_hint_valid.c -o %t.ll
+// RUN: FileCheck %s --check-prefix=LLVM < %t.ll
+// RUN: %loom-raise %t.ll -o %t.mlir
+// RUN: FileCheck %s --check-prefix=RAISED < %t.mlir
+// RUN: %loom-cc -O0 -S -emit-llvm %S/Inputs/candidate_hint_multiline.c -o %t.multiline.ll
+// RUN: %loom-raise %t.multiline.ll -o %t.multiline.mlir
+// RUN: FileCheck %s --check-prefix=MULTILINE < %t.multiline.mlir
+// RUN: %loom-cc -O0 -S -emit-llvm %S/Inputs/candidate_hint_remapped.c -o %t.remapped.ll
+// RUN: %loom-raise %t.remapped.ll -o %t.remapped.mlir
+// RUN: FileCheck %s --check-prefix=REMAPPED < %t.remapped.mlir
+// RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_misplaced.c 2>&1 | FileCheck %s --check-prefix=MISPLACED
+// RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_nested.c 2>&1 | FileCheck %s --check-prefix=NESTED
+// RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_dangling.c 2>&1 | FileCheck %s --check-prefix=DANGLING
+// RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_loop.c 2>&1 | FileCheck %s --check-prefix=LOOP
+// RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_internal.c 2>&1 | FileCheck %s --check-prefix=INTERNAL
+// RUN: not %loom-c++ -std=c++17 -fsyntax-only %S/Inputs/candidate_hint_inline.cpp 2>&1 | FileCheck %s --check-prefix=INLINE
+
+// LLVM: c"loom.candidate.function.1.0|
+// LLVM: @llvm.global.annotations = appending global
+// LLVM-SAME: ptr @hinted
+// LLVM-NOT: ptr @plain
+
+// RAISED: llvm.func @hinted
+// RAISED: llvm.func @plain
+// RAISED-NOT: llvm.global.annotations
+// RAISED-NOT: loom.candidate
+
+// MULTILINE: llvm.func @hinted_multiline
+// MULTILINE-NOT: loom.candidate
+
+// REMAPPED: llvm.func @hinted_remapped
+// REMAPPED-NOT: loom.candidate
+
+// MISPLACED: error: '#pragma loom candidate' must immediately precede a function definition
+// NESTED: error: '#pragma loom candidate' is only valid at file scope before a function definition
+// DANGLING: error: dangling '#pragma loom candidate' has no function definition
+// LOOP: error: loop candidate hints are unsupported by this provider
+// INTERNAL: error: '#pragma loom candidate' requires a non-inline externally visible function definition
+// INLINE: error: '#pragma loom candidate' requires a non-inline externally visible function definition

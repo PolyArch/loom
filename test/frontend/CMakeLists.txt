@@ -194,6 +194,18 @@ target_link_libraries(loom-structured-schedule-generator-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-candidate-hint-test
+  CandidateHintTest.cpp
+)
+
+target_link_libraries(loom-candidate-hint-test PRIVATE
+  LoomADGBuilder
+  LoomFrontendCompilation
+  LoomFrontendRaising
+  LLVMCore
+  LLVMSupport
+)
+
 add_executable(loom-structured-memory-communication-generator-test
   StructuredMemoryCommunicationGeneratorTest.cpp
 )

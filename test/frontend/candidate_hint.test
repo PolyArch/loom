@@ -1,0 +1,4 @@
+// RUN: loom-candidate-hint-test
+
+// The executable owns codec, transient identity, exact target projection, and
+// malformed/duplicate annotation evidence.

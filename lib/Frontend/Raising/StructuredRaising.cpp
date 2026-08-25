@@ -1,5 +1,6 @@
 #include "Frontend/Raising/StructuredRaising.h"
 
+#include "Frontend/Raising/CandidateHints.h"
 #include "Frontend/Raising/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -21,12 +22,15 @@
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Target/LLVMIR/Import.h"
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Metadata.h"
@@ -39,6 +43,9 @@
 #include "llvm/Transforms/Utils/LowerMemIntrinsics.h"
 
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace loom::raising {
 namespace {
@@ -46,6 +53,133 @@ namespace {
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "structured_raising_invalid: " + message);
+}
+
+struct LlvmFunctionCandidateHint final {
+  std::string symbol;
+  FunctionCandidateAnnotation source;
+};
+
+llvm::GlobalVariable *referencedGlobal(llvm::Value *value) {
+  return llvm::dyn_cast<llvm::GlobalVariable>(value->stripPointerCasts());
+}
+
+llvm::Expected<llvm::StringRef> annotationString(llvm::Value *value) {
+  llvm::GlobalVariable *global = referencedGlobal(value);
+  if (!global || !global->hasInitializer())
+    return invalid("candidate annotation does not reference a string global");
+  auto *data =
+      llvm::dyn_cast<llvm::ConstantDataSequential>(global->getInitializer());
+  if (!data || !data->isCString())
+    return invalid("candidate annotation is not a C string");
+  return data->getAsCString();
+}
+
+llvm::Error removeProjectedAnnotationEntries(
+    llvm::Module &module, llvm::GlobalVariable *annotations,
+    llvm::ArrayRef<llvm::Constant *> retained,
+    llvm::ArrayRef<llvm::GlobalVariable *> projectedStrings) {
+  if (!retained.empty()) {
+    auto *entryType =
+        llvm::dyn_cast<llvm::StructType>(retained.front()->getType());
+    if (!entryType)
+      return invalid("retained global annotation has a non-struct type");
+    auto *arrayType = llvm::ArrayType::get(entryType, retained.size());
+    llvm::Constant *initializer = llvm::ConstantArray::get(arrayType, retained);
+    auto *replacement = new llvm::GlobalVariable(
+        module, arrayType, annotations->isConstant(), annotations->getLinkage(),
+        initializer, "", annotations, annotations->getThreadLocalMode(),
+        annotations->getAddressSpace(), annotations->isExternallyInitialized());
+    replacement->copyAttributesFrom(annotations);
+    replacement->takeName(annotations);
+    annotations->replaceAllUsesWith(replacement);
+  } else if (!annotations->use_empty()) {
+    return invalid("projected global annotations have unexpected users");
+  }
+  annotations->eraseFromParent();
+
+  llvm::SmallPtrSet<llvm::GlobalVariable *, 8> visited;
+  for (llvm::GlobalVariable *string : projectedStrings) {
+    if (!visited.insert(string).second)
+      continue;
+    string->removeDeadConstantUsers();
+    if (string->use_empty() && string->hasLocalLinkage())
+      string->eraseFromParent();
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::vector<LlvmFunctionCandidateHint>>
+extractFunctionCandidateHints(llvm::Module &module) {
+  llvm::GlobalVariable *annotations =
+      module.getNamedGlobal("llvm.global.annotations");
+  if (!annotations)
+    return std::vector<LlvmFunctionCandidateHint>{};
+  if (!annotations->hasInitializer())
+    return invalid("llvm.global.annotations has no initializer");
+  auto *initializer =
+      llvm::dyn_cast<llvm::Constant>(annotations->getInitializer());
+  if (!initializer)
+    return invalid("llvm.global.annotations has a non-constant initializer");
+
+  std::vector<LlvmFunctionCandidateHint> result;
+  llvm::SmallVector<llvm::Constant *> retained;
+  llvm::SmallVector<llvm::GlobalVariable *> projectedStrings;
+  llvm::StringSet<> selectedFunctions;
+  for (llvm::Value *operand : initializer->operand_values()) {
+    auto *entry = llvm::dyn_cast<llvm::ConstantStruct>(operand);
+    if (!entry || entry->getNumOperands() < 2) {
+      auto *constant = llvm::dyn_cast<llvm::Constant>(operand);
+      if (!constant)
+        return invalid("global annotation entry is not constant");
+      retained.push_back(constant);
+      continue;
+    }
+
+    auto encoded = annotationString(entry->getOperand(1));
+    if (!encoded) {
+      llvm::consumeError(encoded.takeError());
+      retained.push_back(entry);
+      continue;
+    }
+    if (!encoded->starts_with("loom.candidate.")) {
+      retained.push_back(entry);
+      continue;
+    }
+    if (entry->getNumOperands() != 5)
+      return invalid("candidate annotation entry does not have five fields");
+    auto source = decodeFunctionCandidateAnnotation(*encoded);
+    if (!source)
+      return source.takeError();
+    auto *function = llvm::dyn_cast<llvm::Function>(
+        entry->getOperand(0)->stripPointerCasts());
+    if (!function || function->isDeclaration())
+      return invalid("candidate annotation does not target a function "
+                     "definition");
+    if (!selectedFunctions.insert(function->getName()).second)
+      return invalid("function has duplicate candidate annotations");
+
+    auto file = annotationString(entry->getOperand(2));
+    auto *line = llvm::dyn_cast<llvm::ConstantInt>(entry->getOperand(3));
+    if (!file || !line || !line->getType()->isIntegerTy(32) ||
+        *file != source->sourceFile ||
+        line->getZExtValue() != source->targetBegin.line) {
+      if (!file)
+        llvm::consumeError(file.takeError());
+      return invalid("candidate annotation source anchor disagrees with its "
+                     "payload");
+    }
+    result.push_back({function->getName().str(), std::move(*source)});
+    projectedStrings.push_back(referencedGlobal(entry->getOperand(1)));
+    projectedStrings.push_back(referencedGlobal(entry->getOperand(2)));
+  }
+
+  if (result.empty())
+    return result;
+  if (llvm::Error error = removeProjectedAnnotationEntries(
+          module, annotations, retained, projectedStrings))
+    return std::move(error);
+  return result;
 }
 
 } // namespace
@@ -168,6 +302,9 @@ raiseLlvmModuleToStructuredProgramWithProjection(
     return std::move(error);
   if (llvm::Error error = specializeExactConstantCallbackCallSites(*module))
     return std::move(error);
+  auto candidateHints = extractFunctionCandidateHints(*module);
+  if (!candidateHints)
+    return candidateHints.takeError();
 
   normalizeBulkMemoryIntrinsics(*module);
   if (llvm::verifyModule(*module))
@@ -200,6 +337,18 @@ raiseLlvmModuleToStructuredProgramWithProjection(
   raised->getOperation()->setAttr(
       "llvm.data_layout", mlir::StringAttr::get(&context, llvmDataLayout));
 
+  llvm::SmallVector<mlir::Operation *> trackedCandidateTargets;
+  trackedCandidateTargets.reserve(candidateHints->size());
+  for (const LlvmFunctionCandidateHint &hint : *candidateHints) {
+    mlir::LLVM::LLVMFuncOp function =
+        raised->lookupSymbol<mlir::LLVM::LLVMFuncOp>(hint.symbol);
+    if (!function)
+      return invalid("LLVM import lost a candidate-hinted function");
+    function->setAttr(frontend::structuredCandidateHintAttrName,
+                      mlir::UnitAttr::get(&context));
+    trackedCandidateTargets.push_back(function.getOperation());
+  }
+
   static const bool passesRegistered = [] {
     mlir::registerAllPasses();
     registerRaisingPasses();
@@ -215,7 +364,24 @@ raiseLlvmModuleToStructuredProgramWithProjection(
   if (failed(pipeline.run(*raised)))
     return invalid("mechanical LLVM-to-SCF raising failed");
 
-  return frontend::finalizeStructuredProgramWithTrackedBlocks(raised.get(), {});
+  auto finalized = frontend::finalizeStructuredProgramWithTrackedEntities(
+      raised.get(), {}, trackedCandidateTargets);
+  if (!finalized)
+    return finalized.takeError();
+  if (finalized->trackedOperations.size() != candidateHints->size())
+    return invalid("candidate hint projection changed cardinality");
+  std::vector<frontend::StructuredFunctionCandidateHintProjection>
+      projectedHints;
+  projectedHints.reserve(candidateHints->size());
+  for (auto [index, hint] : llvm::enumerate(*candidateHints))
+    projectedHints.push_back(
+        {finalized->trackedOperations[index],
+         std::move(hint.source.sourceFile),
+         {hint.source.pragma.line, hint.source.pragma.column},
+         {hint.source.targetBegin.line, hint.source.targetBegin.column},
+         {hint.source.targetEnd.line, hint.source.targetEnd.column}});
+  finalized->candidateHints = std::move(projectedHints);
+  return std::move(*finalized);
 }
 
 llvm::Expected<frontend::StructuredProgramCandidate>

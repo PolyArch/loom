@@ -25,6 +25,7 @@ struct StructuredCompilation final {
   StaticGlobalMemoryCatalog staticGlobalMemory;
   StructuredProgramCandidate structuredProgram;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
+  std::vector<StructuredFunctionCandidateHintProjection> candidateHints;
 };
 
 /// The exact non-Mapping result of one front-end invocation. Fabric is an
@@ -35,6 +36,10 @@ struct PreMappingCompilation final {
   StaticGlobalMemoryCatalog staticGlobalMemory;
   StructuredProgramCandidate structuredProgram;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
+  /// Source invocation hints. Targets retain the source Structured identity;
+  /// transformed child programs carry this as lineage rather than pretending
+  /// that an unchanged entity reference resolves in the child.
+  std::vector<StructuredFunctionCandidateHintProjection> candidateHints;
   dataflow::CanonicalDataflowArtifact canonicalDataflow;
 };
 

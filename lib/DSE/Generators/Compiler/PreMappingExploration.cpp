@@ -1684,7 +1684,8 @@ exploreStructuredCompilationToPreMapping(
       parentStorage.push_back(std::make_unique<frontend::StructuredCompilation>(
           frontend::StructuredCompilation{
               sourceCompilation.fabric, sourceCompilation.staticGlobalMemory,
-              std::move(*parentProgram), sourceCompilation.sourceProvenance}));
+              std::move(*parentProgram), sourceCompilation.sourceProvenance,
+              sourceCompilation.candidateHints}));
       frontend::StructuredCompilation *coordinateParent =
           parentStorage.back().get();
       std::vector<SemanticBeamState> beam;
@@ -2054,7 +2055,8 @@ exploreStructuredCompilationToPreMapping(
                         sourceCompilation.fabric,
                         sourceCompilation.staticGlobalMemory,
                         std::move(selected->candidate.structuredProgram),
-                        std::move(selected->candidate.sourceProvenance)}));
+                        std::move(selected->candidate.sourceProvenance),
+                        sourceCompilation.candidateHints}));
             child.parent = parentStorage.back().get();
             nextBeam.push_back(std::move(child));
           }
@@ -2308,6 +2310,7 @@ exploreStructuredCompilationToPreMapping(
             sourceCompilation.fabric, sourceCompilation.staticGlobalMemory,
             std::move(candidate.candidate.structuredProgram),
             std::move(candidate.candidate.sourceProvenance),
+            sourceCompilation.candidateHints,
             std::move(candidate.candidate.canonicalDataflow)},
         std::move(ownership),
         std::move(executionShape),

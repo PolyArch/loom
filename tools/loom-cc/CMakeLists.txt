@@ -19,6 +19,7 @@ set(LLVM_LINK_COMPONENTS
 )
 
 add_llvm_executable(loom-cc
+  CandidatePragma.cpp
   loom-cc.cpp
   cc1_main.cpp
   cc1as_main.cpp
@@ -42,6 +43,7 @@ target_link_options(loom-cc PRIVATE
 
 target_link_libraries(loom-cc PRIVATE
   LoomApplicationBuild
+  LoomFrontendRaising
   clangBasic
   clangCodeGen
   clangDriver

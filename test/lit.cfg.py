@@ -212,6 +212,7 @@ tools = [
     "loom-fabric-switch-resource-contract-test",
     "loom-hardware-configuration-diagnostics-test",
     "loom-constant-callback-specialization-test",
+    "loom-candidate-hint-test",
     "loom-frontend-dfg-integration-test",
     "loom-static-global-memory-test",
     "loom-lower",

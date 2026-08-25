@@ -75,6 +75,7 @@ set(LOOM_TEST_DEPENDS
   loom-config-test
   loom-compiler-target-binding-test
   loom-constant-callback-specialization-test
+  loom-candidate-hint-test
   loom-common-artifact-local-reference-test
   loom-common-artifact-test
   loom-common-blob-test
