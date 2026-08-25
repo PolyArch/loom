@@ -527,43 +527,6 @@ llvm::json::Object workCounter(const Counter &counter) {
 }
 
 llvm::json::Object
-screeningCalibration(const dse::ResourceTimeScreeningCalibration &calibration) {
-  return llvm::json::Object{
-      {"compared_candidates", calibration.comparedCandidates},
-      {"exact_feasible_candidates", calibration.exactFeasibleCandidates},
-      {"exact_infeasible_candidates", calibration.exactInfeasibleCandidates},
-      {"screening_admissible_candidates",
-       calibration.screeningAdmissibleCandidates},
-      {"feasible_intersection", calibration.feasibleIntersection},
-      {"best_comparison_candidates", calibration.bestComparisonCandidates},
-      {"best_rank_matches", calibration.bestRankMatches},
-      {"out_of_domain_candidates", calibration.outOfDomainCandidates},
-      {"no_confidence_candidates", calibration.noConfidenceCandidates},
-      {"low_confidence_candidates", calibration.lowConfidenceCandidates},
-      {"calibrated_confidence_candidates",
-       calibration.calibratedConfidenceCandidates},
-      {"out_of_domain_confidence_candidates",
-       calibration.outOfDomainConfidenceCandidates},
-      {"error_samples", calibration.errorSamples},
-      {"total_absolute_error_picoseconds",
-       calibration.totalAbsoluteErrorPicoseconds},
-      {"maximum_absolute_error_picoseconds",
-       calibration.maximumAbsoluteErrorPicoseconds},
-      {"total_relative_error_permille", calibration.totalRelativeErrorPermille},
-      {"maximum_relative_error_permille",
-       calibration.maximumRelativeErrorPermille},
-      {"mean_absolute_error_picoseconds",
-       calibration.meanAbsoluteErrorPicoseconds},
-      {"mean_relative_error_permille", calibration.meanRelativeErrorPermille},
-      {"feasibility_recall_permille", calibration.feasibilityRecallPermille},
-      {"feasibility_precision_permille",
-       calibration.feasibilityPrecisionPermille},
-      {"best_recall_permille", calibration.bestRecallPermille},
-      {"out_of_domain_permille", calibration.outOfDomainPermille},
-      {"lower_bound_violations", calibration.lowerBoundViolations}};
-}
-
-llvm::json::Object
 resourceTimeFunnelObject(const dse::ResourceTimeMappingFunnel &funnel) {
   const dse::ResourceTimeMappingFunnelAccounting &accounting =
       funnel.accounting;
@@ -579,8 +542,20 @@ resourceTimeFunnelObject(const dse::ResourceTimeMappingFunnel &funnel) {
       {"incomplete_candidates", accounting.incompleteCandidates},
       {"mapping_eligible_schedule_hints",
        accounting.mappingEligibleScheduleHints},
-      {"screening_calibration",
-       screeningCalibration(accounting.screeningCalibration)},
+      {"screening_comparison_candidates",
+       accounting.screeningComparisonCandidates},
+      {"detailed_schedule_feasible_candidates",
+       accounting.detailedScheduleFeasibleCandidates},
+      {"screening_admissible_candidates",
+       accounting.screeningAdmissibleCandidates},
+      {"screening_detailed_feasible_intersection",
+       accounting.screeningDetailedFeasibleIntersection},
+      {"screening_detailed_best_rank_matches",
+       accounting.screeningDetailedBestRankMatches},
+      {"screening_out_of_domain_candidates",
+       accounting.screeningOutOfDomainCandidates},
+      {"maximum_screening_lower_bound_gap_picoseconds",
+       accounting.maximumScreeningLowerBoundGapPicoseconds},
       {"mapping_finalists", accounting.mappingFinalists},
       {"functional_replay_candidates", accounting.functionalReplayCandidates},
       {"dataflow_projection_requests", accounting.dataflowProjectionRequests},
@@ -936,12 +911,8 @@ void emitApplicationPlanningDiagnostics(
           row["screening_confidence"] =
               dse::resourceTimeEstimateConfidenceSpelling(
                   evaluation.screeningConfidence);
-          row["screening_exact_capacity_failure"] =
-              evaluation.screeningExactCapacityFailure;
           row["detailed_frontier_evaluated"] =
               evaluation.detailedFrontierEvaluated;
-          row["detailed_domain_exhaustive"] =
-              evaluation.detailedDomainExhaustive;
           if (evaluation.concurrencyBounds) {
             row["minimum_peak_concurrent_regions"] =
                 evaluation.concurrencyBounds->minimumPeakConcurrentRegions;
@@ -1333,8 +1304,21 @@ void emitApplicationMappingDiagnostics(
               resourceTime.mappingFinalists;
           payload["resource_time_mapping_eligible_schedule_hints"] =
               resourceTime.mappingEligibleScheduleHints;
-          payload["resource_time_screening_calibration"] =
-              screeningCalibration(resourceTime.screeningCalibration);
+          payload["resource_time_screening_comparison_candidates"] =
+              resourceTime.screeningComparisonCandidates;
+          payload["resource_time_detailed_schedule_feasible_candidates"] =
+              resourceTime.detailedScheduleFeasibleCandidates;
+          payload["resource_time_screening_admissible_candidates"] =
+              resourceTime.screeningAdmissibleCandidates;
+          payload["resource_time_screening_detailed_feasible_intersection"] =
+              resourceTime.screeningDetailedFeasibleIntersection;
+          payload["resource_time_screening_detailed_best_rank_matches"] =
+              resourceTime.screeningDetailedBestRankMatches;
+          payload["resource_time_screening_out_of_domain_candidates"] =
+              resourceTime.screeningOutOfDomainCandidates;
+          payload
+              ["resource_time_maximum_screening_lower_bound_gap_picoseconds"] =
+                  resourceTime.maximumScreeningLowerBoundGapPicoseconds;
           payload["resource_time_functional_replay_candidates"] =
               resourceTime.functionalReplayCandidates;
           payload["resource_time_dataflow_projection_requests"] =

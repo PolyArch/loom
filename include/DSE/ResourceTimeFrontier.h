@@ -135,9 +135,9 @@ struct ResourceTimeRegionResourceBound final {
   std::uint64_t maximumUsefulResourceUnits = 0;
   ResourceTimeEstimateSupport support =
       ResourceTimeEstimateSupport::Unsupported;
-  /// The provider-owned exact lower allocation boundary. A nonempty active
-  /// region requires at least one AccCore; physical feasibility at that bound
-  /// still requires an independently verified Mapping finalist.
+  /// The provider-owned exact lower feasibility boundary. Zero with
+  /// Unsupported support means the projection has no lower-bound proof; an
+  /// observed one-core Mapping must not manufacture one.
   std::uint64_t minimumFeasibleResourceUnits = 0;
   ResourceTimeEstimateSupport minimumSupport =
       ResourceTimeEstimateSupport::Unsupported;
@@ -443,50 +443,13 @@ struct ResourceTimeCandidateFunnelEvaluation final {
       ResourceTimeEstimateSupport::Unsupported;
   ResourceTimeEstimateConfidence screeningConfidence =
       ResourceTimeEstimateConfidence::None;
-  bool screeningExactCapacityFailure = false;
   bool detailedFrontierEvaluated = false;
-  /// True only when the detailed event frontier retained every reachable
-  /// state in its admitted domain. Calibration excludes beam-truncated
-  /// completions so a bounded heuristic is never presented as an exact
-  /// shadow result.
-  bool detailedDomainExhaustive = false;
   std::optional<ResourceTimeConcurrencyBounds> concurrencyBounds;
   std::optional<ResourceTimeScheduleHint> bestHint;
   std::vector<ResourceTimeScheduleHint> retainedHints;
   std::optional<ResourceTimeFrontierIncompleteReason> incompleteReason;
   std::optional<ResourceTimeFrontierInfeasibleReason> infeasibleReason;
   ResourceTimeFrontierAccounting frontierAccounting;
-};
-
-/// Closed comparison between cheap candidate screening and an exact bounded
-/// shadow sample. Confusion-matrix counts, confidence strata, and error sums
-/// are retained alongside derived permille rates so reports never need to
-/// reconstruct calibration semantics.
-struct ResourceTimeScreeningCalibration final {
-  std::uint64_t comparedCandidates = 0;
-  std::uint64_t exactFeasibleCandidates = 0;
-  std::uint64_t exactInfeasibleCandidates = 0;
-  std::uint64_t screeningAdmissibleCandidates = 0;
-  std::uint64_t feasibleIntersection = 0;
-  std::uint64_t bestComparisonCandidates = 0;
-  std::uint64_t bestRankMatches = 0;
-  std::uint64_t outOfDomainCandidates = 0;
-  std::uint64_t noConfidenceCandidates = 0;
-  std::uint64_t lowConfidenceCandidates = 0;
-  std::uint64_t calibratedConfidenceCandidates = 0;
-  std::uint64_t outOfDomainConfidenceCandidates = 0;
-  std::uint64_t errorSamples = 0;
-  std::uint64_t totalAbsoluteErrorPicoseconds = 0;
-  std::uint64_t maximumAbsoluteErrorPicoseconds = 0;
-  std::uint64_t totalRelativeErrorPermille = 0;
-  std::uint64_t maximumRelativeErrorPermille = 0;
-  std::uint64_t meanAbsoluteErrorPicoseconds = 0;
-  std::uint64_t meanRelativeErrorPermille = 0;
-  std::uint64_t feasibilityRecallPermille = 0;
-  std::uint64_t feasibilityPrecisionPermille = 0;
-  std::uint64_t bestRecallPermille = 0;
-  std::uint64_t outOfDomainPermille = 0;
-  std::uint64_t lowerBoundViolations = 0;
 };
 
 struct ResourceTimeMappingFunnelAccounting final {
@@ -521,7 +484,17 @@ struct ResourceTimeMappingFunnelAccounting final {
   /// or typed-unsupported before PnR. The analytic funnel alone has no plan
   /// disposition to validate.
   bool applicationPromotionAccountingComplete = false;
-  ResourceTimeScreeningCalibration screeningCalibration;
+  /// Comparison of cheap screening facts with the detailed schedule frontier
+  /// already computed for the bounded sample. Neither side is Mapping/PnR
+  /// legality evidence.
+  std::uint64_t screeningComparisonCandidates = 0;
+  std::uint64_t detailedScheduleFeasibleCandidates = 0;
+  std::uint64_t screeningAdmissibleCandidates = 0;
+  std::uint64_t screeningDetailedFeasibleIntersection = 0;
+  std::uint64_t screeningDetailedBestRankMatches = 0;
+  std::uint64_t screeningOutOfDomainCandidates = 0;
+  std::uint64_t maximumScreeningLowerBoundGapPicoseconds = 0;
+  std::uint64_t screeningLowerBoundViolations = 0;
   /// Exact static Mapping inputs may be shared by several schedule hints. This
   /// counts avoided plan constructions, not skipped owner verification; the
   /// shared plan still undergoes ordinary Mapping and Spectrum verification.

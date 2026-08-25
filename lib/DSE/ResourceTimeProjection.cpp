@@ -320,7 +320,7 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
     result.regions.push_back(std::move(feature));
     result.regionBounds.push_back(
         {(*reachable)[ordinal], maximumUseful[ordinal], boundSupport[ordinal],
-         1, ResourceTimeEstimateSupport::Exact});
+         0, ResourceTimeEstimateSupport::Unsupported});
   }
   return result;
 }

@@ -29,13 +29,6 @@ llvm::Error invalid(const llvm::Twine &message) {
   return invalidResourceTimeFrontier(message);
 }
 
-std::uint64_t permille(std::uint64_t numerator, std::uint64_t denominator) {
-  if (denominator == 0)
-    return 0;
-  return static_cast<std::uint64_t>(
-      (static_cast<unsigned __int128>(numerator) * 1000) / denominator);
-}
-
 void appendDataflowRoots(
     std::vector<std::uint8_t> &bytes,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots) {
@@ -337,57 +330,14 @@ llvm::Error validateResourceTimeMappingFunnelAccounting(
           accounting.generatedCandidates)
     return invalid("resource-time application promotion counts exceed their "
                    "bounded domains");
-  const ResourceTimeScreeningCalibration &calibration =
-      accounting.screeningCalibration;
-  auto exactClassified =
-      llvm::checkedAddUnsigned(calibration.exactFeasibleCandidates,
-                               calibration.exactInfeasibleCandidates);
-  auto confidenceClassified = llvm::checkedAddUnsigned(
-      calibration.noConfidenceCandidates, calibration.lowConfidenceCandidates);
-  if (confidenceClassified)
-    confidenceClassified = llvm::checkedAddUnsigned(
-        *confidenceClassified, calibration.calibratedConfidenceCandidates);
-  if (confidenceClassified)
-    confidenceClassified = llvm::checkedAddUnsigned(
-        *confidenceClassified, calibration.outOfDomainConfidenceCandidates);
-  if (!exactClassified || *exactClassified != calibration.comparedCandidates ||
-      !confidenceClassified ||
-      *confidenceClassified != calibration.comparedCandidates ||
-      calibration.screeningAdmissibleCandidates >
-          calibration.comparedCandidates ||
-      calibration.feasibleIntersection > calibration.exactFeasibleCandidates ||
-      calibration.feasibleIntersection >
-          calibration.screeningAdmissibleCandidates ||
-      calibration.bestRankMatches > calibration.bestComparisonCandidates ||
-      calibration.bestComparisonCandidates > 1 ||
-      calibration.outOfDomainCandidates > calibration.comparedCandidates ||
-      calibration.outOfDomainCandidates !=
-          calibration.outOfDomainConfidenceCandidates ||
-      calibration.errorSamples != calibration.exactFeasibleCandidates ||
-      calibration.meanAbsoluteErrorPicoseconds !=
-          (calibration.errorSamples == 0
-               ? 0
-               : calibration.totalAbsoluteErrorPicoseconds /
-                     calibration.errorSamples) ||
-      calibration.meanRelativeErrorPermille !=
-          (calibration.errorSamples == 0
-               ? 0
-               : calibration.totalRelativeErrorPermille /
-                     calibration.errorSamples) ||
-      calibration.feasibilityRecallPermille !=
-          permille(calibration.feasibleIntersection,
-                   calibration.exactFeasibleCandidates) ||
-      calibration.feasibilityPrecisionPermille !=
-          permille(calibration.feasibleIntersection,
-                   calibration.screeningAdmissibleCandidates) ||
-      calibration.bestRecallPermille !=
-          permille(calibration.bestRankMatches,
-                   calibration.bestComparisonCandidates) ||
-      calibration.outOfDomainPermille !=
-          permille(calibration.outOfDomainCandidates,
-                   calibration.comparedCandidates) ||
-      calibration.lowerBoundViolations != 0)
-    return invalid("resource-time screening calibration is not closed");
+  if (accounting.screeningDetailedFeasibleIntersection >
+          accounting.detailedScheduleFeasibleCandidates ||
+      accounting.detailedScheduleFeasibleCandidates >
+          accounting.screeningComparisonCandidates ||
+      accounting.screeningAdmissibleCandidates >
+          accounting.screeningComparisonCandidates ||
+      accounting.screeningLowerBoundViolations != 0)
+    return invalid("resource-time screening comparison is inconsistent");
   if (accounting.applicationPromotionAccountingComplete &&
       accounting.mappingPlanCandidates +
               accounting.mappingPlanConstructionsAvoidedByExactMemo +
@@ -681,9 +631,7 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
         screenedCandidate.screening.featureScore,
         screenedCandidate.screening.support,
         confidenceForSupport(screenedCandidate.screening.support),
-        screenedCandidate.screening.exactCapacityFailure,
         true,
-        false,
         std::nullopt,
         std::nullopt,
         {},
@@ -694,7 +642,6 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
       evaluation.disposition =
           ResourceTimeCandidateFunnelDisposition::Estimated;
       evaluation.concurrencyBounds = completed->concurrencyBounds;
-      evaluation.detailedDomainExhaustive = completed->domainExhaustive;
       if (lookup->cacheMiss)
         evaluation.frontierAccounting = completed->accounting;
       evaluation.retainedHints = completed->finalists;
@@ -782,8 +729,6 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
               screenedCandidate.screening.featureScore,
               screenedCandidate.screening.support,
               confidenceForSupport(screenedCandidate.screening.support),
-              screenedCandidate.screening.exactCapacityFailure,
-              false,
               false,
               std::nullopt,
               std::nullopt,
@@ -798,52 +743,31 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
     if (evaluation)
       result.evaluations.push_back(std::move(*evaluation));
 
-  ResourceTimeScreeningCalibration &calibration =
-      result.accounting.screeningCalibration;
   const ResourceTimeCandidateFunnelEvaluation *detailedBest = nullptr;
   const ResourceTimeCandidateFunnelEvaluation *screeningBest = nullptr;
   for (const ResourceTimeCandidateFunnelEvaluation &evaluation :
        result.evaluations) {
     if (!evaluation.detailedFrontierEvaluated)
       continue;
-    const bool exactFeasible =
-        evaluation.disposition ==
-            ResourceTimeCandidateFunnelDisposition::Estimated &&
-        evaluation.bestHint && evaluation.detailedDomainExhaustive;
-    const bool exactInfeasible =
-        evaluation.disposition ==
-        ResourceTimeCandidateFunnelDisposition::SoundGateRejected;
-    if (!exactFeasible && !exactInfeasible)
-      continue;
-    ++calibration.comparedCandidates;
-    calibration.exactFeasibleCandidates += exactFeasible;
-    calibration.exactInfeasibleCandidates += exactInfeasible;
+    ++result.accounting.screeningComparisonCandidates;
     const bool outOfDomain =
         evaluation.screeningSupport == ResourceTimeEstimateSupport::OutOfDomain;
     if (outOfDomain)
-      ++calibration.outOfDomainCandidates;
-    switch (evaluation.screeningConfidence) {
-    case ResourceTimeEstimateConfidence::None:
-      ++calibration.noConfidenceCandidates;
-      break;
-    case ResourceTimeEstimateConfidence::Low:
-      ++calibration.lowConfidenceCandidates;
-      break;
-    case ResourceTimeEstimateConfidence::Calibrated:
-      ++calibration.calibratedConfidenceCandidates;
-      break;
-    case ResourceTimeEstimateConfidence::OutOfDomain:
-      ++calibration.outOfDomainConfidenceCandidates;
-      break;
-    }
-    const bool admissible = !evaluation.screeningExactCapacityFailure &&
-                            evaluation.screeningSupport !=
-                                ResourceTimeEstimateSupport::Unsupported &&
+      ++result.accounting.screeningOutOfDomainCandidates;
+    const bool admissible =
+        evaluation.disposition !=
+            ResourceTimeCandidateFunnelDisposition::SoundGateRejected &&
+        evaluation.screeningSupport != ResourceTimeEstimateSupport::Unsupported &&
         !outOfDomain;
     if (admissible)
-      ++calibration.screeningAdmissibleCandidates;
-    if (admissible && exactFeasible)
-      ++calibration.feasibleIntersection;
+      ++result.accounting.screeningAdmissibleCandidates;
+    if (evaluation.disposition !=
+            ResourceTimeCandidateFunnelDisposition::Estimated ||
+        !evaluation.bestHint)
+      continue;
+    ++result.accounting.detailedScheduleFeasibleCandidates;
+    if (admissible)
+      ++result.accounting.screeningDetailedFeasibleIntersection;
     if (admissible &&
         (!screeningBest ||
          std::tuple(evaluation.screeningLowerBoundPicoseconds,
@@ -851,63 +775,26 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
              std::tuple(screeningBest->screeningLowerBoundPicoseconds,
                         screeningBest->candidateIdentity.bytes())))
       screeningBest = &evaluation;
-    if (exactFeasible &&
-        (!detailedBest ||
+    if (!detailedBest ||
         std::tuple(evaluation.bestHint->estimatedMakespanPicoseconds,
                    evaluation.candidateIdentity.bytes()) <
             std::tuple(detailedBest->bestHint->estimatedMakespanPicoseconds,
-                        detailedBest->candidateIdentity.bytes())))
+                       detailedBest->candidateIdentity.bytes()))
       detailedBest = &evaluation;
-    if (!exactFeasible)
+    if (evaluation.screeningLowerBoundPicoseconds >
+        evaluation.bestHint->estimatedMakespanPicoseconds) {
+      ++result.accounting.screeningLowerBoundViolations;
       continue;
-    ++calibration.errorSamples;
-    const std::uint64_t exactMakespan =
-        evaluation.bestHint->estimatedMakespanPicoseconds;
-    if (exactMakespan == 0)
-      return invalid("resource-time exact calibration makespan is zero");
-    if (evaluation.screeningLowerBoundPicoseconds > exactMakespan)
-      ++calibration.lowerBoundViolations;
-    const std::uint64_t error =
-        evaluation.screeningLowerBoundPicoseconds > exactMakespan
-            ? evaluation.screeningLowerBoundPicoseconds - exactMakespan
-            : exactMakespan - evaluation.screeningLowerBoundPicoseconds;
-    const auto totalAbsolute = llvm::checkedAddUnsigned(
-        calibration.totalAbsoluteErrorPicoseconds, error);
-    const std::uint64_t relativeError = permille(error, exactMakespan);
-    const auto totalRelative = llvm::checkedAddUnsigned(
-        calibration.totalRelativeErrorPermille, relativeError);
-    if (!totalAbsolute || !totalRelative)
-      return invalid("resource-time screening calibration error overflows");
-    calibration.totalAbsoluteErrorPicoseconds = *totalAbsolute;
-    calibration.maximumAbsoluteErrorPicoseconds =
-        std::max(calibration.maximumAbsoluteErrorPicoseconds, error);
-    calibration.totalRelativeErrorPermille = *totalRelative;
-    calibration.maximumRelativeErrorPermille =
-        std::max(calibration.maximumRelativeErrorPermille, relativeError);
     }
-    calibration.meanAbsoluteErrorPicoseconds =
-        calibration.errorSamples == 0
-            ? 0
-            : calibration.totalAbsoluteErrorPicoseconds /
-                  calibration.errorSamples;
-    calibration.meanRelativeErrorPermille =
-        calibration.errorSamples == 0
-            ? 0
-            : calibration.totalRelativeErrorPermille / calibration.errorSamples;
-    if (detailedBest && screeningBest) {
-      calibration.bestComparisonCandidates = 1;
-      calibration.bestRankMatches =
-          detailedBest->candidateIdentity == screeningBest->candidateIdentity;
+    const std::uint64_t gap =
+        evaluation.bestHint->estimatedMakespanPicoseconds -
+        evaluation.screeningLowerBoundPicoseconds;
+    result.accounting.maximumScreeningLowerBoundGapPicoseconds = std::max(
+        result.accounting.maximumScreeningLowerBoundGapPicoseconds, gap);
   }
-    calibration.feasibilityRecallPermille = permille(
-        calibration.feasibleIntersection, calibration.exactFeasibleCandidates);
-    calibration.feasibilityPrecisionPermille =
-        permille(calibration.feasibleIntersection,
-                 calibration.screeningAdmissibleCandidates);
-    calibration.bestRecallPermille = permille(
-        calibration.bestRankMatches, calibration.bestComparisonCandidates);
-    calibration.outOfDomainPermille = permille(
-        calibration.outOfDomainCandidates, calibration.comparedCandidates);
+  if (detailedBest && screeningBest &&
+      detailedBest->candidateIdentity == screeningBest->candidateIdentity)
+    result.accounting.screeningDetailedBestRankMatches = 1;
 
   if (result.incompleteReason ==
       ResourceTimeFrontierIncompleteReason::CancelledOrTimeout) {
@@ -952,7 +839,8 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
       eligible.push_back({&evaluation, &hint, *digest});
     }
   }
-  const auto entryLess = [&](const EligibleHint *lhs, const EligibleHint *rhs) {
+  const auto entryLess = [&](const EligibleHint *lhs,
+                             const EligibleHint *rhs) {
     const auto endpointLess = [&](const ResourceTimeScheduleHint &left,
                                   const ResourceTimeScheduleHint &right) {
       switch (policy.spectrumEndpoint) {

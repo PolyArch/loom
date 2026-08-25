@@ -403,21 +403,11 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
                   selected.accounting.mappingEligibleScheduleHints - 3 &&
               selected.finalists.size() == 3 && selected.truncated,
           "resource-time funnel did not bound real Mapping finalists");
-  require(
-      selected.accounting.frontierAccounting.states.consumed != 0 &&
-          selected.accounting.screeningCalibration.comparedCandidates != 0 &&
-          selected.accounting.screeningCalibration.lowerBoundViolations == 0 &&
-          selected.accounting.screeningCalibration.feasibleIntersection <=
-              selected.accounting.screeningCalibration
-                  .exactFeasibleCandidates &&
-          selected.accounting.screeningCalibration.errorSamples ==
-              selected.accounting.screeningCalibration
-                  .exactFeasibleCandidates &&
-          selected.accounting.screeningCalibration.feasibilityRecallPermille ==
-              1000 &&
-          selected.accounting.screeningCalibration
-                  .feasibilityPrecisionPermille == 1000 &&
-          selected.accounting.screeningCalibration.bestRecallPermille == 1000 &&
+  require(selected.accounting.frontierAccounting.states.consumed != 0 &&
+              selected.accounting.screeningComparisonCandidates != 0 &&
+              selected.accounting.screeningLowerBoundViolations == 0 &&
+              selected.accounting.screeningDetailedFeasibleIntersection <=
+                  selected.accounting.detailedScheduleFeasibleCandidates &&
               selected.accounting.frontierAccounting.stateMemoMisses -
                       selected.accounting.frontierAccounting
                           .stateMemoMissCapacityRejections +
@@ -610,15 +600,10 @@ void outOfDomainScreeningRemainsMeasuredButInadmissible() {
   bounded.maximumMappingFinalists = 1;
   const auto selected =
       take(loom::dse::selectResourceTimeMappingFinalists({candidate}, bounded));
-  const auto &calibration = selected.accounting.screeningCalibration;
-  require(calibration.comparedCandidates == 1 &&
-              calibration.exactFeasibleCandidates == 1 &&
-              calibration.outOfDomainCandidates == 1 &&
-              calibration.outOfDomainConfidenceCandidates == 1 &&
-              calibration.screeningAdmissibleCandidates == 0 &&
-              calibration.feasibleIntersection == 0 &&
-              calibration.feasibilityRecallPermille == 0 &&
-              calibration.outOfDomainPermille == 1000 &&
+  require(selected.accounting.screeningComparisonCandidates == 1 &&
+              selected.accounting.screeningOutOfDomainCandidates == 1 &&
+              selected.accounting.screeningAdmissibleCandidates == 0 &&
+              selected.accounting.screeningDetailedFeasibleIntersection == 0 &&
               !loom::dse::validateResourceTimeMappingFunnelAccounting(
                   selected.accounting),
           "out-of-domain screening was presented as admissible evidence");
@@ -664,11 +649,8 @@ void screeningCombinesIndependentLowerBoundSupport() {
               loom::dse::ResourceTimeEstimateSupport::Unsupported &&
           selected.evaluations.front().screeningConfidence ==
               loom::dse::ResourceTimeEstimateConfidence::None &&
-          selected.accounting.screeningCalibration.comparedCandidates == 1 &&
-          selected.accounting.screeningCalibration.noConfidenceCandidates ==
-              1 &&
-          selected.accounting.screeningCalibration
-                  .screeningAdmissibleCandidates == 0,
+          selected.accounting.screeningComparisonCandidates == 1 &&
+          selected.accounting.screeningAdmissibleCandidates == 0,
       "mixed-support screening presented an unsupported work bound as "
       "analytic");
 }
