@@ -670,33 +670,21 @@ llvm::Error SystemCandidateState::verify() const {
   if (capacityOveruse_ != 0 && !admitsCapacityOveruse(*problem_))
     return invalid("CapacityOveruse is not policy-admitted");
 
-  std::map<std::uint64_t, std::vector<PnrIndex>> threadsByRoot;
-  for (const auto &[threadOrdinal, thread] :
-       llvm::enumerate(problem_->threadDecisions()))
-    threadsByRoot[thread.root.entity.value()].push_back(
-        static_cast<PnrIndex>(threadOrdinal));
   for (const auto &[graphOrdinal, graph] :
        llvm::enumerate(problem_->graphDecisions())) {
     const auto graphDomain = problem_->graphChoiceCatalogOrdinals(graphOrdinal);
     const PnrIndex mapping = graphDomain[graphChoices_[graphOrdinal]];
     const PnrIndex mappingClass = problem_->spatialMappingTargetClass(mapping);
     bool intersectsParent = false;
-    const auto rootThreads =
-        threadsByRoot.find(graph.launch.rootThreadLaunch.entity.value());
-    if (rootThreads == threadsByRoot.end())
-      return invalid("graph atom has no parent thread domain");
-    for (PnrIndex threadOrdinal : rootThreads->second) {
+    // The frozen problem owns the exact Presburger overlap relation. Reusing
+    // it here avoids re-solving the same cells for every accepted action;
+    // target-class selection remains an independent check below.
+    for (PnrIndex threadOrdinal : problem_->graphThreadOverlaps(graphOrdinal)) {
+      if (threadOrdinal >= problem_->threadDecisions().size())
+        return invalid("graph atom has an out-of-range parent thread domain");
       const auto &thread = problem_->threadDecisions()[threadOrdinal];
       if (thread.root != graph.launch.rootThreadLaunch)
         continue;
-      if (!(thread.cell == graph.cell)) {
-        auto intersects =
-            detail::systemPresburgerCellsIntersect(thread.cell, graph.cell);
-        if (!intersects)
-          return intersects.takeError();
-        if (!*intersects)
-          continue;
-      }
       intersectsParent = true;
       const auto threadDomain =
           problem_->threadChoiceCatalogOrdinals(threadOrdinal);

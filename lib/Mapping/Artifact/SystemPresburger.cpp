@@ -348,10 +348,48 @@ splitSystemPresburgerSet(llvm::ArrayRef<SystemPresburgerCell> domain,
 llvm::Expected<bool>
 systemPresburgerCellsIntersect(const SystemPresburgerCell &lhs,
                                const SystemPresburgerCell &rhs) {
-  auto intersection = intersectSystemPresburgerCells(lhs, rhs);
-  if (!intersection)
-    return intersection.takeError();
-  return intersection->has_value();
+  auto left = canonicalizeSystemPresburgerCell(lhs);
+  if (!left)
+    return left.takeError();
+  auto right = canonicalizeSystemPresburgerCell(rhs);
+  if (!right)
+    return right.takeError();
+  if (left->dimensionCount != right->dimensionCount ||
+      left->symbolCount != right->symbolCount)
+    return invalid("cannot intersect cells from different spaces");
+  if (*left == *right)
+    return true;
+  const std::uint64_t localCount =
+      static_cast<std::uint64_t>(left->localCount) + right->localCount;
+  if (localCount > std::numeric_limits<std::uint32_t>::max())
+    return invalid("Presburger intersection local count exceeds u32");
+  SystemPresburgerCell combined;
+  combined.dimensionCount = left->dimensionCount;
+  combined.symbolCount = left->symbolCount;
+  combined.localCount = static_cast<std::uint32_t>(localCount);
+  const std::size_t prefix =
+      static_cast<std::size_t>(combined.dimensionCount) + combined.symbolCount;
+  const auto appendRows = [&](const auto &rows, std::uint32_t ownLocals,
+                              std::uint32_t precedingLocals, auto &output) {
+    for (const std::vector<std::int64_t> &row : rows) {
+      std::vector<std::int64_t> lifted(prefix + combined.localCount + 1, 0);
+      std::copy_n(row.begin(), prefix, lifted.begin());
+      std::copy_n(row.begin() + prefix, ownLocals,
+                  lifted.begin() + prefix + precedingLocals);
+      lifted.back() = row.back();
+      output.push_back(std::move(lifted));
+    }
+  };
+  appendRows(left->equalities, left->localCount, 0, combined.equalities);
+  appendRows(right->equalities, right->localCount, left->localCount,
+             combined.equalities);
+  appendRows(left->inequalities, left->localCount, 0, combined.inequalities);
+  appendRows(right->inequalities, right->localCount, left->localCount,
+             combined.inequalities);
+  auto polyhedron = makePolyhedron(combined);
+  if (!polyhedron)
+    return polyhedron.takeError();
+  return !polyhedron->isIntegerEmpty();
 }
 
 llvm::Expected<SystemPresburgerPartitionAnalysis>
