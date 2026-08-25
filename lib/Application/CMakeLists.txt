@@ -27,6 +27,23 @@ target_link_libraries(LoomApplicationHostRunner PUBLIC
   LLVMSupport
 )
 
+add_library(LoomApplicationRuntimeManifest
+  RuntimeManifest.cpp
+)
+
+target_include_directories(LoomApplicationRuntimeManifest PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomApplicationRuntimeManifest PUBLIC
+  LoomCommon
+  LoomDeployment
+  LoomEvaluation
+  LoomPnR
+  LoomSimulator
+  LLVMSupport
+)
+
 file(GLOB_RECURSE LOOM_LLVM_LIBC_MATH_HEADERS CONFIGURE_DEPENDS
   "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/hdr/*.h"
   "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/src/__support/*.h"
@@ -100,6 +117,7 @@ target_include_directories(LoomApplicationDeploymentRuntime PUBLIC
 )
 
 target_link_libraries(LoomApplicationDeploymentRuntime PUBLIC
+  LoomApplicationRuntimeManifest
   LoomRuntimeResourceTime
   LLVMSupport
 )
@@ -116,6 +134,7 @@ target_compile_definitions(LoomApplicationBuild PRIVATE
 )
 
 target_link_libraries(LoomApplicationBuild PUBLIC
+  LoomApplicationRuntimeManifest
   LoomCommon
   LoomDeployment
   LoomDSE

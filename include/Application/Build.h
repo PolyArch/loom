@@ -2,6 +2,7 @@
 #define LOOM_APPLICATION_BUILD_H
 
 #include "Application/Manifest.h"
+#include "Application/RuntimeManifest.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/InvocationManifest.h"
 #include "DSE/JointDesignExploration.h"
@@ -177,6 +178,7 @@ struct ApplicationDeploymentArtifacts final {
   /// Independent replay of the selected schedule after endpoint Deployment
   /// construction. A missing closure remains typed incomplete here.
   std::optional<dse::ResourceTimeSpectrumFunnelResult> resourceTimeSpectrum;
+  std::optional<FinalizedApplicationRuntimeManifest> runtimeManifest;
   deployment::FinalizedDeployment deployment;
 };
 

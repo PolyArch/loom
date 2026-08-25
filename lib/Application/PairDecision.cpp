@@ -1,7 +1,6 @@
 #include "Application/Build.h"
 #include "BuildInternal.h"
 
-#include "Common/ArtifactLocalReference.h"
 #include "DSE/Promotion.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -19,42 +18,10 @@ namespace loom::application {
 
 namespace build_detail {
 
-constexpr llvm::StringLiteral applicationPairIdentityDescriptor{
-    "loom.application.pair.decision.identity.1"};
 constexpr llvm::StringLiteral preAdmissionManifestJoinOwner =
     "application_build";
 constexpr llvm::StringLiteral preAdmissionManifestJoinContract =
     "pre_mapping_owner_verified_v1";
-
-void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
-  for (unsigned shift = 56; shift != 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-  bytes.push_back(static_cast<std::uint8_t>(value));
-}
-
-void appendFramedBytes(std::vector<std::uint8_t> &bytes,
-                       llvm::ArrayRef<std::uint8_t> value) {
-  appendU64(bytes, value.size());
-  bytes.insert(bytes.end(), value.begin(), value.end());
-}
-
-llvm::Expected<ComponentViewDigest>
-deriveApplicationPairIdentity(const ArtifactRootReference &sourceProgram,
-                              const ArtifactRootReference &fabric,
-                              const ArtifactRootReference &workload,
-                              const ArtifactRootReference &runtimeInput) {
-  std::vector<std::uint8_t> bytes;
-  const std::array<ArtifactRootReference, 4> roots = {sourceProgram, fabric,
-                                                      workload, runtimeInput};
-  appendU64(bytes, roots.size());
-  for (const ArtifactRootReference &root : roots)
-    appendFramedBytes(bytes, encodeArtifactRootReference(root));
-  return computeComponentViewDigest(
-      {reinterpret_cast<const std::uint8_t *>(
-           applicationPairIdentityDescriptor.data()),
-       applicationPairIdentityDescriptor.size()},
-      bytes);
-}
 
 ApplicationObjectiveObservation
 unsupportedObjective(ApplicationObjectiveDimension dimension) {
@@ -594,32 +561,6 @@ ApplicationPairDecisionRecord makePreAdmissionFailurePairDecision(
 }
 
 } // namespace build_detail
-
-llvm::StringRef toString(ApplicationPairDecisionDisposition value) {
-  switch (value) {
-  case ApplicationPairDecisionDisposition::VerifiedAcceleration:
-    return "verified_acceleration";
-  case ApplicationPairDecisionDisposition::VerifiedFeasibleButNotBeneficial:
-    return "verified_feasible_but_not_beneficial";
-  case ApplicationPairDecisionDisposition::NoPromisingCandidate:
-    return "no_promising_candidate";
-  case ApplicationPairDecisionDisposition::ExactHardwareIncompatible:
-    return "exact_hardware_incompatible";
-  case ApplicationPairDecisionDisposition::MappingProofNotEstablished:
-    return "mapping_proof_not_established";
-  case ApplicationPairDecisionDisposition::CancelledOrTimeout:
-    return "cancelled_or_timeout";
-  case ApplicationPairDecisionDisposition::BudgetExhausted:
-    return "budget_exhausted";
-  case ApplicationPairDecisionDisposition::UnsupportedSemantic:
-    return "unsupported_semantic";
-  case ApplicationPairDecisionDisposition::ImplementationFailure:
-    return "implementation_failure";
-  case ApplicationPairDecisionDisposition::HardwareDseAlternative:
-    return "hardware_dse_alternative";
-  }
-  llvm_unreachable("unknown application pair decision disposition");
-}
 
 llvm::StringRef toString(ApplicationPairManifestJoinStatus value) {
   switch (value) {

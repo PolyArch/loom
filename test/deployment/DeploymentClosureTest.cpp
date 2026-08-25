@@ -466,6 +466,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
       transitionGraph,
       {},
       std::nullopt,
+      std::nullopt,
       parent};
   auto applicationProvider =
       take(test, runtime::createInProcessRuntimeProvider(

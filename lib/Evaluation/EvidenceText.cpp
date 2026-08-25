@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -436,6 +437,17 @@ llvm::Expected<EvaluationEvidence> parseEvaluationEvidence(
 llvm::Expected<ArtifactRootReference>
 importEvaluationEvidenceRequestReference(const ArtifactRootReference &reference,
                                          const ArtifactStore &artifactStore) {
+  auto projection =
+      importEvaluationEvidenceDependencyProjection(reference, artifactStore);
+  if (!projection)
+    return projection.takeError();
+  return std::move(projection->request);
+}
+
+llvm::Expected<EvaluationEvidenceDependencyProjection>
+importEvaluationEvidenceDependencyProjection(
+    const ArtifactRootReference &reference,
+    const ArtifactStore &artifactStore) {
   if (reference.schemaIdentity != EvaluationEvidence::artifactSchema.identity ||
       reference.schemaVersion != EvaluationEvidence::artifactSchema.version)
     return evaluationError("foreign EvaluationEvidence reference schema");
@@ -449,7 +461,31 @@ importEvaluationEvidenceRequestReference(const ArtifactRootReference &reference,
   auto value = parseEvidenceEnvelope(json);
   if (!value)
     return value.takeError();
-  return parseEvidenceRequestReference(*value->getAsObject());
+  const llvm::json::Object &root = *value->getAsObject();
+  auto request = parseEvidenceRequestReference(root);
+  if (!request)
+    return request.takeError();
+  auto outputs = parseOutputBindings(root);
+  if (!outputs)
+    return outputs.takeError();
+  auto outcome = requireObject(root, "outcome", "evaluation.evidence root");
+  if (!outcome)
+    return outcome.takeError();
+  auto kind = requireString(**outcome, "kind", "Evidence outcome");
+  if (!kind)
+    return kind.takeError();
+  std::optional<EvidenceOutcomeKind> outcomeKind;
+  for (std::uint8_t ordinal = 0; ordinal != 4; ++ordinal) {
+    const auto candidate = static_cast<EvidenceOutcomeKind>(ordinal);
+    if (*kind == toString(candidate)) {
+      outcomeKind = candidate;
+      break;
+    }
+  }
+  if (!outcomeKind)
+    return evaluationError("unknown Evidence outcome kind '" + *kind + "'");
+  return EvaluationEvidenceDependencyProjection{
+      std::move(*request), std::move(*outputs), *outcomeKind};
 }
 
 } // namespace loom::evaluation
