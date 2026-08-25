@@ -291,6 +291,79 @@ llvm::Expected<InvocationManifest> importJointDesignInvocationManifest(
       artifacts, blobs);
 }
 
+JointDesignQualityDisposition jointDesignQualityDisposition(
+    JointDesignQualityIncompleteReason reason) {
+  switch (reason) {
+  case JointDesignQualityIncompleteReason::Unsupported:
+    return JointDesignQualityDisposition::Unsupported;
+  case JointDesignQualityIncompleteReason::ProofNotEstablished:
+    return JointDesignQualityDisposition::ProofNotEstablished;
+  case JointDesignQualityIncompleteReason::ExecutionFailed:
+    return JointDesignQualityDisposition::ExecutionFailed;
+  case JointDesignQualityIncompleteReason::CancelledOrTimeout:
+    return JointDesignQualityDisposition::CancelledOrTimeout;
+  }
+  llvm_unreachable("unknown bounded-quality incomplete reason");
+}
+
+llvm::Error validateJointDesignQualityProvenanceDomain(
+    const JointBoundedQualityPolicy &policy,
+    const JointDesignQualityProvenance &provenance, bool objectiveComplete) {
+  switch (policy.provenanceDomain) {
+  case JointDesignQualityProvenanceDomain::ObjectiveOnly:
+    return llvm::Error::success();
+  case JointDesignQualityProvenanceDomain::ApplicationRuntime:
+    break;
+  }
+  if (policy.objectiveDimensionLabels.size() < 3 ||
+      policy.objectiveDimensionLabels[0] != "dfg_cycles" ||
+      policy.objectiveDimensionLabels[1] != "cgra_cycles" ||
+      policy.objectiveDimensionLabels[2] != "acc_core_count")
+    return invalid("ApplicationRuntime provenance has a foreign Objective "
+                   "domain");
+  if (!provenance.resourceCoreCost)
+    return invalid("ApplicationRuntime provenance lost its exact resource "
+                   "count");
+  if (provenance.rawMeasures.empty() && objectiveComplete)
+    return invalid("complete ApplicationRuntime provenance lost its raw "
+                   "measures");
+  if (provenance.rawMeasures.empty())
+    return llvm::Error::success();
+  if (provenance.rawMeasures.size() < 3)
+    return invalid("ApplicationRuntime provenance has incomplete raw "
+                   "measures");
+  const auto *dfg =
+      std::get_if<ResolvedObjectiveInteger>(&provenance.rawMeasures[0]);
+  const auto *cgra =
+      std::get_if<ResolvedObjectiveInteger>(&provenance.rawMeasures[1]);
+  const auto *cores =
+      std::get_if<ResolvedObjectiveInteger>(&provenance.rawMeasures[2]);
+  if (!dfg || dfg->negative || !cgra || cgra->negative || !cores ||
+      cores->negative)
+    return invalid("ApplicationRuntime provenance has invalid runtime raw "
+                   "measures");
+  if (*provenance.resourceCoreCost != cores->magnitude)
+    return invalid("ApplicationRuntime resource count disagrees with its raw "
+                   "measure");
+  return llvm::Error::success();
+}
+
+llvm::Error validateJointDesignQualityObjective(
+    const ObjectiveProgram &program,
+    const JointDesignQualityProvenance &provenance,
+    llvm::ArrayRef<std::uint64_t> objectiveCodes) {
+  if (provenance.rawMeasures.empty())
+    return llvm::Error::success();
+  ObjectiveVector reproduced = program.makeVector();
+  if (llvm::Error error =
+          program.evaluateCandidateMeasures(provenance.rawMeasures, reproduced))
+    return error;
+  if (reproduced.codes() != objectiveCodes)
+    return invalid("quality provenance raw measures disagree with its "
+                   "Objective codes");
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::vector<ArtifactRootReference>>
 projectJointDesignTargetModules(const ArtifactRootReference &system,
                                 const ArtifactStore &artifactStore) {

@@ -237,6 +237,12 @@ void transientCandidateMeasuresDoNotBorrowMappingOrdinals() {
   requireSuccess(program.evaluateCandidateMeasures(measures, vector));
   require(vector.codes() == llvm::ArrayRef<std::uint64_t>({7, 89}),
           "candidate measures changed direction or ordinal ownership");
+  const loom::dse::ObjectiveVector adopted =
+      take(program.adoptVectorCodes(vector.codes()));
+  require(adopted.codes() == vector.codes(),
+          "recorded candidate objective codes changed during adoption");
+  requireRejected(program.adoptVectorCodes({7}), "wrong dimension count");
+  requireRejected(program.adoptVectorCodes({7, 101}), "outside its dimension");
   const std::uint64_t incomplete[] = {7};
   requireRejected(program.evaluateCandidateMeasures(incomplete, vector),
                   "objective_unavailable");

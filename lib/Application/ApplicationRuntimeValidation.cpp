@@ -267,6 +267,8 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
   auto imported = importApplicationMapping(execution, artifacts);
   if (!imported)
     return imported.takeError();
+  const std::uint64_t resourceCoreCost = static_cast<std::uint64_t>(
+      imported->system.view().accCoreOccurrences().size());
   if (imported->mapping.view().dataflowIdentity() !=
       alternative.dataflow.artifact)
     return invalid("runtime validation selected a foreign software owner");
@@ -283,7 +285,8 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         std::nullopt,
         std::nullopt,
         std::nullopt,
-        {}};
+        {},
+        resourceCoreCost};
 
   if (prepared.portfolioInput &&
       (prepared.portfolioInput->input.profile.warmupSamples != 0 ||
@@ -296,7 +299,8 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         std::nullopt,
         std::nullopt,
         std::nullopt,
-        {}};
+        {},
+        resourceCoreCost};
 
   auto contexts = mapping::projectSystemExecutionContexts(
       imported->dataflowView, imported->mapping.view().executionBindings());
@@ -397,7 +401,8 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         std::nullopt,
         std::nullopt,
         std::nullopt,
-        {}};
+        {},
+        resourceCoreCost};
   }
   auto deadline = applicationReplayDeadline(
       executionPolicy,
@@ -410,6 +415,7 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
 
   ApplicationRuntimeValidation validation;
   validation.disposition = ApplicationMappingRuntimeDisposition::Completed;
+  validation.resourceCoreCost = resourceCoreCost;
   for (const ResolvedApplicationReplay &resolved : resolvedReplays) {
     const sim::SourceBackedDfgReplayCaseReference &replay =
         *resolved.reference;

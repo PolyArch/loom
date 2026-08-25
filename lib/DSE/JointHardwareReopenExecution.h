@@ -40,6 +40,16 @@ executeJointPlan(const JointDesignExplorationPlan &plan,
                  const BlobStore &blobs,
                  const PlanExecutionPolicy *executionPolicy = nullptr);
 
+/// Executes one already-bounded repair plan through the same stopping and
+/// quality owner as the parent application request. Bounded quality remains
+/// fixed to this System frontier; the repair caller owns any further typed
+/// hardware feedback domain.
+llvm::Expected<JointDesignExecution>
+executeJointRepairPlan(const JointDesignExplorationPlan &plan,
+                       const JointDesignPolicy &policy,
+                       JointHardwareReopenRequest request,
+                       const ArtifactStore &artifacts, const BlobStore &blobs);
+
 llvm::Expected<std::vector<ArtifactRootReference>>
 normalizedTimingProfiles(const ArtifactRootReference &system,
                          const ArtifactStore &artifacts);
