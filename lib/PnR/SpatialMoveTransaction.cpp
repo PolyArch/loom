@@ -187,7 +187,11 @@ SpatialMoveTransaction::SpatialMoveTransaction(
           state_->worstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
           state_->totalRouteNegativeSlackQuanta_),
-      initialRecurrenceTiming_(state_->recurrenceTiming_) {
+      recurrenceTimingSelected_(state_->problem().objectiveProgram().selectsMeasure(
+          MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)),
+      initialRecurrenceTiming_(recurrenceTimingSelected_
+                                   ? state_->recurrenceTiming_
+                                   : SpatialRecurrenceTimingProjection{}) {
   state_->activeTransaction_ = this;
   scratch_->activeTransaction_ = this;
 }
@@ -206,6 +210,7 @@ SpatialMoveTransaction::SpatialMoveTransaction(
           other.initialWorstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
           other.initialTotalRouteNegativeSlackQuanta_),
+      recurrenceTimingSelected_(other.recurrenceTimingSelected_),
       initialRecurrenceTiming_(std::move(other.initialRecurrenceTiming_)) {
   other.scratch_ = nullptr;
   if (state_)
@@ -1431,8 +1436,7 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
     state_->worstRouteArrivalDelayQuanta_ = worstArrival;
     state_->totalRouteNegativeSlackQuanta_ = totalNegativeSlack;
   }
-  if (state_->problem().objectiveProgram().selectsMeasure(
-          MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)) {
+  if (recurrenceTimingSelected_) {
     auto recurrenceTiming = detail::projectSpatialRecurrenceTiming(
         *state_, scratch_->routeViews_);
     if (!recurrenceTiming)
@@ -1675,7 +1679,8 @@ void SpatialMoveTransaction::rollback() noexcept {
   state_->worstRouteArrivalDelayQuanta_ = initialWorstRouteArrivalDelayQuanta_;
   state_->totalRouteNegativeSlackQuanta_ =
       initialTotalRouteNegativeSlackQuanta_;
-  state_->recurrenceTiming_ = initialRecurrenceTiming_;
+  if (recurrenceTimingSelected_)
+    state_->recurrenceTiming_ = initialRecurrenceTiming_;
   finish();
 }
 

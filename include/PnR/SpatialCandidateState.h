@@ -654,6 +654,7 @@ private:
   std::uint64_t initialStaticSchedulePressure_ = 0;
   std::uint64_t initialWorstRouteArrivalDelayQuanta_ = 0;
   std::uint64_t initialTotalRouteNegativeSlackQuanta_ = 0;
+  bool recurrenceTimingSelected_ = false;
   SpatialRecurrenceTimingProjection initialRecurrenceTiming_;
   friend class SpatialCandidateState;
   friend class SpatialCandidateScratch;
