@@ -15,6 +15,7 @@
 #include "SpatialPnrProblemIdentity.h"
 #include "SpatialPnrResourceIndex.h"
 #include "SpatialPnrTransferIndex.h"
+#include "SpatialProgressIndex.h"
 #include "SpatialRecurrenceTimingInternal.h"
 #include "SpatialRouteConstraintModel.h"
 #include "SpatialTagConstraintModel.h"
@@ -313,6 +314,9 @@ public:
         *transfers, *localTransfers, *ports, *routing);
     if (!activeRouting)
       return activeRouting.takeError();
+    auto progressIndex = detail::buildFrozenSpatialProgressIndex(*routing);
+    if (!progressIndex)
+      return progressIndex.takeError();
     auto bindingRelations = detail::SpatialBindingRelationModel::create(
         dataflow.identity(), *realizations, *constraints, *transfers, *ports,
         *routing);
@@ -373,7 +377,8 @@ public:
         std::move(*realizations), std::move(*memory), std::move(*transfers),
         std::move(*localTransfers), std::move(*ports), resources,
         std::move(*capacity), routing, std::move(*activeRouting),
-        std::move(*handshake), std::move(*schedulePressure),
+        std::move(*handshake), std::move(*progressIndex),
+        std::move(*schedulePressure),
         std::move(*recurrenceTiming), *progressBasis,
         std::move(*bindingRelations), std::move(*memoryConstraints),
         std::move(*tagConstraints), std::move(*routeConstraints), cacheKey,

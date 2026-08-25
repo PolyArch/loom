@@ -1,6 +1,7 @@
 #include "PnR/SpatialActionDomain.h"
 
 #include "SpatialActionProposalInternal.h"
+#include "SpatialProgressIndex.h"
 
 #include "SpatialBindingRelationModel.h"
 #include "SpatialMemoryCompatibility.h"
@@ -608,7 +609,6 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     if (llvm::Error error = appendTransportRange(offset))
       return error;
   }
-  transportMovableDecisionCount_ = externalNetCount;
 
   for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
        ++logicalNet) {
@@ -673,6 +673,24 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
       if (llvm::Error error =
               appendWitness(ResolvedPnrViolationKind::TagConflict, domain))
         return error;
+
+  std::uint64_t hardProgressWitnessCount = 0;
+  for (PnrIndex owner = 0;
+       owner < preparedProblem_->progressIndex().finiteBufferOwners().size();
+       ++owner) {
+    if (!candidate.progress().finiteBufferOwnerConflicts(owner))
+      continue;
+    if (llvm::Error error = appendWitness(
+            ResolvedPnrViolationKind::HardProgressViolation, owner))
+      return error;
+    if (hardProgressWitnessCount == std::numeric_limits<std::uint64_t>::max())
+      return invalid("hard-progress witness count overflows u64");
+    ++hardProgressWitnessCount;
+  }
+  if (hardProgressWitnessCount >
+      std::numeric_limits<std::uint64_t>::max() - externalNetCount)
+    return invalid("transport movable decision count overflows u64");
+  transportMovableDecisionCount_ = externalNetCount + hardProgressWitnessCount;
 
   const auto appendResourceRange = [&](std::size_t offset) -> llvm::Error {
     if (resourceChoices_.size() == offset)

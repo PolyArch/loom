@@ -5,6 +5,7 @@
 #include "InitializerRelationSolver.h"
 #include "SpatialBindingRelationModel.h"
 #include "SpatialLocalTransferIndex.h"
+#include "SpatialProgressIndex.h"
 #include "SpatialMemoryCompatibility.h"
 #include "SpatialMemoryConstraintModel.h"
 #include "SpatialRouteConstraintModel.h"
@@ -545,9 +546,26 @@ llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
       return executorError("tag-conflict witness has no selected net");
     return llvm::Error::success();
   }
-  case ResolvedPnrViolationKind::HardProgressViolation:
-    return executorError(
-        "HardProgressViolation has no transport-routing dependency closure");
+  case ResolvedPnrViolationKind::HardProgressViolation: {
+    const PnrIndex owner = action.witnessOrdinal;
+    if (owner >= problem.progressIndex().finiteBufferOwners().size() ||
+        !candidate_->progress().finiteBufferOwnerConflicts(owner))
+      return executorError("finite-buffer progress witness is no longer live");
+    bool marked = false;
+    for (PnrIndex logicalNet = 0;
+         logicalNet < transfers.logicalNets().size(); ++logicalNet) {
+      if (!candidate_->progress().logicalNetSelectsFiniteBufferOwner(
+              logicalNet, owner))
+        continue;
+      if (llvm::Error error = markNet(logicalNet))
+        return error;
+      marked = true;
+    }
+    if (!marked)
+      return executorError(
+          "finite-buffer progress witness has no competing logical net");
+    return llvm::Error::success();
+  }
   }
   llvm_unreachable("unknown Spatial violation kind");
 }

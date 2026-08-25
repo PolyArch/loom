@@ -514,7 +514,8 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
                               std::move(seed->candidate));
 
   const auto hasTransportClosureViolation = [&]() {
-    return seed->candidate->unroutedObligationCount() != 0 ||
+    return seed->candidate->hardProgressViolation() != 0 ||
+           seed->candidate->unroutedObligationCount() != 0 ||
            seed->candidate->routeCapacityOveruse() != 0 ||
            seed->candidate->tagResidentCapacityOveruse() != 0 ||
            seed->candidate->tagUnassignedCount() != 0 ||

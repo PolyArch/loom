@@ -226,6 +226,9 @@ public:
   llvm::Error ripUpSubtree(PnrIndex subtreeRootEndpoint);
   llvm::Error ripUpWholeNet();
 
+  /// Append-only traversal mutation journal while this transaction remains
+  /// unprepared. prepare() canonicalizes the same storage before commit.
+  llvm::ArrayRef<RouteTreeTraversalDelta> recordedTraversalDeltas() const;
   llvm::Expected<llvm::ArrayRef<RouteTreeTraversalDelta>> prepare();
   llvm::Expected<const RouteTreeState *> preparedState() const;
   bool initiallyRouted() const { return initialActiveNodeCount_ != 0; }
