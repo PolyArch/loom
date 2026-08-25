@@ -794,9 +794,11 @@ public:
   projectGenerateInvocationRecords(const DsePlanExecutionOutcome &outcome) {
     const CompletedDsePlanExecution *execution =
         std::get_if<CompletedDsePlanExecution>(&outcome);
-    if (!execution)
-      execution =
-          &std::get<IncompleteDsePlanExecution>(outcome).availableExecution_;
+    const IncompleteDsePlanExecution *incompleteExecution = nullptr;
+    if (!execution) {
+      incompleteExecution = &std::get<IncompleteDsePlanExecution>(outcome);
+      execution = &incompleteExecution->availableExecution_;
+    }
     std::vector<GenerateInvocationRecord> completed;
     std::vector<GenerateInvocationWorkSummary> completedWork;
     std::vector<GenerateInvocationRecord> incomplete;
@@ -807,6 +809,9 @@ public:
           execution->generateInvocations_[ordinal];
       const GenerateInvocationWorkSummary &work =
           execution->generateWorkSummaries_[ordinal];
+      if (incompleteExecution && incompleteExecution->executionStopped() &&
+          invocation.planNodeOrdinal > incompleteExecution->nodeOrdinal())
+        continue;
       if (invocation.incompleteReason) {
         incomplete.push_back(invocation);
         incompleteWork.push_back(work);

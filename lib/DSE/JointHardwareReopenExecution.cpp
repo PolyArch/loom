@@ -23,6 +23,8 @@ public:
   static llvm::Error
   bind(JointDesignExecution &execution,
        JointDesignInvocationManifestReference invocationManifest) {
+    if (llvm::Error error = validateJournalOwnership(invocationManifest))
+      return error;
     if (execution.invocationManifest_)
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
@@ -34,6 +36,8 @@ public:
   static llvm::Error
   appendSupporting(JointDesignExecution &execution,
                    JointDesignInvocationManifestReference invocationManifest) {
+    if (llvm::Error error = validateJournalOwnership(invocationManifest))
+      return error;
     const auto sameReference =
         [&](const JointDesignInvocationManifestReference &other) {
           return other.resolvedConfig() ==
@@ -64,6 +68,22 @@ public:
     }
     execution.supportingInvocationManifests_.push_back(
         std::move(invocationManifest));
+    return llvm::Error::success();
+  }
+
+private:
+  static llvm::Error validateJournalOwnership(
+      const JointDesignInvocationManifestReference &reference) {
+    if (!reference.journalReceipt())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "joint execution manifest has no ExecutionJournal receipt");
+    if (reference.journalReceipt()->occurrence() != reference.occurrence() ||
+        reference.journalReceipt()->manifest() != reference.blob())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "joint execution manifest differs from its ExecutionJournal "
+          "receipt");
     return llvm::Error::success();
   }
 };
@@ -149,27 +169,46 @@ publishJointPlanInvocationManifest(
     const DsePlanGenerateInvocationRecords &generateRecords,
     InvocationControllerOutcome outcome, ExecutionJournal &journal,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const auto releaseWith = [&](llvm::Error error) {
+    return llvm::joinErrors(std::move(error),
+                            journal.releaseInvocationOccurrence());
+  };
   auto occurrence = journal.currentInvocationOccurrence();
   if (!occurrence)
     return occurrence.takeError();
   auto externalToolWork = journal.externalToolWorkLedger();
   if (!externalToolWork)
-    return externalToolWork.takeError();
+    return releaseWith(externalToolWork.takeError());
   auto manifest = InvocationManifest::get(
       std::move(closure), occurrence->first.occurrenceOrdinal,
       std::move(occurrence->second), config, generateRecords,
       std::move(outcome), artifacts, std::nullopt,
       std::move(*externalToolWork));
   if (!manifest)
-    return manifest.takeError();
+    return releaseWith(manifest.takeError());
   auto reference =
       publishJointDesignInvocationManifest(*manifest, config, artifacts, blobs);
   if (!reference)
-    return reference.takeError();
+    return releaseWith(reference.takeError());
   if (llvm::Error error = journal.commitInvocationManifest(
-          reference->occurrence(), reference->blob()))
+          reference->occurrence(), reference->blob())) {
+    if (error.isA<ExecutionJournalPersistenceError>())
+      return std::move(error);
+    return releaseWith(std::move(error));
+  }
+  auto receipt = journal.lastCommittedInvocationManifest();
+  if (!receipt)
+    return releaseWith(receipt.takeError());
+  if (!*receipt)
+    return releaseWith(
+        invalid("journal did not retain its invocation manifest receipt"));
+  auto committed =
+      bindInvocationManifestReceipt(std::move(*reference), **receipt);
+  if (!committed)
+    return releaseWith(committed.takeError());
+  if (llvm::Error error = journal.releaseInvocationOccurrence())
     return std::move(error);
-  return reference;
+  return committed;
 }
 
 llvm::Error bindJointDesignInvocationManifest(

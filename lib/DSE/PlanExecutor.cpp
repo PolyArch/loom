@@ -1275,6 +1275,9 @@ resumeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
               const PlanExecutionPolicy &policy, const ArtifactStore &store,
               const BlobStore &blobs,
               InvocationManifestRetention manifestRetention) {
+  if (manifestRetention != InvocationManifestRetention::Release &&
+      manifestRetention != InvocationManifestRetention::Retain)
+    return invalid("unknown invocation manifest retention policy");
   if (journal.runKey() != closure.runKey())
     return invalid("ExecutionJournal belongs to another run closure");
   if (journal.resolvedDseConfigViewDigest() != view.digest())
@@ -1283,10 +1286,11 @@ resumeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
     return std::move(error);
   auto execution =
       executeDsePlan(view, closure, journal, scheduler, policy, store, blobs);
+  if (!execution)
+    return llvm::joinErrors(execution.takeError(),
+                            journal.releaseInvocationOccurrence());
   if (manifestRetention == InvocationManifestRetention::Release) {
     llvm::Error releaseError = journal.releaseInvocationOccurrence();
-    if (!execution)
-      return llvm::joinErrors(execution.takeError(), std::move(releaseError));
     if (releaseError)
       return std::move(releaseError);
   }

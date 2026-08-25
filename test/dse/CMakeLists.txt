@@ -65,6 +65,10 @@ add_executable(loom-dse-joint-design-exploration-test
   JointDesignExplorationTest.cpp
 )
 
+target_include_directories(loom-dse-joint-design-exploration-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/DSE
+)
+
 add_executable(loom-application-pair-outcome-test
   ApplicationPairOutcomeTest.cpp
 )

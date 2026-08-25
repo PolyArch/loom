@@ -368,12 +368,6 @@ void exerciseGroundTruthCampaign() {
   SiteScheduler unavailableScheduler = scheduler({});
   PlanExecutionPolicy unavailableExecution =
       take(PlanExecutionPolicy::get(1, take(SiteResourceClaim::get(1, 0, 0))));
-  CampaignExecutionPolicy genericCampaign =
-      take(CampaignExecutionPolicy::get(1, 1));
-  requireErrorContains(runFpaGroundTruthCampaign(
-                           view, closure, genericCampaign, unavailableExecution,
-                           unavailableScheduler, journal, artifacts, blobs),
-                       "four-hour offline bound");
   CampaignExecutionResult unavailable = take(runFpaGroundTruthCampaign(
       view, closure, campaignPolicy, unavailableExecution, unavailableScheduler,
       journal, artifacts, blobs));
@@ -394,6 +388,7 @@ void exerciseGroundTruthCampaign() {
       *unavailableReason !=
           PromotionAcquisitionIncompleteReason::ProviderUnavailable)
     fail("missing OpenROAD execution site was not typed unavailable");
+  requireSuccess(journal.releaseInvocationOccurrence());
 
   const std::filesystem::path fpaTool =
       take(writeAuthoredOpenRoadStaticFpaTool(temporary.path()));
@@ -413,7 +408,7 @@ void exerciseGroundTruthCampaign() {
   DsePlanExecutionOutcome deadlinePrepared = take(resumeDsePlan(
       view, closure, deadlineJournal, deadlinePreparationScheduler,
       executionPolicy(delayedLocal, ExternalAttemptDisposition::PrepareOnly, 1),
-      artifacts, blobs));
+      artifacts, blobs, InvocationManifestRetention::Release));
   if (!std::holds_alternative<IncompleteDsePlanExecution>(deadlinePrepared))
     fail("deadline fixture unexpectedly completed during preparation");
   const std::vector<BlobDigest> deadlineBindings =
@@ -459,7 +454,7 @@ void exerciseGroundTruthCampaign() {
   DsePlanExecutionOutcome preparedOutcome = take(resumeDsePlan(
       view, closure, journal, prepareScheduler,
       executionPolicy(local, ExternalAttemptDisposition::PrepareOnly, 1),
-      artifacts, blobs));
+      artifacts, blobs, InvocationManifestRetention::Release));
   if (!std::holds_alternative<IncompleteDsePlanExecution>(preparedOutcome))
     fail("prepare-only prefix unexpectedly completed the campaign");
   const std::vector<BlobDigest> bindings = preparedBindings(journal);
@@ -558,9 +553,9 @@ void exerciseGroundTruthCampaign() {
   SiteScheduler modelScheduler = scheduler({});
   const PlanExecutionPolicy modelPolicy =
       take(PlanExecutionPolicy::get(1, take(SiteResourceClaim::get(1, 0, 0))));
-  DsePlanExecutionOutcome modelOutcome =
-      take(resumeDsePlan(modelPlan.view(), modelClosure, modelJournal,
-                         modelScheduler, modelPolicy, artifacts, blobs));
+  DsePlanExecutionOutcome modelOutcome = take(resumeDsePlan(
+      modelPlan.view(), modelClosure, modelJournal, modelScheduler, modelPolicy,
+      artifacts, blobs, InvocationManifestRetention::Release));
   const auto *modelCompleted =
       std::get_if<CompletedDsePlanExecution>(&modelOutcome);
   if (!modelCompleted || modelCompleted->generateInvocations().size() != 1 ||
@@ -605,9 +600,9 @@ void exerciseGroundTruthCampaign() {
   ExecutionJournal replayJournal = take(openExecutionJournal(
       modelRunPath.string(), modelClosure, modelPlan.view()));
   SiteScheduler replayScheduler = scheduler({});
-  DsePlanExecutionOutcome replayed =
-      take(resumeDsePlan(modelPlan.view(), modelClosure, replayJournal,
-                         replayScheduler, modelPolicy, artifacts, blobs));
+  DsePlanExecutionOutcome replayed = take(resumeDsePlan(
+      modelPlan.view(), modelClosure, replayJournal, replayScheduler,
+      modelPolicy, artifacts, blobs, InvocationManifestRetention::Release));
   const auto *replayedCompleted =
       std::get_if<CompletedDsePlanExecution>(&replayed);
   if (!replayedCompleted ||

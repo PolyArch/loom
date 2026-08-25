@@ -9,6 +9,7 @@
 #include "DSE/JointMappingMigration.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
+#include "JointHardwareReopenExecution.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/Evidence.h"
@@ -602,6 +603,22 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       fail("bounded hardware promotion lost its production DSE occurrences");
     take(loom::dse::importJointDesignInvocationManifest(
         *promoted.invocationManifest(), store, blobs));
+    auto contentOnly = take(loom::dse::InvocationManifestReference::get(
+        promoted.invocationManifest()->resolvedConfig(),
+        promoted.invocationManifest()->blob(),
+        promoted.invocationManifest()->occurrence(), store, blobs));
+    if (contentOnly.journalReceipt())
+      fail("strict manifest import forged an ExecutionJournal receipt");
+    llvm::Error foreignBinding =
+        loom::dse::appendJointDesignSupportingInvocationManifest(
+            promoted, std::move(contentOnly));
+    if (!foreignBinding)
+      fail("joint execution accepted a manifest without its journal receipt");
+    const std::string foreignBindingMessage =
+        llvm::toString(std::move(foreignBinding));
+    if (foreignBindingMessage.find("no ExecutionJournal receipt") ==
+        std::string::npos)
+      fail("foreign manifest rejection lost its journal ownership reason");
     for (const auto &supporting : promoted.supportingInvocationManifests())
       take(loom::dse::importJointDesignInvocationManifest(supporting, store,
                                                           blobs));

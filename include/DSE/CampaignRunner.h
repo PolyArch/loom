@@ -126,6 +126,8 @@ struct CampaignAdmissionRefusal final {
 using CampaignExecutionResult =
     std::variant<CampaignExecution, CampaignAdmissionRefusal>;
 
+/// Returns with the journal occurrence retained so the caller can publish and
+/// commit one InvocationManifest for either execution or refusal.
 llvm::Expected<CampaignExecutionResult> runGroundTruthCampaign(
     const ResolvedDseConfigView &view, const DseRunClosure &closure,
     const CampaignExecutionPolicy &campaignPolicy,

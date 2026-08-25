@@ -109,8 +109,7 @@ resumeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
               ExecutionJournal &journal, SiteScheduler &scheduler,
               const PlanExecutionPolicy &policy, const ArtifactStore &store,
               const BlobStore &blobs,
-              InvocationManifestRetention manifestRetention =
-                  InvocationManifestRetention::Release);
+              InvocationManifestRetention manifestRetention);
 
 namespace detail {
 

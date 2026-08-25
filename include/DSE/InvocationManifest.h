@@ -2,6 +2,7 @@
 #define LOOM_DSE_INVOCATIONMANIFEST_H
 
 #include "Common/Artifact.h"
+#include "Common/BlobDigest.h"
 #include "DSE/ExternalToolWorkLedger.h"
 #include "DSE/Plan.h"
 
@@ -20,10 +21,15 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 struct ResolvedConfig;
 } // namespace loom
 
 namespace loom::dse {
+
+class ExecutionJournal;
+class ResolvedDseConfigView;
+enum class CampaignAdmissionFailureReason : std::uint32_t;
 
 class DseProducerSemanticBuildIdentity final {
 public:
@@ -124,6 +130,29 @@ struct InvocationOccurrenceRef final {
   }
 };
 
+/// Durable journal-owned binding between one occurrence and its canonical
+/// manifest Blob. Content import alone cannot construct this receipt.
+class InvocationManifestReceipt final {
+public:
+  const InvocationOccurrenceRef &occurrence() const { return occurrence_; }
+  const BlobDigest &manifest() const { return manifest_; }
+
+  friend bool operator==(const InvocationManifestReceipt &lhs,
+                         const InvocationManifestReceipt &rhs) {
+    return lhs.occurrence_ == rhs.occurrence_ && lhs.manifest_ == rhs.manifest_;
+  }
+
+private:
+  InvocationManifestReceipt(InvocationOccurrenceRef occurrence,
+                            BlobDigest manifest)
+      : occurrence_(std::move(occurrence)), manifest_(std::move(manifest)) {}
+
+  InvocationOccurrenceRef occurrence_;
+  BlobDigest manifest_;
+
+  friend class ExecutionJournal;
+};
+
 struct InvocationCompletedSelection final {
   std::vector<ArtifactRootReference> selected;
   std::vector<ArtifactRootReference> satisfiedEvidence;
@@ -197,7 +226,7 @@ class InvocationManifest final {
 public:
   static constexpr llvm::StringLiteral schemaIdentity =
       "loom.dse.invocation_manifest";
-  static constexpr SchemaVersion schemaVersion{1, 4};
+  static constexpr SchemaVersion schemaVersion{1, 5};
 
   static llvm::Expected<InvocationManifest>
   get(DseRunClosure closure, std::uint64_t occurrenceOrdinal,
@@ -208,6 +237,8 @@ public:
       std::optional<InvocationOperationalObservations> operationalObservations =
           std::nullopt,
       std::optional<InvocationExternalToolWorkLedger> externalToolWork =
+          std::nullopt,
+      std::optional<CampaignAdmissionFailureReason> campaignAdmissionFailure =
           std::nullopt);
 
   const InvocationOccurrenceRef &occurrence() const { return occurrence_; }
@@ -232,6 +263,10 @@ public:
   const InvocationExternalToolWorkLedger &externalToolWork() const {
     return externalToolWork_;
   }
+  const std::optional<CampaignAdmissionFailureReason> &
+  campaignAdmissionFailure() const {
+    return campaignAdmissionFailure_;
+  }
   llvm::ArrayRef<std::uint8_t> canonicalBytes() const {
     return canonicalBytes_;
   }
@@ -246,6 +281,7 @@ private:
       InvocationControllerOutcome outcome,
       std::optional<InvocationOperationalObservations> operationalObservations,
       InvocationExternalToolWorkLedger externalToolWork,
+      std::optional<CampaignAdmissionFailureReason> campaignAdmissionFailure,
       std::vector<std::uint8_t> canonicalBytes)
       : occurrence_(std::move(occurrence)), closure_(std::move(closure)),
         resumedFrom_(std::move(resumedFrom)),
@@ -256,6 +292,7 @@ private:
         outcome_(std::move(outcome)),
         operationalObservations_(std::move(operationalObservations)),
         externalToolWork_(std::move(externalToolWork)),
+        campaignAdmissionFailure_(campaignAdmissionFailure),
         canonicalBytes_(std::move(canonicalBytes)) {}
 
   InvocationOccurrenceRef occurrence_;
@@ -267,6 +304,7 @@ private:
   InvocationControllerOutcome outcome_;
   std::optional<InvocationOperationalObservations> operationalObservations_;
   InvocationExternalToolWorkLedger externalToolWork_;
+  std::optional<CampaignAdmissionFailureReason> campaignAdmissionFailure_;
   std::vector<std::uint8_t> canonicalBytes_;
 
   friend llvm::Expected<InvocationManifest>
@@ -278,6 +316,68 @@ llvm::Expected<InvocationManifest>
 adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
                         const ResolvedConfig &resolvedConfig,
                         const ArtifactStore &artifactStore);
+
+/// Strict content reference to one canonical InvocationManifest. Occurrence
+/// allocation and receipt commit remain owned by ExecutionJournal.
+class InvocationManifestReference final {
+public:
+  static llvm::Expected<InvocationManifestReference>
+  get(ArtifactRootReference resolvedConfig, BlobDigest blob,
+      InvocationOccurrenceRef occurrence, const ArtifactStore &artifacts,
+      const BlobStore &blobs);
+
+  const ArtifactRootReference &resolvedConfig() const {
+    return resolvedConfig_;
+  }
+  const BlobDigest &blob() const { return blob_; }
+  const InvocationOccurrenceRef &occurrence() const { return occurrence_; }
+  const std::optional<InvocationManifestReceipt> &journalReceipt() const {
+    return journalReceipt_;
+  }
+
+private:
+  InvocationManifestReference(ArtifactRootReference resolvedConfig,
+                              BlobDigest blob,
+                              InvocationOccurrenceRef occurrence)
+      : resolvedConfig_(std::move(resolvedConfig)), blob_(std::move(blob)),
+        occurrence_(std::move(occurrence)) {}
+
+  ArtifactRootReference resolvedConfig_;
+  BlobDigest blob_;
+  InvocationOccurrenceRef occurrence_;
+  std::optional<InvocationManifestReceipt> journalReceipt_;
+
+  friend llvm::Expected<InvocationManifestReference>
+  bindInvocationManifestReceipt(InvocationManifestReference,
+                                const InvocationManifestReceipt &);
+};
+
+llvm::Expected<InvocationManifestReference>
+bindInvocationManifestReceipt(InvocationManifestReference reference,
+                              const InvocationManifestReceipt &receipt);
+
+llvm::Expected<InvocationManifestReference> publishInvocationManifest(
+    const InvocationManifest &manifest, const ResolvedConfig &resolvedConfig,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
+llvm::Expected<InvocationManifest>
+importInvocationManifest(const InvocationManifestReference &reference,
+                         const ArtifactStore &artifacts,
+                         const BlobStore &blobs);
+
+llvm::Expected<InvocationControllerOutcome> projectDsePlanInvocationOutcome(
+    const ResolvedDseConfigView &view,
+    const DsePlanExecutionOutcome &executionOutcome);
+
+/// Publishes the canonical manifest and atomically binds its digest to the
+/// active journal occurrence. Hard execution errors have no plan outcome and
+/// therefore remain outside this owner transaction.
+llvm::Expected<InvocationManifestReference> finalizeDsePlanInvocation(
+    DseRunClosure closure, const ResolvedConfig &resolvedConfig,
+    const DsePlanExecutionOutcome &executionOutcome, ExecutionJournal &journal,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    std::optional<CampaignAdmissionFailureReason> campaignAdmissionFailure =
+        std::nullopt);
 
 } // namespace loom::dse
 

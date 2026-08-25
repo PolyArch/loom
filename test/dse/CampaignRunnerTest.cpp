@@ -3,6 +3,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "DSE/CampaignRunner.h"
+#include "DSE/InvocationManifest.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
@@ -189,6 +190,97 @@ void testPilotContinuation(const ArtifactStore &store, const BlobStore &blobs,
     if (records[index].key.planNodeOrdinal() != index ||
         records[index].status != JournalWorkUnitStatus::Completed)
       fail("campaign changed prefix key order or completion state");
+
+  InvocationManifestReference reference =
+      take(finalizeDsePlanInvocation(fixture.closure, fixture.config,
+                                     executed->outcome, journal, store, blobs));
+  InvocationManifest manifest =
+      take(importInvocationManifest(reference, store, blobs));
+  const auto *selected =
+      std::get_if<InvocationCompletedSelection>(&manifest.outcome());
+  if (reference.occurrence().occurrenceOrdinal != 0 || !selected ||
+      selected->selected.size() != 1 || !selected->satisfiedEvidence.empty() ||
+      manifest.generateRecords().size() != 3)
+    fail("campaign manifest lost its occurrence, terminal roots, or records");
+  auto released = journal.currentInvocationOccurrence();
+  if (released)
+    fail("manifest finalization retained its completed occurrence lease");
+  llvm::consumeError(released.takeError());
+  requireErrorContains(journal.queue(makeProjectionKey(99)), "immutable");
+}
+
+void testRefusalManifest(const ArtifactStore &store, const BlobStore &blobs,
+                         llvm::StringRef runRoot) {
+  PlanExecutionFixture fixture = take(makePlanExecutionFixture(
+      store, 3, "loom.test.campaign.refusal_manifest.v1"));
+  ExecutionJournal journal =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  SiteScheduler scheduler =
+      take(SiteScheduler::create(take(SiteCapacity::get(1, 0, 0))));
+  resetPlanExecutionProviderObservations();
+
+  CampaignExecutionResult result = take(runGroundTruthCampaign(
+      fixture.view, fixture.closure,
+      take(CampaignExecutionPolicy::get(
+          1, 1, CampaignExecutionPolicy::maximumSampleActiveWallTimeNanoseconds,
+          1)),
+      makeExecutionPolicy(1), scheduler, journal, store, blobs));
+  const auto *refusal = std::get_if<CampaignAdmissionRefusal>(&result);
+  if (!refusal)
+    fail("bounded campaign did not retain an admission refusal");
+  if (refusal->reason !=
+      CampaignAdmissionFailureReason::CampaignActiveWallTimeLimit)
+    fail("bounded campaign retained unexpected refusal reason " +
+         std::to_string(static_cast<std::uint32_t>(refusal->reason)));
+
+  InvocationManifestReference reference =
+      take(finalizeDsePlanInvocation(fixture.closure, fixture.config,
+                                     refusal->outcome, journal, store, blobs,
+                                     refusal->reason));
+  InvocationManifest manifest =
+      take(importInvocationManifest(reference, store, blobs));
+  const auto *incomplete =
+      std::get_if<InvocationIncomplete>(&manifest.outcome());
+  if (!incomplete || incomplete->planNodeOrdinal != 1 ||
+      incomplete->retainedArtifacts.size() != 1 ||
+      !incomplete->retainedEvidence.empty() ||
+      manifest.campaignAdmissionFailure() != refusal->reason)
+    fail("refused campaign manifest lost its typed incomplete outcome");
+}
+
+void testCompletedRefusalManifest(const ArtifactStore &store,
+                                  const BlobStore &blobs,
+                                  llvm::StringRef runRoot) {
+  PlanExecutionFixture fixture = take(makePlanExecutionFixture(
+      store, 1, "loom.test.campaign.completed_refusal_manifest.v1"));
+  ExecutionJournal journal =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  SiteScheduler scheduler =
+      take(SiteScheduler::create(take(SiteCapacity::get(1, 0, 0))));
+  resetPlanExecutionProviderObservations();
+
+  CampaignExecutionResult result = take(runGroundTruthCampaign(
+      fixture.view, fixture.closure,
+      take(CampaignExecutionPolicy::get(
+          1, 1, CampaignExecutionPolicy::maximumSampleActiveWallTimeNanoseconds,
+          1)),
+      makeExecutionPolicy(1), scheduler, journal, store, blobs));
+  const auto *refusal = std::get_if<CampaignAdmissionRefusal>(&result);
+  if (!refusal ||
+      refusal->reason !=
+          CampaignAdmissionFailureReason::CampaignActiveWallTimeLimit ||
+      !std::holds_alternative<CompletedDsePlanExecution>(refusal->outcome))
+    fail("completed pilot did not retain its typed campaign refusal");
+
+  InvocationManifestReference reference = take(finalizeDsePlanInvocation(
+      fixture.closure, fixture.config, refusal->outcome, journal, store, blobs,
+      refusal->reason));
+  InvocationManifest manifest =
+      take(importInvocationManifest(reference, store, blobs));
+  if (!std::holds_alternative<InvocationCompletedSelection>(
+          manifest.outcome()) ||
+      manifest.campaignAdmissionFailure() != refusal->reason)
+    fail("completed refusal manifest lost its campaign disposition");
 }
 
 } // namespace
@@ -199,11 +291,16 @@ int main() {
   const std::string blobRoot = directory.makeDirectory("blobs");
   const std::string projectionRun = directory.makeDirectory("projection-run");
   const std::string campaignRun = directory.makeDirectory("campaign-run");
+  const std::string refusalRun = directory.makeDirectory("refusal-run");
+  const std::string completedRefusalRun =
+      directory.makeDirectory("completed-refusal-run");
   ArtifactStore store(storeRoot);
   BlobStore blobs(blobRoot);
   requireSuccess(registerPlanExecutionTestGenerator());
   testOperationalProjection(store, projectionRun);
   testCampaignPolicyAdmission();
   testPilotContinuation(store, blobs, campaignRun);
+  testRefusalManifest(store, blobs, refusalRun);
+  testCompletedRefusalManifest(store, blobs, completedRefusalRun);
   return 0;
 }

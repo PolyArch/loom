@@ -303,10 +303,6 @@ runFpaGroundTruthCampaign(const ResolvedDseConfigView &view,
                           const PlanExecutionPolicy &executionPolicy,
                           SiteScheduler &scheduler, ExecutionJournal &journal,
                           const ArtifactStore &store, const BlobStore &blobs) {
-  if (campaignPolicy.campaignActiveWallTimeLimitNanoseconds() >
-      maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds)
-    return invalid("FPA campaign active-time limit exceeds the four-hour "
-                   "offline bound");
   const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
   const auto signedNow =
       std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();

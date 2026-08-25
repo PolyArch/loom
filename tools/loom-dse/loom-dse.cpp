@@ -8,6 +8,7 @@
 #include "DSE/DataflowRewriteCandidateGenerator.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
 #include "DSE/GroundTruthPlan.h"
+#include "DSE/InvocationManifest.h"
 #include "DSE/JointDesignExploration.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/ModelParameterCalibrationAcquisition.h"
@@ -499,10 +500,9 @@ llvm::Expected<int> run() {
         static_cast<std::uint64_t>(systems->size());
     const std::uint64_t pairLimit =
         jointPairLimit == 0 ? completePairCount : jointPairLimit;
-    auto policy =
-        JointDesignPolicy::get(applicationScopes.size(), systems->size(),
-                               pairLimit, jointTechMappingLimit,
-                               jointSpatialMappingLimit);
+    auto policy = JointDesignPolicy::get(
+        applicationScopes.size(), systems->size(), pairLimit,
+        jointTechMappingLimit, jointSpatialMappingLimit);
     if (!policy)
       return policy.takeError();
     auto plan = buildJointDesignExplorationPlan(
@@ -643,8 +643,9 @@ llvm::Expected<int> run() {
       [&]() -> llvm::Expected<ExecutionResult> {
     const GroundTruthCampaignKind campaignKind = groundTruthCampaign.getValue();
     if (campaignKind == GroundTruthCampaignKind::None) {
-      auto outcome = resumeDsePlan(*view, *closure, *journal, *scheduler,
-                                   *executionPolicy, artifacts, blobs);
+      auto outcome =
+          resumeDsePlan(*view, *closure, *journal, *scheduler, *executionPolicy,
+                        artifacts, blobs, InvocationManifestRetention::Retain);
       if (!outcome)
         return outcome.takeError();
       return ExecutionResult{std::in_place_index<0>, std::move(*outcome)};
@@ -677,10 +678,55 @@ llvm::Expected<int> run() {
   monitor.join();
   if (!executionResult) {
     llvm::Error executionError = executionResult.takeError();
+    auto activeOccurrence = journal->currentInvocationOccurrence();
+    if (activeOccurrence)
+      executionError = llvm::joinErrors(std::move(executionError),
+                                        journal->releaseInvocationOccurrence());
+    else
+      llvm::consumeError(activeOccurrence.takeError());
     if (!monitorError.empty())
       return llvm::joinErrors(std::move(executionError), invalid(monitorError));
     return std::move(executionError);
   }
+
+  DsePlanExecutionOutcome *invocationOutcome = nullptr;
+  std::optional<CampaignAdmissionFailureReason> campaignAdmissionFailure;
+  if (auto *direct = std::get_if<DsePlanExecutionOutcome>(&*executionResult)) {
+    invocationOutcome = direct;
+  } else {
+    CampaignExecutionResult &campaign =
+        std::get<CampaignExecutionResult>(*executionResult);
+    if (auto *executed = std::get_if<CampaignExecution>(&campaign))
+      invocationOutcome = &executed->outcome;
+    else {
+      CampaignAdmissionRefusal &refusal =
+          std::get<CampaignAdmissionRefusal>(campaign);
+      invocationOutcome = &refusal.outcome;
+      campaignAdmissionFailure = refusal.reason;
+    }
+  }
+  auto invocation =
+      finalizeDsePlanInvocation(*closure, *config, *invocationOutcome, *journal,
+                                artifacts, blobs, campaignAdmissionFailure);
+  if (!invocation) {
+    llvm::Error manifestError = invocation.takeError();
+    if (!monitorError.empty())
+      return llvm::joinErrors(std::move(manifestError), invalid(monitorError));
+    return std::move(manifestError);
+  }
+  llvm::errs() << "invocation_manifest resolved_config_schema="
+               << invocation->resolvedConfig().schemaIdentity
+               << " resolved_config_version="
+               << invocation->resolvedConfig().schemaVersion.major << '.'
+               << invocation->resolvedConfig().schemaVersion.minor
+               << " resolved_config_identity="
+               << llvm::toHex(invocation->resolvedConfig().artifact.bytes(),
+                              true)
+               << " run_key="
+               << llvm::toHex(invocation->occurrence().runKey.bytes(), true)
+               << " occurrence=" << invocation->occurrence().occurrenceOrdinal
+               << " blob=" << llvm::toHex(invocation->blob().bytes(), true)
+               << '\n';
   if (!monitorError.empty())
     return invalid(monitorError);
 
