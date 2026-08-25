@@ -27,6 +27,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <iterator>
 #include <utility>
 #include <vector>
 
@@ -480,6 +481,72 @@ interconnectProtocolSchema(const FinalizedFabricRoot &implementation) {
   if (!root)
     return invalid("interconnect implementation has the wrong canonical root");
   return root.getProtocolSchema();
+}
+
+llvm::Expected<InterconnectImplementationBuilder>
+InterconnectImplementationBuilder::create(
+    const FinalizedFabricRoot &refinedSystem, const ArtifactStore &store) {
+  if (refinedSystem.view().rootKind() != FabricRootKind::System)
+    return invalid("interconnect implementation builder requires a finalized "
+                   "System root");
+  return InterconnectImplementationBuilder(refinedSystem.reference(), &store);
+}
+
+llvm::Error InterconnectImplementationBuilder::setProtocolSchema(
+    ::fabric::InterconnectProtocolSchema protocol) {
+  switch (protocol) {
+  case ::fabric::InterconnectProtocolSchema::Gem5EventTransportV1:
+    protocol_ = protocol;
+    return llvm::Error::success();
+  }
+  return invalid("interconnect protocol schema is not registered");
+}
+
+llvm::Expected<FinalizedFabricRoot>
+InterconnectImplementationBuilder::finalize() && {
+  if (!store_)
+    return invalid("interconnect implementation builder has no ArtifactStore");
+  switch (protocol_) {
+  case ::fabric::InterconnectProtocolSchema::Gem5EventTransportV1:
+    return finalizeGem5EventInterconnectImplementation(refinedSystem_, *store_);
+  }
+  return invalid("interconnect protocol schema is not registered");
+}
+
+llvm::Expected<InterconnectImplementationSummary>
+inspectInterconnectImplementation(const FinalizedFabricRoot &implementation) {
+  if (implementation.view().rootKind() !=
+      FabricRootKind::InterconnectImplementation)
+    return invalid("Fabric root is not an InterconnectImplementation");
+  const Operation *canonical = implementation.view().canonicalOperation();
+  auto module = dyn_cast_if_present<ModuleOp>(canonical);
+  if (!module || !llvm::hasSingleElement(module.getBody()->getOperations()))
+    return invalid("interconnect implementation has no canonical operation");
+  auto root = dyn_cast<::fabric::InterconnectImplementationOp>(
+      &module.getBody()->front());
+  if (!root)
+    return invalid("interconnect implementation has the wrong canonical root");
+
+  InterconnectImplementationSummary summary;
+  summary.protocol = root.getProtocolSchema();
+  for (Operation &operation : root.getImplementation().front()) {
+    if (isa<::fabric::InterconnectGem5EventEndpointOp>(operation))
+      ++summary.endpointCount;
+    else if (isa<::fabric::InterconnectGem5EventResourceOp>(operation))
+      ++summary.resourceStateCount;
+    else if (isa<::fabric::InterconnectGem5EventTransferOp>(operation))
+      ++summary.transferPatternCount;
+    else if (isa<::fabric::InterconnectGem5EventConfigurationFieldOp>(
+                 operation))
+      ++summary.configurationFieldCount;
+    else
+      return invalid("interconnect implementation contains an unknown "
+                     "protocol operation");
+  }
+  summary.refinementCount =
+      std::distance(root.getRefinements().front().begin(),
+                    root.getRefinements().front().end());
+  return summary;
 }
 
 } // namespace loom::fabric

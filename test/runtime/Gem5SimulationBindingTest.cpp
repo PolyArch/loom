@@ -207,9 +207,18 @@ loom::fabric::FinalizedFabricRoot makeModule(llvm::StringRef test,
 ArtifactRootReference makeInterconnect(
     llvm::StringRef test, const ArtifactRootReference &system,
     const ArtifactStore &store) {
-  return take(test, loom::fabric::finalizeGem5EventInterconnectImplementation(
-                        system, store))
-      .reference();
+  auto refined = take(test, loom::fabric::importEntireFabricRoot(system, store));
+  auto builder = take(
+      test, loom::fabric::InterconnectImplementationBuilder::create(refined,
+                                                                    store));
+  auto implementation = take(test, std::move(builder).finalize());
+  auto summary = take(
+      test, loom::fabric::inspectInterconnectImplementation(implementation));
+  require(test, summary.endpointCount != 0,
+          "interconnect builder emitted no protocol endpoints");
+  require(test, summary.refinementCount != 0,
+          "interconnect builder emitted no architecture refinements");
+  return implementation.reference();
 }
 
 Gem5SimObjectRef object(const Gem5ModelContractDescriptor &descriptor,
@@ -320,6 +329,19 @@ void roundTripAndRejectInvalid(const ArtifactStore &artifacts) {
                                                                   artifacts));
   const auto interconnect =
       makeInterconnect(__func__, system.reference(), artifacts);
+  auto refined = take(__func__, loom::fabric::importEntireFabricRoot(
+                                     system.reference(), artifacts));
+  auto invalidBuilder = take(
+      __func__, loom::fabric::InterconnectImplementationBuilder::create(
+                    refined, artifacts));
+  if (llvm::Error error = invalidBuilder.setProtocolSchema(
+          static_cast<::fabric::InterconnectProtocolSchema>(99))) {
+    const std::string diagnostic = llvm::toString(std::move(error));
+    require(__func__, llvm::StringRef(diagnostic).contains("not registered"),
+            "invalid interconnect protocol lost its typed diagnostic");
+  } else {
+    fail(__func__, "accepted an unregistered interconnect protocol");
+  }
   auto draft = makeDraft(__func__, system, interconnect);
   require(__func__, draft.correspondences.size() >= 3,
           "fixture does not exercise multiple correspondence classes");
