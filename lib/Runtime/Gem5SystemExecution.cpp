@@ -204,9 +204,9 @@ inheritedEnvironment(const LocalToolConfig &config,
   return configured->second.inheritEnvironment;
 }
 
-llvm::Expected<std::string>
-renderProjection(const Gem5SystemFacts &facts,
-                 const ReadinessIdentity &readiness) {
+llvm::Expected<std::string> renderProjection(const Gem5SystemFacts &facts,
+                                             const ReadinessIdentity &readiness,
+                                             bool diagnostics) {
   std::vector<std::vector<llvm::ArrayRef<llvm::StringLiteral>>>
       processorOperationClasses;
   processorOperationClasses.reserve(facts.processors.size());
@@ -446,6 +446,10 @@ renderProjection(const Gem5SystemFacts &facts,
             json.value(std::to_string(gem5MaximumDynamicSpatialInvocations));
             json.value("--bridge-count");
             json.value(std::to_string(facts.spatialBridgeSessions.size()));
+            if (diagnostics && facts.engine == Gem5SystemEngine::Cgra) {
+              json.value("--performance-profile");
+              json.value(kCgraEnginePerformanceProfilePath);
+            }
           });
           json.attribute("result_path",
                          spatialBridgeResultPath(indexed.index()));
@@ -463,8 +467,29 @@ renderProjection(const Gem5SystemFacts &facts,
   return output;
 }
 
+std::vector<std::string> gem5AttemptOutputPaths(const Gem5SystemFacts &facts,
+                                                bool diagnostics) {
+  std::vector<std::string> outputs{kSystemResultPath.str(),
+                                   kMemoryResultPath.str()};
+  for (std::size_t ordinal = 0; ordinal != facts.spatialBridgeSessions.size();
+       ++ordinal)
+    outputs.push_back(spatialBridgeResultPath(ordinal));
+  if (facts.engine == Gem5SystemEngine::Rtl)
+    for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
+         ++ordinal)
+      outputs.push_back(mappedRtlLaunchResultPath(ordinal));
+  if (diagnostics) {
+    outputs.push_back(kGem5PerformanceProfilePath.str());
+    if (facts.engine == Gem5SystemEngine::Cgra)
+      outputs.push_back(kCgraEnginePerformanceProfilePath.str());
+  }
+  llvm::sort(outputs);
+  return outputs;
+}
+
 ExternalToolInvocationImportExpectation makeExpectation(
     const ExternalToolSemanticContract &contract, const Gem5SystemFacts &facts,
+    bool diagnostics,
     llvm::ArrayRef<ExternalToolInvocationSemanticInput>
         additionalSemanticInputs = {},
     std::optional<ExternalFileFingerprint> gem5Binary = std::nullopt) {
@@ -488,16 +513,7 @@ ExternalToolInvocationImportExpectation makeExpectation(
   if (gem5Binary)
     expectation.externalInputs.push_back(
         {"gem5_binary", std::move(*gem5Binary)});
-  expectation.declaredOutputs = {kSystemResultPath.str(),
-                                 kMemoryResultPath.str()};
-  for (std::size_t ordinal = 0; ordinal != facts.spatialBridgeSessions.size();
-       ++ordinal)
-    expectation.declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
-  if (facts.engine == Gem5SystemEngine::Rtl)
-    for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
-         ++ordinal)
-      expectation.declaredOutputs.push_back(mappedRtlLaunchResultPath(ordinal));
-  llvm::sort(expectation.declaredOutputs);
+  expectation.declaredOutputs = gem5AttemptOutputPaths(facts, diagnostics);
   return expectation;
 }
 
@@ -574,6 +590,135 @@ llvm::Expected<Gem5AttemptResult> parseAttemptResult(llvm::StringRef text) {
     return invalid("gem5 result fields are invalid");
   return Gem5AttemptResult{static_cast<std::uint64_t>(*entry),
                            static_cast<std::uint64_t>(*exit), cause->str()};
+}
+
+llvm::Expected<std::uint64_t>
+requiredProfileInteger(const llvm::json::Object &object,
+                       llvm::StringRef field) {
+  const auto value = object.getInteger(field);
+  if (!value || *value < 0)
+    return invalid("gem5 performance profile field '" + field +
+                   "' is not a nonnegative integer");
+  return static_cast<std::uint64_t>(*value);
+}
+
+llvm::Error assignProfileInteger(const llvm::json::Object &object,
+                                 llvm::StringRef field,
+                                 std::uint64_t &destination) {
+  auto value = requiredProfileInteger(object, field);
+  if (!value)
+    return value.takeError();
+  destination = *value;
+  return llvm::Error::success();
+}
+
+llvm::Expected<Gem5SystemAttemptProfile>
+parseGem5SystemAttemptProfile(llvm::StringRef text) {
+  auto value = llvm::json::parse(text);
+  if (!value)
+    return invalid("gem5 performance profile is not valid JSON");
+  const llvm::json::Object *object = value->getAsObject();
+  if (!object || object->size() != 12)
+    return invalid("gem5 performance profile has the wrong shape");
+  const auto schema = object->getString("schema");
+  if (!schema || *schema != "loom.gem5_system_performance_profile.2")
+    return invalid("gem5 performance profile has the wrong schema");
+  Gem5SystemAttemptProfile profile;
+  const auto assign = [&](llvm::StringRef field,
+                          std::uint64_t &destination) -> llvm::Error {
+    return assignProfileInteger(*object, field, destination);
+  };
+  if (llvm::Error error = assign("configuration_wall_nanoseconds",
+                                 profile.configurationWallNanoseconds))
+    return std::move(error);
+  if (llvm::Error error =
+          assign("active_wall_nanoseconds", profile.activeWallNanoseconds))
+    return std::move(error);
+  if (llvm::Error error = assign("gem5_active_cpu_nanoseconds",
+                                 profile.gem5ActiveProcessCpuNanoseconds))
+    return std::move(error);
+  if (llvm::Error error = assign("observation_wall_nanoseconds",
+                                 profile.observationWallNanoseconds))
+    return std::move(error);
+  if (llvm::Error error = assign("observation_cpu_nanoseconds",
+                                 profile.observationProcessCpuNanoseconds))
+    return std::move(error);
+  const llvm::json::Value *engineCpu =
+      object->get("engine_process_cpu_nanoseconds");
+  if (!engineCpu)
+    return invalid("gem5 performance profile field "
+                   "'engine_process_cpu_nanoseconds' is missing");
+  if (!engineCpu->getAsNull()) {
+    auto parsed =
+        requiredProfileInteger(*object, "engine_process_cpu_nanoseconds");
+    if (!parsed)
+      return parsed.takeError();
+    profile.engineProcessCpuNanoseconds = *parsed;
+  }
+  if (llvm::Error error = assign("bridge_callback_cpu_nanoseconds",
+                                 profile.bridgeCallbackCpuNanoseconds))
+    return std::move(error);
+  if (llvm::Error error = assign("bridge_engine_wait_nanoseconds",
+                                 profile.bridgeEngineWaitNanoseconds))
+    return std::move(error);
+  if (llvm::Error error =
+          assign("bridge_message_count", profile.bridgeMessageCount))
+    return std::move(error);
+  if (llvm::Error error = assign("accelerator_invocation_count",
+                                 profile.acceleratorInvocationCount))
+    return std::move(error);
+  if (llvm::Error error = assign("bridge_count", profile.bridgeCount))
+    return std::move(error);
+  return profile;
+}
+
+llvm::Expected<Gem5CgraEngineAttemptProfile>
+parseCgraEngineAttemptProfile(llvm::StringRef text) {
+  auto value = llvm::json::parse(text);
+  if (!value)
+    return invalid("CGRA engine performance profile is not valid JSON");
+  const llvm::json::Object *object = value->getAsObject();
+  if (!object || object->size() != 6)
+    return invalid("CGRA engine performance profile has the wrong shape");
+  const auto schema = object->getString("schema");
+  const auto engine = object->getString("engine");
+  if (!schema || *schema != "loom.gem5_spatial_engine_performance.1" ||
+      !engine || *engine != "cgra")
+    return invalid("CGRA engine performance profile identity is invalid");
+  Gem5CgraEngineAttemptProfile profile;
+  if (llvm::Error error = assignProfileInteger(*object, "invocation_count",
+                                               profile.invocationCount))
+    return std::move(error);
+  if (llvm::Error error = assignProfileInteger(
+          *object, "active_wall_nanoseconds", profile.activeWallNanoseconds))
+    return std::move(error);
+  if (llvm::Error error =
+          assignProfileInteger(*object, "active_cpu_nanoseconds",
+                               profile.activeProcessCpuNanoseconds))
+    return std::move(error);
+  if (llvm::Error error = assignProfileInteger(*object, "event_frame_count",
+                                               profile.eventFrameCount))
+    return std::move(error);
+  return profile;
+}
+
+llvm::Error validateFreshDiagnosticExecution(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &execution) {
+  if (execution.manifestDigest != prepared.manifestDigest)
+    return invalid("gem5 diagnostic execution names a different manifest");
+  if (execution.exitCode != 0 ||
+      execution.reusePolicy != ExternalToolResultReusePolicy::RequireFresh ||
+      execution.cacheAvailability !=
+          ExternalToolResultCacheAvailability::Disabled ||
+      execution.cacheLookup != ExternalToolResultCacheLookup::NotAttempted ||
+      execution.cacheDiscard != ExternalToolResultCacheDiscard::NotAttempted ||
+      execution.cachePublication !=
+          ExternalToolResultCachePublication::NotAttempted ||
+      execution.waitedForCacheKeyLock || !execution.invokedExternalTool)
+    return invalid("gem5 diagnostics require a successful fresh external "
+                   "attempt");
+  return llvm::Error::success();
 }
 
 llvm::Expected<std::uint64_t> readResultU64(llvm::StringRef bytes,
@@ -717,10 +862,13 @@ projectSystemObservations(const Gem5SystemFacts &facts,
 
 } // namespace
 
-llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
-    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
-    const ArtifactStore &artifacts, const BlobStore &blobs,
-    const ExternalToolPreparationContext &context) {
+static llvm::Expected<EvaluationModelProviderPreparation>
+prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
+                                const CaseArtifactResolution &resolution,
+                                const ArtifactStore &artifacts,
+                                const BlobStore &blobs,
+                                const ExternalToolPreparationContext &context,
+                                bool diagnostics) {
   auto factsOrUnsupported = deriveFacts(request, resolution, artifacts, blobs);
   if (!factsOrUnsupported)
     return factsOrUnsupported.takeError();
@@ -778,7 +926,7 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
                    std::nullopt, false});
   files.push_back({kTimeoutBudgetsPath.str(), std::move(*timeoutBudgets),
                    std::nullopt, false});
-  auto projection = renderProjection(facts, *readiness);
+  auto projection = renderProjection(facts, *readiness, diagnostics);
   if (!projection)
     return projection.takeError();
   files.push_back(
@@ -927,17 +1075,13 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
         {"--gem5", gem5Executable, "--gem5-output", "outputs/gem5",
          "--gem5-config", kConfigurationScriptPath.str(), "--projection",
          kProjectionPath.str(), "--system-result", kSystemResultPath.str()});
+    if (diagnostics)
+      primaryCommand.insert(
+          primaryCommand.end(),
+          {"--gem5-performance-profile", kGem5PerformanceProfilePath.str()});
     commands.push_back(std::move(primaryCommand));
-    std::vector<std::string> declaredOutputs{kSystemResultPath.str(),
-                                             kMemoryResultPath.str()};
-    for (std::size_t ordinal = 0; ordinal != facts.spatialBridgeSessions.size();
-         ++ordinal) {
-      declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
-    }
-    for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
-         ++ordinal) {
-      declaredOutputs.push_back(resultPaths[ordinal]);
-    }
+    std::vector<std::string> declaredOutputs =
+        gem5AttemptOutputPaths(facts, diagnostics);
     ExternalToolInvocationBundleSpec specification{
         std::move(*contract),
         std::move(*verilatorTool),
@@ -953,7 +1097,6 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
         std::move(executables)};
     specification.diagnosticCommandOrdinals = {specification.commands.size() -
                                                1};
-    llvm::sort(specification.declaredOutputs);
     llvm::sort(specification.files, [](const auto &lhs, const auto &rhs) {
       return lhs.relativePath < rhs.relativePath;
     });
@@ -998,19 +1141,19 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
       container.versionProbe,
       {},
       inherited,
-      {kSystemResultPath.str(), kMemoryResultPath.str()},
+      gem5AttemptOutputPaths(facts, diagnostics),
       std::move(files),
       {gem5ExternalFile},
       {},
       {}};
-  for (std::size_t ordinal = 0; ordinal != facts.spatialBridgeSessions.size();
-       ++ordinal)
-    specification.declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
-  llvm::sort(specification.declaredOutputs);
   specification.commands = {{specification.tool.executable, "-d",
                              "outputs/gem5", kConfigurationScriptPath.str(),
                              "--projection", kProjectionPath.str(), "--result",
                              kSystemResultPath.str()}};
+  if (diagnostics)
+    specification.commands.front().insert(
+        specification.commands.front().end(),
+        {"--performance-profile", kGem5PerformanceProfilePath.str()});
   auto prepared = finalizeExternalToolInvocationBundle(
       context.bundleDestination, specification);
   if (!prepared)
@@ -1018,10 +1161,29 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
   return EvaluationModelProviderPreparation{std::move(*prepared)};
 }
 
-llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
+llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolPreparationContext &context) {
+  return prepareGem5SystemInvocationImpl(request, resolution, artifacts, blobs,
+                                         context, false);
+}
+
+llvm::Expected<EvaluationModelProviderPreparation>
+prepareGem5SystemDiagnosticInvocation(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolPreparationContext &context) {
+  return prepareGem5SystemInvocationImpl(request, resolution, artifacts, blobs,
+                                         context, true);
+}
+
+static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const PreparedExternalToolInvocation &prepared,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    Gem5SystemDiagnosticEvaluation *diagnostics) {
+  std::vector<Gem5SpatialInvocationProjection> spatialInvocations;
   auto factsOrUnsupported = deriveFacts(request, resolution, artifacts, blobs);
   if (!factsOrUnsupported)
     return factsOrUnsupported.takeError();
@@ -1064,8 +1226,8 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
     }
   }
   auto attempt = importExternalToolInvocationAttempt(
-      prepared,
-      makeExpectation(*contract, facts, mappedRtlInputs, *fingerprint));
+      prepared, makeExpectation(*contract, facts, diagnostics != nullptr,
+                                mappedRtlInputs, *fingerprint));
   if (!attempt)
     return attempt.takeError();
   if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))
@@ -1082,9 +1244,46 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
   auto systemResult = parseAttemptResult(*systemText);
   if (!systemResult)
     return systemResult.takeError();
+  std::optional<Gem5SystemAttemptProfile> attemptProfile;
+  if (diagnostics) {
+    auto profileText = readExternalToolInvocationDeclaredOutput(
+        imported, kGem5PerformanceProfilePath);
+    if (!profileText)
+      return profileText.takeError();
+    auto parsed = parseGem5SystemAttemptProfile(*profileText);
+    if (!parsed)
+      return parsed.takeError();
+    attemptProfile = std::move(*parsed);
+    if (facts.engine == Gem5SystemEngine::Cgra) {
+      auto engineText = readExternalToolInvocationDeclaredOutput(
+          imported, kCgraEnginePerformanceProfilePath);
+      if (!engineText)
+        return engineText.takeError();
+      auto engine = parseCgraEngineAttemptProfile(*engineText);
+      if (!engine)
+        return engine.takeError();
+      attemptProfile->cgraEngine = std::move(*engine);
+    }
+    diagnostics->attemptProfile = *attemptProfile;
+  }
   if (!llvm::StringRef(systemResult->cause).contains("m5_exit"))
     return terminalResult(
         CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
+  if (attemptProfile) {
+    if (attemptProfile->bridgeCount != facts.spatialBridgeSessions.size())
+      return invalid("gem5 performance profile bridge count differs from "
+                     "the exact System projection");
+    if (attemptProfile->bridgeCount == 0 ||
+        attemptProfile->acceleratorInvocationCount == 0 ||
+        attemptProfile->bridgeMessageCount == 0)
+      return invalid("completed gem5 performance profile has no bridge "
+                     "activity");
+    if (attemptProfile->activeWallNanoseconds == 0 ||
+        attemptProfile->activeWallNanoseconds <
+            attemptProfile->observationWallNanoseconds)
+      return invalid("completed gem5 performance profile has inconsistent "
+                     "active timing");
+  }
   for (const auto indexed : llvm::enumerate(facts.spatialBridgeSessions)) {
     const Gem5SpatialBridgeSession &session = indexed.value();
     auto bridgeText = readExternalToolInvocationDeclaredOutput(
@@ -1172,6 +1371,8 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
             eda::open_source::MappedRtlTerminalStatus::StoppedByLimit) {
           if (bridgeResult.status != 1)
             return invalid("bridge status disagrees with the RTL terminal");
+          if (diagnostics)
+            diagnostics->spatialInvocations = spatialInvocations;
           return terminalResult(
               CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
         }
@@ -1243,12 +1444,46 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
         spatialResult = std::move(*boundary);
       }
       if (!spatialResult || !std::holds_alternative<sim::RetiredExecution>(
-                                spatialResult->terminal))
+                                spatialResult->terminal)) {
+        if (diagnostics)
+          diagnostics->spatialInvocations = spatialInvocations;
         return terminalResult(
             CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
+      }
+      if (diagnostics) {
+        if (!spatialResult->progressObservations.graphRetirementVisible)
+          return invalid("retired bridge invocation has no graph-retirement "
+                         "coordinate");
+        auto acceleratorReferenceCycles =
+            sim::integralSpatialReferenceCycleDistance(
+                spatialResult->progressObservations.launchAccepted,
+                *spatialResult->progressObservations.graphRetirementVisible);
+        if (!acceleratorReferenceCycles)
+          return invalid("bridge invocation has no exact integral "
+                         "launch-to-retirement cycle projection");
+        spatialInvocations.push_back(
+            {indexed.index(), bridgeResult.sequence, sessionEntryOrdinal,
+             launchOrdinal, bridgeResult.completionTick,
+             spatialResult->progressObservations, *acceleratorReferenceCycles});
+      }
     }
     if (llvm::is_contained(observedSessionEntries, false))
       return invalid("bridge results omit a declared session entry");
+  }
+
+  if (diagnostics) {
+    if (!attemptProfile)
+      return invalid("gem5 diagnostic import lost its attempt profile");
+    const std::uint64_t invocationCount = spatialInvocations.size();
+    if (attemptProfile->acceleratorInvocationCount != invocationCount)
+      return invalid("gem5 performance profile invocation count differs from "
+                     "the strict bridge result import");
+    if (attemptProfile->cgraEngine &&
+        attemptProfile->cgraEngine->invocationCount != invocationCount)
+      return invalid("CGRA engine profile invocation count differs from the "
+                     "strict bridge result import");
+    diagnostics->spatialInvocations = spatialInvocations;
+    diagnostics->attemptProfile = std::move(*attemptProfile);
   }
 
   auto memoryText =
@@ -1307,6 +1542,34 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
   return EvaluationModelResult{
       {{kExecutionOutput, {std::move(*executionReference)}}},
       CompletedEvidence{std::move(metrics), {}}};
+}
+
+llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importGem5SystemInvocationImpl(request, resolution, prepared,
+                                        artifacts, blobs, nullptr);
+}
+
+llvm::Expected<Gem5SystemDiagnosticEvaluation>
+importGem5SystemDiagnosticInvocation(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  if (llvm::Error error = validateFreshDiagnosticExecution(prepared, execution))
+    return std::move(error);
+  Gem5SystemDiagnosticEvaluation diagnostics{
+      terminalResult(ExecutionFailedEvidence{OutcomeReason::AdapterFailure}),
+      {},
+      {}};
+  auto result = importGem5SystemInvocationImpl(request, resolution, prepared,
+                                               artifacts, blobs, &diagnostics);
+  if (!result)
+    return result.takeError();
+  diagnostics.result = std::move(*result);
+  return diagnostics;
 }
 
 } // namespace loom::runtime

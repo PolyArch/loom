@@ -40,6 +40,27 @@ int compareSpatialEventCoordinates(const SpatialEventCoordinate &lhs,
   return lhs.delta < rhs.delta ? -1 : 1;
 }
 
+std::optional<std::uint64_t>
+integralSpatialReferenceCycleDistance(const SpatialEventCoordinate &from,
+                                      const SpatialEventCoordinate &to) {
+  if (compareSpatialEventCoordinates(to, from) < 0)
+    return std::nullopt;
+  using u128 = unsigned __int128;
+  const u128 fromValue = static_cast<u128>(from.referenceCycle.numerator()) *
+                         to.referenceCycle.denominator();
+  const u128 toValue = static_cast<u128>(to.referenceCycle.numerator()) *
+                       from.referenceCycle.denominator();
+  const u128 commonDenominator =
+      static_cast<u128>(from.referenceCycle.denominator()) *
+      to.referenceCycle.denominator();
+  const u128 difference = toValue - fromValue;
+  if (commonDenominator == 0 || difference % commonDenominator != 0 ||
+      difference / commonDenominator >
+          std::numeric_limits<std::uint64_t>::max())
+    return std::nullopt;
+  return static_cast<std::uint64_t>(difference / commonDenominator);
+}
+
 namespace {
 
 using detail::WireReader;

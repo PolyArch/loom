@@ -8,9 +8,12 @@
 #include "mem/packet.hh"
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -62,7 +65,35 @@ bool writeAll(int descriptor, const std::uint8_t *bytes, std::size_t size) {
   return true;
 }
 
+std::optional<std::uint64_t> threadCpuNanoseconds() {
+  timespec value{};
+  if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0)
+    return std::nullopt;
+  constexpr std::uint64_t nanosecondsPerSecond = 1'000'000'000;
+  if (value.tv_sec < 0 || value.tv_nsec < 0 ||
+      static_cast<std::uint64_t>(value.tv_nsec) >= nanosecondsPerSecond ||
+      static_cast<std::uint64_t>(value.tv_sec) >
+          (std::numeric_limits<std::uint64_t>::max() -
+           static_cast<std::uint64_t>(value.tv_nsec)) /
+              nanosecondsPerSecond)
+    return std::nullopt;
+  return static_cast<std::uint64_t>(value.tv_sec) * nanosecondsPerSecond +
+         static_cast<std::uint64_t>(value.tv_nsec);
+}
+
 } // namespace
+
+LoomSpatialBridge::PerformanceStatistics::PerformanceStatistics(
+    statistics::Group *parent)
+    : statistics::Group(parent, "loomPerformance"),
+      ADD_STAT(callbackCpuNanoseconds, statistics::units::Count::get(),
+               "Host thread CPU nanoseconds spent inside the bridge"),
+      ADD_STAT(engineWaitNanoseconds, statistics::units::Count::get(),
+               "Host wall nanoseconds awaiting Spatial engine messages"),
+      ADD_STAT(messageCount, statistics::units::Count::get(),
+               "Canonical Spatial engine messages consumed"),
+      ADD_STAT(invocationCount, statistics::units::Count::get(),
+               "Spatial invocations completed") {}
 
 LoomSpatialBridge::EngineResponseEvent::EngineResponseEvent(
     LoomSpatialBridge &bridge, int descriptor)
@@ -76,32 +107,43 @@ void LoomSpatialBridge::EngineResponseEvent::process(int revents) {
   // completion. The completion event can still be pending in simulated time.
   if (terminal &&
       (bridge.engineCompletionReceived || bridge.state == State::Complete)) {
+    bridge.finishEngineWait();
     bridge.scheduleEngineDisconnect();
     return;
   }
   if ((revents & POLLIN) != 0) {
-    bridge.consumeEngineMessage();
+    bridge.runAccounted(&LoomSpatialBridge::consumeEngineMessage);
     return;
   }
-  if (terminal)
+  if (terminal) {
+    bridge.finishEngineWait();
     bridge.fail(6, "Spatial engine connection became unavailable");
+  }
 }
 
 LoomSpatialBridge::LoomSpatialBridge(const Params &params)
-    : DmaDevice(params), pioAddress(params.pio_addr), pioSize(params.pio_size),
+    : DmaDevice(params), performanceStatistics(this),
+      pioAddress(params.pio_addr), pioSize(params.pio_size),
       pioDelay(params.pio_latency),
       bridgeSessionOrdinal(params.session_ordinal),
       engineSocketPath(params.engine_socket), resultPath(params.result_path),
       maximumMessageBytes(params.max_message_bytes),
       maximumInvocations(params.max_invocations),
-      launchEvent([this] { fetchStaticLaunch(); }, name() + ".launch"),
-      staticLaunchCompletionEvent([this] { fetchInvocation(); },
-                                  name() + ".static_launch_completion"),
-      invocationCompletionEvent([this] { startLaunch(); },
-                                name() + ".invocation_completion"),
-      dmaCompletionEvent([this] { completeMemoryRequest(); },
-                         name() + ".dma_completion"),
-      completionEvent([this] { completeInvocation(); }, name() + ".completion"),
+      launchEvent(
+          [this] { runAccounted(&LoomSpatialBridge::fetchStaticLaunch); },
+          name() + ".launch"),
+      staticLaunchCompletionEvent(
+          [this] { runAccounted(&LoomSpatialBridge::fetchInvocation); },
+          name() + ".static_launch_completion"),
+      invocationCompletionEvent(
+          [this] { runAccounted(&LoomSpatialBridge::startLaunch); },
+          name() + ".invocation_completion"),
+      dmaCompletionEvent(
+          [this] { runAccounted(&LoomSpatialBridge::completeMemoryRequest); },
+          name() + ".dma_completion"),
+      completionEvent(
+          [this] { runAccounted(&LoomSpatialBridge::completeInvocation); },
+          name() + ".completion"),
       engineDisconnectEvent([this] { disconnectEngine(); },
                             name() + ".engine_disconnect") {
   panic_if(engineSocketPath.empty(), "LoomSpatialBridge socket is empty");
@@ -113,6 +155,8 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
            "LoomSpatialBridge message limit exceeds the DMA size domain");
   panic_if(maximumInvocations == 0,
            "LoomSpatialBridge invocation limit must be positive");
+  panic_if(!publishResults(),
+           "LoomSpatialBridge could not publish its empty result");
 }
 
 LoomSpatialBridge::~LoomSpatialBridge() {
@@ -141,6 +185,7 @@ std::uint32_t LoomSpatialBridge::status() const {
 }
 
 Tick LoomSpatialBridge::read(PacketPtr packet) {
+  const std::optional<std::uint64_t> cpuStarted = threadCpuNanoseconds();
   const Addr offset = packet->getAddr() - pioAddress;
   panic_if(packet->getSize() != 4,
            "LoomSpatialBridge requires 32-bit MMIO accesses");
@@ -188,10 +233,14 @@ Tick LoomSpatialBridge::read(PacketPtr packet) {
   }
   packet->setUintX(value, ByteOrder::little);
   packet->makeAtomicResponse();
+  const std::optional<std::uint64_t> cpuFinished = threadCpuNanoseconds();
+  if (cpuStarted && cpuFinished && *cpuFinished >= *cpuStarted)
+    performanceStatistics.callbackCpuNanoseconds += *cpuFinished - *cpuStarted;
   return pioDelay;
 }
 
 Tick LoomSpatialBridge::write(PacketPtr packet) {
+  const std::optional<std::uint64_t> cpuStarted = threadCpuNanoseconds();
   const Addr offset = packet->getAddr() - pioAddress;
   panic_if(packet->getSize() != 4,
            "LoomSpatialBridge requires 32-bit MMIO accesses");
@@ -245,6 +294,9 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
     }
   }
   packet->makeAtomicResponse();
+  const std::optional<std::uint64_t> cpuFinished = threadCpuNanoseconds();
+  if (cpuStarted && cpuFinished && *cpuFinished >= *cpuStarted)
+    performanceStatistics.callbackCpuNanoseconds += *cpuFinished - *cpuStarted;
   return pioDelay;
 }
 
@@ -302,6 +354,7 @@ void LoomSpatialBridge::scheduleEngineDisconnect() {
 }
 
 void LoomSpatialBridge::disconnectEngine() {
+  finishEngineWait();
   if (engineResponseEvent && engineResponseEvent->queued())
     pollQueue.remove(engineResponseEvent.get());
   if (engineSocket >= 0) {
@@ -337,6 +390,30 @@ bool LoomSpatialBridge::receiveMessage(
   return loom::runtime::decodeGem5BridgeWireMessage(bytes, message, diagnostic);
 }
 
+void LoomSpatialBridge::runAccounted(void (LoomSpatialBridge::*action)()) {
+  const std::optional<std::uint64_t> cpuStarted = threadCpuNanoseconds();
+  (this->*action)();
+  const std::optional<std::uint64_t> cpuFinished = threadCpuNanoseconds();
+  if (cpuStarted && cpuFinished && *cpuFinished >= *cpuStarted)
+    performanceStatistics.callbackCpuNanoseconds += *cpuFinished - *cpuStarted;
+}
+
+void LoomSpatialBridge::startEngineWait() {
+  engineWaitStarted = std::chrono::steady_clock::now();
+}
+
+void LoomSpatialBridge::finishEngineWait() {
+  if (!engineWaitStarted)
+    return;
+  const auto elapsed = std::chrono::steady_clock::now() - *engineWaitStarted;
+  const auto nanoseconds =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+  if (nanoseconds > 0)
+    performanceStatistics.engineWaitNanoseconds +=
+        static_cast<std::uint64_t>(nanoseconds);
+  engineWaitStarted.reset();
+}
+
 void LoomSpatialBridge::startLaunch() {
   if (!connectEngine()) {
     fail(4, "could not connect to the Spatial engine");
@@ -352,14 +429,18 @@ void LoomSpatialBridge::startLaunch() {
     fail(5, "could not send the Spatial launch");
     return;
   }
+  startEngineWait();
 }
 
 void LoomSpatialBridge::consumeEngineMessage() {
   loom::runtime::Gem5BridgeMessage message;
-  if (!receiveMessage(message)) {
+  const bool received = receiveMessage(message);
+  finishEngineWait();
+  if (!received) {
     fail(6, "could not receive a canonical Spatial engine message");
     return;
   }
+  ++performanceStatistics.messageCount;
   if (message.sequence != nextSequence) {
     fail(7, "Spatial engine response has the wrong sequence");
     return;
@@ -436,7 +517,21 @@ void LoomSpatialBridge::completeMemoryRequest() {
     fail(14, "could not send the memory response");
     return;
   }
+  startEngineWait();
   state = State::Running;
+}
+
+bool LoomSpatialBridge::publishResults() {
+  const std::vector<std::uint8_t> normalized =
+      loom::runtime::encodeGem5BridgeResultCollection(completedResults);
+  if (normalized.size() > maximumMessageBytes)
+    return false;
+  std::ofstream output(resultPath, std::ios::binary | std::ios::trunc);
+  if (!output)
+    return false;
+  output.write(reinterpret_cast<const char *>(normalized.data()),
+               static_cast<std::streamsize>(normalized.size()));
+  return static_cast<bool>(output);
 }
 
 void LoomSpatialBridge::completeInvocation() {
@@ -446,31 +541,20 @@ void LoomSpatialBridge::completeInvocation() {
   completedResults.results.push_back({pendingCompletion.status,
                                       lastCompletionTick, nextSequence,
                                       pendingCompletion.result});
-  const std::vector<std::uint8_t> normalized =
-      loom::runtime::encodeGem5BridgeResultCollection(completedResults);
-  if (normalized.size() > maximumMessageBytes) {
+  if (!publishResults()) {
     completedResults.results.pop_back();
-    fail(21, "normalized result collection exceeds the bridge limit");
-    return;
-  }
-  std::ofstream output(resultPath, std::ios::binary | std::ios::trunc);
-  if (!output) {
-    fail(15, "could not create the normalized result");
-    return;
-  }
-  output.write(reinterpret_cast<const char *>(normalized.data()),
-               static_cast<std::streamsize>(normalized.size()));
-  if (!output) {
     fail(16, "could not write the normalized result");
     return;
   }
   errorCode = pendingCompletion.status;
   state = pendingCompletion.status == 0 ? State::Complete : State::Failed;
+  ++performanceStatistics.invocationCount;
   engineCompletionReceived = false;
   ++nextSequence;
 }
 
 void LoomSpatialBridge::fail(std::uint32_t code, const std::string &message) {
+  finishEngineWait();
   warn("LoomSpatialBridge failed: %s", message.c_str());
   errorCode = code;
   state = State::Failed;
@@ -478,6 +562,7 @@ void LoomSpatialBridge::fail(std::uint32_t code, const std::string &message) {
 
 void LoomSpatialBridge::resetBridge() {
   panic_if(dmaPending(), "cannot reset LoomSpatialBridge with pending DMA");
+  engineWaitStarted.reset();
   if (launchEvent.scheduled())
     deschedule(&launchEvent);
   if (staticLaunchCompletionEvent.scheduled())
