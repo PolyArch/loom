@@ -31,7 +31,6 @@ struct GroundTruthEvidencePartitions final {
 struct GroundTruthModelTrack final {
   GroundTruthEvidencePartitions evidence;
   DeterministicGbdtTrainingConfig training;
-  evaluation::ExactRatio calibrationQuantile;
   evaluation::DecimalValue maximumValidationError;
   evaluation::DecimalValue maximumHeldOutError;
 };

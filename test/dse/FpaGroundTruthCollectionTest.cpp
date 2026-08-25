@@ -285,8 +285,8 @@ void verifyCalibrationEvidence(const ArtifactRootReference &calibrationEvidence,
   EvaluationEvidence evidence = take(importEvaluationEvidence(
       calibrationEvidence, resolution, artifacts, blobs));
   const auto *completed = std::get_if<CompletedEvidence>(&evidence.outcome());
-  if (!completed || completed->metricResults.size() != 4)
-    fail("calibration Evidence did not contain four completed FPA errors");
+  if (!completed || completed->metricResults.size() != 8)
+    fail("calibration Evidence did not contain median and P90 FPA errors");
 }
 
 void exerciseGroundTruthCampaign() {
@@ -536,8 +536,7 @@ void exerciseGroundTruthCampaign() {
       GroundTruthEvidencePartitions{
           {evidence[0]}, {evidence[1]}, {evidence[2]}, std::nullopt},
       DeterministicGbdtTrainingConfig{7, 1, 1, 1, 1, 2},
-      take(ExactRatio::get(9, 10)), take(DecimalValue::get(0, 0)),
-      take(DecimalValue::get(0, 0))};
+      take(DecimalValue::get(0, 0)), take(DecimalValue::get(0, 0))};
   ResolvedGroundTruthPlan modelPlan = take(
       buildGroundTruthPlan(defaultResolvedConfig(), std::move(modelInputs)));
   const ArtifactIdentity storedModelConfig = take(

@@ -266,19 +266,24 @@ llvm::Expected<EvaluationModelResult> evaluateRuntime(
       return error.takeError();
     errors.push_back(*error);
   }
-  if (request.metricRequests().size() != 1 ||
-      request.metricRequests().front().query().metric !=
-          MetricKind::RuntimePredictionError)
+  std::vector<MetricResult> results;
+  results.reserve(request.metricRequests().size());
+  for (const MetricRequest &metric : request.metricRequests()) {
+    if (metric.query().metric != MetricKind::RuntimePredictionError)
+      return invalid("System Runtime calibration metric shape is invalid");
+    auto probability = quantile(metric);
+    if (!probability)
+      return probability.takeError();
+    auto value = nearestRank(errors, *probability);
+    if (!value)
+      return value.takeError();
+    results.push_back({UncertaintyKind::Unquantified,
+                       PointObservation{MetricValue{*value}},
+                       {}});
+  }
+  if (results.empty())
     return invalid("System Runtime calibration metric shape is invalid");
-  auto probability = quantile(request.metricRequests().front());
-  if (!probability)
-    return probability.takeError();
-  auto value = nearestRank(errors, *probability);
-  if (!value)
-    return value.takeError();
-  MetricResult result{
-      UncertaintyKind::Unquantified, PointObservation{MetricValue{*value}}, {}};
-  return EvaluationModelResult{{}, CompletedEvidence{{std::move(result)}, {}}};
+  return EvaluationModelResult{{}, CompletedEvidence{std::move(results), {}}};
 }
 
 EvaluationModelDescriptorRef modelRef(BuiltinEvaluationModel model) {
