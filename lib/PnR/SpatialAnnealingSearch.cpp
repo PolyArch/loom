@@ -75,12 +75,17 @@ llvm::Error addCount(std::uint64_t &target, std::uint64_t amount,
 }
 
 llvm::Expected<bool>
-spatialMappingIsCapacityRepairReady(const SpatialCandidateState &candidate) {
+spatialMappingIsExactRepairReady(const SpatialCandidateState &candidate) {
   for (std::uint32_t ordinal = 0;
        ordinal != resolvedPnrViolationKindCount; ++ordinal) {
     const auto kind = static_cast<ResolvedPnrViolationKind>(ordinal);
     if (kind == ResolvedPnrViolationKind::CapacityOveruse)
       continue;
+    if (kind == ResolvedPnrViolationKind::HardProgressViolation) {
+      if (candidate.progress().routeDependencyViolationCount() != 0)
+        return false;
+      continue;
+    }
     auto value = spatialMappingViolationValue(candidate, kind);
     if (!value)
       return value.takeError();
@@ -520,7 +525,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                               [&](llvm::json::Object &fields) {
                                 fields["operation"] = "annealing_incumbent";
                                 fields["seed_attempt"] = seedAttemptOrdinal;
-                                fields["reason"] = "capacity_repair_handoff";
+                                fields["reason"] = "exact_repair_handoff";
                                 fields["temperature_levels"] =
                                     statistics.temperatureLevelCount;
                               });
@@ -874,7 +879,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
           fields["objective_codes"] = std::move(objectiveCodes);
           fields["exact_closure"] = statistics.exactClosureReached;
         });
-    auto repairReady = spatialMappingIsCapacityRepairReady(candidate);
+    auto repairReady = spatialMappingIsExactRepairReady(candidate);
     if (!repairReady)
       return repairReady.takeError();
     if (*repairReady &&
