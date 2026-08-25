@@ -1754,6 +1754,8 @@ void emitApplicationMappingDiagnostics(
                 accounting.unmatchedHints;
             payload["resource_time_transition_unsupported_hints"] =
                 accounting.transitionUnsupportedHints;
+            payload["resource_time_transition_proof_failures"] =
+                accounting.transitionProofFailures;
             payload["resource_time_verified_scenarios"] =
                 accounting.verifiedScenarios;
             payload["resource_time_independent_mapping_imports"] =

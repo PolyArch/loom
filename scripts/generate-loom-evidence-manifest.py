@@ -767,6 +767,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                             "resource_time_materialized_scenarios",
                             "resource_time_unmatched_hints",
                             "resource_time_transition_unsupported_hints",
+                            "resource_time_transition_proof_failures",
                             "resource_time_verification_incomplete_reason",
                             "system_mappings",
                             "incomplete_reason",

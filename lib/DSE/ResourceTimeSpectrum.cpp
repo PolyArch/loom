@@ -192,7 +192,8 @@ materializeHint(
     llvm::ArrayRef<ImportedMappingProjection> mappings,
     llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> mappingPath,
     const ArtifactStore &store, const BlobStore *blobs,
-    ResourceTimeSpectrumFunnelAccounting &accounting) {
+    ResourceTimeSpectrumFunnelAccounting &accounting,
+    std::optional<std::string> &firstTransitionProofDiagnostic) {
   if (hint.states.size() != hint.actions.size() + 1)
     return invalid("resource-time hint action/state lineage is incomplete");
   // A resource-time schedule may change allocation at an event boundary.
@@ -413,8 +414,12 @@ materializeHint(
             transition, store, *blobs);
         if (finalized)
           transition = std::move(*finalized);
-        else
-          llvm::consumeError(finalized.takeError());
+        else {
+          ++accounting.transitionProofFailures;
+          std::string diagnostic = llvm::toString(finalized.takeError());
+          if (!firstTransitionProofDiagnostic)
+            firstTransitionProofDiagnostic = std::move(diagnostic);
+        }
       }
     }
     scenario.transitions.transitions.push_back(std::move(transition));
@@ -796,6 +801,7 @@ verifyResourceTimeMappingFinalists(
     llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> mappingPath) {
   const auto begin = std::chrono::steady_clock::now();
   ResourceTimeSpectrumFunnelAccounting accounting;
+  std::optional<std::string> firstTransitionProofDiagnostic;
   accounting.hintCandidates = hints.size();
   if (hints.empty() || regions.empty() || bounds.size() != regions.size() ||
       systemMappings.empty())
@@ -960,8 +966,9 @@ verifyResourceTimeMappingFinalists(
       ++accounting.transitionUnsupportedHints;
       continue;
     }
-    auto scenario = materializeHint(hint, regions, imported, mappingPath, store,
-                                    blobs, accounting);
+    auto scenario =
+        materializeHint(hint, regions, imported, mappingPath, store, blobs,
+                        accounting, firstTransitionProofDiagnostic);
     if (!scenario)
       return scenario.takeError();
     if (*scenario) {
@@ -993,6 +1000,11 @@ verifyResourceTimeMappingFinalists(
                                              executionControl, blobs);
   if (!verified)
     return verified.takeError();
+  if (firstTransitionProofDiagnostic)
+    if (auto *incomplete =
+            std::get_if<IncompleteResourceTimeSpectrum>(&*verified))
+      incomplete->diagnostic += ": transition finalization failed: " +
+                                *firstTransitionProofDiagnostic;
   // The independent verifier reuses the same invocation-owned immutable
   // SystemMapping session. Refresh the accounting after it runs so the
   // evidence covers both finalist projection and verifier imports.

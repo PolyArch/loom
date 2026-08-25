@@ -102,6 +102,7 @@ struct ResourceTimeSpectrumFunnelAccounting final {
   std::uint64_t materializedScenarios = 0;
   std::uint64_t unmatchedHints = 0;
   std::uint64_t transitionUnsupportedHints = 0;
+  std::uint64_t transitionProofFailures = 0;
   std::uint64_t verifiedScenarios = 0;
   std::uint64_t mappingImportRequests = 0;
   std::uint64_t mappingImportCacheHits = 0;
