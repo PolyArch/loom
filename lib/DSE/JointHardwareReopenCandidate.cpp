@@ -442,6 +442,9 @@ static llvm::Expected<dse::DsePlanExecutionResult> executeResolvedGeneratePlan(
     const JointHardwareReopenRequest &request, dse::SiteScheduler &scheduler,
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const PlanExecutionPolicy *executionPolicy = nullptr) {
+  semanticInputs.insert(semanticInputs.end(),
+                        request.invocationSemanticInputs.begin(),
+                        request.invocationSemanticInputs.end());
   canonicalizeRoots(semanticInputs);
   auto publishedConfig = artifacts.put(ResolvedConfig::artifactSchema,
                                        canonicalResolvedConfigBytes(config));

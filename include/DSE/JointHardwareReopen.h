@@ -11,6 +11,7 @@
 
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace loom {
@@ -70,6 +71,28 @@ struct JointSpatialTransportMappingRepair final {
 };
 
 struct JointHardwareReopenRequest final {
+  JointHardwareReopenRequest(
+      DseProducerSemanticBuildIdentity producer, std::string journalRoot,
+      std::vector<ArtifactRootReference> evidence,
+      JointDesignStoppingPolicy stoppingPolicy,
+      std::optional<JointBoundedQualityPolicy> boundedQuality,
+      std::optional<std::uint64_t> maximumUsefulAccCoreCount,
+      SiteCapacity siteCapacity, PlanExecutionPolicy executionPolicy,
+      PreMappingSpectrumEndpoint spectrumEndpoint =
+          PreMappingSpectrumEndpoint::Automatic,
+      JointHardwareExplorationScope hardwareExplorationScope =
+          JointHardwareExplorationScope::BoundedHardwareReopen,
+      std::vector<ArtifactRootReference> invocationSemanticInputs = {})
+      : producer(std::move(producer)), journalRoot(std::move(journalRoot)),
+        evidence(std::move(evidence)), stoppingPolicy(stoppingPolicy),
+        boundedQuality(std::move(boundedQuality)),
+        maximumUsefulAccCoreCount(maximumUsefulAccCoreCount),
+        siteCapacity(std::move(siteCapacity)),
+        executionPolicy(std::move(executionPolicy)),
+        spectrumEndpoint(spectrumEndpoint),
+        hardwareExplorationScope(hardwareExplorationScope),
+        invocationSemanticInputs(std::move(invocationSemanticInputs)) {}
+
   DseProducerSemanticBuildIdentity producer;
   std::string journalRoot;
   std::vector<ArtifactRootReference> evidence;
@@ -89,6 +112,10 @@ struct JointHardwareReopenRequest final {
       PreMappingSpectrumEndpoint::Automatic;
   JointHardwareExplorationScope hardwareExplorationScope =
       JointHardwareExplorationScope::BoundedHardwareReopen;
+  /// Invocation-level immutable inputs consumed by ranking or stopping policy
+  /// but not owned by the Mapping plan. They join every parent and repair
+  /// closure and remain ordinary semantic inputs rather than Evidence.
+  std::vector<ArtifactRootReference> invocationSemanticInputs;
 };
 
 struct JointResourceTimeAdjacentRepair final {

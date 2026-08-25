@@ -844,20 +844,33 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   const std::array adjacentPartitions = {
       loom::pnr::SystemBindingPartitionIntent{mappedRoots.front(), 2}};
   const std::array adjacentRoots = {mappedRoots.front()};
+  loom::dse::JointHardwareReopenRequest adjacentRequest{
+      take(loom::dse::DseProducerSemanticBuildIdentity::get(
+          "loom.test.resource_time_adjacent.v1")),
+      adjacentJournal.str().str(),
+      {},
+      loom::dse::JointDesignStoppingPolicy::FirstVerified,
+      std::nullopt,
+      std::nullopt,
+      take(loom::dse::SiteCapacity::get(2, 0, 0)),
+      take(loom::dse::PlanExecutionPolicy::get(
+          2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))};
+  adjacentRequest.invocationSemanticInputs = {alternateSystem};
   const auto adjacentRepair =
       take(loom::dse::executeResourceTimeAdjacentMappingRepair(
           plan, parentExecution, policy, adjacentPartitions, adjacentRoots,
-          {take(loom::dse::DseProducerSemanticBuildIdentity::get(
-               "loom.test.resource_time_adjacent.v1")),
-           adjacentJournal.str().str(),
-           {},
-           loom::dse::JointDesignStoppingPolicy::FirstVerified,
-           std::nullopt,
-           std::nullopt,
-           take(loom::dse::SiteCapacity::get(2, 0, 0)),
-           take(loom::dse::PlanExecutionPolicy::get(
-               2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
-          store, blobs));
+          std::move(adjacentRequest), store, blobs));
+  std::vector<loom::ArtifactRootReference> adjacentSemanticInputs =
+      loom::dse::projectJointDesignSemanticInputs(adjacentRepair.plan);
+  adjacentSemanticInputs.push_back(alternateSystem);
+  const auto adjacentClosure = take(loom::dse::DseRunClosure::get(
+      take(loom::dse::DseProducerSemanticBuildIdentity::get(
+          "loom.test.resource_time_adjacent.v1")),
+      adjacentSemanticInputs, adjacentRepair.plan.resolvedConfig, {}, store));
+  if (!adjacentRepair.execution.summary.invocationRunKey ||
+      *adjacentRepair.execution.summary.invocationRunKey !=
+          adjacentClosure.runKey().bytes())
+    fail("adjacent repair closure omitted its invocation semantic input");
   const auto adjacentSeed = take(loom::pnr::importSystemMappingMigrationSeed(
       adjacentRepair.migrationSeed, store));
   if (adjacentSeed.reopenedRoots() !=

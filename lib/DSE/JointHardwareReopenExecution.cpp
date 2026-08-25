@@ -11,6 +11,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
+#include <algorithm>
 #include <system_error>
 
 namespace loom::dse {
@@ -40,6 +41,14 @@ executeJointPlan(const JointDesignExplorationPlan &plan,
     return invalid("ResolvedConfig publication changed its identity");
   std::vector<ArtifactRootReference> semanticInputs =
       projectJointDesignSemanticInputs(plan);
+  semanticInputs.insert(semanticInputs.end(),
+                        request.invocationSemanticInputs.begin(),
+                        request.invocationSemanticInputs.end());
+  std::sort(semanticInputs.begin(), semanticInputs.end(),
+            artifactRootReferenceLess);
+  semanticInputs.erase(
+      std::unique(semanticInputs.begin(), semanticInputs.end()),
+      semanticInputs.end());
   auto closure = DseRunClosure::get(request.producer, semanticInputs, config,
                                     evidence, artifacts);
   if (!closure)
