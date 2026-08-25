@@ -231,6 +231,7 @@ private:
   std::vector<PnrIndex> routeCostTraversals_;
   std::vector<PnrIndex> routeCostLogicalNets_;
   std::vector<std::uint64_t> localTransferClaimBits_;
+  std::vector<PnrIndex> localTransferClaimWords_;
   std::unique_ptr<detail::InitializerRelationSolver> relationSolver_;
   std::unique_ptr<detail::SpatialMemoryConstraintScratch>
       memoryConstraintScratch_;
@@ -256,6 +257,7 @@ private:
   std::vector<PnrIndex> explicitMemoryExposureSelections_;
   std::vector<std::uint8_t> explicitMemoryExposureMarks_;
   std::uint64_t netEpoch_ = 0;
+  std::uint8_t dependencyEpoch_ = 0;
   SpatialCandidateState *candidate_ = nullptr;
   bool activeProbe_ = false;
   bool globalRouting_ = false;

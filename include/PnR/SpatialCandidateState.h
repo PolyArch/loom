@@ -130,6 +130,7 @@ private:
   };
 
   void beginTransaction();
+  void advanceProgressRouteDeltaEpoch();
   void resetTransaction();
 
   std::vector<std::unique_ptr<RouteTreeTransactionScratch>> routeScratch_;
@@ -198,6 +199,8 @@ private:
   std::size_t resourcePartiallyAppliedDeltaCount_ = 0;
 
   std::vector<std::size_t> progressRecordedRouteDeltaCounts_;
+  std::vector<std::uint64_t> progressRecordedRouteDeltaEpochs_;
+  std::uint64_t progressRecordedRouteDeltaEpoch_ = 0;
   std::vector<std::uint8_t> progressTerminalActive_;
   std::vector<ProgressTraversalDelta> progressTraversalDeltas_;
   std::vector<std::uint8_t> progressDirtyNetMarks_;
