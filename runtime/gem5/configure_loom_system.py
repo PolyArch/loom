@@ -33,7 +33,7 @@ from m5.objects import (
 
 
 CONFIG_SCHEMA = "loom.gem5_system_projection.10"
-PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.2"
+PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.3"
 STATISTICS_BEGIN = "---------- Begin Simulation Statistics ----------"
 STATISTICS_END = "---------- End Simulation Statistics   ----------"
 
@@ -42,6 +42,7 @@ BRIDGE_STAT_SUFFIXES = {
     "bridge_engine_wait_nanoseconds": ".loomPerformance.engineWaitNanoseconds",
     "bridge_message_count": ".loomPerformance.messageCount",
     "accelerator_invocation_count": ".loomPerformance.invocationCount",
+    "bridge_clock_failure_count": ".loomPerformance.clockFailureCount",
 }
 
 
@@ -400,7 +401,7 @@ def build_processor(processor: dict, ordinal: int):
     )
 
 
-def build_system(projection: dict) -> RiscvSystem:
+def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
     memory = projection["memory"]
     require_keys(memory, {"base", "size", "latency"}, "memory")
     host = projection["host"]
@@ -558,6 +559,7 @@ def build_system(projection: dict) -> RiscvSystem:
             result_path=bridge["result_path"],
             max_message_bytes=bridge["maximum_message_bytes"],
             max_invocations=bridge["maximum_invocations"],
+            collect_performance=collect_performance,
         )
         device.pio = system.membus.mem_side_ports
         device.dma = system.membus.cpu_side_ports
@@ -585,14 +587,15 @@ def main() -> None:
     )
     performance = None
     try:
-        system = build_system(projection)
+        system = build_system(projection, diagnostics)
         Root(full_system=True, system=system)
+        m5.instantiate()
+        configuration_finished = time.monotonic_ns() if diagnostics else None
+        entry_tick = int(m5.curTick())
         simulation_cpu_before = (
             resource.getrusage(resource.RUSAGE_SELF) if diagnostics else None
         )
         simulation_started = time.monotonic_ns() if diagnostics else None
-        m5.instantiate()
-        entry_tick = int(m5.curTick())
         event = m5.simulate(projection["maximum_ticks"])
         simulation_finished = time.monotonic_ns() if diagnostics else None
         simulation_cpu_after = (
@@ -625,6 +628,7 @@ def main() -> None:
             observation_cpu_after = resource.getrusage(resource.RUSAGE_SELF)
             if None in (
                 configuration_started,
+                configuration_finished,
                 simulation_cpu_before,
                 simulation_started,
                 simulation_finished,
@@ -637,15 +641,12 @@ def main() -> None:
             performance = {
                 "schema": PERFORMANCE_PROFILE_SCHEMA,
                 "configuration_wall_nanoseconds": (
-                    simulation_started - configuration_started
+                    configuration_finished - configuration_started
                 ),
-                "active_wall_nanoseconds": (
-                    simulation_finished
-                    - simulation_started
-                    + observation_finished
-                    - observation_started
+                "simulation_wall_nanoseconds": (
+                    simulation_finished - simulation_started
                 ),
-                "gem5_active_cpu_nanoseconds": elapsed_cpu_nanoseconds(
+                "gem5_simulation_cpu_nanoseconds": elapsed_cpu_nanoseconds(
                     simulation_cpu_before, simulation_cpu_after
                 ),
                 "observation_wall_nanoseconds": (

@@ -798,11 +798,12 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
   auto outcome = loom::sim::simulateCgraWorkload(
       prepared, workload.workload, runtimeInput, maximumWork, std::nullopt,
       externalMemoryProvider);
-  const auto wallFinished = std::chrono::steady_clock::now();
   if (!outcome)
     return outcome.takeError();
   std::optional<std::uint64_t> cpuFinished;
+  std::optional<std::chrono::steady_clock::time_point> wallFinished;
   if (performanceProfile) {
+    wallFinished = std::chrono::steady_clock::now();
     auto currentCpu = engineProcessCpuNanoseconds();
     if (!currentCpu)
       return currentCpu.takeError();
@@ -1070,7 +1071,7 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
   }
   if (performanceProfile) {
     const auto elapsedWall =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(wallFinished -
+        std::chrono::duration_cast<std::chrono::nanoseconds>(*wallFinished -
                                                              *wallStarted)
             .count();
     if (elapsedWall < 0 || *cpuFinished < *cpuStarted)

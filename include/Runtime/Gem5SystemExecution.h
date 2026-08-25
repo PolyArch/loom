@@ -19,8 +19,8 @@ struct Gem5CgraEngineAttemptProfile final {
 
 struct Gem5SystemAttemptProfile final {
   std::uint64_t configurationWallNanoseconds = 0;
-  std::uint64_t activeWallNanoseconds = 0;
-  std::uint64_t gem5ActiveProcessCpuNanoseconds = 0;
+  std::uint64_t simulationWallNanoseconds = 0;
+  std::uint64_t gem5SimulationProcessCpuNanoseconds = 0;
   std::uint64_t observationWallNanoseconds = 0;
   std::uint64_t observationProcessCpuNanoseconds = 0;
   std::optional<std::uint64_t> engineProcessCpuNanoseconds;
@@ -28,6 +28,7 @@ struct Gem5SystemAttemptProfile final {
   std::uint64_t bridgeEngineWaitNanoseconds = 0;
   std::uint64_t bridgeMessageCount = 0;
   std::uint64_t acceleratorInvocationCount = 0;
+  std::uint64_t bridgeClockFailureCount = 0;
   std::uint64_t bridgeCount = 0;
   std::optional<Gem5CgraEngineAttemptProfile> cgraEngine;
 };
@@ -39,14 +40,14 @@ struct Gem5SpatialInvocationProjection final {
   std::uint64_t launchOrdinal = 0;
   std::uint64_t completionGem5Tick = 0;
   sim::SpatialProgressObservations progress;
-  std::uint64_t acceleratorReferenceCycles = 0;
+  std::optional<std::uint64_t> acceleratorReferenceCycles;
 };
 
 /// Attempt-local operational observations from one explicitly fresh gem5
 /// diagnostic invocation. The ordinary Evaluation provider never requires or
 /// imports these observations.
 struct Gem5SystemDiagnosticEvaluation final {
-  evaluation::EvaluationModelResult result;
+  evaluation::EvaluationEvidence evidence;
   std::vector<Gem5SpatialInvocationProjection> spatialInvocations;
   Gem5SystemAttemptProfile attemptProfile;
 };

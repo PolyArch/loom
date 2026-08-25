@@ -93,7 +93,9 @@ LoomSpatialBridge::PerformanceStatistics::PerformanceStatistics(
       ADD_STAT(messageCount, statistics::units::Count::get(),
                "Canonical Spatial engine messages consumed"),
       ADD_STAT(invocationCount, statistics::units::Count::get(),
-               "Spatial invocations completed") {}
+               "Spatial invocations completed"),
+      ADD_STAT(clockFailureCount, statistics::units::Count::get(),
+               "Host performance clock samples that failed") {}
 
 LoomSpatialBridge::EngineResponseEvent::EngineResponseEvent(
     LoomSpatialBridge &bridge, int descriptor)
@@ -129,6 +131,7 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
       engineSocketPath(params.engine_socket), resultPath(params.result_path),
       maximumMessageBytes(params.max_message_bytes),
       maximumInvocations(params.max_invocations),
+      collectPerformance(params.collect_performance),
       launchEvent(
           [this] { runAccounted(&LoomSpatialBridge::fetchStaticLaunch); },
           name() + ".launch"),
@@ -155,7 +158,7 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
            "LoomSpatialBridge message limit exceeds the DMA size domain");
   panic_if(maximumInvocations == 0,
            "LoomSpatialBridge invocation limit must be positive");
-  panic_if(!publishResults(),
+  panic_if(publishResults() != ResultPublication::Published,
            "LoomSpatialBridge could not publish its empty result");
 }
 
@@ -185,7 +188,7 @@ std::uint32_t LoomSpatialBridge::status() const {
 }
 
 Tick LoomSpatialBridge::read(PacketPtr packet) {
-  const std::optional<std::uint64_t> cpuStarted = threadCpuNanoseconds();
+  const CallbackAccounting accounting = beginCallbackAccounting();
   const Addr offset = packet->getAddr() - pioAddress;
   panic_if(packet->getSize() != 4,
            "LoomSpatialBridge requires 32-bit MMIO accesses");
@@ -233,14 +236,12 @@ Tick LoomSpatialBridge::read(PacketPtr packet) {
   }
   packet->setUintX(value, ByteOrder::little);
   packet->makeAtomicResponse();
-  const std::optional<std::uint64_t> cpuFinished = threadCpuNanoseconds();
-  if (cpuStarted && cpuFinished && *cpuFinished >= *cpuStarted)
-    performanceStatistics.callbackCpuNanoseconds += *cpuFinished - *cpuStarted;
+  finishCallbackAccounting(accounting);
   return pioDelay;
 }
 
 Tick LoomSpatialBridge::write(PacketPtr packet) {
-  const std::optional<std::uint64_t> cpuStarted = threadCpuNanoseconds();
+  const CallbackAccounting accounting = beginCallbackAccounting();
   const Addr offset = packet->getAddr() - pioAddress;
   panic_if(packet->getSize() != 4,
            "LoomSpatialBridge requires 32-bit MMIO accesses");
@@ -294,9 +295,7 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
     }
   }
   packet->makeAtomicResponse();
-  const std::optional<std::uint64_t> cpuFinished = threadCpuNanoseconds();
-  if (cpuStarted && cpuFinished && *cpuFinished >= *cpuStarted)
-    performanceStatistics.callbackCpuNanoseconds += *cpuFinished - *cpuStarted;
+  finishCallbackAccounting(accounting);
   return pioDelay;
 }
 
@@ -390,16 +389,40 @@ bool LoomSpatialBridge::receiveMessage(
   return loom::runtime::decodeGem5BridgeWireMessage(bytes, message, diagnostic);
 }
 
+LoomSpatialBridge::CallbackAccounting
+LoomSpatialBridge::beginCallbackAccounting() {
+  if (!collectPerformance)
+    return {};
+  const std::optional<std::uint64_t> started = threadCpuNanoseconds();
+  if (!started) {
+    ++performanceStatistics.clockFailureCount;
+    return {};
+  }
+  return CallbackAccounting{*started, true};
+}
+
+void LoomSpatialBridge::finishCallbackAccounting(
+    CallbackAccounting accounting) {
+  if (!accounting.valid)
+    return;
+  const std::optional<std::uint64_t> finished = threadCpuNanoseconds();
+  if (!finished || *finished < accounting.started) {
+    ++performanceStatistics.clockFailureCount;
+    return;
+  }
+  performanceStatistics.callbackCpuNanoseconds +=
+      *finished - accounting.started;
+}
+
 void LoomSpatialBridge::runAccounted(void (LoomSpatialBridge::*action)()) {
-  const std::optional<std::uint64_t> cpuStarted = threadCpuNanoseconds();
+  const CallbackAccounting accounting = beginCallbackAccounting();
   (this->*action)();
-  const std::optional<std::uint64_t> cpuFinished = threadCpuNanoseconds();
-  if (cpuStarted && cpuFinished && *cpuFinished >= *cpuStarted)
-    performanceStatistics.callbackCpuNanoseconds += *cpuFinished - *cpuStarted;
+  finishCallbackAccounting(accounting);
 }
 
 void LoomSpatialBridge::startEngineWait() {
-  engineWaitStarted = std::chrono::steady_clock::now();
+  if (collectPerformance)
+    engineWaitStarted = std::chrono::steady_clock::now();
 }
 
 void LoomSpatialBridge::finishEngineWait() {
@@ -521,17 +544,17 @@ void LoomSpatialBridge::completeMemoryRequest() {
   state = State::Running;
 }
 
-bool LoomSpatialBridge::publishResults() {
+LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
   const std::vector<std::uint8_t> normalized =
       loom::runtime::encodeGem5BridgeResultCollection(completedResults);
   if (normalized.size() > maximumMessageBytes)
-    return false;
+    return ResultPublication::TooLarge;
   std::ofstream output(resultPath, std::ios::binary | std::ios::trunc);
   if (!output)
-    return false;
+    return ResultPublication::OpenFailed;
   output.write(reinterpret_cast<const char *>(normalized.data()),
                static_cast<std::streamsize>(normalized.size()));
-  return static_cast<bool>(output);
+  return output ? ResultPublication::Published : ResultPublication::WriteFailed;
 }
 
 void LoomSpatialBridge::completeInvocation() {
@@ -541,9 +564,22 @@ void LoomSpatialBridge::completeInvocation() {
   completedResults.results.push_back({pendingCompletion.status,
                                       lastCompletionTick, nextSequence,
                                       pendingCompletion.result});
-  if (!publishResults()) {
+  const ResultPublication publication = publishResults();
+  if (publication != ResultPublication::Published) {
     completedResults.results.pop_back();
-    fail(16, "could not write the normalized result");
+    switch (publication) {
+    case ResultPublication::TooLarge:
+      fail(21, "normalized result collection exceeds the bridge limit");
+      break;
+    case ResultPublication::OpenFailed:
+      fail(15, "could not create the normalized result");
+      break;
+    case ResultPublication::WriteFailed:
+      fail(16, "could not write the normalized result");
+      break;
+    case ResultPublication::Published:
+      panic("published result classified as a publication failure");
+    }
     return;
   }
   errorCode = pendingCompletion.status;

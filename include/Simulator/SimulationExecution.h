@@ -61,13 +61,6 @@ struct SpatialEventCoordinate {
 int compareSpatialEventCoordinates(const SpatialEventCoordinate &lhs,
                                    const SpatialEventCoordinate &rhs);
 
-/// Returns the exact integral reference-cycle distance when `to` does not
-/// precede `from`; nonintegral, reversed, or overflowing intervals have no
-/// integral projection.
-std::optional<std::uint64_t>
-integralSpatialReferenceCycleDistance(const SpatialEventCoordinate &from,
-                                      const SpatialEventCoordinate &to);
-
 struct SpatialProgressObservations {
   SpatialEventCoordinate launchAccepted;
   std::optional<SpatialEventCoordinate> graphRetirementVisible;

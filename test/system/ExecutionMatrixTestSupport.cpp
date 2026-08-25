@@ -1289,16 +1289,17 @@ sim::CanonicalSimulationExecution importDiagnosticExecution(
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   require(test,
-          std::holds_alternative<evaluation::CompletedEvidence>(
-              diagnostics.result.outcome),
+          diagnostics.evidence.outcomeKind() ==
+              evaluation::EvidenceOutcomeKind::Completed,
           "diagnostic gem5 attempt did not complete");
   require(test,
-          diagnostics.result.outputBindings.size() == 1 &&
-              diagnostics.result.outputBindings.front().artifacts.size() == 1,
+          diagnostics.evidence.outputBindings().size() == 1 &&
+              diagnostics.evidence.outputBindings().front().artifacts.size() ==
+                  1,
           "diagnostic gem5 attempt did not publish one SimulationExecution");
   auto execution = take(
       test, sim::importSimulationExecution(
-                diagnostics.result.outputBindings.front().artifacts.front(),
+                diagnostics.evidence.outputBindings().front().artifacts.front(),
                 resolution, artifacts, blobs));
   require(test,
           execution.request() ==
@@ -1364,7 +1365,8 @@ CompletedRun runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
                            const SharedFixture &fixture,
                            const Gem5Readiness &readiness,
                            ArtifactStore &artifacts, BlobStore &blobs,
-                           const deployment::test::TemporaryTree &tree) {
+                           const deployment::test::TemporaryTree &tree,
+                           bool collectDiagnostics) {
   auto gem5Binding =
       buildGem5Binding(test, fixture.hardware.system, fixture.interconnect,
                        readiness.buildIdentity, artifacts);
@@ -1398,61 +1400,55 @@ CompletedRun runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
   CompletedRun completed =
       runExternal(test, request, resolution, local, tree.path("system-bundle"),
                   artifacts, blobs);
-  runtime::Gem5SystemDiagnosticEvaluation diagnostics = runGem5Diagnostic(
-      test, request, resolution, std::move(local),
-      tree.path("system-diagnostic-bundle"), artifacts, blobs);
-  sim::CanonicalSimulationExecution diagnosticExecution =
-      importDiagnosticExecution(test, diagnostics, request, resolution,
-                                artifacts, blobs);
-  const auto *ordinarySystem = completed.execution.system();
-  const auto *diagnosticSystem = diagnosticExecution.system();
-  require(test, ordinarySystem && diagnosticSystem,
-          "ordinary and diagnostic attempts did not publish System executions");
-  require(test,
-          sim::haveExactlyEqualSystemFunctionalObservations(
-              ordinarySystem->functionalObservations,
-              diagnosticSystem->functionalObservations),
-          "ordinary and diagnostic functional observations differ");
-  const std::uint64_t ordinaryDeterministicWork =
-      deterministicWork(completed.execution);
-  const std::uint64_t diagnosticDeterministicWork =
-      deterministicWork(diagnosticExecution);
-  completed.diagnosticDeterministicWork = diagnosticDeterministicWork;
-  if (ordinaryDeterministicWork != diagnosticDeterministicWork)
-    llvm::outs() << "execution-matrix cell=" << test
-                 << " simulated_work_replay=timing_variant ordinary="
-                 << ordinaryDeterministicWork
-                 << " diagnostic=" << diagnosticDeterministicWork << '\n';
-  require(test,
-          diagnostics.attemptProfile.bridgeCount == 4 &&
-              diagnostics.attemptProfile.acceleratorInvocationCount ==
-                  diagnostics.spatialInvocations.size() &&
-              !diagnostics.spatialInvocations.empty(),
-          "gem5 diagnostics differ from the exact bridge execution");
-  std::uint64_t acceleratorReferenceCycles = 0;
-  for (const runtime::Gem5SpatialInvocationProjection &invocation :
-       diagnostics.spatialInvocations) {
+  if (collectDiagnostics) {
+    runtime::Gem5SystemDiagnosticEvaluation diagnostics = runGem5Diagnostic(
+        test, request, resolution, std::move(local),
+        tree.path("system-diagnostic-bundle"), artifacts, blobs);
+    sim::CanonicalSimulationExecution diagnosticExecution =
+        importDiagnosticExecution(test, diagnostics, request, resolution,
+                                  artifacts, blobs);
+    const auto *ordinarySystem = completed.execution.system();
+    const auto *diagnosticSystem = diagnosticExecution.system();
+    require(
+        test, ordinarySystem && diagnosticSystem,
+        "ordinary and diagnostic attempts did not publish System executions");
     require(test,
-            invocation.acceleratorReferenceCycles <=
-                std::numeric_limits<std::uint64_t>::max() -
-                    acceleratorReferenceCycles,
-            "accelerator cycle report overflows its domain");
-    acceleratorReferenceCycles += invocation.acceleratorReferenceCycles;
+            sim::haveExactlyEqualSystemFunctionalObservations(
+                ordinarySystem->functionalObservations,
+                diagnosticSystem->functionalObservations),
+            "ordinary and diagnostic functional observations differ");
+    const std::uint64_t ordinaryDeterministicWork =
+        deterministicWork(completed.execution);
+    const std::uint64_t diagnosticDeterministicWork =
+        deterministicWork(diagnosticExecution);
+    completed.diagnosticDeterministicWork = diagnosticDeterministicWork;
+    if (ordinaryDeterministicWork != diagnosticDeterministicWork)
+      llvm::outs() << "execution-matrix cell=" << test
+                   << " simulated_work_replay=timing_variant ordinary="
+                   << ordinaryDeterministicWork
+                   << " diagnostic=" << diagnosticDeterministicWork << '\n';
+    require(test,
+            diagnostics.attemptProfile.bridgeCount == 4 &&
+                diagnostics.attemptProfile.acceleratorInvocationCount ==
+                    diagnostics.spatialInvocations.size() &&
+                !diagnostics.spatialInvocations.empty(),
+            "gem5 diagnostics differ from the exact bridge execution");
+    if (cell == ExecutionMatrixCell::SystemCgra)
+      require(test,
+              diagnostics.attemptProfile.cgraEngine.has_value() &&
+                  diagnostics.attemptProfile.cgraEngine->invocationCount ==
+                      diagnostics.spatialInvocations.size(),
+              "CGRA engine diagnostics differ from bridge retirement");
+    else
+      require(test, !diagnostics.attemptProfile.cgraEngine.has_value(),
+              "non-CGRA execution published a CGRA engine profile");
+    require(
+        test,
+        diagnostics.attemptProfile.engineProcessCpuNanoseconds.has_value() ==
+            (cell != ExecutionMatrixCell::SystemRtl),
+        "gem5 engine CPU observation has the wrong ownership");
+    completed.gem5Diagnostics = std::move(diagnostics);
   }
-  if (cell == ExecutionMatrixCell::SystemCgra)
-    require(test,
-            diagnostics.attemptProfile.cgraEngine.has_value() &&
-                diagnostics.attemptProfile.cgraEngine->invocationCount ==
-                    diagnostics.spatialInvocations.size(),
-            "CGRA engine diagnostics differ from bridge retirement");
-  else
-    require(test, !diagnostics.attemptProfile.cgraEngine.has_value(),
-            "non-CGRA execution published a CGRA engine profile");
-  require(test,
-          diagnostics.attemptProfile.engineProcessCpuNanoseconds.has_value() ==
-              (cell != ExecutionMatrixCell::SystemRtl),
-          "gem5 engine CPU observation has the wrong ownership");
-  completed.gem5Diagnostics = std::move(diagnostics);
   if (cell == ExecutionMatrixCell::SystemCgra) {
     auto sample = take(
         test, evaluation::models::importSystemRuntimeTrainingEvidenceSample(
@@ -1520,24 +1516,40 @@ void recordRunStatistics(ExecutionMatrixCell cell,
     const runtime::Gem5SystemAttemptProfile &profile =
         completed.gem5Diagnostics->attemptProfile;
     std::uint64_t acceleratorReferenceCycles = 0;
+    std::uint64_t unavailableAcceleratorCycleCount = 0;
     for (const runtime::Gem5SpatialInvocationProjection &invocation :
-         completed.gem5Diagnostics->spatialInvocations)
-      acceleratorReferenceCycles += invocation.acceleratorReferenceCycles;
-    llvm::outs()
-        << " gem5_configuration_wall_us="
-        << profile.configurationWallNanoseconds / 1000
-        << " gem5_active_wall_us=" << profile.activeWallNanoseconds / 1000
-        << " gem5_active_cpu_us="
-        << profile.gem5ActiveProcessCpuNanoseconds / 1000
-        << " observation_wall_us=" << profile.observationWallNanoseconds / 1000
-        << " observation_cpu_us="
-        << profile.observationProcessCpuNanoseconds / 1000
-        << " bridge_callback_cpu_us="
-        << profile.bridgeCallbackCpuNanoseconds / 1000
-        << " bridge_wait_us=" << profile.bridgeEngineWaitNanoseconds / 1000
-        << " bridge_messages=" << profile.bridgeMessageCount
-        << " accelerator_invocations=" << profile.acceleratorInvocationCount
-        << " accelerator_cycles=" << acceleratorReferenceCycles;
+         completed.gem5Diagnostics->spatialInvocations) {
+      if (!invocation.acceleratorReferenceCycles) {
+        ++unavailableAcceleratorCycleCount;
+        continue;
+      }
+      require(cellName(cell),
+              *invocation.acceleratorReferenceCycles <=
+                  std::numeric_limits<std::uint64_t>::max() -
+                      acceleratorReferenceCycles,
+              "accelerator cycle report overflows its domain");
+      acceleratorReferenceCycles += *invocation.acceleratorReferenceCycles;
+    }
+    llvm::outs() << " gem5_configuration_wall_us="
+                 << profile.configurationWallNanoseconds / 1000
+                 << " gem5_simulation_wall_us="
+                 << profile.simulationWallNanoseconds / 1000
+                 << " gem5_simulation_cpu_us="
+                 << profile.gem5SimulationProcessCpuNanoseconds / 1000
+                 << " observation_wall_us="
+                 << profile.observationWallNanoseconds / 1000
+                 << " observation_cpu_us="
+                 << profile.observationProcessCpuNanoseconds / 1000
+                 << " bridge_callback_cpu_us="
+                 << profile.bridgeCallbackCpuNanoseconds / 1000
+                 << " bridge_wait_us="
+                 << profile.bridgeEngineWaitNanoseconds / 1000
+                 << " bridge_messages=" << profile.bridgeMessageCount
+                 << " accelerator_invocations="
+                 << profile.acceleratorInvocationCount
+                 << " accelerator_cycles=" << acceleratorReferenceCycles
+                 << " accelerator_cycle_unavailable_count="
+                 << unavailableAcceleratorCycleCount;
     if (profile.engineProcessCpuNanoseconds)
       llvm::outs() << " engine_process_cpu_us="
                    << *profile.engineProcessCpuNanoseconds / 1000;
@@ -1592,8 +1604,8 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixCell cell,
         cell == ExecutionMatrixCell::SpatialRtl)
       return runSpatialCell(test, cell, fixture, artifacts, blobs, tree);
     const Gem5Readiness readiness = readGem5Readiness(test, readinessPath);
-    return runSystemCell(test, cell, fixture, readiness, artifacts, blobs,
-                         tree);
+    return runSystemCell(test, cell, fixture, readiness, artifacts, blobs, tree,
+                         emitStatistics);
   }();
   const auto activeEnd = std::chrono::steady_clock::now();
   if (emitStatistics)
