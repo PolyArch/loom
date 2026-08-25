@@ -30,6 +30,7 @@ constexpr char runKeyDomain[] = "loom.dse.run_key.1.0\0";
 constexpr SchemaVersion legacyInvocationManifestSchemaVersion{1, 0};
 constexpr SchemaVersion operationalInvocationManifestSchemaVersion{1, 1};
 constexpr SchemaVersion typedRunClosureManifestSchemaVersion{1, 2};
+constexpr SchemaVersion preExternalToolWorkManifestSchemaVersion{1, 3};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -857,6 +858,7 @@ encodeManifest(const InvocationOccurrenceRef &occurrence,
                const InvocationControllerOutcome &outcome,
                const std::optional<InvocationOperationalObservations>
                    &operationalObservations,
+               const InvocationExternalToolWorkLedger &externalToolWork,
                SchemaVersion schemaVersion) {
   Encoder encoder;
   encoder.text(InvocationManifest::schemaIdentity);
@@ -896,7 +898,65 @@ encodeManifest(const InvocationOccurrenceRef &occurrence,
       }
     }
   }
+  if (schemaVersion == InvocationManifest::schemaVersion) {
+    auto encodeWork = [&](const ExternalToolWorkLedger &work) {
+      for (std::uint64_t value : externalToolWorkLedgerCounters(work))
+        encoder.u64(value);
+    };
+    encodeWork(externalToolWork.total());
+    encoder.u64(externalToolWork.planNodes().size());
+    for (const PlanNodeExternalToolWorkLedger &node :
+         externalToolWork.planNodes()) {
+      encoder.u64(node.planNodeOrdinal);
+      encodeWork(node.work);
+    }
+  }
   return encoder.take();
+}
+
+llvm::Expected<ExternalToolWorkLedger>
+decodeExternalToolWorkLedger(Decoder &decoder) {
+  ExternalToolWorkLedgerCounters values{};
+  for (std::uint64_t &value : values) {
+    auto decoded = decoder.u64("external-tool work ledger value");
+    if (!decoded)
+      return decoded.takeError();
+    value = *decoded;
+  }
+  return externalToolWorkLedgerFromCounters(values);
+}
+
+llvm::Expected<InvocationExternalToolWorkLedger>
+decodeInvocationExternalToolWorkLedger(Decoder &decoder) {
+  auto encodedTotal = decodeExternalToolWorkLedger(decoder);
+  if (!encodedTotal)
+    return encodedTotal.takeError();
+  auto count = decoder.u64("external-tool plan-node ledger count");
+  if (!count)
+    return count.takeError();
+  constexpr std::uint64_t encodedRowWidth =
+      (externalToolWorkLedgerCounterCount + 1) * sizeof(std::uint64_t);
+  if (*count > std::numeric_limits<std::size_t>::max() ||
+      *count > decoder.remaining() / encodedRowWidth)
+    return invalid("external-tool plan-node ledger count is not representable "
+                   "by the remaining wire");
+  std::vector<PlanNodeExternalToolWorkLedger> planNodes;
+  planNodes.reserve(static_cast<std::size_t>(*count));
+  for (std::uint64_t index = 0; index != *count; ++index) {
+    auto ordinal = decoder.u64("external-tool ledger plan node");
+    if (!ordinal)
+      return ordinal.takeError();
+    auto work = decodeExternalToolWorkLedger(decoder);
+    if (!work)
+      return work.takeError();
+    planNodes.push_back({*ordinal, *work});
+  }
+  auto ledger = InvocationExternalToolWorkLedger::get(planNodes);
+  if (!ledger)
+    return ledger.takeError();
+  if (ledger->total() != *encodedTotal)
+    return invalid("external-tool work total differs from plan-node rows");
+  return ledger;
 }
 
 llvm::Expected<std::optional<InvocationOperationalObservations>>
@@ -984,6 +1044,7 @@ llvm::Error validateManifest(
     const InvocationControllerOutcome &outcome,
     const std::optional<InvocationOperationalObservations>
         &operationalObservations,
+    const InvocationExternalToolWorkLedger &externalToolWork,
     const ResolvedDseConfigView &view, const ArtifactStore &store) {
   if (occurrence.runKey != closure.runKey())
     return invalid("occurrence run key disagrees with its semantic closure");
@@ -1002,7 +1063,14 @@ llvm::Error validateManifest(
   if (llvm::Error error =
           validateOutcome(outcome, generateRecords, closure, view, store))
     return error;
-  return validateOperationalObservations(operationalObservations, view);
+  if (llvm::Error error =
+          validateOperationalObservations(operationalObservations, view))
+    return error;
+  for (const PlanNodeExternalToolWorkLedger &node :
+       externalToolWork.planNodes())
+    if (node.planNodeOrdinal >= view.plan().nodes().size())
+      return invalid("external-tool work references an unknown plan node");
+  return llvm::Error::success();
 }
 
 llvm::Expected<std::vector<InvocationGenerateRecord>>
@@ -1074,7 +1142,8 @@ llvm::Expected<InvocationManifest> InvocationManifest::get(
     const ResolvedConfig &resolvedConfig,
     const DsePlanGenerateInvocationRecords &generateRecords,
     InvocationControllerOutcome outcome, const ArtifactStore &artifactStore,
-    std::optional<InvocationOperationalObservations> operationalObservations) {
+    std::optional<InvocationOperationalObservations> operationalObservations,
+    std::optional<InvocationExternalToolWorkLedger> externalToolWork) {
   if (closure.resolvedConfigIdentity() !=
       loom::resolvedConfigIdentity(resolvedConfig))
     return invalid("run closure names a different ResolvedConfig identity");
@@ -1088,21 +1157,29 @@ llvm::Expected<InvocationManifest> InvocationManifest::get(
     return flattened.takeError();
   if (llvm::Error error = canonicalizeOutcome(outcome))
     return std::move(error);
+  if (!externalToolWork) {
+    auto empty = InvocationExternalToolWorkLedger::get({});
+    if (!empty)
+      return empty.takeError();
+    externalToolWork = std::move(*empty);
+  }
   InvocationOccurrenceRef occurrence{closure.runKey(), occurrenceOrdinal};
   if (llvm::Error error = validateManifest(
           occurrence, closure, resumedFrom, view->schemaDescriptorBytes(),
-          view->digest(), *flattened, outcome, operationalObservations, *view,
-          artifactStore))
+          view->digest(), *flattened, outcome, operationalObservations,
+          *externalToolWork, *view, artifactStore))
     return std::move(error);
   std::vector<std::uint8_t> canonical =
       encodeManifest(occurrence, closure, resumedFrom,
                      view->schemaDescriptorBytes(), view->digest(), *flattened,
-                     outcome, operationalObservations, schemaVersion);
+                     outcome, operationalObservations, *externalToolWork,
+                     schemaVersion);
   return InvocationManifest(
       std::move(occurrence), std::move(closure), std::move(resumedFrom),
       view->schemaDescriptorBytes().vec(), view->digest(),
       std::move(*flattened), std::move(outcome),
-      std::move(operationalObservations), std::move(canonical));
+      std::move(operationalObservations), std::move(*externalToolWork),
+      std::move(canonical));
 }
 
 llvm::Expected<InvocationManifest>
@@ -1124,6 +1201,7 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
       (sourceSchemaVersion != legacyInvocationManifestSchemaVersion &&
        sourceSchemaVersion != operationalInvocationManifestSchemaVersion &&
        sourceSchemaVersion != typedRunClosureManifestSchemaVersion &&
+       sourceSchemaVersion != preExternalToolWorkManifestSchemaVersion &&
        sourceSchemaVersion != InvocationManifest::schemaVersion))
     return invalid("unsupported InvocationManifest schema");
 
@@ -1191,6 +1269,18 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
       return decodedObservations.takeError();
     operationalObservations = std::move(*decodedObservations);
   }
+  auto emptyExternalToolWork = InvocationExternalToolWorkLedger::get({});
+  if (!emptyExternalToolWork)
+    return emptyExternalToolWork.takeError();
+  InvocationExternalToolWorkLedger externalToolWork =
+      std::move(*emptyExternalToolWork);
+  if (sourceSchemaVersion == InvocationManifest::schemaVersion) {
+    auto decodedExternalToolWork =
+        decodeInvocationExternalToolWorkLedger(decoder);
+    if (!decodedExternalToolWork)
+      return decodedExternalToolWork.takeError();
+    externalToolWork = std::move(*decodedExternalToolWork);
+  }
   if (!decoder.atEnd())
     return invalid("canonical InvocationManifest has trailing bytes");
 
@@ -1212,11 +1302,13 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
   InvocationOccurrenceRef occurrence{closure->runKey(), *occurrenceOrdinal};
   if (llvm::Error error = validateManifest(
           occurrence, *closure, resumedFrom, *dseViewDescriptor, *dseViewDigest,
-          records, *outcome, operationalObservations, *view, artifactStore))
+          records, *outcome, operationalObservations, externalToolWork, *view,
+          artifactStore))
     return std::move(error);
   std::vector<std::uint8_t> sourceCanonical = encodeManifest(
       occurrence, *closure, resumedFrom, *dseViewDescriptor, *dseViewDigest,
-      records, *outcome, operationalObservations, sourceSchemaVersion);
+      records, *outcome, operationalObservations, externalToolWork,
+      sourceSchemaVersion);
   if (llvm::ArrayRef<std::uint8_t>(sourceCanonical) != canonicalBytes)
     return invalid("InvocationManifest bytes are not canonical");
   std::vector<std::uint8_t> currentCanonical =
@@ -1224,13 +1316,14 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
           ? std::move(sourceCanonical)
           : encodeManifest(occurrence, *closure, resumedFrom,
                            *dseViewDescriptor, *dseViewDigest, records,
-                           *outcome, operationalObservations,
+                           *outcome, operationalObservations, externalToolWork,
                            InvocationManifest::schemaVersion);
   return InvocationManifest(
       std::move(occurrence), std::move(*closure), std::move(resumedFrom),
       std::move(*dseViewDescriptor), std::move(*dseViewDigest),
       std::move(records), std::move(*outcome),
-      std::move(operationalObservations), std::move(currentCanonical));
+      std::move(operationalObservations), std::move(externalToolWork),
+      std::move(currentCanonical));
 }
 
 } // namespace loom::dse

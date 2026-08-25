@@ -31,6 +31,7 @@ add_library(LoomDSEPolicy
   ../CandidateGeneratorRecovery.cpp
   ../EvidenceObligation.cpp
   ../ExecutionJournal.cpp
+  ../ExternalToolWorkLedger.cpp
   ../Plan.cpp
   ../PlanExecutor.cpp
   ../OperationalProjection.cpp

@@ -272,6 +272,13 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
       hit->externalToolWork !=
           ExternalToolWorkLedger{1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0})
     fail("reopen changed external-tool cache-hit work accounting");
+  const InvocationExternalToolWorkLedger summary =
+      take(reopened.externalToolWorkLedger());
+  if (summary.planNodes().size() != 1 ||
+      summary.planNodes().front().planNodeOrdinal != 4 ||
+      summary.total() !=
+          ExternalToolWorkLedger{2, 2, 1, 1, 0, 2, 0, 1, 1, 1, 1, 0, 1, 0})
+    fail("Journal external-tool work did not aggregate by plan node");
 }
 
 void rewriteSingleRecordSnapshotAsLegacy(llvm::StringRef runRoot) {

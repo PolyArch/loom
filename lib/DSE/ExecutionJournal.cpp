@@ -312,66 +312,30 @@ llvm::Error validateRecord(const JournalWorkUnitRecord &record) {
   if (record.finalizedWorkRecord &&
       !canonicalAscii(record.finalizedWorkRecord->schemaIdentity))
     return invalid("finalized-work record schema is not canonical ASCII");
-  const ExternalToolWorkLedger &ledger = record.externalToolWork;
-  if (ledger.consumed > ledger.reserved ||
-      ledger.avoided > ledger.reserved - ledger.consumed ||
-      ledger.reserved > ledger.planned)
-    return invalid("external-tool work exceeds its planned reservation");
-  if (ledger.avoided != ledger.cacheHits)
-    return invalid("external-tool avoided work differs from cache hits");
-  if (ledger.cacheHits > ledger.cacheAvailable ||
-      ledger.cacheMisses > ledger.cacheAvailable - ledger.cacheHits)
-    return invalid("external-tool cache lookups exceed availability");
-  if (ledger.cacheDiscards > ledger.cacheMisses ||
-      ledger.cacheDiscardFailures > ledger.cacheMisses - ledger.cacheDiscards)
-    return invalid("external-tool cache discards exceed misses");
-  if (ledger.cachePublications > ledger.cacheMisses ||
-      ledger.cachePublicationFailures >
-          ledger.cacheMisses - ledger.cachePublications)
-    return invalid("external-tool cache publications exceed misses");
-  if (ledger.cacheDisabled > ledger.reserved ||
-      ledger.cacheAvailable > ledger.reserved - ledger.cacheDisabled ||
-      ledger.cacheUnavailable >
-          ledger.reserved - ledger.cacheDisabled - ledger.cacheAvailable)
-    return invalid("external-tool cache observations exceed reservations");
-  if (ledger.cacheLockWaits > ledger.reserved)
-    return invalid("external-tool cache waits exceed reservations");
-  if (!record.preparedInvocation && ledger.planned != 0)
+  if (llvm::Error error =
+          validateExternalToolWorkLedger(record.externalToolWork))
+    return error;
+  if (!record.preparedInvocation && record.externalToolWork.planned != 0)
     return invalid("work without a prepared invocation has external-tool work");
   return llvm::Error::success();
 }
 
 void encodeExternalToolWorkLedger(Encoder &encoder,
                                   const ExternalToolWorkLedger &ledger) {
-  encoder.u64(ledger.planned);
-  encoder.u64(ledger.reserved);
-  encoder.u64(ledger.consumed);
-  encoder.u64(ledger.avoided);
-  encoder.u64(ledger.cacheDisabled);
-  encoder.u64(ledger.cacheAvailable);
-  encoder.u64(ledger.cacheUnavailable);
-  encoder.u64(ledger.cacheHits);
-  encoder.u64(ledger.cacheMisses);
-  encoder.u64(ledger.cacheLockWaits);
-  encoder.u64(ledger.cacheDiscards);
-  encoder.u64(ledger.cacheDiscardFailures);
-  encoder.u64(ledger.cachePublications);
-  encoder.u64(ledger.cachePublicationFailures);
+  for (std::uint64_t value : externalToolWorkLedgerCounters(ledger))
+    encoder.u64(value);
 }
 
 llvm::Expected<ExternalToolWorkLedger>
 decodeExternalToolWorkLedger(Decoder &decoder) {
-  std::array<std::uint64_t, externalToolWorkLedgerCounterCount> values{};
+  ExternalToolWorkLedgerCounters values{};
   for (std::uint64_t &value : values) {
     auto decoded = decoder.u64("external-tool work ledger value");
     if (!decoded)
       return decoded.takeError();
     value = *decoded;
   }
-  return ExternalToolWorkLedger{values[0],  values[1], values[2],  values[3],
-                                values[4],  values[5], values[6],  values[7],
-                                values[8],  values[9], values[10], values[11],
-                                values[12], values[13]};
+  return externalToolWorkLedgerFromCounters(values);
 }
 
 void encodeRecord(Encoder &encoder, const JournalWorkUnitRecord &record) {
@@ -863,6 +827,25 @@ llvm::Expected<std::vector<JournalWorkUnitRecord>>
 ExecutionJournal::workUnits() const {
   std::lock_guard<std::mutex> lock(state_->mutex);
   return state_->workUnits;
+}
+
+llvm::Expected<InvocationExternalToolWorkLedger>
+ExecutionJournal::externalToolWorkLedger() const {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  std::vector<PlanNodeExternalToolWorkLedger> planNodes;
+  for (const JournalWorkUnitRecord &record : state_->workUnits) {
+    if (record.externalToolWork.planned == 0)
+      continue;
+    const std::uint64_t ordinal = record.key.planNodeOrdinal();
+    if (planNodes.empty() || planNodes.back().planNodeOrdinal != ordinal) {
+      planNodes.push_back({ordinal, record.externalToolWork});
+      continue;
+    }
+    if (llvm::Error error = accumulateExternalToolWorkLedger(
+            planNodes.back().work, record.externalToolWork))
+      return std::move(error);
+  }
+  return InvocationExternalToolWorkLedger::get(planNodes);
 }
 
 llvm::Expected<std::optional<JournalWorkUnitRecord>>

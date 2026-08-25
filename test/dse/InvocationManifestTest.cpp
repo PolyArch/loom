@@ -470,6 +470,17 @@ InvocationOperationalObservations operationalObservations(
                                            4,   16,  std::move(planNodes)};
 }
 
+constexpr std::size_t encodedExternalToolWorkWidth =
+    externalToolWorkLedgerCounterCount * sizeof(std::uint64_t);
+constexpr std::size_t encodedEmptyExternalToolWorkWidth =
+    encodedExternalToolWorkWidth + sizeof(std::uint64_t);
+
+InvocationExternalToolWorkLedger externalToolWork() {
+  return take(InvocationExternalToolWorkLedger::get(
+      {{0, ExternalToolWorkLedger{2, 2, 1, 1, 0, 2, 0, 1, 1, 1, 1, 0, 1,
+                                  0}}}));
+}
+
 void testOperationalObservationCompatibility(const ArtifactStore &store,
                                              const BlobStore &blobs) {
   Fixture fixture = makeFixture(store, blobs);
@@ -510,19 +521,31 @@ void testOperationalObservationCompatibility(const ArtifactStore &store,
       absentSelection->satisfiedEvidence != presentSelection->satisfiedEvidence)
     fail("operational observations changed formal invocation semantics");
 
-  std::vector<std::uint8_t> legacy(absent.canonicalBytes().begin(),
-                                   absent.canonicalBytes().end());
-  if (legacy.size() < 4)
-    fail("schema 1.1 absent manifest is unexpectedly short");
-  legacy.resize(legacy.size() - 4);
+  std::vector<std::uint8_t> preExternalToolWork(
+      absent.canonicalBytes().begin(), absent.canonicalBytes().end());
+  if (preExternalToolWork.size() < encodedEmptyExternalToolWorkWidth)
+    fail("current absent manifest is unexpectedly short");
   const std::size_t minorOffset =
       8 + InvocationManifest::schemaIdentity.size() + 4;
+  preExternalToolWork.resize(preExternalToolWork.size() -
+                             encodedEmptyExternalToolWorkWidth);
+  writeU32(preExternalToolWork, minorOffset, 3);
+  InvocationManifest adoptedPreExternalToolWork = take(
+      adoptInvocationManifest(preExternalToolWork, fixture.config, store));
+  if (adoptedPreExternalToolWork.canonicalBytes() != absent.canonicalBytes() ||
+      !adoptedPreExternalToolWork.externalToolWork().planNodes().empty())
+    fail("schema 1.3 import did not derive an empty external-tool ledger");
+
+  std::vector<std::uint8_t> legacy = preExternalToolWork;
+  if (legacy.size() < 4)
+    fail("schema 1.3 absent manifest is unexpectedly short");
+  legacy.resize(legacy.size() - 4);
   writeU32(legacy, minorOffset, 0);
   InvocationManifest adoptedLegacy =
       take(adoptInvocationManifest(legacy, fixture.config, store));
   if (adoptedLegacy.canonicalBytes() != absent.canonicalBytes() ||
       adoptedLegacy.operationalObservations())
-    fail("schema 1.0 import did not produce canonical schema 1.1 output");
+    fail("schema 1.0 import did not produce the current canonical output");
 
   InvocationManifest resumedAbsent = take(InvocationManifest::get(
       makeClosure(fixture, store, {fixture.source}), 9,
@@ -537,6 +560,60 @@ void testOperationalObservationCompatibility(const ArtifactStore &store,
     fail("operational observations changed resume provenance");
 }
 
+void testExternalToolWorkRoundTrip(const ArtifactStore &store,
+                                   const BlobStore &blobs) {
+  Fixture fixture = makeFixture(store, blobs);
+  const InvocationControllerOutcome outcome = InvocationCompletedSelection{
+      {fixture.selected}, {fixture.preexistingEvidence}};
+  const InvocationExternalToolWorkLedger work = externalToolWork();
+  InvocationManifest manifest = take(InvocationManifest::get(
+      makeClosure(fixture, store, {fixture.source}), 11, std::nullopt,
+      fixture.config, fixture.records, outcome, store, std::nullopt, work));
+  InvocationManifest adopted = take(adoptInvocationManifest(
+      manifest.canonicalBytes(), fixture.config, store));
+  if (manifest.externalToolWork() != work ||
+      adopted.externalToolWork() != work ||
+      adopted.canonicalBytes() != manifest.canonicalBytes())
+    fail("external-tool work ledger did not round-trip exactly");
+
+  constexpr std::size_t encodedLedgerWidth =
+      2 * encodedExternalToolWorkWidth + 2 * sizeof(std::uint64_t);
+  if (manifest.canonicalBytes().size() < encodedLedgerWidth)
+    fail("external-tool work ledger suffix is unexpectedly short");
+  std::vector<std::uint8_t> inconsistent(manifest.canonicalBytes().begin(),
+                                         manifest.canonicalBytes().end());
+  const std::size_t suffix = inconsistent.size() - encodedLedgerWidth;
+  writeU64(inconsistent, suffix, 3);
+  auto rejected =
+      adoptInvocationManifest(inconsistent, fixture.config, store);
+  if (rejected)
+    fail("manifest importer accepted an external-tool total unlike its rows");
+  requireErrorContains(rejected.takeError(), "differs from plan-node rows");
+
+  auto duplicate = InvocationExternalToolWorkLedger::get(
+      {{0, work.planNodes().front().work},
+       {0, work.planNodes().front().work}});
+  if (duplicate)
+    fail("external-tool ledger accepted duplicate plan-node rows");
+  requireErrorContains(duplicate.takeError(), "strictly increasing");
+
+  auto zero = InvocationExternalToolWorkLedger::get(
+      {{0, ExternalToolWorkLedger{}}});
+  if (zero)
+    fail("external-tool ledger accepted a zero plan-node row");
+  requireErrorContains(zero.takeError(), "no planned work");
+
+  auto unknownWork = take(InvocationExternalToolWorkLedger::get(
+      {{1, work.planNodes().front().work}}));
+  auto unknown = InvocationManifest::get(
+      makeClosure(fixture, store, {fixture.source}), 12, std::nullopt,
+      fixture.config, fixture.records, outcome, store, std::nullopt,
+      unknownWork);
+  if (unknown)
+    fail("manifest accepted external-tool work for an unknown plan node");
+  requireErrorContains(unknown.takeError(), "unknown plan node");
+}
+
 void testOperationalObservationRejections(const ArtifactStore &store,
                                           const BlobStore &blobs) {
   Fixture fixture = makeFixture(store, blobs, false, 2);
@@ -547,10 +624,12 @@ void testOperationalObservationRejections(const ArtifactStore &store,
       fixture.config, fixture.records, outcome, store,
       operationalObservations({{0, 7, 11}, {1, 13, 17}})));
   constexpr std::size_t observationSuffixWidth = 4 + 5 * 8 + 8 + 2 * 24;
-  if (valid.canonicalBytes().size() < observationSuffixWidth)
+  if (valid.canonicalBytes().size() <
+      observationSuffixWidth + encodedEmptyExternalToolWorkWidth)
     fail("schema 1.1 observation suffix is unexpectedly short");
-  const std::size_t suffix =
-      valid.canonicalBytes().size() - observationSuffixWidth;
+  const std::size_t suffix = valid.canonicalBytes().size() -
+                             encodedEmptyExternalToolWorkWidth -
+                             observationSuffixWidth;
 
   auto expectRejected = [&](std::vector<std::uint8_t> bytes,
                             llvm::StringRef needle) {
@@ -592,7 +671,12 @@ void testOperationalObservationRejections(const ArtifactStore &store,
   expectRejected(std::move(overflowing), "remaining wire");
 
   std::vector<std::uint8_t> partial(valid.canonicalBytes().begin(),
-                                    valid.canonicalBytes().end() - 8);
+                                    valid.canonicalBytes().end());
+  partial.resize(partial.size() - encodedEmptyExternalToolWorkWidth);
+  const std::size_t minorOffset =
+      8 + InvocationManifest::schemaIdentity.size() + 4;
+  writeU32(partial, minorOffset, 3);
+  partial.resize(partial.size() - 8);
   expectRejected(std::move(partial), "remaining wire");
 }
 
@@ -662,6 +746,7 @@ int main(int argc, char **argv) {
   testIncompleteWorkPreservation(store, blobs);
   testIncompleteReasonRoundTripCoverage(store, blobs);
   testOperationalObservationCompatibility(store, blobs);
+  testExternalToolWorkRoundTrip(store, blobs);
   testOperationalObservationRejections(store, blobs);
   testStrictFailures(store, blobs);
   return 0;

@@ -152,6 +152,8 @@ public:
   llvm::StringRef localRunRoot() const;
 
   llvm::Expected<std::vector<JournalWorkUnitRecord>> workUnits() const;
+  llvm::Expected<InvocationExternalToolWorkLedger>
+  externalToolWorkLedger() const;
   llvm::Expected<std::optional<JournalWorkUnitRecord>>
   find(const WorkUnitKey &key) const;
 

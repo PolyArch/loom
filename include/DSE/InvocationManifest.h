@@ -2,6 +2,7 @@
 #define LOOM_DSE_INVOCATIONMANIFEST_H
 
 #include "Common/Artifact.h"
+#include "DSE/ExternalToolWorkLedger.h"
 #include "DSE/Plan.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -196,7 +197,7 @@ class InvocationManifest final {
 public:
   static constexpr llvm::StringLiteral schemaIdentity =
       "loom.dse.invocation_manifest";
-  static constexpr SchemaVersion schemaVersion{1, 3};
+  static constexpr SchemaVersion schemaVersion{1, 4};
 
   static llvm::Expected<InvocationManifest>
   get(DseRunClosure closure, std::uint64_t occurrenceOrdinal,
@@ -205,6 +206,8 @@ public:
       const DsePlanGenerateInvocationRecords &generateRecords,
       InvocationControllerOutcome outcome, const ArtifactStore &artifactStore,
       std::optional<InvocationOperationalObservations> operationalObservations =
+          std::nullopt,
+      std::optional<InvocationExternalToolWorkLedger> externalToolWork =
           std::nullopt);
 
   const InvocationOccurrenceRef &occurrence() const { return occurrence_; }
@@ -226,6 +229,9 @@ public:
   operationalObservations() const {
     return operationalObservations_;
   }
+  const InvocationExternalToolWorkLedger &externalToolWork() const {
+    return externalToolWork_;
+  }
   llvm::ArrayRef<std::uint8_t> canonicalBytes() const {
     return canonicalBytes_;
   }
@@ -239,6 +245,7 @@ private:
       std::vector<InvocationGenerateRecord> generateRecords,
       InvocationControllerOutcome outcome,
       std::optional<InvocationOperationalObservations> operationalObservations,
+      InvocationExternalToolWorkLedger externalToolWork,
       std::vector<std::uint8_t> canonicalBytes)
       : occurrence_(std::move(occurrence)), closure_(std::move(closure)),
         resumedFrom_(std::move(resumedFrom)),
@@ -248,6 +255,7 @@ private:
         generateRecords_(std::move(generateRecords)),
         outcome_(std::move(outcome)),
         operationalObservations_(std::move(operationalObservations)),
+        externalToolWork_(std::move(externalToolWork)),
         canonicalBytes_(std::move(canonicalBytes)) {}
 
   InvocationOccurrenceRef occurrence_;
@@ -258,6 +266,7 @@ private:
   std::vector<InvocationGenerateRecord> generateRecords_;
   InvocationControllerOutcome outcome_;
   std::optional<InvocationOperationalObservations> operationalObservations_;
+  InvocationExternalToolWorkLedger externalToolWork_;
   std::vector<std::uint8_t> canonicalBytes_;
 
   friend llvm::Expected<InvocationManifest>

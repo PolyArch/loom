@@ -1,12 +1,20 @@
 #ifndef LOOM_DSE_EXTERNALTOOLWORKLEDGER_H
 #define LOOM_DSE_EXTERNALTOOLWORKLEDGER_H
 
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Error.h"
+
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
+#include <vector>
 
 namespace loom::dse {
 
 inline constexpr std::size_t externalToolWorkLedgerCounterCount = 14;
+using ExternalToolWorkLedgerCounters =
+    std::array<std::uint64_t, externalToolWorkLedgerCounterCount>;
 
 /// Additive operational accounting for exact external-tool work. Cache
 /// lookup and publication are observations of reserved work, not independent
@@ -46,6 +54,61 @@ struct ExternalToolWorkLedger final {
                          const ExternalToolWorkLedger &rhs) {
     return !(lhs == rhs);
   }
+};
+
+llvm::Error
+validateExternalToolWorkLedger(const ExternalToolWorkLedger &ledger);
+
+ExternalToolWorkLedgerCounters
+externalToolWorkLedgerCounters(const ExternalToolWorkLedger &ledger);
+
+llvm::Expected<ExternalToolWorkLedger> externalToolWorkLedgerFromCounters(
+    const ExternalToolWorkLedgerCounters &counters);
+
+llvm::Error
+accumulateExternalToolWorkLedger(ExternalToolWorkLedger &total,
+                                 const ExternalToolWorkLedger &addition);
+
+struct PlanNodeExternalToolWorkLedger final {
+  std::uint64_t planNodeOrdinal = 0;
+  ExternalToolWorkLedger work;
+
+  friend bool operator==(const PlanNodeExternalToolWorkLedger &lhs,
+                         const PlanNodeExternalToolWorkLedger &rhs) {
+    return lhs.planNodeOrdinal == rhs.planNodeOrdinal && lhs.work == rhs.work;
+  }
+};
+
+/// Canonical immutable projection of Journal external-tool work. The total is
+/// derived from strictly increasing plan-node rows and cannot diverge from
+/// them.
+class InvocationExternalToolWorkLedger final {
+public:
+  static llvm::Expected<InvocationExternalToolWorkLedger>
+  get(llvm::ArrayRef<PlanNodeExternalToolWorkLedger> planNodes);
+
+  const ExternalToolWorkLedger &total() const { return total_; }
+  llvm::ArrayRef<PlanNodeExternalToolWorkLedger> planNodes() const {
+    return planNodes_;
+  }
+
+  friend bool operator==(const InvocationExternalToolWorkLedger &lhs,
+                         const InvocationExternalToolWorkLedger &rhs) {
+    return lhs.total_ == rhs.total_ && lhs.planNodes_ == rhs.planNodes_;
+  }
+  friend bool operator!=(const InvocationExternalToolWorkLedger &lhs,
+                         const InvocationExternalToolWorkLedger &rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  InvocationExternalToolWorkLedger(
+      ExternalToolWorkLedger total,
+      std::vector<PlanNodeExternalToolWorkLedger> planNodes)
+      : total_(total), planNodes_(std::move(planNodes)) {}
+
+  ExternalToolWorkLedger total_;
+  std::vector<PlanNodeExternalToolWorkLedger> planNodes_;
 };
 
 } // namespace loom::dse
