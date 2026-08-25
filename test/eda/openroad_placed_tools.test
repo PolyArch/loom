@@ -1,3 +1,3 @@
-# REQUIRES: openroad-2026-08-16
+# REQUIRES: openroad-2026-08-25
 # RUN: rm -rf %t
-# RUN: bash -c 'source /etc/profile.d/modules.sh && module load openroad/2026.08.16-cbc7678e45cc && %loom-openroad-placed-test --real-smoke %t "$(command -v openroad)" "$(openroad -version)"'
+# RUN: bash -c 'source /etc/profile.d/modules.sh && module load openroad/2026.08.25-21512b0ab68c && %loom-openroad-placed-test --real-smoke %t "$(command -v openroad)" "$(openroad -version)"'
