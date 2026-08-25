@@ -678,6 +678,13 @@ events must already be covered by earlier complete producer launches. A mixed,
 nested, dynamic-grid, or insufficiently supplied launch is typed Unsupported
 before any callback can expose an unwritten receive slot.
 
+That proof also derives the finite flat producer and per-branch consumer event
+counts for the complete logical channel invocation. The generated adapter
+opens the `OrderedChannelABI` generation with those counts before the first
+endpoint call and requires producer finish, every consumer terminal, and
+collective join after the selected entry returns. Runtime does not infer these
+counts from queue occupancy or observed execution.
+
 The Spatial Bridge binding's `maximumMessageBytes` is a separate provider wire
 and staging limit. It may reject an unrepresentable invocation or message with
 a typed provider outcome, but it cannot change logical capacity, split one

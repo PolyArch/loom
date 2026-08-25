@@ -55,6 +55,9 @@ struct MemoryTargetPlan final {
 struct NativeExecutionContext final {
   struct LogicalChannel final {
     std::optional<loom::runtime::OrderedChannelABI> abi;
+    std::optional<std::uint64_t> producerMessageCount;
+    std::vector<std::optional<std::uint64_t>> consumerMessageCounts;
+    bool generationOpened = false;
   };
 
   std::vector<AlignedByteStorage> objects;
@@ -74,6 +77,7 @@ struct NativeExecutionContext final {
 
 struct NativeChannelCallbackNames final {
   std::string create;
+  std::string rate;
   std::string send;
   std::string receive;
 };
