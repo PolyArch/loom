@@ -24,6 +24,12 @@ struct BuiltinSpatialCoreExpansion final {
 llvm::Expected<loom::fabric::InstructionCoreArchitecturalContract>
 getBuiltinInstructionCoreArchitecture();
 
+/// Exact in-order InstructionCore realization used by builtin target presets.
+/// System recipes that embed an independently authored SpatialCore reuse this
+/// owner instead of copying its execution-unit and resource contracts.
+llvm::Expected<loom::fabric::InstructionCoreMicroarchitecturalRealization>
+getBuiltinInOrderInstructionCoreMicroarchitecture();
+
 llvm::Expected<BuiltinTargetPreset> parseBuiltinTargetPreset(llvm::StringRef);
 
 llvm::Expected<BuiltinSpatialCoreExpansion>

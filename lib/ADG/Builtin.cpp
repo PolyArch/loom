@@ -86,7 +86,7 @@ makeBuiltinInstructionCoreArchitecture() {
 }
 
 llvm::Expected<loom::fabric::InstructionCoreMicroarchitecturalRealization>
-inOrderMicroarchitecture() {
+makeBuiltinInOrderInstructionCoreMicroarchitecture() {
   auto resources = singleRequesterResourceContract();
   if (!resources)
     return resources.takeError();
@@ -760,7 +760,7 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
   auto architecture = getBuiltinInstructionCoreArchitecture();
   if (!architecture)
     return architecture.takeError();
-  auto inOrder = inOrderMicroarchitecture();
+  auto inOrder = getBuiltinInOrderInstructionCoreMicroarchitecture();
   if (!inOrder)
     return inOrder.takeError();
   auto outOfOrder = outOfOrderMicroarchitecture();
@@ -1073,6 +1073,11 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
 llvm::Expected<loom::fabric::InstructionCoreArchitecturalContract>
 getBuiltinInstructionCoreArchitecture() {
   return makeBuiltinInstructionCoreArchitecture();
+}
+
+llvm::Expected<loom::fabric::InstructionCoreMicroarchitecturalRealization>
+getBuiltinInOrderInstructionCoreMicroarchitecture() {
+  return makeBuiltinInOrderInstructionCoreMicroarchitecture();
 }
 
 llvm::Expected<BuiltinTargetPreset>

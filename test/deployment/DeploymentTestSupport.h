@@ -30,6 +30,8 @@ struct MappedSpatialSystemSpec final {
   std::uint32_t accCoreCount = 2;
   bool alternateInstructionMicroarchitectures = false;
   bool attachSystemMemory = false;
+  fabric::ResetInitialState resetInitialState =
+      fabric::ResetInitialState::Asserted;
 };
 
 struct MappedSystemExecutablePrograms final {

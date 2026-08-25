@@ -107,6 +107,7 @@ set(LOOM_TEST_DEPENDS
   loom-dse-model-parameter-training-test
   loom-dse-ground-truth-campaign-integration-test
   loom-dse-fpa-ground-truth-collection-test
+  loom-dse-fu-reverse-synthesis-workflow-test
   loom-dse-joint-design-exploration-test
   loom-dse-production-candidate-generator-registration-test
   loom-dse-portable-spatial-core-rtl-generator-test

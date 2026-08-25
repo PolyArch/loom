@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -282,12 +283,17 @@ prepareSynthesisDomain(const ::dataflow::CanonicalDataflowProgramView &dataflow,
 llvm::Expected<::loom::adg::DesignBuilder> buildFabricDesign(
     const ::fabric::CanonicalImplementationCapability &arithmeticCapability,
     const ::fabric::CanonicalImplementationCapability &syncCapability,
-    const ArtifactStore &store) {
+    std::uint32_t residentContexts, const ArtifactStore &store) {
   using namespace ::loom::adg;
-  constexpr std::uint32_t residentContexts = 1;
+  if (residentContexts == 0)
+    return failure(FuReverseSynthesisFailure::FabricFinalizationFailed,
+                   "synthesized FU requires a non-zero context inventory");
+  std::uint32_t tagWidth = 1;
+  while (tagWidth < 32 && (std::uint64_t{1} << tagWidth) < residentContexts)
+    ++tagWidth;
   auto bits0 = PortType::bits(0);
   auto bits32 = PortType::bits(32);
-  auto tagged32 = PortType::taggedBits(32, 1);
+  auto tagged32 = PortType::taggedBits(32, tagWidth);
   if (!bits0 || !bits32 || !tagged32)
     return failure(FuReverseSynthesisFailure::FabricFinalizationFailed,
                    "Fabric rejected the bounded synthesis port types");
@@ -402,8 +408,9 @@ llvm::Expected<::loom::adg::DesignBuilder> buildFabricDesign(
 llvm::Expected<::loom::fabric::FinalizedFabricRoot> materializeFabric(
     const ::fabric::CanonicalImplementationCapability &arithmeticCapability,
     const ::fabric::CanonicalImplementationCapability &syncCapability,
-    const ArtifactStore &store) {
-  auto design = buildFabricDesign(arithmeticCapability, syncCapability, store);
+    std::uint32_t residentContexts, const ArtifactStore &store) {
+  auto design = buildFabricDesign(arithmeticCapability, syncCapability,
+                                  residentContexts, store);
   if (!design)
     return design.takeError();
   auto finalized = std::move(*design).finalize();
@@ -425,12 +432,11 @@ struct MappingMaterializationAttempt final {
 
 llvm::Expected<MappingMaterializationAttempt>
 materializeMapping(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                   ::dataflow::GraphRef graph,
+                   llvm::ArrayRef<::dataflow::GraphRef> graphs,
                    const ::loom::fabric::FinalizedFabricRoot &fabric,
                    const ::loom::mapping::ResolvedTechMappingConfigView &config,
                    const ArtifactStore &store,
                    ExecutionControlView executionControl) {
-  const std::array graphs = {graph};
   const auto outcome = ::loom::mapping::generateTechMappings(
       {dataflow, graphs, fabric.view(), config, store, executionControl});
   if (const auto *generated =
@@ -612,6 +618,64 @@ llvm::Error verifyMaterializedCoverage(
   return llvm::Error::success();
 }
 
+llvm::Error verifyMaterializedJointCoverage(
+    const ::loom::mapping::FinalizedTechMapping &mapping,
+    llvm::ArrayRef<FuSynthesisCoverageWitness> witnesses,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FinalizedFabricRoot &fabric) {
+  std::vector<::dataflow::GraphRef> graphs;
+  graphs.reserve(witnesses.size());
+  for (const FuSynthesisCoverageWitness &witness : witnesses)
+    graphs.push_back(witness.graph);
+  if (mapping.view().dataflowIdentity() != dataflow.identity() ||
+      mapping.view().fabricIdentity() != fabric.view().identity() ||
+      mapping.view().covers() != llvm::ArrayRef<::dataflow::GraphRef>(graphs) ||
+      mapping.view().computeRealizations().size() != witnesses.size() ||
+      !mapping.view().memoryRealizations().empty())
+    return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                   "joint TechMapping does not have exact graph-set and "
+                   "Fabric ownership");
+
+  std::vector<bool> matched(mapping.view().computeRealizations().size(), false);
+  for (const FuSynthesisCoverageWitness &witness : witnesses) {
+    const ::loom::mapping::TechComputeRealizationView prospective{
+        0, witness.capabilityTemplate, witness.actors, witness.boundaries};
+    if (llvm::Error error =
+            ::loom::mapping::verifyTechComputeRealizationClosure(
+                prospective, dataflow, fabric.view()))
+      return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                     llvm::toString(std::move(error)));
+    auto expected = ::loom::mapping::canonicalTechMatchRowKey(
+        prospective, dataflow.identity());
+    if (!expected)
+      return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                     llvm::toString(expected.takeError()));
+    std::optional<std::size_t> found;
+    for (const auto &[ordinal, realization] :
+         llvm::enumerate(mapping.view().computeRealizations())) {
+      auto actual = ::loom::mapping::canonicalTechMatchRowKey(
+          realization, dataflow.identity());
+      if (!actual)
+        return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                       llvm::toString(actual.takeError()));
+      if (*actual != *expected)
+        continue;
+      if (found || matched[ordinal])
+        return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                       "joint TechMapping repeats a coverage realization");
+      found = ordinal;
+    }
+    if (!found)
+      return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                     "joint TechMapping omits a coverage realization");
+    matched[*found] = true;
+  }
+  if (!llvm::all_of(matched, [](bool value) { return value; }))
+    return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                   "joint TechMapping contains a foreign realization");
+  return llvm::Error::success();
+}
+
 } // namespace
 
 char FuReverseSynthesisError::ID = 0;
@@ -655,9 +719,13 @@ attemptScalarIntegerAddSubFuSynthesis(
     return failure(FuReverseSynthesisFailure::CancelledOrTimeout,
                    "reverse FU synthesis was interrupted before Fabric "
                    "materialization");
+  if (prepared->graphs.size() > std::numeric_limits<std::uint32_t>::max())
+    return failure(FuReverseSynthesisFailure::FabricFinalizationFailed,
+                   "reverse FU synthesis context inventory exceeds u32");
 
-  auto fabric = materializeFabric(prepared->arithmeticCapability,
-                                  prepared->syncCapability, store);
+  auto fabric = materializeFabric(
+      prepared->arithmeticCapability, prepared->syncCapability,
+      static_cast<std::uint32_t>(prepared->graphs.size()), store);
   if (!fabric)
     return fabric.takeError();
   auto coverage = buildCoverage(prepared->admitted, dataflow, *fabric);
@@ -668,7 +736,7 @@ attemptScalarIntegerAddSubFuSynthesis(
   mappings.reserve(prepared->graphs.size());
   std::optional<FuReverseSynthesisFailure> termination;
   std::string terminationMessage;
-  std::uint64_t consumedGraphBindings = 0;
+  std::uint64_t consumedMappingInvocations = 0;
   for (auto [graph, witness] : llvm::zip(prepared->graphs, *coverage)) {
     if (executionControl.stopRequested()) {
       termination = FuReverseSynthesisFailure::CancelledOrTimeout;
@@ -676,9 +744,10 @@ attemptScalarIntegerAddSubFuSynthesis(
           "reverse FU synthesis was interrupted between graph bindings";
       break;
     }
-    ++consumedGraphBindings;
-    auto mapping = materializeMapping(dataflow, graph, *fabric, mappingConfig,
-                                      store, executionControl);
+    ++consumedMappingInvocations;
+    const std::array graphSet = {graph};
+    auto mapping = materializeMapping(dataflow, graphSet, *fabric,
+                                      mappingConfig, store, executionControl);
     if (!mapping)
       return mapping.takeError();
     if (mapping->mapping) {
@@ -693,9 +762,37 @@ attemptScalarIntegerAddSubFuSynthesis(
       break;
     }
   }
-  return ScalarIntegerAddSubFuSynthesisAttempt{
-      std::move(*fabric), std::move(mappings),           std::move(*coverage),
-      termination,        std::move(terminationMessage), consumedGraphBindings};
+  std::optional<::loom::mapping::FinalizedTechMapping> jointMapping;
+  if (!termination) {
+    if (executionControl.stopRequested()) {
+      termination = FuReverseSynthesisFailure::CancelledOrTimeout;
+      terminationMessage =
+          "reverse FU synthesis was interrupted before joint graph binding";
+    } else {
+      ++consumedMappingInvocations;
+      auto mapping = materializeMapping(dataflow, prepared->graphs, *fabric,
+                                        mappingConfig, store, executionControl);
+      if (!mapping)
+        return mapping.takeError();
+      if (mapping->mapping) {
+        if (llvm::Error error = verifyMaterializedJointCoverage(
+                *mapping->mapping, *coverage, dataflow, *fabric))
+          return std::move(error);
+        jointMapping = std::move(*mapping->mapping);
+      }
+      if (mapping->termination) {
+        termination = mapping->termination;
+        terminationMessage = std::move(mapping->diagnostic);
+      }
+    }
+  }
+  return ScalarIntegerAddSubFuSynthesisAttempt{std::move(*fabric),
+                                               std::move(mappings),
+                                               std::move(jointMapping),
+                                               std::move(*coverage),
+                                               termination,
+                                               std::move(terminationMessage),
+                                               consumedMappingInvocations};
 }
 
 llvm::Expected<ScalarIntegerAddSubFuSynthesisResult>
@@ -710,24 +807,28 @@ synthesizeScalarIntegerAddSubFu(
     return attempt.takeError();
   if (attempt->termination_)
     return failure(*attempt->termination_, attempt->terminationMessage_);
-  return ScalarIntegerAddSubFuSynthesisResult{std::move(attempt->fabric_),
-                                              std::move(attempt->mappings_),
-                                              std::move(attempt->coverage_)};
+  if (!attempt->jointMapping_)
+    return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                   "complete synthesis has no joint TechMapping");
+  return ScalarIntegerAddSubFuSynthesisResult{
+      std::move(attempt->fabric_), std::move(attempt->perGraphMappings_),
+      std::move(*attempt->jointMapping_), std::move(attempt->coverage_)};
 }
 
 llvm::Error verifyScalarIntegerAddSubFuFabricLineage(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::GraphRef> graphs,
     const ::loom::fabric::FinalizedFabricRoot &fabric,
     const ArtifactStore &store) {
-  std::vector<::dataflow::GraphRef> graphs;
-  graphs.reserve(dataflow.graphs().size());
-  for (const ::dataflow::CanonicalGraphView &graph : dataflow.graphs())
-    graphs.push_back(graph.ref);
   auto prepared = prepareSynthesisDomain(dataflow, graphs);
   if (!prepared)
     return prepared.takeError();
-  auto design = buildFabricDesign(prepared->arithmeticCapability,
-                                  prepared->syncCapability, store);
+  if (prepared->graphs.size() > std::numeric_limits<std::uint32_t>::max())
+    return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                   "lineage context inventory exceeds u32");
+  auto design = buildFabricDesign(
+      prepared->arithmeticCapability, prepared->syncCapability,
+      static_cast<std::uint32_t>(prepared->graphs.size()), store);
   if (!design)
     return design.takeError();
   auto expected = std::move(*design).deriveRootIdentities();
@@ -742,16 +843,20 @@ llvm::Error verifyScalarIntegerAddSubFuFabricLineage(
 
 llvm::Error verifyScalarIntegerAddSubFuMappingLineage(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::GraphRef> graphs,
     const ::loom::fabric::FinalizedFabricRoot &fabric,
     const ::loom::mapping::FinalizedTechMapping &mapping,
     const ArtifactStore &store) {
-  if (llvm::Error error =
-          verifyScalarIntegerAddSubFuFabricLineage(dataflow, fabric, store))
+  if (llvm::Error error = verifyScalarIntegerAddSubFuFabricLineage(
+          dataflow, graphs, fabric, store))
     return error;
   if (mapping.view().covers().size() != 1)
     return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
                    "TechMapping lineage must cover exactly one graph");
   const ::dataflow::GraphRef graph = mapping.view().covers().front();
+  if (!llvm::is_contained(graphs, graph))
+    return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                   "TechMapping lineage graph is outside the synthesis set");
   auto admitted = admitGraph(dataflow, graph);
   if (!admitted)
     return admitted.takeError();
@@ -761,6 +866,24 @@ llvm::Error verifyScalarIntegerAddSubFuMappingLineage(
     return coverage.takeError();
   return verifyMaterializedCoverage(mapping, coverage->front(), dataflow,
                                     fabric);
+}
+
+llvm::Error verifyScalarIntegerAddSubFuJointMappingLineage(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::GraphRef> graphs,
+    const ::loom::fabric::FinalizedFabricRoot &fabric,
+    const ::loom::mapping::FinalizedTechMapping &mapping,
+    const ArtifactStore &store) {
+  if (llvm::Error error = verifyScalarIntegerAddSubFuFabricLineage(
+          dataflow, graphs, fabric, store))
+    return error;
+  auto prepared = prepareSynthesisDomain(dataflow, graphs);
+  if (!prepared)
+    return prepared.takeError();
+  auto coverage = buildCoverage(prepared->admitted, dataflow, fabric);
+  if (!coverage)
+    return coverage.takeError();
+  return verifyMaterializedJointCoverage(mapping, *coverage, dataflow, fabric);
 }
 
 } // namespace loom::dse

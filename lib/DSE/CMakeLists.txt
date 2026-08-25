@@ -49,6 +49,7 @@ add_subdirectory(Generators/Modeling)
 add_subdirectory(Feedback)
 
 add_library(LoomDSEProductionOwners
+  FuReverseSynthesisWorkflow.cpp
   ProductionOwners.cpp
 )
 

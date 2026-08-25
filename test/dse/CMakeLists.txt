@@ -14,6 +14,10 @@ add_executable(loom-dse-hardware-candidate-generator-test
   HardwareCandidateGeneratorTest.cpp
 )
 
+add_executable(loom-dse-fu-reverse-synthesis-workflow-test
+  FuReverseSynthesisWorkflowTest.cpp
+)
+
 add_executable(loom-dse-portable-spatial-core-rtl-generator-test
   PortableSpatialCoreRtlGeneratorTest.cpp
 )
@@ -137,6 +141,18 @@ target_link_libraries(loom-dse-hardware-candidate-generator-test PRIVATE
   MLIRArithDialect
   MLIRDataflow
   MLIRDLTIDialect
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-fu-reverse-synthesis-workflow-test PRIVATE
+  LoomDSEProductionOwners
+  LoomDeploymentTestSupport
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
   MLIRIR
   MLIRParser
   LLVMSupport

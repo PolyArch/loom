@@ -2782,7 +2782,7 @@ kinds 0 through 11:
 | 18 | `system_runtime_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.system_runtime", 1.0, 0)` |
 | 19 | `joint_dataflow_frontier` | finalized Canonical Dataflow children produced for an explicit bounded Dataflow/System frontier |
 | 20 | `joint_mapping_frontier` | finalized System children, TechMapping, SpatialMapping, and SystemMapping roots plus the exact successfully mapped Dataflow and System roots |
-| 23 | `fu_reverse_synthesis` | one explicit bounded FU Module plus exact per-graph TechMapping roots for a strictly admitted complete Canonical Dataflow graph domain |
+| 23 | `fu_reverse_synthesis` | one explicit bounded FU Module, its deterministic one-AccCore System shell, the Module's normalized physical timing profile, the System ConfigurationABI, exact per-graph TechMapping roots, and one exact whole-domain TechMapping for a strictly admitted complete Canonical Dataflow graph domain |
 
 The hardware and frontier kinds use the following descriptor-owned typed
 configuration roots:
@@ -2833,16 +2833,47 @@ FuReverseSynthesisConfigView = exact resolved TechMappingConfigView
 
 Kind 23 treats the complete graph inventory of its exactly-one Canonical
 Dataflow input as one atomic bounded synthesis unit. The FU identity is derived
-only from the admitted actor envelopes and explicit topology. Output demand
-that cannot retain the one FU and every per-graph TechMapping terminates before
-materialization with `SemanticLimitReached`; interruption and unsupported graph
-domains remain distinct typed incomplete outcomes. Its `graph_binding` work
-unit plans one slot per graph and consumes a slot when that graph's Mapping
-attempt starts. An incomplete outcome retains the exact Fabric and every
-completed per-graph TechMapping with their owner-validated lineage.
-Completed provider results and independently replayed invocation records also
-pass the same descriptor-owned outcome closure: exactly one Fabric is present,
-and every input graph is covered by exactly one returned TechMapping.
+from the admitted actor envelopes, explicit topology, and the resident context
+capacity required by that complete graph set. The System shell is mechanically
+derived from that Module, the normalized timing profile is owned by that
+Module, and the packed ConfigurationABI is owned by the System. Kind 23
+reconstructs the exact canonical normalized profile and default packed ABI
+references when validating both lineage and outcomes; another valid profile
+or ABI with the same owner is not interchangeable. Output demand
+that cannot retain those fixed artifacts, every per-graph TechMapping, and the
+whole-domain TechMapping terminates before materialization with
+`SemanticLimitReached`; interruption and unsupported graph domains remain
+distinct typed incomplete outcomes. Its `mapping_invocation` work unit plans
+one slot per graph plus one whole-domain slot and consumes a slot when that
+Mapping attempt starts. An incomplete outcome retains the fixed artifact
+closure, every completed per-graph TechMapping, and any completed whole-domain
+TechMapping with owner-validated lineage. Completed provider results and
+independently replayed invocation records pass the same descriptor-owned
+outcome closure: each fixed artifact is unique, every input graph is covered by
+exactly one per-graph TechMapping, and one additional TechMapping covers the
+exact complete graph set.
+
+`buildFuReverseSynthesisCandidateWorkflow` is the production Plan composition
+for this bounded domain. It requires every graph to be reachable from a root
+thread, then sends the per-graph Mapping set and the whole-domain Mapping
+through separate root-complete Spatial PnR kind 7 invocations. The per-graph
+SpatialMappings remain exact coverage evidence. The whole-domain
+SpatialMapping assigns the shared FU realizations to distinct resident
+instruction contexts and alone enters root-complete System PnR kind 9;
+portable SpatialCore RTL kind 16 then specializes the resulting System through
+ordinary typed use-def edges. Rootless or partially unreachable graph domains
+are rejected before execution. Mapping proof not established and unsupported
+portable structure or operation coverage remain the typed incomplete outcomes
+of their existing owners. Completed workflow projection strictly reimports the
+entire graph, Fabric, Mapping, ConfigurationABI, and HardwareImplementation
+closure, re-derives the exact timing, packed ABI, and portable operation-leaf
+specialization without publishing during verification, and derives the
+occurrence-qualified configured-hardware projection before Deployment.
+Deployment subsequently consumes a selected returned
+SystemMapping, portable implementation plus runtime binding, and ordinary
+executable leaves through its existing `buildDeploymentFromLinkedProgram`
+owner; the workflow does not duplicate executable or runtime-platform
+selection.
 
 The current spatial-microarchitecture configuration descriptor is
 `loom.spatial_microarchitecture_rewrite.config.2.1`; the candidate-decision

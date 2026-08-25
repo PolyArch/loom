@@ -438,13 +438,13 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
     resetMembers.push_back(core.spatialCoreResetDomainMember());
   }
   requireSuccess(
-      test, reset.close(resetMembers,
-                        take(test, fabric::ResetDomainContractRecord::create(
-                                       fabric::ResetPolarity::ActiveHigh,
-                                       fabric::ResetTiming::Asynchronous,
-                                       fabric::ResetTiming::Asynchronous,
-                                       fabric::ResetInitialState::Asserted,
-                                       std::nullopt, 0))));
+      test,
+      reset.close(resetMembers,
+                  take(test, fabric::ResetDomainContractRecord::create(
+                                 fabric::ResetPolarity::ActiveHigh,
+                                 fabric::ResetTiming::Asynchronous,
+                                 fabric::ResetTiming::Asynchronous,
+                                 spec.resetInitialState, std::nullopt, 0))));
   requireSuccess(test, system.close());
   auto finalized = take(test, std::move(design).finalize());
   require(test, finalized.roots().size() == 1,

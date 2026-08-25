@@ -306,6 +306,12 @@ llvm::Expected<FinalizedConfigurationABI>
 finalizeConfigurationABI(ConfigurationABIDraft draft,
                          const ArtifactStore &store);
 
+/// Canonicalizes one draft through the same path as finalization and derives
+/// its exact artifact reference without publishing it.
+llvm::Expected<ArtifactRootReference>
+deriveConfigurationABIArtifactReference(ConfigurationABIDraft draft,
+                                        const ArtifactStore &store);
+
 llvm::Expected<FinalizedConfigurationABI>
 importConfigurationABI(const ArtifactRootReference &reference,
                        const ArtifactStore &store);

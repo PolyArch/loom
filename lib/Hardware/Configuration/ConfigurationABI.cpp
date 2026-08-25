@@ -1,5 +1,6 @@
 #include "Hardware/Configuration/ConfigurationABI.h"
 
+#include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -1471,6 +1472,43 @@ std::uint64_t retainedConfigurationABIBytes(
   return bytes;
 }
 
+struct CanonicalizedConfigurationABIArtifact final {
+  CanonicalSemanticBytes bytes;
+  ConfigurationABIConstructionStatistics statistics;
+};
+
+llvm::Expected<CanonicalizedConfigurationABIArtifact>
+canonicalizeConfigurationABIArtifact(ConfigurationABIDraft draft,
+                                     const ArtifactStore &store) {
+  ArtifactRootReference fabricReference = draft.fabric;
+  auto units = canonicalizeDraft(std::move(draft), store);
+  if (!units)
+    return units.takeError();
+  const std::string json = serializeConfigurationABI(
+      fabricReference, units->encodingRelations, units->units);
+  units->statistics.canonicalByteCount = json.size();
+  CanonicalSemanticBytes bytes(
+      std::vector<std::uint8_t>(json.begin(), json.end()));
+
+  auto reparsedDraft = parseConfigurationABI(bytes.bytes());
+  if (!reparsedDraft)
+    return reparsedDraft.takeError();
+  ArtifactRootReference reparsedFabric = reparsedDraft->fabric;
+  auto reparsedUnits = canonicalizeDraft(std::move(*reparsedDraft), store);
+  if (!reparsedUnits)
+    return reparsedUnits.takeError();
+  reparsedUnits->statistics.canonicalByteCount = json.size();
+  if (serializeConfigurationABI(reparsedFabric,
+                                reparsedUnits->encodingRelations,
+                                reparsedUnits->units) != json)
+    return invalid("canonical JSON does not independently round-trip");
+
+  ConfigurationABIConstructionStatistics aggregate = units->statistics;
+  accumulateStatistics(aggregate, reparsedUnits->statistics);
+  aggregate.canonicalByteCount = json.size();
+  return CanonicalizedConfigurationABIArtifact{std::move(bytes), aggregate};
+}
+
 } // namespace
 
 namespace detail {
@@ -1814,30 +1852,11 @@ ConfigurationABI::decode(ProgrammingUnitId id,
 llvm::Expected<FinalizedConfigurationABI>
 finalizeConfigurationABI(ConfigurationABIDraft draft,
                          const ArtifactStore &store) {
-  ArtifactRootReference fabricReference = draft.fabric;
-  auto units = canonicalizeDraft(std::move(draft), store);
-  if (!units)
-    return units.takeError();
-  const std::string json = serializeConfigurationABI(
-      fabricReference, units->encodingRelations, units->units);
-  units->statistics.canonicalByteCount = json.size();
-  CanonicalSemanticBytes bytes(
-      std::vector<std::uint8_t>(json.begin(), json.end()));
-
-  auto reparsedDraft = parseConfigurationABI(bytes.bytes());
-  if (!reparsedDraft)
-    return reparsedDraft.takeError();
-  ArtifactRootReference reparsedFabric = reparsedDraft->fabric;
-  auto reparsedUnits = canonicalizeDraft(std::move(*reparsedDraft), store);
-  if (!reparsedUnits)
-    return reparsedUnits.takeError();
-  reparsedUnits->statistics.canonicalByteCount = json.size();
-  if (serializeConfigurationABI(reparsedFabric,
-                                reparsedUnits->encodingRelations,
-                                reparsedUnits->units) != json)
-    return invalid("canonical JSON does not independently round-trip");
-
-  auto identity = store.put(configurationAbiSchema, bytes);
+  auto canonical =
+      canonicalizeConfigurationABIArtifact(std::move(draft), store);
+  if (!canonical)
+    return canonical.takeError();
+  auto identity = store.put(configurationAbiSchema, canonical->bytes);
   if (!identity)
     return identity.takeError();
   auto imported =
@@ -1846,12 +1865,23 @@ finalizeConfigurationABI(ConfigurationABIDraft draft,
                              store);
   if (!imported)
     return imported.takeError();
-  ConfigurationABIConstructionStatistics aggregate = units->statistics;
-  accumulateStatistics(aggregate, reparsedUnits->statistics);
+  ConfigurationABIConstructionStatistics aggregate = canonical->statistics;
   accumulateStatistics(aggregate, imported->constructionStatistics_);
-  aggregate.canonicalByteCount = json.size();
+  aggregate.canonicalByteCount = canonical->bytes.bytes().size();
   imported->constructionStatistics_ = aggregate;
   return std::move(*imported);
+}
+
+llvm::Expected<ArtifactRootReference>
+deriveConfigurationABIArtifactReference(ConfigurationABIDraft draft,
+                                        const ArtifactStore &store) {
+  auto canonical =
+      canonicalizeConfigurationABIArtifact(std::move(draft), store);
+  if (!canonical)
+    return canonical.takeError();
+  return ArtifactRootReference{
+      configurationAbiSchema.identity.str(), configurationAbiSchema.version,
+      finalizeArtifactIdentity(configurationAbiSchema, canonical->bytes)};
 }
 
 llvm::Expected<FinalizedConfigurationABI>

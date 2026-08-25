@@ -125,6 +125,10 @@ struct ImplementationInterface final {
   }
 };
 
+/// Orders interface records exactly as HardwareImplementation finalization.
+void canonicalizeHardwareImplementationInterfaceOrder(
+    std::vector<ImplementationInterface> &interfaces);
+
 struct ActivityPoint final {
   RepresentationLocator representationLocator;
   std::optional<fabric::FabricPhysicalOccurrenceOwnerRef> semanticFabricRef;
