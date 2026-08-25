@@ -49,8 +49,24 @@ OrderedChannelABI::validateConsumer(std::uint32_t consumerOrdinal) const {
   return llvm::Error::success();
 }
 
+llvm::Error OrderedChannelABI::validateActiveGeneration() const {
+  if (generationState_ == GenerationState::Cancelled)
+    return reject(OrderedChannelABIError::Kind::GenerationCancelled,
+                  "ordered channel generation is cancelled");
+  if (generationState_ == GenerationState::Complete)
+    return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
+                  "ordered channel generation is complete");
+  return llvm::Error::success();
+}
+
 OrderedChannelSend
 OrderedChannelABI::send(llvm::ArrayRef<std::uint8_t> payload) {
+  if (generationState_ == GenerationState::Cancelled)
+    return {OrderedChannelSendKind::GenerationCancelled, nextSendSequence_};
+  if (generationState_ == GenerationState::Complete || producerFinished_)
+    return {OrderedChannelSendKind::InvalidLifecycle, nextSendSequence_};
+  if (expectedMessages_ && nextSendSequence_ >= *expectedMessages_)
+    return {OrderedChannelSendKind::StaticRateExceeded, nextSendSequence_};
   if (nextSendSequence_ == std::numeric_limits<std::uint64_t>::max())
     return {OrderedChannelSendKind::SequenceExhausted, nextSendSequence_};
   if (messages_.size() >= capacityMessages_)
@@ -60,6 +76,131 @@ OrderedChannelABI::send(llvm::ArrayRef<std::uint8_t> payload) {
   message.payload.assign(payload.begin(), payload.end());
   messages_.push_back(std::move(message));
   return {OrderedChannelSendKind::Accepted, nextSendSequence_ - 1};
+}
+
+llvm::Error OrderedChannelABI::openGeneration(
+    std::uint64_t producerMessageCount,
+    llvm::ArrayRef<std::uint64_t> consumerMessageCounts) {
+  if (llvm::Error error = validateActiveGeneration())
+    return error;
+  if (expectedMessages_ || nextSendSequence_ != 0 ||
+      llvm::any_of(nextReceiveSequences_,
+                   [](std::uint64_t sequence) { return sequence != 0; }) ||
+      llvm::any_of(
+          reservations_,
+          [](const auto &reservation) { return reservation.has_value(); }) ||
+      producerFinished_ || llvm::is_contained(finishedConsumers_, true) ||
+      !messages_.empty())
+    return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
+                  "ordered channel generation is not pristine");
+  if (consumerMessageCounts.size() != consumerCount())
+    return reject(OrderedChannelABIError::Kind::InvalidConfiguration,
+                  "ordered channel static rates omit a consumer");
+  expectedMessages_ = producerMessageCount;
+  for (const auto indexed : llvm::enumerate(consumerMessageCounts))
+    expectedConsumerMessages_[indexed.index()] = indexed.value();
+  return llvm::Error::success();
+}
+
+llvm::Error OrderedChannelABI::finishProducer() {
+  if (llvm::Error error = validateActiveGeneration())
+    return error;
+  if (!expectedMessages_ || producerFinished_)
+    return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
+                  "ordered channel producer cannot finish now");
+  if (nextSendSequence_ < *expectedMessages_)
+    return reject(OrderedChannelABIError::Kind::GenerationDeficit,
+                  "ordered channel producer has not published its static rate");
+  producerFinished_ = true;
+  generationState_ = GenerationState::Closing;
+  return llvm::Error::success();
+}
+
+llvm::Error OrderedChannelABI::finishConsumer(std::uint32_t consumerOrdinal) {
+  if (llvm::Error error = validateConsumer(consumerOrdinal))
+    return error;
+  if (llvm::Error error = validateActiveGeneration())
+    return error;
+  if (!expectedConsumerMessages_[consumerOrdinal] ||
+      finishedConsumers_[consumerOrdinal])
+    return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
+                  "ordered channel consumer cannot finish now");
+  if (reservations_[consumerOrdinal])
+    return reject(OrderedChannelABIError::Kind::OutstandingReservation,
+                  "ordered channel consumer has a live reservation");
+  const std::uint64_t expected = *expectedConsumerMessages_[consumerOrdinal];
+  const std::uint64_t observed = nextReceiveSequences_[consumerOrdinal];
+  if (observed < expected)
+    return reject(OrderedChannelABIError::Kind::GenerationDeficit,
+                  "ordered channel consumer has not received its static rate");
+  finishedConsumers_[consumerOrdinal] = true;
+  generationState_ = GenerationState::Closing;
+  return llvm::Error::success();
+}
+
+llvm::Error OrderedChannelABI::joinGeneration() {
+  if (llvm::Error error = validateActiveGeneration())
+    return error;
+  if (!expectedMessages_ || !producerFinished_)
+    return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
+                  "ordered channel producer has not finished");
+  if (llvm::any_of(reservations_, [](const auto &reservation) {
+        return reservation.has_value();
+      }))
+    return reject(OrderedChannelABIError::Kind::OutstandingReservation,
+                  "ordered channel generation has a live reservation");
+  if (llvm::is_contained(finishedConsumers_, false) || !messages_.empty())
+    return reject(OrderedChannelABIError::Kind::PendingConsumer,
+                  "ordered channel generation has a pending consumer");
+  generationState_ = GenerationState::Complete;
+  return llvm::Error::success();
+}
+
+llvm::Error OrderedChannelABI::cancelGeneration() {
+  if (generationState_ == GenerationState::Cancelled)
+    return reject(OrderedChannelABIError::Kind::GenerationCancelled,
+                  "ordered channel generation is already cancelled");
+  if (generationState_ == GenerationState::Complete)
+    return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
+                  "ordered channel completed generation cannot be cancelled");
+  for (std::optional<Reservation> &reservation : reservations_)
+    reservation.reset();
+  messages_.clear();
+  generationState_ = GenerationState::Cancelled;
+  return llvm::Error::success();
+}
+
+llvm::Error OrderedChannelABI::reset() {
+  if (generationState_ != GenerationState::Complete &&
+      generationState_ != GenerationState::Cancelled) {
+    if (llvm::any_of(reservations_, [](const auto &reservation) {
+          return reservation.has_value();
+        }))
+      return reject(OrderedChannelABIError::Kind::OutstandingReservation,
+                    "ordered channel generation has a live reservation");
+    if (producerFinished_ && llvm::is_contained(finishedConsumers_, false))
+      return reject(OrderedChannelABIError::Kind::PendingConsumer,
+                    "ordered channel generation has not joined");
+    return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
+                  "ordered channel active generation cannot be reset");
+  }
+  if (generation_ == std::numeric_limits<std::uint64_t>::max())
+    return reject(OrderedChannelABIError::Kind::GenerationIdentityExhausted,
+                  "ordered channel generation identity domain is exhausted");
+  ++generation_;
+  nextReservationIdentity_ = 1;
+  nextSendSequence_ = 0;
+  producerFinished_ = false;
+  llvm::fill(nextReceiveSequences_, 0);
+  for (std::optional<Reservation> &reservation : reservations_)
+    reservation.reset();
+  llvm::fill(finishedConsumers_, false);
+  expectedMessages_.reset();
+  for (std::optional<std::uint64_t> &expected : expectedConsumerMessages_)
+    expected.reset();
+  messages_.clear();
+  generationState_ = GenerationState::Open;
+  return llvm::Error::success();
 }
 
 OrderedChannelABI::Message *
@@ -74,15 +215,25 @@ llvm::Expected<OrderedChannelReceiveTicket>
 OrderedChannelABI::receive(std::uint32_t consumerOrdinal) {
   if (llvm::Error error = validateConsumer(consumerOrdinal))
     return std::move(error);
+  if (llvm::Error error = validateActiveGeneration())
+    return std::move(error);
+  if (finishedConsumers_[consumerOrdinal])
+    return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
+                  "ordered channel consumer is already finished");
   if (reservations_[consumerOrdinal])
     return reject(OrderedChannelABIError::Kind::OutstandingReservation,
                   "ordered channel consumer already has a live reservation");
   const std::uint64_t sequence = nextReceiveSequences_[consumerOrdinal];
+  if (expectedConsumerMessages_[consumerOrdinal] &&
+      sequence >= *expectedConsumerMessages_[consumerOrdinal])
+    return reject(OrderedChannelABIError::Kind::StaticRateExceeded,
+                  "ordered channel receive exceeds its static rate");
   Message *message = findMessage(sequence);
   if (!message) {
     OrderedChannelReceiveTicket ticket;
     ticket.consumerOrdinal = consumerOrdinal;
     ticket.sequence = sequence;
+    ticket.generation = generation_;
     return ticket;
   }
   if (nextReservationIdentity_ == std::numeric_limits<std::uint64_t>::max())
@@ -94,6 +245,7 @@ OrderedChannelABI::receive(std::uint32_t consumerOrdinal) {
   ticket.kind = OrderedChannelReceiveKind::Message;
   ticket.consumerOrdinal = consumerOrdinal;
   ticket.sequence = sequence;
+  ticket.generation = generation_;
   ticket.payload = message->payload;
   ticket.ownerIdentity_ = ownerIdentity_;
   ticket.reservationIdentity_ = reservationIdentity;
@@ -104,8 +256,19 @@ llvm::Error OrderedChannelABI::validateTicket(
     const OrderedChannelReceiveTicket &ticket) const {
   if (ticket.kind != OrderedChannelReceiveKind::Message ||
       ticket.consumerOrdinal >= consumerCount() ||
-      ticket.ownerIdentity_ != ownerIdentity_ ||
-      !reservations_[ticket.consumerOrdinal] ||
+      ticket.ownerIdentity_ != ownerIdentity_)
+    return reject(OrderedChannelABIError::Kind::InvalidTicket,
+                  "ordered channel ticket names a foreign reservation");
+  if (ticket.generation != generation_)
+    return reject(OrderedChannelABIError::Kind::StaleGeneration,
+                  "ordered channel ticket names a stale generation");
+  if (generationState_ == GenerationState::Cancelled)
+    return reject(OrderedChannelABIError::Kind::GenerationCancelled,
+                  "ordered channel ticket names a cancelled generation");
+  if (generationState_ == GenerationState::Complete)
+    return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
+                  "ordered channel generation is complete");
+  if (!reservations_[ticket.consumerOrdinal] ||
       reservations_[ticket.consumerOrdinal]->sequence != ticket.sequence ||
       reservations_[ticket.consumerOrdinal]->identity !=
           ticket.reservationIdentity_)

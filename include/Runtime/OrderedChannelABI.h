@@ -18,6 +18,9 @@ enum class OrderedChannelSendKind : std::uint8_t {
   Accepted,
   WouldBlock,
   SequenceExhausted,
+  StaticRateExceeded,
+  InvalidLifecycle,
+  GenerationCancelled,
 };
 
 struct OrderedChannelSend final {
@@ -30,12 +33,14 @@ enum class OrderedChannelReceiveKind : std::uint8_t {
   WouldBlock,
 };
 
-/// A receive reservation and its acknowledgement coordinates. Private
-/// transient identity binds copies to the exact live reservation and owner.
+/// A receive reservation and its acknowledgement coordinates. Generation and
+/// private transient identity bind copies to the exact live reservation and
+/// owner.
 struct OrderedChannelReceiveTicket final {
   OrderedChannelReceiveKind kind = OrderedChannelReceiveKind::WouldBlock;
   std::uint32_t consumerOrdinal = 0;
   std::uint64_t sequence = 0;
+  std::uint64_t generation = 0;
   std::vector<std::uint8_t> payload;
 
 private:
@@ -54,6 +59,13 @@ public:
     OutstandingReservation,
     ReservationIdentityExhausted,
     InvalidTicket,
+    InvalidLifecycle,
+    GenerationDeficit,
+    StaticRateExceeded,
+    PendingConsumer,
+    GenerationCancelled,
+    StaleGeneration,
+    GenerationIdentityExhausted,
   };
 
   static char ID;
@@ -74,7 +86,8 @@ private:
 /// FIFO cursors, reservations, acknowledgements, multicast retention, and
 /// bounded capacity without creating persistent channel or session identity.
 /// The caller must submit sends in the canonical event commit order; this
-/// owner does not choose ordering from concurrent arrival.
+/// owner does not choose ordering from concurrent arrival. Optional static
+/// rates close one transient generation before reset opens the next.
 class OrderedChannelABI final {
 public:
   static llvm::Expected<OrderedChannelABI>
@@ -86,6 +99,21 @@ public:
   OrderedChannelABI &operator=(const OrderedChannelABI &) = delete;
 
   OrderedChannelSend send(llvm::ArrayRef<std::uint8_t> payload);
+
+  /// Declares the static flat event counts for the current pristine
+  /// generation. Creation and reset already leave one generation open; this
+  /// call only supplies its optional terminal-count contract.
+  llvm::Error
+  openGeneration(std::uint64_t producerMessageCount,
+                 llvm::ArrayRef<std::uint64_t> consumerMessageCounts);
+
+  llvm::Error finishProducer();
+  llvm::Error finishConsumer(std::uint32_t consumerOrdinal);
+  llvm::Error joinGeneration();
+  llvm::Error cancelGeneration();
+  llvm::Error reset();
+
+  std::uint64_t generation() const { return generation_; }
 
   llvm::Expected<OrderedChannelReceiveTicket>
   receive(std::uint32_t consumerOrdinal);
@@ -101,6 +129,13 @@ public:
   nextReceiveSequence(std::uint32_t consumerOrdinal) const;
 
 private:
+  enum class GenerationState : std::uint8_t {
+    Open,
+    Closing,
+    Complete,
+    Cancelled,
+  };
+
   struct Message final {
     std::uint64_t sequence = 0;
     std::vector<std::uint8_t> payload;
@@ -114,19 +149,28 @@ private:
   OrderedChannelABI(std::uint64_t capacityMessages, std::uint32_t consumerCount)
       : capacityMessages_(capacityMessages),
         ownerIdentity_(std::make_shared<const std::uint8_t>(0)),
-        nextReceiveSequences_(consumerCount, 0), reservations_(consumerCount) {}
+        nextReceiveSequences_(consumerCount, 0), reservations_(consumerCount),
+        finishedConsumers_(consumerCount, false),
+        expectedConsumerMessages_(consumerCount) {}
 
   llvm::Error validateConsumer(std::uint32_t consumerOrdinal) const;
   llvm::Error validateTicket(const OrderedChannelReceiveTicket &ticket) const;
+  llvm::Error validateActiveGeneration() const;
   Message *findMessage(std::uint64_t sequence);
   void reclaimAcknowledgedPrefix();
 
   std::uint64_t capacityMessages_ = 0;
   std::shared_ptr<const void> ownerIdentity_;
   std::uint64_t nextReservationIdentity_ = 1;
+  std::uint64_t generation_ = 0;
   std::uint64_t nextSendSequence_ = 0;
+  bool producerFinished_ = false;
   std::vector<std::uint64_t> nextReceiveSequences_;
   std::vector<std::optional<Reservation>> reservations_;
+  std::vector<bool> finishedConsumers_;
+  std::optional<std::uint64_t> expectedMessages_;
+  std::vector<std::optional<std::uint64_t>> expectedConsumerMessages_;
+  GenerationState generationState_ = GenerationState::Open;
   std::deque<Message> messages_;
 };
 
