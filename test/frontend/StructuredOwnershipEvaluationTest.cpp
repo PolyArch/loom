@@ -491,7 +491,7 @@ void centralPlanEvaluatesScheduleChildren() {
       design.roots().front().reference(), store));
 
   loom::frontend::StructuredCompilation compilation{
-      system.reference(), {}, makeScheduledLoopProgram(), {}};
+      system.reference(), {}, makeScheduledLoopProgram(), {}, {}};
   auto inputs = makeScheduledLoopInputs(compilation.structuredProgram, store);
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
   config.dse.schedule.scopeExpansionLimit = 8;

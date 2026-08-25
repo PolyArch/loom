@@ -166,8 +166,8 @@ void collectScheduledEndpoints(
     return ::dataflow::ConstantOp::create(builder, loc, type, control,
                                           builder.getIndexAttr(value))
         .getValue();
-  auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(type);
-  assert(integer && "structured choice selector must be integer-like");
+  assert(::llvm::isa<::mlir::IntegerType>(type) &&
+         "structured choice selector must be integer-like");
   return ::dataflow::ConstantOp::create(builder, loc, type, control,
                                         builder.getIntegerAttr(type, value))
       .getValue();
@@ -793,8 +793,9 @@ private:
       return ::mlir::arith::IndexCastOp::create(builder, loc, recurrenceType,
                                                 value)
           .getResult();
-    auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(value.getType());
-    assert(integer && integer.getWidth() < recurrenceType.getWidth() &&
+    assert(::llvm::isa<::mlir::IntegerType>(value.getType()) &&
+           ::llvm::cast<::mlir::IntegerType>(value.getType()).getWidth() <
+               recurrenceType.getWidth() &&
            "stream schedule recurrence must hold its source domain");
     return ::mlir::arith::ExtSIOp::create(builder, loc, recurrenceType, value)
         .getResult();
