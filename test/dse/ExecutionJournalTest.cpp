@@ -343,7 +343,8 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
   requireSuccess(journal.recordPreparedExecutionInterval(
       missKey, 0, unixNanosecondsNow(),
       external_tool::ExternalToolInvocationExecutionObservation{
-          0, external_tool::ExternalToolResultCacheAvailability::Available,
+          0, external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
+          external_tool::ExternalToolResultCacheAvailability::Available,
           external_tool::ExternalToolResultCacheLookup::Miss,
           external_tool::ExternalToolResultCacheDiscard::Discarded,
           external_tool::ExternalToolResultCachePublication::Published, false,
@@ -354,7 +355,8 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
   requireSuccess(journal.recordPreparedExecutionInterval(
       hitKey, 0, unixNanosecondsNow(),
       external_tool::ExternalToolInvocationExecutionObservation{
-          0, external_tool::ExternalToolResultCacheAvailability::Available,
+          0, external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
+          external_tool::ExternalToolResultCacheAvailability::Available,
           external_tool::ExternalToolResultCacheLookup::Hit,
           external_tool::ExternalToolResultCacheDiscard::NotAttempted,
           external_tool::ExternalToolResultCachePublication::NotAttempted, true,
