@@ -290,7 +290,7 @@ llvm::Expected<CampaignExecutionPolicy> makeFpaGroundTruthCampaignPolicy(
   return CampaignExecutionPolicy::get(
       pilotDispatchCount, minimumObservedPilotWorkUnits,
       sampleActiveWallTimeLimitNanoseconds,
-      maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds);
+      CampaignExecutionPolicy::maximumCampaignActiveWallTimeNanoseconds);
 }
 
 llvm::Expected<CampaignExecutionResult>
@@ -300,10 +300,6 @@ runFpaGroundTruthCampaign(const ResolvedDseConfigView &view,
                           const PlanExecutionPolicy &executionPolicy,
                           SiteScheduler &scheduler, ExecutionJournal &journal,
                           const ArtifactStore &store, const BlobStore &blobs) {
-  if (campaignPolicy.campaignActiveWallTimeLimitNanoseconds() >
-      maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds)
-    return invalid("FPA campaign active-time limit exceeds the four-hour "
-                   "offline bound");
   return runGroundTruthCampaign(view, closure, campaignPolicy, executionPolicy,
                                 scheduler, journal, store, blobs);
 }

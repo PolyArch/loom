@@ -361,19 +361,10 @@ void exerciseGroundTruthCampaign() {
 
   CampaignExecutionPolicy campaignPolicy =
       take(makeFpaGroundTruthCampaignPolicy(1, 1));
-  if (campaignPolicy.campaignActiveWallTimeLimitNanoseconds() !=
-      maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds)
-    fail("FPA campaign policy lost the four-hour offline bound");
 
   SiteScheduler unavailableScheduler = scheduler({});
   PlanExecutionPolicy unavailableExecution =
       take(PlanExecutionPolicy::get(1, take(SiteResourceClaim::get(1, 0, 0))));
-  CampaignExecutionPolicy genericCampaign =
-      take(CampaignExecutionPolicy::get(1, 1));
-  requireErrorContains(runFpaGroundTruthCampaign(
-                           view, closure, genericCampaign, unavailableExecution,
-                           unavailableScheduler, journal, artifacts, blobs),
-                       "four-hour offline bound");
   CampaignExecutionResult unavailable = take(runFpaGroundTruthCampaign(
       view, closure, campaignPolicy, unavailableExecution, unavailableScheduler,
       journal, artifacts, blobs));
