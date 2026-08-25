@@ -383,6 +383,10 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
       (descriptor.ownerFeedbackPayload->schemaDescriptorBytes.empty() ||
        !descriptor.ownerFeedbackPayload->validateCanonical))
     return invalid("descriptor has an incomplete owner feedback contract");
+  if (descriptor.ownerOutcome &&
+      (descriptor.ownerOutcome->schemaDescriptorBytes.empty() ||
+       !descriptor.ownerOutcome->validateCanonical))
+    return invalid("descriptor has an incomplete owner outcome contract");
   if (static_cast<std::uint32_t>(descriptor.determinism) >
       static_cast<std::uint32_t>(
           CandidateGeneratorDeterminism::IndependentReplicates))
@@ -494,8 +498,12 @@ llvm::Error validateProviderResult(
             *result.ownerFeedback, inputBindings, store))
       return error;
   }
+  llvm::ArrayRef<CandidateGeneratorOutputBinding> canonicalOutputs;
+  llvm::ArrayRef<CandidateGeneratorLineageEdge> canonicalEdges;
+  bool isCompleted = false;
   if (auto *completed =
           std::get_if<CompletedCandidateGeneratorResult>(&result.outcome)) {
+    isCompleted = true;
     if (llvm::Error error = canonicalizeOutputBindings(
             descriptor, completed->outputBindings, true, store))
       return error;
@@ -506,6 +514,8 @@ llvm::Error validateProviderResult(
             descriptor, inputBindings, completed->outputBindings,
             completed->lineageEdges, store))
       return error;
+    canonicalOutputs = completed->outputBindings;
+    canonicalEdges = completed->lineageEdges;
   } else {
     auto &incomplete =
         std::get<IncompleteCandidateGeneratorResult>(result.outcome);
@@ -523,7 +533,12 @@ llvm::Error validateProviderResult(
             descriptor, inputBindings, incomplete.retainedOutputBindings,
             incomplete.lineageEdges, store))
       return error;
+    canonicalOutputs = incomplete.retainedOutputBindings;
+    canonicalEdges = incomplete.lineageEdges;
   }
+  if (descriptor.ownerOutcome)
+    return descriptor.ownerOutcome->validateCanonical(
+        inputBindings, canonicalOutputs, canonicalEdges, isCompleted, store);
   return llvm::Error::success();
 }
 
@@ -1074,6 +1089,9 @@ llvm::Error validateCanonicalCandidateGeneratorInvocation(
     return error;
   if (llvm::ArrayRef(canonicalEdges) != lineageEdges)
     return invalid("invocation lineage edges are not canonical");
+  if (descriptor->ownerOutcome)
+    return descriptor->ownerOutcome->validateCanonical(
+        inputs, canonicalOutputs, canonicalEdges, completed, store);
   return llvm::Error::success();
 }
 

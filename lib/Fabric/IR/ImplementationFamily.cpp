@@ -64,6 +64,10 @@ llvm::Error requireArity(const CanonicalActorSchemaProjection &actor,
                          unsigned inputs, unsigned results);
 llvm::Error requireUniformType(const CanonicalActorSchemaProjection &actor,
                                unsigned inputs);
+llvm::Error verifyScalarOrdinaryIntegerActorShape(
+    const CanonicalActorSchemaProjection &actor);
+llvm::Error
+verifySyncTokenActorShape(const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitFloatBehavior(const FloatBehaviorProfile &behavior,
                    ::mlir::arith::FastMathFlags actorFlags,
@@ -741,13 +745,14 @@ admitSyncTokenAdmission(const FamilyCapabilityParams &capability,
                         const CanonicalActorSchemaProjection &actor,
                         const ::loom::PointerLayout *pointerLayout) {
   const auto &params = std::get<fabric::RoutedTokenParams>(capability);
+  if (llvm::Error error = fabric::verifyRoutedTokenParams(params))
+    return error;
+  if (llvm::Error error = verifySyncTokenActorShape(actor))
+    return error;
   const unsigned lanes = actor.type.getNumInputs();
-  if (lanes == 0 || lanes > params.maxFan ||
-      actor.type.getNumResults() != lanes)
+  if (lanes > params.maxFan)
     return reject("sync lane count exceeds routed-token fan capacity");
   for (unsigned lane = 0; lane < lanes; ++lane) {
-    if (actor.type.getInput(lane) != actor.type.getResult(lane))
-      return reject("sync lane types do not agree");
     if (llvm::Error error = admitPayload(actor.type.getInput(lane),
                                          params.maxPayloadBits, pointerLayout))
       return error;
@@ -775,6 +780,8 @@ llvm::Error admitMuxTokenAdmission(const FamilyCapabilityParams &capability,
                                    const CanonicalActorSchemaProjection &actor,
                                    const ::loom::PointerLayout *pointerLayout) {
   const auto &params = std::get<fabric::RoutedTokenParams>(capability);
+  if (llvm::Error error = fabric::verifyRoutedTokenParams(params))
+    return error;
   if (actor.type.getNumInputs() < 3 || actor.type.getNumResults() != 1)
     return reject("token mux arity is malformed");
   const unsigned fan = actor.type.getNumInputs() - 1;
@@ -800,6 +807,8 @@ admitDemuxTokenAdmission(const FamilyCapabilityParams &capability,
                          const CanonicalActorSchemaProjection &actor,
                          const ::loom::PointerLayout *pointerLayout) {
   const auto &params = std::get<fabric::RoutedTokenParams>(capability);
+  if (llvm::Error error = fabric::verifyRoutedTokenParams(params))
+    return error;
   const unsigned fan = actor.type.getNumResults();
   if (actor.type.getNumInputs() != 2 || fan < 2 || fan > params.maxFan)
     return reject("token demux exceeds routed-token fan capacity");
@@ -850,6 +859,35 @@ fabric::capabilityParamsSchema(const FamilyCapabilityParams &params) {
         return Params::schemaId;
       },
       params);
+}
+
+llvm::Error fabric::verifyRoutedTokenParams(const RoutedTokenParams &params) {
+  if (params.maxPayloadBits < RoutedTokenParams::minimumPayloadCapacityBits)
+    return reject("routed-token payload capacity must be at least one bit");
+  if (params.maxFan < RoutedTokenParams::minimumFanCapacity)
+    return reject("routed-token fan capacity must be at least two");
+  return llvm::Error::success();
+}
+
+llvm::Error fabric::verifyImplementationFamilyActorShape(
+    ImplementationFamilyId family,
+    const ::dataflow::CanonicalActorSchemaProjection &actor) {
+  const std::uint32_t familyIndex = static_cast<std::uint32_t>(family);
+  if (familyIndex >= implementationFamilyCount())
+    return reject("implementation family is not registered");
+  const ImplementationFamilyDescriptor &descriptor =
+      implementationFamily(family);
+  if (!llvm::is_contained(descriptor.admittedSchemas, actor.schema))
+    return reject("actor schema is not admitted by the implementation family");
+  switch (descriptor.typedAdmissionProvider) {
+  case TypedAdmissionProviderId::ScalarOrdinaryIntegerAdmission:
+    return verifyScalarOrdinaryIntegerActorShape(actor);
+  case TypedAdmissionProviderId::SyncTokenAdmission:
+    return verifySyncTokenActorShape(actor);
+  default:
+    return reject("implementation-family admission provider has no shared "
+                  "capability-independent shape validator");
+  }
 }
 
 llvm::Error fabric::verifyImplementationFamilyAdmission(
@@ -1451,6 +1489,60 @@ llvm::Error requireUniformType(const CanonicalActorSchemaProjection &actor,
   return llvm::Error::success();
 }
 
+llvm::Error verifyScalarOrdinaryIntegerActorShape(
+    const CanonicalActorSchemaProjection &actor) {
+  if (actor.schema == OperationSchemaId::LLVMGetElementPtr) {
+    const auto *payload =
+        std::get_if<dataflow::GetElementPtrPayload>(&actor.payload);
+    if (!payload || !payload->sourceElementType)
+      return reject("GEP actor has no exact source element type");
+    if (actor.type.getNumInputs() == 0 || actor.type.getNumResults() != 1)
+      return reject("GEP actor has invalid arity");
+    auto base =
+        ::mlir::dyn_cast<::mlir::LLVM::LLVMPointerType>(actor.type.getInput(0));
+    auto result = ::mlir::dyn_cast<::mlir::LLVM::LLVMPointerType>(
+        actor.type.getResult(0));
+    if (!base || !result || base.getAddressSpace() != result.getAddressSpace())
+      return reject("GEP pointer address spaces do not agree");
+    unsigned dynamicCount = 0;
+    for (std::int32_t raw : payload->rawConstantIndices)
+      dynamicCount += raw == ::mlir::LLVM::GEPOp::kDynamicIndex;
+    if (dynamicCount + 1 != actor.type.getNumInputs())
+      return reject("GEP dynamic index pattern does not match its function "
+                    "type");
+    for (::mlir::Type type : actor.type.getInputs().drop_front()) {
+      auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(type);
+      if (!::llvm::isa<::mlir::IndexType>(type) &&
+          (!integer || !integer.isSignless()))
+        return reject("GEP dynamic index is not an integer or index type");
+    }
+    return llvm::Error::success();
+  }
+
+  if (llvm::Error error = requireUniformType(actor, 2))
+    return error;
+  ::mlir::Type type = actor.type.getInput(0);
+  auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(type);
+  if (!::llvm::isa<::mlir::IndexType>(type) &&
+      (!integer || !integer.isSignless()))
+    return reject("integer width admission requires a scalar signless integer "
+                  "or index type");
+  return llvm::Error::success();
+}
+
+llvm::Error
+verifySyncTokenActorShape(const CanonicalActorSchemaProjection &actor) {
+  if (!std::holds_alternative<::dataflow::NoPayload>(actor.payload))
+    return reject("sync actor has a noncanonical semantic payload");
+  const unsigned lanes = actor.type.getNumInputs();
+  if (lanes == 0 || actor.type.getNumResults() != lanes)
+    return reject("sync actor has an invalid lane inventory");
+  for (unsigned lane = 0; lane < lanes; ++lane)
+    if (actor.type.getInput(lane) != actor.type.getResult(lane))
+      return reject("sync lane types do not agree");
+  return llvm::Error::success();
+}
+
 bool hasFastMathFlag(::mlir::arith::FastMathFlags flags,
                      ::mlir::arith::FastMathFlags flag) {
   using Bits = std::underlying_type_t<::mlir::arith::FastMathFlags>;
@@ -1532,7 +1624,15 @@ llvm::Error admitScalarOrdinaryIntegerAdmission(
   if (llvm::Error error = validateIntegerWidths(
           params.integerWidths, ordinaryIntegerWidths(), "ordinary scalar"))
     return error;
-  return admitUniformInteger(actor, params.integerWidths, 2);
+  if (llvm::Error error = verifyScalarOrdinaryIntegerActorShape(actor))
+    return error;
+  llvm::Expected<IntegerWidth> width =
+      integerWidth(actor.type.getInput(0), "integer width admission");
+  if (!width)
+    return width.takeError();
+  if (!params.integerWidths.contains(*width))
+    return reject("integer width is not admitted");
+  return llvm::Error::success();
 }
 
 llvm::Error admitGetElementPtr(const FamilyCapabilityParams &capability,
@@ -1548,26 +1648,12 @@ llvm::Error admitGetElementPtr(const FamilyCapabilityParams &capability,
   if (pointerLayout.kind != ::loom::PointerLayoutKind::StableIntegral)
     return reject("pointer layout requires an unavailable representation "
                   "provider");
-
-  const auto *payload =
-      std::get_if<dataflow::GetElementPtrPayload>(&actor.payload);
-  if (!payload || !payload->sourceElementType)
-    return reject("GEP actor has no exact source element type");
-  if (actor.type.getNumInputs() == 0 || actor.type.getNumResults() != 1)
-    return reject("GEP actor has invalid arity");
+  if (llvm::Error error = verifyScalarOrdinaryIntegerActorShape(actor))
+    return error;
   auto base =
       ::mlir::dyn_cast<::mlir::LLVM::LLVMPointerType>(actor.type.getInput(0));
-  auto result =
-      ::mlir::dyn_cast<::mlir::LLVM::LLVMPointerType>(actor.type.getResult(0));
-  if (!base || !result || base.getAddressSpace() != result.getAddressSpace() ||
-      base.getAddressSpace() != pointerLayout.addressSpace)
+  if (base.getAddressSpace() != pointerLayout.addressSpace)
     return reject("GEP pointer address spaces do not match the exact layout");
-
-  unsigned dynamicCount = 0;
-  for (std::int32_t raw : payload->rawConstantIndices)
-    dynamicCount += raw == ::mlir::LLVM::GEPOp::kDynamicIndex;
-  if (dynamicCount + 1 != actor.type.getNumInputs())
-    return reject("GEP dynamic index pattern does not match its function type");
   for (::mlir::Type type : actor.type.getInputs().drop_front()) {
     llvm::Expected<IntegerWidth> width =
         integerWidth(type, "GEP dynamic index width");

@@ -2775,6 +2775,7 @@ kinds 0 through 11:
 | 18 | `system_runtime_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.system_runtime", 1.0, 0)` |
 | 19 | `joint_dataflow_frontier` | finalized Canonical Dataflow children produced for an explicit bounded Dataflow/System frontier |
 | 20 | `joint_mapping_frontier` | finalized System children, TechMapping, SpatialMapping, and SystemMapping roots plus the exact successfully mapped Dataflow and System roots |
+| 23 | `fu_reverse_synthesis` | one explicit bounded FU Module plus exact per-graph TechMapping roots for a strictly admitted complete Canonical Dataflow graph domain |
 
 The hardware and frontier kinds use the following descriptor-owned typed
 configuration roots:
@@ -2820,7 +2821,21 @@ JointMappingFrontierConfig {
   system_pnr: exact resolved SystemPnrConfigView
 }
 
+FuReverseSynthesisConfigView = exact resolved TechMappingConfigView
 ```
+
+Kind 23 treats the complete graph inventory of its exactly-one Canonical
+Dataflow input as one atomic bounded synthesis unit. The FU identity is derived
+only from the admitted actor envelopes and explicit topology. Output demand
+that cannot retain the one FU and every per-graph TechMapping terminates before
+materialization with `SemanticLimitReached`; interruption and unsupported graph
+domains remain distinct typed incomplete outcomes. Its `graph_binding` work
+unit plans one slot per graph and consumes a slot when that graph's Mapping
+attempt starts. An incomplete outcome retains the exact Fabric and every
+completed per-graph TechMapping with their owner-validated lineage.
+Completed provider results and independently replayed invocation records also
+pass the same descriptor-owned outcome closure: exactly one Fabric is present,
+and every input graph is covered by exactly one returned TechMapping.
 
 The current spatial-microarchitecture configuration descriptor is
 `loom.spatial_microarchitecture_rewrite.config.2.1`; the candidate-decision

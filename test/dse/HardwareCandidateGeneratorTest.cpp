@@ -2,6 +2,7 @@
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
+#include "DSE/FuReverseSynthesis.h"
 #include "DSE/HardwareDecision.h"
 #include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
 #include "DSE/SpatialTopologyCandidateGenerator.h"
@@ -12,11 +13,24 @@
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Mapping/Tech/TechMappingHardwareDemand.h"
 
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowOps.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
+
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <limits>
 #include <map>
@@ -80,6 +94,32 @@ completed(const loom::dse::CandidateGeneratorProviderResult &result) {
   return *value;
 }
 
+const loom::dse::IncompleteCandidateGeneratorResult &
+incomplete(const loom::dse::CandidateGeneratorProviderResult &result) {
+  const auto *value =
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &result.outcome);
+  if (!value)
+    fail("provider did not return an incomplete outcome");
+  return *value;
+}
+
+bool stopRequested(const void *context) {
+  return *static_cast<const bool *>(context);
+}
+
+struct StopAfterCalls final {
+  mutable std::uint64_t calls = 0;
+  std::uint64_t stopAfter = std::numeric_limits<std::uint64_t>::max();
+};
+
+bool stopAfterCalls(const void *context) {
+  const auto &state = *static_cast<const StopAfterCalls *>(context);
+  const bool stop = state.calls >= state.stopAfter;
+  ++state.calls;
+  return stop;
+}
+
 struct Fixture final {
   TemporaryDirectory directory;
   loom::ArtifactStore store;
@@ -89,6 +129,21 @@ struct Fixture final {
       : store(directory.path()),
         blobs((llvm::Twine(directory.path()) + "/blobs").str()) {}
 };
+
+std::size_t regularFileCount(llvm::StringRef root) {
+  std::error_code error;
+  llvm::sys::fs::recursive_directory_iterator iterator(root, error), end;
+  if (error)
+    fail("cannot inspect ArtifactStore: " + error.message());
+  std::size_t count = 0;
+  while (iterator != end) {
+    count += llvm::sys::fs::is_regular_file(iterator->path());
+    iterator.increment(error);
+    if (error)
+      fail("cannot inspect ArtifactStore: " + error.message());
+  }
+  return count;
+}
 
 loom::fabric::FinalizedFabricRoot
 generateBuiltinSystem(Fixture &fixture, loom::adg::BuiltinTargetPreset preset,
@@ -1053,12 +1108,362 @@ void systemRelationalNoOps(Fixture &fixture,
           "relational no-op incorrectly produced decision lineage");
 }
 
+dataflow::CanonicalDataflowArtifact
+parseSynthesisProgram(llvm::StringRef source) {
+  mlir::DialectRegistry registry;
+  registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
+                  mlir::DLTIDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+  require(static_cast<bool>(module),
+          "cannot parse scalar integer synthesis fixture");
+  return take(dataflow::finalizeCanonicalDataflow(module.get()));
+}
+
+dataflow::CanonicalDataflowArtifact scalarIntegerSynthesisProgram() {
+  return parseSynthesisProgram(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @add(%start: none, %lhs: i32, %rhs: i32) -> i32
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value = arith.addi %lhs, %rhs : i32
+    %result:2 = dataflow.sync %start, %value
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%result#1 : i32) streams() memories()
+        complete(%result#0 : none)
+  }
+  dataflow.graph private @sub(%start: none, %lhs: i32, %rhs: i32) -> i32
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value = arith.subi %lhs, %rhs : i32
+    %result:2 = dataflow.sync %start, %value
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%result#1 : i32) streams() memories()
+        complete(%result#0 : none)
+  }
+  dataflow.graph private @sub_clone(%start: none, %lhs: i32, %rhs: i32) -> i32
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value = arith.subi %lhs, %rhs : i32
+    %result:2 = dataflow.sync %start, %value
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%result#1 : i32) streams() memories()
+        complete(%result#0 : none)
+  }
+}
+)mlir");
+}
+
+dataflow::CanonicalDataflowArtifact scalarIntegerMultiplyProgram() {
+  return parseSynthesisProgram(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @mul(%start: none, %lhs: i32, %rhs: i32) -> i32
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value = arith.muli %lhs, %rhs : i32
+    %result:2 = dataflow.sync %start, %value
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%result#1 : i32) streams() memories()
+        complete(%result#0 : none)
+  }
+}
+)mlir");
+}
+
+dataflow::CanonicalDataflowArtifact scalarIntegerAddProgram() {
+  return parseSynthesisProgram(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @add(%start: none, %lhs: i32, %rhs: i32) -> i32
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value = arith.addi %lhs, %rhs : i32
+    %result:2 = dataflow.sync %start, %value
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%result#1 : i32) streams() memories()
+        complete(%result#0 : none)
+  }
+}
+)mlir");
+}
+
+dataflow::GraphRef
+graphOccurrenceContaining(const dataflow::CanonicalDataflowProgramView &view,
+                          dataflow::OperationSchemaId schema,
+                          std::size_t occurrence) {
+  std::vector<dataflow::GraphRef> graphs;
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
+    if (dataflow::operationSchemaOf(actor.op) != schema)
+      continue;
+    graphs.push_back(actor.graph);
+  }
+  require(occurrence < graphs.size(),
+          "synthesis fixture omits a selected operation-schema occurrence");
+  return graphs[occurrence];
+}
+
+template <typename T>
+void requireFuSynthesisFailure(llvm::Expected<T> value,
+                               loom::dse::FuReverseSynthesisFailure expected) {
+  if (value)
+    fail("expected reverse FU synthesis rejection");
+  std::optional<loom::dse::FuReverseSynthesisFailure> observed;
+  llvm::Error remaining = llvm::handleErrors(
+      value.takeError(), [&](const loom::dse::FuReverseSynthesisError &error) {
+        observed = error.failure();
+      });
+  if (remaining)
+    fail("unexpected reverse FU synthesis error: " +
+         llvm::toString(std::move(remaining)));
+  require(observed == expected,
+          "reverse FU synthesis returned the wrong typed rejection");
+}
+
+void boundedFuReverseSynthesis(Fixture &fixture) {
+  auto program = scalarIntegerSynthesisProgram();
+  const loom::ArtifactRootReference programReference =
+      take(dataflow::publishCanonicalDataflow(program, fixture.store));
+  auto view = take(program.view());
+  const dataflow::GraphRef add = graphOccurrenceContaining(
+      view, dataflow::OperationSchemaId::ArithAddI, 0);
+  const dataflow::GraphRef sub = graphOccurrenceContaining(
+      view, dataflow::OperationSchemaId::ArithSubI, 0);
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.techMapping.candidatePublicationLimit = 2;
+  const auto mappingConfig =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  const std::array<dataflow::GraphRef, 2> forward = {add, sub};
+  const std::array<dataflow::GraphRef, 2> reverse = {sub, add};
+  auto synthesized = take(loom::dse::synthesizeScalarIntegerAddSubFu(
+      view, forward, mappingConfig, fixture.store));
+  auto reordered = take(loom::dse::synthesizeScalarIntegerAddSubFu(
+      view, reverse, mappingConfig, fixture.store));
+  require(synthesized.fabric().reference() == reordered.fabric().reference(),
+          "graph-set order changed synthesized Fabric identity");
+  require(synthesized.mappings().size() == 2 &&
+              reordered.mappings().size() == 2,
+          "bounded synthesis did not materialize every graph independently");
+  for (std::size_t ordinal = 0; ordinal < synthesized.mappings().size();
+       ++ordinal)
+    require(synthesized.mappings()[ordinal].reference() ==
+                reordered.mappings()[ordinal].reference(),
+            "graph-set order changed materialized TechMapping identity");
+
+  const auto templates = synthesized.fabric().view().fuTemplates();
+  require(templates.size() == 1,
+          "bounded synthesis did not create one FU template");
+  const auto capabilityTemplates =
+      synthesized.fabric().view().fuCapabilityTemplates(templates.front());
+  require(capabilityTemplates.size() == 1 &&
+              capabilityTemplates.front().activeNodes.size() == 2 &&
+              capabilityTemplates.front().activeEdges.size() == 6,
+          "bounded synthesis did not retain its complete FU topology");
+  const auto operations =
+      synthesized.fabric().view().resolvedFabricOpCapabilities(
+          templates.front());
+  require(operations.size() == 2,
+          "bounded synthesis did not create two operation resources");
+  bool foundArithmetic = false;
+  bool foundSync = false;
+  for (const auto &operation : operations) {
+    if (operation.implementationFamily ==
+        fabric::ImplementationFamilyId::ScalarIntegerAddSub) {
+      const auto *parameters = std::get_if<fabric::ScalarIntegerParams>(
+          &operation.parameterizedCapability);
+      foundArithmetic =
+          parameters && parameters->integerWidths.size() == 1 &&
+          parameters->integerWidths.contains(fabric::IntegerWidth::I32) &&
+          operation.enabledOperationSchemas.size() == 2;
+    }
+    if (operation.implementationFamily ==
+        fabric::ImplementationFamilyId::TokenSync) {
+      const auto *parameters = std::get_if<fabric::RoutedTokenParams>(
+          &operation.parameterizedCapability);
+      foundSync = parameters && parameters->maxPayloadBits == 32 &&
+                  parameters->maxFan == 2 &&
+                  operation.enabledOperationSchemas.size() == 1;
+    }
+  }
+  require(foundArithmetic && foundSync,
+          "canonical capability envelopes did not reach Fabric");
+
+  require(synthesized.coverage().size() == 2,
+          "bounded synthesis did not prove every input graph");
+  for (const loom::dse::FuSynthesisCoverageWitness &witness :
+       synthesized.coverage()) {
+    const auto *resolvedWitness =
+        take(loom::dse::resolveFuSynthesisCoverage(synthesized, witness));
+    require(resolvedWitness->actors.size() == 2 &&
+                resolvedWitness->boundaries.size() == 5,
+            "coverage witness omitted an actor or FU boundary relation");
+  }
+  loom::dse::FuSynthesisCoverageWitness mutated =
+      synthesized.coverage().front();
+  mutated.graph = sub;
+  requireFuSynthesisFailure(
+      loom::dse::resolveFuSynthesisCoverage(synthesized, mutated),
+      loom::dse::FuReverseSynthesisFailure::CoverageNotEstablished);
+
+  auto providerInputs =
+      take(loom::dse::bindFuReverseSynthesisCandidateGeneratorInputs(
+          programReference));
+  auto providerBinding =
+      take(loom::dse::resolveFuReverseSynthesisCandidateGeneratorBinding(
+          mappingConfig));
+  auto providerResult = take(loom::dse::invokeCandidateGenerator(
+      providerInputs, providerBinding, fixture.store, fixture.blobs));
+  const auto &providerCompleted = completed(providerResult);
+  require(providerCompleted.outputBindings.size() == 2 &&
+              providerCompleted.outputBindings[0].artifacts.size() == 1 &&
+              providerCompleted.outputBindings[1].artifacts.size() == 3,
+          "production reverse synthesis provider omitted an output");
+  require(providerCompleted.outputBindings[0].artifacts.front() ==
+              synthesized.fabric().reference(),
+          "equivalent graph cardinality changed synthesized Fabric identity");
+  require(providerCompleted.lineageEdges.size() == 4,
+          "production reverse synthesis provider omitted derivation lineage");
+
+  auto truncatedOutputs = providerCompleted.outputBindings;
+  const loom::ArtifactRootReference omittedMapping =
+      truncatedOutputs[1].artifacts.back();
+  truncatedOutputs[1].artifacts.pop_back();
+  auto truncatedLineage = providerCompleted.lineageEdges;
+  truncatedLineage.erase(std::remove_if(truncatedLineage.begin(),
+                                        truncatedLineage.end(),
+                                        [&](const auto &edge) {
+                                          return edge.output == omittedMapping;
+                                        }),
+                         truncatedLineage.end());
+  requireError(loom::dse::validateCanonicalCandidateGeneratorInvocation(
+                   providerInputs, providerBinding, truncatedOutputs,
+                   truncatedLineage, true, fixture.store),
+               "complete graph domain");
+
+  const std::array<loom::dse::CandidateGeneratorOutputDemand, 2> limits = {{
+      {loom::dse::CandidateGeneratorOutputSlotRef(0), 1},
+      {loom::dse::CandidateGeneratorOutputSlotRef(1), 2},
+  }};
+  auto limitedResult = take(loom::dse::invokeCandidateGenerator(
+      providerInputs, providerBinding, fixture.store, fixture.blobs,
+      loom::dse::CandidateGeneratorInvocationView({}, limits)));
+  const auto &limited = incomplete(limitedResult);
+  require(limited.reason == loom::dse::CandidateGeneratorIncompleteReason::
+                                SemanticLimitReached &&
+              limited.retainedOutputBindings.size() == 2 &&
+              limited.retainedOutputBindings[0].artifacts.empty() &&
+              limited.retainedOutputBindings[1].artifacts.empty() &&
+              limitedResult.workSummary.front().planned ==
+                  providerCompleted.outputBindings[1].artifacts.size() &&
+              limitedResult.workSummary.front().consumed == 0,
+          "reverse synthesis ignored its atomic output demand");
+
+  const bool stop = true;
+  auto cancelledResult = take(loom::dse::invokeCandidateGenerator(
+      providerInputs, providerBinding, fixture.store, fixture.blobs,
+      loom::ExecutionControlView(&stop, stopRequested)));
+  const auto &cancelled = incomplete(cancelledResult);
+  require(cancelled.reason == loom::dse::CandidateGeneratorIncompleteReason::
+                                  CancelledOrTimeout &&
+              cancelled.retainedOutputBindings.size() == 2 &&
+              cancelled.retainedOutputBindings[0].artifacts.empty() &&
+              cancelled.retainedOutputBindings[1].artifacts.empty() &&
+              cancelledResult.workSummary.front().consumed == 0,
+          "reverse synthesis ignored cancellation before its atomic work");
+
+  StopAfterCalls calibration;
+  auto calibrated = take(loom::dse::attemptScalarIntegerAddSubFuSynthesis(
+      view, {add}, mappingConfig, fixture.store,
+      loom::ExecutionControlView(&calibration, stopAfterCalls)));
+  require(calibrated.complete() && calibrated.mappings().size() == 1 &&
+              calibration.calls > 0,
+          "reverse synthesis cancellation boundary calibration failed");
+  StopAfterCalls midRun{0, calibration.calls + 1};
+  auto interruptedResult = take(loom::dse::invokeCandidateGenerator(
+      providerInputs, providerBinding, fixture.store, fixture.blobs,
+      loom::ExecutionControlView(&midRun, stopAfterCalls)));
+  const auto &interrupted = incomplete(interruptedResult);
+  require(interrupted.reason == loom::dse::CandidateGeneratorIncompleteReason::
+                                    CancelledOrTimeout &&
+              interrupted.retainedOutputBindings.size() == 2 &&
+              interrupted.retainedOutputBindings[0].artifacts.size() == 1 &&
+              interrupted.retainedOutputBindings[1].artifacts.size() == 1 &&
+              interrupted.lineageEdges.size() == 2 &&
+              interruptedResult.workSummary.front().planned ==
+                  providerCompleted.outputBindings[1].artifacts.size() &&
+              interruptedResult.workSummary.front().consumed == 1,
+          "mid-run cancellation lost its finalized synthesis prefix");
+
+  const auto &descriptor =
+      loom::dse::fuReverseSynthesisCandidateGeneratorDescriptor();
+  require(descriptor.ownerLineagePayload && descriptor.ownerOutcome,
+          "reverse synthesis descriptor has no closure contracts");
+  TemporaryDirectory replayDirectory;
+  loom::ArtifactStore replayStore(replayDirectory.path());
+  auto addProgram = scalarIntegerAddProgram();
+  const loom::ArtifactRootReference addProgramReference =
+      take(dataflow::publishCanonicalDataflow(addProgram, replayStore));
+  const loom::ArtifactIdentity copiedFabric =
+      take(replayStore.put(loom::fabric::fabricArtifactSchema,
+                           synthesized.fabric().canonicalBytes()));
+  require(copiedFabric == synthesized.fabric().reference().artifact,
+          "read-only replay fixture changed Fabric identity");
+  const std::array<std::uint8_t, 1> fabricPayload = {0};
+  const std::array<loom::ArtifactRootReference, 1> fabricParents = {
+      addProgramReference};
+  const std::size_t storedBefore = regularFileCount(replayDirectory.path());
+  requireError(descriptor.ownerLineagePayload->validateCanonical(
+                   fabricPayload, synthesized.fabric().reference(),
+                   fabricParents, replayStore),
+               "complete Dataflow graph domain");
+  require(regularFileCount(replayDirectory.path()) == storedBefore,
+          "lineage replay published an artifact while rejecting its output");
+
+  requireFuSynthesisFailure(
+      loom::dse::synthesizeScalarIntegerAddSubFu(view, {}, mappingConfig,
+                                                 fixture.store),
+      loom::dse::FuReverseSynthesisFailure::EmptyGraphSet);
+  requireFuSynthesisFailure(
+      loom::dse::synthesizeScalarIntegerAddSubFu(view, {add, add},
+                                                 mappingConfig, fixture.store),
+      loom::dse::FuReverseSynthesisFailure::DuplicateGraph);
+
+  auto multiplyProgram = scalarIntegerMultiplyProgram();
+  const loom::ArtifactRootReference multiplyReference =
+      take(dataflow::publishCanonicalDataflow(multiplyProgram, fixture.store));
+  auto multiplyView = take(multiplyProgram.view());
+  const dataflow::GraphRef multiply = graphOccurrenceContaining(
+      multiplyView, dataflow::OperationSchemaId::ArithMulI, 0);
+  requireFuSynthesisFailure(
+      loom::dse::synthesizeScalarIntegerAddSubFu(multiplyView, {multiply},
+                                                 mappingConfig, fixture.store),
+      loom::dse::FuReverseSynthesisFailure::UnsupportedActorSchema);
+  requireFuSynthesisFailure(
+      loom::dse::synthesizeScalarIntegerAddSubFu(view, {multiply},
+                                                 mappingConfig, fixture.store),
+      loom::dse::FuReverseSynthesisFailure::InvalidGraphReference);
+
+  auto unsupportedInputs =
+      take(loom::dse::bindFuReverseSynthesisCandidateGeneratorInputs(
+          multiplyReference));
+  auto unsupportedResult = take(loom::dse::invokeCandidateGenerator(
+      unsupportedInputs, providerBinding, fixture.store, fixture.blobs));
+  const auto &unsupported = incomplete(unsupportedResult);
+  require(unsupported.reason ==
+                  loom::dse::CandidateGeneratorIncompleteReason::Unsupported &&
+              unsupported.retainedOutputBindings.size() == 2 &&
+              unsupported.retainedOutputBindings[0].artifacts.empty() &&
+              unsupported.retainedOutputBindings[1].artifacts.empty(),
+          "production reverse synthesis did not type unsupported input");
+}
+
 } // namespace
 
 int main() {
   strictConfigAdmission();
   localMemoryPortVariantRoundTrip();
   Fixture fixture;
+  boundedFuReverseSynthesis(fixture);
   auto system = generateBuiltinSystem(fixture);
   parameterizedTemplateScale(fixture, system);
   auto module = importBuiltinModule(system, fixture);

@@ -352,9 +352,13 @@ materializePortableTokenSync(FabricOperationProviderRequest request) {
   if (request.capability.implementationFamily !=
       ::fabric::ImplementationFamilyId::TokenSync)
     return invalid("sync provider received a different family");
-  if (!std::holds_alternative<::fabric::RoutedTokenParams>(
-          request.capability.parameterizedCapability))
+  const auto *parameters = std::get_if<::fabric::RoutedTokenParams>(
+      &request.capability.parameterizedCapability);
+  if (!parameters)
     return invalid("sync capability has the wrong parameter schema");
+  if (llvm::Error error = ::fabric::verifyRoutedTokenParams(*parameters))
+    return invalid("sync capability has malformed routed-token parameters: " +
+                   llvm::toString(std::move(error)));
   if (!hasExactSchema(request.capability,
                       ::dataflow::OperationSchemaId::DataflowSync))
     return invalid("sync capability does not expose its exact schema");

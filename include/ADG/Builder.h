@@ -1683,6 +1683,10 @@ public:
 
   llvm::Expected<FinalizedFabricDesign> finalize() &&;
 
+  /// Canonicalizes every closed root through the Fabric finalizer and returns
+  /// exact identities without publishing the derived objects.
+  llvm::Expected<std::vector<ArtifactIdentity>> deriveRootIdentities() &&;
+
   /// Finalizes the sole derived Module and returns the exact transient
   /// occurrence correspondence produced by Fabric canonical relabeling.
   llvm::Expected<loom::fabric::FinalizedFabricModuleProjection>

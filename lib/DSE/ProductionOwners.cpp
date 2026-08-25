@@ -3,6 +3,7 @@
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/DataflowRewriteCandidateGenerator.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
+#include "DSE/FuReverseSynthesis.h"
 #include "DSE/ModelParameterCalibrationAcquisition.h"
 #include "DSE/ModelParameterTrainingCandidateGenerator.h"
 #include "DSE/PortableSpatialCoreRtlCandidateGenerator.h"
@@ -45,6 +46,7 @@ llvm::Error registerProductionDseOwners() {
       &registerRootCompleteSystemPnrCandidateGenerator,
       &registerApplicationSystemPnrCandidateGenerator,
       &registerFabricTemplateCandidateGenerator,
+      &registerFuReverseSynthesisCandidateGenerator,
       &registerSpatialTopologyCandidateGenerator,
       &registerSpatialMicroarchitectureCandidateGenerator,
       &registerSystemCompositionCandidateGenerator,

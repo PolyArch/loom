@@ -1480,18 +1480,28 @@ DesignBuilder::createSpatialCore(llvm::StringRef label,
   return SpatialCoreBuilder(state_, ordinal);
 }
 
-llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
-  if (!state_ || state_->consumed)
+namespace {
+
+llvm::Error
+consumeClosedDesign(const std::shared_ptr<detail::DesignState> &state) {
+  if (!state || state->consumed)
     return invalid("DesignBuilder is already consumed");
-  for (const detail::SpatialRootState &root : state_->spatialRoots) {
+  for (const detail::SpatialRootState &root : state->spatialRoots) {
     if (!root.closed)
       return invalid("SpatialCore '" + root.label + "' is not closed");
   }
-  for (const detail::SystemRootState &root : state_->systemRoots)
+  for (const detail::SystemRootState &root : state->systemRoots)
     if (!root.closed)
       return invalid("System '" + root.label + "' is not closed");
+  state->consumed = true;
+  return llvm::Error::success();
+}
 
-  state_->consumed = true;
+} // namespace
+
+llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
+  if (llvm::Error error = consumeClosedDesign(state_))
+    return std::move(error);
   std::vector<loom::fabric::FinalizedFabricRoot> finalized;
   std::vector<FinalizedFabricDesign::FuCapabilityResolution>
       capabilityResolutions;
@@ -1586,6 +1596,33 @@ FinalizedFabricDesign::resolve(const FuCapabilityTemplateHandle &handle) const {
   if (!match)
     return invalid("FU capability handle has no finalized target");
   return match->target;
+}
+
+llvm::Expected<std::vector<ArtifactIdentity>>
+DesignBuilder::deriveRootIdentities() && {
+  if (llvm::Error error = consumeClosedDesign(state_))
+    return std::move(error);
+  std::vector<ArtifactIdentity> identities;
+  identities.reserve(state_->spatialRoots.size() + state_->systemRoots.size());
+  for (const detail::SpatialRootState &root : state_->spatialRoots) {
+    auto identity = loom::fabric::deriveFabricRootIdentity(
+        root.operation, root.domainRelation, state_->store);
+    if (!identity)
+      return identity.takeError();
+    identities.push_back(std::move(*identity));
+  }
+  for (const detail::SystemRootState &root : state_->systemRoots) {
+    llvm::SmallVector<ArtifactRootReference, 4> importedModules;
+    importedModules.reserve(root.importedModules.size());
+    for (const detail::ImportedModuleState &module : root.importedModules)
+      importedModules.push_back(module.reference);
+    auto identity = loom::fabric::deriveFabricRootIdentity(
+        root.operation, importedModules, state_->store);
+    if (!identity)
+      return identity.takeError();
+    identities.push_back(std::move(*identity));
+  }
+  return identities;
 }
 
 llvm::Expected<loom::fabric::FinalizedFabricModuleProjection>

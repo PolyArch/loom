@@ -810,15 +810,16 @@ parseParams(CapabilityParamsSchemaId schema, DictionaryAttr params) {
     if (llvm::Error error =
             checkFields(params, {"max_payload_bits", "max_fan"}))
       return std::move(error);
-    auto capacity = requirePositiveU32(params, "max_payload_bits");
+    auto capacity = requireU32(params, "max_payload_bits");
     if (!capacity)
       return capacity.takeError();
-    auto fan = requirePositiveU32(params, "max_fan");
+    auto fan = requireU32(params, "max_fan");
     if (!fan)
       return fan.takeError();
-    if (*fan < 2)
-      return reject("hw_params field 'max_fan' must be at least two");
-    return FamilyCapabilityParams(RoutedTokenParams{*capacity, *fan});
+    RoutedTokenParams routed{*capacity, *fan};
+    if (llvm::Error error = verifyRoutedTokenParams(routed))
+      return std::move(error);
+    return FamilyCapabilityParams(routed);
   }
   }
   llvm_unreachable("unregistered capability parameter schema");

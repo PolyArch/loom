@@ -1,5 +1,7 @@
 add_library(LoomDSEHardwareGenerator
   FabricTemplateCandidateGenerator.cpp
+  FuReverseSynthesis.cpp
+  FuReverseSynthesisCandidateGenerator.cpp
   HardwareDecision.cpp
   PortableSpatialCoreRtlCandidateGenerator.cpp
   SpatialMicroarchitectureCandidateGenerator.cpp
@@ -18,5 +20,6 @@ target_link_libraries(LoomDSEHardwareGenerator PUBLIC
   LoomDSECandidateGenerator
   LoomFabricArtifact
   LoomHardwareRTL
+  LoomTechMapping
   LLVMSupport
 )

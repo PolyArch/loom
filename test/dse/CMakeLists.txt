@@ -134,6 +134,11 @@ target_link_libraries(loom-dse-hardware-candidate-generator-test PRIVATE
   LoomDSEHardwareGenerator
   LoomFabricArtifact
   LoomTechMapping
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRIR
+  MLIRParser
   LLVMSupport
 )
 

@@ -93,6 +93,8 @@ llvm::Error fabric::detail::forEachCanonicalRoutedTokenLaneImage(
   const auto *routed = std::get_if<RoutedTokenParams>(&params);
   if (!routed)
     return reject("routed-token family has the wrong parameter schema");
+  if (llvm::Error error = verifyRoutedTokenParams(*routed))
+    return error;
   if (laneCount == 0 || laneCount > routed->maxFan)
     return llvm::Error::success();
 

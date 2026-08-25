@@ -181,6 +181,7 @@ tools = [
     "loom-fabric-implementation-family-behavior-inventory-test",
     "loom-fabric-implementation-family-fixed-behavior-test",
     "loom-fabric-implementation-family-test",
+    "loom-fabric-canonical-implementation-capability-test",
     "loom-fabric-scalar-float-behavior-test",
     "loom-fabric-scalar-float-compare-behavior-test",
     "loom-fabric-scalar-integer-behavior-test",

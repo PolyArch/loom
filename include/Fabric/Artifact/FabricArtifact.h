@@ -299,6 +299,14 @@ llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
     const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
     const ArtifactStore &store);
 
+/// Derives the exact canonical identity of one Module without publishing it.
+/// Validation and replay use the same canonicalization and strict import path
+/// as finalization while retaining read-only ArtifactStore behavior.
+llvm::Expected<ArtifactIdentity> deriveFabricRootIdentity(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+    const ArtifactStore &store);
+
 llvm::Expected<FinalizedFabricModuleProjection>
 finalizeFabricModuleWithCorrespondence(
     ::fabric::ModuleOp source,
@@ -320,6 +328,12 @@ llvm::Expected<FinalizedFabricRoot>
 finalizeFabricRoot(::fabric::SystemOp source,
                    llvm::ArrayRef<ArtifactRootReference> importedModules,
                    const ArtifactStore &store);
+
+/// Derives the exact canonical identity of one System without publishing it.
+llvm::Expected<ArtifactIdentity>
+deriveFabricRootIdentity(::fabric::SystemOp source,
+                         llvm::ArrayRef<ArtifactRootReference> importedModules,
+                         const ArtifactStore &store);
 
 /// Finalizes one System and publishes the complete transient correspondence
 /// produced by the same canonical-labeling transaction.

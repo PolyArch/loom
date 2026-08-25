@@ -38,6 +38,7 @@ mlir_target_link_libraries(MLIRFabricEnums PUBLIC
 # consumer that must not depend on the Fabric dialect, such as a backend
 # provider registry, can still read the one generated relation.
 add_mlir_library(LoomFabricImplementationFamily
+  CanonicalImplementationCapability.cpp
   FamilyCapabilityParams.cpp
   ImplementationFamily.cpp
   ImplementationFamilyBehaviorKey.cpp

@@ -308,6 +308,8 @@ resolveRoutedToken(ImplementationFamilyId family,
   const auto *typed = std::get_if<RoutedTokenParams>(&params);
   if (!typed)
     return reject("routed token has the wrong parameter schema");
+  if (llvm::Error error = verifyRoutedTokenParams(*typed))
+    return std::move(error);
   OperationSchemaId schema;
   if (family == ImplementationFamilyId::TokenSync)
     schema = OperationSchemaId::DataflowSync;

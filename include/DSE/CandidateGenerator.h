@@ -212,6 +212,7 @@ struct CandidateGeneratorOwnerFeedbackPayloadContract final {
       const ArtifactStore &store);
 };
 
+struct CandidateGeneratorOwnerOutcomeContract;
 struct CandidateGeneratorDescriptor;
 
 class CandidateGeneratorDescriptorRef final {
@@ -261,6 +262,7 @@ struct CandidateGeneratorDescriptor final {
   ProviderForm providerForm;
   const CandidateGeneratorOwnerFeedbackPayloadContract *ownerFeedbackPayload =
       nullptr;
+  const CandidateGeneratorOwnerOutcomeContract *ownerOutcome = nullptr;
 
   CandidateGeneratorDescriptorRef reference() const;
   const CandidateGeneratorInputSlotDescriptor *
@@ -328,6 +330,18 @@ struct CandidateGeneratorLineageEdge final {
            lhs.output == rhs.output && lhs.parents == rhs.parents &&
            lhs.ownerPayload == rhs.ownerPayload;
   }
+};
+
+/// Descriptor-owned closure across all canonical output slots and lineage
+/// edges. Per-slot cardinality and per-edge payload validation remain generic;
+/// this contract owns semantic relations that span several output artifacts.
+struct CandidateGeneratorOwnerOutcomeContract final {
+  llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes;
+  llvm::Error (*validateCanonical)(
+      llvm::ArrayRef<CandidateGeneratorInputBinding> canonicalInputs,
+      llvm::ArrayRef<CandidateGeneratorOutputBinding> canonicalOutputs,
+      llvm::ArrayRef<CandidateGeneratorLineageEdge> canonicalLineageEdges,
+      bool completed, const ArtifactStore &store);
 };
 
 struct CompletedCandidateGeneratorResult final {

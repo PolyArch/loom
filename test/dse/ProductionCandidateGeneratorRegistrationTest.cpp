@@ -1,6 +1,7 @@
 #include "DSE/CandidateGenerator.h"
 #include "DSE/DataflowRewriteCandidateGenerator.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
+#include "DSE/FuReverseSynthesis.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/ModelParameterCalibrationAcquisition.h"
 #include "DSE/ModelParameterTrainingCandidateGenerator.h"
@@ -66,6 +67,7 @@ int main() {
   requireSuccess(
       loom::dse::registerStructuredSpecialMathAccuracyCandidateGenerator());
   requireSuccess(loom::dse::registerFabricTemplateCandidateGenerator());
+  requireSuccess(loom::dse::registerFuReverseSynthesisCandidateGenerator());
   requireSuccess(loom::dse::registerSpatialTopologyCandidateGenerator());
   requireSuccess(
       loom::dse::registerSpatialMicroarchitectureCandidateGenerator());
@@ -131,4 +133,7 @@ int main() {
   requireRegistered(
       CandidateGeneratorKind(22),
       loom::dse::applicationSystemPnrCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(23),
+      loom::dse::fuReverseSynthesisCandidateGeneratorDescriptor());
 }

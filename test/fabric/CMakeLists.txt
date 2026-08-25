@@ -238,7 +238,17 @@ add_executable(loom-fabric-implementation-family-test
   ImplementationFamilyTest.cpp
 )
 
+add_executable(loom-fabric-canonical-implementation-capability-test
+  CanonicalImplementationCapabilityTest.cpp
+)
+
 target_link_libraries(loom-fabric-implementation-family-test PRIVATE
+  LoomFabricImplementationFamily
+  MLIRDataflow
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-canonical-implementation-capability-test PRIVATE
   LoomFabricImplementationFamily
   MLIRDataflow
   LLVMSupport

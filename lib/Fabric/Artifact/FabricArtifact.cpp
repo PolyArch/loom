@@ -595,7 +595,7 @@ void recordFabricImportRevalidation(std::uint64_t byteCount) {
 }
 
 llvm::Expected<StrictImportResult>
-strictImportModule(const ArtifactRootReference &reference,
+strictImportModule(const ArtifactIdentity &identity,
                    const CanonicalSemanticBytes &canonicalBytes,
                    DecodedFabricArtifact decoded) {
   if (decoded.rootKind != FabricRootKind::Module)
@@ -672,8 +672,8 @@ strictImportModule(const ArtifactRootReference &reference,
     return std::move(error);
   auto canonicalModule = std::make_shared<mlir::OwningOpRef<mlir::ModuleOp>>(
       std::move(parsed->module));
-  auto view = buildModuleView(root, *labeling, reference.artifact,
-                              parsed->context, std::move(canonicalModule));
+  auto view = buildModuleView(root, *labeling, identity, parsed->context,
+                              std::move(canonicalModule));
   if (!view)
     return view.takeError();
   if (llvm::Error error = validateUnconditionalHandshakeClosure(*view))
@@ -1438,9 +1438,47 @@ llvm::Expected<FabricArtifactView> buildSystemView(
 }
 
 llvm::Expected<StrictImportResult>
-strictImportSystem(const ArtifactRootReference &reference,
+strictImportSystem(const ArtifactIdentity &identity,
                    const CanonicalSemanticBytes &canonicalBytes,
                    DecodedFabricArtifact decoded, const ArtifactStore &store);
+
+llvm::Expected<StrictImportResult>
+strictImportDecoded(const ArtifactIdentity &identity,
+                    const ArtifactRootReference *publishedReference,
+                    const CanonicalSemanticBytes &canonicalBytes,
+                    DecodedFabricArtifact decoded, const ArtifactStore &store) {
+  switch (decoded.rootKind) {
+  case FabricRootKind::Module:
+    return strictImportModule(identity, canonicalBytes, std::move(decoded));
+  case FabricRootKind::System:
+    return strictImportSystem(identity, canonicalBytes, std::move(decoded),
+                              store);
+  case FabricRootKind::InterconnectImplementation:
+    if (!publishedReference)
+      return invalid("unpublished InterconnectImplementation import is "
+                     "unsupported");
+    if (auto view = detail::strictImportInterconnectImplementation(
+            *publishedReference, decoded, store))
+      return StrictImportResult{std::move(decoded), std::move(*view), {}, {}};
+    else
+      return view.takeError();
+  }
+  llvm_unreachable("closed Fabric root kind");
+}
+
+llvm::Expected<StrictImportResult>
+strictImportUnpublished(const ArtifactIdentity &identity,
+                        const CanonicalSemanticBytes &canonicalBytes,
+                        const ArtifactStore &store) {
+  if (finalizeArtifactIdentity(fabricArtifactSchema, canonicalBytes) !=
+      identity)
+    return invalid("unpublished identity does not match canonical bytes");
+  auto decoded = decodeFabricArtifactEnvelope(canonicalBytes.bytes());
+  if (!decoded)
+    return decoded.takeError();
+  return strictImportDecoded(identity, nullptr, canonicalBytes,
+                             std::move(*decoded), store);
+}
 
 llvm::Expected<std::shared_ptr<const StrictImportResult>>
 strictImport(const ArtifactRootReference &reference,
@@ -1476,23 +1514,9 @@ strictImport(const ArtifactRootReference &reference,
   auto decoded = decodeFabricArtifactEnvelope(canonicalBytes.bytes());
   if (!decoded)
     return decoded.takeError();
-  llvm::Expected<StrictImportResult> imported = [&]() {
-    switch (decoded->rootKind) {
-    case FabricRootKind::Module:
-      return strictImportModule(reference, canonicalBytes, std::move(*decoded));
-    case FabricRootKind::System:
-      return strictImportSystem(reference, canonicalBytes, std::move(*decoded),
-                                store);
-    case FabricRootKind::InterconnectImplementation:
-      if (auto view = detail::strictImportInterconnectImplementation(
-              reference, *decoded, store))
-        return llvm::Expected<StrictImportResult>(
-            StrictImportResult{std::move(*decoded), std::move(*view), {}, {}});
-      else
-        return llvm::Expected<StrictImportResult>(view.takeError());
-    }
-    llvm_unreachable("closed Fabric root kind");
-  }();
+  llvm::Expected<StrictImportResult> imported =
+      strictImportDecoded(reference.artifact, &reference, canonicalBytes,
+                          std::move(*decoded), store);
   if (!imported)
     return imported.takeError();
   const std::uint64_t constructionNanoseconds =
@@ -1511,7 +1535,7 @@ strictImport(const ArtifactRootReference &reference,
 }
 
 llvm::Expected<StrictImportResult>
-strictImportSystem(const ArtifactRootReference &reference,
+strictImportSystem(const ArtifactIdentity &identity,
                    const CanonicalSemanticBytes &canonicalBytes,
                    DecodedFabricArtifact decoded, const ArtifactStore &store) {
   if (decoded.rootKind != FabricRootKind::System)
@@ -1576,8 +1600,8 @@ strictImportSystem(const ArtifactRootReference &reference,
     return rewritten.takeError();
   if (*rewritten != decoded.canonicalMlirBytecode)
     return invalid("canonical System MLIR bytecode is not byte stable");
-  auto view = buildSystemView(root, *labeling, reference.artifact,
-                              importedModules, parsed->context);
+  auto view = buildSystemView(root, *labeling, identity, importedModules,
+                              parsed->context);
   if (!view)
     return view.takeError();
   return StrictImportResult{std::move(decoded), std::move(*view), {}, {}};
@@ -1750,7 +1774,18 @@ finalizeFabricRoot(::fabric::ModuleOp source, const ArtifactStore &store) {
   return finalizeFabricRoot(source, empty, store);
 }
 
-llvm::Expected<FinalizedFabricModuleProjection> detail::finalizeFabricModule(
+namespace {
+
+struct DerivedFabricModuleCandidate final {
+  ArtifactIdentity identity;
+  CanonicalSemanticBytes canonicalBytes;
+  std::vector<FabricDirectDependency> directDependencies;
+  FabricArtifactView view;
+  std::vector<FabricModuleEntityCorrespondence> entities;
+  std::vector<FabricFuCapabilityTemplateCorrespondence> capabilities;
+};
+
+llvm::Expected<DerivedFabricModuleCandidate> deriveFabricModuleCandidate(
     ::fabric::ModuleOp source,
     const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
     const ArtifactStore &store, bool captureEntityCorrespondence,
@@ -1767,25 +1802,56 @@ llvm::Expected<FinalizedFabricModuleProjection> detail::finalizeFabricModule(
       encodeFabricArtifactEnvelope(FabricRootKind::Module, {}, *bytecode);
   if (!canonical)
     return canonical.takeError();
-  ArtifactRootReference reference{
-      fabricArtifactSchema.identity.str(), fabricArtifactSchema.version,
-      finalizeArtifactIdentity(fabricArtifactSchema, *canonical)};
-  auto imported = strictImport(reference, *canonical, store, false);
+  ArtifactIdentity identity =
+      finalizeArtifactIdentity(fabricArtifactSchema, *canonical);
+  auto imported = strictImportUnpublished(identity, *canonical, store);
   if (!imported)
     return imported.takeError();
   if (llvm::Error error =
           detail::validateFabricArtifactDependencyFramingClosure(store,
                                                                  *canonical))
     return std::move(error);
-  auto stored = store.put(fabricArtifactSchema, *canonical);
+  return DerivedFabricModuleCandidate{
+      std::move(identity), std::move(*canonical),
+      imported->decoded.dependencies, imported->view,
+      std::move(candidate->entities), std::move(candidate->capabilities)};
+}
+
+llvm::Expected<ArtifactRootReference>
+publishDerivedFabricRoot(const ArtifactIdentity &identity,
+                         const CanonicalSemanticBytes &canonical,
+                         const ArtifactStore &store) {
+  auto stored = store.put(fabricArtifactSchema, canonical);
   if (!stored)
     return stored.takeError();
-  if (*stored != reference.artifact)
+  if (*stored != identity)
     return invalid("ArtifactStore returned a different Fabric identity");
+  return ArtifactRootReference{fabricArtifactSchema.identity.str(),
+                               fabricArtifactSchema.version,
+                               std::move(*stored)};
+}
+
+} // namespace
+
+llvm::Expected<FinalizedFabricModuleProjection> detail::finalizeFabricModule(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+    const ArtifactStore &store, bool captureEntityCorrespondence,
+    bool captureCapabilityCorrespondence) {
+  auto derived = deriveFabricModuleCandidate(
+      source, domainRelation, store, captureEntityCorrespondence,
+      captureCapabilityCorrespondence);
+  if (!derived)
+    return derived.takeError();
+  auto reference = publishDerivedFabricRoot(derived->identity,
+                                            derived->canonicalBytes, store);
+  if (!reference)
+    return reference.takeError();
   return FinalizedFabricModuleProjection{
-      FinalizedFabricRoot(reference, std::move(*canonical),
-                          (*imported)->decoded.dependencies, (*imported)->view),
-      std::move(candidate->entities), std::move(candidate->capabilities)};
+      FinalizedFabricRoot(
+          std::move(*reference), std::move(derived->canonicalBytes),
+          std::move(derived->directDependencies), std::move(derived->view)),
+      std::move(derived->entities), std::move(derived->capabilities)};
 }
 
 llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
@@ -1797,6 +1863,17 @@ llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
   if (!finalized)
     return finalized.takeError();
   return std::move(finalized->root);
+}
+
+llvm::Expected<ArtifactIdentity> deriveFabricRootIdentity(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+    const ArtifactStore &store) {
+  auto derived =
+      deriveFabricModuleCandidate(source, domainRelation, store, false, false);
+  if (!derived)
+    return derived.takeError();
+  return std::move(derived->identity);
 }
 
 llvm::Expected<FinalizedFabricModuleProjection>
@@ -1817,7 +1894,18 @@ finalizeFabricModuleWithCapabilityCorrespondence(
                                       true);
 }
 
-llvm::Expected<FinalizedFabricSystemProjection> detail::finalizeFabricSystem(
+namespace {
+
+struct DerivedFabricSystemCandidate final {
+  ArtifactIdentity identity;
+  CanonicalSemanticBytes canonicalBytes;
+  std::vector<FabricDirectDependency> directDependencies;
+  FabricArtifactView view;
+  std::vector<FabricSystemEntityCorrespondence> entities;
+  std::vector<FabricSystemTransferPatternCorrespondence> transferPatterns;
+};
+
+llvm::Expected<DerivedFabricSystemCandidate> deriveFabricSystemCandidate(
     ::fabric::SystemOp source,
     llvm::ArrayRef<ArtifactRootReference> importedModules,
     const ArtifactStore &store, bool captureCorrespondence) {
@@ -1832,25 +1920,42 @@ llvm::Expected<FinalizedFabricSystemProjection> detail::finalizeFabricSystem(
       FabricRootKind::System, candidate->dependencies, *bytecode);
   if (!canonical)
     return canonical.takeError();
-  ArtifactRootReference reference{
-      fabricArtifactSchema.identity.str(), fabricArtifactSchema.version,
-      finalizeArtifactIdentity(fabricArtifactSchema, *canonical)};
+  ArtifactIdentity identity =
+      finalizeArtifactIdentity(fabricArtifactSchema, *canonical);
   if (llvm::Error error =
           detail::validateFabricArtifactDependencyFramingClosure(store,
                                                                  *canonical))
     return std::move(error);
-  auto imported = strictImport(reference, *canonical, store, false);
+  auto imported = strictImportUnpublished(identity, *canonical, store);
   if (!imported)
     return imported.takeError();
-  auto stored = store.put(fabricArtifactSchema, *canonical);
-  if (!stored)
-    return stored.takeError();
-  if (*stored != reference.artifact)
-    return invalid("ArtifactStore returned a different Fabric identity");
+  return DerivedFabricSystemCandidate{std::move(identity),
+                                      std::move(*canonical),
+                                      imported->decoded.dependencies,
+                                      imported->view,
+                                      std::move(candidate->entities),
+                                      std::move(candidate->transferPatterns)};
+}
+
+} // namespace
+
+llvm::Expected<FinalizedFabricSystemProjection> detail::finalizeFabricSystem(
+    ::fabric::SystemOp source,
+    llvm::ArrayRef<ArtifactRootReference> importedModules,
+    const ArtifactStore &store, bool captureCorrespondence) {
+  auto derived = deriveFabricSystemCandidate(source, importedModules, store,
+                                             captureCorrespondence);
+  if (!derived)
+    return derived.takeError();
+  auto reference = publishDerivedFabricRoot(derived->identity,
+                                            derived->canonicalBytes, store);
+  if (!reference)
+    return reference.takeError();
   return FinalizedFabricSystemProjection{
-      FinalizedFabricRoot(reference, std::move(*canonical),
-                          (*imported)->decoded.dependencies, (*imported)->view),
-      std::move(candidate->entities), std::move(candidate->transferPatterns)};
+      FinalizedFabricRoot(
+          std::move(*reference), std::move(derived->canonicalBytes),
+          std::move(derived->directDependencies), std::move(derived->view)),
+      std::move(derived->entities), std::move(derived->transferPatterns)};
 }
 
 llvm::Expected<FinalizedFabricRoot>
@@ -1862,6 +1967,17 @@ finalizeFabricRoot(::fabric::SystemOp source,
   if (!finalized)
     return finalized.takeError();
   return std::move(finalized->root);
+}
+
+llvm::Expected<ArtifactIdentity>
+deriveFabricRootIdentity(::fabric::SystemOp source,
+                         llvm::ArrayRef<ArtifactRootReference> importedModules,
+                         const ArtifactStore &store) {
+  auto derived =
+      deriveFabricSystemCandidate(source, importedModules, store, false);
+  if (!derived)
+    return derived.takeError();
+  return std::move(derived->identity);
 }
 
 llvm::Expected<FinalizedFabricSystemProjection>

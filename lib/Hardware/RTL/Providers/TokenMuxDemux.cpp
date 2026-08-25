@@ -325,8 +325,11 @@ materializePortableTokenRouting(FabricOperationProviderRequest request,
     return invalid("capability parameter schema does not match its family");
   const auto *parameters = std::get_if<::fabric::RoutedTokenParams>(
       &request.capability.parameterizedCapability);
-  if (!parameters || parameters->maxPayloadBits == 0 || parameters->maxFan < 2)
+  if (!parameters)
     return invalid("capability has malformed routed-token parameters");
+  if (llvm::Error error = ::fabric::verifyRoutedTokenParams(*parameters))
+    return invalid("capability has malformed routed-token parameters: " +
+                   llvm::toString(std::move(error)));
   const bool isMux = family == ::fabric::ImplementationFamilyId::TokenMux;
   const std::vector<::dataflow::OperationSchemaId> expectedSchemas{
       isMux ? ::dataflow::OperationSchemaId::DataflowMux
@@ -395,8 +398,8 @@ materializePortableTokenRouting(FabricOperationProviderRequest request,
       return invalid("configured routed capability is not one finite field");
     const auto fieldOrdinal =
         request.capability.configurationFieldSchema.front().ordinal;
-    field = request.configurationAbi.findOperationEncodingRelation(request.occurrence,
-                                                        fieldOrdinal);
+    field = request.configurationAbi.findOperationEncodingRelation(
+        request.occurrence, fieldOrdinal);
     if (!field)
       return invalid("configured routed field is absent from ABI 3.0");
     codebook = std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);

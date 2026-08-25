@@ -544,9 +544,24 @@ struct PayloadCapacityParams {
 struct RoutedTokenParams {
   static constexpr CapabilityParamsSchemaId schemaId =
       CapabilityParamsSchemaId::RoutedTokenParams;
+  static constexpr std::uint32_t minimumPayloadCapacityBits = 1;
+  static constexpr std::uint32_t minimumFanCapacity = 2;
   std::uint32_t maxPayloadBits;
   std::uint32_t maxFan;
 };
+
+/// Verifies the canonical nonzero payload and routed fan capacity domain.
+/// Every codec, admission, correspondence, and behavior consumer shares this
+/// owner instead of restating the lower bounds.
+llvm::Error verifyRoutedTokenParams(const RoutedTokenParams &params);
+
+/// Verifies capability-independent actor-shape invariants owned by the
+/// implementation family's typed admission provider. The initial shared
+/// shape owners cover scalar ordinary-integer and token-sync providers; other
+/// providers reject this query until their admission is decomposed.
+llvm::Error verifyImplementationFamilyActorShape(
+    ImplementationFamilyId family,
+    const ::dataflow::CanonicalActorSchemaProjection &actor);
 
 struct FixedVectorSliceAlignMergeParams {
   static constexpr CapabilityParamsSchemaId schemaId =
@@ -583,6 +598,57 @@ using FamilyCapabilityParams =
                  FixedVectorFloatCompareMinMaxParams, FixedVectorAdapterParams,
                  PayloadCapacityParams, RoutedTokenParams,
                  FixedVectorSliceAlignMergeParams, FixedVectorShuffleParams>;
+
+/// Closed failures from deriving the least capability envelope currently
+/// expressible for a non-empty exact actor set. An unavailable inverse policy
+/// is distinct from a malformed actor projection or a family that does not
+/// own the requested actor schemas.
+enum class CanonicalCapabilityDerivationFailure : std::uint8_t {
+  EmptyActorSet,
+  InvalidFamily,
+  FamilyDoesNotOwnSchema,
+  UnsupportedAdmissionProvider,
+  InvalidActorProjection,
+  NoAdmittingFamily,
+};
+
+class CanonicalCapabilityDerivationError final
+    : public llvm::ErrorInfo<CanonicalCapabilityDerivationError> {
+public:
+  static char ID;
+
+  CanonicalCapabilityDerivationError(
+      CanonicalCapabilityDerivationFailure failure, std::string message)
+      : failure_(failure), message_(std::move(message)) {}
+
+  CanonicalCapabilityDerivationFailure failure() const { return failure_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  CanonicalCapabilityDerivationFailure failure_;
+  std::string message_;
+};
+
+/// One implementation family and its least currently expressible typed
+/// capability envelope for a non-empty exact actor set. Enabled schemas are a
+/// canonical set projection of the actors, not a copy of the family catalog.
+struct CanonicalImplementationCapability final {
+  ImplementationFamilyId family;
+  FamilyCapabilityParams parameters;
+  std::vector<::dataflow::OperationSchemaId> enabledSchemas;
+};
+
+/// Derives the least capability envelope for one explicit implementation
+/// family and exact actor set. The family must own every actor schema in the
+/// generated registry. The initial inverse policies cover scalar ordinary
+/// integer and context-free token-sync admissions; every other provider, and
+/// representation-dependent index or pointer payload, fails typed unavailable
+/// until its lower-envelope policy has the required canonical context.
+llvm::Expected<CanonicalImplementationCapability>
+deriveCanonicalImplementationCapability(
+    ImplementationFamilyId family,
+    llvm::ArrayRef<::dataflow::CanonicalActorSchemaProjection> actors);
 
 /// Bit positions of the direct semantic field for one structural slice
 /// resource. Every value is mechanically derived from the actor projection;
