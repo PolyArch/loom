@@ -560,9 +560,11 @@ detail::negotiateSystemServiceRoutes(
     if (!recurrence)
       return recurrence.takeError();
     auto objective = problem.objectiveProgram().evaluateSystemProjection(
-        problem, graphChoices, *recurrence, capacity->capacity.total,
-        *traversalClaim, capacity->timing.minimumInitiationIntervalCycles,
-        capacity->timing.transportBitCycleDemand, capacity->progress);
+        problem, graphChoices, *recurrence, capacity->demand.capacity.total,
+        *traversalClaim,
+        capacity->demand.timing.minimumInitiationIntervalCycles,
+        capacity->demand.timing.transportBitCycleDemand,
+        capacity->demand.progress);
     if (!objective)
       return objective.takeError();
     bool selectedRankImproved = !bestRankObjective;
