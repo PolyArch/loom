@@ -23,6 +23,16 @@ FabricRoot =
   | InterconnectImplementation
 ```
 
+The `X.Y` rule classifies the semantic change between schema definitions:
+changing `X` is incompatible, while increasing `Y` adds a non-breaking
+semantic extension without changing existing field meanings. It does not make
+schema descriptors interchangeable at the persistent boundary. The Common
+Artifact descriptor is part of the identity preimage, and each Fabric owner
+accepts and emits exactly the descriptor it implements. Reading, defaulting,
+or upgrading an object with a different minor version requires an explicit
+owner-defined migration that re-finalizes the object under a new identity;
+minor-version proximity alone never authorizes a compatibility reader.
+
 Version 4.0 is one atomic breaking boundary. It retains the complete 3.0
 memory-plane, connection, identity, and root contracts while changing one
 execution invariant: a selected Buffered `fabric.fifo` cuts both forward-valid
@@ -35,10 +45,11 @@ legality and cycle timing. The RootRelative memory index-width relation
 introduced in 2.0 and the exact System service-endpoint attachment introduced
 in 3.0 remain part of this boundary.
 
-Version 4.1 is a compatible extension of the message-transfer capability
-domain. In addition to its canonical finite set of exact payload types, a
-message endpoint may carry one canonical fixed-vector family and one canonical
-finite set of exact stable-integral pointer formats. The vector family stores
+Version 4.1 is a non-breaking semantic extension of the 4.0 message-transfer
+capability domain under the `X.Y` rule above. In addition to its canonical
+finite set of exact payload types, a message endpoint may carry one canonical
+fixed-vector family and one canonical finite set of exact stable-integral
+pointer formats. The vector family stores
 exact scalar element types, a positive maximum row-major-flattened payload
 width, and a positive maximum rank no greater than the canonical type codec's
 rank limit. A concrete vector is admitted exactly when it is fixed, has
@@ -317,7 +328,11 @@ The MLIR payload encodes each external root use as a `u64be` dependency-table
 ordinal followed by the referenced owner's canonical local target bytes when
 a target is required. It does not repeat an ArtifactIdentity. The Fabric
 semantic envelope does not repeat its own schema descriptor because the Common
-identity preimage already owns that framing.
+identity preimage already owns that framing. The `v6` semantic-domain marker
+therefore identifies the major-version envelope grammar; it is not a wildcard
+minor-version admission rule. `fabricArtifactSchema` remains the sole owner of
+the complete current version, and strict import compares the root reference
+against that exact descriptor before decoding the envelope.
 
 The specification fixes the canonical result, not a canonical-labeling
 algorithm. Individualization-refinement, orbit pruning, or another exact
