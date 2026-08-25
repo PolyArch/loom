@@ -41,6 +41,7 @@ target_link_libraries(LoomApplicationRuntimeManifest PUBLIC
   LoomEvaluation
   LoomPnR
   LoomSimulator
+  LoomStructuredFabricAnalyticModel
   LLVMSupport
 )
 

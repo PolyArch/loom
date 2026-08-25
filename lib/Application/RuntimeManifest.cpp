@@ -11,8 +11,13 @@
 #include "Deployment/Deployment.h"
 #include "Deployment/Package.h"
 #include "Evaluation/Evidence.h"
+#include "Evaluation/Models/CgraSimulation.h"
+#include "Evaluation/Models/DfgSimulation.h"
+#include "Evaluation/Models/SimulationComparison.h"
 #include "Evaluation/Request.h"
+#include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Identity/FabricRefText.h"
+#include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Simulator/SimulationExecution.h"
 
@@ -660,6 +665,36 @@ std::string canonicalJsonKey(WriteValue &&writeValue) {
 }
 
 void canonicalizeGraphOrder(pnr::ResourceTimeTransitionGraph &graph) {
+  for (pnr::ResourceTimeTransition &transition : graph.transitions) {
+    for (auto *allocations :
+         {&transition.beforeActive, &transition.afterActive}) {
+      for (pnr::ResourceTimeRegionAllocation &allocation : *allocations)
+        llvm::sort(allocation.resources, [](const auto &lhs, const auto &rhs) {
+          return fabric::printFabricRef(lhs) < fabric::printFabricRef(rhs);
+        });
+      llvm::sort(*allocations, [](const auto &lhs, const auto &rhs) {
+        const std::string lhsKey = canonicalJsonKey(
+            [&](llvm::json::OStream &json) { writeAllocation(json, lhs); });
+        const std::string rhsKey = canonicalJsonKey(
+            [&](llvm::json::OStream &json) { writeAllocation(json, rhs); });
+        return lhsKey < rhsKey;
+      });
+    }
+    llvm::sort(transition.completedBefore,
+               [](const auto &lhs, const auto &rhs) {
+                 const std::string lhsKey =
+                     canonicalJsonKey([&](llvm::json::OStream &json) {
+                       writeDataflowReference(json, lhs.artifact, lhs);
+                     });
+                 const std::string rhsKey =
+                     canonicalJsonKey([&](llvm::json::OStream &json) {
+                       writeDataflowReference(json, rhs.artifact, rhs);
+                     });
+                 return lhsKey < rhsKey;
+               });
+    llvm::sort(transition.beforeLiveWork, artifactRootReferenceLess);
+    llvm::sort(transition.afterLiveWork, artifactRootReferenceLess);
+  }
   llvm::sort(graph.endpoints, [](const auto &lhs, const auto &rhs) {
     const std::string lhsKey = canonicalJsonKey(
         [&](llvm::json::OStream &json) { writeEndpoint(json, lhs); });
@@ -961,6 +996,13 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
           ApplicationPairDecisionDisposition::HardwareDseAlternative)
     return reject(ApplicationRuntimeManifestErrorReason::PairDecisionIncomplete,
                   "runtime manifest does not carry a completed pair decision");
+  const bool selectedDifferentSystem = draft.selectedSystem != draft.fabric;
+  if (selectedDifferentSystem !=
+      (draft.pairDisposition ==
+       ApplicationPairDecisionDisposition::HardwareDseAlternative))
+    return reject(
+        ApplicationRuntimeManifestErrorReason::PairDecisionIncomplete,
+        "hardware-alternative disposition differs from the selected System");
   if (draft.selectedScheduleHintDigests.empty())
     return reject(ApplicationRuntimeManifestErrorReason::PairDecisionIncomplete,
                   "runtime manifest has no selected schedule hint");
@@ -974,6 +1016,24 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
                     "runtime manifest pair root is unavailable: " +
                         llvm::toString(stored.takeError()));
   }
+  if (draft.sourceProgram.schemaIdentity !=
+          frontend::structuredProgramArtifactSchema.identity ||
+      draft.sourceProgram.schemaVersion !=
+          frontend::structuredProgramArtifactSchema.version ||
+      draft.fabric.schemaIdentity != fabric::fabricArtifactSchema.identity ||
+      draft.fabric.schemaVersion != fabric::fabricArtifactSchema.version ||
+      draft.selectedSystem.schemaIdentity !=
+          fabric::fabricArtifactSchema.identity ||
+      draft.selectedSystem.schemaVersion !=
+          fabric::fabricArtifactSchema.version ||
+      draft.workload.schemaIdentity != sim::simulationWorkloadSchema.identity ||
+      draft.workload.schemaVersion != sim::simulationWorkloadSchema.version ||
+      draft.runtimeInput.schemaIdentity !=
+          sim::simulationRuntimeInputSchema.identity ||
+      draft.runtimeInput.schemaVersion !=
+          sim::simulationRuntimeInputSchema.version)
+    return reject(ApplicationRuntimeManifestErrorReason::PairIdentityMismatch,
+                  "runtime manifest pair roots use foreign schemas");
 
   auto importedMapping =
       mapping::importSystemMapping(draft.selectedMapping, artifacts);
@@ -1115,6 +1175,15 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
 
   const auto spatialMappings =
       importedMapping->view().executionBindings().spatialMappingImports();
+  enum class RuntimeEvidenceKind : std::uint8_t { Dfg, Cgra };
+  struct ExecutionEvidenceRecord final {
+    ArtifactRootReference evidence;
+    ArtifactRootReference execution;
+    ArtifactRootReference workload;
+    ArtifactRootReference runtimeInput;
+    evaluation::CaseArtifactResolution resolution;
+    RuntimeEvidenceKind kind;
+  };
   struct RuntimeInputPair final {
     ArtifactRootReference workload;
     ArtifactRootReference runtimeInput;
@@ -1123,6 +1192,30 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
       return workload == other.workload && runtimeInput == other.runtimeInput;
     }
   };
+  const auto strictExecutionOutput =
+      [&](const evaluation::EvaluationEvidence &evidence)
+      -> llvm::Expected<ArtifactRootReference> {
+    std::optional<ArtifactRootReference> execution;
+    for (const evaluation::ModelOutputBinding &binding :
+         evidence.outputBindings())
+      for (const ArtifactRootReference &output : binding.artifacts) {
+        if (output.schemaIdentity != sim::simulationExecutionSchema.identity ||
+            output.schemaVersion != sim::simulationExecutionSchema.version)
+          continue;
+        if (execution)
+          return reject(
+              ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+              "runtime Evidence repeats its SimulationExecution output");
+        execution = output;
+      }
+    if (!execution)
+      return reject(
+          ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+          "runtime Evidence has no SimulationExecution output");
+    return *execution;
+  };
+  std::vector<ExecutionEvidenceRecord> executionEvidence;
+  std::vector<const EvidenceFacts *> comparisonEvidence;
   std::vector<RuntimeInputPair> sourceRuntimeInputs;
   std::vector<RuntimeInputPair> mappedRuntimeInputs;
   for (const EvidenceFacts &facts : evidenceFacts) {
@@ -1149,18 +1242,68 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
       }
     }
     const bool hasDataflow = contains(facts.requestReferences, dataflow);
-    const bool hasSpatialMapping =
-        llvm::any_of(spatialMappings, [&](const ArtifactRootReference &root) {
-          return contains(facts.requestReferences, root);
-        });
+    std::vector<ArtifactRootReference> selectedSpatialMappings;
+    for (const ArtifactRootReference &root : spatialMappings)
+      if (contains(facts.requestReferences, root))
+        selectedSpatialMappings.push_back(root);
+    const bool hasSpatialMapping = !selectedSpatialMappings.empty();
+    if (!hasDataflow && !hasSpatialMapping) {
+      comparisonEvidence.push_back(&facts);
+      continue;
+    }
     if ((hasDataflow || hasSpatialMapping) && (!workload || !runtimeInput))
       return reject(
           ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
           "runtime Evidence Request has no exact workload and runtime input");
-    if (hasDataflow)
-      sourceRuntimeInputs.push_back({*workload, *runtimeInput});
-    if (hasSpatialMapping)
+    std::optional<evaluation::CaseArtifactResolution> resolution;
+    RuntimeEvidenceKind kind = RuntimeEvidenceKind::Dfg;
+    if (hasSpatialMapping) {
+      if (selectedSpatialMappings.size() != 1)
+        return reject(
+            ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+            "runtime Evidence Request repeats a selected SpatialMapping");
+      auto resolved = evaluation::models::resolveCgraSimulationCase(
+          selectedSpatialMappings.front(), *workload, *runtimeInput, artifacts);
+      if (!resolved)
+        return reject(
+            ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+            "cannot resolve selected CGRA runtime case: " +
+                llvm::toString(resolved.takeError()));
+      if (resolved->canonicalDataflow != dataflow)
+        return reject(
+            ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+            "CGRA runtime case names a foreign canonical Dataflow");
+      resolution.emplace(std::move(resolved->resolution));
+      kind = RuntimeEvidenceKind::Cgra;
       mappedRuntimeInputs.push_back({*workload, *runtimeInput});
+    } else {
+      auto resolved = evaluation::models::resolveDfgSimulationCase(
+          dataflow, *workload, *runtimeInput, artifacts);
+      if (!resolved)
+        return reject(
+            ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+            "cannot resolve DFG runtime case: " +
+                llvm::toString(resolved.takeError()));
+      resolution.emplace(std::move(*resolved));
+      sourceRuntimeInputs.push_back({*workload, *runtimeInput});
+    }
+    auto strict = evaluation::importEvaluationEvidence(
+        facts.evidence, *resolution, artifacts, blobs);
+    if (!strict)
+      return reject(
+          ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+          "runtime Evidence failed strict import: " +
+              llvm::toString(strict.takeError()));
+    if (strict->requestRef() != facts.projection.request ||
+        strict->outcomeKind() != evaluation::EvidenceOutcomeKind::Completed)
+      return reject(
+          ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+          "strict runtime Evidence differs from its dependency projection");
+    auto execution = strictExecutionOutput(*strict);
+    if (!execution)
+      return execution.takeError();
+    executionEvidence.push_back({facts.evidence, *execution, *workload,
+                                 *runtimeInput, std::move(*resolution), kind});
   }
   const auto pairLess = [](const RuntimeInputPair &lhs,
                            const RuntimeInputPair &rhs) {
@@ -1179,31 +1322,70 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
         ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
         "runtime Evidence does not join DFG and Spatial Mapping executions "
         "through the same workload and runtime input set");
+  std::vector<ArtifactRootReference> classifiedExecutionOutputs;
+  for (const ExecutionEvidenceRecord &record : executionEvidence)
+    classifiedExecutionOutputs.push_back(record.execution);
+  llvm::sort(classifiedExecutionOutputs, artifactRootReferenceLess);
+  if (classifiedExecutionOutputs != executionOutputs)
+    return reject(
+        ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+        "runtime Evidence has an unclassified SimulationExecution output");
 
-  for (const ArtifactRootReference &oracle : draft.oracleEvidence) {
-    const auto facts = llvm::find_if(evidenceFacts, [&](const auto &candidate) {
-      return candidate.evidence == oracle;
-    });
-    if (facts == evidenceFacts.end())
-      return reject(
-          ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
-          "oracle Evidence has no runtime dependency projection");
-    std::size_t comparedExecutions = 0;
+  std::vector<ArtifactRootReference> verifiedOracleEvidence;
+  for (const EvidenceFacts *facts : comparisonEvidence) {
+    std::vector<const ExecutionEvidenceRecord *> compared;
     for (const ArtifactRootReference &reference : facts->requestReferences) {
       if (reference.schemaIdentity != sim::simulationExecutionSchema.identity ||
           reference.schemaVersion != sim::simulationExecutionSchema.version)
         continue;
-      if (!contains(executionOutputs, reference))
+      const auto record =
+          llvm::find_if(executionEvidence, [&](const auto &row) {
+            return row.execution == reference;
+          });
+      if (record == executionEvidence.end())
         return reject(
             ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
             "oracle Evidence names a foreign SimulationExecution");
-      ++comparedExecutions;
+      compared.push_back(&*record);
     }
-    if (comparedExecutions < 2)
+    if (compared.size() != 2 || compared[0]->kind == compared[1]->kind)
       return reject(
           ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
-          "oracle Evidence does not compare two bound SimulationExecutions");
+          "oracle Evidence does not compare one DFG and one CGRA execution");
+    const ExecutionEvidenceRecord *dfg =
+        compared[0]->kind == RuntimeEvidenceKind::Dfg ? compared[0]
+                                                      : compared[1];
+    const ExecutionEvidenceRecord *cgra =
+        compared[0]->kind == RuntimeEvidenceKind::Cgra ? compared[0]
+                                                       : compared[1];
+    auto resolution = evaluation::models::resolveSimulationComparisonCase(
+        dfg->execution, dfg->resolution, cgra->execution, cgra->resolution,
+        artifacts, blobs);
+    if (!resolution)
+      return reject(
+          ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+          "cannot resolve SimulationComparison Evidence: " +
+              llvm::toString(resolution.takeError()));
+    auto strict = evaluation::importEvaluationEvidence(
+        facts->evidence, *resolution, artifacts, blobs);
+    if (!strict)
+      return reject(
+          ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+          "oracle Evidence failed strict SimulationComparison import: " +
+              llvm::toString(strict.takeError()));
+    if (strict->requestRef() != facts->projection.request ||
+        strict->outcomeKind() != evaluation::EvidenceOutcomeKind::Completed ||
+        !llvm::is_contained(draft.oracleEvidence, facts->evidence))
+      return reject(
+          ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+          "strict SimulationComparison differs from the oracle Evidence set");
+    verifiedOracleEvidence.push_back(facts->evidence);
   }
+  llvm::sort(verifiedOracleEvidence, artifactRootReferenceLess);
+  if (verifiedOracleEvidence != draft.oracleEvidence)
+    return reject(
+        ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+        "oracle Evidence contains a non-SimulationComparison result");
 
   if (draft.transitionGraph) {
     if (llvm::Error error = pnr::verifyResourceTimeTransitionGraph(
@@ -1212,6 +1394,16 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
           ApplicationRuntimeManifestErrorReason::TransitionGraphMismatch,
           "resource-time transition graph failed independent replay: " +
               llvm::toString(std::move(error)));
+    for (const pnr::ResourceTimeTransition &transition :
+         draft.transitionGraph->transitions)
+      if (!transition.safePoint ||
+          transition.safePoint->kind !=
+              pnr::ResourceTimeSafePointKind::Completion ||
+          transition.safePoint->artifact != dataflow)
+        return reject(
+            ApplicationRuntimeManifestErrorReason::TransitionGraphMismatch,
+            "runtime manifest supports only canonical Dataflow root "
+            "completion safe points");
     if (draft.transitionGraph->entry.mapping != draft.selectedMapping ||
         draft.transitionGraph->entry.deployment != draft.deployment)
       return reject(

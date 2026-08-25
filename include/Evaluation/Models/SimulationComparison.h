@@ -19,6 +19,13 @@ struct PreparedSimulationComparisonEvaluation final {
 
 llvm::Error registerSimulationComparisonModel();
 
+llvm::Expected<CaseArtifactResolution> resolveSimulationComparisonCase(
+    const ArtifactRootReference &referenceExecution,
+    const CaseArtifactResolution &referenceResolution,
+    const ArtifactRootReference &candidateExecution,
+    const CaseArtifactResolution &candidateResolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
+
 llvm::Expected<PreparedSimulationComparisonEvaluation>
 prepareSimulationComparisonEvaluation(
     const ArtifactRootReference &referenceExecution,

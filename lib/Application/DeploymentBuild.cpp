@@ -68,6 +68,7 @@ canonicalTypeBytes(mlir::Type type) {
 }
 
 llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
+    const PreparedApplicationBuild &prepared,
     const ApplicationMappingExecution &mappingExecution,
     std::uint64_t selectedPlan, const ArtifactRootReference &selectedMapping,
     const deployment::FinalizedDeployment &deployment,
@@ -78,6 +79,8 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
       !mappingExecution.execution.summary.selectedMapping ||
       *mappingExecution.execution.summary.selectedMapping != selectedMapping)
     return invalid("Deployment selection differs from its Mapping summary");
+  if (!mappingExecution.execution.summary.invocationRunKey)
+    return invalid("Deployment selection has no Mapping invocation run key");
 
   if (!mappingExecution.provenance.pairDecision)
     return invalid("Deployment selection has no application pair decision");
@@ -88,6 +91,19 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
       !pair.fabric || !pair.workload || !pair.runtimeInput ||
       !pair.selectedCandidateIdentity || !pair.selectedSystem)
     return invalid("Deployment selection lacks an exact pair manifest join");
+  if (*pair.invocationRunKey !=
+      *mappingExecution.execution.summary.invocationRunKey)
+    return invalid("Deployment pair run key differs from Mapping execution");
+  if (mappingExecution.provenance.sourceProgram != pair.sourceProgram ||
+      mappingExecution.provenance.fabric != pair.fabric ||
+      mappingExecution.provenance.workload != pair.workload ||
+      mappingExecution.provenance.runtimeInput != pair.runtimeInput)
+    return invalid("Deployment pair roots differ from Mapping provenance");
+  if (*pair.sourceProgram != prepared.preMappingSourceProgram ||
+      *pair.fabric != prepared.preMappingFabric ||
+      *pair.workload != prepared.preMappingWorkload ||
+      *pair.runtimeInput != prepared.preMappingRuntimeInput)
+    return invalid("Deployment pair roots differ from application preparation");
 
   auto expectedPair = deriveApplicationPairIdentity(
       *pair.sourceProgram, *pair.fabric, *pair.workload, *pair.runtimeInput);
@@ -123,6 +139,16 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
       selectedOutcome->runtimeEvidence.empty() ||
       selectedOutcome->oracleEvidence.empty())
     return invalid("Deployment selection lacks completed runtime evidence");
+  const PreparedApplicationMappingAlternative &selectedAlternative =
+      prepared.mappingAlternatives[selectedPlan];
+  if (selectedOutcome->preMappingCandidateRecordOrdinal !=
+          selectedAlternative.preMappingCandidateRecordOrdinal ||
+      selectedOutcome->dataflow != selectedAlternative.dataflow ||
+      !selectedOutcome->planningRecord ||
+      !selectedOutcome->planningRecord->candidateIdentity ||
+      *selectedOutcome->planningRecord->candidateIdentity !=
+          selectedAlternative.candidateIdentity)
+    return invalid("Deployment selection differs from its planning record");
   if (selectedOutcome->system != *pair.selectedSystem)
     return invalid("Deployment selection differs from the pair System");
 
@@ -138,6 +164,10 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
   if (!selectedCandidate || !selectedCandidate->candidateIdentity ||
       *selectedCandidate->candidateIdentity !=
           *pair.selectedCandidateIdentity ||
+      *selectedCandidate->candidateIdentity !=
+          selectedAlternative.candidateIdentity ||
+      selectedCandidate->planningRecordOrdinal !=
+          selectedAlternative.preMappingCandidateRecordOrdinal ||
       !selectedCandidate->planOrdinal ||
       *selectedCandidate->planOrdinal != selectedPlan)
     return invalid("Deployment selection differs from the selected candidate");
@@ -163,8 +193,12 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
   };
   canonicalizeHints(selectedScheduleHints);
   canonicalizeHints(observedScheduleHints);
+  std::vector<ComponentViewDigest> preparedScheduleHints =
+      selectedAlternative.equivalentScheduleHintDigests;
+  canonicalizeHints(preparedScheduleHints);
   if (selectedScheduleHints.empty() ||
       selectedScheduleHints != observedScheduleHints ||
+      selectedScheduleHints != preparedScheduleHints ||
       std::adjacent_find(selectedScheduleHints.begin(),
                          selectedScheduleHints.end()) !=
           selectedScheduleHints.end())
@@ -792,7 +826,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
   if (!selectedPlan)
     return invalid("Deployment selection has no selected plan ordinal");
   auto runtimeManifest = finalizeRuntimeManifest(
-      mappingExecution, *selectedPlan, imported->mapping.reference(),
+      prepared, mappingExecution, *selectedPlan, imported->mapping.reference(),
       *deployment, resourceTimeTransitionGraph, artifacts, blobs);
   if (!runtimeManifest)
     return runtimeManifest.takeError();
@@ -802,7 +836,6 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
                                         abi->constructionStatistics(),
                                         std::move(*selectedHardwareBindings),
                                         std::move(*selectedBinaries),
-                                        std::move(resourceTimeTransitionGraph),
                                         std::move(resourceTimeTransitions),
                                         std::move(resourceTimeSpectrum),
                                         std::move(*runtimeManifest),

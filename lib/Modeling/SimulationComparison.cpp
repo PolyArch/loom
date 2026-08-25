@@ -384,14 +384,12 @@ llvm::Error registerSimulationComparisonModel() {
   return registerEvaluationModelProvider(kProvider);
 }
 
-llvm::Expected<PreparedSimulationComparisonEvaluation>
-prepareSimulationComparisonEvaluation(
+llvm::Expected<CaseArtifactResolution> resolveSimulationComparisonCase(
     const ArtifactRootReference &referenceExecution,
     const CaseArtifactResolution &referenceResolution,
     const ArtifactRootReference &candidateExecution,
     const CaseArtifactResolution &candidateResolution,
-    const ResolvedConfig &config, const ArtifactStore &artifactStore,
-    const BlobStore &blobStore) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   if (llvm::Error error = registerSimulationComparisonModel())
     return std::move(error);
   auto referenceRequest = sim::simulationExecutionRequestReference(
@@ -415,6 +413,24 @@ prepareSimulationComparisonEvaluation(
           candidateExecution, *resolution, artifactStore, blobStore);
       !imported)
     return imported.takeError();
+  return resolution;
+}
+
+llvm::Expected<PreparedSimulationComparisonEvaluation>
+prepareSimulationComparisonEvaluation(
+    const ArtifactRootReference &referenceExecution,
+    const CaseArtifactResolution &referenceResolution,
+    const ArtifactRootReference &candidateExecution,
+    const CaseArtifactResolution &candidateResolution,
+    const ResolvedConfig &config, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore) {
+  if (llvm::Error error = registerSimulationComparisonModel())
+    return std::move(error);
+  auto resolution = resolveSimulationComparisonCase(
+      referenceExecution, referenceResolution, candidateExecution,
+      candidateResolution, artifactStore, blobStore);
+  if (!resolution)
+    return resolution.takeError();
 
   auto bindings = EvaluationSubjectBindings::get(
       {{kReferenceExecutionRole, {referenceExecution}},
