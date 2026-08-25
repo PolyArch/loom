@@ -120,8 +120,10 @@ struct ResourceTimeSpectrumFunnelResult final {
 
 /// One state in an ordered finite Mapping/Deployment path. The path is
 /// invocation-local compiler output; it is never inferred from allocation
-/// counts or discovered by scanning the ArtifactStore. Path advancement is
-/// allowed only at a compiler-known completion action.
+/// counts or discovered by scanning the ArtifactStore. A nonempty path must
+/// cover every Mapping finalist exactly once. Every Deployment is strictly
+/// imported and must select its paired Mapping before schedule materialization.
+/// Path advancement is allowed only at a compiler-known completion action.
 struct ResourceTimeMappingDeploymentEndpoint final {
   ArtifactRootReference mapping;
   ArtifactRootReference deployment;

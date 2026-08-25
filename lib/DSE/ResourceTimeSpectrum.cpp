@@ -840,6 +840,12 @@ verifyResourceTimeMappingFinalists(
       canonicalMappings.end());
   std::vector<ArtifactRootReference> endpointMappings;
   endpointMappings.reserve(mappingPath.size());
+  if (!mappingPath.empty() && !blobs)
+    return invalid(
+        "resource-time Mapping path requires a Deployment BlobStore");
+  if (!mappingPath.empty() && mappingPath.size() != canonicalMappings.size())
+    return invalid("resource-time Mapping path must cover every Mapping "
+                   "finalist exactly once");
   for (const ResourceTimeMappingDeploymentEndpoint &endpoint : mappingPath) {
     if (!llvm::is_contained(canonicalMappings, endpoint.mapping))
       return invalid("resource-time Mapping path names a foreign "
@@ -889,6 +895,27 @@ verifyResourceTimeMappingFinalists(
     else
       ++accounting.mappingProgressProofNotEstablished;
     imported.push_back(std::move(*projection));
+  }
+  if (!mappingPath.empty()) {
+    const ArtifactRootReference &endpointDataflow = imported.front().dataflow;
+    const ArtifactRootReference &endpointFabric = imported.front().fabric;
+    for (const ImportedMappingProjection &mapping : imported) {
+      if (mapping.dataflow != endpointDataflow)
+        return invalid("resource-time Mapping path changes Canonical Dataflow "
+                       "without a typed correspondence owner");
+      if (mapping.fabric != endpointFabric)
+        return invalid("resource-time Mapping path changes the immutable "
+                       "Fabric");
+    }
+    for (const ResourceTimeMappingDeploymentEndpoint &endpoint : mappingPath) {
+      auto deployment = ::loom::deployment::importDeployment(
+          endpoint.deployment, store, *blobs);
+      if (!deployment)
+        return deployment.takeError();
+      if (deployment->deployment().systemMapping() != endpoint.mapping)
+        return invalid("resource-time Deployment endpoint does not select its "
+                       "paired SystemMapping");
+    }
   }
   const auto importStats = importSession.statistics();
   accounting.mappingImportRequests = importStats.importRequests;

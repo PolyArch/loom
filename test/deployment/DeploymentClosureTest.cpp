@@ -894,22 +894,28 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   const std::array parentEndpointOnly = {
       dse::ResourceTimeMappingDeploymentEndpoint{parentMapping.reference(),
                                                  parent.reference()}};
-  const auto incompleteApplicationFunnel =
-      take(test, dse::verifyResourceTimeMappingFinalists(
-                     {applicationHint}, applicationRegions, applicationBounds,
-                     applicationMappings, artifacts, {},
-                     dse::ResourceTimeConcurrencyBounds{
-                         1, 1, dse::ResourceTimeEstimateSupport::Exact},
-                     &blobs, parentEndpointOnly));
-  const auto *incompleteApplication =
-      std::get_if<dse::IncompleteResourceTimeSpectrum>(
-          &incompleteApplicationFunnel.verification);
-  deployment::test::require(
-      test,
-      incompleteApplication &&
-          incompleteApplication->reason ==
-              dse::ResourceTimeSpectrumIncompleteReason::ProofNotEstablished,
-      "missing child Deployment did not remain typed proof-not-established");
+  expectError(test,
+              dse::verifyResourceTimeMappingFinalists(
+                  {applicationHint}, applicationRegions, applicationBounds,
+                  applicationMappings, artifacts, {},
+                  dse::ResourceTimeConcurrencyBounds{
+                      1, 1, dse::ResourceTimeEstimateSupport::Exact},
+                  &blobs, parentEndpointOnly),
+              "must cover every Mapping finalist exactly once");
+
+  const std::array mismatchedEndpoints = {
+      dse::ResourceTimeMappingDeploymentEndpoint{parentMapping.reference(),
+                                                 child.reference()},
+      dse::ResourceTimeMappingDeploymentEndpoint{childMapping.reference(),
+                                                 parent.reference()}};
+  expectError(test,
+              dse::verifyResourceTimeMappingFinalists(
+                  {applicationHint}, applicationRegions, applicationBounds,
+                  applicationMappings, artifacts, {},
+                  dse::ResourceTimeConcurrencyBounds{
+                      1, 1, dse::ResourceTimeEstimateSupport::Exact},
+                  &blobs, mismatchedEndpoints),
+              "does not select its paired SystemMapping");
 
   constexpr llvm::StringLiteral mutationOwner =
       "loom.test.resource_time_delta_mutation";
