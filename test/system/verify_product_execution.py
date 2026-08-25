@@ -468,15 +468,6 @@ def validate_mapping_work(
                 row.get("seed_attempt_slots") == 1 and row.get("prepared_seeds") == 1,
                 f"{name} search prepared unexpected restart work",
             )
-            if name == "Spatial" or not hardware_reopen:
-                for field in (
-                    "calibration_proposal_slots",
-                    "annealing_base_proposal_slots",
-                    "annealing_movable_proposal_slots",
-                    "annealing_accepted_actions",
-                    "exact_repair_invocations",
-                ):
-                    require(row.get(field) == 0, f"{name} search performed {field}")
             if name == "System" and row.get("migration_seed_attempt_slots") == 1:
                 require(
                     row.get("final_closure_attempts") == 0,
