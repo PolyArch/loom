@@ -630,7 +630,9 @@ llvm::Expected<PreparedApplicationBuild> prepareMappedApplication(
        std::move(preMappingOptions), std::move(resourceTimePolicy),
        target.portfolioInput ? std::optional<SelectedApplicationInput>(
                                    target.portfolioInput->selection)
-                             : std::nullopt},
+                             : std::nullopt,
+       std::nullopt,
+       {}},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!outcome)
     return outcome.takeError();

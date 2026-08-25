@@ -19,6 +19,7 @@
 #include "Deployment/DeploymentPipeline.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/DfgSimulation.h"
+#include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/Models/SimulationComparison.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -158,6 +159,7 @@ derivePreMappingInvocationRunKey(
     const std::optional<ArtifactRootReference> &fabric,
     const std::optional<ArtifactRootReference> &workload,
     const std::optional<ArtifactRootReference> &runtimeInput,
+    const std::optional<ArtifactRootReference> &edaPredictionModelWeight,
     const ResolvedConfig &config, const ArtifactStore &artifacts) {
   if (!sourceProgram || !fabric || !workload || !runtimeInput)
     return std::optional<std::array<std::uint8_t, 32>>{};
@@ -165,8 +167,10 @@ derivePreMappingInvocationRunKey(
       applicationBuildProducerIdentity);
   if (!producer)
     return producer.takeError();
-  const std::array<ArtifactRootReference, 4> inputs = {
+  std::vector<ArtifactRootReference> inputs = {
       *sourceProgram, *fabric, *workload, *runtimeInput};
+  if (edaPredictionModelWeight)
+    inputs.push_back(*edaPredictionModelWeight);
   for (const ArtifactRootReference &input : inputs) {
     auto stored = artifacts.get(input);
     if (!stored)
@@ -1150,6 +1154,16 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       ApplicationBuildOperation::ApplicationPreparation);
   if (llvm::Error error = dse::registerProductionDseOwners())
     return std::move(error);
+  std::optional<ArtifactRootReference> edaPredictionModelWeight;
+  if (request.edaPredictionModelWeight) {
+    auto imported = evaluation::models::importEdaPredictionModelWeight(
+        *request.edaPredictionModelWeight, artifacts, blobs);
+    if (!imported)
+      return imported.takeError();
+    edaPredictionModelWeight = imported->reference();
+  } else if (!request.fpaOperatingConditions.empty()) {
+    return invalid("FPA operating conditions require a frozen model weight");
+  }
   auto system = fabric::importEntireFabricRoot(request.system, artifacts);
   if (!system)
     return system.takeError();
@@ -1191,7 +1205,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       -> llvm::Expected<std::optional<std::array<std::uint8_t, 32>>> {
     return derivePreMappingInvocationRunKey(
         value.sourceProgram, value.fabric, value.workload, value.runtimeInput,
-        request.resolvedConfig, artifacts);
+        edaPredictionModelWeight, request.resolvedConfig, artifacts);
   };
   if (auto *incomplete =
           std::get_if<dse::IncompletePreMappingExploration>(&*preMapping)) {
@@ -1200,7 +1214,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       const dse::PreMappingCheckpoint &checkpoint = *incomplete->checkpoint;
       auto invocationRunKey = derivePreMappingInvocationRunKey(
           checkpoint.sourceProgram, checkpoint.fabric, checkpoint.workload,
-          checkpoint.runtimeInput, request.resolvedConfig, artifacts);
+          checkpoint.runtimeInput, edaPredictionModelWeight,
+          request.resolvedConfig, artifacts);
       if (!invocationRunKey)
         return invocationRunKey.takeError();
       auto decision = makePreparationPairDecision(
@@ -1245,7 +1260,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       std::get<dse::CompletedPreMappingSelection>(std::move(*preMapping));
   auto completedInvocationRunKey = derivePreMappingInvocationRunKey(
       completed.sourceProgram, completed.fabric, completed.workload,
-      completed.runtimeInput, request.resolvedConfig, artifacts);
+      completed.runtimeInput, edaPredictionModelWeight, request.resolvedConfig,
+      artifacts);
   if (!completedInvocationRunKey)
     return completedInvocationRunKey.takeError();
   if (completed.selected.empty())
@@ -1958,7 +1974,9 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       completed.frontierPolicyDigest,
       systemView->artifact().accCoreOccurrences().size(),
       std::nullopt,
-      std::move(request.portfolioInput)};
+      std::move(request.portfolioInput),
+      std::move(edaPredictionModelWeight),
+      std::move(request.fpaOperatingConditions)};
   prepared.preMappingInvocationRunKey = *completedInvocationRunKey;
   emitApplicationPlanningDiagnostics(prepared);
   return ApplicationBuildPreparationOutcome{std::move(prepared)};

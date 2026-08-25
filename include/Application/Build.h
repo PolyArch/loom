@@ -11,6 +11,7 @@
 #include "DSE/ResourceTimeFrontier.h"
 #include "DSE/ResourceTimeSpectrum.h"
 #include "Deployment/Deployment.h"
+#include "Evaluation/Case.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/CompilerTargetLinker.h"
@@ -72,6 +73,8 @@ struct ApplicationBuildRequest final {
   dse::PreMappingExplorationOptions preMappingOptions;
   dse::ResourceTimeFrontierPolicy resourceTimePolicy;
   std::optional<SelectedApplicationInput> portfolioInput;
+  std::optional<ArtifactRootReference> edaPredictionModelWeight;
+  std::vector<evaluation::EvaluationCondition> fpaOperatingConditions;
 };
 
 struct PreparedApplicationSoftware final {
@@ -144,6 +147,8 @@ struct PreparedApplicationBuild final {
   /// loses its provenance join.
   std::optional<std::array<std::uint8_t, 32>> preMappingInvocationRunKey;
   std::optional<SelectedApplicationInput> portfolioInput;
+  std::optional<ArtifactRootReference> edaPredictionModelWeight;
+  std::vector<evaluation::EvaluationCondition> fpaOperatingConditions;
 };
 
 struct ApplicationDeploymentRequest final {
