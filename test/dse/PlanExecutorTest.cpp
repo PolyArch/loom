@@ -60,14 +60,16 @@ private:
 };
 
 PlanExecutionPolicy makePolicy(std::uint64_t workers,
-                               std::optional<std::uint64_t> dispatches = {}) {
-  return take(PlanExecutionPolicy::get(workers,
-                                       take(SiteResourceClaim::get(1, 0, 0)),
-                                       std::nullopt, {}, dispatches));
+                               std::optional<std::uint64_t> dispatches = {},
+                               std::uint64_t memoryBytes = 0) {
+  return take(PlanExecutionPolicy::get(
+      workers, take(SiteResourceClaim::get(1, memoryBytes, 0)), std::nullopt,
+      {}, dispatches));
 }
 
-SiteScheduler makeScheduler() {
-  return take(SiteScheduler::create(take(SiteCapacity::get(2, 0, 0))));
+SiteScheduler makeScheduler(std::uint64_t memoryBytes = 0) {
+  return take(
+      SiteScheduler::create(take(SiteCapacity::get(2, memoryBytes, 0))));
 }
 
 void testParallelExecutionAndTerminalReplay(const ArtifactStore &store,
@@ -101,9 +103,9 @@ void testParallelExecutionAndTerminalReplay(const ArtifactStore &store,
       records[1].key.planNodeOrdinal() != 1)
     fail("journal did not retain canonical recoverable Generate work");
 
-  DsePlanExecutionResult replay =
-      take(resumeDsePlan(fixture.view, fixture.closure, journal, scheduler,
-                         makePolicy(2), store, blobs));
+  DsePlanExecutionResult replay = take(resumeDsePlan(
+      fixture.view, fixture.closure, journal, scheduler, makePolicy(2), store,
+      blobs, InvocationManifestRetention::Release));
   if (!std::holds_alternative<CompletedDsePlanExecution>(replay))
     fail("terminal plan did not replay to the same completed outcome");
   if (planExecutionProviderCalls() != 2)
@@ -118,9 +120,9 @@ void testParallelExecutionAndTerminalReplay(const ArtifactStore &store,
 
   ExecutionJournal reopened =
       take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
-  DsePlanExecutionResult recovered =
-      take(resumeDsePlan(fixture.view, fixture.closure, reopened, scheduler,
-                         makePolicy(2), store, blobs));
+  DsePlanExecutionResult recovered = take(resumeDsePlan(
+      fixture.view, fixture.closure, reopened, scheduler, makePolicy(2), store,
+      blobs, InvocationManifestRetention::Release));
   if (!std::holds_alternative<CompletedDsePlanExecution>(recovered))
     fail("reopened plan did not reconstruct its completed outcome");
   if (planExecutionProviderCalls() != 2)
@@ -154,9 +156,9 @@ void testStopAndResumeMissingKeys(const ArtifactStore &store,
       planExecutionProviderCalls() != 0)
     fail("graceful stop dispatched new Generate work");
 
-  DsePlanExecutionResult resumed =
-      take(resumeDsePlan(fixture.view, fixture.closure, journal, scheduler,
-                         makePolicy(2), store, blobs));
+  DsePlanExecutionResult resumed = take(resumeDsePlan(
+      fixture.view, fixture.closure, journal, scheduler, makePolicy(2), store,
+      blobs, InvocationManifestRetention::Release));
   if (!std::holds_alternative<CompletedDsePlanExecution>(resumed) ||
       planExecutionProviderCalls() != 2)
     fail("resume did not execute exactly the missing stable work keys");
@@ -215,12 +217,55 @@ void testDeterministicDispatchPrefix(const ArtifactStore &store,
       pilotRecords.front().status != JournalWorkUnitStatus::Completed)
     fail("pilot dispatch was not the canonical resolved-plan prefix");
 
-  DsePlanExecutionResult full =
-      take(resumeDsePlan(fixture.view, fixture.closure, journal, scheduler,
-                         makePolicy(3), store, blobs));
+  DsePlanExecutionResult full = take(resumeDsePlan(
+      fixture.view, fixture.closure, journal, scheduler, makePolicy(3), store,
+      blobs, InvocationManifestRetention::Release));
   if (!std::holds_alternative<CompletedDsePlanExecution>(full) ||
       planExecutionProviderCalls() != 3)
     fail("resumed prefix did not finish only its missing work units");
+}
+
+void testProviderReceivesAdmittedResourceBudget(const ArtifactStore &store,
+                                                const BlobStore &blobs,
+                                                llvm::StringRef runRoot) {
+  constexpr std::uint64_t memoryBudgetBytes = UINT64_C(64) * 1024 * 1024;
+  PlanExecutionFixture fixture = take(makePlanExecutionFixture(
+      store, 1, "loom.test.plan_executor.memory_budget.v1"));
+  ExecutionJournal journal =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  SiteScheduler scheduler = makeScheduler(memoryBudgetBytes);
+  resetPlanExecutionProviderObservations();
+
+  DsePlanExecutionResult result = take(executeDsePlan(
+      fixture.view, fixture.closure, journal, scheduler,
+      makePolicy(1, std::nullopt, memoryBudgetBytes), store, blobs));
+  if (!std::holds_alternative<CompletedDsePlanExecution>(result) ||
+      planExecutionProviderCpuBudgetCores() != 1 ||
+      planExecutionProviderMemoryBudgetBytes() != memoryBudgetBytes)
+    fail("Generate provider lost its admitted execution resource budget");
+}
+
+void testInvalidRetentionDoesNotLease(const ArtifactStore &store,
+                                      const BlobStore &blobs,
+                                      llvm::StringRef runRoot) {
+  PlanExecutionFixture fixture = take(makePlanExecutionFixture(
+      store, 1, "loom.test.plan_executor.invalid_retention.v1"));
+  ExecutionJournal journal =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  SiteScheduler scheduler = makeScheduler();
+  auto rejected = resumeDsePlan(
+      fixture.view, fixture.closure, journal, scheduler, makePolicy(1), store,
+      blobs, static_cast<InvocationManifestRetention>(0xff));
+  if (rejected)
+    fail("resume accepted an unknown manifest retention policy");
+  const std::string message = llvm::toString(rejected.takeError());
+  if (message.find("unknown invocation manifest retention policy") ==
+      std::string::npos)
+    fail("invalid retention rejection lost its lifecycle reason");
+  auto occurrence = journal.currentInvocationOccurrence();
+  if (occurrence)
+    fail("invalid retention policy opened an invocation occurrence");
+  llvm::consumeError(occurrence.takeError());
 }
 
 } // namespace
@@ -234,6 +279,10 @@ int main() {
   const std::string inflightStoppedRun =
       directory.makeDirectory("inflight-stopped-run");
   const std::string prefixRun = directory.makeDirectory("prefix-run");
+  const std::string resourceBudgetRun =
+      directory.makeDirectory("resource-budget-run");
+  const std::string invalidRetentionRun =
+      directory.makeDirectory("invalid-retention-run");
   ArtifactStore store(storeRoot);
   BlobStore blobs(blobRoot);
   requireSuccess(registerPlanExecutionTestGenerator());
@@ -241,5 +290,7 @@ int main() {
   testStopAndResumeMissingKeys(store, blobs, stoppedRun);
   testRunningProviderObservesStop(store, blobs, inflightStoppedRun);
   testDeterministicDispatchPrefix(store, blobs, prefixRun);
+  testProviderReceivesAdmittedResourceBudget(store, blobs, resourceBudgetRun);
+  testInvalidRetentionDoesNotLease(store, blobs, invalidRetentionRun);
   return 0;
 }

@@ -123,16 +123,33 @@ System providers query it only between atomic owner work units. Their typed
 interruption snapshot contains the owner stage, the exact consumed frontier,
 the best selected rank when one is defined, a per-violation closure residual
 when it can be reconstructed, retained finalized references, active wall time,
-allocator observation, and peak resident memory when the host provides it.
-Unavailable rank or residual dimensions remain absent; they are never replaced
-with zero. Mapping debug output serializes this snapshot as one nested payload,
-and is disabled without constructing that payload.
+process CPU-time delta, allocator observation, and process peak resident memory
+when the host provides them. Process values can include concurrent work and
+are not invocation-local attribution. Unavailable rank or residual dimensions
+remain absent; they are never replaced with zero. Mapping debug output
+serializes this snapshot as one nested payload, and is disabled without
+constructing that payload.
 
 ## Spatial Restart Sequence
 
 The Spatial provider allocates exactly `seed_attempt_count` isolated restart
 slots. Slots may execute in parallel, but their results are reduced by original
 restart ordinal.
+
+`ExhaustConfiguredWork` bounds parallel restart workers by the configured
+candidate-worker request, restart count, active RouteGraph unit count, the
+admitted CPU claim, and the admitted memory reservation. A missing or zero
+resource dimension is unconstrained. The active RouteGraph unit count is the
+saturated sum of active endpoints, traversals, and routing arcs, with one as
+the minimum serial execution capacity. When a memory reservation is present,
+canonical restart zero supplies a deterministic retained-scratch estimate for
+the active problem; that already-required result is retained and is not
+generated again. The shared frozen-problem projection is charged once.
+`FirstVerifiedCandidate` remains a serial bounded-prefix execution. A plan
+publication bound is applied only after the exhaustive restart sequence and
+cannot reduce, serialize, or reclassify its configured work. Worker allocation
+and host-process observations are diagnostic only and cannot change restart
+streams, ordinal reduction, candidate identity, or formal work accounting.
 
 Each slot executes:
 

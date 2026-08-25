@@ -110,6 +110,9 @@ boundTechMappingFrontierForRepair(
 std::vector<ArtifactRootReference>
 mappingRoots(const JointDesignExecution &execution);
 
+void mergeMappedPairs(JointDesignExecution &target,
+                      const JointDesignExecution &source);
+
 std::optional<ArtifactRootReference>
 firstMapping(const JointDesignExecution &execution);
 

@@ -2279,7 +2279,8 @@ The manifest records:
 
 - occurrence and semantic-closure references;
 - descriptors and verification digests for component views actually consumed;
-- optional resume provenance and one controller outcome;
+- optional resume provenance, one plan-controller outcome, and an optional
+  typed campaign-admission failure disposition;
 - canonical Generate invocation records binding exact typed inputs, one
   resolved producer binding, exact descriptor-slot output sets, and
   single-child `MechanicalDerivation` or `CandidateDecision` lineage edges;
@@ -2296,15 +2297,20 @@ obligations and retained finalized material but no formal selected output.
 
 ### Operational Observations
 
-`loom.dse.invocation_manifest 1.3` is the current compatible extension of that
+`loom.dse.invocation_manifest 1.5` is the current compatible extension of that
 persistent record family. Version 1.1 added one optional nonsemantic
 `InvocationOperationalObservations` block to 1.0. Version 1.2 admits incomplete
 Generate records before later executed plan nodes while preserving the same
 per-record completion field and canonical encoding. Version 1.3 adds the
 `CancelledOrTimeout` terminal to the promotion-acquisition incomplete-reason
 domain. It is execution history, never evidence of infeasibility, and retains
-stable tag 4 after `Unsupported` tag 3. Versions 1.0, 1.1, and 1.2 remain
-importable.
+stable tag 4 after `Unsupported` tag 3. Version 1.4 adds the canonical
+invocation and per-plan-node external-tool work ledger. Version 1.5 adds an
+optional `CampaignAdmissionFailureReason` alongside, rather than inside, the
+plan-controller outcome. A completed plan can therefore retain its selected
+Artifact set while recording that campaign admission was refused by an active
+time or throughput policy. Versions 1.0 through 1.4 remain importable and
+derive an absent campaign disposition.
 
 ```text
 PromotionAcquisitionIncompleteReason =
@@ -2386,6 +2392,19 @@ and reuses only fully finalized outputs bound to the expected WorkUnitKey.
 In-flight work is safely retried with its original ordinal. Resume cannot
 renumber work, consume the same logical slot twice, substitute another
 candidate, or complete from best-so-far state.
+
+`beginResume` leases the next occurrence ordinal without durably advancing it.
+Only `commitInvocationManifest` atomically records the exact manifest Blob,
+advances the ordinal, and seals the recovered work state. Releasing or losing
+an uncommitted lease therefore reuses the same ordinal and cannot create a gap.
+If snapshot rename succeeds but the run-directory durability barrier fails,
+the Journal reports typed `PublishedDirectorySyncPending`: the visible state
+already owns the publication, rollback must not be inferred, and the same
+operation is idempotent after the barrier is retried. Opening an existing
+Journal conservatively completes that directory barrier before exposing its
+receipt. A strict manifest content reference alone cannot bind a joint
+execution; that binder also requires the unforgeable occurrence-and-Blob
+receipt issued by the Journal commit owner.
 
 A terminal in-process Generate record is recovered directly from its immutable
 owner finalized-work record. Recovery strict-imports that record, revalidates
@@ -4221,11 +4240,12 @@ Only these stable semantic anchors belong at this boundary:
 - Equal admitted closure and local binding produce byte-identical bundles;
   `prepare`, caller execution, and `import` remain independently callable and
   expose no Job, scheduler, or process handle.
-- InvocationManifest 1.0, 1.1, and 1.2 remain importable; 1.3 round-trips
-  absent and present operational observations plus retained incomplete
-  Generate frontiers and typed promotion timeout canonically, rejects unknown
-  plan-node references, duplicate or unsorted rows, zero context counts, and
-  arithmetic overflow, and never changes formal selection or Evidence.
+- InvocationManifest 1.0 through 1.4 remain importable; 1.5 round-trips absent
+  and present operational observations, external-tool work, campaign refusal,
+  retained incomplete Generate frontiers, and typed promotion timeout
+  canonically, rejects unknown enum values, plan-node references, duplicate or
+  unsorted rows, zero context counts, and arithmetic overflow, and never
+  changes formal selection or Evidence.
 - Candidate-generator binding identity is derived from the exact descriptor
   and canonical config view, and a caller-authored replacement is rejected.
 - An external generator publishes only complete descriptor output Artifacts;

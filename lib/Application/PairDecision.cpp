@@ -132,6 +132,25 @@ mapRuntimeDispositionToPairDisposition(
   llvm_unreachable("unknown application runtime disposition");
 }
 
+std::optional<ApplicationPairDecisionDisposition>
+mapQualityDispositionToPairDisposition(
+    dse::JointDesignQualityDisposition disposition) {
+  switch (disposition) {
+  case dse::JointDesignQualityDisposition::Unsupported:
+    return ApplicationPairDecisionDisposition::UnsupportedSemantic;
+  case dse::JointDesignQualityDisposition::ProofNotEstablished:
+    return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+  case dse::JointDesignQualityDisposition::ExecutionFailed:
+    return ApplicationPairDecisionDisposition::ImplementationFailure;
+  case dse::JointDesignQualityDisposition::CancelledOrTimeout:
+    return ApplicationPairDecisionDisposition::CancelledOrTimeout;
+  case dse::JointDesignQualityDisposition::NotRequested:
+  case dse::JointDesignQualityDisposition::Complete:
+    return std::nullopt;
+  }
+  llvm_unreachable("unknown joint quality disposition");
+}
+
 std::optional<dse::PreMappingSpectrumClass>
 requestedResourceTimeSpectrumClass(dse::PreMappingSpectrumEndpoint endpoint) {
   switch (endpoint) {
@@ -621,29 +640,14 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           incompleteCauses.push_back(*disposition);
       }
       for (const ApplicationPairQualityInvocationRecord &invocation :
-           qualityInvocations) {
-        switch (invocation.qualityDisposition) {
-        case dse::JointDesignQualityDisposition::NotRequested:
-        case dse::JointDesignQualityDisposition::Complete:
-          break;
-        case dse::JointDesignQualityDisposition::Unsupported:
-          incompleteCauses.push_back(
-              ApplicationPairDecisionDisposition::UnsupportedSemantic);
-          break;
-        case dse::JointDesignQualityDisposition::ProofNotEstablished:
-          incompleteCauses.push_back(
-              ApplicationPairDecisionDisposition::MappingProofNotEstablished);
-          break;
-        case dse::JointDesignQualityDisposition::ExecutionFailed:
-          incompleteCauses.push_back(
-              ApplicationPairDecisionDisposition::ImplementationFailure);
-          break;
-        case dse::JointDesignQualityDisposition::CancelledOrTimeout:
-          incompleteCauses.push_back(
-              ApplicationPairDecisionDisposition::CancelledOrTimeout);
-          break;
-        }
-      }
+           qualityInvocations)
+        if (auto disposition = mapQualityDispositionToPairDisposition(
+                invocation.qualityDisposition))
+          incompleteCauses.push_back(*disposition);
+      if (qualityInvocations.empty())
+        if (auto disposition = mapQualityDispositionToPairDisposition(
+                summary.qualityDisposition))
+          incompleteCauses.push_back(*disposition);
       result.disposition = prioritizeIncompletePairDisposition(
           incompleteCauses, summary.declaredWorkExhausted ||
                                 summary.jointFrontierTruncated ||

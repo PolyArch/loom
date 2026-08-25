@@ -12,6 +12,7 @@
 #include "Common/BlobStore.h"
 #include "Common/ExecutionControl.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/CandidateGenerator.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/Models/FpaParameterContract.h"
@@ -494,10 +495,6 @@ prepareProductTarget(const ProductBuildOptions &options) {
   auto config = resolveConfigProfile(options.accelerationProfile);
   if (!config)
     return config.takeError();
-  config->dse.spatialPnr.search.completionGoal =
-      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
-  config->dse.systemPnr.search.completionGoal =
-      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
   auto publishedConfig = (*workspace)
                              ->artifacts()
                              .put(ResolvedConfig::artifactSchema,
@@ -768,10 +765,11 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
       applicationBuildProducerIdentity);
   if (!producer)
     return producer.takeError();
-  auto capacity = dse::SiteCapacity::get(1, 0, 0);
+  const std::uint32_t candidateWorkerCount = dse::defaultCandidateWorkerCount();
+  auto capacity = dse::SiteCapacity::get(candidateWorkerCount, 0, 0);
   if (!capacity)
     return capacity.takeError();
-  auto claim = dse::SiteResourceClaim::get(1, 0, 0);
+  auto claim = dse::SiteResourceClaim::get(candidateWorkerCount, 0, 0);
   if (!claim)
     return claim.takeError();
   std::optional<dse::ExternalExecutionSite> externalSite;
@@ -835,16 +833,37 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
                               " with reason " +
                               dse::toString(incomplete->reason()));
   }
-  if (mappingCount == 0)
+  if (mappingCount == 0 &&
+      !execution->execution.summary.qualityIncompleteCandidate)
     return productError("loom_mapping_no_feasible_candidate",
                         "joint Mapping selected no SystemMapping");
   if (options.mappingStoppingPolicy ==
-          dse::JointDesignStoppingPolicy::BoundedQuality &&
-      execution->execution.summary.qualityDisposition !=
-          dse::JointDesignQualityDisposition::Complete)
-    return productError(
-        "loom_mapping_quality_incomplete",
-        "BoundedQuality did not establish a complete application QoR result");
+      dse::JointDesignStoppingPolicy::BoundedQuality) {
+    switch (execution->execution.summary.qualityDisposition) {
+    case dse::JointDesignQualityDisposition::Complete:
+      break;
+    case dse::JointDesignQualityDisposition::Unsupported:
+      return productError("loom_mapping_quality_unsupported",
+                          "application QoR acquisition was unsupported");
+    case dse::JointDesignQualityDisposition::ProofNotEstablished:
+      return productError(
+          "loom_mapping_quality_proof_not_established",
+          "application QoR acquisition did not establish proof");
+    case dse::JointDesignQualityDisposition::ExecutionFailed:
+      return productError("loom_mapping_quality_execution_failed",
+                          "application QoR acquisition execution failed");
+    case dse::JointDesignQualityDisposition::CancelledOrTimeout:
+      return productError("loom_mapping_quality_cancelled_or_timeout",
+                          "application QoR acquisition was cancelled or "
+                          "timed out");
+    case dse::JointDesignQualityDisposition::NotRequested:
+      return productError("loom_mapping_quality_not_requested",
+                          "bounded application QoR acquisition did not run");
+    }
+  }
+  if (mappingCount == 0)
+    return productError("loom_mapping_no_feasible_candidate",
+                        "joint Mapping selected no SystemMapping");
   if (!execution->execution.summary.selectedMapping)
     return productError("loom_mapping_selection_incomplete",
                         "Mapping returned candidates without a selected root");

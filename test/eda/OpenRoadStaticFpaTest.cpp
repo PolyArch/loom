@@ -31,8 +31,8 @@ using namespace loom::hardware;
 namespace {
 
 constexpr llvm::StringLiteral kSyntheticBuild =
-    "OpenROAD synthetic cbc7678e45cc";
-constexpr llvm::StringLiteral kPinnedBuild = "26Q3-1297-gcbc7678e45";
+    "OpenROAD synthetic 21512b0ab68c";
+constexpr llvm::StringLiteral kPinnedBuild = "21512b0";
 constexpr std::array<MetricKind, 4> kAllFpaMetrics{
     MetricKind::LeakagePower, MetricKind::LimitingClockFrequency,
     MetricKind::DynamicPower, MetricKind::TotalArea};
@@ -154,7 +154,7 @@ writeAuthoredGpdkRouteTool(const std::filesystem::path &root) {
   const std::string body = R"sh(#!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "-version" || "${1:-}" == "--version" ]]; then
-  printf '%s\n' '26Q3-1297-gcbc7678e45'
+  printf '%s\n' '21512b0'
   exit 0
 fi
 if [[ "$#" -ne 7 || "$1" != "-no_init" || "$2" != "-no_splash" ||

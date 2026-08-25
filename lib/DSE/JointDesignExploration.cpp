@@ -46,49 +46,6 @@ llvm::Error invalid(const llvm::Twine &message) {
       "joint_design_exploration_invalid: " + message);
 }
 
-llvm::Expected<ResolvedConfig>
-importInvocationResolvedConfig(const ArtifactRootReference &reference,
-                               const ArtifactStore &artifacts) {
-  if (reference.schemaIdentity != ResolvedConfig::artifactSchema.identity ||
-      reference.schemaVersion != ResolvedConfig::artifactSchema.version)
-    return invalid("invocation manifest reference names a non-ResolvedConfig "
-                   "Artifact");
-  auto stored = artifacts.get(reference);
-  if (!stored)
-    return stored.takeError();
-  const llvm::ArrayRef<std::uint8_t> bytes = stored->bytes();
-  auto config = parseResolvedConfig(
-      llvm::StringRef(reinterpret_cast<const char *>(bytes.data()),
-                      bytes.size()),
-      "stored invocation ResolvedConfig");
-  if (!config)
-    return config.takeError();
-  if (resolvedConfigIdentity(*config) != reference.artifact ||
-      canonicalResolvedConfigBytes(*config).bytes() != bytes)
-    return invalid("invocation ResolvedConfig is not its exact canonical "
-                   "Artifact");
-  return config;
-}
-
-llvm::Expected<InvocationManifest> adoptJointDesignInvocationManifest(
-    const ArtifactRootReference &resolvedConfig, const BlobDigest &blob,
-    const InvocationOccurrenceRef &occurrence, const ArtifactStore &artifacts,
-    const BlobStore &blobs) {
-  auto config = importInvocationResolvedConfig(resolvedConfig, artifacts);
-  if (!config)
-    return config.takeError();
-  auto canonical = blobs.get(blob);
-  if (!canonical)
-    return canonical.takeError();
-  auto manifest = adoptInvocationManifest(*canonical, *config, artifacts);
-  if (!manifest)
-    return manifest.takeError();
-  if (manifest->occurrence() != occurrence)
-    return invalid("invocation manifest reference occurrence differs from "
-                   "the canonical Blob");
-  return manifest;
-}
-
 std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
   return std::string(reinterpret_cast<const char *>(bytes.data()),
                      bytes.size());
@@ -244,51 +201,90 @@ llvm::Expected<std::size_t> findSystem(llvm::ArrayRef<ImportedSystem> systems,
 } // namespace
 
 llvm::Expected<JointDesignInvocationManifestReference>
-JointDesignInvocationManifestReference::get(
-    ArtifactRootReference resolvedConfig, BlobDigest blob,
-    InvocationOccurrenceRef occurrence, const ArtifactStore &artifacts,
-    const BlobStore &blobs) {
-  auto manifest = adoptJointDesignInvocationManifest(
-      resolvedConfig, blob, occurrence, artifacts, blobs);
-  if (!manifest)
-    return manifest.takeError();
-  return JointDesignInvocationManifestReference(
-      std::move(resolvedConfig), std::move(blob), std::move(occurrence));
-}
-
-llvm::Expected<JointDesignInvocationManifestReference>
 publishJointDesignInvocationManifest(const InvocationManifest &manifest,
                                      const ResolvedConfig &resolvedConfig,
                                      const ArtifactStore &artifacts,
                                      const BlobStore &blobs) {
-  auto configIdentity =
-      artifacts.put(ResolvedConfig::artifactSchema,
-                    canonicalResolvedConfigBytes(resolvedConfig));
-  if (!configIdentity)
-    return configIdentity.takeError();
-  if (*configIdentity != resolvedConfigIdentity(resolvedConfig) ||
-      *configIdentity != manifest.closure().resolvedConfigIdentity())
-    return invalid("invocation manifest names a different ResolvedConfig");
-  auto adopted = adoptInvocationManifest(manifest.canonicalBytes(),
-                                         resolvedConfig, artifacts);
-  if (!adopted)
-    return adopted.takeError();
-  auto blob = blobs.put(manifest.canonicalBytes());
-  if (!blob)
-    return blob.takeError();
-  return JointDesignInvocationManifestReference::get(
-      ArtifactRootReference{ResolvedConfig::artifactSchema.identity.str(),
-                            ResolvedConfig::artifactSchema.version,
-                            std::move(*configIdentity)},
-      std::move(*blob), manifest.occurrence(), artifacts, blobs);
+  return publishInvocationManifest(manifest, resolvedConfig, artifacts, blobs);
 }
 
 llvm::Expected<InvocationManifest> importJointDesignInvocationManifest(
     const JointDesignInvocationManifestReference &reference,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
-  return adoptJointDesignInvocationManifest(
-      reference.resolvedConfig(), reference.blob(), reference.occurrence(),
-      artifacts, blobs);
+  return importInvocationManifest(reference, artifacts, blobs);
+}
+
+JointDesignQualityDisposition jointDesignQualityDisposition(
+    JointDesignQualityIncompleteReason reason) {
+  switch (reason) {
+  case JointDesignQualityIncompleteReason::Unsupported:
+    return JointDesignQualityDisposition::Unsupported;
+  case JointDesignQualityIncompleteReason::ProofNotEstablished:
+    return JointDesignQualityDisposition::ProofNotEstablished;
+  case JointDesignQualityIncompleteReason::ExecutionFailed:
+    return JointDesignQualityDisposition::ExecutionFailed;
+  case JointDesignQualityIncompleteReason::CancelledOrTimeout:
+    return JointDesignQualityDisposition::CancelledOrTimeout;
+  }
+  llvm_unreachable("unknown bounded-quality incomplete reason");
+}
+
+llvm::Error validateJointDesignQualityProvenanceDomain(
+    const JointBoundedQualityPolicy &policy,
+    const JointDesignQualityProvenance &provenance, bool objectiveComplete) {
+  switch (policy.provenanceDomain) {
+  case JointDesignQualityProvenanceDomain::ObjectiveOnly:
+    return llvm::Error::success();
+  case JointDesignQualityProvenanceDomain::ApplicationRuntime:
+    break;
+  }
+  if (policy.objectiveDimensionLabels.size() < 3 ||
+      policy.objectiveDimensionLabels[0] != "dfg_cycles" ||
+      policy.objectiveDimensionLabels[1] != "cgra_cycles" ||
+      policy.objectiveDimensionLabels[2] != "acc_core_count")
+    return invalid("ApplicationRuntime provenance has a foreign Objective "
+                   "domain");
+  if (!provenance.resourceCoreCost)
+    return invalid("ApplicationRuntime provenance lost its exact resource "
+                   "count");
+  if (provenance.rawMeasures.empty() && objectiveComplete)
+    return invalid("complete ApplicationRuntime provenance lost its raw "
+                   "measures");
+  if (provenance.rawMeasures.empty())
+    return llvm::Error::success();
+  if (provenance.rawMeasures.size() < 3)
+    return invalid("ApplicationRuntime provenance has incomplete raw "
+                   "measures");
+  const auto *dfg =
+      std::get_if<ResolvedObjectiveInteger>(&provenance.rawMeasures[0]);
+  const auto *cgra =
+      std::get_if<ResolvedObjectiveInteger>(&provenance.rawMeasures[1]);
+  const auto *cores =
+      std::get_if<ResolvedObjectiveInteger>(&provenance.rawMeasures[2]);
+  if (!dfg || dfg->negative || !cgra || cgra->negative || !cores ||
+      cores->negative)
+    return invalid("ApplicationRuntime provenance has invalid runtime raw "
+                   "measures");
+  if (*provenance.resourceCoreCost != cores->magnitude)
+    return invalid("ApplicationRuntime resource count disagrees with its raw "
+                   "measure");
+  return llvm::Error::success();
+}
+
+llvm::Error validateJointDesignQualityObjective(
+    const ObjectiveProgram &program,
+    const JointDesignQualityProvenance &provenance,
+    llvm::ArrayRef<std::uint64_t> objectiveCodes) {
+  if (provenance.rawMeasures.empty())
+    return llvm::Error::success();
+  ObjectiveVector reproduced = program.makeVector();
+  if (llvm::Error error =
+          program.evaluateCandidateMeasures(provenance.rawMeasures, reproduced))
+    return error;
+  if (reproduced.codes() != objectiveCodes)
+    return invalid("quality provenance raw measures disagree with its "
+                   "Objective codes");
+  return llvm::Error::success();
 }
 
 llvm::Expected<std::vector<ArtifactRootReference>>

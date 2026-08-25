@@ -119,6 +119,18 @@ llvm::StringRef spelling(ApplicationMappingRuntimeDisposition value) {
   llvm_unreachable("unknown application runtime disposition");
 }
 
+llvm::json::Value encodeObjectiveScalar(
+    const ResolvedObjectiveScalar &value) {
+  if (const auto *integer = std::get_if<ResolvedObjectiveInteger>(&value))
+    return llvm::json::Object{{"kind", "integer"},
+                              {"negative", integer->negative},
+                              {"magnitude", integer->magnitude}};
+  const auto &decimal = std::get<ResolvedObjectiveDecimal>(value);
+  return llvm::json::Object{{"kind", "decimal"},
+                            {"coefficient", decimal.coefficient},
+                            {"base10_exponent", decimal.base10Exponent}};
+}
+
 llvm::StringRef spelling(ApplicationObjectiveDimension value) {
   switch (value) {
   case ApplicationObjectiveDimension::HostOnlyWork:
@@ -185,6 +197,65 @@ void addOptionalRoot(llvm::json::Object &object, llvm::StringRef key,
     const std::optional<ArtifactRootReference> &value);
 std::string encodeRoot(const ArtifactRootReference &reference);
 
+llvm::json::Object encodeQualityProvenance(
+    const dse::JointDesignQualityProvenance &provenance) {
+  llvm::json::Array rawMeasures;
+  for (const ResolvedObjectiveScalar &measure : provenance.rawMeasures)
+    rawMeasures.push_back(encodeObjectiveScalar(measure));
+  llvm::json::Array supportingEvidence;
+  for (const ArtifactRootReference &reference : provenance.supportingEvidence)
+    supportingEvidence.push_back(encodeRoot(reference));
+  llvm::json::Array verificationEvidence;
+  for (const ArtifactRootReference &reference : provenance.verificationEvidence)
+    verificationEvidence.push_back(encodeRoot(reference));
+  llvm::json::Object result{
+      {"raw_measures", std::move(rawMeasures)},
+      {"supporting_evidence", std::move(supportingEvidence)},
+      {"verification_evidence", std::move(verificationEvidence)},
+      {"resource_core_cost",
+       provenance.resourceCoreCost
+           ? llvm::json::Value(*provenance.resourceCoreCost)
+           : llvm::json::Value(nullptr)}};
+  if (provenance.spatialFifoFeedback)
+    result["spatial_fifo_feedback"] = llvm::json::Object{
+        {"disposition", dse::spatialFifoRuntimeFeedbackDispositionSpelling(
+                            provenance.spatialFifoFeedback->disposition)},
+        {"reason", dse::spatialFifoRuntimeFeedbackReasonSpelling(
+                       provenance.spatialFifoFeedback->reason)},
+        {"parent_mapping",
+         encodeRoot(provenance.spatialFifoFeedback->parentMapping)},
+        {"spatial_mapping",
+         encodeRoot(provenance.spatialFifoFeedback->spatialMapping)}};
+  else
+    result["spatial_fifo_feedback"] = nullptr;
+  if (provenance.spatialOperandQueueFeedback) {
+    llvm::json::Object feedback{
+        {"disposition",
+         dse::spatialOperandQueueRuntimeFeedbackDispositionSpelling(
+             provenance.spatialOperandQueueFeedback->disposition)},
+        {"reason", dse::spatialOperandQueueRuntimeFeedbackReasonSpelling(
+                       provenance.spatialOperandQueueFeedback->reason)}};
+    addOptionalRoot(feedback, "parent_mapping",
+                    provenance.spatialOperandQueueFeedback->parentMapping);
+    result["spatial_operand_queue_feedback"] = std::move(feedback);
+  } else {
+    result["spatial_operand_queue_feedback"] = nullptr;
+  }
+  if (provenance.spatialTransportFeedback) {
+    llvm::json::Object feedback{
+        {"disposition", dse::spatialTransportRuntimeFeedbackDispositionSpelling(
+                            provenance.spatialTransportFeedback->disposition)},
+        {"reason", dse::spatialTransportRuntimeFeedbackReasonSpelling(
+                       provenance.spatialTransportFeedback->reason)}};
+    addOptionalRoot(feedback, "parent_mapping",
+                    provenance.spatialTransportFeedback->parentMapping);
+    result["spatial_transport_feedback"] = std::move(feedback);
+  } else {
+    result["spatial_transport_feedback"] = nullptr;
+  }
+  return result;
+}
+
 llvm::json::Object
 encodePortfolioInput(const SelectedApplicationInput &selection,
                      ApplicationPortfolioExecutionBinding binding) {
@@ -249,6 +320,7 @@ llvm::json::Object encodePairDecision(
     llvm::json::Object result{
         {"system_mapping", encodeRoot(observation.candidate)},
         {"objective_codes", std::move(codes)},
+        {"provenance", encodeQualityProvenance(observation.provenance)},
         {"incomplete_reason",
          observation.incompleteReason
              ? llvm::json::Value(spelling(*observation.incompleteReason))
@@ -264,6 +336,7 @@ llvm::json::Object encodePairDecision(
         {"plan_ordinal", observation.planOrdinal},
         {"system", encodeRoot(observation.system)},
         {"objective_codes", std::move(codes)},
+        {"provenance", encodeQualityProvenance(observation.provenance)},
         {"incomplete_reason",
          observation.incompleteReason
              ? llvm::json::Value(spelling(*observation.incompleteReason))
@@ -1696,6 +1769,8 @@ void emitApplicationMappingDiagnostics(
           for (std::uint64_t code : observation.objectiveCodes)
             objective.push_back(code);
           entry["objective_codes"] = std::move(objective);
+          entry["provenance"] =
+              encodeQualityProvenance(observation.provenance);
           if (observation.incompleteReason)
             entry["incomplete_reason"] =
                 spelling(*observation.incompleteReason);
@@ -1718,6 +1793,8 @@ void emitApplicationMappingDiagnostics(
           for (std::uint64_t code : observation.objectiveCodes)
             objective.push_back(code);
           entry["objective_codes"] = std::move(objective);
+          entry["provenance"] =
+              encodeQualityProvenance(observation.provenance);
           if (observation.incompleteReason)
             entry["incomplete_reason"] =
                 spelling(*observation.incompleteReason);

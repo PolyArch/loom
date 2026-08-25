@@ -95,8 +95,10 @@ std::uint32_t findGate(llvm::ArrayRef<GateRecord> gates,
 llvm::Expected<QualityGatePolicy>
 makeGate(std::uint32_t obligation, ModelParameterCalibrationTarget target,
          evaluation::DecimalValue threshold) {
+  constexpr std::size_t calibrationQuantileCount = 2;
   const std::size_t metricCount =
-      target == ModelParameterCalibrationTarget::Fpa ? 4 : 1;
+      (target == ModelParameterCalibrationTarget::Fpa ? 4 : 1) *
+      calibrationQuantileCount;
   std::vector<QualityGateClause> clauses;
   clauses.reserve(metricCount);
   for (std::size_t metric = 0; metric != metricCount; ++metric)
@@ -189,7 +191,7 @@ buildGroundTruthPlan(ResolvedConfig baseConfig, GroundTruthPlanInputs inputs) {
           CalibrationPartitionRole::HeldOut}) {
       auto obligation =
           prepareModelParameterCalibrationEvidenceObligationTemplate(
-              target, partition, track.calibrationQuantile, baseConfig);
+              target, partition, baseConfig);
       if (!obligation)
         return obligation.takeError();
       obligations.push_back({target, partition, std::move(*obligation)});

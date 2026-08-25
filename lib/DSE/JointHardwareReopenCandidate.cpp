@@ -202,6 +202,24 @@ mappingRoots(const dse::JointDesignExecution &execution) {
   return roots;
 }
 
+void mergeMappedPairs(dse::JointDesignExecution &target,
+                      const dse::JointDesignExecution &source) {
+  for (const dse::JointMappedPair &candidate : source.mappedPairs) {
+    auto retained = llvm::find_if(
+        target.mappedPairs, [&](const dse::JointMappedPair &existing) {
+          return existing.pair == candidate.pair;
+        });
+    if (retained == target.mappedPairs.end()) {
+      target.mappedPairs.push_back(candidate);
+      continue;
+    }
+    retained->systemMappings.insert(retained->systemMappings.end(),
+                                    candidate.systemMappings.begin(),
+                                    candidate.systemMappings.end());
+    canonicalizeRoots(retained->systemMappings);
+  }
+}
+
 std::optional<ArtifactRootReference>
 firstMapping(const dse::JointDesignExecution &execution) {
   for (const dse::JointMappedPair &pair : execution.mappedPairs)

@@ -11,6 +11,8 @@
 #include "llvm/Support/Path.h"
 
 #include <array>
+#include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -19,10 +21,28 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
+
+namespace {
+
+std::atomic<bool> failNextDirectorySync{false};
+
+} // namespace
+
+extern "C" int fsync(int descriptor) {
+  struct stat status{};
+  if (::fstat(descriptor, &status) == 0 && S_ISDIR(status.st_mode) &&
+      failNextDirectorySync.exchange(false, std::memory_order_relaxed)) {
+    errno = EIO;
+    return -1;
+  }
+  return static_cast<int>(::syscall(SYS_fsync, descriptor));
+}
 
 namespace {
 
@@ -49,6 +69,26 @@ void requireErrorContains(llvm::Error error, llvm::StringRef needle) {
   const std::string message = llvm::toString(std::move(error));
   if (message.find(needle.str()) == std::string::npos)
     fail("expected error containing '" + needle.str() + "', got: " + message);
+}
+
+void requirePublishedDirectorySyncPending(llvm::Error error) {
+  if (!error)
+    fail("expected a pending directory-sync persistence error");
+  bool matched = false;
+  llvm::handleAllErrors(
+      std::move(error),
+      [&](const ExecutionJournalPersistenceError &persistence) {
+        matched = persistence.reason() ==
+                      ExecutionJournalPersistenceErrorReason::
+                          PublishedDirectorySyncPending &&
+                  persistence.underlyingError() ==
+                      std::error_code(EIO, std::generic_category());
+      },
+      [&](const llvm::ErrorInfoBase &other) {
+        fail("unexpected persistence error: " + other.message());
+      });
+  if (!matched)
+    fail("directory-sync failure lost its typed persistence disposition");
 }
 
 class TemporaryDirectory final {
@@ -255,13 +295,32 @@ void testStrictAdmission(const ArtifactStore &store, llvm::StringRef runRoot) {
     if (filesystemError)
       fail("cannot restore the owned journal lock");
 
+    failNextDirectorySync.store(true, std::memory_order_relaxed);
+    requirePublishedDirectorySyncPending(journal.beginResume());
+    auto pendingOccurrence = journal.currentInvocationOccurrence();
+    if (pendingOccurrence)
+      fail("pending resume durability exposed an invocation occurrence");
+    requireErrorContains(pendingOccurrence.takeError(), "has not opened");
+    std::filesystem::rename(lock, savedLock, filesystemError);
+    std::ofstream(lock).close();
+    requireErrorContains(journal.beginResume(), "lock inode changed");
+    if (!std::filesystem::remove(lock, filesystemError) || filesystemError)
+      fail("cannot remove the pending-sync replacement journal lock");
+    std::filesystem::rename(savedLock, lock, filesystemError);
+    if (filesystemError)
+      fail("cannot restore the pending-sync journal lock");
+    requireSuccess(journal.beginResume());
+
     ExecutionJournal concurrent =
         take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
-    requireSuccess(journal.beginResume());
     auto initialOccurrence = take(journal.currentInvocationOccurrence());
     if (initialOccurrence.first.occurrenceOrdinal != 0 ||
         initialOccurrence.second)
       fail("initial journal occurrence has incorrect resume provenance");
+    requireSuccess(journal.releaseInvocationOccurrence());
+    requireSuccess(journal.beginResume());
+    if (take(journal.currentInvocationOccurrence()) != initialOccurrence)
+      fail("uncommitted occurrence release advanced the durable ordinal");
     requireErrorContains(concurrent.beginResume(), "already opened");
     if (take(concurrent.currentInvocationOccurrence()) != initialOccurrence)
       fail("journal aliases exposed different active occurrences");
@@ -294,6 +353,8 @@ void testStrictAdmission(const ArtifactStore &store, llvm::StringRef runRoot) {
         journal.markTerminal(key, JournalWorkUnitStatus::Completed, 1, 2,
                              {publish(store, 0x42), publish(store, 0x41)});
     requireErrorContains(std::move(unordered), "canonical and unique");
+    requireSuccess(journal.markTerminal(key, JournalWorkUnitStatus::Completed,
+                                        0, unixNanosecondsNow()));
 
     const BlobDigest firstManifest = computeBlobDigest({0x32});
     std::filesystem::rename(snapshot, saved, filesystemError);
@@ -309,6 +370,9 @@ void testStrictAdmission(const ArtifactStore &store, llvm::StringRef runRoot) {
     std::filesystem::rename(saved, snapshot, filesystemError);
     if (filesystemError)
       fail("cannot restore the manifest commit snapshot");
+    failNextDirectorySync.store(true, std::memory_order_relaxed);
+    requirePublishedDirectorySyncPending(journal.commitInvocationManifest(
+        initialOccurrence.first, firstManifest));
     requireSuccess(journal.commitInvocationManifest(initialOccurrence.first,
                                                     firstManifest));
     requireSuccess(concurrent.commitInvocationManifest(initialOccurrence.first,
@@ -318,17 +382,77 @@ void testStrictAdmission(const ArtifactStore &store, llvm::StringRef runRoot) {
         journal.commitInvocationManifest(initialOccurrence.first,
                                          computeBlobDigest({0x33})),
         "already owns");
+    requireSuccess(journal.releaseInvocationOccurrence());
+    requireErrorContains(journal.queue(makeKey(1, 1)), "immutable");
   }
 
-  ExecutionJournal resumed =
+  const WorkUnitKey interruptedKey = makeKey(2, 0);
+  {
+    ExecutionJournal resumed =
+        take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+    requireErrorContains(resumed.queue(makeKey(1, 2)), "immutable");
+    requireSuccess(resumed.beginResume());
+    auto resumedOccurrence = take(resumed.currentInvocationOccurrence());
+    if (resumedOccurrence.first.occurrenceOrdinal != 1 ||
+        !resumedOccurrence.second ||
+        resumedOccurrence.second->occurrenceOrdinal != 0 ||
+        resumedOccurrence.second->runKey != resumedOccurrence.first.runKey)
+      fail("resumed journal occurrence lost its durable predecessor");
+    requireSuccess(resumed.queue(interruptedKey));
+    requireSuccess(resumed.markRunning(interruptedKey));
+    requireErrorContains(
+        resumed.commitInvocationManifest(resumedOccurrence.first,
+                                         computeBlobDigest({0x34})),
+        "quiescent work records");
+  }
+
+  ExecutionJournal recovered =
       take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
-  requireSuccess(resumed.beginResume());
-  auto resumedOccurrence = take(resumed.currentInvocationOccurrence());
-  if (resumedOccurrence.first.occurrenceOrdinal != 1 ||
-      !resumedOccurrence.second ||
-      resumedOccurrence.second->occurrenceOrdinal != 0 ||
-      resumedOccurrence.second->runKey != resumedOccurrence.first.runKey)
-    fail("resumed journal occurrence lost its durable predecessor");
+  const auto interrupted = take(recovered.find(interruptedKey));
+  if (!interrupted || interrupted->status != JournalWorkUnitStatus::Queued ||
+      interrupted->activeAttemptStartUnixTimeNanoseconds != 0)
+    fail("interrupted uncommitted occurrence did not recover as sealed queued "
+         "work");
+  requireErrorContains(recovered.queue(makeKey(2, 1)), "immutable");
+  requireSuccess(recovered.beginResume());
+  const auto retry = take(recovered.currentInvocationOccurrence());
+  if (retry.first.occurrenceOrdinal != 1 || !retry.second ||
+      retry.second->occurrenceOrdinal != 0)
+    fail("interrupted uncommitted occurrence advanced its durable ordinal");
+}
+
+void testPublishedCommitRecovery(const ArtifactStore &store,
+                                 llvm::StringRef runRoot) {
+  Fixture fixture =
+      makeFixture(store, 0x35, "loom.test.execution.published_commit.v1");
+  {
+    ExecutionJournal journal =
+        take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+    requireSuccess(journal.beginResume());
+    const auto occurrence = take(journal.currentInvocationOccurrence());
+    failNextDirectorySync.store(true, std::memory_order_relaxed);
+    requirePublishedDirectorySyncPending(journal.commitInvocationManifest(
+        occurrence.first, computeBlobDigest({0x36})));
+  }
+
+  failNextDirectorySync.store(true, std::memory_order_relaxed);
+  auto pendingReopen =
+      openExecutionJournal(runRoot, fixture.closure, fixture.view);
+  if (pendingReopen)
+    fail("journal reopen skipped its conservative directory barrier");
+  requirePublishedDirectorySyncPending(pendingReopen.takeError());
+  ExecutionJournal reopened =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  const auto receipt = take(reopened.lastCommittedInvocationManifest());
+  if (!receipt || receipt->occurrence().occurrenceOrdinal != 0 ||
+      receipt->manifest() != computeBlobDigest({0x36}))
+    fail("reopened journal lost its committed manifest receipt");
+  requireErrorContains(reopened.queue(makeKey(1, 0)), "immutable");
+  requireSuccess(reopened.beginResume());
+  const auto resumed = take(reopened.currentInvocationOccurrence());
+  if (resumed.first.occurrenceOrdinal != 1 || !resumed.second ||
+      resumed.second->occurrenceOrdinal != 0)
+    fail("published manifest commit was lost after the journal handle closed");
 }
 
 void testExternalToolWorkLedger(const ArtifactStore &store,
@@ -439,6 +563,8 @@ int main() {
   const std::string storeRoot = directory.makeDirectory("artifacts");
   const std::string recoveryRun = directory.makeDirectory("recovery-run");
   const std::string admissionRun = directory.makeDirectory("admission-run");
+  const std::string publishedCommitRun =
+      directory.makeDirectory("published-commit-run");
   const std::string externalToolRun =
       directory.makeDirectory("external-tool-run");
   const std::string legacyRun = directory.makeDirectory("legacy-run");
@@ -448,6 +574,7 @@ int main() {
   ArtifactStore store(storeRoot);
   testRecoveryAndTerminalAdmission(store, recoveryRun);
   testStrictAdmission(store, admissionRun);
+  testPublishedCommitRecovery(store, publishedCommitRun);
   testExternalToolWorkLedger(store, externalToolRun);
   testHistoricalSnapshotRejection(store, legacyRun, 1);
   testHistoricalSnapshotRejection(store, externalLedgerRun, 2);

@@ -566,6 +566,16 @@ tryHardwareFeedbackReopen(
               fields["diagnostic"] =
                   llvm::toString(boundedTechMappings.takeError());
             });
+        // The Tech gate is a real DSE occurrence even when its bounded
+        // frontier cannot preserve graph coverage. Keep it as the terminal
+        // typed failure so callers retain its manifest and ancestry instead
+        // of silently falling back to the original parent attempt.
+        currentConfig = system->config;
+        latestFailed = std::move(gate->execution);
+        latestFailedPlan = std::move(*reopenPlan);
+        currentFailure = &*latestFailed;
+        currentPlan = &*latestFailedPlan;
+        currentFailureIsTechGate = true;
         break;
       }
       gateSeed.techMappings = std::move(*boundedTechMappings);
@@ -918,6 +928,43 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       return stored.takeError();
     return llvm::Error::success();
   };
+  const auto validateQualityEvidenceSet =
+      [&](llvm::ArrayRef<ArtifactRootReference> evidence) -> llvm::Error {
+    for (const ArtifactRootReference &reference : evidence)
+      if (llvm::Error error = validateQualityEvidence(reference))
+        return error;
+    return llvm::Error::success();
+  };
+  const auto validateQualityProvenance =
+      [&](const ArtifactRootReference &candidate,
+          const std::optional<ArtifactRootReference> &evidence,
+          llvm::ArrayRef<ArtifactRootReference> supportingEvidence,
+          llvm::ArrayRef<ArtifactRootReference> verificationEvidence,
+          const JointDesignQualityProvenance &provenance)
+      -> llvm::Error {
+    if (llvm::Error error = validateQualityEvidence(evidence))
+      return error;
+    if (llvm::Error error = validateQualityEvidenceSet(supportingEvidence))
+      return error;
+    if (llvm::Error error = validateQualityEvidenceSet(verificationEvidence))
+      return error;
+    for (const ArtifactRootReference &verification : verificationEvidence)
+      if (!llvm::is_contained(supportingEvidence, verification))
+        return invalid("quality verification Evidence is outside its "
+                       "supporting Evidence");
+    if (provenance.spatialFifoFeedback &&
+        provenance.spatialFifoFeedback->parentMapping != candidate)
+      return invalid("quality FIFO feedback names a foreign Mapping");
+    if (provenance.spatialOperandQueueFeedback &&
+        provenance.spatialOperandQueueFeedback->parentMapping &&
+        *provenance.spatialOperandQueueFeedback->parentMapping != candidate)
+      return invalid("quality operand feedback names a foreign Mapping");
+    if (provenance.spatialTransportFeedback &&
+        provenance.spatialTransportFeedback->parentMapping &&
+        *provenance.spatialTransportFeedback->parentMapping != candidate)
+      return invalid("quality transport feedback names a foreign Mapping");
+    return llvm::Error::success();
+  };
   const auto acquireHardwarePromotion =
       [&](const JointDesignExplorationPlan &plan, std::uint64_t planOrdinal)
       -> llvm::Expected<const CandidateObjectiveVector *> {
@@ -942,7 +989,11 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                        "System");
       if (!incomplete->candidate)
         incomplete->candidate = system;
-      if (llvm::Error error = validateQualityEvidence(incomplete->evidence))
+      if (llvm::Error error = validateQualityProvenance(
+              system, incomplete->evidence,
+              incomplete->provenance.supportingEvidence,
+              incomplete->provenance.verificationEvidence,
+              incomplete->provenance))
         return std::move(error);
       assessment.incomplete = std::move(*incomplete);
       hardwarePromotionObservations.push_back({planOrdinal,
@@ -950,7 +1001,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                                                {},
                                                assessment.incomplete->reason,
                                                assessment.incomplete->evidence,
-                                               false});
+                                               false,
+                                               assessment.incomplete
+                                                   ->provenance});
       boundedQualitySearchIncomplete = true;
       return static_cast<const CandidateObjectiveVector *>(nullptr);
     }
@@ -960,15 +1013,24 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         objectives.front().objective.candidate != system)
       return invalid("hardware promotion acquisition must return exactly one "
                      "objective for its System");
-    if (llvm::Error error =
-            validateQualityEvidence(objectives.front().evidence))
+    if (llvm::Error error = validateQualityProvenance(
+            system, objectives.front().evidence,
+            objectives.front().provenance.supportingEvidence,
+            objectives.front().provenance.verificationEvidence,
+            objectives.front().provenance))
+      return std::move(error);
+    if (llvm::Error error = validateJointDesignQualityObjective(
+            *request.boundedQuality->hardwarePromotion->objectiveProgram,
+            objectives.front().provenance,
+            objectives.front().objective.objective.codes()))
       return std::move(error);
     hardwarePromotionObservations.push_back(
         {planOrdinal, system,
          std::vector<std::uint64_t>(
              objectives.front().objective.objective.codes().begin(),
              objectives.front().objective.objective.codes().end()),
-         std::nullopt, objectives.front().evidence, false});
+         std::nullopt, objectives.front().evidence, false,
+         objectives.front().provenance});
     assessment.objective = std::move(objectives.front().objective);
     return &*assessment.objective;
   };
@@ -990,6 +1052,10 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     if (llvm::Error error = attachJointDesignSupportingInvocationManifests(
             execution, encounteredInvocations))
       return std::move(error);
+    if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality) {
+      for (const VerifiedAlternative &alternative : verifiedAlternatives)
+        mergeMappedPairs(execution, alternative.execution);
+    }
     if (accounting.hardwareRepairProbesReserved >=
         accounting.hardwareRepairProbesConsumed) {
       const std::uint64_t accounted = accounting.hardwareRepairProbesConsumed +
@@ -1766,20 +1832,6 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
              decltype(&artifactRootReferenceLess)>
         objectiveIndices(&artifactRootReferenceLess);
     std::optional<IncompleteJointDesignQuality> firstQualityIncomplete;
-    const auto qualityDisposition =
-        [](JointDesignQualityIncompleteReason reason) {
-          switch (reason) {
-          case JointDesignQualityIncompleteReason::Unsupported:
-            return JointDesignQualityDisposition::Unsupported;
-          case JointDesignQualityIncompleteReason::ProofNotEstablished:
-            return JointDesignQualityDisposition::ProofNotEstablished;
-          case JointDesignQualityIncompleteReason::ExecutionFailed:
-            return JointDesignQualityDisposition::ExecutionFailed;
-          case JointDesignQualityIncompleteReason::CancelledOrTimeout:
-            return JointDesignQualityDisposition::CancelledOrTimeout;
-          }
-          llvm_unreachable("unknown bounded-quality incomplete reason");
-        };
     for (VerifiedAlternative &alternative : verifiedAlternatives) {
       std::vector<ArtifactRootReference> alternativeMappings =
           mappingRoots(alternative.execution);
@@ -1797,15 +1849,31 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
             dispatchDeadlineReached(request.executionPolicy)) {
           deadlineObserved = true;
           boundedQualitySearchIncomplete = true;
+          JointDesignQualityProvenance provenance;
+          if (quality.provenanceDomain ==
+              JointDesignQualityProvenanceDomain::ApplicationRuntime) {
+            auto resourceCoreCost =
+                deriveApplicationRuntimeResourceCoreCost(
+                    alternative.execution, mapping, artifacts);
+            if (!resourceCoreCost)
+              return resourceCoreCost.takeError();
+            provenance.resourceCoreCost = *resourceCoreCost;
+          }
+          if (llvm::Error error =
+                  validateJointDesignQualityProvenanceDomain(quality,
+                                                             provenance,
+                                                             false))
+            return std::move(error);
           qualityObservations.push_back(
               {mapping,
                {},
                JointDesignQualityIncompleteReason::CancelledOrTimeout,
-               std::nullopt});
+               std::nullopt,
+               provenance});
           if (!firstQualityIncomplete)
             firstQualityIncomplete = IncompleteJointDesignQuality{
                 JointDesignQualityIncompleteReason::CancelledOrTimeout, mapping,
-                std::nullopt};
+                std::nullopt, std::move(provenance)};
           continue;
         }
         alternative.execution.summary.selectedMapping = mapping;
@@ -1815,12 +1883,29 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           return acquired.takeError();
         if (const auto *incomplete =
                 std::get_if<IncompleteJointDesignQuality>(&*acquired)) {
-          if (llvm::Error error = validateQualityEvidence(incomplete->evidence))
+          if (incomplete->candidate && incomplete->candidate != mapping)
+            return invalid("bounded-quality incomplete acquisition named a "
+                           "foreign SystemMapping");
+          if (llvm::Error error = validateQualityProvenance(
+                  mapping, incomplete->evidence,
+                  incomplete->provenance.supportingEvidence,
+                  incomplete->provenance.verificationEvidence,
+                  incomplete->provenance))
+            return std::move(error);
+          if (llvm::Error error =
+                  validateJointDesignQualityProvenanceDomain(
+                      quality, incomplete->provenance, false))
             return std::move(error);
           qualityObservations.push_back(
-              {mapping, {}, incomplete->reason, incomplete->evidence});
+              {mapping,
+               {},
+               incomplete->reason,
+               incomplete->evidence,
+               incomplete->provenance});
           if (!firstQualityIncomplete)
-            firstQualityIncomplete = *incomplete;
+            firstQualityIncomplete = IncompleteJointDesignQuality{
+                incomplete->reason, mapping, incomplete->evidence,
+                incomplete->provenance};
           alternative.execution.summary.selectedMapping.reset();
           continue;
         }
@@ -1830,14 +1915,27 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         if (one.size() != 1 || one.front().objective.candidate != mapping)
           return invalid("bounded-quality acquisition must return exactly one "
                          "objective for the selected SystemMapping");
-        if (llvm::Error error = validateQualityEvidence(one.front().evidence))
+        if (llvm::Error error = validateQualityProvenance(
+                mapping, one.front().evidence,
+                one.front().provenance.supportingEvidence,
+                one.front().provenance.verificationEvidence,
+                one.front().provenance))
+          return std::move(error);
+        if (llvm::Error error = validateJointDesignQualityProvenanceDomain(
+                quality, one.front().provenance, true))
+          return std::move(error);
+        if (llvm::Error error = validateJointDesignQualityObjective(
+                *quality.objectiveProgram, one.front().provenance,
+                one.front().objective.objective.codes()))
           return std::move(error);
         qualityObservations.push_back(
             {mapping,
              std::vector<std::uint64_t>(
                  one.front().objective.objective.codes().begin(),
                  one.front().objective.objective.codes().end()),
-             std::nullopt, one.front().evidence});
+             std::nullopt,
+             one.front().evidence,
+             one.front().provenance});
         acquiredObjectives.push_back(std::move(one.front().objective));
       }
       alternative.execution.summary.selectedMapping.reset();
@@ -1869,7 +1967,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           qualityObservations[index - 1].incompleteReason !=
               qualityObservations[index].incompleteReason ||
           qualityObservations[index - 1].evidence !=
-              qualityObservations[index].evidence)
+              qualityObservations[index].evidence ||
+          qualityObservations[index - 1].provenance !=
+              qualityObservations[index].provenance)
         return invalid("bounded-quality acquisition assigned conflicting "
                        "observations to one SystemMapping");
     }
@@ -1880,33 +1980,58 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                       return lhs.candidate == rhs.candidate;
                     }),
         qualityObservations.end());
+    const auto executionOwner =
+        [&](const ArtifactRootReference &candidate)
+        -> llvm::Expected<std::size_t> {
+      for (std::size_t ordinal = 0; ordinal != verifiedAlternatives.size();
+           ++ordinal)
+        if (llvm::is_contained(
+                mappingRoots(verifiedAlternatives[ordinal].execution),
+                candidate))
+          return ordinal;
+      return invalid("bounded-quality candidate has no verified execution "
+                     "owner");
+    };
     if (objectives.empty()) {
       if (!firstQualityIncomplete)
         return invalid("bounded-quality acquisition produced no objectives");
       auto fallback = firstMapping(verifiedAlternatives.front().execution);
       if (!firstQualityIncomplete->candidate && !fallback)
         return invalid("bounded-quality incomplete result has no candidate");
-      const ArtifactRootReference candidate =
-          firstQualityIncomplete->candidate.value_or(*fallback);
-      return finish(std::move(verifiedAlternatives.front().execution),
+      const ArtifactRootReference &candidate =
+          firstQualityIncomplete->candidate
+              ? *firstQualityIncomplete->candidate
+              : *fallback;
+      auto owner = executionOwner(candidate);
+      if (!owner)
+        return owner.takeError();
+      return finish(std::move(verifiedAlternatives[*owner].execution),
                     std::nullopt, std::nullopt,
-                    qualityDisposition(firstQualityIncomplete->reason),
+                    jointDesignQualityDisposition(
+                        firstQualityIncomplete->reason),
                     candidate, !deadlineObserved);
     }
     if (firstQualityIncomplete || boundedQualitySearchIncomplete ||
         deadlineObserved) {
-      const ArtifactRootReference candidate =
-          firstQualityIncomplete
-              ? firstQualityIncomplete->candidate.value_or(
-                    candidates.empty()
-                        ? firstMapping(verifiedAlternatives.front().execution)
-                              .value()
-                        : candidates.front())
-              : firstMapping(verifiedAlternatives.front().execution).value();
-      return finish(std::move(verifiedAlternatives.front().execution),
+      std::optional<ArtifactRootReference> candidate =
+          firstQualityIncomplete ? firstQualityIncomplete->candidate
+                                 : std::nullopt;
+      if (!candidate && !candidates.empty())
+        candidate = candidates.front();
+      if (!candidate)
+        candidate = firstMapping(verifiedAlternatives.front().execution);
+      if (!candidate)
+        return invalid("bounded-quality incomplete result has no candidate");
+      auto owner = executionOwner(*candidate);
+      if (!owner)
+        return owner.takeError();
+      return finish(std::move(verifiedAlternatives[*owner].execution),
                     std::nullopt, std::nullopt,
-                    JointDesignQualityDisposition::ProofNotEstablished,
-                    candidate, false);
+                    firstQualityIncomplete
+                        ? jointDesignQualityDisposition(
+                              firstQualityIncomplete->reason)
+                        : JointDesignQualityDisposition::ProofNotEstablished,
+                    *candidate, false);
     }
     llvm::sort(candidates, artifactRootReferenceLess);
     auto candidateSet =

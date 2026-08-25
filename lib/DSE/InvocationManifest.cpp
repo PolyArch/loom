@@ -4,7 +4,10 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/CampaignRunner.h"
+#include "DSE/ExecutionJournal.h"
 #include "DSE/ResolvedConfigView.h"
 #include "Evaluation/Evidence.h"
 
@@ -17,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -31,6 +35,7 @@ constexpr SchemaVersion legacyInvocationManifestSchemaVersion{1, 0};
 constexpr SchemaVersion operationalInvocationManifestSchemaVersion{1, 1};
 constexpr SchemaVersion typedRunClosureManifestSchemaVersion{1, 2};
 constexpr SchemaVersion preExternalToolWorkManifestSchemaVersion{1, 3};
+constexpr SchemaVersion preCampaignAdmissionManifestSchemaVersion{1, 4};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -346,6 +351,15 @@ llvm::Error validateIncompleteReason(const DsePlanIncompleteReason &reason) {
       reason);
 }
 
+llvm::Error validateCampaignAdmissionFailure(
+    const std::optional<CampaignAdmissionFailureReason> &failure) {
+  if (failure && static_cast<std::uint32_t>(*failure) >
+                     static_cast<std::uint32_t>(
+                         CampaignAdmissionFailureReason::ThroughputUnavailable))
+    return invalid("unknown campaign admission failure reason");
+  return llvm::Error::success();
+}
+
 llvm::Error validateGenerateRecord(const InvocationGenerateRecord &record,
                                    const ResolvedGeneratePlanNode &planNode,
                                    const ArtifactStore &store) {
@@ -534,8 +548,9 @@ decodeIncompleteReason(Decoder &decoder) {
     return DsePlanIncompleteReason{
         static_cast<CandidateGeneratorIncompleteReason>(*ordinal)};
   case 1:
-    if (*ordinal > static_cast<std::uint32_t>(
-                       PromotionAcquisitionIncompleteReason::CancelledOrTimeout))
+    if (*ordinal >
+        static_cast<std::uint32_t>(
+            PromotionAcquisitionIncompleteReason::CancelledOrTimeout))
       return invalid("unknown acquisition incomplete reason");
     return DsePlanIncompleteReason{
         static_cast<PromotionAcquisitionIncompleteReason>(*ordinal)};
@@ -859,6 +874,8 @@ encodeManifest(const InvocationOccurrenceRef &occurrence,
                const std::optional<InvocationOperationalObservations>
                    &operationalObservations,
                const InvocationExternalToolWorkLedger &externalToolWork,
+               const std::optional<CampaignAdmissionFailureReason>
+                   &campaignAdmissionFailure,
                SchemaVersion schemaVersion) {
   Encoder encoder;
   encoder.text(InvocationManifest::schemaIdentity);
@@ -898,7 +915,8 @@ encodeManifest(const InvocationOccurrenceRef &occurrence,
       }
     }
   }
-  if (schemaVersion == InvocationManifest::schemaVersion) {
+  if (schemaVersion == preCampaignAdmissionManifestSchemaVersion ||
+      schemaVersion == InvocationManifest::schemaVersion) {
     auto encodeWork = [&](const ExternalToolWorkLedger &work) {
       for (std::uint64_t value : externalToolWorkLedgerCounters(work))
         encoder.u64(value);
@@ -911,7 +929,31 @@ encodeManifest(const InvocationOccurrenceRef &occurrence,
       encodeWork(node.work);
     }
   }
+  if (schemaVersion == InvocationManifest::schemaVersion) {
+    encoder.u32(campaignAdmissionFailure ? 1 : 0);
+    if (campaignAdmissionFailure)
+      encoder.u32(static_cast<std::uint32_t>(*campaignAdmissionFailure));
+  }
   return encoder.take();
+}
+
+llvm::Expected<std::optional<CampaignAdmissionFailureReason>>
+decodeCampaignAdmissionFailure(Decoder &decoder) {
+  auto present = decoder.u32("campaign admission failure presence");
+  if (!present)
+    return present.takeError();
+  if (*present > 1)
+    return invalid("campaign admission failure presence is not boolean");
+  if (*present == 0)
+    return std::optional<CampaignAdmissionFailureReason>{};
+  auto reason = decoder.u32("campaign admission failure reason");
+  if (!reason)
+    return reason.takeError();
+  const auto decoded = static_cast<CampaignAdmissionFailureReason>(*reason);
+  const std::optional<CampaignAdmissionFailureReason> failure{decoded};
+  if (llvm::Error error = validateCampaignAdmissionFailure(failure))
+    return std::move(error);
+  return failure;
 }
 
 llvm::Expected<ExternalToolWorkLedger>
@@ -1045,6 +1087,8 @@ llvm::Error validateManifest(
     const std::optional<InvocationOperationalObservations>
         &operationalObservations,
     const InvocationExternalToolWorkLedger &externalToolWork,
+    const std::optional<CampaignAdmissionFailureReason>
+        &campaignAdmissionFailure,
     const ResolvedDseConfigView &view, const ArtifactStore &store) {
   if (occurrence.runKey != closure.runKey())
     return invalid("occurrence run key disagrees with its semantic closure");
@@ -1065,6 +1109,9 @@ llvm::Error validateManifest(
     return error;
   if (llvm::Error error =
           validateOperationalObservations(operationalObservations, view))
+    return error;
+  if (llvm::Error error =
+          validateCampaignAdmissionFailure(campaignAdmissionFailure))
     return error;
   for (const PlanNodeExternalToolWorkLedger &node :
        externalToolWork.planNodes())
@@ -1093,6 +1140,91 @@ flattenGenerateRecords(const DsePlanGenerateInvocationRecords &records) {
     return lhs.invocation.planNodeOrdinal < rhs.invocation.planNodeOrdinal;
   });
   return flattened;
+}
+
+llvm::Expected<ResolvedConfig>
+importInvocationResolvedConfig(const ArtifactRootReference &reference,
+                               const ArtifactStore &artifacts) {
+  if (reference.schemaIdentity != ResolvedConfig::artifactSchema.identity ||
+      reference.schemaVersion != ResolvedConfig::artifactSchema.version)
+    return invalid("manifest reference names a non-ResolvedConfig Artifact");
+  auto stored = artifacts.get(reference);
+  if (!stored)
+    return stored.takeError();
+  const llvm::ArrayRef<std::uint8_t> bytes = stored->bytes();
+  auto config = parseResolvedConfig(
+      llvm::StringRef(reinterpret_cast<const char *>(bytes.data()),
+                      bytes.size()),
+      "stored invocation ResolvedConfig");
+  if (!config)
+    return config.takeError();
+  if (resolvedConfigIdentity(*config) != reference.artifact ||
+      canonicalResolvedConfigBytes(*config).bytes() != bytes)
+    return invalid("manifest ResolvedConfig is not its exact canonical "
+                   "Artifact");
+  return config;
+}
+
+llvm::ArrayRef<PlanInputBinding>
+planNodeInputs(const ResolvedDsePlanNode &node) {
+  return std::visit(
+      [](const auto &resolved) { return resolved.inputBindings(); }, node);
+}
+
+std::set<PlanOutputRef> consumedPlanOutputs(const ResolvedDsePlan &plan) {
+  std::set<PlanOutputRef> consumed;
+  for (const ResolvedDsePlanNode &node : plan.nodes())
+    for (const PlanInputBinding &input : planNodeInputs(node))
+      std::visit(
+          [&](const auto &binding) {
+            using T = std::decay_t<decltype(binding)>;
+            if constexpr (std::is_same_v<T, PlanOutputRef>) {
+              consumed.insert(binding);
+            } else if constexpr (std::is_same_v<T, BoundedPlanOutputJoin>) {
+              consumed.insert(binding.outputs.begin(), binding.outputs.end());
+            }
+          },
+          input);
+  return consumed;
+}
+
+struct ProjectedInvocationRoots final {
+  std::vector<ArtifactRootReference> artifacts;
+  std::vector<ArtifactRootReference> evidence;
+};
+
+ProjectedInvocationRoots
+projectAvailableRoots(const ResolvedDsePlan &plan,
+                      const CompletedDsePlanExecution &execution,
+                      bool terminalOnly) {
+  const std::set<PlanOutputRef> consumed =
+      terminalOnly ? consumedPlanOutputs(plan) : std::set<PlanOutputRef>{};
+  ProjectedInvocationRoots projected;
+  for (std::uint64_t nodeOrdinal = 0; nodeOrdinal != plan.nodes().size();
+       ++nodeOrdinal) {
+    for (std::uint64_t slotOrdinal = 0;
+         slotOrdinal <= std::numeric_limits<std::uint32_t>::max();
+         ++slotOrdinal) {
+      const PlanOutputRef output{nodeOrdinal,
+                                 static_cast<std::uint32_t>(slotOrdinal)};
+      const PlanValueDescriptor *descriptor = plan.resolve(output);
+      if (!descriptor)
+        break;
+      if ((terminalOnly && consumed.find(output) != consumed.end()) ||
+          !execution.hasOutput(output))
+        continue;
+      const llvm::ArrayRef<ArtifactRootReference> roots =
+          execution.resolve(output);
+      for (const ArtifactRootReference &root : roots) {
+        std::vector<ArtifactRootReference> &destination =
+            isEvidence(root) ? projected.evidence : projected.artifacts;
+        destination.push_back(root);
+      }
+    }
+  }
+  canonicalizeRoots(projected.artifacts);
+  canonicalizeRoots(projected.evidence);
+  return projected;
 }
 
 } // namespace
@@ -1143,7 +1275,8 @@ llvm::Expected<InvocationManifest> InvocationManifest::get(
     const DsePlanGenerateInvocationRecords &generateRecords,
     InvocationControllerOutcome outcome, const ArtifactStore &artifactStore,
     std::optional<InvocationOperationalObservations> operationalObservations,
-    std::optional<InvocationExternalToolWorkLedger> externalToolWork) {
+    std::optional<InvocationExternalToolWorkLedger> externalToolWork,
+    std::optional<CampaignAdmissionFailureReason> campaignAdmissionFailure) {
   if (closure.resolvedConfigIdentity() !=
       loom::resolvedConfigIdentity(resolvedConfig))
     return invalid("run closure names a different ResolvedConfig identity");
@@ -1167,19 +1300,18 @@ llvm::Expected<InvocationManifest> InvocationManifest::get(
   if (llvm::Error error = validateManifest(
           occurrence, closure, resumedFrom, view->schemaDescriptorBytes(),
           view->digest(), *flattened, outcome, operationalObservations,
-          *externalToolWork, *view, artifactStore))
+          *externalToolWork, campaignAdmissionFailure, *view, artifactStore))
     return std::move(error);
-  std::vector<std::uint8_t> canonical =
-      encodeManifest(occurrence, closure, resumedFrom,
-                     view->schemaDescriptorBytes(), view->digest(), *flattened,
-                     outcome, operationalObservations, *externalToolWork,
-                     schemaVersion);
+  std::vector<std::uint8_t> canonical = encodeManifest(
+      occurrence, closure, resumedFrom, view->schemaDescriptorBytes(),
+      view->digest(), *flattened, outcome, operationalObservations,
+      *externalToolWork, campaignAdmissionFailure, schemaVersion);
   return InvocationManifest(
       std::move(occurrence), std::move(closure), std::move(resumedFrom),
       view->schemaDescriptorBytes().vec(), view->digest(),
       std::move(*flattened), std::move(outcome),
       std::move(operationalObservations), std::move(*externalToolWork),
-      std::move(canonical));
+      campaignAdmissionFailure, std::move(canonical));
 }
 
 llvm::Expected<InvocationManifest>
@@ -1202,6 +1334,7 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
        sourceSchemaVersion != operationalInvocationManifestSchemaVersion &&
        sourceSchemaVersion != typedRunClosureManifestSchemaVersion &&
        sourceSchemaVersion != preExternalToolWorkManifestSchemaVersion &&
+       sourceSchemaVersion != preCampaignAdmissionManifestSchemaVersion &&
        sourceSchemaVersion != InvocationManifest::schemaVersion))
     return invalid("unsupported InvocationManifest schema");
 
@@ -1274,12 +1407,21 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
     return emptyExternalToolWork.takeError();
   InvocationExternalToolWorkLedger externalToolWork =
       std::move(*emptyExternalToolWork);
-  if (sourceSchemaVersion == InvocationManifest::schemaVersion) {
+  if (sourceSchemaVersion == preCampaignAdmissionManifestSchemaVersion ||
+      sourceSchemaVersion == InvocationManifest::schemaVersion) {
     auto decodedExternalToolWork =
         decodeInvocationExternalToolWorkLedger(decoder);
     if (!decodedExternalToolWork)
       return decodedExternalToolWork.takeError();
     externalToolWork = std::move(*decodedExternalToolWork);
+  }
+  std::optional<CampaignAdmissionFailureReason> campaignAdmissionFailure;
+  if (sourceSchemaVersion == InvocationManifest::schemaVersion) {
+    auto decodedCampaignAdmissionFailure =
+        decodeCampaignAdmissionFailure(decoder);
+    if (!decodedCampaignAdmissionFailure)
+      return decodedCampaignAdmissionFailure.takeError();
+    campaignAdmissionFailure = std::move(*decodedCampaignAdmissionFailure);
   }
   if (!decoder.atEnd())
     return invalid("canonical InvocationManifest has trailing bytes");
@@ -1302,13 +1444,13 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
   InvocationOccurrenceRef occurrence{closure->runKey(), *occurrenceOrdinal};
   if (llvm::Error error = validateManifest(
           occurrence, *closure, resumedFrom, *dseViewDescriptor, *dseViewDigest,
-          records, *outcome, operationalObservations, externalToolWork, *view,
-          artifactStore))
+          records, *outcome, operationalObservations, externalToolWork,
+          campaignAdmissionFailure, *view, artifactStore))
     return std::move(error);
   std::vector<std::uint8_t> sourceCanonical = encodeManifest(
       occurrence, *closure, resumedFrom, *dseViewDescriptor, *dseViewDigest,
       records, *outcome, operationalObservations, externalToolWork,
-      sourceSchemaVersion);
+      campaignAdmissionFailure, sourceSchemaVersion);
   if (llvm::ArrayRef<std::uint8_t>(sourceCanonical) != canonicalBytes)
     return invalid("InvocationManifest bytes are not canonical");
   std::vector<std::uint8_t> currentCanonical =
@@ -1317,13 +1459,167 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
           : encodeManifest(occurrence, *closure, resumedFrom,
                            *dseViewDescriptor, *dseViewDigest, records,
                            *outcome, operationalObservations, externalToolWork,
+                           campaignAdmissionFailure,
                            InvocationManifest::schemaVersion);
   return InvocationManifest(
       std::move(occurrence), std::move(*closure), std::move(resumedFrom),
       std::move(*dseViewDescriptor), std::move(*dseViewDigest),
       std::move(records), std::move(*outcome),
       std::move(operationalObservations), std::move(externalToolWork),
-      std::move(currentCanonical));
+      campaignAdmissionFailure, std::move(currentCanonical));
+}
+
+llvm::Expected<InvocationManifestReference> InvocationManifestReference::get(
+    ArtifactRootReference resolvedConfig, BlobDigest blob,
+    InvocationOccurrenceRef occurrence, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  InvocationManifestReference reference(std::move(resolvedConfig),
+                                        std::move(blob), std::move(occurrence));
+  auto manifest = importInvocationManifest(reference, artifacts, blobs);
+  if (!manifest)
+    return manifest.takeError();
+  return reference;
+}
+
+llvm::Expected<InvocationManifestReference>
+bindInvocationManifestReceipt(InvocationManifestReference reference,
+                              const InvocationManifestReceipt &receipt) {
+  if (reference.occurrence() != receipt.occurrence() ||
+      reference.blob() != receipt.manifest())
+    return invalid("journal receipt names a different invocation manifest");
+  reference.journalReceipt_ = receipt;
+  return reference;
+}
+
+llvm::Expected<InvocationManifestReference> publishInvocationManifest(
+    const InvocationManifest &manifest, const ResolvedConfig &resolvedConfig,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto configIdentity =
+      artifacts.put(ResolvedConfig::artifactSchema,
+                    canonicalResolvedConfigBytes(resolvedConfig));
+  if (!configIdentity)
+    return configIdentity.takeError();
+  if (*configIdentity != resolvedConfigIdentity(resolvedConfig) ||
+      *configIdentity != manifest.closure().resolvedConfigIdentity())
+    return invalid("manifest names a different ResolvedConfig");
+  auto adopted = adoptInvocationManifest(manifest.canonicalBytes(),
+                                         resolvedConfig, artifacts);
+  if (!adopted)
+    return adopted.takeError();
+  auto blob = blobs.put(manifest.canonicalBytes());
+  if (!blob)
+    return blob.takeError();
+  return InvocationManifestReference::get(
+      ArtifactRootReference{ResolvedConfig::artifactSchema.identity.str(),
+                            ResolvedConfig::artifactSchema.version,
+                            std::move(*configIdentity)},
+      std::move(*blob), manifest.occurrence(), artifacts, blobs);
+}
+
+llvm::Expected<InvocationManifest>
+importInvocationManifest(const InvocationManifestReference &reference,
+                         const ArtifactStore &artifacts,
+                         const BlobStore &blobs) {
+  auto config =
+      importInvocationResolvedConfig(reference.resolvedConfig(), artifacts);
+  if (!config)
+    return config.takeError();
+  auto canonical = blobs.get(reference.blob());
+  if (!canonical)
+    return canonical.takeError();
+  auto manifest = adoptInvocationManifest(*canonical, *config, artifacts);
+  if (!manifest)
+    return manifest.takeError();
+  if (manifest->occurrence() != reference.occurrence())
+    return invalid("manifest reference occurrence differs from the canonical "
+                   "Blob");
+  return manifest;
+}
+
+llvm::Expected<InvocationControllerOutcome> projectDsePlanInvocationOutcome(
+    const ResolvedDseConfigView &view,
+    const DsePlanExecutionOutcome &executionOutcome) {
+  const CompletedDsePlanExecution *available =
+      std::get_if<CompletedDsePlanExecution>(&executionOutcome);
+  const auto *incomplete =
+      std::get_if<IncompleteDsePlanExecution>(&executionOutcome);
+  if (!available)
+    available = &incomplete->availableExecution();
+  if (available->resolvedDseConfigViewDigest() != view.digest())
+    return invalid("plan outcome names a different resolved DSE view");
+
+  ProjectedInvocationRoots roots =
+      projectAvailableRoots(view.plan(), *available, incomplete == nullptr);
+  if (incomplete)
+    return InvocationControllerOutcome{
+        InvocationIncomplete{incomplete->nodeOrdinal(),
+                             incomplete->reason(),
+                             {},
+                             std::move(roots.artifacts),
+                             std::move(roots.evidence)}};
+  if (roots.artifacts.empty())
+    return InvocationControllerOutcome{
+        InvocationCompletedNoFeasibleCandidate{std::move(roots.evidence)}};
+  return InvocationControllerOutcome{InvocationCompletedSelection{
+      std::move(roots.artifacts), std::move(roots.evidence)}};
+}
+
+llvm::Expected<InvocationManifestReference> finalizeDsePlanInvocation(
+    DseRunClosure closure, const ResolvedConfig &resolvedConfig,
+    const DsePlanExecutionOutcome &executionOutcome, ExecutionJournal &journal,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    std::optional<CampaignAdmissionFailureReason> campaignAdmissionFailure) {
+  auto view = projectResolvedDseConfigView(resolvedConfig);
+  if (!view)
+    return view.takeError();
+  if (closure.runKey() != journal.runKey())
+    return invalid("journal belongs to a different DSE run closure");
+  if (view->digest() != journal.resolvedDseConfigViewDigest())
+    return invalid("journal belongs to a different resolved DSE view");
+  auto occurrence = journal.currentInvocationOccurrence();
+  if (!occurrence)
+    return occurrence.takeError();
+  const auto releaseWith = [&](llvm::Error error) {
+    return llvm::joinErrors(std::move(error),
+                            journal.releaseInvocationOccurrence());
+  };
+  auto outcome = projectDsePlanInvocationOutcome(*view, executionOutcome);
+  if (!outcome)
+    return releaseWith(outcome.takeError());
+  DsePlanGenerateInvocationRecords generateRecords =
+      projectDsePlanGenerateInvocationRecords(executionOutcome);
+  auto externalToolWork = journal.externalToolWorkLedger();
+  if (!externalToolWork)
+    return releaseWith(externalToolWork.takeError());
+  auto manifest = InvocationManifest::get(
+      std::move(closure), occurrence->first.occurrenceOrdinal,
+      std::move(occurrence->second), resolvedConfig, generateRecords,
+      std::move(*outcome), artifacts, std::nullopt,
+      std::move(*externalToolWork), campaignAdmissionFailure);
+  if (!manifest)
+    return releaseWith(manifest.takeError());
+  auto reference =
+      publishInvocationManifest(*manifest, resolvedConfig, artifacts, blobs);
+  if (!reference)
+    return releaseWith(reference.takeError());
+  if (llvm::Error error = journal.commitInvocationManifest(
+          reference->occurrence(), reference->blob())) {
+    if (error.isA<ExecutionJournalPersistenceError>())
+      return std::move(error);
+    return releaseWith(std::move(error));
+  }
+  auto receipt = journal.lastCommittedInvocationManifest();
+  if (!receipt)
+    return releaseWith(receipt.takeError());
+  if (!*receipt)
+    return releaseWith(invalid("journal did not retain its manifest receipt"));
+  auto committedReference =
+      bindInvocationManifestReceipt(std::move(*reference), **receipt);
+  if (!committedReference)
+    return releaseWith(committedReference.takeError());
+  if (llvm::Error error = journal.releaseInvocationOccurrence())
+    return std::move(error);
+  return committedReference;
 }
 
 } // namespace loom::dse

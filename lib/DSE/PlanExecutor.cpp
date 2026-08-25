@@ -730,8 +730,15 @@ RecoverablePlanWorkExecutor::executeGenerate(
     if (llvm::Error error = journal_.markRunning(*key))
       return std::move(error);
     const auto begin = std::chrono::steady_clock::now();
-    const CandidateGeneratorInvocationView invocation(executionControl,
-                                                      outputDemands);
+    const ExecutionResourceBudget executionBudget{
+        lease.claim().cpuCores() == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>(lease.claim().cpuCores()),
+        lease.claim().memoryBytes() == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>(lease.claim().memoryBytes())};
+    const CandidateGeneratorInvocationView invocation(
+        executionControl, outputDemands, executionBudget);
     auto generated =
         invokeCandidateGenerator(inputs, binding, store, blobs, invocation);
     if (!generated) {
@@ -1221,8 +1228,6 @@ llvm::Expected<PlanExecutionPolicy> PlanExecutionPolicy::get(
     std::optional<std::uint64_t> dispatchNotAfterUnixNanoseconds) {
   if (workerCount == 0)
     return invalid("execution policy requires a positive worker count");
-  if (maximumDispatches && *maximumDispatches == 0)
-    return invalid("maximum dispatch count must be positive when present");
   if (dispatchNotAfterUnixNanoseconds && *dispatchNotAfterUnixNanoseconds == 0)
     return invalid("dispatch deadline must be positive when present");
   if (externalSite && static_cast<std::uint32_t>(externalSite->disposition) >
@@ -1268,6 +1273,9 @@ resumeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
               const PlanExecutionPolicy &policy, const ArtifactStore &store,
               const BlobStore &blobs,
               InvocationManifestRetention manifestRetention) {
+  if (manifestRetention != InvocationManifestRetention::Release &&
+      manifestRetention != InvocationManifestRetention::Retain)
+    return invalid("unknown invocation manifest retention policy");
   if (journal.runKey() != closure.runKey())
     return invalid("ExecutionJournal belongs to another run closure");
   if (journal.resolvedDseConfigViewDigest() != view.digest())
@@ -1276,10 +1284,11 @@ resumeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
     return std::move(error);
   auto execution =
       executeDsePlan(view, closure, journal, scheduler, policy, store, blobs);
+  if (!execution)
+    return llvm::joinErrors(execution.takeError(),
+                            journal.releaseInvocationOccurrence());
   if (manifestRetention == InvocationManifestRetention::Release) {
     llvm::Error releaseError = journal.releaseInvocationOccurrence();
-    if (!execution)
-      return llvm::joinErrors(execution.takeError(), std::move(releaseError));
     if (releaseError)
       return std::move(releaseError);
   }

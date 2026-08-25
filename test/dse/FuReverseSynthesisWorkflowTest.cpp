@@ -327,7 +327,8 @@ int main() {
   auto reopenedJournal =
       take(loom::dse::openExecutionJournal(journalPath, closure, configView));
   auto replay = take(loom::dse::resumeDsePlan(
-      configView, closure, reopenedJournal, scheduler, policy, store, blobs));
+      configView, closure, reopenedJournal, scheduler, policy, store, blobs,
+      loom::dse::InvocationManifestRetention::Release));
   const auto *replayed =
       std::get_if<loom::dse::CompletedDsePlanExecution>(&replay);
   require(replayed && replayed->generateInvocations().size() == 5,

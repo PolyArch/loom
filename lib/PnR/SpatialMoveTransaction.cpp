@@ -188,11 +188,6 @@ SpatialMoveTransaction::SpatialMoveTransaction(
       initialTotalRouteNegativeSlackQuanta_(
           state_->totalRouteNegativeSlackQuanta_),
       initialRecurrenceTiming_(state_->recurrenceTiming_) {
-  for (PnrIndex logicalNet = 0; logicalNet < state_->routeTrees_.size();
-       ++logicalNet)
-    scratch.progressTerminalActive_[logicalNet] =
-        !state_->usesRegisterFifo(logicalNet) &&
-        state_->routeTrees_[logicalNet]->isRouted();
   state_->activeTransaction_ = this;
   scratch_->activeTransaction_ = this;
 }
@@ -452,6 +447,9 @@ void SpatialMoveTransaction::markProgressNetDirty(PnrIndex logicalNet) {
   assert(logicalNet < scratch_->progressDirtyNetMarks_.size());
   if (scratch_->progressDirtyNetMarks_[logicalNet])
     return;
+  scratch_->progressTerminalActive_[logicalNet] =
+      !state_->usesRegisterFifo(logicalNet) &&
+      state_->routeTrees_[logicalNet]->isRouted();
   scratch_->progressDirtyNetMarks_[logicalNet] = 1;
   scratch_->progressDirtyNets_.push_back(logicalNet);
 }
