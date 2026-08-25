@@ -162,7 +162,8 @@ buildIndependentIntegerAddsDataflow(mlir::MLIRContext &context,
             "  dataflow.thread private @worker "
             "domain(#dataflow.thread_domain<dense>)(%lhs: i32, %rhs: i32) "
             "ctrl (%ctrl: none) {\n"
-            "    %result = dataflow.graph.launch @independent_adds "
+            "    %result:" + std::to_string(actorCount + 1) +
+            " = dataflow.graph.launch @independent_adds "
             "deps(%ctrl) values(%lhs, %rhs) stream_inputs() "
             "memories() stream_outputs() : (none, i32, i32) -> (";
   for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
@@ -170,7 +171,8 @@ buildIndependentIntegerAddsDataflow(mlir::MLIRContext &context,
       stream << ", ";
     stream << "i32";
   }
-  stream << ")\n    dataflow.thread.yield %ctrl : none\n  }\n"
+  stream << ", none)\n    dataflow.thread.yield %result#" << actorCount
+         << " : none\n  }\n"
             "  func.func private @host() {\n"
             "    %lhs = arith.constant 7 : i32\n"
             "    %rhs = arith.constant 11 : i32\n"
