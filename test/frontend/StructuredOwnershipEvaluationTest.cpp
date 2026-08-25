@@ -1274,10 +1274,13 @@ void runEvaluationAnchor() {
   centralConfig.dse.evidenceObligationTemplates = {analyticObligation};
   centralConfig.dse.qualityGatePolicies = {
       take(loom::dse::QualityGatePolicy::get({}))};
+  std::vector<loom::ArtifactRootReference> centralCandidates{baselineRef,
+                                                              spatialRef};
+  llvm::sort(centralCandidates, loom::artifactRootReferenceLess);
   centralConfig.dse.planNodes = {loom::dse::PromotePlanNodeDefinition{
       loom::dse::structuredEvaluationPromotionAcquisitionDescriptor()
           .reference(),
-      {loom::dse::ExactPlanArtifacts{{baselineRef, spatialRef}},
+      {loom::dse::ExactPlanArtifacts{std::move(centralCandidates)},
        loom::dse::ExactPlanArtifacts{{design.roots().front().reference()}},
        loom::dse::ExactPlanArtifacts{{inputs.workloadReference}},
        loom::dse::ExactPlanArtifacts{{inputs.runtimeInputReference}}},
@@ -1368,10 +1371,14 @@ void runEvaluationAnchor() {
     const auto *functionalPlanCompleted =
         std::get_if<loom::dse::CompletedDsePlanExecution>(
             &functionalPlanOutcome);
+    std::vector<loom::ArtifactRootReference> expectedFunctionalCandidates{
+        baselineRef, spatialRef};
+    llvm::sort(expectedFunctionalCandidates,
+               loom::artifactRootReferenceLess);
     if (!functionalPlanCompleted ||
         functionalPlanCompleted->resolve({1, 0}) !=
             llvm::ArrayRef<loom::ArtifactRootReference>(
-                {baselineRef, spatialRef}) ||
+                expectedFunctionalCandidates) ||
         functionalPlanCompleted->resolve({1, 1}).size() != 2)
       fail(
           "central functional Promote did not replay the generated candidates");
@@ -1477,11 +1484,19 @@ void runEvaluationAnchor() {
     fail("functional replay did not execute the selected graph activation");
   auto combinedReplay = take(loom::sim::validateSourceBackedDfgReplay(
       compiled.structuredProgram, combined, inputs.workload,
-      inputs.runtimeInput,
-      {100000, 1000000, 256ULL * 1024ULL * 1024ULL}, &inputs.observations));
+      inputs.runtimeInput, {100000, 1000000, 256ULL * 1024ULL * 1024ULL},
+      &inputs.observations,
+      [&](const loom::sim::CanonicalSimulationWorkload &,
+          const loom::sim::CanonicalSimulationRuntimeInput &)
+          -> llvm::Expected<loom::sim::SourceBackedDfgReplayCaseReference> {
+        return loom::sim::SourceBackedDfgReplayCaseReference{
+            inputs.workloadReference, inputs.runtimeInputReference};
+      }));
   if (combinedReplay.status !=
           loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
       combinedReplay.dynamicActivations != 2 ||
+      combinedReplay.replayCaseOccurrences != 2 ||
+      combinedReplay.replayCases.size() != 1 ||
       combinedReplay.wavefrontSteps == 0 || combinedReplay.eventCount == 0)
     fail("functional replay did not cover every reachable Spatial region");
   auto coldReplay = take(loom::sim::validateSourceBackedDfgReplay(
