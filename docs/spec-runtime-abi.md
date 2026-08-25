@@ -424,6 +424,15 @@ semantics. It does not schedule endpoint occurrences: its caller must submit
 sends in Dataflow's canonical event commit order rather than arrival-race
 order, and each execution adapter owns blocking and retry around `WouldBlock`.
 
+The native selected-program adapter is not a thread scheduler. Its dense-thread
+ownership projection erases launch and wait carriers, then invokes channel
+callbacks synchronously in lexical launch order on one JIT call stack. A
+receive that would block cannot suspend that stack for a later producer, so a
+consumer-first projection that depends on such suspension is outside this
+adapter. Supporting it requires an execution owner that schedules and resumes
+thread occurrences while preserving source waits, rather than a retry loop in
+the channel callback.
+
 The Spatial Bridge binding's `maximumMessageBytes` is a separate provider wire
 and staging limit. It may reject an unrepresentable invocation or message with
 a typed provider outcome, but it cannot change logical capacity, split one

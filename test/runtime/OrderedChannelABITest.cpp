@@ -153,12 +153,13 @@ void invalidTicketsAndConsumersDoNotMutateState() {
   expectABIError(std::move(foreignError),
                  OrderedChannelABIError::Kind::InvalidTicket,
                  "foreign sequence ticket was not rejected atomically");
+  auto cancelledCopy = ticket;
   require(!channel.cancel(ticket), "ticket cancellation failed");
   auto replacement = take(channel.receive(0));
-  auto revokedError = channel.acknowledge(ticket);
-  expectABIError(std::move(revokedError),
-                 OrderedChannelABIError::Kind::InvalidTicket,
-                 "cancelled ticket acknowledged a replacement reservation");
+  auto revokedError = channel.acknowledge(cancelledCopy);
+  expectABIError(
+      std::move(revokedError), OrderedChannelABIError::Kind::InvalidTicket,
+      "cancelled ticket copy acknowledged a replacement reservation");
 
   OrderedChannelABI peer = take(OrderedChannelABI::create(1, 1));
   require(peer.send({8}).kind == OrderedChannelSendKind::Accepted,
