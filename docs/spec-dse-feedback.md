@@ -2876,13 +2876,14 @@ owner; the workflow does not duplicate executable or runtime-platform
 selection.
 
 The current spatial-microarchitecture configuration descriptor is
-`loom.spatial_microarchitecture_rewrite.config.2.1`; the candidate-decision
-descriptor is `loom.spatial_microarchitecture_candidate_decision.3.0`, and the
-provider identity is `loom.spatial_microarchitecture_rewrite.generator.v3`.
+`loom.spatial_microarchitecture_rewrite.config.2.2`; the candidate-decision
+descriptor is `loom.spatial_microarchitecture_candidate_decision.3.1`, and the
+provider identity is `loom.spatial_microarchitecture_rewrite.generator.v4`.
 Config 2.1 appends the two Temporal operand-buffer decisions below without
 renumbering 2.0 decision tags. Decision 3.0 additionally carries the complete
 finalizer-produced parent-to-child Module occurrence correspondence, so a
-consumer never guesses a child occurrence from a parent dense ordinal.
+consumer never guesses a child occurrence from a parent dense ordinal. Config
+2.2 and decision 3.1 append the typed switch route-table capacity decision.
 
 Kind 16 has one empty canonical resolved-config view. Its exact descriptor
 fixes the portable operation-provider catalog. It consumes exactly one
@@ -3006,9 +3007,11 @@ parent or leave a DSE-only Fabric form. A completed child carries one
 `CandidateDecision` lineage contribution whose payload is owned by that exact
 generator descriptor. Identity deduplication occurs only after finalization.
 
-The kind-15 System-composition lineage payload
-`loom.system_composition_candidate_decision.2.0` also carries the exact
-parent-to-child `AccCoreOccurrenceRef` correspondence for every preserved
+The current System-composition configuration descriptor is
+`loom.system_composition_rewrite.config.1.1`; the lineage payload is
+`loom.system_composition_candidate_decision.3.1`, and the provider identity is
+`loom.system_composition_rewrite.generator.v3`. The lineage payload carries the
+exact parent-to-child `AccCoreOccurrenceRef` correspondence for every preserved
 parent AccCore. The System finalizer derives this one-to-one relation while it
 canonically relabels the child; the controller may not reconstruct it from
 Module equality or occurrence ordinal. `AddAccCore` and `RemoveAccCore`
@@ -3016,8 +3019,9 @@ validate the expected cardinality delta, while every other System rewrite
 preserves the cardinality. Every unchanged descendant retains its exact Module
 target. The sole exception is the target of a typed
 `ReplaceSpatialAttachment`, which must select that decision's exact Module.
-This lineage records structural descent only and does not claim that parent and
-child resources are interchangeable.
+The 3.1 decision payload appends the canonical transport-source swap and the
+memory-service-owned region resize. This lineage records structural descent
+only and does not claim that parent and child resources are interchangeable.
 
 The TechMapping providers may return
 `loom.mapping.tech_compute_context_hall_feedback.1.0`. It represents one exact

@@ -1788,6 +1788,8 @@ void graphBindingWorkflow() {
           scheduleMappings->accounting.migrationPreservedGraphBindings +
                   scheduleMappings->accounting.migrationReopenedGraphBindings ==
               scheduleProblem->graphDecisions().size() &&
+          scheduleMappings->accounting.migrationReopenedServiceLegs != 0 &&
+          scheduleMappings->accounting.migrationPreservedServiceLegs +
           scheduleMappings->accounting.migrationReopenedServiceLegs ==
               scheduleProblem->serviceLegs().size(),
       "resource-time root delta did not drive bounded System repair");

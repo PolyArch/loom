@@ -1339,6 +1339,98 @@ llvm::Error SystemBuilder::replaceTransportConnection(
   return verifySystemDraft(**root, "transport connection replacement");
 }
 
+llvm::Error SystemBuilder::swapTransportConnectionSources(
+    const loom::fabric::FabricTransportEndpointRef &firstDestination,
+    const loom::fabric::FabricTransportEndpointRef &secondDestination) {
+  if (firstDestination == secondDestination)
+    return invalid("transport connection swap requires two destinations");
+  auto state = detail::activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto root = derivedSystem(*state, rootOrdinal_);
+  if (!root)
+    return root.takeError();
+  ::fabric::SystemConnectionOp first;
+  ::fabric::SystemConnectionOp second;
+  for (mlir::Operation &operation : (*root)->operation.getBody().front()) {
+    auto connection = mlir::dyn_cast<::fabric::SystemConnectionOp>(operation);
+    if (!connection || connection.getMemoryServiceAttr())
+      continue;
+    auto destination =
+        loom::fabric::decodeFabricRef<loom::fabric::FabricTransportEndpointRef>(
+            unsignedBytes(connection.getDestinationAttr()));
+    if (!destination)
+      return destination.takeError();
+    if (*destination == firstDestination)
+      first = connection;
+    else if (*destination == secondDestination)
+      second = connection;
+  }
+  if (!first || !second)
+    return invalid("transport connection swap destination is not connected");
+  auto firstSource =
+      loom::fabric::decodeFabricRef<loom::fabric::FabricTransportEndpointRef>(
+          unsignedBytes(first.getSourceAttr()));
+  if (!firstSource)
+    return firstSource.takeError();
+  auto secondSource =
+      loom::fabric::decodeFabricRef<loom::fabric::FabricTransportEndpointRef>(
+          unsignedBytes(second.getSourceAttr()));
+  if (!secondSource)
+    return secondSource.takeError();
+  if (*firstSource == *secondSource)
+    return invalid("transport connection swap is a no-op");
+  first.setSourceAttr(denseBytes(
+      (*state)->context, loom::fabric::canonicalFabricBytes(*secondSource)));
+  second.setSourceAttr(denseBytes(
+      (*state)->context, loom::fabric::canonicalFabricBytes(*firstSource)));
+  return verifySystemDraft(**root, "transport connection source swap");
+}
+
+llvm::Error SystemBuilder::resizeSystemMemoryRegion(
+    loom::fabric::SystemMemoryServiceRef memoryService,
+    loom::fabric::FabricOrdinal regionOrdinal, std::uint64_t sizeBytes) {
+  if (sizeBytes == 0)
+    return invalid("System memory region size must be positive");
+  auto state = detail::activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto root = derivedSystem(*state, rootOrdinal_);
+  if (!root)
+    return root.takeError();
+  auto service = systemEntity<::fabric::SystemMemoryServiceOp>(
+      **root, memoryService.id(), "System memory service");
+  if (!service)
+    return service.takeError();
+  auto contract = ::fabric::decodeMemoryServiceContractRecord(
+      unsignedBytes(service->getServiceContractAttr().getRecord()),
+      &(*state)->context, ::fabric::MemoryServiceOwnerKind::System);
+  if (!contract)
+    return contract.takeError();
+  if (regionOrdinal >= contract->regions().size())
+    return invalid("System memory region ordinal is out of range");
+  ::fabric::MemoryServiceContractDeclaration declaration{
+      std::vector<::fabric::MemoryServiceRegionDeclaration>(
+          contract->regions().begin(), contract->regions().end()),
+      contract->resourceContract(),
+      std::vector<::fabric::MemoryServiceCapabilityDeclaration>(
+          contract->capabilities().begin(), contract->capabilities().end())};
+  if (declaration.regions[regionOrdinal].sizeBytes == sizeBytes)
+    return invalid("System memory region resize is a no-op");
+  declaration.regions[regionOrdinal].sizeBytes = sizeBytes;
+  auto resized = ::fabric::MemoryServiceContractRecord::create(
+      &(*state)->context, ::fabric::MemoryServiceOwnerKind::System,
+      std::move(declaration));
+  if (!resized)
+    return resized.takeError();
+  auto encoded = ::fabric::encodeMemoryServiceContractRecord(*resized);
+  if (!encoded)
+    return encoded.takeError();
+  service->setServiceContractAttr(::fabric::MemoryServiceContractAttr::get(
+      &(*state)->context, denseBytes((*state)->context, *encoded)));
+  return verifySystemDraft(**root, "System memory region resize");
+}
+
 llvm::Error SystemBuilder::replaceSpatialMemoryAttachment(
     const loom::fabric::FabricMemoryEndpointRef &spatialEndpoint,
     loom::fabric::SystemServiceEndpointRef serviceEndpoint) {

@@ -20,7 +20,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.spatial_microarchitecture_rewrite.config.2.1";
+    "loom.spatial_microarchitecture_rewrite.config.2.2";
 
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> inputSlots = {{
     {CandidateGeneratorInputSlotRef(0), "fabric_module_parent",
@@ -86,6 +86,15 @@ validateDecisionAgainstParent(const SpatialMicroarchitectureDecision &decision,
               value.entriesPerAllocationUnit)
             return invalid("operand-buffer resize is a no-op");
           return llvm::Error::success();
+        } else if constexpr (std::is_same_v<Value, ResizeSwitchRouteTable>) {
+          if (value.entries == 0)
+            return invalid("switch route-table capacity must be positive");
+          if (parent.switchSchedule(value.target) !=
+              ::fabric::Schedule::Temporal)
+            return invalid("route-table resize requires a Temporal switch");
+          if (parent.switchRouteTableSize(value.target) == value.entries)
+            return invalid("switch route-table resize is a no-op");
+          return llvm::Error::success();
         } else if constexpr (std::is_same_v<Value, ChangePeKind> ||
                              std::is_same_v<Value, ChangeFuCapability> ||
                              std::is_same_v<
@@ -129,6 +138,8 @@ llvm::Error applyDecision(loom::adg::SpatialCoreBuilder &builder,
                                           ChangeSwitchModeOrScheduleCapacity>)
           return builder.replaceSwitchModeOrScheduleCapacity(value.target,
                                                              value.prototype);
+        else if constexpr (std::is_same_v<Value, ResizeSwitchRouteTable>)
+          return builder.resizeSwitchRouteTable(value.target, value.entries);
         else if constexpr (std::is_same_v<Value, ResizeMemory>)
           return builder.resizeMemory(value.target, value.capacityBytes);
         else if constexpr (std::is_same_v<Value, ChangeMemoryOperationTable>)
@@ -230,7 +241,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialMicroarchitectureCandidateGeneratorKind,
     "spatial_microarchitecture_rewrite",
-    "loom.spatial_microarchitecture_rewrite.generator.v3",
+    "loom.spatial_microarchitecture_rewrite.generator.v4",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},

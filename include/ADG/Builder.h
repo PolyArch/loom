@@ -1173,6 +1173,9 @@ public:
   llvm::Error replaceSwitchModeOrScheduleCapacity(
       loom::fabric::FabricSwitchOccurrenceRef target,
       loom::fabric::FabricSwitchOccurrenceRef prototype);
+  llvm::Error
+  resizeSwitchRouteTable(loom::fabric::FabricSwitchOccurrenceRef target,
+                         std::uint32_t entries);
   llvm::Error resizeMemory(loom::fabric::FabricMemoryOccurrenceRef target,
                            std::uint64_t capacityBytes);
   llvm::Error replaceMemoryOperationTable(
@@ -1597,6 +1600,13 @@ public:
   llvm::Error replaceTransportConnection(
       const loom::fabric::FabricTransportEndpointRef &destination,
       const loom::fabric::FabricTransportEndpointRef &source);
+  llvm::Error swapTransportConnectionSources(
+      const loom::fabric::FabricTransportEndpointRef &firstDestination,
+      const loom::fabric::FabricTransportEndpointRef &secondDestination);
+  llvm::Error
+  resizeSystemMemoryRegion(loom::fabric::SystemMemoryServiceRef service,
+                           loom::fabric::FabricOrdinal regionOrdinal,
+                           std::uint64_t sizeBytes);
   llvm::Error replaceSpatialMemoryAttachment(
       const loom::fabric::FabricMemoryEndpointRef &spatialEndpoint,
       loom::fabric::SystemServiceEndpointRef serviceEndpoint);

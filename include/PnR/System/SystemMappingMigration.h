@@ -405,6 +405,16 @@ private:
                                    const ArtifactStore &);
 };
 
+/// Composes consecutive exact System transformation lineages. Entities,
+/// transfer patterns, and imported Modules that disappear in the second
+/// child are omitted; surviving entries remain one-to-one and are revalidated
+/// against the original parent and final child Systems.
+llvm::Expected<SystemExecutionBindingCorrespondence>
+composeSystemExecutionBindingCorrespondence(
+    const SystemExecutionBindingCorrespondence &first,
+    const SystemExecutionBindingCorrespondence &second,
+    const ArtifactStore &store);
+
 llvm::Expected<FinalizedSystemMappingMigrationSeed>
 finalizeSystemMappingMigrationSeed(
     const ArtifactRootReference &parentMapping,

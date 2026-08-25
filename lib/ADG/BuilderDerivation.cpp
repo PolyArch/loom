@@ -770,6 +770,46 @@ llvm::Error SpatialCoreBuilder::replaceSwitchModeOrScheduleCapacity(
   return llvm::Error::success();
 }
 
+llvm::Error SpatialCoreBuilder::resizeSwitchRouteTable(
+    loom::fabric::FabricSwitchOccurrenceRef target, std::uint32_t entries) {
+  if (entries == 0)
+    return invalid("switch route-table capacity must be positive");
+  auto state = detail::activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto root = derivedSpatialRoot(*state, rootOrdinal_);
+  if (!root)
+    return root.takeError();
+  auto operation =
+      moduleOccurrence((*root)->operation, *(*root)->derivedParent, target);
+  if (!operation)
+    return operation.takeError();
+  auto sw = mlir::cast<::fabric::SwitchOp>(*operation);
+  if (sw.getSchedule() != ::fabric::Schedule::Temporal)
+    return invalid("route-table resize requires a Temporal switch");
+  if (auto configuration = sw.getSwConfigsAttr();
+      configuration && configuration.get("route_table"))
+    return invalid("cannot resize a programmed switch route table");
+  auto parameters = sw.getHwParamsAttr();
+  auto dictionary = parameters && parameters.size() == 1
+                        ? mlir::dyn_cast<mlir::DictionaryAttr>(parameters[0])
+                        : mlir::DictionaryAttr();
+  auto current = dictionary ? mlir::dyn_cast_or_null<mlir::IntegerAttr>(
+                                  dictionary.get("route_table_size"))
+                            : mlir::IntegerAttr();
+  if (!current || current.getInt() <= 0)
+    return invalid("Temporal switch has no route-table capacity");
+  if (static_cast<std::uint64_t>(current.getInt()) == entries)
+    return invalid("switch route-table resize is a no-op");
+  mlir::NamedAttrList updated(dictionary.getValue());
+  updated.set("route_table_size",
+              mlir::IntegerAttr::get(
+                  mlir::IntegerType::get(sw.getContext(), 32), entries));
+  sw.setHwParamsAttr(mlir::ArrayAttr::get(
+      sw.getContext(), {updated.getDictionary(sw.getContext())}));
+  return llvm::Error::success();
+}
+
 llvm::Error
 SpatialCoreBuilder::resizeMemory(loom::fabric::FabricMemoryOccurrenceRef target,
                                  std::uint64_t capacityBytes) {

@@ -52,6 +52,7 @@ struct HardwareRecipeGrowth final {
   std::optional<ChangeFifoBypassCapability> fifoBypassChange;
   std::optional<ChangeTemporalOperandBufferMode> operandBufferModeChange;
   std::optional<ResizeTemporalOperandBuffer> operandBufferResize;
+  std::optional<SpatialMicroarchitectureDecisionDomain> moduleDecision;
   std::uint64_t resizedInstructionStoreCount = 0;
   std::uint64_t maximumInstructionStoreCapacity = 0;
   std::uint64_t addedContexts = 0;

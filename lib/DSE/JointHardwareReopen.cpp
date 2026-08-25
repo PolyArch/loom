@@ -355,7 +355,9 @@ tryHardwareFeedbackReopen(
         auto projected = rebaseJointMappingFrontier(
             *currentPlan, *currentFailure, system->reference,
             system->moduleCorrespondences,
-            system->mappingImpact ? &*system->mappingImpact : nullptr,
+            system->mappingImpact ? llvm::ArrayRef<HardwareImpactProjection>(
+                                        *system->mappingImpact)
+                                  : llvm::ArrayRef<HardwareImpactProjection>(),
             artifacts);
         if (!projected)
           return projected.takeError();

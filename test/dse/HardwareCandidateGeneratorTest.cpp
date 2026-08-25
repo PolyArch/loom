@@ -10,6 +10,7 @@
 #include "DSE/TechMappingHardwareFeedback.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Mapping/Tech/TechMappingHardwareDemand.h"
 
@@ -1080,6 +1081,38 @@ void systemRelationalNoOps(Fixture &fixture,
 
   const auto core = system.view().accCoreOccurrences().front();
   const auto transport = system.view().pointConnections().front();
+  if (system.view().pointConnections().size() > 1) {
+    auto first = system.view().pointConnections().front().destination;
+    auto second = system.view().pointConnections().back().destination;
+    if (first != second) {
+      if (loom::fabric::canonicalFabricBytes(first) <
+          loom::fabric::canonicalFabricBytes(second))
+        std::swap(first, second);
+      const std::array canonicalSwap = {loom::dse::SystemCompositionDecision(
+          loom::dse::SwapTransportConnectionSources{second, first})};
+      const std::array reverseSwap = {loom::dse::SystemCompositionDecision(
+          loom::dse::SwapTransportConnectionSources{first, second})};
+      const auto canonicalBytes =
+          loom::dse::encodeSystemCompositionRewriteConfig(canonicalSwap, 1);
+      const auto reverseBytes =
+          loom::dse::encodeSystemCompositionRewriteConfig(reverseSwap, 1);
+      require(canonicalBytes == reverseBytes,
+              "symmetric transport swap has multiple encodings");
+      const auto adopted =
+          take(loom::dse::adoptSystemCompositionRewriteConfig(reverseBytes));
+      const auto *swap = std::get_if<loom::dse::SwapTransportConnectionSources>(
+          &adopted.first.front());
+      require(swap && swap->firstDestination == second &&
+                  swap->secondDestination == first,
+              "transport swap codec did not retain canonical endpoint order");
+      std::vector<loom::dse::SystemCompositionDecisionDomain> noncanonicalSwap =
+          {loom::dse::SwapTransportConnectionSourcesDomain{first, {second}}};
+      requireError(
+          loom::dse::resolveSystemCompositionRewriteConfig(noncanonicalSwap, 1)
+              .takeError(),
+          "order is not canonical");
+    }
+  }
   std::vector<loom::dse::SystemCompositionDecisionDomain> domains = {
       loom::dse::SelectInstructionCoreRealizationDomain{
           loom::fabric::InstructionCoreContextRef{core},

@@ -1038,13 +1038,16 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
                                  growth.fifoResize.has_value() +
                                  growth.fifoBypassChange.has_value() +
                                  growth.operandBufferModeChange.has_value() +
-                                 growth.operandBufferResize.has_value();
+                                 growth.operandBufferResize.has_value() +
+                                 growth.moduleDecision.has_value();
   if (!growth.techModule || decisionKinds != 1 || growth.addedContexts != 0 ||
       growth.addedGateways != 0 || growth.addedAccCores != 0)
     return invalid("typed Module growth received a mixed or empty change");
 
   std::vector<SpatialMicroarchitectureDecisionDomain> domains;
-  if (!growth.instructionStoreResizes.empty())
+  if (growth.moduleDecision)
+    domains.push_back(*growth.moduleDecision);
+  else if (!growth.instructionStoreResizes.empty())
     domains.push_back(
         ResizeInstructionStoresDomain{growth.instructionStoreResizes});
   else if (growth.fifoResize)
@@ -1096,7 +1099,16 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
     return decision.takeError();
   if (decision->parent != *growth.techModule)
     return invalid("typed Module growth changed its parent owner");
-  if (!growth.instructionStoreResizes.empty()) {
+  if (growth.moduleDecision) {
+    auto expanded = expandSpatialMicroarchitectureDecisionDomains(
+        llvm::ArrayRef<SpatialMicroarchitectureDecisionDomain>(
+            *growth.moduleDecision));
+    if (!expanded)
+      return expanded.takeError();
+    if (expanded->size() != 1 ||
+        expanded->front().index() != decision->decision.index())
+      return invalid("typed Module growth changed its decision domain");
+  } else if (!growth.instructionStoreResizes.empty()) {
     const auto *resizes =
         std::get_if<ResizeInstructionStores>(&decision->decision);
     if (!resizes ||
@@ -1138,11 +1150,11 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
   }
   auto impact = projectHardwareImpact(*decision, childReference);
   if (!impact.child ||
-      (growth.instructionStoreResizes.empty() &&
+      (!growth.moduleDecision && growth.instructionStoreResizes.empty() &&
        !growth.operandBufferModeChange && !growth.operandBufferResize &&
        impact.family != HardwareMutationFamily::SpatialFifo))
     return invalid("typed Module growth has an incompatible impact family");
-  if (!growth.instructionStoreResizes.empty() &&
+  if (!growth.moduleDecision && !growth.instructionStoreResizes.empty() &&
       (impact.tech.kind != HardwareMappingImpactKind::Rebase ||
        impact.tech.realizationRoots.empty()))
     return invalid("instruction-store growth has no typed Tech impact");
@@ -1331,7 +1343,8 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
       mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
       mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
         fields["operation"] =
-            !growth.instructionStoreResizes.empty()
+            growth.moduleDecision ? "typed_module_hardware_mutation"
+            : !growth.instructionStoreResizes.empty()
                 ? "typed_resize_instruction_stores_growth"
             : growth.operandBufferModeChange || growth.operandBufferResize
                 ? "typed_temporal_operand_buffer_growth"
