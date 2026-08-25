@@ -162,6 +162,18 @@ deriveSpatialRouteProgressDependencies(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping);
 
+struct SpatialFiniteBufferSelection final {
+  std::uint64_t logicalNetOrdinal = 0;
+  ::loom::fabric::FabricFifoOccurrenceRef fifo;
+};
+
+/// Counts physical Buffered FIFOs selected by more than one logical net. This
+/// is the canonical cross-net reducer shared by search and strict Mapping
+/// verification; callers remain responsible for projecting the complete
+/// selected traversal domain.
+std::uint64_t countSpatialSharedFiniteBuffers(
+    llvm::ArrayRef<SpatialFiniteBufferSelection> selections);
+
 /// Projects whether every Buffered FIFO selected by the complete RouteTree
 /// domain belongs to at most one logical net. Multiple logical nets sharing a
 /// finite physical queue require a queue-order recurrence proof that the
