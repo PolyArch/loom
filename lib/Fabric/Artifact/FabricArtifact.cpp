@@ -1753,9 +1753,11 @@ finalizeFabricRoot(::fabric::ModuleOp source, const ArtifactStore &store) {
 llvm::Expected<FinalizedFabricModuleProjection> detail::finalizeFabricModule(
     ::fabric::ModuleOp source,
     const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
-    const ArtifactStore &store, bool captureCorrespondence) {
+    const ArtifactStore &store, bool captureEntityCorrespondence,
+    bool captureCapabilityCorrespondence) {
   auto candidate = detail::buildCanonicalFabricModuleCandidate(
-      source, &domainRelation, captureCorrespondence);
+      source, &domainRelation, captureEntityCorrespondence,
+      captureCapabilityCorrespondence);
   if (!candidate)
     return candidate.takeError();
   auto bytecode = detail::writeCanonicalFabricBytecode(candidate->module.get());
@@ -1783,7 +1785,7 @@ llvm::Expected<FinalizedFabricModuleProjection> detail::finalizeFabricModule(
   return FinalizedFabricModuleProjection{
       FinalizedFabricRoot(reference, std::move(*canonical),
                           (*imported)->decoded.dependencies, (*imported)->view),
-      std::move(candidate->entities)};
+      std::move(candidate->entities), std::move(candidate->capabilities)};
 }
 
 llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
@@ -1791,7 +1793,7 @@ llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
     const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
     const ArtifactStore &store) {
   auto finalized =
-      detail::finalizeFabricModule(source, domainRelation, store, false);
+      detail::finalizeFabricModule(source, domainRelation, store, false, false);
   if (!finalized)
     return finalized.takeError();
   return std::move(finalized->root);
@@ -1802,7 +1804,17 @@ finalizeFabricModuleWithCorrespondence(
     ::fabric::ModuleOp source,
     const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
     const ArtifactStore &store) {
-  return detail::finalizeFabricModule(source, domainRelation, store, true);
+  return detail::finalizeFabricModule(source, domainRelation, store, true,
+                                      false);
+}
+
+llvm::Expected<FinalizedFabricModuleProjection>
+finalizeFabricModuleWithCapabilityCorrespondence(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+    const ArtifactStore &store) {
+  return detail::finalizeFabricModule(source, domainRelation, store, false,
+                                      true);
 }
 
 llvm::Expected<FinalizedFabricSystemProjection> detail::finalizeFabricSystem(

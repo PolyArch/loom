@@ -15,13 +15,14 @@ namespace loom::fabric::detail {
 struct CanonicalFabricModuleCandidate final {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<FabricModuleEntityCorrespondence> entities;
+  std::vector<FabricFuCapabilityTemplateCorrespondence> capabilities;
 };
 
 llvm::Expected<CanonicalFabricModuleCandidate>
 buildCanonicalFabricModuleCandidate(
     ::fabric::ModuleOp source,
     const ::fabric::ModuleDomainAuthoringRelation *domainRelation,
-    bool captureCorrespondence);
+    bool captureEntityCorrespondence, bool captureCapabilityCorrespondence);
 
 } // namespace loom::fabric::detail
 

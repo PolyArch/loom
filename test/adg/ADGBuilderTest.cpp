@@ -625,14 +625,12 @@ void typedPeFuGraphsFinalize() {
   auto resultMux =
       take(test, spatialFu.addMux({take(test, sum.output(0)),
                                    take(test, product.output(0))}));
-  if (llvm::Error error =
-          spatialFu.addCapabilityTemplate(FuCapabilityTemplateSpec{
-              {sum}, {{aRoutes, 0}, {bRoutes, 0}, {resultMux, 0}}}))
-    fail(test, llvm::toString(std::move(error)));
-  if (llvm::Error error =
-          spatialFu.addCapabilityTemplate(FuCapabilityTemplateSpec{
-              {product}, {{aRoutes, 1}, {bRoutes, 1}, {resultMux, 1}}}))
-    fail(test, llvm::toString(std::move(error)));
+  const auto productTemplate = take(
+      test, spatialFu.addCapabilityTemplateWithHandle(FuCapabilityTemplateSpec{
+                {product}, {{aRoutes, 1}, {bRoutes, 1}, {resultMux, 1}}}));
+  const auto sumTemplate = take(
+      test, spatialFu.addCapabilityTemplateWithHandle(FuCapabilityTemplateSpec{
+                {sum}, {{aRoutes, 0}, {bRoutes, 0}, {resultMux, 0}}}));
   if (llvm::Error error = spatialFu.close({take(test, resultMux.output(0))}))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = spatialPe.close())
@@ -682,6 +680,37 @@ void typedPeFuGraphsFinalize() {
           uniqueFuTemplate(test, finalized.roots()[0].view()));
   require(test, spatialTemplates.size() == 2,
           "explicit add-or-multiply routing did not form two FU templates");
+  const auto finalizedSum = take(test, finalized.resolve(sumTemplate));
+  const auto finalizedProduct = take(test, finalized.resolve(productTemplate));
+  require(test,
+          finalizedSum.artifact == finalized.roots()[0].reference().artifact &&
+              finalizedProduct.artifact ==
+                  finalized.roots()[0].reference().artifact &&
+              finalizedSum.entity != finalizedProduct.entity,
+          "FU capability handles lost their exact finalized targets");
+  const auto hasFamily = [&](const auto &reference,
+                             ::fabric::ImplementationFamilyId family) {
+    const auto records =
+        finalized.roots()[0].view().fuCapabilityTemplates(reference.entity.fu);
+    if (reference.entity.ordinal >= records.size())
+      return false;
+    for (const auto &node : records[reference.entity.ordinal].activeNodes) {
+      if (node.node != loom::fabric::FabricFuNodeKind::Op)
+        continue;
+      const auto *capability =
+          finalized.roots()[0].view().resolvedFabricOpCapability(node);
+      if (capability && capability->implementationFamily == family)
+        return true;
+    }
+    return false;
+  };
+  require(
+      test,
+      hasFamily(finalizedSum,
+                ::fabric::ImplementationFamilyId::ScalarIntegerAddSub) &&
+          hasFamily(finalizedProduct,
+                    ::fabric::ImplementationFamilyId::ScalarIntegerMultiply),
+      "FU capability handle correspondence changed row semantics");
   const auto temporalTemplates =
       finalized.roots()[1].view().fuCapabilityTemplates(
           uniqueFuTemplate(test, finalized.roots()[1].view()));

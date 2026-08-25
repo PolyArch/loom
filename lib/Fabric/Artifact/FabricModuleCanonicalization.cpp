@@ -112,6 +112,171 @@ std::optional<FabricEntityKind> moduleOccurrenceKind(Operation *operation) {
   return std::nullopt;
 }
 
+struct AuthoredFuCapabilityRow final {
+  std::vector<Operation *> activeOperations;
+  std::vector<std::pair<Operation *, FabricOrdinal>> routes;
+};
+
+using AuthoredFuCapabilityRows =
+    std::map<Operation *, std::vector<AuthoredFuCapabilityRow>>;
+
+std::vector<std::uint8_t> unsignedBytes(DenseI8ArrayAttr attribute) {
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(attribute.size());
+  for (std::int8_t byte : attribute.asArrayRef())
+    bytes.push_back(static_cast<std::uint8_t>(byte));
+  return bytes;
+}
+
+llvm::Expected<AuthoredFuCapabilityRows> captureAuthoredFuCapabilityRows(
+    ::fabric::ModuleOp root,
+    const std::map<Operation *, FabricModuleEntityReference> &authored) {
+  AuthoredFuCapabilityRows result;
+  llvm::Error error = llvm::Error::success();
+  root->walk([&](::fabric::FuOp fu) {
+    if (error)
+      return WalkResult::interrupt();
+    if (!authored.count(fu.getOperation()))
+      return WalkResult::advance();
+    ::fabric::FuCapabilityDomainAttr attribute =
+        fu.getCapabilityTemplatesAttr();
+    if (!attribute)
+      return WalkResult::advance();
+    auto domain = ::fabric::decodeFuCapabilityDomainRecord(
+        unsignedBytes(attribute.getRecord()));
+    if (!domain) {
+      error = domain.takeError();
+      return WalkResult::interrupt();
+    }
+
+    llvm::SmallVector<Operation *, 16> nodes;
+    for (Operation &operation : fu.getBody().front().without_terminator())
+      if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(operation))
+        nodes.push_back(&operation);
+    std::vector<AuthoredFuCapabilityRow> rows;
+    rows.reserve(domain->templates().size());
+    for (const ::fabric::FuCapabilityTemplateSelection &selection :
+         domain->templates()) {
+      AuthoredFuCapabilityRow row;
+      row.activeOperations.reserve(
+          selection.activeOperationNodeOrdinals.size());
+      for (FabricOrdinal ordinal : selection.activeOperationNodeOrdinals) {
+        if (ordinal >= nodes.size() || !isa<::fabric::OpOp>(nodes[ordinal])) {
+          error = invalid("authored FU capability names an invalid operation");
+          return WalkResult::interrupt();
+        }
+        row.activeOperations.push_back(nodes[ordinal]);
+      }
+      row.routes.reserve(selection.routes.size());
+      for (const ::fabric::FuCapabilityRouteSelection &route :
+           selection.routes) {
+        if (route.selectorNodeOrdinal >= nodes.size() ||
+            !isa<::fabric::MuxOp, ::fabric::DemuxOp>(
+                nodes[route.selectorNodeOrdinal])) {
+          error = invalid("authored FU capability names an invalid selector");
+          return WalkResult::interrupt();
+        }
+        row.routes.emplace_back(nodes[route.selectorNodeOrdinal],
+                                route.selectedPort);
+      }
+      rows.push_back(std::move(row));
+    }
+    result.emplace(fu.getOperation(), std::move(rows));
+    return WalkResult::advance();
+  });
+  if (error)
+    return std::move(error);
+  return result;
+}
+
+llvm::Expected<std::vector<FabricFuCapabilityTemplateCorrespondence>>
+projectFuCapabilityTemplateCorrespondence(
+    const std::map<Operation *, FabricModuleEntityReference> &authored,
+    const AuthoredFuCapabilityRows &sourceRows,
+    const detail::FabricCanonicalLabeling &labeling) {
+  std::vector<FabricFuCapabilityTemplateCorrespondence> result;
+  for (const auto &[operation, rows] : sourceRows) {
+    auto fu = dyn_cast_or_null<::fabric::FuOp>(operation);
+    auto sourceEntity = authored.find(operation);
+    auto templateId = labeling.fuTemplateIdByOccurrence.find(operation);
+    if (!fu || sourceEntity == authored.end() ||
+        sourceEntity->second.kind != FabricEntityKind::FabricFuOccurrence ||
+        templateId == labeling.fuTemplateIdByOccurrence.end())
+      return invalid("authored FU capability lost its owner correspondence");
+    const FabricFuTemplateRef owner(templateId->second);
+
+    llvm::SmallVector<Operation *, 16> canonicalNodes;
+    for (Operation &node : fu.getBody().front().without_terminator())
+      if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(node))
+        canonicalNodes.push_back(&node);
+    llvm::sort(canonicalNodes, [&](Operation *left, Operation *right) {
+      return labeling.definitionFuNodeOrdinalByOperation.lookup(left) <
+             labeling.definitionFuNodeOrdinalByOperation.lookup(right);
+    });
+    for (auto [ordinal, node] : llvm::enumerate(canonicalNodes)) {
+      auto found = labeling.definitionFuNodeOrdinalByOperation.find(node);
+      if (found == labeling.definitionFuNodeOrdinalByOperation.end() ||
+          found->second != ordinal)
+        return invalid("authored FU capability lost its node correspondence");
+    }
+
+    auto finalRecords =
+        detail::deriveFabricFuCapabilityTemplates(fu, owner, canonicalNodes);
+    if (!finalRecords)
+      return finalRecords.takeError();
+    std::map<std::vector<std::uint8_t>, FabricOrdinal> finalOrdinals;
+    for (auto [ordinal, record] : llvm::enumerate(*finalRecords)) {
+      auto bytes = canonicalFabricFuCapabilityTemplateBytes(record);
+      if (!bytes)
+        return bytes.takeError();
+      if (!finalOrdinals.emplace(std::move(*bytes), ordinal).second)
+        return invalid("canonical FU capability inventory is not unique");
+    }
+
+    for (auto [sourceOrdinal, row] : llvm::enumerate(rows)) {
+      ::fabric::FuCapabilityTemplateSelection selection;
+      selection.activeOperationNodeOrdinals.reserve(
+          row.activeOperations.size());
+      for (Operation *active : row.activeOperations) {
+        auto found = labeling.definitionFuNodeOrdinalByOperation.find(active);
+        if (found == labeling.definitionFuNodeOrdinalByOperation.end())
+          return invalid("authored FU capability operation was not relabeled");
+        selection.activeOperationNodeOrdinals.push_back(found->second);
+      }
+      selection.routes.reserve(row.routes.size());
+      for (const auto &[selector, selectedPort] : row.routes) {
+        auto found = labeling.definitionFuNodeOrdinalByOperation.find(selector);
+        if (found == labeling.definitionFuNodeOrdinalByOperation.end())
+          return invalid("authored FU capability selector was not relabeled");
+        selection.routes.push_back({found->second, selectedPort});
+      }
+      auto normalized =
+          ::fabric::FuCapabilityDomainRecord::create({std::move(selection)});
+      if (!normalized)
+        return normalized.takeError();
+      auto record = detail::deriveFabricFuCapabilityTemplate(
+          fu, owner, canonicalNodes, normalized->templates().front());
+      if (!record)
+        return record.takeError();
+      auto bytes = canonicalFabricFuCapabilityTemplateBytes(*record);
+      if (!bytes)
+        return bytes.takeError();
+      auto target = finalOrdinals.find(*bytes);
+      if (target == finalOrdinals.end())
+        return invalid("authored FU capability has no canonical record");
+      result.push_back(
+          {{sourceEntity->second, sourceOrdinal}, {owner, target->second}});
+    }
+  }
+  llvm::sort(result, [](const auto &left, const auto &right) {
+    return std::tie(left.source.fu.kind, left.source.fu.id,
+                    left.source.fu.occurrenceOrdinal, left.source.ordinal) <
+           std::tie(right.source.fu.kind, right.source.fu.id,
+                    right.source.fu.occurrenceOrdinal, right.source.ordinal);
+  });
+  return result;
+}
+
 llvm::Expected<std::vector<FabricModuleEntityCorrespondence>>
 projectModuleEntityCorrespondence(
     const std::map<Operation *, FabricModuleEntityReference> &authored,
@@ -174,7 +339,7 @@ llvm::Expected<detail::CanonicalFabricModuleCandidate>
 detail::buildCanonicalFabricModuleCandidate(
     ::fabric::ModuleOp source,
     const ::fabric::ModuleDomainAuthoringRelation *domainRelation,
-    bool captureCorrespondence) {
+    bool captureEntityCorrespondence, bool captureCapabilityCorrespondence) {
   auto sourceModule = source->getParentOfType<ModuleOp>();
   if (!sourceModule || source->getParentOp() != sourceModule.getOperation())
     return invalid("the selected Fabric Module must be top-level");
@@ -191,7 +356,7 @@ detail::buildCanonicalFabricModuleCandidate(
     return invalid("the selected Fabric root was not cloned");
 
   std::map<Operation *, FabricModuleEntityReference> authoredEntities;
-  if (captureCorrespondence) {
+  if (captureEntityCorrespondence || captureCapabilityCorrespondence) {
     std::map<FabricEntityKind, std::uint64_t> authoredOrdinals;
     clonedRoot->walk([&](Operation *operation) {
       const auto kind = moduleOccurrenceKind(operation);
@@ -233,6 +398,15 @@ detail::buildCanonicalFabricModuleCandidate(
           detail::eraseElaboratedFabricModuleDeclarations(clonedRoot))
     return std::move(error);
 
+  AuthoredFuCapabilityRows authoredCapabilities;
+  if (captureCapabilityCorrespondence) {
+    auto captured =
+        captureAuthoredFuCapabilityRows(clonedRoot, authoredEntities);
+    if (!captured)
+      return captured.takeError();
+    authoredCapabilities = std::move(*captured);
+  }
+
   for (Operation &operation :
        llvm::make_early_inc_range(scratch->getBody()->getOperations()))
     if (&operation != clonedRoot.getOperation())
@@ -272,12 +446,20 @@ detail::buildCanonicalFabricModuleCandidate(
   if (!reordered)
     return reordered.takeError();
   std::vector<FabricModuleEntityCorrespondence> entities;
-  if (captureCorrespondence) {
+  std::vector<FabricFuCapabilityTemplateCorrespondence> capabilities;
+  if (captureEntityCorrespondence) {
     auto projected =
         projectModuleEntityCorrespondence(authoredEntities, *reordered);
     if (!projected)
       return projected.takeError();
     entities = std::move(*projected);
+  }
+  if (captureCapabilityCorrespondence) {
+    auto projectedCapabilities = projectFuCapabilityTemplateCorrespondence(
+        authoredEntities, authoredCapabilities, *reordered);
+    if (!projectedCapabilities)
+      return projectedCapabilities.takeError();
+    capabilities = std::move(*projectedCapabilities);
   }
   if (llvm::Error error = detail::materializeFabricCanonicalIds(*reordered))
     return std::move(error);
@@ -286,8 +468,8 @@ detail::buildCanonicalFabricModuleCandidate(
     return std::move(error);
   if (failed(verify(*scratch)))
     return invalid("canonical Fabric IDs produced invalid IR");
-  return detail::CanonicalFabricModuleCandidate{std::move(scratch),
-                                                std::move(entities)};
+  return detail::CanonicalFabricModuleCandidate{
+      std::move(scratch), std::move(entities), std::move(capabilities)};
 }
 
 } // namespace loom::fabric

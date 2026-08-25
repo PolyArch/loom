@@ -377,6 +377,17 @@ instruction-context, or other members and rely on containment to assign them.
 They may return typed groups of created handles, but cannot create hidden
 hardware facts or use a private emitter.
 
+`FuBuilder::addCapabilityTemplateWithHandle` returns one owner-checked
+`FuCapabilityTemplateHandle`. Finalization resolves that handle through the
+same FU-node canonical relabeling and normalized capability-record inventory
+that owns the final Fabric artifact. The resulting
+`ArtifactReference<FabricFuCapabilityTemplateRef>` cannot be inferred from
+insertion order: both source rows and finalized records are canonically sorted,
+and the transient correspondence matches their exact normalized semantics.
+The handle and correspondence are authoring-only and are never serialized.
+`addCapabilityTemplate` is the handle-discarding convenience form over the same
+operation.
+
 ### FU Feedback Edges
 
 An FU graph may contain a real directed cycle. The typed construction surface

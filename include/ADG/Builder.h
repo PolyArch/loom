@@ -33,6 +33,7 @@
 namespace loom::adg {
 namespace detail {
 class DesignState;
+class DesignIdentity;
 struct MeshSwitchNetworkState;
 struct SystemHandleAccess;
 } // namespace detail
@@ -41,6 +42,7 @@ class FuBuilder;
 class FuNode;
 class PeBuilder;
 class ModuleDomainMemberHandle;
+class FuCapabilityTemplateHandle;
 class HardwareDomainBuilder;
 class ServiceTransformBuilder;
 class SystemBuilder;
@@ -463,6 +465,29 @@ struct FuCapabilityTemplateSpec final {
   std::vector<FuRouteSelection> routes;
 };
 
+/// One owner-checked authoring row in an FU's finite capability domain. The
+/// handle survives finalization only as a key into FinalizedFabricDesign's
+/// transient correspondence and is never serialized as Fabric identity.
+class FuCapabilityTemplateHandle final {
+public:
+  FuCapabilityTemplateHandle() = default;
+
+private:
+  FuCapabilityTemplateHandle(
+      const std::shared_ptr<detail::DesignIdentity> &identity,
+      std::size_t rootOrdinal, std::size_t fuOrdinal, std::size_t draftOrdinal)
+      : identity_(identity), rootOrdinal_(rootOrdinal), fuOrdinal_(fuOrdinal),
+        draftOrdinal_(draftOrdinal) {}
+
+  std::weak_ptr<detail::DesignIdentity> identity_;
+  std::size_t rootOrdinal_ = 0;
+  std::size_t fuOrdinal_ = 0;
+  std::size_t draftOrdinal_ = 0;
+
+  friend class FuBuilder;
+  friend class FinalizedFabricDesign;
+};
+
 struct FifoSpec final {
   PortType outputType;
   std::uint32_t maxDepth;
@@ -710,6 +735,11 @@ public:
   llvm::Expected<FuNode> addDemux(FuValue input, std::uint32_t outputCount);
 
   llvm::Error addCapabilityTemplate(const FuCapabilityTemplateSpec &spec);
+
+  /// Adds one capability row and returns its exact authoring handle. The
+  /// ordinary addCapabilityTemplate overload is the handle-discarding form.
+  llvm::Expected<FuCapabilityTemplateHandle>
+  addCapabilityTemplateWithHandle(const FuCapabilityTemplateSpec &spec);
 
   llvm::Error close(llvm::ArrayRef<FuValue> outputs);
 
@@ -1327,12 +1357,27 @@ public:
     return roots_;
   }
 
-private:
-  explicit FinalizedFabricDesign(
-      std::vector<loom::fabric::FinalizedFabricRoot> roots)
-      : roots_(std::move(roots)) {}
+  llvm::Expected<ArtifactReference<loom::fabric::FabricFuCapabilityTemplateRef>>
+  resolve(const FuCapabilityTemplateHandle &handle) const;
 
+private:
+  struct FuCapabilityResolution final {
+    std::size_t rootOrdinal = 0;
+    std::size_t fuOrdinal = 0;
+    std::size_t draftOrdinal = 0;
+    ArtifactReference<loom::fabric::FabricFuCapabilityTemplateRef> target;
+  };
+
+  explicit FinalizedFabricDesign(
+      std::shared_ptr<detail::DesignIdentity> identity,
+      std::vector<loom::fabric::FinalizedFabricRoot> roots,
+      std::vector<FuCapabilityResolution> capabilities)
+      : identity_(std::move(identity)), roots_(std::move(roots)),
+        capabilities_(std::move(capabilities)) {}
+
+  std::shared_ptr<detail::DesignIdentity> identity_;
   std::vector<loom::fabric::FinalizedFabricRoot> roots_;
+  std::vector<FuCapabilityResolution> capabilities_;
 
   friend class DesignBuilder;
 };

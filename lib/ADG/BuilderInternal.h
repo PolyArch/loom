@@ -20,6 +20,8 @@
 
 namespace loom::adg::detail {
 
+class DesignIdentity final {};
+
 struct SpatialRootState final {
   ::fabric::ModuleOp operation;
   std::string label;
@@ -40,6 +42,8 @@ struct PeState final {
 struct FuCapabilityTemplateDraft final {
   std::vector<mlir::Operation *> activeOperations;
   std::vector<std::pair<mlir::Operation *, std::uint32_t>> routes;
+  std::optional<loom::fabric::FabricOrdinal> canonicalOrdinal;
+  bool handleExposed = false;
 };
 
 struct FuState final {
@@ -108,6 +112,7 @@ public:
   explicit DesignState(const loom::ArtifactStore &store);
 
   mlir::MLIRContext context;
+  std::shared_ptr<DesignIdentity> identity = std::make_shared<DesignIdentity>();
   mlir::OwningOpRef<mlir::ModuleOp> draft;
   const loom::ArtifactStore &store;
   std::vector<SpatialRootState> spatialRoots;

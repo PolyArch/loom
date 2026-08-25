@@ -5,6 +5,7 @@
 #include "BuilderInternal.h"
 
 #include "Fabric/IR/FabricAttrs.h"
+#include "Fabric/IR/FabricCanonicalEntity.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
@@ -95,6 +96,37 @@ bool sameFabricKind(mlir::Type left, mlir::Type right) {
           mlir::isa<::fabric::BitsTagType>(right)) ||
          (mlir::isa<mlir::MemRefType>(left) &&
           mlir::isa<mlir::MemRefType>(right));
+}
+
+std::optional<loom::fabric::FabricEntityKind>
+moduleOccurrenceKind(mlir::Operation *operation) {
+  using loom::fabric::FabricEntityKind;
+  if (mlir::isa<::fabric::ModuleOp>(operation))
+    return FabricEntityKind::FabricModuleTemplate;
+  if (mlir::isa<::fabric::PeOp>(operation))
+    return FabricEntityKind::FabricPeOccurrence;
+  if (mlir::isa<::fabric::FuOp>(operation))
+    return FabricEntityKind::FabricFuOccurrence;
+  if (mlir::isa<::fabric::MemOp>(operation))
+    return FabricEntityKind::FabricMemoryOccurrence;
+  if (mlir::isa<::fabric::SwitchOp>(operation))
+    return FabricEntityKind::FabricSwitchOccurrence;
+  if (mlir::isa<::fabric::FifoOp>(operation))
+    return FabricEntityKind::FabricFifoOccurrence;
+  if (mlir::isa<::fabric::BoundaryOp>(operation))
+    return FabricEntityKind::FabricBoundaryOccurrence;
+  return std::nullopt;
+}
+
+void assignAuthoringEntityIds(::fabric::ModuleOp root) {
+  loom::fabric::FabricEntityId next = 0;
+  root->walk([&](mlir::Operation *operation) {
+    if (!moduleOccurrenceKind(operation))
+      return;
+    operation->setAttr(
+        ::fabric::kEntityIdAttrName,
+        ::fabric::EntityIdAttr::get(operation->getContext(), next++));
+  });
 }
 
 } // namespace
@@ -609,6 +641,22 @@ llvm::Expected<FuNode> FuBuilder::addDemux(FuValue input,
 
 llvm::Error
 FuBuilder::addCapabilityTemplate(const FuCapabilityTemplateSpec &spec) {
+  auto handle = addCapabilityTemplateWithHandle(spec);
+  if (!handle)
+    return handle.takeError();
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  (*state)
+      ->fus[fuOrdinal_]
+      .capabilityTemplates[handle->draftOrdinal_]
+      .handleExposed = false;
+  return llvm::Error::success();
+}
+
+llvm::Expected<FuCapabilityTemplateHandle>
+FuBuilder::addCapabilityTemplateWithHandle(
+    const FuCapabilityTemplateSpec &spec) {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
@@ -648,8 +696,11 @@ FuBuilder::addCapabilityTemplate(const FuCapabilityTemplateSpec &spec) {
     }
     draft.routes.emplace_back(*operation, selection.selectedPort);
   }
+  const std::size_t draftOrdinal = (*fu)->capabilityTemplates.size();
   (*fu)->capabilityTemplates.push_back(std::move(draft));
-  return llvm::Error::success();
+  (*fu)->capabilityTemplates.back().handleExposed = true;
+  return FuCapabilityTemplateHandle((*state)->identity, rootOrdinal_,
+                                    fuOrdinal_, draftOrdinal);
 }
 
 llvm::Error FuBuilder::close(llvm::ArrayRef<FuValue> outputs) {
@@ -693,10 +744,25 @@ llvm::Error FuBuilder::close(llvm::ArrayRef<FuValue> outputs) {
       }
       selections.push_back(std::move(selection));
     }
+    const std::vector<::fabric::FuCapabilityTemplateSelection>
+        sourceSelections = selections;
     auto domain =
         ::fabric::FuCapabilityDomainRecord::create(std::move(selections));
     if (!domain)
       return domain.takeError();
+    for (auto [draft, source] :
+         llvm::zip_equal((*fu)->capabilityTemplates, sourceSelections)) {
+      auto normalized =
+          ::fabric::FuCapabilityDomainRecord::create({std::move(source)});
+      if (!normalized)
+        return normalized.takeError();
+      auto found =
+          llvm::find(domain->templates(), normalized->templates().front());
+      if (found == domain->templates().end())
+        return invalid("FU capability row was lost during normalization");
+      draft.canonicalOrdinal = static_cast<loom::fabric::FabricOrdinal>(
+          found - domain->templates().begin());
+    }
     auto bytes = ::fabric::encodeFuCapabilityDomainRecord(*domain);
     if (!bytes)
       return bytes.takeError();
@@ -1762,13 +1828,65 @@ llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
 
   state_->consumed = true;
   std::vector<loom::fabric::FinalizedFabricRoot> finalized;
+  std::vector<FinalizedFabricDesign::FuCapabilityResolution>
+      capabilityResolutions;
   finalized.reserve(state_->spatialRoots.size() + state_->systemRoots.size());
-  for (const detail::SpatialRootState &root : state_->spatialRoots) {
-    auto result = loom::fabric::finalizeFabricRoot(
-        root.operation, root.domainRelation, state_->store);
+  for (auto [rootOrdinal, root] : llvm::enumerate(state_->spatialRoots)) {
+    bool captureCapabilities = false;
+    for (const detail::FuState &fu : state_->fus)
+      if (fu.rootOrdinal == rootOrdinal)
+        captureCapabilities |=
+            llvm::any_of(fu.capabilityTemplates,
+                         [](const auto &draft) { return draft.handleExposed; });
+    if (!captureCapabilities) {
+      auto result = loom::fabric::finalizeFabricRoot(
+          root.operation, root.domainRelation, state_->store);
+      if (!result)
+        return result.takeError();
+      finalized.push_back(std::move(*result));
+      continue;
+    }
+    assignAuthoringEntityIds(root.operation);
+    auto result =
+        loom::fabric::finalizeFabricModuleWithCapabilityCorrespondence(
+            root.operation, root.domainRelation, state_->store);
     if (!result)
       return result.takeError();
-    finalized.push_back(std::move(*result));
+    for (auto [fuOrdinal, fu] : llvm::enumerate(state_->fus)) {
+      if (fu.rootOrdinal != rootOrdinal)
+        continue;
+      auto sourceId = fu.operation->getAttrOfType<::fabric::EntityIdAttr>(
+          ::fabric::kEntityIdAttrName);
+      if (!sourceId)
+        return invalid("FU authoring correspondence has no source identity");
+      for (auto [draftOrdinal, draft] :
+           llvm::enumerate(fu.capabilityTemplates)) {
+        if (!draft.handleExposed)
+          continue;
+        if (!draft.canonicalOrdinal)
+          return invalid("FU capability handle was not closed");
+        const loom::fabric::FabricFuCapabilityTemplateCorrespondence *match =
+            nullptr;
+        for (const auto &candidate : result->capabilities) {
+          if (candidate.source.fu.kind !=
+                  loom::fabric::FabricEntityKind::FabricFuOccurrence ||
+              candidate.source.fu.id != sourceId.getId() ||
+              candidate.source.ordinal != *draft.canonicalOrdinal)
+            continue;
+          if (match)
+            return invalid("FU capability handle has multiple canonical rows");
+          match = &candidate;
+        }
+        if (!match)
+          return invalid("FU capability handle has no canonical row");
+        capabilityResolutions.push_back(
+            {rootOrdinal,
+             fuOrdinal,
+             draftOrdinal,
+             {result->root.reference().artifact, match->target}});
+      }
+    }
+    finalized.push_back(std::move(result->root));
   }
   for (const detail::SystemRootState &root : state_->systemRoots) {
     llvm::SmallVector<ArtifactRootReference, 4> importedModules;
@@ -1781,7 +1899,28 @@ llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
       return result.takeError();
     finalized.push_back(std::move(*result));
   }
-  return FinalizedFabricDesign(std::move(finalized));
+  return FinalizedFabricDesign(state_->identity, std::move(finalized),
+                               std::move(capabilityResolutions));
+}
+
+llvm::Expected<ArtifactReference<loom::fabric::FabricFuCapabilityTemplateRef>>
+FinalizedFabricDesign::resolve(const FuCapabilityTemplateHandle &handle) const {
+  std::shared_ptr<detail::DesignIdentity> identity = handle.identity_.lock();
+  if (!identity || identity.get() != identity_.get())
+    return invalid("FU capability handle belongs to a foreign design");
+  const FuCapabilityResolution *match = nullptr;
+  for (const FuCapabilityResolution &candidate : capabilities_) {
+    if (candidate.rootOrdinal != handle.rootOrdinal_ ||
+        candidate.fuOrdinal != handle.fuOrdinal_ ||
+        candidate.draftOrdinal != handle.draftOrdinal_)
+      continue;
+    if (match)
+      return invalid("FU capability handle has multiple finalized targets");
+    match = &candidate;
+  }
+  if (!match)
+    return invalid("FU capability handle has no finalized target");
+  return match->target;
 }
 
 llvm::Expected<loom::fabric::FinalizedFabricModuleProjection>

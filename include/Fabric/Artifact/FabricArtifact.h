@@ -37,7 +37,8 @@ llvm::Expected<FinalizedFabricSystemProjection> finalizeFabricSystem(
 llvm::Expected<FinalizedFabricModuleProjection> finalizeFabricModule(
     ::fabric::ModuleOp source,
     const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
-    const ArtifactStore &store, bool captureCorrespondence);
+    const ArtifactStore &store, bool captureEntityCorrespondence,
+    bool captureCapabilityCorrespondence);
 }
 
 enum class FabricArtifactImportSessionMode : std::uint8_t {
@@ -156,6 +157,11 @@ private:
       ::fabric::ModuleOp source,
       const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
       const ArtifactStore &store);
+  friend llvm::Expected<FinalizedFabricModuleProjection>
+  finalizeFabricModuleWithCapabilityCorrespondence(
+      ::fabric::ModuleOp source,
+      const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+      const ArtifactStore &store);
   friend llvm::Expected<FinalizedFabricRoot>
   finalizeFabricRoot(::fabric::SystemOp source,
                      llvm::ArrayRef<ArtifactRootReference> importedModules,
@@ -174,7 +180,8 @@ private:
   detail::finalizeFabricModule(
       ::fabric::ModuleOp source,
       const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
-      const ArtifactStore &store, bool captureCorrespondence);
+      const ArtifactStore &store, bool captureEntityCorrespondence,
+      bool captureCapabilityCorrespondence);
   friend llvm::Expected<FinalizedFabricRoot>
   importEntireFabricRoot(const ArtifactRootReference &reference,
                          const ArtifactStore &store);
@@ -202,6 +209,29 @@ struct FabricModuleEntityCorrespondence final {
   }
 };
 
+/// One authoring-domain row owned by an exact FU occurrence before canonical
+/// relabeling. The ordinal addresses the normalized capability domain carried
+/// by that source occurrence.
+struct FabricFuCapabilityTemplateSourceRef final {
+  FabricModuleEntityReference fu;
+  FabricOrdinal ordinal = 0;
+
+  friend bool operator==(const FabricFuCapabilityTemplateSourceRef &lhs,
+                         const FabricFuCapabilityTemplateSourceRef &rhs) {
+    return lhs.fu == rhs.fu && lhs.ordinal == rhs.ordinal;
+  }
+};
+
+struct FabricFuCapabilityTemplateCorrespondence final {
+  FabricFuCapabilityTemplateSourceRef source;
+  FabricFuCapabilityTemplateRef target;
+
+  friend bool operator==(const FabricFuCapabilityTemplateCorrespondence &lhs,
+                         const FabricFuCapabilityTemplateCorrespondence &rhs) {
+    return lhs.source == rhs.source && lhs.target == rhs.target;
+  }
+};
+
 /// Finalizer-owned transient correspondence for every Module-local occurrence
 /// entity in one derived root. Source references belong to the authored parent
 /// namespace and targets belong to `root`. The relation is produced by the
@@ -209,6 +239,7 @@ struct FabricModuleEntityCorrespondence final {
 struct FinalizedFabricModuleProjection final {
   FinalizedFabricRoot root;
   std::vector<FabricModuleEntityCorrespondence> entities;
+  std::vector<FabricFuCapabilityTemplateCorrespondence> capabilities;
 };
 
 struct FabricSystemEntityReference final {
@@ -270,6 +301,15 @@ llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
 
 llvm::Expected<FinalizedFabricModuleProjection>
 finalizeFabricModuleWithCorrespondence(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+    const ArtifactStore &store);
+
+/// Finalizes one Module and returns only the transient correspondence for
+/// explicitly authored FU capability rows. Expanded child occurrences need no
+/// source correspondence for this projection.
+llvm::Expected<FinalizedFabricModuleProjection>
+finalizeFabricModuleWithCapabilityCorrespondence(
     ::fabric::ModuleOp source,
     const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
     const ArtifactStore &store);

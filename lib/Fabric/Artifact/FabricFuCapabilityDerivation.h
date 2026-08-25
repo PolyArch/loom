@@ -35,6 +35,21 @@ canonicalizeFabricFuCapabilityDomain(
     ::fabric::FuOp fu, llvm::ArrayRef<mlir::Operation *> canonicalNodeOrder,
     FabricFuCapabilityOrdinalSpace sourceOrdinalSpace);
 
+/// Canonicalizes one exact source row into the supplied definition-node order.
+/// This is the row-level form used by transient authoring correspondence; the
+/// returned value owns no persistent identity beyond the enclosing FU domain.
+llvm::Expected<::fabric::FuCapabilityTemplateSelection>
+canonicalizeFabricFuCapabilityTemplate(
+    ::fabric::FuOp fu, const ::fabric::FuCapabilityTemplateSelection &selection,
+    llvm::ArrayRef<mlir::Operation *> canonicalNodeOrder,
+    FabricFuCapabilityOrdinalSpace sourceOrdinalSpace);
+
+llvm::Expected<FabricFuCapabilityTemplateRecord>
+deriveFabricFuCapabilityTemplate(
+    ::fabric::FuOp fu, FabricFuTemplateRef owner,
+    llvm::ArrayRef<mlir::Operation *> canonicalNodeOrder,
+    const ::fabric::FuCapabilityTemplateSelection &selection);
+
 llvm::Expected<std::vector<FabricFuCapabilityTemplateRecord>>
 deriveFabricFuCapabilityTemplates(
     ::fabric::FuOp fu, FabricFuTemplateRef owner,

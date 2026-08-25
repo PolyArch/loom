@@ -493,25 +493,6 @@ llvm::Expected<::fabric::FuCapabilityDomainRecord>
 canonicalizeFabricFuCapabilityDomain(
     ::fabric::FuOp fu, llvm::ArrayRef<Operation *> canonicalNodeOrder,
     FabricFuCapabilityOrdinalSpace sourceOrdinalSpace) {
-  llvm::SmallVector<Operation *, 16> physicalNodeOrder;
-  for (Operation &operation : fu.getBody().front().without_terminator())
-    if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(operation))
-      physicalNodeOrder.push_back(&operation);
-
-  if (physicalNodeOrder.size() != canonicalNodeOrder.size())
-    return invalid("canonical FU node domain has the wrong size");
-  llvm::DenseMap<Operation *, std::uint64_t> canonicalOrdinal;
-  for (auto [ordinal, operation] : llvm::enumerate(canonicalNodeOrder)) {
-    if (!operation || !llvm::is_contained(physicalNodeOrder, operation))
-      return invalid("canonical FU node domain contains a foreign node");
-    if (!canonicalOrdinal.try_emplace(operation, ordinal).second)
-      return invalid("canonical FU node domain repeats a node");
-  }
-  const llvm::ArrayRef<Operation *> sourceNodeOrder =
-      sourceOrdinalSpace == FabricFuCapabilityOrdinalSpace::AuthoringPhysical
-          ? llvm::ArrayRef<Operation *>(physicalNodeOrder)
-          : canonicalNodeOrder;
-
   ::fabric::FuCapabilityDomainAttr attribute = fu.getCapabilityTemplatesAttr();
   if (!attribute) {
     auto inferred =
@@ -524,7 +505,12 @@ canonicalizeFabricFuCapabilityDomain(
     auto selection = projectSingletonDomain(inferred->front());
     if (!selection)
       return selection.takeError();
-    return ::fabric::FuCapabilityDomainRecord::create({std::move(*selection)});
+    auto canonical = canonicalizeFabricFuCapabilityTemplate(
+        fu, *selection, canonicalNodeOrder,
+        FabricFuCapabilityOrdinalSpace::CanonicalDefinition);
+    if (!canonical)
+      return canonical.takeError();
+    return ::fabric::FuCapabilityDomainRecord::create({std::move(*canonical)});
   }
 
   auto decoded = ::fabric::decodeFuCapabilityDomainRecord(
@@ -536,38 +522,82 @@ canonicalizeFabricFuCapabilityDomain(
   remapped.reserve(decoded->templates().size());
   for (const ::fabric::FuCapabilityTemplateSelection &source :
        decoded->templates()) {
-    ::fabric::FuCapabilityTemplateSelection destination;
-    destination.activeOperationNodeOrdinals.reserve(
-        source.activeOperationNodeOrdinals.size());
-    for (std::uint64_t ordinal : source.activeOperationNodeOrdinals) {
-      if (ordinal >= sourceNodeOrder.size())
-        return invalid("capability domain names an unknown operation node");
-      Operation *operation = sourceNodeOrder[ordinal];
-      if (!isa<::fabric::OpOp>(operation))
-        return invalid("capability domain activates a non-operation node");
-      destination.activeOperationNodeOrdinals.push_back(
-          canonicalOrdinal.lookup(operation));
-    }
-    destination.routes.reserve(source.routes.size());
-    for (const ::fabric::FuCapabilityRouteSelection &route : source.routes) {
-      if (route.selectorNodeOrdinal >= sourceNodeOrder.size())
-        return invalid("capability domain names an unknown selector node");
-      Operation *selector = sourceNodeOrder[route.selectorNodeOrdinal];
-      if (auto mux = dyn_cast<::fabric::MuxOp>(selector)) {
-        if (route.selectedPort >= mux.getInputs().size())
-          return invalid("capability domain selects an unknown mux input");
-      } else if (auto demux = dyn_cast<::fabric::DemuxOp>(selector)) {
-        if (route.selectedPort >= demux.getOutputs().size())
-          return invalid("capability domain selects an unknown demux output");
-      } else {
-        return invalid("capability domain route names a non-selector node");
-      }
-      destination.routes.push_back(
-          {canonicalOrdinal.lookup(selector), route.selectedPort});
-    }
-    remapped.push_back(std::move(destination));
+    auto destination = canonicalizeFabricFuCapabilityTemplate(
+        fu, source, canonicalNodeOrder, sourceOrdinalSpace);
+    if (!destination)
+      return destination.takeError();
+    remapped.push_back(std::move(*destination));
   }
   return ::fabric::FuCapabilityDomainRecord::create(std::move(remapped));
+}
+
+llvm::Expected<::fabric::FuCapabilityTemplateSelection>
+canonicalizeFabricFuCapabilityTemplate(
+    ::fabric::FuOp fu, const ::fabric::FuCapabilityTemplateSelection &selection,
+    llvm::ArrayRef<Operation *> canonicalNodeOrder,
+    FabricFuCapabilityOrdinalSpace sourceOrdinalSpace) {
+  llvm::SmallVector<Operation *, 16> physicalNodeOrder;
+  for (Operation &operation : fu.getBody().front().without_terminator())
+    if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(operation))
+      physicalNodeOrder.push_back(&operation);
+  if (physicalNodeOrder.size() != canonicalNodeOrder.size())
+    return invalid("canonical FU node domain has the wrong size");
+
+  llvm::DenseMap<Operation *, std::uint64_t> canonicalOrdinal;
+  for (auto [ordinal, operation] : llvm::enumerate(canonicalNodeOrder)) {
+    if (!operation || !llvm::is_contained(physicalNodeOrder, operation))
+      return invalid("canonical FU node domain contains a foreign node");
+    if (!canonicalOrdinal.try_emplace(operation, ordinal).second)
+      return invalid("canonical FU node domain repeats a node");
+  }
+  const llvm::ArrayRef<Operation *> sourceNodeOrder =
+      sourceOrdinalSpace == FabricFuCapabilityOrdinalSpace::AuthoringPhysical
+          ? llvm::ArrayRef<Operation *>(physicalNodeOrder)
+          : canonicalNodeOrder;
+
+  ::fabric::FuCapabilityTemplateSelection destination;
+  destination.activeOperationNodeOrdinals.reserve(
+      selection.activeOperationNodeOrdinals.size());
+  for (std::uint64_t ordinal : selection.activeOperationNodeOrdinals) {
+    if (ordinal >= sourceNodeOrder.size())
+      return invalid("capability domain names an unknown operation node");
+    Operation *operation = sourceNodeOrder[ordinal];
+    if (!isa<::fabric::OpOp>(operation))
+      return invalid("capability domain activates a non-operation node");
+    destination.activeOperationNodeOrdinals.push_back(
+        canonicalOrdinal.lookup(operation));
+  }
+  destination.routes.reserve(selection.routes.size());
+  for (const ::fabric::FuCapabilityRouteSelection &route : selection.routes) {
+    if (route.selectorNodeOrdinal >= sourceNodeOrder.size())
+      return invalid("capability domain names an unknown selector node");
+    Operation *selector = sourceNodeOrder[route.selectorNodeOrdinal];
+    if (auto mux = dyn_cast<::fabric::MuxOp>(selector)) {
+      if (route.selectedPort >= mux.getInputs().size())
+        return invalid("capability domain selects an unknown mux input");
+    } else if (auto demux = dyn_cast<::fabric::DemuxOp>(selector)) {
+      if (route.selectedPort >= demux.getOutputs().size())
+        return invalid("capability domain selects an unknown demux output");
+    } else {
+      return invalid("capability domain route names a non-selector node");
+    }
+    destination.routes.push_back(
+        {canonicalOrdinal.lookup(selector), route.selectedPort});
+  }
+
+  auto normalized =
+      ::fabric::FuCapabilityDomainRecord::create({std::move(destination)});
+  if (!normalized)
+    return normalized.takeError();
+  return normalized->templates().front();
+}
+
+llvm::Expected<FabricFuCapabilityTemplateRecord>
+deriveFabricFuCapabilityTemplate(
+    ::fabric::FuOp fu, FabricFuTemplateRef owner,
+    llvm::ArrayRef<Operation *> canonicalNodeOrder,
+    const ::fabric::FuCapabilityTemplateSelection &selection) {
+  return Deriver(fu, owner, canonicalNodeOrder).run(selection);
 }
 
 llvm::Expected<std::vector<FabricFuCapabilityTemplateRecord>>
@@ -584,7 +614,8 @@ deriveFabricFuCapabilityTemplates(
   records.reserve(domain->templates().size());
   for (const ::fabric::FuCapabilityTemplateSelection &selection :
        domain->templates()) {
-    auto record = Deriver(fu, owner, canonicalNodeOrder).run(selection);
+    auto record = deriveFabricFuCapabilityTemplate(
+        fu, owner, canonicalNodeOrder, selection);
     if (!record)
       return record.takeError();
     records.push_back(std::move(*record));
