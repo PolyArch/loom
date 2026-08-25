@@ -314,9 +314,7 @@ public:
         *transfers, *localTransfers, *ports, *routing);
     if (!activeRouting)
       return activeRouting.takeError();
-    auto progressIndex = detail::buildFrozenSpatialProgressIndex(*routing);
-    if (!progressIndex)
-      return progressIndex.takeError();
+    const auto &progressIndex = timingContext.progressIndex;
     auto bindingRelations = detail::SpatialBindingRelationModel::create(
         dataflow.identity(), *realizations, *constraints, *transfers, *ports,
         *routing);
@@ -377,7 +375,7 @@ public:
         std::move(*realizations), std::move(*memory), std::move(*transfers),
         std::move(*localTransfers), std::move(*ports), resources,
         std::move(*capacity), routing, std::move(*activeRouting),
-        std::move(*handshake), std::move(*progressIndex),
+        std::move(*handshake), progressIndex,
         std::move(*schedulePressure),
         std::move(*recurrenceTiming), *progressBasis,
         std::move(*bindingRelations), std::move(*memoryConstraints),
@@ -1277,20 +1275,28 @@ public:
         return routing.takeError();
       auto routingOwner =
           std::make_shared<const FrozenSpatialRoutingGraph>(std::move(*routing));
+      auto progressIndex =
+          detail::buildFrozenSpatialProgressIndex(*routingOwner);
+      if (!progressIndex)
+        return progressIndex.takeError();
       timingContext = std::make_shared<const detail::FabricTimingContext>(
           detail::FabricTimingContext{timingKey, fabric.identity(),
                                       physicalTiming.digest().bytes(),
-                                      staticContext, routingOwner});
+                                      staticContext, routingOwner,
+                                      std::move(*progressIndex)});
       timingStatistics.constructionCount = 1;
       timingStatistics.constructionNanoseconds =
           detail::elapsedNanoseconds(timingBegin);
       timingStatistics.retainedBytes =
-          detail::timingContextRetainedBytes(*routingOwner);
+          detail::timingContextRetainedBytes(
+              *routingOwner, *timingContext->progressIndex);
       timingStatistics.deterministicWork =
           routingOwner->traversals().size() +
           routingOwner->routeClaims().size() +
           routingOwner->traversalClaimKeys().size() +
-          routingOwner->traversalArcs().size();
+          routingOwner->traversalArcs().size() +
+          timingContext->progressIndex->traversalOwnerOrdinals().size() +
+          timingContext->progressIndex->ownerTraversals().size();
       if (session) {
         auto entry = session->complete(
             detail::PnrDerivedContextDomain::FabricTiming, timingKey,
@@ -1343,6 +1349,7 @@ public:
       return invalid("Fabric derived context key does not match its inputs");
     if (!staticContext.resources || !staticContext.routingTopology ||
         !staticContext.tagContinuity || !timingContext.routing ||
+        !timingContext.progressIndex ||
         &timingContext.routing->topology() !=
             staticContext.routingTopology.get() ||
         &timingContext.routing->tagContinuity() !=

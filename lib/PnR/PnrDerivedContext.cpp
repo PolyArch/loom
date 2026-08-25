@@ -1,5 +1,7 @@
 #include "PnrDerivedContextInternal.h"
 
+#include "SpatialProgressIndex.h"
+
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 
 #include "llvm/ADT/StringExtras.h"
@@ -158,7 +160,8 @@ std::uint64_t loom::pnr::detail::topologyQualityDeterministicWork(
 }
 
 std::uint64_t loom::pnr::detail::timingContextRetainedBytes(
-    const FrozenSpatialRoutingGraph &routing) {
+    const FrozenSpatialRoutingGraph &routing,
+    const FrozenSpatialProgressIndex &progressIndex) {
   std::uint64_t bytes = sizeof(FabricTimingContext) + sizeof(routing);
   bytes += routing.traversals().size() * sizeof(FrozenSpatialTraversal);
   bytes += routing.traversalResourceStates().size() * sizeof(PnrIndex);
@@ -170,6 +173,11 @@ std::uint64_t loom::pnr::detail::timingContextRetainedBytes(
   bytes += routing.routeClaimTraversals().size() * sizeof(PnrIndex);
   bytes += routing.traversalArcOffsets().size() * sizeof(PnrIndex);
   bytes += routing.traversalArcs().size() * sizeof(PnrIndex);
+  bytes += progressIndex.finiteBufferOwners().size() *
+           sizeof(::loom::fabric::FabricFifoOccurrenceRef);
+  bytes += progressIndex.traversalOwnerOrdinals().size() * sizeof(PnrIndex);
+  bytes += progressIndex.ownerTraversalOffsets().size() * sizeof(PnrIndex);
+  bytes += progressIndex.ownerTraversals().size() * sizeof(PnrIndex);
   return bytes;
 }
 

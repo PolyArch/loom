@@ -36,6 +36,7 @@ struct FabricTimingContext final {
   ComponentViewDigest::Storage physicalTimingDigestBytes{};
   std::shared_ptr<const FabricStaticContext> staticContext;
   std::shared_ptr<const FrozenSpatialRoutingGraph> routing;
+  std::shared_ptr<const FrozenSpatialProgressIndex> progressIndex;
 };
 
 struct FabricDerivedContextStorage final {
@@ -66,8 +67,9 @@ std::uint64_t topologyQualityDeterministicWork(
 std::uint64_t topologyQualityRetainedBytes(
     const ::loom::fabric::FabricTopologyQualityReport &report);
 
-std::uint64_t
-timingContextRetainedBytes(const FrozenSpatialRoutingGraph &routing);
+std::uint64_t timingContextRetainedBytes(
+    const FrozenSpatialRoutingGraph &routing,
+    const FrozenSpatialProgressIndex &progressIndex);
 
 } // namespace loom::pnr::detail
 
