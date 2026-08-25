@@ -59,9 +59,18 @@ void sharedFiniteFifoRequiresRecurrenceProof(
   const auto buffered = loom::fabric::FabricPhysicalTraversalRef::fifoTraversal(
       loom::fabric::FabricFifoOccurrenceRef(7),
       loom::fabric::FabricFifoTraversalMode::Buffered);
+  const auto otherBuffered =
+      loom::fabric::FabricPhysicalTraversalRef::fifoTraversal(
+          loom::fabric::FabricFifoOccurrenceRef(8),
+          loom::fabric::FabricFifoTraversalMode::Buffered);
+  const auto bypass = loom::fabric::FabricPhysicalTraversalRef::fifoTraversal(
+      loom::fabric::FabricFifoOccurrenceRef(7),
+      loom::fabric::FabricFifoTraversalMode::Bypass);
   std::vector<loom::mapping::SpatialRouteTreeView> routes;
   routes.push_back(
       {firstProducer, endpoint, buffered, /*nodes=*/{}, /*sinks=*/{}});
+  if (!loom::mapping::projectSpatialFiniteBufferRecurrence(routes).established)
+    fail("one logical net did not establish finite FIFO independence");
   routes.push_back({secondProducer, endpoint, std::nullopt,
                     /*nodes=*/{},
                     /*sinks=*/{{secondConsumer, 0, buffered}}});
@@ -76,6 +85,12 @@ void sharedFiniteFifoRequiresRecurrenceProof(
                              FiniteBufferRecurrence ||
       recurrence.established)
     fail("shared finite FIFO recurrence was treated as established");
+  routes.back().sinks.front().localTraversal = otherBuffered;
+  if (!loom::mapping::projectSpatialFiniteBufferRecurrence(routes).established)
+    fail("distinct finite FIFO owners were treated as shared");
+  routes.back().sinks.front().localTraversal = bypass;
+  if (!loom::mapping::projectSpatialFiniteBufferRecurrence(routes).established)
+    fail("bypass traversal was treated as an active finite queue");
   projection.routeObligations = {recurrence};
   const auto closure =
       take(loom::mapping::deriveMappingProgressClosure(model, projection));
@@ -91,10 +106,10 @@ void sharedFiniteFifoRequiresRecurrenceProof(
   const auto mixedClosure =
       take(loom::mapping::deriveMappingProgressClosure(model, projection));
   if (mixedClosure.kind !=
-          loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
-      mixedClosure.reason != loom::mapping::MappingProgressClosureReason::
-                                 FiniteBufferRecurrenceNotEstablished)
-    fail("shared FIFO was hidden by a closed-wait disposition");
+          loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet ||
+      mixedClosure.reason !=
+          loom::mapping::MappingProgressClosureReason::MissingDurableBoundary)
+    fail("proven closed wait was hidden by an incomplete recurrence");
 }
 
 void initializedFeedbackProgressBasis() {

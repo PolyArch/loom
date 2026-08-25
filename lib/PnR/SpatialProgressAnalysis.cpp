@@ -5,6 +5,7 @@
 #include "PnR/SpatialPnrProblem.h"
 
 #include "Fabric/Identity/FabricRefs.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -75,13 +76,7 @@ selectedAttachment(const SpatialCandidateState &candidate,
 
 llvm::Expected<std::uint64_t>
 sharedFiniteFifoCount(const SpatialCandidateState &candidate) {
-  struct SelectedFifo final {
-    FabricFifoOccurrenceRef fifo;
-    PnrIndex logicalNet = 0;
-    bool shared = false;
-  };
-  std::vector<SelectedFifo> selectedFifos;
-  std::uint64_t count = 0;
+  std::vector<::loom::mapping::SpatialFiniteBufferSelection> selections;
   const FrozenSpatialPnrProblem &problem = candidate.problem();
   const auto nets = problem.transfers().logicalNets();
   const auto sources = problem.transfers().logicalNetSourceBindings();
@@ -94,16 +89,14 @@ sharedFiniteFifoCount(const SpatialCandidateState &candidate) {
     if (candidate.usesRegisterFifo(logicalNet) || !tree.isRouted())
       continue;
 
-    std::vector<FabricFifoOccurrenceRef> routeFifos;
     const auto appendTraversal = [&](PnrIndex traversal) -> llvm::Error {
       if (traversal >= problem.routing().traversals().size())
         return invalid("selected FIFO traversal is out of range");
       const auto *fifo = std::get_if<FabricFifoTraversalPayload>(
           &problem.routing().traversals()[traversal].reference.payload);
-      if (!fifo || fifo->mode != FabricFifoTraversalMode::Buffered ||
-          llvm::is_contained(routeFifos, fifo->owner))
+      if (!fifo || fifo->mode != FabricFifoTraversalMode::Buffered)
         return llvm::Error::success();
-      routeFifos.push_back(fifo->owner);
+      selections.push_back({logicalNet, fifo->owner});
       return llvm::Error::success();
     };
     const auto appendTerminal =
@@ -134,23 +127,8 @@ sharedFiniteFifoCount(const SpatialCandidateState &candidate) {
          sinks.slice(nets[logicalNet].sinkOffset, nets[logicalNet].sinkCount))
       if (llvm::Error error = appendTerminal(sink))
         return std::move(error);
-
-    for (FabricFifoOccurrenceRef fifo : routeFifos) {
-      auto selected = llvm::find_if(
-          selectedFifos, [&](const auto &use) { return use.fifo == fifo; });
-      if (selected == selectedFifos.end()) {
-        selectedFifos.push_back({fifo, logicalNet, false});
-        continue;
-      }
-      if (selected->logicalNet == logicalNet || selected->shared)
-        continue;
-      if (count == std::numeric_limits<std::uint64_t>::max())
-        return invalid("shared finite FIFO count exceeds u64");
-      ++count;
-      selected->shared = true;
-    }
   }
-  return count;
+  return ::loom::mapping::countSpatialSharedFiniteBuffers(selections);
 }
 
 } // namespace

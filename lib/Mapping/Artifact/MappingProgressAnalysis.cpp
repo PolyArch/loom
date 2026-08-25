@@ -1048,15 +1048,6 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
         MappingProgressClosureReason::CyclicDataflowBasis,
         {}};
   if (llvm::any_of(projection.routeObligations, [](const auto &obligation) {
-        return obligation.kind ==
-                   MappingRouteProgressObligationKind::FiniteBufferRecurrence &&
-               !obligation.established;
-      }))
-    return MappingProgressClosure{
-        MappingProgressClosureKind::ProofNotEstablished,
-        MappingProgressClosureReason::FiniteBufferRecurrenceNotEstablished,
-        {}};
-  if (llvm::any_of(projection.routeObligations, [](const auto &obligation) {
         return obligation.kind == MappingRouteProgressObligationKind::
                                       DurableBoundaryAfterDivergence &&
                !obligation.established;
@@ -1064,6 +1055,15 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
     return MappingProgressClosure{
         MappingProgressClosureKind::ProvenClosedWaitSet,
         MappingProgressClosureReason::MissingDurableBoundary,
+        {}};
+  if (llvm::any_of(projection.routeObligations, [](const auto &obligation) {
+        return obligation.kind ==
+                   MappingRouteProgressObligationKind::FiniteBufferRecurrence &&
+               !obligation.established;
+      }))
+    return MappingProgressClosure{
+        MappingProgressClosureKind::ProofNotEstablished,
+        MappingProgressClosureReason::FiniteBufferRecurrenceNotEstablished,
         {}};
 
   const auto eventOrdinal = [&](const ::dataflow::EventFamilyKey &event)
@@ -1506,16 +1506,45 @@ deriveSpatialRouteProgressDependencies(
   return result;
 }
 
-MappingRouteProgressObligationProjection projectSpatialFiniteBufferRecurrence(
-    llvm::ArrayRef<SpatialRouteTreeView> routes) {
+std::uint64_t countSpatialSharedFiniteBuffers(
+    llvm::ArrayRef<SpatialFiniteBufferSelection> selections) {
   struct SelectedFifo final {
     ::loom::fabric::FabricFifoOccurrenceRef fifo;
-    ::dataflow::CanonicalGraphProducerEndpointRef logicalNet;
+    std::uint64_t logicalNetOrdinal = 0;
+    bool shared = false;
   };
   std::vector<SelectedFifo> selectedFifos;
+  std::uint64_t count = 0;
+  for (const SpatialFiniteBufferSelection &selection : selections) {
+    auto selected = llvm::find_if(selectedFifos, [&](const auto &use) {
+      return use.fifo == selection.fifo;
+    });
+    if (selected == selectedFifos.end()) {
+      selectedFifos.push_back(
+          {selection.fifo, selection.logicalNetOrdinal, false});
+      continue;
+    }
+    if (selected->logicalNetOrdinal == selection.logicalNetOrdinal ||
+        selected->shared)
+      continue;
+    ++count;
+    selected->shared = true;
+  }
+  return count;
+}
 
+MappingRouteProgressObligationProjection projectSpatialFiniteBufferRecurrence(
+    llvm::ArrayRef<SpatialRouteTreeView> routes) {
+  std::vector<::dataflow::CanonicalGraphProducerEndpointRef> logicalNets;
+  std::vector<SpatialFiniteBufferSelection> selections;
   for (const SpatialRouteTreeView &route : routes) {
-    std::vector<::loom::fabric::FabricFifoOccurrenceRef> routeFifos;
+    auto logicalNet = llvm::find(logicalNets, route.logicalNet);
+    if (logicalNet == logicalNets.end()) {
+      logicalNets.push_back(route.logicalNet);
+      logicalNet = std::prev(logicalNets.end());
+    }
+    const std::uint64_t logicalNetOrdinal =
+        std::distance(logicalNets.begin(), logicalNet);
     const auto append =
         [&](const std::optional<::loom::fabric::FabricPhysicalTraversalRef>
                 &traversal) {
@@ -1524,31 +1553,18 @@ MappingRouteProgressObligationProjection projectSpatialFiniteBufferRecurrence(
           const auto *fifo =
               std::get_if<::loom::fabric::FabricFifoTraversalPayload>(
                   &traversal->payload);
-          if (!fifo ||
-              fifo->mode != ::loom::fabric::FabricFifoTraversalMode::Buffered ||
-              llvm::is_contained(routeFifos, fifo->owner))
-            return;
-          routeFifos.push_back(fifo->owner);
+          if (fifo &&
+              fifo->mode == ::loom::fabric::FabricFifoTraversalMode::Buffered)
+            selections.push_back({logicalNetOrdinal, fifo->owner});
         };
     append(route.localTraversal);
     for (const SpatialRouteNodeView &node : route.nodes)
       append(node.incomingTraversal);
     for (const SpatialRouteSinkView &sink : route.sinks)
       append(sink.localTraversal);
-
-    for (const ::loom::fabric::FabricFifoOccurrenceRef fifo : routeFifos) {
-      const auto selected = llvm::find_if(
-          selectedFifos, [&](const auto &use) { return use.fifo == fifo; });
-      if (selected == selectedFifos.end()) {
-        selectedFifos.push_back({fifo, route.logicalNet});
-        continue;
-      }
-      if (selected->logicalNet != route.logicalNet)
-        return {MappingRouteProgressObligationKind::FiniteBufferRecurrence,
-                false};
-    }
   }
-  return {MappingRouteProgressObligationKind::FiniteBufferRecurrence, true};
+  return {MappingRouteProgressObligationKind::FiniteBufferRecurrence,
+          countSpatialSharedFiniteBuffers(selections) == 0};
 }
 
 llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
