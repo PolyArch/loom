@@ -289,6 +289,7 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   traversalAdded_.assign(traversalCount, 0);
   touchedTraversals_.reserve(traversalCount);
   progressRecordedRouteDeltaCounts_.assign(netCount, 0);
+  progressRecordedRouteDeltaEpochs_.assign(netCount, 0);
   progressTerminalActive_.assign(netCount, 0);
   progressTraversalDeltas_.clear();
   progressTraversalDeltas_.reserve(traversalCount);
@@ -302,6 +303,7 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   decisionEpoch_ = 0;
   affectedEpoch_ = 0;
   traversalEpoch_ = 0;
+  progressRecordedRouteDeltaEpoch_ = 0;
   preparedProblem_ = &problem;
   resetTransaction();
   return llvm::Error::success();
@@ -358,6 +360,7 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(traversalDeltaMarks_) + retainedBytes(traversalRemoved_) +
       retainedBytes(traversalAdded_) + retainedBytes(touchedTraversals_) +
       retainedBytes(progressRecordedRouteDeltaCounts_) +
+      retainedBytes(progressRecordedRouteDeltaEpochs_) +
       retainedBytes(progressTerminalActive_) +
       retainedBytes(progressTraversalDeltas_) +
       retainedBytes(progressDirtyNetMarks_) +
@@ -384,12 +387,20 @@ void SpatialCandidateScratch::beginTransaction() {
        &affectedMemoryServiceGroupMarks_, &affectedMemoryExposureMarks_,
        &affectedNetMarks_, &affectedBindingRelationMarks_});
   advanceEpoch(traversalEpoch_, {&traversalDeltaMarks_});
+  advanceProgressRouteDeltaEpoch();
+}
+
+void SpatialCandidateScratch::advanceProgressRouteDeltaEpoch() {
+  if (++progressRecordedRouteDeltaEpoch_ == 0) {
+    std::fill(progressRecordedRouteDeltaEpochs_.begin(),
+              progressRecordedRouteDeltaEpochs_.end(), 0);
+    progressRecordedRouteDeltaEpoch_ = 1;
+  }
 }
 
 void SpatialCandidateScratch::resetTransaction() {
   for (PnrIndex net : touchedRoutes_) {
     routeTransactions_[net].reset();
-    progressRecordedRouteDeltaCounts_[net] = 0;
   }
   touchedRoutes_.clear();
   routeViews_.clear();

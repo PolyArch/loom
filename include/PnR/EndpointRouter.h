@@ -12,10 +12,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <map>
 #include <optional>
 #include <string>
 #include <system_error>
+#include <unordered_map>
 #include <vector>
 
 namespace loom::pnr {
@@ -178,6 +178,9 @@ private:
   bool targetRequiresTraversal(PnrIndex endpoint) const;
   bool isSource(PnrIndex endpoint) const;
   PnrIndex targetPreferenceRank(PnrIndex endpoint) const;
+  llvm::Expected<RouteCost>
+  searchArcCost(const EndpointRouteSearchRequest &request, PnrIndex arc,
+                bool current);
   bool arcEligible(PnrIndex arc, const EndpointRouteSearchRequest &request,
                    bool enforceSourceReplication) const;
   llvm::Error buildHeuristic(const EndpointRouteSearchRequest &request);
@@ -200,6 +203,18 @@ private:
     bool populated = false;
   };
 
+  struct HeuristicCacheDigestHash final {
+    std::size_t
+    operator()(const std::array<std::uint8_t, 32> &digest) const noexcept {
+      std::uint64_t hash = 1469598103934665603ULL;
+      for (std::uint8_t byte : digest) {
+        hash ^= byte;
+        hash *= 1099511628211ULL;
+      }
+      return static_cast<std::size_t>(hash);
+    }
+  };
+
   RouteCost cachedHeuristic(const HeuristicCacheEntry &entry,
                             PnrIndex endpoint) const;
   std::size_t
@@ -220,6 +235,8 @@ private:
 
   std::array<std::uint8_t, 32>
   heuristicCacheKeyDigest(const EndpointRouteSearchRequest &request) const;
+  std::array<std::uint8_t, 32>
+  eligibleTraversalMaskDigest(const EndpointRouteSearchRequest &request) const;
 
   EndpointRoutingGraphView graph_;
   std::vector<RouteCost> heuristics_;
@@ -244,17 +261,25 @@ private:
   std::vector<PnrIndex> timingStateLabelHeads_;
   std::vector<std::uint64_t> timingStateLabelEpochs_;
   std::vector<PnrIndex> timingHeap_;
+  std::vector<RouteCost> timingArcCosts_;
+  std::vector<std::uint64_t> timingArcCostEpochs_;
   std::vector<HeuristicCacheEntry> heuristicCache_;
-  std::map<std::array<std::uint8_t, 32>, std::size_t> heuristicCacheIndex_;
+  std::unordered_map<std::array<std::uint8_t, 32>, std::size_t,
+                     HeuristicCacheDigestHash>
+      heuristicCacheIndex_;
   const HeuristicCacheEntry *activeCachedHeuristic_ = nullptr;
   std::size_t heuristicCacheDistanceByteBudget_ = 0;
   std::size_t heuristicCacheDistanceBytes_ = 0;
   std::uint64_t heuristicCacheUseEpoch_ = 0;
+  mutable std::vector<std::uint64_t> eligibleTraversalMaskSnapshot_;
+  mutable std::array<std::uint8_t, 32> eligibleTraversalMaskDigest_{};
+  mutable bool eligibleTraversalMaskDigestValid_ = false;
   std::uint64_t heuristicGeneration_ = 0;
   std::uint64_t searchGeneration_ = 0;
   std::uint64_t targetGeneration_ = 0;
   std::uint64_t sourceGeneration_ = 0;
   std::uint64_t timingLabelGeneration_ = 0;
+  std::uint64_t timingArcCostGeneration_ = 0;
   std::uint64_t endpointExpansionCount_ = 0;
   std::uint64_t heuristicCacheHitCount_ = 0;
   std::uint64_t heuristicBuildCount_ = 0;
