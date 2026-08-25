@@ -191,18 +191,8 @@ void typedDynamicWorkGatesRemainDistinct(mlir::MLIRContext &context) {
   auto stable = loom::sim::projectDynamicWorkStableItemKey(
       loom::sim::WorkItemId::child(root, 0));
   loom::deployment::test::require(
-      test, !stable, "child WorkItemId acquired an unowned stable key");
-  bool childGate = false;
-  llvm::handleAllErrors(
-      stable.takeError(),
-      [&](const loom::sim::DynamicWorkStableItemProjectionError &) {
-        childGate = true;
-      },
-      [&](const llvm::ErrorInfoBase &error) {
-        loom::deployment::test::fail(test, error.message());
-      });
-  loom::deployment::test::require(
-      test, childGate, "child stable-key rejection became a generic error");
+      test, static_cast<bool>(stable),
+      "child WorkItemId lost the domain-wide stable execution class");
 }
 
 const std::vector<loom::ArtifactRootReference> &
@@ -458,6 +448,10 @@ void dynamicWorkTraversesMappingAndJoins() {
           complete.dispatch.joinEffect ==
               loom::sim::RetirementEffect::DomainCompleted &&
           !complete.dispatch.cancelled &&
+          complete.dispatch.processedItemCount == 1 &&
+          complete.dispatch.publishedChildCount == 0 &&
+          complete.dispatch.completedItemCount == 1 &&
+          complete.dispatch.cancelledItemCount == 0 &&
           complete.spatialContext.spatialMapping == spatialMapping &&
           complete.spatialContext.context.accCore ==
               complete.instructionContext.accCore &&
@@ -473,6 +467,104 @@ void dynamicWorkTraversesMappingAndJoins() {
       test, complete.dispatch.replay, completeKinds,
       loom::sim::WorkItemId::root(loom::sim::ThreadDispatchOccurrenceId(1)));
 
+  loom::runtime::DynamicWorkExecutionRequest treeRequest;
+  treeRequest.workerCount = 2;
+  treeRequest.queueCapacityPerWorker = 2;
+  treeRequest.rootPayload = {2, 0, 0, 0};
+  std::vector<loom::sim::WorkItemId> visitedItems;
+  std::vector<std::uint32_t> visitedWorkers;
+  auto workTree = take(
+      test,
+      executionSession.executeRoot(
+          dataflowView, systemMapping, root, std::move(treeRequest),
+          [&](const loom::runtime::DynamicWorkExecutionAssignment &assignment)
+              -> llvm::Expected<loom::runtime::DynamicWorkItemExecution> {
+            visitedItems.push_back(assignment.item);
+            visitedWorkers.push_back(assignment.workerOrdinal);
+            loom::deployment::test::require(
+                test,
+                assignment.instructionContext == *completedInstruction &&
+                    assignment.spatialContext &&
+                    assignment.spatialContext->context ==
+                        completedSpatial->context &&
+                    !assignment.servicePlans.empty(),
+                "a child item changed the persistent System selection");
+            if (!assignment.item.isRoot())
+              return loom::runtime::DynamicWorkItemExecution{};
+            return loom::runtime::DynamicWorkItemExecution{
+                loom::runtime::DynamicWorkExecutionAction::Complete,
+                {{1, 0, 0, 0}, {2, 0, 0, 0}}};
+          }));
+  const auto treeRoot =
+      loom::sim::WorkItemId::root(loom::sim::ThreadDispatchOccurrenceId(2));
+  const auto firstChild = loom::sim::WorkItemId::child(treeRoot, 0);
+  const auto secondChild = loom::sim::WorkItemId::child(treeRoot, 1);
+  loom::deployment::test::require(
+      test,
+      workTree.dispatchOccurrence ==
+              loom::sim::ThreadDispatchOccurrenceId(2) &&
+          workTree.joinEffect ==
+              loom::sim::RetirementEffect::DomainCompleted &&
+          !workTree.cancelled && workTree.processedItemCount == 3 &&
+          workTree.publishedChildCount == 2 &&
+          workTree.completedItemCount == 3 &&
+          workTree.cancelledItemCount == 0 &&
+          visitedItems ==
+              std::vector<loom::sim::WorkItemId>{treeRoot, firstChild,
+                                                 secondChild} &&
+          visitedWorkers == std::vector<std::uint32_t>{0, 1, 0},
+      "bounded execution did not steal and join the complete work tree");
+  const std::array treeKinds{
+      loom::sim::DynamicWorkScheduleActionKind::AdmitRoot,
+      loom::sim::DynamicWorkScheduleActionKind::AcquireLocal,
+      loom::sim::DynamicWorkScheduleActionKind::PublishChild,
+      loom::sim::DynamicWorkScheduleActionKind::PublishChild,
+      loom::sim::DynamicWorkScheduleActionKind::Complete,
+      loom::sim::DynamicWorkScheduleActionKind::Steal,
+      loom::sim::DynamicWorkScheduleActionKind::Complete,
+      loom::sim::DynamicWorkScheduleActionKind::AcquireLocal,
+      loom::sim::DynamicWorkScheduleActionKind::Complete};
+  loom::deployment::test::require(
+      test, workTree.replay.size() == treeKinds.size(),
+      "work-tree replay has an unexpected transition count");
+  for (std::size_t index = 0; index < treeKinds.size(); ++index)
+    loom::deployment::test::require(
+        test, workTree.replay[index].kind == treeKinds[index],
+        "work-tree replay changed deterministic transition order");
+
+  loom::runtime::DynamicWorkExecutionRequest blockedRequest;
+  blockedRequest.workerCount = 2;
+  blockedRequest.queueCapacityPerWorker = 1;
+  blockedRequest.rootPayload = {2, 0, 0, 0};
+  auto blocked = executionSession.executeRoot(
+      dataflowView, systemMapping, root, std::move(blockedRequest),
+      [](const loom::runtime::DynamicWorkExecutionAssignment &)
+          -> llvm::Expected<loom::runtime::DynamicWorkItemExecution> {
+        return loom::runtime::DynamicWorkItemExecution{
+            loom::runtime::DynamicWorkExecutionAction::Complete,
+            {{1, 0, 0, 0}, {2, 0, 0, 0}}};
+      });
+  loom::deployment::test::require(
+      test, !blocked,
+      "an over-capacity child batch entered the responsibility domain");
+  bool capacityGate = false;
+  llvm::handleAllErrors(
+      blocked.takeError(),
+      [&](const loom::runtime::DynamicWorkExecutionIncomplete &error) {
+        capacityGate =
+            error.reason() ==
+                loom::runtime::DynamicWorkExecutionIncompleteReason::
+                    QueueCapacity &&
+            error.item() == loom::sim::WorkItemId::root(
+                                loom::sim::ThreadDispatchOccurrenceId(3));
+      },
+      [&](const llvm::ErrorInfoBase &error) {
+        loom::deployment::test::fail(test, error.message());
+      });
+  loom::deployment::test::require(
+      test, capacityGate,
+      "queue backpressure lost its typed incomplete item witness");
+
   loom::runtime::DynamicWorkExecutionRequest cancelRequest;
   cancelRequest.workerCount = 2;
   cancelRequest.queueCapacityPerWorker = 2;
@@ -486,23 +578,28 @@ void dynamicWorkTraversesMappingAndJoins() {
                 test,
                 assignment.item ==
                         loom::sim::WorkItemId::root(
-                            loom::sim::ThreadDispatchOccurrenceId(2)) &&
+                            loom::sim::ThreadDispatchOccurrenceId(4)) &&
                     assignment.instructionContext == *completedInstruction &&
                     assignment.spatialContext &&
                     assignment.spatialContext->context ==
                         completedSpatial->context &&
                     !assignment.servicePlans.empty(),
                 "dispatch-local identity changed persistent selection");
-            return loom::runtime::DynamicWorkExecutionAction::
-                RequestCancellation;
+            return loom::runtime::DynamicWorkItemExecution{
+                loom::runtime::DynamicWorkExecutionAction::
+                    RequestCancellation,
+                {}};
           }));
   loom::deployment::test::require(
       test,
       cancelled.dispatchOccurrence ==
-              loom::sim::ThreadDispatchOccurrenceId(2) &&
+              loom::sim::ThreadDispatchOccurrenceId(4) &&
           cancelled.joinEffect ==
               loom::sim::RetirementEffect::DomainCompleted &&
-          cancelled.cancelled,
+          cancelled.cancelled && cancelled.processedItemCount == 1 &&
+          cancelled.publishedChildCount == 0 &&
+          cancelled.completedItemCount == 0 &&
+          cancelled.cancelledItemCount == 1,
       "cancelled execution did not join its responsibility domain");
   const std::array cancelKinds{
       loom::sim::DynamicWorkScheduleActionKind::AdmitRoot,
@@ -511,7 +608,7 @@ void dynamicWorkTraversesMappingAndJoins() {
       loom::sim::DynamicWorkScheduleActionKind::CancelActive};
   requireReplay(
       test, cancelled.replay, cancelKinds,
-      loom::sim::WorkItemId::root(loom::sim::ThreadDispatchOccurrenceId(2)));
+      loom::sim::WorkItemId::root(loom::sim::ThreadDispatchOccurrenceId(4)));
 }
 
 } // namespace

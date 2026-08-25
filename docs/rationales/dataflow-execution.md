@@ -99,18 +99,23 @@ select Mapping. Serializing those transitions with a host mutex makes queued
 payloads visible to host workers without inventing program-visible memory
 ordering.
 
-The first execution adapter intentionally closes only the root singleton. Its
-stable key is a Dataflow projection of the distinguished root, independent of
-the Runtime dispatch occurrence. SystemMapping selects the persistent
-Instruction, Spatial, and service-plan contexts from that key; the bounded
-scheduler still owns only transient worker placement. The concrete CGRA entry
-admits the narrower case where one scalar root payload is forwarded unchanged
-to one direct graph and the thread body contains only that launch and its
-yield. CGRA retirement is observed before the existing responsibility owner
-completes the item. The generic synchronous executor boundary remains an
-integration hook and cannot establish body execution by itself.
+The first execution adapter uses one Dataflow-owned stable execution class for
+the complete domain because every item executes the same thread definition.
+The class is independent of Runtime dispatch occurrence, item path, payload,
+and worker. SystemMapping selects the persistent Instruction, Spatial, and
+service-plan contexts from that class; the bounded scheduler still owns only
+transient worker placement. The generic adapter may publish a finite child
+group returned by its external execution owner and deterministically drains
+the responsibility domain through local acquisition and stealing. This closes
+scheduler ownership and join, but the callback remains an integration boundary
+and cannot establish source-body or source-spawn execution by itself.
 
-This does not admit a program-visible or device-side shared queue, child
+The concrete CGRA entry admits the narrower case where one scalar payload is
+forwarded unchanged to one direct graph and the thread body contains only that
+launch and its yield. CGRA retirement is observed before the existing
+responsibility owner completes the item.
+
+This does not admit a program-visible or device-side shared queue, source child
 publication lineage, channel correspondence, active-item migration,
 remapping, launch captures, or provider image transport. Those capabilities
 need their exact semantic and execution owners, not weaker ordered channel

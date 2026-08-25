@@ -73,7 +73,7 @@ enum class DynamicWorkPublishKind : std::uint8_t {
 
 struct DynamicWorkPublishResult final {
   DynamicWorkPublishKind kind = DynamicWorkPublishKind::WouldBlock;
-  std::optional<WorkItemId> child;
+  std::vector<WorkItemId> children;
 };
 
 enum class DynamicWorkCancellationKind : std::uint8_t {
@@ -161,6 +161,12 @@ public:
   publishChild(const DynamicWorkAssignment &parent,
                llvm::ArrayRef<std::uint8_t> payload);
 
+  /// Atomically publishes one ordered group. Capacity or cancellation refusal
+  /// publishes none of the group and consumes no child ordinal.
+  llvm::Expected<DynamicWorkPublishResult> publishChildren(
+      const DynamicWorkAssignment &parent,
+      llvm::ArrayRef<std::vector<std::uint8_t>> payloads);
+
   llvm::Expected<DynamicWorkCancellationResult>
   requestCancellation(const WorkItemId &item);
 
@@ -169,6 +175,10 @@ public:
 
   llvm::Expected<RetirementEffect> complete(DynamicWorkAssignment &&assignment);
   llvm::Expected<RetirementEffect> cancel(DynamicWorkAssignment &&assignment);
+
+  /// Cancels every queued responsibility in worker/front order. Active
+  /// assignments remain owned by their workers.
+  llvm::Expected<std::optional<RetirementEffect>> cancelQueued();
 
   std::size_t activeCount() const;
   std::size_t queuedCount() const;

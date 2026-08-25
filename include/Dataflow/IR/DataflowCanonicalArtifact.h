@@ -79,10 +79,9 @@ struct CanonicalRootThreadLogicalDomainView {
   std::vector<mlir::Value> launchParameters;
 };
 
-/// Canonical stable key for the first finite DynamicWork profile. The root
-/// key is independent of the execution-local dispatch occurrence. Child paths
-/// are deliberately absent until Dataflow owns a spawn operation and its
-/// source correspondence.
+/// Canonical stable execution class for the first DynamicWork profile. Every
+/// item in one thread domain has the same mapped behavior; execution-local
+/// item lineage remains in WorkItemId and never selects Mapping.
 struct DynamicWorkStableItemKey final {
   friend constexpr bool operator==(DynamicWorkStableItemKey,
                                    DynamicWorkStableItemKey) {
@@ -115,10 +114,10 @@ private:
   std::string message_;
 };
 
-/// Dataflow-owned finite projection for the admitted root-only DynamicWork
-/// profile. Values and types borrow the imported canonical program. Mapping
-/// consumes `stableItemKeys`; Runtime combines the same root key with its
-/// separate execution-local WorkItemId.
+/// Dataflow-owned finite projection for the admitted DynamicWork profile.
+/// Values and types borrow the imported canonical program. Mapping consumes
+/// `stableItemKeys`; Runtime combines the domain-wide class with its separate
+/// execution-local WorkItemId.
 struct CanonicalDynamicWorkProjection final {
   RootThreadLaunchRef root;
   std::uint64_t workItemArgumentOrdinal = 0;
@@ -129,8 +128,8 @@ struct CanonicalDynamicWorkProjection final {
   std::uint32_t payloadByteWidth = 0;
 };
 
-/// Stable comparison bytes owned by Dataflow. The root-only key is a closed
-/// zero-field variant, encoded by its u32 discriminator.
+/// Stable comparison bytes owned by Dataflow. The domain-wide class is a
+/// closed zero-field variant, encoded by its u32 discriminator.
 std::vector<std::uint8_t>
 encodeDynamicWorkStableItemKey(DynamicWorkStableItemKey key);
 llvm::Expected<DynamicWorkStableItemKey>

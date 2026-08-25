@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace loom {
 namespace sim {
@@ -113,6 +114,11 @@ public:
   /// responsibility. Rejected when `parent` is foreign or invalid.
   llvm::Expected<WorkResponsibility>
   spawnChild(const WorkResponsibility &parent);
+
+  /// Publishes a finite ordered child group as one responsibility transaction.
+  /// Failure acquires no child and consumes no ordinal.
+  llvm::Expected<std::vector<WorkResponsibility>>
+  spawnChildren(const WorkResponsibility &parent, std::size_t count);
 
   /// Consumes one live capability, retires its active item exactly once, and
   /// reports whether this retirement is the completion transition. A foreign

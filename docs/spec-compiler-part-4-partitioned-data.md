@@ -229,10 +229,11 @@ semantics.
 
 Logical coordinates, `WorkItemId`, designated work payload, and launch
 parameters are software facts. SystemMapping's `B_thread` relation consumes the
-legal logical domain to select an AccCore for each instance. A dynamic domain
-may expose a typed stable-key tuple mechanically derived from its item identity
-and payload for the existing `StableKeyLookup` relation; Mapping cannot use
-queue order or invent another item identity. Event-relative `ResourceUse`
+legal logical domain to select an AccCore for each instance. The first dynamic
+profile exposes one typed stable execution class for its thread definition;
+all items share that Mapping selection while retaining distinct `WorkItemId`
+values. Payload, queue order, worker assignment, and ordinal path cannot select
+Mapping or invent another item identity. Event-relative `ResourceUse`
 separately owns occupancy and release. Neither relation may reinterpret logical
 identity as Cartesian hardware position.
 
@@ -278,13 +279,17 @@ worker or deque selection cannot evaluate or replace `B_thread`.
 
 The admitted execution adapter is narrower than the complete DynamicWork
 model. It accepts one root payload, no launch captures, and at most one direct
-graph launch. Dataflow projects the distinguished root stable key; verified
-SystemMapping uses that key to select `B_thread`, `B_graph`, and contextual
-service plans. The concrete CGRA entry further requires one byte-addressable
+graph launch. Dataflow projects the domain execution class; verified
+SystemMapping uses that class to select `B_thread`, `B_graph`, and contextual
+service plans for every item. The generic synchronous adapter may publish a
+finite child-payload group reported by its external execution owner and will
+drain the complete responsibility domain through bounded stealing. That report
+does not establish source-body execution or source publication lineage. The
+concrete CGRA entry further requires one byte-addressable
 scalar integer forwarded unchanged to the sole graph value input and a thread
 body containing only that launch and its yield. It derives graph runtime input
 from the scheduled payload, executes the selected SpatialMapping, and retires
-or cancels the root responsibility only after the selected execution returns.
+or cancels the item responsibility only after the selected execution returns.
 Captures, missing or non-direct graph bodies, nested or multiple graph
 launches, and incompatible payloads retain distinct typed capability reasons.
 Child publication has no canonical operation yet and therefore cannot enter a

@@ -86,24 +86,9 @@ private:
   llvm::SmallVector<std::uint64_t, 4> ordinals_;
 };
 
-class DynamicWorkStableItemProjectionError final
-    : public llvm::ErrorInfo<DynamicWorkStableItemProjectionError> {
-public:
-  static char ID;
-
-  explicit DynamicWorkStableItemProjectionError(std::string message)
-      : message_(std::move(message)) {}
-
-  void log(llvm::raw_ostream &stream) const override;
-  std::error_code convertToErrorCode() const override;
-
-private:
-  std::string message_;
-};
-
-/// Removes the execution-local dispatch occurrence from an admitted root
-/// WorkItemId. Child items remain typed unavailable until Dataflow owns their
-/// publication operation and canonical ordinal-path projection.
+/// Removes execution-local dispatch and item lineage from one DynamicWork
+/// item. The selected thread owns one stable execution class for the complete
+/// domain; WorkItemId remains the sole logical identity of an item.
 llvm::Expected<dataflow::DynamicWorkStableItemKey>
 projectDynamicWorkStableItemKey(const WorkItemId &item);
 

@@ -152,34 +152,53 @@ DynamicWorkScheduler::acquire(std::uint32_t workerOrdinal) {
 llvm::Expected<DynamicWorkPublishResult>
 DynamicWorkScheduler::publishChild(const DynamicWorkAssignment &parent,
                                    llvm::ArrayRef<std::uint8_t> payload) {
+  std::vector<std::uint8_t> owned(payload.begin(), payload.end());
+  auto result = publishChildren(parent, {owned});
+  if (!result)
+    return result.takeError();
+  return std::move(*result);
+}
+
+llvm::Expected<DynamicWorkPublishResult>
+DynamicWorkScheduler::publishChildren(
+    const DynamicWorkAssignment &parent,
+    llvm::ArrayRef<std::vector<std::uint8_t>> payloads) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (llvm::Error error = validateAssignment(parent))
     return std::move(error);
   Item &parentState = items_.find(parent.id_)->second;
   if (parentState.cancellationRequested)
     return DynamicWorkPublishResult{
-        DynamicWorkPublishKind::CancellationRequested, std::nullopt};
+        DynamicWorkPublishKind::CancellationRequested, {}};
+  if (payloads.empty())
+    return DynamicWorkPublishResult{DynamicWorkPublishKind::Published, {}};
   auto &queue = queues_[parent.workerOrdinal_];
-  if (queue.size() >= queueCapacityPerWorker_)
-    return DynamicWorkPublishResult{DynamicWorkPublishKind::WouldBlock,
-                                    std::nullopt};
+  if (payloads.size() > queueCapacityPerWorker_ - queue.size())
+    return DynamicWorkPublishResult{DynamicWorkPublishKind::WouldBlock, {}};
 
-  auto child = domain_.spawnChild(*parentState.responsibility);
-  if (!child)
-    return child.takeError();
-  WorkItemId childId = child->id();
-  Item childState;
-  childState.responsibility =
-      std::make_unique<WorkResponsibility>(std::move(*child));
-  childState.workerOrdinal = parent.workerOrdinal_;
-  childState.payload.assign(payload.begin(), payload.end());
-  if (!items_.emplace(childId, std::move(childState)).second)
-    llvm::report_fatal_error(
-        "DynamicWorkScheduler invariant failure: duplicate child identity");
-  queue.push_back(childId);
-  record(DynamicWorkScheduleActionKind::PublishChild, childId,
-         parent.workerOrdinal_, parent.workerOrdinal_);
-  return DynamicWorkPublishResult{DynamicWorkPublishKind::Published, childId};
+  auto children =
+      domain_.spawnChildren(*parentState.responsibility, payloads.size());
+  if (!children)
+    return children.takeError();
+  DynamicWorkPublishResult result{DynamicWorkPublishKind::Published, {}};
+  result.children.reserve(children->size());
+  for (std::size_t index = 0; index < children->size(); ++index) {
+    WorkResponsibility &child = (*children)[index];
+    WorkItemId childId = child.id();
+    Item childState;
+    childState.responsibility =
+        std::make_unique<WorkResponsibility>(std::move(child));
+    childState.workerOrdinal = parent.workerOrdinal_;
+    childState.payload = payloads[index];
+    if (!items_.emplace(childId, std::move(childState)).second)
+      llvm::report_fatal_error(
+          "DynamicWorkScheduler invariant failure: duplicate child identity");
+    queue.push_back(childId);
+    record(DynamicWorkScheduleActionKind::PublishChild, childId,
+           parent.workerOrdinal_, parent.workerOrdinal_);
+    result.children.push_back(std::move(childId));
+  }
+  return result;
 }
 
 llvm::Expected<DynamicWorkCancellationResult>
@@ -264,6 +283,32 @@ llvm::Expected<RetirementEffect>
 DynamicWorkScheduler::cancel(DynamicWorkAssignment &&assignment) {
   return retireAssignment(std::move(assignment),
                           DynamicWorkScheduleActionKind::CancelActive);
+}
+
+llvm::Expected<std::optional<RetirementEffect>>
+DynamicWorkScheduler::cancelQueued() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::optional<RetirementEffect> finalEffect;
+  for (std::uint32_t worker = 0; worker < queues_.size(); ++worker) {
+    auto &queue = queues_[worker];
+    while (!queue.empty()) {
+      WorkItemId item = queue.front();
+      queue.pop_front();
+      auto found = items_.find(item);
+      if (found == items_.end() || found->second.state != ItemState::Queued)
+        llvm::report_fatal_error(
+            "DynamicWorkScheduler invariant failure: queued item is absent");
+      auto retired =
+          domain_.retire(std::move(*found->second.responsibility));
+      if (!retired)
+        return retired.takeError();
+      items_.erase(found);
+      record(DynamicWorkScheduleActionKind::CancelQueued, item, worker,
+             std::nullopt);
+      finalEffect = *retired;
+    }
+  }
+  return finalEffect;
 }
 
 std::size_t DynamicWorkScheduler::activeCount() const {

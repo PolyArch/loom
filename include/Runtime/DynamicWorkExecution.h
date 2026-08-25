@@ -69,6 +69,29 @@ private:
   sim::CgraSimulationOutcome outcome_;
 };
 
+enum class DynamicWorkExecutionIncompleteReason : std::uint8_t {
+  QueueCapacity,
+};
+
+class DynamicWorkExecutionIncomplete final
+    : public llvm::ErrorInfo<DynamicWorkExecutionIncomplete> {
+public:
+  static char ID;
+
+  DynamicWorkExecutionIncomplete(DynamicWorkExecutionIncompleteReason reason,
+                                 sim::WorkItemId item)
+      : reason_(reason), item_(std::move(item)) {}
+
+  DynamicWorkExecutionIncompleteReason reason() const { return reason_; }
+  const sim::WorkItemId &item() const { return item_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  DynamicWorkExecutionIncompleteReason reason_;
+  sim::WorkItemId item_;
+};
+
 struct DynamicWorkExecutionRequest final {
   std::uint32_t workerCount = 0;
   std::size_t queueCapacityPerWorker = 0;
@@ -95,14 +118,23 @@ enum class DynamicWorkExecutionAction : std::uint8_t {
   RequestCancellation,
 };
 
+struct DynamicWorkItemExecution final {
+  DynamicWorkExecutionAction action = DynamicWorkExecutionAction::Complete;
+  std::vector<std::vector<std::uint8_t>> childPayloads;
+};
+
 using DynamicWorkSelectedBodyExecutor =
-    std::function<llvm::Expected<DynamicWorkExecutionAction>(
+    std::function<llvm::Expected<DynamicWorkItemExecution>(
         const DynamicWorkExecutionAssignment &)>;
 
 struct DynamicWorkExecutionResult final {
   sim::ThreadDispatchOccurrenceId dispatchOccurrence{0};
   sim::RetirementEffect joinEffect = sim::RetirementEffect::DomainStillActive;
   bool cancelled = false;
+  std::uint64_t processedItemCount = 0;
+  std::uint64_t publishedChildCount = 0;
+  std::uint64_t completedItemCount = 0;
+  std::uint64_t cancelledItemCount = 0;
   std::vector<sim::DynamicWorkScheduleAction> replay;
 };
 
@@ -119,10 +151,10 @@ struct DynamicWorkCgraExecutionResult final {
   sim::RetiredCgraSimulation execution;
 };
 
-/// Coordinates the bounded root-only DynamicWork profile. SystemMapping
-/// selects persistent Instruction, optional Spatial, and service-plan targets
-/// from the Dataflow-owned stable root key. Scheduler worker assignment
-/// remains transient.
+/// Coordinates the bounded DynamicWork profile. SystemMapping selects
+/// persistent Instruction, optional Spatial, and service-plan targets from the
+/// Dataflow-owned domain execution class. WorkItemId, scheduler worker
+/// assignment, and deque placement remain transient.
 class DynamicWorkExecutionSession final {
 public:
   DynamicWorkExecutionSession() = default;
@@ -131,9 +163,10 @@ public:
   DynamicWorkExecutionSession &
   operator=(const DynamicWorkExecutionSession &) = delete;
 
-  /// Invokes one external synchronous execution owner with the verified
-  /// selection. Complete is that owner's report, not independent body
-  /// execution evidence. The result proves only responsibility retirement.
+  /// Invokes one external synchronous execution owner for every item in the
+  /// responsibility domain. Child publication is atomic per returned item
+  /// result. Complete is the owner's report, not independent body execution
+  /// evidence; the result proves the selected Mapping and responsibility join.
   llvm::Expected<DynamicWorkExecutionResult>
   executeRoot(const dataflow::CanonicalDataflowProgramView &dataflow,
               const mapping::FinalizedSystemMapping &systemMapping,

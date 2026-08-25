@@ -298,7 +298,7 @@ decodeDynamicWorkStableItemKey(llvm::ArrayRef<std::uint8_t> bytes) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "dataflow_dynamic_work_projection_invalid: stable item key is not "
-        "the canonical root key");
+        "the canonical domain execution class");
   return DynamicWorkStableItemKey{};
 }
 

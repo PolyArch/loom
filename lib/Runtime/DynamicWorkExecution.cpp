@@ -44,6 +44,23 @@ llvm::Error verifyDynamicWorkJoin(const sim::DynamicWorkScheduler &scheduler,
       "incomplete responsibility domain");
 }
 
+llvm::Error cancelDynamicWorkDomain(
+    sim::DynamicWorkScheduler &scheduler,
+    sim::DynamicWorkAssignment &&activeAssignment) {
+  auto active = retireDynamicWorkAssignment(
+      scheduler, std::move(activeAssignment),
+      DynamicWorkExecutionAction::RequestCancellation);
+  if (!active)
+    return active.takeError();
+  sim::RetirementEffect finalEffect = *active;
+  auto queued = scheduler.cancelQueued();
+  if (!queued)
+    return queued.takeError();
+  if (*queued)
+    finalEffect = **queued;
+  return verifyDynamicWorkJoin(scheduler, finalEffect);
+}
+
 llvm::StringRef spelling(sim::SpatialExecutionSessionState state) {
   switch (state) {
   case sim::SpatialExecutionSessionState::Runnable:
@@ -127,6 +144,7 @@ selectDynamicWorkServicePlans(
 
 char DynamicWorkExecutionUnsupported::ID = 0;
 char DynamicWorkCgraExecutionIncomplete::ID = 0;
+char DynamicWorkExecutionIncomplete::ID = 0;
 
 void DynamicWorkExecutionUnsupported::log(llvm::raw_ostream &stream) const {
   stream << "dynamic_work_execution_unsupported: " << message_;
@@ -142,6 +160,20 @@ void DynamicWorkCgraExecutionIncomplete::log(llvm::raw_ostream &stream) const {
 }
 
 std::error_code DynamicWorkCgraExecutionIncomplete::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
+
+void DynamicWorkExecutionIncomplete::log(llvm::raw_ostream &stream) const {
+  switch (reason_) {
+  case DynamicWorkExecutionIncompleteReason::QueueCapacity:
+    stream << "dynamic_work_execution_incomplete: child publication exceeds "
+              "the admitted queue capacity";
+    return;
+  }
+  llvm_unreachable("unknown DynamicWork execution incomplete reason");
+}
+
+std::error_code DynamicWorkExecutionIncomplete::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
 }
 
@@ -213,52 +245,132 @@ DynamicWorkExecutionSession::executeRoot(
   if (!scheduler)
     return scheduler.takeError();
 
-  auto assignment = (*scheduler)->acquire(0);
-  if (!assignment)
-    return assignment.takeError();
-  if (!*assignment)
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "dynamic_work_execution_invalid: admitted root is not schedulable");
-  auto stableItem = sim::projectDynamicWorkStableItemKey((**assignment).id());
-  if (!stableItem)
-    return stableItem.takeError();
-  if (!(*stableItem == dynamic->stableItemKeys.front()))
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "dynamic_work_execution_invalid: scheduler item key differs from "
-        "Dataflow projection");
+  DynamicWorkExecutionResult result;
+  result.dispatchOccurrence = *dispatchOccurrence;
+  std::uint32_t nextWorker = 0;
+  while (!(*scheduler)->completed()) {
+    std::optional<sim::DynamicWorkAssignment> assignment;
+    for (std::uint32_t offset = 0; offset < request.workerCount; ++offset) {
+      const std::uint32_t worker = static_cast<std::uint32_t>(
+          (static_cast<std::uint64_t>(nextWorker) + offset) %
+          request.workerCount);
+      auto acquired = (*scheduler)->acquire(worker);
+      if (!acquired)
+        return acquired.takeError();
+      if (!*acquired)
+        continue;
+      assignment.emplace(std::move(**acquired));
+      nextWorker = (worker + 1) % request.workerCount;
+      break;
+    }
+    if (!assignment)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "dynamic_work_execution_invalid: live responsibility domain has "
+          "no schedulable item");
+    if (assignment->payload().size() != dynamic->payloadByteWidth) {
+      llvm::Error error = llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "dynamic_work_execution_invalid: child payload byte width differs "
+          "from canonical Dataflow");
+      return llvm::joinErrors(
+          std::move(error),
+          cancelDynamicWorkDomain(**scheduler, std::move(*assignment)));
+    }
+    auto stableItem = sim::projectDynamicWorkStableItemKey(assignment->id());
+    if (!stableItem) {
+      llvm::Error error = stableItem.takeError();
+      return llvm::joinErrors(
+          std::move(error),
+          cancelDynamicWorkDomain(**scheduler, std::move(*assignment)));
+    }
+    if (!(*stableItem == dynamic->stableItemKeys.front())) {
+      llvm::Error error = llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "dynamic_work_execution_invalid: scheduler item class differs "
+          "from Dataflow projection");
+      return llvm::joinErrors(
+          std::move(error),
+          cancelDynamicWorkDomain(**scheduler, std::move(*assignment)));
+    }
 
-  DynamicWorkExecutionAssignment executionAssignment{
-      (**assignment).id(),
-      (**assignment).workerOrdinal(),
-      (**assignment).payload(),
-      *instruction,
-      spatial,
-      std::move(*servicePlans)};
-  auto action = executor(executionAssignment);
-  if (!action) {
-    llvm::Error bodyError = action.takeError();
-    auto cleanup = retireDynamicWorkAssignment(
-        **scheduler, std::move(**assignment),
-        DynamicWorkExecutionAction::RequestCancellation);
-    if (!cleanup)
-      return llvm::joinErrors(std::move(bodyError), cleanup.takeError());
-    if (llvm::Error joinError = verifyDynamicWorkJoin(**scheduler, *cleanup))
-      return llvm::joinErrors(std::move(bodyError), std::move(joinError));
-    return std::move(bodyError);
+    DynamicWorkExecutionAssignment executionAssignment{
+        assignment->id(), assignment->workerOrdinal(), assignment->payload(),
+        *instruction, spatial, *servicePlans};
+    auto itemResult = executor(executionAssignment);
+    ++result.processedItemCount;
+    if (!itemResult) {
+      llvm::Error bodyError = itemResult.takeError();
+      return llvm::joinErrors(
+          std::move(bodyError),
+          cancelDynamicWorkDomain(**scheduler, std::move(*assignment)));
+    }
+    if (itemResult->action ==
+            DynamicWorkExecutionAction::RequestCancellation &&
+        !itemResult->childPayloads.empty()) {
+      llvm::Error error = llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "dynamic_work_execution_invalid: a cancelled item cannot publish "
+          "children");
+      return llvm::joinErrors(
+          std::move(error),
+          cancelDynamicWorkDomain(**scheduler, std::move(*assignment)));
+    }
+    for (const auto &payload : itemResult->childPayloads) {
+      if (payload.size() == dynamic->payloadByteWidth)
+        continue;
+      llvm::Error error = llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "dynamic_work_execution_invalid: child payload byte width differs "
+          "from canonical Dataflow");
+      return llvm::joinErrors(
+          std::move(error),
+          cancelDynamicWorkDomain(**scheduler, std::move(*assignment)));
+    }
+    auto published = (*scheduler)->publishChildren(
+        *assignment, itemResult->childPayloads);
+    if (!published) {
+      llvm::Error error = published.takeError();
+      return llvm::joinErrors(
+          std::move(error),
+          cancelDynamicWorkDomain(**scheduler, std::move(*assignment)));
+    }
+    if (published->kind == sim::DynamicWorkPublishKind::WouldBlock) {
+      llvm::Error error = llvm::make_error<DynamicWorkExecutionIncomplete>(
+          DynamicWorkExecutionIncompleteReason::QueueCapacity,
+          assignment->id());
+      return llvm::joinErrors(
+          std::move(error),
+          cancelDynamicWorkDomain(**scheduler, std::move(*assignment)));
+    }
+    if (published->kind != sim::DynamicWorkPublishKind::Published) {
+      llvm::Error error = llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "dynamic_work_execution_invalid: child publication observed an "
+          "unexpected cancellation request");
+      return llvm::joinErrors(
+          std::move(error),
+          cancelDynamicWorkDomain(**scheduler, std::move(*assignment)));
+    }
+    result.publishedChildCount += published->children.size();
+
+    const bool cancelled = itemResult->action ==
+                           DynamicWorkExecutionAction::RequestCancellation;
+    auto retirement = retireDynamicWorkAssignment(
+        **scheduler, std::move(*assignment), itemResult->action);
+    if (!retirement)
+      return retirement.takeError();
+    result.joinEffect = *retirement;
+    result.cancelled |= cancelled;
+    if (cancelled)
+      ++result.cancelledItemCount;
+    else
+      ++result.completedItemCount;
   }
-
-  const bool cancelled =
-      *action == DynamicWorkExecutionAction::RequestCancellation;
-  auto retirement = retireDynamicWorkAssignment(
-      **scheduler, std::move(**assignment), *action);
-  if (!retirement)
-    return retirement.takeError();
-  if (llvm::Error error = verifyDynamicWorkJoin(**scheduler, *retirement))
+  if (llvm::Error error = verifyDynamicWorkJoin(**scheduler, result.joinEffect))
     return std::move(error);
-  return DynamicWorkExecutionResult{*dispatchOccurrence, *retirement, cancelled,
-                                    (*scheduler)->replay()};
+  result.replay = (*scheduler)->replay();
+  return result;
 }
 
 llvm::Expected<DynamicWorkCgraExecutionResult>
@@ -330,7 +442,7 @@ DynamicWorkExecutionSession::executeRootCgra(
   auto dispatch = executeRoot(
       *view, systemMapping, root, std::move(request.dispatch),
       [&](const DynamicWorkExecutionAssignment &assignment)
-          -> llvm::Expected<DynamicWorkExecutionAction> {
+          -> llvm::Expected<DynamicWorkItemExecution> {
         if (!assignment.spatialContext)
           return unsupported(
               DynamicWorkExecutionUnsupportedReason::SelectedGraphUnavailable,
@@ -388,7 +500,7 @@ DynamicWorkExecutionSession::executeRootCgra(
           return llvm::make_error<DynamicWorkCgraExecutionIncomplete>(
               std::move(*outcome));
         retired = std::move(*outcome->retired);
-        return DynamicWorkExecutionAction::Complete;
+        return DynamicWorkItemExecution{};
       });
   if (!dispatch)
     return dispatch.takeError();

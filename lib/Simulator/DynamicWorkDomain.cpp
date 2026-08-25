@@ -65,23 +65,9 @@ WorkItemId WorkItemId::root(ThreadDispatchOccurrenceId domainInstance) {
   return WorkItemId(domainInstance, rootOrdinal);
 }
 
-char DynamicWorkStableItemProjectionError::ID = 0;
-
-void DynamicWorkStableItemProjectionError::log(
-    llvm::raw_ostream &stream) const {
-  stream << "dynamic_work_stable_item_projection_unavailable: " << message_;
-}
-
-std::error_code
-DynamicWorkStableItemProjectionError::convertToErrorCode() const {
-  return llvm::inconvertibleErrorCode();
-}
-
 llvm::Expected<dataflow::DynamicWorkStableItemKey>
 projectDynamicWorkStableItemKey(const WorkItemId &item) {
-  if (!item.isRoot())
-    return llvm::make_error<DynamicWorkStableItemProjectionError>(
-        "child WorkItemId has no Dataflow-owned publication lineage");
+  (void)item;
   return dataflow::DynamicWorkStableItemKey{};
 }
 
@@ -158,6 +144,15 @@ llvm::Expected<WorkResponsibility> DynamicWorkDomain::admitRoot() {
 
 llvm::Expected<WorkResponsibility>
 DynamicWorkDomain::spawnChild(const WorkResponsibility &parent) {
+  auto children = spawnChildren(parent, 1);
+  if (!children)
+    return children.takeError();
+  return std::move(children->front());
+}
+
+llvm::Expected<std::vector<WorkResponsibility>>
+DynamicWorkDomain::spawnChildren(const WorkResponsibility &parent,
+                                 std::size_t count) {
   if (llvm::Error error = validateCapability(parent))
     return std::move(error);
   if (control_->active.count(parent.id_) == 0)
@@ -169,17 +164,23 @@ DynamicWorkDomain::spawnChild(const WorkResponsibility &parent) {
       currentCursor == control_->childCursor.end()
           ? detail::ChildOrdinalCursor()
           : currentCursor->second;
-  std::optional<std::uint64_t> ordinal = nextCursor.take();
-  if (!ordinal)
+  auto ordinals = nextCursor.take(count);
+  if (!ordinals)
     return reject(DynamicWorkDomainError::Kind::ChildOrdinalExhausted,
                   describe(parent.id_) + " has exhausted its child ordinals");
 
-  WorkItemId child = WorkItemId::child(parent.id_, *ordinal);
-  if (!control_->active.insert(child).second)
-    llvm::report_fatal_error(
-        "DynamicWorkDomain invariant failure: duplicate active child");
+  std::vector<WorkResponsibility> children;
+  children.reserve(count);
+  for (std::uint64_t ordinal : *ordinals) {
+    WorkItemId child = WorkItemId::child(parent.id_, ordinal);
+    if (!control_->active.insert(child).second)
+      llvm::report_fatal_error(
+          "DynamicWorkDomain invariant failure: duplicate active child");
+    WorkResponsibility responsibility(std::move(child), control_);
+    children.push_back(std::move(responsibility));
+  }
   control_->childCursor[parent.id_] = nextCursor;
-  return WorkResponsibility(std::move(child), control_);
+  return children;
 }
 
 llvm::Expected<RetirementEffect>
