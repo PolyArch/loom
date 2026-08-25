@@ -288,6 +288,16 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   traversalRemoved_.assign(traversalCount, 0);
   traversalAdded_.assign(traversalCount, 0);
   touchedTraversals_.reserve(traversalCount);
+  progressRecordedRouteDeltaCounts_.assign(netCount, 0);
+  progressTerminalActive_.assign(netCount, 0);
+  progressTraversalDeltas_.clear();
+  progressTraversalDeltas_.reserve(traversalCount);
+  progressDirtyNetMarks_.assign(netCount, 0);
+  progressDirtyNets_.clear();
+  progressDirtyNets_.reserve(netCount);
+  progressDependencyJournalMarks_.assign(netCount, 0);
+  progressDependencyDeltas_.clear();
+  progressDependencyDeltas_.reserve(netCount);
 
   decisionEpoch_ = 0;
   affectedEpoch_ = 0;
@@ -346,7 +356,14 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(removedSwitchHandshakeFragments_) +
       retainedBytes(addedSwitchHandshakeFragments_) +
       retainedBytes(traversalDeltaMarks_) + retainedBytes(traversalRemoved_) +
-      retainedBytes(traversalAdded_) + retainedBytes(touchedTraversals_);
+      retainedBytes(traversalAdded_) + retainedBytes(touchedTraversals_) +
+      retainedBytes(progressRecordedRouteDeltaCounts_) +
+      retainedBytes(progressTerminalActive_) +
+      retainedBytes(progressTraversalDeltas_) +
+      retainedBytes(progressDirtyNetMarks_) +
+      retainedBytes(progressDirtyNets_) +
+      retainedBytes(progressDependencyJournalMarks_) +
+      retainedBytes(progressDependencyDeltas_);
   return bytes;
 }
 
@@ -357,7 +374,8 @@ void SpatialCandidateScratch::beginTransaction() {
                 &boundaryJournalMarks_, &memoryPlanJournalMarks_,
                 &logicalMemoryJournalMarks_, &memoryDispatchJournalMarks_,
                 &memoryExposureJournalMarks_,
-                &registerFifoTransferJournalMarks_});
+                &registerFifoTransferJournalMarks_,
+                &progressDependencyJournalMarks_});
   advanceEpoch(
       affectedEpoch_,
       {&affectedComputeMarks_, &affectedMemoryMarks_, &affectedPortMarks_,
@@ -383,6 +401,13 @@ void SpatialCandidateScratch::resetTransaction() {
   addedSwitchHandshakeFragments_.clear();
   switchHandshakeBaselineCaptured_ = false;
   touchedTraversals_.clear();
+  for (PnrIndex logicalNet : progressDirtyNets_)
+    progressDirtyNetMarks_[logicalNet] = 0;
+  progressDirtyNets_.clear();
+  std::fill(progressRecordedRouteDeltaCounts_.begin(),
+            progressRecordedRouteDeltaCounts_.end(), 0);
+  progressTraversalDeltas_.clear();
+  progressDependencyDeltas_.clear();
   decisionDeltas_.clear();
   affectedComputes_.clear();
   affectedMemories_.clear();
@@ -618,6 +643,10 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   if (!recurrenceTiming)
     return recurrenceTiming.takeError();
   candidate->recurrenceTiming_ = std::move(*recurrenceTiming);
+  auto progressState = SpatialProgressState::create(*candidate);
+  if (!progressState)
+    return progressState.takeError();
+  candidate->progressState_ = std::move(*progressState);
   if (llvm::Error error = candidate->verify())
     return std::move(error);
   return candidate;
@@ -1052,10 +1081,7 @@ SpatialCandidateState::projectVerifiedRoutes(
   switch (problem_->progressBasis().kind) {
   case ::loom::mapping::MappingDataflowProgressBasisKind::Acyclic:
   case ::loom::mapping::MappingDataflowProgressBasisKind::InitializedFeedback: {
-    auto count = spatialCandidateClosedWaitCount(*this);
-    if (!count)
-      return count.takeError();
-    hardProgressViolation = *count;
+    hardProgressViolation = progressState_.hardProgressViolation();
     break;
   }
   case ::loom::mapping::MappingDataflowProgressBasisKind::Cyclic:
@@ -1409,6 +1435,8 @@ llvm::Error SpatialCandidateState::verify() const {
   if (llvm::Error error =
           routeResources_.verify(routeTrees_, registerFifoTransfers_))
     return error;
+  if (llvm::Error error = progressState_.verify(*this))
+    return error;
   std::vector<const RouteTreeState *> routes;
   routes.reserve(routeTrees_.size());
   for (const RouteTreeStateHandle &route : routeTrees_)
@@ -1462,6 +1490,7 @@ SpatialCandidateState::beginMove(SpatialCandidateScratch &scratch) & {
       scratch.memoryExposureJournalMarks_.size() !=
           memoryExposureSelections_.size() ||
       scratch.routeTransactions_.size() != routeTrees_.size() ||
+      scratch.progressTerminalActive_.size() != routeTrees_.size() ||
       scratch.traversalDeltaMarks_.size() !=
           problem_->routing().traversals().size() ||
       scratch.affectedBindingRelationMarks_.size() !=

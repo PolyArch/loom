@@ -35,6 +35,7 @@ namespace detail {
 class SpatialBindingRelationModel;
 class SpatialMemoryConstraintModel;
 class SpatialPnrProblemIdentity;
+class FrozenSpatialProgressIndex;
 class SpatialRouteConstraintModel;
 class SpatialRecurrenceTimingIndex;
 class SpatialSchedulePressureIndex;
@@ -1304,6 +1305,9 @@ public:
     return activeRouting_;
   }
   const FrozenSpatialHandshakeIndex &handshake() const { return handshake_; }
+  const detail::FrozenSpatialProgressIndex &progressIndex() const {
+    return *progressIndex_;
+  }
   const detail::SpatialSchedulePressureIndex &schedulePressure() const {
     return *schedulePressure_;
   }
@@ -1346,6 +1350,7 @@ private:
       std::shared_ptr<const FrozenSpatialRoutingGraph> routing,
       FrozenSpatialActiveRoutingDomain activeRouting,
       FrozenSpatialHandshakeIndex handshake,
+      std::shared_ptr<const detail::FrozenSpatialProgressIndex> progressIndex,
       std::shared_ptr<const detail::SpatialSchedulePressureIndex>
           schedulePressure,
       std::shared_ptr<const detail::SpatialRecurrenceTimingIndex>
@@ -1374,6 +1379,7 @@ private:
         resources_(std::move(resources)), capacity_(std::move(capacity)),
         routing_(std::move(routing)), activeRouting_(std::move(activeRouting)),
         handshake_(std::move(handshake)),
+        progressIndex_(std::move(progressIndex)),
         schedulePressure_(std::move(schedulePressure)),
         recurrenceTiming_(std::move(recurrenceTiming)),
         progressBasis_(progressBasis),
@@ -1401,6 +1407,7 @@ private:
   std::shared_ptr<const FrozenSpatialRoutingGraph> routing_;
   FrozenSpatialActiveRoutingDomain activeRouting_;
   FrozenSpatialHandshakeIndex handshake_;
+  std::shared_ptr<const detail::FrozenSpatialProgressIndex> progressIndex_;
   std::shared_ptr<const detail::SpatialSchedulePressureIndex> schedulePressure_;
   std::shared_ptr<const detail::SpatialRecurrenceTimingIndex> recurrenceTiming_;
   ::loom::mapping::MappingDataflowProgressBasis progressBasis_;

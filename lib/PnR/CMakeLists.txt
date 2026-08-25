@@ -49,6 +49,8 @@ add_mlir_library(LoomPnR
   SpatialPnrProblemIdentity.cpp
   SpatialPhysicalTiming.cpp
   SpatialProgressAnalysis.cpp
+  SpatialProgressIndex.cpp
+  SpatialProgressState.cpp
   SpatialRecurrenceTiming.cpp
   SpatialPnrResourceIndex.cpp
   SpatialPnrTagContinuityIndex.cpp

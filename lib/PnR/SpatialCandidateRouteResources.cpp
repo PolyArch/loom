@@ -1,5 +1,7 @@
 #include "PnR/SpatialCandidateState.h"
 
+#include "SpatialProgressIndex.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
@@ -32,6 +34,10 @@ llvm::Error increment(PnrIndex &value, PnrIndex amount,
 llvm::Error SpatialMoveTransaction::collectRouteTraversalDeltas() {
   if (routeDeltasCollected_)
     return llvm::Error::success();
+  if (llvm::Error error = synchronizeProgressProjection()) {
+    rollbackAppliedRouteResources();
+    return error;
+  }
   std::uint64_t proposedUnroutedObligationCount =
       state_->unroutedObligationCount_;
   for (PnrIndex logicalNet : scratch_->touchedRoutes_) {
@@ -162,6 +168,7 @@ void SpatialMoveTransaction::rollbackAppliedRouteResources() noexcept {
   scratch_->resourceFullyAppliedRouteCount_ = 0;
   scratch_->resourcePartiallyAppliedDeltaCount_ = 0;
   routeDeltasCollected_ = false;
+  rollbackProgressProjection();
 }
 
 void SpatialMoveTransaction::acceptAppliedRouteResources() noexcept {
@@ -169,4 +176,101 @@ void SpatialMoveTransaction::acceptAppliedRouteResources() noexcept {
   scratch_->resourcePartiallyAppliedDeltaCount_ = 0;
   routeDeltasCollected_ = false;
   routeViolationApplied_ = false;
+  acceptProgressProjection();
+}
+
+llvm::Error SpatialMoveTransaction::applyProgressTraversalDelta(
+    PnrIndex logicalNet, PnrIndex traversal, PnrIndex removed,
+    PnrIndex added) {
+  if (traversal >= state_->problem_->routing().traversals().size())
+    return candidateError("progress traversal is out of range");
+  if (state_->problem_->progressIndex().traversalOwner(traversal) ==
+      getInvalidPnrIndex())
+    return llvm::Error::success();
+  if (llvm::Error error = state_->progressState_.applyTraversalDelta(
+          logicalNet, traversal, removed, added))
+    return error;
+  scratch_->progressTraversalDeltas_.push_back(
+      {logicalNet, traversal, removed, added});
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialMoveTransaction::synchronizeProgressProjection() {
+  for (PnrIndex logicalNet : scratch_->touchedRoutes_) {
+    RouteTreeTransaction &route = *scratch_->routeTransactions_[logicalNet];
+    const auto deltas = route.recordedTraversalDeltas();
+    std::size_t &applied =
+        scratch_->progressRecordedRouteDeltaCounts_[logicalNet];
+    if (applied > deltas.size())
+      return candidateError(
+          "RouteTree progress journal lost recorded traversal deltas");
+    for (const RouteTreeTraversalDelta &delta : deltas.drop_front(applied)) {
+      if (llvm::Error error = applyProgressTraversalDelta(
+              logicalNet, delta.traversal, delta.removed, delta.added))
+        return error;
+      ++applied;
+    }
+  }
+
+  for (PnrIndex logicalNet : scratch_->progressDirtyNets_) {
+    const bool desiredTerminalActive =
+        !state_->usesRegisterFifo(logicalNet) &&
+        state_->routeTrees_[logicalNet]->isRouted();
+    const bool currentTerminalActive =
+        scratch_->progressTerminalActive_[logicalNet] != 0;
+    if (llvm::Error error = changeProgressTerminalSelections(
+            logicalNet, currentTerminalActive, desiredTerminalActive))
+      return error;
+    scratch_->progressTerminalActive_[logicalNet] = desiredTerminalActive;
+  }
+
+  for (PnrIndex logicalNet : scratch_->progressDirtyNets_) {
+    if (scratch_->progressDependencyJournalMarks_[logicalNet] !=
+        scratch_->decisionEpoch_) {
+      scratch_->progressDependencyJournalMarks_[logicalNet] =
+          scratch_->decisionEpoch_;
+      scratch_->progressDependencyDeltas_.push_back(
+          {logicalNet,
+           state_->progressState_
+               .logicalNetRouteDependencyViolationCount(logicalNet)});
+    }
+    if (llvm::Error error =
+            state_->progressState_.refreshLogicalNetRouteDependencies(
+                *state_, logicalNet))
+      return error;
+  }
+  for (PnrIndex logicalNet : scratch_->progressDirtyNets_)
+    scratch_->progressDirtyNetMarks_[logicalNet] = 0;
+  scratch_->progressDirtyNets_.clear();
+  return llvm::Error::success();
+}
+
+void SpatialMoveTransaction::rollbackProgressProjection() noexcept {
+  if (!scratch_)
+    return;
+  for (const SpatialCandidateScratch::ProgressDependencyDelta &delta :
+       llvm::reverse(scratch_->progressDependencyDeltas_))
+    state_->progressState_.restoreLogicalNetRouteDependencyCount(
+        delta.logicalNet, delta.oldCount);
+  for (const SpatialCandidateScratch::ProgressTraversalDelta &delta :
+       llvm::reverse(scratch_->progressTraversalDeltas_))
+    state_->progressState_.revertTraversalDelta(
+        delta.logicalNet, delta.traversal, delta.removed, delta.added);
+  for (PnrIndex logicalNet : scratch_->progressDirtyNets_)
+    scratch_->progressDirtyNetMarks_[logicalNet] = 0;
+  scratch_->progressDirtyNets_.clear();
+  std::fill(scratch_->progressRecordedRouteDeltaCounts_.begin(),
+            scratch_->progressRecordedRouteDeltaCounts_.end(), 0);
+  scratch_->progressTraversalDeltas_.clear();
+  scratch_->progressDependencyDeltas_.clear();
+}
+
+void SpatialMoveTransaction::acceptProgressProjection() noexcept {
+  for (PnrIndex logicalNet : scratch_->progressDirtyNets_)
+    scratch_->progressDirtyNetMarks_[logicalNet] = 0;
+  scratch_->progressDirtyNets_.clear();
+  std::fill(scratch_->progressRecordedRouteDeltaCounts_.begin(),
+            scratch_->progressRecordedRouteDeltaCounts_.end(), 0);
+  scratch_->progressTraversalDeltas_.clear();
+  scratch_->progressDependencyDeltas_.clear();
 }

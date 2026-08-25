@@ -1097,6 +1097,13 @@ llvm::Error RouteTreeTransaction::verify() const {
   return state_->verifyState(true);
 }
 
+llvm::ArrayRef<RouteTreeTraversalDelta>
+RouteTreeTransaction::recordedTraversalDeltas() const {
+  if (!state_ || !scratch_)
+    return {};
+  return scratch_->traversalDeltas_;
+}
+
 llvm::Expected<llvm::ArrayRef<RouteTreeTraversalDelta>>
 RouteTreeTransaction::prepare() {
   if (!state_)
