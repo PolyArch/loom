@@ -624,6 +624,55 @@ void outOfDomainScreeningRemainsMeasuredButInadmissible() {
           "out-of-domain screening was presented as admissible evidence");
 }
 
+void screeningCombinesIndependentLowerBoundSupport() {
+  const auto screeningPoint =
+      [](std::uint64_t resources, std::uint64_t execution,
+         loom::dse::ResourceTimeEstimateSupport support) {
+        return loom::dse::ResourceTimeSpeedupPoint{
+            {resources}, execution, std::nullopt, std::nullopt, 0,
+            0,           0,         support};
+      };
+  std::vector<loom::dse::ResourceTimeRegionFeature> regions{
+      {root(120),
+       {},
+       {screeningPoint(2, 2, loom::dse::ResourceTimeEstimateSupport::Analytic),
+        screeningPoint(1, 3,
+                       loom::dse::ResourceTimeEstimateSupport::Unsupported)},
+       0,
+       false,
+       {}},
+      {root(121),
+       {},
+       {screeningPoint(2, 2, loom::dse::ResourceTimeEstimateSupport::Analytic),
+        screeningPoint(1, 3,
+                       loom::dse::ResourceTimeEstimateSupport::Unsupported)},
+       0,
+       false,
+       {}}};
+  loom::dse::ResourceTimeMappingCandidateInput candidate{
+      digest(120),       0, 2, 2, 2, 2, invocation(), {reference(20)},
+      std::move(regions)};
+  auto bounded = policy();
+  bounded.availableResourceUnits = {2};
+  bounded.maximumMappingFinalists = 1;
+  const auto selected =
+      take(loom::dse::selectResourceTimeMappingFinalists({candidate}, bounded));
+  require(
+      selected.evaluations.size() == 1 &&
+          selected.evaluations.front().screeningLowerBoundPicoseconds == 3 &&
+          selected.evaluations.front().screeningSupport ==
+              loom::dse::ResourceTimeEstimateSupport::Unsupported &&
+          selected.evaluations.front().screeningConfidence ==
+              loom::dse::ResourceTimeEstimateConfidence::None &&
+          selected.accounting.screeningCalibration.comparedCandidates == 1 &&
+          selected.accounting.screeningCalibration.noConfidenceCandidates ==
+              1 &&
+          selected.accounting.screeningCalibration
+                  .screeningAdmissibleCandidates == 0,
+      "mixed-support screening presented an unsupported work bound as "
+      "analytic");
+}
+
 void exactMemoSupportsWarmAndConcurrentReuse() {
   auto bounded = policy();
   bounded.maximumMappingFinalists = 1;
@@ -746,6 +795,7 @@ int main() {
   replayIsDeterministic();
   mappingFunnelAdmitsOnlyBoundedFinalists();
   outOfDomainScreeningRemainsMeasuredButInadmissible();
+  screeningCombinesIndependentLowerBoundSupport();
   exactMemoSupportsWarmAndConcurrentReuse();
   return 0;
 }

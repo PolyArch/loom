@@ -132,6 +132,8 @@ screenCandidate(const ResourceTimeMappingCandidateInput &candidate,
     std::uint64_t minimumWork = std::numeric_limits<std::uint64_t>::max();
     ResourceTimeEstimateSupport minimumDurationSupport =
         ResourceTimeEstimateSupport::Unsupported;
+    ResourceTimeEstimateSupport minimumWorkSupport =
+        ResourceTimeEstimateSupport::Unsupported;
     for (const ResourceTimeSpeedupPoint &point : region.speedupCurve) {
       if (point.resourceUnits.size() != candidate.resourceClasses.size() ||
           allocationMagnitude(point.resourceUnits) == 0)
@@ -151,13 +153,21 @@ screenCandidate(const ResourceTimeMappingCandidateInput &candidate,
         minimumDuration = duration;
         minimumDurationSupport = point.support;
       }
-      minimumWork = std::min(minimumWork, *work);
+      if (*work < minimumWork ||
+          (*work == minimumWork &&
+           estimateSupportRank(point.support) <
+               estimateSupportRank(minimumWorkSupport))) {
+        minimumWork = *work;
+        minimumWorkSupport = point.support;
+      }
     }
     if (!hasFittingPoint && region.allocationDomainExhaustive)
       result.exactCapacityFailure = true;
     if (!hasFittingPoint && !region.allocationDomainExhaustive)
       minimumDurationSupport = ResourceTimeEstimateSupport::Unsupported;
-    result.support = combineSupport(result.support, minimumDurationSupport);
+    result.support =
+        combineSupport(result.support, combineSupport(minimumDurationSupport,
+                                                      minimumWorkSupport));
     result.lowerBoundPicoseconds =
         std::max(result.lowerBoundPicoseconds, minimumDuration);
     const auto total = llvm::checkedAddUnsigned(totalResourceWork, minimumWork);
