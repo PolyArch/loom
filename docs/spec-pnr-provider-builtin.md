@@ -145,6 +145,13 @@ the minimum serial execution capacity. When a memory reservation is present,
 canonical restart zero supplies a deterministic retained-scratch estimate for
 the active problem; that already-required result is retained and is not
 generated again. The shared frozen-problem projection is charged once.
+Root-complete exhaustive ranking may transfer its already constructed
+ordinal-zero seed to this same owner; the handoff is consumed once and its
+initializer and routing work is charged once. The formal owner still performs
+the normal candidate verification. A failed transferred seed retains its typed
+failure and is classified by the formal restart owner without a cold retry.
+Root active-problem diagnostics report both prepared and consumed handoff
+counts so this transfer remains independently auditable.
 `FirstVerifiedCandidate` remains a serial bounded-prefix execution. A plan
 publication bound is applied only after the exhaustive restart sequence and
 cannot reduce, serialize, or reclassify its configured work. Worker allocation
