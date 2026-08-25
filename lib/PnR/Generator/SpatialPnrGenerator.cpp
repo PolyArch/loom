@@ -601,7 +601,7 @@ restartInterrupted(SpatialPnrInterruptionStage stage,
 SpatialRestartResult runSpatialRestartImpl(
     const FrozenSpatialPnrProblemHandle &problem, std::uint32_t attempt,
     ExecutionControlView executionControl, SpatialRestartScratch &scratch,
-  SpatialPathFinderSeedHandoffHandle preparedSeedHandoff = nullptr) {
+    SpatialPathFinderSeedHandoffHandle preparedSeedHandoff = nullptr) {
   SpatialPnrGenerationAccounting accounting;
   if (!preparedSeedHandoff && executionControl.stopRequested())
     return restartInterrupted(SpatialPnrInterruptionStage::SeedConstruction,
