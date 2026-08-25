@@ -147,12 +147,8 @@ executeResourceTimeAdjacentMappingRepair(
   const auto executeIndependent = [&](const JointDesignExplorationPlan &plan,
                                       const JointHardwareReopenRequest &run)
       -> llvm::Expected<JointDesignExecution> {
-    auto scheduler = SiteScheduler::create(run.siteCapacity);
-    if (!scheduler)
-      return scheduler.takeError();
     loom::pnr::PnrDerivedContextSession derivedContextSession;
-    return executeJointPlan(plan, run.evidence, run, *scheduler, artifacts,
-                            blobs);
+    return executeJointRepairPlan(plan, *repairPolicy, run, artifacts, blobs);
   };
   auto coldExecution = executeIndependent(coldPlan, coldRequest);
   if (!coldExecution)
@@ -166,9 +162,9 @@ executeResourceTimeAdjacentMappingRepair(
   execution->summary.incrementalReopenWallTimeNanoseconds =
       execution->summary.executionWallTimeNanoseconds;
   const std::optional<ArtifactRootReference> coldMapping =
-      firstMapping(*coldExecution);
+      coldExecution->summary.selectedMapping;
   const std::optional<ArtifactRootReference> incrementalMapping =
-      firstMapping(*execution);
+      execution->summary.selectedMapping;
   for (const auto *reference : {&coldMapping, &incrementalMapping}) {
     if (!*reference)
       continue;
@@ -179,15 +175,10 @@ executeResourceTimeAdjacentMappingRepair(
         imported->view().fabricIdentity() != system.artifact)
       return invalid("paired resource-time Mapping has foreign owners");
   }
-  coldExecution->summary.selectedMapping = coldMapping;
-  execution->summary.selectedMapping = incrementalMapping;
   const std::vector<ArtifactRootReference> coldMappings =
-      coldMapping ? std::vector<ArtifactRootReference>{*coldMapping}
-                  : std::vector<ArtifactRootReference>{};
+      mappingRoots(*coldExecution);
   const std::vector<ArtifactRootReference> incrementalMappings =
-      incrementalMapping
-          ? std::vector<ArtifactRootReference>{*incrementalMapping}
-          : std::vector<ArtifactRootReference>{};
+      mappingRoots(*execution);
   auto coldVerification = independentlyVerifyChildMappings(
       coldMappings, software.dataflow, system, artifacts);
   if (!coldVerification)
@@ -196,7 +187,6 @@ executeResourceTimeAdjacentMappingRepair(
       incrementalMappings, software.dataflow, system, artifacts);
   if (!incrementalVerification)
     return incrementalVerification.takeError();
-
   std::set<ArtifactIdentity::Storage> preservedTech;
   for (const ArtifactRootReference &reference : *spatialMappings) {
     auto mapping = mapping::importSpatialMapping(reference, artifacts);
@@ -337,15 +327,12 @@ accountSystemColdFallback(JointMappingRebaseAccounting &accounting) {
 
 llvm::Expected<JointDesignExecution>
 executeIndependentMutationPlan(const JointDesignExplorationPlan &plan,
+                               const JointDesignPolicy &policy,
                                const JointHardwareReopenRequest &request,
                                const ArtifactStore &artifacts,
                                const BlobStore &blobs) {
-  auto scheduler = SiteScheduler::create(request.siteCapacity);
-  if (!scheduler)
-    return scheduler.takeError();
   loom::pnr::PnrDerivedContextSession derivedContextSession;
-  return executeJointPlan(plan, request.evidence, request, *scheduler,
-                          artifacts, blobs);
+  return executeJointRepairPlan(plan, policy, request, artifacts, blobs);
 }
 
 llvm::Expected<mapping::SystemMappingImportSessionStatistics>
@@ -778,13 +765,14 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
   llvm::sys::path::append(incrementalJournal, "incremental");
   incrementalRequest.journalRoot = incrementalJournal.str().str();
   auto coldExecution =
-      executeIndependentMutationPlan(*coldPlan, coldRequest, artifacts, blobs);
+      executeIndependentMutationPlan(*coldPlan, policy, coldRequest, artifacts,
+                                     blobs);
   if (!coldExecution)
     return coldExecution.takeError();
   coldExecution->summary.coldReopenWallTimeNanoseconds =
       coldExecution->summary.executionWallTimeNanoseconds;
   auto incrementalExecution = executeIndependentMutationPlan(
-      *incrementalPlan, incrementalRequest, artifacts, blobs);
+      *incrementalPlan, policy, incrementalRequest, artifacts, blobs);
   if (!incrementalExecution)
     return incrementalExecution.takeError();
   applyMappingRebaseAccounting(incrementalExecution->summary,
@@ -794,14 +782,6 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
       mappingRoots(*coldExecution);
   std::vector<ArtifactRootReference> incrementalMappings =
       mappingRoots(*incrementalExecution);
-  if (!coldMappings.empty()) {
-    coldExecution->summary.selectedMapping = coldMappings.front();
-    coldExecution->summary.selectedPlanOrdinal = 0;
-  }
-  if (!incrementalMappings.empty()) {
-    incrementalExecution->summary.selectedMapping = incrementalMappings.front();
-    incrementalExecution->summary.selectedPlanOrdinal = 0;
-  }
   coldExecution->summary.verifiedAlternatives = coldMappings.size();
   incrementalExecution->summary.verifiedAlternatives =
       incrementalMappings.size();
@@ -814,7 +794,6 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
       artifacts);
   if (!incrementalVerification)
     return incrementalVerification.takeError();
-
   mapping_debug::emit(
       mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
       mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
@@ -943,6 +922,10 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
   if (parentPlan.pairOutputs.size() != 1 || request.journalRoot.empty())
     return invalid(
         "operand-buffer hardware repair requires one exact parent pair");
+  if (request.boundedQuality &&
+      request.boundedQuality->maximumHardwareRepairProbes == 0)
+    return invalid("bounded operand-buffer repair requires a positive probe "
+                   "limit");
   auto parentMapping =
       mapping::importSystemMapping(*feedback.parentMapping, artifacts);
   if (!parentMapping)
@@ -999,9 +982,13 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
   decisions.push_back(ResizeTemporalOperandBuffer{
       target.pe, target.candidateEntriesPerAllocationUnit});
   result.candidateLimit = decisions.size();
-  for (std::size_t ordinal = 0; ordinal != decisions.size(); ++ordinal) {
+  if (request.boundedQuality)
+    result.candidateLimit = std::min<std::uint64_t>(
+        result.candidateLimit,
+        request.boundedQuality->maximumHardwareRepairProbes);
+  for (std::size_t ordinal = 0; ordinal != result.candidateLimit; ++ordinal) {
     if (dispatchDeadlineReached(request.executionPolicy)) {
-      const std::uint64_t remaining = decisions.size() - ordinal;
+      const std::uint64_t remaining = result.candidateLimit - ordinal;
       result.candidatesPlanned += remaining;
       result.candidatesReserved += remaining;
       result.candidatesCancelled += remaining;

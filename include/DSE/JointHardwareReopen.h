@@ -12,9 +12,11 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom {
@@ -120,6 +122,32 @@ struct JointHardwareReopenRequest final {
   /// closure and remain ordinary semantic inputs rather than Evidence.
   std::vector<ArtifactRootReference> invocationSemanticInputs;
 };
+
+struct JointRepairQualitySelection final {
+  std::size_t executionOrdinal = 0;
+  ArtifactRootReference mapping;
+};
+
+struct JointRepairQualityIncomplete final {
+  std::size_t executionOrdinal = 0;
+  IncompleteJointDesignQuality incomplete;
+};
+
+using JointRepairQualitySelectionOutcome =
+    std::variant<JointRepairQualitySelection, JointRepairQualityIncomplete>;
+
+/// Selects one already quality-assessed repair Mapping through the same
+/// ObjectiveProgram, Pareto dimensions, and total ordering as the parent
+/// bounded application request. A typed incomplete result blocks selection;
+/// it is never treated as an inferior objective.
+llvm::Expected<JointRepairQualitySelectionOutcome>
+selectJointRepairMappingByQuality(
+    llvm::ArrayRef<JointDesignExecution> executions,
+    const JointBoundedQualityPolicy &quality, const ArtifactStore &artifacts);
+
+llvm::Expected<std::uint64_t> deriveApplicationRuntimeResourceCoreCost(
+    const JointDesignExecution &execution,
+    const ArtifactRootReference &mapping, const ArtifactStore &artifacts);
 
 struct JointResourceTimeAdjacentRepair final {
   ArtifactRootReference parentMapping;

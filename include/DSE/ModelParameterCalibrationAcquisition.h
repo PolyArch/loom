@@ -28,7 +28,7 @@ llvm::Error registerModelParameterCalibrationPromotionAcquisitions();
 llvm::Expected<EvidenceObligationTemplate>
 prepareModelParameterCalibrationEvidenceObligationTemplate(
     ModelParameterCalibrationTarget target, CalibrationPartitionRole partition,
-    evaluation::ExactRatio quantile, const ResolvedConfig &resolvedConfig);
+    const ResolvedConfig &resolvedConfig);
 
 } // namespace loom::dse
 

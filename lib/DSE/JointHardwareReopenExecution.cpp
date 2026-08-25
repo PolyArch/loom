@@ -1,5 +1,7 @@
 #include "JointHardwareReopenExecution.h"
 
+#include "JointHardwareReopenInternal.h"
+
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
@@ -140,6 +142,10 @@ projectInvocationOutcome(const JointDesignExecution &execution,
     return InvocationCompletedNoFeasibleCandidate{};
   return InvocationCompletedSelection{std::move(mappings), {}};
 }
+
+llvm::Expected<std::optional<ArtifactRootReference>>
+finalizeJointRepairSelection(JointDesignExecution &execution,
+                             JointDesignStoppingPolicy stoppingPolicy);
 
 } // namespace
 
@@ -286,6 +292,71 @@ executeJointPlan(const JointDesignExplorationPlan &plan,
     return std::move(error);
   return execution;
 }
+
+llvm::Expected<JointDesignExecution>
+executeJointRepairPlan(const JointDesignExplorationPlan &plan,
+                       const JointDesignPolicy &policy,
+                       JointHardwareReopenRequest request,
+                       const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const JointDesignStoppingPolicy stoppingPolicy = request.stoppingPolicy;
+  llvm::Expected<JointDesignExecution> execution = [&]()
+      -> llvm::Expected<JointDesignExecution> {
+    if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality) {
+      if (!request.boundedQuality)
+        return invalid("bounded repair has no quality policy");
+      request.hardwareExplorationScope =
+          JointHardwareExplorationScope::FixedSystemFrontier;
+      const JointDesignExplorationPlan *planPointer = &plan;
+      return executeJointDesignWithHardwareReopen(
+          llvm::ArrayRef<const JointDesignExplorationPlan *>(&planPointer, 1),
+          policy, std::move(request), artifacts, blobs);
+    }
+    if (request.boundedQuality)
+      return invalid("first-verified repair carries a quality policy");
+    auto scheduler = SiteScheduler::create(request.siteCapacity);
+    if (!scheduler)
+      return scheduler.takeError();
+    return executeJointPlan(plan, request.evidence, request, *scheduler,
+                            artifacts, blobs);
+  }();
+  if (!execution)
+    return execution.takeError();
+  auto selected = finalizeJointRepairSelection(*execution, stoppingPolicy);
+  if (!selected)
+    return selected.takeError();
+  return std::move(*execution);
+}
+
+namespace {
+
+llvm::Expected<std::optional<ArtifactRootReference>>
+finalizeJointRepairSelection(JointDesignExecution &execution,
+                             JointDesignStoppingPolicy stoppingPolicy) {
+  if (stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality) {
+    if (execution.summary.qualityDisposition !=
+        JointDesignQualityDisposition::Complete) {
+      execution.summary.selectedMapping.reset();
+      execution.summary.selectedPlanOrdinal.reset();
+      return std::nullopt;
+    }
+    if (!execution.summary.selectedMapping)
+      return invalid("completed bounded repair has no selected Mapping");
+    const std::vector<ArtifactRootReference> mappings =
+        joint_reopen_detail::mappingRoots(execution);
+    if (!llvm::is_contained(mappings, *execution.summary.selectedMapping))
+      return invalid("bounded repair selected a Mapping outside its output");
+    return execution.summary.selectedMapping;
+  }
+
+  std::optional<ArtifactRootReference> selected =
+      joint_reopen_detail::firstMapping(execution);
+  execution.summary.selectedMapping = selected;
+  execution.summary.selectedPlanOrdinal =
+      selected ? std::optional<std::uint64_t>(0) : std::nullopt;
+  return selected;
+}
+
+} // namespace
 
 llvm::Expected<std::vector<ArtifactRootReference>>
 normalizedTimingProfiles(const ArtifactRootReference &system,

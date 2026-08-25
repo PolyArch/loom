@@ -336,6 +336,15 @@ claim. Runtime-qualified tail invocations retain their own InvocationManifest
 run key and local plan-ordinal base; their observations are never folded into
 the final invocation's `JointDesignExecutionSummary`.
 
+Runtime-feedback repair plans use that same bounded-quality policy before a
+repair Mapping may re-enter Application validation. Each child invocation
+retains its own quality and hardware-promotion observations. The shared
+`ObjectiveProgram`, Pareto dimensions, and final total ordering select the one
+repair Mapping eligible for the Application join. Selection reconstructs the
+validated ObjectiveVector from each child invocation's recorded codes and
+never repeats quality acquisition. Any typed incomplete child blocks that
+selection instead of becoming an inferior numeric objective.
+
 ## Anchor Verification
 
 Stable tests cover exact implementation coupling, separation of implementation

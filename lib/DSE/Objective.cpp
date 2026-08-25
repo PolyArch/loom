@@ -287,6 +287,20 @@ llvm::Expected<ObjectiveProgram> ObjectiveProgram::getCandidateMeasures(
   return program;
 }
 
+llvm::Expected<ObjectiveVector>
+ObjectiveProgram::adoptVectorCodes(llvm::ArrayRef<std::uint64_t> codes) const {
+  if (codes.size() != dimensions_.size())
+    return invalid("recorded ObjectiveVector has the wrong dimension count");
+  ObjectiveVector result = makeVector();
+  for (std::size_t ordinal = 0; ordinal != codes.size(); ++ordinal) {
+    const CompiledDimension &dimension = dimensions_[ordinal];
+    if (codes[ordinal] > dimension.upperIndex - dimension.lowerIndex)
+      return invalid("recorded ObjectiveVector code is outside its dimension");
+    result.codes_[ordinal] = codes[ordinal];
+  }
+  return result;
+}
+
 llvm::Error ObjectiveProgram::evaluate(ObjectiveSourceValues sources,
                                        ObjectiveVector &result) const {
   if (result.codes_.size() != dimensions_.size())
