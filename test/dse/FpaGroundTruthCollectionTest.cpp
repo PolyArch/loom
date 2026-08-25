@@ -45,7 +45,7 @@ using namespace loom::external_tool;
 using namespace loom::hardware;
 
 constexpr llvm::StringLiteral kProviderBuild =
-    "OpenROAD synthetic cbc7678e45cc";
+    "OpenROAD synthetic 21512b0ab68c";
 
 [[noreturn]] void fail(const std::string &message) {
   std::cerr << "DSE ground-truth campaign test failure: " << message << '\n';
