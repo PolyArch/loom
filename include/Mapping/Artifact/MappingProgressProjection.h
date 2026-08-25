@@ -105,12 +105,20 @@ struct MappingProgressActivationProjection final {
   MappingResourceProgressUse arbitration;
 };
 
-/// One selected route dependency whose dependent branch must become durable
-/// after it diverges from its causal prerequisite branch. This value is
-/// rebuilt from the selected route tree and typed Fabric traversals or sink
-/// boundaries; it is not a persisted proof label.
+enum class MappingRouteProgressObligationKind : std::uint8_t {
+  DurableBoundaryAfterDivergence,
+  FiniteBufferRecurrence,
+};
+
+/// One physical progress obligation rebuilt from the selected route trees and
+/// typed Fabric traversals or sink boundaries. An unestablished durable
+/// boundary is a concrete closed-wait witness. An unestablished finite-buffer
+/// recurrence remains incomplete because a finite replay cannot prove general
+/// queue liveness. This value is not a persisted proof label.
 struct MappingRouteProgressObligationProjection final {
-  bool durableBoundaryAfterDivergence = false;
+  MappingRouteProgressObligationKind kind =
+      MappingRouteProgressObligationKind::DurableBoundaryAfterDivergence;
+  bool established = false;
 };
 
 /// The complete removable input to the shared Mapping progress kernel.

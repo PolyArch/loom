@@ -52,19 +52,9 @@ llvm::Expected<PnrIndex> parentSlot(const RouteTreeState &tree, PnrIndex slot) {
   return *parent;
 }
 
-} // namespace
-
-llvm::Expected<bool> loom::pnr::spatialAttachmentProvidesLocalProgressBoundary(
-    const FrozenSpatialPortIndex &ports, PnrIndex attachmentOption) {
-  if (attachmentOption >= ports.attachmentOptions().size())
-    return invalid("attachment option is out of range");
-  return ports.attachmentOptions()[attachmentOption].progressBoundary !=
-         ::loom::mapping::SpatialDurableProgressBoundaryKind::None;
-}
-
-llvm::Expected<bool> loom::pnr::spatialTerminalProvidesLocalProgressBoundary(
-    const SpatialCandidateState &candidate,
-    FrozenSpatialTerminalBinding terminal) {
+llvm::Expected<const FrozenSpatialAttachmentOption *>
+selectedAttachment(const SpatialCandidateState &candidate,
+                   FrozenSpatialTerminalBinding terminal) {
   PnrIndex option = 0;
   switch (terminal.kind) {
   case FrozenSpatialTerminalBindingKind::PortDemand:
@@ -78,8 +68,109 @@ llvm::Expected<bool> loom::pnr::spatialTerminalProvidesLocalProgressBoundary(
     option = candidate.graphBoundaryAttachment(terminal.index);
     break;
   }
-  return spatialAttachmentProvidesLocalProgressBoundary(
-      candidate.problem().ports(), option);
+  if (option >= candidate.problem().ports().attachmentOptions().size())
+    return invalid("selected terminal attachment is out of range");
+  return &candidate.problem().ports().attachmentOptions()[option];
+}
+
+llvm::Expected<std::uint64_t>
+sharedFiniteFifoCount(const SpatialCandidateState &candidate) {
+  struct SelectedFifo final {
+    FabricFifoOccurrenceRef fifo;
+    PnrIndex logicalNet = 0;
+    bool shared = false;
+  };
+  std::vector<SelectedFifo> selectedFifos;
+  std::uint64_t count = 0;
+  const FrozenSpatialPnrProblem &problem = candidate.problem();
+  const auto nets = problem.transfers().logicalNets();
+  const auto sources = problem.transfers().logicalNetSourceBindings();
+  const auto sinks = problem.transfers().logicalNetSinkBindings();
+
+  for (PnrIndex logicalNet = 0; logicalNet < nets.size(); ++logicalNet) {
+    if (logicalNet >= sources.size())
+      return invalid("logical net has no source terminal");
+    const RouteTreeState &tree = candidate.routeTree(logicalNet);
+    if (candidate.usesRegisterFifo(logicalNet) || !tree.isRouted())
+      continue;
+
+    std::vector<FabricFifoOccurrenceRef> routeFifos;
+    const auto appendTraversal = [&](PnrIndex traversal) -> llvm::Error {
+      if (traversal >= problem.routing().traversals().size())
+        return invalid("selected FIFO traversal is out of range");
+      const auto *fifo = std::get_if<FabricFifoTraversalPayload>(
+          &problem.routing().traversals()[traversal].reference.payload);
+      if (!fifo || fifo->mode != FabricFifoTraversalMode::Buffered ||
+          llvm::is_contained(routeFifos, fifo->owner))
+        return llvm::Error::success();
+      routeFifos.push_back(fifo->owner);
+      return llvm::Error::success();
+    };
+    const auto appendTerminal =
+        [&](FrozenSpatialTerminalBinding terminal) -> llvm::Error {
+      auto attachment = selectedAttachment(candidate, terminal);
+      if (!attachment)
+        return attachment.takeError();
+      if ((*attachment)->localTraversal)
+        return appendTraversal(*(*attachment)->localTraversal);
+      return llvm::Error::success();
+    };
+
+    if (llvm::Error error = appendTerminal(sources[logicalNet]))
+      return std::move(error);
+    for (const RouteTreeNode &node : tree.nodeStorage()) {
+      if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+        continue;
+      if (node.parentArc >= problem.routing().routingArcs().size())
+        return invalid("selected route-tree parent arc is out of range");
+      if (llvm::Error error = appendTraversal(
+              problem.routing().routingArcs()[node.parentArc].traversal))
+        return std::move(error);
+    }
+    if (nets[logicalNet].sinkOffset > sinks.size() ||
+        nets[logicalNet].sinkCount > sinks.size() - nets[logicalNet].sinkOffset)
+      return invalid("logical net sink terminal range is inconsistent");
+    for (FrozenSpatialTerminalBinding sink :
+         sinks.slice(nets[logicalNet].sinkOffset, nets[logicalNet].sinkCount))
+      if (llvm::Error error = appendTerminal(sink))
+        return std::move(error);
+
+    for (FabricFifoOccurrenceRef fifo : routeFifos) {
+      auto selected = llvm::find_if(
+          selectedFifos, [&](const auto &use) { return use.fifo == fifo; });
+      if (selected == selectedFifos.end()) {
+        selectedFifos.push_back({fifo, logicalNet, false});
+        continue;
+      }
+      if (selected->logicalNet == logicalNet || selected->shared)
+        continue;
+      if (count == std::numeric_limits<std::uint64_t>::max())
+        return invalid("shared finite FIFO count exceeds u64");
+      ++count;
+      selected->shared = true;
+    }
+  }
+  return count;
+}
+
+} // namespace
+
+llvm::Expected<bool> loom::pnr::spatialAttachmentProvidesLocalProgressBoundary(
+    const FrozenSpatialPortIndex &ports, PnrIndex attachmentOption) {
+  if (attachmentOption >= ports.attachmentOptions().size())
+    return invalid("attachment option is out of range");
+  return ports.attachmentOptions()[attachmentOption].progressBoundary !=
+         ::loom::mapping::SpatialDurableProgressBoundaryKind::None;
+}
+
+llvm::Expected<bool> loom::pnr::spatialTerminalProvidesLocalProgressBoundary(
+    const SpatialCandidateState &candidate,
+    FrozenSpatialTerminalBinding terminal) {
+  auto attachment = selectedAttachment(candidate, terminal);
+  if (!attachment)
+    return attachment.takeError();
+  return (*attachment)->progressBoundary !=
+         ::loom::mapping::SpatialDurableProgressBoundaryKind::None;
 }
 
 llvm::Expected<llvm::ArrayRef<FrozenSpatialProgressPrerequisite>>
@@ -206,7 +297,10 @@ llvm::Expected<bool> loom::pnr::spatialRouteProgressDependencySatisfied(
 
 llvm::Expected<std::uint64_t> loom::pnr::spatialCandidateClosedWaitCount(
     const SpatialCandidateState &candidate) {
-  std::uint64_t count = 0;
+  auto sharedFifos = sharedFiniteFifoCount(candidate);
+  if (!sharedFifos)
+    return sharedFifos.takeError();
+  std::uint64_t count = *sharedFifos;
   const auto nets = candidate.problem().transfers().logicalNets();
   for (PnrIndex logicalNet = 0; logicalNet < nets.size(); ++logicalNet) {
     for (PnrIndex dependent = 0; dependent < nets[logicalNet].sinkCount;

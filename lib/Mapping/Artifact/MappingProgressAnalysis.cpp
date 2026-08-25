@@ -1048,7 +1048,18 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
         MappingProgressClosureReason::CyclicDataflowBasis,
         {}};
   if (llvm::any_of(projection.routeObligations, [](const auto &obligation) {
-        return !obligation.durableBoundaryAfterDivergence;
+        return obligation.kind ==
+                   MappingRouteProgressObligationKind::FiniteBufferRecurrence &&
+               !obligation.established;
+      }))
+    return MappingProgressClosure{
+        MappingProgressClosureKind::ProofNotEstablished,
+        MappingProgressClosureReason::FiniteBufferRecurrenceNotEstablished,
+        {}};
+  if (llvm::any_of(projection.routeObligations, [](const auto &obligation) {
+        return obligation.kind == MappingRouteProgressObligationKind::
+                                      DurableBoundaryAfterDivergence &&
+               !obligation.established;
       }))
     return MappingProgressClosure{
         MappingProgressClosureKind::ProvenClosedWaitSet,
@@ -1495,6 +1506,51 @@ deriveSpatialRouteProgressDependencies(
   return result;
 }
 
+MappingRouteProgressObligationProjection projectSpatialFiniteBufferRecurrence(
+    llvm::ArrayRef<SpatialRouteTreeView> routes) {
+  struct SelectedFifo final {
+    ::loom::fabric::FabricFifoOccurrenceRef fifo;
+    ::dataflow::CanonicalGraphProducerEndpointRef logicalNet;
+  };
+  std::vector<SelectedFifo> selectedFifos;
+
+  for (const SpatialRouteTreeView &route : routes) {
+    std::vector<::loom::fabric::FabricFifoOccurrenceRef> routeFifos;
+    const auto append =
+        [&](const std::optional<::loom::fabric::FabricPhysicalTraversalRef>
+                &traversal) {
+          if (!traversal)
+            return;
+          const auto *fifo =
+              std::get_if<::loom::fabric::FabricFifoTraversalPayload>(
+                  &traversal->payload);
+          if (!fifo ||
+              fifo->mode != ::loom::fabric::FabricFifoTraversalMode::Buffered ||
+              llvm::is_contained(routeFifos, fifo->owner))
+            return;
+          routeFifos.push_back(fifo->owner);
+        };
+    append(route.localTraversal);
+    for (const SpatialRouteNodeView &node : route.nodes)
+      append(node.incomingTraversal);
+    for (const SpatialRouteSinkView &sink : route.sinks)
+      append(sink.localTraversal);
+
+    for (const ::loom::fabric::FabricFifoOccurrenceRef fifo : routeFifos) {
+      const auto selected = llvm::find_if(
+          selectedFifos, [&](const auto &use) { return use.fifo == fifo; });
+      if (selected == selectedFifos.end()) {
+        selectedFifos.push_back({fifo, route.logicalNet});
+        continue;
+      }
+      if (selected->logicalNet != route.logicalNet)
+        return {MappingRouteProgressObligationKind::FiniteBufferRecurrence,
+                false};
+    }
+  }
+  return {MappingRouteProgressObligationKind::FiniteBufferRecurrence, true};
+}
+
 llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
@@ -1515,6 +1571,8 @@ llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     return basis.takeError();
   MappingProgressProjection result;
   result.basis = *basis;
+  result.routeObligations.push_back(
+      projectSpatialFiniteBufferRecurrence(routes));
   auto temporalDispatchDomains =
       deriveSpatialTemporalPeDispatchDomains(fabric, computeBindings);
   if (!temporalDispatchDomains)
@@ -1556,7 +1614,9 @@ llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
                  transfer.sink == net.sinks[dependency.dependentSinkOrdinal];
         });
     if (localTransfer != registerFifoTransfers.end()) {
-      result.routeObligations.push_back({true});
+      result.routeObligations.push_back(
+          {MappingRouteProgressObligationKind::DurableBoundaryAfterDivergence,
+           true});
       continue;
     }
     const auto route = llvm::find_if(routes, [&](const auto &candidate) {
@@ -1602,7 +1662,9 @@ llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
         std::distance(route->sinks.begin(), dependent));
     if (!durable)
       return durable.takeError();
-    result.routeObligations.push_back({*durable});
+    result.routeObligations.push_back(
+        {MappingRouteProgressObligationKind::DurableBoundaryAfterDivergence,
+         *durable});
   }
   return result;
 }
@@ -1709,7 +1771,9 @@ projectSystemTransferRouteProgress(
               route, prerequisiteNode, dependentNode);
           if (!durable)
             return durable.takeError();
-          result.push_back({*durable});
+          result.push_back({MappingRouteProgressObligationKind::
+                                DurableBoundaryAfterDivergence,
+                            *durable});
         }
     }
   }

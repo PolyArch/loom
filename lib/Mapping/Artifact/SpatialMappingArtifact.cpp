@@ -1337,7 +1337,8 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
   case MappingProgressClosureKind::ProvenClosedWaitSet:
     return invalid("HardProgressViolation");
   case MappingProgressClosureKind::ProofNotEstablished:
-    return incomplete("proof_not_established");
+    return incomplete(llvm::Twine("proof_not_established: ") +
+                      mappingProgressClosureReasonSpelling(progress->reason));
   }
 
   return ImportedSpatialView{*techIdentity,
@@ -1694,6 +1695,20 @@ llvm::Expected<SpatialMappingView> SpatialMappingView::import(
       std::move(imported->physicalTagSegments),
       std::move(imported->configuredHardware),
       std::move(imported->handshakeSelection));
+}
+
+bool spatialRouteTreeSelectsTraversal(
+    const SpatialRouteTreeView &route,
+    const ::loom::fabric::FabricPhysicalTraversalRef &traversal) {
+  if (route.localTraversal && *route.localTraversal == traversal)
+    return true;
+  if (llvm::any_of(route.nodes, [&](const SpatialRouteNodeView &node) {
+        return node.incomingTraversal && *node.incomingTraversal == traversal;
+      }))
+    return true;
+  return llvm::any_of(route.sinks, [&](const SpatialRouteSinkView &sink) {
+    return sink.localTraversal && *sink.localTraversal == traversal;
+  });
 }
 
 bool spatialMappingUsesFifoOccurrence(

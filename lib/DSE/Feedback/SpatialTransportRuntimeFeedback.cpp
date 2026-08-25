@@ -31,14 +31,6 @@ alternativeKey(llvm::ArrayRef<std::uint8_t> producer,
   return key;
 }
 
-bool routeSelectsTraversal(
-    const mapping::SpatialRouteTreeView &route,
-    const ::loom::fabric::FabricPhysicalTraversalRef &traversal) {
-  return llvm::any_of(route.nodes, [&](const auto &node) {
-    return node.incomingTraversal && *node.incomingTraversal == traversal;
-  });
-}
-
 llvm::Expected<bool> producerMatchesSemanticActor(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
@@ -195,7 +187,7 @@ deriveSpatialTransportRuntimeFeedback(
           if (llvm::Error error =
                   ::loom::fabric::validateFabricRef(fabric->view(), traversal))
             return error;
-          if (!routeSelectsTraversal(*route, traversal))
+          if (!mapping::spatialRouteTreeSelectsTraversal(*route, traversal))
             continue;
           selectedRuntimeTraversal = true;
           const std::string key = alternativeKey(*encodedProducer, traversal);

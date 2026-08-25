@@ -162,6 +162,13 @@ deriveSpatialRouteProgressDependencies(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping);
 
+/// Projects whether every Buffered FIFO selected by the complete RouteTree
+/// domain belongs to at most one logical net. Multiple logical nets sharing a
+/// finite physical queue require a queue-order recurrence proof that the
+/// current static Mapping model does not establish.
+MappingRouteProgressObligationProjection projectSpatialFiniteBufferRecurrence(
+    llvm::ArrayRef<SpatialRouteTreeView> routes);
+
 llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
