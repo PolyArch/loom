@@ -122,11 +122,9 @@ firstTransportWitness(const SpatialCandidateState &candidate) {
   const FrozenSpatialPnrProblem &problem = candidate.problem();
   const auto &transfers = problem.transfers();
   const auto &routing = problem.routing();
-  for (PnrIndex owner = 0;
-       owner < problem.progressIndex().finiteBufferOwners().size(); ++owner)
-    if (candidate.progress().finiteBufferOwnerConflicts(owner))
-      return TransportWitness{ResolvedPnrViolationKind::HardProgressViolation,
-                              owner};
+  if (const auto owner = candidate.progress().firstFiniteBufferConflictOwner())
+    return TransportWitness{ResolvedPnrViolationKind::HardProgressViolation,
+                            *owner};
   for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
        ++logicalNet)
     if (!candidate.usesRegisterFifo(logicalNet) &&
@@ -1059,15 +1057,15 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     return llvm::Error::success();
   };
   const auto addProgressWitness = [&](PnrIndex owner) -> llvm::Error {
-    if (owner >= problem.progressIndex().finiteBufferOwners().size() ||
-        !candidate.progress().finiteBufferOwnerConflicts(owner))
-      return invocationError("finite-buffer progress witness is no longer live");
-    for (PnrIndex logicalNet = 0;
-         logicalNet < transfers.logicalNets().size(); ++logicalNet)
-      if (candidate.progress().logicalNetSelectsFiniteBufferOwner(logicalNet,
-                                                                  owner))
-        if (llvm::Error error = addWitnessNet(logicalNet))
-          return error;
+    if (llvm::Error error = candidate.rebuildFiniteBufferConflictWitness(
+            owner, hardProgressWitness_))
+      return error;
+    for (PnrIndex logicalNet : hardProgressWitness_.competingLogicalNets)
+      if (llvm::Error error = addWitnessNet(logicalNet))
+        return error;
+    if (hardProgressWitness_.routeAnchors.empty())
+      return invocationError(
+          "finite-buffer progress witness has no route anchor");
     return llvm::Error::success();
   };
 
@@ -1906,6 +1904,8 @@ std::size_t SpatialExactRepairScratch::retainedStorageBytes() const {
          retainedBytes(netIncluded_) + retainedBytes(decisionQueue_) +
          retainedBytes(decisions_) + retainedBytes(relations_) +
          retainedBytes(affectedNets_) +
+         retainedBytes(hardProgressWitness_.competingLogicalNets) +
+         retainedBytes(hardProgressWitness_.routeAnchors) +
          retainedBytes(routeCutCertificate_.forcedNetCuts) +
          retainedCertificateBytes(learnedCutCertificates_) +
          retainedBytes(routeCutBlockedTraversals_) +

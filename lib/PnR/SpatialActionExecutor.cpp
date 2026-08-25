@@ -322,6 +322,9 @@ SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate) {
   explicitRegisterFifoTransfers_.resize(netMarks_.size());
   affectedNets_.clear();
   affectedNets_.reserve(netMarks_.size());
+  hardProgressWitness_.competingLogicalNets.clear();
+  hardProgressWitness_.competingLogicalNets.reserve(netMarks_.size());
+  hardProgressWitness_.routeAnchors.clear();
   routeCostTraversals_.clear();
   routeCostTraversals_.reserve(
       candidate.problem().routing().traversals().size());
@@ -548,22 +551,17 @@ llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
   }
   case ResolvedPnrViolationKind::HardProgressViolation: {
     const PnrIndex owner = action.witnessOrdinal;
-    if (owner >= problem.progressIndex().finiteBufferOwners().size() ||
-        !candidate_->progress().finiteBufferOwnerConflicts(owner))
-      return executorError("finite-buffer progress witness is no longer live");
-    bool marked = false;
-    for (PnrIndex logicalNet = 0;
-         logicalNet < transfers.logicalNets().size(); ++logicalNet) {
-      if (!candidate_->progress().logicalNetSelectsFiniteBufferOwner(
-              logicalNet, owner))
-        continue;
+    if (llvm::Error error = candidate_->rebuildFiniteBufferConflictWitness(
+            owner, hardProgressWitness_))
+      return error;
+    for (PnrIndex logicalNet : hardProgressWitness_.competingLogicalNets) {
       if (llvm::Error error = markNet(logicalNet))
         return error;
-      marked = true;
     }
-    if (!marked)
+    if (hardProgressWitness_.competingLogicalNets.empty() ||
+        hardProgressWitness_.routeAnchors.empty())
       return executorError(
-          "finite-buffer progress witness has no competing logical net");
+          "finite-buffer progress witness has no route closure");
     return llvm::Error::success();
   }
   }
@@ -1793,6 +1791,8 @@ std::size_t SpatialActionExecutorScratch::retainedStorageBytes() const {
          retainedBytes(explicitNetDispositionMarks_) +
          retainedBytes(explicitNetDispositions_) +
          retainedBytes(explicitRegisterFifoTransfers_) +
+         retainedBytes(hardProgressWitness_.competingLogicalNets) +
+         retainedBytes(hardProgressWitness_.routeAnchors) +
          retainedBytes(routeCostTraversals_) +
          retainedBytes(routeCostLogicalNets_) +
          retainedBytes(localTransferClaimBits_) +

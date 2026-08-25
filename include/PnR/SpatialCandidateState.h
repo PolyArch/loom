@@ -289,6 +289,11 @@ public:
   finiteBufferConflictWitnesses() const {
     return progressState_.finiteBufferConflictWitnesses(*this);
   }
+  llvm::Error rebuildFiniteBufferConflictWitness(
+      PnrIndex owner, SpatialFiniteBufferConflictWitness &witness) const {
+    return progressState_.rebuildFiniteBufferConflictWitness(*this, owner,
+                                                             witness);
+  }
   /// Exact selected envelope cache. FrozenSpatialCapacityIndex remains the
   /// sole owner of envelope semantics; these dense views are rebuildable.
   PnrIndex resourceTimeEnvelopeRefcount(PnrIndex envelope) const;

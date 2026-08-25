@@ -730,8 +730,15 @@ RecoverablePlanWorkExecutor::executeGenerate(
     if (llvm::Error error = journal_.markRunning(*key))
       return std::move(error);
     const auto begin = std::chrono::steady_clock::now();
-    const CandidateGeneratorInvocationView invocation(executionControl,
-                                                      outputDemands);
+    const ExecutionResourceBudget executionBudget{
+        lease.claim().cpuCores() == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>(lease.claim().cpuCores()),
+        lease.claim().memoryBytes() == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>(lease.claim().memoryBytes())};
+    const CandidateGeneratorInvocationView invocation(
+        executionControl, outputDemands, executionBudget);
     auto generated =
         invokeCandidateGenerator(inputs, binding, store, blobs, invocation);
     if (!generated) {

@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace loom::pnr {
@@ -38,6 +39,15 @@ struct SpatialFiniteBufferConflictWitness final {
   std::vector<SpatialProgressRouteAnchor> routeAnchors;
 };
 
+struct SpatialProgressStatistics final {
+  std::uint64_t incrementalUpdateCount = 0;
+  std::uint64_t incrementalUpdateWallTimeNanoseconds = 0;
+  std::uint64_t coldVerificationCount = 0;
+  std::uint64_t coldVerificationWallTimeNanoseconds = 0;
+  std::uint64_t coldProgressScanCount = 0;
+  std::uint64_t coldProgressScanWallTimeNanoseconds = 0;
+};
+
 /// Rebuildable exact projection of route-selected durable progress facts.
 /// FrozenSpatialPnrProblem owns the immutable owner/dependency indices. This
 /// state contains only dense ordinals, refcounts, bitsets, and cached totals.
@@ -58,11 +68,13 @@ public:
   }
   PnrIndex finiteBufferOwnerLogicalNetCount(PnrIndex owner) const;
   bool finiteBufferOwnerConflicts(PnrIndex owner) const;
-  bool logicalNetSelectsFiniteBufferOwner(PnrIndex logicalNet,
-                                          PnrIndex owner) const;
+  std::optional<PnrIndex> firstFiniteBufferConflictOwner() const;
+  llvm::Error
+  enumerateFiniteBufferConflictOwners(std::vector<PnrIndex> &owners) const;
   std::uint64_t logicalNetRouteDependencyViolationCount(
       PnrIndex logicalNet) const;
   std::size_t retainedStorageBytes() const;
+  const SpatialProgressStatistics &statistics() const { return statistics_; }
 
   llvm::Error applyTraversalDelta(PnrIndex logicalNet, PnrIndex traversal,
                                   PnrIndex removed, PnrIndex added);
@@ -75,6 +87,9 @@ public:
 
   llvm::Expected<std::vector<SpatialFiniteBufferConflictWitness>>
   finiteBufferConflictWitnesses(const SpatialCandidateState &candidate) const;
+  llvm::Error rebuildFiniteBufferConflictWitness(
+      const SpatialCandidateState &candidate, PnrIndex owner,
+      SpatialFiniteBufferConflictWitness &witness) const;
   llvm::Error verify(const SpatialCandidateState &candidate) const;
 
 private:
@@ -110,6 +125,8 @@ private:
   std::vector<std::uint64_t> netRouteDependencyViolationCounts_;
   std::uint64_t sharedFiniteBufferConflictCount_ = 0;
   std::uint64_t routeDependencyViolationCount_ = 0;
+  bool statisticsEnabled_ = false;
+  mutable SpatialProgressStatistics statistics_;
 
   friend class SpatialCandidateState;
 };

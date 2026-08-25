@@ -519,6 +519,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   const bool firstVerifiedCandidate =
       config->policy().search.completionGoal ==
       ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  const auto applyOutputDemand = [&] {
+    canonicalizeReferences(outputs);
+    if (maximumOutputs && outputs.size() > *maximumOutputs)
+      outputs.erase(outputs.begin() + static_cast<std::size_t>(*maximumOutputs),
+                    outputs.end());
+  };
 
   std::vector<PreparedTechCandidate> preparedCandidates;
   std::vector<::dataflow::GraphRef> candidateGraphs;
@@ -857,7 +863,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     }
     if (firstVerifiedCandidate)
       emitCandidateOrder(prepared, techOrdinal);
-    if (maximumOutputs && outputs.size() >= *maximumOutputs) {
+    if (firstVerifiedCandidate && maximumOutputs &&
+        outputs.size() >= *maximumOutputs) {
       rememberIncomplete(
           CandidateGeneratorIncompleteReason::SemanticLimitReached);
       break;
@@ -871,7 +878,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
             {dataflow, prepared.tech.view(), fabric->view(), *physicalTiming,
              *config, prepared.constraints.view(), store,
              defaultCandidateWorkerCount(), invocation.executionControl(),
-             &*derivedContexts, topology, prepared.activeProblem, false});
+             &*derivedContexts, topology, prepared.activeProblem, false,
+             std::nullopt, invocation.executionBudget()});
     const auto invocationWorkSummary = std::visit(
         [](const auto &value) {
           return spatialPnrCandidateGeneratorWorkSummary(value.accounting);
@@ -889,18 +897,17 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                      std::make_move_iterator(generated->candidates.begin()),
                      std::make_move_iterator(generated->candidates.end()));
       canonicalizeReferences(outputs);
-      const bool droppedOutputs =
-          maximumOutputs && outputs.size() > *maximumOutputs;
+      const bool droppedOutputs = firstVerifiedCandidate && maximumOutputs &&
+                                  outputs.size() > *maximumOutputs;
       if (droppedOutputs)
-        outputs.erase(outputs.begin() +
-                          static_cast<std::size_t>(*maximumOutputs),
-                      outputs.end());
+        applyOutputDemand();
       if (outputs.size() > outputCountBefore)
         addCoveredGraphs(prepared.tech.view().covers(), coveredGraphs);
       if (!hasUncoveredGraph(candidateGraphs, coveredGraphs))
         break;
-      if (droppedOutputs ||
-          (maximumOutputs && outputs.size() >= *maximumOutputs)) {
+      if (firstVerifiedCandidate &&
+          (droppedOutputs ||
+           (maximumOutputs && outputs.size() >= *maximumOutputs))) {
         rememberIncomplete(
             CandidateGeneratorIncompleteReason::SemanticLimitReached);
         break;
@@ -987,11 +994,13 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       break;
     }
     if (std::holds_alternative<::loom::pnr::UnsupportedSpatialPnrGeneration>(
-            outcome))
+            outcome)) {
+      applyOutputDemand();
       return CandidateGeneratorProviderResult{
           incomplete(CandidateGeneratorIncompleteReason::Unsupported,
                      std::move(outputs)),
           std::move(workSummary), encodeFeedback(graphBoundaryFeedback)};
+    }
     if (const auto *invalid =
             std::get_if<::loom::pnr::InvalidSpatialPnrGeneration>(&outcome))
       return llvm::createStringError(
@@ -1006,6 +1015,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
             internal.diagnostic);
   }
 
+  applyOutputDemand();
+
   ::loom::mapping_debug::emit(
       ::loom::mapping_debug::Level::Summary,
       ::loom::mapping_debug::Stage::SpatialPnr,
@@ -1014,7 +1025,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
         fields["statistics_kind"] =
             "root_complete_spatial_candidate_graph_frontier";
         fields["input_candidate_graph_count"] = candidateGraphs.size();
-        fields["published_graph_count"] = coveredGraphs.size();
+        fields["covered_graph_count"] = coveredGraphs.size();
         fields["prepared_tech_mapping_count"] = preparedCandidates.size();
         fields["attempted_tech_mapping_count"] = attemptedTechMappings;
         fields["skipped_covered_tech_mapping_count"] =

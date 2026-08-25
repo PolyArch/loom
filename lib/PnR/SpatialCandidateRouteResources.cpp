@@ -259,8 +259,8 @@ void SpatialMoveTransaction::rollbackProgressProjection() noexcept {
   for (PnrIndex logicalNet : scratch_->progressDirtyNets_)
     scratch_->progressDirtyNetMarks_[logicalNet] = 0;
   scratch_->progressDirtyNets_.clear();
-  std::fill(scratch_->progressRecordedRouteDeltaCounts_.begin(),
-            scratch_->progressRecordedRouteDeltaCounts_.end(), 0);
+  for (PnrIndex logicalNet : scratch_->touchedRoutes_)
+    scratch_->progressRecordedRouteDeltaCounts_[logicalNet] = 0;
   scratch_->progressTraversalDeltas_.clear();
   scratch_->progressDependencyDeltas_.clear();
 }
@@ -269,8 +269,8 @@ void SpatialMoveTransaction::acceptProgressProjection() noexcept {
   for (PnrIndex logicalNet : scratch_->progressDirtyNets_)
     scratch_->progressDirtyNetMarks_[logicalNet] = 0;
   scratch_->progressDirtyNets_.clear();
-  std::fill(scratch_->progressRecordedRouteDeltaCounts_.begin(),
-            scratch_->progressRecordedRouteDeltaCounts_.end(), 0);
+  for (PnrIndex logicalNet : scratch_->touchedRoutes_)
+    scratch_->progressRecordedRouteDeltaCounts_[logicalNet] = 0;
   scratch_->progressTraversalDeltas_.clear();
   scratch_->progressDependencyDeltas_.clear();
 }
