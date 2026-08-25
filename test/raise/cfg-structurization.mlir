@@ -137,6 +137,31 @@
 // LOCAL-LABEL: llvm.func @dead_ingress
 // LOCAL: cf.cond_br %arg0 weights([7, 3])
 // LOCAL: scf.if %arg1
+// LOCAL-LABEL: llvm.func @tagged_dead_ingress
+// LOCAL: cf.cond_br %arg0 weights([8, 2])
+// LOCAL: llvm.blocktag <id = 0>
+// LOCAL: cf.cond_br %arg1
+// LOCAL-NOT: scf.if
+// LOCAL-LABEL: llvm.func @tagged_dead_unrelated
+// LOCAL: scf.if %arg0
+// LOCAL: arith.addi
+// LOCAL: llvm.blocktag <id = 1>
+// LOCAL: llvm.return
+// LOCAL-LABEL: llvm.func @tagged_reachable_then_plain
+// LOCAL: llvm.blocktag <id = 2>
+// LOCAL: scf.if %arg0
+// LOCAL-LABEL: llvm.func @tagged_diamond
+// LOCAL: cf.cond_br %arg0
+// LOCAL: llvm.blocktag <id = 3>
+// LOCAL-NOT: scf.if
+// LOCAL-LABEL: llvm.mlir.global private @tagged_dead_ingress_address
+// LOCAL: llvm.blockaddress <function = @tagged_dead_ingress, tag = <id = 0>>
+// LOCAL-LABEL: llvm.mlir.global private @tagged_dead_unrelated_address
+// LOCAL: llvm.blockaddress <function = @tagged_dead_unrelated, tag = <id = 1>>
+// LOCAL-LABEL: llvm.mlir.global private @tagged_reachable_address
+// LOCAL: llvm.blockaddress <function = @tagged_reachable_then_plain, tag = <id = 2>>
+// LOCAL-LABEL: llvm.mlir.global private @tagged_diamond_address
+// LOCAL: llvm.blockaddress <function = @tagged_diamond, tag = <id = 3>>
 
 //--- counted.ll
 target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
@@ -461,5 +486,86 @@ llvm.func @dead_ingress(%weighted: i1, %plain: i1, %a: i32, %b: i32) -> i32 {
   cf.br ^exit(%b : i32)
 ^exit(%result: i32):
   llvm.return %result : i32
+}
+
+llvm.func @tagged_dead_ingress(%weighted: i1, %plain: i1, %a: i32, %b: i32) -> i32 {
+  cf.cond_br %weighted weights([8, 2]), ^left, ^right
+^left:
+  cf.br ^plain_entry
+^right:
+  cf.br ^plain_entry
+^dead:
+  llvm.blocktag <id = 0>
+  cf.br ^plain_true
+^plain_entry:
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^plain_true:
+  cf.br ^exit(%a : i32)
+^plain_false:
+  cf.br ^exit(%b : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @tagged_dead_unrelated(%plain: i1, %a: i32, %b: i32) -> i32 {
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^dead_entry:
+  %dead_value = arith.addi %a, %b : i32
+  cf.br ^dead_tag(%dead_value : i32)
+^dead_tag(%dead_argument: i32):
+  llvm.blocktag <id = 1>
+  cf.br ^dead_exit(%dead_argument : i32)
+^dead_exit(%dead_result: i32):
+  llvm.return %dead_result : i32
+^plain_true:
+  cf.br ^exit(%a : i32)
+^plain_false:
+  cf.br ^exit(%b : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @tagged_reachable_then_plain(%plain: i1, %a: i32, %b: i32) -> i32 {
+  llvm.blocktag <id = 2>
+  cf.br ^plain_entry
+^plain_entry:
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^plain_true:
+  cf.br ^exit(%a : i32)
+^plain_false:
+  cf.br ^exit(%b : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @tagged_diamond(%plain: i1, %a: i32, %b: i32) -> i32 {
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^plain_true:
+  llvm.blocktag <id = 3>
+  cf.br ^exit(%a : i32)
+^plain_false:
+  cf.br ^exit(%b : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.mlir.global private @tagged_dead_ingress_address() : !llvm.ptr {
+  %address = llvm.blockaddress <function = @tagged_dead_ingress, tag = <id = 0>> : !llvm.ptr
+  llvm.return %address : !llvm.ptr
+}
+
+llvm.mlir.global private @tagged_dead_unrelated_address() : !llvm.ptr {
+  %address = llvm.blockaddress <function = @tagged_dead_unrelated, tag = <id = 1>> : !llvm.ptr
+  llvm.return %address : !llvm.ptr
+}
+
+llvm.mlir.global private @tagged_reachable_address() : !llvm.ptr {
+  %address = llvm.blockaddress <function = @tagged_reachable_then_plain, tag = <id = 2>> : !llvm.ptr
+  llvm.return %address : !llvm.ptr
+}
+
+llvm.mlir.global private @tagged_diamond_address() : !llvm.ptr {
+  %address = llvm.blockaddress <function = @tagged_diamond, tag = <id = 3>> : !llvm.ptr
+  llvm.return %address : !llvm.ptr
 }
 }

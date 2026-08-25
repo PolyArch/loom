@@ -55,17 +55,23 @@
 //     restate a one-target llvm.indirectbr as an unconditional branch;
 //   * a `cf.switch` selector or case value does not fit the structured
 //     switch's index and 64-bit case carriers;
+//   * a block owns llvm.blocktag, whose parent block identity may be observed
+//     by a module-level llvm.blockaddress independently of SSA uses;
 //   * an imported callable holds a value whose type LLVM cannot spell, since
 //     the adapter would otherwise have to state an undefined value of that type
 //     as the stronger `ub.poison`; or
 //   * a loop annotation's owning loop is not exactly identifiable.
 //
 // Every structuring traversal works on a detached clone of the callable op.
-// The whole-callable fast path erases that clone region's unreachable blocks,
-// which is the one cleanup upstream's documented structural preconditions
-// require. Local selection simply ignores unreachable blocks. Each clone is
-// taken from the then-current original and published back into its original
-// callable op only after the complete attempted rewrite succeeds. The walk is
+// Unreachable components with no externally visible block identity are erased
+// from that clone, which is the one cleanup upstream's documented structural
+// preconditions require. An unreachable component containing llvm.blocktag is
+// instead retained because a module-level llvm.blockaddress can observe that
+// identity without an SSA or CFG use. The whole-callable path declines such a
+// clone. A local region may still structure when the retained component does
+// not enter its extraction boundary. Each clone is taken from the then-current
+// original and published back into its original callable op only after the
+// complete attempted rewrite succeeds. The walk is
 // post-order, so a nested callable is structured and published before its
 // enclosing callable: the ancestor is therefore cloned from an original that
 // already holds the structured descendant, and its clone carries that structure
@@ -103,7 +109,6 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/CFGToSCF.h"
-#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -192,6 +197,8 @@ bool acceptsBlockForStructuring(::mlir::Block &block, bool importedLLVMCallable,
                                 uint64_t indexBitwidth) {
   if (importedLLVMCallable && !holdsOnlyLLVMSpellableValues(block))
     return false;
+  if (!block.getOps<::mlir::LLVM::BlockTagOp>().empty())
+    return false;
 
   ::mlir::Operation *terminator = block.getTerminator();
   if (statesBranchWeights(terminator))
@@ -275,6 +282,55 @@ struct LocalRegionPlan final {
 
 using DeclinedLocalRegions =
     ::llvm::SmallVector<::std::pair<::mlir::Block *, ::mlir::Block *>, 4>;
+
+// Remove only unreachable CFG components whose block identity cannot be
+// observed outside the callable. llvm.blockaddress references a blocktag by
+// symbol and integer tag rather than an SSA use, so preserving the complete
+// weakly connected unreachable component is necessary to retain both that
+// identity and the component's internal SSA/branch closure.
+bool eraseUnanchoredUnreachableBlocks(::mlir::Operation *callable,
+                                      ::mlir::Region &region,
+                                      ::mlir::IRRewriter &rewriter) {
+  ::mlir::DominanceInfo dominance(callable);
+  ::llvm::SmallVector<::mlir::Block *, 8> unreachable;
+  ::llvm::SmallVector<::mlir::Block *, 4> worklist;
+  ::llvm::DenseSet<::mlir::Block *> retained;
+  for (::mlir::Block &block : region) {
+    if (dominance.isReachableFromEntry(&block))
+      continue;
+    unreachable.push_back(&block);
+    bool hasBlockIdentity = false;
+    (void)block.walk([&](::mlir::LLVM::BlockTagOp) {
+      hasBlockIdentity = true;
+      return ::mlir::WalkResult::interrupt();
+    });
+    if (hasBlockIdentity && retained.insert(&block).second)
+      worklist.push_back(&block);
+  }
+
+  while (!worklist.empty()) {
+    ::mlir::Block *block = worklist.pop_back_val();
+    auto retain = [&](::mlir::Block *neighbor) {
+      if (!dominance.isReachableFromEntry(neighbor) &&
+          retained.insert(neighbor).second)
+        worklist.push_back(neighbor);
+    };
+    for (::mlir::Block *predecessor : block->getPredecessors())
+      retain(predecessor);
+    for (::mlir::Block *successor : block->getSuccessors())
+      retain(successor);
+  }
+
+  ::llvm::SmallVector<::mlir::Block *, 8> erased;
+  for (::mlir::Block *block : unreachable)
+    if (!retained.contains(block))
+      erased.push_back(block);
+  for (::mlir::Block *block : erased)
+    block->dropAllDefinedValueUses();
+  for (::mlir::Block *block : erased)
+    rewriter.eraseBlock(block);
+  return retained.empty();
+}
 
 bool isDeclinedLocalRegion(const DeclinedLocalRegions &declined,
                            ::mlir::Block *entry, ::mlir::Block *continuation) {
@@ -654,6 +710,11 @@ bool structureLocalRegion(::mlir::Operation *clonedCallable,
   ::llvm::DenseSet<::mlir::Block *> members(plan.blocks.begin(),
                                             plan.blocks.end());
   ::mlir::DominanceInfo originalDominance(clonedCallable);
+  for (::mlir::Block *block : plan.blocks)
+    for (::mlir::Block *predecessor : block->getPredecessors())
+      if (!members.contains(predecessor) &&
+          !originalDominance.isReachableFromEntry(predecessor))
+        return false;
   auto liveOuts =
       collectLocalLiveOuts(callableRegion, plan, members, originalDominance);
   if (!liveOuts)
@@ -807,8 +868,7 @@ bool structureCallableLocally(::mlir::Region &region, bool importedLLVMCallable,
     ::mlir::IRMapping mapping;
     ::mlir::OwningOpRef<::mlir::Operation *> clone(callable->clone(mapping));
     ::mlir::Region &cloneRegion = clone->getRegion(region.getRegionNumber());
-    (void)::mlir::eraseUnreachableBlocks(rewriter, cloneRegion,
-                                         /*recurse=*/false);
+    (void)eraseUnanchoredUnreachableBlocks(clone.get(), cloneRegion, rewriter);
     LocalRegionPlan clonePlan = remapLocalRegionPlan(*localPlan, mapping);
     if (!structureLocalRegion(clone.get(), cloneRegion, clonePlan,
                               importedLLVMCallable, rewriter)) {
@@ -858,8 +918,8 @@ bool structureCallableWhole(::mlir::Region &region, bool importedLLVMCallable,
         loom::raising::candidateLoopHintName);
   }
 
-  (void)::mlir::eraseUnreachableBlocks(rewriter, cloneRegion,
-                                       /*recurse=*/false);
+  if (!eraseUnanchoredUnreachableBlocks(clone.get(), cloneRegion, rewriter))
+    return false;
   ::mlir::DominanceInfo dominance(clone.get());
   CallableStructuring structuring(importedLLVMCallable, cloneAnnotations);
   if (::mlir::failed(
