@@ -829,7 +829,7 @@ as a complete implementation.
 
 These bindings are downstream `HardwareImplementation` facts. They are not
 Fabric `ImplementationInput` dependencies and cannot be used to make that
-reserved-unavailable `loom.fabric 4.x` role legal. An Interconnect
+reserved-unavailable `loom.fabric 6.x` role legal. An Interconnect
 Implementation remains a separate System-level product; provider-owned
 external state for the selected SpatialCore occurrence is selected and
 validated here.

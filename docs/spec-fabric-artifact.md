@@ -14,7 +14,7 @@ loom.fabric 6.0
 
 ArtifactSchemaDescriptor {
   identity = "loom.fabric"
-  version = 5.0
+  version = 6.0
 }
 
 FabricRoot =
@@ -58,9 +58,19 @@ string spelling and the authoring-only `pe_enable`, `instruction_mem`, and
 `per_fu_sw_configs` attributes are not accepted. Selected instruction state
 exists only in the Mapping-derived configured view and ConfigurationImage.
 Because this changes the canonical Module grammar and removes a competing
-configuration authority, the current owner accepts and emits only the exact
-`loom.fabric 6.0` descriptor. There is no 4.x compatibility owner, string
-alias, fallback importer, or in-place upgrade.
+configuration authority, the Version 5.0 owner accepted and emitted only its
+exact descriptor. There was no 4.x compatibility owner, string alias, fallback
+importer, or in-place upgrade.
+
+Version 6.0 is one atomic breaking boundary for System hardware-domain
+membership. A SpatialCore member is occurrence-qualified through the selected
+AccCore and Module domain slot, so two occurrences of one imported Module no
+longer collapse to the same template-local owner. The hardware-domain record,
+canonical System relation, typed member codec, and derived effective-domain
+queries all use that one `FabricHardwareDomainMemberRef` contract.
+Reinterpreting a Version 5.0 member would lose occurrence identity, so the
+current owner accepts and emits only the exact `loom.fabric 6.0` descriptor.
+There is no 5.x compatibility owner, fallback importer, or in-place upgrade.
 
 The 4.0 `fabric.system.connection` relation retains both its Transport and
 MemoryService variants from 3.0. These remain required operation-service
@@ -95,7 +105,7 @@ a known root variant, that variant fails closed as
 `Unsupported(FabricRootProviderUnavailable)`. It cannot fall back to another
 root operation. This is distinct from
 `fabric_artifact_owner_contract_unavailable`, which means the schema itself has
-no enabled owner contract, as for `ImplementationInput` in schema 5.x.
+no enabled owner contract, as for `ImplementationInput` in schema 6.x.
 
 There is no persistent finalized-design wrapper, separate family per variant,
 or generic hardware manifest.
@@ -114,20 +124,20 @@ The dependency-role catalog remains unchanged in `loom.fabric 6.0`:
 ```text
 ImportedModule       = 0
 RefinedSystem        = 1
-ImplementationInput  = 2  // reserved-unavailable in schema 5.x
+ImplementationInput  = 2  // reserved-unavailable in schema 6.x
 ```
 
 A `Module` root admits no direct dependency: every authoring template use is
 fully elaborated into the canonical Module and no `fabric.instantiate`
 survives. A `System` root admits only `ImportedModule`. An
 `InterconnectImplementation` root admits exactly one `RefinedSystem` and no
-other direct dependency in schema 5.x. `ImplementationInput = 2` retains its
-wire ordinal so schema 5.x never renumbers a published discriminant, but it has
+other direct dependency in schema 6.x. `ImplementationInput = 2` retains its
+wire ordinal so schema 6.x never renumbers a published discriminant, but it has
 no accepted artifact family, schema version, root kind, owner-local target
-kind, or dependency-use contract in schema 5.x. It is therefore not an enabled
+kind, or dependency-use contract in schema 6.x. It is therefore not an enabled
 dependency role and cannot appear in a canonical Fabric root.
 
-The enabled schema-5.0 dependency contracts are exact:
+The enabled schema-6.0 dependency contracts are exact:
 
 ```text
 ImportedModule:
@@ -139,8 +149,8 @@ RefinedSystem:
   required root = System
 ```
 
-A `loom.fabric 3.x` or 4.x Module has no 5.0 dependency contract and is rejected
-rather than republished under a new identity without exact finalization.
+A pre-6.0 Module has no 6.0 dependency contract and is rejected rather than
+republished under a new identity without exact finalization.
 Likewise, a `RefinedSystem` dependency cannot cross a Fabric schema version or
 name a Module or InterconnectImplementation root. A later compatible Fabric
 minor version must explicitly publish its own dependency-contract table; role
@@ -159,7 +169,7 @@ ordinal alone never owns those facts.
 
 Dependency use is determined by the static field that contains the compact
 reference. There is no generic dependency-use tag, path, or property bag. The
-closed schema 5.x field catalog is:
+closed schema 6.x field catalog is:
 
 ```text
 System AccCore spatial_core
@@ -296,9 +306,10 @@ bytes("loom.fabric.semantic.v6\0")
 Root variant ordinals are `Module = 0`, `System = 1`, and
 `InterconnectImplementation = 2`. The dependency-role ordinals above and the
 root ordinals are preserved from schema 4.x and immutable throughout schema
-5.x. Counts and lengths are unsigned big-endian values, there is no padding or native layout, and the
-decoder rejects truncation, trailing bytes, noncanonical dependency order,
-duplicates, unused rows, and payload references outside the dependency table.
+6.x. Counts and lengths are unsigned big-endian values, there is no padding or
+native layout, and the decoder rejects truncation, trailing bytes, noncanonical
+dependency order, duplicates, unused rows, and payload references outside the
+dependency table.
 Decoding the known ordinal `ImplementationInput = 2` does not make it legal;
 schema validation rejects it as reserved-unavailable before dependency lookup.
 

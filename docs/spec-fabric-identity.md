@@ -108,7 +108,7 @@ bytes of the named Fabric reference defined in this specification.
 
 One generated Fabric declaration owns this table, the C++ enum, each typed
 codec registration, strict decoder, and validator dispatch. A kind ordinal is
-stable for all schema 5.x versions. New kinds append under a compatible minor
+stable for all schema 6.x versions. New kinds append under a compatible minor
 revision; reordering, deleting, repurposing, or changing a target's payload
 meaning requires a major revision. Root references use their separate Common
 variant and consume no local-kind ordinal.
