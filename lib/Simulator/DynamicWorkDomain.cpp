@@ -172,6 +172,7 @@ DynamicWorkDomain::retire(WorkResponsibility &&responsibility) {
     llvm::report_fatal_error(
         "DynamicWorkDomain invariant failure: inactive live capability");
   control_->active.erase(active);
+  control_->childCursor.erase(responsibility.id_);
   responsibility.control_.reset();
 
   return completed() ? RetirementEffect::DomainCompleted

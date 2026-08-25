@@ -91,8 +91,19 @@ The first closed profile intentionally has no channel endpoint. A work-item ID
 and a channel message position answer different questions, and inventing an
 implicit correspondence would reintroduce sessions, epochs, or hidden queues.
 Memory and explicit atomic/coherence services carry shared irregular state.
-Multi-producer work distribution can be added only with those exact owners,
-not by weakening ordered channel semantics or recursive-thread ownership.
+A bounded execution-local scheduler may distribute queued items among
+transient workers while one `DynamicWorkDomain` remains the responsibility and
+completion owner. Deques, live assignments, cancellation requests, and the
+ordered scheduling trace are Runtime state; they neither alter `WorkItemId` nor
+select Mapping. Serializing those transitions with a host mutex makes queued
+payloads visible to host workers without inventing program-visible memory
+ordering.
+
+This does not admit a program-visible or device-side shared queue, channel
+correspondence, active-item migration, remapping, or compiler/provider
+integration. Those capabilities need their exact semantic and execution
+owners, not weaker ordered channel semantics, recursive-thread ownership, or a
+second DynamicWork completion rule.
 
 ## Why Channel Is A Separate Ordered Carrier
 

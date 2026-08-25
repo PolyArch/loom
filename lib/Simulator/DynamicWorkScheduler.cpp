@@ -4,7 +4,6 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
 
-#include <algorithm>
 #include <utility>
 
 namespace loom::sim {
@@ -92,8 +91,8 @@ void DynamicWorkScheduler::record(DynamicWorkScheduleActionKind kind,
                                   const WorkItemId &item,
                                   std::optional<std::uint32_t> sourceWorker,
                                   std::optional<std::uint32_t> targetWorker) {
-  replay_.push_back(DynamicWorkScheduleAction{nextActionSequence_++, kind, item,
-                                              sourceWorker, targetWorker});
+  replay_.push_back(
+      DynamicWorkScheduleAction{kind, item, sourceWorker, targetWorker});
 }
 
 llvm::Expected<std::optional<DynamicWorkAssignment>>
@@ -101,15 +100,23 @@ DynamicWorkScheduler::acquire(std::uint32_t workerOrdinal) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (llvm::Error error = validateWorker(workerOrdinal))
     return std::move(error);
+  if (llvm::any_of(items_, [workerOrdinal](const auto &entry) {
+        return entry.second.state == ItemState::Active &&
+               entry.second.workerOrdinal == workerOrdinal;
+      }))
+    return reject(DynamicWorkSchedulerError::Kind::WorkerBusy,
+                  "dynamic-work worker already owns an active assignment");
 
   std::uint32_t sourceWorker = workerOrdinal;
   DynamicWorkScheduleActionKind action =
       DynamicWorkScheduleActionKind::AcquireLocal;
   if (queues_[workerOrdinal].empty()) {
     bool found = false;
-    for (std::uint32_t offset = 1; offset < queues_.size(); ++offset) {
-      const std::uint32_t victim =
-          (workerOrdinal + offset) % static_cast<std::uint32_t>(queues_.size());
+    for (std::size_t offset = 1; offset < queues_.size(); ++offset) {
+      const std::uint32_t victim = static_cast<std::uint32_t>(
+          (static_cast<std::uint64_t>(workerOrdinal) +
+           static_cast<std::uint64_t>(offset)) %
+          static_cast<std::uint64_t>(queues_.size()));
       if (!queues_[victim].empty()) {
         sourceWorker = victim;
         action = DynamicWorkScheduleActionKind::Steal;
@@ -175,7 +182,7 @@ DynamicWorkScheduler::publishChild(const DynamicWorkAssignment &parent,
   return DynamicWorkPublishResult{DynamicWorkPublishKind::Published, childId};
 }
 
-llvm::Expected<DynamicWorkCancellationKind>
+llvm::Expected<DynamicWorkCancellationResult>
 DynamicWorkScheduler::requestCancellation(const WorkItemId &item) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto found = items_.find(item);
@@ -185,11 +192,13 @@ DynamicWorkScheduler::requestCancellation(const WorkItemId &item) {
   Item &state = found->second;
   if (state.state == ItemState::Active) {
     if (state.cancellationRequested)
-      return DynamicWorkCancellationKind::AlreadyRequested;
+      return DynamicWorkCancellationResult{
+          DynamicWorkCancellationKind::AlreadyRequested, std::nullopt};
     state.cancellationRequested = true;
     record(DynamicWorkScheduleActionKind::RequestCancellation, item,
            state.workerOrdinal, state.workerOrdinal);
-    return DynamicWorkCancellationKind::RequestedActive;
+    return DynamicWorkCancellationResult{
+        DynamicWorkCancellationKind::RequestedActive, std::nullopt};
   }
 
   auto &queue = queues_[state.workerOrdinal];
@@ -205,7 +214,8 @@ DynamicWorkScheduler::requestCancellation(const WorkItemId &item) {
   items_.erase(found);
   record(DynamicWorkScheduleActionKind::CancelQueued, item, workerOrdinal,
          std::nullopt);
-  return DynamicWorkCancellationKind::CancelledQueued;
+  return DynamicWorkCancellationResult{
+      DynamicWorkCancellationKind::CancelledQueued, *retired};
 }
 
 llvm::Expected<bool> DynamicWorkScheduler::cancellationRequested(
@@ -223,6 +233,16 @@ DynamicWorkScheduler::retireAssignment(DynamicWorkAssignment &&assignment,
   if (llvm::Error error = validateAssignment(assignment))
     return std::move(error);
   auto found = items_.find(assignment.id_);
+  const bool cancellationRequested = found->second.cancellationRequested;
+  if (action == DynamicWorkScheduleActionKind::Complete &&
+      cancellationRequested)
+    return reject(DynamicWorkSchedulerError::Kind::CancellationPending,
+                  "dynamic-work completion has a pending cancellation");
+  if (action == DynamicWorkScheduleActionKind::CancelActive &&
+      !cancellationRequested)
+    return reject(
+        DynamicWorkSchedulerError::Kind::CancellationNotRequested,
+        "dynamic-work cancellation was not requested for this assignment");
   const WorkItemId item = assignment.id_;
   const std::uint32_t workerOrdinal = assignment.workerOrdinal_;
   auto retired = domain_.retire(std::move(*found->second.responsibility));

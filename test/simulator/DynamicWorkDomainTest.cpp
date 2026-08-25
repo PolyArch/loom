@@ -53,6 +53,11 @@ static_assert(std::is_move_constructible<DynamicWorkAssignment>::value,
               "a worker assignment must support ownership transfer");
 static_assert(!std::is_move_assignable<DynamicWorkAssignment>::value,
               "assignment overwrite must not abandon live work");
+static_assert(
+    !std::is_constructible<DynamicWorkCancellationResult,
+                           DynamicWorkCancellationKind,
+                           std::optional<RetirementEffect>>::value,
+    "cancellation callers must not forge contradictory typed outcomes");
 
 static_assert(
     !std::is_invocable<decltype(&DynamicWorkDomain::spawnChild),
@@ -422,19 +427,16 @@ void boundedDequeStealingPreservesLogicalIdentity() {
   auto blocked = takeExpected(scheduler->publishChild(root, {0x53}));
   require(blocked.kind == DynamicWorkPublishKind::WouldBlock && !blocked.child,
           "a full local deque did not provide typed backpressure");
+  expectSchedulerRejected(scheduler->acquire(1), SchedulerKind::WorkerBusy,
+                          "a worker acquired two active assignments");
 
   auto stolenResult = takeExpected(scheduler->acquire(0));
-  auto localResult = takeExpected(scheduler->acquire(1));
-  require(stolenResult && localResult,
-          "published children were not available to workers");
+  require(stolenResult.has_value(),
+          "the published child was not available to a thief");
   DynamicWorkAssignment stolen = std::move(*stolenResult);
-  DynamicWorkAssignment local = std::move(*localResult);
   require(stolen.id() == *first.child && stolen.workerOrdinal() == 0 &&
               stolen.payload().front() == 0x51,
           "stealing did not take the victim deque front");
-  require(local.id() == *second.child && local.workerOrdinal() == 1 &&
-              local.payload().front() == 0x52,
-          "local acquisition did not take the owner deque back");
 
   auto afterCapacity = takeExpected(scheduler->publishChild(root, {0x53}));
   require(afterCapacity.kind == DynamicWorkPublishKind::Published &&
@@ -442,6 +444,16 @@ void boundedDequeStealingPreservesLogicalIdentity() {
               *afterCapacity.child == WorkItemId::child(rootId, 2),
           "backpressure consumed a child identity or failed to recover");
 
+  expectEffect(scheduler->complete(std::move(root)),
+               RetirementEffect::DomainStillActive,
+               "root completion retired its published descendants");
+  auto localResult = takeExpected(scheduler->acquire(1));
+  require(localResult.has_value(),
+          "the local worker did not reacquire published work");
+  DynamicWorkAssignment local = std::move(*localResult);
+  require(local.id() == *afterCapacity.child && local.workerOrdinal() == 1 &&
+              local.payload().front() == 0x53,
+          "local acquisition did not take the owner deque back");
   expectEffect(scheduler->complete(std::move(stolen)),
                RetirementEffect::DomainStillActive,
                "stolen child completion retired unrelated work");
@@ -449,31 +461,39 @@ void boundedDequeStealingPreservesLogicalIdentity() {
                RetirementEffect::DomainStillActive,
                "local child completion retired unrelated work");
   auto lastResult = takeExpected(scheduler->acquire(1));
-  require(lastResult && (*lastResult).id() == *afterCapacity.child,
-          "the recovered child was not replayably queued");
+  require(lastResult && (*lastResult).id() == *second.child,
+          "the remaining child was not replayably queued");
   expectEffect(scheduler->complete(std::move(*lastResult)),
-               RetirementEffect::DomainStillActive,
-               "last child completion retired an active root");
-  expectEffect(scheduler->complete(std::move(root)),
                RetirementEffect::DomainCompleted,
-               "root completion did not close the drained domain");
+               "last child completion did not close the drained domain");
   require(scheduler->completed() && scheduler->activeCount() == 0 &&
               scheduler->queuedCount() == 0,
           "the drained scheduler retained work or completion authority");
 
   const auto replay = scheduler->replay();
-  require(!replay.empty() &&
-              replay.front().kind == DynamicWorkScheduleActionKind::AdmitRoot,
-          "replay did not begin with root admission");
+  const DynamicWorkScheduleActionKind expectedKinds[] = {
+      DynamicWorkScheduleActionKind::AdmitRoot,
+      DynamicWorkScheduleActionKind::Steal,
+      DynamicWorkScheduleActionKind::PublishChild,
+      DynamicWorkScheduleActionKind::PublishChild,
+      DynamicWorkScheduleActionKind::Steal,
+      DynamicWorkScheduleActionKind::PublishChild,
+      DynamicWorkScheduleActionKind::Complete,
+      DynamicWorkScheduleActionKind::AcquireLocal,
+      DynamicWorkScheduleActionKind::Complete,
+      DynamicWorkScheduleActionKind::Complete,
+      DynamicWorkScheduleActionKind::AcquireLocal,
+      DynamicWorkScheduleActionKind::Complete,
+  };
+  require(replay.size() == sizeof(expectedKinds) / sizeof(expectedKinds[0]),
+          "replay retained a rejected or omitted a committed transition");
   for (std::size_t index = 0; index < replay.size(); ++index)
-    require(replay[index].sequence == index,
-            "scheduler replay sequence is not total and gap-free");
-  require(llvm::any_of(replay,
-                       [](const DynamicWorkScheduleAction &action) {
-                         return action.kind ==
-                                DynamicWorkScheduleActionKind::Steal;
-                       }),
-          "scheduler replay omitted the ownership transfer");
+    require(replay[index].kind == expectedKinds[index],
+            "scheduler replay order is not deterministic");
+  require(replay[1].item == rootId && replay[1].sourceWorker == 0 &&
+              replay[1].targetWorker == 1 && replay[4].item == *first.child &&
+              replay[4].sourceWorker == 1 && replay[4].targetWorker == 0,
+          "replay lost a deterministic ownership transfer");
 }
 
 void cancellationRetiresExactlyOneResponsibility() {
@@ -485,17 +505,34 @@ void cancellationRetiresExactlyOneResponsibility() {
   auto child = takeExpected(scheduler->publishChild(root, {0x62}));
   require(child.child.has_value(), "cancellation fixture child was not queued");
 
-  require(takeExpected(scheduler->requestCancellation(*child.child)) ==
-              DynamicWorkCancellationKind::CancelledQueued,
+  auto queuedCancellation =
+      takeExpected(scheduler->requestCancellation(*child.child));
+  require(queuedCancellation.kind() ==
+                  DynamicWorkCancellationKind::CancelledQueued &&
+              queuedCancellation.retirementEffect() ==
+                  RetirementEffect::DomainStillActive,
           "queued cancellation did not retire its responsibility");
   require(scheduler->activeCount() == 1 && scheduler->queuedCount() == 0,
           "queued cancellation changed the root responsibility");
-  require(takeExpected(scheduler->requestCancellation(root.id())) ==
-              DynamicWorkCancellationKind::RequestedActive,
+  auto descendant = takeExpected(scheduler->publishChild(root, {0x64}));
+  require(descendant.kind == DynamicWorkPublishKind::Published &&
+              descendant.child.has_value(),
+          "active cancellation fixture did not publish its descendant");
+  auto activeCancellation =
+      takeExpected(scheduler->requestCancellation(root.id()));
+  require(activeCancellation.kind() ==
+                  DynamicWorkCancellationKind::RequestedActive &&
+              !activeCancellation.retirementEffect(),
           "active cancellation was not delivered as a request");
-  require(takeExpected(scheduler->requestCancellation(root.id())) ==
-              DynamicWorkCancellationKind::AlreadyRequested,
+  auto repeatedCancellation =
+      takeExpected(scheduler->requestCancellation(root.id()));
+  require(repeatedCancellation.kind() ==
+                  DynamicWorkCancellationKind::AlreadyRequested &&
+              !repeatedCancellation.retirementEffect(),
           "repeated active cancellation changed its typed outcome");
+  expectSchedulerRejected(scheduler->complete(std::move(root)),
+                          SchedulerKind::CancellationPending,
+                          "completion bypassed a pending cancellation");
   require(takeExpected(scheduler->cancellationRequested(root)),
           "the worker could not observe its cancellation request");
   auto rejectedPublish = takeExpected(scheduler->publishChild(root, {0x63}));
@@ -504,21 +541,62 @@ void cancellationRetiresExactlyOneResponsibility() {
               !rejectedPublish.child,
           "a cancelled active item published new responsibility");
   expectEffect(scheduler->cancel(std::move(root)),
+               RetirementEffect::DomainStillActive,
+               "active cancellation recursively retired a descendant");
+  auto descendantResult = takeExpected(scheduler->acquire(0));
+  require(descendantResult && descendantResult->id() == *descendant.child,
+          "a surviving descendant was not available after parent cancellation");
+  expectEffect(scheduler->complete(std::move(*descendantResult)),
                RetirementEffect::DomainCompleted,
-               "active cancellation did not complete the drained domain");
+               "the surviving descendant lost the completion transition");
+
+  const auto replay = scheduler->replay();
+  require(replay.size() == 9 &&
+              replay[3].kind == DynamicWorkScheduleActionKind::CancelQueued &&
+              replay[4].kind == DynamicWorkScheduleActionKind::PublishChild &&
+              replay[5].kind ==
+                  DynamicWorkScheduleActionKind::RequestCancellation &&
+              replay[6].kind == DynamicWorkScheduleActionKind::CancelActive &&
+              replay[7].kind == DynamicWorkScheduleActionKind::AcquireLocal &&
+              replay[8].kind == DynamicWorkScheduleActionKind::Complete,
+          "cancellation replay retained a typed no-op or lost retirement");
+}
+
+void queuedRootCancellationCarriesCompletionTransition() {
+  auto scheduler =
+      takeExpected(DynamicWorkScheduler::create(kDispatch, 1, 1, {0x68}));
+  const WorkItemId root = WorkItemId::root(kDispatch);
+  auto cancellation = takeExpected(scheduler->requestCancellation(root));
+  require(cancellation.kind() == DynamicWorkCancellationKind::CancelledQueued &&
+              cancellation.retirementEffect() ==
+                  RetirementEffect::DomainCompleted,
+          "queued root cancellation lost the completion transition");
+  require(scheduler->completed() && scheduler->activeCount() == 0 &&
+              scheduler->queuedCount() == 0,
+          "queued root cancellation left live scheduler state");
+  const auto replay = scheduler->replay();
+  require(replay.size() == 2 && replay[1].item == root &&
+              replay[1].kind == DynamicWorkScheduleActionKind::CancelQueued &&
+              replay[1].sourceWorker == 0 && !replay[1].targetWorker,
+          "queued root cancellation replay is not canonical");
+  expectSchedulerRejected(scheduler->requestCancellation(root),
+                          SchedulerKind::UnknownItem,
+                          "a retired root accepted repeated cancellation");
 }
 
 void assignmentAuthorityCannotCrossSchedulers() {
   auto left =
       takeExpected(DynamicWorkScheduler::create(kDispatch, 1, 1, {0x71}));
-  auto right = takeExpected(DynamicWorkScheduler::create(
-      ThreadDispatchOccurrenceId(8), 1, 1, {0x72}));
+  auto right =
+      takeExpected(DynamicWorkScheduler::create(kDispatch, 1, 1, {0x72}));
   auto leftResult = takeExpected(left->acquire(0));
   auto rightResult = takeExpected(right->acquire(0));
   require(leftResult && rightResult,
           "foreign assignment fixture is incomplete");
   DynamicWorkAssignment leftAssignment = std::move(*leftResult);
   DynamicWorkAssignment rightAssignment = std::move(*rightResult);
+  require(leftAssignment.id() == rightAssignment.id(),
+          "foreign assignment fixture did not collide in logical identity");
 
   expectSchedulerRejected(right->complete(std::move(leftAssignment)),
                           SchedulerKind::InvalidAssignment,
@@ -528,6 +606,12 @@ void assignmentAuthorityCannotCrossSchedulers() {
   expectEffect(left->complete(std::move(leftAssignment)),
                RetirementEffect::DomainCompleted,
                "the rejected assignment lost its original authority");
+  expectSchedulerRejected(left->complete(std::move(leftAssignment)),
+                          SchedulerKind::InvalidAssignment,
+                          "a consumed assignment retired twice");
+  expectSchedulerRejected(right->cancel(std::move(rightAssignment)),
+                          SchedulerKind::CancellationNotRequested,
+                          "an assignment cancelled without a request");
   expectEffect(right->complete(std::move(rightAssignment)),
                RetirementEffect::DomainCompleted,
                "foreign rejection disturbed the peer assignment");
@@ -549,6 +633,7 @@ int main() {
   maximumChildOrdinalPrecedesExhaustion();
   boundedDequeStealingPreservesLogicalIdentity();
   cancellationRetiresExactlyOneResponsibility();
+  queuedRootCancellationCarriesCompletionTransition();
   assignmentAuthorityCannotCrossSchedulers();
   return 0;
 }

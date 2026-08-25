@@ -326,6 +326,11 @@ it does not close a channel or manufacture an EOS message. A concurrently
 receiving consumer that cannot otherwise know when to stop remains unsupported
 unless its payload protocol expresses termination explicitly.
 
+A bounded Runtime scheduler may relocate a queued DynamicWork item between
+transient worker deques, but queue emptiness, worker idleness, cancellation
+requests, and scheduling trace contents are not quiescence. Only the
+`DynamicWorkDomain` responsibility set owns completion.
+
 `dataflow.channel.send` and `dataflow.channel.receive` are InstructionCore
 stored-program operations inside a `dataflow.thread` body and are forbidden in
 a canonical `dataflow.graph`. Send blocks as required to submit one message in
@@ -340,6 +345,11 @@ domains. A `DynamicWork` definition cannot own a channel endpoint or graph
 stream binding. Its `WorkItemId` and responsibility-set termination do not
 define FIFO message identity, source-map coordinates, a channel session, or an
 EOS event.
+
+Stealing a queued DynamicWork item is not a send, receive, competitive channel
+arbitration, endpoint binding, EOS event, or `source_map` correspondence. It
+does not relax the DynamicWork channel restriction or create another route to
+domain completion.
 
 A logical channel has at most one producer/output binding and may have several
 consumer/input bindings. Each consumer binding owns a total deterministic

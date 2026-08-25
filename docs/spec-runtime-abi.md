@@ -116,6 +116,57 @@ implicit thread-body argument, and cannot select Mapping, binary, route, or
 configuration state. Repeated execution of the same root launch therefore
 reuses its persistent bindings while retaining distinct runtime state.
 
+#### Bounded Dynamic Work Scheduling
+
+For one admitted DynamicWork dispatch, the bounded scheduler kernel owns a
+fixed transient worker set, one finite-capacity deque per worker, queue
+placement, live assignment validation, cooperative cancellation delivery, and
+an ordered transition trace. It retains exactly one `DynamicWorkDomain`-issued
+responsibility for every queued or assigned item. `DynamicWorkDomain` remains
+the sole owner of root and child responsibility acquisition, retirement, and
+the collective completion transition. Empty deques, idle workers, cancellation
+requests, and trace position cannot complete the dispatch.
+
+A worker has at most one active assignment. It acquires the back of its local
+deque or, when idle, visits other workers in cyclic ordinal order and steals
+the front of the first nonempty deque. Only queued, not-yet-started items may
+be stolen. The move-only assignment is bound to its scheduler, live item, and
+worker; worker ordinal and queue position remain transient and cannot alter
+`WorkItemId` or select Mapping.
+
+Child publication checks local capacity before asking `DynamicWorkDomain` to
+spawn. A full deque returns typed `WouldBlock` without acquiring responsibility
+or consuming the parent's next child ordinal. The parent may retry only after
+relevant queue state changes. The scheduler mutex serializes publication,
+acquisition, cancellation, and retirement. Its unlock/lock order makes the
+queued payload and responsibility visible to the acquiring host worker, but it
+does not replace program atomics or a selected Fabric memory-consistency
+realization.
+
+The holder of the execution-local scheduler is the cancellation authority; a
+`WorkItemId` passed to that scheduler is only a selector. Queued cancellation
+immediately retires that responsibility and returns the exact
+`RetirementEffect`. Active cancellation is one idempotent request that blocks
+normal completion and later child publication until the assigned worker
+cancels; cancellation without such a request is rejected. It does not
+recursively cancel already published descendants. The ordered trace contains
+successful state-changing transitions and their item, source worker, and
+target worker; its vector position is the sole transition order. Empty
+acquisition, `WouldBlock`, repeated cancellation, and rejected calls add no
+transition.
+
+The worker set and queued capacity are bounded; retained replay history grows
+with committed transitions. Bounded trace retention is not part of this
+standalone kernel.
+
+This scheduler kernel does not define a `ThreadDispatchImage` field, lower
+`dataflow.work.spawn`, evaluate a thread binding for a dynamic item, or connect
+a selected binary to a Runtime provider. It is currently a standalone
+Runtime/Simulator primitive, not production DynamicWork Mapping or execution.
+A path without those adapters remains typed Unsupported. Active safe-point
+migration and remapping are separate contracts and are not inferred from
+queued-item stealing.
+
 The Thread Dispatch provider maintains one bounded transient record per exact
 Deployment target. Target selection addresses that record for submission and
 status queries; it is not the completion identity. A successful submission
@@ -144,8 +195,9 @@ once: those occurrences are ordered, mutually exclusive uses of one compiled
 context, not additional resident contexts. Each occurrence rebuilds its
 invocation wire and memory snapshot after the preceding occurrence completes;
 no mutable wire, queue, CPU, bridge, or engine state is reused as a derived
-fact. A dynamic-bound, nested, non-dense, or over-bound domain remains typed
-Unsupported rather than being truncated or assigned an inferred coordinate.
+fact. A dynamic-bound, nested, over-bound, or non-dense domain, including
+DynamicWork without the required adapters, remains typed Unsupported rather
+than being truncated or assigned an inferred coordinate.
 
 Reachable selected roots need not share one source callable. Generated host
 glue groups the flat rooted-launch set by its exact callable owner while

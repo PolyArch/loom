@@ -30,10 +30,9 @@ enum class DynamicWorkScheduleActionKind : std::uint8_t {
   Complete,
 };
 
-/// One replayable scheduler transition. Worker ordinals are transient
-/// assignments; `item` remains the sole logical work identity.
+/// One scheduler transition in canonical replay order. Worker ordinals are
+/// transient assignments; `item` remains the sole logical work identity.
 struct DynamicWorkScheduleAction final {
-  std::uint64_t sequence = 0;
   DynamicWorkScheduleActionKind kind = DynamicWorkScheduleActionKind::AdmitRoot;
   WorkItemId item;
   std::optional<std::uint32_t> sourceWorker;
@@ -83,14 +82,38 @@ enum class DynamicWorkCancellationKind : std::uint8_t {
   AlreadyRequested,
 };
 
+/// A queued cancellation always carries the exact domain retirement effect;
+/// active request outcomes carry none. Only the scheduler constructs results.
+class DynamicWorkCancellationResult final {
+public:
+  DynamicWorkCancellationKind kind() const { return kind_; }
+  std::optional<RetirementEffect> retirementEffect() const {
+    return retirementEffect_;
+  }
+
+private:
+  friend class DynamicWorkScheduler;
+
+  DynamicWorkCancellationResult(
+      DynamicWorkCancellationKind kind,
+      std::optional<RetirementEffect> retirementEffect)
+      : kind_(kind), retirementEffect_(retirementEffect) {}
+
+  DynamicWorkCancellationKind kind_;
+  std::optional<RetirementEffect> retirementEffect_;
+};
+
 class DynamicWorkSchedulerError final
     : public llvm::ErrorInfo<DynamicWorkSchedulerError> {
 public:
   enum class Kind {
     InvalidConfiguration,
     InvalidWorker,
+    WorkerBusy,
     InvalidAssignment,
     UnknownItem,
+    CancellationPending,
+    CancellationNotRequested,
   };
 
   static char ID;
@@ -115,6 +138,10 @@ private:
 /// release/acquire visibility for payloads and responsibility state. A worker
 /// pops the back of its local deque; an idle worker steals the front of the
 /// first nonempty victim in cyclic ordinal order.
+///
+/// A successful assignment is a linear obligation. Its owner must consume it
+/// through complete or, after a cancellation request, cancel. Destroying the
+/// handle does not retire the domain responsibility.
 class DynamicWorkScheduler final {
 public:
   static llvm::Expected<std::unique_ptr<DynamicWorkScheduler>>
@@ -134,7 +161,7 @@ public:
   publishChild(const DynamicWorkAssignment &parent,
                llvm::ArrayRef<std::uint8_t> payload);
 
-  llvm::Expected<DynamicWorkCancellationKind>
+  llvm::Expected<DynamicWorkCancellationResult>
   requestCancellation(const WorkItemId &item);
 
   llvm::Expected<bool>
@@ -176,7 +203,6 @@ private:
   DynamicWorkDomain domain_;
   std::size_t queueCapacityPerWorker_ = 0;
   std::shared_ptr<const void> ownerIdentity_;
-  std::uint64_t nextActionSequence_ = 0;
   std::vector<std::deque<WorkItemId>> queues_;
   std::map<WorkItemId, Item> items_;
   std::vector<DynamicWorkScheduleAction> replay_;
