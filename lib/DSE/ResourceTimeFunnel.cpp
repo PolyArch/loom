@@ -91,11 +91,46 @@ exactFrontierMemoKey(const ResourceTimeInvocationKey &invocation,
 
 struct ResourceTimeCandidateScreening final {
   std::uint64_t lowerBoundPicoseconds = 0;
+  std::uint64_t criticalPathLowerBoundPicoseconds = 0;
+  std::uint64_t resourceWorkLowerBoundPicoseconds = 0;
   std::uint64_t featureScore = 0;
   ResourceTimeEstimateSupport support =
       ResourceTimeEstimateSupport::Unsupported;
+  ResourceTimeEstimateSupport criticalPathSupport =
+      ResourceTimeEstimateSupport::Unsupported;
+  ResourceTimeEstimateSupport resourceWorkSupport =
+      ResourceTimeEstimateSupport::Unsupported;
+  ResourceTimeEstimateSupport physicalModelSupport =
+      ResourceTimeEstimateSupport::Unsupported;
   bool exactCapacityFailure = false;
 };
+
+void retainMaximumBound(std::uint64_t value,
+                        ResourceTimeEstimateSupport support,
+                        std::uint64_t &maximum,
+                        ResourceTimeEstimateSupport &maximumSupport) {
+  if (value > maximum) {
+    maximum = value;
+    maximumSupport = support;
+  } else if (value == maximum) {
+    maximumSupport = combineSupport(maximumSupport, support);
+  }
+}
+
+std::uint8_t physicalSupportRank(ResourceTimeEstimateSupport support) {
+  switch (support) {
+  case ResourceTimeEstimateSupport::Calibrated:
+    return 0;
+  case ResourceTimeEstimateSupport::Unsupported:
+    return 1;
+  case ResourceTimeEstimateSupport::OutOfDomain:
+    return 2;
+  case ResourceTimeEstimateSupport::Exact:
+  case ResourceTimeEstimateSupport::Analytic:
+    llvm_unreachable("non-physical support passed physical ranking");
+  }
+  llvm_unreachable("unknown resource-time estimate support");
+}
 
 llvm::Expected<ResourceTimeCandidateScreening>
 screenCandidate(const ResourceTimeMappingCandidateInput &candidate,
@@ -103,6 +138,14 @@ screenCandidate(const ResourceTimeMappingCandidateInput &candidate,
   if (candidate.resourceClasses.empty() || candidate.regions.empty() ||
       candidate.resourceClasses.size() != policy.availableResourceUnits.size())
     return invalid("resource-time screening inputs are not aligned");
+  if (candidate.physicalModelSupport !=
+          ResourceTimeEstimateSupport::Calibrated &&
+      candidate.physicalModelSupport !=
+          ResourceTimeEstimateSupport::OutOfDomain &&
+      candidate.physicalModelSupport !=
+          ResourceTimeEstimateSupport::Unsupported)
+    return invalid("resource-time screening has a non-physical model support "
+                   "grade");
   std::uint64_t totalCapacity = 0;
   for (std::uint64_t units : policy.availableResourceUnits) {
     const auto sum = llvm::checkedAddUnsigned(totalCapacity, units);
@@ -114,8 +157,11 @@ screenCandidate(const ResourceTimeMappingCandidateInput &candidate,
     return invalid("resource-time screening has no capacity");
 
   ResourceTimeCandidateScreening result;
-  result.support = ResourceTimeEstimateSupport::Exact;
+  result.physicalModelSupport = candidate.physicalModelSupport;
   std::uint64_t totalResourceWork = 0;
+  ResourceTimeEstimateSupport totalResourceWorkSupport =
+      ResourceTimeEstimateSupport::Exact;
+  bool haveCriticalPathBound = false;
   std::uint64_t featureScore = 0;
   for (const ResourceTimeRegionFeature &region : candidate.regions) {
     if (region.speedupCurve.empty())
@@ -139,34 +185,41 @@ screenCandidate(const ResourceTimeMappingCandidateInput &candidate,
           duration, allocationMagnitude(point.resourceUnits));
       if (!work)
         return invalid("resource-time screening work overflows");
-      if (duration < minimumDuration ||
-          (duration == minimumDuration &&
-           estimateSupportRank(point.support) <
-               estimateSupportRank(minimumDurationSupport))) {
+      if (duration < minimumDuration) {
         minimumDuration = duration;
         minimumDurationSupport = point.support;
+      } else if (duration == minimumDuration) {
+        minimumDurationSupport =
+            combineSupport(minimumDurationSupport, point.support);
       }
-      if (*work < minimumWork ||
-          (*work == minimumWork &&
-           estimateSupportRank(point.support) <
-               estimateSupportRank(minimumWorkSupport))) {
+      if (*work < minimumWork) {
         minimumWork = *work;
         minimumWorkSupport = point.support;
+      } else if (*work == minimumWork) {
+        minimumWorkSupport = combineSupport(minimumWorkSupport, point.support);
       }
     }
     if (!hasFittingPoint && region.allocationDomainExhaustive)
       result.exactCapacityFailure = true;
-    if (!hasFittingPoint && !region.allocationDomainExhaustive)
+    if (!hasFittingPoint && !region.allocationDomainExhaustive) {
       minimumDurationSupport = ResourceTimeEstimateSupport::Unsupported;
-    result.support =
-        combineSupport(result.support, combineSupport(minimumDurationSupport,
-                                                      minimumWorkSupport));
-    result.lowerBoundPicoseconds =
-        std::max(result.lowerBoundPicoseconds, minimumDuration);
+      minimumWorkSupport = ResourceTimeEstimateSupport::Unsupported;
+    }
+    if (!haveCriticalPathBound) {
+      result.criticalPathLowerBoundPicoseconds = minimumDuration;
+      result.criticalPathSupport = minimumDurationSupport;
+      haveCriticalPathBound = true;
+    } else {
+      retainMaximumBound(minimumDuration, minimumDurationSupport,
+                         result.criticalPathLowerBoundPicoseconds,
+                         result.criticalPathSupport);
+    }
     const auto total = llvm::checkedAddUnsigned(totalResourceWork, minimumWork);
     if (!total)
       return invalid("resource-time screening aggregate work overflows");
     totalResourceWork = *total;
+    totalResourceWorkSupport =
+        combineSupport(totalResourceWorkSupport, minimumWorkSupport);
     const auto feature = llvm::checkedAddUnsigned(
         region.analyticFeatures.launchSynchronizationCost,
         region.analyticFeatures.topologyCongestionProxy);
@@ -184,8 +237,12 @@ screenCandidate(const ResourceTimeMappingCandidateInput &candidate,
   }
   const std::uint64_t resourceBound = totalResourceWork / totalCapacity +
                                       (totalResourceWork % totalCapacity != 0);
-  result.lowerBoundPicoseconds =
-      std::max(result.lowerBoundPicoseconds, resourceBound);
+  result.resourceWorkLowerBoundPicoseconds = resourceBound;
+  result.resourceWorkSupport = totalResourceWorkSupport;
+  result.lowerBoundPicoseconds = result.criticalPathLowerBoundPicoseconds;
+  result.support = result.criticalPathSupport;
+  retainMaximumBound(resourceBound, totalResourceWorkSupport,
+                     result.lowerBoundPicoseconds, result.support);
   result.featureScore = featureScore;
   return result;
 }
@@ -336,6 +393,12 @@ llvm::Error validateResourceTimeMappingFunnelAccounting(
           accounting.screeningComparisonCandidates ||
       accounting.screeningAdmissibleCandidates >
           accounting.screeningComparisonCandidates ||
+      accounting.screeningOutOfDomainCandidates >
+          accounting.screeningComparisonCandidates ||
+      accounting.screeningCalibratedPhysicalCandidates >
+          accounting.screeningComparisonCandidates ||
+      accounting.screeningPhysicalOutOfDomainCandidates >
+          accounting.screeningOutOfDomainCandidates ||
       accounting.screeningLowerBoundViolations != 0)
     return invalid("resource-time screening comparison is inconsistent");
   if (accounting.applicationPromotionAccountingComplete &&
@@ -507,13 +570,15 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
     const auto &right = screened[rhs];
     const auto &leftCandidate = candidates[left.index];
     const auto &rightCandidate = candidates[right.index];
-    const auto leftKey = std::tuple(estimateSupportRank(left.screening.support),
-                                    left.screening.lowerBoundPicoseconds,
-                                    left.screening.featureScore,
-                                    leftCandidate.maximumUsefulResourceUnits,
-                                    leftCandidate.candidateIdentity.bytes());
+    const auto leftKey = std::tuple(
+        estimateSupportRank(left.screening.support),
+        physicalSupportRank(left.screening.physicalModelSupport),
+        left.screening.lowerBoundPicoseconds, left.screening.featureScore,
+        leftCandidate.maximumUsefulResourceUnits,
+        leftCandidate.candidateIdentity.bytes());
     const auto rightKey = std::tuple(
         estimateSupportRank(right.screening.support),
+        physicalSupportRank(right.screening.physicalModelSupport),
         right.screening.lowerBoundPicoseconds, right.screening.featureScore,
         rightCandidate.maximumUsefulResourceUnits,
         rightCandidate.candidateIdentity.bytes());
@@ -638,6 +703,16 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
         std::nullopt,
         std::nullopt,
         {}};
+    evaluation.screeningCriticalPathLowerBoundPicoseconds =
+        screenedCandidate.screening.criticalPathLowerBoundPicoseconds;
+    evaluation.screeningCriticalPathSupport =
+        screenedCandidate.screening.criticalPathSupport;
+    evaluation.screeningResourceWorkLowerBoundPicoseconds =
+        screenedCandidate.screening.resourceWorkLowerBoundPicoseconds;
+    evaluation.screeningResourceWorkSupport =
+        screenedCandidate.screening.resourceWorkSupport;
+    evaluation.physicalModelSupport =
+        screenedCandidate.screening.physicalModelSupport;
     if (auto *completed = std::get_if<CompletedResourceTimeFrontier>(outcome)) {
       evaluation.disposition =
           ResourceTimeCandidateFunnelDisposition::Estimated;
@@ -716,26 +791,36 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
       if (evaluations[screenedCandidate.index])
         continue;
       const auto &candidate = candidates[screenedCandidate.index];
-      evaluations[screenedCandidate.index] =
-          ResourceTimeCandidateFunnelEvaluation{
-              candidate.candidateIdentity,
-              candidate.inputPreferenceRank,
-              candidate.acceleratedRegionCount,
-              candidate.acceleratedGraphCount,
-              candidate.acceleratedActorCount,
-              candidate.maximumUsefulResourceUnits,
-              ResourceTimeCandidateFunnelDisposition::Estimated,
-              screenedCandidate.screening.lowerBoundPicoseconds,
-              screenedCandidate.screening.featureScore,
-              screenedCandidate.screening.support,
-              confidenceForSupport(screenedCandidate.screening.support),
-              false,
-              std::nullopt,
-              std::nullopt,
-              {},
-              std::nullopt,
-              std::nullopt,
-              {}};
+      ResourceTimeCandidateFunnelEvaluation evaluation{
+          candidate.candidateIdentity,
+          candidate.inputPreferenceRank,
+          candidate.acceleratedRegionCount,
+          candidate.acceleratedGraphCount,
+          candidate.acceleratedActorCount,
+          candidate.maximumUsefulResourceUnits,
+          ResourceTimeCandidateFunnelDisposition::Estimated,
+          screenedCandidate.screening.lowerBoundPicoseconds,
+          screenedCandidate.screening.featureScore,
+          screenedCandidate.screening.support,
+          confidenceForSupport(screenedCandidate.screening.support),
+          false,
+          std::nullopt,
+          std::nullopt,
+          {},
+          std::nullopt,
+          std::nullopt,
+          {}};
+      evaluation.screeningCriticalPathLowerBoundPicoseconds =
+          screenedCandidate.screening.criticalPathLowerBoundPicoseconds;
+      evaluation.screeningCriticalPathSupport =
+          screenedCandidate.screening.criticalPathSupport;
+      evaluation.screeningResourceWorkLowerBoundPicoseconds =
+          screenedCandidate.screening.resourceWorkLowerBoundPicoseconds;
+      evaluation.screeningResourceWorkSupport =
+          screenedCandidate.screening.resourceWorkSupport;
+      evaluation.physicalModelSupport =
+          screenedCandidate.screening.physicalModelSupport;
+      evaluations[screenedCandidate.index] = std::move(evaluation);
       ++result.accounting.estimatedCandidates;
       ++result.accounting.successiveHalvingDeferredCandidates;
     }
@@ -750,10 +835,18 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
     if (!evaluation.detailedFrontierEvaluated)
       continue;
     ++result.accounting.screeningComparisonCandidates;
-    const bool outOfDomain =
+    const bool timingOutOfDomain =
         evaluation.screeningSupport == ResourceTimeEstimateSupport::OutOfDomain;
+    const bool physicalOutOfDomain = evaluation.physicalModelSupport ==
+                                     ResourceTimeEstimateSupport::OutOfDomain;
+    const bool outOfDomain = timingOutOfDomain || physicalOutOfDomain;
     if (outOfDomain)
       ++result.accounting.screeningOutOfDomainCandidates;
+    if (evaluation.physicalModelSupport ==
+        ResourceTimeEstimateSupport::Calibrated)
+      ++result.accounting.screeningCalibratedPhysicalCandidates;
+    if (physicalOutOfDomain)
+      ++result.accounting.screeningPhysicalOutOfDomainCandidates;
     const bool admissible =
         evaluation.disposition !=
             ResourceTimeCandidateFunnelDisposition::SoundGateRejected &&

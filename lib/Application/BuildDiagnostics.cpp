@@ -641,6 +641,10 @@ resourceTimeFunnelObject(const dse::ResourceTimeMappingFunnel &funnel) {
        accounting.screeningDetailedBestRankMatches},
       {"screening_out_of_domain_candidates",
        accounting.screeningOutOfDomainCandidates},
+      {"screening_calibrated_physical_candidates",
+       accounting.screeningCalibratedPhysicalCandidates},
+      {"screening_physical_out_of_domain_candidates",
+       accounting.screeningPhysicalOutOfDomainCandidates},
       {"maximum_screening_lower_bound_gap_picoseconds",
        accounting.maximumScreeningLowerBoundGapPicoseconds},
       {"mapping_finalists", accounting.mappingFinalists},
@@ -992,12 +996,25 @@ void emitApplicationPlanningDiagnostics(
                   evaluation.disposition);
           row["screening_lower_bound_picoseconds"] =
               evaluation.screeningLowerBoundPicoseconds;
+          row["screening_critical_path_lower_bound_picoseconds"] =
+              evaluation.screeningCriticalPathLowerBoundPicoseconds;
+          row["screening_critical_path_support"] =
+              dse::resourceTimeEstimateSupportSpelling(
+                  evaluation.screeningCriticalPathSupport);
+          row["screening_resource_work_lower_bound_picoseconds"] =
+              evaluation.screeningResourceWorkLowerBoundPicoseconds;
+          row["screening_resource_work_support"] =
+              dse::resourceTimeEstimateSupportSpelling(
+                  evaluation.screeningResourceWorkSupport);
           row["screening_feature_score"] = evaluation.screeningFeatureScore;
           row["screening_support"] = dse::resourceTimeEstimateSupportSpelling(
                   evaluation.screeningSupport);
           row["screening_confidence"] =
               dse::resourceTimeEstimateConfidenceSpelling(
                   evaluation.screeningConfidence);
+          row["physical_model_support"] =
+              dse::resourceTimeEstimateSupportSpelling(
+                  evaluation.physicalModelSupport);
           row["detailed_frontier_evaluated"] =
               evaluation.detailedFrontierEvaluated;
           if (evaluation.concurrencyBounds) {
@@ -1403,6 +1420,11 @@ void emitApplicationMappingDiagnostics(
               resourceTime.screeningDetailedBestRankMatches;
           payload["resource_time_screening_out_of_domain_candidates"] =
               resourceTime.screeningOutOfDomainCandidates;
+          payload["resource_time_screening_calibrated_physical_candidates"] =
+              resourceTime.screeningCalibratedPhysicalCandidates;
+          payload
+              ["resource_time_screening_physical_out_of_domain_candidates"] =
+                  resourceTime.screeningPhysicalOutOfDomainCandidates;
           payload
               ["resource_time_maximum_screening_lower_bound_gap_picoseconds"] =
                   resourceTime.maximumScreeningLowerBoundGapPicoseconds;

@@ -1530,6 +1530,41 @@ exploreStructuredCompilationToPreMapping(
   std::optional<DsePlanIncompleteReason> ownershipIncompleteReason;
   bool dataflowProviderIncomplete = false;
   std::optional<DsePlanIncompleteReason> dataflowIncompleteReason;
+  const auto deriveNoFeasibleCompleteness =
+      [&]() -> llvm::Expected<PreMappingSearchCompleteness> {
+    PreMappingSearchCompleteness completeness;
+    const bool allExactGateRejected =
+        !candidateInventory.empty() &&
+        llvm::all_of(candidateInventory,
+                     [](const PreMappingCandidatePlanningRecord &record) {
+                       return record.disposition ==
+                              PreMappingCandidatePlanningDisposition::
+                                  ExactGateRejected;
+                     });
+    const bool dependenciesComplete = llvm::none_of(
+        protocolDependencyProjection->relations, [](const auto &relation) {
+          return relation.knowledge ==
+                 frontend::analysis::
+                     StructuredProtocolDependencyKnowledge::Unknown;
+        });
+    completeness.domainComplete =
+        allExactGateRejected && !coordinatePlan->truncated &&
+        sourceProtocolRoots->size() <= 4 && dependenciesComplete;
+    if (completeness.domainComplete) {
+      auto recall = evaluatePreMappingShadowRecall(
+          sourceProtocolRoots->size(), *coordinatePlan);
+      if (!recall)
+        return recall.takeError();
+      completeness.domainComplete = recall->missingSubsets.empty();
+    }
+    completeness.budgetComplete = allExactGateRejected;
+    completeness.providerComplete =
+        allExactGateRejected && retainedPlanIncompleteness.empty() &&
+        !ownershipProviderIncomplete && !dataflowProviderIncomplete;
+    completeness.evidenceComplete = allExactGateRejected;
+    completeness.selectionComplete = allExactGateRejected;
+    return completeness;
+  };
   const auto retainedSemanticCandidates = [&]() {
     std::vector<ArtifactRootReference> retained;
     for (const RetainedOwnershipAlternative &alternative :
@@ -2166,6 +2201,9 @@ exploreStructuredCompilationToPreMapping(
                           retainedSemanticCandidates(),
                           std::move(satisfiedEvidence),
                           std::move(planGenerateInvocations));
+    auto completeness = deriveNoFeasibleCompleteness();
+    if (!completeness)
+      return completeness.takeError();
     return PreMappingExplorationOutcome{
         CompletedPreMappingNoFeasibleCandidate{
             std::move(satisfiedEvidence),
@@ -2175,7 +2213,7 @@ exploreStructuredCompilationToPreMapping(
             *workloadReference,
             *runtimeInputReference,
             std::move(candidateInventory),
-            {},
+            std::move(*completeness),
             *frontierPolicyDigest,
             sourceHostOnlyWork}};
   }
@@ -2611,7 +2649,10 @@ exploreStructuredCompilationToPreMapping(
             CandidateGeneratorIncompleteReason::SemanticLimitReached},
         retainedSemanticCandidates(), std::move(satisfiedEvidence),
         std::move(planGenerateInvocations));
-  if (selected.empty())
+  if (selected.empty()) {
+    auto noFeasibleCompleteness = deriveNoFeasibleCompleteness();
+    if (!noFeasibleCompleteness)
+      return noFeasibleCompleteness.takeError();
     return PreMappingExplorationOutcome{CompletedPreMappingNoFeasibleCandidate{
         std::move(satisfiedEvidence),
         std::move(planGenerateInvocations),
@@ -2620,9 +2661,10 @@ exploreStructuredCompilationToPreMapping(
         *workloadReference,
         *runtimeInputReference,
         std::move(candidateInventory),
-        {},
+        std::move(*noFeasibleCompleteness),
         *frontierPolicyDigest,
         sourceHostOnlyWork}};
+  }
   const StructuredOwnershipSharedEvaluationStatistics sharedStatistics =
       sharedEvaluation.statistics();
   mapping_debug::emit(

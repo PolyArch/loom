@@ -169,6 +169,45 @@ void incompleteCausePriority() {
           "unattributed declared work exhaustion lost its fallback");
 }
 
+void noFeasibleOutcomePreservesTypedCause() {
+  using PairDisposition = loom::application::ApplicationPairDecisionDisposition;
+  using PlanningDisposition = loom::dse::PreMappingCandidatePlanningDisposition;
+  using loom::application::build_detail::classifyPreMappingNoFeasibleOutcome;
+
+  loom::dse::CompletedPreMappingNoFeasibleCandidate proofGap;
+  loom::dse::PreMappingCandidatePlanningRecord record;
+  record.disposition = PlanningDisposition::Unknown;
+  record.incompleteReason = loom::dse::DsePlanIncompleteReason{
+      loom::dse::CandidateGeneratorIncompleteReason::ProofNotEstablished};
+  proofGap.candidateInventory.push_back(std::move(record));
+  require(classifyPreMappingNoFeasibleOutcome(proofGap) ==
+              PairDisposition::MappingProofNotEstablished,
+          "no-feasible preparation collapsed a proof gap into budget");
+
+  loom::dse::CompletedPreMappingNoFeasibleCandidate exactRejection;
+  exactRejection.completeness = {true, true, true, true, true};
+  loom::dse::PreMappingCandidatePlanningRecord rejected;
+  rejected.disposition = PlanningDisposition::ExactGateRejected;
+  exactRejection.candidateInventory.push_back(std::move(rejected));
+  require(classifyPreMappingNoFeasibleOutcome(exactRejection) ==
+              PairDisposition::NoPromisingCandidate,
+          "exact candidate rejection became an incomplete outcome");
+
+  exactRejection.completeness.selectionComplete = false;
+  require(classifyPreMappingNoFeasibleOutcome(exactRejection) ==
+              PairDisposition::MappingProofNotEstablished,
+          "partial exact rejection became a complete negative outcome");
+
+  loom::dse::CompletedPreMappingNoFeasibleCandidate heuristicRejection;
+  heuristicRejection.completeness = {false, true, true, true, true};
+  loom::dse::PreMappingCandidatePlanningRecord heuristic;
+  heuristic.disposition = PlanningDisposition::HeuristicPruned;
+  heuristicRejection.candidateInventory.push_back(std::move(heuristic));
+  require(classifyPreMappingNoFeasibleOutcome(heuristicRejection) ==
+              PairDisposition::MappingProofNotEstablished,
+          "heuristic pruning was mislabeled as budget exhaustion");
+}
+
 void qualityDispositionProjection() {
   using PairDisposition = loom::application::ApplicationPairDecisionDisposition;
   using QualityDisposition = loom::dse::JointDesignQualityDisposition;
@@ -269,6 +308,7 @@ int main() {
   typedReasonProjection();
   spectrumSelectionProjection();
   incompleteCausePriority();
+  noFeasibleOutcomePreservesTypedCause();
   qualityDispositionProjection();
   return 0;
 }
