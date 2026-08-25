@@ -147,7 +147,10 @@ source range. This includes the separate preprocessing job created by
 `candidate_hint_unsupported_construct`; the driver does not run a hidden
 second frontend invocation or invent a public preprocessed carrier. Inputs
 without a candidate retain Clang's ordinary preprocessing, dependency, stdin,
-plugin, and failure-artifact behavior.
+plugin, pass-pipeline, and failure-artifact behavior. A code-generating action
+that selects a candidate while disabling LLVM passes likewise returns
+`candidate_hint_unsupported_construct`, because the source provider cannot
+project that target without its pipeline-start pass.
 
 For an internal definition emitted only by the candidate provider, temporary
 retention is released after the relocatable payload is captured. Existing LLVM

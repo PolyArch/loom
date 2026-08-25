@@ -551,7 +551,6 @@ enum class CC1ProgramAction : std::uint8_t {
 
 struct CC1CommandSemantics final {
   CC1ProgramAction action = CC1ProgramAction::Other;
-  bool llvmPassesDisabled = false;
 };
 
 bool isCC1Command(const Command &command) {
@@ -571,7 +570,6 @@ std::optional<CC1CommandSemantics> cc1CommandSemantics(const Command &command) {
                                           diagnostics))
     return std::nullopt;
   CC1CommandSemantics semantics;
-  semantics.llvmPassesDisabled = invocation.getCodeGenOpts().DisableLLVMPasses;
   switch (invocation.getFrontendOpts().ProgramAction) {
   case frontend::EmitAssembly:
     semantics.action = CC1ProgramAction::Assembly;
@@ -606,38 +604,6 @@ bool feedsAssemblerAction(const Compilation &compilation,
     }
   }
   return false;
-}
-
-bool feedsAnotherFrontendAction(const Compilation &compilation,
-                                const Command &producer) {
-  for (const std::string &output : producer.getOutputFilenames()) {
-    if (output.empty())
-      continue;
-    for (const Command &consumer : compilation.getJobs()) {
-      if (&consumer == &producer || !isCC1Command(consumer))
-        continue;
-      if (llvm::any_of(consumer.getInputInfos(), [&](const InputInfo &input) {
-            return input.isFilename() && input.getFilename() == output;
-          }))
-        return true;
-    }
-  }
-  return false;
-}
-
-llvm::Error validateFrontendPassPipelines(const Compilation &compilation) {
-  for (const Command &command : compilation.getJobs()) {
-    auto semantics = cc1CommandSemantics(command);
-    if (!semantics || semantics->action == CC1ProgramAction::Other ||
-        !semantics->llvmPassesDisabled)
-      continue;
-    if (semantics->action == CC1ProgramAction::LLVM &&
-        feedsAnotherFrontendAction(compilation, command))
-      continue;
-    return productError("loom_frontend_projection_unsupported",
-                        "the final LLVM pass pipeline cannot be disabled");
-  }
-  return llvm::Error::success();
 }
 
 llvm::Error appendFrontendPassPlugins(Compilation &compilation,
@@ -951,11 +917,6 @@ static int loom_main(int Argc, char **Argv,
         return 1;
       }
       if (llvm::Error error = rejectReservedCandidateReplayArguments(*C)) {
-        llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(error))
-                     << '\n';
-        return 1;
-      }
-      if (llvm::Error error = validateFrontendPassPipelines(*C)) {
         llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(error))
                      << '\n';
         return 1;

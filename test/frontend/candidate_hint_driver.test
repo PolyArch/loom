@@ -27,6 +27,10 @@
 // RUN: not %loom-cc -fno-integrated-cc1 -Wp,@%t.replay.rsp -fsyntax-only %S/Inputs/candidate_hint_valid.c 2>&1 | FileCheck %s --check-prefix=RESERVED-REPLAY
 // RUN: not %loom-cc -S -emit-llvm -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_valid.c -o %t.disabled.ll 2>&1 | FileCheck %s --check-prefix=DISABLED-PIPELINE
 // RUN: not %loom-cc -c -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_valid.c -o %t.disabled.o 2>&1 | FileCheck %s --check-prefix=DISABLED-PIPELINE
+// RUN: %loom-cc -S -emit-llvm -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_internal.c -o %t.disabled-plain.ll
+// RUN: FileCheck %s --check-prefix=DISABLED-PLAIN --implicit-check-not=loom.candidate < %t.disabled-plain.ll
+// RUN: %loom-cc -c -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_internal.c -o %t.disabled-plain.o
+// RUN: %loom-cc -S -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_internal.c -o %t.disabled-plain.s
 // RUN: %loom-cc -c -Xclang -fsyntax-only -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_valid.c
 // RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_pragma_operator.c 2>&1 | FileCheck %s --check-prefix=PRAGMA-OPERATOR
 // RUN: not %loom-cc -fintegrated-cc1 -save-temps=obj -O0 -S -emit-llvm %S/Inputs/candidate_hint_valid.c -o %t.integrated.ll 2>&1 | FileCheck %s --check-prefix=PREPROCESSING
@@ -172,7 +176,8 @@
 // SYNTAX-GUARD: error: 'case' statement not in switch statement
 // INTERNAL-REPLAY: loom_internal_invocation_invalid: candidate replay argument is unsupported
 // RESERVED-REPLAY: loom_internal_invocation_invalid: candidate replay argument is unsupported
-// DISABLED-PIPELINE: loom_frontend_projection_unsupported: the final LLVM pass pipeline cannot be disabled
+// DISABLED-PIPELINE: candidate_hint_unsupported_construct: candidate projection requires the LLVM pass pipeline
+// DISABLED-PLAIN: target triple =
 // PRAGMA-OPERATOR: candidate_hint_unsupported_construct: '#pragma loom candidate' cannot use a macro pragma introducer
 // DRYCMD: "-cc1"
 // PREPROCESSING: candidate_hint_unsupported_construct: preprocessing-only actions cannot preserve exact candidate source ranges

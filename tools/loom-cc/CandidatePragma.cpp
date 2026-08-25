@@ -639,6 +639,12 @@ private:
       reportRaw(diagnostics, pragmaLocation, message);
       return;
     }
+    if (projectCandidates && compiler.getCodeGenOpts().DisableLLVMPasses) {
+      report(diagnostics, pragmaLocation,
+             CandidateHintErrorKind::UnsupportedConstruct,
+             "candidate projection requires the LLVM pass pipeline");
+      return;
+    }
     if (!projectCandidates)
       return;
     attach(function, std::move(*encoded));
