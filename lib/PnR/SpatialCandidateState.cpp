@@ -1069,9 +1069,15 @@ SpatialCandidateState::projectVerifiedRoutes(
       graphBoundaryAttachments_);
   if (!physicalTiming)
     return physicalTiming.takeError();
-  auto recurrenceTiming = detail::projectSpatialRecurrenceTiming(*this, routes);
-  if (!recurrenceTiming)
-    return recurrenceTiming.takeError();
+  SpatialRecurrenceTimingProjection recurrenceTiming = recurrenceTiming_;
+  if (problem_->objectiveProgram().selectsMeasure(
+          MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)) {
+    auto projectedRecurrence =
+        detail::projectSpatialRecurrenceTiming(*this, routes);
+    if (!projectedRecurrence)
+      return projectedRecurrence.takeError();
+    recurrenceTiming = std::move(*projectedRecurrence);
+  }
   auto tags =
       tagAssignments_.projectVerifiedRoutes(routes, tagSummary != nullptr);
   if (!tags)
@@ -1110,7 +1116,7 @@ SpatialCandidateState::projectVerifiedRoutes(
       routeResources->totalSelectedTraversalClaim(),
       routeResources->routeReleaseLatencyCycles(),
       routeResources->routeMinimumInitiationIntervalCycles(),
-      std::move(*recurrenceTiming),
+      std::move(recurrenceTiming),
       routeResources->transportBitCycleDemand(),
       physicalTiming->worstArrivalDelayQuanta,
       physicalTiming->totalNegativeSlackQuanta,
@@ -1468,12 +1474,16 @@ llvm::Error SpatialCandidateState::verify() const {
           totalRouteNegativeSlackQuanta_)
     return candidateError(
         "cached physical timing diverges from selected routes");
-  auto recurrenceTiming = detail::projectSpatialRecurrenceTiming(*this, routes);
-  if (!recurrenceTiming)
-    return recurrenceTiming.takeError();
-  if (!(*recurrenceTiming == recurrenceTiming_))
-    return candidateError(
-        "cached recurrence timing diverges from selected Mapping");
+  if (problem_->objectiveProgram().selectsMeasure(
+          MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)) {
+    auto recurrenceTiming =
+        detail::projectSpatialRecurrenceTiming(*this, routes);
+    if (!recurrenceTiming)
+      return recurrenceTiming.takeError();
+    if (!(*recurrenceTiming == recurrenceTiming_))
+      return candidateError(
+          "cached recurrence timing diverges from selected Mapping");
+  }
   if (llvm::Error error = tagAssignments_.verify(routeTrees_))
     return error;
   return verifyHandshakeProjection();

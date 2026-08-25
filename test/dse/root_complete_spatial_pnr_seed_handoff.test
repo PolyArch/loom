@@ -1,0 +1,9 @@
+# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-root-complete-spatial-pnr-generator-test canonical-seed-handoff 2>&1 | FileCheck %s
+# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-root-complete-spatial-pnr-generator-test finite-set-traversal 2>&1 | FileCheck --check-prefix=ROOT %s
+
+# CHECK: "prepared_seed_handoff":true
+# CHECK: "statistics_kind":"spatial_pnr_invocation"
+# CHECK: spatial_seed_handoff reused_ordinal=0 memory_calibration=verified seed_slots=4
+
+# ROOT: "rank_seed_handoff_consumed_count":2
+# ROOT: "rank_seed_handoff_count":2

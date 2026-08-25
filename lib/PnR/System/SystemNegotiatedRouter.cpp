@@ -419,6 +419,8 @@ detail::negotiateSystemServiceRoutes(
     return selectedOrder.takeError();
   order = std::move(*selectedOrder);
   std::optional<CanonicalSystemServiceRoutes> previous;
+  std::shared_ptr<const detail::SystemCandidateProjectionCache>
+      previousProjectionCache;
   std::optional<CanonicalSystemServiceRoutes> best;
   std::optional<dse::ObjectiveVector> bestObjective;
   std::optional<dse::ObjectiveVector> bestRankObjective;
@@ -507,12 +509,6 @@ detail::negotiateSystemServiceRoutes(
       return observeArithmeticFailure(built.takeError(), iteration,
                                       "service_route_search", debugStatistics,
                                       closureStatus);
-    auto capacity = problem.capacityModel().project(
-        problem, {threadChoices, graphChoices, built->selections.routes,
-                  built->selections.nodes, built->selections.sinks,
-                  instructionResourceUses, serviceResourceUses});
-    if (!capacity)
-      return capacity.takeError();
     if (isCapacityClosed(topology, built->capacityUsage)) {
       if (llvm::Error error = verifySystemServiceRoutes(
               problem, threadChoices, graphChoices, built->selections.routes,
@@ -531,6 +527,22 @@ detail::negotiateSystemServiceRoutes(
       closureStatus = mapping_debug::ClosureStatus::Closed;
       return std::move(built->selections);
     }
+    const detail::SystemCandidateCapacityProjectionView capacityView{
+        threadChoices,
+        graphChoices,
+        built->selections.routes,
+        built->selections.nodes,
+        built->selections.sinks,
+        instructionResourceUses,
+        serviceResourceUses};
+    llvm::Expected<detail::SystemCandidateProjectionResult> capacity =
+        previousProjectionCache
+            ? problem.capacityModel().projectRouteDelta(
+                  problem, capacityView, *previousProjectionCache)
+            : problem.capacityModel().projectWithCache(problem, capacityView);
+    if (!capacity)
+      return capacity.takeError();
+    previousProjectionCache = capacity->cache;
     const bool admitsTemporary =
         closureRequirement ==
             SystemRoutingClosureRequirement::PolicyAdmittedTemporary &&
@@ -548,9 +560,11 @@ detail::negotiateSystemServiceRoutes(
     if (!recurrence)
       return recurrence.takeError();
     auto objective = problem.objectiveProgram().evaluateSystemProjection(
-        problem, graphChoices, *recurrence, capacity->capacity.total,
-        *traversalClaim, capacity->timing.minimumInitiationIntervalCycles,
-        capacity->timing.transportBitCycleDemand, capacity->progress);
+        problem, graphChoices, *recurrence, capacity->demand.capacity.total,
+        *traversalClaim,
+        capacity->demand.timing.minimumInitiationIntervalCycles,
+        capacity->demand.timing.transportBitCycleDemand,
+        capacity->demand.progress);
     if (!objective)
       return objective.takeError();
     bool selectedRankImproved = !bestRankObjective;

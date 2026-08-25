@@ -1431,9 +1431,10 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
     state_->worstRouteArrivalDelayQuanta_ = worstArrival;
     state_->totalRouteNegativeSlackQuanta_ = totalNegativeSlack;
   }
-  {
-    auto recurrenceTiming =
-        detail::projectSpatialRecurrenceTiming(*state_, scratch_->routeViews_);
+  if (state_->problem().objectiveProgram().selectsMeasure(
+          MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)) {
+    auto recurrenceTiming = detail::projectSpatialRecurrenceTiming(
+        *state_, scratch_->routeViews_);
     if (!recurrenceTiming)
       return recurrenceTiming.takeError();
     state_->recurrenceTiming_ = std::move(*recurrenceTiming);

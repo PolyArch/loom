@@ -139,6 +139,11 @@ public:
   llvm::Expected<dse::ObjectiveSignedDifference>
   selectedEnergyDifference(const dse::ObjectiveVector &left,
                            const dse::ObjectiveVector &right) const;
+  bool selectsMeasure(MappingMeasureKind kind) const {
+    const auto ordinal = static_cast<std::uint32_t>(kind);
+    return ordinal < mappingMeasureKindCount &&
+           (selectedMeasures_ & (UINT64_C(1) << ordinal)) != 0;
+  }
   llvm::Expected<int>
   compareSelectedRank(const dse::ObjectiveVector &left,
                       llvm::ArrayRef<std::uint8_t> leftCandidateKey,
