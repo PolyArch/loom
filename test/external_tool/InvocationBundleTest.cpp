@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -19,6 +20,7 @@
 #include <sstream>
 #include <string>
 #include <sys/wait.h>
+#include <thread>
 #include <tuple>
 #include <unistd.h>
 #include <utility>
@@ -240,6 +242,56 @@ void executionResourceBindingIsExact(const std::filesystem::path &root,
   requireFailureContains(
       __func__, deriveExternalToolExecutionBindingDigest(spec.tool, invalid),
       "runtime binding kind");
+}
+
+struct ExecutionDeadline final {
+  std::chrono::steady_clock::time_point notAfter;
+};
+
+bool executionDeadlineReached(const void *opaque) {
+  return std::chrono::steady_clock::now() >=
+         static_cast<const ExecutionDeadline *>(opaque)->notAfter;
+}
+
+std::optional<std::chrono::steady_clock::duration>
+executionDeadlineRemaining(const void *opaque) {
+  const auto notAfter =
+      static_cast<const ExecutionDeadline *>(opaque)->notAfter;
+  const auto now = std::chrono::steady_clock::now();
+  return now >= notAfter ? std::chrono::steady_clock::duration::zero()
+                         : notAfter - now;
+}
+
+void controlledExecutionStopsTheProcessGroup(
+    const std::filesystem::path &root, const std::filesystem::path &tool) {
+  ExternalToolInvocationBundleSpec spec =
+      baseSpec(tool, "outputs/stopped-result.txt");
+  spec.commands = {{tool.string(), "controlled-block", "outputs/entered",
+                    "outputs/child.pid", "outputs/late",
+                    "outputs/stopped-result.txt"}};
+  const PreparedExternalToolInvocation prepared =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         (root / "controlled-stop").string(), spec));
+  const ExecutionDeadline deadline{std::chrono::steady_clock::now() +
+                                   std::chrono::milliseconds(150)};
+  const loom::ExecutionControlView control{&deadline, executionDeadlineReached,
+                                           executionDeadlineRemaining};
+  const ExternalToolInvocationExecutionObservation observation = take(
+      __func__, executeExternalToolInvocationBundleObserved(prepared, control));
+  require(__func__,
+          observation.exitCode == externalToolExecutionStoppedExitCode &&
+              observation.cacheAvailability ==
+                  ExternalToolResultCacheAvailability::Disabled &&
+              observation.invokedExternalTool,
+          "controlled execution did not report its stopped real dispatch");
+  const std::filesystem::path outputs = root / "controlled-stop" / "outputs";
+  require(__func__, std::filesystem::exists(outputs / "entered"),
+          "controlled fixture did not enter the external tool");
+  require(__func__, !std::filesystem::exists(outputs / "completion.json"),
+          "stopped execution published a completion record");
+  std::this_thread::sleep_for(std::chrono::milliseconds(700));
+  require(__func__, !std::filesystem::exists(outputs / "late"),
+          "a descendant survived the stopped external-tool process group");
 }
 
 void deterministicHostBundleExecutes(const std::filesystem::path &root,
@@ -1832,6 +1884,13 @@ int main(int argc, char **argv) {
       "    while [[ ! -e \"$3\" ]]; do sleep 0.01; done\n"
       "    printf '%s' completed >\"$4\"\n"
       "    ;;\n"
+      "  controlled-block)\n"
+      "    printf '%s' entered >\"$2\"\n"
+      "    (sleep 0.6; printf '%s' late >\"$4\") &\n"
+      "    printf '%s' \"$!\" >\"$3\"\n"
+      "    while :; do sleep 0.01; done\n"
+      "    printf '%s' completed >\"$5\"\n"
+      "    ;;\n"
       "  no-output) : ;;\n"
       "  compile|compile-nonexec|compile-symlink)\n"
       "    mkdir -p -- \"$(dirname -- \"$2\")\"\n"
@@ -1885,6 +1944,7 @@ int main(int argc, char **argv) {
           "could not isolate the cache fixture");
   resultImporterIdentityUsesCanonicalFraming();
   executionResourceBindingIsExact(root, tool);
+  controlledExecutionStopsTheProcessGroup(root, tool);
   deterministicHostBundleExecutes(root, tool);
   toolProducedExecutableLifecycle(root, tool);
   containerBundleExecutes(root, tool, container);

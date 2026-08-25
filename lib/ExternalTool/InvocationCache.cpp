@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -30,10 +31,12 @@
 #include <filesystem>
 #include <optional>
 #include <set>
+#include <signal.h>
 #include <string>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <system_error>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -125,6 +128,48 @@ struct CacheEntry final {
   ExternalToolResultCacheKey key;
   std::vector<CacheFile> files;
 };
+
+struct CacheRootResolution final {
+  std::optional<std::filesystem::path> root;
+  bool executionStopped = false;
+};
+
+struct ScriptExecution final {
+  int exitCode = 0;
+  bool invoked = false;
+};
+
+bool waitForExecutionControl(ExecutionControlView executionControl) {
+  if (executionControl.stopRequested())
+    return false;
+  auto delay = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::milliseconds(10));
+  if (auto remaining = executionControl.remainingTime()) {
+    if (*remaining <= std::chrono::steady_clock::duration::zero())
+      return false;
+    delay = std::min(
+        delay,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(*remaining));
+  }
+  if (delay > std::chrono::steady_clock::duration::zero())
+    std::this_thread::sleep_for(delay);
+  return !executionControl.stopRequested();
+}
+
+llvm::Expected<bool> acquireExclusiveLock(int descriptor,
+                                          ExecutionControlView executionControl,
+                                          bool &waited) {
+  while (::flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
+    if (errno == EINTR)
+      continue;
+    if (errno != EWOULDBLOCK && errno != EAGAIN)
+      return cacheSystemError("cannot acquire cache lock");
+    waited = true;
+    if (!waitForExecutionControl(executionControl))
+      return false;
+  }
+  return true;
+}
 
 void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
   for (int shift = 56; shift >= 0; shift -= 8)
@@ -480,10 +525,11 @@ std::string keyText(const ExternalToolResultCacheKey &key) {
          formatBlobDigestHex(key.toolVersionDigest);
 }
 
-llvm::Expected<std::optional<std::filesystem::path>> cacheRoot() {
+llvm::Expected<CacheRootResolution>
+cacheRoot(ExecutionControlView executionControl) {
   const char *value = std::getenv(kCacheRootEnvironment.str().c_str());
   if (!value || !*value)
-    return std::optional<std::filesystem::path>{};
+    return CacheRootResolution{};
   std::filesystem::path root(value);
   if (!root.is_absolute())
     return cacheError("cache root must be absolute");
@@ -514,11 +560,13 @@ llvm::Expected<std::optional<std::filesystem::path>> cacheRoot() {
              O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600));
   if (initializationLock.get() < 0)
     return cacheSystemError("cannot open cache initialization lock");
-  while (::flock(initializationLock.get(), LOCK_EX) != 0) {
-    if (errno == EINTR)
-      continue;
-    return cacheSystemError("cannot acquire cache initialization lock");
-  }
+  bool waited = false;
+  auto locked =
+      acquireExclusiveLock(initializationLock.get(), executionControl, waited);
+  if (!locked)
+    return locked.takeError();
+  if (!*locked)
+    return CacheRootResolution{std::nullopt, true};
 
   const std::filesystem::path marker = root / kCacheMarkerName.str();
   if (!std::filesystem::exists(marker, error)) {
@@ -590,12 +638,13 @@ llvm::Expected<std::optional<std::filesystem::path>> cacheRoot() {
     if (::chmod(namespacePath.c_str(), S_IRWXU) != 0)
       return cacheSystemError("cannot make cache namespace private");
   }
-  return std::optional<std::filesystem::path>(root);
+  return CacheRootResolution{root, false};
 }
 
-llvm::Expected<CacheLockAcquisition>
+llvm::Expected<std::optional<CacheLockAcquisition>>
 lockKey(const std::filesystem::path &root,
-        const ExternalToolResultCacheKey &key) {
+        const ExternalToolResultCacheKey &key,
+        ExecutionControlView executionControl) {
   const std::string name =
       formatBlobDigestHex(key.inputMaterialDigest) + "." +
       formatBlobDigestHex(key.executionConfigurationDigest) + "." +
@@ -606,20 +655,14 @@ lockKey(const std::filesystem::path &root,
   if (descriptor.get() < 0)
     return cacheSystemError("cannot open cache-key lock");
   bool waited = false;
-  while (::flock(descriptor.get(), LOCK_EX | LOCK_NB) != 0) {
-    if (errno == EINTR)
-      continue;
-    if (errno != EWOULDBLOCK && errno != EAGAIN)
-      return cacheSystemError("cannot acquire cache-key lock");
-    waited = true;
-    while (::flock(descriptor.get(), LOCK_EX) != 0) {
-      if (errno == EINTR)
-        continue;
-      return cacheSystemError("cannot acquire cache-key lock");
-    }
-    break;
-  }
-  return CacheLockAcquisition{CacheLock(std::move(descriptor)), waited};
+  auto locked =
+      acquireExclusiveLock(descriptor.get(), executionControl, waited);
+  if (!locked)
+    return locked.takeError();
+  if (!*locked)
+    return std::optional<CacheLockAcquisition>{};
+  return std::optional<CacheLockAcquisition>(
+      CacheLockAcquisition{CacheLock(std::move(descriptor)), waited});
 }
 
 std::filesystem::path entryPath(const std::filesystem::path &root,
@@ -998,8 +1041,25 @@ llvm::Error publishEntry(const std::filesystem::path &entryRoot,
 
 enum class CacheScriptMode { Execute, Preflight, Postflight };
 
-llvm::Expected<int> runScript(const PreparedExternalToolInvocation &prepared,
-                              CacheScriptMode mode) {
+llvm::Error stopProcessGroup(const llvm::sys::ProcessInfo &process) {
+  const pid_t processId = static_cast<pid_t>(process.Pid);
+  if (::kill(-processId, SIGKILL) != 0) {
+    if (errno != ESRCH)
+      return cacheSystemError("cannot stop generated run-script process group");
+    if (::kill(processId, SIGKILL) != 0 && errno != ESRCH)
+      return cacheSystemError("cannot stop generated run script");
+  }
+  std::string message;
+  const llvm::sys::ProcessInfo waited =
+      llvm::sys::Wait(process, std::nullopt, &message);
+  if (waited.Pid != process.Pid)
+    return cacheError("cannot reap stopped generated run script: " + message);
+  return llvm::Error::success();
+}
+
+llvm::Expected<ScriptExecution>
+runScript(const PreparedExternalToolInvocation &prepared, CacheScriptMode mode,
+          ExecutionControlView executionControl) {
   auto manifest = loadPreparedInvocationManifest(prepared);
   if (!manifest)
     return manifest.takeError();
@@ -1013,13 +1073,37 @@ llvm::Expected<int> runScript(const PreparedExternalToolInvocation &prepared,
     arguments.push_back("--loom-cache-preflight");
   else if (mode == CacheScriptMode::Postflight)
     arguments.push_back("--loom-cache-postflight");
+  if (executionControl.stopRequested())
+    return ScriptExecution{externalToolExecutionStoppedExitCode, false};
   std::string message;
   bool executionFailed = false;
-  const int status = llvm::sys::ExecuteAndWait(
-      *bash, arguments, std::nullopt, {}, 0, 0, &message, &executionFailed);
-  if (executionFailed || status < 0)
+  const llvm::sys::ProcessInfo process =
+      llvm::sys::ExecuteNoWait(*bash, arguments, std::nullopt, {}, 0, &message,
+                               &executionFailed, nullptr, true);
+  if (executionFailed || process.Pid == 0)
     return cacheError("could not execute generated run script: " + message);
-  return status;
+  while (true) {
+    if (executionControl.stopRequested()) {
+      if (llvm::Error error = stopProcessGroup(process))
+        return std::move(error);
+      return ScriptExecution{externalToolExecutionStoppedExitCode, true};
+    }
+    const llvm::sys::ProcessInfo waited =
+        llvm::sys::Wait(process, 0, &message, nullptr, true);
+    if (waited.Pid == process.Pid) {
+      if (waited.ReturnCode < 0)
+        return cacheError("generated run script terminated abnormally: " +
+                          message);
+      return ScriptExecution{waited.ReturnCode, true};
+    }
+    if (waited.Pid != 0)
+      return cacheError("could not wait for generated run script: " + message);
+    if (!waitForExecutionControl(executionControl)) {
+      if (llvm::Error error = stopProcessGroup(process))
+        return std::move(error);
+      return ScriptExecution{externalToolExecutionStoppedExitCode, true};
+    }
+  }
 }
 
 } // namespace
@@ -1047,31 +1131,50 @@ llvm::Expected<ExternalToolResultCacheKey> deriveExternalToolResultCacheKey(
 
 llvm::Expected<ExternalToolInvocationExecutionObservation>
 executeExternalToolInvocationBundleObserved(
-    const PreparedExternalToolInvocation &prepared) {
+    const PreparedExternalToolInvocation &prepared,
+    ExecutionControlView executionControl) {
+  const auto stopped = [](ExternalToolResultCacheAvailability availability,
+                          bool waited, bool invoked) {
+    return ExternalToolInvocationExecutionObservation{
+        externalToolExecutionStoppedExitCode,
+        availability,
+        ExternalToolResultCacheLookup::NotAttempted,
+        ExternalToolResultCacheDiscard::NotAttempted,
+        ExternalToolResultCachePublication::NotAttempted,
+        waited,
+        invoked};
+  };
   auto executeWithoutCache =
       [&](ExternalToolResultCacheAvailability availability,
           bool waitedForCacheKeyLock = false)
       -> llvm::Expected<ExternalToolInvocationExecutionObservation> {
-    auto status = runScript(prepared, CacheScriptMode::Execute);
-    if (!status)
-      return status.takeError();
+    auto execution =
+        runScript(prepared, CacheScriptMode::Execute, executionControl);
+    if (!execution)
+      return execution.takeError();
     return ExternalToolInvocationExecutionObservation{
-        *status,
+        execution->exitCode,
         availability,
         ExternalToolResultCacheLookup::NotAttempted,
         ExternalToolResultCacheDiscard::NotAttempted,
         ExternalToolResultCachePublication::NotAttempted,
         waitedForCacheKeyLock,
-        true};
+        execution->invoked};
   };
-  auto root = cacheRoot();
+  if (executionControl.stopRequested())
+    return stopped(ExternalToolResultCacheAvailability::Unavailable, false,
+                   false);
+  auto root = cacheRoot(executionControl);
   if (!root) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
                     llvm::toString(root.takeError()));
     return executeWithoutCache(
         ExternalToolResultCacheAvailability::Unavailable);
   }
-  if (!*root)
+  if (root->executionStopped)
+    return stopped(ExternalToolResultCacheAvailability::Unavailable, false,
+                   false);
+  if (!root->root)
     return executeWithoutCache(ExternalToolResultCacheAvailability::Disabled);
 
   auto key = deriveExternalToolResultCacheKey(prepared);
@@ -1082,14 +1185,16 @@ executeExternalToolInvocationBundleObserved(
         ExternalToolResultCacheAvailability::Unavailable);
   }
   const std::string keySpelling = keyText(*key);
-  auto lock = lockKey(**root, *key);
+  auto lock = lockKey(*root->root, *key, executionControl);
   if (!lock) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
                     llvm::toString(lock.takeError()));
     return executeWithoutCache(
         ExternalToolResultCacheAvailability::Unavailable);
   }
-  const bool waitedForCacheKeyLock = lock->waited;
+  if (!*lock)
+    return stopped(ExternalToolResultCacheAvailability::Available, true, false);
+  const bool waitedForCacheKeyLock = (**lock).waited;
 
   auto loaded = loadPreparedInvocationManifest(prepared);
   if (!loaded) {
@@ -1098,7 +1203,7 @@ executeExternalToolInvocationBundleObserved(
     return executeWithoutCache(ExternalToolResultCacheAvailability::Unavailable,
                                waitedForCacheKeyLock);
   }
-  const std::filesystem::path entry = entryPath(**root, *key);
+  const std::filesystem::path entry = entryPath(*root->root, *key);
   std::error_code statusError;
   const bool entryExists = std::filesystem::exists(entry, statusError);
   if (statusError) {
@@ -1110,12 +1215,16 @@ executeExternalToolInvocationBundleObserved(
   ExternalToolResultCacheDiscard discard =
       ExternalToolResultCacheDiscard::NotAttempted;
   if (entryExists) {
-    auto preflight = runScript(prepared, CacheScriptMode::Preflight);
+    auto preflight =
+        runScript(prepared, CacheScriptMode::Preflight, executionControl);
     if (!preflight)
       return preflight.takeError();
-    if (*preflight != 0)
+    if (preflight->exitCode == externalToolExecutionStoppedExitCode)
+      return stopped(ExternalToolResultCacheAvailability::Available,
+                     waitedForCacheKeyLock, preflight->invoked);
+    if (preflight->exitCode != 0)
       return ExternalToolInvocationExecutionObservation{
-          *preflight,
+          preflight->exitCode,
           ExternalToolResultCacheAvailability::Available,
           ExternalToolResultCacheLookup::Miss,
           discard,
@@ -1143,12 +1252,22 @@ executeExternalToolInvocationBundleObserved(
                           : ExternalToolResultCacheDiscard::Discarded;
   }
   cacheDiagnostic(DiagnosticVerbosity::Summary, "miss", keySpelling);
-  auto status = runScript(prepared, CacheScriptMode::Execute);
-  if (!status)
-    return status.takeError();
-  if (*status != 0)
+  auto execution =
+      runScript(prepared, CacheScriptMode::Execute, executionControl);
+  if (!execution)
+    return execution.takeError();
+  if (execution->exitCode == externalToolExecutionStoppedExitCode)
     return ExternalToolInvocationExecutionObservation{
-        *status,
+        execution->exitCode,
+        ExternalToolResultCacheAvailability::Available,
+        ExternalToolResultCacheLookup::Miss,
+        discard,
+        ExternalToolResultCachePublication::NotAttempted,
+        waitedForCacheKeyLock,
+        execution->invoked};
+  if (execution->exitCode != 0)
+    return ExternalToolInvocationExecutionObservation{
+        execution->exitCode,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss,
         discard,
@@ -1164,7 +1283,8 @@ executeExternalToolInvocationBundleObserved(
         ExternalToolResultCachePublication::Failed,
         waitedForCacheKeyLock,
         true};
-  auto postflight = runScript(prepared, CacheScriptMode::Postflight);
+  auto postflight =
+      runScript(prepared, CacheScriptMode::Postflight, executionControl);
   if (!postflight) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     llvm::toString(postflight.takeError()));
@@ -1177,7 +1297,7 @@ executeExternalToolInvocationBundleObserved(
         waitedForCacheKeyLock,
         true};
   }
-  if (*postflight != 0) {
+  if (postflight->exitCode != 0) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     "invocation inputs or tool changed during execution");
     return ExternalToolInvocationExecutionObservation{

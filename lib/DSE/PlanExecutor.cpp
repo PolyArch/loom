@@ -228,6 +228,12 @@ providerExecutionRemainingTime(const void *opaque) {
       std::chrono::nanoseconds(remaining));
 }
 
+ExecutionControlView
+providerExecutionControl(const ProviderExecutionStopContext &context) {
+  return ExecutionControlView{&context, providerExecutionStopRequested,
+                              providerExecutionRemainingTime};
+}
+
 llvm::Expected<std::optional<JournalWorkUnitRecord>>
 findOrQueue(ExecutionJournal &journal, const WorkUnitKey &key) {
   auto found = journal.find(key);
@@ -341,6 +347,7 @@ private:
       const WorkUnitKey &key,
       const external_tool::PreparedExternalToolInvocation &prepared,
       bool reserveNewDispatch);
+  llvm::Error settleStoppedExternalExecution(const WorkUnitKey &key);
   llvm::Expected<PromotionEvidenceExecutionResult>
   executeEvidence(const PromotionEvidenceExecutionTask &task,
                   const ArtifactStore &store, const BlobStore &blobs);
@@ -349,6 +356,7 @@ private:
                           const PromotionEvidenceExecutionTask &task,
                           const ArtifactStore &store,
                           const BlobStore &blobs) const;
+  bool executionStopRequested() const;
   bool reserveDispatch();
 
   ExecutionJournal &journal_;
@@ -361,6 +369,12 @@ private:
   fabric::FabricArtifactImportSession::Attachment fabricImportAttachment_;
   pnr::PnrDerivedContextSession::Attachment derivedContextAttachment_;
 };
+
+bool RecoverablePlanWorkExecutor::executionStopRequested() const {
+  const ProviderExecutionStopContext context{
+      &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
+  return providerExecutionStopRequested(&context);
+}
 
 bool RecoverablePlanWorkExecutor::reserveDispatch() {
   if (journal_.gracefulStopRequested())
@@ -500,14 +514,22 @@ RecoverablePlanWorkExecutor::executePreparedInvocation(
   auto claim = resourceClaim(key, &*bindingDigest);
   if (!claim)
     return claim.takeError();
-  auto lease = scheduler_.acquire(key, *claim);
-  if (!lease)
-    return lease.takeError();
+  const ProviderExecutionStopContext stopContext{
+      &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
+  const ExecutionControlView executionControl =
+      providerExecutionControl(stopContext);
+  auto acquired = scheduler_.acquire(key, *claim, executionControl);
+  if (!acquired)
+    return acquired.takeError();
+  if (!*acquired)
+    return std::optional<
+        external_tool::ExternalToolInvocationExecutionObservation>{};
+  SiteResourceLease lease = std::move(**acquired);
   if (llvm::Error error = journal_.beginPreparedExecution(key))
     return std::move(error);
   const auto begin = std::chrono::steady_clock::now();
-  auto execution =
-      external_tool::executeExternalToolInvocationBundleObserved(prepared);
+  auto execution = external_tool::executeExternalToolInvocationBundleObserved(
+      prepared, executionControl);
   auto active = activeNanoseconds(begin);
   if (!active)
     return active.takeError();
@@ -527,6 +549,15 @@ RecoverablePlanWorkExecutor::executePreparedInvocation(
     return std::move(intervalError);
   return std::optional<
       external_tool::ExternalToolInvocationExecutionObservation>(*execution);
+}
+
+llvm::Error RecoverablePlanWorkExecutor::settleStoppedExternalExecution(
+    const WorkUnitKey &key) {
+  auto terminalTime = terminalUnixNanoseconds();
+  if (!terminalTime)
+    return terminalTime.takeError();
+  return journal_.markTerminal(key, JournalWorkUnitStatus::TimedOut, 0,
+                               *terminalTime, {});
 }
 
 llvm::Expected<CandidateGeneratorProviderResult>
@@ -566,6 +597,14 @@ RecoverablePlanWorkExecutor::executeGenerate(
         return makeIncompleteCandidateResult(
             *descriptor,
             CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+      if ((**executed).exitCode ==
+          external_tool::externalToolExecutionStoppedExitCode) {
+        if (llvm::Error error = settleStoppedExternalExecution(*key))
+          return std::move(error);
+        return makeIncompleteCandidateResult(
+            *descriptor,
+            CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+      }
       imported = tryImportPreparedCandidate(
           inputs, binding, *(*record)->preparedInvocation, store, blobs);
       if (!imported)
@@ -604,8 +643,13 @@ RecoverablePlanWorkExecutor::executeGenerate(
             inputs, binding, *(*record)->preparedInvocation, store, blobs);
         if (!imported)
           return imported.takeError();
-        if (!*imported)
+        if (!*imported) {
+          if ((*record)->status == JournalWorkUnitStatus::TimedOut)
+            return makeIncompleteCandidateResult(
+                *descriptor,
+                CandidateGeneratorIncompleteReason::CancelledOrTimeout);
           return invalid("terminal Generate attempt is incomplete");
+        }
         return std::move(**imported);
       }
       if ((*record)->preparedInvocation)
@@ -672,17 +716,20 @@ RecoverablePlanWorkExecutor::executeGenerate(
     auto claim = resourceClaim(*key, nullptr);
     if (!claim)
       return claim.takeError();
-    auto lease = scheduler_.acquire(*key, *claim);
-    if (!lease)
-      return lease.takeError();
+    const ProviderExecutionStopContext stopContext{
+        &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
+    const ExecutionControlView executionControl =
+        providerExecutionControl(stopContext);
+    auto acquired = scheduler_.acquire(*key, *claim, executionControl);
+    if (!acquired)
+      return acquired.takeError();
+    if (!*acquired)
+      return makeIncompleteCandidateResult(
+          *descriptor, CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+    SiteResourceLease lease = std::move(**acquired);
     if (llvm::Error error = journal_.markRunning(*key))
       return std::move(error);
     const auto begin = std::chrono::steady_clock::now();
-    const ProviderExecutionStopContext stopContext{
-        &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
-    const ExecutionControlView executionControl{&stopContext,
-                                                providerExecutionStopRequested,
-                                                providerExecutionRemainingTime};
     const CandidateGeneratorInvocationView invocation(executionControl,
                                                       outputDemands);
     auto generated =
@@ -714,9 +761,17 @@ RecoverablePlanWorkExecutor::executeGenerate(
     return generated;
   }
 
-  auto preparationLease = scheduler_.acquire(*key, policy_.inProcessClaim());
-  if (!preparationLease)
-    return preparationLease.takeError();
+  const ProviderExecutionStopContext preparationStopContext{
+      &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
+  auto acquiredPreparation =
+      scheduler_.acquire(*key, policy_.inProcessClaim(),
+                         providerExecutionControl(preparationStopContext));
+  if (!acquiredPreparation)
+    return acquiredPreparation.takeError();
+  if (!*acquiredPreparation)
+    return makeIncompleteCandidateResult(
+        *descriptor, CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+  SiteResourceLease preparationLease = std::move(**acquiredPreparation);
   if (llvm::Error error = journal_.markRunning(*key))
     return std::move(error);
   const auto preparationBegin = std::chrono::steady_clock::now();
@@ -742,7 +797,7 @@ RecoverablePlanWorkExecutor::executeGenerate(
   if (llvm::Error error = journal_.recordPrepared(
           *key, *prepared, *preparationActive, *preparationEnd))
     return std::move(error);
-  preparationLease->release();
+  preparationLease.release();
   if (policy_.externalSite()->disposition ==
       ExternalAttemptDisposition::PrepareOnly)
     return makeIncompleteCandidateResult(
@@ -753,6 +808,13 @@ RecoverablePlanWorkExecutor::executeGenerate(
   if (!*executed)
     return makeIncompleteCandidateResult(
         *descriptor, CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+  if ((**executed).exitCode ==
+      external_tool::externalToolExecutionStoppedExitCode) {
+    if (llvm::Error error = settleStoppedExternalExecution(*key))
+      return std::move(error);
+    return makeIncompleteCandidateResult(
+        *descriptor, CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+  }
   auto imported =
       tryImportPreparedCandidate(inputs, binding, *prepared, store, blobs);
   if (!imported)
@@ -910,7 +972,16 @@ RecoverablePlanWorkExecutor::executeEvidence(
         return executed.takeError();
       if (!*executed)
         return PromotionEvidenceExecutionResult{
-            PromotionAcquisitionIncompleteReason::ProviderUnavailable};
+            executionStopRequested()
+                ? PromotionAcquisitionIncompleteReason::CancelledOrTimeout
+                : PromotionAcquisitionIncompleteReason::ProviderUnavailable};
+      if ((**executed).exitCode ==
+          external_tool::externalToolExecutionStoppedExitCode) {
+        if (llvm::Error error = settleStoppedExternalExecution(*key))
+          return std::move(error);
+        return PromotionEvidenceExecutionResult{
+            PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+      }
       imported = tryImportPreparedEvidence(task.request, *task.resolution,
                                            *(*record)->preparedInvocation,
                                            store, blobs);
@@ -938,6 +1009,10 @@ RecoverablePlanWorkExecutor::executeEvidence(
                         (*record)->status == JournalWorkUnitStatus::TimedOut ||
                         (*record)->status == JournalWorkUnitStatus::Unsupported;
   if (terminal) {
+    if ((*record)->status == JournalWorkUnitStatus::TimedOut &&
+        (*record)->preparedInvocation && (*record)->finalizedOutputs.empty())
+      return PromotionEvidenceExecutionResult{
+          PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
     auto evidence = importFinalizedEvidence(**record, task, store, blobs);
     if (!evidence)
       return evidence.takeError();
@@ -953,7 +1028,9 @@ RecoverablePlanWorkExecutor::executeEvidence(
         PromotionAcquisitionIncompleteReason::ProviderUnavailable};
   if (!reserveDispatch())
     return PromotionEvidenceExecutionResult{
-        PromotionAcquisitionIncompleteReason::ProviderUnavailable};
+        executionStopRequested()
+            ? PromotionAcquisitionIncompleteReason::CancelledOrTimeout
+            : PromotionAcquisitionIncompleteReason::ProviderUnavailable};
 
   std::optional<evaluation::EvaluationEvidence> evidence;
   std::uint64_t active = 0;
@@ -961,9 +1038,16 @@ RecoverablePlanWorkExecutor::executeEvidence(
     auto claim = resourceClaim(*key, nullptr);
     if (!claim)
       return claim.takeError();
-    auto lease = scheduler_.acquire(*key, *claim);
-    if (!lease)
-      return lease.takeError();
+    const ProviderExecutionStopContext stopContext{
+        &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
+    auto acquired =
+        scheduler_.acquire(*key, *claim, providerExecutionControl(stopContext));
+    if (!acquired)
+      return acquired.takeError();
+    if (!*acquired)
+      return PromotionEvidenceExecutionResult{
+          PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+    SiteResourceLease lease = std::move(**acquired);
     if (llvm::Error error = journal_.markRunning(*key))
       return std::move(error);
     const auto begin = std::chrono::steady_clock::now();
@@ -979,9 +1063,17 @@ RecoverablePlanWorkExecutor::executeEvidence(
       return measured.takeError();
     active = *measured;
   } else {
-    auto preparationLease = scheduler_.acquire(*key, policy_.inProcessClaim());
-    if (!preparationLease)
-      return preparationLease.takeError();
+    const ProviderExecutionStopContext preparationStopContext{
+        &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
+    auto acquiredPreparation =
+        scheduler_.acquire(*key, policy_.inProcessClaim(),
+                           providerExecutionControl(preparationStopContext));
+    if (!acquiredPreparation)
+      return acquiredPreparation.takeError();
+    if (!*acquiredPreparation)
+      return PromotionEvidenceExecutionResult{
+          PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+    SiteResourceLease preparationLease = std::move(**acquiredPreparation);
     if (llvm::Error error = journal_.markRunning(*key))
       return std::move(error);
     const auto preparationBegin = std::chrono::steady_clock::now();
@@ -1017,7 +1109,7 @@ RecoverablePlanWorkExecutor::executeEvidence(
       if (llvm::Error error = journal_.recordPrepared(
               *key, prepared, *preparationActive, *preparationEnd))
         return std::move(error);
-      preparationLease->release();
+      preparationLease.release();
       if (policy_.externalSite()->disposition ==
           ExternalAttemptDisposition::PrepareOnly)
         return PromotionEvidenceExecutionResult{
@@ -1027,7 +1119,16 @@ RecoverablePlanWorkExecutor::executeEvidence(
         return executed.takeError();
       if (!*executed)
         return PromotionEvidenceExecutionResult{
-            PromotionAcquisitionIncompleteReason::ProviderUnavailable};
+            executionStopRequested()
+                ? PromotionAcquisitionIncompleteReason::CancelledOrTimeout
+                : PromotionAcquisitionIncompleteReason::ProviderUnavailable};
+      if ((**executed).exitCode ==
+          external_tool::externalToolExecutionStoppedExitCode) {
+        if (llvm::Error error = settleStoppedExternalExecution(*key))
+          return std::move(error);
+        return PromotionEvidenceExecutionResult{
+            PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+      }
       auto imported = tryImportPreparedEvidence(task.request, *task.resolution,
                                                 prepared, store, blobs);
       if (!imported)

@@ -5,6 +5,7 @@
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -325,6 +326,61 @@ SiteScheduler::acquire(const WorkUnitKey &key, const SiteResourceClaim &claim) {
   state_->running.push_back(std::move(*found));
   state_->queued.erase(found);
   return SiteResourceLease(state_, key, claim);
+}
+
+llvm::Expected<std::optional<SiteResourceLease>>
+SiteScheduler::acquire(const WorkUnitKey &key, const SiteResourceClaim &claim,
+                       ExecutionControlView executionControl) {
+  std::unique_lock<std::mutex> lock(state_->mutex);
+  if (!admitted(claim, state_->capacity))
+    return invalid("claim exceeds declared site capacity");
+  if (containsKey(state_->running, key) || containsKey(state_->queued, key))
+    return invalid("work unit already owns or awaits a resource claim");
+  state_->queued.push_back({key, claim});
+  const auto removeQueued = [&] {
+    auto found =
+        llvm::find_if(state_->queued, [&](const ScheduledWorkUnit &unit) {
+          return unit.key == key;
+        });
+    if (found == state_->queued.end())
+      llvm_unreachable("site scheduler lost a controlled queued claim");
+    state_->queued.erase(found);
+  };
+  while (true) {
+    auto remaining = executionControl.remainingTime();
+    if (executionControl.stopRequested() ||
+        (remaining &&
+         *remaining <= std::chrono::steady_clock::duration::zero())) {
+      removeQueued();
+      lock.unlock();
+      state_->changed.notify_all();
+      return std::optional<SiteResourceLease>{};
+    }
+    for (const ScheduledWorkUnit &queued : state_->queued) {
+      if (!fits(queued.claim, state_->capacity, state_->allocated))
+        continue;
+      if (!(queued.key == key))
+        break;
+      auto found =
+          llvm::find_if(state_->queued, [&](const ScheduledWorkUnit &unit) {
+            return unit.key == key;
+          });
+      if (found == state_->queued.end())
+        llvm_unreachable("site scheduler lost a controlled queued claim");
+      add(state_->allocated, found->claim);
+      state_->running.push_back(std::move(*found));
+      state_->queued.erase(found);
+      return std::optional<SiteResourceLease>(
+          SiteResourceLease(state_, key, claim));
+    }
+    auto delay = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::milliseconds(10));
+    if (remaining)
+      delay = std::min(
+          delay,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(*remaining));
+    state_->changed.wait_for(lock, delay);
+  }
 }
 
 llvm::Expected<SiteSchedulerSnapshot> SiteScheduler::snapshot() const {

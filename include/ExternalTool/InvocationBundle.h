@@ -9,6 +9,7 @@
 
 #include "Common/Artifact.h"
 #include "Common/BlobDigest.h"
+#include "Common/ExecutionControl.h"
 #include "Common/ProviderForm.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -164,6 +165,10 @@ struct ExternalToolInvocationExecutionObservation final {
   bool waitedForCacheKeyLock;
   bool invokedExternalTool;
 };
+
+/// Reserved operational result when execution control stops a prepared
+/// invocation. External tools cannot return negative process exit codes.
+inline constexpr int externalToolExecutionStoppedExitCode = -2;
 
 struct ExternalToolInvocationBundleSpec {
   ExternalToolSemanticContract semanticContract;
@@ -327,7 +332,8 @@ llvm::Expected<int> executeExternalToolInvocationBundle(
 /// exact cache and external-tool disposition for journals and manifests.
 llvm::Expected<ExternalToolInvocationExecutionObservation>
 executeExternalToolInvocationBundleObserved(
-    const PreparedExternalToolInvocation &prepared);
+    const PreparedExternalToolInvocation &prepared,
+    ExecutionControlView executionControl = {});
 
 /// Derives the exact persistent-result cache key from one verified prepared
 /// invocation. This reads and validates the key-bearing generated files and

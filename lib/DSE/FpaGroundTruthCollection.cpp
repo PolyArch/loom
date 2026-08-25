@@ -12,8 +12,11 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <utility>
@@ -304,8 +307,29 @@ runFpaGroundTruthCampaign(const ResolvedDseConfigView &view,
       maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds)
     return invalid("FPA campaign active-time limit exceeds the four-hour "
                    "offline bound");
-  return runGroundTruthCampaign(view, closure, campaignPolicy, executionPolicy,
-                                scheduler, journal, store, blobs);
+  const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
+  const auto signedNow =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+  if (signedNow <= 0)
+    return invalid("system clock cannot represent an FPA campaign deadline");
+  const std::uint64_t now = static_cast<std::uint64_t>(signedNow);
+  const std::uint64_t wallTimeLimit =
+      campaignPolicy.campaignActiveWallTimeLimitNanoseconds();
+  if (now > std::numeric_limits<std::uint64_t>::max() - wallTimeLimit)
+    return invalid("FPA campaign deadline overflows uint64");
+  std::uint64_t deadline = now + wallTimeLimit;
+  if (executionPolicy.dispatchNotAfterUnixNanoseconds())
+    deadline =
+        std::min(deadline, *executionPolicy.dispatchNotAfterUnixNanoseconds());
+  auto boundedExecution = PlanExecutionPolicy::get(
+      executionPolicy.workerCount(), executionPolicy.inProcessClaim(),
+      executionPolicy.externalSite(), executionPolicy.resourceBindings(),
+      executionPolicy.maximumDispatches(), deadline);
+  if (!boundedExecution)
+    return boundedExecution.takeError();
+  return runGroundTruthCampaign(view, closure, campaignPolicy,
+                                *boundedExecution, scheduler, journal, store,
+                                blobs);
 }
 
 } // namespace loom::dse

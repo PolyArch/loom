@@ -4,6 +4,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -40,6 +41,24 @@ WorkUnitKey makeKey(std::uint64_t ordinal) {
       take(WorkUnitDescriptorRef::get("loom.test.scheduler_registry",
                                       SchemaVersion{1, 0}, 3)),
       ordinal));
+}
+
+struct SchedulerDeadline final {
+  std::chrono::steady_clock::time_point notAfter;
+};
+
+bool schedulerDeadlineReached(const void *opaque) {
+  return std::chrono::steady_clock::now() >=
+         static_cast<const SchedulerDeadline *>(opaque)->notAfter;
+}
+
+std::optional<std::chrono::steady_clock::duration>
+schedulerDeadlineRemaining(const void *opaque) {
+  const auto notAfter =
+      static_cast<const SchedulerDeadline *>(opaque)->notAfter;
+  const auto now = std::chrono::steady_clock::now();
+  return now >= notAfter ? std::chrono::steady_clock::duration::zero()
+                         : notAfter - now;
 }
 
 void testExactClaimsAndRelease() {
@@ -134,11 +153,43 @@ void testQueuedClaimsAreNotBypassed() {
   queued->release();
 }
 
+void testControlledAcquireLeavesTheQueue() {
+  SiteScheduler scheduler =
+      take(SiteScheduler::create(take(SiteCapacity::get(1, 0, 0))));
+  const SiteResourceClaim oneCpu = take(SiteResourceClaim::get(1, 0, 0));
+  std::optional<SiteResourceLease> running =
+      take(scheduler.tryAcquire(makeKey(20), oneCpu));
+  if (!running)
+    fail("scheduler could not establish the controlled-wait fixture");
+
+  const SchedulerDeadline deadline{std::chrono::steady_clock::now() +
+                                   std::chrono::milliseconds(100)};
+  const ExecutionControlView executionControl{
+      &deadline, schedulerDeadlineReached, schedulerDeadlineRemaining};
+  bool cancelled = false;
+  const auto begin = std::chrono::steady_clock::now();
+  std::thread waiter([&] {
+    std::optional<SiteResourceLease> lease =
+        take(scheduler.acquire(makeKey(21), oneCpu, executionControl));
+    cancelled = !lease;
+  });
+  waiter.join();
+  if (!cancelled ||
+      std::chrono::steady_clock::now() - begin >= std::chrono::seconds(1))
+    fail("controlled acquire did not stop at its execution deadline");
+  SiteSchedulerSnapshot snapshot = take(scheduler.snapshot());
+  if (!snapshot.queued.empty() || snapshot.running.size() != 1 ||
+      !(snapshot.running.front().key == makeKey(20)))
+    fail("controlled acquire left stale scheduler ownership");
+  running->release();
+}
+
 } // namespace
 
 int main() {
   testExactClaimsAndRelease();
   testStrictCapacityAdmission();
   testQueuedClaimsAreNotBypassed();
+  testControlledAcquireLeavesTheQueue();
   return 0;
 }

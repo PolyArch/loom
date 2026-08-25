@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -118,6 +119,37 @@ RoutedFixture makeRoutedFixture(const std::filesystem::path &root,
       makeOpenRoadResolvedExecution(tool.string(), kProviderBuild, false),
       artifacts, blobs));
   return RoutedFixture{std::move(gate), std::move(routed)};
+}
+
+std::filesystem::path
+writeDelayedFpaTool(const std::filesystem::path &root,
+                    const std::filesystem::path &underlying) {
+  const std::filesystem::path tool = root / "delayed-openroad-fpa";
+  std::ofstream output(tool);
+  output << "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "tool_dir=$(cd -- \"$(dirname -- \"$0\")\" && pwd)\n"
+            "if [[ \"${1:-}\" == \"-version\" || "
+            "\"${1:-}\" == \"--version\" ]]; then\n"
+            "  exec \"$tool_dir/"
+         << underlying.filename().string()
+         << "\" \"$@\"\n"
+            "fi\n"
+            "sleep 5\n"
+            "exec \"$tool_dir/"
+         << underlying.filename().string() << "\" \"$@\"\n";
+  output.close();
+  if (!output)
+    fail("cannot write delayed FPA tool");
+  std::error_code error;
+  std::filesystem::permissions(tool,
+                               std::filesystem::perms::owner_read |
+                                   std::filesystem::perms::owner_write |
+                                   std::filesystem::perms::owner_exec,
+                               std::filesystem::perm_options::replace, error);
+  if (error)
+    fail("cannot make delayed FPA tool executable");
+  return tool;
 }
 
 SubjectTargetRef rootTarget(const ArtifactRootReference &hardware) {
@@ -367,6 +399,62 @@ void exerciseGroundTruthCampaign() {
       take(writeAuthoredOpenRoadStaticFpaTool(temporary.path()));
   const LocalToolConfig local =
       makeOpenRoadLocalToolConfig(training.gate, fpaTool);
+
+  const std::filesystem::path delayedTool =
+      writeDelayedFpaTool(temporary.path(), fpaTool);
+  const LocalToolConfig delayedLocal =
+      makeOpenRoadLocalToolConfig(training.gate, delayedTool);
+  const std::filesystem::path deadlineRunPath =
+      temporary.path() / "deadline-run";
+  std::filesystem::create_directories(deadlineRunPath);
+  ExecutionJournal deadlineJournal =
+      take(openExecutionJournal(deadlineRunPath.string(), closure, view));
+  SiteScheduler deadlinePreparationScheduler = scheduler({});
+  DsePlanExecutionOutcome deadlinePrepared = take(resumeDsePlan(
+      view, closure, deadlineJournal, deadlinePreparationScheduler,
+      executionPolicy(delayedLocal, ExternalAttemptDisposition::PrepareOnly, 1),
+      artifacts, blobs));
+  if (!std::holds_alternative<IncompleteDsePlanExecution>(deadlinePrepared))
+    fail("deadline fixture unexpectedly completed during preparation");
+  const std::vector<BlobDigest> deadlineBindings =
+      preparedBindings(deadlineJournal);
+  if (deadlineBindings.size() != 1)
+    fail("deadline fixture did not prepare one exact external binding");
+  SiteScheduler deadlineScheduler = scheduler(deadlineBindings);
+  CampaignExecutionPolicy shortCampaign = take(
+      CampaignExecutionPolicy::get(1, 1, 1'000'000'000ULL, 150'000'000ULL));
+  const auto deadlineBegin = std::chrono::steady_clock::now();
+  CampaignExecutionResult deadlineResult = take(runFpaGroundTruthCampaign(
+      view, closure, shortCampaign,
+      executionPolicy(delayedLocal, ExternalAttemptDisposition::ExecutePrepared,
+                      std::nullopt),
+      deadlineScheduler, deadlineJournal, artifacts, blobs));
+  const auto deadlineElapsed = std::chrono::steady_clock::now() - deadlineBegin;
+  if (deadlineElapsed >= std::chrono::seconds(2))
+    fail("FPA campaign did not enforce its selected hard wall");
+  const DsePlanExecutionOutcome *deadlineOutcome = nullptr;
+  if (const auto *refusal =
+          std::get_if<CampaignAdmissionRefusal>(&deadlineResult))
+    deadlineOutcome = &refusal->outcome;
+  else
+    deadlineOutcome = &std::get<CampaignExecution>(deadlineResult).outcome;
+  const auto *deadlineIncomplete =
+      std::get_if<IncompleteDsePlanExecution>(deadlineOutcome);
+  const auto *deadlineReason =
+      deadlineIncomplete ? std::get_if<PromotionAcquisitionIncompleteReason>(
+                               &deadlineIncomplete->reason())
+                         : nullptr;
+  if (!deadlineReason ||
+      *deadlineReason !=
+          PromotionAcquisitionIncompleteReason::CancelledOrTimeout)
+    fail("FPA hard wall did not preserve its typed timeout outcome");
+  const std::vector<JournalWorkUnitRecord> deadlineRecords =
+      take(deadlineJournal.workUnits());
+  if (deadlineRecords.size() != 1 ||
+      deadlineRecords.front().status != JournalWorkUnitStatus::TimedOut ||
+      !deadlineRecords.front().finalizedOutputs.empty())
+    fail("stopped FPA provider published a terminal output");
+
   SiteScheduler prepareScheduler = scheduler({});
   DsePlanExecutionOutcome preparedOutcome = take(resumeDsePlan(
       view, closure, journal, prepareScheduler,

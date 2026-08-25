@@ -555,10 +555,14 @@ model-data sample's complete newly required dependency slice is limited to ten
 active minutes. `loom-dse --ground-truth-campaign=fpa` selects the FPA policy,
 which rejects a campaign policy above four active hours and propagates the
 remaining budget as the same absolute dispatch deadline used by the plan
-executor. `--ground-truth-campaign=generic` retains the general collection
-policy. Uncached Mapping, RTL, implementation, and EDA prerequisites remain
-visible and charged in that plan. A timeout, incomplete attempt, or typed
-Unsupported outcome produces no training sample.
+executor, including its pilot. Plan execution observes that deadline while
+waiting for site resources, and External Tool execution observes it while
+waiting for a cache owner and while running a provider. A stopped provider
+process group publishes neither completion nor cache entry.
+`--ground-truth-campaign=generic` retains the general collection policy.
+Uncached Mapping, RTL, implementation, and EDA prerequisites remain visible
+and charged in that plan. A timeout, incomplete attempt, or typed Unsupported
+outcome produces no training sample.
 
 ## Anchor Verification
 

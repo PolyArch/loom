@@ -2,6 +2,7 @@
 #define LOOM_DSE_SITESCHEDULER_H
 
 #include "Common/BlobDigest.h"
+#include "Common/ExecutionControl.h"
 #include "DSE/ExecutionJournal.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -179,6 +180,11 @@ public:
   tryAcquire(const WorkUnitKey &key, const SiteResourceClaim &claim);
   llvm::Expected<SiteResourceLease>
   acquire(const WorkUnitKey &key, const SiteResourceClaim &claim);
+  /// Preserves queue fairness while observing invocation-local execution
+  /// control. An empty lease means control stopped before admission.
+  llvm::Expected<std::optional<SiteResourceLease>>
+  acquire(const WorkUnitKey &key, const SiteResourceClaim &claim,
+          ExecutionControlView executionControl);
   llvm::Expected<SiteSchedulerSnapshot> snapshot() const;
 
 private:
