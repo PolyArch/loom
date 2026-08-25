@@ -34,6 +34,7 @@ add_mlir_library(LoomSimulator
   DFGSimulatorTypedInput.cpp
   DFGSimulatorVectorActors.cpp
   DynamicWorkDomain.cpp
+  DynamicWorkScheduler.cpp
   MemoryAtomicOrder.cpp
   MemorySynchronization.cpp
   OperationSemantics.cpp

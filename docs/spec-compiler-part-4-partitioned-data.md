@@ -21,6 +21,7 @@ Part 4 owns:
   `index` block arguments;
 * launch-domain cardinality rules;
 * dynamic work-item identity, publication, retirement, and termination;
+* the bounded execution-local work-stealing and cancellation profile;
 * source induction-variable reconstruction; and
 * the boundary between ordinary software data views and physical Mapping.
 
@@ -30,8 +31,8 @@ Part 4 does not own:
 * parallel, temporal, tiling, interchange, vector, or unroll choices;
 * physical AccCore selection, route, Tag, reservation, or topology;
 * a second memory-transfer or partitioned-data ABI; or
-* a queue implementation, channel-lifecycle protocol, work-stealing policy, or
-  multi-producer atomic-memory protocol.
+* a provider queue implementation, channel-lifecycle protocol, distributed or
+  priority scheduling policy, or multi-process atomic-memory protocol.
 
 ## 2. Logical Domain Kinds
 
@@ -255,20 +256,55 @@ Anchor-level verification covers:
 * rejection of physical topology or Mapping authority in the software ABI;
 * root identity, deterministic child ordinals, acquire-before-publish, and
   exactly-once retirement for a dynamic work tree; and
-* collective completion only after the dynamic responsibility set is empty.
+* collective completion only after the dynamic responsibility set is empty;
+* bounded local-deque backpressure and deterministic victim selection;
+* worker-independent item identity across steals; and
+* queued and active cancellation with a gap-free replay sequence.
 
 Tests should assert these stable boundaries rather than preserve a particular
 analysis cache, view-chain implementation, textual op order, or optimization
 heuristic.
 
-## 7. Deferred Semantics
+## 7. Bounded Work-Stealing Profile
 
-Multi-producer shared work queues, work stealing, priority queues, duplicate
-suppression, cancellation, distributed termination, and work-item migration
-are not implied by `DynamicWork`. They require explicit atomic, ordering,
-coherence, or service contracts. Distributed-buffer and neighborhood-exchange
-behavior likewise requires explicit dataflow and service semantics rather than
-hidden layout metadata.
+The bounded execution-local scheduler profile admits one typed work-stealing
+owner without changing the logical-domain ABI. `DynamicWorkDomain` remains the
+sole owner of active responsibility and collective completion. The scheduler
+owns only a bounded local deque per transient worker, queue placement,
+assignment generation, cancellation delivery, and a totally ordered replay
+log. A `WorkItemId` is never replaced by a queue position or worker ordinal.
+
+Publication acquires the child responsibility before making its item visible;
+the scheduler's serialized publication and acquisition operations provide the
+release/acquire boundary for the payload and responsibility state. A worker
+acquires from the back of its own deque. An idle worker steals from the front
+of a deterministically selected nonempty victim deque. A full deque returns a
+typed `WouldBlock` result without consuming a child ordinal. A queued
+cancellation removes and retires exactly that item; an active cancellation is
+an idempotent request that the owning worker must observe before retirement.
+Assignment handles carry a private scheduler owner and generation, so a stale,
+foreign, duplicated, or already-retired handle cannot retire another item.
+Every transition records the item identity, source and target worker (when
+applicable), and a monotonic replay sequence. Replay is diagnostic evidence;
+it is not a second completion authority and does not become Mapping identity.
+
+This profile does not admit priority queues, duplicate suppression,
+distributed termination, channel endpoints, or work-item migration. Migration
+requires the finite compiler-preverified Mapping transition graph and its
+typed live-state correspondence; until that owner is present, a worker may
+only transfer a not-yet-started queued item through the scheduler above.
+Atomic memory order and Fabric coherence for a multi-process or device-side
+queue remain outside this execution-local profile and require their own
+capability contract.
+
+## 8. Deferred Semantics
+
+Multi-producer shared work queues, priority queues, duplicate suppression,
+distributed termination, and work-item migration beyond the bounded profile
+remain deferred. They require explicit atomic, ordering, coherence, or service
+contracts. Distributed-buffer and neighborhood-exchange behavior likewise
+requires explicit dataflow and service semantics rather than hidden layout
+metadata.
 
 Static halo and neighborhood exchange are compilation patterns, not new
 Dataflow entities. A structured candidate expresses them through existing

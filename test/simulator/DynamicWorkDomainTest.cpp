@@ -1,4 +1,5 @@
 #include "Simulator/DynamicWorkDomain.h"
+#include "Simulator/DynamicWorkScheduler.h"
 #include "Simulator/ThreadDispatchIdentity.h"
 
 #include "DynamicWorkOrdinal.h"
@@ -46,6 +47,13 @@ static_assert(!std::is_move_constructible<DynamicWorkDomain>::value,
 static_assert(!std::is_move_assignable<DynamicWorkDomain>::value,
               "DynamicWorkDomain must not be move assignable");
 
+static_assert(!std::is_copy_constructible<DynamicWorkAssignment>::value,
+              "a worker assignment must not be copied");
+static_assert(std::is_move_constructible<DynamicWorkAssignment>::value,
+              "a worker assignment must support ownership transfer");
+static_assert(!std::is_move_assignable<DynamicWorkAssignment>::value,
+              "assignment overwrite must not abandon live work");
+
 static_assert(
     !std::is_invocable<decltype(&DynamicWorkDomain::spawnChild),
                        DynamicWorkDomain &, const WorkItemId &>::value,
@@ -57,6 +65,7 @@ static_assert(!std::is_invocable<decltype(&DynamicWorkDomain::retire),
 namespace {
 
 using Kind = DynamicWorkDomainError::Kind;
+using SchedulerKind = DynamicWorkSchedulerError::Kind;
 
 constexpr ThreadDispatchOccurrenceId kDispatch(7);
 
@@ -103,6 +112,18 @@ void expectRejected(llvm::Expected<T> value, Kind kind,
 void expectEffect(llvm::Expected<RetirementEffect> value, RetirementEffect want,
                   llvm::StringRef message) {
   require(takeExpected(std::move(value)) == want, message);
+}
+
+template <typename T>
+void expectSchedulerRejected(llvm::Expected<T> value, SchedulerKind kind,
+                             llvm::StringRef message) {
+  require(!value, message);
+  std::optional<SchedulerKind> rejected;
+  llvm::handleAllErrors(
+      value.takeError(),
+      [&](const DynamicWorkSchedulerError &error) { rejected = error.kind(); },
+      [&](const llvm::ErrorInfoBase &) {});
+  require(rejected && *rejected == kind, message);
 }
 
 void rootIdentityAndImmediateSourceClosure() {
@@ -379,6 +400,139 @@ void maximumChildOrdinalPrecedesExhaustion() {
   require(!ordinal, "an exhausted cursor resumed issuing ordinals");
 }
 
+void boundedDequeStealingPreservesLogicalIdentity() {
+  auto scheduler =
+      takeExpected(DynamicWorkScheduler::create(kDispatch, 2, 2, {0x41}));
+  auto rootResult = takeExpected(scheduler->acquire(1));
+  require(rootResult.has_value(), "an idle worker did not steal the root");
+  DynamicWorkAssignment root = std::move(*rootResult);
+  const WorkItemId rootId = root.id();
+  require(rootId == WorkItemId::root(kDispatch) && root.workerOrdinal() == 1 &&
+              root.payload().size() == 1 && root.payload().front() == 0x41,
+          "root stealing changed logical identity or payload");
+
+  auto first = takeExpected(scheduler->publishChild(root, {0x51}));
+  auto second = takeExpected(scheduler->publishChild(root, {0x52}));
+  require(first.kind == DynamicWorkPublishKind::Published && first.child &&
+              *first.child == WorkItemId::child(rootId, 0) &&
+              second.kind == DynamicWorkPublishKind::Published &&
+              second.child && *second.child == WorkItemId::child(rootId, 1),
+          "child publication did not use canonical program-order identities");
+
+  auto blocked = takeExpected(scheduler->publishChild(root, {0x53}));
+  require(blocked.kind == DynamicWorkPublishKind::WouldBlock && !blocked.child,
+          "a full local deque did not provide typed backpressure");
+
+  auto stolenResult = takeExpected(scheduler->acquire(0));
+  auto localResult = takeExpected(scheduler->acquire(1));
+  require(stolenResult && localResult,
+          "published children were not available to workers");
+  DynamicWorkAssignment stolen = std::move(*stolenResult);
+  DynamicWorkAssignment local = std::move(*localResult);
+  require(stolen.id() == *first.child && stolen.workerOrdinal() == 0 &&
+              stolen.payload().front() == 0x51,
+          "stealing did not take the victim deque front");
+  require(local.id() == *second.child && local.workerOrdinal() == 1 &&
+              local.payload().front() == 0x52,
+          "local acquisition did not take the owner deque back");
+
+  auto afterCapacity = takeExpected(scheduler->publishChild(root, {0x53}));
+  require(afterCapacity.kind == DynamicWorkPublishKind::Published &&
+              afterCapacity.child &&
+              *afterCapacity.child == WorkItemId::child(rootId, 2),
+          "backpressure consumed a child identity or failed to recover");
+
+  expectEffect(scheduler->complete(std::move(stolen)),
+               RetirementEffect::DomainStillActive,
+               "stolen child completion retired unrelated work");
+  expectEffect(scheduler->complete(std::move(local)),
+               RetirementEffect::DomainStillActive,
+               "local child completion retired unrelated work");
+  auto lastResult = takeExpected(scheduler->acquire(1));
+  require(lastResult && (*lastResult).id() == *afterCapacity.child,
+          "the recovered child was not replayably queued");
+  expectEffect(scheduler->complete(std::move(*lastResult)),
+               RetirementEffect::DomainStillActive,
+               "last child completion retired an active root");
+  expectEffect(scheduler->complete(std::move(root)),
+               RetirementEffect::DomainCompleted,
+               "root completion did not close the drained domain");
+  require(scheduler->completed() && scheduler->activeCount() == 0 &&
+              scheduler->queuedCount() == 0,
+          "the drained scheduler retained work or completion authority");
+
+  const auto replay = scheduler->replay();
+  require(!replay.empty() &&
+              replay.front().kind == DynamicWorkScheduleActionKind::AdmitRoot,
+          "replay did not begin with root admission");
+  for (std::size_t index = 0; index < replay.size(); ++index)
+    require(replay[index].sequence == index,
+            "scheduler replay sequence is not total and gap-free");
+  require(llvm::any_of(replay,
+                       [](const DynamicWorkScheduleAction &action) {
+                         return action.kind ==
+                                DynamicWorkScheduleActionKind::Steal;
+                       }),
+          "scheduler replay omitted the ownership transfer");
+}
+
+void cancellationRetiresExactlyOneResponsibility() {
+  auto scheduler =
+      takeExpected(DynamicWorkScheduler::create(kDispatch, 2, 2, {0x61}));
+  auto rootResult = takeExpected(scheduler->acquire(0));
+  require(rootResult.has_value(), "root acquisition failed");
+  DynamicWorkAssignment root = std::move(*rootResult);
+  auto child = takeExpected(scheduler->publishChild(root, {0x62}));
+  require(child.child.has_value(), "cancellation fixture child was not queued");
+
+  require(takeExpected(scheduler->requestCancellation(*child.child)) ==
+              DynamicWorkCancellationKind::CancelledQueued,
+          "queued cancellation did not retire its responsibility");
+  require(scheduler->activeCount() == 1 && scheduler->queuedCount() == 0,
+          "queued cancellation changed the root responsibility");
+  require(takeExpected(scheduler->requestCancellation(root.id())) ==
+              DynamicWorkCancellationKind::RequestedActive,
+          "active cancellation was not delivered as a request");
+  require(takeExpected(scheduler->requestCancellation(root.id())) ==
+              DynamicWorkCancellationKind::AlreadyRequested,
+          "repeated active cancellation changed its typed outcome");
+  require(takeExpected(scheduler->cancellationRequested(root)),
+          "the worker could not observe its cancellation request");
+  auto rejectedPublish = takeExpected(scheduler->publishChild(root, {0x63}));
+  require(rejectedPublish.kind ==
+                  DynamicWorkPublishKind::CancellationRequested &&
+              !rejectedPublish.child,
+          "a cancelled active item published new responsibility");
+  expectEffect(scheduler->cancel(std::move(root)),
+               RetirementEffect::DomainCompleted,
+               "active cancellation did not complete the drained domain");
+}
+
+void assignmentAuthorityCannotCrossSchedulers() {
+  auto left =
+      takeExpected(DynamicWorkScheduler::create(kDispatch, 1, 1, {0x71}));
+  auto right = takeExpected(DynamicWorkScheduler::create(
+      ThreadDispatchOccurrenceId(8), 1, 1, {0x72}));
+  auto leftResult = takeExpected(left->acquire(0));
+  auto rightResult = takeExpected(right->acquire(0));
+  require(leftResult && rightResult,
+          "foreign assignment fixture is incomplete");
+  DynamicWorkAssignment leftAssignment = std::move(*leftResult);
+  DynamicWorkAssignment rightAssignment = std::move(*rightResult);
+
+  expectSchedulerRejected(right->complete(std::move(leftAssignment)),
+                          SchedulerKind::InvalidAssignment,
+                          "a worker assignment crossed scheduler owners");
+  require(left->activeCount() == 1 && right->activeCount() == 1,
+          "foreign assignment rejection changed responsibility state");
+  expectEffect(left->complete(std::move(leftAssignment)),
+               RetirementEffect::DomainCompleted,
+               "the rejected assignment lost its original authority");
+  expectEffect(right->complete(std::move(rightAssignment)),
+               RetirementEffect::DomainCompleted,
+               "foreign rejection disturbed the peer assignment");
+}
+
 } // namespace
 
 int main() {
@@ -393,5 +547,8 @@ int main() {
   independentOrdinalSequencesForInterleavedParents();
   retiredParentRejectsSpawnAtomically();
   maximumChildOrdinalPrecedesExhaustion();
+  boundedDequeStealingPreservesLogicalIdentity();
+  cancellationRetiresExactlyOneResponsibility();
+  assignmentAuthorityCannotCrossSchedulers();
   return 0;
 }
