@@ -156,7 +156,16 @@ WorkUnitKey makeKey(std::uint64_t node, std::uint64_t ordinal) {
 external_tool::PreparedExternalToolInvocation
 makePrepared(llvm::StringRef runRoot, llvm::StringRef name,
              std::uint8_t digestByte) {
-  return {(runRoot + "/" + name).str(), computeBlobDigest({digestByte})};
+  const std::filesystem::path root((runRoot + "/" + name).str());
+  std::error_code error;
+  if (!std::filesystem::create_directory(root, error) || error)
+    fail("cannot create prepared invocation fixture");
+  std::ofstream manifest(root / "tool-invocation.json", std::ios::binary);
+  manifest.put(static_cast<char>(digestByte));
+  manifest.close();
+  if (!manifest)
+    fail("cannot write prepared invocation manifest fixture");
+  return {root.string(), computeBlobDigest({digestByte})};
 }
 
 void prepare(ExecutionJournal &journal, const WorkUnitKey &key,
@@ -465,10 +474,12 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
   const WorkUnitKey missKey = makeKey(4, 0);
   const auto missPrepared = makePrepared(runRoot, "miss", 0x61);
   prepare(journal, missKey, missPrepared);
+  const BlobDigest missAttempt =
+      take(external_tool::beginExternalToolInvocationAttempt(missPrepared));
   requireSuccess(journal.recordPreparedExecutionInterval(
       missKey, 0, unixNanosecondsNow(),
       external_tool::ExternalToolInvocationExecutionObservation{
-          missPrepared.manifestDigest, 0,
+          missPrepared.manifestDigest, missAttempt, 0,
           external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
           external_tool::ExternalToolResultCacheAvailability::Available,
           external_tool::ExternalToolResultCacheLookup::Miss,
@@ -479,10 +490,12 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
   const WorkUnitKey hitKey = makeKey(4, 1);
   const auto hitPrepared = makePrepared(runRoot, "hit", 0x62);
   prepare(journal, hitKey, hitPrepared);
+  const BlobDigest hitAttempt =
+      take(external_tool::beginExternalToolInvocationAttempt(hitPrepared));
   requireSuccess(journal.recordPreparedExecutionInterval(
       hitKey, 0, unixNanosecondsNow(),
       external_tool::ExternalToolInvocationExecutionObservation{
-          hitPrepared.manifestDigest, 0,
+          hitPrepared.manifestDigest, hitAttempt, 0,
           external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
           external_tool::ExternalToolResultCacheAvailability::Available,
           external_tool::ExternalToolResultCacheLookup::Hit,
@@ -513,11 +526,14 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
   const WorkUnitKey foreignKey = makeKey(4, 2);
   const auto foreignPrepared = makePrepared(runRoot, "foreign", 0x63);
   prepare(reopened, foreignKey, foreignPrepared);
+  (void)take(
+      external_tool::beginExternalToolInvocationAttempt(foreignPrepared));
   const auto beforeForeign = take(reopened.find(foreignKey));
   if (!beforeForeign)
     fail("foreign manifest fixture was not prepared");
   external_tool::ExternalToolInvocationExecutionObservation foreignObservation{
       hitPrepared.manifestDigest,
+      hitAttempt,
       0,
       external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
       external_tool::ExternalToolResultCacheAvailability::Available,
@@ -542,6 +558,64 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
       afterForeign->preparedInvocation->manifestDigest !=
           beforeForeign->preparedInvocation->manifestDigest)
     fail("foreign manifest rejection mutated the journal record");
+
+  const WorkUnitKey foreignRootKey = makeKey(4, 3);
+  const auto foreignRootPrepared =
+      makePrepared(runRoot, "foreign-root", 0x62);
+  prepare(reopened, foreignRootKey, foreignRootPrepared);
+  (void)take(external_tool::beginExternalToolInvocationAttempt(
+      foreignRootPrepared));
+  const auto beforeForeignRoot = take(reopened.find(foreignRootKey));
+  external_tool::ExternalToolInvocationExecutionObservation
+      foreignRootObservation{
+          foreignRootPrepared.manifestDigest,
+          hitAttempt,
+          0,
+          external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
+          external_tool::ExternalToolResultCacheAvailability::Available,
+          external_tool::ExternalToolResultCacheLookup::Hit,
+          external_tool::ExternalToolResultCacheDiscard::NotAttempted,
+          external_tool::ExternalToolResultCachePublication::NotAttempted,
+          true,
+          false};
+  requireErrorContains(
+      reopened.recordPreparedExecutionInterval(
+          foreignRootKey, 99, unixNanosecondsNow(), foreignRootObservation),
+      "another attempt generation");
+  const auto afterForeignRoot = take(reopened.find(foreignRootKey));
+  if (!beforeForeignRoot || !afterForeignRoot ||
+      afterForeignRoot->activeWallIntervals !=
+          beforeForeignRoot->activeWallIntervals ||
+      afterForeignRoot->externalToolWork != beforeForeignRoot->externalToolWork)
+    fail("foreign root rejection mutated the journal record");
+
+  const WorkUnitKey staleKey = makeKey(4, 4);
+  const auto stalePrepared = makePrepared(runRoot, "stale", 0x64);
+  prepare(reopened, staleKey, stalePrepared);
+  const BlobDigest staleAttempt =
+      take(external_tool::beginExternalToolInvocationAttempt(stalePrepared));
+  external_tool::ExternalToolInvocationExecutionObservation staleObservation{
+      stalePrepared.manifestDigest,
+      staleAttempt,
+      0,
+      external_tool::ExternalToolResultReusePolicy::RequireFresh,
+      external_tool::ExternalToolResultCacheAvailability::Disabled,
+      external_tool::ExternalToolResultCacheLookup::NotAttempted,
+      external_tool::ExternalToolResultCacheDiscard::NotAttempted,
+      external_tool::ExternalToolResultCachePublication::NotAttempted,
+      false,
+      true};
+  (void)take(external_tool::beginExternalToolInvocationAttempt(stalePrepared));
+  const auto beforeStale = take(reopened.find(staleKey));
+  requireErrorContains(
+      reopened.recordPreparedExecutionInterval(
+          staleKey, 99, unixNanosecondsNow(), staleObservation),
+      "another attempt generation");
+  const auto afterStale = take(reopened.find(staleKey));
+  if (!beforeStale || !afterStale ||
+      afterStale->activeWallIntervals != beforeStale->activeWallIntervals ||
+      afterStale->externalToolWork != beforeStale->externalToolWork)
+    fail("stale attempt rejection mutated the journal record");
 }
 
 void rewriteSnapshotAsHistorical(llvm::StringRef runRoot,

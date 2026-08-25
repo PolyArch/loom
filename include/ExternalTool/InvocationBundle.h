@@ -165,6 +165,7 @@ enum class ExternalToolResultReusePolicy {
 /// tool; unsuccessful tool attempts are never published.
 struct ExternalToolInvocationExecutionObservation final {
   BlobDigest manifestDigest;
+  BlobDigest attemptToken;
   int exitCode;
   ExternalToolResultReusePolicy reusePolicy;
   ExternalToolResultCacheAvailability cacheAvailability;
@@ -345,6 +346,18 @@ executeExternalToolInvocationBundleObserved(
     ExecutionControlView executionControl = {},
     ExternalToolResultReusePolicy reusePolicy =
         ExternalToolResultReusePolicy::AllowExactReuse);
+
+/// Starts one nonsemantic execution generation for a prepared root. The token
+/// is published atomically beside the manifest and changes on every call; it
+/// never enters an invocation identity or persistent result-cache key.
+llvm::Expected<BlobDigest> beginExternalToolInvocationAttempt(
+    const PreparedExternalToolInvocation &prepared);
+
+/// Proves that an observation belongs to the currently published execution
+/// generation of the exact prepared root.
+llvm::Error validateExternalToolInvocationExecutionObservation(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &observation);
 
 /// Derives the exact persistent-result cache key from one verified prepared
 /// invocation. This reads and validates the key-bearing generated files and

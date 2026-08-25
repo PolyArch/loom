@@ -1134,11 +1134,16 @@ executeExternalToolInvocationBundleObserved(
     const PreparedExternalToolInvocation &prepared,
     ExecutionControlView executionControl,
     ExternalToolResultReusePolicy reusePolicy) {
+  auto attemptToken = beginExternalToolInvocationAttempt(prepared);
+  if (!attemptToken)
+    return attemptToken.takeError();
   const auto stopped =
-      [&prepared, reusePolicy](ExternalToolResultCacheAvailability availability,
-                               bool waited, bool invoked) {
+      [&prepared, &attemptToken,
+       reusePolicy](ExternalToolResultCacheAvailability availability,
+                    bool waited, bool invoked) {
         return ExternalToolInvocationExecutionObservation{
             prepared.manifestDigest,
+            *attemptToken,
             externalToolExecutionStoppedExitCode,
             reusePolicy,
             availability,
@@ -1170,6 +1175,7 @@ executeExternalToolInvocationBundleObserved(
     }
     return ExternalToolInvocationExecutionObservation{
         prepared.manifestDigest,
+        *attemptToken,
         execution->exitCode,
         reusePolicy,
         availability,
@@ -1248,6 +1254,7 @@ executeExternalToolInvocationBundleObserved(
     if (preflight->exitCode != 0)
       return ExternalToolInvocationExecutionObservation{
           prepared.manifestDigest,
+          *attemptToken,
           preflight->exitCode,
           reusePolicy,
           ExternalToolResultCacheAvailability::Available,
@@ -1261,6 +1268,7 @@ executeExternalToolInvocationBundleObserved(
       cacheDiagnostic(DiagnosticVerbosity::Summary, "hit", keySpelling);
       return ExternalToolInvocationExecutionObservation{
           prepared.manifestDigest,
+          *attemptToken,
           0,
           reusePolicy,
           ExternalToolResultCacheAvailability::Available,
@@ -1286,6 +1294,7 @@ executeExternalToolInvocationBundleObserved(
   if (execution->exitCode == externalToolExecutionStoppedExitCode)
     return ExternalToolInvocationExecutionObservation{
         prepared.manifestDigest,
+        *attemptToken,
         execution->exitCode,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1297,6 +1306,7 @@ executeExternalToolInvocationBundleObserved(
   if (execution->exitCode != 0)
     return ExternalToolInvocationExecutionObservation{
         prepared.manifestDigest,
+        *attemptToken,
         execution->exitCode,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1308,6 +1318,7 @@ executeExternalToolInvocationBundleObserved(
   if (discard == ExternalToolResultCacheDiscard::Failed)
     return ExternalToolInvocationExecutionObservation{
         prepared.manifestDigest,
+        *attemptToken,
         0,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1323,6 +1334,7 @@ executeExternalToolInvocationBundleObserved(
                     llvm::toString(postflight.takeError()));
     return ExternalToolInvocationExecutionObservation{
         prepared.manifestDigest,
+        *attemptToken,
         0,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1335,6 +1347,7 @@ executeExternalToolInvocationBundleObserved(
   if (postflight->exitCode == externalToolExecutionStoppedExitCode)
     return ExternalToolInvocationExecutionObservation{
         prepared.manifestDigest,
+        *attemptToken,
         externalToolExecutionStoppedExitCode,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1348,6 +1361,7 @@ executeExternalToolInvocationBundleObserved(
                     "invocation inputs or tool changed during execution");
     return ExternalToolInvocationExecutionObservation{
         prepared.manifestDigest,
+        *attemptToken,
         0,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1367,6 +1381,7 @@ executeExternalToolInvocationBundleObserved(
                       "cache-key material changed during execution");
     return ExternalToolInvocationExecutionObservation{
         prepared.manifestDigest,
+        *attemptToken,
         0,
         reusePolicy,
         ExternalToolResultCacheAvailability::Available,
@@ -1387,6 +1402,7 @@ executeExternalToolInvocationBundleObserved(
   }
   return ExternalToolInvocationExecutionObservation{
       prepared.manifestDigest,
+      *attemptToken,
       0,
       reusePolicy,
       ExternalToolResultCacheAvailability::Available,
