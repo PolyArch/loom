@@ -286,8 +286,10 @@ using DeclinedLocalRegions =
 // Remove only unreachable CFG components whose block identity cannot be
 // observed outside the callable. llvm.blockaddress references a blocktag by
 // symbol and integer tag rather than an SSA use, so preserving the complete
-// weakly connected unreachable component is necessary to retain both that
-// identity and the component's internal SSA/branch closure.
+// weakly connected unreachable component and its recursive SSA definitions is
+// necessary to retain both that identity and the component's complete input
+// closure. MLIR permits SSA references between otherwise disconnected
+// unreachable components, so CFG adjacency alone is insufficient.
 bool eraseUnanchoredUnreachableBlocks(::mlir::Operation *callable,
                                       ::mlir::Region &region,
                                       ::mlir::IRRewriter &rewriter) {
@@ -319,6 +321,21 @@ bool eraseUnanchoredUnreachableBlocks(::mlir::Operation *callable,
       retain(predecessor);
     for (::mlir::Block *successor : block->getSuccessors())
       retain(successor);
+    (void)block->walk([&](::mlir::Operation *operation) {
+      for (::mlir::Value operand : operation->getOperands()) {
+        ::mlir::Block *definition = nullptr;
+        if (auto argument = ::mlir::dyn_cast<::mlir::BlockArgument>(operand))
+          definition = argument.getOwner();
+        else if (::mlir::Operation *owner = operand.getDefiningOp())
+          definition = owner->getBlock();
+        if (!definition)
+          continue;
+        if (::mlir::Block *callableBlock =
+                region.findAncestorBlockInRegion(*definition))
+          retain(callableBlock);
+      }
+      return ::mlir::WalkResult::advance();
+    });
   }
 
   ::llvm::SmallVector<::mlir::Block *, 8> erased;

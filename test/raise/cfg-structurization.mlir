@@ -509,12 +509,12 @@ llvm.func @tagged_dead_ingress(%weighted: i1, %plain: i1, %a: i32, %b: i32) -> i
 
 llvm.func @tagged_dead_unrelated(%plain: i1, %a: i32, %b: i32) -> i32 {
   cf.cond_br %plain, ^plain_true, ^plain_false
-^dead_entry:
+^dead_definition:
   %dead_value = arith.addi %a, %b : i32
-  cf.br ^dead_tag(%dead_value : i32)
-^dead_tag(%dead_argument: i32):
+  llvm.return %dead_value : i32
+^dead_tag:
   llvm.blocktag <id = 1>
-  cf.br ^dead_exit(%dead_argument : i32)
+  cf.br ^dead_exit(%dead_value : i32)
 ^dead_exit(%dead_result: i32):
   llvm.return %dead_result : i32
 ^plain_true:
