@@ -195,7 +195,8 @@ void emitInvocationExecutionStatistics(
     const SpatialPnrWorkerAllocation &allocation,
     const SpatialActiveProblemStatistics &problemStatistics,
     ExecutionResourceBudget executionBudget,
-    const ExecutionResourceTracker &resources) {
+    const ExecutionResourceTracker &resources,
+    bool preparedSeedHandoff) {
   if (!mapping_debug::enabled(mapping_debug::Level::Summary))
     return;
   const ExecutionResourceStatistics observation = resources.observe();
@@ -203,6 +204,7 @@ void emitInvocationExecutionStatistics(
       mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
       mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
         fields["statistics_kind"] = "spatial_pnr_execution";
+        fields["prepared_seed_handoff"] = preparedSeedHandoff;
         fields["configured_worker_count"] = allocation.configuredWorkerCount;
         fields["restart_count"] = allocation.restartCount;
         fields["serial_prefix"] = allocation.serialPrefix;
@@ -598,19 +600,48 @@ restartInterrupted(SpatialPnrInterruptionStage stage,
 
 SpatialRestartResult runSpatialRestartImpl(
     const FrozenSpatialPnrProblemHandle &problem, std::uint32_t attempt,
-    ExecutionControlView executionControl, SpatialRestartScratch &scratch) {
+    ExecutionControlView executionControl, SpatialRestartScratch &scratch,
+    SpatialPathFinderSeedHandoffHandle preparedSeedHandoff = nullptr) {
   SpatialPnrGenerationAccounting accounting;
-  if (executionControl.stopRequested())
+  accounting.seedAttemptSlots = 1;
+  if (!preparedSeedHandoff && executionControl.stopRequested())
     return restartInterrupted(SpatialPnrInterruptionStage::SeedConstruction,
                               std::move(accounting));
-  accounting.seedAttemptSlots = 1;
   const auto &search = problem->config().policy().search;
   SpatialAnnealingSearchScratch &annealing = scratch.annealing;
   SpatialExactRepairScratch &repair = scratch.repair;
   SpatialGlobalRoutingClosureScratch &finalClosure = scratch.finalClosure;
 
   SpatialPathFinderSeedWorkSummary seedWork;
-  auto seed = createPathFinderSpatialSeed(problem, attempt, seedWork);
+  llvm::Expected<SpatialPathFinderSeed> seed = [&]() {
+    if (!preparedSeedHandoff)
+      return createPathFinderSpatialSeed(problem, attempt, seedWork);
+    if (preparedSeedHandoff->consumed)
+      return llvm::Expected<SpatialPathFinderSeed>(llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "Spatial seed handoff was consumed more than once"));
+    if (preparedSeedHandoff->attemptOrdinal != attempt)
+      return llvm::Expected<SpatialPathFinderSeed>(llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "Spatial seed handoff ordinal does not match restart ordinal"));
+    preparedSeedHandoff->consumed = true;
+    seedWork = preparedSeedHandoff->workSummary;
+    if (preparedSeedHandoff->seed) {
+      auto prepared = llvm::Expected<SpatialPathFinderSeed>(
+          std::move(*preparedSeedHandoff->seed));
+      preparedSeedHandoff->seed.reset();
+      return prepared;
+    }
+    if (preparedSeedHandoff->failure) {
+      auto failure = llvm::Expected<SpatialPathFinderSeed>(
+          std::move(*preparedSeedHandoff->failure));
+      preparedSeedHandoff->failure.reset();
+      return failure;
+    }
+    return llvm::Expected<SpatialPathFinderSeed>(llvm::createStringError(
+        std::make_error_code(std::errc::invalid_argument),
+        "Spatial seed handoff contains neither a seed nor a failure"));
+  }();
   if (llvm::Error error = checkedAdd(seedWork.initializerAssignmentAttempts,
                                      accounting.initializerAssignmentAttempts,
                                      "initializer assignment attempts"))
@@ -890,10 +921,12 @@ SpatialRestartResult runSpatialRestartImpl(
 SpatialRestartResult
 runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
                   std::uint32_t attempt,
-                  ExecutionControlView executionControl) {
+                  ExecutionControlView executionControl,
+                  SpatialPathFinderSeedHandoffHandle preparedSeedHandoff =
+                      nullptr) {
   SpatialRestartScratch scratch;
-  SpatialRestartResult result =
-      runSpatialRestartImpl(problem, attempt, executionControl, scratch);
+  SpatialRestartResult result = runSpatialRestartImpl(
+      problem, attempt, executionControl, scratch, std::move(preparedSeedHandoff));
   result.workerScratchRetainedBytes = scratch.retainedStorageBytes();
   return result;
 }
@@ -1264,10 +1297,35 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
       inputs.config.policy().search.completionGoal ==
       ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
   const bool serialPrefix = firstVerifiedCandidate;
+  if (inputs.preparedCanonicalSeed) {
+    const SpatialPathFinderSeedHandoff &handoff =
+        *inputs.preparedCanonicalSeed;
+    if (firstVerifiedCandidate || handoff.attemptOrdinal != 0 ||
+        !handoff.problemCacheKey ||
+        *handoff.problemCacheKey != (*problem)->cacheKey() ||
+        (handoff.seed.has_value() == handoff.failure.has_value()))
+      return InvalidSpatialPnrGeneration{
+          InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
+          "prepared Spatial seed handoff is incompatible with the selected "
+          "completion goal or ordinal"};
+    if (handoff.seed &&
+        (!handoff.seed->candidate ||
+         handoff.seed->attemptOrdinal != handoff.attemptOrdinal ||
+         handoff.seed->candidate->problem().cacheKey() !=
+             (*problem)->cacheKey()))
+      return InvalidSpatialPnrGeneration{
+          InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
+          "prepared Spatial seed handoff does not bind the exact frozen "
+          "problem"};
+  }
   const FrozenSpatialPnrProblemHandle frozenProblem = *problem;
   std::vector<SpatialRestartResult> restartResults;
   const auto runRestart = [&](std::uint32_t attempt) {
-    return runSpatialRestart(frozenProblem, attempt, inputs.executionControl);
+    SpatialPathFinderSeedHandoffHandle handoff;
+    if (attempt == 0)
+      handoff = inputs.preparedCanonicalSeed;
+    return runSpatialRestart(frozenProblem, attempt, inputs.executionControl,
+                             std::move(handoff));
   };
   const bool calibrateWorkerMemory =
       executionBudget.memoryBytes && !serialPrefix && restartCount > 1;
@@ -1291,7 +1349,8 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   const std::uint32_t workerCount = workerAllocation.actualWorkerCount;
   auto emitExecutionStatisticsOnExit = llvm::scope_exit([&] {
     emitInvocationExecutionStatistics(
-        workerAllocation, (*problem)->statistics(), executionBudget, resources);
+        workerAllocation, (*problem)->statistics(), executionBudget, resources,
+        inputs.preparedCanonicalSeed != nullptr);
   });
 
   if (serialPrefix) {
