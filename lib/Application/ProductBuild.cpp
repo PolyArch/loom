@@ -12,6 +12,7 @@
 #include "Common/BlobStore.h"
 #include "Common/ExecutionControl.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/CandidateGenerator.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/Models/FpaParameterContract.h"
@@ -494,10 +495,6 @@ prepareProductTarget(const ProductBuildOptions &options) {
   auto config = resolveConfigProfile(options.accelerationProfile);
   if (!config)
     return config.takeError();
-  config->dse.spatialPnr.search.completionGoal =
-      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
-  config->dse.systemPnr.search.completionGoal =
-      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
   auto publishedConfig = (*workspace)
                              ->artifacts()
                              .put(ResolvedConfig::artifactSchema,
@@ -768,10 +765,11 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
       applicationBuildProducerIdentity);
   if (!producer)
     return producer.takeError();
-  auto capacity = dse::SiteCapacity::get(1, 0, 0);
+  const std::uint32_t candidateWorkerCount = dse::defaultCandidateWorkerCount();
+  auto capacity = dse::SiteCapacity::get(candidateWorkerCount, 0, 0);
   if (!capacity)
     return capacity.takeError();
-  auto claim = dse::SiteResourceClaim::get(1, 0, 0);
+  auto claim = dse::SiteResourceClaim::get(candidateWorkerCount, 0, 0);
   if (!claim)
     return claim.takeError();
   std::optional<dse::ExternalExecutionSite> externalSite;

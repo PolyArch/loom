@@ -86,6 +86,7 @@ set(LOOM_TEST_DEPENDS
   loom-application-host-run-test
   loom-application-manifest-test
   loom-application-pair-outcome-test
+  loom-application-product-build-policy-test
   loom-dataflow-activity-definedness-test
   loom-dataflow-ordered-cardinality-handshake-test
   loom-dataflow-rewrite-decision-test

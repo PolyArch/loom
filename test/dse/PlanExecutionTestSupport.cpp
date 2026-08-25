@@ -68,6 +68,8 @@ std::atomic_uint64_t maximumActiveProviders{0};
 std::atomic_uint64_t requiredConcurrentProviders{1};
 std::atomic_bool waitForStopRequest{false};
 std::atomic_bool observedStopRequest{false};
+std::atomic_uint64_t observedCpuBudgetCores{0};
+std::atomic_uint64_t observedMemoryBudgetBytes{0};
 std::mutex concurrencyMutex;
 std::condition_variable concurrencyChanged;
 
@@ -92,6 +94,12 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     return invalid("provider received the wrong exact invocation");
 
   providerCalls.fetch_add(1, std::memory_order_relaxed);
+  observedCpuBudgetCores.store(
+      invocation.executionBudget().cpuCores.value_or(0),
+      std::memory_order_relaxed);
+  observedMemoryBudgetBytes.store(
+      invocation.executionBudget().memoryBytes.value_or(0),
+      std::memory_order_relaxed);
   const std::uint64_t active =
       activeProviders.fetch_add(1, std::memory_order_relaxed) + 1;
   observeMaximum(active);
@@ -213,6 +221,8 @@ void resetPlanExecutionProviderObservations() {
   requiredConcurrentProviders.store(1, std::memory_order_relaxed);
   waitForStopRequest.store(false, std::memory_order_relaxed);
   observedStopRequest.store(false, std::memory_order_relaxed);
+  observedCpuBudgetCores.store(0, std::memory_order_relaxed);
+  observedMemoryBudgetBytes.store(0, std::memory_order_relaxed);
 }
 
 void requireConcurrentPlanExecutionProviders(std::uint64_t count) {
@@ -240,6 +250,14 @@ std::uint64_t maximumConcurrentPlanExecutionProviders() {
 
 bool planExecutionProviderObservedStop() {
   return observedStopRequest.load(std::memory_order_relaxed);
+}
+
+std::uint64_t planExecutionProviderCpuBudgetCores() {
+  return observedCpuBudgetCores.load(std::memory_order_relaxed);
+}
+
+std::uint64_t planExecutionProviderMemoryBudgetBytes() {
+  return observedMemoryBudgetBytes.load(std::memory_order_relaxed);
 }
 
 } // namespace loom::dse::test_support

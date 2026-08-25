@@ -850,10 +850,24 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
               statistics.cachedInactiveActionCount - levelCachedBegin;
           fields["transition_failures"] =
               statistics.annealingTransitionFailureCount - levelFailureBegin;
-          fields["heuristic_cache_hits"] =
+          const std::uint64_t heuristicCacheHits =
               actionExecutor_.heuristicCacheHitCount() - levelHeuristicHitBegin;
-          fields["heuristic_builds"] =
+          const std::uint64_t heuristicBuilds =
               actionExecutor_.heuristicBuildCount() - levelHeuristicBuildBegin;
+          fields["heuristic_cache_hits"] = heuristicCacheHits;
+          fields["heuristic_builds"] = heuristicBuilds;
+          const std::uint64_t heuristicLookups =
+              heuristicBuilds > std::numeric_limits<std::uint64_t>::max() -
+                                    heuristicCacheHits
+                  ? std::numeric_limits<std::uint64_t>::max()
+                  : heuristicCacheHits + heuristicBuilds;
+          fields["heuristic_cache_lookups"] = heuristicLookups;
+          if (heuristicLookups != 0)
+            fields["heuristic_cache_hit_ratio"] =
+                static_cast<double>(heuristicCacheHits) /
+                static_cast<double>(heuristicLookups);
+          else
+            fields["heuristic_cache_hit_ratio"] = nullptr;
           fields["heuristic_cache_entries"] =
               actionExecutor_.heuristicCacheEntryCount();
           fields["heuristic_cache_evictions"] =

@@ -217,6 +217,7 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   routeRootEndpoints_.clear();
   routeSubtreeSlots_.clear();
   routeSubtreeHasSink_.clear();
+  hardProgressWitnessOwners_.clear();
   resourceAnchors_.clear();
   resourceChoices_.clear();
   realizationMovableDecisionCount_ = 0;
@@ -229,6 +230,8 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   routeRootEndpoints_.reserve(endpointCount);
   routeSubtreeSlots_.reserve(endpointCount);
   routeSubtreeHasSink_.reserve(endpointCount);
+  hardProgressWitnessOwners_.reserve(
+      problem.progressIndex().finiteBufferOwners().size());
   resourceAnchors_.reserve(resourceAnchorCapacity);
   resourceChoices_.reserve(resourceChoiceCapacity);
   relationChoices_.resize(relations.decisionCount());
@@ -318,6 +321,7 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
   transportAnchors_.clear();
   transportChoices_.clear();
   routeRootEndpoints_.clear();
+  hardProgressWitnessOwners_.clear();
   resourceAnchors_.clear();
   resourceChoices_.clear();
   realizationMovableDecisionCount_ = 0;
@@ -675,11 +679,11 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
         return error;
 
   std::uint64_t hardProgressWitnessCount = 0;
-  for (PnrIndex owner = 0;
-       owner < preparedProblem_->progressIndex().finiteBufferOwners().size();
-       ++owner) {
-    if (!candidate.progress().finiteBufferOwnerConflicts(owner))
-      continue;
+  if (llvm::Error error =
+          candidate.progress().enumerateFiniteBufferConflictOwners(
+              hardProgressWitnessOwners_))
+    return error;
+  for (PnrIndex owner : hardProgressWitnessOwners_) {
     if (llvm::Error error = appendWitness(
             ResolvedPnrViolationKind::HardProgressViolation, owner))
       return error;
@@ -934,6 +938,7 @@ std::size_t SpatialActionDomainScratch::retainedStorageBytes() const {
          retainedBytes(routeRootEndpoints_) +
          retainedBytes(routeSubtreeSlots_) +
          retainedBytes(routeSubtreeHasSink_) +
+         retainedBytes(hardProgressWitnessOwners_) +
          (memoryConstraintScratch_
               ? memoryConstraintScratch_->retainedStorageBytes()
               : 0);

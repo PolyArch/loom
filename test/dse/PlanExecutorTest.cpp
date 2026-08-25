@@ -60,14 +60,16 @@ private:
 };
 
 PlanExecutionPolicy makePolicy(std::uint64_t workers,
-                               std::optional<std::uint64_t> dispatches = {}) {
-  return take(PlanExecutionPolicy::get(workers,
-                                       take(SiteResourceClaim::get(1, 0, 0)),
-                                       std::nullopt, {}, dispatches));
+                               std::optional<std::uint64_t> dispatches = {},
+                               std::uint64_t memoryBytes = 0) {
+  return take(PlanExecutionPolicy::get(
+      workers, take(SiteResourceClaim::get(1, memoryBytes, 0)), std::nullopt,
+      {}, dispatches));
 }
 
-SiteScheduler makeScheduler() {
-  return take(SiteScheduler::create(take(SiteCapacity::get(2, 0, 0))));
+SiteScheduler makeScheduler(std::uint64_t memoryBytes = 0) {
+  return take(
+      SiteScheduler::create(take(SiteCapacity::get(2, memoryBytes, 0))));
 }
 
 void testParallelExecutionAndTerminalReplay(const ArtifactStore &store,
@@ -223,6 +225,26 @@ void testDeterministicDispatchPrefix(const ArtifactStore &store,
     fail("resumed prefix did not finish only its missing work units");
 }
 
+void testProviderReceivesAdmittedResourceBudget(const ArtifactStore &store,
+                                                const BlobStore &blobs,
+                                                llvm::StringRef runRoot) {
+  constexpr std::uint64_t memoryBudgetBytes = UINT64_C(64) * 1024 * 1024;
+  PlanExecutionFixture fixture = take(makePlanExecutionFixture(
+      store, 1, "loom.test.plan_executor.memory_budget.v1"));
+  ExecutionJournal journal =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  SiteScheduler scheduler = makeScheduler(memoryBudgetBytes);
+  resetPlanExecutionProviderObservations();
+
+  DsePlanExecutionResult result = take(executeDsePlan(
+      fixture.view, fixture.closure, journal, scheduler,
+      makePolicy(1, std::nullopt, memoryBudgetBytes), store, blobs));
+  if (!std::holds_alternative<CompletedDsePlanExecution>(result) ||
+      planExecutionProviderCpuBudgetCores() != 1 ||
+      planExecutionProviderMemoryBudgetBytes() != memoryBudgetBytes)
+    fail("Generate provider lost its admitted execution resource budget");
+}
+
 } // namespace
 
 int main() {
@@ -234,6 +256,8 @@ int main() {
   const std::string inflightStoppedRun =
       directory.makeDirectory("inflight-stopped-run");
   const std::string prefixRun = directory.makeDirectory("prefix-run");
+  const std::string resourceBudgetRun =
+      directory.makeDirectory("resource-budget-run");
   ArtifactStore store(storeRoot);
   BlobStore blobs(blobRoot);
   requireSuccess(registerPlanExecutionTestGenerator());
@@ -241,5 +265,6 @@ int main() {
   testStopAndResumeMissingKeys(store, blobs, stoppedRun);
   testRunningProviderObservesStop(store, blobs, inflightStoppedRun);
   testDeterministicDispatchPrefix(store, blobs, prefixRun);
+  testProviderReceivesAdmittedResourceBudget(store, blobs, resourceBudgetRun);
   return 0;
 }

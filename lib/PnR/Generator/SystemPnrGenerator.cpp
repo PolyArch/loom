@@ -519,6 +519,12 @@ interruptionPayload(const SystemPnrInterruptionSnapshot &snapshot) {
   llvm::json::Object resourceValues;
   resourceValues["active_wall_time_ns"] =
       snapshot.resources.activeWallTimeNanoseconds;
+  if (snapshot.resources.processCpuTimeDeltaNanoseconds)
+    resourceValues["process_cpu_time_delta_ns"] =
+        *snapshot.resources.processCpuTimeDeltaNanoseconds;
+  else
+    resourceValues["process_cpu_time_delta_ns"] = nullptr;
+  resourceValues["resource_observation_scope"] = "process";
   resourceValues["allocated_memory_bytes"] =
       snapshot.resources.allocatedMemoryBytes;
   if (snapshot.resources.peakResidentMemoryBytes)

@@ -387,8 +387,10 @@ void SpatialCandidateScratch::beginTransaction() {
 }
 
 void SpatialCandidateScratch::resetTransaction() {
-  for (PnrIndex net : touchedRoutes_)
+  for (PnrIndex net : touchedRoutes_) {
     routeTransactions_[net].reset();
+    progressRecordedRouteDeltaCounts_[net] = 0;
+  }
   touchedRoutes_.clear();
   routeViews_.clear();
   tagValueViews_.clear();
@@ -404,8 +406,6 @@ void SpatialCandidateScratch::resetTransaction() {
   for (PnrIndex logicalNet : progressDirtyNets_)
     progressDirtyNetMarks_[logicalNet] = 0;
   progressDirtyNets_.clear();
-  std::fill(progressRecordedRouteDeltaCounts_.begin(),
-            progressRecordedRouteDeltaCounts_.end(), 0);
   progressTraversalDeltas_.clear();
   progressDependencyDeltas_.clear();
   decisionDeltas_.clear();
