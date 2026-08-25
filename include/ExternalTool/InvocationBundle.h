@@ -127,6 +127,44 @@ struct ExternalToolResultCacheKey final {
   }
 };
 
+enum class ExternalToolResultCacheAvailability {
+  Disabled,
+  Available,
+  Unavailable,
+};
+
+enum class ExternalToolResultCacheLookup {
+  NotAttempted,
+  Hit,
+  Miss,
+};
+
+enum class ExternalToolResultCacheDiscard {
+  NotAttempted,
+  Discarded,
+  Failed,
+};
+
+enum class ExternalToolResultCachePublication {
+  NotAttempted,
+  Published,
+  Failed,
+};
+
+/// The exact cache and execution disposition of one invocation attempt. Cache
+/// infrastructure failures remain non-fatal to the external tool, but are no
+/// longer erased into diagnostics. A cache hit never invokes the external
+/// tool; unsuccessful tool attempts are never published.
+struct ExternalToolInvocationExecutionObservation final {
+  int exitCode;
+  ExternalToolResultCacheAvailability cacheAvailability;
+  ExternalToolResultCacheLookup cacheLookup;
+  ExternalToolResultCacheDiscard cacheDiscard;
+  ExternalToolResultCachePublication cachePublication;
+  bool waitedForCacheKeyLock;
+  bool invokedExternalTool;
+};
+
 struct ExternalToolInvocationBundleSpec {
   ExternalToolSemanticContract semanticContract;
   ResolvedToolBinding tool;
@@ -283,6 +321,12 @@ finalizeExternalToolInvocationBundle(
     const ExternalToolInvocationBundleSpec &specification);
 
 llvm::Expected<int> executeExternalToolInvocationBundle(
+    const PreparedExternalToolInvocation &prepared);
+
+/// Executes through the same persistent cache owner while preserving the
+/// exact cache and external-tool disposition for journals and manifests.
+llvm::Expected<ExternalToolInvocationExecutionObservation>
+executeExternalToolInvocationBundleObserved(
     const PreparedExternalToolInvocation &prepared);
 
 /// Derives the exact persistent-result cache key from one verified prepared

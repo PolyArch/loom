@@ -1479,8 +1479,19 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
   const PreparedExternalToolInvocation first =
       take(__func__, finalizeExternalToolInvocationBundle(
                          (root / "cache-first").string(), firstSpec));
+  const ExternalToolInvocationExecutionObservation population =
+      take(__func__, executeExternalToolInvocationBundleObserved(first));
   require(__func__,
-          take(__func__, executeExternalToolInvocationBundle(first)) == 0,
+          population.exitCode == 0 &&
+              population.cacheAvailability ==
+                  ExternalToolResultCacheAvailability::Available &&
+              population.cacheLookup == ExternalToolResultCacheLookup::Miss &&
+              population.cacheDiscard ==
+                  ExternalToolResultCacheDiscard::NotAttempted &&
+              population.cachePublication ==
+                  ExternalToolResultCachePublication::Published &&
+              !population.waitedForCacheKeyLock &&
+              population.invokedExternalTool,
           "the cache population invocation failed");
   require(__func__, readFile(counter) == "1",
           "cache population did not enter the tool exactly once");
@@ -1529,8 +1540,18 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
           "equivalent local tool and bundle paths changed the cache key");
   require(__func__, first.manifestDigest != relocated.manifestDigest,
           "the path-relocated fixtures unexpectedly share one manifest");
+  const ExternalToolInvocationExecutionObservation cacheHit =
+      take(__func__, executeExternalToolInvocationBundleObserved(relocated));
   require(__func__,
-          take(__func__, executeExternalToolInvocationBundle(relocated)) == 0,
+          cacheHit.exitCode == 0 &&
+              cacheHit.cacheAvailability ==
+                  ExternalToolResultCacheAvailability::Available &&
+              cacheHit.cacheLookup == ExternalToolResultCacheLookup::Hit &&
+              cacheHit.cacheDiscard ==
+                  ExternalToolResultCacheDiscard::NotAttempted &&
+              cacheHit.cachePublication ==
+                  ExternalToolResultCachePublication::NotAttempted &&
+              !cacheHit.invokedExternalTool,
           "the path-relocated cache lookup failed");
   require(__func__, readFile(counter) == "1",
           "a cache hit re-entered the external tool");
@@ -1580,10 +1601,19 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
   const PreparedExternalToolInvocation afterCorruption = take(
       __func__, finalizeExternalToolInvocationBundle(
                     (root / "cache-after-corruption").string(), firstSpec));
-  require(
-      __func__,
-      take(__func__, executeExternalToolInvocationBundle(afterCorruption)) == 0,
-      "a corrupt cache entry did not fall back to real execution");
+  const ExternalToolInvocationExecutionObservation recovered = take(
+      __func__, executeExternalToolInvocationBundleObserved(afterCorruption));
+  require(__func__,
+          recovered.exitCode == 0 &&
+              recovered.cacheAvailability ==
+                  ExternalToolResultCacheAvailability::Available &&
+              recovered.cacheLookup == ExternalToolResultCacheLookup::Miss &&
+              recovered.cacheDiscard ==
+                  ExternalToolResultCacheDiscard::Discarded &&
+              recovered.cachePublication ==
+                  ExternalToolResultCachePublication::Published &&
+              recovered.invokedExternalTool,
+          "a corrupt cache entry did not fall back to real execution");
   require(__func__, readFile(counter) == "3",
           "a corrupt cache entry was adopted as a hit");
 

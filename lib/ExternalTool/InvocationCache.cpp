@@ -111,6 +111,11 @@ private:
   FileDescriptor descriptor_;
 };
 
+struct CacheLockAcquisition final {
+  CacheLock lock;
+  bool waited;
+};
+
 struct CacheFile final {
   std::string relativePath;
   BlobDigest digest;
@@ -588,8 +593,9 @@ llvm::Expected<std::optional<std::filesystem::path>> cacheRoot() {
   return std::optional<std::filesystem::path>(root);
 }
 
-llvm::Expected<CacheLock> lockKey(const std::filesystem::path &root,
-                                  const ExternalToolResultCacheKey &key) {
+llvm::Expected<CacheLockAcquisition>
+lockKey(const std::filesystem::path &root,
+        const ExternalToolResultCacheKey &key) {
   const std::string name =
       formatBlobDigestHex(key.inputMaterialDigest) + "." +
       formatBlobDigestHex(key.executionConfigurationDigest) + "." +
@@ -599,12 +605,21 @@ llvm::Expected<CacheLock> lockKey(const std::filesystem::path &root,
                                    0600));
   if (descriptor.get() < 0)
     return cacheSystemError("cannot open cache-key lock");
-  while (::flock(descriptor.get(), LOCK_EX) != 0) {
+  bool waited = false;
+  while (::flock(descriptor.get(), LOCK_EX | LOCK_NB) != 0) {
     if (errno == EINTR)
       continue;
-    return cacheSystemError("cannot acquire cache-key lock");
+    if (errno != EWOULDBLOCK && errno != EAGAIN)
+      return cacheSystemError("cannot acquire cache-key lock");
+    waited = true;
+    while (::flock(descriptor.get(), LOCK_EX) != 0) {
+      if (errno == EINTR)
+        continue;
+      return cacheSystemError("cannot acquire cache-key lock");
+    }
+    break;
   }
-  return CacheLock(std::move(descriptor));
+  return CacheLockAcquisition{CacheLock(std::move(descriptor)), waited};
 }
 
 std::filesystem::path entryPath(const std::filesystem::path &root,
@@ -1030,72 +1045,149 @@ llvm::Expected<ExternalToolResultCacheKey> deriveExternalToolResultCacheKey(
       domainDigest("loom.external_tool_cache.tool.v1", *toolVersion)};
 }
 
-llvm::Expected<int> executeExternalToolInvocationBundle(
+llvm::Expected<ExternalToolInvocationExecutionObservation>
+executeExternalToolInvocationBundleObserved(
     const PreparedExternalToolInvocation &prepared) {
+  auto executeWithoutCache =
+      [&](ExternalToolResultCacheAvailability availability,
+          bool waitedForCacheKeyLock = false)
+      -> llvm::Expected<ExternalToolInvocationExecutionObservation> {
+    auto status = runScript(prepared, CacheScriptMode::Execute);
+    if (!status)
+      return status.takeError();
+    return ExternalToolInvocationExecutionObservation{
+        *status,
+        availability,
+        ExternalToolResultCacheLookup::NotAttempted,
+        ExternalToolResultCacheDiscard::NotAttempted,
+        ExternalToolResultCachePublication::NotAttempted,
+        waitedForCacheKeyLock,
+        true};
+  };
   auto root = cacheRoot();
   if (!root) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
                     llvm::toString(root.takeError()));
-    return runScript(prepared, CacheScriptMode::Execute);
+    return executeWithoutCache(
+        ExternalToolResultCacheAvailability::Unavailable);
   }
   if (!*root)
-    return runScript(prepared, CacheScriptMode::Execute);
+    return executeWithoutCache(ExternalToolResultCacheAvailability::Disabled);
 
   auto key = deriveExternalToolResultCacheKey(prepared);
   if (!key) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
                     llvm::toString(key.takeError()));
-    return runScript(prepared, CacheScriptMode::Execute);
+    return executeWithoutCache(
+        ExternalToolResultCacheAvailability::Unavailable);
   }
   const std::string keySpelling = keyText(*key);
   auto lock = lockKey(**root, *key);
   if (!lock) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
                     llvm::toString(lock.takeError()));
-    return runScript(prepared, CacheScriptMode::Execute);
+    return executeWithoutCache(
+        ExternalToolResultCacheAvailability::Unavailable);
   }
+  const bool waitedForCacheKeyLock = lock->waited;
 
   auto loaded = loadPreparedInvocationManifest(prepared);
   if (!loaded) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
                     llvm::toString(loaded.takeError()));
-    return runScript(prepared, CacheScriptMode::Execute);
+    return executeWithoutCache(ExternalToolResultCacheAvailability::Unavailable,
+                               waitedForCacheKeyLock);
   }
   const std::filesystem::path entry = entryPath(**root, *key);
   std::error_code statusError;
-  if (std::filesystem::exists(entry, statusError) && !statusError) {
+  const bool entryExists = std::filesystem::exists(entry, statusError);
+  if (statusError) {
+    cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
+                    statusError.message());
+    return executeWithoutCache(ExternalToolResultCacheAvailability::Unavailable,
+                               waitedForCacheKeyLock);
+  }
+  ExternalToolResultCacheDiscard discard =
+      ExternalToolResultCacheDiscard::NotAttempted;
+  if (entryExists) {
     auto preflight = runScript(prepared, CacheScriptMode::Preflight);
     if (!preflight)
       return preflight.takeError();
     if (*preflight != 0)
-      return *preflight;
+      return ExternalToolInvocationExecutionObservation{
+          *preflight,
+          ExternalToolResultCacheAvailability::Available,
+          ExternalToolResultCacheLookup::Miss,
+          discard,
+          ExternalToolResultCachePublication::NotAttempted,
+          waitedForCacheKeyLock,
+          false};
     auto restored = restoreEntry(entry, prepared, loaded->second, *key);
     if (restored && *restored) {
       cacheDiagnostic(DiagnosticVerbosity::Summary, "hit", keySpelling);
-      return 0;
+      return ExternalToolInvocationExecutionObservation{
+          0,
+          ExternalToolResultCacheAvailability::Available,
+          ExternalToolResultCacheLookup::Hit,
+          discard,
+          ExternalToolResultCachePublication::NotAttempted,
+          waitedForCacheKeyLock,
+          false};
     }
     if (!restored)
       cacheDiagnostic(DiagnosticVerbosity::Summary, "discard",
                       llvm::toString(restored.takeError()));
     std::error_code removeError;
     std::filesystem::remove_all(entry, removeError);
+    discard = removeError ? ExternalToolResultCacheDiscard::Failed
+                          : ExternalToolResultCacheDiscard::Discarded;
   }
   cacheDiagnostic(DiagnosticVerbosity::Summary, "miss", keySpelling);
   auto status = runScript(prepared, CacheScriptMode::Execute);
   if (!status)
     return status.takeError();
   if (*status != 0)
-    return *status;
+    return ExternalToolInvocationExecutionObservation{
+        *status,
+        ExternalToolResultCacheAvailability::Available,
+        ExternalToolResultCacheLookup::Miss,
+        discard,
+        ExternalToolResultCachePublication::NotAttempted,
+        waitedForCacheKeyLock,
+        true};
+  if (discard == ExternalToolResultCacheDiscard::Failed)
+    return ExternalToolInvocationExecutionObservation{
+        0,
+        ExternalToolResultCacheAvailability::Available,
+        ExternalToolResultCacheLookup::Miss,
+        discard,
+        ExternalToolResultCachePublication::Failed,
+        waitedForCacheKeyLock,
+        true};
   auto postflight = runScript(prepared, CacheScriptMode::Postflight);
   if (!postflight) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     llvm::toString(postflight.takeError()));
-    return 0;
+    return ExternalToolInvocationExecutionObservation{
+        0,
+        ExternalToolResultCacheAvailability::Available,
+        ExternalToolResultCacheLookup::Miss,
+        discard,
+        ExternalToolResultCachePublication::Failed,
+        waitedForCacheKeyLock,
+        true};
   }
   if (*postflight != 0) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     "invocation inputs or tool changed during execution");
-    return 0;
+    return ExternalToolInvocationExecutionObservation{
+        0,
+        ExternalToolResultCacheAvailability::Available,
+        ExternalToolResultCacheLookup::Miss,
+        discard,
+        ExternalToolResultCachePublication::Failed,
+        waitedForCacheKeyLock,
+        true};
   }
   auto postflightKey = deriveExternalToolResultCacheKey(prepared);
   if (!postflightKey || *postflightKey != *key) {
@@ -1105,14 +1197,40 @@ llvm::Expected<int> executeExternalToolInvocationBundle(
     else
       cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                       "cache-key material changed during execution");
-    return 0;
+    return ExternalToolInvocationExecutionObservation{
+        0,
+        ExternalToolResultCacheAvailability::Available,
+        ExternalToolResultCacheLookup::Miss,
+        discard,
+        ExternalToolResultCachePublication::Failed,
+        waitedForCacheKeyLock,
+        true};
   }
-  if (llvm::Error error = publishEntry(entry, prepared, loaded->second, *key))
+  ExternalToolResultCachePublication publication =
+      ExternalToolResultCachePublication::Published;
+  if (llvm::Error error = publishEntry(entry, prepared, loaded->second, *key)) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     llvm::toString(std::move(error)));
-  else
+    publication = ExternalToolResultCachePublication::Failed;
+  } else {
     cacheDiagnostic(DiagnosticVerbosity::Decision, "published", entry.string());
-  return 0;
+  }
+  return ExternalToolInvocationExecutionObservation{
+      0,
+      ExternalToolResultCacheAvailability::Available,
+      ExternalToolResultCacheLookup::Miss,
+      discard,
+      publication,
+      waitedForCacheKeyLock,
+      true};
+}
+
+llvm::Expected<int> executeExternalToolInvocationBundle(
+    const PreparedExternalToolInvocation &prepared) {
+  auto observation = executeExternalToolInvocationBundleObserved(prepared);
+  if (!observation)
+    return observation.takeError();
+  return observation->exitCode;
 }
 
 } // namespace loom::external_tool
