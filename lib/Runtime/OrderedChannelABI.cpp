@@ -125,6 +125,9 @@ llvm::Error OrderedChannelABI::finishConsumer(std::uint32_t consumerOrdinal) {
       finishedConsumers_[consumerOrdinal])
     return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
                   "ordered channel consumer cannot finish now");
+  if (!producerFinished_)
+    return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
+                  "ordered channel consumer cannot finish before producer");
   if (reservations_[consumerOrdinal])
     return reject(OrderedChannelABIError::Kind::OutstandingReservation,
                   "ordered channel consumer has a live reservation");
@@ -225,9 +228,20 @@ OrderedChannelABI::receive(std::uint32_t consumerOrdinal) {
                   "ordered channel consumer already has a live reservation");
   const std::uint64_t sequence = nextReceiveSequences_[consumerOrdinal];
   if (expectedConsumerMessages_[consumerOrdinal] &&
-      sequence >= *expectedConsumerMessages_[consumerOrdinal])
+      sequence == *expectedConsumerMessages_[consumerOrdinal]) {
+    OrderedChannelReceiveTicket ticket;
+    ticket.kind = producerFinished_
+                      ? OrderedChannelReceiveKind::EndOfGeneration
+                      : OrderedChannelReceiveKind::WouldBlock;
+    ticket.consumerOrdinal = consumerOrdinal;
+    ticket.sequence = sequence;
+    ticket.generation = generation_;
+    return ticket;
+  }
+  if (expectedConsumerMessages_[consumerOrdinal] &&
+      sequence > *expectedConsumerMessages_[consumerOrdinal])
     return reject(OrderedChannelABIError::Kind::StaticRateExceeded,
-                  "ordered channel receive exceeds its static rate");
+                  "ordered channel receive exceeded its static rate");
   Message *message = findMessage(sequence);
   if (!message) {
     OrderedChannelReceiveTicket ticket;

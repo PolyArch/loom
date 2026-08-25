@@ -31,6 +31,7 @@ struct OrderedChannelSend final {
 enum class OrderedChannelReceiveKind : std::uint8_t {
   Message,
   WouldBlock,
+  EndOfGeneration,
 };
 
 /// A receive reservation and its acknowledgement coordinates. Generation and

@@ -200,11 +200,10 @@ void boundedGenerationCompletesAndRepeats() {
   auto secondLeft = take(channel.receive(0));
   require(!channel.acknowledge(secondLeft),
           "left branch did not consume its static rate");
-  auto excessReceive = channel.receive(0);
-  require(!excessReceive, "consumer exceeded the declared generation rate");
-  expectABIError(excessReceive.takeError(),
-                 OrderedChannelABIError::Kind::StaticRateExceeded,
-                 "excess receive did not retain its typed outcome");
+  auto leftEnd = take(channel.receive(0));
+  require(leftEnd.kind == OrderedChannelReceiveKind::EndOfGeneration &&
+              leftEnd.generation == 0 && leftEnd.sequence == 2,
+          "left branch did not observe its generation EOS");
   require(!channel.finishConsumer(0), "left branch could not finish");
   auto pending = channel.joinGeneration();
   expectABIError(std::move(pending),
@@ -217,6 +216,10 @@ void boundedGenerationCompletesAndRepeats() {
   auto secondRight = take(channel.receive(1));
   require(!channel.acknowledge(secondRight),
           "right branch did not consume its static rate");
+  auto rightEnd = take(channel.receive(1));
+  require(rightEnd.kind == OrderedChannelReceiveKind::EndOfGeneration &&
+              rightEnd.generation == 0 && rightEnd.sequence == 2,
+          "right branch did not observe its generation EOS");
   require(!channel.finishConsumer(1), "right branch could not finish");
   require(!channel.joinGeneration(), "complete generation did not join");
   require(channel.send({6}).kind == OrderedChannelSendKind::InvalidLifecycle,
@@ -236,17 +239,21 @@ void boundedGenerationCompletesAndRepeats() {
           "second generation rates were rejected");
   require(channel.send({9}).kind == OrderedChannelSendKind::Accepted,
           "second generation did not restart SendSeq");
+  require(!channel.finishProducer(),
+          "second generation producer could not finish");
   for (std::uint32_t consumer = 0; consumer != 2; ++consumer) {
     auto ticket = take(channel.receive(consumer));
     require(ticket.generation == 1 && ticket.sequence == 0,
             "receive ticket omitted its generation coordinates");
     require(!channel.acknowledge(ticket),
             "second generation acknowledgement failed");
+    auto end = take(channel.receive(consumer));
+    require(end.kind == OrderedChannelReceiveKind::EndOfGeneration &&
+                end.generation == 1 && end.sequence == 1,
+            "second generation consumer did not observe EOS");
     require(!channel.finishConsumer(consumer),
             "second generation consumer could not finish");
   }
-  require(!channel.finishProducer(),
-          "second generation producer could not finish");
   require(!channel.joinGeneration(), "second complete generation did not join");
 }
 
@@ -281,6 +288,9 @@ void generationDeficitsAndLifecycleAreTyped() {
   auto second = take(channel.receive(0));
   require(!channel.acknowledge(second),
           "deficit fixture second receive failed");
+  auto end = take(channel.receive(0));
+  require(end.kind == OrderedChannelReceiveKind::EndOfGeneration,
+          "balanced generation did not expose EOS");
   require(!channel.finishConsumer(0), "consumer could not finish at its rate");
   require(!channel.joinGeneration(), "balanced generation did not join");
   auto duplicateJoin = channel.joinGeneration();
@@ -368,6 +378,10 @@ void cancelledGenerationInvalidatesTicketsAndReopens() {
   require(!channel.openGeneration(0, {0}),
           "zero-rate replacement generation was rejected");
   require(!channel.finishProducer(), "zero-rate producer could not finish");
+  auto end = take(channel.receive(0));
+  require(end.kind == OrderedChannelReceiveKind::EndOfGeneration &&
+              end.generation == 1 && end.sequence == 0,
+          "zero-rate generation did not expose EOS");
   require(!channel.finishConsumer(0), "zero-rate consumer could not finish");
   require(!channel.joinGeneration(),
           "zero-rate replacement generation did not join");
