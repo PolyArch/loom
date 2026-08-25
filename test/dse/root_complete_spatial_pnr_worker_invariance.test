@@ -1,1 +1,7 @@
-# RUN: %loom-root-complete-spatial-pnr-generator-test worker-invariance
+# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-root-complete-spatial-pnr-generator-test worker-invariance 2>&1 | FileCheck %s
+
+# CHECK: "active_route_graph_unit_count":{{[1-9][0-9]*}}{{.*}}"active_wall_time_ns":{{[0-9]+}}{{.*}}"configured_worker_count":4{{.*}}"cpu_budget_cores":4{{.*}}"memory_limited_worker_count":1{{.*}}"peak_resident_memory_bytes":{{(null|[1-9][0-9]*)}}{{.*}}"process_cpu_time_delta_ns":{{(null|[0-9]+)}}{{.*}}"resource_observation_scope":"process"{{.*}}"route_graph_limited_worker_count":{{[1-9][0-9]*}}{{.*}}"statistics_kind":"spatial_pnr_execution"{{.*}}"thread_count":1{{.*}}"worker_count":1
+# CHECK: "configured_worker_count":4{{.*}}"cpu_budget_cores":3{{.*}}"cpu_limited_worker_count":3{{.*}}"memory_budget_bytes":null{{.*}}"memory_calibrated":false{{.*}}"memory_limited_worker_count":null{{.*}}"statistics_kind":"spatial_pnr_execution"{{.*}}"thread_count":3{{.*}}"worker_count":3
+# CHECK: "a_star_expansions":{{[0-9]+}}{{.*}}"candidate_publications":1{{.*}}"negotiation_iterations":{{[0-9]+}}{{.*}}"publication_slots":1{{.*}}"seed_attempt_slots":4{{.*}}"statistics_kind":"spatial_pnr_invocation"
+# CHECK: "configured_worker_count":4{{.*}}"cpu_budget_cores":3{{.*}}"memory_budget_bytes":null{{.*}}"statistics_kind":"spatial_pnr_execution"{{.*}}"thread_count":3{{.*}}"worker_count":3
+# CHECK: spatial_worker_budget constrained_workers=1 parallel_workers=3 exhaustive_restart_slots=4 bounded_publications=1

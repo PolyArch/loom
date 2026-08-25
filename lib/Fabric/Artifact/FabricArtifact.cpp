@@ -91,10 +91,19 @@ validateUnconditionalHandshakeClosure(const FabricArtifactView &view) {
   if (!arcs)
     return arcs.takeError();
 
+  struct KeyedArc final {
+    std::vector<std::uint8_t> source;
+    std::vector<std::uint8_t> destination;
+  };
+  std::vector<KeyedArc> keyedArcs;
+  keyedArcs.reserve(arcs->size());
   std::set<std::vector<std::uint8_t>> orderedSignals;
   for (const HandshakeDependencyArc &arc : *arcs) {
-    orderedSignals.insert(handshakeSignalKey(arc.source));
-    orderedSignals.insert(handshakeSignalKey(arc.destination));
+    KeyedArc keyed{handshakeSignalKey(arc.source),
+                   handshakeSignalKey(arc.destination)};
+    orderedSignals.insert(keyed.source);
+    orderedSignals.insert(keyed.destination);
+    keyedArcs.push_back(std::move(keyed));
   }
   std::map<std::vector<std::uint8_t>, std::uint32_t> signalOrdinals;
   for (const std::vector<std::uint8_t> &signal : orderedSignals)
@@ -104,11 +113,9 @@ validateUnconditionalHandshakeClosure(const FabricArtifactView &view) {
   std::vector<std::vector<std::uint32_t>> adjacency(signalOrdinals.size());
   std::vector<std::uint32_t> indegree(signalOrdinals.size(), 0);
   std::set<std::pair<std::uint32_t, std::uint32_t>> uniqueArcs;
-  for (const HandshakeDependencyArc &arc : *arcs) {
-    const std::uint32_t source =
-        signalOrdinals.at(handshakeSignalKey(arc.source));
-    const std::uint32_t destination =
-        signalOrdinals.at(handshakeSignalKey(arc.destination));
+  for (const KeyedArc &arc : keyedArcs) {
+    const std::uint32_t source = signalOrdinals.at(arc.source);
+    const std::uint32_t destination = signalOrdinals.at(arc.destination);
     if (!uniqueArcs.emplace(source, destination).second)
       continue;
     adjacency[source].push_back(destination);

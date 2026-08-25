@@ -11,6 +11,7 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrDerivedContext.h"
 #include "PnR/PnrGeneration.h"
+#include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialPnrProblem.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -229,10 +230,14 @@ struct SpatialPnrGenerationInputs final {
       nullptr;
   FrozenSpatialPnrProblemHandle preparedActiveProblem = nullptr;
   bool emitTopologyQualityDiagnostic = true;
-  /// Plan-derived maximum number of canonical candidate restarts to retain.
-  /// This transient work policy bounds provider effort and publication; it is
-  /// not part of Mapping identity or legality.
+  /// Plan-derived maximum number of canonical candidate restarts to publish.
+  /// Every restart required by ExhaustConfiguredWork still executes. This
+  /// publication projection is not part of Mapping identity or legality.
   std::optional<std::uint64_t> maximumCandidatePublications = std::nullopt;
+  ExecutionResourceBudget executionBudget = {};
+  /// Optional one-shot ordinal-zero seed prepared by a deterministic ranking
+  /// pass. The formal owner consumes the handoff and accounts its seed work.
+  SpatialPathFinderSeedHandoffHandle preparedCanonicalSeed = nullptr;
 };
 
 /// Runs the fixed canonical Spatial restart sequence for one exact D/T/F/C/K

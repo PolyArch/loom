@@ -122,11 +122,9 @@ firstTransportWitness(const SpatialCandidateState &candidate) {
   const FrozenSpatialPnrProblem &problem = candidate.problem();
   const auto &transfers = problem.transfers();
   const auto &routing = problem.routing();
-  for (PnrIndex owner = 0;
-       owner < problem.progressIndex().finiteBufferOwners().size(); ++owner)
-    if (candidate.progress().finiteBufferOwnerConflicts(owner))
-      return TransportWitness{ResolvedPnrViolationKind::HardProgressViolation,
-                              owner};
+  if (const auto owner = candidate.progress().firstFiniteBufferConflictOwner())
+    return TransportWitness{ResolvedPnrViolationKind::HardProgressViolation,
+                            *owner};
   for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
        ++logicalNet)
     if (!candidate.usesRegisterFifo(logicalNet) &&
@@ -1059,15 +1057,15 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     return llvm::Error::success();
   };
   const auto addProgressWitness = [&](PnrIndex owner) -> llvm::Error {
-    if (owner >= problem.progressIndex().finiteBufferOwners().size() ||
-        !candidate.progress().finiteBufferOwnerConflicts(owner))
-      return invocationError("finite-buffer progress witness is no longer live");
-    for (PnrIndex logicalNet = 0;
-         logicalNet < transfers.logicalNets().size(); ++logicalNet)
-      if (candidate.progress().logicalNetSelectsFiniteBufferOwner(logicalNet,
-                                                                  owner))
-        if (llvm::Error error = addWitnessNet(logicalNet))
-          return error;
+    if (llvm::Error error = candidate.rebuildFiniteBufferConflictWitness(
+            owner, hardProgressWitness_))
+      return error;
+    for (PnrIndex logicalNet : hardProgressWitness_.competingLogicalNets)
+      if (llvm::Error error = addWitnessNet(logicalNet))
+        return error;
+    if (hardProgressWitness_.routeAnchors.empty())
+      return invocationError(
+          "finite-buffer progress witness has no route anchor");
     return llvm::Error::success();
   };
 
@@ -1329,6 +1327,9 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
              .slice(legalValueOffsets_[local], legalValueOffsets_[local + 1] -
                                                    legalValueOffsets_[local])});
 
+  // Encode every closed relation, including structural relations. Members
+  // outside the mutable region are pinned to their current values above;
+  // filtering structural relations here would loosen the exact model.
   for (PnrIndex relation : relations_) {
     const detail::InitializerRelationRecord &record =
         relationModel.relations()[relation];
@@ -1383,6 +1384,10 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     transportObservationVariables.push_back(
         localDispositions->variables()[local]);
   }
+  std::vector<IntVar> canonicalAssignmentVariables = variables;
+  canonicalAssignmentVariables.insert(canonicalAssignmentVariables.end(),
+                                      localDispositions->variables().begin(),
+                                      localDispositions->variables().end());
 
   std::vector<int> mutationParentLocals(decisions_.size(), -1);
   for (auto [local, decision] : llvm::enumerate(decisions_)) {
@@ -1463,6 +1468,110 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
   const dse::ObjectiveVector initialObjective =
       actionExecutor_.currentObjective();
 
+  // A legal route closure may be worse than the current objective. Keep the
+  // best such assignment outside the mutable CP-SAT model so search can look
+  // for a better legal closure without turning the fallback into a proof of
+  // illegality.
+  std::vector<SpatialMappingAction> bestLegalFallbackActions;
+  std::vector<std::int64_t> bestLegalFallbackAssignment;
+  std::optional<dse::ObjectiveVector> bestLegalFallbackObjective;
+
+  const auto commitBestLegalFallback = [&](std::string detail)
+      -> llvm::Expected<SpatialExactRepairResult> {
+    if (!bestLegalFallbackObjective || bestLegalFallbackActions.empty() ||
+        bestLegalFallbackAssignment.size() != canonicalVariables.size())
+      return executedResult(SpatialExactRepairResultKind::InternalError,
+                            "route repair lost its legal fallback");
+
+    actions_ = bestLegalFallbackActions;
+    auto fallbackProbe = actionExecutor_.probeBatch(
+        candidate, actions_, SpatialActionExecutionContext::ExactRepair,
+        policy.maxRegionDecisions - decisions_.size());
+    if (!fallbackProbe) {
+      std::string failureDetail;
+      std::optional<SpatialActionTransitionFailureKind> transitionFailure;
+      llvm::Error unhandled = llvm::handleErrors(
+          fallbackProbe.takeError(),
+          [&](const SpatialActionTransitionFailure &failure) -> llvm::Error {
+            llvm::raw_string_ostream stream(failureDetail);
+            failure.log(stream);
+            transitionFailure = failure.kind();
+            return llvm::Error::success();
+          });
+      if (unhandled)
+        failureDetail = llvm::toString(std::move(unhandled));
+      const SpatialExactRepairResultKind kind =
+          transitionFailure &&
+                  *transitionFailure ==
+                      SpatialActionTransitionFailureKind::WorkLimit
+              ? SpatialExactRepairResultKind::UnknownBudgetExhausted
+              : SpatialExactRepairResultKind::InternalError;
+      return executedResult(
+          kind, (llvm::Twine("best legal route-repair fallback could not be "
+                             "replayed: ") +
+                 failureDetail)
+                    .str());
+    }
+
+    bool assignmentRealized = true;
+    for (auto [local, decision] : llvm::enumerate(decisions_)) {
+      auto realized = currentBindingChoice(candidate, bindings, decision);
+      if (!realized) {
+        llvm::Error error = realized.takeError();
+        if (llvm::Error discardError = fallbackProbe->discard())
+          error = llvm::joinErrors(std::move(error), std::move(discardError));
+        return executedResult(SpatialExactRepairResultKind::InternalError,
+                              llvm::toString(std::move(error)));
+      }
+      if (*realized !=
+          static_cast<PnrIndex>(bestLegalFallbackAssignment[local])) {
+        assignmentRealized = false;
+        break;
+      }
+    }
+    auto witnessLive = transportWitnessIsLive(candidate, **primaryWitness);
+    if (!witnessLive) {
+      llvm::Error error = witnessLive.takeError();
+      if (llvm::Error discardError = fallbackProbe->discard())
+        error = llvm::joinErrors(std::move(error), std::move(discardError));
+      return executedResult(SpatialExactRepairResultKind::InternalError,
+                            llvm::toString(std::move(error)));
+    }
+    if (!assignmentRealized || candidate.atomicCapacityOveruse() != 0 ||
+        *witnessLive) {
+      if (llvm::Error error = fallbackProbe->discard())
+        return executedResult(SpatialExactRepairResultKind::InternalError,
+                              llvm::toString(std::move(error)));
+      return executedResult(
+          SpatialExactRepairResultKind::InternalError,
+          "recorded legal route-repair fallback failed its replay checks");
+    }
+    lastActionCount = actions_.size();
+    if (llvm::Error error = fallbackProbe->commit())
+      return executedResult(SpatialExactRepairResultKind::InternalError,
+                            llvm::toString(std::move(error)));
+    if (llvm::Error error = candidate.verify())
+      return executedResult(SpatialExactRepairResultKind::InternalError,
+                            llvm::toString(std::move(error)));
+    loom::mapping_debug::emit(
+        loom::mapping_debug::Level::Decision,
+        loom::mapping_debug::Stage::SpatialPnr,
+        loom::mapping_debug::Event::ActionOutcome,
+        [&](llvm::json::Object &fields) {
+          fields["search_scope"] = "route_exact_repair";
+          fields["restart"] = restartOrdinal;
+          fields["assignment"] = assignmentOrdinal;
+          fields["accepted"] = true;
+          fields["legal_fallback"] = true;
+          fields["witness_kind"] =
+              static_cast<std::uint32_t>(primaryWitnessKind);
+          fields["witness_ordinal"] = primaryWitnessOrdinal;
+          fields["solver_calls"] = solverCalls;
+        });
+    return executedResult(SpatialExactRepairResultKind::Repaired,
+                          std::move(detail));
+  };
+
   while (solverCalls < solverCallLimit) {
     auto solved =
         proveCurrentAssignment
@@ -1482,6 +1591,10 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
         return executedResult(
             SpatialExactRepairResultKind::InternalError,
             "current route-repair assignment violates its exact model");
+      if (bestLegalFallbackObjective)
+        return commitBestLegalFallback(
+            "committed the best legal route-repair fallback after search "
+            "exhaustion");
       if (sawUnknownAssignment)
         return executedResult(
             SpatialExactRepairResultKind::UnknownBudgetExhausted,
@@ -1493,10 +1606,16 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
           "exact route closure");
     }
     if (solved->kind ==
-        detail::CpSatCanonicalResultKind::UnknownBudgetExhausted)
+        detail::CpSatCanonicalResultKind::UnknownBudgetExhausted) {
+      if (bestLegalFallbackObjective) {
+        return commitBestLegalFallback(
+            "committed the best legal route-repair fallback at the solver "
+            "budget boundary");
+      }
       return executedResult(
           SpatialExactRepairResultKind::UnknownBudgetExhausted,
           "route exact repair exhausted its solver-call budget");
+    }
     if (solved->assignment.size() != canonicalVariables.size())
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             "route repair assignment has the wrong size");
@@ -1684,6 +1803,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     bool regionalLimit = false;
     std::uint64_t rejectedRegionDecisionCount = assignmentRegionDecisionCount;
     bool routeWorkUnknown = false;
+    bool objectiveOnlyRejection = false;
     routeCutCertificate_ = {};
     if (!probe) {
       std::string detail;
@@ -1768,8 +1888,10 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                               llvm::toString(std::move(error)));
       }
       const bool selectedRankImproved = *selectedRank < 0;
-      if (!assignmentRealized || candidate.atomicCapacityOveruse() != 0 ||
-          *primaryWitnessLive || !selectedRankImproved) {
+      const bool assignmentLegal =
+          assignmentRealized && candidate.atomicCapacityOveruse() == 0 &&
+          !*primaryWitnessLive;
+      if (!assignmentLegal) {
         rejectAssignment = true;
         loom::mapping_debug::emit(
             loom::mapping_debug::Level::Decision,
@@ -1797,7 +1919,9 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
         if (llvm::Error error = probe->discard())
           return executedResult(SpatialExactRepairResultKind::InternalError,
                                 llvm::toString(std::move(error)));
-      } else {
+      } else if (*selectedRank <= 0) {
+        // Objective rank is a preference only. Equal-rank and improved legal
+        // closures can be committed immediately; neither is a no-good.
         if (llvm::Error error = probe->commit())
           return executedResult(SpatialExactRepairResultKind::InternalError,
                                 llvm::toString(std::move(error)));
@@ -1817,8 +1941,43 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                   static_cast<std::uint32_t>(primaryWitnessKind);
               fields["witness_ordinal"] = primaryWitnessOrdinal;
               fields["solver_calls"] = solverCalls;
-            });
+        });
         return executedResult(SpatialExactRepairResultKind::Repaired);
+      } else {
+        // Keep QoR-worse legal closures as a deterministic fallback while the
+        // canonical model searches for a better legal assignment. The
+        // fallback is copied before the provisional probe is discarded.
+        bool replaceFallback = !bestLegalFallbackObjective;
+        if (bestLegalFallbackObjective) {
+          auto comparison =
+              candidate.problem().objectiveProgram().compareSelectedRank(
+                  probe->objective(), {}, *bestLegalFallbackObjective, {});
+          if (!comparison) {
+            llvm::Error error = comparison.takeError();
+            if (llvm::Error discardError = probe->discard())
+              error = llvm::joinErrors(std::move(error),
+                                       std::move(discardError));
+            return executedResult(SpatialExactRepairResultKind::InternalError,
+                                  llvm::toString(std::move(error)));
+          }
+          replaceFallback = *comparison < 0;
+          if (*comparison == 0 &&
+              std::lexicographical_compare(
+                  solved->assignment.begin(), solved->assignment.end(),
+                  bestLegalFallbackAssignment.begin(),
+                  bestLegalFallbackAssignment.end()))
+            replaceFallback = true;
+        }
+        if (replaceFallback) {
+          bestLegalFallbackActions = actions_;
+          bestLegalFallbackAssignment = solved->assignment;
+          bestLegalFallbackObjective = probe->objective();
+        }
+        objectiveOnlyRejection = true;
+        rejectAssignment = true;
+        if (llvm::Error error = probe->discard())
+          return executedResult(SpatialExactRepairResultKind::InternalError,
+                                llvm::toString(std::move(error)));
       }
     }
 
@@ -1839,18 +1998,30 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
           fields["regional_limit"] = regionalLimit;
           fields["region_decisions"] = rejectedRegionDecisionCount;
           fields["route_work_unknown"] = routeWorkUnknown;
+          fields["objective_only_rejection"] = objectiveOnlyRejection;
+          fields["legal_fallback_recorded"] =
+              objectiveOnlyRejection && bestLegalFallbackObjective.has_value();
           fields["cut_logical_net_count"] =
               routeCutCertificate_.forcedNetCuts.size();
         });
     if (!rejectAssignment)
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             "route repair lost its assignment outcome");
-    if (regionalLimit)
+    if (regionalLimit) {
+      if (bestLegalFallbackObjective)
+        return commitBestLegalFallback(
+            "committed the best legal route-repair fallback before the "
+            "regional closure limit");
       return result(SpatialExactRepairResultKind::RegionTooLarge,
                     rejectedRegionDecisionCount, solverCalls, lastActionCount,
                     "route conflict closure exceeds max_region_decisions",
                     actionExecutor_.endpointExpansionCount(),
                     actionExecutor_.negotiationIterationCount());
+    }
+    if (fixedTerminalCut && bestLegalFallbackObjective)
+      return commitBestLegalFallback(
+          "committed the best legal route-repair fallback before fixed "
+          "terminal-region expansion");
     if (fixedTerminalCut) {
       if (!insertCutCertificate(learnedCutCertificates_, routeCutCertificate_))
         return executedResult(
@@ -1872,30 +2043,45 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       }
     } else {
       elementValues_.clear();
-      elementValues_.reserve(canonicalVariables.size());
-      for (auto [local, decision] : llvm::enumerate(decisions_)) {
-        const std::int64_t selected = solved->assignment[local];
-        if (decision < computeCount) {
-          const auto choices = bindings.computeChoices(decision);
-          if (selected < 0 ||
-              static_cast<std::size_t>(selected) >= choices.size())
-            return executedResult(
-                SpatialExactRepairResultKind::InternalError,
-                "route repair cannot project a compute observation");
-          elementValues_.push_back(choices[selected].placement);
-        } else {
-          elementValues_.push_back(selected);
+      if (objectiveOnlyRejection) {
+        // This exclusion only advances this invocation's canonical
+        // enumeration. The legal tuple remains retained above and is
+        // committed if no better legal closure is found; it is not evidence
+        // that the hard domain is infeasible.
+        elementValues_.assign(solved->assignment.begin(),
+                              solved->assignment.end());
+        model.AddForbiddenAssignments(canonicalAssignmentVariables)
+            .AddTuple(elementValues_);
+      } else {
+        elementValues_.reserve(canonicalVariables.size());
+        for (auto [local, decision] : llvm::enumerate(decisions_)) {
+          const std::int64_t selected = solved->assignment[local];
+          if (decision < computeCount) {
+            const auto choices = bindings.computeChoices(decision);
+            if (selected < 0 ||
+                static_cast<std::size_t>(selected) >= choices.size())
+              return executedResult(
+                  SpatialExactRepairResultKind::InternalError,
+                  "route repair cannot project a compute observation");
+            elementValues_.push_back(choices[selected].placement);
+          } else {
+            elementValues_.push_back(selected);
+          }
         }
+        elementValues_.insert(elementValues_.end(),
+                              solved->assignment.begin() + decisions_.size(),
+                              solved->assignment.end());
+        model.AddForbiddenAssignments(transportObservationVariables)
+            .AddTuple(elementValues_);
       }
-      elementValues_.insert(elementValues_.end(),
-                            solved->assignment.begin() + decisions_.size(),
-                            solved->assignment.end());
-      model.AddForbiddenAssignments(transportObservationVariables)
-          .AddTuple(elementValues_);
     }
     proveCurrentAssignment = false;
     ++assignmentOrdinal;
   }
+  if (bestLegalFallbackObjective)
+    return commitBestLegalFallback(
+        "committed the best legal route-repair fallback after the solver "
+        "budget was exhausted");
   return executedResult(SpatialExactRepairResultKind::UnknownBudgetExhausted,
                         "route exact repair exhausted its solver-call budget");
 }
@@ -1906,6 +2092,8 @@ std::size_t SpatialExactRepairScratch::retainedStorageBytes() const {
          retainedBytes(netIncluded_) + retainedBytes(decisionQueue_) +
          retainedBytes(decisions_) + retainedBytes(relations_) +
          retainedBytes(affectedNets_) +
+         retainedBytes(hardProgressWitness_.competingLogicalNets) +
+         retainedBytes(hardProgressWitness_.routeAnchors) +
          retainedBytes(routeCutCertificate_.forcedNetCuts) +
          retainedCertificateBytes(learnedCutCertificates_) +
          retainedBytes(routeCutBlockedTraversals_) +

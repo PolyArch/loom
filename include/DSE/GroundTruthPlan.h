@@ -31,7 +31,6 @@ struct GroundTruthEvidencePartitions final {
 struct GroundTruthModelTrack final {
   GroundTruthEvidencePartitions evidence;
   DeterministicGbdtTrainingConfig training;
-  evaluation::ExactRatio calibrationQuantile;
   evaluation::DecimalValue maximumValidationError;
   evaluation::DecimalValue maximumHeldOutError;
 };
@@ -140,10 +139,6 @@ struct FpaGroundTruthCollectionPlan final {
 llvm::Expected<FpaGroundTruthCollectionPlan> buildFpaGroundTruthCollectionPlan(
     FpaGroundTruthPlanInputs inputs, const ResolvedConfig &baseConfig,
     const ArtifactStore &artifactStore, const BlobStore &blobStore);
-
-inline constexpr std::uint64_t
-    maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds =
-        4ULL * 60ULL * 60ULL * 1000ULL * 1000ULL * 1000ULL;
 
 llvm::Expected<CampaignExecutionPolicy> makeFpaGroundTruthCampaignPolicy(
     std::uint64_t pilotDispatchCount,

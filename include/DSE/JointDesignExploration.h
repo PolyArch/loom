@@ -1,11 +1,11 @@
 #ifndef LOOM_DSE_JOINTDESIGNEXPLORATION_H
 #define LOOM_DSE_JOINTDESIGNEXPLORATION_H
 
-#include "Common/BlobDigest.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/JointDesignPolicy.h"
 #include "DSE/PlanExecutor.h"
 #include "DSE/Promotion.h"
+#include "DSE/SpatialRuntimeFeedback.h"
 #include "Fabric/Identity/FabricRefs.h"
 #include "PnR/PnrConfig.h"
 
@@ -109,6 +109,66 @@ enum class JointDesignQualityIncompleteReason : std::uint8_t {
   CancelledOrTimeout,
 };
 
+JointDesignQualityDisposition jointDesignQualityDisposition(
+    JointDesignQualityIncompleteReason reason);
+
+/// Exact reusable facts returned by a quality acquisition before Objective
+/// quantization. Supporting Evidence establishes the measures; verification
+/// Evidence independently checks the candidate and may be a typed subset.
+struct JointDesignQualityProvenance final {
+  JointDesignQualityProvenance() = default;
+  JointDesignQualityProvenance(
+      std::vector<ResolvedObjectiveScalar> rawMeasures,
+      std::vector<ArtifactRootReference> supportingEvidence,
+      std::vector<ArtifactRootReference> verificationEvidence,
+      std::optional<SpatialFifoRuntimeFeedback> spatialFifoFeedback = {},
+      std::optional<SpatialOperandQueueRuntimeFeedback>
+          spatialOperandQueueFeedback = {},
+      std::optional<SpatialTransportRuntimeFeedback>
+          spatialTransportFeedback = {},
+      std::optional<std::uint64_t> resourceCoreCost = {})
+      : rawMeasures(std::move(rawMeasures)),
+        supportingEvidence(std::move(supportingEvidence)),
+        verificationEvidence(std::move(verificationEvidence)),
+        spatialFifoFeedback(std::move(spatialFifoFeedback)),
+        spatialOperandQueueFeedback(std::move(spatialOperandQueueFeedback)),
+        spatialTransportFeedback(std::move(spatialTransportFeedback)),
+        resourceCoreCost(resourceCoreCost) {}
+
+  /// Exact pre-quantization measures returned by the acquisition owner. An
+  /// empty vector means that the policy did not publish reusable measures;
+  /// otherwise ObjectiveProgram must reproduce objectiveCodes from it.
+  std::vector<ResolvedObjectiveScalar> rawMeasures;
+  /// Additional Evaluation Evidence consumed while producing rawMeasures.
+  /// The optional evidence above remains the acquisition's primary Evidence.
+  std::vector<ArtifactRootReference> supportingEvidence;
+  /// Completed Evidence which independently verifies the acquired candidate.
+  std::vector<ArtifactRootReference> verificationEvidence;
+  std::optional<SpatialFifoRuntimeFeedback> spatialFifoFeedback;
+  std::optional<SpatialOperandQueueRuntimeFeedback> spatialOperandQueueFeedback;
+  std::optional<SpatialTransportRuntimeFeedback> spatialTransportFeedback;
+  /// Exact System resource count imported by an ApplicationRuntime policy.
+  /// It remains available when runtime or FPA acquisition is incomplete and
+  /// therefore cannot publish a complete raw Objective vector.
+  std::optional<std::uint64_t> resourceCoreCost;
+
+  friend bool operator==(const JointDesignQualityProvenance &lhs,
+                         const JointDesignQualityProvenance &rhs) {
+    return lhs.rawMeasures == rhs.rawMeasures &&
+           lhs.supportingEvidence == rhs.supportingEvidence &&
+           lhs.verificationEvidence == rhs.verificationEvidence &&
+           lhs.spatialFifoFeedback == rhs.spatialFifoFeedback &&
+           lhs.spatialOperandQueueFeedback ==
+               rhs.spatialOperandQueueFeedback &&
+           lhs.spatialTransportFeedback == rhs.spatialTransportFeedback &&
+           lhs.resourceCoreCost == rhs.resourceCoreCost;
+  }
+  friend bool operator!=(const JointDesignQualityProvenance &lhs,
+                         const JointDesignQualityProvenance &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 /// Invocation-local QoR observation for one concrete SystemMapping. A
 /// missing objective is explicit typed evidence; it is never represented by a
 /// sentinel score.
@@ -117,6 +177,7 @@ struct JointDesignQualityObservation final {
   std::vector<std::uint64_t> objectiveCodes;
   std::optional<JointDesignQualityIncompleteReason> incompleteReason;
   std::optional<ArtifactRootReference> evidence;
+  JointDesignQualityProvenance provenance{};
 };
 
 /// Pre-Mapping quality observation for one exact software/System plan. The
@@ -129,6 +190,7 @@ struct JointHardwarePromotionObservation final {
   std::optional<JointDesignQualityIncompleteReason> incompleteReason;
   std::optional<ArtifactRootReference> evidence;
   bool promotedToExactMapping = false;
+  JointDesignQualityProvenance provenance{};
 };
 
 /// One exact software-plan outcome retained independently of the final
@@ -250,33 +312,7 @@ struct JointDesignExecutionSummary final {
   std::vector<JointDesignAttemptRecord> attempts;
 };
 
-/// Strict content reference to one canonical InvocationManifest. Production
-/// occurrence allocation and commit remain owned by ExecutionJournal; this
-/// value proves the imported manifest content and its embedded occurrence.
-class JointDesignInvocationManifestReference final {
-public:
-  static llvm::Expected<JointDesignInvocationManifestReference>
-  get(ArtifactRootReference resolvedConfig, BlobDigest blob,
-      InvocationOccurrenceRef occurrence, const ArtifactStore &artifacts,
-      const BlobStore &blobs);
-
-  const ArtifactRootReference &resolvedConfig() const {
-    return resolvedConfig_;
-  }
-  const BlobDigest &blob() const { return blob_; }
-  const InvocationOccurrenceRef &occurrence() const { return occurrence_; }
-
-private:
-  JointDesignInvocationManifestReference(ArtifactRootReference resolvedConfig,
-                                         BlobDigest blob,
-                                         InvocationOccurrenceRef occurrence)
-      : resolvedConfig_(std::move(resolvedConfig)), blob_(std::move(blob)),
-        occurrence_(std::move(occurrence)) {}
-
-  ArtifactRootReference resolvedConfig_;
-  BlobDigest blob_;
-  InvocationOccurrenceRef occurrence_;
-};
+using JointDesignInvocationManifestReference = InvocationManifestReference;
 
 llvm::Expected<JointDesignInvocationManifestReference>
 publishJointDesignInvocationManifest(const InvocationManifest &manifest,
@@ -329,11 +365,13 @@ struct IncompleteJointDesignQuality final {
       JointDesignQualityIncompleteReason::ProofNotEstablished;
   std::optional<ArtifactRootReference> candidate;
   std::optional<ArtifactRootReference> evidence;
+  JointDesignQualityProvenance provenance{};
 };
 
 struct JointDesignQualityCandidate final {
   CandidateObjectiveVector objective;
   std::optional<ArtifactRootReference> evidence;
+  JointDesignQualityProvenance provenance{};
 };
 
 using JointDesignQualityAcquisition =
@@ -347,6 +385,11 @@ using JointDesignQualityAcquirer =
 using JointHardwarePromotionQualityAcquirer =
     std::function<llvm::Expected<JointDesignQualityAcquisition>(
         const JointDesignExplorationPlan &, std::uint64_t planOrdinal)>;
+
+enum class JointDesignQualityProvenanceDomain : std::uint8_t {
+  ObjectiveOnly,
+  ApplicationRuntime,
+};
 
 /// In-process, pre-Mapping objective used only to rank which bounded hardware
 /// parents may consume additional exact Mapping/PnR work. Candidate identity
@@ -369,6 +412,8 @@ struct JointBoundedQualityPolicy final {
   /// not a second objective definition; the ObjectiveProgram remains the
   /// ordering authority.
   std::vector<std::string> objectiveDimensionLabels;
+  JointDesignQualityProvenanceDomain provenanceDomain =
+      JointDesignQualityProvenanceDomain::ObjectiveOnly;
   std::vector<std::uint32_t> paretoDimensions;
   std::uint32_t finalTotalOrdering = 0;
   JointDesignQualityAcquirer acquire;
@@ -385,6 +430,17 @@ struct JointBoundedQualityPolicy final {
   /// alternatives. Zero is invalid.
   std::uint64_t maximumHardwareRepairProbes = 16;
 };
+
+/// Validates facts whose shape is owned by the selected provenance domain.
+/// Objective code reproduction and Evidence existence remain the callers'
+/// responsibility because they require their respective semantic owners.
+llvm::Error validateJointDesignQualityProvenanceDomain(
+    const JointBoundedQualityPolicy &policy,
+    const JointDesignQualityProvenance &provenance, bool objectiveComplete);
+llvm::Error validateJointDesignQualityObjective(
+    const ObjectiveProgram &program,
+    const JointDesignQualityProvenance &provenance,
+    llvm::ArrayRef<std::uint64_t> objectiveCodes);
 
 /// Executes or resumes the exact plan through the shared Journal and
 /// scheduler. Missing Mapping support remains the underlying typed incomplete

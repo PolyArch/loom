@@ -201,6 +201,12 @@ llvm::Error SpatialMoveTransaction::synchronizeProgressProjection() {
     const auto deltas = route.recordedTraversalDeltas();
     std::size_t &applied =
         scratch_->progressRecordedRouteDeltaCounts_[logicalNet];
+    if (scratch_->progressRecordedRouteDeltaEpochs_[logicalNet] !=
+        scratch_->progressRecordedRouteDeltaEpoch_) {
+      applied = 0;
+      scratch_->progressRecordedRouteDeltaEpochs_[logicalNet] =
+          scratch_->progressRecordedRouteDeltaEpoch_;
+    }
     if (applied > deltas.size())
       return candidateError(
           "RouteTree progress journal lost recorded traversal deltas");
@@ -259,8 +265,7 @@ void SpatialMoveTransaction::rollbackProgressProjection() noexcept {
   for (PnrIndex logicalNet : scratch_->progressDirtyNets_)
     scratch_->progressDirtyNetMarks_[logicalNet] = 0;
   scratch_->progressDirtyNets_.clear();
-  std::fill(scratch_->progressRecordedRouteDeltaCounts_.begin(),
-            scratch_->progressRecordedRouteDeltaCounts_.end(), 0);
+  scratch_->advanceProgressRouteDeltaEpoch();
   scratch_->progressTraversalDeltas_.clear();
   scratch_->progressDependencyDeltas_.clear();
 }
@@ -269,8 +274,7 @@ void SpatialMoveTransaction::acceptProgressProjection() noexcept {
   for (PnrIndex logicalNet : scratch_->progressDirtyNets_)
     scratch_->progressDirtyNetMarks_[logicalNet] = 0;
   scratch_->progressDirtyNets_.clear();
-  std::fill(scratch_->progressRecordedRouteDeltaCounts_.begin(),
-            scratch_->progressRecordedRouteDeltaCounts_.end(), 0);
+  scratch_->advanceProgressRouteDeltaEpoch();
   scratch_->progressTraversalDeltas_.clear();
   scratch_->progressDependencyDeltas_.clear();
 }

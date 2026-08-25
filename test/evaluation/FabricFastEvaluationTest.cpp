@@ -344,6 +344,13 @@ void frozenWeightDrivesInProcessFpaAndPreservesOod() {
       take(models::importEdaPredictionModelWeight(bundle.reference(), artifacts,
                                                   blobs));
 
+  models::CanonicalDataflowFabricFpaInference directInference =
+      take(models::inferCanonicalDataflowFabricFpa(
+          dataflow, fabric.reference(), weight, {}, artifacts, blobs));
+  require(
+      std::holds_alternative<ModelParameterPrediction>(directInference.outcome),
+      "resource-time FPA inference did not consume the frozen weight");
+
   auto calibrated =
       take(models::prepareCanonicalDataflowFabricCalibratedFpaEvaluation(
           dataflow, fabric.reference(), weight, {}, config, artifacts, blobs));
@@ -379,6 +386,13 @@ void frozenWeightDrivesInProcessFpaAndPreservesOod() {
       EvaluationCondition{ActivityBindingCondition{
           target, ExplicitAssumptionSource{target, take(ExactRatio::get(1, 2)),
                                            take(ExactRatio::get(1, 10))}}}};
+  models::CanonicalDataflowFabricFpaInference directOutOfDomain =
+      take(models::inferCanonicalDataflowFabricFpa(
+          dataflow, fabric.reference(), weight, outOfDomain, artifacts, blobs));
+  require(std::holds_alternative<OutOfDomainModelParameterInference>(
+              directOutOfDomain.outcome) &&
+              directOutOfDomain.contextDigest != directInference.contextDigest,
+          "resource-time FPA inference lost typed OOD or condition context");
   auto oodRequest =
       take(models::prepareCanonicalDataflowFabricCalibratedFpaEvaluation(
           dataflow, fabric.reference(), weight, outOfDomain, config, artifacts,

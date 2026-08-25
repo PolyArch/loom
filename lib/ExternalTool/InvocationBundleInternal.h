@@ -23,6 +23,7 @@ constexpr llvm::StringLiteral kCompletionPath = "outputs/completion.json";
 constexpr llvm::StringLiteral kStdoutPath = "outputs/stdout.log";
 constexpr llvm::StringLiteral kStderrPath = "outputs/stderr.log";
 constexpr llvm::StringLiteral kToolVersionPath = "outputs/.loom-tool-version";
+constexpr llvm::StringLiteral kAttemptTokenPath = ".loom-attempt-token";
 constexpr llvm::StringLiteral kTypedClosureManifestVersion = "2.0";
 constexpr llvm::StringLiteral kExternalFileTreeManifestVersion = "2.1";
 constexpr llvm::StringLiteral kToolProducedExecutableManifestVersion = "2.2";

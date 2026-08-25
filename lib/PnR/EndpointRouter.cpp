@@ -75,7 +75,7 @@ constexpr std::size_t maximumHeuristicCacheEntryCount = 4096;
 constexpr std::uint32_t compactHeuristicInfinity =
     std::numeric_limits<std::uint32_t>::max();
 constexpr llvm::StringLiteral endpointHeuristicAlgorithmIdentity =
-    "loom.pnr.endpoint_lower_bound_heuristic.4";
+    "loom.pnr.endpoint_lower_bound_heuristic.5";
 
 void updateDigestWord(llvm::SHA256 &digest, std::uint64_t value) {
   std::array<std::uint8_t, 8> bytes{};
@@ -123,21 +123,13 @@ llvm::Expected<RouteCost> addFiniteCost(RouteCost lhs, RouteCost rhs,
 }
 
 llvm::Expected<RouteCost>
-arcSearchCost(const EndpointRouteSearchRequest &request, PnrIndex arc,
-              bool current) {
+computeArcSearchCost(const EndpointRouteSearchRequest &request, PnrIndex arc,
+                     bool current, RouteCost physicalTimingCost) {
   const RouteCost resourceCost =
       current ? request.currentArcCosts[arc] : request.lowerBoundArcCosts[arc];
   if (!request.physicalTimingEnabled)
     return resourceCost;
-  auto timingCost = detail::physicalTimingDrivenTraversalCost(
-      request.arcTimingDelayQuanta[arc], request.requiredTimingQuanta,
-      request.timingCriticality);
-  if (!timingCost) {
-    llvm::consumeError(timingCost.takeError());
-    return overflow("physical traversal cost exceeds the largest finite route "
-                    "cost");
-  }
-  return addFiniteCost(resourceCost, *timingCost,
+  return addFiniteCost(resourceCost, physicalTimingCost,
                        current ? "current physical arc cost"
                                : "lower-bound physical arc cost");
 }
@@ -249,8 +241,13 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   timingStateLabelEpochs_.assign(searchStateCount, 0);
   timingHeap_.clear();
   timingHeap_.reserve(searchStateCount);
+  timingArcCosts_.assign(graph.arcs.size(), 0);
+  timingArcCostEpochs_.assign(graph.arcs.size(), 0);
   heuristicCache_.clear();
   heuristicCacheIndex_.clear();
+  eligibleTraversalMaskSnapshot_.clear();
+  eligibleTraversalMaskDigest_ = {};
+  eligibleTraversalMaskDigestValid_ = false;
   heuristicCacheDistanceByteBudget_ = 0;
   heuristicCacheDistanceBytes_ = 0;
   if (endpointCount != 0 &&
@@ -266,6 +263,7 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
                                           std::max<std::size_t>(entryBytes, 1));
     if (entryCount != 0) {
       heuristicCache_.resize(entryCount);
+      heuristicCacheIndex_.reserve(entryCount);
       const std::size_t fixedBytes =
           heuristicCache_.capacity() *
           (sizeof(HeuristicCacheEntry) + indexEntryBytes);
@@ -281,9 +279,12 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   targetGeneration_ = 0;
   sourceGeneration_ = 0;
   timingLabelGeneration_ = 0;
+  timingArcCostGeneration_ = 0;
   endpointExpansionCount_ = 0;
   heuristicCacheHitCount_ = 0;
   heuristicBuildCount_ = 0;
+  forwardHeuristicQueryCount_ = 0;
+  forwardHeuristicUnreachableCount_ = 0;
   heuristicCacheEvictionCount_ = 0;
   prepared_ = true;
   return llvm::Error::success();
@@ -352,13 +353,18 @@ bool EndpointRouteSearchScratch::refillRouteQueueMinimumBucket() {
         const std::size_t destination =
             difference == 0 ? 0 : 64 - llvm::countl_zero(difference);
         if (destination == 0) {
-          routeQueueMinimumHeap_.push_back(entry);
-          const auto worse = [&](std::size_t lhs, std::size_t rhs) {
-            return routeQueueTieWorse(routeQueueEntries_[lhs],
-                                      routeQueueEntries_[rhs]);
-          };
-          std::push_heap(routeQueueMinimumHeap_.begin(),
-                         routeQueueMinimumHeap_.end(), worse);
+          if (heapMode_ == HeapMode::ReverseDistance) {
+            record.next = routeQueueBucketHeads_[0];
+            routeQueueBucketHeads_[0] = entry;
+          } else {
+            routeQueueMinimumHeap_.push_back(entry);
+            const auto worse = [&](std::size_t lhs, std::size_t rhs) {
+              return routeQueueTieWorse(routeQueueEntries_[lhs],
+                                        routeQueueEntries_[rhs]);
+            };
+            std::push_heap(routeQueueMinimumHeap_.begin(),
+                           routeQueueMinimumHeap_.end(), worse);
+          }
         } else {
           record.next = routeQueueBucketHeads_[destination];
           routeQueueBucketHeads_[destination] = entry;
@@ -366,25 +372,40 @@ bool EndpointRouteSearchScratch::refillRouteQueueMinimumBucket() {
       }
       entry = next;
     }
-    if (!routeQueueMinimumHeap_.empty())
+    if (heapMode_ == HeapMode::ReverseDistance) {
+      if (routeQueueBucketHeads_[0] != invalidEntry)
+        return true;
+    } else if (!routeQueueMinimumHeap_.empty()) {
       return true;
+    }
   }
 }
 
 bool EndpointRouteSearchScratch::routeQueueEmpty() {
+  constexpr std::size_t invalidEntry = std::numeric_limits<std::size_t>::max();
   const auto worse = [&](std::size_t lhs, std::size_t rhs) {
     return routeQueueTieWorse(routeQueueEntries_[lhs], routeQueueEntries_[rhs]);
   };
   while (true) {
-    while (!routeQueueMinimumHeap_.empty() &&
-           !routeQueueEntryCurrent(
-               routeQueueEntries_[routeQueueMinimumHeap_.front()])) {
-      std::pop_heap(routeQueueMinimumHeap_.begin(),
-                    routeQueueMinimumHeap_.end(), worse);
-      routeQueueMinimumHeap_.pop_back();
+    if (heapMode_ == HeapMode::ReverseDistance) {
+      while (routeQueueBucketHeads_[0] != invalidEntry &&
+             !routeQueueEntryCurrent(
+                 routeQueueEntries_[routeQueueBucketHeads_[0]]))
+        routeQueueBucketHeads_[0] =
+            routeQueueEntries_[routeQueueBucketHeads_[0]].next;
+      if (routeQueueBucketHeads_[0] != invalidEntry)
+        return false;
+    } else {
+      while (!routeQueueMinimumHeap_.empty() &&
+             !routeQueueEntryCurrent(
+                 routeQueueEntries_[routeQueueMinimumHeap_.front()])) {
+        std::pop_heap(routeQueueMinimumHeap_.begin(),
+                      routeQueueMinimumHeap_.end(), worse);
+        routeQueueMinimumHeap_.pop_back();
+      }
+      if (!routeQueueMinimumHeap_.empty())
+        return false;
     }
-    if (!routeQueueMinimumHeap_.empty())
-      return false;
     if (!refillRouteQueueMinimumBucket())
       return true;
   }
@@ -405,6 +426,10 @@ void EndpointRouteSearchScratch::insertOrDecrease(PnrIndex endpoint) {
     routeQueueBucketHeads_[bucket] = entry;
     return;
   }
+  if (heapMode_ == HeapMode::ReverseDistance) {
+    routeQueueBucketHeads_[0] = entry;
+    return;
+  }
   routeQueueMinimumHeap_.push_back(entry);
   const auto worse = [&](std::size_t lhs, std::size_t rhs) {
     return routeQueueTieWorse(routeQueueEntries_[lhs], routeQueueEntries_[rhs]);
@@ -414,6 +439,17 @@ void EndpointRouteSearchScratch::insertOrDecrease(PnrIndex endpoint) {
 }
 
 PnrIndex EndpointRouteSearchScratch::popMinimum() {
+  if (heapMode_ == HeapMode::ReverseDistance) {
+    constexpr std::size_t invalidEntry =
+        std::numeric_limits<std::size_t>::max();
+    while (routeQueueBucketHeads_[0] != invalidEntry) {
+      const std::size_t entry = routeQueueBucketHeads_[0];
+      routeQueueBucketHeads_[0] = routeQueueEntries_[entry].next;
+      if (routeQueueEntryCurrent(routeQueueEntries_[entry]))
+        return routeQueueEntries_[entry].state;
+    }
+    llvm_unreachable("reverse-distance queue is empty");
+  }
   assert(!routeQueueMinimumHeap_.empty());
   const auto worse = [&](std::size_t lhs, std::size_t rhs) {
     return routeQueueTieWorse(routeQueueEntries_[lhs], routeQueueEntries_[rhs]);
@@ -452,6 +488,15 @@ RouteCost EndpointRouteSearchScratch::heuristic(PnrIndex endpoint) const {
   if (heuristicEpochs_[endpoint] != heuristicGeneration_)
     return routeCostInfinity;
   return heuristics_[endpoint];
+}
+
+RouteCost
+EndpointRouteSearchScratch::queryForwardHeuristic(PnrIndex endpoint) {
+  saturatingIncrement(forwardHeuristicQueryCount_);
+  const RouteCost value = heuristic(endpoint);
+  if (value == routeCostInfinity)
+    saturatingIncrement(forwardHeuristicUnreachableCount_);
+  return value;
 }
 
 RouteCost
@@ -535,6 +580,26 @@ bool EndpointRouteSearchScratch::arcEligible(
              required;
 }
 
+llvm::Expected<RouteCost> EndpointRouteSearchScratch::searchArcCost(
+    const EndpointRouteSearchRequest &request, PnrIndex arc, bool current) {
+  if (!request.physicalTimingEnabled)
+    return computeArcSearchCost(request, arc, current, 0);
+  if (timingArcCostEpochs_[arc] != timingArcCostGeneration_) {
+    auto timingCost = detail::physicalTimingDrivenTraversalCost(
+        request.arcTimingDelayQuanta[arc], request.requiredTimingQuanta,
+        request.timingCriticality);
+    if (!timingCost) {
+      llvm::consumeError(timingCost.takeError());
+      return overflow(
+          "physical traversal cost exceeds the largest finite route "
+          "cost");
+    }
+    timingArcCosts_[arc] = *timingCost;
+    timingArcCostEpochs_[arc] = timingArcCostGeneration_;
+  }
+  return computeArcSearchCost(request, arc, current, timingArcCosts_[arc]);
+}
+
 llvm::Error EndpointRouteSearchScratch::buildHeuristic(
     const EndpointRouteSearchRequest &request) {
   activeCachedHeuristic_ = nullptr;
@@ -558,7 +623,7 @@ llvm::Error EndpointRouteSearchScratch::buildHeuristic(
       if (!arcEligible(arc, request, false))
         continue;
       const PnrIndex predecessor = graph_.arcSources[arc];
-      auto arcCost = arcSearchCost(request, arc, false);
+      auto arcCost = searchArcCost(request, arc, false);
       if (!arcCost)
         return arcCost.takeError();
       auto candidate =
@@ -595,9 +660,29 @@ EndpointRouteSearchScratch::heuristicCacheKeyDigest(
   for (PnrIndex endpoint : request.targetEndpoints)
     updateDigestWord(digest, endpoint);
   updateDigestWord(digest, request.eligibleTraversalBits.size());
-  for (std::uint64_t word : request.eligibleTraversalBits)
-    updateDigestWord(digest, word);
+  digest.update(eligibleTraversalMaskDigest(request));
   return digest.final();
+}
+
+std::array<std::uint8_t, 32>
+EndpointRouteSearchScratch::eligibleTraversalMaskDigest(
+    const EndpointRouteSearchRequest &request) const {
+  const auto mask = request.eligibleTraversalBits;
+  const bool unchanged =
+      eligibleTraversalMaskDigestValid_ &&
+      eligibleTraversalMaskSnapshot_.size() == mask.size() &&
+      std::equal(eligibleTraversalMaskSnapshot_.begin(),
+                 eligibleTraversalMaskSnapshot_.end(), mask.begin());
+  if (unchanged)
+    return eligibleTraversalMaskDigest_;
+
+  eligibleTraversalMaskSnapshot_.assign(mask.begin(), mask.end());
+  llvm::SHA256 digest;
+  for (std::uint64_t word : mask)
+    updateDigestWord(digest, word);
+  eligibleTraversalMaskDigest_ = digest.final();
+  eligibleTraversalMaskDigestValid_ = true;
+  return eligibleTraversalMaskDigest_;
 }
 
 bool EndpointRouteSearchScratch::loadCachedHeuristic(
@@ -771,7 +856,7 @@ EndpointRouteSearchScratch::searchTimingAware(
     }
     if (timingLabels_.size() >= std::numeric_limits<PnrIndex>::max())
       return overflow("physical timing label domain exceeds PnrIndex");
-    const RouteCost lowerBound = heuristic(endpoint);
+    const RouteCost lowerBound = queryForwardHeuristic(endpoint);
     if (lowerBound == routeCostInfinity)
       return std::optional<PnrIndex>();
     auto priority =
@@ -924,7 +1009,7 @@ EndpointRouteSearchScratch::searchTimingAware(
         return overflow("physical timing slack penalty exceeds the largest "
                         "finite route cost");
       }
-      auto arcCost = arcSearchCost(request, arc, true);
+      auto arcCost = searchArcCost(request, arc, true);
       if (!arcCost)
         return arcCost.takeError();
       auto distance = addFiniteCost(label.distance, *arcCost,
@@ -1078,6 +1163,7 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
       return invalid("current arc cost is below its admissible lower bound");
   }
 
+  advanceGeneration(timingArcCostEpochs_, timingArcCostGeneration_);
   beginTargetGeneration();
   for (auto [ordinal, target] : llvm::enumerate(request.targetEndpoints)) {
     targetEpochs_[target] = targetGeneration_;
@@ -1103,7 +1189,7 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
            request.sourceEndpoints, request.sourceReplicationGroups)) {
     sourceEpochs_[source] = sourceGeneration_;
     sourceReplicationGroups_[source] = replicationGroup;
-    const RouteCost lowerBound = heuristic(source);
+    const RouteCost lowerBound = queryForwardHeuristic(source);
     if (lowerBound == routeCostInfinity)
       continue;
     const PnrIndex state = searchState(source, false);
@@ -1160,10 +1246,10 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
       if (request.forbidSourceReentry && isSource(successor) &&
           successor != endpoint)
         continue;
-      const RouteCost successorHeuristic = heuristic(successor);
+      const RouteCost successorHeuristic = queryForwardHeuristic(successor);
       if (successorHeuristic == routeCostInfinity)
         continue;
-      auto arcCost = arcSearchCost(request, arc, true);
+      auto arcCost = searchArcCost(request, arc, true);
       if (!arcCost)
         return arcCost.takeError();
       auto candidateDistance =
@@ -1263,6 +1349,8 @@ std::size_t EndpointRouteSearchScratch::heuristicCacheRetainedBytes() const {
   cacheBytes +=
       heuristicCacheIndex_.size() * (sizeof(std::array<std::uint8_t, 32>) +
                                      sizeof(std::size_t) + sizeof(void *) * 3);
+  cacheBytes +=
+      eligibleTraversalMaskSnapshot_.capacity() * sizeof(std::uint64_t);
   return cacheBytes;
 }
 
@@ -1272,7 +1360,9 @@ std::size_t EndpointRouteSearchScratch::retainedStorageBytes() const {
       timingLabels_.capacity() * sizeof(TimingSearchLabel) +
       timingStateLabelHeads_.capacity() * sizeof(PnrIndex) +
       timingStateLabelEpochs_.capacity() * sizeof(std::uint64_t) +
-      timingHeap_.capacity() * sizeof(PnrIndex);
+      timingHeap_.capacity() * sizeof(PnrIndex) +
+      timingArcCosts_.capacity() * sizeof(RouteCost) +
+      timingArcCostEpochs_.capacity() * sizeof(std::uint64_t);
   return cacheBytes + heuristics_.capacity() * sizeof(RouteCost) +
          distances_.capacity() * sizeof(RouteCost) +
          priorities_.capacity() * sizeof(RouteCost) +

@@ -368,9 +368,10 @@ validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
     }
   }
 
-  std::set<std::string> paths{kManifestName.str(),   kRunScriptName.str(),
-                              kCompletionPath.str(), kStdoutPath.str(),
-                              kStderrPath.str(),     kToolVersionPath.str()};
+  std::set<std::string> paths{
+      kManifestName.str(),   kRunScriptName.str(), kCompletionPath.str(),
+      kStdoutPath.str(),     kStderrPath.str(),    kToolVersionPath.str(),
+      kAttemptTokenPath.str()};
   for (const MaterializedBundleFile &file : specification.files) {
     llvm::Expected<std::string> path =
         normalizedRelativePath(file.relativePath, "materialized file");
@@ -1737,6 +1738,66 @@ finalizeExternalToolInvocationBundle(
   cleanup.published = true;
   return PreparedExternalToolInvocation{bundleRoot.str(),
                                         contentDigest(manifestBytes)};
+}
+
+llvm::Expected<BlobDigest> beginExternalToolInvocationAttempt(
+    const PreparedExternalToolInvocation &prepared) {
+  auto bundleRoot = openBundleRoot(prepared.bundleRoot);
+  if (!bundleRoot)
+    return bundleRoot.takeError();
+
+  llvm::SmallString<256> model(prepared.bundleRoot);
+  llvm::sys::path::append(model, ".loom-attempt-%%%%%%%%%%%%%%%%");
+  llvm::SmallString<256> unique;
+  llvm::sys::fs::createUniquePath(model, unique, true);
+  std::vector<std::uint8_t> preimage;
+  preimage.insert(preimage.end(), prepared.manifestDigest.bytes().begin(),
+                  prepared.manifestDigest.bytes().end());
+  const llvm::StringRef root = prepared.bundleRoot;
+  preimage.insert(preimage.end(), root.bytes_begin(), root.bytes_end());
+  const llvm::StringRef uniqueSpelling = unique;
+  preimage.insert(preimage.end(), uniqueSpelling.bytes_begin(),
+                  uniqueSpelling.bytes_end());
+  const BlobDigest token = computeBlobDigest(preimage);
+
+  const std::filesystem::path destination =
+      std::filesystem::path(prepared.bundleRoot) / kAttemptTokenPath.str();
+  const std::filesystem::path temporary =
+      destination.string() + ".partial." + formatBlobDigestHex(token);
+  if (llvm::Error error = writeFile(temporary, formatBlobDigestHex(token),
+                                    false))
+    return std::move(error);
+  std::error_code publishError;
+  std::filesystem::rename(temporary, destination, publishError);
+  if (publishError) {
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    return bundleError("could not publish execution attempt token: " +
+                       publishError.message());
+  }
+  return token;
+}
+
+llvm::Error validateExternalToolInvocationExecutionObservation(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &observation) {
+  if (observation.manifestDigest != prepared.manifestDigest)
+    return bundleError(
+        "execution observation manifest differs from prepared invocation");
+  auto bundle = openPreparedBundle(prepared);
+  if (!bundle)
+    return bundle.takeError();
+  auto tokenText =
+      readOrdinaryBundleFile(bundle->root.get(), kAttemptTokenPath);
+  if (!tokenText)
+    return tokenText.takeError();
+  auto token = parseBlobDigestHex(*tokenText);
+  if (!token)
+    return bundleError("execution attempt token is malformed");
+  if (*token != observation.attemptToken)
+    return bundleError(
+        "execution observation belongs to another attempt generation");
+  return llvm::Error::success();
 }
 
 llvm::Expected<InvocationCompletion> loadExternalToolInvocationCompletion(

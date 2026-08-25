@@ -187,12 +187,11 @@ SpatialMoveTransaction::SpatialMoveTransaction(
           state_->worstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
           state_->totalRouteNegativeSlackQuanta_),
-      initialRecurrenceTiming_(state_->recurrenceTiming_) {
-  for (PnrIndex logicalNet = 0; logicalNet < state_->routeTrees_.size();
-       ++logicalNet)
-    scratch.progressTerminalActive_[logicalNet] =
-        !state_->usesRegisterFifo(logicalNet) &&
-        state_->routeTrees_[logicalNet]->isRouted();
+      recurrenceTimingSelected_(state_->problem().objectiveProgram().selectsMeasure(
+          MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)),
+      initialRecurrenceTiming_(recurrenceTimingSelected_
+                                   ? state_->recurrenceTiming_
+                                   : SpatialRecurrenceTimingProjection{}) {
   state_->activeTransaction_ = this;
   scratch_->activeTransaction_ = this;
 }
@@ -211,6 +210,7 @@ SpatialMoveTransaction::SpatialMoveTransaction(
           other.initialWorstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
           other.initialTotalRouteNegativeSlackQuanta_),
+      recurrenceTimingSelected_(other.recurrenceTimingSelected_),
       initialRecurrenceTiming_(std::move(other.initialRecurrenceTiming_)) {
   other.scratch_ = nullptr;
   if (state_)
@@ -452,6 +452,9 @@ void SpatialMoveTransaction::markProgressNetDirty(PnrIndex logicalNet) {
   assert(logicalNet < scratch_->progressDirtyNetMarks_.size());
   if (scratch_->progressDirtyNetMarks_[logicalNet])
     return;
+  scratch_->progressTerminalActive_[logicalNet] =
+      !state_->usesRegisterFifo(logicalNet) &&
+      state_->routeTrees_[logicalNet]->isRouted();
   scratch_->progressDirtyNetMarks_[logicalNet] = 1;
   scratch_->progressDirtyNets_.push_back(logicalNet);
 }
@@ -1433,9 +1436,9 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
     state_->worstRouteArrivalDelayQuanta_ = worstArrival;
     state_->totalRouteNegativeSlackQuanta_ = totalNegativeSlack;
   }
-  {
-    auto recurrenceTiming =
-        detail::projectSpatialRecurrenceTiming(*state_, scratch_->routeViews_);
+  if (recurrenceTimingSelected_) {
+    auto recurrenceTiming = detail::projectSpatialRecurrenceTiming(
+        *state_, scratch_->routeViews_);
     if (!recurrenceTiming)
       return recurrenceTiming.takeError();
     state_->recurrenceTiming_ = std::move(*recurrenceTiming);
@@ -1676,7 +1679,8 @@ void SpatialMoveTransaction::rollback() noexcept {
   state_->worstRouteArrivalDelayQuanta_ = initialWorstRouteArrivalDelayQuanta_;
   state_->totalRouteNegativeSlackQuanta_ =
       initialTotalRouteNegativeSlackQuanta_;
-  state_->recurrenceTiming_ = initialRecurrenceTiming_;
+  if (recurrenceTimingSelected_)
+    state_->recurrenceTiming_ = initialRecurrenceTiming_;
   finish();
 }
 

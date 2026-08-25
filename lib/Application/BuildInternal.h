@@ -71,6 +71,9 @@ ApplicationPairDecisionDisposition prioritizeIncompletePairDisposition(
     llvm::ArrayRef<ApplicationPairDecisionDisposition> causes,
     bool declaredWorkExhausted);
 
+ApplicationPairDecisionDisposition classifyPreMappingNoFeasibleOutcome(
+    const dse::CompletedPreMappingNoFeasibleCandidate &outcome);
+
 ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const PreparedApplicationBuild &prepared,
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,

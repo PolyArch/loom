@@ -12,7 +12,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
-#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -293,7 +292,7 @@ llvm::Expected<CampaignExecutionPolicy> makeFpaGroundTruthCampaignPolicy(
   return CampaignExecutionPolicy::get(
       pilotDispatchCount, minimumObservedPilotWorkUnits,
       sampleActiveWallTimeLimitNanoseconds,
-      maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds);
+      CampaignExecutionPolicy::maximumCampaignActiveWallTimeNanoseconds);
 }
 
 llvm::Expected<CampaignExecutionResult>
@@ -303,10 +302,6 @@ runFpaGroundTruthCampaign(const ResolvedDseConfigView &view,
                           const PlanExecutionPolicy &executionPolicy,
                           SiteScheduler &scheduler, ExecutionJournal &journal,
                           const ArtifactStore &store, const BlobStore &blobs) {
-  if (campaignPolicy.campaignActiveWallTimeLimitNanoseconds() >
-      maximumFpaGroundTruthCampaignActiveWallTimeNanoseconds)
-    return invalid("FPA campaign active-time limit exceeds the four-hour "
-                   "offline bound");
   const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
   const auto signedNow =
       std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();

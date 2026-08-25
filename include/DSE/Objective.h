@@ -124,6 +124,11 @@ public:
     return ObjectiveVector(dimensions_.size());
   }
 
+  /// Reconstructs one previously evaluated vector from invocation provenance.
+  /// Every code is checked against this program's exact compiled domain.
+  llvm::Expected<ObjectiveVector>
+  adoptVectorCodes(llvm::ArrayRef<std::uint64_t> codes) const;
+
   std::size_t dimensionCount() const { return dimensions_.size(); }
   std::size_t weightedLevelCount() const { return levels_.size(); }
   std::size_t totalOrderingCount() const { return orderings_.size(); }

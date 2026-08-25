@@ -146,6 +146,30 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
     EndpointRoutingArc arc;
   };
   std::vector<ArcDraft> arcDrafts;
+  std::size_t arcDraftCapacity = 0;
+  bool reserveArcDrafts = true;
+  for (const auto &traversal : traversalViews) {
+    if (traversal.destinations.size() != 0 &&
+        traversal.sources.size() > std::numeric_limits<std::size_t>::max() /
+                                       traversal.destinations.size()) {
+      reserveArcDrafts = false;
+      break;
+    }
+    const std::size_t arcProduct =
+        traversal.sources.size() * traversal.destinations.size();
+    if (arcProduct >
+        std::numeric_limits<std::size_t>::max() - arcDraftCapacity) {
+      reserveArcDrafts = false;
+      break;
+    }
+    arcDraftCapacity += arcProduct;
+    if constexpr (sizeof(PnrIndex) < sizeof(std::size_t))
+      if (arcDraftCapacity >
+          static_cast<std::size_t>(std::numeric_limits<PnrIndex>::max()))
+        reserveArcDrafts = false;
+  }
+  if (reserveArcDrafts)
+    arcDrafts.reserve(arcDraftCapacity);
   llvm::StringMap<PnrIndex> replicationGroups;
   llvm::StringMap<PnrIndex> capacityCells;
   llvm::StringMap<PnrIndex> capacityActivations;
@@ -300,7 +324,6 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
     auto arcEnd = checkedPnrIndexAdd(arcContext, arcDrafts.size(), *arcProduct);
     if (!arcEnd)
       return arcEnd.takeError();
-    arcDrafts.reserve(*arcEnd);
     for (PnrIndex source : sources) {
       const auto &sourcePath = result.endpoints_[source].dataPath;
       for (PnrIndex destination : destinations) {

@@ -4,6 +4,8 @@
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialPnrProblem.h"
 
+#include "Common/MappingDebugLog.h"
+
 #include "SpatialProgressAnalysis.h"
 #include "SpatialProgressIndex.h"
 
@@ -13,6 +15,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -32,6 +35,61 @@ constexpr PnrCapacityContext logicalNetCountContext{
 constexpr PnrCapacityContext ownerCountContext{
     candidateArtifact, "owner_logical_net_counts", "finite_buffer_owners",
     PnrCapacityMeasure::Count};
+
+void saturatingAdd(std::uint64_t &value, std::uint64_t added) {
+  value = added > std::numeric_limits<std::uint64_t>::max() - value
+              ? std::numeric_limits<std::uint64_t>::max()
+              : value + added;
+}
+
+std::uint64_t elapsedNanoseconds(std::chrono::steady_clock::time_point begin) {
+  const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now() - begin)
+                           .count();
+  return elapsed <= 0 ? 0 : static_cast<std::uint64_t>(elapsed);
+}
+
+class ProgressTimer final {
+public:
+  ProgressTimer(std::uint64_t *count, std::uint64_t *wallTimeNanoseconds)
+      : count_(count), wallTimeNanoseconds_(wallTimeNanoseconds),
+        begin_(count ? std::chrono::steady_clock::now()
+                     : std::chrono::steady_clock::time_point{}) {}
+
+  ~ProgressTimer() { finish(); }
+
+  void finish() {
+    if (!count_)
+      return;
+    saturatingAdd(*count_, 1);
+    saturatingAdd(*wallTimeNanoseconds_, elapsedNanoseconds(begin_));
+    count_ = nullptr;
+    wallTimeNanoseconds_ = nullptr;
+  }
+
+private:
+  std::uint64_t *count_;
+  std::uint64_t *wallTimeNanoseconds_;
+  std::chrono::steady_clock::time_point begin_;
+};
+
+void emitProgressStatistics(const SpatialProgressStatistics &statistics) {
+  loom::mapping_debug::emit(
+      loom::mapping_debug::Level::Summary,
+      loom::mapping_debug::Stage::SpatialPnr,
+      loom::mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
+        fields["statistics_kind"] = "spatial_progress_projection";
+        fields["incremental_update_count"] = statistics.incrementalUpdateCount;
+        fields["incremental_update_wall_time_nanoseconds"] =
+            statistics.incrementalUpdateWallTimeNanoseconds;
+        fields["cold_verification_count"] = statistics.coldVerificationCount;
+        fields["cold_verification_wall_time_nanoseconds"] =
+            statistics.coldVerificationWallTimeNanoseconds;
+        fields["cold_progress_scan_count"] = statistics.coldProgressScanCount;
+        fields["cold_progress_scan_wall_time_nanoseconds"] =
+            statistics.coldProgressScanWallTimeNanoseconds;
+      });
+}
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -198,6 +256,8 @@ SpatialProgressState::create(const SpatialCandidateState &candidate) {
             result.refreshLogicalNetRouteDependencies(candidate, logicalNet))
       return std::move(error);
   }
+  result.statisticsEnabled_ =
+      loom::mapping_debug::enabled(loom::mapping_debug::Level::Summary);
   return result;
 }
 
@@ -213,15 +273,37 @@ bool SpatialProgressState::finiteBufferOwnerConflicts(PnrIndex owner) const {
           (std::uint64_t{1} << (owner % 64))) != 0;
 }
 
-bool SpatialProgressState::logicalNetSelectsFiniteBufferOwner(
-    PnrIndex logicalNet, PnrIndex owner) const {
-  assert(logicalNet < logicalNetCount_ && owner < ownerCount_);
-  if (logicalNetWordCount_ == 0)
-    return false;
-  return (ownerLogicalNetBits_[static_cast<std::size_t>(owner) *
-                                  logicalNetWordCount_ +
-                              logicalNet / 64] &
-          (std::uint64_t{1} << (logicalNet % 64))) != 0;
+std::optional<PnrIndex>
+SpatialProgressState::firstFiniteBufferConflictOwner() const {
+  for (std::size_t word = 0; word < conflictingOwnerBits_.size(); ++word) {
+    const std::uint64_t bits = conflictingOwnerBits_[word];
+    if (bits == 0)
+      continue;
+    const std::size_t owner = word * 64 + llvm::countr_zero(bits);
+    assert(owner < ownerCount_ && "conflicting-owner bitset has excess bits");
+    return static_cast<PnrIndex>(owner);
+  }
+  return std::nullopt;
+}
+
+llvm::Error SpatialProgressState::enumerateFiniteBufferConflictOwners(
+    std::vector<PnrIndex> &owners) const {
+  owners.clear();
+  owners.reserve(static_cast<std::size_t>(sharedFiniteBufferConflictCount_));
+  for (std::size_t word = 0; word < conflictingOwnerBits_.size(); ++word) {
+    std::uint64_t bits = conflictingOwnerBits_[word];
+    while (bits != 0) {
+      const unsigned bit = llvm::countr_zero(bits);
+      const std::size_t owner = word * 64 + bit;
+      if (owner >= ownerCount_)
+        return invalid("conflicting-owner bitset has an excess bit");
+      owners.push_back(static_cast<PnrIndex>(owner));
+      bits &= bits - 1;
+    }
+  }
+  if (owners.size() != sharedFiniteBufferConflictCount_)
+    return invalid("conflicting-owner bitset disagrees with its total");
+  return llvm::Error::success();
 }
 
 std::uint64_t SpatialProgressState::logicalNetRouteDependencyViolationCount(
@@ -249,6 +331,10 @@ llvm::Error SpatialProgressState::applyTraversalDelta(
     return llvm::Error::success();
   if (owner >= ownerCount_)
     return invalid("traversal finite-buffer owner is out of range");
+  ProgressTimer timer(
+      statisticsEnabled_ ? &statistics_.incrementalUpdateCount : nullptr,
+      statisticsEnabled_ ? &statistics_.incrementalUpdateWallTimeNanoseconds
+                         : nullptr);
 
   auto &refcounts = netOwnerRefcounts_[logicalNet];
   const auto found = refcounts.find(owner);
@@ -347,6 +433,10 @@ llvm::Error SpatialProgressState::refreshLogicalNetRouteDependencies(
     const SpatialCandidateState &candidate, PnrIndex logicalNet) {
   if (logicalNet >= netRouteDependencyViolationCounts_.size())
     return invalid("route dependency cache index is out of range");
+  ProgressTimer timer(
+      statisticsEnabled_ ? &statistics_.incrementalUpdateCount : nullptr,
+      statisticsEnabled_ ? &statistics_.incrementalUpdateWallTimeNanoseconds
+                         : nullptr);
   auto projected = projectLogicalNetRouteDependencies(candidate, logicalNet);
   if (!projected)
     return projected.takeError();
@@ -365,6 +455,10 @@ llvm::Error SpatialProgressState::refreshLogicalNetRouteDependencies(
 void SpatialProgressState::restoreLogicalNetRouteDependencyCount(
     PnrIndex logicalNet, std::uint64_t count) noexcept {
   assert(logicalNet < netRouteDependencyViolationCounts_.size());
+  ProgressTimer timer(
+      statisticsEnabled_ ? &statistics_.incrementalUpdateCount : nullptr,
+      statisticsEnabled_ ? &statistics_.incrementalUpdateWallTimeNanoseconds
+                         : nullptr);
   const std::uint64_t current =
       netRouteDependencyViolationCounts_[logicalNet];
   assert(current <= routeDependencyViolationCount_);
@@ -379,58 +473,84 @@ SpatialProgressState::finiteBufferConflictWitnesses(
     const SpatialCandidateState &candidate) const {
   if (&candidate.problem() != problem_)
     return invalid("finite-buffer witness candidate is foreign");
+  std::vector<PnrIndex> owners;
+  if (llvm::Error error = enumerateFiniteBufferConflictOwners(owners))
+    return std::move(error);
   std::vector<SpatialFiniteBufferConflictWitness> witnesses;
-  witnesses.reserve(sharedFiniteBufferConflictCount_);
-  const auto owners = problem_->progressIndex().finiteBufferOwners();
-  for (PnrIndex owner = 0; owner < ownerCount_; ++owner) {
-    if (!finiteBufferOwnerConflicts(owner))
-      continue;
-    SpatialFiniteBufferConflictWitness witness;
-    witness.ownerOrdinal = owner;
-    witness.owner = owners[owner];
-    const std::size_t bitOffset =
-        static_cast<std::size_t>(owner) * logicalNetWordCount_;
-    for (std::size_t word = 0; word < logicalNetWordCount_; ++word) {
-      std::uint64_t bits = ownerLogicalNetBits_[bitOffset + word];
-      while (bits != 0) {
-        const unsigned bit = llvm::countr_zero(bits);
-        const std::size_t logicalNet = word * 64 + bit;
-        if (logicalNet >= logicalNetCount_)
-          return invalid("finite-buffer owner bitset has an excess bit");
-        witness.competingLogicalNets.push_back(
-            static_cast<PnrIndex>(logicalNet));
-        bits &= bits - 1;
-      }
-    }
-    for (PnrIndex logicalNet : witness.competingLogicalNets) {
-      if (llvm::Error error = forEachSelectedTraversal(
-              candidate, logicalNet,
-              [&](PnrIndex traversal,
-                  const SpatialProgressRouteAnchor &anchor) -> llvm::Error {
-                if (problem_->progressIndex().traversalOwner(traversal) ==
-                    owner)
-                  witness.routeAnchors.push_back(anchor);
-                return llvm::Error::success();
-              }))
-        return std::move(error);
-    }
-    llvm::sort(witness.routeAnchors,
-               [](const SpatialProgressRouteAnchor &lhs,
-                  const SpatialProgressRouteAnchor &rhs) {
-                 return std::tie(lhs.logicalNet, lhs.kind, lhs.sinkObligation,
-                                 lhs.endpoint, lhs.traversal) <
-                        std::tie(rhs.logicalNet, rhs.kind, rhs.sinkObligation,
-                                 rhs.endpoint, rhs.traversal);
-               });
-    witnesses.push_back(std::move(witness));
+  witnesses.reserve(owners.size());
+  for (PnrIndex owner : owners) {
+    witnesses.emplace_back();
+    if (llvm::Error error = rebuildFiniteBufferConflictWitness(
+            candidate, owner, witnesses.back()))
+      return std::move(error);
   }
   if (witnesses.size() != sharedFiniteBufferConflictCount_)
     return invalid("finite-buffer witness count diverges from conflict state");
   return witnesses;
 }
 
+llvm::Error SpatialProgressState::rebuildFiniteBufferConflictWitness(
+    const SpatialCandidateState &candidate, PnrIndex owner,
+    SpatialFiniteBufferConflictWitness &witness) const {
+  witness.ownerOrdinal = getInvalidPnrIndex();
+  witness.competingLogicalNets.clear();
+  witness.routeAnchors.clear();
+  if (&candidate.problem() != problem_)
+    return invalid("finite-buffer witness candidate is foreign");
+  const auto owners = problem_->progressIndex().finiteBufferOwners();
+  if (owner >= ownerCount_ || owner >= owners.size())
+    return invalid("finite-buffer witness owner is out of range");
+  if (!finiteBufferOwnerConflicts(owner))
+    return invalid("finite-buffer witness owner has no live conflict");
+
+  witness.ownerOrdinal = owner;
+  witness.owner = owners[owner];
+  const std::size_t bitOffset =
+      static_cast<std::size_t>(owner) * logicalNetWordCount_;
+  for (std::size_t word = 0; word < logicalNetWordCount_; ++word) {
+    std::uint64_t bits = ownerLogicalNetBits_[bitOffset + word];
+    while (bits != 0) {
+      const unsigned bit = llvm::countr_zero(bits);
+      const std::size_t logicalNet = word * 64 + bit;
+      if (logicalNet >= logicalNetCount_)
+        return invalid("finite-buffer owner bitset has an excess bit");
+      witness.competingLogicalNets.push_back(static_cast<PnrIndex>(logicalNet));
+      bits &= bits - 1;
+    }
+  }
+  if (witness.competingLogicalNets.size() != ownerLogicalNetCounts_[owner])
+    return invalid("finite-buffer owner bitset disagrees with its net count");
+
+  for (PnrIndex logicalNet : witness.competingLogicalNets) {
+    const std::size_t anchorBegin = witness.routeAnchors.size();
+    if (llvm::Error error = forEachSelectedTraversal(
+            candidate, logicalNet,
+            [&](PnrIndex traversal,
+                const SpatialProgressRouteAnchor &anchor) -> llvm::Error {
+              if (problem_->progressIndex().traversalOwner(traversal) == owner)
+                witness.routeAnchors.push_back(anchor);
+              return llvm::Error::success();
+            }))
+      return error;
+    if (witness.routeAnchors.size() == anchorBegin)
+      return invalid("finite-buffer conflict net has no owner route anchor");
+  }
+  llvm::sort(witness.routeAnchors, [](const SpatialProgressRouteAnchor &lhs,
+                                      const SpatialProgressRouteAnchor &rhs) {
+    return std::tie(lhs.logicalNet, lhs.kind, lhs.sinkObligation, lhs.endpoint,
+                    lhs.traversal) < std::tie(rhs.logicalNet, rhs.kind,
+                                              rhs.sinkObligation, rhs.endpoint,
+                                              rhs.traversal);
+  });
+  return llvm::Error::success();
+}
+
 llvm::Error
 SpatialProgressState::verify(const SpatialCandidateState &candidate) const {
+  ProgressTimer verificationTimer(
+      statisticsEnabled_ ? &statistics_.coldVerificationCount : nullptr,
+      statisticsEnabled_ ? &statistics_.coldVerificationWallTimeNanoseconds
+                         : nullptr);
   if (!problem_ || &candidate.problem() != problem_)
     return invalid("progress state is bound to a foreign candidate");
   auto expected = create(candidate);
@@ -452,10 +572,19 @@ SpatialProgressState::verify(const SpatialCandidateState &candidate) const {
           expected->routeDependencyViolationCount_)
     return invalid("incremental projection diverges from cold reconstruction");
 
-  auto cold = spatialCandidateClosedWaitCount(candidate);
+  llvm::Expected<std::uint64_t> cold = [&] {
+    ProgressTimer scanTimer(
+        statisticsEnabled_ ? &statistics_.coldProgressScanCount : nullptr,
+        statisticsEnabled_ ? &statistics_.coldProgressScanWallTimeNanoseconds
+                           : nullptr);
+    return spatialCandidateClosedWaitCount(candidate);
+  }();
   if (!cold)
     return cold.takeError();
   if (*cold != hardProgressViolation())
     return invalid("incremental hard-progress total diverges from cold verifier");
+  verificationTimer.finish();
+  if (statisticsEnabled_)
+    emitProgressStatistics(statistics_);
   return llvm::Error::success();
 }

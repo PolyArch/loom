@@ -515,12 +515,12 @@ makeOpenRoadResolvedExecution(llvm::StringRef executable,
                               llvm::StringRef version, bool moduleBound) {
   std::vector<std::string> modules;
   if (moduleBound)
-    modules.push_back("openroad/2026.08.16-cbc7678e45cc");
+    modules.push_back("openroad/2026.08.25-21512b0ab68c");
   external_tool::ExternalToolProviderDescriptor provider{
       external_tool::ToolProviderDescriptor{
           "openroad", {"openroad"}, {}, modules},
       external_tool::ToolVersionProbe{{"-version"},
-                                      moduleBound ? "cbc7678e45"
+                                      moduleBound ? "21512b0"
                                                   : version.str(),
                                       {0},
                                       std::nullopt},
@@ -565,7 +565,7 @@ writeAuthoredOpenRoadRouteTool(const std::filesystem::path &root,
   const std::string body = R"sh(#!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "-version" || "${1:-}" == "--version" ]]; then
-  printf '%s\n' 'OpenROAD synthetic cbc7678e45cc'
+  printf '%s\n' 'OpenROAD synthetic 21512b0ab68c'
   exit 0
 fi
 if [[ "$#" -ne 7 || "$1" != "-no_init" || "$2" != "-no_splash" ||
@@ -637,7 +637,7 @@ writeAuthoredOpenRoadStaticFpaTool(const std::filesystem::path &root,
   const std::string body = R"sh(#!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "-version" || "${1:-}" == "--version" ]]; then
-  printf '%s\n' 'OpenROAD synthetic cbc7678e45cc'
+  printf '%s\n' 'OpenROAD synthetic 21512b0ab68c'
   exit 0
 fi
 if [[ "$#" -ne 7 || "$1" != "-no_init" || "$2" != "-no_splash" ||

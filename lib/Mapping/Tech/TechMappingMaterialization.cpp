@@ -8,6 +8,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -217,8 +218,9 @@ materializeTechMappingCandidate(const TechMappingGenerationInputs &inputs,
   context.loadDialect<::mapping::MappingDialect>();
   mlir::OpBuilder builder(&context);
   const mlir::Location location = builder.getUnknownLoc();
-  auto module = mlir::ModuleOp::create(location);
-  builder.setInsertionPointToStart(module.getBody());
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::ModuleOp::create(location);
+  builder.setInsertionPointToStart(module->getBody());
 
   std::vector<mlir::Attribute> covers;
   covers.reserve(inputs.covers.size());

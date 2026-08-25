@@ -130,6 +130,7 @@ private:
   };
 
   void beginTransaction();
+  void advanceProgressRouteDeltaEpoch();
   void resetTransaction();
 
   std::vector<std::unique_ptr<RouteTreeTransactionScratch>> routeScratch_;
@@ -198,6 +199,8 @@ private:
   std::size_t resourcePartiallyAppliedDeltaCount_ = 0;
 
   std::vector<std::size_t> progressRecordedRouteDeltaCounts_;
+  std::vector<std::uint64_t> progressRecordedRouteDeltaEpochs_;
+  std::uint64_t progressRecordedRouteDeltaEpoch_ = 0;
   std::vector<std::uint8_t> progressTerminalActive_;
   std::vector<ProgressTraversalDelta> progressTraversalDeltas_;
   std::vector<std::uint8_t> progressDirtyNetMarks_;
@@ -288,6 +291,11 @@ public:
   llvm::Expected<std::vector<SpatialFiniteBufferConflictWitness>>
   finiteBufferConflictWitnesses() const {
     return progressState_.finiteBufferConflictWitnesses(*this);
+  }
+  llvm::Error rebuildFiniteBufferConflictWitness(
+      PnrIndex owner, SpatialFiniteBufferConflictWitness &witness) const {
+    return progressState_.rebuildFiniteBufferConflictWitness(*this, owner,
+                                                             witness);
   }
   /// Exact selected envelope cache. FrozenSpatialCapacityIndex remains the
   /// sole owner of envelope semantics; these dense views are rebuildable.
@@ -646,6 +654,7 @@ private:
   std::uint64_t initialStaticSchedulePressure_ = 0;
   std::uint64_t initialWorstRouteArrivalDelayQuanta_ = 0;
   std::uint64_t initialTotalRouteNegativeSlackQuanta_ = 0;
+  bool recurrenceTimingSelected_ = false;
   SpatialRecurrenceTimingProjection initialRecurrenceTiming_;
   friend class SpatialCandidateState;
   friend class SpatialCandidateScratch;

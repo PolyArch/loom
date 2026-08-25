@@ -132,6 +132,25 @@ mapRuntimeDispositionToPairDisposition(
   llvm_unreachable("unknown application runtime disposition");
 }
 
+std::optional<ApplicationPairDecisionDisposition>
+mapQualityDispositionToPairDisposition(
+    dse::JointDesignQualityDisposition disposition) {
+  switch (disposition) {
+  case dse::JointDesignQualityDisposition::Unsupported:
+    return ApplicationPairDecisionDisposition::UnsupportedSemantic;
+  case dse::JointDesignQualityDisposition::ProofNotEstablished:
+    return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+  case dse::JointDesignQualityDisposition::ExecutionFailed:
+    return ApplicationPairDecisionDisposition::ImplementationFailure;
+  case dse::JointDesignQualityDisposition::CancelledOrTimeout:
+    return ApplicationPairDecisionDisposition::CancelledOrTimeout;
+  case dse::JointDesignQualityDisposition::NotRequested:
+  case dse::JointDesignQualityDisposition::Complete:
+    return std::nullopt;
+  }
+  llvm_unreachable("unknown joint quality disposition");
+}
+
 std::optional<dse::PreMappingSpectrumClass>
 requestedResourceTimeSpectrumClass(dse::PreMappingSpectrumEndpoint endpoint) {
   switch (endpoint) {
@@ -207,6 +226,55 @@ ApplicationPairDecisionDisposition prioritizeIncompletePairDisposition(
   return *llvm::max_element(causes, [&](auto lhs, auto rhs) {
     return priority(lhs) < priority(rhs);
   });
+}
+
+ApplicationPairDecisionDisposition classifyPreMappingNoFeasibleOutcome(
+    const dse::CompletedPreMappingNoFeasibleCandidate &outcome) {
+  std::vector<ApplicationPairDecisionDisposition> causes;
+  for (const dse::PreMappingCandidatePlanningRecord &record :
+       outcome.candidateInventory) {
+    if (record.incompleteReason) {
+      causes.push_back(
+          mapIncompleteReasonToPairDisposition(*record.incompleteReason));
+      continue;
+    }
+    switch (record.disposition) {
+    case dse::PreMappingCandidatePlanningDisposition::ExactGateRejected:
+      break;
+    case dse::PreMappingCandidatePlanningDisposition::Unsupported:
+      causes.push_back(ApplicationPairDecisionDisposition::UnsupportedSemantic);
+      break;
+    case dse::PreMappingCandidatePlanningDisposition::Unknown:
+    case dse::PreMappingCandidatePlanningDisposition::Retained:
+    case dse::PreMappingCandidatePlanningDisposition::HeuristicPruned:
+      causes.push_back(
+          ApplicationPairDecisionDisposition::MappingProofNotEstablished);
+      break;
+    case dse::PreMappingCandidatePlanningDisposition::CancelledOrTimeout:
+      causes.push_back(ApplicationPairDecisionDisposition::CancelledOrTimeout);
+      break;
+    case dse::PreMappingCandidatePlanningDisposition::CoordinateBudget:
+    case dse::PreMappingCandidatePlanningDisposition::
+        ProgramMaterializationBudget:
+    case dse::PreMappingCandidatePlanningDisposition::AnalyticEvaluationBudget:
+    case dse::PreMappingCandidatePlanningDisposition::FunctionalReplayBudget:
+    case dse::PreMappingCandidatePlanningDisposition::DataflowPromotionBudget:
+    case dse::PreMappingCandidatePlanningDisposition::MappingPairBudget:
+      causes.push_back(ApplicationPairDecisionDisposition::BudgetExhausted);
+      break;
+    }
+  }
+  if (!outcome.completeness.domainComplete ||
+      !outcome.completeness.budgetComplete)
+    causes.push_back(ApplicationPairDecisionDisposition::BudgetExhausted);
+  if (!outcome.completeness.providerComplete ||
+      !outcome.completeness.evidenceComplete ||
+      !outcome.completeness.selectionComplete)
+    causes.push_back(
+        ApplicationPairDecisionDisposition::MappingProofNotEstablished);
+  if (!causes.empty())
+    return prioritizeIncompletePairDisposition(causes, false);
+  return ApplicationPairDecisionDisposition::NoPromisingCandidate;
 }
 
 ApplicationPairDecisionRecord deriveApplicationPairDecision(
@@ -572,29 +640,14 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           incompleteCauses.push_back(*disposition);
       }
       for (const ApplicationPairQualityInvocationRecord &invocation :
-           qualityInvocations) {
-        switch (invocation.qualityDisposition) {
-        case dse::JointDesignQualityDisposition::NotRequested:
-        case dse::JointDesignQualityDisposition::Complete:
-          break;
-        case dse::JointDesignQualityDisposition::Unsupported:
-          incompleteCauses.push_back(
-              ApplicationPairDecisionDisposition::UnsupportedSemantic);
-          break;
-        case dse::JointDesignQualityDisposition::ProofNotEstablished:
-          incompleteCauses.push_back(
-              ApplicationPairDecisionDisposition::MappingProofNotEstablished);
-          break;
-        case dse::JointDesignQualityDisposition::ExecutionFailed:
-          incompleteCauses.push_back(
-              ApplicationPairDecisionDisposition::ImplementationFailure);
-          break;
-        case dse::JointDesignQualityDisposition::CancelledOrTimeout:
-          incompleteCauses.push_back(
-              ApplicationPairDecisionDisposition::CancelledOrTimeout);
-          break;
-        }
-      }
+           qualityInvocations)
+        if (auto disposition = mapQualityDispositionToPairDisposition(
+                invocation.qualityDisposition))
+          incompleteCauses.push_back(*disposition);
+      if (qualityInvocations.empty())
+        if (auto disposition = mapQualityDispositionToPairDisposition(
+                summary.qualityDisposition))
+          incompleteCauses.push_back(*disposition);
       result.disposition = prioritizeIncompletePairDisposition(
           incompleteCauses, summary.declaredWorkExhausted ||
                                 summary.jointFrontierTruncated ||

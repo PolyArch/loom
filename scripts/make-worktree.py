@@ -1093,6 +1093,7 @@ def configure_loom(
         "-B",
         str(paths.loom_build),
         "-DCMAKE_BUILD_TYPE=Release",
+        "-DLOOM_ENABLE_ASSERTIONS=OFF",
         f"-DCMAKE_C_COMPILER={LOOM_C_COMPILER}",
         f"-DCMAKE_CXX_COMPILER={LOOM_CXX_COMPILER}",
         f"-DMLIR_DIR={paths.mlir_dir}",

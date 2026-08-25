@@ -322,12 +322,33 @@ SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate) {
   explicitRegisterFifoTransfers_.resize(netMarks_.size());
   affectedNets_.clear();
   affectedNets_.reserve(netMarks_.size());
+  hardProgressWitness_.competingLogicalNets.clear();
+  hardProgressWitness_.competingLogicalNets.reserve(netMarks_.size());
+  hardProgressWitness_.routeAnchors.clear();
   routeCostTraversals_.clear();
   routeCostTraversals_.reserve(
       candidate.problem().routing().traversals().size());
   localTransferClaimBits_.assign(
       (candidate.problem().routing().routeClaims().size() + 63) / 64, 0);
+  localTransferClaimWords_.clear();
+  localTransferClaimWords_.reserve(localTransferClaimBits_.size());
+  std::fill(relationDecisionMarks_.begin(), relationDecisionMarks_.end(), 0);
+  std::fill(explicitAttachmentMarks_.begin(), explicitAttachmentMarks_.end(),
+            0);
+  std::fill(explicitNetDispositionMarks_.begin(),
+            explicitNetDispositionMarks_.end(), 0);
+  std::fill(explicitLogicalMemoryMarks_.begin(),
+            explicitLogicalMemoryMarks_.end(), 0);
+  std::fill(changedLogicalMemoryMarks_.begin(),
+            changedLogicalMemoryMarks_.end(), 0);
+  std::fill(explicitMemoryDispatchGroupMarks_.begin(),
+            explicitMemoryDispatchGroupMarks_.end(), 0);
+  std::fill(explicitMemoryDispatchUseMarks_.begin(),
+            explicitMemoryDispatchUseMarks_.end(), 0);
+  std::fill(explicitMemoryExposureMarks_.begin(),
+            explicitMemoryExposureMarks_.end(), 0);
   netEpoch_ = 0;
+  dependencyEpoch_ = 0;
   candidate_ = &candidate;
   return llvm::Error::success();
 }
@@ -344,44 +365,50 @@ void SpatialActionExecutorScratch::beginDependencyClosure() {
     std::fill(netMarks_.begin(), netMarks_.end(), 0);
     netEpoch_ = 1;
   }
+  if (++dependencyEpoch_ == 0) {
+    std::fill(relationDecisionMarks_.begin(), relationDecisionMarks_.end(), 0);
+    std::fill(explicitAttachmentMarks_.begin(), explicitAttachmentMarks_.end(),
+              0);
+    std::fill(explicitNetDispositionMarks_.begin(),
+              explicitNetDispositionMarks_.end(), 0);
+    std::fill(explicitLogicalMemoryMarks_.begin(),
+              explicitLogicalMemoryMarks_.end(), 0);
+    std::fill(changedLogicalMemoryMarks_.begin(),
+              changedLogicalMemoryMarks_.end(), 0);
+    std::fill(explicitMemoryDispatchGroupMarks_.begin(),
+              explicitMemoryDispatchGroupMarks_.end(), 0);
+    std::fill(explicitMemoryDispatchUseMarks_.begin(),
+              explicitMemoryDispatchUseMarks_.end(), 0);
+    std::fill(explicitMemoryExposureMarks_.begin(),
+              explicitMemoryExposureMarks_.end(), 0);
+    dependencyEpoch_ = 1;
+  }
   affectedNets_.clear();
   routeCostTraversals_.clear();
-  std::fill(relationDecisionMarks_.begin(), relationDecisionMarks_.end(), 0);
-  std::fill(explicitAttachmentMarks_.begin(), explicitAttachmentMarks_.end(),
-            0);
-  std::fill(explicitNetDispositionMarks_.begin(),
-            explicitNetDispositionMarks_.end(), 0);
+  for (PnrIndex word : localTransferClaimWords_)
+    localTransferClaimBits_[word] = 0;
+  localTransferClaimWords_.clear();
   relationDecisionQueue_.clear();
   releasedRelationDecisions_.clear();
   changedBindingRoots_.clear();
-  std::fill(explicitLogicalMemoryMarks_.begin(),
-            explicitLogicalMemoryMarks_.end(), 0);
   explicitLogicalMemoryBindings_.clear();
   explicitLogicalMemoryChoices_.clear();
-  std::fill(changedLogicalMemoryMarks_.begin(),
-            changedLogicalMemoryMarks_.end(), 0);
   changedLogicalMemoryBindings_.clear();
-  std::fill(explicitMemoryDispatchGroupMarks_.begin(),
-            explicitMemoryDispatchGroupMarks_.end(), 0);
   explicitMemoryDispatchGroups_.clear();
-  std::fill(explicitMemoryDispatchUseMarks_.begin(),
-            explicitMemoryDispatchUseMarks_.end(), 0);
-  std::fill(explicitMemoryExposureMarks_.begin(),
-            explicitMemoryExposureMarks_.end(), 0);
   globalRouting_ = false;
 }
 
 void SpatialActionExecutorScratch::markChangedBindingRoot(PnrIndex decision) {
   if (decision >= relationDecisionMarks_.size() ||
-      relationDecisionMarks_[decision])
+      relationDecisionMarks_[decision] == dependencyEpoch_)
     return;
-  relationDecisionMarks_[decision] = 1;
+  relationDecisionMarks_[decision] = dependencyEpoch_;
   changedBindingRoots_.push_back(decision);
 }
 
 void SpatialActionExecutorScratch::markExplicitAttachment(PnrIndex decision) {
   if (decision < explicitAttachmentMarks_.size())
-    explicitAttachmentMarks_[decision] = 1;
+    explicitAttachmentMarks_[decision] = dependencyEpoch_;
 }
 
 llvm::Error SpatialActionExecutorScratch::markNet(PnrIndex logicalNet) {
@@ -418,7 +445,7 @@ llvm::Error SpatialActionExecutorScratch::markWholeNet(
   }
   if (llvm::Error error = markNet(action.logicalNet))
     return error;
-  explicitNetDispositionMarks_[action.logicalNet] = 1;
+  explicitNetDispositionMarks_[action.logicalNet] = dependencyEpoch_;
   explicitNetDispositions_[action.logicalNet] = action.disposition;
   explicitRegisterFifoTransfers_[action.logicalNet] =
       action.registerFifoTransfer;
@@ -548,22 +575,17 @@ llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
   }
   case ResolvedPnrViolationKind::HardProgressViolation: {
     const PnrIndex owner = action.witnessOrdinal;
-    if (owner >= problem.progressIndex().finiteBufferOwners().size() ||
-        !candidate_->progress().finiteBufferOwnerConflicts(owner))
-      return executorError("finite-buffer progress witness is no longer live");
-    bool marked = false;
-    for (PnrIndex logicalNet = 0;
-         logicalNet < transfers.logicalNets().size(); ++logicalNet) {
-      if (!candidate_->progress().logicalNetSelectsFiniteBufferOwner(
-              logicalNet, owner))
-        continue;
+    if (llvm::Error error = candidate_->rebuildFiniteBufferConflictWitness(
+            owner, hardProgressWitness_))
+      return error;
+    for (PnrIndex logicalNet : hardProgressWitness_.competingLogicalNets) {
       if (llvm::Error error = markNet(logicalNet))
         return error;
-      marked = true;
     }
-    if (!marked)
+    if (hardProgressWitness_.competingLogicalNets.empty() ||
+        hardProgressWitness_.routeAnchors.empty())
       return executorError(
-          "finite-buffer progress witness has no competing logical net");
+          "finite-buffer progress witness has no route closure");
     return llvm::Error::success();
   }
   }
@@ -801,7 +823,7 @@ llvm::Error SpatialActionExecutorScratch::recordExplicitLogicalMemoryBinding(
     return executorError("logical-memory Action is out of range");
   const SpatialLogicalMemoryBindingSelection selection{
       action.target, action.physicalOffsetBytes};
-  if (explicitLogicalMemoryMarks_[action.binding]) {
+  if (explicitLogicalMemoryMarks_[action.binding] == dependencyEpoch_) {
     const auto &prior = explicitLogicalMemorySelections_[action.binding];
     if (prior.target != selection.target ||
         prior.physicalOffsetBytes != selection.physicalOffsetBytes)
@@ -809,7 +831,7 @@ llvm::Error SpatialActionExecutorScratch::recordExplicitLogicalMemoryBinding(
           "one ActionBatch selects conflicting logical-memory bindings");
     return llvm::Error::success();
   }
-  explicitLogicalMemoryMarks_[action.binding] = 1;
+  explicitLogicalMemoryMarks_[action.binding] = dependencyEpoch_;
   explicitLogicalMemorySelections_[action.binding] = selection;
   explicitLogicalMemoryBindings_.push_back(action.binding);
   explicitLogicalMemoryChoices_.push_back(selection);
@@ -853,7 +875,7 @@ SpatialActionExecutorScratch::explicitLogicalMemoryTargetSupported(
   for (PnrIndex use : uses) {
     if (use >= explicitMemoryDispatchUseMarks_.size())
       return executorError("logical-memory use is out of range");
-    if (explicitMemoryDispatchUseMarks_[use]) {
+    if (explicitMemoryDispatchUseMarks_[use] == dependencyEpoch_) {
       auto exact = optionSupported(use, explicitMemoryDispatchSelections_[use]);
       if (!exact)
         return exact.takeError();
@@ -866,7 +888,7 @@ SpatialActionExecutorScratch::explicitLogicalMemoryTargetSupported(
     if (group >= memory.serviceUseGroups().size() ||
         group >= explicitMemoryDispatchGroupMarks_.size())
       return executorError("logical-memory use group is out of range");
-    if (!explicitMemoryDispatchGroupMarks_[group])
+    if (explicitMemoryDispatchGroupMarks_[group] != dependencyEpoch_)
       continue;
     const PnrIndex requiredPattern = explicitMemoryDispatchPatterns_[group];
     const FrozenSpatialMemoryServiceUseGroup &record =
@@ -877,7 +899,7 @@ SpatialActionExecutorScratch::explicitLogicalMemoryTargetSupported(
          memory.serviceGroupUses().slice(record.useOffset, record.useCount)) {
       if (member >= explicitMemoryDispatchUseMarks_.size())
         return executorError("logical-memory use group has a foreign member");
-      if (explicitMemoryDispatchUseMarks_[member]) {
+      if (explicitMemoryDispatchUseMarks_[member] == dependencyEpoch_) {
         const PnrIndex option = explicitMemoryDispatchSelections_[member];
         auto exact = optionSupported(member, option);
         if (!exact)
@@ -907,7 +929,7 @@ SpatialActionExecutorScratch::explicitLogicalMemoryTargetSupported(
   for (PnrIndex exposure : exposures) {
     if (exposure >= explicitMemoryExposureMarks_.size())
       return executorError("logical-memory exposure is out of range");
-    if (!explicitMemoryExposureMarks_[exposure])
+    if (explicitMemoryExposureMarks_[exposure] != dependencyEpoch_)
       continue;
     const PnrIndex option = explicitMemoryExposureSelections_[exposure];
     if (option >= memory.exposureOptions().size() ||
@@ -1010,9 +1032,9 @@ SpatialActionExecutorScratch::reconcileExplicitLogicalMemoryBindings(
 
 void SpatialActionExecutorScratch::markChangedLogicalMemoryBinding(
     PnrIndex binding) {
-  if (changedLogicalMemoryMarks_[binding])
+  if (changedLogicalMemoryMarks_[binding] == dependencyEpoch_)
     return;
-  changedLogicalMemoryMarks_[binding] = 1;
+  changedLogicalMemoryMarks_[binding] = dependencyEpoch_;
   changedLogicalMemoryBindings_.push_back(binding);
 }
 
@@ -1166,11 +1188,11 @@ llvm::Error SpatialActionExecutorScratch::recordExplicitMemoryDispatch(
     return executorError("memory-dispatch Action is out of range");
   if (use >= explicitMemoryDispatchSelections_.size())
     return executorError("memory-dispatch Action has a foreign use");
-  if (explicitMemoryDispatchUseMarks_[use] &&
+  if (explicitMemoryDispatchUseMarks_[use] == dependencyEpoch_ &&
       explicitMemoryDispatchSelections_[use] != option)
     return intrinsicTransitionFailure(
         "one ActionBatch selects conflicting options for one memory use");
-  explicitMemoryDispatchUseMarks_[use] = 1;
+  explicitMemoryDispatchUseMarks_[use] = dependencyEpoch_;
   explicitMemoryDispatchSelections_[use] = option;
   const PnrIndex group = memory.rootedUseServiceGroups()[use];
   if (group == getInvalidPnrIndex())
@@ -1179,13 +1201,13 @@ llvm::Error SpatialActionExecutorScratch::recordExplicitMemoryDispatch(
     return executorError("memory-dispatch Action has a foreign group");
   const PnrIndex pattern =
       candidate.problem().capacity().memoryDispatchOptionPatterns()[option];
-  if (explicitMemoryDispatchGroupMarks_[group]) {
+  if (explicitMemoryDispatchGroupMarks_[group] == dependencyEpoch_) {
     if (explicitMemoryDispatchPatterns_[group] != pattern)
       return intrinsicTransitionFailure(
           "one ActionBatch selects conflicting memory UsePatterns");
     return llvm::Error::success();
   }
-  explicitMemoryDispatchGroupMarks_[group] = 1;
+  explicitMemoryDispatchGroupMarks_[group] = dependencyEpoch_;
   explicitMemoryDispatchPatterns_[group] = pattern;
   explicitMemoryDispatchGroups_.push_back(group);
   return llvm::Error::success();
@@ -1215,10 +1237,11 @@ llvm::Error SpatialActionExecutorScratch::reconcileExplicitMemoryDispatches(
     for (PnrIndex member : members) {
       if (member >= explicitMemoryDispatchUseMarks_.size())
         return executorError("memory dispatch group has a foreign member");
-      PnrIndex selected = explicitMemoryDispatchUseMarks_[member]
-                              ? explicitMemoryDispatchSelections_[member]
-                              : candidate.memoryUseDispatch(member);
-      if (explicitMemoryDispatchUseMarks_[member] &&
+      PnrIndex selected =
+          explicitMemoryDispatchUseMarks_[member] == dependencyEpoch_
+              ? explicitMemoryDispatchSelections_[member]
+              : candidate.memoryUseDispatch(member);
+      if (explicitMemoryDispatchUseMarks_[member] == dependencyEpoch_ &&
           candidate.memoryUseDispatch(member) != selected) {
         if (llvm::Error error = move.setMemoryUseDispatch(member, selected))
           return error;
@@ -1227,7 +1250,7 @@ llvm::Error SpatialActionExecutorScratch::reconcileExplicitMemoryDispatches(
           detail::memoryDispatchMatchesTarget(
               memory, memory.dispatchOptions()[selected], target))
         continue;
-      if (explicitMemoryDispatchUseMarks_[member])
+      if (explicitMemoryDispatchUseMarks_[member] == dependencyEpoch_)
         return intrinsicTransitionFailure(
             "explicit memory-dispatch Action is incompatible with its group");
       auto domain = candidate.memoryDispatchDomain(member);
@@ -1258,11 +1281,11 @@ llvm::Error SpatialActionExecutorScratch::recordExplicitMemoryExposure(
   if (exposure >= explicitMemoryExposureSelections_.size() ||
       option >= candidate.problem().memory().exposureOptions().size())
     return executorError("memory-exposure Action is out of range");
-  if (explicitMemoryExposureMarks_[exposure] &&
+  if (explicitMemoryExposureMarks_[exposure] == dependencyEpoch_ &&
       explicitMemoryExposureSelections_[exposure] != option)
     return intrinsicTransitionFailure(
         "one ActionBatch selects conflicting memory exposures");
-  explicitMemoryExposureMarks_[exposure] = 1;
+  explicitMemoryExposureMarks_[exposure] = dependencyEpoch_;
   explicitMemoryExposureSelections_[exposure] = option;
   return llvm::Error::success();
 }
@@ -1272,7 +1295,7 @@ llvm::Error SpatialActionExecutorScratch::reconcileExplicitMemoryExposures(
   const FrozenSpatialMemoryIndex &memory = candidate.problem().memory();
   for (PnrIndex exposure = 0; exposure < explicitMemoryExposureMarks_.size();
        ++exposure) {
-    if (!explicitMemoryExposureMarks_[exposure])
+    if (explicitMemoryExposureMarks_[exposure] != dependencyEpoch_)
       continue;
     const PnrIndex option = explicitMemoryExposureSelections_[exposure];
     const PnrIndex binding = memory.exposures()[exposure].logicalBinding;
@@ -1323,9 +1346,9 @@ llvm::Error SpatialActionExecutorScratch::reconcileBindingRelations(
         attachment.owner >= ports.placementDomains().size())
       return executorError("PortDemand attachment owner is malformed");
     if (ports.placementDomains()[attachment.owner].placement == placement ||
-        relationDecisionMarks_[decision])
+        relationDecisionMarks_[decision] == dependencyEpoch_)
       return llvm::Error::success();
-    relationDecisionMarks_[decision] = 1;
+    relationDecisionMarks_[decision] = dependencyEpoch_;
     relationDecisionQueue_.push_back(decision);
     return llvm::Error::success();
   };
@@ -1365,9 +1388,9 @@ llvm::Error SpatialActionExecutorScratch::reconcileBindingRelations(
         if (member.decision >= relationDecisionMarks_.size())
           return executorError("binding relation member is out of range");
         if (member.decision < bindings.portDecisionOffset() ||
-            relationDecisionMarks_[member.decision])
+            relationDecisionMarks_[member.decision] == dependencyEpoch_)
           continue;
-        relationDecisionMarks_[member.decision] = 1;
+        relationDecisionMarks_[member.decision] = dependencyEpoch_;
         relationDecisionQueue_.push_back(member.decision);
       }
     }
@@ -1376,7 +1399,7 @@ llvm::Error SpatialActionExecutorScratch::reconcileBindingRelations(
   fixedRelationChoices_ = candidate.bindingRelationChoices_;
   for (PnrIndex decision : relationDecisionQueue_)
     if (decision >= bindings.portDecisionOffset() &&
-        !explicitAttachmentMarks_[decision]) {
+        explicitAttachmentMarks_[decision] != dependencyEpoch_) {
       fixedRelationChoices_[decision] = getInvalidPnrIndex();
       releasedRelationDecisions_.push_back(decision);
     }
@@ -1452,7 +1475,7 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
     if (pendingRouteKinds_[logicalNet] == PendingRouteKind::WholeNet) {
       std::optional<PnrIndex> selectedLocal;
       const SpatialWholeNetDispositionKind disposition =
-          explicitNetDispositionMarks_[logicalNet]
+          explicitNetDispositionMarks_[logicalNet] == dependencyEpoch_
               ? explicitNetDispositions_[logicalNet]
               : SpatialWholeNetDispositionKind::Preferred;
       if (disposition == SpatialWholeNetDispositionKind::RegisterFifo) {
@@ -1473,8 +1496,9 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
         if (!candidate.routeTree(logicalNet).isUnrouted())
           if (llvm::Error error = move.ripUpWholeRoute(logicalNet))
             return error;
-        std::fill(localTransferClaimBits_.begin(),
-                  localTransferClaimBits_.end(), 0);
+        for (PnrIndex word : localTransferClaimWords_)
+          localTransferClaimBits_[word] = 0;
+        localTransferClaimWords_.clear();
         const auto &option =
             candidate.problem()
                 .localTransfers()
@@ -1490,8 +1514,10 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
                    record.routeClaimOffset, record.routeClaimCount)) {
             if (claim >= routing.routeClaims().size())
               return executorError("register-FIFO route claim is out of range");
-            localTransferClaimBits_[claim / 64] |= std::uint64_t{1}
-                                                   << (claim % 64);
+            const PnrIndex word = claim / 64;
+            if (localTransferClaimBits_[word] == 0)
+              localTransferClaimWords_.push_back(word);
+            localTransferClaimBits_[word] |= std::uint64_t{1} << (claim % 64);
           }
         }
         if (llvm::Error error = routeCosts_->updateSelectedLogicalNetClaims(
@@ -1793,9 +1819,12 @@ std::size_t SpatialActionExecutorScratch::retainedStorageBytes() const {
          retainedBytes(explicitNetDispositionMarks_) +
          retainedBytes(explicitNetDispositions_) +
          retainedBytes(explicitRegisterFifoTransfers_) +
+         retainedBytes(hardProgressWitness_.competingLogicalNets) +
+         retainedBytes(hardProgressWitness_.routeAnchors) +
          retainedBytes(routeCostTraversals_) +
          retainedBytes(routeCostLogicalNets_) +
          retainedBytes(localTransferClaimBits_) +
+         retainedBytes(localTransferClaimWords_) +
          retainedBytes(fixedRelationChoices_) +
          retainedBytes(relationDecisionMarks_) +
          retainedBytes(explicitAttachmentMarks_) +

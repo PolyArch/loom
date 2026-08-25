@@ -1,6 +1,7 @@
 #include "Application/BuildDiagnostics.h"
 #include "ApplicationRuntimeValidationInternal.h"
 #include "BuildInternal.h"
+#include "QualityInternal.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
@@ -190,12 +191,18 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::uint64_t hardwareRepairProbesConsumed = 0;
   std::uint64_t hardwareRepairProbesRejected = 0;
   std::uint64_t hardwareRepairProbesCancelled = 0;
+  std::uint64_t sharedHardwareRepairProbesReserved = 0;
   std::uint64_t spatialMappingRepairCandidateLimit = 0;
   std::uint64_t spatialMappingRepairsPlanned = 0;
   std::uint64_t spatialMappingRepairsReserved = 0;
   std::uint64_t spatialMappingRepairsConsumed = 0;
   std::uint64_t spatialMappingRepairsRejected = 0;
   std::uint64_t spatialMappingRepairsCancelled = 0;
+  const auto addSaturated = [](std::uint64_t &total, std::uint64_t value) {
+    total = value > std::numeric_limits<std::uint64_t>::max() - total
+                ? std::numeric_limits<std::uint64_t>::max()
+                : total + value;
+  };
   std::uint64_t parentTechDecisions = 0;
   std::uint64_t parentSpatialDecisions = 0;
   std::uint64_t preservedTechDecisions = 0;
@@ -371,32 +378,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         maximumUsefulAccCoreCount = std::max(maximumUsefulAccCoreCount,
                                              bound.maximumUsefulResourceUnits);
     std::optional<dse::JointBoundedQualityPolicy> boundedQuality =
-        request.boundedQuality;
-    if (boundedQuality && firstPlan != 0) {
-      dse::JointDesignQualityAcquirer acquire = boundedQuality->acquire;
-      boundedQuality->acquire = [acquire = std::move(acquire), firstPlan](
-                                    const dse::JointDesignExecution &execution,
-                                    std::uint64_t planOrdinal)
-          -> llvm::Expected<dse::JointDesignQualityAcquisition> {
-        if (planOrdinal > std::numeric_limits<std::uint64_t>::max() - firstPlan)
-          return invalid("bounded-quality plan ordinal overflowed");
-        return acquire(execution, planOrdinal + firstPlan);
-      };
-      if (boundedQuality->hardwarePromotion) {
-        dse::JointHardwarePromotionQualityAcquirer promote =
-            boundedQuality->hardwarePromotion->acquire;
-        boundedQuality->hardwarePromotion->acquire =
-            [promote = std::move(promote),
-             firstPlan](const dse::JointDesignExplorationPlan &plan,
-                        std::uint64_t planOrdinal)
-            -> llvm::Expected<dse::JointDesignQualityAcquisition> {
-          if (planOrdinal >
-              std::numeric_limits<std::uint64_t>::max() - firstPlan)
-            return invalid("hardware-promotion plan ordinal overflowed");
-          return promote(plan, planOrdinal + firstPlan);
-        };
-      }
-    }
+        detail::rebaseApplicationBoundedQualityPolicy(request.boundedQuality,
+                                                      firstPlan);
     dse::JointHardwareReopenRequest reopenRequest{
         request.producer,
         std::move(journalRoot),
@@ -416,19 +399,62 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         tail, prepared.jointPolicy, std::move(reopenRequest), artifacts, blobs);
   };
 
+  const auto remainingSharedHardwareRepairProbes = [&]() -> std::uint64_t {
+    if (!request.boundedQuality)
+      return std::numeric_limits<std::uint64_t>::max();
+    if (sharedHardwareRepairProbesReserved >=
+        request.boundedQuality->maximumHardwareRepairProbes)
+      return 0;
+    return request.boundedQuality->maximumHardwareRepairProbes -
+           sharedHardwareRepairProbesReserved;
+  };
+  const auto reserveSharedHardwareRepairProbes =
+      [&](std::uint64_t reserved) -> llvm::Error {
+    if (!request.boundedQuality)
+      return llvm::Error::success();
+    if (reserved > remainingSharedHardwareRepairProbes())
+      return invalid("runtime repair exceeded its shared hardware probe "
+                     "limit");
+    sharedHardwareRepairProbesReserved += reserved;
+    return llvm::Error::success();
+  };
   const auto makeRepairRequest =
-      [&](std::string journalRoot) -> dse::JointHardwareReopenRequest {
+      [&](std::string journalRoot, std::uint64_t planOrdinal,
+          std::optional<std::uint64_t> remainingProbeLimit = std::nullopt)
+      -> dse::JointHardwareReopenRequest {
+    std::optional<dse::JointBoundedQualityPolicy> boundedQuality =
+        detail::rebaseApplicationBoundedQualityPolicy(request.boundedQuality,
+                                                      planOrdinal);
+    if (boundedQuality && remainingProbeLimit)
+      boundedQuality->maximumHardwareRepairProbes = std::min(
+          boundedQuality->maximumHardwareRepairProbes, *remainingProbeLimit);
     dse::JointHardwareReopenRequest repairRequest{
         request.producer,
         std::move(journalRoot),
         evidence,
-        dse::JointDesignStoppingPolicy::FirstVerified,
-        std::nullopt,
+        boundedQuality ? dse::JointDesignStoppingPolicy::BoundedQuality
+                       : dse::JointDesignStoppingPolicy::FirstVerified,
+        std::move(boundedQuality),
         std::nullopt,
         request.siteCapacity,
         request.executionPolicy};
     repairRequest.invocationSemanticInputs = qualitySemanticInputs;
     return repairRequest;
+  };
+
+  const auto resolveRuntime =
+      [&](const PreparedApplicationMappingAlternative &alternative,
+          const dse::JointDesignExecution &execution,
+          const ArtifactRootReference &mapping)
+      -> llvm::Expected<detail::ApplicationRuntimeValidation> {
+    if (request.boundedQuality &&
+        request.boundedQuality->provenanceDomain ==
+            dse::JointDesignQualityProvenanceDomain::ApplicationRuntime)
+      return detail::projectApplicationQualityRuntime(
+          execution, mapping, *request.boundedQuality, artifacts);
+    return detail::validateApplicationMappingRuntime(
+        prepared, alternative, execution, request.executionPolicy, artifacts,
+        blobs);
   };
 
   std::optional<dse::JointDesignExecution> selectedExecution;
@@ -437,23 +463,9 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     auto execution = executeTail(firstPlan);
     if (!execution)
       return execution.takeError();
-    qualityInvocations.push_back(ApplicationPairQualityInvocationRecord{
-        static_cast<std::uint64_t>(firstPlan), execution->invocationRunKey(),
-        execution->summary.qualityDisposition,
-        execution->summary.qualityIncompleteCandidate,
-        execution->summary.qualityObjectiveDimensionLabels,
-        execution->summary.qualityObservations,
-        execution->summary.hardwarePromotionObjectiveDimensionLabels,
-        execution->summary.hardwarePromotionObservations,
-        execution->summary.selectedPlanOrdinal,
-        execution->summary.selectedMapping});
-    for (dse::JointHardwarePromotionObservation &observation :
-         execution->summary.hardwarePromotionObservations) {
-      if (observation.planOrdinal >
-          std::numeric_limits<std::uint64_t>::max() - firstPlan)
-        return invalid("hardware-promotion observation ordinal overflowed");
-      observation.planOrdinal += firstPlan;
-    }
+    if (llvm::Error error = detail::recordApplicationQualityInvocation(
+            *execution, firstPlan, qualityInvocations))
+      return std::move(error);
     if (llvm::Error error = appendOutcomes(*execution, firstPlan))
       return std::move(error);
     attemptedSoftwarePlans += execution->summary.attemptedSoftwarePlans;
@@ -463,29 +475,30 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         execution->summary.hardwareReopensDeferredByQuality;
     hardwareReopensWithheldWithoutExactFeedback +=
         execution->summary.hardwareReopensWithheldWithoutExactFeedback;
-    hardwareRepairProbeLimit += execution->summary.hardwareRepairProbeLimit;
-    hardwareRepairProbesPlanned +=
-        execution->summary.hardwareRepairProbesPlanned;
-    hardwareRepairProbesReserved +=
-        execution->summary.hardwareRepairProbesReserved;
-    hardwareRepairProbesConsumed +=
-        execution->summary.hardwareRepairProbesConsumed;
-    hardwareRepairProbesRejected +=
-        execution->summary.hardwareRepairProbesRejected;
-    hardwareRepairProbesCancelled +=
-        execution->summary.hardwareRepairProbesCancelled;
-    spatialMappingRepairCandidateLimit +=
-        execution->summary.spatialMappingRepairCandidateLimit;
-    spatialMappingRepairsPlanned +=
-        execution->summary.spatialMappingRepairsPlanned;
-    spatialMappingRepairsReserved +=
-        execution->summary.spatialMappingRepairsReserved;
-    spatialMappingRepairsConsumed +=
-        execution->summary.spatialMappingRepairsConsumed;
-    spatialMappingRepairsRejected +=
-        execution->summary.spatialMappingRepairsRejected;
-    spatialMappingRepairsCancelled +=
-        execution->summary.spatialMappingRepairsCancelled;
+    addSaturated(hardwareRepairProbeLimit,
+                 execution->summary.hardwareRepairProbeLimit);
+    addSaturated(hardwareRepairProbesPlanned,
+                 execution->summary.hardwareRepairProbesPlanned);
+    addSaturated(hardwareRepairProbesReserved,
+                 execution->summary.hardwareRepairProbesReserved);
+    addSaturated(hardwareRepairProbesConsumed,
+                 execution->summary.hardwareRepairProbesConsumed);
+    addSaturated(hardwareRepairProbesRejected,
+                 execution->summary.hardwareRepairProbesRejected);
+    addSaturated(hardwareRepairProbesCancelled,
+                 execution->summary.hardwareRepairProbesCancelled);
+    addSaturated(spatialMappingRepairCandidateLimit,
+                 execution->summary.spatialMappingRepairCandidateLimit);
+    addSaturated(spatialMappingRepairsPlanned,
+                 execution->summary.spatialMappingRepairsPlanned);
+    addSaturated(spatialMappingRepairsReserved,
+                 execution->summary.spatialMappingRepairsReserved);
+    addSaturated(spatialMappingRepairsConsumed,
+                 execution->summary.spatialMappingRepairsConsumed);
+    addSaturated(spatialMappingRepairsRejected,
+                 execution->summary.spatialMappingRepairsRejected);
+    addSaturated(spatialMappingRepairsCancelled,
+                 execution->summary.spatialMappingRepairsCancelled);
     parentTechDecisions += execution->summary.parentTechDecisions;
     parentSpatialDecisions += execution->summary.parentSpatialDecisions;
     preservedTechDecisions += execution->summary.preservedTechDecisions;
@@ -507,35 +520,55 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     verifiedAlternatives += execution->summary.verifiedAlternatives;
     accumulateProviderWork(execution->summary);
 
-    if (!execution->summary.selectedPlanOrdinal ||
-        !execution->summary.selectedMapping) {
+    std::optional<std::uint64_t> mappingPlanOrdinal =
+        execution->summary.selectedPlanOrdinal;
+    std::optional<ArtifactRootReference> runtimeMapping =
+        execution->summary.selectedMapping;
+    if (mappingPlanOrdinal.has_value() != runtimeMapping.has_value())
+      return invalid("joint Mapping selection has an incomplete exact join");
+    if (!runtimeMapping && request.boundedQuality &&
+        execution->summary.qualityIncompleteCandidate) {
+      runtimeMapping = execution->summary.qualityIncompleteCandidate;
+      for (const dse::JointDesignAttemptRecord &attempt :
+           execution->summary.attempts) {
+        if (!llvm::is_contained(attempt.systemMappings, *runtimeMapping))
+          continue;
+        if (mappingPlanOrdinal && *mappingPlanOrdinal != attempt.planOrdinal)
+          return invalid("quality-incomplete Mapping has conflicting plan "
+                         "owners");
+        mappingPlanOrdinal = attempt.planOrdinal;
+      }
+      if (!mappingPlanOrdinal)
+        return invalid("quality-incomplete Mapping has no exact plan owner");
+    }
+    if (!mappingPlanOrdinal || !runtimeMapping) {
       selectedExecution.emplace(std::move(*execution));
       break;
     }
-    if (*execution->summary.selectedPlanOrdinal >
+    if (*mappingPlanOrdinal >
         std::numeric_limits<std::uint64_t>::max() - firstPlan)
       return invalid("selected Mapping plan ordinal overflowed");
     const std::uint64_t selectedPlanOrdinal =
-        *execution->summary.selectedPlanOrdinal + firstPlan;
+        *mappingPlanOrdinal + firstPlan;
     if (selectedPlanOrdinal >= prepared.mappingAlternatives.size())
       return invalid("selected Mapping has a foreign plan ordinal");
-    auto runtime = detail::validateApplicationMappingRuntime(
-        prepared, prepared.mappingAlternatives[selectedPlanOrdinal], *execution,
-        request.executionPolicy, artifacts, blobs);
+    auto runtime = resolveRuntime(
+        prepared.mappingAlternatives[selectedPlanOrdinal], *execution,
+        *runtimeMapping);
     if (!runtime)
       return runtime.takeError();
     bool joined = false;
     for (ApplicationMappingCandidateOutcome &outcome : outcomes) {
       if (outcome.planOrdinal != selectedPlanOrdinal ||
           !llvm::is_contained(outcome.systemMappings,
-                              *execution->summary.selectedMapping))
+                              *runtimeMapping))
         continue;
       outcome.runtimeDisposition = runtime->disposition;
       outcome.runtimeEvidence = runtime->evidence;
       outcome.oracleEvidence = runtime->oracleEvidence;
       outcome.dfgCycles = runtime->dfgCycles;
       outcome.cgraCycles = runtime->cgraCycles;
-      outcome.resourceCoreCost = prepared.preMappingFabricAccCoreCount;
+      outcome.resourceCoreCost = runtime->resourceCoreCost;
       joined = true;
     }
     if (!joined)
@@ -546,96 +579,29 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     // the requested class.
     if (runtime->disposition ==
             ApplicationMappingRuntimeDisposition::Completed &&
+        execution->summary.selectedMapping &&
         !outcomeMatchesRequestedSpectrum(selectedPlanOrdinal,
-                                         *execution->summary.selectedMapping)) {
+                                         *runtimeMapping)) {
       execution->summary.selectedPlanOrdinal.reset();
       execution->summary.selectedMapping.reset();
       selectedExecution.emplace(std::move(*execution));
       firstPlan = static_cast<std::size_t>(selectedPlanOrdinal) + 1;
       continue;
     }
-    auto consumeRepairedExecutions =
-        [&](auto &repaired) -> llvm::Expected<bool> {
-      for (std::size_t childOrdinal = 0;
-           childOrdinal != repaired->executions.size(); ++childOrdinal) {
-        dse::JointDesignExecution &childExecution =
-            repaired->executions[childOrdinal];
-        if (childOrdinal >= repaired->childSystems.size())
-          return invalid("hardware repair lost its child System");
-        accumulateProviderWork(childExecution.summary);
-        std::vector<ArtifactRootReference> childMappings;
-        for (const dse::JointMappedPair &pair : childExecution.mappedPairs)
-          childMappings.insert(childMappings.end(), pair.systemMappings.begin(),
-                               pair.systemMappings.end());
-        llvm::sort(childMappings, artifactRootReferenceLess);
-        childMappings.erase(
-            std::unique(childMappings.begin(), childMappings.end()),
-            childMappings.end());
-        attempts.push_back({selectedPlanOrdinal,
-                            repaired->childSystems[childOrdinal],
-                            childMappings.empty()
-                                ? dse::JointDesignAttemptDisposition::Incomplete
-                                : dse::JointDesignAttemptDisposition::Verified,
-                            std::nullopt,
-                            childMappings.empty()
-                                ? std::optional<dse::DsePlanIncompleteReason>(
-                                      dse::CandidateGeneratorIncompleteReason::
-                                          ProofNotEstablished)
-                                : std::nullopt,
-                            childMappings});
-        if (childMappings.empty() || !childExecution.summary.selectedMapping)
-          continue;
-        auto childRuntime = detail::validateApplicationMappingRuntime(
-            prepared, prepared.mappingAlternatives[selectedPlanOrdinal],
-            childExecution, request.executionPolicy, artifacts, blobs);
-        if (!childRuntime)
-          return childRuntime.takeError();
-        const PreparedApplicationMappingAlternative &alternative =
-            prepared.mappingAlternatives[selectedPlanOrdinal];
-        for (const ComponentViewDigest &scheduleHintDigest :
-             alternativeScheduleHintDigests(alternative)) {
-          auto childSpectrum = verifyResourceTimeAlternative(
-              prepared.resourceTimeFunnel, alternative, childMappings,
-              artifacts, blobs, scheduleHintDigest, {},
-              request.executionControl);
-          if (!childSpectrum)
-            return childSpectrum.takeError();
-          outcomes.push_back(ApplicationMappingCandidateOutcome{
-              alternative.preMappingCandidateRecordOrdinal,
-              selectedPlanOrdinal,
-              scheduleHintDigest,
-              alternative.dataflow,
-              repaired->childSystems[childOrdinal],
-              dse::JointDesignAttemptDisposition::Verified,
-              std::nullopt,
-              std::nullopt,
-              childMappings,
-              prepared.candidateInventory
-                  [alternative.preMappingCandidateRecordOrdinal],
-              alternative.plan.systemBindingPartitions,
-              childRuntime->disposition,
-              childRuntime->evidence,
-              {},
-              std::move(*childSpectrum),
-              childRuntime->dfgCycles,
-              childRuntime->cgraCycles,
-              std::nullopt,
-              childRuntime->oracleEvidence});
-        }
-        if (childRuntime->disposition ==
-                ApplicationMappingRuntimeDisposition::Completed &&
-            outcomeMatchesRequestedSpectrum(
-                selectedPlanOrdinal,
-                childExecution.summary.selectedMapping.value())) {
-          childExecution.summary.selectedPlanOrdinal = selectedPlanOrdinal;
-          selectedExecution.emplace(std::move(childExecution));
-          return true;
-        }
-      }
-      return false;
+    std::vector<ArtifactRootReference> repairSystems;
+    std::vector<dse::JointDesignExecution> repairExecutions;
+    const auto appendRepairExecutions = [&](auto &repaired) -> llvm::Error {
+      if (repaired->childSystems.size() != repaired->executions.size())
+        return invalid("hardware repair lost its child System domain");
+      repairSystems.insert(repairSystems.end(), repaired->childSystems.begin(),
+                           repaired->childSystems.end());
+      for (dse::JointDesignExecution &child : repaired->executions)
+        repairExecutions.push_back(std::move(child));
+      return llvm::Error::success();
     };
     if (runtime->disposition !=
             ApplicationMappingRuntimeDisposition::Completed &&
+        remainingSharedHardwareRepairProbes() != 0 &&
         runtime->spatialTransportFeedback &&
         runtime->spatialTransportFeedback->disposition ==
             dse::SpatialTransportRuntimeFeedbackDisposition::Exact) {
@@ -646,23 +612,28 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       auto repaired = dse::executeSpatialTransportRuntimeRepair(
           prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
           prepared.jointPolicy, *runtime->spatialTransportFeedback,
-          makeRepairRequest(feedbackJournal.str().str()), artifacts, blobs);
+          makeRepairRequest(feedbackJournal.str().str(), selectedPlanOrdinal,
+                            remainingSharedHardwareRepairProbes()),
+          artifacts, blobs);
       if (!repaired)
         return repaired.takeError();
-      spatialMappingRepairCandidateLimit += repaired->candidateLimit;
-      spatialMappingRepairsPlanned += repaired->candidatesPlanned;
-      spatialMappingRepairsReserved += repaired->candidatesReserved;
-      spatialMappingRepairsConsumed += repaired->candidatesConsumed;
-      spatialMappingRepairsRejected += repaired->candidatesRejected;
-      spatialMappingRepairsCancelled += repaired->candidatesCancelled;
-      auto selected = consumeRepairedExecutions(repaired);
-      if (!selected)
-        return selected.takeError();
-      if (*selected)
-        break;
+      addSaturated(spatialMappingRepairCandidateLimit,
+                   repaired->candidateLimit);
+      addSaturated(spatialMappingRepairsPlanned, repaired->candidatesPlanned);
+      addSaturated(spatialMappingRepairsReserved, repaired->candidatesReserved);
+      addSaturated(spatialMappingRepairsConsumed, repaired->candidatesConsumed);
+      addSaturated(spatialMappingRepairsRejected, repaired->candidatesRejected);
+      addSaturated(spatialMappingRepairsCancelled,
+                   repaired->candidatesCancelled);
+      if (llvm::Error error =
+              reserveSharedHardwareRepairProbes(repaired->candidatesReserved))
+        return std::move(error);
+      if (llvm::Error error = appendRepairExecutions(repaired))
+        return std::move(error);
     }
     if (runtime->disposition !=
             ApplicationMappingRuntimeDisposition::Completed &&
+        remainingSharedHardwareRepairProbes() != 0 &&
         runtime->spatialFifoFeedback &&
         runtime->spatialFifoFeedback->disposition ==
             dse::SpatialFifoRuntimeFeedbackDisposition::Exact) {
@@ -673,97 +644,27 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       auto repaired = dse::executeSpatialFifoHardwareFeedbackReopen(
           prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
           prepared.jointPolicy, *runtime->spatialFifoFeedback,
-          makeRepairRequest(feedbackJournal.str().str()), artifacts, blobs);
+          makeRepairRequest(feedbackJournal.str().str(), selectedPlanOrdinal,
+                            remainingSharedHardwareRepairProbes()),
+          artifacts, blobs);
       if (!repaired)
         return repaired.takeError();
-      hardwareRepairProbeLimit += repaired->candidateLimit;
-      hardwareRepairProbesPlanned += repaired->candidatesPlanned;
-      hardwareRepairProbesReserved += repaired->candidatesReserved;
-      hardwareRepairProbesConsumed += repaired->candidatesConsumed;
-      hardwareRepairProbesRejected += repaired->candidatesRejected;
-      hardwareRepairProbesCancelled += repaired->candidatesCancelled;
-      for (std::size_t childOrdinal = 0;
-           childOrdinal != repaired->executions.size(); ++childOrdinal) {
-        dse::JointDesignExecution &childExecution =
-            repaired->executions[childOrdinal];
-        if (childOrdinal >= repaired->childSystems.size())
-          return invalid("FIFO hardware repair lost its child System");
-        accumulateProviderWork(childExecution.summary);
-        std::vector<ArtifactRootReference> childMappings;
-        for (const dse::JointMappedPair &pair : childExecution.mappedPairs)
-          childMappings.insert(childMappings.end(), pair.systemMappings.begin(),
-                               pair.systemMappings.end());
-        llvm::sort(childMappings, artifactRootReferenceLess);
-        childMappings.erase(
-            std::unique(childMappings.begin(), childMappings.end()),
-            childMappings.end());
-        attempts.push_back({selectedPlanOrdinal,
-                            repaired->childSystems[childOrdinal],
-                            childMappings.empty()
-                                ? dse::JointDesignAttemptDisposition::Incomplete
-                                : dse::JointDesignAttemptDisposition::Verified,
-                            std::nullopt,
-                            childMappings.empty()
-                                ? std::optional<dse::DsePlanIncompleteReason>(
-                                      dse::CandidateGeneratorIncompleteReason::
-                                          ProofNotEstablished)
-                                : std::nullopt,
-                            childMappings});
-        if (childMappings.empty() || !childExecution.summary.selectedMapping)
-          continue;
-        auto childRuntime = detail::validateApplicationMappingRuntime(
-            prepared, prepared.mappingAlternatives[selectedPlanOrdinal],
-            childExecution, request.executionPolicy, artifacts, blobs);
-        if (!childRuntime)
-          return childRuntime.takeError();
-        const PreparedApplicationMappingAlternative &alternative =
-            prepared.mappingAlternatives[selectedPlanOrdinal];
-        for (const ComponentViewDigest &scheduleHintDigest :
-             alternativeScheduleHintDigests(alternative)) {
-          auto childSpectrum = verifyResourceTimeAlternative(
-              prepared.resourceTimeFunnel, alternative, childMappings,
-              artifacts, blobs, scheduleHintDigest, {},
-              request.executionControl);
-          if (!childSpectrum)
-            return childSpectrum.takeError();
-          outcomes.push_back(ApplicationMappingCandidateOutcome{
-              alternative.preMappingCandidateRecordOrdinal,
-              selectedPlanOrdinal,
-              scheduleHintDigest,
-              alternative.dataflow,
-              repaired->childSystems[childOrdinal],
-              dse::JointDesignAttemptDisposition::Verified,
-              std::nullopt,
-              std::nullopt,
-              childMappings,
-              prepared.candidateInventory
-                  [alternative.preMappingCandidateRecordOrdinal],
-              alternative.plan.systemBindingPartitions,
-              childRuntime->disposition,
-              childRuntime->evidence,
-              {},
-              std::move(*childSpectrum),
-              childRuntime->dfgCycles,
-              childRuntime->cgraCycles,
-              std::nullopt,
-              childRuntime->oracleEvidence});
-        }
-        if (childRuntime->disposition !=
-            ApplicationMappingRuntimeDisposition::Completed)
-          continue;
-        if (!outcomeMatchesRequestedSpectrum(
-                selectedPlanOrdinal,
-                childExecution.summary.selectedMapping.value()))
-          continue;
-        childExecution.summary.selectedPlanOrdinal = selectedPlanOrdinal;
-        selectedExecution.emplace(std::move(childExecution));
-        break;
-      }
-      if (selectedExecution && selectedExecution->summary.selectedPlanOrdinal)
-        break;
+      addSaturated(hardwareRepairProbeLimit, repaired->candidateLimit);
+      addSaturated(hardwareRepairProbesPlanned, repaired->candidatesPlanned);
+      addSaturated(hardwareRepairProbesReserved, repaired->candidatesReserved);
+      addSaturated(hardwareRepairProbesConsumed, repaired->candidatesConsumed);
+      addSaturated(hardwareRepairProbesRejected, repaired->candidatesRejected);
+      addSaturated(hardwareRepairProbesCancelled,
+                   repaired->candidatesCancelled);
+      if (llvm::Error error =
+              reserveSharedHardwareRepairProbes(repaired->candidatesReserved))
+        return std::move(error);
+      if (llvm::Error error = appendRepairExecutions(repaired))
+        return std::move(error);
     }
     if (runtime->disposition !=
             ApplicationMappingRuntimeDisposition::Completed &&
+        remainingSharedHardwareRepairProbes() != 0 &&
         request.hardwareExplorationScope ==
             dse::JointHardwareExplorationScope::BoundedHardwareReopen &&
         runtime->spatialOperandQueueFeedback &&
@@ -776,23 +677,170 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       auto repaired = dse::executeSpatialOperandBufferHardwareFeedbackReopen(
           prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
           prepared.jointPolicy, *runtime->spatialOperandQueueFeedback,
-          makeRepairRequest(feedbackJournal.str().str()), artifacts, blobs);
+          makeRepairRequest(feedbackJournal.str().str(), selectedPlanOrdinal,
+                            remainingSharedHardwareRepairProbes()),
+          artifacts, blobs);
       if (!repaired)
         return repaired.takeError();
-      hardwareRepairProbeLimit += repaired->candidateLimit;
-      hardwareRepairProbesPlanned += repaired->candidatesPlanned;
-      hardwareRepairProbesReserved += repaired->candidatesReserved;
-      hardwareRepairProbesConsumed += repaired->candidatesConsumed;
-      hardwareRepairProbesRejected += repaired->candidatesRejected;
-      hardwareRepairProbesCancelled += repaired->candidatesCancelled;
-      auto selected = consumeRepairedExecutions(repaired);
-      if (!selected)
-        return selected.takeError();
-      if (*selected)
+      addSaturated(hardwareRepairProbeLimit, repaired->candidateLimit);
+      addSaturated(hardwareRepairProbesPlanned, repaired->candidatesPlanned);
+      addSaturated(hardwareRepairProbesReserved, repaired->candidatesReserved);
+      addSaturated(hardwareRepairProbesConsumed, repaired->candidatesConsumed);
+      addSaturated(hardwareRepairProbesRejected, repaired->candidatesRejected);
+      addSaturated(hardwareRepairProbesCancelled,
+                   repaired->candidatesCancelled);
+      if (llvm::Error error =
+              reserveSharedHardwareRepairProbes(repaired->candidatesReserved))
+        return std::move(error);
+      if (llvm::Error error = appendRepairExecutions(repaired))
+        return std::move(error);
+    }
+    if (!repairExecutions.empty()) {
+      auto qualityChoice = detail::chooseApplicationRepairByQuality(
+          repairExecutions, request.boundedQuality, artifacts);
+      if (!qualityChoice)
+        return qualityChoice.takeError();
+      const auto *qualitySelection =
+          std::get_if<dse::JointRepairQualitySelection>(&*qualityChoice);
+      const auto *qualityIncomplete =
+          std::get_if<dse::JointRepairQualityIncomplete>(&*qualityChoice);
+      std::vector<std::vector<ArtifactRootReference>> repairMappings;
+      repairMappings.reserve(repairExecutions.size());
+      const auto appendRepairOutcome =
+          [&](std::size_t childOrdinal,
+              const std::vector<ArtifactRootReference> &childMappings,
+              const detail::ApplicationRuntimeValidation &childRuntime)
+          -> llvm::Error {
+        const PreparedApplicationMappingAlternative &alternative =
+            prepared.mappingAlternatives[selectedPlanOrdinal];
+        for (const ComponentViewDigest &scheduleHintDigest :
+             alternativeScheduleHintDigests(alternative)) {
+          auto childSpectrum = verifyResourceTimeAlternative(
+              prepared.resourceTimeFunnel, alternative, childMappings,
+              artifacts, blobs, scheduleHintDigest, {},
+              request.executionControl);
+          if (!childSpectrum)
+            return childSpectrum.takeError();
+          outcomes.push_back(ApplicationMappingCandidateOutcome{
+              alternative.preMappingCandidateRecordOrdinal,
+              selectedPlanOrdinal,
+              scheduleHintDigest,
+              alternative.dataflow,
+              repairSystems[childOrdinal],
+              dse::JointDesignAttemptDisposition::Verified,
+              std::nullopt,
+              std::nullopt,
+              childMappings,
+              prepared.candidateInventory
+                  [alternative.preMappingCandidateRecordOrdinal],
+              alternative.plan.systemBindingPartitions,
+              childRuntime.disposition,
+              childRuntime.evidence,
+              {},
+              std::move(*childSpectrum),
+              childRuntime.dfgCycles,
+              childRuntime.cgraCycles,
+              childRuntime.resourceCoreCost,
+              childRuntime.oracleEvidence});
+        }
+        return llvm::Error::success();
+      };
+      for (std::size_t childOrdinal = 0;
+           childOrdinal != repairExecutions.size(); ++childOrdinal) {
+        dse::JointDesignExecution &childExecution =
+            repairExecutions[childOrdinal];
+        if (llvm::Error error = detail::recordApplicationQualityInvocation(
+                childExecution, selectedPlanOrdinal, qualityInvocations))
+          return std::move(error);
+        accumulateProviderWork(childExecution.summary);
+        std::vector<ArtifactRootReference> childMappings;
+        for (const dse::JointMappedPair &pair : childExecution.mappedPairs)
+          childMappings.insert(childMappings.end(), pair.systemMappings.begin(),
+                               pair.systemMappings.end());
+        llvm::sort(childMappings, artifactRootReferenceLess);
+        childMappings.erase(
+            std::unique(childMappings.begin(), childMappings.end()),
+            childMappings.end());
+        repairMappings.push_back(childMappings);
+        attempts.push_back({selectedPlanOrdinal,
+                            repairSystems[childOrdinal],
+                            childMappings.empty()
+                                ? dse::JointDesignAttemptDisposition::Incomplete
+                                : dse::JointDesignAttemptDisposition::Verified,
+                            std::nullopt,
+                            childMappings.empty()
+                                ? std::optional<dse::DsePlanIncompleteReason>(
+                                      dse::CandidateGeneratorIncompleteReason::
+                                          ProofNotEstablished)
+                                : std::nullopt,
+                            childMappings});
+        if (selectedExecution || qualityIncomplete ||
+            (qualitySelection &&
+             qualitySelection->executionOrdinal != childOrdinal) ||
+            childMappings.empty() || !childExecution.summary.selectedMapping)
+          continue;
+        auto childRuntime = resolveRuntime(
+            prepared.mappingAlternatives[selectedPlanOrdinal], childExecution,
+            *childExecution.summary.selectedMapping);
+        if (!childRuntime)
+          return childRuntime.takeError();
+        if (llvm::Error error =
+                appendRepairOutcome(childOrdinal, childMappings, *childRuntime))
+          return std::move(error);
+        if (childRuntime->disposition ==
+                ApplicationMappingRuntimeDisposition::Completed &&
+            outcomeMatchesRequestedSpectrum(
+                selectedPlanOrdinal,
+                childExecution.summary.selectedMapping.value())) {
+          childExecution.summary.selectedPlanOrdinal = selectedPlanOrdinal;
+          selectedExecution.emplace(std::move(childExecution));
+        }
+      }
+      if (selectedExecution && selectedExecution->summary.selectedPlanOrdinal)
         break;
+      if (qualityIncomplete) {
+        if (qualityIncomplete->executionOrdinal >= repairExecutions.size())
+          return invalid("repair quality incomplete result has a foreign "
+                         "execution owner");
+        dse::JointDesignExecution &owner =
+            repairExecutions[qualityIncomplete->executionOrdinal];
+        if (owner.summary.selectedMapping ||
+            owner.summary.qualityIncompleteCandidate !=
+                qualityIncomplete->incomplete.candidate)
+          return invalid("repair quality incomplete result lost its exact "
+                         "summary");
+        if (qualityIncomplete->incomplete.candidate) {
+          const std::vector<ArtifactRootReference> &ownerMappings =
+              repairMappings[qualityIncomplete->executionOrdinal];
+          if (!llvm::is_contained(
+                  ownerMappings, *qualityIncomplete->incomplete.candidate))
+            return invalid("repair quality incomplete candidate is outside "
+                           "its execution owner");
+          detail::ApplicationRuntimeValidation projected;
+          projected.disposition =
+              ApplicationMappingRuntimeDisposition::NotRequested;
+          if (request.boundedQuality &&
+              request.boundedQuality->provenanceDomain ==
+                  dse::JointDesignQualityProvenanceDomain::ApplicationRuntime) {
+            auto runtime = detail::projectApplicationQualityRuntime(
+                owner, *qualityIncomplete->incomplete.candidate,
+                *request.boundedQuality, artifacts);
+            if (!runtime)
+              return runtime.takeError();
+            projected = std::move(*runtime);
+          }
+          if (llvm::Error error = appendRepairOutcome(
+                  qualityIncomplete->executionOrdinal, ownerMappings,
+                  projected))
+            return std::move(error);
+        }
+        selectedExecution.emplace(std::move(owner));
+        break;
+      }
     }
     if (runtime->disposition ==
-        ApplicationMappingRuntimeDisposition::Completed) {
+            ApplicationMappingRuntimeDisposition::Completed &&
+        execution->summary.selectedMapping) {
       // Exercise every already-retained resource-time state for this exact
       // Dataflow through the application owner while one verified parent
       // Mapping is live. Each retained plan is attempted at most once. A
@@ -842,7 +890,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                                     std::to_string(parentPlanOrdinal) + "-" +
                                     std::to_string(childOrdinal));
         dse::JointHardwareReopenRequest adjacentRequest =
-            makeRepairRequest(adjacentJournal.str().str());
+            makeRepairRequest(adjacentJournal.str().str(), childOrdinal);
         adjacentRequest.spectrumEndpoint =
             prepared.resourceTimePolicy.spectrumEndpoint;
         auto adjacent = dse::executeResourceTimeAdjacentMappingRepair(
@@ -851,6 +899,12 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             std::move(adjacentRequest), artifacts, blobs);
         if (!adjacent)
           return adjacent.takeError();
+        if (llvm::Error error = detail::recordApplicationQualityInvocation(
+                adjacent->coldExecution, childOrdinal, qualityInvocations))
+          return std::move(error);
+        if (llvm::Error error = detail::recordApplicationQualityInvocation(
+                adjacent->execution, childOrdinal, qualityInvocations))
+          return std::move(error);
         const dse::JointDesignExecutionSummary &childSummary =
             adjacent->execution.summary;
         accumulateProviderWork(adjacent->coldExecution.summary);
@@ -922,9 +976,9 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             false};
         if (childHasMapping) {
           adjacent->execution.summary.selectedPlanOrdinal = childOrdinal;
-          auto childRuntime = detail::validateApplicationMappingRuntime(
-              prepared, childAlternative, adjacent->execution,
-              request.executionPolicy, artifacts, blobs);
+          auto childRuntime =
+              resolveRuntime(childAlternative, adjacent->execution,
+                             *adjacent->execution.summary.selectedMapping);
           if (!childRuntime)
             return childRuntime.takeError();
           bool incrementalSpectrumVerified = false;
@@ -967,9 +1021,9 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
           bool coldVerified = false;
           if (adjacent->coldMapping) {
             adjacent->coldExecution.summary.selectedPlanOrdinal = childOrdinal;
-            auto coldRuntime = detail::validateApplicationMappingRuntime(
-                prepared, childAlternative, adjacent->coldExecution,
-                request.executionPolicy, artifacts, blobs);
+            auto coldRuntime =
+                resolveRuntime(childAlternative, adjacent->coldExecution,
+                               *adjacent->coldExecution.summary.selectedMapping);
             if (!coldRuntime)
               return coldRuntime.takeError();
             std::vector<ArtifactRootReference> coldMappings;
@@ -1078,16 +1132,16 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     execution->summary.selectedPlanOrdinal.reset();
     execution->summary.selectedMapping.reset();
     selectedExecution.emplace(std::move(*execution));
-    if (runtime->disposition ==
-        ApplicationMappingRuntimeDisposition::CancelledOrTimeout)
+    if (request.boundedQuality ||
+        runtime->disposition ==
+            ApplicationMappingRuntimeDisposition::CancelledOrTimeout)
       break;
     firstPlan = static_cast<std::size_t>(selectedPlanOrdinal) + 1;
     // A verified Mapping is not an application result.  Runtime validation
     // may reject the selected QoR winner (for example, a functional replay
     // mismatch or an execution timeout).  Continue through the remaining
-    // bounded software frontier for every stopping policy; otherwise
-    // BoundedQuality would silently turn one failed application-level check
-    // into a terminal Mapping failure.
+    // FirstVerified frontier. BoundedQuality already assessed the complete
+    // bounded frontier and retains its typed incomplete observation.
   }
   if (!selectedExecution)
     return invalid("joint Mapping execution produced no bounded outcome");

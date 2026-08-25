@@ -21,6 +21,8 @@ namespace loom::evaluation::models {
 namespace {
 
 constexpr ModelInputSlotRef kParameterInput(0);
+constexpr llvm::StringLiteral kFpaInferenceContextDescriptor{
+    "loom.evaluation.canonical_dataflow_fabric_fpa_inference_context.1"};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -138,6 +140,50 @@ llvm::Error registerCalibratedFpaProviders() {
     if (llvm::Error error = registerEvaluationModelProvider(provider))
       return error;
   return llvm::Error::success();
+}
+
+llvm::Expected<CanonicalDataflowFabricFpaInference>
+inferCanonicalDataflowFabricFpa(
+    const ArtifactRootReference &canonicalDataflow,
+    const ArtifactRootReference &fabric, const EdaPredictionModelWeight &weight,
+    llvm::ArrayRef<EvaluationCondition> operatingConditions,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  if (llvm::Error error = registerProductionEvaluationRegistry())
+    return std::move(error);
+  auto resolution = resolveCanonicalDataflowFabricEvaluationCase(
+      canonicalDataflow, fabric, artifactStore);
+  if (!resolution)
+    return resolution.takeError();
+  auto bindings = EvaluationSubjectBindings::get(
+      {{canonicalDataflowFabricAnalyticCandidateRole(), {canonicalDataflow}},
+       {canonicalDataflowFabricAnalyticFabricRole(), {fabric}}});
+  if (!bindings)
+    return bindings.takeError();
+  auto evaluationCase = EvaluationCase::get(
+      builtinEvaluationCaseSignatureRef(
+          BuiltinEvaluationCase::CanonicalDataflowWithFabric),
+      std::move(*bindings), std::nullopt, std::nullopt, operatingConditions,
+      *resolution, artifactStore, blobStore);
+  if (!evaluationCase)
+    return evaluationCase.takeError();
+  auto features =
+      projectModelFeatures(fpaModelParameterContractRef(), *evaluationCase,
+                           *resolution, artifactStore, blobStore);
+  if (!features)
+    return features.takeError();
+  auto inference = inferModelParameters(weight.bundle(), *features);
+  if (!inference)
+    return inference.takeError();
+  const EvaluationCaseKey caseKey = baseCaseKey(*evaluationCase);
+  auto contextDigest =
+      computeComponentViewDigest({reinterpret_cast<const std::uint8_t *>(
+                                      kFpaInferenceContextDescriptor.data()),
+                                  kFpaInferenceContextDescriptor.size()},
+                                 caseKey.bytes());
+  if (!contextDigest)
+    return contextDigest.takeError();
+  return CanonicalDataflowFabricFpaInference{std::move(*inference),
+                                             std::move(*contextDigest)};
 }
 
 llvm::Expected<PreparedCanonicalDataflowFabricCalibratedFpaEvaluation>

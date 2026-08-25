@@ -372,14 +372,37 @@ bool temporalHintLess(const ResourceTimeScheduleHint &lhs,
                   rhs.totalAllocatedResourceTime);
 }
 
+std::uint64_t
+totalAdmittedResourceUnits(const ResourceTimeScheduleHint &hint) {
+  std::uint64_t total = 0;
+  for (std::size_t index = 0; index != hint.actions.size(); ++index) {
+    const ResourceTimeActionDelta &action = hint.actions[index];
+    if (action.kind != ResourceTimeActionKind::AdmitRegion ||
+        !action.admittedRegion || index + 1 >= hint.states.size())
+      continue;
+    const auto allocation = llvm::find_if(
+        hint.states[index + 1].active, [&](const auto &candidate) {
+          return candidate.region == *action.admittedRegion;
+        });
+    if (allocation == hint.states[index + 1].active.end())
+      return std::numeric_limits<std::uint64_t>::max();
+    const std::uint64_t units = allocationMagnitude(allocation->resourceUnits);
+    total = llvm::checkedAddUnsigned(total, units)
+                .value_or(std::numeric_limits<std::uint64_t>::max());
+  }
+  return total;
+}
+
 bool spatialHintLess(const ResourceTimeScheduleHint &lhs,
                      const ResourceTimeScheduleHint &rhs) {
   if (lhs.peakConcurrentRegions != rhs.peakConcurrentRegions)
     return lhs.peakConcurrentRegions > rhs.peakConcurrentRegions;
-  return std::tie(lhs.totalAllocatedResourceTime,
-                  lhs.estimatedMakespanPicoseconds) <
-         std::tie(rhs.totalAllocatedResourceTime,
-                  rhs.estimatedMakespanPicoseconds);
+  return std::tuple(totalAdmittedResourceUnits(lhs),
+                    lhs.totalAllocatedResourceTime,
+                    lhs.estimatedMakespanPicoseconds) <
+         std::tuple(totalAdmittedResourceUnits(rhs),
+                    rhs.totalAllocatedResourceTime,
+                    rhs.estimatedMakespanPicoseconds);
 }
 
 ResourceTimeScheduleHint makeHint(SearchState state) {
@@ -426,19 +449,9 @@ selectFinalists(std::vector<ResourceTimeScheduleHint> hints,
   }
   if (selected.size() < maximum && !hints.empty()) {
     std::size_t spatial = 0;
-    for (std::size_t index = 1; index != hints.size(); ++index) {
-      const bool betterConcurrency = hints[index].peakConcurrentRegions >
-                                     hints[spatial].peakConcurrentRegions;
-      const bool equalConcurrency = hints[index].peakConcurrentRegions ==
-                                    hints[spatial].peakConcurrentRegions;
-      const bool betterTie =
-          std::tie(hints[index].totalAllocatedResourceTime,
-                   hints[index].estimatedMakespanPicoseconds) <
-          std::tie(hints[spatial].totalAllocatedResourceTime,
-                   hints[spatial].estimatedMakespanPicoseconds);
-      if (betterConcurrency || (equalConcurrency && betterTie))
+    for (std::size_t index = 1; index != hints.size(); ++index)
+      if (spatialHintLess(hints[index], hints[spatial]))
         spatial = index;
-    }
     append(spatial);
   }
   for (std::size_t index = 0; index != hints.size(); ++index)

@@ -269,7 +269,7 @@ MappingConstraintSet over the exact `D/T/F` tuple. All upstream identities must
 match exactly. The empty constraint set is a real Artifact; absence is invalid.
 
 The current in-tree Spatial config descriptor is
-`loom.spatial_pnr.config.15.0`. A config digest from another domain or version
+`loom.spatial_pnr.config.15.1`. A config digest from another domain or version
 cannot be adopted. The config is invocation input and does not enter the
 semantic identity of a published SpatialMapping.
 

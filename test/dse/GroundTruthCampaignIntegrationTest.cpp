@@ -49,7 +49,6 @@ GroundTruthModelTrack track(std::uint8_t base, std::uint64_t seed) {
            {evidence(static_cast<std::uint8_t>(base + 3))},
            std::nullopt},
           {seed, 3, 2, 1, 1, 2},
-          take(ExactRatio::get(9, 10)),
           take(DecimalValue::get(2, -1)),
           take(DecimalValue::get(3, -1))};
 }
@@ -71,6 +70,38 @@ void exactDualTrackPlanIsDeterministic() {
   require(first.view().plan().nodes().size() == 6 &&
               first.preexistingEvidence().size() == 8,
           "dual-track campaign did not retain its finite evidence closure");
+  const ExactRatio median = take(ExactRatio::get(1, 2));
+  const ExactRatio p90 = take(ExactRatio::get(9, 10));
+  std::array<std::size_t, 2> metricCounts{};
+  for (const EvidenceObligationTemplate &obligation :
+       first.resolvedConfig().dse.evidenceObligationTemplates) {
+    const std::size_t count = obligation.metricRequests().size();
+    if (count == 8)
+      ++metricCounts[0];
+    else if (count == 2)
+      ++metricCounts[1];
+    else
+      fail("calibration obligation lost its median/P90 metric shape");
+    std::array<std::size_t, 2> quantileCounts{};
+    for (const MetricRequestTemplate &metric : obligation.metricRequests()) {
+      if (metric.conditions.size() != 1 ||
+          metric.conditions.front().kind() != EvaluationConditionKind::Quantile)
+        fail("calibration metric lost its exact quantile condition");
+      const ExactRatio quantile =
+          std::get<QuantileCondition>(metric.conditions.front().payload)
+              .probability;
+      if (quantile == median)
+        ++quantileCounts[0];
+      else if (quantile == p90)
+        ++quantileCounts[1];
+      else
+        fail("calibration metric admitted a non-canonical quantile");
+    }
+    if (quantileCounts[0] != count / 2 || quantileCounts[1] != count / 2)
+      fail("calibration obligation duplicated or omitted an error quantile");
+  }
+  require(metricCounts == std::array<std::size_t, 2>{2, 2},
+          "dual-track campaign did not retain both error quantiles");
 
   const std::array outputs = {first.fpaOutputs(), first.systemRuntimeOutputs()};
   for (const auto &trackOutputs : outputs) {

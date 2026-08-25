@@ -1,14 +1,23 @@
 #include "BuildInternal.h"
 
 #include "Common/Artifact.h"
+#include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
+#include "Config/ResolvedConfig.h"
+#include "DSE/ResolvedConfigView.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
 #include <cstdlib>
 #include <optional>
+#include <string>
+#include <system_error>
 #include <utility>
 
 namespace {
@@ -28,6 +37,27 @@ template <typename T> T take(llvm::Expected<T> value) {
     fail(llvm::toString(value.takeError()));
   return std::move(*value);
 }
+
+class TemporaryDirectory final {
+public:
+  TemporaryDirectory() {
+    if (std::error_code error = llvm::sys::fs::createUniqueDirectory(
+            "loom-application-pair-outcome", path_))
+      fail("cannot create temporary directory: " + error.message());
+  }
+  ~TemporaryDirectory() { llvm::sys::fs::remove_directories(path_); }
+
+  std::string makeDirectory(llvm::StringRef name) const {
+    llvm::SmallString<128> path(path_);
+    llvm::sys::path::append(path, name);
+    if (std::error_code error = llvm::sys::fs::create_directory(path))
+      fail("cannot create test directory: " + error.message());
+    return path.str().str();
+  }
+
+private:
+  llvm::SmallString<128> path_;
+};
 
 void typedReasonProjection() {
   using PairDisposition = loom::application::ApplicationPairDecisionDisposition;
@@ -139,11 +169,146 @@ void incompleteCausePriority() {
           "unattributed declared work exhaustion lost its fallback");
 }
 
+void noFeasibleOutcomePreservesTypedCause() {
+  using PairDisposition = loom::application::ApplicationPairDecisionDisposition;
+  using PlanningDisposition = loom::dse::PreMappingCandidatePlanningDisposition;
+  using loom::application::build_detail::classifyPreMappingNoFeasibleOutcome;
+
+  loom::dse::CompletedPreMappingNoFeasibleCandidate proofGap;
+  loom::dse::PreMappingCandidatePlanningRecord record;
+  record.disposition = PlanningDisposition::Unknown;
+  record.incompleteReason = loom::dse::DsePlanIncompleteReason{
+      loom::dse::CandidateGeneratorIncompleteReason::ProofNotEstablished};
+  proofGap.candidateInventory.push_back(std::move(record));
+  require(classifyPreMappingNoFeasibleOutcome(proofGap) ==
+              PairDisposition::MappingProofNotEstablished,
+          "no-feasible preparation collapsed a proof gap into budget");
+
+  loom::dse::CompletedPreMappingNoFeasibleCandidate exactRejection;
+  exactRejection.completeness = {true, true, true, true, true};
+  loom::dse::PreMappingCandidatePlanningRecord rejected;
+  rejected.disposition = PlanningDisposition::ExactGateRejected;
+  exactRejection.candidateInventory.push_back(std::move(rejected));
+  require(classifyPreMappingNoFeasibleOutcome(exactRejection) ==
+              PairDisposition::NoPromisingCandidate,
+          "exact candidate rejection became an incomplete outcome");
+
+  exactRejection.completeness.selectionComplete = false;
+  require(classifyPreMappingNoFeasibleOutcome(exactRejection) ==
+              PairDisposition::MappingProofNotEstablished,
+          "partial exact rejection became a complete negative outcome");
+
+  loom::dse::CompletedPreMappingNoFeasibleCandidate heuristicRejection;
+  heuristicRejection.completeness = {false, true, true, true, true};
+  loom::dse::PreMappingCandidatePlanningRecord heuristic;
+  heuristic.disposition = PlanningDisposition::HeuristicPruned;
+  heuristicRejection.candidateInventory.push_back(std::move(heuristic));
+  require(classifyPreMappingNoFeasibleOutcome(heuristicRejection) ==
+              PairDisposition::MappingProofNotEstablished,
+          "heuristic pruning was mislabeled as budget exhaustion");
+}
+
+void qualityDispositionProjection() {
+  using PairDisposition = loom::application::ApplicationPairDecisionDisposition;
+  using QualityDisposition = loom::dse::JointDesignQualityDisposition;
+  using namespace loom::application;
+
+  TemporaryDirectory directory;
+  loom::ArtifactStore artifacts(directory.makeDirectory("artifacts"));
+  loom::BlobStore blobs(directory.makeDirectory("blobs"));
+  const loom::dse::ResolvedDseConfigView view = take(
+      loom::dse::projectResolvedDseConfigView(loom::defaultResolvedConfig()));
+
+  std::array<std::uint8_t, loom::ArtifactIdentity::byteSize> rootBytes{};
+  rootBytes.back() = 1;
+  const loom::ArtifactRootReference root{
+      "loom.test.application_pair_quality",
+      {1, 0},
+      take(loom::ArtifactIdentity::fromBytes(rootBytes))};
+  std::array<std::uint8_t, loom::ComponentViewDigest::byteSize> digestBytes{};
+  digestBytes.back() = 2;
+  const loom::ComponentViewDigest digest =
+      take(loom::ComponentViewDigest::fromBytes(digestBytes));
+  PreparedApplicationBuild prepared{
+      {},
+      take(loom::dse::JointDesignPolicy::get(1, 1, 1, 1, 1)),
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      0,
+      false,
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      loom::dse::StructuredOwnershipSelectionMode::SemanticConformance,
+      loom::dse::StructuredOwnershipSelectionMode::SemanticConformance,
+      {},
+      {},
+      {},
+      root,
+      root,
+      root,
+      root,
+      digest,
+      0,
+      {},
+      {},
+      {},
+      {}};
+  const std::array cases = {
+      std::pair{QualityDisposition::Unsupported,
+                PairDisposition::UnsupportedSemantic},
+      std::pair{QualityDisposition::ProofNotEstablished,
+                PairDisposition::MappingProofNotEstablished},
+      std::pair{QualityDisposition::ExecutionFailed,
+                PairDisposition::ImplementationFailure},
+      std::pair{QualityDisposition::CancelledOrTimeout,
+                PairDisposition::CancelledOrTimeout}};
+  for (const auto &[quality, expected] : cases) {
+    loom::dse::JointDesignExecutionSummary summary;
+    summary.qualityDisposition = quality;
+    loom::dse::JointDesignExecution execution{
+        take(loom::dse::executeDsePlan(view, artifacts, blobs)), {},
+        std::move(summary)};
+    const ApplicationPairDecisionRecord decision =
+        build_detail::deriveApplicationPairDecision(prepared, {}, execution,
+                                                    {});
+    require(decision.disposition == expected,
+            "summary quality disposition was not used by the pair owner");
+  }
+
+  loom::dse::JointDesignExecutionSummary conflictingSummary;
+  conflictingSummary.qualityDisposition =
+      QualityDisposition::CancelledOrTimeout;
+  loom::dse::JointDesignExecution conflictingExecution{
+      take(loom::dse::executeDsePlan(view, artifacts, blobs)), {},
+      std::move(conflictingSummary)};
+  ApplicationPairQualityInvocationRecord invocation;
+  invocation.qualityDisposition = QualityDisposition::Unsupported;
+  const std::array invocations = {std::move(invocation)};
+  const ApplicationPairDecisionRecord invocationDecision =
+      build_detail::deriveApplicationPairDecision(
+          prepared, {}, conflictingExecution, invocations);
+  require(invocationDecision.disposition ==
+              PairDisposition::UnsupportedSemantic,
+          "summary quality disposition overrode its invocation owner");
+}
+
 } // namespace
 
 int main() {
   typedReasonProjection();
   spectrumSelectionProjection();
   incompleteCausePriority();
+  noFeasibleOutcomePreservesTypedCause();
+  qualityDispositionProjection();
   return 0;
 }

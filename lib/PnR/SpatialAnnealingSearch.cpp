@@ -669,6 +669,10 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
         actionExecutor_.heuristicCacheHitCount();
     const std::uint64_t levelHeuristicBuildBegin =
         actionExecutor_.heuristicBuildCount();
+    const std::uint64_t levelForwardHeuristicQueryBegin =
+        actionExecutor_.forwardHeuristicQueryCount();
+    const std::uint64_t levelForwardHeuristicUnreachableBegin =
+        actionExecutor_.forwardHeuristicUnreachableCount();
     const std::uint64_t movableDecisionCount =
         actionDomain_.selectableMovableDecisionCount(
             policy.search.actionProposal);
@@ -850,10 +854,39 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
               statistics.cachedInactiveActionCount - levelCachedBegin;
           fields["transition_failures"] =
               statistics.annealingTransitionFailureCount - levelFailureBegin;
-          fields["heuristic_cache_hits"] =
+          const std::uint64_t heuristicCacheHits =
               actionExecutor_.heuristicCacheHitCount() - levelHeuristicHitBegin;
-          fields["heuristic_builds"] =
+          const std::uint64_t heuristicBuilds =
               actionExecutor_.heuristicBuildCount() - levelHeuristicBuildBegin;
+          fields["heuristic_cache_hits"] = heuristicCacheHits;
+          fields["heuristic_builds"] = heuristicBuilds;
+          const std::uint64_t forwardHeuristicQueries =
+              actionExecutor_.forwardHeuristicQueryCount() -
+              levelForwardHeuristicQueryBegin;
+          const std::uint64_t forwardHeuristicUnreachable =
+              actionExecutor_.forwardHeuristicUnreachableCount() -
+              levelForwardHeuristicUnreachableBegin;
+          fields["forward_heuristic_queries"] = forwardHeuristicQueries;
+          fields["forward_heuristic_unreachable_queries"] =
+              forwardHeuristicUnreachable;
+          if (forwardHeuristicQueries != 0)
+            fields["forward_heuristic_unreachable_ratio"] =
+                static_cast<double>(forwardHeuristicUnreachable) /
+                static_cast<double>(forwardHeuristicQueries);
+          else
+            fields["forward_heuristic_unreachable_ratio"] = nullptr;
+          const std::uint64_t heuristicLookups =
+              heuristicBuilds > std::numeric_limits<std::uint64_t>::max() -
+                                    heuristicCacheHits
+                  ? std::numeric_limits<std::uint64_t>::max()
+                  : heuristicCacheHits + heuristicBuilds;
+          fields["heuristic_cache_lookups"] = heuristicLookups;
+          if (heuristicLookups != 0)
+            fields["heuristic_cache_hit_ratio"] =
+                static_cast<double>(heuristicCacheHits) /
+                static_cast<double>(heuristicLookups);
+          else
+            fields["heuristic_cache_hit_ratio"] = nullptr;
           fields["heuristic_cache_entries"] =
               actionExecutor_.heuristicCacheEntryCount();
           fields["heuristic_cache_evictions"] =

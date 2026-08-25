@@ -83,6 +83,38 @@ void verifyResourceTimeSpectrumWorkflow(
     ArtifactStore &store) {
   require(roots.size() == 2,
           "fixture does not expose two mapped resource-time regions");
+  const ArtifactRootReference fabricReference{
+      ::loom::fabric::fabricArtifactSchema.identity.str(),
+      ::loom::fabric::fabricArtifactSchema.version,
+      mapping.view().fabricIdentity()};
+  auto fabric =
+      take(::loom::fabric::importEntireFabricRoot(fabricReference, store));
+  auto system = take(::loom::fabric::requireSystemRoot(fabric.view()));
+  const auto projection =
+      take(dse::projectResourceTimeDataflow(dataflow, system, "host", 100));
+  require(projection.regions.size() == roots.size() &&
+              projection.regionBounds.size() == roots.size(),
+          "canonical resource-time projection lost its exact application "
+          "coverage");
+  for (std::size_t ordinal = 0; ordinal != projection.regions.size();
+       ++ordinal) {
+    const auto &region = projection.regions[ordinal];
+    const auto &bound = projection.regionBounds[ordinal];
+    require(region.region == bound.region &&
+                bound.minimumFeasibleResourceUnits == 1 &&
+                bound.minimumSupport ==
+                    dse::ResourceTimeEstimateSupport::Exact &&
+                bound.maximumUsefulResourceUnits != 0 &&
+                bound.support == dse::ResourceTimeEstimateSupport::Exact,
+            "canonical Dataflow did not establish exact useful allocation "
+            "bounds");
+    require(region.analyticFeatures.launchSynchronizationCost ==
+                    region.dependencies.size() &&
+                region.analyticFeatures.topologyCongestionProxy ==
+                    region.analyticFeatures.actorCount +
+                        region.dependencies.size(),
+            "resource-time dependency features were frozen before causality");
+  }
   const auto contexts = take(mapping::projectSystemExecutionContexts(
       dataflow, mapping.view().executionBindings()));
   const std::vector firstResources = resourcesForRoot(roots[0], contexts);
@@ -271,51 +303,16 @@ void verifyResourceTimeSpectrumWorkflow(
   const ArtifactRootReference dataflowReference{
       ::dataflow::canonicalDataflowSchema.identity.str(),
       ::dataflow::canonicalDataflowSchema.version, dataflow.identity()};
-  const ArtifactRootReference fabricReference{
-      ::loom::fabric::fabricArtifactSchema.identity.str(),
-      ::loom::fabric::fabricArtifactSchema.version,
-      mapping.view().fabricIdentity()};
   const auto modelDigest = take(dse::resourceTimeAnalyticModelSnapshotDigest());
   const dse::ResourceTimeInvocationKey invocation{
       mapping.reference(), dataflowReference,
       fabricReference,     mapping.reference(),
       mapping.reference(), modelDigest,
-      modelDigest,         "main",
-      std::nullopt};
-  const std::vector<dse::ResourceTimeRegionFeature> features = {
-      dse::ResourceTimeRegionFeature{
-          roots[0],
-          {},
-          {dse::ResourceTimeSpeedupPoint{
-              {firstResources.size()},
-              10,
-              std::nullopt,
-              std::nullopt,
-              0,
-              0,
-              0,
-              dse::ResourceTimeEstimateSupport::Exact}},
-          1,
-          true,
-          {}},
-      dse::ResourceTimeRegionFeature{
-          roots[1],
-          {},
-          {dse::ResourceTimeSpeedupPoint{
-              {secondResources.size()},
-              10,
-              std::nullopt,
-              std::nullopt,
-              0,
-              0,
-              0,
-              dse::ResourceTimeEstimateSupport::Exact}},
-          1,
-          true,
-          {}}};
+      modelDigest,         "host",
+      100};
+  const auto &features = projection.regions;
   dse::ResourceTimeFrontierPolicy frontierPolicy;
-  frontierPolicy.availableResourceUnits = {firstResources.size() +
-                                           secondResources.size()};
+  frontierPolicy.availableResourceUnits = projection.availableResourceUnits;
   frontierPolicy.maximumStatesGenerated = 256;
   frontierPolicy.maximumActionsGenerated = 1024;
   frontierPolicy.maximumStateCacheEntries = 256;
@@ -327,12 +324,7 @@ void verifyResourceTimeSpectrumWorkflow(
       std::get_if<dse::CompletedResourceTimeFrontier>(&frontier);
   require(completed && !completed->finalists.empty(),
           "real Mapping fixture produced no schedule finalists");
-  const std::vector<dse::ResourceTimeRegionResourceBound> bounds = {
-      {roots[0], firstResources.size(), dse::ResourceTimeEstimateSupport::Exact,
-       firstResources.size(), dse::ResourceTimeEstimateSupport::Exact},
-      {roots[1], secondResources.size(),
-       dse::ResourceTimeEstimateSupport::Exact, secondResources.size(),
-       dse::ResourceTimeEstimateSupport::Exact}};
+  const auto bounds = projection.regionBounds;
   const auto funnel = take(dse::verifyResourceTimeMappingFinalists(
       completed->finalists, features, bounds, {mapping.reference()}, store, {},
       completed->concurrencyBounds));
@@ -341,11 +333,16 @@ void verifyResourceTimeSpectrumWorkflow(
   require(funnelVerified && funnel.accounting.materializedScenarios != 0 &&
               funnel.accounting.verifiedScenarios ==
                   funnel.accounting.materializedScenarios &&
+              llvm::any_of(funnelVerified->scenarios,
+                           [](const auto &scenario) {
+                             return scenario.spectrumClass ==
+                                    dse::PreMappingSpectrumClass::MaxSpatial;
+                           }) &&
               funnel.accounting.mappingImportRequests != 0 &&
               funnel.accounting.mappingImportCacheMisses != 0 &&
               funnel.accounting.mappingImportCacheHits != 0,
-          "bounded schedule funnel did not reach the independent Mapping "
-          "verifier through its shared import session");
+          "production resource-time projection did not reach a MaxSpatial "
+          "SystemMapping through the independent verifier");
 
   auto unprovenMinimumBounds = bounds;
   for (auto &bound : unprovenMinimumBounds) {
