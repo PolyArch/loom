@@ -14,6 +14,19 @@ target_link_libraries(LoomApplicationPortfolio PUBLIC
   LLVMSupport
 )
 
+add_library(LoomApplicationHostRunner
+  HostRunner.cpp
+)
+
+target_include_directories(LoomApplicationHostRunner PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomApplicationHostRunner PUBLIC
+  LoomApplicationPortfolio
+  LLVMSupport
+)
+
 file(GLOB_RECURSE LOOM_LLVM_LIBC_MATH_HEADERS CONFIGURE_DEPENDS
   "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/hdr/*.h"
   "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/src/__support/*.h"

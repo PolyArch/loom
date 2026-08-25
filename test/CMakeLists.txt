@@ -63,6 +63,7 @@ set(LOOM_TEST_DEPENDS
   loom
   loom-adg
   loom-application-build
+  loom-application-host-run
   loom-cc
   loom-lower
   loom-payload
@@ -82,6 +83,7 @@ set(LOOM_TEST_DEPENDS
   loom-common-canonical-relation-test
   loom-common-mapping-debug-log-test
   loom-common-special-math-accuracy-test
+  loom-application-host-run-test
   loom-application-manifest-test
   loom-dataflow-activity-definedness-test
   loom-dataflow-ordered-cardinality-handshake-test

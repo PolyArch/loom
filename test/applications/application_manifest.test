@@ -1,5 +1,6 @@
 # RUN: %loom-application-manifest-test %t %S/manifest.json %S/../..
 # RUN: %loom-cc -std=c11 -O1 -ffp-contract=off -fno-math-errno \
+# RUN:   -DLOOM_ATTENTION_RETAIN_LOOPS -DLOOM_ATTENTION_PRODUCT_EXECUTION \
 # RUN:   %S/loom-multisensor-attention/main.c -lm -o %t.attention
 # RUN: %t.attention | diff -u %S/loom-multisensor-attention/expected-smoke.txt -
 # RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
@@ -9,8 +10,8 @@
 # RUN:   %loom_external/gapbs/src/pr.cc -o %t.pagerank
 # RUN: %t.pagerank | diff -u %S/gapbs-pagerank-expected-smoke.txt -
 # RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
-# RUN:   %S/../app/vecadd/main_func.c -o %t.vecadd
-# RUN: %t.vecadd | diff -u %S/../app/vecadd/expected.txt -
+# RUN:   %S/vecadd-memory/vecadd_memory.c -o %t.vecadd
+# RUN: %t.vecadd | diff -u %S/vecadd-memory/expected-smoke.txt -
 # RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
 # RUN:   -Wno-unknown-pragmas -I%S/llama2c-kernels-include \
 # RUN:   -include %S/llama2c-kernels-smoke.h \
@@ -52,6 +53,14 @@
 # RUN:   --portfolio-repository-root=%S/../.. \
 # RUN:   --portfolio-application=gapbs-pagerank --portfolio-input=smoke \
 # RUN:   2>&1 | FileCheck %s --check-prefix=TARGET-CONFLICT
+# RUN: sed '0,/"link_options": \[\]/s//"link_options": ["-lz"]/' \
+# RUN:   %S/manifest.json > %t.library-conflict.json
+# RUN: not %loom-application-build --driver-arguments-output=%t.library.args \
+# RUN:   --deployment-output=%t.library-deployment \
+# RUN:   --portfolio-manifest=%t.library-conflict.json \
+# RUN:   --portfolio-repository-root=%S/../.. \
+# RUN:   --portfolio-application=gapbs-pagerank --portfolio-input=smoke \
+# RUN:   2>&1 | FileCheck %s --check-prefix=LIBRARY-CONFLICT
 # RUN: not %loom-application-build --driver-arguments-output=%t.profile.args \
 # RUN:   --deployment-output=%t.profile-deployment \
 # RUN:   --portfolio-manifest=%S/manifest.json \
@@ -61,12 +70,15 @@
 # RUN:   --portfolio-input=smoke \
 # RUN:   2>&1 | FileCheck %s --check-prefix=PROFILE
 
+# PORTFOLIO: {{^-o$}}
+# PORTFOLIO-NEXT: {{.*}}/linker/portfolio.elf
 # PORTFOLIO: -working-directory={{.*}}
 # PORTFOLIO: -x
 # PORTFOLIO-NEXT: c
-# PORTFOLIO: {{.*}}test/app/vecadd/main_func.c
+# PORTFOLIO: {{.*}}test/applications/vecadd-memory/vecadd_memory.c
 # PARTIAL: portfolio manifest, repository, application, and input must be selected together
 # OVERRIDE: a portfolio selection derives its exact sources and compiler options from the manifest
 # CONTINUITY: portfolio selections must retain compile-to-Deployment continuity through loom-cc
 # TARGET-CONFLICT: manifest compiler option '--target=x86_64' conflicts with product-owned compiler target policy
-# PROFILE: product source binding supports exactly zero warm-up samples and one measured sample until a profile runner is selected
+# LIBRARY-CONFLICT: manifest link option '-lz' names a library unavailable to the product freestanding runtime
+# PROFILE: product source binding supports exactly zero warm-up samples and one measured sample; the bounded host profile remains independently executable

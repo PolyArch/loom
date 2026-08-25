@@ -725,7 +725,7 @@ second workload authority:
 2. the ten source-backed workflows in
    [End-To-End Conformance Anchors](spec-end-to-end-demonstrators.md) supply
    bounded vertical-stack anchors;
-3. the six complete programs in
+3. the five complete programs in
    [Real Application Portfolio](spec-application-portfolio.md) supply sustained
    multi-stage and heterogeneous-system use; and
 4. exact selected subsets of those owned workloads supply reproducible

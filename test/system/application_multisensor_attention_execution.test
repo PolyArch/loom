@@ -1,14 +1,11 @@
 # REQUIRES: gem5-25.1.0.1
 # RUN: rm -rf %t.deployment %t.execution
-# RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
-# RUN:   -DLOOM_ATTENTION_RETAIN_LOOPS -DLOOM_ATTENTION_PRODUCT_EXECUTION \
-# RUN:   %S/../applications/loom-multisensor-attention/main.c -lm -o %t.native
-# RUN: %t.native
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc \
 # RUN:   --loom-accel-profile=%S/Inputs/product_attention_dse_grown.yaml \
-# RUN:   -std=c11 -O1 -ffp-contract=off -fno-math-errno \
-# RUN:   -DLOOM_ATTENTION_RETAIN_LOOPS -DLOOM_ATTENTION_PRODUCT_EXECUTION \
-# RUN:   %S/../applications/loom-multisensor-attention/main.c -o %t.elf \
+# RUN:   --loom-portfolio-manifest=%S/../applications/manifest.json \
+# RUN:   --loom-portfolio-repository-root=%S/../.. \
+# RUN:   --loom-portfolio-application=loom-multisensor-attention \
+# RUN:   --loom-portfolio-input=smoke \
 # RUN:   --loom-deploy-output=%t.deployment \
 # RUN:   --loom-operator-protocol-symbol=project_audio \
 # RUN:   --loom-operator-protocol-symbol=project_imu \
@@ -21,6 +18,8 @@
 # RUN:   > %t.run.stdout 2> %t.run.stderr
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
+# RUN:   --portfolio-application=loom-multisensor-attention \
+# RUN:   --portfolio-input=smoke \
 # RUN:   --minimum-unique-acc-cores=4 \
 # RUN:   --required-dataflow-text=math.exp \
 # RUN:   --required-dataflow-text=scf.for \

@@ -116,7 +116,8 @@ def search_invocations(
 
 def validate_mapping_work(
     events: list[dict[str, Any]], expected_system_active_contexts: int | None,
-    spatial_search_frontier: bool,
+    spatial_search_frontier: bool, portfolio_application: str | None,
+    portfolio_input: str | None,
 ) -> None:
     reopen_attempts = [
         payload
@@ -220,6 +221,32 @@ def validate_mapping_work(
             "successful product decision omitted the host-only baseline")
     require(pair_decision.get("final_application_qor_complete") is True,
             "successful product decision omitted application QoR evidence")
+    if portfolio_application is not None:
+        portfolio = pair_decision.get("portfolio_input")
+        require(isinstance(portfolio, dict),
+                "portfolio product decision omitted its manifest selection")
+        require(
+            portfolio.get("application_identity") == portfolio_application
+            and portfolio.get("input_name") == portfolio_input,
+            "portfolio product decision names the wrong manifest selection",
+        )
+        require(
+            portfolio.get("execution_binding")
+            == "canonical_simulation_and_oracle"
+            and portfolio.get("execution_binding_established") is True,
+            "portfolio selection lacks canonical Simulation and oracle Evidence",
+        )
+        profile = portfolio.get("declared_profile")
+        require(
+            isinstance(profile, dict)
+            and profile.get("warmup_samples") == 0
+            and profile.get("measured_samples") == 1
+            and profile.get("total_samples") == 1
+            and profile.get("oracle_coverage") == "all_measured_samples"
+            and isinstance(profile.get("deadline_milliseconds"), int)
+            and profile["deadline_milliseconds"] > 0,
+            "portfolio product decision changed its bounded profile",
+        )
     selected_values = {
         observation.get("dimension"): observation
         for observation in pair_decision.get("selected_objective", [])
@@ -283,6 +310,13 @@ def validate_mapping_work(
                 require(observation.get("mapping_disposition") in {
                     "verified", "proven_no_feasible_candidate", "incomplete"
                 }, "candidate Mapping observation lacks typed disposition")
+                if candidate.get("selected") and portfolio_application is not None:
+                    require(
+                        observation.get("runtime_disposition") == "completed"
+                        and isinstance(observation.get("oracle_evidence"), list)
+                        and observation["oracle_evidence"],
+                        "selected portfolio Mapping lacks oracle Evidence",
+                    )
     objective_vectors = [pair_decision.get("host_only_baseline", [])]
     objective_vectors.extend(
         candidate.get("objective", [])
@@ -792,7 +826,14 @@ def main() -> None:
         "--require-unique-dense-coordinates", action="store_true"
     )
     parser.add_argument("--minimum-unique-acc-cores", type=int, default=1)
+    parser.add_argument("--portfolio-application")
+    parser.add_argument("--portfolio-input")
     arguments = parser.parse_args()
+    require(
+        (arguments.portfolio_application is None)
+        == (arguments.portfolio_input is None),
+        "portfolio application and input must be selected together",
+    )
     require(
         arguments.spatial_invocations is None
         or arguments.spatial_invocations > 0,
@@ -813,7 +854,8 @@ def main() -> None:
     events = read_diagnostics(arguments.diagnostics)
     validate_mapping_work(
         events, arguments.expected_system_active_contexts,
-        arguments.spatial_search_frontier,
+        arguments.spatial_search_frontier, arguments.portfolio_application,
+        arguments.portfolio_input,
     )
     if arguments.require_spatial_unconditional_handshake:
         validate_spatial_unconditional_handshake(events)

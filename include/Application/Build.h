@@ -230,6 +230,15 @@ enum class ApplicationPairManifestJoinStatus : std::uint8_t {
 
 llvm::StringRef toString(ApplicationPairManifestJoinStatus value);
 
+enum class ApplicationPortfolioExecutionBinding : std::uint8_t {
+  NotSelected,
+  DeclaredOnly,
+  CanonicalSimulation,
+  CanonicalSimulationAndOracle,
+};
+
+llvm::StringRef toString(ApplicationPortfolioExecutionBinding value);
+
 /// Fixed application-QoR dimensions. The ordering is stable for reports, but
 /// the existing DSE ObjectiveProgram remains the sole ordering authority.
 enum class ApplicationObjectiveDimension : std::uint8_t {
@@ -283,6 +292,9 @@ struct ApplicationPairMappingObservation final {
   std::optional<dse::DsePlanIncompleteReason> incompleteReason;
   std::vector<ArtifactRootReference> systemMappings;
   std::vector<ArtifactRootReference> runtimeEvidence;
+  /// Completed SimulationComparison Evidence against the source-backed native
+  /// oracle. Runtime Evidence remains the owner; this is its typed subset.
+  std::vector<ArtifactRootReference> oracleEvidence;
   std::optional<dse::PreMappingSpectrumClass> verifiedSpectrum;
 };
 
@@ -316,6 +328,8 @@ struct ApplicationPairCandidateRecord final {
 /// PreMappingCandidatePlanningRecord, checkpoints, and their ledgers.
 struct ApplicationPairDecisionRecord final {
   std::optional<SelectedApplicationInput> portfolioInput;
+  ApplicationPortfolioExecutionBinding portfolioExecutionBinding =
+      ApplicationPortfolioExecutionBinding::NotSelected;
   std::optional<ComponentViewDigest> pairIdentity;
   /// Exact DSE InvocationManifest run-key join for the Mapping attempt.
   std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
@@ -348,6 +362,14 @@ struct ApplicationPairDecisionRecord final {
   std::optional<std::string> detail;
 };
 
+/// Publishes the typed pair boundary when an exact portfolio profile cannot
+/// enter the product source-binding runner. No source/workload/runtime roots
+/// are invented before compilation, and the host-profile report remains a
+/// separate operational input.
+ApplicationPairDecisionRecord makeUnsupportedPortfolioProfilePairDecision(
+    SelectedApplicationInput selection,
+    const ArtifactRootReference &requestedSystem, llvm::StringRef detail);
+
 /// Exact join between one bounded pre-Mapping planning record and one joint
 /// Mapping attempt. Verified outcomes name the independently imported
 /// SystemMapping roots; incomplete and infeasible outcomes remain distinct.
@@ -378,6 +400,7 @@ struct ApplicationMappingCandidateOutcome final {
   std::optional<std::uint64_t> dfgCycles;
   std::optional<std::uint64_t> cgraCycles;
   std::optional<std::uint64_t> resourceCoreCost;
+  std::vector<ArtifactRootReference> oracleEvidence;
 };
 
 /// Evidence for one application-level resource-time transition attempt. The

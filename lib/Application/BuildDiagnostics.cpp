@@ -186,7 +186,8 @@ void addOptionalRoot(
 std::string encodeRoot(const ArtifactRootReference &reference);
 
 llvm::json::Object
-encodePortfolioInput(const SelectedApplicationInput &selection) {
+encodePortfolioInput(const SelectedApplicationInput &selection,
+                     ApplicationPortfolioExecutionBinding binding) {
   llvm::json::Object result;
   result["application_identity"] = selection.applicationIdentity;
   result["input_name"] = selection.input.name;
@@ -224,7 +225,10 @@ encodePortfolioInput(const SelectedApplicationInput &selection) {
                            {"path", input.path},
                            {"sha256", formatBlobDigestHex(input.digest)}});
   result["cached_inputs"] = std::move(cachedInputs);
-  result["execution_binding_established"] = false;
+  result["execution_binding"] = toString(binding);
+  result["execution_binding_established"] =
+      binding ==
+      ApplicationPortfolioExecutionBinding::CanonicalSimulationAndOracle;
   return result;
 }
 
@@ -232,7 +236,8 @@ llvm::json::Object encodePairDecision(
     const ApplicationPairDecisionRecord &decision) {
   llvm::json::Object result;
   if (decision.portfolioInput)
-    result["portfolio_input"] = encodePortfolioInput(*decision.portfolioInput);
+    result["portfolio_input"] = encodePortfolioInput(
+        *decision.portfolioInput, decision.portfolioExecutionBinding);
   else
     result["portfolio_input"] = nullptr;
   if (decision.pairIdentity)
@@ -361,6 +366,10 @@ llvm::json::Object encodePairDecision(
       for (const ArtifactRootReference &reference : observation.runtimeEvidence)
         runtimeEvidence.push_back(encodeRoot(reference));
       mapping["runtime_evidence"] = std::move(runtimeEvidence);
+      llvm::json::Array oracleEvidence;
+      for (const ArtifactRootReference &reference : observation.oracleEvidence)
+        oracleEvidence.push_back(encodeRoot(reference));
+      mapping["oracle_evidence"] = std::move(oracleEvidence);
       mappingObservations.push_back(std::move(mapping));
     }
     encoded["mapping_observations"] = std::move(mappingObservations);

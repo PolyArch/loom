@@ -34,6 +34,7 @@ struct ApplicationRuntimeValidation final {
   std::optional<dse::SpatialOperandQueueRuntimeFeedback>
       spatialOperandQueueFeedback;
   std::optional<dse::SpatialTransportRuntimeFeedback> spatialTransportFeedback;
+  std::vector<ArtifactRootReference> oracleEvidence;
 };
 
 llvm::Expected<ImportedApplicationMapping>

@@ -109,16 +109,30 @@ The tracked JSON contract is schema `loom.application_portfolio` version
 
 Applications, source selections, cached inputs, named inputs, cache
 references, and execution selections are strictly ordered and unique.
-Compiler and link option order remains semantic and is preserved. All paths
-are normalized visible-ASCII relative paths; stable logical names use
-lowercase ASCII letters, digits, `.`, `_`, or `-`. Execution-selection order
-is `smoke`, `validation`, then `scale_eda`. The build entry is one member of
-the exact source selection. Every cached declaration is referenced by a named
-input.
+Compiler and link option order remains semantic. A consumer either preserves
+that order or consumes a documented option through an existing semantic
+owner. All paths are normalized visible-ASCII relative paths; stable logical
+names use lowercase ASCII letters, digits, `.`, `_`, or `-`.
+Execution-selection order is `smoke`, `validation`, then `scale_eda`. The build
+entry is one member of the exact source selection. Every cached declaration
+is referenced by a named input.
 Unknown fields are invalid, so a Gitlink row cannot copy a revision, version
 alias, tolerance, or untyped property into the manifest. Workload and
 runtime-input names are repository selections for their existing owners, not
 new Artifact identities.
+
+The host projection passes the ordered link options to the native compiler.
+The product projection has no host sysroot: the exact `-lm` option is consumed
+as a dependency on Loom's existing freestanding math runtime and is not sent
+to the initial RISC-V LLD invocation. Other `-l` options are invalid until the
+product runtime owns their implementation. This interpretation preserves the
+manifest as the build dependency owner without inventing an empty target
+library or importing a host library into the product image.
+
+The current manifest selects only `smoke`. It has no `validation` or
+`scale_eda` member, so neither name carries a current coverage claim. Those
+values remain schema vocabulary for future real rows; adding one requires an
+actual bounded input and oracle under the same contract.
 
 The profile owns no duplicated total or oracle sample count. Its exact input
 budget is derived as `warmup_samples + measured_samples`; the sum must fit in
@@ -163,15 +177,23 @@ the current product source-binding path.
 
 The pair decision projects the resolved application identity, input name,
 source/build selection, declared workload and runtime-input names, declared
-oracle and bounded profile, and referenced cache digests. Until a portfolio
-runner binds those declarations to canonical Simulation inputs and oracle
-results, the projection publishes `execution_binding_established: false`; it
-must not be interpreted as sample or correctness Evidence. The manifest and
-repository paths are operational inputs and never enter pair, candidate,
-Mapping, workload, or runtime-input identity. The canonical source program,
-workload, runtime input, Fabric, Mapping, and execution Evidence remain owned
-by their existing Artifacts; the portfolio projection is repository
-provenance, not a second copy of those payloads.
+oracle and bounded profile, and referenced cache digests. Its typed execution
+binding is `declared_only`, `canonical_simulation`, or
+`canonical_simulation_and_oracle`. The last state is reached only after the
+existing Mapping runtime owner completes source-backed DFG and CGRA
+Simulation and a native `SimulationComparison` reports no finding. Its exact
+Evidence references are carried by the selected Mapping observation, and the
+derived `execution_binding_established` compatibility field is true only in
+that state. A pre-admission or unsupported profile decision remains
+`declared_only` and cannot be interpreted as correctness Evidence.
+
+The manifest exact-output host report is an additional conformance gate, not
+a substitute for that canonical Simulation binding. Manifest and repository
+paths are operational inputs and never enter pair, candidate, Mapping,
+workload, or runtime-input identity. The canonical source program, workload,
+runtime input, Fabric, Mapping, and execution Evidence remain owned by their
+existing Artifacts; the portfolio projection is repository provenance, not a
+second copy of those payloads.
 
 The referenced source package owns program sources and build semantics. Existing
 Loom owners produce the linked LLVM module, Structured Program Candidate,
@@ -194,6 +216,65 @@ These names do not define training, validation, or held-out data roles.
 `CalibrationPartitionRole` remains owned only by the model-training contract.
 A runner may select any canonical subset explicitly, but it cannot publish a
 different membership inventory or weaken the selected row's oracle.
+
+## Bounded Host Runner
+
+The bounded host runner is an operational conformance path for one exact
+application/input selection. It consumes `ApplicationManifest` and
+`SourceAdmission`; it does not parse a second manifest shape, repeat source or
+cache admission, enumerate applications, or infer a source set. It selects
+`clang` for C and `clang++` for C++ from `PATH` unless the invocation names an
+explicit compiler executable. Compilation runs with the repository root as
+the compiler working directory, preserves manifest compiler and link option
+order, and compiles the canonical source paths returned by admission in their
+admitted order. The runner likewise consumes admission-owned oracle and cache
+paths instead of resolving manifest paths again. Compiler outputs and captures
+live in one unique invocation directory below the repository's ignored `temp`
+directory and are removed when the invocation returns.
+
+The host executable ABI is derived only for selections that reference cached
+inputs. Such an executable receives the admitted absolute cache paths in the
+selected manifest order, followed by the decimal `warmup_samples` and
+`measured_samples` values. A selection without cached inputs receives none of
+those derived arguments and is host-runnable only with zero warm-up samples
+and one measured sample. Any other no-cache profile is typed
+`unsupported_profile` rather than silently executing the wrong count. This
+conditional ABI is owned here and is not a generic Simulation, Deployment, or
+product runtime ABI. A future application whose host entry cannot consume this
+shape requires an explicit portfolio contract change rather than
+application-name dispatch in the runner.
+
+This is a Linux host path. Execution inherits the invoking environment with
+`LC_ALL=C`, disconnects stdin, and captures stdout and stderr separately. The
+profile deadline covers only host executable wall time, measured with a
+monotonic clock; it does not include compilation. Completion must be observed
+before the deadline. Expiration terminates the detached host process group and
+produces a typed timeout with no exit status. A leader that exits while another
+member remains in its process group produces `execution_failure`; the group is
+terminated before captures are read. A zero host exit is compared byte-for-byte
+with the selected exact oracle. Typed invariant oracles remain typed
+unsupported until their owning checker is registered; the runner never
+reinterprets one as an exact oracle.
+
+The runner preserves disjoint `source_unavailable`, `compile_failure`,
+`execution_failure`, `timeout`, `oracle_mismatch`, `unsupported_oracle`,
+`unsupported_profile`, and `succeeded` outcomes. Its deterministically ordered
+JSON projection is schema `loom.application_host_run` version `1.0`. The
+projection records the exact application/input and source/build selection,
+workload and runtime-input names, cached-input declarations and digests,
+oracle selection, complete profile, source-admission status, selected compiler
+and compile exit status, host exit status and wall nanoseconds, oracle status,
+and the typed outcome.
+Signal and timeout sentinels are not exit statuses. Human compiler and runtime
+diagnostics are preserved on the report across successful and failed stages but
+remain outside that JSON projection.
+
+This report is not an Artifact, `InvocationManifest`, or
+`EvaluationEvidence`. Exact host stdout conformance does not join the manifest
+workload/runtime-input names to canonical Simulation roots, establish a
+Simulation execution result, or publish correctness or performance Evidence.
+Those semantic bindings remain the responsibility of their existing runtime
+and Evaluation owners.
 
 ## Inputs And Static Data
 
@@ -247,6 +328,15 @@ baseline and exact candidate Evidence. Model training consumes explicit
 Training, Validation, and HeldOut Evidence sets through the central DSE
 contract; a held-out release gate must pass before an updated parameter bundle
 is promoted.
+
+The derived evidence manifest joins each exact manifest row independently to
+its bounded host report and pair decision. It publishes separate host
+conformance, typed pair-disposition, and canonical application-QoR gates. An
+explicit unsupported, timeout, or proof-not-established pair can therefore
+close the typed disposition gate without being reported as canonical QoR.
+The per-member evaluation records every contributing report and pair count so
+an untyped duplicate cannot be hidden by a valid row. Unsupported objective
+dimensions retain a null value.
 
 Raw longitudinal measurements, direct EDA Evidence, reports, databases,
 waveforms, bitfiles, and training corpora remain in ignored or user-owned
@@ -314,13 +404,13 @@ five admitted rows, byte-exact bounded TinyML inference under its declared
 deadline, product-driver argument projection, and rejection of partial,
 injected, replayed, target-conflicting, or unsupported-profile selections.
 
-Portfolio closure additionally requires a runner that binds every selected
-profile to canonical Simulation workload/runtime-input roots, enforces its
-warm-up, measured-sample, oracle-coverage, and execution-deadline contract,
-and publishes the resulting correctness and performance Evidence. Release
-anchors must then prove member-local acceleration gates, reject aggregate
-masking, cover the supported execution matrix, require every released AccCore
-occurrence to have a selected SystemMapping user, and cover the declared
-single-application, domain, and complete cross-domain sets. Those gates do not
-exist until their owning runtime and evidence paths publish the required
-typed outcomes.
+Canonical release closure remains pair-local. The Attention, Llama kernel,
+regular `vecadd-memory`, and irregular PageRank anchors require exact manifest
+selection, completed source-backed Simulation and oracle Evidence, one
+selected Mapping candidate, host baseline, and complete application QoR. The
+bounded TinyML row independently proves its real one-warm-up/four-measured
+host profile and exact oracle, while its current product profile limit is a
+typed unsupported pair rather than fabricated Mapping or QoR. Future
+`validation` or `scale_eda` rows, complete cross-domain release sets, and
+additional runtime profile shapes require production Evidence from their
+existing runtime, Mapping, and Evaluation owners before they can be claimed.

@@ -181,6 +181,238 @@ def collect_work_entries(
             )
 
 
+def validate_portfolio_pair(decision: dict[str, Any]) -> dict[str, Any] | None:
+    selection = decision.get("portfolio_input")
+    if not isinstance(selection, dict):
+        return None
+    application = selection.get("application_identity")
+    input_name = selection.get("input_name")
+    reasons: list[str] = []
+    typed_reasons: list[str] = []
+    if not isinstance(application, str) or not isinstance(input_name, str):
+        reasons.append("invalid_selection")
+        typed_reasons.append("invalid_selection")
+    dispositions = {
+        "verified_acceleration",
+        "verified_feasible_but_not_beneficial",
+        "no_promising_candidate",
+        "exact_hardware_incompatible",
+        "mapping_proof_not_established",
+        "cancelled_or_timeout",
+        "budget_exhausted",
+        "unsupported_semantic",
+        "implementation_failure",
+        "hardware_dse_alternative",
+    }
+    disposition = decision.get("disposition")
+    if disposition not in dispositions:
+        typed_reasons.append("invalid_disposition")
+    join_status = decision.get("invocation_manifest_join_status")
+    if join_status not in {
+        "exact",
+        "owner_scoped_planning_closure",
+        "owner_verified_pre_admission",
+    }:
+        typed_reasons.append("manifest_join_unverified")
+    if join_status == "owner_verified_pre_admission":
+        if decision.get("manifest_join_owner_verified") is not True:
+            typed_reasons.append("manifest_join_owner_unverified")
+        if not isinstance(decision.get("manifest_join_owner"), str):
+            typed_reasons.append("manifest_join_owner_missing")
+        if not isinstance(decision.get("manifest_join_contract"), str):
+            typed_reasons.append("manifest_join_contract_missing")
+    else:
+        run_key = decision.get("invocation_manifest_run_key")
+        if not isinstance(run_key, str) or re.fullmatch(r"[0-9a-f]{64}", run_key) is None:
+            typed_reasons.append("manifest_run_key_missing")
+    if not isinstance(decision.get("fabric"), str):
+        typed_reasons.append("fabric_missing")
+    causal_dispositions = {
+        "no_promising_candidate",
+        "exact_hardware_incompatible",
+        "mapping_proof_not_established",
+        "cancelled_or_timeout",
+        "budget_exhausted",
+        "unsupported_semantic",
+        "implementation_failure",
+    }
+    if disposition in causal_dispositions and not isinstance(
+        decision.get("detail"), str
+    ):
+        typed_reasons.append("typed_failure_detail_missing")
+    if (
+        selection.get("execution_binding") != "canonical_simulation_and_oracle"
+        or selection.get("execution_binding_established") is not True
+    ):
+        reasons.append("execution_binding_incomplete")
+    if decision.get("host_only_baseline_complete") is not True:
+        reasons.append("host_baseline_incomplete")
+    if decision.get("final_application_qor_complete") is not True:
+        reasons.append("application_qor_incomplete")
+    if decision.get("invocation_manifest_join_status") != "exact":
+        reasons.append("invocation_manifest_join_incomplete")
+
+    candidates = decision.get("candidates")
+    selected = []
+    if isinstance(candidates, list):
+        selected = [
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, dict) and candidate.get("selected") is True
+        ]
+    if len(selected) != 1:
+        reasons.append("selected_candidate_not_unique")
+    else:
+        observations = selected[0].get("mapping_observations")
+        completed = (
+            [
+                observation
+                for observation in observations
+                if isinstance(observation, dict)
+                and observation.get("runtime_disposition") == "completed"
+                and isinstance(observation.get("system_mappings"), list)
+                and observation["system_mappings"]
+                and isinstance(observation.get("oracle_evidence"), list)
+                and observation["oracle_evidence"]
+            ]
+            if isinstance(observations, list)
+            else []
+        )
+        if not completed:
+            reasons.append("selected_mapping_evidence_incomplete")
+
+    objective_vectors = [decision.get("host_only_baseline")]
+    objective_vectors.append(decision.get("selected_objective"))
+    if isinstance(candidates, list):
+        objective_vectors.extend(
+            candidate.get("objective")
+            for candidate in candidates
+            if isinstance(candidate, dict)
+        )
+    for vector in objective_vectors:
+        if not isinstance(vector, list):
+            continue
+        if any(
+            isinstance(observation, dict)
+            and observation.get("evidence") == "unsupported"
+            and observation.get("value") is not None
+            for observation in vector
+        ):
+            reasons.append("unsupported_objective_has_value")
+            break
+    if disposition in {
+        "verified_acceleration",
+        "verified_feasible_but_not_beneficial",
+        "hardware_dse_alternative",
+    }:
+        typed_reasons.extend(f"success_{reason}" for reason in reasons)
+    return {
+        "application_identity": application,
+        "input_name": input_name,
+        "disposition": disposition,
+        "typed_complete": not typed_reasons,
+        "typed_incomplete_reasons": typed_reasons,
+        "complete": not reasons,
+        "incomplete_reasons": reasons,
+    }
+
+
+def validate_portfolio_host_run(
+    report: dict[str, Any], expected: dict[str, Any] | None
+) -> dict[str, Any]:
+    selection = report.get("selection")
+    application = (
+        selection.get("application_identity") if isinstance(selection, dict) else None
+    )
+    input_name = selection.get("input_name") if isinstance(selection, dict) else None
+    reasons: list[str] = []
+    if (
+        report.get("schema") != "loom.application_host_run"
+        or report.get("version") != "1.0"
+    ):
+        reasons.append("invalid_report_schema")
+    if not isinstance(application, str) or not isinstance(input_name, str):
+        reasons.append("invalid_selection")
+    if expected is None:
+        reasons.append("manifest_selection_missing")
+    else:
+        expected_selection = {
+            key: expected[key]
+            for key in (
+                "application_identity",
+                "input_name",
+                "source",
+                "build",
+                "workload",
+                "runtime_input",
+                "cached_inputs",
+                "oracle",
+            )
+        }
+        if selection != expected_selection:
+            reasons.append("manifest_selection_mismatch")
+        if report.get("profile") != expected["profile"]:
+            reasons.append("manifest_profile_mismatch")
+
+    source_admission = report.get("source_admission")
+    if (
+        not isinstance(source_admission, dict)
+        or source_admission.get("status") != "admitted"
+    ):
+        reasons.append("source_not_admitted")
+    compilation = report.get("compile")
+    if (
+        not isinstance(compilation, dict)
+        or compilation.get("status") != "succeeded"
+        or compilation.get("exit_status") != 0
+        or not isinstance(compilation.get("compiler"), str)
+    ):
+        reasons.append("host_compile_incomplete")
+    execution = report.get("execution")
+    wall_time = (
+        execution.get("host_wall_time_nanoseconds")
+        if isinstance(execution, dict)
+        else None
+    )
+    if (
+        not isinstance(execution, dict)
+        or execution.get("status") != "succeeded"
+        or execution.get("exit_status") != 0
+        or integer(wall_time) is None
+        or wall_time <= 0
+    ):
+        reasons.append("host_execution_incomplete")
+    elif expected is not None:
+        profile = expected.get("profile")
+        deadline = (
+            profile.get("deadline_milliseconds")
+            if isinstance(profile, dict)
+            else None
+        )
+        if integer(deadline) is None or wall_time > deadline * 1_000_000:
+            reasons.append("host_deadline_exceeded")
+    oracle = report.get("oracle_result")
+    if not isinstance(oracle, dict) or oracle.get("status") != "matched":
+        reasons.append("host_oracle_incomplete")
+    if report.get("outcome") != "succeeded":
+        reasons.append("host_outcome_incomplete")
+    return {
+        "application_identity": application,
+        "input_name": input_name,
+        "outcome": report.get("outcome"),
+        "host_wall_time_nanoseconds": wall_time,
+        "complete": not reasons,
+        "incomplete_reasons": reasons,
+    }
+
+
+def portfolio_selection_key(report: dict[str, Any]) -> tuple[Any, Any]:
+    selection = report.get("selection")
+    if not isinstance(selection, dict):
+        return (None, None)
+    return (selection.get("application_identity"), selection.get("input_name"))
+
+
 def relative_path(path: Path, root: Path) -> str:
     try:
         return path.resolve().relative_to(root.resolve()).as_posix()
@@ -220,6 +452,8 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
     application_outcomes: list[dict[str, Any]] = []
     application_pair_decisions: list[dict[str, Any]] = []
+    portfolio_inventory: list[dict[str, Any]] = []
+    portfolio_host_runs: list[dict[str, Any]] = []
     quality_summaries: list[dict[str, Any]] = []
     quality_observations: list[dict[str, Any]] = []
     funnel_summaries: list[dict[str, Any]] = []
@@ -271,6 +505,52 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                         if key in run
                     }
                     execution_matrix_observations.append(observation)
+        if payload.get("schema") == "loom.application_portfolio":
+            applications = payload.get("applications")
+            if isinstance(applications, list):
+                for application in applications:
+                    if not isinstance(application, dict):
+                        continue
+                    identity = application.get("identity")
+                    selections = application.get("selections")
+                    inputs = application.get("inputs")
+                    cached_inputs = application.get("cached_inputs")
+                    if not isinstance(inputs, list):
+                        continue
+                    cached_input_rows = (
+                        cached_inputs if isinstance(cached_inputs, list) else []
+                    )
+                    cached_by_name = {
+                        cached.get("logical_name"): cached
+                        for cached in cached_input_rows
+                        if isinstance(cached, dict)
+                        and isinstance(cached.get("logical_name"), str)
+                    }
+                    for selected_input in inputs:
+                        if not isinstance(selected_input, dict):
+                            continue
+                        selected_cached_names = selected_input.get("cached_inputs")
+                        selected_cached = (
+                            [cached_by_name.get(name) for name in selected_cached_names]
+                            if isinstance(selected_cached_names, list)
+                            else []
+                        )
+                        portfolio_inventory.append(
+                            {
+                                "application_identity": identity,
+                                "input_name": selected_input.get("name"),
+                                "source": application.get("source"),
+                                "build": application.get("build"),
+                                "workload": selected_input.get("workload"),
+                                "runtime_input": selected_input.get("runtime_input"),
+                                "cached_inputs": selected_cached,
+                                "oracle": selected_input.get("oracle"),
+                                "profile": selected_input.get("profile"),
+                                "selections": selections,
+                            }
+                        )
+        if payload.get("schema") == "loom.application_host_run":
+            portfolio_host_runs.append(payload)
         # Nested planning/candidate records project one root event. Counting
         # their statuses again would fabricate outcomes and work.
         if record_kind in {"root", "standalone"}:
@@ -939,6 +1219,81 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
         disposition = candidate.get("disposition")
         if isinstance(disposition, str):
             disposition_counts[disposition] = disposition_counts.get(disposition, 0) + 1
+    portfolio_pairs = [
+        validated
+        for decision in application_pair_decisions
+        if (validated := validate_portfolio_pair(decision)) is not None
+    ]
+    portfolio_by_key = {
+        (row.get("application_identity"), row.get("input_name")): row
+        for row in portfolio_inventory
+    }
+    portfolio_host_evaluations = [
+        validate_portfolio_host_run(
+            report,
+            portfolio_by_key.get(portfolio_selection_key(report)),
+        )
+        for report in portfolio_host_runs
+    ]
+    required_smoke = {
+        (row.get("application_identity"), row.get("input_name"))
+        for row in portfolio_inventory
+        if isinstance(row.get("selections"), list) and "smoke" in row["selections"]
+    }
+    pairs_by_key: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    for row in portfolio_pairs:
+        key = (row.get("application_identity"), row.get("input_name"))
+        pairs_by_key.setdefault(key, []).append(row)
+    hosts_by_key: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    for row in portfolio_host_evaluations:
+        key = (row.get("application_identity"), row.get("input_name"))
+        hosts_by_key.setdefault(key, []).append(row)
+    member_evaluations = []
+    for application, input_name in sorted(
+        required_smoke, key=lambda pair: (str(pair[0]), str(pair[1]))
+    ):
+        key = (application, input_name)
+        pair_rows = pairs_by_key.get(key, [])
+        host_rows = hosts_by_key.get(key, [])
+        host_complete = bool(host_rows) and all(row["complete"] for row in host_rows)
+        typed_pair_complete = bool(pair_rows) and all(
+            row["typed_complete"] for row in pair_rows
+        )
+        canonical_qor_complete = any(row["complete"] for row in pair_rows)
+        member_evaluations.append(
+            {
+                "application_identity": application,
+                "input_name": input_name,
+                "host_run_count": len(host_rows),
+                "pair_decision_count": len(pair_rows),
+                "typed_dispositions": sorted(
+                    {
+                        row["disposition"]
+                        for row in pair_rows
+                        if isinstance(row.get("disposition"), str)
+                    }
+                ),
+                "host_complete": host_complete,
+                "typed_pair_complete": typed_pair_complete,
+                "canonical_qor_complete": canonical_qor_complete,
+                "member_complete": host_complete and typed_pair_complete,
+            }
+        )
+    missing_canonical_smoke = [
+        (row["application_identity"], row["input_name"])
+        for row in member_evaluations
+        if not row["canonical_qor_complete"]
+    ]
+    missing_typed_smoke = [
+        (row["application_identity"], row["input_name"])
+        for row in member_evaluations
+        if not row["typed_pair_complete"]
+    ]
+    missing_host_smoke = [
+        (row["application_identity"], row["input_name"])
+        for row in member_evaluations
+        if not row["host_complete"]
+    ]
     return {
         "event_count": len(records),
         "record_kinds": dict(sorted(record_kinds.items())),
@@ -955,6 +1310,27 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
         "candidate_dispositions": dict(sorted(disposition_counts.items())),
         "application_mapping_outcomes": application_outcomes,
         "application_pair_decisions": application_pair_decisions,
+        "portfolio": {
+            "inventory": portfolio_inventory,
+            "host_run_evaluations": portfolio_host_evaluations,
+            "pair_evaluations": portfolio_pairs,
+            "member_evaluations": member_evaluations,
+            "required_smoke_pairs": [
+                [row["application_identity"], row["input_name"]]
+                for row in member_evaluations
+            ],
+            "missing_host_smoke_pairs": [list(pair) for pair in missing_host_smoke],
+            "missing_typed_smoke_pairs": [list(pair) for pair in missing_typed_smoke],
+            "missing_canonical_qor_smoke_pairs": [
+                list(pair) for pair in missing_canonical_smoke
+            ],
+            "host_gates_hold": bool(required_smoke) and not missing_host_smoke,
+            "typed_pair_gates_hold": bool(required_smoke) and not missing_typed_smoke,
+            "canonical_qor_gates_hold": bool(required_smoke)
+            and not missing_canonical_smoke,
+            "member_gates_hold": bool(required_smoke)
+            and all(row["member_complete"] for row in member_evaluations),
+        },
         "quality_summaries": quality_summaries,
         "quality_observations": quality_observations,
         "funnel_summaries": funnel_summaries,

@@ -1,10 +1,10 @@
 # REQUIRES: gem5-25.1.0.1
 # RUN: rm -rf %t.deployment %t.execution
-# RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
-# RUN:   %S/Inputs/product_vecadd_memory.c -o %t.native
-# RUN: %t.native
-# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc %loom-product-acceleration-profile -std=c11 -O1 -ffp-contract=off \
-# RUN:   -fno-math-errno %S/Inputs/product_vecadd_memory.c -o %t.elf \
+# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc %loom-product-acceleration-profile \
+# RUN:   --loom-portfolio-manifest=%S/../applications/manifest.json \
+# RUN:   --loom-portfolio-repository-root=%S/../.. \
+# RUN:   --loom-portfolio-application=vecadd-memory \
+# RUN:   --loom-portfolio-input=smoke \
 # RUN:   --loom-deploy-output=%t.deployment \
 # RUN:   --loom-operator-protocol-symbol=vecadd_memory \
 # RUN:   > %t.build.stdout 2> %t.build.stderr
@@ -14,6 +14,7 @@
 # RUN:   > %t.run.stdout 2> %t.run.stderr
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
+# RUN:   --portfolio-application=vecadd-memory --portfolio-input=smoke \
 # RUN:   --mapping-inspector=loom-product-mapping-inspection-test \
 # RUN:   --require-memory-engine \
 # RUN:   --required-dataflow-text=dataflow.load \

@@ -128,20 +128,50 @@ void emitRuntimeEvidenceFailure(
 }
 
 llvm::Expected<std::optional<MonotonicClock::time_point>>
-applicationReplayDeadline(const dse::PlanExecutionPolicy &policy) {
-  if (!policy.dispatchNotAfterUnixNanoseconds())
-    return std::nullopt;
-  if (*policy.dispatchNotAfterUnixNanoseconds() >
-      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
-    return invalid("Mapping deadline exceeds the clock representation");
-  const auto deadline = std::chrono::system_clock::time_point{
-      std::chrono::nanoseconds{static_cast<std::int64_t>(
-          *policy.dispatchNotAfterUnixNanoseconds())}};
-  const auto remaining = deadline - std::chrono::system_clock::now();
-  if (remaining <= std::chrono::system_clock::duration::zero())
-    return MonotonicClock::now();
-  return MonotonicClock::now() +
-         std::chrono::duration_cast<MonotonicClock::duration>(remaining);
+applicationReplayDeadline(
+    const dse::PlanExecutionPolicy &policy,
+    std::optional<std::uint64_t> profileDeadlineMilliseconds) {
+  const MonotonicClock::time_point monotonicNow = MonotonicClock::now();
+  std::optional<MonotonicClock::time_point> result;
+  if (policy.dispatchNotAfterUnixNanoseconds()) {
+    if (*policy.dispatchNotAfterUnixNanoseconds() >
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+      return invalid("Mapping deadline exceeds the clock representation");
+    const auto deadline = std::chrono::system_clock::time_point{
+        std::chrono::nanoseconds{static_cast<std::int64_t>(
+            *policy.dispatchNotAfterUnixNanoseconds())}};
+    const auto remaining = deadline - std::chrono::system_clock::now();
+    if (remaining <= std::chrono::system_clock::duration::zero()) {
+      result = monotonicNow;
+    } else {
+      const MonotonicClock::duration monotonicRemaining =
+          std::chrono::duration_cast<MonotonicClock::duration>(remaining);
+      result =
+          monotonicRemaining > MonotonicClock::time_point::max() - monotonicNow
+              ? MonotonicClock::time_point::max()
+              : monotonicNow + monotonicRemaining;
+    }
+  }
+  if (!profileDeadlineMilliseconds)
+    return result;
+  using Milliseconds = std::chrono::milliseconds;
+  const auto maximumMilliseconds =
+      std::chrono::duration_cast<Milliseconds>(MonotonicClock::duration::max())
+          .count();
+  if (maximumMilliseconds <= 0 ||
+      *profileDeadlineMilliseconds >
+          static_cast<std::uint64_t>(maximumMilliseconds))
+    return invalid("portfolio deadline exceeds the clock representation");
+  const MonotonicClock::duration profileDuration =
+      std::chrono::duration_cast<MonotonicClock::duration>(Milliseconds{
+          static_cast<Milliseconds::rep>(*profileDeadlineMilliseconds)});
+  if (profileDuration > MonotonicClock::time_point::max() - monotonicNow)
+    return invalid("portfolio deadline exceeds the clock representation");
+  const MonotonicClock::time_point profileDeadline =
+      monotonicNow + profileDuration;
+  if (!result || profileDeadline < *result)
+    result = profileDeadline;
+  return result;
 }
 
 llvm::Expected<ArtifactRootReference>
@@ -252,7 +282,21 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         std::nullopt,
         std::nullopt,
         std::nullopt,
-        std::nullopt};
+        std::nullopt,
+        {}};
+
+  if (prepared.portfolioInput &&
+      (prepared.portfolioInput->input.profile.warmupSamples != 0 ||
+       prepared.portfolioInput->input.profile.measuredSamples != 1))
+    return ApplicationRuntimeValidation{
+        ApplicationMappingRuntimeDisposition::Unsupported,
+        {},
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        {}};
 
   auto contexts = mapping::projectSystemExecutionContexts(
       imported->dataflowView, imported->mapping.view().executionBindings());
@@ -352,9 +396,15 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         std::nullopt,
         std::nullopt,
         std::nullopt,
-        std::nullopt};
+        std::nullopt,
+        {}};
   }
-  auto deadline = applicationReplayDeadline(executionPolicy);
+  auto deadline = applicationReplayDeadline(
+      executionPolicy,
+      prepared.portfolioInput
+          ? std::optional<std::uint64_t>(
+                prepared.portfolioInput->input.profile.deadlineMilliseconds)
+          : std::nullopt);
   if (!deadline)
     return deadline.takeError();
 
@@ -570,8 +620,10 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
       return invalid("simulation comparison has no unique result");
     const evaluation::FindingResultValue &comparisonResult =
         completed->findingResults.front().result;
-    if (std::holds_alternative<evaluation::AbsentFinding>(comparisonResult))
+    if (std::holds_alternative<evaluation::AbsentFinding>(comparisonResult)) {
+      validation.oracleEvidence.push_back(*comparisonEvidenceReference);
       continue;
+    }
     validation.disposition =
         std::holds_alternative<evaluation::NotApplicableFinding>(
             comparisonResult)
@@ -583,6 +635,10 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
   validation.evidence.erase(
       std::unique(validation.evidence.begin(), validation.evidence.end()),
       validation.evidence.end());
+  llvm::sort(validation.oracleEvidence, artifactRootReferenceLess);
+  validation.oracleEvidence.erase(std::unique(validation.oracleEvidence.begin(),
+                                              validation.oracleEvidence.end()),
+                                  validation.oracleEvidence.end());
   return validation;
 }
 

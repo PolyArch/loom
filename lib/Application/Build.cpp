@@ -264,6 +264,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const dse::JointDesignExecutionSummary &summary) {
   ApplicationPairDecisionRecord result;
   result.portfolioInput = prepared.portfolioInput;
+  if (result.portfolioInput)
+    result.portfolioExecutionBinding =
+        ApplicationPortfolioExecutionBinding::DeclaredOnly;
   result.invocationRunKey = summary.invocationRunKey
                                 ? summary.invocationRunKey
                                 : prepared.preMappingInvocationRunKey;
@@ -365,6 +368,7 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           outcome.incompleteReason,
           outcome.systemMappings,
           outcome.runtimeEvidence,
+          outcome.oracleEvidence,
           std::nullopt};
       if (outcome.resourceTimeSpectrum) {
         if (const auto *verification = std::get_if<
@@ -453,6 +457,24 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
         result.finalApplicationQorComplete =
             result.hostOnlyBaselineComplete && dfg.value.has_value() &&
             cgra.value.has_value();
+        if (result.portfolioInput && !outcome.runtimeEvidence.empty())
+          result.portfolioExecutionBinding =
+              ApplicationPortfolioExecutionBinding::CanonicalSimulation;
+        if (result.portfolioInput &&
+            result.portfolioInput->input.profile.warmupSamples == 0 &&
+            result.portfolioInput->input.profile.measuredSamples == 1 &&
+            outcome.runtimeDisposition ==
+                ApplicationMappingRuntimeDisposition::Completed &&
+            !outcome.oracleEvidence.empty())
+          result.portfolioExecutionBinding =
+              ApplicationPortfolioExecutionBinding::
+                  CanonicalSimulationAndOracle;
+        const bool portfolioExecutionComplete =
+            !result.portfolioInput || result.portfolioExecutionBinding ==
+                                          ApplicationPortfolioExecutionBinding::
+                                              CanonicalSimulationAndOracle;
+        result.finalApplicationQorComplete =
+            result.finalApplicationQorComplete && portfolioExecutionComplete;
         if (outcome.runtimeDisposition !=
             ApplicationMappingRuntimeDisposition::Completed) {
           switch (outcome.runtimeDisposition) {
@@ -476,6 +498,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           case ApplicationMappingRuntimeDisposition::Completed:
             llvm_unreachable("completed runtime disposition handled above");
           }
+        } else if (!portfolioExecutionComplete) {
+          result.disposition =
+              ApplicationPairDecisionDisposition::MappingProofNotEstablished;
         } else if (outcome.system != prepared.preMappingFabric) {
           result.disposition =
               ApplicationPairDecisionDisposition::HardwareDseAlternative;
@@ -540,6 +565,9 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
     std::optional<SelectedApplicationInput> portfolioInput = std::nullopt) {
   ApplicationPairDecisionRecord result;
   result.portfolioInput = std::move(portfolioInput);
+  if (result.portfolioInput)
+    result.portfolioExecutionBinding =
+        ApplicationPortfolioExecutionBinding::DeclaredOnly;
   result.invocationRunKey = std::move(invocationRunKey);
   if (result.invocationRunKey)
     result.manifestJoinStatus =
@@ -1090,6 +1118,29 @@ llvm::StringRef toString(ApplicationPairManifestJoinStatus value) {
     return "missing";
   }
   llvm_unreachable("unknown application pair manifest join status");
+}
+
+llvm::StringRef toString(ApplicationPortfolioExecutionBinding value) {
+  switch (value) {
+  case ApplicationPortfolioExecutionBinding::NotSelected:
+    return "not_selected";
+  case ApplicationPortfolioExecutionBinding::DeclaredOnly:
+    return "declared_only";
+  case ApplicationPortfolioExecutionBinding::CanonicalSimulation:
+    return "canonical_simulation";
+  case ApplicationPortfolioExecutionBinding::CanonicalSimulationAndOracle:
+    return "canonical_simulation_and_oracle";
+  }
+  llvm_unreachable("unknown application portfolio execution binding");
+}
+
+ApplicationPairDecisionRecord makeUnsupportedPortfolioProfilePairDecision(
+    SelectedApplicationInput selection,
+    const ArtifactRootReference &requestedSystem, llvm::StringRef detail) {
+  return makePreparationPairDecision(
+      std::nullopt, requestedSystem, std::nullopt, std::nullopt, {},
+      ApplicationPairDecisionDisposition::UnsupportedSemantic, detail,
+      std::nullopt, std::nullopt, true, std::move(selection));
 }
 
 llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
@@ -2130,8 +2181,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             attempt.incompleteNodeOrdinal,
             attempt.incompleteReason,
             attempt.systemMappings,
-            prepared.candidateInventory
-                [alternative.preMappingCandidateRecordOrdinal],
+            prepared.candidateInventory[alternative
+                                            .preMappingCandidateRecordOrdinal],
             alternative.plan.systemBindingPartitions,
             ApplicationMappingRuntimeDisposition::NotRequested,
             {},
@@ -2139,7 +2190,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             std::move(resourceTimeSpectrum),
             std::nullopt,
             std::nullopt,
-            std::nullopt});
+            std::nullopt,
+            {}});
       }
       if (alternative.equivalentScheduleHintDigests.empty())
         outcomes.push_back(ApplicationMappingCandidateOutcome{
@@ -2152,8 +2204,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             attempt.incompleteNodeOrdinal,
             attempt.incompleteReason,
             attempt.systemMappings,
-            prepared.candidateInventory
-                [alternative.preMappingCandidateRecordOrdinal],
+            prepared.candidateInventory[alternative
+                                            .preMappingCandidateRecordOrdinal],
             alternative.plan.systemBindingPartitions,
             ApplicationMappingRuntimeDisposition::NotRequested,
             {},
@@ -2161,7 +2213,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             std::move(emptyScheduleSpectrum),
             std::nullopt,
             std::nullopt,
-            std::nullopt});
+            std::nullopt,
+            {}});
       dse::JointDesignAttemptRecord adjusted = attempt;
       adjusted.planOrdinal = planOrdinal;
       attempts.push_back(std::move(adjusted));
@@ -2291,6 +2344,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         continue;
       outcome.runtimeDisposition = runtime->disposition;
       outcome.runtimeEvidence = runtime->evidence;
+      outcome.oracleEvidence = runtime->oracleEvidence;
       outcome.dfgCycles = runtime->dfgCycles;
       outcome.cgraCycles = runtime->cgraCycles;
       outcome.resourceCoreCost = prepared.preMappingFabricAccCoreCount;
@@ -2382,7 +2436,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             std::move(*childSpectrum),
             childRuntime->dfgCycles,
             childRuntime->cgraCycles,
-            std::nullopt});
+            std::nullopt,
+            childRuntime->oracleEvidence});
         if (childRuntime->disposition ==
                 ApplicationMappingRuntimeDisposition::Completed &&
             outcomeMatchesRequestedSpectrum(
@@ -2517,7 +2572,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             std::move(*childSpectrum),
             childRuntime->dfgCycles,
             childRuntime->cgraCycles,
-            std::nullopt});
+            std::nullopt,
+            childRuntime->oracleEvidence});
         if (childRuntime->disposition !=
             ApplicationMappingRuntimeDisposition::Completed)
           continue;
@@ -2745,8 +2801,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 std::nullopt,
                 std::nullopt,
                 childMappings,
-                prepared.candidateInventory[
-                    childAlternative.preMappingCandidateRecordOrdinal],
+                prepared.candidateInventory
+                    [childAlternative.preMappingCandidateRecordOrdinal],
                 childAlternative.plan.systemBindingPartitions,
                 childRuntime->disposition,
                 childRuntime->evidence,
@@ -2754,7 +2810,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 std::move(*childSpectrum),
                 childRuntime->dfgCycles,
                 childRuntime->cgraCycles,
-                std::nullopt});
+                std::nullopt,
+                childRuntime->oracleEvidence});
           } else {
             outcomes.push_back(ApplicationMappingCandidateOutcome{
                 childAlternative.preMappingCandidateRecordOrdinal,
@@ -2766,8 +2823,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 std::nullopt,
                 childIncompleteReason,
                 {},
-                prepared.candidateInventory[
-                    childAlternative.preMappingCandidateRecordOrdinal],
+                prepared.candidateInventory
+                    [childAlternative.preMappingCandidateRecordOrdinal],
                 childAlternative.plan.systemBindingPartitions,
                 ApplicationMappingRuntimeDisposition::NotRequested,
                 {},
@@ -2775,7 +2832,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 std::nullopt,
                 std::nullopt,
                 std::nullopt,
-                std::nullopt});
+                std::nullopt,
+                {}});
           }
           incrementalMappingObservations.push_back(std::move(observation));
           mapping_debug::emit(

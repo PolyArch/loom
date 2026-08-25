@@ -1,0 +1,20 @@
+# REQUIRES: system-linux
+
+# RUN: %loom-application-host-run-test %t.dir %S/manifest.json %S/../..
+# RUN: %loom-application-host-run --manifest=%S/manifest.json \
+# RUN:   --repository-root=%S/../.. --application=vecadd-memory --input=smoke \
+# RUN:   > %t.vecadd.json
+# RUN: FileCheck %s --check-prefix=REPORT < %t.vecadd.json
+
+# REPORT: "schema": "loom.application_host_run"
+# REPORT: "version": "1.0"
+# REPORT: "application_identity": "vecadd-memory"
+# REPORT: "input_name": "smoke"
+# REPORT: "warmup_samples": 0
+# REPORT: "measured_samples": 1
+# REPORT: "deadline_milliseconds": 120000
+# REPORT: "status": "succeeded"
+# REPORT: "exit_status": 0
+# REPORT: "host_wall_time_nanoseconds": [[WALL:[0-9]+]]
+# REPORT: "status": "matched"
+# REPORT: "outcome": "succeeded"

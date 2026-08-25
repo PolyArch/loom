@@ -294,12 +294,13 @@ membership authority and lets each workflow retain its own source, protocol,
 and oracle.
 
 The real-application portfolio therefore starts with five complementary
-programs: two streaming ML workloads, one compact language-model inference,
-one irregular graph workload, and one Loom-owned heterogeneous multisensor
-pipeline. A fixed starter set makes vertical closure reviewable, while a
-general admission rule allows later applications only when they contribute a
-new stack behavior. Treating directory contents or a generated dashboard as
-membership would make ordinary checkout state a semantic authority.
+programs: bounded TinyML anomaly inference, a compact language-model kernel
+harness, irregular PageRank, a Loom-owned heterogeneous multisensor Attention
+pipeline, and regular contiguous-memory vecadd. A fixed starter set makes
+vertical closure reviewable, while a general admission rule allows later
+applications only when they contribute a new stack behavior. Treating
+directory contents or a generated dashboard as membership would make ordinary
+checkout state a semantic authority.
 
 One thin manifest is the smallest sufficient repository owner. It selects
 source/build entries, named inputs, independent oracles, and execution cadence;
@@ -307,7 +308,10 @@ all program, workload, Mapping, simulation, implementation, and Evidence facts
 remain in their existing owners. An `ApplicationArtifact` would merely wrap
 those references and create another identity without adding a semantic fact.
 Similarly, one manifest with smoke, validation, and scale/EDA selections keeps
-cadence separate from membership and avoids three drifting inventories.
+cadence vocabulary separate from membership and avoids three drifting
+inventories. The current rows select only smoke because no independent
+validation or scale/EDA workload-and-oracle row is yet admitted; retaining an
+empty tier claim would defeat that separation.
 
 Pinned external source revisions remain Gitlink facts rather than copied
 manifest strings. Fixed model data follows the executable image contract and

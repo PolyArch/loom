@@ -358,6 +358,7 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
 
   llvm::Function *helper = llvm::Function::Create(
       startType, llvm::GlobalValue::InternalLinkage, helperName, module);
+  helper->setDoesNotThrow();
   llvm::BasicBlock *entry =
       llvm::BasicBlock::Create(module.getContext(), "entry", helper);
   llvm::BasicBlock *prepare =
@@ -598,6 +599,7 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
 
   llvm::Function *wait = llvm::Function::Create(
       waitType, llvm::GlobalValue::InternalLinkage, waitName, module);
+  wait->setDoesNotThrow();
   wait->getArg(0)->setName("generation");
   llvm::BasicBlock *waitEntry =
       llvm::BasicBlock::Create(module.getContext(), "entry", wait);
@@ -1048,6 +1050,8 @@ llvm::Error addHostEntry(llvm::Module &module, llvm::StringRef applicationEntry,
   llvm::Function *entry = llvm::Function::Create(
       llvm::FunctionType::get(i64, {i64, i64, i64, i64, i64, i64}, false),
       llvm::GlobalValue::ExternalLinkage, applicationHostEntrySymbol, module);
+  if (application->doesNotThrow())
+    entry->setDoesNotThrow();
   auto argument = entry->arg_begin();
   llvm::Value *dispatch = &*argument++;
   dispatch->setName("dispatch");
@@ -1152,6 +1156,7 @@ void emitInstructionEntry(llvm::Module &module, std::uint64_t ordinal) {
                               {i64, i64, i64, i64, i64, i64}, false),
       llvm::GlobalValue::ExternalLinkage,
       "__loom_thread_entry_" + std::to_string(ordinal), module);
+  entry->setDoesNotThrow();
   auto argument = entry->arg_begin();
   llvm::Value *bridge = &*argument++;
   llvm::Value *staticAddress = &*argument++;

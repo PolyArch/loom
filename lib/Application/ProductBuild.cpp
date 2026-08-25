@@ -53,6 +53,8 @@
 namespace loom::application {
 namespace {
 
+constexpr llvm::StringLiteral portfolioFreestandingMathLibraryOption{"-lm"};
+
 using MonotonicClock = std::chrono::steady_clock;
 
 llvm::Error productError(llvm::StringRef kind, const llvm::Twine &message) {
@@ -285,6 +287,13 @@ llvm::Error validatePortfolioBuildOptions(const BuildSelection &build) {
           "loom_portfolio_build_invalid",
           "manifest link option '" + option +
               "' conflicts with product-owned compiler target policy");
+    else if (llvm::StringRef(option).starts_with("-l") &&
+             option != portfolioFreestandingMathLibraryOption)
+      return productError(
+          "loom_portfolio_build_invalid",
+          "manifest link option '" + option +
+              "' names a library unavailable to the product freestanding "
+              "runtime");
   return llvm::Error::success();
 }
 
@@ -304,12 +313,6 @@ resolvePortfolioInput(const ProductBuildOptions &options) {
                         llvm::toString(selection.takeError()));
   if (llvm::Error error = validatePortfolioBuildOptions(selection->build))
     return std::move(error);
-  if (selection->input.profile.warmupSamples != 0 ||
-      selection->input.profile.measuredSamples != 1)
-    return productError(
-        "loom_portfolio_profile_unsupported",
-        "product source binding supports exactly zero warm-up samples and "
-        "one measured sample until a profile runner is selected");
   std::optional<llvm::StringRef> cacheRoot;
   if (!options.portfolioCacheRoot.empty())
     cacheRoot = options.portfolioCacheRoot;
@@ -500,8 +503,8 @@ prepareProductTarget(const ProductBuildOptions &options) {
 
 std::vector<std::string> projectDriverArguments(
     const CompilerTargetCommandLineProjection &target,
-    const std::optional<PreparedProductTarget::PortfolioInput>
-        &portfolioInput) {
+    const std::optional<PreparedProductTarget::PortfolioInput> &portfolioInput,
+    llvm::StringRef linkerWorkspace) {
   std::vector<std::string> result;
   result.push_back("--target=" + target.targetTriple);
   result.push_back("-march=" + target.architecture);
@@ -526,6 +529,10 @@ std::vector<std::string> projectDriverArguments(
   if (target.positionIndependent)
     result.push_back("-fPIC");
   if (portfolioInput) {
+    result.push_back("-o");
+    result.push_back(
+        (std::filesystem::path(linkerWorkspace.str()) / "portfolio.elf")
+            .string());
     result.push_back("-working-directory=" + portfolioInput->repositoryRoot);
     result.insert(result.end(),
                   portfolioInput->selection.build.compilerOptions.begin(),
@@ -536,9 +543,10 @@ std::vector<std::string> projectDriverArguments(
       result.push_back(
           (std::filesystem::path(portfolioInput->source.sourceRoot) / source)
               .string());
-    result.insert(result.end(),
-                  portfolioInput->selection.build.linkOptions.begin(),
-                  portfolioInput->selection.build.linkOptions.end());
+    for (const std::string &option :
+         portfolioInput->selection.build.linkOptions)
+      if (option != portfolioFreestandingMathLibraryOption)
+        result.push_back(option);
   }
   return result;
 }
@@ -918,7 +926,8 @@ public:
         target_(std::move(target)) {}
 
   std::vector<std::string> compilerArguments() const {
-    return projectDriverArguments(target_.commandLine, target_.portfolioInput);
+    return projectDriverArguments(target_.commandLine, target_.portfolioInput,
+                                  target_.workspace->linkerPath());
   }
 
   llvm::Error buildFromFinalLink(llvm::StringRef finalLinkOutput) {
@@ -983,6 +992,19 @@ ProductBuildInvocation::create(ProductBuildOptions options) {
   auto target = prepareProductTarget(options);
   if (!target)
     return target.takeError();
+  if (target->portfolioInput &&
+      (target->portfolioInput->selection.input.profile.warmupSamples != 0 ||
+       target->portfolioInput->selection.input.profile.measuredSamples != 1)) {
+    constexpr llvm::StringLiteral detail =
+        "product source binding supports exactly zero warm-up samples and one "
+        "measured sample; the bounded host profile remains independently "
+        "executable";
+    emitApplicationPairDecisionDiagnostics(
+        makeUnsupportedPortfolioProfilePairDecision(
+            target->portfolioInput->selection, target->system.reference(),
+            detail));
+    return productError("loom_portfolio_profile_unsupported", detail);
+  }
   return std::unique_ptr<ProductBuildInvocation>(new ProductBuildInvocation(
       std::make_unique<Impl>(std::move(options), std::move(*localToolConfig),
                              std::move(fabricImportSession),

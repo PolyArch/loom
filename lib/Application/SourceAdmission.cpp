@@ -308,22 +308,30 @@ validateRepositorySource(const std::filesystem::path &repositoryRoot,
                             repositoryRoot, "repository source root");
 }
 
-llvm::Error
-validateBuildAndOracles(const std::filesystem::path &repositoryRoot,
-                        const std::filesystem::path &sourceRoot,
-                        const ApplicationDefinition &application,
-                        const WorkloadInputSelection *selectedInput = nullptr) {
+struct AdmittedApplicationFiles final {
+  std::vector<std::string> sources;
+  std::vector<AdmittedApplicationInput> inputs;
+};
+
+llvm::Expected<AdmittedApplicationFiles> resolveBuildAndOracleFiles(
+    const std::filesystem::path &repositoryRoot,
+    const std::filesystem::path &sourceRoot,
+    const ApplicationDefinition &application,
+    const WorkloadInputSelection *selectedInput = nullptr) {
+  AdmittedApplicationFiles files;
   std::vector<std::filesystem::path> selectedSources;
+  files.sources.reserve(application.build.sources.size());
   selectedSources.reserve(application.build.sources.size());
   for (const std::string &source : application.build.sources) {
     auto resolved =
         canonicalFile(sourceRoot, source, sourceRoot, "selected build source");
     if (!resolved)
       return resolved.takeError();
+    files.sources.push_back(resolved->string());
     selectedSources.push_back(std::move(*resolved));
   }
-  const auto validateOracle =
-      [&](const WorkloadInputSelection &input) -> llvm::Error {
+  const auto validateOracle = [&](const WorkloadInputSelection &input)
+      -> llvm::Expected<AdmittedApplicationInput> {
     auto oracle = canonicalFile(repositoryRoot, input.oracle.entry,
                                 repositoryRoot, "oracle entry");
     if (!oracle)
@@ -331,31 +339,42 @@ validateBuildAndOracles(const std::filesystem::path &repositoryRoot,
     if (llvm::is_contained(selectedSources, *oracle))
       return invalid("oracle entry for '" + application.identity +
                      "' is also a selected program source");
-    return llvm::Error::success();
+    return AdmittedApplicationInput{input.name, oracle->string(), {}};
   };
-  if (selectedInput)
-    return validateOracle(*selectedInput);
-  for (const WorkloadInputSelection &input : application.inputs) {
-    if (llvm::Error error = validateOracle(input))
-      return error;
+  if (selectedInput) {
+    auto input = validateOracle(*selectedInput);
+    if (!input)
+      return input.takeError();
+    files.inputs.push_back(std::move(*input));
+    return files;
   }
-  return llvm::Error::success();
+  files.inputs.reserve(application.inputs.size());
+  for (const WorkloadInputSelection &input : application.inputs) {
+    auto admitted = validateOracle(input);
+    if (!admitted)
+      return admitted.takeError();
+    files.inputs.push_back(std::move(*admitted));
+  }
+  return files;
 }
 
-llvm::Expected<std::optional<UnavailableApplicationSource>>
+using CachedInputAdmission = std::variant<std::vector<AdmittedCachedInput>,
+                                          UnavailableApplicationSource>;
+
+llvm::Expected<CachedInputAdmission>
 validateCachedInputs(const std::filesystem::path &cacheRoot,
                      const ApplicationDefinition &application,
                      const WorkloadInputSelection *selectedInput = nullptr) {
   const auto validateInput = [&](const CachedInput &input)
-      -> llvm::Expected<std::optional<UnavailableApplicationSource>> {
+      -> llvm::Expected<
+          std::variant<AdmittedCachedInput, UnavailableApplicationSource>> {
     const std::filesystem::path path = cacheRoot / input.path;
     auto exists = pathExists(path, "cached input");
     if (!exists)
       return exists.takeError();
     if (!*exists)
-      return std::optional<UnavailableApplicationSource>{
-          UnavailableApplicationSource{SourceUnavailableReason::CachedInput,
-                                       application.identity, input.path}};
+      return UnavailableApplicationSource{SourceUnavailableReason::CachedInput,
+                                          application.identity, input.path};
     auto canonical =
         canonicalFile(cacheRoot, input.path, cacheRoot, "cached input");
     if (!canonical)
@@ -373,9 +392,11 @@ validateCachedInputs(const std::filesystem::path &cacheRoot,
                      application.identity + "' has digest " +
                      formatBlobDigestHex(actual) + " instead of " +
                      formatBlobDigestHex(input.digest));
-    return std::optional<UnavailableApplicationSource>{};
+    return AdmittedCachedInput{input.logicalName, canonical->string()};
   };
+  std::vector<AdmittedCachedInput> admitted;
   if (selectedInput) {
+    admitted.reserve(selectedInput->cachedInputs.size());
     for (const std::string &logicalName : selectedInput->cachedInputs) {
       const auto found = llvm::find_if(
           application.cachedInputs, [&](const CachedInput &input) {
@@ -386,17 +407,62 @@ validateCachedInputs(const std::filesystem::path &cacheRoot,
                        "' references unknown cached input '" + logicalName +
                        "'");
       auto unavailable = validateInput(*found);
-      if (!unavailable || *unavailable)
-        return unavailable;
+      if (!unavailable)
+        return unavailable.takeError();
+      if (auto *missing =
+              std::get_if<UnavailableApplicationSource>(&*unavailable))
+        return std::move(*missing);
+      admitted.push_back(
+          std::get<AdmittedCachedInput>(std::move(*unavailable)));
     }
-    return std::optional<UnavailableApplicationSource>{};
+    return CachedInputAdmission{std::move(admitted)};
   }
+  admitted.reserve(application.cachedInputs.size());
   for (const CachedInput &input : application.cachedInputs) {
     auto unavailable = validateInput(input);
-    if (!unavailable || *unavailable)
-      return unavailable;
+    if (!unavailable)
+      return unavailable.takeError();
+    if (auto *missing =
+            std::get_if<UnavailableApplicationSource>(&*unavailable))
+      return std::move(*missing);
+    admitted.push_back(std::get<AdmittedCachedInput>(std::move(*unavailable)));
   }
-  return std::optional<UnavailableApplicationSource>{};
+  return CachedInputAdmission{std::move(admitted)};
+}
+
+llvm::Error assignCachedInputs(
+    const ApplicationDefinition &application,
+    const WorkloadInputSelection *selectedInput,
+    llvm::ArrayRef<AdmittedCachedInput> admittedCachedInputs,
+    llvm::MutableArrayRef<AdmittedApplicationInput> admittedInputs) {
+  const auto assign = [&](const WorkloadInputSelection &input,
+                          AdmittedApplicationInput &admitted) -> llvm::Error {
+    admitted.cachedInputs.reserve(input.cachedInputs.size());
+    for (const std::string &logicalName : input.cachedInputs) {
+      const auto found = llvm::find_if(
+          admittedCachedInputs, [&](const AdmittedCachedInput &cached) {
+            return cached.logicalName == logicalName;
+          });
+      if (found == admittedCachedInputs.end())
+        return invalid("admitted cache projection lost logical input '" +
+                       logicalName + "'");
+      admitted.cachedInputs.push_back(*found);
+    }
+    return llvm::Error::success();
+  };
+  if (selectedInput) {
+    if (admittedInputs.size() != 1 ||
+        admittedInputs.front().inputName != selectedInput->name)
+      return invalid("selected input admission changed identity");
+    return assign(*selectedInput, admittedInputs.front());
+  }
+  if (admittedInputs.size() != application.inputs.size())
+    return invalid("application input admission changed cardinality");
+  for (auto [input, admitted] :
+       llvm::zip_equal(application.inputs, admittedInputs))
+    if (llvm::Error error = assign(input, admitted))
+      return error;
+  return llvm::Error::success();
 }
 
 } // namespace
@@ -546,9 +612,10 @@ admitApplicationSourcesImpl(const ApplicationManifest &manifest,
           });
       selectedInput = &*input;
     }
-    if (llvm::Error error = validateBuildAndOracles(
-            repositoryRoot, sourceRoot, *application, selectedInput))
-      return std::move(error);
+    auto admittedFiles = resolveBuildAndOracleFiles(
+        repositoryRoot, sourceRoot, *application, selectedInput);
+    if (!admittedFiles)
+      return admittedFiles.takeError();
     const bool selectedCache = selectedInput
                                    ? !selectedInput->cachedInputs.empty()
                                    : !application->cachedInputs.empty();
@@ -563,13 +630,21 @@ admitApplicationSourcesImpl(const ApplicationManifest &manifest,
           validateCachedInputs(*cacheRoot, *application, selectedInput);
       if (!unavailable)
         return unavailable.takeError();
-      if (*unavailable) {
-        outcomes.emplace_back(std::move(**unavailable));
+      if (auto *missing =
+              std::get_if<UnavailableApplicationSource>(&*unavailable)) {
+        outcomes.emplace_back(std::move(*missing));
         continue;
       }
+      const auto &cachedInputs =
+          std::get<std::vector<AdmittedCachedInput>>(*unavailable);
+      if (llvm::Error error = assignCachedInputs(
+              *application, selectedInput, cachedInputs, admittedFiles->inputs))
+        return std::move(error);
     }
     outcomes.emplace_back(AdmittedApplicationSource{
-        application->identity, sourceRoot.generic_string()});
+        application->identity, repositoryRoot.generic_string(),
+        sourceRoot.generic_string(), std::move(admittedFiles->sources),
+        std::move(admittedFiles->inputs)});
   }
   return outcomes;
 }

@@ -23,7 +23,8 @@
           "-Wno-unknown-pragmas",
           "-Iexternals/gapbs/src",
           "-Itest/applications/gapbs-pagerank-include",
-          "-include=test/applications/gapbs-pagerank-smoke.h"
+          "-include",
+          "test/applications/gapbs-pagerank-smoke.h"
         ],
         "link_options": []
       },
@@ -68,7 +69,8 @@
           "-fno-math-errno",
           "-Wno-unknown-pragmas",
           "-Itest/applications/llama2c-kernels-include",
-          "-include=test/applications/llama2c-kernels-smoke.h"
+          "-include",
+          "test/applications/llama2c-kernels-smoke.h"
         ],
         "link_options": [
           "-lm"
@@ -112,7 +114,9 @@
         "compiler_options": [
           "-O1",
           "-ffp-contract=off",
-          "-fno-math-errno"
+          "-fno-math-errno",
+          "-DLOOM_ATTENTION_RETAIN_LOOPS",
+          "-DLOOM_ATTENTION_PRODUCT_EXECUTION"
         ],
         "link_options": [
           "-lm"
@@ -203,13 +207,13 @@
       "identity": "vecadd-memory",
       "source": {
         "kind": "repository",
-        "root": "test/app/vecadd"
+        "root": "test/applications/vecadd-memory"
       },
       "build": {
-        "entry": "main_func.c",
+        "entry": "vecadd_memory.c",
         "language": "c",
         "sources": [
-          "main_func.c"
+          "vecadd_memory.c"
         ],
         "compiler_options": [
           "-O1",
@@ -227,7 +231,7 @@
           "cached_inputs": [],
           "oracle": {
             "kind": "exact",
-            "entry": "test/app/vecadd/expected.txt"
+            "entry": "test/applications/vecadd-memory/expected-smoke.txt"
           },
           "profile": {
             "warmup_samples": 0,

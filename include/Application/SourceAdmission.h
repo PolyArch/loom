@@ -24,9 +24,27 @@ enum class SourceUnavailableReason : std::uint8_t {
 
 llvm::StringRef toString(SourceUnavailableReason reason);
 
+struct AdmittedCachedInput final {
+  std::string logicalName;
+  std::string path;
+};
+
+struct AdmittedApplicationInput final {
+  std::string inputName;
+  /// Canonical absolute oracle path validated by admission.
+  std::string oraclePath;
+  /// Canonical absolute cache paths in selected manifest order.
+  std::vector<AdmittedCachedInput> cachedInputs;
+};
+
 struct AdmittedApplicationSource final {
   std::string applicationIdentity;
+  /// Canonical absolute repository root validated by admission.
+  std::string repositoryRoot;
   std::string sourceRoot;
+  /// Canonical absolute source paths in manifest build order.
+  std::vector<std::string> sourcePaths;
+  std::vector<AdmittedApplicationInput> inputs;
 };
 
 struct UnavailableApplicationSource final {

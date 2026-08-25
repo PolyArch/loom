@@ -500,19 +500,32 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
           "31bc130d27e3732e1c09db946ccc7bfa130f98739bcd90cfa39d590f61f4d6fa")
     fail("repository manifest changed the TinyML inference selection");
 
-  const std::vector<std::string> existingApplications = {
-      "gapbs-pagerank", "llama2c-kernels", "loom-multisensor-attention",
-      "vecadd-memory"};
-  auto outcomes = take(admitApplicationSources(
-      manifest, existingApplications, sharedRepositoryRoot));
-  if (outcomes.size() != 4)
-    fail("repository manifest source admission changed cardinality");
-  for (auto [index, identity] : llvm::enumerate(existingApplications)) {
+  const std::vector<std::string> gitlinkApplications = {"gapbs-pagerank",
+                                                        "llama2c-kernels"};
+  auto gitlinkOutcomes = take(admitApplicationSources(
+      manifest, gitlinkApplications, sharedRepositoryRoot));
+  if (gitlinkOutcomes.size() != gitlinkApplications.size())
+    fail("repository manifest Gitlink admission changed cardinality");
+  for (auto [index, identity] : llvm::enumerate(gitlinkApplications)) {
     const auto *admitted =
-        std::get_if<AdmittedApplicationSource>(&outcomes[index]);
+        std::get_if<AdmittedApplicationSource>(&gitlinkOutcomes[index]);
     if (!admitted || admitted->applicationIdentity != identity ||
         !std::filesystem::path(admitted->sourceRoot).is_absolute())
-      fail("repository application source was not admitted");
+      fail("repository manifest Gitlink source was not admitted");
+  }
+
+  const std::vector<std::string> repositoryApplications = {
+      "loom-multisensor-attention", "vecadd-memory"};
+  auto repositoryOutcomes = take(admitApplicationSources(
+      manifest, repositoryApplications, repositoryRoot));
+  if (repositoryOutcomes.size() != repositoryApplications.size())
+    fail("repository-owned source admission changed cardinality");
+  for (auto [index, identity] : llvm::enumerate(repositoryApplications)) {
+    const auto *admitted =
+        std::get_if<AdmittedApplicationSource>(&repositoryOutcomes[index]);
+    if (!admitted || admitted->applicationIdentity != identity ||
+        !std::filesystem::path(admitted->sourceRoot).is_absolute())
+      fail("repository-owned application source was not admitted");
   }
 
   ApplicationSourceAdmissionOutcome tinyMlAdmission =
