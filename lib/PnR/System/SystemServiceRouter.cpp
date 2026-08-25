@@ -900,8 +900,16 @@ loom::pnr::detail::buildSystemServiceRoutes(
         routeRequest.endpointExpansionLimit =
             problem.config().policy().search.routing.endpointExpansionLimit;
         routeRequest.eligibleTraversalBits = eligibleTraversals;
+        const std::uint64_t initialEndpointExpansions =
+            search.endpointExpansionCount();
         auto routed = search.search(routeRequest);
-        const std::uint64_t consumed = search.endpointExpansionCount();
+        const std::uint64_t totalEndpointExpansions =
+            search.endpointExpansionCount();
+        if (totalEndpointExpansions < initialEndpointExpansions)
+          return arithmeticOverflow(
+              "endpoint expansion counter moved backwards during a probe");
+        const std::uint64_t consumed =
+            totalEndpointExpansions - initialEndpointExpansions;
         if (consumed >
             std::numeric_limits<std::uint64_t>::max() - endpointExpansions)
           return arithmeticOverflow(

@@ -131,6 +131,23 @@ void minimizeCanonicalBlock(CpModelProto &model,
   }
 }
 
+void installCanonicalDecisionStrategy(
+    CpModelProto &model, llvm::ArrayRef<CpSatCanonicalVariable> variables) {
+  model.clear_search_strategy();
+  if (variables.empty())
+    return;
+  DecisionStrategyProto *strategy = model.add_search_strategy();
+  for (const CpSatCanonicalVariable &variable : variables) {
+    auto *expression = strategy->add_exprs();
+    expression->add_vars(variable.protoIndex);
+    expression->add_coeffs(1);
+  }
+  strategy->set_variable_selection_strategy(
+      DecisionStrategyProto::CHOOSE_FIRST);
+  strategy->set_domain_reduction_strategy(
+      DecisionStrategyProto::SELECT_MIN_VALUE);
+}
+
 SatParameters parameters(std::int32_t randomSeed) {
   SatParameters result;
   result.set_num_workers(1);
@@ -215,8 +232,9 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
           "objective must minimize one exact integer objective variable");
   }
 
-  SolveState state{maxSolverCalls, 0, parameters(randomSeed)};
   CpModelProto working = model;
+  installCanonicalDecisionStrategy(working, variables);
+  SolveState state{maxSolverCalls, 0, parameters(randomSeed)};
   std::optional<CpSolverResponse> initial = solve(working, state);
   if (!initial)
     return unknown(state.calls);

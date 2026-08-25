@@ -95,9 +95,6 @@ public:
   bool relationIsStructural(PnrIndex relation) const {
     return relationRoles_[relation] == SpatialBindingRelationRole::Structural;
   }
-  bool relationRequiresRouteRepairEncoding(PnrIndex relation) const {
-    return !relationIsStructural(relation);
-  }
   bool relationSatisfied(PnrIndex relation,
                          llvm::ArrayRef<PnrIndex> choices) const {
     return relations_.relationSatisfied(relation, choices);

@@ -11,7 +11,7 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.0
+  loom.spatial_pnr.config.15.1
   loom.spatial_pnr.freeze.2.22
   loom.mapping.pnr.objective 3.1
   selected FabricPhysicalTimingProfile descriptor and digest
@@ -287,7 +287,11 @@ add a no-good over the complete observed placement, attachment, and local versus
 external disposition tuple. A fixed-terminal certificate excludes only
 assignments for which its separating capacity proof remains valid. Certificate
 growth is monotonic inside one invocation and cannot become persistent Mapping
-state.
+state. A successful probe that realizes its assignment, removes the primary
+witness, and preserves atomic capacity is legal even when its selected
+objective rank does not improve. Objective preference cannot turn that legal
+assignment into a hard no-good; the cold closure and verifier remain the
+legality gates.
 
 ### Final Spatial Closure
 
