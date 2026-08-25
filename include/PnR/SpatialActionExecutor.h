@@ -137,6 +137,12 @@ public:
   std::uint64_t heuristicBuildCount() const {
     return router_.heuristicBuildCount();
   }
+  std::uint64_t forwardHeuristicQueryCount() const {
+    return router_.forwardHeuristicQueryCount();
+  }
+  std::uint64_t forwardHeuristicUnreachableCount() const {
+    return router_.forwardHeuristicUnreachableCount();
+  }
   std::uint64_t heuristicCacheEvictionCount() const {
     return router_.heuristicCacheEvictionCount();
   }

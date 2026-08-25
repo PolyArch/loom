@@ -162,6 +162,12 @@ public:
   std::uint64_t heuristicBuildCount() const {
     return netRouter_.heuristicBuildCount();
   }
+  std::uint64_t forwardHeuristicQueryCount() const {
+    return netRouter_.forwardHeuristicQueryCount();
+  }
+  std::uint64_t forwardHeuristicUnreachableCount() const {
+    return netRouter_.forwardHeuristicUnreachableCount();
+  }
   std::uint64_t heuristicCacheEvictionCount() const {
     return netRouter_.heuristicCacheEvictionCount();
   }

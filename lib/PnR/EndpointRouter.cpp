@@ -283,6 +283,8 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   endpointExpansionCount_ = 0;
   heuristicCacheHitCount_ = 0;
   heuristicBuildCount_ = 0;
+  forwardHeuristicQueryCount_ = 0;
+  forwardHeuristicUnreachableCount_ = 0;
   heuristicCacheEvictionCount_ = 0;
   prepared_ = true;
   return llvm::Error::success();
@@ -486,6 +488,15 @@ RouteCost EndpointRouteSearchScratch::heuristic(PnrIndex endpoint) const {
   if (heuristicEpochs_[endpoint] != heuristicGeneration_)
     return routeCostInfinity;
   return heuristics_[endpoint];
+}
+
+RouteCost
+EndpointRouteSearchScratch::queryForwardHeuristic(PnrIndex endpoint) {
+  saturatingIncrement(forwardHeuristicQueryCount_);
+  const RouteCost value = heuristic(endpoint);
+  if (value == routeCostInfinity)
+    saturatingIncrement(forwardHeuristicUnreachableCount_);
+  return value;
 }
 
 RouteCost
@@ -845,7 +856,7 @@ EndpointRouteSearchScratch::searchTimingAware(
     }
     if (timingLabels_.size() >= std::numeric_limits<PnrIndex>::max())
       return overflow("physical timing label domain exceeds PnrIndex");
-    const RouteCost lowerBound = heuristic(endpoint);
+    const RouteCost lowerBound = queryForwardHeuristic(endpoint);
     if (lowerBound == routeCostInfinity)
       return std::optional<PnrIndex>();
     auto priority =
@@ -1178,7 +1189,7 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
            request.sourceEndpoints, request.sourceReplicationGroups)) {
     sourceEpochs_[source] = sourceGeneration_;
     sourceReplicationGroups_[source] = replicationGroup;
-    const RouteCost lowerBound = heuristic(source);
+    const RouteCost lowerBound = queryForwardHeuristic(source);
     if (lowerBound == routeCostInfinity)
       continue;
     const PnrIndex state = searchState(source, false);
@@ -1235,7 +1246,7 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
       if (request.forbidSourceReentry && isSource(successor) &&
           successor != endpoint)
         continue;
-      const RouteCost successorHeuristic = heuristic(successor);
+      const RouteCost successorHeuristic = queryForwardHeuristic(successor);
       if (successorHeuristic == routeCostInfinity)
         continue;
       auto arcCost = searchArcCost(request, arc, true);

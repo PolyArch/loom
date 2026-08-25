@@ -82,6 +82,12 @@ public:
   std::uint64_t heuristicBuildCount() const {
     return endpointSearch_.heuristicBuildCount();
   }
+  std::uint64_t forwardHeuristicQueryCount() const {
+    return endpointSearch_.forwardHeuristicQueryCount();
+  }
+  std::uint64_t forwardHeuristicUnreachableCount() const {
+    return endpointSearch_.forwardHeuristicUnreachableCount();
+  }
   std::uint64_t heuristicCacheEvictionCount() const {
     return endpointSearch_.heuristicCacheEvictionCount();
   }

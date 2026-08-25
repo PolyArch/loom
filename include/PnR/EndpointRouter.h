@@ -134,6 +134,12 @@ public:
     return heuristicCacheHitCount_;
   }
   std::uint64_t heuristicBuildCount() const { return heuristicBuildCount_; }
+  std::uint64_t forwardHeuristicQueryCount() const {
+    return forwardHeuristicQueryCount_;
+  }
+  std::uint64_t forwardHeuristicUnreachableCount() const {
+    return forwardHeuristicUnreachableCount_;
+  }
   std::uint64_t heuristicCacheEvictionCount() const {
     return heuristicCacheEvictionCount_;
   }
@@ -170,6 +176,7 @@ private:
   void beginTargetGeneration();
   void beginSourceGeneration();
   RouteCost heuristic(PnrIndex endpoint) const;
+  RouteCost queryForwardHeuristic(PnrIndex endpoint);
   RouteCost distance(PnrIndex searchState) const;
   PnrIndex searchState(PnrIndex endpoint, bool requirementMet) const;
   PnrIndex searchEndpoint(PnrIndex searchState) const;
@@ -283,6 +290,8 @@ private:
   std::uint64_t endpointExpansionCount_ = 0;
   std::uint64_t heuristicCacheHitCount_ = 0;
   std::uint64_t heuristicBuildCount_ = 0;
+  std::uint64_t forwardHeuristicQueryCount_ = 0;
+  std::uint64_t forwardHeuristicUnreachableCount_ = 0;
   std::uint64_t heuristicCacheEvictionCount_ = 0;
   HeapMode heapMode_ = HeapMode::ReverseDistance;
   bool prepared_ = false;
