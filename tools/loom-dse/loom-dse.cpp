@@ -7,6 +7,7 @@
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/DataflowRewriteCandidateGenerator.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
+#include "DSE/GroundTruthPlan.h"
 #include "DSE/JointDesignExploration.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/ModelParameterCalibrationAcquisition.h"
@@ -194,10 +195,20 @@ llvm::cl::list<std::string> licenseBindingCapacities(
     llvm::cl::desc("exact license binding digest and capacity as HEX=UNITS"),
     llvm::cl::value_desc("binding"), llvm::cl::ZeroOrMore);
 
-llvm::cl::opt<bool> groundTruthCampaign(
+enum class GroundTruthCampaignKind : std::uint8_t {
+  None,
+  Generic,
+  Fpa,
+};
+
+llvm::cl::opt<GroundTruthCampaignKind> groundTruthCampaign(
     "ground-truth-campaign",
-    llvm::cl::desc("apply deterministic pilot and collection time gates"),
-    llvm::cl::init(false));
+    llvm::cl::desc("apply generic or FPA campaign time gates"),
+    llvm::cl::values(clEnumValN(GroundTruthCampaignKind::Generic, "generic",
+                                "generic ground-truth collection policy"),
+                     clEnumValN(GroundTruthCampaignKind::Fpa, "fpa",
+                                "four-hour FPA active-time policy")),
+    llvm::cl::init(GroundTruthCampaignKind::None));
 llvm::cl::opt<std::uint64_t>
     pilotDispatchCount("pilot-dispatches",
                        llvm::cl::desc("deterministic pilot prefix size"),
@@ -630,20 +641,33 @@ llvm::Expected<int> run() {
       std::variant<DsePlanExecutionOutcome, CampaignExecutionResult>;
   llvm::Expected<ExecutionResult> executionResult =
       [&]() -> llvm::Expected<ExecutionResult> {
-    if (!groundTruthCampaign) {
+    const GroundTruthCampaignKind campaignKind = groundTruthCampaign.getValue();
+    if (campaignKind == GroundTruthCampaignKind::None) {
       auto outcome = resumeDsePlan(*view, *closure, *journal, *scheduler,
                                    *executionPolicy, artifacts, blobs);
       if (!outcome)
         return outcome.takeError();
       return ExecutionResult{std::in_place_index<0>, std::move(*outcome)};
     }
-    auto campaignPolicy = CampaignExecutionPolicy::get(
+    if (campaignKind == GroundTruthCampaignKind::Generic) {
+      auto campaignPolicy = CampaignExecutionPolicy::get(
+          pilotDispatchCount, minimumPilotObservations);
+      if (!campaignPolicy)
+        return campaignPolicy.takeError();
+      auto outcome = runGroundTruthCampaign(*view, *closure, *campaignPolicy,
+                                            *executionPolicy, *scheduler,
+                                            *journal, artifacts, blobs);
+      if (!outcome)
+        return outcome.takeError();
+      return ExecutionResult{std::in_place_index<1>, std::move(*outcome)};
+    }
+    auto campaignPolicy = makeFpaGroundTruthCampaignPolicy(
         pilotDispatchCount, minimumPilotObservations);
     if (!campaignPolicy)
       return campaignPolicy.takeError();
-    auto outcome = runGroundTruthCampaign(*view, *closure, *campaignPolicy,
-                                          *executionPolicy, *scheduler,
-                                          *journal, artifacts, blobs);
+    auto outcome = runFpaGroundTruthCampaign(*view, *closure, *campaignPolicy,
+                                             *executionPolicy, *scheduler,
+                                             *journal, artifacts, blobs);
     if (!outcome)
       return outcome.takeError();
     return ExecutionResult{std::in_place_index<1>, std::move(*outcome)};
@@ -670,7 +694,7 @@ llvm::Expected<int> run() {
   progress->flush();
 
   int exitCode = EXIT_SUCCESS;
-  if (groundTruthCampaign) {
+  if (groundTruthCampaign.getValue() != GroundTruthCampaignKind::None) {
     CampaignExecutionResult &campaignOutcome =
         std::get<CampaignExecutionResult>(*executionResult);
     if (const auto *refused =

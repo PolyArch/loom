@@ -552,11 +552,13 @@ explicit multi-source contract whose features own source identity.
 
 Ground-truth collection uses the central finite DSE plan and Journal. Every
 model-data sample's complete newly required dependency slice is limited to ten
-active minutes. The FPA entry point rejects a campaign policy above four
-active hours and propagates the remaining budget as the same absolute dispatch
-deadline used by the plan executor. Uncached Mapping, RTL, implementation, and
-EDA prerequisites remain visible and charged in that plan. A timeout,
-incomplete attempt, or typed Unsupported outcome produces no training sample.
+active minutes. `loom-dse --ground-truth-campaign=fpa` selects the FPA policy,
+which rejects a campaign policy above four active hours and propagates the
+remaining budget as the same absolute dispatch deadline used by the plan
+executor. `--ground-truth-campaign=generic` retains the general collection
+policy. Uncached Mapping, RTL, implementation, and EDA prerequisites remain
+visible and charged in that plan. A timeout, incomplete attempt, or typed
+Unsupported outcome produces no training sample.
 
 ## Anchor Verification
 

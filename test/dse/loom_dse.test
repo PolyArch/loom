@@ -3,7 +3,7 @@
 # RUN: loom-dse --config %t/config.json --artifact-store %t/artifacts \
 # RUN:   --blob-store %t/blobs --run-root %t/run \
 # RUN:   --producer-build loom.test.dse-cli.v1 --workers 1 --site-cpu 1 \
-# RUN:   --ground-truth-campaign --pilot-dispatches 1 \
+# RUN:   --ground-truth-campaign=fpa --pilot-dispatches 1 \
 # RUN:   --minimum-pilot-observations 1 --progress-interval-ms 25 \
 # RUN:   --progress-jsonl - 2> %t/result | FileCheck %s --check-prefix=PROGRESS
 # RUN: FileCheck %s --check-prefix=RESULT < %t/result
