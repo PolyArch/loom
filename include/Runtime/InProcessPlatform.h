@@ -3,6 +3,7 @@
 
 #include "Runtime/DeploymentLoader.h"
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -20,6 +21,9 @@ struct InProcessRuntimeFailurePlan final {
   std::optional<std::uint64_t> configurationWriteOrdinal;
   std::optional<InProcessRuntimeReadbackCorruption> readbackCorruption;
   bool identityMismatchAfterRecoveryReset = false;
+  std::optional<std::uint64_t> activationPreparationOrdinal;
+  std::uint64_t activationReplacementFailures = 0;
+  std::uint64_t activationDiscardFailures = 0;
 };
 
 struct InProcessRuntimeDeviceConfig final {
@@ -40,6 +44,9 @@ struct InProcessRuntimeStatistics final {
   std::uint64_t staticMemoryInstallCount = 0;
   std::uint64_t executableRegistrationCount = 0;
   std::uint64_t activationCount = 0;
+  std::uint64_t activationPreparationCount = 0;
+  std::uint64_t activationDiscardCount = 0;
+  std::uint64_t activationReplacementCount = 0;
   std::uint64_t leaseReleaseCount = 0;
   std::uint64_t quarantineCount = 0;
 };
@@ -81,11 +88,24 @@ public:
       const RuntimeExecutableRegistrationView &registration) override;
   llvm::Error activate(const RuntimeLeaseHandle &lease,
                        const RuntimeActivationView &activation) override;
+  llvm::Expected<RuntimePreparedActivationHandle>
+  prepareActivation(const RuntimeLeaseHandle &lease,
+                    const RuntimeExecutableRegistrationView &registration,
+                    const RuntimeActivationView &activation) override;
+  llvm::Error replaceActivationAtomically(
+      const RuntimeLeaseHandle &lease,
+      const RuntimePreparedActivationHandle &prepared) override;
+  llvm::Error discardPreparedActivation(
+      const RuntimeLeaseHandle &lease,
+      const RuntimePreparedActivationHandle &prepared) override;
   llvm::Error releaseExclusiveLease(const RuntimeLeaseHandle &lease) override;
   void quarantineDevice(const RuntimeDeviceHandle &device) override;
 
   InProcessRuntimeStatistics statistics() const;
   bool isQuarantined(std::uint64_t deviceOrdinal) const;
+  std::optional<ArtifactRootReference>
+  activeDeployment(std::uint64_t deviceOrdinal) const;
+  std::size_t preparedActivationCount(std::uint64_t deviceOrdinal) const;
 
 private:
   struct State;

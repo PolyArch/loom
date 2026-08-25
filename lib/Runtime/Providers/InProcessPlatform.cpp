@@ -95,6 +95,20 @@ ArtifactIdentity foreignIdentity(const ArtifactIdentity &identity) {
   return llvm::cantFail(ArtifactIdentity::fromBytes(bytes));
 }
 
+llvm::Error validateExecutableRegistration(
+    const RuntimeExecutableRegistrationView &registration) {
+  if (registration.hostProgramBytes.empty())
+    return invalid("host program is empty");
+  if (registration.instructionCoreBinaries.size() !=
+      registration.instructionCoreProgramBytes.size())
+    return invalid("InstructionCore binary and byte catalogs disagree");
+  if (llvm::any_of(
+          registration.instructionCoreProgramBytes,
+          [](llvm::ArrayRef<std::uint8_t> bytes) { return bytes.empty(); }))
+    return invalid("InstructionCore program is empty");
+  return llvm::Error::success();
+}
+
 const RuntimeProviderEndpointKindDescriptor endpointKinds[] = {
     {0, "identity", RuntimeEndpointClass::Identity,
      RuntimeEndpointFlow::ImplementationToRuntime, false,
@@ -114,6 +128,7 @@ const RuntimeProviderDescriptor descriptor{
     endpointKinds,
     true,
     true,
+    true,
     true};
 
 } // namespace
@@ -127,6 +142,10 @@ struct InProcessRuntimeProvider::State final {
     bool leased = false;
     bool quarantined = false;
     bool activated = false;
+    std::optional<ArtifactRootReference> activeDeployment;
+    std::uint64_t nextPreparedActivation = 1;
+    std::uint64_t preparationCount = 0;
+    std::map<std::uint64_t, ArtifactRootReference> preparedActivations;
     std::uint64_t leaseGeneration = 0;
     std::uint64_t resetCount = 0;
     std::uint64_t writeCount = 0;
@@ -210,8 +229,8 @@ InProcessRuntimeProvider::readImplementationIdentity(
                    "set");
   ++state_->statistics.identityReadCount;
   const ArtifactIdentity &implementation =
-      (*device)->config.hardwareImplementations[static_cast<std::size_t>(
-          *ordinal)];
+      (*device)
+          ->config.hardwareImplementations[static_cast<std::size_t>(*ordinal)];
   if ((*device)->config.failures.identityMismatchAfterRecoveryReset &&
       (*device)->resetCount >= 2)
     return foreignIdentity(implementation);
@@ -256,6 +275,8 @@ InProcessRuntimeProvider::quiesceAndReset(const RuntimeLeaseHandle &lease) {
   if (!device)
     return device.takeError();
   device->second->activated = false;
+  device->second->activeDeployment.reset();
+  device->second->preparedActivations.clear();
   device->second->shadow.clear();
   device->second->active.clear();
   device->second->staticMemory.clear();
@@ -397,19 +418,12 @@ llvm::Error InProcessRuntimeProvider::installStaticMemory(
 llvm::Error InProcessRuntimeProvider::registerExecutables(
     const RuntimeLeaseHandle &lease,
     const RuntimeExecutableRegistrationView &registration) {
+  if (llvm::Error error = validateExecutableRegistration(registration))
+    return error;
   std::lock_guard<std::mutex> lock(state_->mutex);
   auto device = state_->leasedDevice(lease);
   if (!device)
     return device.takeError();
-  if (registration.hostProgramBytes.empty())
-    return invalid("host program is empty");
-  if (registration.instructionCoreBinaries.size() !=
-      registration.instructionCoreProgramBytes.size())
-    return invalid("InstructionCore binary and byte catalogs disagree");
-  if (llvm::any_of(
-          registration.instructionCoreProgramBytes,
-          [](llvm::ArrayRef<std::uint8_t> bytes) { return bytes.empty(); }))
-    return invalid("InstructionCore program is empty");
   ++state_->statistics.executableRegistrationCount;
   return llvm::Error::success();
 }
@@ -417,13 +431,82 @@ llvm::Error InProcessRuntimeProvider::registerExecutables(
 llvm::Error
 InProcessRuntimeProvider::activate(const RuntimeLeaseHandle &lease,
                                    const RuntimeActivationView &activation) {
-  (void)activation;
   std::lock_guard<std::mutex> lock(state_->mutex);
   auto device = state_->leasedDevice(lease);
   if (!device)
     return device.takeError();
   device->second->activated = true;
+  device->second->activeDeployment = activation.deployment;
   ++state_->statistics.activationCount;
+  return llvm::Error::success();
+}
+
+llvm::Expected<RuntimePreparedActivationHandle>
+InProcessRuntimeProvider::prepareActivation(
+    const RuntimeLeaseHandle &lease,
+    const RuntimeExecutableRegistrationView &registration,
+    const RuntimeActivationView &activation) {
+  if (llvm::Error error = validateExecutableRegistration(registration))
+    return std::move(error);
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  auto device = state_->leasedDevice(lease);
+  if (!device)
+    return device.takeError();
+  if (!device->second->activated || !device->second->activeDeployment)
+    return invalid("device has no active Deployment during preparation");
+  const std::uint64_t preparationOrdinal = device->second->preparationCount++;
+  if (device->second->config.failures.activationPreparationOrdinal ==
+      preparationOrdinal)
+    return failed("injected activation preparation failure");
+  if (device->second->nextPreparedActivation == 0)
+    return invalid("prepared activation handle space is exhausted");
+  const std::uint64_t ordinal = device->second->nextPreparedActivation++;
+  device->second->preparedActivations.emplace(ordinal, activation.deployment);
+  ++state_->statistics.activationPreparationCount;
+  return RuntimePreparedActivationHandle{encodeU64(ordinal)};
+}
+
+llvm::Error InProcessRuntimeProvider::replaceActivationAtomically(
+    const RuntimeLeaseHandle &lease,
+    const RuntimePreparedActivationHandle &prepared) {
+  auto ordinal = decodeU64(prepared.opaque);
+  if (!ordinal)
+    return ordinal.takeError();
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  auto device = state_->leasedDevice(lease);
+  if (!device)
+    return device.takeError();
+  if (!device->second->activated || !device->second->activeDeployment)
+    return invalid("device has no active Deployment to replace");
+  auto activation = device->second->preparedActivations.find(*ordinal);
+  if (activation == device->second->preparedActivations.end())
+    return invalid("prepared activation handle is unknown");
+  if (device->second->config.failures.activationReplacementFailures != 0) {
+    --device->second->config.failures.activationReplacementFailures;
+    return failed("injected atomic activation replacement failure");
+  }
+  device->second->activeDeployment = activation->second;
+  ++state_->statistics.activationReplacementCount;
+  return llvm::Error::success();
+}
+
+llvm::Error InProcessRuntimeProvider::discardPreparedActivation(
+    const RuntimeLeaseHandle &lease,
+    const RuntimePreparedActivationHandle &prepared) {
+  auto ordinal = decodeU64(prepared.opaque);
+  if (!ordinal)
+    return ordinal.takeError();
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  auto device = state_->leasedDevice(lease);
+  if (!device)
+    return device.takeError();
+  if (device->second->config.failures.activationDiscardFailures != 0) {
+    --device->second->config.failures.activationDiscardFailures;
+    return failed("injected prepared activation discard failure");
+  }
+  if (device->second->preparedActivations.erase(*ordinal) != 1)
+    return invalid("prepared activation handle is unknown");
+  ++state_->statistics.activationDiscardCount;
   return llvm::Error::success();
 }
 
@@ -462,6 +545,24 @@ bool InProcessRuntimeProvider::isQuarantined(
   std::lock_guard<std::mutex> lock(state_->mutex);
   return deviceOrdinal < state_->devices.size() &&
          state_->devices[static_cast<std::size_t>(deviceOrdinal)].quarantined;
+}
+
+std::optional<ArtifactRootReference>
+InProcessRuntimeProvider::activeDeployment(std::uint64_t deviceOrdinal) const {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if (deviceOrdinal >= state_->devices.size())
+    return std::nullopt;
+  return state_->devices[static_cast<std::size_t>(deviceOrdinal)]
+      .activeDeployment;
+}
+
+std::size_t InProcessRuntimeProvider::preparedActivationCount(
+    std::uint64_t deviceOrdinal) const {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if (deviceOrdinal >= state_->devices.size())
+    return 0;
+  return state_->devices[static_cast<std::size_t>(deviceOrdinal)]
+      .preparedActivations.size();
 }
 
 const RuntimeProviderDescriptor &inProcessRuntimeProviderDescriptor() {

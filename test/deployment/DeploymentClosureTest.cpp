@@ -11,6 +11,8 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "PnR/System/SystemMappingMigration.h"
+#include "Runtime/DeploymentLoader.h"
+#include "Runtime/InProcessPlatform.h"
 #include "Runtime/ResourceTimeTransitionSelection.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -69,6 +71,67 @@ void expectSelectionError(
   if (value)
     deployment::test::fail(test, "accepted invalid resource-time selection");
   expectSelectionError(test, value.takeError(), expectedReason);
+}
+
+template <typename T>
+runtime::RuntimeActivationReplacementErrorReason
+expectActivationReplacementError(llvm::StringRef test,
+                                 llvm::Expected<T> value) {
+  if (value)
+    deployment::test::fail(test, "invalid activation replacement unexpectedly "
+                                 "succeeded");
+  std::optional<runtime::RuntimeActivationReplacementErrorReason> reason;
+  llvm::handleAllErrors(
+      value.takeError(),
+      [&](const runtime::RuntimeActivationReplacementError &replacement) {
+        reason = replacement.reason();
+      },
+      [&](const llvm::ErrorInfoBase &other) {
+        deployment::test::fail(test, other.message());
+      });
+  if (!reason)
+    deployment::test::fail(test,
+                           "activation replacement had no typed diagnostic");
+  return *reason;
+}
+
+std::vector<ArtifactIdentity> implementationIdentities(
+    llvm::StringRef test, const deployment::FinalizedDeployment &deployment,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const auto bindings = deployment.deployment().hardwareBindings();
+  std::vector<std::optional<ArtifactIdentity>> indexed(bindings.size());
+  for (const deployment::DeploymentHardwareBinding &binding : bindings) {
+    const auto runtimeBinding =
+        take(test, runtime::importRuntimePlatformBinding(
+                       binding.runtimePlatformBinding, artifacts, blobs));
+    const auto *reported = std::get_if<runtime::HardwareReportedIdentity>(
+        &runtimeBinding.binding().identityVerification());
+    deployment::test::require(
+        test, reported != nullptr,
+        "resource-time activation fixture has no reported identity");
+    bool found = false;
+    for (std::size_t ordinal = 0; ordinal != bindings.size(); ++ordinal) {
+      if (!(reported->implementationIdentityEndpoint ==
+            runtime::inProcessRuntimeEndpoint(
+                runtime::RuntimeEndpointClass::Identity, ordinal)))
+        continue;
+      deployment::test::require(test, !indexed[ordinal],
+                                "runtime identity endpoint is duplicated");
+      indexed[ordinal] = binding.hardwareImplementation.artifact;
+      found = true;
+      break;
+    }
+    deployment::test::require(test, found,
+                              "runtime identity endpoint is outside fixture");
+  }
+  std::vector<ArtifactIdentity> result;
+  result.reserve(indexed.size());
+  for (const auto &identity : indexed) {
+    deployment::test::require(test, identity.has_value(),
+                              "runtime identity coverage is incomplete");
+    result.push_back(*identity);
+  }
+  return result;
 }
 
 void exactClosureRoundTripsAndRejectsStaleChild() {
@@ -291,23 +354,83 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
                                 premature.replay().empty(),
                             "rejected transition mutated selector state");
 
-  auto selector =
-      take(test, runtime::ResourceTimeTransitionSelectionSession::create(
-                     transitionGraph, parent, artifacts, blobs));
-  auto stayed = take(test, selector.completeRoot(precedingRoot, std::nullopt));
+  const auto implementations =
+      implementationIdentities(test, parent, artifacts, blobs);
+  auto provider = take(test, runtime::createInProcessRuntimeProvider(
+                                 {{implementations, std::nullopt, {}}}));
+  auto loaded = take(
+      test, runtime::loadDeployment(parent, {provider, 0}, artifacts, blobs));
+  (void)take(test, premature.completeRootAndActivate(precedingRoot,
+                                                     std::nullopt, loaded));
+  const auto unpreparedReason = expectActivationReplacementError(
+      test, premature.completeRootAndActivate(root, transition.child, loaded));
+  deployment::test::require(
+      test,
+      unpreparedReason == runtime::RuntimeActivationReplacementErrorReason::
+                              PreparationFailed &&
+          premature.currentEndpoint() == transition.parent &&
+          premature.completedRoots().size() == 1 &&
+          premature.completedRoots().front() == precedingRoot &&
+          provider->activeDeployment(0) == parent.reference() &&
+          provider->statistics().activationPreparationCount == 0,
+      "unprepared activation did not fail before changing provider state");
+
+  auto selector = take(
+      test, runtime::ResourceTimeTransitionSelectionSession::createPrepared(
+                transitionGraph, loaded, artifacts, blobs));
+  deployment::test::require(
+      test,
+      provider->statistics().activationPreparationCount == 1 &&
+          provider->statistics().activationReplacementCount == 0,
+      "resource-time child endpoint was not prepared before execution");
+  auto stayed = take(test, selector.completeRootAndActivate(
+                               precedingRoot, std::nullopt, loaded));
   deployment::test::require(
       test,
       !stayed && selector.currentEndpoint() == transition.parent &&
           selector.completedRoots().size() == 1 &&
-          selector.completedRoots().front() == precedingRoot,
+          selector.completedRoots().front() == precedingRoot &&
+          loaded.deployment().reference() == parent.reference(),
       "explicit stay changed the Mapping endpoint or completion frontier");
-  auto selected = take(test, selector.completeRoot(root, transition.child));
+
+  auto foreignProvider = take(test, runtime::createInProcessRuntimeProvider(
+                                        {{implementations, std::nullopt, {}}}));
+  auto foreignLoaded =
+      take(test, runtime::loadDeployment(parent, {foreignProvider, 0},
+                                         artifacts, blobs));
+  const auto foreignReason = expectActivationReplacementError(
+      test,
+      selector.completeRootAndActivate(root, transition.child, foreignLoaded));
+  deployment::test::require(
+      test,
+      foreignReason == runtime::RuntimeActivationReplacementErrorReason::
+                           PreparationFailed &&
+          selector.currentEndpoint() == transition.parent &&
+          selector.completedRoots().size() == 1 &&
+          selector.completedRoots().front() == precedingRoot &&
+          loaded.deployment().reference() == parent.reference() &&
+          foreignLoaded.deployment().reference() == parent.reference() &&
+          provider->activeDeployment(0) == parent.reference() &&
+          foreignProvider->activeDeployment(0) == parent.reference() &&
+          provider->statistics().activationReplacementCount == 0 &&
+          foreignProvider->statistics().activationReplacementCount == 0,
+      "prepared selector crossed its exact loaded Deployment association");
+
+  auto selected = take(
+      test, selector.completeRootAndActivate(root, transition.child, loaded));
   deployment::test::require(
       test,
       selected && selected->parent == transition.parent &&
           selected->child == transition.child &&
-          selector.currentEndpoint() == transition.child,
-      "selector did not choose the exact preverified edge");
+          selector.currentEndpoint() == transition.child &&
+          loaded.deployment().reference() == child.reference() &&
+          provider->activeDeployment(0) == child.reference() &&
+          provider->statistics().activationPreparationCount == 1 &&
+          provider->statistics().activationReplacementCount == 1 &&
+          provider->statistics().activationCount == 1 &&
+          provider->statistics().executableRegistrationCount == 1 &&
+          provider->statistics().resetCount == 1,
+      "selector did not atomically activate the exact preverified edge");
   if (llvm::Error error = selector.joinMappedRoots())
     deployment::test::fail(test, llvm::toString(std::move(error)));
   deployment::test::require(
@@ -323,6 +446,88 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
           replayed.currentEndpoint() == transition.child &&
           replayed.completedRoots() == selector.completedRoots(),
       "selector replay diverged from the accepted transition sequence");
+
+  auto firstCycleDraft = draft;
+  firstCycleDraft.trigger =
+      dataflow::rootThreadCompletionEventFamily(precedingRoot);
+  firstCycleDraft.beforeActive = {{precedingRoot, precedingResources}};
+  firstCycleDraft.completedBefore.clear();
+  const auto firstCycle =
+      take(test, pnr::finalizeResourceTimeTransition(std::move(firstCycleDraft),
+                                                     artifacts, blobs));
+  auto secondCycleDraft = draft;
+  secondCycleDraft.parent = transition.child;
+  secondCycleDraft.child = transition.parent;
+  secondCycleDraft.beforeActive = {{root, resourcesFor(childContexts, root)}};
+  const auto secondCycle =
+      take(test, pnr::finalizeResourceTimeTransition(
+                     std::move(secondCycleDraft), artifacts, blobs));
+  const pnr::ResourceTimeTransitionGraph cycleGraph{
+      transition.parent,
+      {transition.parent, transition.child},
+      {firstCycle, secondCycle}};
+  if (llvm::Error error =
+          pnr::verifyResourceTimeTransitionGraph(cycleGraph, artifacts, blobs))
+    deployment::test::fail(test, llvm::toString(std::move(error)));
+  auto cycleProvider = take(test, runtime::createInProcessRuntimeProvider(
+                                      {{implementations, std::nullopt, {}}}));
+  {
+    auto cycleLoaded =
+        take(test, runtime::loadDeployment(parent, {cycleProvider, 0},
+                                           artifacts, blobs));
+    auto cycleSelector = take(
+        test, runtime::ResourceTimeTransitionSelectionSession::createPrepared(
+                  cycleGraph, cycleLoaded, artifacts, blobs));
+    (void)take(test, cycleSelector.completeRootAndActivate(
+                         precedingRoot, firstCycle.child, cycleLoaded));
+    (void)take(test, cycleSelector.completeRootAndActivate(
+                         root, secondCycle.child, cycleLoaded));
+    if (llvm::Error error = cycleSelector.joinMappedRoots())
+      deployment::test::fail(test, llvm::toString(std::move(error)));
+    deployment::test::require(
+        test,
+        cycleSelector.currentEndpoint() == transition.parent &&
+            cycleLoaded.deployment().reference() == parent.reference() &&
+            cycleProvider->activeDeployment(0) == parent.reference() &&
+            cycleProvider->statistics().activationPreparationCount == 2 &&
+            cycleProvider->statistics().activationReplacementCount == 2,
+        "prepared endpoint handles did not support a verified endpoint "
+        "revisit");
+  }
+  deployment::test::require(
+      test,
+      cycleProvider->preparedActivationCount(0) == 0 &&
+          cycleProvider->statistics().activationDiscardCount == 2 &&
+          cycleProvider->statistics().resetCount == 2 &&
+          cycleProvider->statistics().leaseReleaseCount == 1,
+      "loaded Deployment teardown did not discard prepared activations");
+
+  runtime::InProcessRuntimeFailurePlan discardFailure;
+  discardFailure.activationDiscardFailures = 1;
+  auto discardProvider = take(
+      test, runtime::createInProcessRuntimeProvider(
+                {{implementations, std::nullopt, std::move(discardFailure)}}));
+  {
+    auto discardLoaded =
+        take(test, runtime::loadDeployment(parent, {discardProvider, 0},
+                                           artifacts, blobs));
+    auto discardSelector = take(
+        test, runtime::ResourceTimeTransitionSelectionSession::createPrepared(
+                  transitionGraph, discardLoaded, artifacts, blobs));
+    deployment::test::require(
+        test,
+        discardProvider->preparedActivationCount(0) == 1 &&
+            discardSelector.currentEndpoint() == transition.parent,
+        "discard fallback fixture did not retain one prepared activation");
+  }
+  deployment::test::require(
+      test,
+      discardProvider->preparedActivationCount(0) == 0 &&
+          discardProvider->statistics().activationDiscardCount == 0 &&
+          discardProvider->statistics().resetCount == 2 &&
+          discardProvider->statistics().leaseReleaseCount == 1 &&
+          !discardProvider->isQuarantined(0),
+      "reset did not recover from prepared activation discard failure");
 
   auto cancelled =
       take(test, runtime::ResourceTimeTransitionSelectionSession::create(
@@ -342,6 +547,125 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
                 transitionGraph, parent, artifacts, blobs, cancelled.replay()));
   deployment::test::require(test, cancelledReplay.cancelled(),
                             "selector cancellation replay was not terminal");
+
+  runtime::InProcessRuntimeFailurePlan preparationFailure;
+  preparationFailure.activationPreparationOrdinal = 1;
+  auto preparationProvider = take(test, runtime::createInProcessRuntimeProvider(
+                                            {{implementations, std::nullopt,
+                                              std::move(preparationFailure)}}));
+  auto preparationLoaded =
+      take(test, runtime::loadDeployment(parent, {preparationProvider, 0},
+                                         artifacts, blobs));
+  const auto preparationReason = expectActivationReplacementError(
+      test, runtime::ResourceTimeTransitionSelectionSession::createPrepared(
+                cycleGraph, preparationLoaded, artifacts, blobs));
+  deployment::test::require(
+      test,
+      preparationReason == runtime::RuntimeActivationReplacementErrorReason::
+                               PreparationFailed &&
+          preparationLoaded.deployment().reference() == parent.reference() &&
+          preparationProvider->activeDeployment(0) == parent.reference() &&
+          preparationProvider->preparedActivationCount(0) == 0 &&
+          preparationProvider->statistics().activationPreparationCount == 1 &&
+          preparationProvider->statistics().activationDiscardCount == 1 &&
+          preparationProvider->statistics().activationReplacementCount == 0,
+      "partial activation preparation did not discard its prepared prefix");
+  auto retriedPreparation = take(
+      test, runtime::ResourceTimeTransitionSelectionSession::createPrepared(
+                cycleGraph, preparationLoaded, artifacts, blobs));
+  deployment::test::require(
+      test,
+      preparationProvider->preparedActivationCount(0) == 2 &&
+          preparationProvider->statistics().activationPreparationCount == 3 &&
+          preparationProvider->statistics().activationDiscardCount == 1 &&
+          retriedPreparation.currentEndpoint() == transition.parent,
+      "fully cleaned activation preparation was not retryable");
+
+  runtime::InProcessRuntimeFailurePlan retainedPreparationFailure;
+  retainedPreparationFailure.activationPreparationOrdinal = 1;
+  retainedPreparationFailure.activationDiscardFailures = 1;
+  auto retainedPreparationProvider =
+      take(test, runtime::createInProcessRuntimeProvider(
+                     {{implementations, std::nullopt,
+                       std::move(retainedPreparationFailure)}}));
+  {
+    auto retainedPreparationLoaded = take(
+        test, runtime::loadDeployment(parent, {retainedPreparationProvider, 0},
+                                      artifacts, blobs));
+    const auto retainedReason = expectActivationReplacementError(
+        test, runtime::ResourceTimeTransitionSelectionSession::createPrepared(
+                  cycleGraph, retainedPreparationLoaded, artifacts, blobs));
+    deployment::test::require(
+        test,
+        retainedReason == runtime::RuntimeActivationReplacementErrorReason::
+                              PreparationFailed &&
+            retainedPreparationProvider->preparedActivationCount(0) == 1 &&
+            retainedPreparationProvider->statistics()
+                    .activationPreparationCount == 1 &&
+            retainedPreparationProvider->statistics().activationDiscardCount ==
+                0,
+        "failed preparation did not retain an undiscarded handle");
+    const auto lockedReason = expectActivationReplacementError(
+        test, runtime::ResourceTimeTransitionSelectionSession::createPrepared(
+                  cycleGraph, retainedPreparationLoaded, artifacts, blobs));
+    deployment::test::require(
+        test,
+        lockedReason == runtime::RuntimeActivationReplacementErrorReason::
+                            PreparationFailed &&
+            retainedPreparationProvider->preparedActivationCount(0) == 1 &&
+            retainedPreparationProvider->statistics()
+                    .activationPreparationCount == 1,
+        "retained preparation state did not reject another attempt");
+  }
+  deployment::test::require(
+      test,
+      retainedPreparationProvider->preparedActivationCount(0) == 0 &&
+          retainedPreparationProvider->statistics().resetCount == 2 &&
+          retainedPreparationProvider->statistics().leaseReleaseCount == 1 &&
+          !retainedPreparationProvider->isQuarantined(0),
+      "reset did not clear retained preparation state");
+
+  runtime::InProcessRuntimeFailurePlan replacementFailure;
+  replacementFailure.activationReplacementFailures = 1;
+  auto failingProvider = take(test, runtime::createInProcessRuntimeProvider(
+                                        {{implementations, std::nullopt,
+                                          std::move(replacementFailure)}}));
+  auto failingLoaded =
+      take(test, runtime::loadDeployment(parent, {failingProvider, 0},
+                                         artifacts, blobs));
+  auto failingSelector = take(
+      test, runtime::ResourceTimeTransitionSelectionSession::createPrepared(
+                transitionGraph, failingLoaded, artifacts, blobs));
+  (void)take(test, failingSelector.completeRootAndActivate(
+                       precedingRoot, std::nullopt, failingLoaded));
+  const auto replacementReason = expectActivationReplacementError(
+      test, failingSelector.completeRootAndActivate(root, transition.child,
+                                                    failingLoaded));
+  deployment::test::require(
+      test,
+      replacementReason == runtime::RuntimeActivationReplacementErrorReason::
+                               ActivationFailed &&
+          failingSelector.currentEndpoint() == transition.parent &&
+          failingSelector.completedRoots().size() == 1 &&
+          failingSelector.completedRoots().front() == precedingRoot &&
+          failingSelector.replay().size() == 1 &&
+          failingLoaded.deployment().reference() == parent.reference() &&
+          failingProvider->activeDeployment(0) == parent.reference() &&
+          failingProvider->statistics().activationPreparationCount == 1 &&
+          failingProvider->statistics().activationReplacementCount == 0,
+      "failed provider activation mutated selector or Deployment state");
+  auto retried = take(test, failingSelector.completeRootAndActivate(
+                                root, transition.child, failingLoaded));
+  deployment::test::require(
+      test,
+      retried && failingSelector.currentEndpoint() == transition.child &&
+          failingSelector.completedRoots().size() == 2 &&
+          failingSelector.replay().size() == 2 &&
+          failingLoaded.deployment().reference() == child.reference() &&
+          failingProvider->activeDeployment(0) == child.reference() &&
+          failingProvider->statistics().activationPreparationCount == 1 &&
+          failingProvider->statistics().activationReplacementCount == 1,
+      "prepared activation handle was not reusable after provider rejection");
 
   dse::ResourceTimeScheduleHint applicationHint;
   applicationHint.actions = {

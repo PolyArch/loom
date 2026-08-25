@@ -42,6 +42,13 @@ llvm::Error loadError(RuntimeLoadFailureKind kind, const llvm::Twine &message,
   return llvm::make_error<RuntimeLoadError>(kind, message.str(), quarantined);
 }
 
+llvm::Error
+activationReplacementError(RuntimeActivationReplacementErrorReason reason,
+                           const llvm::Twine &message) {
+  return llvm::make_error<RuntimeActivationReplacementError>(reason,
+                                                             message.str());
+}
+
 void appendU32(ByteVector &bytes, std::uint32_t value) {
   for (unsigned shift = 24;; shift -= 8) {
     bytes.push_back(static_cast<std::uint8_t>(value >> shift));
@@ -265,9 +272,10 @@ struct RuntimeIdentityClaim final {
   ArtifactIdentity expectedImplementation;
 };
 
-llvm::Error verifyProviderIdentities(
-    RuntimeProviderInstance &provider, const RuntimeDeviceHandle &device,
-    llvm::ArrayRef<RuntimeIdentityClaim> claims) {
+llvm::Error
+verifyProviderIdentities(RuntimeProviderInstance &provider,
+                         const RuntimeDeviceHandle &device,
+                         llvm::ArrayRef<RuntimeIdentityClaim> claims) {
   for (const RuntimeIdentityClaim &claim : claims)
     if (llvm::Error error = verifyProviderIdentity(
             provider, device, claim.verification, claim.expectedImplementation))
@@ -785,10 +793,11 @@ llvm::Error recoverAndRelease(RuntimeLoadFailureKind kind,
   return loadError(kind, diagnostic, quarantined);
 }
 
-llvm::Error releaseLoadedState(RuntimeProviderInstance &provider,
-                               const RuntimeDeviceHandle &device,
-                               const RuntimeLeaseHandle &lease,
-                               llvm::ArrayRef<RuntimeIdentityClaim> identities) {
+llvm::Error
+releaseLoadedState(RuntimeProviderInstance &provider,
+                   const RuntimeDeviceHandle &device,
+                   const RuntimeLeaseHandle &lease,
+                   llvm::ArrayRef<RuntimeIdentityClaim> identities) {
   bool quarantine = false;
   if (llvm::Error reset = provider.quiesceAndReset(lease)) {
     llvm::consumeError(std::move(reset));
@@ -845,15 +854,83 @@ std::error_code RuntimeLoadError::convertToErrorCode() const {
   return std::make_error_code(std::errc::io_error);
 }
 
+char RuntimeActivationReplacementError::ID = 0;
+
+void RuntimeActivationReplacementError::log(llvm::raw_ostream &output) const {
+  output << "runtime_activation_replacement_failed: " << diagnostic_;
+}
+
+std::error_code RuntimeActivationReplacementError::convertToErrorCode() const {
+  return std::make_error_code(std::errc::io_error);
+}
+
 llvm::Error RuntimeProviderInstance::programConfigurationMulticast(
     const RuntimeLeaseHandle &, llvm::ArrayRef<RuntimeConfigurationTarget>) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "atomic programming multicast is unsupported");
 }
 
+llvm::Expected<RuntimePreparedActivationHandle>
+RuntimeProviderInstance::prepareActivation(
+    const RuntimeLeaseHandle &, const RuntimeExecutableRegistrationView &,
+    const RuntimeActivationView &) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::operation_not_supported),
+      "prepared activation replacement is unsupported");
+}
+
+llvm::Error RuntimeProviderInstance::replaceActivationAtomically(
+    const RuntimeLeaseHandle &, const RuntimePreparedActivationHandle &) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::operation_not_supported),
+      "prepared activation replacement is unsupported");
+}
+
+llvm::Error RuntimeProviderInstance::discardPreparedActivation(
+    const RuntimeLeaseHandle &, const RuntimePreparedActivationHandle &) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::operation_not_supported),
+      "prepared activation replacement is unsupported");
+}
+
+namespace {
+
+bool sameRootSet(llvm::ArrayRef<dataflow::RootThreadLaunchRef> lhs,
+                 llvm::ArrayRef<dataflow::RootThreadLaunchRef> rhs) {
+  return lhs.size() == rhs.size() && llvm::all_of(lhs, [&](auto root) {
+           return llvm::is_contained(rhs, root);
+         });
+}
+
+bool sameSafePoint(
+    const std::optional<pnr::ResourceTimeSafePointReference> &lhs,
+    const std::optional<pnr::ResourceTimeSafePointReference> &rhs) {
+  if (lhs.has_value() != rhs.has_value())
+    return false;
+  return !lhs || (lhs->artifact == rhs->artifact && lhs->kind == rhs->kind);
+}
+
+bool sameSelectionEdge(const pnr::ResourceTimeTransition &lhs,
+                       const pnr::ResourceTimeTransition &rhs) {
+  return lhs.trigger == rhs.trigger &&
+         sameSafePoint(lhs.safePoint, rhs.safePoint) &&
+         lhs.parent == rhs.parent && lhs.child == rhs.child &&
+         sameRootSet(lhs.completedBefore, rhs.completedBefore);
+}
+
+} // namespace
+
 namespace detail {
 
+struct ResourceTimeActivationToken final {};
+
 struct LoadedDeploymentState final {
+  struct PreparedActivation final {
+    pnr::ResourceTimeTransitionEndpointReference endpoint;
+    deployment::FinalizedDeployment deployment;
+    RuntimePreparedActivationHandle handle;
+  };
+
   LoadedDeploymentState(deployment::FinalizedDeployment deployment,
                         std::shared_ptr<RuntimeProviderInstance> provider,
                         RuntimeDeviceHandle device, RuntimeLeaseHandle lease,
@@ -870,11 +947,18 @@ struct LoadedDeploymentState final {
   RuntimeDeviceHandle device;
   RuntimeLeaseHandle lease;
   std::vector<RuntimeIdentityClaim> identities;
+  std::optional<pnr::ResourceTimeTransitionGraph> preparedActivationGraph;
+  std::vector<PreparedActivation> preparedActivations;
+  std::shared_ptr<const ResourceTimeActivationToken> preparedActivationToken;
 
   ~LoadedDeploymentState() {
-    if (provider)
-      llvm::consumeError(releaseLoadedState(*provider, device, lease,
-                                            identities));
+    if (!provider)
+      return;
+    for (const PreparedActivation &activation : preparedActivations)
+      llvm::consumeError(
+          provider->discardPreparedActivation(lease, activation.handle));
+    llvm::consumeError(
+        releaseLoadedState(*provider, device, lease, identities));
   }
 };
 
@@ -897,6 +981,172 @@ const deployment::FinalizedDeployment &LoadedDeployment::deployment() const {
 const RuntimeDeviceHandle &LoadedDeployment::device() const {
   assert(state_ && "moved-from LoadedDeployment has no device");
   return state_->device;
+}
+
+llvm::Expected<std::shared_ptr<const detail::ResourceTimeActivationToken>>
+LoadedDeployment::prepareResourceTimeActivations(
+    const pnr::ResourceTimeTransitionGraph &graph,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  assert(state_ && "moved-from LoadedDeployment has no deployment state");
+  if (state_->preparedActivationGraph || state_->preparedActivationToken ||
+      !state_->preparedActivations.empty())
+    return activationReplacementError(
+        RuntimeActivationReplacementErrorReason::PreparationFailed,
+        "loaded Deployment already retains resource-time preparation state");
+  if (llvm::Error error =
+          pnr::verifyResourceTimeTransitionGraph(graph, artifacts, blobs))
+    return activationReplacementError(
+        RuntimeActivationReplacementErrorReason::InvalidDeployment,
+        "resource-time graph failed independent closure: " +
+            llvm::toString(std::move(error)));
+  if (!graph.entry.deployment ||
+      *graph.entry.deployment != state_->deployment.reference() ||
+      graph.entry.mapping != state_->deployment.deployment().systemMapping())
+    return activationReplacementError(
+        RuntimeActivationReplacementErrorReason::TransitionMismatch,
+        "resource-time graph entry is not the active Deployment");
+  if (!state_->deployment.deployment().staticMemoryImages().empty())
+    return activationReplacementError(
+        RuntimeActivationReplacementErrorReason::TransitionMismatch,
+        "prepared activation requires an empty static-memory state");
+  if (!state_->provider->descriptor().supportsPreparedActivationReplacement)
+    return activationReplacementError(
+        RuntimeActivationReplacementErrorReason::ProviderCapabilityUnavailable,
+        "runtime provider does not support prepared activation replacement");
+
+  std::vector<detail::LoadedDeploymentState::PreparedActivation> prepared;
+  const auto failPreparation =
+      [&](RuntimeActivationReplacementErrorReason reason,
+          const llvm::Twine &message) -> llvm::Error {
+    std::string diagnostic = message.str();
+    std::vector<detail::LoadedDeploymentState::PreparedActivation>
+        cleanupFailures;
+    for (auto &activation : prepared)
+      if (llvm::Error error = state_->provider->discardPreparedActivation(
+              state_->lease, activation.handle)) {
+        diagnostic += "; prepared activation cleanup failed: " +
+                      llvm::toString(std::move(error));
+        cleanupFailures.push_back(std::move(activation));
+      }
+    state_->preparedActivations = std::move(cleanupFailures);
+    return activationReplacementError(reason, diagnostic);
+  };
+
+  prepared.reserve(graph.endpoints.size());
+  for (const pnr::ResourceTimeTransitionEndpointReference &endpoint :
+       graph.endpoints) {
+    if (!llvm::any_of(graph.transitions,
+                      [&](const pnr::ResourceTimeTransition &transition) {
+                        return transition.child == endpoint;
+                      }))
+      continue;
+    if (!endpoint.deployment)
+      return failPreparation(
+          RuntimeActivationReplacementErrorReason::InvalidDeployment,
+          "verified resource-time endpoint has no Deployment");
+    auto reimported =
+        deployment::importDeployment(*endpoint.deployment, artifacts, blobs);
+    if (!reimported)
+      return failPreparation(
+          RuntimeActivationReplacementErrorReason::InvalidDeployment,
+          "candidate Deployment closure validation failed: " +
+              llvm::toString(reimported.takeError()));
+    deployment::FinalizedDeployment deployment = std::move(*reimported);
+    const auto &candidate = deployment.deployment();
+    if (!candidate.staticMemoryImages().empty())
+      return failPreparation(
+          RuntimeActivationReplacementErrorReason::TransitionMismatch,
+          "prepared activation requires empty child static-memory state");
+
+    auto closure = importRuntimeClosure(deployment, artifacts, blobs);
+    if (!closure)
+      return failPreparation(
+          RuntimeActivationReplacementErrorReason::InvalidDeployment,
+          "candidate runtime closure import failed: " +
+              llvm::toString(closure.takeError()));
+    const RuntimeProviderBinding &allowed =
+        closure->runtimeBindings.front().binding().providerBinding();
+    const RuntimeProviderDescriptor *registered =
+        findRuntimeProvider(allowed.descriptor);
+    if (!registered || registered != &state_->provider->descriptor() ||
+        registered->implementationSemanticIdentity !=
+            allowed.implementationSemanticIdentity ||
+        registered->runtimeAbiIdentity != allowed.runtimeAbiIdentity)
+      return failPreparation(
+          RuntimeActivationReplacementErrorReason::ProviderMismatch,
+          "candidate Deployment selects another runtime provider");
+
+    auto executables = importExecutables(deployment, artifacts, blobs);
+    if (!executables)
+      return failPreparation(
+          RuntimeActivationReplacementErrorReason::InvalidDeployment,
+          "candidate executable closure import failed: " +
+              llvm::toString(executables.takeError()));
+    const RuntimeExecutableRegistrationView registration{
+        candidate.hostProgram(), executables->hostBytes,
+        executables->instructionBinaries, executables->instructionBytes,
+        candidate.threadDispatchImage()};
+    const RuntimeActivationView activation{
+        deployment.reference(), closure->runtimeBindings,
+        candidate.threadDispatchImage(), candidate.spatialLaunchImage(),
+        candidate.admissionImage()};
+    auto handle = state_->provider->prepareActivation(state_->lease,
+                                                      registration, activation);
+    if (!handle)
+      return failPreparation(
+          RuntimeActivationReplacementErrorReason::PreparationFailed,
+          "provider rejected activation preparation: " +
+              llvm::toString(handle.takeError()));
+    prepared.push_back({endpoint, std::move(deployment), std::move(*handle)});
+  }
+
+  state_->preparedActivationGraph = graph;
+  state_->preparedActivations = std::move(prepared);
+  auto token = std::make_shared<const detail::ResourceTimeActivationToken>();
+  state_->preparedActivationToken = token;
+  return token;
+}
+
+llvm::Error LoadedDeployment::activatePreparedTransition(
+    const pnr::ResourceTimeTransition &transition,
+    const std::shared_ptr<const detail::ResourceTimeActivationToken> &token) {
+  assert(state_ && "moved-from LoadedDeployment has no deployment state");
+  if (!token || token != state_->preparedActivationToken ||
+      !state_->preparedActivationGraph)
+    return activationReplacementError(
+        RuntimeActivationReplacementErrorReason::PreparationFailed,
+        "selector is not bound to the loaded resource-time graph");
+  if (!transition.parent.deployment ||
+      *transition.parent.deployment != state_->deployment.reference())
+    return activationReplacementError(
+        RuntimeActivationReplacementErrorReason::TransitionMismatch,
+        "resource-time edge does not leave the active Deployment");
+  if (!llvm::any_of(state_->preparedActivationGraph->transitions,
+                    [&](const pnr::ResourceTimeTransition &candidate) {
+                      return sameSelectionEdge(candidate, transition);
+                    }))
+    return activationReplacementError(
+        RuntimeActivationReplacementErrorReason::TransitionMismatch,
+        "resource-time edge is outside the prepared graph");
+
+  auto prepared = llvm::find_if(
+      state_->preparedActivations,
+      [&](const detail::LoadedDeploymentState::PreparedActivation &candidate) {
+        return candidate.endpoint == transition.child;
+      });
+  if (prepared == state_->preparedActivations.end())
+    return activationReplacementError(
+        RuntimeActivationReplacementErrorReason::PreparationFailed,
+        "selected child activation is not prepared");
+  if (llvm::Error error = state_->provider->replaceActivationAtomically(
+          state_->lease, prepared->handle))
+    return activationReplacementError(
+        RuntimeActivationReplacementErrorReason::ActivationFailed,
+        "provider rejected atomic activation replacement: " +
+            llvm::toString(std::move(error)));
+
+  state_->deployment = prepared->deployment;
+  return llvm::Error::success();
 }
 
 llvm::Expected<LoadedDeployment>
@@ -1004,10 +1254,9 @@ loadDeployment(deployment::FinalizedDeployment deployment,
   std::vector<RuntimeInterfaceBinding> memoryBindings;
   for (const FinalizedRuntimePlatformBinding &binding :
        closure->runtimeBindings)
-    memoryBindings.insert(
-        memoryBindings.end(),
-        binding.binding().memoryInterfaceBindings().begin(),
-        binding.binding().memoryInterfaceBindings().end());
+    memoryBindings.insert(memoryBindings.end(),
+                          binding.binding().memoryInterfaceBindings().begin(),
+                          binding.binding().memoryInterfaceBindings().end());
 
   for (const RuntimeStaticMemoryInstall &install : staticMemory) {
     deviceStateChanged = true;
@@ -1026,11 +1275,11 @@ loadDeployment(deployment::FinalizedDeployment deployment,
       deployment.deployment().threadDispatchImage()};
   deviceStateChanged = true;
   if (llvm::Error error = provider.registerExecutables(*lease, registration))
-    return recoverAndRelease(
-        RuntimeLoadFailureKind::Registration,
-        "executable registration failed: " + llvm::toString(std::move(error)),
-        provider, device, *lease, identities,
-        /*restoreCleanState=*/deviceStateChanged);
+    return recoverAndRelease(RuntimeLoadFailureKind::Registration,
+                             "executable registration failed: " +
+                                 llvm::toString(std::move(error)),
+                             provider, device, *lease, identities,
+                             /*restoreCleanState=*/deviceStateChanged);
 
   const RuntimeActivationView activation{
       deployment.reference(), closure->runtimeBindings,
@@ -1038,11 +1287,11 @@ loadDeployment(deployment::FinalizedDeployment deployment,
       deployment.deployment().spatialLaunchImage(),
       deployment.deployment().admissionImage()};
   if (llvm::Error error = provider.activate(*lease, activation))
-    return recoverAndRelease(
-        RuntimeLoadFailureKind::Activation,
-        "activation failed: " + llvm::toString(std::move(error)), provider,
-        device, *lease, identities,
-        /*restoreCleanState=*/deviceStateChanged);
+    return recoverAndRelease(RuntimeLoadFailureKind::Activation,
+                             "activation failed: " +
+                                 llvm::toString(std::move(error)),
+                             provider, device, *lease, identities,
+                             /*restoreCleanState=*/deviceStateChanged);
 
   return LoadedDeployment(std::make_unique<detail::LoadedDeploymentState>(
       std::move(deployment), std::move(selection.provider), device,

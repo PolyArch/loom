@@ -215,14 +215,28 @@ turning graph container order into an undocumented policy when several child
 states share one trigger. Recording an explicit stay preserves the equally
 important decision not to transition.
 
-Selection is intentionally separate from execution. The current provider
-lifecycle has no endpoint preload, safe-point activation swap, live-state
-snapshot, or continuation operation, and the transition graph is not a
-Deployment runtime image. Calling a selected edge a completed migration would
-therefore erase missing owners. The bounded session records and replays only
-completion-frontier choices and joins the entry Mapping's root inventory;
-provider execution, DynamicWork cancellation, host residual work, and process
-termination keep their existing authorities.
+Decision derivation remains separate from activation commit. A caller may
+validate and replay completion-frontier choices without touching a provider,
+while the combined commit path requires an independently verified edge and an
+exact loaded parent Deployment. Before execution, Runtime imports the finite
+edge catalog and the provider copies each unique selectable child executable
+and activation image into a reusable transient prepared handle. The entry is
+prepared only when a later completion frontier has a verified return edge to
+its Mapping endpoint. The safe-point operation then performs
+one failure-atomic handle switch under the existing lease, without Artifact
+I/O or image transfer. Setup and runtime control costs retain their ordinary
+execution timing owners; they are not relabeled as PnR reprogramming or
+live-state migration. Runtime does not derive another Mapping, reprogram
+hardware, or reinterpret a graph vector as policy. This keeps the graph and
+Mapping verifier as the legality owner while making the admitted no-live-state
+activation primitive executable at its completion edge.
+
+That replacement is deliberately not a general continuation mechanism. It
+does not snapshot scheduler state, carry tokens or DynamicWork, generate a
+completion callback, or launch remaining roots on its own. The bounded session
+records and replays the canonical completion choices and joins the entry
+Mapping's root inventory. Provider execution, DynamicWork cancellation, host
+residual work, and process termination keep their existing authorities.
 
 The same separation applies to control progress. A channel consumer may be the
 first mapped thread submitted, so Host glue must preserve launch handles and

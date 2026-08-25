@@ -64,6 +64,7 @@ add_executable(loom-deployment-closure-test
 target_link_libraries(loom-deployment-closure-test PRIVATE
   LoomDSE
   LoomDeploymentTestSupport
+  LoomRuntimeDeploymentLoader
   LoomRuntimeResourceTime
 )
 

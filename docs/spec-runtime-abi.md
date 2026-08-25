@@ -272,9 +272,46 @@ The graph verifier proves exact endpoint closure, one shared canonical root
 scope, individual edge closure, and monotonically realizable completion
 frontiers from the entry. The selector still rechecks the exact completed-root
 set at each call and leaves an edge unselected unless the caller has committed
-the required frontier. This does not upgrade the graph into an executable
-migration schedule: provider activation and live-state execution remain
-separate owners.
+the required frontier. `completeRoot` records that pure decision without
+changing a provider. `completeRootAndActivate` instead commits a selected edge
+only through the loaded Deployment that exactly matches the current endpoint.
+
+`createPrepared` independently verifies the graph against the loaded entry,
+derives the unique set of selectable child endpoints from its verified edges,
+imports their Deployment and executable closures during invocation setup, and
+requires the same registered provider descriptor, implementation semantics,
+and Runtime ABI. An entry-only graph needs no provider capability. The admitted
+no-live-state profile also requires empty parent and child static-memory images.
+The provider copies each selectable child image into a provider-owned transient
+prepared handle before the session is returned. Preparation cost is setup cost;
+it is not silently attributed to the PnR-owned reprogramming or migration
+fields.
+
+The returned session and loaded Deployment share one transient, unforgeable
+association for that exact graph preparation. A pure selection or replay
+session has no such association, and a session prepared for another loaded
+Deployment cannot activate this one. A failed provider preparation retains no
+state from that call. Runtime discards every earlier prepared handle. Complete
+cleanup restores the unprepared state and permits a later preparation attempt;
+if a discard itself fails, the loaded Deployment is locked against another
+attempt and its ordinary quiesce/reset lifecycle remains the final bounded
+cleanup owner.
+
+At a completion frontier, the combined commit path is the only owner allowed
+to select a prepared handle. Every selectable child endpoint has one reusable
+handle; this includes the entry exactly when a verified return edge targets it,
+because a monotonically growing completion frontier may revisit an earlier
+Mapping endpoint. The switch performs no Artifact or Blob import and sends no
+executable or runtime-image bytes. The provider retains the existing lease and
+hardware programming and atomically changes the active endpoint.
+Provider rejection leaves the handle reusable and the parent Deployment active,
+while the selector restores its endpoint, completion frontier, and replay log.
+The host cost of this bounded control operation remains ordinary runtime
+timing; the edge's exact zero values continue to mean zero hardware
+reprogramming and zero live-state migration, not zero CPU instruction latency.
+Loaded Deployment teardown explicitly discards every retained handle before
+the ordinary quiesce/reset and lease release. Reset invalidates all prepared
+handles even when an earlier discard failed.
 
 Rejected calls do not change the endpoint, completed-root subset, lifecycle,
 or replay. Replay uses typed roots and full endpoints and re-executes every
@@ -282,15 +319,22 @@ accepted completion, stay, join, and cancellation decision. Cancellation is
 idempotent for the selector but does not cancel provider, channel, or
 DynamicWork responsibilities. `joinMappedRoots` proves only that every root in
 the entry Mapping has collectively completed; host residual work and process
-termination remain separate runtime owners.
+termination remain separate runtime owners. Replay is deliberately a pure
+decision replay. A runtime wishing to reproduce execution applies those
+validated records one at a time through a prepared session, so a provider
+failure cannot hide or discard the already accepted selector prefix.
 
 The admitted selector profile is narrower than live migration: every edge is
 a verified completion edge with no before/after live work, no token-state
 correspondence, and exact zero reprogramming and migration cost. The selector
-does not program or activate the child Deployment, snapshot a scheduler, move
-tokens or payloads, or resume execution under the child. A graph with live
-state, an explicit safe point, or nonzero transition work remains typed
-unsupported until those execution and persistence owners exist.
+does not reprogram hardware, install or move memory, snapshot a scheduler, or
+move tokens or payloads. Prepared activation replacement does not itself report
+the completion event, start remaining child roots, or resume DynamicWork;
+those actions require their existing execution owners to call the combined
+commit path and continue from the child Mapping. A graph with live state, an
+explicit safe point other than canonical root completion, or nonzero
+transition work remains typed unsupported until those execution and
+persistence owners exist.
 
 The Thread Dispatch provider maintains one bounded transient record per exact
 Deployment target. Target selection addresses that record for submission and

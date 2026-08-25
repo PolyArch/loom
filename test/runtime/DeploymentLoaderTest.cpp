@@ -116,6 +116,25 @@ public:
     return delegate_->activate(lease, activation);
   }
 
+  llvm::Expected<RuntimePreparedActivationHandle>
+  prepareActivation(const RuntimeLeaseHandle &lease,
+                    const RuntimeExecutableRegistrationView &registration,
+                    const RuntimeActivationView &activation) override {
+    return delegate_->prepareActivation(lease, registration, activation);
+  }
+
+  llvm::Error replaceActivationAtomically(
+      const RuntimeLeaseHandle &lease,
+      const RuntimePreparedActivationHandle &prepared) override {
+    return delegate_->replaceActivationAtomically(lease, prepared);
+  }
+
+  llvm::Error discardPreparedActivation(
+      const RuntimeLeaseHandle &lease,
+      const RuntimePreparedActivationHandle &prepared) override {
+    return delegate_->discardPreparedActivation(lease, prepared);
+  }
+
   llvm::Error releaseExclusiveLease(const RuntimeLeaseHandle &lease) override {
     return delegate_->releaseExclusiveLease(lease);
   }
@@ -139,7 +158,8 @@ const RuntimeProviderDescriptor &nonPortableRuntimeProviderDescriptor() {
       portable.endpointKinds,
       portable.supportsHardwareReportedIdentity,
       portable.supportsTrustedImmutableIdentity,
-      portable.supportsAtomicProgrammingMulticast};
+      portable.supportsAtomicProgrammingMulticast,
+      portable.supportsPreparedActivationReplacement};
   return descriptor;
 }
 
@@ -153,7 +173,8 @@ const RuntimeProviderDescriptor &unicastRuntimeProviderDescriptor() {
       multicast.endpointKinds,
       multicast.supportsHardwareReportedIdentity,
       multicast.supportsTrustedImmutableIdentity,
-      false};
+      false,
+      multicast.supportsPreparedActivationReplacement};
   return descriptor;
 }
 
@@ -280,12 +301,12 @@ void rejectsReadbackMismatchAndRestoresCleanState() {
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
   const auto implementations =
       implementationIdentities(test, deployment, artifacts, blobs);
-  auto provider = take(
-      test,
-      createInProcessRuntimeProvider(
-          {{implementations,
-            std::nullopt,
-            {std::nullopt, InProcessRuntimeReadbackCorruption{0, 1}, false}}}));
+  auto provider =
+      take(test, createInProcessRuntimeProvider(
+                     {{implementations,
+                       std::nullopt,
+                       {std::nullopt, InProcessRuntimeReadbackCorruption{0, 1},
+                        false, std::nullopt, 0, 0}}}));
 
   const ObservedLoadError error = expectLoadError(
       test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
@@ -311,10 +332,11 @@ void rejectsInterruptedAtomicProgrammingAndRestoresCleanState() {
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
   const auto implementations =
       implementationIdentities(test, deployment, artifacts, blobs);
-  auto provider = take(
-      test, createInProcessRuntimeProvider(
-                {{implementations, std::nullopt,
-                  {1, std::nullopt, false}}}));
+  auto provider =
+      take(test, createInProcessRuntimeProvider(
+                     {{implementations,
+                       std::nullopt,
+                       {1, std::nullopt, false, std::nullopt, 0, 0}}}));
 
   const ObservedLoadError error = expectLoadError(
       test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
@@ -342,12 +364,12 @@ void quarantinesDeviceWhenRecoveryIdentityCannotBeProven() {
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
   const auto implementations =
       implementationIdentities(test, deployment, artifacts, blobs);
-  auto provider = take(
-      test,
-      createInProcessRuntimeProvider(
-          {{implementations,
-            std::nullopt,
-            {std::nullopt, InProcessRuntimeReadbackCorruption{0, 1}, true}}}));
+  auto provider =
+      take(test, createInProcessRuntimeProvider(
+                     {{implementations,
+                       std::nullopt,
+                       {std::nullopt, InProcessRuntimeReadbackCorruption{0, 1},
+                        true, std::nullopt, 0, 0}}}));
 
   const ObservedLoadError error = expectLoadError(
       test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
@@ -557,7 +579,7 @@ void ignoresAbiUnusedHighReadbackBits() {
                   std::nullopt,
                   {std::nullopt,
                    InProcessRuntimeReadbackCorruption{0, UINT32_C(0x80000000)},
-                   false}}}));
+                   false, std::nullopt, 0, 0}}}));
 
   {
     auto loaded =

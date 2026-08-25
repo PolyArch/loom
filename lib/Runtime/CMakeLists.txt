@@ -53,6 +53,7 @@ target_include_directories(LoomRuntimeResourceTime PUBLIC
 target_link_libraries(LoomRuntimeResourceTime PUBLIC
   LoomDeployment
   LoomPnR
+  LoomRuntimeDeploymentLoader
   LLVMSupport
 )
 
@@ -69,6 +70,7 @@ target_link_libraries(LoomRuntimeDeploymentLoader PUBLIC
   LoomHardwareImplementation
   LoomHardwareRTL
   LoomMappingArtifact
+  LoomPnR
   LoomRuntimePlatformBinding
   LLVMSupport
 )

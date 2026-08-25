@@ -51,6 +51,7 @@ struct RuntimeProviderDescriptor final {
   bool supportsHardwareReportedIdentity = false;
   bool supportsTrustedImmutableIdentity = false;
   bool supportsAtomicProgrammingMulticast = false;
+  bool supportsPreparedActivationReplacement = false;
 };
 
 struct RuntimeProviderDescriptorRef final {

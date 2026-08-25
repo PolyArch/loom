@@ -5,6 +5,7 @@
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Runtime/DeploymentLoader.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -105,12 +106,28 @@ ResourceTimeTransitionSelectionSession::create(
       return reject(
           ResourceTimeSelectionErrorReason::UnsupportedTransitionProfile,
           "resource-time selector supports only verified completion edges "
-          "with no live state and exact zero transition cost");
+          "with no live state and zero reprogramming and migration cost");
 
   const auto roots = mapping->view().executionBindings().rootThreadLaunches();
   return ResourceTimeTransitionSelectionSession(
       std::move(graph), std::move(dataflowReference),
       std::vector<dataflow::RootThreadLaunchRef>(roots.begin(), roots.end()));
+}
+
+llvm::Expected<ResourceTimeTransitionSelectionSession>
+ResourceTimeTransitionSelectionSession::createPrepared(
+    pnr::ResourceTimeTransitionGraph graph, LoadedDeployment &loaded,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto session = create(graph, loaded.deployment(), artifacts, blobs);
+  if (!session)
+    return session.takeError();
+  if (graph.transitions.empty())
+    return session;
+  auto token = loaded.prepareResourceTimeActivations(graph, artifacts, blobs);
+  if (!token)
+    return token.takeError();
+  session->preparedActivationToken_ = std::move(*token);
+  return session;
 }
 
 llvm::Expected<std::optional<pnr::ResourceTimeTransition>>
@@ -169,6 +186,38 @@ ResourceTimeTransitionSelectionSession::completeRoot(
   return selected;
 }
 
+llvm::Expected<std::optional<pnr::ResourceTimeTransition>>
+ResourceTimeTransitionSelectionSession::completeRootAndActivate(
+    dataflow::RootThreadLaunchRef completedRoot,
+    std::optional<pnr::ResourceTimeTransitionEndpointReference> child,
+    LoadedDeployment &loaded) {
+  if (!current_.deployment ||
+      loaded.deployment().reference() != *current_.deployment)
+    return reject(ResourceTimeSelectionErrorReason::ActiveDeploymentMismatch,
+                  "loaded Deployment does not match the current resource-time "
+                  "endpoint");
+
+  const pnr::ResourceTimeTransitionEndpointReference priorCurrent = current_;
+  const std::vector<bool> priorCompletedMarks = completedMarks_;
+  const std::vector<dataflow::RootThreadLaunchRef> priorCompletedRoots =
+      completedRoots_;
+  const std::size_t priorReplaySize = replay_.size();
+  auto selected = completeRoot(completedRoot, std::move(child));
+  if (!selected)
+    return selected.takeError();
+  if (!*selected)
+    return selected;
+  if (llvm::Error error = loaded.activatePreparedTransition(
+          **selected, preparedActivationToken_)) {
+    current_ = priorCurrent;
+    completedMarks_ = priorCompletedMarks;
+    completedRoots_ = priorCompletedRoots;
+    replay_.resize(priorReplaySize);
+    return std::move(error);
+  }
+  return selected;
+}
+
 llvm::Error ResourceTimeTransitionSelectionSession::joinMappedRoots() {
   if (state_ == State::Joined)
     return llvm::Error::success();
@@ -197,6 +246,41 @@ llvm::Error ResourceTimeTransitionSelectionSession::cancel() {
   return llvm::Error::success();
 }
 
+llvm::Error ResourceTimeTransitionSelectionSession::applyReplayRecord(
+    const ResourceTimeSelectionReplayRecord &record) {
+  const std::size_t priorSize = replay_.size();
+  switch (record.action) {
+  case ResourceTimeSelectionAction::CompleteRoot: {
+    if (!record.completion || record.completion->parent != current_)
+      return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
+                    "completion replay does not match the current endpoint");
+    auto selected = completeRoot(record.completion->completedRoot,
+                                 record.completion->child);
+    if (!selected)
+      return selected.takeError();
+    break;
+  }
+  case ResourceTimeSelectionAction::JoinMappedRoots:
+    if (record.completion)
+      return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
+                    "mapped-root join replay carries a completion decision");
+    if (llvm::Error error = joinMappedRoots())
+      return error;
+    break;
+  case ResourceTimeSelectionAction::Cancel:
+    if (record.completion)
+      return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
+                    "cancellation replay carries a completion decision");
+    if (llvm::Error error = cancel())
+      return error;
+    break;
+  }
+  if (replay_.size() != priorSize + 1 || !sameRecord(replay_.back(), record))
+    return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
+                  "resource-time selector replay diverged");
+  return llvm::Error::success();
+}
+
 llvm::Expected<ResourceTimeTransitionSelectionSession>
 ResourceTimeTransitionSelectionSession::replay(
     pnr::ResourceTimeTransitionGraph graph,
@@ -206,38 +290,9 @@ ResourceTimeTransitionSelectionSession::replay(
   auto replayed = create(std::move(graph), entryDeployment, artifacts, blobs);
   if (!replayed)
     return replayed.takeError();
-  for (const ResourceTimeSelectionReplayRecord &record : records) {
-    const std::size_t priorSize = replayed->replay_.size();
-    switch (record.action) {
-    case ResourceTimeSelectionAction::CompleteRoot:
-      if (!record.completion || record.completion->parent != replayed->current_)
-        return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
-                      "completion replay does not match the current endpoint");
-      if (auto selected = replayed->completeRoot(
-              record.completion->completedRoot, record.completion->child);
-          !selected)
-        return selected.takeError();
-      break;
-    case ResourceTimeSelectionAction::JoinMappedRoots:
-      if (record.completion)
-        return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
-                      "mapped-root join replay carries a completion decision");
-      if (llvm::Error error = replayed->joinMappedRoots())
-        return std::move(error);
-      break;
-    case ResourceTimeSelectionAction::Cancel:
-      if (record.completion)
-        return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
-                      "cancellation replay carries a completion decision");
-      if (llvm::Error error = replayed->cancel())
-        return std::move(error);
-      break;
-    }
-    if (replayed->replay_.size() != priorSize + 1 ||
-        !sameRecord(replayed->replay_.back(), record))
-      return reject(ResourceTimeSelectionErrorReason::ReplayMismatch,
-                    "resource-time selector replay diverged");
-  }
+  for (const ResourceTimeSelectionReplayRecord &record : records)
+    if (llvm::Error error = replayed->applyReplayRecord(record))
+      return std::move(error);
   return replayed;
 }
 

@@ -8,6 +8,7 @@
 #include "Frontend/Executable/InstructionCoreBinary.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
+#include "PnR/System/SystemMappingMigration.h"
 #include "Runtime/RuntimePlatformBinding.h"
 #include "Runtime/RuntimeProvider.h"
 
@@ -19,6 +20,7 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -64,6 +66,34 @@ private:
   bool deviceQuarantined_;
 };
 
+enum class RuntimeActivationReplacementErrorReason : std::uint8_t {
+  InvalidDeployment,
+  TransitionMismatch,
+  ProviderMismatch,
+  ProviderCapabilityUnavailable,
+  PreparationFailed,
+  ActivationFailed,
+};
+
+class RuntimeActivationReplacementError final
+    : public llvm::ErrorInfo<RuntimeActivationReplacementError> {
+public:
+  static char ID;
+
+  RuntimeActivationReplacementError(
+      RuntimeActivationReplacementErrorReason reason, std::string diagnostic)
+      : reason_(reason), diagnostic_(std::move(diagnostic)) {}
+
+  RuntimeActivationReplacementErrorReason reason() const { return reason_; }
+  llvm::StringRef diagnostic() const { return diagnostic_; }
+  void log(llvm::raw_ostream &output) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  RuntimeActivationReplacementErrorReason reason_;
+  std::string diagnostic_;
+};
+
 /// Provider-owned transient token. Its bytes are meaningful only to the
 /// selected provider instance and never enter an Artifact identity.
 struct RuntimeDeviceHandle final {
@@ -83,6 +113,12 @@ struct RuntimeLeaseHandle final {
                          const RuntimeLeaseHandle &rhs) {
     return lhs.opaque == rhs.opaque;
   }
+};
+
+/// Provider-owned token for one executable and activation image prepared
+/// before resource-time execution begins. It has no persistent identity.
+struct RuntimePreparedActivationHandle final {
+  std::vector<std::uint8_t> opaque;
 };
 
 struct RuntimeConfigurationWord final {
@@ -163,6 +199,8 @@ public:
   readTrustedAttestation(const RuntimeDeviceHandle &device) = 0;
   virtual llvm::Expected<RuntimeLeaseHandle>
   acquireExclusiveLease(const RuntimeDeviceHandle &device) = 0;
+  /// Restores the provider's declared clean state and invalidates every
+  /// provider-owned prepared activation handle under this lease.
   virtual llvm::Error quiesceAndReset(const RuntimeLeaseHandle &lease) = 0;
   virtual llvm::Error
   writeConfigurationWord(const RuntimeLeaseHandle &lease,
@@ -188,6 +226,24 @@ public:
       const RuntimeExecutableRegistrationView &registration) = 0;
   virtual llvm::Error activate(const RuntimeLeaseHandle &lease,
                                const RuntimeActivationView &activation) = 0;
+  /// Copies all state needed for a later activation replacement. This call is
+  /// part of invocation setup and cannot retain either synchronous view. An
+  /// error retains no prepared state from this call.
+  virtual llvm::Expected<RuntimePreparedActivationHandle>
+  prepareActivation(const RuntimeLeaseHandle &lease,
+                    const RuntimeExecutableRegistrationView &registration,
+                    const RuntimeActivationView &activation);
+  /// Atomically switches to one prepared activation without loading artifacts,
+  /// executable bytes, or runtime images. On error, the previous Deployment
+  /// remains active. The prepared handle remains reusable after either result.
+  virtual llvm::Error
+  replaceActivationAtomically(const RuntimeLeaseHandle &lease,
+                              const RuntimePreparedActivationHandle &prepared);
+  /// Invalidates one reusable prepared copy without changing the currently
+  /// active Deployment. Quiesce/reset remains the bounded cleanup fallback.
+  virtual llvm::Error
+  discardPreparedActivation(const RuntimeLeaseHandle &lease,
+                            const RuntimePreparedActivationHandle &prepared);
   virtual llvm::Error
   releaseExclusiveLease(const RuntimeLeaseHandle &lease) = 0;
   virtual void quarantineDevice(const RuntimeDeviceHandle &device) = 0;
@@ -202,12 +258,15 @@ struct RuntimeProviderSelection final {
 
 namespace detail {
 struct LoadedDeploymentState;
+struct ResourceTimeActivationToken;
 
 llvm::Expected<std::vector<std::uint8_t>> configurationActivationEventKey(
     const ArtifactIdentity &dataflowIdentity,
     llvm::ArrayRef<mapping::SystemSpatialContextDomain> spatialDomains,
     fabric::SpatialCoreOccurrenceRef spatialCore);
 } // namespace detail
+
+class ResourceTimeTransitionSelectionSession;
 
 class LoadedDeployment final {
 public:
@@ -225,7 +284,17 @@ private:
   explicit LoadedDeployment(
       std::unique_ptr<detail::LoadedDeploymentState> state);
 
+  llvm::Expected<std::shared_ptr<const detail::ResourceTimeActivationToken>>
+  prepareResourceTimeActivations(const pnr::ResourceTimeTransitionGraph &graph,
+                                 const ArtifactStore &artifacts,
+                                 const BlobStore &blobs);
+  llvm::Error activatePreparedTransition(
+      const pnr::ResourceTimeTransition &transition,
+      const std::shared_ptr<const detail::ResourceTimeActivationToken> &token);
+
   std::unique_ptr<detail::LoadedDeploymentState> state_;
+
+  friend class ResourceTimeTransitionSelectionSession;
 
   friend llvm::Expected<LoadedDeployment>
   loadDeployment(deployment::FinalizedDeployment, RuntimeProviderSelection,

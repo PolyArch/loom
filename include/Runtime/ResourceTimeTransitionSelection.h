@@ -8,6 +8,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -21,9 +22,14 @@ class BlobStore;
 
 namespace loom::runtime {
 
+namespace detail {
+struct ResourceTimeActivationToken;
+} // namespace detail
+
 enum class ResourceTimeSelectionErrorReason : std::uint8_t {
   EntryDeploymentMismatch,
   UnsupportedTransitionProfile,
+  ActiveDeploymentMismatch,
   UnknownMappedRoot,
   DuplicateCompletion,
   TransitionUnavailable,
@@ -70,15 +76,25 @@ struct ResourceTimeSelectionReplayRecord final {
   std::optional<ResourceTimeCompletionDecision> completion;
 };
 
+class LoadedDeployment;
+
 /// Invocation-local selector for one immutable compiler-preverified graph.
-/// It records safe-point choices but does not program or activate a child
-/// Deployment and does not snapshot or move live runtime state.
+/// It can coordinate an atomic child activation replacement for the admitted
+/// completion-only profile but does not snapshot or move live runtime state.
 class ResourceTimeTransitionSelectionSession final {
 public:
   static llvm::Expected<ResourceTimeTransitionSelectionSession>
   create(::loom::pnr::ResourceTimeTransitionGraph graph,
          const ::loom::deployment::FinalizedDeployment &entryDeployment,
          const ArtifactStore &artifacts, const BlobStore &blobs);
+
+  /// Verifies the graph and prepares every selectable child endpoint before
+  /// returning a session that may commit selected edges to the loaded
+  /// Deployment. An entry-only graph needs no provider preparation.
+  static llvm::Expected<ResourceTimeTransitionSelectionSession>
+  createPrepared(::loom::pnr::ResourceTimeTransitionGraph graph,
+                 LoadedDeployment &loaded, const ArtifactStore &artifacts,
+                 const BlobStore &blobs);
 
   static llvm::Expected<ResourceTimeTransitionSelectionSession>
   replay(::loom::pnr::ResourceTimeTransitionGraph graph,
@@ -115,6 +131,15 @@ public:
       std::optional<::loom::pnr::ResourceTimeTransitionEndpointReference>
           child);
 
+  /// Commits a completion only after an exact child Deployment activation is
+  /// atomically replaced under the existing lease. Provider rejection leaves
+  /// the selector, replay, and loaded Deployment at the parent endpoint.
+  llvm::Expected<std::optional<::loom::pnr::ResourceTimeTransition>>
+  completeRootAndActivate(
+      ::dataflow::RootThreadLaunchRef completedRoot,
+      std::optional<::loom::pnr::ResourceTimeTransitionEndpointReference> child,
+      LoadedDeployment &loaded);
+
   /// Joins only the root inventory imported from the entry SystemMapping.
   /// Host residual execution and process termination remain separate owners.
   llvm::Error joinMappedRoots();
@@ -138,12 +163,17 @@ private:
         mappedRoots_(std::move(mappedRoots)),
         completedMarks_(mappedRoots_.size(), false), current_(graph_.entry) {}
 
+  llvm::Error
+  applyReplayRecord(const ResourceTimeSelectionReplayRecord &record);
+
   ::loom::pnr::ResourceTimeTransitionGraph graph_;
   ArtifactRootReference dataflow_;
   std::vector<::dataflow::RootThreadLaunchRef> mappedRoots_;
   std::vector<bool> completedMarks_;
   std::vector<::dataflow::RootThreadLaunchRef> completedRoots_;
   ::loom::pnr::ResourceTimeTransitionEndpointReference current_;
+  std::shared_ptr<const detail::ResourceTimeActivationToken>
+      preparedActivationToken_;
   State state_ = State::Running;
   std::vector<ResourceTimeSelectionReplayRecord> replay_;
 };
