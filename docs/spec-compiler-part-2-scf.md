@@ -685,8 +685,11 @@ sequence of registered pure scalar compute and direct rank-one, unit-physical-
 stride, zero-offset loads or stores indexed only by the induction variable.
 Every access relation and iteration domain must be constructed by MLIR
 Affine/Presburger analysis. The frozen statement domains and exact dependence
-polyhedra are passed to the pinned Polly/ISL schedule provider. ISL schedule
-maps and trees are invocation-local summaries only: they cannot become a
+polyhedra are passed to the pinned Polly/ISL schedule provider. The ISL objects
+and schedule tree remain invocation-local. Before releasing them, the provider
+freezes every statement schedule map into Loom-owned typed Presburger pieces:
+integer equalities and inequalities, explicit local floor divisions, and
+source/schedule/parameter dimensions. These rows are analysis views, not a
 second dependence owner or a persistent Schedule Artifact. The provider is
 bounded by a fixed operation quota and rejects a changed statement domain or
 missing finite schedule band. Domain admission, unavailable schedule, and
@@ -876,7 +879,7 @@ or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v8`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v9`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator

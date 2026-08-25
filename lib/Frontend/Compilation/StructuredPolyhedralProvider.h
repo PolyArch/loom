@@ -1,6 +1,8 @@
 #ifndef LOOM_FRONTEND_COMPILATION_STRUCTUREDPOLYHEDRALPROVIDER_H
 #define LOOM_FRONTEND_COMPILATION_STRUCTUREDPOLYHEDRALPROVIDER_H
 
+#include "Frontend/Compilation/StructuredScop.h"
+
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -30,10 +32,10 @@ struct PolyhedralDependenceRelation final {
 
 struct PolyhedralScheduleProviderView final {
   std::uint64_t parameterCount = 0;
-  std::uint64_t scheduleMapCount = 0;
   std::uint64_t scheduleBandCount = 0;
   std::uint64_t scheduleDimensionCount = 0;
   std::uint64_t coincidentDimensionCount = 0;
+  std::vector<StructuredPolyhedralStatementScheduleView> statementSchedules;
 };
 
 enum class PolyhedralScheduleProviderRefusalKind : std::uint32_t {

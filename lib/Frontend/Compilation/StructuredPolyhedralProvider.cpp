@@ -7,6 +7,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
+#include <isl/aff.h>
 #include <isl/constraint.h>
 #include <isl/ctx.h>
 #include <isl/local_space.h>
@@ -23,6 +24,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -63,6 +65,8 @@ using IslUnionMap = IslOwner<isl_union_map, isl_union_map_free>;
 using IslSchedule = IslOwner<isl_schedule, isl_schedule_free>;
 using IslScheduleConstraints =
     IslOwner<isl_schedule_constraints, isl_schedule_constraints_free>;
+using IslAff = IslOwner<isl_aff, isl_aff_free>;
+using IslVal = IslOwner<isl_val, isl_val_free>;
 
 llvm::Error providerError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -345,6 +349,465 @@ struct BandSummary final {
   bool failed = false;
 };
 
+bool constraintLess(const StructuredPolyhedralConstraintView &lhs,
+                    const StructuredPolyhedralConstraintView &rhs) {
+  if (lhs.kind != rhs.kind)
+    return lhs.kind < rhs.kind;
+  return lhs.coefficients < rhs.coefficients;
+}
+
+bool divisionLess(const StructuredPolyhedralDivisionView &lhs,
+                  const StructuredPolyhedralDivisionView &rhs) {
+  if (lhs.denominator != rhs.denominator)
+    return lhs.denominator < rhs.denominator;
+  return lhs.numerator < rhs.numerator;
+}
+
+bool pieceLess(const StructuredPolyhedralSchedulePieceView &lhs,
+               const StructuredPolyhedralSchedulePieceView &rhs) {
+  if (lhs.sourceDimensionCount != rhs.sourceDimensionCount)
+    return lhs.sourceDimensionCount < rhs.sourceDimensionCount;
+  if (lhs.scheduleDimensionCount != rhs.scheduleDimensionCount)
+    return lhs.scheduleDimensionCount < rhs.scheduleDimensionCount;
+  if (lhs.parameterCount != rhs.parameterCount)
+    return lhs.parameterCount < rhs.parameterCount;
+  if (lhs.divisions != rhs.divisions)
+    return std::lexicographical_compare(
+        lhs.divisions.begin(), lhs.divisions.end(), rhs.divisions.begin(),
+        rhs.divisions.end(), divisionLess);
+  return std::lexicographical_compare(
+      lhs.constraints.begin(), lhs.constraints.end(), rhs.constraints.begin(),
+      rhs.constraints.end(), constraintLess);
+}
+
+bool readInteger(IslVal value, std::int64_t &result) {
+  if (!value || isl_val_is_int(value.get()) != isl_bool_true)
+    return false;
+  isl_ctx *context = isl_val_get_ctx(value.get());
+  const long integer = isl_val_get_num_si(value.get());
+  if (isl_ctx_last_error(context) != isl_error_none)
+    return false;
+  result = static_cast<std::int64_t>(integer);
+  return true;
+}
+
+bool readCoefficient(isl_constraint *constraint, enum isl_dim_type type,
+                     unsigned position, std::int64_t &result) {
+  return readInteger(
+      IslVal(isl_constraint_get_coefficient_val(constraint, type, position)),
+      result);
+}
+
+struct ConstraintFreezeContext final {
+  StructuredPolyhedralSchedulePieceView *piece = nullptr;
+  bool failed = false;
+};
+
+isl_stat freezeConstraint(isl_constraint *rawConstraint, void *opaque) {
+  IslConstraint constraint(rawConstraint);
+  auto &context = *static_cast<ConstraintFreezeContext *>(opaque);
+  StructuredPolyhedralSchedulePieceView &piece = *context.piece;
+  const std::uint64_t localCount = piece.divisions.size();
+  const std::uint64_t coefficientCount = piece.sourceDimensionCount +
+                                         piece.scheduleDimensionCount +
+                                         piece.parameterCount + localCount + 1;
+  if (coefficientCount > std::numeric_limits<std::size_t>::max()) {
+    context.failed = true;
+    return isl_stat_error;
+  }
+  StructuredPolyhedralConstraintView frozen;
+  const isl_bool equality = isl_constraint_is_equality(constraint.get());
+  if (equality < 0) {
+    context.failed = true;
+    return isl_stat_error;
+  }
+  frozen.kind = equality == isl_bool_true
+                    ? StructuredPolyhedralConstraintKind::Equality
+                    : StructuredPolyhedralConstraintKind::Inequality;
+  frozen.coefficients.reserve(static_cast<std::size_t>(coefficientCount));
+  const auto append = [&](enum isl_dim_type type, std::uint64_t count) {
+    for (std::uint64_t index = 0; index != count; ++index) {
+      std::int64_t coefficient = 0;
+      if (index > std::numeric_limits<unsigned>::max() ||
+          !readCoefficient(constraint.get(), type, static_cast<unsigned>(index),
+                           coefficient))
+        return false;
+      frozen.coefficients.push_back(coefficient);
+    }
+    return true;
+  };
+  if (!append(isl_dim_in, piece.sourceDimensionCount) ||
+      !append(isl_dim_out, piece.scheduleDimensionCount) ||
+      !append(isl_dim_param, piece.parameterCount) ||
+      !append(isl_dim_div, localCount)) {
+    context.failed = true;
+    return isl_stat_error;
+  }
+  std::int64_t constant = 0;
+  if (!readInteger(IslVal(isl_constraint_get_constant_val(constraint.get())),
+                   constant)) {
+    context.failed = true;
+    return isl_stat_error;
+  }
+  frozen.coefficients.push_back(constant);
+  piece.constraints.push_back(std::move(frozen));
+  return isl_stat_ok;
+}
+
+bool readScaledAffValue(isl_aff *affine, enum isl_dim_type type,
+                        unsigned position, isl_val *denominator,
+                        std::int64_t &result) {
+  IslVal coefficient(isl_aff_get_coefficient_val(affine, type, position));
+  if (!coefficient)
+    return false;
+  coefficient.reset(
+      isl_val_mul(coefficient.release(), isl_val_copy(denominator)));
+  return readInteger(std::move(coefficient), result);
+}
+
+bool freezeDivisions(isl_basic_map *basic,
+                     StructuredPolyhedralSchedulePieceView &piece) {
+  const isl_size localCount = isl_basic_map_dim(basic, isl_dim_div);
+  if (localCount < 0)
+    return false;
+  piece.divisions.resize(static_cast<std::size_t>(localCount));
+  for (isl_size local = 0; local != localCount; ++local) {
+    IslAff division(isl_basic_map_get_div(basic, local));
+    if (!division)
+      return false;
+    const isl_size affineDimensions = isl_aff_dim(division.get(), isl_dim_in);
+    const isl_size affineParameters =
+        isl_aff_dim(division.get(), isl_dim_param);
+    const isl_size affineLocals = isl_aff_dim(division.get(), isl_dim_div);
+    if (affineDimensions < 0 || affineParameters < 0 || affineLocals < 0 ||
+        static_cast<std::uint64_t>(affineDimensions) !=
+            piece.sourceDimensionCount + piece.scheduleDimensionCount ||
+        static_cast<std::uint64_t>(affineParameters) != piece.parameterCount ||
+        affineLocals != localCount)
+      return false;
+    IslVal denominator(isl_aff_get_denominator_val(division.get()));
+    std::int64_t signedDenominator = 0;
+    if (!readInteger(IslVal(isl_val_copy(denominator.get())),
+                     signedDenominator) ||
+        signedDenominator <= 0)
+      return false;
+    StructuredPolyhedralDivisionView &frozen =
+        piece.divisions[static_cast<std::size_t>(local)];
+    frozen.denominator = static_cast<std::uint64_t>(signedDenominator);
+    const std::uint64_t numeratorCount =
+        piece.sourceDimensionCount + piece.scheduleDimensionCount +
+        piece.parameterCount + static_cast<std::uint64_t>(localCount) + 1;
+    if (numeratorCount > std::numeric_limits<std::size_t>::max())
+      return false;
+    frozen.numerator.reserve(static_cast<std::size_t>(numeratorCount));
+    for (std::uint64_t index = 0;
+         index != piece.sourceDimensionCount + piece.scheduleDimensionCount;
+         ++index) {
+      std::int64_t coefficient = 0;
+      if (index > std::numeric_limits<unsigned>::max() ||
+          !readScaledAffValue(division.get(), isl_dim_in,
+                              static_cast<unsigned>(index), denominator.get(),
+                              coefficient))
+        return false;
+      frozen.numerator.push_back(coefficient);
+    }
+    for (std::uint64_t index = 0; index != piece.parameterCount; ++index) {
+      std::int64_t coefficient = 0;
+      if (index > std::numeric_limits<unsigned>::max() ||
+          !readScaledAffValue(division.get(), isl_dim_param,
+                              static_cast<unsigned>(index), denominator.get(),
+                              coefficient))
+        return false;
+      frozen.numerator.push_back(coefficient);
+    }
+    for (isl_size index = 0; index != localCount; ++index) {
+      std::int64_t coefficient = 0;
+      if (!readScaledAffValue(division.get(), isl_dim_div, index,
+                              denominator.get(), coefficient))
+        return false;
+      frozen.numerator.push_back(coefficient);
+    }
+    IslVal constant(isl_aff_get_constant_val(division.get()));
+    if (!constant)
+      return false;
+    constant.reset(
+        isl_val_mul(constant.release(), isl_val_copy(denominator.get())));
+    std::int64_t frozenConstant = 0;
+    if (!readInteger(std::move(constant), frozenConstant))
+      return false;
+    frozen.numerator.push_back(frozenConstant);
+  }
+  return true;
+}
+
+bool accumulate(std::int64_t &value, std::int64_t delta) {
+  if ((delta > 0 && value > std::numeric_limits<std::int64_t>::max() - delta) ||
+      (delta < 0 && value < std::numeric_limits<std::int64_t>::min() - delta))
+    return false;
+  value += delta;
+  return true;
+}
+
+bool negate(std::int64_t value, std::int64_t &result) {
+  if (value == std::numeric_limits<std::int64_t>::min())
+    return false;
+  result = -value;
+  return true;
+}
+
+llvm::Expected<isl_constraint *>
+reconstructConstraint(isl_local_space *localSpace,
+                      const StructuredPolyhedralSchedulePieceView &piece,
+                      llvm::ArrayRef<std::int64_t> row, bool equality) {
+  const std::uint64_t expectedWidth =
+      piece.sourceDimensionCount + piece.scheduleDimensionCount +
+      piece.parameterCount + piece.divisions.size() + 1;
+  if (row.size() != expectedWidth)
+    return providerError("a frozen schedule row has inconsistent arity");
+  IslConstraint constraint(equality
+                               ? isl_constraint_alloc_equality(localSpace)
+                               : isl_constraint_alloc_inequality(localSpace));
+  if (!constraint)
+    return providerError("cannot reconstruct an ISL schedule constraint");
+  std::uint64_t offset = 0;
+  const auto append = [&](enum isl_dim_type type, unsigned destinationOffset,
+                          std::uint64_t count) -> llvm::Error {
+    for (std::uint64_t index = 0; index != count; ++index) {
+      if (index > std::numeric_limits<unsigned>::max() - destinationOffset)
+        return providerError("a frozen schedule dimension exceeds ISL arity");
+      auto updated = setCoefficient(
+          constraint.release(), type,
+          destinationOffset + static_cast<unsigned>(index), row[offset++]);
+      if (!updated)
+        return updated.takeError();
+      constraint.reset(*updated);
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error error = append(isl_dim_in, 0, piece.sourceDimensionCount))
+    return std::move(error);
+  if (llvm::Error error = append(isl_dim_out, 0, piece.scheduleDimensionCount))
+    return std::move(error);
+  if (llvm::Error error = append(isl_dim_param, 0, piece.parameterCount))
+    return std::move(error);
+  if (piece.scheduleDimensionCount > std::numeric_limits<unsigned>::max())
+    return providerError("a frozen schedule range exceeds ISL arity");
+  if (llvm::Error error = append(
+          isl_dim_out, static_cast<unsigned>(piece.scheduleDimensionCount),
+          piece.divisions.size()))
+    return std::move(error);
+  auto updated = setConstant(constraint.release(), row[offset]);
+  if (!updated)
+    return updated.takeError();
+  return *updated;
+}
+
+llvm::Expected<isl_map *>
+reconstructSchedulePiece(isl_map *sourceMap,
+                         const StructuredPolyhedralSchedulePieceView &piece) {
+  if (piece.sourceDimensionCount > std::numeric_limits<unsigned>::max() ||
+      piece.scheduleDimensionCount > std::numeric_limits<unsigned>::max() ||
+      piece.divisions.size() > std::numeric_limits<unsigned>::max())
+    return providerError("a frozen schedule piece exceeds ISL arity");
+  IslOwner<isl_space, isl_space_free> space(isl_map_get_space(sourceMap));
+  if (!space)
+    return providerError("cannot read the original ISL schedule space");
+  space.reset(
+      isl_space_add_dims(space.release(), isl_dim_out, piece.divisions.size()));
+  if (!space)
+    return providerError("cannot extend a reconstructed ISL schedule space");
+  IslBasicMap reconstructed(isl_basic_map_universe(space.release()));
+  if (!reconstructed)
+    return providerError("cannot allocate a reconstructed ISL schedule map");
+
+  const auto addRow = [&](llvm::ArrayRef<std::int64_t> row,
+                          bool equality) -> llvm::Error {
+    auto constraint =
+        reconstructConstraint(isl_local_space_from_space(
+                                  isl_basic_map_get_space(reconstructed.get())),
+                              piece, row, equality);
+    if (!constraint)
+      return constraint.takeError();
+    reconstructed.reset(
+        isl_basic_map_add_constraint(reconstructed.release(), *constraint));
+    if (!reconstructed)
+      return providerError("cannot add a reconstructed schedule constraint");
+    return llvm::Error::success();
+  };
+  for (const StructuredPolyhedralConstraintView &constraint : piece.constraints)
+    if (llvm::Error error = addRow(
+            constraint.coefficients,
+            constraint.kind == StructuredPolyhedralConstraintKind::Equality))
+      return std::move(error);
+
+  for (std::size_t local = 0; local != piece.divisions.size(); ++local) {
+    const StructuredPolyhedralDivisionView &division = piece.divisions[local];
+    const std::uint64_t rowWidth =
+        piece.sourceDimensionCount + piece.scheduleDimensionCount +
+        piece.parameterCount + piece.divisions.size() + 1;
+    if (division.denominator == 0 ||
+        division.denominator > static_cast<std::uint64_t>(
+                                   std::numeric_limits<std::int64_t>::max()) ||
+        division.numerator.size() != rowWidth)
+      return providerError("a frozen schedule division is malformed");
+    const std::size_t localOffset = static_cast<std::size_t>(
+        piece.sourceDimensionCount + piece.scheduleDimensionCount +
+        piece.parameterCount);
+    if (llvm::any_of(
+            llvm::ArrayRef<std::int64_t>(division.numerator)
+                .slice(localOffset + local, piece.divisions.size() - local),
+            [](std::int64_t coefficient) { return coefficient != 0; }))
+      return providerError("a frozen schedule division is cyclic");
+    std::vector<std::int64_t> lower = division.numerator;
+    const std::int64_t denominator =
+        static_cast<std::int64_t>(division.denominator);
+    if (!accumulate(lower[localOffset + local], -denominator))
+      return providerError("a frozen schedule division overflows");
+    if (llvm::Error error = addRow(lower, false))
+      return std::move(error);
+
+    std::vector<std::int64_t> upper;
+    upper.reserve(rowWidth);
+    for (std::int64_t coefficient : division.numerator) {
+      std::int64_t negated = 0;
+      if (!negate(coefficient, negated))
+        return providerError("a frozen schedule division overflows");
+      upper.push_back(negated);
+    }
+    if (!accumulate(upper[localOffset + local], denominator) ||
+        !accumulate(upper.back(), denominator - 1))
+      return providerError("a frozen schedule division overflows");
+    if (llvm::Error error = addRow(upper, false))
+      return std::move(error);
+  }
+
+  IslMap result(isl_map_from_basic_map(reconstructed.release()));
+  if (!result)
+    return providerError("cannot construct a frozen ISL schedule piece");
+  result.reset(
+      isl_map_project_out(result.release(), isl_dim_out,
+                          static_cast<unsigned>(piece.scheduleDimensionCount),
+                          static_cast<unsigned>(piece.divisions.size())));
+  if (!result)
+    return providerError("cannot project frozen ISL schedule divisions");
+  return result.release();
+}
+
+llvm::Error verifyFrozenScheduleMap(
+    isl_map *original,
+    const StructuredPolyhedralStatementScheduleView &schedule) {
+  IslMap reconstructed;
+  for (const StructuredPolyhedralSchedulePieceView &piece : schedule.pieces) {
+    auto map = reconstructSchedulePiece(original, piece);
+    if (!map)
+      return map.takeError();
+    if (!reconstructed) {
+      reconstructed.reset(*map);
+      continue;
+    }
+    reconstructed.reset(isl_map_union(reconstructed.release(), *map));
+    if (!reconstructed)
+      return providerError("cannot union reconstructed ISL schedule pieces");
+  }
+  if (!reconstructed)
+    return providerError("a frozen statement schedule has no pieces");
+  const isl_bool equal = isl_map_is_equal(original, reconstructed.get());
+  if (equal < 0)
+    return providerError("cannot compare a frozen ISL schedule map");
+  if (equal == isl_bool_false)
+    return providerError("a frozen ISL schedule map changed semantics");
+  return llvm::Error::success();
+}
+
+struct BasicMapFreezeContext final {
+  StructuredPolyhedralStatementScheduleView *statement = nullptr;
+  std::uint64_t parameterCount = 0;
+  bool failed = false;
+};
+
+isl_stat freezeBasicMap(isl_basic_map *rawBasic, void *opaque) {
+  IslBasicMap basic(rawBasic);
+  auto &context = *static_cast<BasicMapFreezeContext *>(opaque);
+  const isl_size sourceDimensions = isl_basic_map_dim(basic.get(), isl_dim_in);
+  const isl_size scheduleDimensions =
+      isl_basic_map_dim(basic.get(), isl_dim_out);
+  const isl_size parameters = isl_basic_map_dim(basic.get(), isl_dim_param);
+  if (sourceDimensions < 0 || scheduleDimensions < 0 || parameters < 0 ||
+      static_cast<std::uint64_t>(parameters) != context.parameterCount) {
+    context.failed = true;
+    return isl_stat_error;
+  }
+  StructuredPolyhedralSchedulePieceView piece{
+      static_cast<std::uint64_t>(sourceDimensions),
+      static_cast<std::uint64_t>(scheduleDimensions),
+      context.parameterCount,
+      {},
+      {}};
+  if (!freezeDivisions(basic.get(), piece)) {
+    context.failed = true;
+    return isl_stat_error;
+  }
+  ConstraintFreezeContext constraintContext{&piece, false};
+  if (isl_basic_map_foreach_constraint(basic.get(), freezeConstraint,
+                                       &constraintContext) < 0 ||
+      constraintContext.failed) {
+    context.failed = true;
+    return isl_stat_error;
+  }
+  llvm::sort(piece.constraints, constraintLess);
+  context.statement->pieces.push_back(std::move(piece));
+  return isl_stat_ok;
+}
+
+struct ScheduleFreezeContext final {
+  const std::map<std::string, std::uint64_t> *statementOrdinals = nullptr;
+  const llvm::DenseMap<std::uint64_t, unsigned> *statementDimensions = nullptr;
+  std::uint64_t parameterCount = 0;
+  std::vector<StructuredPolyhedralStatementScheduleView> schedules;
+  bool failed = false;
+};
+
+isl_stat freezeScheduleMap(isl_map *rawMap, void *opaque) {
+  IslMap map(rawMap);
+  auto &context = *static_cast<ScheduleFreezeContext *>(opaque);
+  const char *tuple = isl_map_get_tuple_name(map.get(), isl_dim_in);
+  if (!tuple) {
+    context.failed = true;
+    return isl_stat_error;
+  }
+  auto ordinal = context.statementOrdinals->find(tuple);
+  if (ordinal == context.statementOrdinals->end() ||
+      llvm::any_of(context.schedules, [&](const auto &schedule) {
+        return schedule.statementOrdinal == ordinal->second;
+      })) {
+    context.failed = true;
+    return isl_stat_error;
+  }
+  auto dimensions = context.statementDimensions->find(ordinal->second);
+  const isl_size sourceDimensions = isl_map_dim(map.get(), isl_dim_in);
+  if (dimensions == context.statementDimensions->end() ||
+      sourceDimensions < 0 ||
+      static_cast<unsigned>(sourceDimensions) != dimensions->second) {
+    context.failed = true;
+    return isl_stat_error;
+  }
+  StructuredPolyhedralStatementScheduleView schedule{ordinal->second, {}};
+  BasicMapFreezeContext basicContext{&schedule, context.parameterCount, false};
+  if (isl_map_foreach_basic_map(map.get(), freezeBasicMap, &basicContext) < 0 ||
+      basicContext.failed || schedule.pieces.empty()) {
+    context.failed = true;
+    return isl_stat_error;
+  }
+  llvm::sort(schedule.pieces, pieceLess);
+  if (llvm::Error error = verifyFrozenScheduleMap(map.get(), schedule)) {
+    llvm::consumeError(std::move(error));
+    context.failed = true;
+    return isl_stat_error;
+  }
+  context.schedules.push_back(std::move(schedule));
+  return isl_stat_ok;
+}
+
 isl_bool summarizeBand(isl_schedule_node *node, void *opaque) {
   auto &summary = *static_cast<BandSummary *>(opaque);
   if (isl_schedule_node_get_type(node) != isl_schedule_node_band)
@@ -524,9 +987,6 @@ llvm::Expected<PolyhedralScheduleProviderOutcome> computePinnedIslSchedule(
   IslUnionMap scheduleMap(isl_schedule_get_map(schedule.get()));
   if (!scheduleMap)
     return providerFailure("the ISL schedule has no schedule map");
-  const isl_size mapCount = isl_union_map_n_map(scheduleMap.get());
-  if (mapCount < 0)
-    return providerFailure("cannot count the ISL schedule maps");
   if (!dependences.empty()) {
     IslUnionMap ordered(
         isl_union_map_lex_lt_union_map(isl_union_map_copy(scheduleMap.get()),
@@ -549,9 +1009,32 @@ llvm::Expected<PolyhedralScheduleProviderOutcome> computePinnedIslSchedule(
   if (bands.bands == 0 || bands.dimensions == 0)
     return PolyhedralScheduleProviderRefusalKind::ScheduleNotEstablished;
 
+  std::map<std::string, std::uint64_t> statementOrdinals;
+  llvm::DenseMap<std::uint64_t, unsigned> statementDimensions;
+  for (const PolyhedralStatementDomain &statement : statements) {
+    statementOrdinals.try_emplace(tupleName(statement.statementOrdinal),
+                                  statement.statementOrdinal);
+    statementDimensions.try_emplace(statement.statementOrdinal,
+                                    statement.domain->getNumDimVars());
+  }
+  ScheduleFreezeContext frozen{&statementOrdinals,
+                               &statementDimensions,
+                               parameters.values.size(),
+                               {},
+                               false};
+  if (isl_union_map_foreach_map(scheduleMap.get(), freezeScheduleMap, &frozen) <
+          0 ||
+      frozen.failed)
+    return providerFailure("cannot freeze the exact ISL schedule maps");
+  llvm::sort(frozen.schedules, [](const auto &lhs, const auto &rhs) {
+    return lhs.statementOrdinal < rhs.statementOrdinal;
+  });
+  if (frozen.schedules.size() != statements.size())
+    return providerError("the frozen ISL schedule lost a statement map");
+
   return PolyhedralScheduleProviderOutcome(PolyhedralScheduleProviderView{
-      parameters.values.size(), static_cast<std::uint64_t>(mapCount),
-      bands.bands, bands.dimensions, bands.coincidentDimensions});
+      parameters.values.size(), bands.bands, bands.dimensions,
+      bands.coincidentDimensions, std::move(frozen.schedules)});
 }
 
 } // namespace loom::frontend::detail

@@ -62,15 +62,63 @@ enum class StructuredPolyhedralProviderKind : std::uint32_t {
   PinnedPollyIsl = 0,
 };
 
+enum class StructuredPolyhedralConstraintKind : std::uint32_t {
+  Equality = 0,
+  Inequality = 1,
+};
+
+/// One exact integer row in source-dimension, schedule-dimension, parameter,
+/// local-variable, constant order. Equalities denote row == 0 and
+/// inequalities denote row >= 0.
+struct StructuredPolyhedralConstraintView final {
+  StructuredPolyhedralConstraintKind kind =
+      StructuredPolyhedralConstraintKind::Equality;
+  std::vector<std::int64_t> coefficients;
+
+  friend bool operator==(const StructuredPolyhedralConstraintView &lhs,
+                         const StructuredPolyhedralConstraintView &rhs) {
+    return lhs.kind == rhs.kind && lhs.coefficients == rhs.coefficients;
+  }
+};
+
+/// One floor division local. The numerator uses the same variable order as a
+/// constraint row, including its trailing constant.
+struct StructuredPolyhedralDivisionView final {
+  std::uint64_t denominator = 1;
+  std::vector<std::int64_t> numerator;
+
+  friend bool operator==(const StructuredPolyhedralDivisionView &lhs,
+                         const StructuredPolyhedralDivisionView &rhs) {
+    return lhs.denominator == rhs.denominator && lhs.numerator == rhs.numerator;
+  }
+};
+
+/// One basic Presburger piece of a statement schedule relation. The union of
+/// all pieces for a statement is its exact schedule map.
+struct StructuredPolyhedralSchedulePieceView final {
+  std::uint64_t sourceDimensionCount = 0;
+  std::uint64_t scheduleDimensionCount = 0;
+  std::uint64_t parameterCount = 0;
+  std::vector<StructuredPolyhedralDivisionView> divisions;
+  std::vector<StructuredPolyhedralConstraintView> constraints;
+};
+
+struct StructuredPolyhedralStatementScheduleView final {
+  std::uint64_t statementOrdinal = 0;
+  std::vector<StructuredPolyhedralSchedulePieceView> pieces;
+};
+
 struct StructuredPolyhedralScheduleView final {
   StructuredPolyhedralProviderKind provider =
       StructuredPolyhedralProviderKind::PinnedPollyIsl;
   std::uint64_t parameterCount = 0;
   std::uint64_t dependenceCount = 0;
-  std::uint64_t scheduleMapCount = 0;
   std::uint64_t scheduleBandCount = 0;
   std::uint64_t scheduleDimensionCount = 0;
   std::uint64_t coincidentDimensionCount = 0;
+  std::vector<StructuredPolyhedralStatementScheduleView> statementSchedules;
+
+  std::uint64_t scheduleMapCount() const { return statementSchedules.size(); }
 };
 
 struct StructuredScopAccessView final {

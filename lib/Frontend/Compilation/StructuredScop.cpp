@@ -599,9 +599,9 @@ llvm::Expected<StructuredScopAnalysisOutcome> analyzeProjectedScop(
     }
     return refuse(loopReference, refusal);
   }
-  const detail::PolyhedralScheduleProviderView &providerSchedule =
+  detail::PolyhedralScheduleProviderView &providerSchedule =
       std::get<detail::PolyhedralScheduleProviderView>(*providerOutcome);
-  if (providerSchedule.scheduleMapCount != sourceStatementOps.size())
+  if (providerSchedule.statementSchedules.size() != sourceStatementOps.size())
     return invalid("Polly/ISL schedule changed statement cardinality");
 
   ExactStructuredScopView result(loopReference);
@@ -641,10 +641,10 @@ llvm::Expected<StructuredScopAnalysisOutcome> analyzeProjectedScop(
   result.polyhedralSchedule = {StructuredPolyhedralProviderKind::PinnedPollyIsl,
                                providerSchedule.parameterCount,
                                providerDependences.size(),
-                               providerSchedule.scheduleMapCount,
                                providerSchedule.scheduleBandCount,
                                providerSchedule.scheduleDimensionCount,
-                               providerSchedule.coincidentDimensionCount};
+                               providerSchedule.coincidentDimensionCount,
+                               std::move(providerSchedule.statementSchedules)};
   result.minimumAlignmentBytes = std::numeric_limits<std::uint64_t>::max();
   result.maximumElementBytes = elementWidth;
   for (AccessProof &access : accesses) {

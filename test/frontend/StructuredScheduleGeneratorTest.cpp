@@ -964,12 +964,31 @@ module attributes {dlti.dl_spec = #layout} {
       scop->polyhedralSchedule.provider !=
           loom::frontend::StructuredPolyhedralProviderKind::PinnedPollyIsl ||
       scop->polyhedralSchedule.dependenceCount != 4 ||
-      scop->polyhedralSchedule.scheduleMapCount != 4 ||
+      scop->polyhedralSchedule.scheduleMapCount() != 4 ||
       scop->polyhedralSchedule.scheduleBandCount == 0 ||
       scop->polyhedralSchedule.scheduleDimensionCount == 0 ||
       scop->reductionSchedule !=
           loom::frontend::StructuredReductionSchedule::None)
     fail("exact vector SCoP analysis lost a provider-proven fact");
+  for (auto [ordinal, schedule] :
+       llvm::enumerate(scop->polyhedralSchedule.statementSchedules)) {
+    if (schedule.statementOrdinal != ordinal || schedule.pieces.empty())
+      fail("typed provider schedule lost a statement relation");
+    for (const auto &piece : schedule.pieces) {
+      if (piece.sourceDimensionCount != 1 || piece.parameterCount != 0 ||
+          piece.scheduleDimensionCount == 0 || piece.constraints.empty())
+        fail("typed provider schedule has an invalid static piece");
+      const std::uint64_t rowWidth =
+          piece.sourceDimensionCount + piece.scheduleDimensionCount +
+          piece.parameterCount + piece.divisions.size() + 1;
+      for (const auto &division : piece.divisions)
+        if (division.denominator == 0 || division.numerator.size() != rowWidth)
+          fail("typed provider schedule has an invalid division");
+      for (const auto &constraint : piece.constraints)
+        if (constraint.coefficients.size() != rowWidth)
+          fail("typed provider schedule has an invalid constraint row");
+    }
+  }
 
   auto domain = take(
       loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 8));
@@ -1119,8 +1138,13 @@ module attributes {dlti.dl_spec = #layout} {
       std::get_if<loom::frontend::ExactStructuredScopView>(&analysis);
   if (!scop || scop->statementCount != 3 || scop->parameterCount != 1 ||
       scop->polyhedralSchedule.parameterCount != 1 ||
-      scop->polyhedralSchedule.scheduleMapCount != 3 || scop->constantTripCount)
+      scop->polyhedralSchedule.scheduleMapCount() != 3 ||
+      scop->constantTripCount)
     fail("symbolic SCoP lost its exact provider parameter domain");
+  for (const auto &schedule : scop->polyhedralSchedule.statementSchedules)
+    for (const auto &piece : schedule.pieces)
+      if (piece.parameterCount != 1)
+        fail("typed symbolic schedule lost its exact parameter space");
 }
 
 void exactScopRefusalsAreLocalAndTyped() {
