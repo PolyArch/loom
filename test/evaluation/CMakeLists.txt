@@ -65,6 +65,8 @@ target_link_libraries(loom-evaluation-fabric-fast-evaluation-test PRIVATE
   LoomFabricArtifact
   LoomStructuredFabricAnalyticModel
   MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
   MLIRLoom
   MLIRParser
   LLVMSupport

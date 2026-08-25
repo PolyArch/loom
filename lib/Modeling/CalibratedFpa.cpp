@@ -5,6 +5,7 @@
 #include "Evaluation/ModelParameter.h"
 #include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/ModelProvider.h"
+#include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "Evaluation/Request.h"
@@ -12,6 +13,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <system_error>
 #include <vector>
 
@@ -136,6 +138,67 @@ llvm::Error registerCalibratedFpaProviders() {
     if (llvm::Error error = registerEvaluationModelProvider(provider))
       return error;
   return llvm::Error::success();
+}
+
+llvm::Expected<PreparedCanonicalDataflowFabricCalibratedFpaEvaluation>
+prepareCanonicalDataflowFabricCalibratedFpaEvaluation(
+    const ArtifactRootReference &canonicalDataflow,
+    const ArtifactRootReference &fabric, const EdaPredictionModelWeight &weight,
+    llvm::ArrayRef<EvaluationCondition> operatingConditions,
+    const ResolvedConfig &config, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore) {
+  if (llvm::Error error = registerProductionEvaluationRegistry())
+    return std::move(error);
+
+  auto resolution = resolveCanonicalDataflowFabricEvaluationCase(
+      canonicalDataflow, fabric, artifactStore);
+  if (!resolution)
+    return resolution.takeError();
+  auto bindings = EvaluationSubjectBindings::get(
+      {{canonicalDataflowFabricAnalyticCandidateRole(), {canonicalDataflow}},
+       {canonicalDataflowFabricAnalyticFabricRole(), {fabric}}});
+  if (!bindings)
+    return bindings.takeError();
+  auto evaluationCase = EvaluationCase::get(
+      builtinEvaluationCaseSignatureRef(
+          BuiltinEvaluationCase::CanonicalDataflowWithFabric),
+      std::move(*bindings), std::nullopt, std::nullopt, operatingConditions,
+      *resolution, artifactStore, blobStore);
+  if (!evaluationCase)
+    return evaluationCase.takeError();
+
+  constexpr std::array<MetricKind, 4> metrics = {
+      MetricKind::LimitingClockFrequency, MetricKind::TotalArea,
+      MetricKind::DynamicPower, MetricKind::LeakagePower};
+  std::vector<MetricRequest> requests;
+  requests.reserve(metrics.size());
+  for (MetricKind metricKind : metrics) {
+    auto metric = MetricRequest::get(
+        MetricQuery{metricKind, EvaluationScope{ScopeFormRef(0), {}}}, {},
+        *evaluationCase, *resolution, artifactStore);
+    if (!metric)
+      return metric.takeError();
+    requests.push_back(std::move(*metric));
+  }
+
+  auto descriptor = builtinEvaluationModelDescriptorRef(
+      BuiltinEvaluationModel::CanonicalDataflowFabricCalibratedFpa);
+  if (!descriptor)
+    return descriptor.takeError();
+  auto modelBinding = ResolvedModelBinding::project(
+      *descriptor, {{kParameterInput, {weight.reference()}}}, config);
+  if (!modelBinding)
+    return modelBinding.takeError();
+  auto request = EvaluationRequest::get(*evaluationCase, requests, {},
+                                        std::move(*modelBinding), 0,
+                                        *resolution, artifactStore, blobStore);
+  if (!request)
+    return request.takeError();
+  auto published = publishEvaluationRequest(*request, artifactStore);
+  if (!published)
+    return published.takeError();
+  return PreparedCanonicalDataflowFabricCalibratedFpaEvaluation{
+      std::move(*request), std::move(*resolution)};
 }
 
 } // namespace loom::evaluation::models
