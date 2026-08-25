@@ -153,9 +153,20 @@ struct WorkloadCaptureContext final {
 thread_local NativeExecutionContext *activeExecution = nullptr;
 thread_local WorkloadCaptureContext *activeWorkloadCapture = nullptr;
 
+void recordExecutionError(llvm::Error error) {
+  if (!activeExecution) {
+    llvm::consumeError(std::move(error));
+    return;
+  }
+  if (activeExecution->error) {
+    llvm::consumeError(std::move(error));
+    return;
+  }
+  activeExecution->error.emplace(std::move(error));
+}
+
 void recordExecutionError(llvm::StringRef message) {
-  if (activeExecution && !activeExecution->error)
-    activeExecution->error = message.str();
+  recordExecutionError(executionFailed(message));
 }
 
 void nativeInvalidLogicalThreadExtent() {
@@ -174,7 +185,7 @@ std::uint64_t nativeLogicalChannelCreate(std::uint64_t receiverCount) {
       std::numeric_limits<std::uint64_t>::max(),
       static_cast<std::uint32_t>(receiverCount));
   if (!abi) {
-    recordExecutionError(llvm::toString(abi.takeError()));
+    recordExecutionError(abi.takeError());
     return 0;
   }
   channel.abi.emplace(std::move(*abi));
@@ -213,7 +224,7 @@ void nativeLogicalChannelRate(std::uint64_t handle,
     consumerMessageCounts.push_back(*count);
   if (llvm::Error error = channel.abi->openGeneration(producerMessageCount,
                                                       consumerMessageCounts)) {
-    recordExecutionError(llvm::toString(std::move(error)));
+    recordExecutionError(std::move(error));
     return;
   }
   channel.generationOpened = true;
@@ -236,7 +247,7 @@ void nativeLogicalChannelSend(std::uint64_t handle, const void *base,
       llvm::ArrayRef<std::uint8_t>(static_cast<const std::uint8_t *>(base),
                                    static_cast<std::size_t>(byteCount)));
   if (sent.kind != loom::runtime::OrderedChannelSendKind::Accepted)
-    recordExecutionError("logical channel send did not accept its message");
+    recordExecutionError(loom::runtime::orderedChannelSendError(sent.kind));
 }
 
 void nativeLogicalChannelReceive(std::uint64_t handle,
@@ -257,19 +268,32 @@ void nativeLogicalChannelReceive(std::uint64_t handle,
   auto received =
       channel.abi->receive(static_cast<std::uint32_t>(receiverOrdinal));
   if (!received) {
-    recordExecutionError(llvm::toString(received.takeError()));
+    recordExecutionError(received.takeError());
     return;
   }
-  if (received->kind != loom::runtime::OrderedChannelReceiveKind::Message ||
-      received->payload.size() != byteCount) {
-    if (received->kind == loom::runtime::OrderedChannelReceiveKind::Message)
-      llvm::consumeError(channel.abi->cancel(*received));
-    recordExecutionError("logical channel receive has no matching message");
+  if (received->kind != loom::runtime::OrderedChannelReceiveKind::Message) {
+    const auto kind =
+        received->kind == loom::runtime::OrderedChannelReceiveKind::WouldBlock
+            ? loom::runtime::OrderedChannelABIError::Kind::WouldBlock
+            : loom::runtime::OrderedChannelABIError::Kind::InvalidLifecycle;
+    recordExecutionError(
+        llvm::make_error<loom::runtime::OrderedChannelABIError>(
+            kind, "logical channel receive has no message in this lifecycle"));
+    return;
+  }
+  if (received->payload.size() != byteCount) {
+    llvm::Error failure =
+        llvm::make_error<loom::runtime::OrderedChannelABIError>(
+            loom::runtime::OrderedChannelABIError::Kind::InvalidConfiguration,
+            "logical channel receive payload has the wrong byte count");
+    failure =
+        llvm::joinErrors(std::move(failure), channel.abi->cancel(*received));
+    recordExecutionError(std::move(failure));
     return;
   }
   std::memcpy(base, received->payload.data(), received->payload.size());
   if (llvm::Error error = channel.abi->acknowledge(*received))
-    recordExecutionError(llvm::toString(std::move(error)));
+    recordExecutionError(std::move(error));
 }
 
 void *nativeRuntimeObject(std::uint64_t ordinal) {
@@ -1459,6 +1483,54 @@ llvm::Expected<WorkloadCaptureContext> prepareWorkloadCaptureContext(
   return capture;
 }
 
+llvm::Error cancelUnjoinedLogicalChannels(NativeExecutionContext &capture) {
+  llvm::Error result = llvm::Error::success();
+  for (NativeExecutionContext::LogicalChannel &channel :
+       capture.logicalChannels)
+    if (channel.abi && !channel.generationJoined)
+      result =
+          llvm::joinErrors(std::move(result), channel.abi->cancelGeneration());
+  return result;
+}
+
+llvm::Error failLogicalChannelExecution(NativeExecutionContext &capture,
+                                        llvm::Error failure) {
+  return llvm::joinErrors(std::move(failure),
+                          cancelUnjoinedLogicalChannels(capture));
+}
+
+llvm::Error finishLogicalChannelExecution(NativeExecutionContext &capture) {
+  for (NativeExecutionContext::LogicalChannel &channel :
+       capture.logicalChannels) {
+    if (!channel.generationOpened)
+      return failLogicalChannelExecution(
+          capture, executionFailed(
+                       "logical channel did not open its finite generation"));
+    if (llvm::Error error = channel.abi->finishProducer())
+      return failLogicalChannelExecution(capture, std::move(error));
+    for (std::uint32_t receiver = 0; receiver != channel.abi->consumerCount();
+         ++receiver) {
+      auto terminal = channel.abi->receive(receiver);
+      if (!terminal)
+        return failLogicalChannelExecution(capture, terminal.takeError());
+      if (terminal->kind !=
+          loom::runtime::OrderedChannelReceiveKind::EndOfGeneration)
+        return failLogicalChannelExecution(
+            capture,
+            llvm::make_error<loom::runtime::OrderedChannelABIError>(
+                loom::runtime::OrderedChannelABIError::Kind::InvalidLifecycle,
+                "logical channel endpoint did not reach its generation "
+                "terminal"));
+      if (llvm::Error error = channel.abi->finishConsumer(receiver))
+        return failLogicalChannelExecution(capture, std::move(error));
+    }
+    if (llvm::Error error = channel.abi->joinGeneration())
+      return failLogicalChannelExecution(capture, std::move(error));
+    channel.generationJoined = true;
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error runInstrumentedExecution(
     llvm::orc::ThreadSafeModule module, const CallbackNames &names,
     NativeExecutionContext &capture, std::unique_ptr<llvm::orc::LLJIT> jit,
@@ -1584,52 +1656,30 @@ llvm::Error runInstrumentedExecution(
   wrapper->toPtr<Wrapper>()();
   activeWorkloadCapture = nullptr;
   activeExecution = nullptr;
-  if (llvm::Error error = jit->deinitialize(dylib))
-    return classifyJitError(std::move(error),
-                            "cannot deinitialize the Structured program");
-  if (capture.error) {
-    llvm::Error failure = executionFailed(*capture.error);
-    for (NativeExecutionContext::LogicalChannel &channel :
-         capture.logicalChannels)
-      if (channel.abi)
-        failure = llvm::joinErrors(std::move(failure),
-                                   channel.abi->cancelGeneration());
-    return failure;
+  if (llvm::Error error = jit->deinitialize(dylib)) {
+    llvm::Error failure = classifyJitError(
+        std::move(error), "cannot deinitialize the Structured program");
+    if (capture.error)
+      failure = llvm::joinErrors(std::move(failure), std::move(*capture.error));
+    return failLogicalChannelExecution(capture, std::move(failure));
   }
-  for (NativeExecutionContext::LogicalChannel &channel :
-       capture.logicalChannels) {
-    if (!channel.generationOpened)
-      return executionFailed(
-          "logical channel did not open its finite generation");
-    if (llvm::Error error = channel.abi->finishProducer())
-      return error;
-    for (std::uint32_t receiver = 0; receiver != channel.abi->consumerCount();
-         ++receiver) {
-      auto terminal = channel.abi->receive(receiver);
-      if (!terminal)
-        return terminal.takeError();
-      if (terminal->kind !=
-          loom::runtime::OrderedChannelReceiveKind::EndOfGeneration)
-        return executionFailed(
-            "logical channel endpoint did not reach its generation terminal");
-      if (llvm::Error error = channel.abi->finishConsumer(receiver))
-        return error;
-    }
-    if (llvm::Error error = channel.abi->joinGeneration())
-      return error;
-  }
+  if (capture.error)
+    return failLogicalChannelExecution(capture, std::move(*capture.error));
   if (workloadCapture) {
     if (workloadCapture->error) {
       const std::error_code code = workloadCapture->errorCode.value_or(
           std::make_error_code(std::errc::io_error));
-      return llvm::createStringError(code, "native_workload_capture: %s",
-                                     workloadCapture->error->c_str());
+      return failLogicalChannelExecution(
+          capture, llvm::createStringError(code, "native_workload_capture: %s",
+                                           workloadCapture->error->c_str()));
     }
     if (!workloadCapture->activeCalls.empty())
-      return executionFailed(
-          "workload-backed capture left an incomplete invocation");
+      return failLogicalChannelExecution(
+          capture,
+          executionFailed(
+              "workload-backed capture left an incomplete invocation"));
   }
-  return llvm::Error::success();
+  return finishLogicalChannelExecution(capture);
 }
 
 struct NativeProgramExecutionResult final {

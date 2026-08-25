@@ -700,6 +700,15 @@ endpoint call and requires producer finish, every consumer terminal, and
 collective join after the selected entry returns. Runtime does not infer these
 counts from queue occupancy or observed execution.
 
+The adapter transports every rejected ABI outcome as its original typed
+`OrderedChannelABIError`; it does not flatten backpressure, sequence
+exhaustion, rate excess, cancellation, or lifecycle misuse into a generic
+execution string. Any failure after entry cancels every generation that has
+not joined, including failures while finishing endpoints or deinitializing the
+native image. A fully terminal path alone joins. Each native execution owns a
+fresh transient ABI instance; reset and reuse of one direct ABI session are
+separate conformance evidence rather than an adapter lifecycle guarantee.
+
 The Spatial Bridge binding's `maximumMessageBytes` is a separate provider wire
 and staging limit. It may reject an unrepresentable invocation or message with
 a typed provider outcome, but it cannot change logical capacity, split one

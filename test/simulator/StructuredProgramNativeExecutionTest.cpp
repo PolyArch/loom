@@ -448,8 +448,10 @@ module {
   auto selected = parse(R"mlir(
 module {
   dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
-      %channel: !dataflow.channel<i32>, %message: i32) ctrl (%ctrl: none) {
-    dataflow.channel.send %channel, %message : !dataflow.channel<i32>
+      %channel: !dataflow.channel<i32>, %first: i32, %second: i32)
+      ctrl (%ctrl: none) {
+    dataflow.channel.send %channel, %first : !dataflow.channel<i32>
+    dataflow.channel.send %channel, %second : !dataflow.channel<i32>
     dataflow.thread.yield
   }
 
@@ -470,12 +472,9 @@ module {
     %channel = dataflow.channel.create : !dataflow.channel<i32>
     %seven = llvm.mlir.constant(7 : i32) : i32
     %eleven = llvm.mlir.constant(11 : i32) : i32
-    %producer0 = dataflow.thread.launch @producer(%channel, %seven)
-        : (!dataflow.channel<i32>, i32) -> !dataflow.thread_token
-    dataflow.thread.wait %producer0 : !dataflow.thread_token
-    %producer1 = dataflow.thread.launch @producer(%channel, %eleven)
-        : (!dataflow.channel<i32>, i32) -> !dataflow.thread_token
-    dataflow.thread.wait %producer1 : !dataflow.thread_token
+    %producer = dataflow.thread.launch @producer(%channel, %seven, %eleven)
+        : (!dataflow.channel<i32>, i32, i32) -> !dataflow.thread_token
+    dataflow.thread.wait %producer : !dataflow.thread_token
     %consumer0 = dataflow.thread.launch @consumer(%channel, %left)
         : (!dataflow.channel<i32>, !llvm.ptr) -> !dataflow.thread_token
     dataflow.thread.wait %consumer0 : !dataflow.thread_token
@@ -506,14 +505,9 @@ module {
       test, loom::sim::executeNativeStructuredProgram(source, workload, input));
   const auto candidate = take(test, loom::sim::executeSelectedStructuredProgram(
                                         selected, source, workload, input));
-  const auto repeated = take(test, loom::sim::executeSelectedStructuredProgram(
-                                       selected, source, workload, input));
   require(test,
           loom::sim::haveEquivalentFunctionalObservations(reference, candidate),
           "ordered multicast changed whole-program observations");
-  require(test,
-          loom::sim::haveEquivalentFunctionalObservations(candidate, repeated),
-          "repeated ordered-channel generation changed observations");
 
   auto consumerFirst = parse(R"mlir(
 module {

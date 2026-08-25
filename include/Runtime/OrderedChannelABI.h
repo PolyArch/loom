@@ -57,6 +57,8 @@ public:
   enum class Kind {
     InvalidConfiguration,
     InvalidConsumer,
+    WouldBlock,
+    SequenceExhausted,
     OutstandingReservation,
     ReservationIdentityExhausted,
     InvalidTicket,
@@ -82,6 +84,11 @@ private:
   Kind kind_;
   std::string message_;
 };
+
+/// Converts a rejected send result into the corresponding typed ABI error.
+/// Accepted sends return success; callers do not reconstruct or stringify
+/// send-state distinctions.
+llvm::Error orderedChannelSendError(OrderedChannelSendKind kind);
 
 /// Direct invocation-local ordered-channel ABI and sequence owner. It owns the
 /// FIFO cursors, reservations, acknowledgements, multicast retention, and
