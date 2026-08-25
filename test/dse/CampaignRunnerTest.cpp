@@ -17,6 +17,7 @@
 #include <iostream>
 #include <string>
 #include <utility>
+#include <variant>
 
 namespace {
 
@@ -85,9 +86,31 @@ WorkUnitKey makeProjectionKey(std::uint64_t ordinal) {
       ordinal));
 }
 
+WorkUnitKey makePlanExecutionKey(const PlanExecutionFixture &fixture,
+                                 std::uint64_t planNodeOrdinal) {
+  if (planNodeOrdinal >= fixture.config.dse.planNodes.size())
+    fail("plan execution key names an unknown plan node");
+  const auto *definition = std::get_if<GeneratePlanNodeDefinition>(
+      &fixture.config.dse.planNodes[planNodeOrdinal]);
+  if (!definition)
+    fail("plan execution key names a non-Generate plan node");
+  auto owner = take(
+      WorkUnitDescriptorRef::get(candidateGeneratorDescriptorSchema.identity,
+                                 candidateGeneratorDescriptorSchema.version,
+                                 definition->descriptor.kind().ordinal()));
+  return take(WorkUnitKey::get(planNodeOrdinal, std::move(owner), 0));
+}
+
 PlanExecutionPolicy makeExecutionPolicy(std::uint64_t workers) {
   return take(PlanExecutionPolicy::get(
       workers, take(SiteResourceClaim::get(1, 0, 0))));
+}
+
+PlanExecutionPolicy makeBoundedExecutionPolicy(std::uint64_t workers,
+                                               std::uint64_t dispatches) {
+  return take(PlanExecutionPolicy::get(workers,
+                                       take(SiteResourceClaim::get(1, 0, 0)),
+                                       std::nullopt, {}, dispatches));
 }
 
 void testOperationalProjection(const ArtifactStore &store,
@@ -191,6 +214,75 @@ void testPilotContinuation(const ArtifactStore &store, const BlobStore &blobs,
       fail("campaign changed prefix key order or completion state");
 }
 
+void testResumedPilotUsesRemainingBudget(const ArtifactStore &store,
+                                         const BlobStore &blobs,
+                                         llvm::StringRef runRoot) {
+  PlanExecutionFixture fixture = take(makePlanExecutionFixture(
+      store, 2, "loom.test.campaign.remaining_budget.v1"));
+  ExecutionJournal journal =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  SiteScheduler scheduler =
+      take(SiteScheduler::create(take(SiteCapacity::get(1, 0, 0))));
+  resetPlanExecutionProviderObservations();
+  DsePlanExecutionResult prior =
+      take(executeDsePlan(fixture.view, fixture.closure, journal, scheduler,
+                          makeBoundedExecutionPolicy(1, 1), store, blobs));
+  if (!std::holds_alternative<IncompleteDsePlanExecution>(prior) ||
+      planExecutionProviderCalls() != 1)
+    fail("active-time fixture did not consume one canonical dispatch");
+  const auto priorRecords = take(journal.workUnits());
+  if (priorRecords.empty() ||
+      !(priorRecords.front().key == makePlanExecutionKey(fixture, 0)))
+    fail("active-time fixture did not retain the canonical recovery key");
+  resetPlanExecutionProviderObservations();
+
+  CampaignExecutionResult result = take(runGroundTruthCampaign(
+      fixture.view, fixture.closure,
+      take(CampaignExecutionPolicy::get(
+          1, 1, CampaignExecutionPolicy::maximumSampleActiveWallTimeNanoseconds,
+          1)),
+      makeExecutionPolicy(1), scheduler, journal, store, blobs));
+  const auto *refusal = std::get_if<CampaignAdmissionRefusal>(&result);
+  if (!refusal ||
+      refusal->reason !=
+          CampaignAdmissionFailureReason::CampaignActiveWallTimeLimit)
+    fail("resumed campaign did not retain its consumed active-time refusal");
+  if (planExecutionProviderCalls() != 0)
+    fail("resumed pilot dispatched provider work after exhausting its budget");
+}
+
+void testResumedPilotConsumesCompletedPrefix(const ArtifactStore &store,
+                                             const BlobStore &blobs,
+                                             llvm::StringRef runRoot) {
+  PlanExecutionFixture fixture = take(makePlanExecutionFixture(
+      store, 4, "loom.test.campaign.remaining_pilot_prefix.v1"));
+  ExecutionJournal journal =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  SiteScheduler scheduler =
+      take(SiteScheduler::create(take(SiteCapacity::get(2, 0, 0))));
+  resetPlanExecutionProviderObservations();
+  DsePlanExecutionResult prior =
+      take(executeDsePlan(fixture.view, fixture.closure, journal, scheduler,
+                          makeBoundedExecutionPolicy(1, 1), store, blobs));
+  if (!std::holds_alternative<IncompleteDsePlanExecution>(prior) ||
+      planExecutionProviderCalls() != 1)
+    fail("resumed pilot fixture did not consume one canonical dispatch");
+  resetPlanExecutionProviderObservations();
+
+  CampaignExecutionResult result = take(runGroundTruthCampaign(
+      fixture.view, fixture.closure, take(CampaignExecutionPolicy::get(2, 1)),
+      makeExecutionPolicy(2), scheduler, journal, store, blobs));
+  if (!std::get_if<CampaignExecution>(&result) ||
+      planExecutionProviderCalls() != 3)
+    fail("resumed pilot repeated its completed prefix instead of charging "
+         "only the remaining pilot dispatch");
+  if (maximumConcurrentPlanExecutionProviders() != 2)
+    fail("resumed pilot consumed work that belonged to the admitted pass");
+  const auto records = take(journal.workUnits());
+  if (records.size() != 4)
+    fail("resumed pilot did not close the remaining finite work units");
+}
+
 } // namespace
 
 int main() {
@@ -199,11 +291,16 @@ int main() {
   const std::string blobRoot = directory.makeDirectory("blobs");
   const std::string projectionRun = directory.makeDirectory("projection-run");
   const std::string campaignRun = directory.makeDirectory("campaign-run");
+  const std::string resumedRun = directory.makeDirectory("resumed-run");
+  const std::string resumedPrefixRun =
+      directory.makeDirectory("resumed-prefix-run");
   ArtifactStore store(storeRoot);
   BlobStore blobs(blobRoot);
   requireSuccess(registerPlanExecutionTestGenerator());
   testOperationalProjection(store, projectionRun);
   testCampaignPolicyAdmission();
   testPilotContinuation(store, blobs, campaignRun);
+  testResumedPilotUsesRemainingBudget(store, blobs, resumedRun);
+  testResumedPilotConsumesCompletedPrefix(store, blobs, resumedPrefixRun);
   return 0;
 }

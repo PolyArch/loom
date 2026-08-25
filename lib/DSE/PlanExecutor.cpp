@@ -1228,8 +1228,6 @@ llvm::Expected<PlanExecutionPolicy> PlanExecutionPolicy::get(
     std::optional<std::uint64_t> dispatchNotAfterUnixNanoseconds) {
   if (workerCount == 0)
     return invalid("execution policy requires a positive worker count");
-  if (maximumDispatches && *maximumDispatches == 0)
-    return invalid("maximum dispatch count must be positive when present");
   if (dispatchNotAfterUnixNanoseconds && *dispatchNotAfterUnixNanoseconds == 0)
     return invalid("dispatch deadline must be positive when present");
   if (externalSite && static_cast<std::uint32_t>(externalSite->disposition) >
