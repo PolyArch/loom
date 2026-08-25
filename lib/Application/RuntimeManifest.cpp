@@ -162,6 +162,48 @@ parseRootArray(const llvm::json::Object &object, llvm::StringRef key,
   return roots;
 }
 
+void writeReplayCases(
+    llvm::json::OStream &json,
+    llvm::ArrayRef<sim::SourceBackedDfgReplayCaseReference> replayCases) {
+  json.attributeArray("source_backed_replay_cases", [&] {
+    for (const sim::SourceBackedDfgReplayCaseReference &replay : replayCases)
+      json.object([&] {
+        writeRoot(json, "workload", replay.workload);
+        writeRoot(json, "runtime_input", replay.runtimeInput);
+      });
+  });
+}
+
+llvm::Expected<std::vector<sim::SourceBackedDfgReplayCaseReference>>
+parseReplayCases(const llvm::json::Object &object) {
+  auto values =
+      requireArray(object, "source_backed_replay_cases", "runtime manifest");
+  if (!values)
+    return values.takeError();
+  std::vector<sim::SourceBackedDfgReplayCaseReference> result;
+  result.reserve((*values)->size());
+  for (const llvm::json::Value &value : **values) {
+    const llvm::json::Object *replay = value.getAsObject();
+    if (!replay)
+      return malformed("runtime manifest source-backed replay case must be an "
+                       "object");
+    if (llvm::Error error =
+            rejectUnknownFields(*replay, {"workload", "runtime_input"},
+                                "runtime manifest source-backed replay case"))
+      return std::move(error);
+    auto workload = parseRoot(*replay, "workload",
+                              "runtime manifest source-backed replay case");
+    if (!workload)
+      return workload.takeError();
+    auto runtimeInput = parseRoot(*replay, "runtime_input",
+                                  "runtime manifest source-backed replay case");
+    if (!runtimeInput)
+      return runtimeInput.takeError();
+    result.push_back({std::move(*workload), std::move(*runtimeInput)});
+  }
+  return result;
+}
+
 void writeDigestArray(llvm::json::OStream &json, llvm::StringRef key,
                       llvm::ArrayRef<ComponentViewDigest> digests) {
   json.attributeArray(key, [&] {
@@ -779,6 +821,7 @@ std::string serializeDraft(const ApplicationRuntimeManifestDraft &draft) {
     writeRoot(json, "fabric", draft.fabric);
     writeRoot(json, "workload", draft.workload);
     writeRoot(json, "runtime_input", draft.runtimeInput);
+    writeReplayCases(json, draft.sourceBackedReplayCases);
     json.attribute("pair_identity",
                    formatComponentViewDigestHex(draft.pairIdentity));
     json.attribute("invocation_run_key",
@@ -792,6 +835,8 @@ std::string serializeDraft(const ApplicationRuntimeManifestDraft &draft) {
     writeRoot(json, "selected_system", draft.selectedSystem);
     writeRoot(json, "selected_mapping", draft.selectedMapping);
     writeRoot(json, "deployment", draft.deployment);
+    writeRoot(json, "activation_workload", draft.activationWorkload);
+    writeRoot(json, "activation_runtime_input", draft.activationRuntimeInput);
     writeRootArray(json, "runtime_request_dependencies",
                    draft.runtimeRequestDependencies);
     writeRootArray(json, "runtime_evidence", draft.runtimeEvidence);
@@ -815,15 +860,30 @@ parseDraft(llvm::StringRef text) {
   const llvm::json::Object *root = value->getAsObject();
   if (!root)
     return malformed("runtime manifest root must be an object");
-  if (llvm::Error error = rejectUnknownFields(
-          *root,
-          {"schema", "schema_version", "source_program", "fabric", "workload",
-           "runtime_input", "pair_identity", "invocation_run_key",
-           "pair_disposition", "selected_candidate", "selected_plan",
-           "selected_schedule_hints", "selected_system", "selected_mapping",
-           "deployment", "runtime_request_dependencies", "runtime_evidence",
-           "oracle_evidence", "transition_graph"},
-          "runtime manifest"))
+  if (llvm::Error error = rejectUnknownFields(*root,
+                                              {"schema",
+                                               "schema_version",
+                                               "source_program",
+                                               "fabric",
+                                               "workload",
+                                               "runtime_input",
+                                               "source_backed_replay_cases",
+                                               "pair_identity",
+                                               "invocation_run_key",
+                                               "pair_disposition",
+                                               "selected_candidate",
+                                               "selected_plan",
+                                               "selected_schedule_hints",
+                                               "selected_system",
+                                               "selected_mapping",
+                                               "deployment",
+                                               "activation_workload",
+                                               "activation_runtime_input",
+                                               "runtime_request_dependencies",
+                                               "runtime_evidence",
+                                               "oracle_evidence",
+                                               "transition_graph"},
+                                              "runtime manifest"))
     return std::move(error);
   auto schema = requireString(*root, "schema", "runtime manifest");
   if (!schema)
@@ -852,6 +912,9 @@ parseDraft(llvm::StringRef text) {
   auto runtimeInput = parseRoot(*root, "runtime_input", "runtime manifest");
   if (!runtimeInput)
     return runtimeInput.takeError();
+  auto replayCases = parseReplayCases(*root);
+  if (!replayCases)
+    return replayCases.takeError();
   auto pairSpelling = requireString(*root, "pair_identity", "runtime manifest");
   if (!pairSpelling)
     return pairSpelling.takeError();
@@ -902,6 +965,14 @@ parseDraft(llvm::StringRef text) {
   auto deployment = parseRoot(*root, "deployment", "runtime manifest");
   if (!deployment)
     return deployment.takeError();
+  auto activationWorkload =
+      parseRoot(*root, "activation_workload", "runtime manifest");
+  if (!activationWorkload)
+    return activationWorkload.takeError();
+  auto activationRuntimeInput =
+      parseRoot(*root, "activation_runtime_input", "runtime manifest");
+  if (!activationRuntimeInput)
+    return activationRuntimeInput.takeError();
   auto runtimeRequestDependencies =
       parseRootArray(*root, "runtime_request_dependencies", "runtime manifest");
   if (!runtimeRequestDependencies)
@@ -932,6 +1003,7 @@ parseDraft(llvm::StringRef text) {
                                          std::move(*fabric),
                                          std::move(*workload),
                                          std::move(*runtimeInput),
+                                         std::move(*replayCases),
                                          *pairIdentity,
                                          runKey,
                                          *disposition,
@@ -941,6 +1013,8 @@ parseDraft(llvm::StringRef text) {
                                          std::move(*selectedSystem),
                                          std::move(*mapping),
                                          std::move(*deployment),
+                                         std::move(*activationWorkload),
+                                         std::move(*activationRuntimeInput),
                                          std::move(*runtimeRequestDependencies),
                                          std::move(*runtimeEvidence),
                                          std::move(*oracleEvidence),
@@ -969,6 +1043,21 @@ llvm::Error canonicalizeDigestSet(std::vector<ComponentViewDigest> &digests,
       return reject(
           ApplicationRuntimeManifestErrorReason::PairDecisionIncomplete,
           name + " repeats one digest");
+  return llvm::Error::success();
+}
+
+llvm::Error canonicalizeReplayCases(
+    std::vector<sim::SourceBackedDfgReplayCaseReference> &replayCases) {
+  llvm::sort(replayCases, [](const auto &lhs, const auto &rhs) {
+    if (lhs.workload != rhs.workload)
+      return artifactRootReferenceLess(lhs.workload, rhs.workload);
+    return artifactRootReferenceLess(lhs.runtimeInput, rhs.runtimeInput);
+  });
+  for (std::size_t index = 1; index != replayCases.size(); ++index)
+    if (replayCases[index - 1] == replayCases[index])
+      return reject(
+          ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+          "source-backed replay cases repeat one activation input");
   return llvm::Error::success();
 }
 
@@ -1034,6 +1123,28 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
           sim::simulationRuntimeInputSchema.version)
     return reject(ApplicationRuntimeManifestErrorReason::PairIdentityMismatch,
                   "runtime manifest pair roots use foreign schemas");
+  if (draft.activationWorkload.schemaIdentity !=
+          sim::simulationWorkloadSchema.identity ||
+      draft.activationWorkload.schemaVersion !=
+          sim::simulationWorkloadSchema.version ||
+      draft.activationRuntimeInput.schemaIdentity !=
+          sim::simulationRuntimeInputSchema.identity ||
+      draft.activationRuntimeInput.schemaVersion !=
+          sim::simulationRuntimeInputSchema.version)
+    return reject(ApplicationRuntimeManifestErrorReason::DeploymentMismatch,
+                  "runtime manifest activation roots use foreign schemas");
+
+  auto sourceInputs = sim::importStructuredProgramSimulationInputs(
+      draft.workload, draft.runtimeInput, artifacts);
+  if (!sourceInputs)
+    return reject(ApplicationRuntimeManifestErrorReason::PairIdentityMismatch,
+                  "runtime manifest source activation failed strict import: " +
+                      llvm::toString(sourceInputs.takeError()));
+  if (sourceInputs->structuredProgram.identity() !=
+      draft.sourceProgram.artifact)
+    return reject(ApplicationRuntimeManifestErrorReason::PairIdentityMismatch,
+                  "runtime manifest source activation names a foreign "
+                  "StructuredProgram");
 
   auto importedMapping =
       mapping::importSystemMapping(draft.selectedMapping, artifacts);
@@ -1058,6 +1169,17 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
   if (importedDeployment->deployment().systemMapping() != draft.selectedMapping)
     return reject(ApplicationRuntimeManifestErrorReason::DeploymentMismatch,
                   "Deployment does not bind the selected SystemMapping");
+  auto activationInputs = sim::importSystemSimulationInputs(
+      draft.activationWorkload, draft.activationRuntimeInput, artifacts, blobs);
+  if (!activationInputs)
+    return reject(
+        ApplicationRuntimeManifestErrorReason::DeploymentMismatch,
+        "runtime manifest Deployment activation failed strict import: " +
+            llvm::toString(activationInputs.takeError()));
+  if (activationInputs->deployment.reference() != draft.deployment)
+    return reject(ApplicationRuntimeManifestErrorReason::DeploymentMismatch,
+                  "runtime manifest activation inputs name a foreign "
+                  "Deployment");
   auto deploymentClosure = deployment::deriveDeploymentPackageClosure(
       *importedDeployment, artifacts, blobs);
   if (!deploymentClosure)
@@ -1070,6 +1192,24 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
         ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
         "completed Application runtime requires runtime and oracle "
         "Evidence");
+  if (draft.sourceBackedReplayCases.empty())
+    return reject(
+        ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+        "completed Application runtime has no source-backed replay case");
+  for (const sim::SourceBackedDfgReplayCaseReference &replay :
+       draft.sourceBackedReplayCases) {
+    auto imported = sim::importSpatialSimulationInputs(
+        replay.workload, replay.runtimeInput, artifacts);
+    if (!imported)
+      return reject(
+          ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+          "source-backed replay case failed strict import: " +
+              llvm::toString(imported.takeError()));
+    if (imported->dataflow.identity() != dataflow.artifact)
+      return reject(
+          ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+          "source-backed replay case names a foreign canonical Dataflow");
+  }
   for (const ArtifactRootReference &oracle : draft.oracleEvidence)
     if (!contains(draft.runtimeEvidence, oracle))
       return reject(
@@ -1317,11 +1457,19 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
   };
   canonicalizePairs(sourceRuntimeInputs);
   canonicalizePairs(mappedRuntimeInputs);
-  if (sourceRuntimeInputs.empty() || sourceRuntimeInputs != mappedRuntimeInputs)
+  std::vector<RuntimeInputPair> sourceBackedReplayInputs;
+  sourceBackedReplayInputs.reserve(draft.sourceBackedReplayCases.size());
+  for (const sim::SourceBackedDfgReplayCaseReference &replay :
+       draft.sourceBackedReplayCases)
+    sourceBackedReplayInputs.push_back({replay.workload, replay.runtimeInput});
+  canonicalizePairs(sourceBackedReplayInputs);
+  if (sourceRuntimeInputs.empty() ||
+      sourceRuntimeInputs != mappedRuntimeInputs ||
+      sourceRuntimeInputs != sourceBackedReplayInputs)
     return reject(
         ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
         "runtime Evidence does not join DFG and Spatial Mapping executions "
-        "through the same workload and runtime input set");
+        "through the exact source-backed replay input set");
   std::vector<ArtifactRootReference> classifiedExecutionOutputs;
   for (const ExecutionEvidenceRecord &record : executionEvidence)
     classifiedExecutionOutputs.push_back(record.execution);
@@ -1482,6 +1630,9 @@ llvm::Expected<ApplicationRuntimeManifest>
 ApplicationRuntimeManifest::get(ApplicationRuntimeManifestDraft draft,
                                 const ArtifactStore &artifacts,
                                 const BlobStore &blobs) {
+  if (llvm::Error error =
+          canonicalizeReplayCases(draft.sourceBackedReplayCases))
+    return std::move(error);
   if (llvm::Error error = canonicalizeDigestSet(
           draft.selectedScheduleHintDigests, "selected schedule hints"))
     return std::move(error);

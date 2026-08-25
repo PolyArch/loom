@@ -48,7 +48,6 @@
 #include <filesystem>
 #include <map>
 #include <memory>
-#include <numeric>
 #include <optional>
 #include <set>
 #include <string>
@@ -74,10 +73,6 @@ llvm::cl::opt<std::string>
     gem5Readiness("gem5-readiness",
                   llvm::cl::desc("Pinned gem5 readiness JSON"),
                   llvm::cl::value_desc("path"), llvm::cl::Required);
-llvm::cl::opt<std::uint64_t>
-    programEntry("program-entry",
-                 llvm::cl::desc("Deployment program entry ordinal"),
-                 llvm::cl::init(0));
 llvm::cl::opt<std::int64_t>
     expectedI32("expected-i32",
                 llvm::cl::desc("Independent expected i32 result"));
@@ -249,38 +244,18 @@ struct PublishedInputs final {
 };
 
 llvm::Expected<PublishedInputs>
-publishInputs(const loom::deployment::FinalizedDeployment &deployment,
-              const loom::ArtifactStore &artifacts) {
-  const loom::deployment::DeploymentProgramEntryRef entry{
-      deployment.reference().artifact, programEntry};
-  auto shapes = loom::sim::projectSystemSimulationBoundaryShapes(
-      deployment, entry, artifacts);
-  if (!shapes)
-    return shapes.takeError();
-  if (!shapes->valueArguments.empty())
-    return invalid("program entry value arguments require explicit inputs");
-  loom::sim::SystemSimulationWorkload draft{entry};
-  draft.observableContract.valueResults.resize(shapes->valueResults.size());
-  std::iota(draft.observableContract.valueResults.begin(),
-            draft.observableContract.valueResults.end(), 0);
-  auto workload =
-      loom::sim::finalizeSimulationWorkload(draft, deployment, artifacts);
-  if (!workload)
-    return workload.takeError();
-  loom::sim::SystemSimulationRuntimeInputDraft runtimeDraft{
-      workload->identity()};
-  auto runtime = loom::sim::finalizeSimulationRuntimeInput(
-      runtimeDraft, *workload, deployment, artifacts);
-  if (!runtime)
-    return runtime.takeError();
-  auto workloadRef = loom::sim::publishSimulationWorkload(*workload, artifacts);
-  if (!workloadRef)
-    return workloadRef.takeError();
-  auto runtimeRef =
-      loom::sim::publishSimulationRuntimeInput(*runtime, artifacts);
-  if (!runtimeRef)
-    return runtimeRef.takeError();
-  return PublishedInputs{std::move(*workloadRef), std::move(*runtimeRef)};
+loadInputs(const loom::application::ApplicationRuntimeManifest &manifest,
+           const loom::deployment::FinalizedDeployment &deployment,
+           const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
+  auto imported = loom::sim::importSystemSimulationInputs(
+      manifest.activationWorkload(), manifest.activationRuntimeInput(),
+      artifacts, blobs);
+  if (!imported)
+    return imported.takeError();
+  if (imported->deployment.reference() != deployment.reference())
+    return invalid("Application activation inputs name a foreign Deployment");
+  return PublishedInputs{manifest.activationWorkload(),
+                         manifest.activationRuntimeInput()};
 }
 
 llvm::Expected<loom::evaluation::CaseArtifactResolution>
@@ -1289,7 +1264,7 @@ llvm::Error run() {
         manifest.selectedSystem(), readiness->identity, {}, artifacts);
     if (!binding)
       return binding.takeError();
-    auto inputs = publishInputs(deployment, artifacts);
+    auto inputs = loadInputs(manifest, deployment, artifacts, blobs);
     if (!inputs)
       return inputs.takeError();
     auto resolution =

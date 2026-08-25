@@ -183,9 +183,16 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
   for (const ArtifactRootReference *root :
        {&manifest.reference(), &runtime.sourceProgram(), &runtime.fabric(),
         &runtime.workload(), &runtime.runtimeInput(), &runtime.selectedSystem(),
-        &runtime.selectedMapping(), &runtime.deployment()})
+        &runtime.selectedMapping(), &runtime.deployment(),
+        &runtime.activationWorkload(), &runtime.activationRuntimeInput()})
     if (llvm::Error error = addArtifact(result.artifacts, *root, artifacts))
       return std::move(error);
+  for (const sim::SourceBackedDfgReplayCaseReference &replay :
+       runtime.sourceBackedReplayCases())
+    for (const ArtifactRootReference *root :
+         {&replay.workload, &replay.runtimeInput})
+      if (llvm::Error error = addArtifact(result.artifacts, *root, artifacts))
+        return std::move(error);
   std::vector<ArtifactRootReference> expandedFabrics;
   if (llvm::Error error = addFabricClosure(result.artifacts, expandedFabrics,
                                            runtime.fabric(), artifacts))

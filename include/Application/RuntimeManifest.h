@@ -4,6 +4,7 @@
 #include "Common/Artifact.h"
 #include "Common/ComponentViewDigest.h"
 #include "PnR/System/SystemMappingMigration.h"
+#include "Simulator/SourceBackedDfgValidation.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -27,7 +28,7 @@ namespace loom::application {
 enum class ApplicationPairDecisionDisposition : std::uint8_t;
 
 inline constexpr ArtifactSchemaDescriptor applicationRuntimeManifestSchema{
-    "loom.application.runtime_manifest", SchemaVersion{1, 0}};
+    "loom.application.runtime_manifest", SchemaVersion{2, 0}};
 
 enum class ApplicationRuntimeManifestErrorReason : std::uint8_t {
   ForeignSchema,
@@ -64,6 +65,7 @@ struct ApplicationRuntimeManifestDraft final {
   ArtifactRootReference fabric;
   ArtifactRootReference workload;
   ArtifactRootReference runtimeInput;
+  std::vector<sim::SourceBackedDfgReplayCaseReference> sourceBackedReplayCases;
   ComponentViewDigest pairIdentity;
   std::array<std::uint8_t, 32> invocationRunKey;
   ApplicationPairDecisionDisposition pairDisposition;
@@ -73,6 +75,8 @@ struct ApplicationRuntimeManifestDraft final {
   ArtifactRootReference selectedSystem;
   ArtifactRootReference selectedMapping;
   ArtifactRootReference deployment;
+  ArtifactRootReference activationWorkload;
+  ArtifactRootReference activationRuntimeInput;
   std::vector<ArtifactRootReference> runtimeRequestDependencies;
   std::vector<ArtifactRootReference> runtimeEvidence;
   std::vector<ArtifactRootReference> oracleEvidence;
@@ -89,6 +93,10 @@ public:
   const ArtifactRootReference &fabric() const { return fabric_; }
   const ArtifactRootReference &workload() const { return workload_; }
   const ArtifactRootReference &runtimeInput() const { return runtimeInput_; }
+  llvm::ArrayRef<sim::SourceBackedDfgReplayCaseReference>
+  sourceBackedReplayCases() const {
+    return sourceBackedReplayCases_;
+  }
   const ComponentViewDigest &pairIdentity() const { return pairIdentity_; }
   const std::array<std::uint8_t, 32> &invocationRunKey() const {
     return invocationRunKey_;
@@ -110,6 +118,12 @@ public:
     return selectedMapping_;
   }
   const ArtifactRootReference &deployment() const { return deployment_; }
+  const ArtifactRootReference &activationWorkload() const {
+    return activationWorkload_;
+  }
+  const ArtifactRootReference &activationRuntimeInput() const {
+    return activationRuntimeInput_;
+  }
   llvm::ArrayRef<ArtifactRootReference> runtimeRequestDependencies() const {
     return runtimeRequestDependencies_;
   }
@@ -133,6 +147,7 @@ private:
       : sourceProgram_(std::move(draft.sourceProgram)),
         fabric_(std::move(draft.fabric)), workload_(std::move(draft.workload)),
         runtimeInput_(std::move(draft.runtimeInput)),
+        sourceBackedReplayCases_(std::move(draft.sourceBackedReplayCases)),
         pairIdentity_(draft.pairIdentity),
         invocationRunKey_(draft.invocationRunKey),
         pairDisposition_(draft.pairDisposition),
@@ -143,6 +158,8 @@ private:
         selectedSystem_(std::move(draft.selectedSystem)),
         selectedMapping_(std::move(draft.selectedMapping)),
         deployment_(std::move(draft.deployment)),
+        activationWorkload_(std::move(draft.activationWorkload)),
+        activationRuntimeInput_(std::move(draft.activationRuntimeInput)),
         runtimeRequestDependencies_(
             std::move(draft.runtimeRequestDependencies)),
         runtimeEvidence_(std::move(draft.runtimeEvidence)),
@@ -154,6 +171,7 @@ private:
   ArtifactRootReference fabric_;
   ArtifactRootReference workload_;
   ArtifactRootReference runtimeInput_;
+  std::vector<sim::SourceBackedDfgReplayCaseReference> sourceBackedReplayCases_;
   ComponentViewDigest pairIdentity_;
   std::array<std::uint8_t, 32> invocationRunKey_;
   ApplicationPairDecisionDisposition pairDisposition_;
@@ -163,6 +181,8 @@ private:
   ArtifactRootReference selectedSystem_;
   ArtifactRootReference selectedMapping_;
   ArtifactRootReference deployment_;
+  ArtifactRootReference activationWorkload_;
+  ArtifactRootReference activationRuntimeInput_;
   std::vector<ArtifactRootReference> runtimeRequestDependencies_;
   std::vector<ArtifactRootReference> runtimeEvidence_;
   std::vector<ArtifactRootReference> oracleEvidence_;
