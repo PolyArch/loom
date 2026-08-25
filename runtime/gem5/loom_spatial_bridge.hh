@@ -59,6 +59,7 @@ private:
 
   int engineSocket = -1;
   std::unique_ptr<EngineResponseEvent> engineResponseEvent;
+  bool engineCompletionReceived = false;
   State state = State::Idle;
   std::uint32_t errorCode = 0;
   std::uint64_t nextSequence = 0;
@@ -83,8 +84,11 @@ private:
   EventFunctionWrapper invocationCompletionEvent;
   EventFunctionWrapper dmaCompletionEvent;
   EventFunctionWrapper completionEvent;
+  EventFunctionWrapper engineDisconnectEvent;
 
   bool connectEngine();
+  void scheduleEngineDisconnect();
+  void disconnectEngine();
   bool sendMessage(const loom::runtime::Gem5BridgeMessage &message);
   bool receiveMessage(loom::runtime::Gem5BridgeMessage &message);
   void fetchStaticLaunch();

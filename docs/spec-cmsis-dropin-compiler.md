@@ -117,10 +117,11 @@ external source path.
 
 A product final link retains LLD's `<output>.resolution.txt` and
 `<output>.0.5.precodegen.bc` save-temporary files beside the requested output.
-Together with the selected fat-LTO inputs named by the resolution report, these
-files are the removable final-link replay closure consumed by the public
-ApplicationBuild owner and its developer replay wrapper. Consuming the closure
-does not delete it or assign it a second Artifact identity.
+Selected source-derived fat-LTO inputs are isolated under
+`<output>.loom-link/`, and the resolution report names their exact paths.
+Together these files are the removable final-link replay closure consumed by
+the public ApplicationBuild owner and its developer replay wrapper. Consuming
+the closure does not delete it or assign it a second Artifact identity.
 
 ## Compatibility Mode
 
@@ -388,8 +389,9 @@ Both native and Loom builds use the LLVM tools pinned by Loom; a host `ar`,
 
 The primary DFG semantic gate chooses one deterministic WorkloadVector per
 typed operator identity that is compatible with the invocation's exact
-executable ISA/ABI cohort and gives it a 15-second wall-time execution limit by
-default. Provider configuration, final link, compilation, candidate
+executable ISA/ABI cohort and gives it the `fast` wall-time tier from the
+canonical [`timeout-budgets.json`](../config/timeout-budgets.json) by default.
+Provider configuration, final link, compilation, candidate
 generation, and shared target construction occur outside that simulation
 limit and have separate bounded execution controls. A vector must be compact
 enough to execute meaningful firing and state-transition behavior within the

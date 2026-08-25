@@ -312,7 +312,7 @@ add_test(
 set_tests_properties(loom-semantic-baseline PROPERTIES
   LABELS semantic-baseline
   RUN_SERIAL TRUE
-  TIMEOUT 1800
+  TIMEOUT ${LOOM_TIMEOUT_XLONG_SECONDS}
 )
 
 add_custom_target(check-loom-semantic-baseline

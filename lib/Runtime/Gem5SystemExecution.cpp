@@ -68,6 +68,9 @@
 #ifndef LOOM_GEM5_CONFIG_SCRIPT_PATH
 #error "LOOM_GEM5_CONFIG_SCRIPT_PATH is required"
 #endif
+#ifndef LOOM_TIMEOUT_BUDGETS_PATH
+#error "LOOM_TIMEOUT_BUDGETS_PATH is required"
+#endif
 #ifndef LOOM_GEM5_DFG_ENGINE_PATH
 #error "LOOM_GEM5_DFG_ENGINE_PATH is required"
 #endif
@@ -767,8 +770,13 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
   auto configuration = readFile(LOOM_GEM5_CONFIG_SCRIPT_PATH);
   if (!configuration)
     return configuration.takeError();
+  auto timeoutBudgets = readFile(LOOM_TIMEOUT_BUDGETS_PATH);
+  if (!timeoutBudgets)
+    return timeoutBudgets.takeError();
   std::vector<MaterializedBundleFile> files = std::move(facts.semanticInputs);
   files.push_back({kConfigurationScriptPath.str(), std::move(*configuration),
+                   std::nullopt, false});
+  files.push_back({kTimeoutBudgetsPath.str(), std::move(*timeoutBudgets),
                    std::nullopt, false});
   auto projection = renderProjection(facts, *readiness);
   if (!projection)

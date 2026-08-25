@@ -5,14 +5,25 @@ from __future__ import annotations
 import math
 import os
 import statistics
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Sequence
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
 
 
 SPATIAL_REFERENCE_FLOOR_SECONDS = 0.1
 SYSTEM_BUDGET_MULTIPLIER = 3.0
 HARD_FAILURE_RATIO = 10.0
 REFERENCE_RATE_TARGET_HZ = 100_000.0
+DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS = float(timeout_seconds(Tier.FAST))
+CGRA_SPATIAL_BOOTSTRAP_BUDGET_SECONDS = float(timeout_seconds(Tier.MEDIUM))
 RESERVED_DEVELOPMENT_CPUS = 4
 MAX_OUTER_WORKERS = 120
 

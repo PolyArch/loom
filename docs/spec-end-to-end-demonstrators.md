@@ -133,25 +133,26 @@ system_budget = min(3 * spatial_reference,
                     3 * Spatial-only absolute budget)
 ```
 
-The DFG Spatial-only absolute budget is 15 seconds, so its paired System + DFG
-absolute ceiling is 45 seconds. A one-second Spatial-only case still receives
-a three-second System budget, not the ceiling. Tiny cases use a persistent
-warmed simulator and enough deterministic repetitions to make the 100 ms
-floor meaningful. A ratio at or above ten is always a conformance failure.
-The factor three is an initial suite-wide policy and may change only from
-aggregate profiling evidence, never as a per-case exception.
+The DFG Spatial-only absolute budget is the `fast` tier from the canonical
+[`timeout-budgets.json`](../config/timeout-budgets.json), so its paired System
++ DFG absolute ceiling is derived by the formula above. A case below that
+ceiling still receives the formula-derived budget, not the ceiling. Tiny cases
+use a persistent warmed simulator and enough deterministic repetitions to make
+the 100 ms floor meaningful. A ratio at or above ten is always a conformance
+failure. The factor three is an initial suite-wide policy and may change only
+from aggregate profiling evidence, never as a per-case exception.
 
-CGRA Spatial-only bring-up uses a 45-second bootstrap ceiling while at least
-the ten representative workloads in this specification establish warmed
-active-wall, reference-cycle-rate, event-count, contention, and peak-memory
-evidence. Before System + CGRA conformance begins, the conformance owner must
-publish one suite-wide CGRA Spatial-only absolute budget in tracked gate
-configuration. Its value is selected from that aggregate evidence and the
-100 k reference-cycles-per-wall-second target. It is not an Artifact field,
-semantic limit, model parameter, or per-case override. A later change requires
-new aggregate evidence and one tracked gate update. The paired System + CGRA
-budget consumes that exact published Spatial-only budget through the formula
-above; no caller or simulator may supply a hidden second value.
+CGRA Spatial-only bring-up uses the canonical `medium` tier as its bootstrap
+ceiling while at least the ten representative workloads in this specification
+establish warmed active-wall, reference-cycle-rate, event-count, contention,
+and peak-memory evidence. Before System + CGRA conformance begins, the
+conformance owner must publish one suite-wide CGRA Spatial-only absolute budget
+in tracked gate configuration. Its value is selected from that aggregate
+evidence and the 100 k reference-cycles-per-wall-second target. It is not an
+Artifact field, semantic limit, model parameter, or per-case override. A later
+change requires new aggregate evidence and one tracked gate update. The paired
+System + CGRA budget consumes that exact published Spatial-only budget through
+the formula above; no caller or simulator may supply a hidden second value.
 
 Every paired result reports active wall time, the System-to-Spatial ratio,
 reference cycles per wall second, engine/Bridge/host/observation CPU time,

@@ -27,7 +27,8 @@ observe that deadline only at their atomic owner boundaries and return typed
 `CancelledOrTimeout` or incomplete best-so-far state. The duration, deadline,
 and observed wall time are invocation diagnostics; none enters ResolvedConfig,
 candidate identity, Artifact bytes, or an objective. Omitting the option means
-the product owner's declared positive 120-second default; an unbounded product
+the product owner's declared positive `fast` tier from the canonical
+[`timeout-budgets.json`](../config/timeout-budgets.json); an unbounded product
 Mapping invocation is not supported. An external process timeout may remain a
 final containment mechanism, but it is not the semantic cancellation owner.
 

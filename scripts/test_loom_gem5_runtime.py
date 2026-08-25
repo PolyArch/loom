@@ -16,6 +16,10 @@ import tempfile
 
 
 REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
+
 CONFIG_SCRIPT = REPOSITORY_ROOT / "runtime" / "gem5" / "configure_loom_system.py"
 M5OP_SOURCE = REPOSITORY_ROOT / "externals" / "gem5" / "util" / "m5" / "src" / "abi" / "riscv" / "m5op.S"
 M5_INCLUDE = REPOSITORY_ROOT / "externals" / "gem5" / "include"
@@ -685,7 +689,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 text=True,
                 stdout=gem5_log,
                 stderr=subprocess.STDOUT,
-                timeout=60,
+                timeout=timeout_seconds(Tier.XLONG),
             )
         if completed.returncode != 0:
             sys.stderr.write(gem5_log_path.read_text(encoding="utf-8"))
@@ -695,7 +699,12 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         if system_result["schema"] != "loom.gem5_system_attempt.1":
             raise RuntimeError("gem5 system result has the wrong schema")
         if "m5_exit instruction encountered" not in system_result["cause"]:
-            raise RuntimeError(f"guest did not retire normally: {system_result['cause']}")
+            retained_root = root.with_name(root.name + "-failed")
+            root.replace(retained_root)
+            raise RuntimeError(
+                "guest did not retire normally: "
+                f"{system_result['cause']}; artifacts: {retained_root}"
+            )
         completion_ticks = []
         for ordinal, (bridge_result_path, engine_trace_path) in enumerate(
             zip(bridge_result_paths, engine_trace_paths, strict=True)

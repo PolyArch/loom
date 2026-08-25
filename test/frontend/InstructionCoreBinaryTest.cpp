@@ -3,6 +3,7 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Common/TimeoutBudgets.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
@@ -245,9 +246,11 @@ linkedExecutable(llvm::StringRef test,
   };
   std::string error;
   bool executionFailed = false;
-  const int result = llvm::sys::ExecuteAndWait(
-      linker, arguments, std::nullopt, {}, /*SecondsToWait=*/30,
-      /*MemoryLimit=*/1024, &error, &executionFailed);
+  const int result =
+      llvm::sys::ExecuteAndWait(linker, arguments, std::nullopt, {},
+                                static_cast<unsigned>(loom::timeout::seconds(
+                                    loom::timeout::Tier::UltraFast)),
+                                /*MemoryLimit=*/1024, &error, &executionFailed);
   require(test, !executionFailed && result == 0, "ld.lld failed: " + error);
 
   auto buffer = llvm::MemoryBuffer::getFile(executablePath, false, false);

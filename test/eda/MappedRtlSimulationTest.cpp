@@ -165,7 +165,7 @@ loom::eda::open_source::MappedRtlSimulationResult expectedMappedResult() {
   result.valueResults = {{{llvm::APInt(32, 7)}}};
   result.streamOutputs = {
       {32, {llvm::APInt(32, 0x21)}, StreamTermination::ClosedAfterLast},
-      {32, {llvm::APInt(32, 0x36)}, StreamTermination::ClosedAfterLast}};
+      {32, {llvm::APInt(32, 0x3b)}, StreamTermination::ClosedAfterLast}};
   std::vector<SemanticMemoryByte> memory(
       16, SemanticMemoryByte{SemanticState::Defined, 0});
   memory[0].value = 0x11;
@@ -306,7 +306,7 @@ std::int64_t requireCompletedEvidence(
             "mapped RTL execution changed an observed stream");
   };
   requireStream(0, 0x21);
-  requireStream(1, 0x36);
+  requireStream(1, 0x3b);
   require(functional.memories.size() == 1,
           "mapped RTL execution omitted its memory observation");
   const auto *memory =

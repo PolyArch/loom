@@ -1,1 +1,1 @@
-# RUN: timeout 90s %loom-mapped-rtl-simulation-test --result-tamper
+# RUN: timeout %loom-timeout-xlong %loom-mapped-rtl-simulation-test --result-tamper

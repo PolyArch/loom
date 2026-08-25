@@ -17,6 +17,8 @@ from typing import Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_ROOT = ROOT / "test"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(TEST_ROOT) not in sys.path:
     sys.path.insert(0, str(TEST_ROOT))
 
@@ -24,12 +26,13 @@ import corpus_gate  # noqa: E402
 import corpus_inventory  # noqa: E402
 import corpus_target_profile  # noqa: E402
 from corpus_simulation_report import parse_dse_execution_projection  # noqa: E402
+from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
 
 
 EXPECTED_WORKLOAD_COUNT = 892
-CORPUS_WALL_LIMIT_SECONDS = 600.0
-CASE_WALL_LIMIT_SECONDS = 30.0
-DFG_WALL_LIMIT_SECONDS = 15.0
+CORPUS_WALL_LIMIT_SECONDS = float(timeout_seconds(Tier.NIGHTLY))
+CASE_WALL_LIMIT_SECONDS = float(timeout_seconds(Tier.FAST))
+DFG_WALL_LIMIT_SECONDS = float(timeout_seconds(Tier.FAST))
 REALTIME_LAYOUT_MARKERS = ("forceSimulation", "dagre.layout", "elk.layout")
 ARTIFACT_FIELDS = {
     "canonical_dataflow",
@@ -506,7 +509,7 @@ def run_baseline(args: argparse.Namespace) -> dict[str, object]:
             str(build_root / "test"),
         ],
         output_root,
-        1200.0,
+        float(timeout_seconds(Tier.XLONG)),
         cwd=source_root,
     )
     steps["adg_builder"] = _run_step(
@@ -516,7 +519,7 @@ def run_baseline(args: argparse.Namespace) -> dict[str, object]:
             "--conformance-anchors",
         ],
         output_root,
-        180.0,
+        float(timeout_seconds(Tier.FAST)),
         cwd=source_root,
     )
     steps["adg_builder"]["coverage"] = validate_hardware_anchor_report(
@@ -540,7 +543,7 @@ def run_baseline(args: argparse.Namespace) -> dict[str, object]:
                 f"--output={output_base}",
             ],
             output_root,
-            180.0,
+            float(timeout_seconds(Tier.FAST)),
             cwd=source_root,
         )
         identity_text = (output_root / f"{step_name}.log").read_text()
@@ -565,7 +568,8 @@ def run_baseline(args: argparse.Namespace) -> dict[str, object]:
                 representative_identities,
             ),
             output_root,
-            len(representative_identities) * CASE_WALL_LIMIT_SECONDS + 60.0,
+            len(representative_identities) * CASE_WALL_LIMIT_SECONDS
+            + timeout_seconds(Tier.ULTRAFAST),
             cwd=source_root,
         )
         replay_summaries.append(_load_json(replay_root / "summary.json"))
@@ -576,7 +580,7 @@ def run_baseline(args: argparse.Namespace) -> dict[str, object]:
         "corpus",
         _corpus_command(source_root, corpus_root, args.jobs, args),
         output_root,
-        CORPUS_WALL_LIMIT_SECONDS + 30.0,
+        CORPUS_WALL_LIMIT_SECONDS + timeout_seconds(Tier.ULTRAFAST),
         cwd=source_root,
     )
     corpus_summary = _load_json(corpus_root / "summary.json")

@@ -1,0 +1,30 @@
+{
+  "schema": "loom.timeout_budgets",
+  "version": 1,
+  "tiers": {
+    "ultrafast": {
+      "seconds": 10,
+      "description": "Unit-level and function tests"
+    },
+    "fast": {
+      "seconds": 180,
+      "description": "Small applications"
+    },
+    "medium": {
+      "seconds": 300,
+      "description": "Normal end-to-end tests"
+    },
+    "long": {
+      "seconds": 900,
+      "description": "Stress end-to-end tests"
+    },
+    "xlong": {
+      "seconds": 1800,
+      "description": "Long tests and simulation or EDA tests"
+    },
+    "nightly": {
+      "seconds": 14400,
+      "description": "Daily extended tests"
+    }
+  }
+}

@@ -3,6 +3,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Common/MappingDebugLog.h"
+#include "Common/TimeoutBudgets.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -72,7 +73,6 @@
 #include <optional>
 #include <set>
 #include <string>
-#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -81,6 +81,10 @@
 
 namespace loom::system_test {
 namespace {
+
+#ifndef LOOM_TEST_BUILD_JOBS
+#error "LOOM_TEST_BUILD_JOBS must be defined"
+#endif
 
 using deployment::test::fail;
 using deployment::test::require;
@@ -267,9 +271,10 @@ compileGuest(llvm::StringRef test, const deployment::test::TemporaryTree &tree,
   arguments.append({"-o", imagePath});
   std::string error;
   bool failed = false;
-  const int status =
-      llvm::sys::ExecuteAndWait(LOOM_TEST_CLANG_PATH, arguments, std::nullopt,
-                                {}, 60, 2048, &error, &failed);
+  const int status = llvm::sys::ExecuteAndWait(
+      LOOM_TEST_CLANG_PATH, arguments, std::nullopt, {},
+      static_cast<unsigned>(timeout::seconds(timeout::Tier::Fast)), 2048,
+      &error, &failed);
   require(test, !failed && status == 0,
           "clang could not build the RISC-V guest: " + error);
   auto buffer = llvm::MemoryBuffer::getFile(imagePath, false, false);
@@ -1073,12 +1078,7 @@ struct ToolBinding final {
   external_tool::ResolvedToolBinding resolved;
 };
 
-std::uint64_t qualificationBuildJobs() {
-  const std::uint64_t concurrency = std::thread::hardware_concurrency();
-  if (concurrency <= 1)
-    return 1;
-  return concurrency > 4 ? concurrency - 4 : concurrency;
-}
+std::uint64_t qualificationBuildJobs() { return LOOM_TEST_BUILD_JOBS; }
 
 ToolBinding
 resolveHostTool(llvm::StringRef test,

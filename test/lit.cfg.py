@@ -3,6 +3,16 @@ import os
 import subprocess
 import sys
 
+_repository_root = os.path.dirname(os.path.dirname(__file__))
+sys.path.insert(0, _repository_root)
+
+from config.timeout_budgets import (  # noqa: E402
+    Tier,
+    milliseconds,
+    seconds,
+    shell,
+)
+
 import lit.formats
 from lit.llvm import llvm_config
 
@@ -10,10 +20,17 @@ config.name = "LOOM"
 config.test_format = lit.formats.ShTest()
 config.suffixes = [".mlir", ".test"]
 
-# Hardware tools and scale Mapping tests launch nested workers and carry large
-# resident sets. Keep enough independent work in flight for this host without
-# letting lit's outer worker pool oversubscribe those inner workloads.
-lit_config.parallelism_groups["resource-intensive"] = 6
+# Resource-intensive tests are still bounded by the same host-aware worker
+# budget as the outer lit pool. The dispatcher exports this value so nested
+# runners and lit share one parallelism decision; direct lit runs use the same
+# nproc-minus-four policy.
+try:
+    _test_jobs = int(os.environ.get("LOOM_TEST_JOBS", ""))
+except ValueError:
+    _test_jobs = 0
+if _test_jobs < 1:
+    _test_jobs = max(1, min((os.cpu_count() or 1) - 4, 120))
+lit_config.parallelism_groups["resource-intensive"] = _test_jobs
 
 if getattr(config, "loom_have_circt", False):
     config.available_features.add("circt")
@@ -40,7 +57,7 @@ try:
         capture_output=True,
         env=config.environment,
         text=True,
-        timeout=60,
+        timeout=seconds(Tier.FAST),
     )
     catalog_projection = json.loads(catalog_result.stdout)
 except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
@@ -55,6 +72,13 @@ if not isinstance(available_backend_features, list) or not all(
         isinstance(feature, str) for feature in available_backend_features):
     lit_config.fatal("backend tool catalog projection has invalid features")
 config.available_features.update(available_backend_features)
+
+for _tier in Tier:
+    config.substitutions.append(
+        (f"%loom-timeout-{_tier.value}-ms", str(
+            milliseconds(_tier))))
+    config.substitutions.append(
+        (f"%loom-timeout-{_tier.value}", shell(_tier)))
 
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.loom_obj_root, "test")

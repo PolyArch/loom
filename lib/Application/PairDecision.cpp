@@ -323,6 +323,8 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
       if (outcome.preMappingCandidateRecordOrdinal != ordinal)
         continue;
       candidate.enteredMapping = true;
+      if (!candidate.planOrdinal)
+        candidate.planOrdinal = outcome.planOrdinal;
       const bool isSelectedOutcome =
           summary.selectedPlanOrdinal &&
           *summary.selectedPlanOrdinal == outcome.planOrdinal &&

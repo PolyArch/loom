@@ -5,6 +5,31 @@ set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+set(LOOM_TIMEOUT_BUDGETS_FILE
+  "${PROJECT_SOURCE_DIR}/config/timeout-budgets.json")
+if(NOT EXISTS "${LOOM_TIMEOUT_BUDGETS_FILE}")
+  message(FATAL_ERROR
+    "Missing canonical timeout budget definition: ${LOOM_TIMEOUT_BUDGETS_FILE}")
+endif()
+file(READ "${LOOM_TIMEOUT_BUDGETS_FILE}" _loom_timeout_budgets_json)
+foreach(_loom_timeout_tier IN ITEMS ultrafast fast medium long xlong nightly)
+  string(JSON _loom_timeout_seconds GET "${_loom_timeout_budgets_json}"
+    tiers "${_loom_timeout_tier}" seconds)
+  if(NOT _loom_timeout_seconds MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR
+      "Timeout budget '${_loom_timeout_tier}' must be a positive integer")
+  endif()
+  string(TOUPPER "${_loom_timeout_tier}" _loom_timeout_tier_upper)
+  set("LOOM_TIMEOUT_${_loom_timeout_tier_upper}_SECONDS"
+    "${_loom_timeout_seconds}")
+endforeach()
+file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/include/Common")
+configure_file(
+  "${PROJECT_SOURCE_DIR}/include/Common/TimeoutBudgets.h.in"
+  "${PROJECT_BINARY_DIR}/include/Common/TimeoutBudgets.h"
+  @ONLY
+)
+
 set(LOOM_PNR_INDEX_BITS "32" CACHE STRING
   "Native PnR index width in bits (32 or 64)")
 set_property(CACHE LOOM_PNR_INDEX_BITS PROPERTY STRINGS 32 64)

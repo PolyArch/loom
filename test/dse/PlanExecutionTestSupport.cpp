@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/ComponentViewDigest.h"
+#include "Common/TimeoutBudgets.h"
 #include "DSE/CandidateGenerator.h"
 
 #include <algorithm>
@@ -97,8 +98,8 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   concurrencyChanged.notify_all();
   if (requiredConcurrentProviders.load(std::memory_order_relaxed) > 1) {
     std::unique_lock<std::mutex> lock(concurrencyMutex);
-    const bool rendezvous =
-        concurrencyChanged.wait_for(lock, std::chrono::seconds(10), [] {
+    const bool rendezvous = concurrencyChanged.wait_for(
+        lock, loom::timeout::duration(loom::timeout::Tier::UltraFast), [] {
           return activeProviders.load(std::memory_order_relaxed) >=
                  requiredConcurrentProviders.load(std::memory_order_relaxed);
         });
@@ -110,7 +111,8 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   }
   if (waitForStopRequest.load(std::memory_order_relaxed)) {
     const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        std::chrono::steady_clock::now() +
+        loom::timeout::duration(loom::timeout::Tier::UltraFast);
     while (!invocation.stopRequested() &&
            std::chrono::steady_clock::now() < deadline)
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -223,9 +225,9 @@ void requirePlanExecutionProviderStopObservation() {
 
 bool waitForActivePlanExecutionProvider() {
   std::unique_lock<std::mutex> lock(concurrencyMutex);
-  return concurrencyChanged.wait_for(lock, std::chrono::seconds(10), [] {
-    return activeProviders.load(std::memory_order_relaxed) != 0;
-  });
+  return concurrencyChanged.wait_for(
+      lock, loom::timeout::duration(loom::timeout::Tier::UltraFast),
+      [] { return activeProviders.load(std::memory_order_relaxed) != 0; });
 }
 
 std::uint64_t planExecutionProviderCalls() {

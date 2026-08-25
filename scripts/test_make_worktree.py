@@ -31,6 +31,11 @@ SCRIPT = Path(__file__).with_name("make-worktree.py")
 REPO_ROOT = SCRIPT.parents[1]
 REPO_TEMP_ROOT = REPO_ROOT / "build" / "test-runs"
 UNSET = object()
+sys.path.insert(0, str(REPO_ROOT))
+
+from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
+
+UNIT_TEST_WATCHDOG_SECONDS = float(timeout_seconds(Tier.ULTRAFAST))
 
 
 def load_dispatcher():
@@ -186,7 +191,9 @@ class MakeWorktreeTest(unittest.TestCase):
             ("/clang", "clang 21.1.8"),
             ("/clang++", "clang 21.1.8"),
         )
-        self.args = Namespace(jobs=1, lock_timeout=1.0)
+        self.args = Namespace(
+            jobs=1, lock_timeout=self.module.DEFAULT_LOCK_TIMEOUT
+        )
         self.llvm_identity = self.module.llvm_build_identity(self.state.llvm_commit, self.compilers)
         self.circt_identity = self.module.circt_build_identity(self.llvm_identity, self.state.circt_commit)
         self.or_tools_identity = self.module.or_tools_build_identity(self.state.or_tools_commit, self.loom_compilers)
@@ -313,16 +320,16 @@ class MakeWorktreeTest(unittest.TestCase):
         for process in processes:
             if process.pid is None:
                 continue
-            process.join(2.0)
+            process.join(UNIT_TEST_WATCHDOG_SECONDS)
             if process.is_alive():
                 process.terminate()
-                process.join(2.0)
+                process.join(UNIT_TEST_WATCHDOG_SECONDS)
 
     def wait_for_turnstile_records(
         self,
         path: Path,
         expected: int,
-        timeout: float = 2.0,
+        timeout: float = UNIT_TEST_WATCHDOG_SECONDS,
     ) -> None:
         expected_size = expected * self.module._TURNSTILE_RECORD_SIZE
         deadline = time.monotonic() + timeout
@@ -335,7 +342,7 @@ class MakeWorktreeTest(unittest.TestCase):
         self,
         path: Path,
         expected_pids: set[int],
-        timeout: float = 1.0,
+        timeout: float = UNIT_TEST_WATCHDOG_SECONDS,
     ) -> None:
         self.wait_for_lock_processes(
             path,
@@ -349,7 +356,7 @@ class MakeWorktreeTest(unittest.TestCase):
         expected_holders: set[int] | None = None,
         expected_waiters: set[int] | None = None,
         expected_processes: set[int] | None = None,
-        timeout: float = 1.0,
+        timeout: float = UNIT_TEST_WATCHDOG_SECONDS,
     ) -> None:
         stat = path.stat()
         key = f"{os.major(stat.st_dev):02x}:{os.minor(stat.st_dev):02x}:{stat.st_ino}"
@@ -533,7 +540,7 @@ class MakeWorktreeTest(unittest.TestCase):
                 if name is None:
                     raise AssertionError(f"unexpected command: {cmd}")
                 active[name].set()
-                if not release[name].wait(2.0):
+                if not release[name].wait(UNIT_TEST_WATCHDOG_SECONDS):
                     raise RuntimeError(f"{name} release timed out")
 
             def consume(name):
@@ -543,10 +550,10 @@ class MakeWorktreeTest(unittest.TestCase):
             try:
                 with self.build_environment(self.module, run=controlled_run):
                     processes["reader-a"].start()
-                    self.assertTrue(active["reader-a"].wait(1.0))
+                    self.assertTrue(active["reader-a"].wait(UNIT_TEST_WATCHDOG_SECONDS))
                     processes["reader-b"].start()
                     self.assertTrue(
-                        active["reader-b"].wait(0.5),
+                        active["reader-b"].wait(UNIT_TEST_WATCHDOG_SECONDS),
                         "ready Loom readers did not overlap",
                     )
             finally:
@@ -579,7 +586,9 @@ class MakeWorktreeTest(unittest.TestCase):
             started = {name: context.Event() for name in names if name != "holding-reader"}
             order = context.Queue()
             by_build = {str(paths.loom_build): name for name, paths in readers.items()}
-            args = Namespace(jobs=1, lock_timeout=3.0)
+            args = Namespace(
+                jobs=1, lock_timeout=self.module.DEFAULT_LOCK_TIMEOUT
+            )
 
             def controlled_run(cmd, **kwargs):
                 if cmd[:2] != ["cmake", "--build"]:
@@ -591,7 +600,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     raise AssertionError(f"unexpected command: {cmd}")
                 order.put(name)
                 active[name].set()
-                if not release[name].wait(2.0):
+                if not release[name].wait(UNIT_TEST_WATCHDOG_SECONDS):
                     raise RuntimeError(f"{name} release timed out")
 
             def consume(name):
@@ -624,18 +633,27 @@ class MakeWorktreeTest(unittest.TestCase):
             try:
                 with self.build_environment(self.module, run=controlled_run):
                     processes["holding-reader"].start()
-                    self.assertTrue(active["holding-reader"].wait(1.0))
-                    self.assertEqual(order.get(timeout=1.0), "holding-reader")
+                    self.assertTrue(
+                        active["holding-reader"].wait(UNIT_TEST_WATCHDOG_SECONDS)
+                    )
+                    self.assertEqual(
+                        order.get(timeout=UNIT_TEST_WATCHDOG_SECONDS),
+                        "holding-reader",
+                    )
 
                     processes["first-writer"].start()
-                    self.assertTrue(started["first-writer"].wait(0.5))
+                    self.assertTrue(
+                        started["first-writer"].wait(UNIT_TEST_WATCHDOG_SECONDS)
+                    )
                     self.wait_for_lock_holders(
                         shared.llvm_lock_turnstile,
                         {processes["first-writer"].pid},
                     )
 
                     processes["queued-reader"].start()
-                    self.assertTrue(started["queued-reader"].wait(0.5))
+                    self.assertTrue(
+                        started["queued-reader"].wait(UNIT_TEST_WATCHDOG_SECONDS)
+                    )
                     self.wait_for_lock_processes(
                         shared.llvm_lock_turnstile,
                         expected_waiters={processes["queued-reader"].pid},
@@ -643,16 +661,24 @@ class MakeWorktreeTest(unittest.TestCase):
 
                     for name in later_writers:
                         processes[name].start()
-                        self.assertTrue(started[name].wait(0.5))
+                        self.assertTrue(
+                            started[name].wait(UNIT_TEST_WATCHDOG_SECONDS)
+                        )
                         self.wait_for_lock_processes(
                             shared.llvm_lock_turnstile,
                             expected_processes={processes[name].pid},
                         )
 
                     release["holding-reader"].set()
-                    self.assertEqual(order.get(timeout=1.0), "first-writer")
+                    self.assertEqual(
+                        order.get(timeout=UNIT_TEST_WATCHDOG_SECONDS),
+                        "first-writer",
+                    )
                     release["first-writer"].set()
-                    self.assertEqual(order.get(timeout=1.0), "queued-reader")
+                    self.assertEqual(
+                        order.get(timeout=UNIT_TEST_WATCHDOG_SECONDS),
+                        "queued-reader",
+                    )
                     release["queued-reader"].set()
             finally:
                 for event in release.values():
@@ -680,7 +706,7 @@ class MakeWorktreeTest(unittest.TestCase):
             def controlled_run(cmd, **kwargs):
                 if cmd and cmd[0] == str(shared.llvm_lit):
                     lit_active.set()
-                    if not release_lit.wait(2.0):
+                    if not release_lit.wait(UNIT_TEST_WATCHDOG_SECONDS):
                         raise RuntimeError("lit release timed out")
                     Path(cmd[cmd.index("--output") + 1]).write_text('{"tests": []}')
                     return
@@ -689,7 +715,7 @@ class MakeWorktreeTest(unittest.TestCase):
                         return
                     if cmd[2] == str(shared.llvm_build):
                         writer_active.set()
-                        if not release_writer.wait(2.0):
+                        if not release_writer.wait(UNIT_TEST_WATCHDOG_SECONDS):
                             raise RuntimeError("writer release timed out")
                         return
                 raise AssertionError(f"unexpected command: {cmd}")
@@ -707,7 +733,7 @@ class MakeWorktreeTest(unittest.TestCase):
             try:
                 with self.build_environment(self.module, run=controlled_run):
                     test_process.start()
-                    self.assertTrue(lit_active.wait(1.0))
+                    self.assertTrue(lit_active.wait(UNIT_TEST_WATCHDOG_SECONDS))
                     writer_process.start()
                     self.wait_for_lock_holders(
                         shared.llvm_lock_turnstile,
@@ -715,7 +741,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     )
                     self.assertFalse(writer_active.is_set())
                     release_lit.set()
-                    self.assertTrue(writer_active.wait(1.0))
+                    self.assertTrue(writer_active.wait(UNIT_TEST_WATCHDOG_SECONDS))
                     release_writer.set()
             finally:
                 release_lit.set()
@@ -755,7 +781,7 @@ class MakeWorktreeTest(unittest.TestCase):
             server = socket.socket()
             server.bind(("127.0.0.1", 0))
             server.listen(1)
-            server.settimeout(1.0)
+            server.settimeout(UNIT_TEST_WATCHDOG_SECONDS)
             server_port = server.getsockname()[1]
             context = multiprocessing.get_context("fork")
             writer_active = context.Event()
@@ -775,7 +801,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     shared=False,
                 ):
                     writer_active.set()
-                    release_writer.wait(2.0)
+                    release_writer.wait(UNIT_TEST_WATCHDOG_SECONDS)
 
             dispatcher = context.Process(target=run_dispatcher, name="loom-dispatcher")
             writer = context.Process(target=compete, name="llvm-writer")
@@ -819,7 +845,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     )
 
                     os.kill(supervisor_pid, signal.SIGSTOP)
-                    deadline = time.monotonic() + 1.0
+                    deadline = time.monotonic() + UNIT_TEST_WATCHDOG_SECONDS
                     while True:
                         status = Path(f"/proc/{supervisor_pid}/status").read_text()
                         if "\nState:\tT" in status:
@@ -830,7 +856,7 @@ class MakeWorktreeTest(unittest.TestCase):
 
                     before = heartbeat.stat().st_size
                     dispatcher.kill()
-                    dispatcher.join(1.0)
+                    dispatcher.join(UNIT_TEST_WATCHDOG_SECONDS)
                     self.assertFalse(dispatcher.is_alive())
                     self.assertFalse(
                         writer_active.wait(0.1),
@@ -839,7 +865,7 @@ class MakeWorktreeTest(unittest.TestCase):
                         "post-lease writes)",
                     )
                     os.kill(supervisor_pid, signal.SIGCONT)
-                    self.assertTrue(writer_active.wait(1.0))
+                    self.assertTrue(writer_active.wait(UNIT_TEST_WATCHDOG_SECONDS))
                     command_ready, _, _ = select.select([child_pidfds[0]], (), (), 0)
                     self.assertEqual(
                         command_ready,
@@ -855,7 +881,9 @@ class MakeWorktreeTest(unittest.TestCase):
                     )
                     release_writer.set()
 
-                    ready, _, _ = select.select(child_pidfds, (), (), 1.0)
+                    ready, _, _ = select.select(
+                        child_pidfds, (), (), UNIT_TEST_WATCHDOG_SECONDS
+                    )
                     self.assertEqual(
                         set(ready),
                         set(child_pidfds),
@@ -867,7 +895,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     os.kill(supervisor_pid, signal.SIGCONT)
                 if dispatcher.is_alive():
                     dispatcher.kill()
-                    dispatcher.join(1.0)
+                    dispatcher.join(UNIT_TEST_WATCHDOG_SECONDS)
                 self.join_processes((writer,))
                 for pid in (command_pid, supervisor_pid):
                     if pid is None:
@@ -1298,12 +1326,12 @@ class MakeWorktreeTest(unittest.TestCase):
                 shared=False,
             ):
                 held.set()
-                release.wait(2.0)
+                release.wait(UNIT_TEST_WATCHDOG_SECONDS)
 
         holder = context.Process(target=hold_writer, name="lock-holder")
         try:
             holder.start()
-            self.assertTrue(held.wait(1.0))
+            self.assertTrue(held.wait(UNIT_TEST_WATCHDOG_SECONDS))
             started = time.monotonic()
             cpu_started = time.process_time()
             stderr = io.StringIO()
@@ -1386,7 +1414,12 @@ class MakeWorktreeTest(unittest.TestCase):
             # accumulates for a later acquisition to scan.
             self.assertEqual(sizes, {2 * record_size})
 
-            self.module.cmd_distclean(paths, Namespace(jobs=1, lock_timeout=1.0))
+            self.module.cmd_distclean(
+                paths,
+                Namespace(
+                    jobs=1, lock_timeout=self.module.DEFAULT_LOCK_TIMEOUT
+                ),
+            )
             self.assertEqual(paths.llvm_lock_turnstile.stat().st_size, 2 * record_size)
 
             # The slot is genuinely reused rather than the protocol having
@@ -1411,7 +1444,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     shared=False,
                 ):
                     held.set()
-                    release.wait(10.0)
+                    release.wait(UNIT_TEST_WATCHDOG_SECONDS)
 
             def queue_writer():
                 with self.module.SharedProductLock(
@@ -1426,7 +1459,7 @@ class MakeWorktreeTest(unittest.TestCase):
             queued = [context.Process(target=queue_writer, name=f"queued-{index}") for index in range(cohort)]
             try:
                 holder.start()
-                self.assertTrue(held.wait(2.0))
+                self.assertTrue(held.wait(UNIT_TEST_WATCHDOG_SECONDS))
                 for index, process in enumerate(queued):
                     process.start()
                     self.wait_for_turnstile_records(paths.llvm_lock_turnstile, index + 2)
@@ -1464,7 +1497,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     shared=False,
                 ):
                     held.set()
-                    release.wait(10.0)
+                    release.wait(UNIT_TEST_WATCHDOG_SECONDS)
 
             def queue_writer(name):
                 with self.module.SharedProductLock(
@@ -1488,7 +1521,7 @@ class MakeWorktreeTest(unittest.TestCase):
             retained = queued[-1]
             try:
                 holder.start()
-                self.assertTrue(held.wait(1.0))
+                self.assertTrue(held.wait(UNIT_TEST_WATCHDOG_SECONDS))
                 for index, process in enumerate(queued):
                     process.start()
                     # Queued participants are the only residency the
@@ -1510,8 +1543,12 @@ class MakeWorktreeTest(unittest.TestCase):
 
                 release.set()
                 # Compaction moves records but never reorders tickets.
-                self.assertEqual(order.get(timeout=5.0), retained.name)
-                self.assertEqual(order.get(timeout=5.0), "newcomer")
+                self.assertEqual(
+                    order.get(timeout=UNIT_TEST_WATCHDOG_SECONDS), retained.name
+                )
+                self.assertEqual(
+                    order.get(timeout=UNIT_TEST_WATCHDOG_SECONDS), "newcomer"
+                )
             finally:
                 release.set()
                 self.join_processes((holder, newcomer, *queued))

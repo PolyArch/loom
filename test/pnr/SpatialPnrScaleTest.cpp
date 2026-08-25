@@ -1,5 +1,6 @@
 #include "ADG/Builder.h"
 #include "Common/ArtifactStore.h"
+#include "Common/TimeoutBudgets.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -306,8 +307,8 @@ generateTechMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
   auto outcome = loom::mapping::generateTechMappings(
       {dataflow, covers, fabric, config, store});
   const auto elapsed = std::chrono::steady_clock::now() - start;
-  if (elapsed >= std::chrono::seconds(10))
-    fail("scale TechMapping exceeded its ten-second budget");
+  if (elapsed >= loom::timeout::duration(loom::timeout::Tier::UltraFast))
+    fail("scale TechMapping exceeded its ultrafast budget");
   const auto *generated =
       std::get_if<loom::mapping::GeneratedTechMappings>(&outcome);
   if (!generated || generated->candidates.size() != 1) {
@@ -489,8 +490,9 @@ void regularMeshProducesTypedOutcome() {
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - caseStart)
           .count();
-  if (totalWallNanoseconds >= UINT64_C(90) * UINT64_C(1000000000))
-    fail("regular scale Mapping exceeded its ninety-second budget");
+  if (totalWallNanoseconds >=
+      loom::timeout::nanoseconds(loom::timeout::Tier::Long))
+    fail("regular scale Mapping exceeded its long budget");
   if (observation.peakResidentBytes >= UINT64_C(8) * 1024 * 1024 * 1024)
     fail("regular scale Spatial PnR exceeded its 8 GiB resident budget");
   printObservation("regular", actorCount, observation, totalWallNanoseconds,
@@ -552,8 +554,9 @@ void irregularMeshProvesResidentContextPigeonhole() {
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - caseStart)
           .count();
-  if (totalWallNanoseconds >= UINT64_C(90) * UINT64_C(1000000000))
-    fail("irregular scale Mapping exceeded its ninety-second budget");
+  if (totalWallNanoseconds >=
+      loom::timeout::nanoseconds(loom::timeout::Tier::Long))
+    fail("irregular scale Mapping exceeded its long budget");
   if (observation.peakResidentBytes >= UINT64_C(8) * 1024 * 1024 * 1024)
     fail("irregular scale Spatial PnR exceeded its 8 GiB resident budget");
   llvm::outs() << "tech_mapping_root_supply kind=irregular_infeasible actors="
@@ -615,8 +618,9 @@ void irregularMeshProducesTypedOutcome() {
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - caseStart)
           .count();
-  if (totalWallNanoseconds >= UINT64_C(90) * UINT64_C(1000000000))
-    fail("feasible irregular Mapping exceeded its ninety-second budget");
+  if (totalWallNanoseconds >=
+      loom::timeout::nanoseconds(loom::timeout::Tier::Long))
+    fail("feasible irregular Mapping exceeded its long budget");
   if (observation.peakResidentBytes >= UINT64_C(8) * 1024 * 1024 * 1024)
     fail("feasible irregular Spatial PnR exceeded its 8 GiB resident budget");
   printObservation("irregular_feasible", actorCount, observation,

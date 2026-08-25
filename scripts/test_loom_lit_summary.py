@@ -86,7 +86,12 @@ class LoomLitSummaryTest(unittest.TestCase):
             output = io.StringIO()
             with redirect_stdout(output):
                 run_lit_with_unsupported_summary(
-                    Path("llvm-lit"), test_root, 7, (), {"PATH": "/bin"}, runner
+                    Path("llvm-lit"),
+                    test_root,
+                    7,
+                    (),
+                    {"PATH": "/bin", "LIT_BATCH_SIZE": "8"},
+                    runner,
                 )
 
             self.assertEqual(len(calls), 1)
@@ -94,7 +99,10 @@ class LoomLitSummaryTest(unittest.TestCase):
             report_path = Path(command[command.index("--output") + 1])
             self.assertFalse(report_path.exists())
             self.assertEqual(command[-1], str(test_root))
-            self.assertEqual(kwargs, {"env": {"PATH": "/bin"}})
+            self.assertEqual(
+                kwargs,
+                {"env": {"PATH": "/bin", "LIT_BATCH_SIZE": "1"}},
+            )
             self.assertEqual(output.getvalue(), "Unsupported (yosys): 1 (100.00%)\n")
 
     def test_preserves_explicit_lit_report(self) -> None:

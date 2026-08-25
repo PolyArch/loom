@@ -515,6 +515,74 @@ findProductLinkOutput(const Compilation &compilation) {
   return *outputs.begin();
 }
 
+struct ProductLinkStaging final {
+  std::string publicOutput;
+  std::string stagedOutput;
+};
+
+llvm::Expected<ProductLinkStaging>
+prepareProductLinkStaging(const Compilation &compilation,
+                          llvm::SmallVectorImpl<const char *> &args,
+                          llvm::StringSet<> &saved) {
+  auto output = findProductLinkOutput(compilation);
+  if (!output)
+    return output.takeError();
+  const llvm::StringRef filename = llvm::sys::path::filename(*output);
+  if (filename.empty())
+    return productError("loom_final_link_invalid",
+                        "Deployment final link output has no filename");
+
+  llvm::SmallString<256> stagingDirectory(*output);
+  stagingDirectory += ".loom-link";
+  if (std::error_code error =
+          llvm::sys::fs::remove_directories(stagingDirectory))
+    return productError("loom_final_link_staging_failed",
+                        "cannot replace final-link staging directory: " +
+                            error.message());
+  if (std::error_code error = llvm::sys::fs::create_directory(stagingDirectory))
+    return productError("loom_final_link_staging_failed",
+                        "cannot create final-link staging directory: " +
+                            error.message());
+
+  llvm::SmallString<256> stagedOutput(stagingDirectory);
+  llvm::sys::path::append(stagedOutput, filename);
+  args.push_back(GetStableCStr(saved, "-save-temps=obj"));
+  args.push_back(GetStableCStr(saved, "-o"));
+  args.push_back(GetStableCStr(saved, stagedOutput));
+  return ProductLinkStaging{std::move(*output), stagedOutput.str().str()};
+}
+
+llvm::Error publishProductLink(const ProductLinkStaging &staging) {
+  const auto require = [&](llvm::StringRef suffix) -> llvm::Error {
+    if (llvm::sys::fs::exists(staging.stagedOutput + suffix.str()))
+      return llvm::Error::success();
+    return productError("loom_final_link_artifact_missing",
+                        "staged final-link artifact is missing: " +
+                            staging.stagedOutput + suffix);
+  };
+  for (llvm::StringRef suffix :
+       {llvm::StringRef(), llvm::StringRef(".resolution.txt"),
+        llvm::StringRef(".0.5.precodegen.bc")})
+    if (llvm::Error error = require(suffix))
+      return error;
+
+  const auto publish = [&](llvm::StringRef suffix) -> llvm::Error {
+    const std::string source = staging.stagedOutput + suffix.str();
+    const std::string destination = staging.publicOutput + suffix.str();
+    if (std::error_code error = llvm::sys::fs::rename(source, destination))
+      return productError("loom_final_link_publication_failed",
+                          "cannot publish final-link artifact '" + source +
+                              "' as '" + destination + "': " + error.message());
+    return llvm::Error::success();
+  };
+  for (llvm::StringRef suffix :
+       {llvm::StringRef(".0.5.precodegen.bc"), llvm::StringRef(),
+        llvm::StringRef(".resolution.txt")})
+    if (llvm::Error error = publish(suffix))
+      return error;
+  return llvm::Error::success();
+}
+
 } // namespace
 
 extern int cc1_main(llvm::ArrayRef<const char *> Argv, const char *Argv0,
@@ -630,24 +698,6 @@ llvm::Error appendFrontendPassPlugins(Compilation &compilation,
     command.replaceArguments(std::move(arguments));
   }
   return llvm::Error::success();
-}
-
-static void
-ensureProductLinkInputsAreReplayable(llvm::SmallVectorImpl<const char *> &args,
-                                     llvm::StringSet<> &saved) {
-  for (const char *raw : llvm::ArrayRef(args).drop_front()) {
-    if (!raw)
-      continue;
-    const llvm::StringRef argument(raw);
-    if (argument == "-save-temps" || argument.starts_with("-save-temps="))
-      return;
-  }
-  // LLD's resolution report names selected LTO inputs, while the ordinary
-  // driver otherwise removes those temporary objects before the product
-  // importer runs. Keep one exact object beside the final link output; the
-  // importer resolves that invocation-local path and never folds it into
-  // semantic identity.
-  args.insert(args.begin() + 1, GetStableCStr(saved, "-save-temps=obj"));
 }
 
 template <class T>
@@ -830,7 +880,6 @@ static int loom_main(int Argc, char **Argv,
   std::vector<std::string> ProductTargetArguments;
   std::unique_ptr<loom::application::ProductBuildInvocation> ProductInvocation;
   if (LoomOptions->requestsProductFlow()) {
-    ensureProductLinkInputsAreReplayable(Args, SavedStrings);
     auto ProductOptions = makeProductBuildOptions(*LoomOptions);
     if (!ProductOptions) {
       llvm::errs() << "loom-cc: error: "
@@ -907,6 +956,29 @@ static int loom_main(int Argc, char **Argv,
   }
 
   std::unique_ptr<Compilation> C(TheDriver.BuildCompilation(Args));
+  std::optional<ProductLinkStaging> ProductLink;
+  if (LoomOptions->requestsProductFlow() && C && !C->containsError()) {
+    auto Staging = prepareProductLinkStaging(*C, Args, SavedStrings);
+    if (!Staging) {
+      llvm::errs() << "loom-cc: error: " << llvm::toString(Staging.takeError())
+                   << '\n';
+      return 1;
+    }
+    ProductLink = std::move(*Staging);
+    C.reset(TheDriver.BuildCompilation(Args));
+    if (C && !C->containsError()) {
+      auto Output = findProductLinkOutput(*C);
+      if (!Output) {
+        llvm::errs() << "loom-cc: error: " << llvm::toString(Output.takeError())
+                     << '\n';
+        return 1;
+      }
+      if (*Output != ProductLink->stagedOutput) {
+        llvm::errs() << "loom-cc: error: staged final link output changed\n";
+        return 1;
+      }
+    }
+  }
   const bool printsCommands =
       C && C->getArgs().hasArg(options::OPT__HASH_HASH_HASH);
   if (C && !C->containsError()) {
@@ -934,16 +1006,6 @@ static int loom_main(int Argc, char **Argv,
                      << '\n';
         return 1;
       }
-  }
-  std::optional<std::string> ProductLinkOutput;
-  if (LoomOptions->requestsProductFlow() && C && !C->containsError()) {
-    auto Output = findProductLinkOutput(*C);
-    if (!Output) {
-      llvm::errs() << "loom-cc: error: " << llvm::toString(Output.takeError())
-                   << '\n';
-      return 1;
-    }
-    ProductLinkOutput = std::move(*Output);
   }
 
   Driver::ReproLevel ReproLevel = Driver::ReproLevel::OnCrash;
@@ -989,9 +1051,13 @@ static int loom_main(int Argc, char **Argv,
     }
   }
 
-  if (Res == 0 && ProductLinkOutput) {
-    if (llvm::Error Error =
-            ProductInvocation->buildFromFinalLink(*ProductLinkOutput)) {
+  if (Res == 0 && ProductLink) {
+    if (llvm::Error Error = publishProductLink(*ProductLink)) {
+      llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(Error))
+                   << '\n';
+      Res = 1;
+    } else if (llvm::Error Error = ProductInvocation->buildFromFinalLink(
+                   ProductLink->publicOutput)) {
       llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(Error))
                    << '\n';
       Res = 1;

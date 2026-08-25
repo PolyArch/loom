@@ -1,6 +1,7 @@
 #ifndef LOOM_APPLICATION_PRODUCTBUILD_H
 #define LOOM_APPLICATION_PRODUCTBUILD_H
 
+#include "Common/TimeoutBudgets.h"
 #include "DSE/JointDesignPolicy.h"
 #include "DSE/PreMappingFrontier.h"
 
@@ -16,7 +17,7 @@ namespace loom::application {
 
 inline constexpr std::uint64_t defaultProductTechCandidateLimit = 8;
 inline constexpr std::uint64_t defaultProductMappingWallTimeLimitMilliseconds =
-    120000;
+    timeout::milliseconds(timeout::Tier::Fast);
 
 struct ProductBuildOptions final {
   std::string deploymentOutput;

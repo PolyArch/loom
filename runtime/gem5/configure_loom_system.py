@@ -33,6 +33,27 @@ from m5.objects import (
 
 CONFIG_SCHEMA = "loom.gem5_system_projection.10"
 
+
+def load_timeout_seconds(tier: str) -> int:
+    bundled_path = pathlib.Path(__file__).with_name("timeout-budgets.json")
+    repository_path = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "config"
+        / "timeout-budgets.json"
+    )
+    budget_path = bundled_path if bundled_path.is_file() else repository_path
+    document = json.loads(budget_path.read_text(encoding="utf-8"))
+    if document.get("schema") != "loom.timeout_budgets":
+        raise ValueError("timeout budget document has the wrong schema")
+    value = document.get("tiers", {}).get(tier, {}).get("seconds")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{tier} timeout budget is invalid")
+    return value
+
+
+XLONG_TIMEOUT_SECONDS = load_timeout_seconds("xlong")
+FAST_TIMEOUT_SECONDS = load_timeout_seconds("fast")
+
 PROCESSOR_FIELDS = {
     "cpu_id",
     "model",
@@ -199,7 +220,7 @@ def start_engines(
                 continue
             socket_path.unlink(missing_ok=True)
             processes.append(subprocess.Popen(command))
-            deadline = time.monotonic() + 10.0
+            deadline = time.monotonic() + XLONG_TIMEOUT_SECONDS
             while not socket_path.exists():
                 if processes[-1].poll() is not None:
                     raise RuntimeError(
@@ -224,7 +245,7 @@ def stop_engines(processes: list[subprocess.Popen]) -> None:
             process.terminate()
     for process in processes:
         try:
-            process.wait(timeout=5.0)
+            process.wait(timeout=FAST_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()

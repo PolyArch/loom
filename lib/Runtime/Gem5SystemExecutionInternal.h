@@ -38,6 +38,8 @@ inline constexpr llvm::StringLiteral kProjectionPath =
     "drivers/gem5-system-projection.json";
 inline constexpr llvm::StringLiteral kConfigurationScriptPath =
     "drivers/configure_loom_system.py";
+inline constexpr llvm::StringLiteral kTimeoutBudgetsPath =
+    "drivers/timeout-budgets.json";
 inline constexpr llvm::StringLiteral kDfgEnginePath =
     "drivers/loom-gem5-dfg-engine";
 inline constexpr llvm::StringLiteral kCgraEnginePath =

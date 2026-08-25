@@ -56,7 +56,10 @@ from typing import Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_ROOT = ROOT / "test"
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TEST_ROOT))
+
+from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
 
 import corpus_inventory  # noqa: E402
 import corpus_target_profile  # noqa: E402
@@ -192,8 +195,9 @@ TOOL_FILE_NAMES = {
 }
 LLVM_TOOL_KEYS = frozenset({"lld", "llvm_dis"})
 
-DEFAULT_DFG_SIMULATION_TIMEOUT_SECONDS = 15.0
-DEFAULT_PROVIDER_SETUP_TIMEOUT_SECONDS = 120.0
+DEFAULT_DFG_SIMULATION_TIMEOUT_SECONDS = float(timeout_seconds(Tier.FAST))
+DEFAULT_PROVIDER_SETUP_TIMEOUT_SECONDS = float(timeout_seconds(Tier.FAST))
+PROCESS_TERMINATION_TIMEOUT_SECONDS = float(timeout_seconds(Tier.ULTRAFAST))
 DEFAULT_DFG_MAX_WAVEFRONT_STEPS = 1_000_000
 DEFAULT_DFG_MAX_EVENT_COUNT = 10_000_000
 DEFAULT_DFG_MAX_CAPTURE_BYTES = 256 * 1024 * 1024
@@ -699,7 +703,7 @@ def _terminate_process_group(process_group: int) -> bool:
         os.killpg(process_group, signal.SIGKILL)
     except ProcessLookupError:
         return True
-    deadline = time.monotonic() + 1.0
+    deadline = time.monotonic() + PROCESS_TERMINATION_TIMEOUT_SECONDS
     while _process_group_exists(process_group) and time.monotonic() < deadline:
         time.sleep(0.01)
     return True
@@ -1557,8 +1561,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         type=float,
         default=None,
         metavar="SECONDS",
-        help="per-case wall-clock deadline; the case process group is killed "
-        "when it expires (default: 30 for dfg-sim, 120 otherwise)",
+        help=(
+            "per-case wall-clock deadline; the case process group is killed "
+            "when it expires (default: "
+            f"{default_case_timeout('dfg-sim'):g} for dfg-sim, "
+            f"{default_case_timeout('d0'):g} otherwise)"
+        ),
     )
     parser.add_argument(
         "--dfg-simulation-timeout",
