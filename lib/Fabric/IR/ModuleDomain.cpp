@@ -374,27 +374,22 @@ llvm::Error ModuleDomainAuthoringRelation::ensureDefaultAssignments(
   return llvm::Error::success();
 }
 
-llvm::Error ModuleDomainAuthoringRelation::noteInternalMember(
-    mlir::Operation *owner, InternalMemberRole role,
-    loom::fabric::FabricOrdinal subOrdinal) {
-  if (!owner)
+llvm::Error ModuleDomainAuthoringRelation::noteMember(MemberKey key) {
+  if (!key.owner)
     return invalid("internal domain member has no draft operation");
   // Exhaustive catalog check: no value outside the five roles is admitted.
-  if (role != InternalMemberRole::Occurrence &&
-      role != InternalMemberRole::InstructionContext &&
-      role != InternalMemberRole::FuNode &&
-      role != InternalMemberRole::MemoryOperationPort &&
-      role != InternalMemberRole::LocalMemoryService)
+  if (key.role != InternalMemberRole::Occurrence &&
+      key.role != InternalMemberRole::InstructionContext &&
+      key.role != InternalMemberRole::FuNode &&
+      key.role != InternalMemberRole::MemoryOperationPort &&
+      key.role != InternalMemberRole::LocalMemoryService)
     return invalid("internal domain member role is outside the catalog");
-  if (subOrdinal != 0 && (role == InternalMemberRole::Occurrence ||
-                          role == InternalMemberRole::FuNode ||
-                          role == InternalMemberRole::LocalMemoryService))
+  if (key.ordinal != 0 && (key.role == InternalMemberRole::Occurrence ||
+                           key.role == InternalMemberRole::FuNode ||
+                           key.role == InternalMemberRole::LocalMemoryService))
     return invalid("internal domain member role does not take a sub-ordinal");
-  MemberKey key;
-  key.internal = true;
-  key.owner = owner;
-  key.role = role;
-  key.ordinal = subOrdinal;
+  if (llvm::is_contained(key.instancePath, nullptr))
+    return invalid("instantiated domain member path contains a null use");
   for (const MemberKey &existing : internalMembers_)
     if (existing == key)
       return invalid("internal domain member is already registered");
@@ -408,6 +403,32 @@ llvm::Error ModuleDomainAuthoringRelation::noteInternalMember(
       return error;
   }
   return llvm::Error::success();
+}
+
+llvm::Error ModuleDomainAuthoringRelation::noteInternalMember(
+    mlir::Operation *owner, InternalMemberRole role,
+    loom::fabric::FabricOrdinal subOrdinal) {
+  MemberKey key;
+  key.internal = true;
+  key.owner = owner;
+  key.role = role;
+  key.ordinal = subOrdinal;
+  return noteMember(std::move(key));
+}
+
+llvm::Error ModuleDomainAuthoringRelation::noteInstantiatedMember(
+    llvm::ArrayRef<mlir::Operation *> instancePath,
+    mlir::Operation *targetOwner, InternalMemberRole role,
+    loom::fabric::FabricOrdinal subOrdinal) {
+  if (instancePath.empty())
+    return invalid("instantiated domain member path is empty");
+  MemberKey key;
+  key.internal = true;
+  key.owner = targetOwner;
+  key.instancePath.assign(instancePath.begin(), instancePath.end());
+  key.role = role;
+  key.ordinal = subOrdinal;
+  return noteMember(std::move(key));
 }
 
 llvm::Error ModuleDomainAuthoringRelation::assignOne(
@@ -456,6 +477,27 @@ llvm::Error ModuleDomainAuthoringRelation::assignInternal(
     if (existing == key)
       return assignOne(key, slotKind, slotOrdinal);
   return invalid("assignment names an unregistered internal domain member");
+}
+
+llvm::Error ModuleDomainAuthoringRelation::assignInstantiated(
+    llvm::ArrayRef<mlir::Operation *> instancePath,
+    mlir::Operation *targetOwner, InternalMemberRole role,
+    loom::fabric::FabricOrdinal subOrdinal,
+    loom::fabric::FabricClockResetKind slotKind,
+    loom::fabric::FabricOrdinal slotOrdinal) {
+  if (instancePath.empty())
+    return invalid("instantiated domain member path is empty");
+  MemberKey key;
+  key.internal = true;
+  key.owner = targetOwner;
+  key.instancePath.assign(instancePath.begin(), instancePath.end());
+  key.role = role;
+  key.ordinal = subOrdinal;
+  for (const MemberKey &existing : internalMembers_)
+    if (existing == key)
+      return assignOne(key, slotKind, slotOrdinal);
+  return invalid("assignment names an unregistered instantiated domain "
+                 "member");
 }
 
 bool ModuleDomainAuthoringRelation::empty() const {
@@ -538,6 +580,12 @@ ModuleDomainAuthoringRelation::remap(const mlir::IRMapping &mapping) const {
     member.owner = mapping.lookupOrNull(member.owner);
     if (!member.owner)
       return invalid("domain member is missing from the canonical clone map");
+    for (mlir::Operation *&instance : member.instancePath) {
+      instance = mapping.lookupOrNull(instance);
+      if (!instance)
+        return invalid(
+            "domain member instance is missing from the canonical clone map");
+    }
     return member;
   };
   for (const MemberKey &member : internalMembers_) {
@@ -569,27 +617,12 @@ ModuleDomainAuthoringRelation::remap(const mlir::IRMapping &mapping) const {
   return result;
 }
 
-void ModuleDomainAuthoringRelation::remapMappedOperations(
-    const mlir::IRMapping &mapping) {
-  const auto remap = [&](MemberKey &member) {
-    if (!member.internal)
-      return;
-    if (mlir::Operation *mapped = mapping.lookupOrNull(member.owner))
-      member.owner = mapped;
-  };
-  for (MemberKey &member : internalMembers_)
-    remap(member);
-  for (AssignmentRow &assignment : assignments_)
-    remap(assignment.member);
-  for (InstanceBindingRecord &binding : instanceBindings_)
-    if (mlir::Operation *mapped = mapping.lookupOrNull(binding.instance))
-      binding.instance = mapped;
-}
-
 llvm::Error ModuleDomainAuthoringRelation::replicateMappedOperations(
     const mlir::IRMapping &mapping) {
   std::vector<MemberKey> replicatedMembers;
   for (const MemberKey &member : internalMembers_) {
+    if (!member.instancePath.empty())
+      continue;
     mlir::Operation *mapped =
         member.internal ? mapping.lookupOrNull(member.owner) : nullptr;
     if (!mapped)
@@ -604,6 +637,8 @@ llvm::Error ModuleDomainAuthoringRelation::replicateMappedOperations(
 
   std::vector<AssignmentRow> replicatedAssignments;
   for (const AssignmentRow &assignment : assignments_) {
+    if (!assignment.member.instancePath.empty())
+      continue;
     mlir::Operation *mapped =
         assignment.member.internal
             ? mapping.lookupOrNull(assignment.member.owner)
@@ -629,16 +664,17 @@ llvm::Error ModuleDomainAuthoringRelation::eraseOperations(
   const auto erased = [&](mlir::Operation *operation) {
     return llvm::is_contained(operations, operation);
   };
-  internalMembers_.erase(
-      std::remove_if(internalMembers_.begin(), internalMembers_.end(),
-                     [&](const MemberKey &member) {
-                       return member.internal && erased(member.owner);
-                     }),
-      internalMembers_.end());
+  const auto ownsErasedOperation = [&](const MemberKey &member) {
+    return member.internal &&
+           (erased(member.owner) || llvm::any_of(member.instancePath, erased));
+  };
+  internalMembers_.erase(std::remove_if(internalMembers_.begin(),
+                                        internalMembers_.end(),
+                                        ownsErasedOperation),
+                         internalMembers_.end());
   assignments_.erase(std::remove_if(assignments_.begin(), assignments_.end(),
                                     [&](const AssignmentRow &row) {
-                                      return row.member.internal &&
-                                             erased(row.member.owner);
+                                      return ownsErasedOperation(row.member);
                                     }),
                      assignments_.end());
   instanceBindings_.erase(
@@ -767,6 +803,14 @@ llvm::Error ModuleDomainAuthoringRelation::composeInstance(
   const auto mapMember = [&](MemberKey member) -> llvm::Expected<MemberKey> {
     if (!member.internal)
       return member;
+    if (!member.instancePath.empty()) {
+      member.instancePath.front() =
+          childCloneMapping.lookupOrNull(member.instancePath.front());
+      if (!member.instancePath.front())
+        return invalid(
+            "child domain instance is absent from instance clone map");
+      return member;
+    }
     member.owner = childCloneMapping.lookupOrNull(member.owner);
     if (!member.owner)
       return invalid("child domain member is absent from instance clone map");
@@ -829,6 +873,67 @@ llvm::Error ModuleDomainAuthoringRelation::composeInstance(
   return llvm::Error::success();
 }
 
+llvm::Error ModuleDomainAuthoringRelation::materializePhysicalInstance(
+    mlir::Operation *instance, mlir::Operation *target,
+    mlir::Operation *occurrence, const mlir::IRMapping &targetCloneMapping) {
+  if (!instance || !target || !occurrence)
+    return invalid("physical instance materialization has a null operation");
+
+  const auto materialize = [&](MemberKey &member) -> llvm::Error {
+    if (!member.internal)
+      return llvm::Error::success();
+    if (member.instancePath.empty()) {
+      if (member.owner == instance)
+        member.owner = occurrence;
+      return llvm::Error::success();
+    }
+    auto selected = llvm::find(member.instancePath, instance);
+    if (selected == member.instancePath.end())
+      return llvm::Error::success();
+    const std::size_t selectedOrdinal = selected - member.instancePath.begin();
+    const bool hasNestedSuffix =
+        selectedOrdinal + 1 != member.instancePath.size();
+    std::vector<mlir::Operation *> remaining;
+    remaining.reserve(member.instancePath.size() - 1);
+    remaining.insert(remaining.end(), member.instancePath.begin(), selected);
+    for (mlir::Operation *nested :
+         llvm::drop_begin(member.instancePath, selectedOrdinal + 1)) {
+      mlir::Operation *mapped = targetCloneMapping.lookupOrNull(nested);
+      if (!mapped)
+        return invalid(
+            "nested physical instance is absent from its target clone map");
+      remaining.push_back(mapped);
+    }
+    member.instancePath = std::move(remaining);
+    if (hasNestedSuffix)
+      return llvm::Error::success();
+    if (member.owner == target) {
+      member.owner = occurrence;
+      return llvm::Error::success();
+    }
+    member.owner = targetCloneMapping.lookupOrNull(member.owner);
+    if (!member.owner)
+      return invalid(
+          "physical instance owner is absent from its target clone map");
+    return llvm::Error::success();
+  };
+
+  for (MemberKey &member : internalMembers_)
+    if (llvm::Error error = materialize(member))
+      return error;
+  for (AssignmentRow &assignment : assignments_)
+    if (llvm::Error error = materialize(assignment.member))
+      return error;
+
+  for (auto left = internalMembers_.begin(); left != internalMembers_.end();
+       ++left)
+    for (auto right = std::next(left); right != internalMembers_.end(); ++right)
+      if (*left == *right)
+        return invalid("physical instance materialized a duplicate domain "
+                       "member");
+  return llvm::Error::success();
+}
+
 llvm::Error ModuleDomainAuthoringRelation::visitAssignments(
     BoundaryAssignmentVisitor boundary,
     InternalAssignmentVisitor internal) const {
@@ -836,6 +941,9 @@ llvm::Error ModuleDomainAuthoringRelation::visitAssignments(
     return invalid("Module instance domain rows were not composed before "
                    "assignment visitation");
   for (const AssignmentRow &row : assignments_) {
+    if (row.member.internal && !row.member.instancePath.empty())
+      return invalid("physical instance domain member was not elaborated "
+                     "before assignment visitation");
     llvm::Error error =
         row.member.internal
             ? internal(row.member.owner, row.member.role, row.member.ordinal,

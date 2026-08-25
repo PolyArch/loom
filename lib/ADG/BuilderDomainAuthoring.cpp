@@ -35,9 +35,9 @@ PeBuilder::instructionContextMember(std::size_t ordinal) const {
   if (ordinal >= instructionContexts_)
     return invalid("PE instruction context ordinal is outside the resident "
                    "context inventory");
-  return ModuleDomainMemberHandle::internal(state_, rootOrdinal_, operation_,
-                                            DomainMemberRole::InstructionContext,
-                                            ordinal);
+  return ModuleDomainMemberHandle::internal(
+      state_, rootOrdinal_, operation_, DomainMemberRole::InstructionContext,
+      ordinal);
 }
 
 llvm::Expected<ModuleDomainMemberHandle>
@@ -48,8 +48,8 @@ MemoryResult::operationPortMember(std::size_t ordinal) const {
   return operationPorts_[ordinal];
 }
 
-llvm::Expected<ModuleDomainSlotHandle> SpatialCoreBuilder::declareDomainSlot(
-    loom::fabric::FabricClockResetKind kind) {
+llvm::Expected<ModuleDomainSlotHandle>
+SpatialCoreBuilder::declareDomainSlot(loom::fabric::FabricClockResetKind kind) {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
@@ -116,9 +116,9 @@ SpatialCoreBuilder::outputDomainMember(std::size_t ordinal) const {
       state_, rootOrdinal_, loom::fabric::FabricPortDirection::Output, ordinal);
 }
 
-llvm::Error SpatialCoreBuilder::assignDomainSlot(
-    const ModuleDomainMemberHandle &member,
-    const ModuleDomainSlotHandle &slot) {
+llvm::Error
+SpatialCoreBuilder::assignDomainSlot(const ModuleDomainMemberHandle &member,
+                                     const ModuleDomainSlotHandle &slot) {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
@@ -127,21 +127,22 @@ llvm::Error SpatialCoreBuilder::assignDomainSlot(
   detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
   if (root.closed)
     return invalid("SpatialCore is already closed");
-  if (llvm::Error error =
-          checkDomainHandleOwner(*state, rootOrdinal_, slot.state_,
-                                 slot.rootOrdinal_, "domain slot"))
+  if (llvm::Error error = checkDomainHandleOwner(
+          *state, rootOrdinal_, slot.state_, slot.rootOrdinal_, "domain slot"))
     return error;
   if (llvm::Error error =
           checkDomainHandleOwner(*state, rootOrdinal_, member.state_,
                                  member.rootOrdinal_, "domain member"))
     return error;
   if (!member.internal_)
-    return root.domainRelation.assignBoundary(member.direction_,
-                                              member.ordinal_, slot.kind_,
-                                              slot.ordinal_);
-  return root.domainRelation.assignInternal(member.owner_, member.role_,
-                                            member.ordinal_, slot.kind_,
-                                            slot.ordinal_);
+    return root.domainRelation.assignBoundary(
+        member.direction_, member.ordinal_, slot.kind_, slot.ordinal_);
+  if (!member.instancePath_.empty())
+    return root.domainRelation.assignInstantiated(
+        member.instancePath_, member.owner_, member.role_, member.ordinal_,
+        slot.kind_, slot.ordinal_);
+  return root.domainRelation.assignInternal(
+      member.owner_, member.role_, member.ordinal_, slot.kind_, slot.ordinal_);
 }
 
 } // namespace loom::adg

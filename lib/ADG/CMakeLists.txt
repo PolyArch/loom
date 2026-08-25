@@ -1,6 +1,9 @@
 add_mlir_library(LoomADGBuilder
   Builtin.cpp
   Builder.cpp
+  BuilderComputeTemplates.cpp
+  BuilderPhysicalMaterialization.cpp
+  BuilderSpecifications.cpp
   BuilderDerivation.cpp
   SystemBuilderDerivation.cpp
   BuilderDomainAuthoring.cpp

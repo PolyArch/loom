@@ -5,6 +5,7 @@ add_executable(loom-adg-builder-api-test
   ADGServiceLegCarrierTest.cpp
   ADGTopologyTest.cpp
   BuilderDomainAuthoringTest.cpp
+  BuilderTemplateTest.cpp
 )
 
 target_include_directories(loom-adg-builder-api-test PRIVATE
@@ -16,6 +17,9 @@ target_link_libraries(loom-adg-builder-api-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   LoomFrontendCompilation
+  MLIRFabric
+  MLIRIR
+  MLIRParser
   LLVMSupport
 )
 

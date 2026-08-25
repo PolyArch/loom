@@ -516,7 +516,12 @@ private:
     Operation *occurrence = builder.create(state);
     bodyMapping.map(instantiate.getOperation(), occurrence);
     if (domainRelation)
-      domainRelation->remapMappedOperations(bodyMapping);
+      if (llvm::Error error = domainRelation->materializePhysicalInstance(
+              instantiate.getOperation(), target, occurrence, bodyMapping)) {
+        instantiate.emitError(llvm::toString(std::move(error)));
+        occurrence->erase();
+        return failure();
+      }
     if (isa<fabric::SwitchOp, fabric::MemOp>(occurrence))
       setEndpointTypes(occurrence, getEffectiveInnerTypes(instantiate));
     if (auto pe = dyn_cast<fabric::PeOp>(occurrence)) {

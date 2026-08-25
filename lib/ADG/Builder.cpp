@@ -10,7 +10,6 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "Fabric/IR/FuCapabilityDomain.h"
-#include "Fabric/IR/SwitchResourceContract.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -26,7 +25,6 @@
 #include <limits>
 #include <string>
 #include <system_error>
-#include <type_traits>
 #include <utility>
 
 namespace loom::adg {
@@ -89,15 +87,6 @@ using detail::materializePortType;
 using DomainMemberRole =
     ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
 
-bool sameFabricKind(mlir::Type left, mlir::Type right) {
-  return (mlir::isa<::fabric::BitsType>(left) &&
-          mlir::isa<::fabric::BitsType>(right)) ||
-         (mlir::isa<::fabric::BitsTagType>(left) &&
-          mlir::isa<::fabric::BitsTagType>(right)) ||
-         (mlir::isa<mlir::MemRefType>(left) &&
-          mlir::isa<mlir::MemRefType>(right));
-}
-
 std::optional<loom::fabric::FabricEntityKind>
 moduleOccurrenceKind(mlir::Operation *operation) {
   using loom::fabric::FabricEntityKind;
@@ -138,89 +127,6 @@ detail::DesignState::DesignState(const loom::ArtifactStore &store)
   context.appendDialectRegistry(registry);
   context.loadAllAvailableDialects();
   draft = mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
-}
-
-llvm::Expected<PortType> PortType::bits(std::uint32_t width) {
-  return PortType(Kind::Bits, width, 0, {});
-}
-
-llvm::Expected<PortType> PortType::taggedBits(std::uint32_t width,
-                                              std::uint32_t tagWidth) {
-  if (tagWidth == 0)
-    return invalid("tagged Fabric port requires a positive tag width");
-  return PortType(Kind::TaggedBits, width, tagWidth, {});
-}
-
-llvm::Expected<PortType> PortType::memory(llvm::ArrayRef<std::int64_t> shape,
-                                          const PortType &elementType) {
-  if (elementType.kind() == Kind::Memory)
-    return invalid("Fabric memory element cannot itself be a memory port");
-  if (elementType.kind() == Kind::TaggedBits)
-    return invalid("Fabric memref element must be untagged bits");
-  if (elementType.width() == 0)
-    return invalid("Fabric memref element requires a positive data width");
-  for (std::int64_t extent : shape)
-    if (extent <= 0 && extent != PortType::kDynamicExtent)
-      return invalid("Fabric memory shape contains an invalid extent");
-  return PortType(Kind::Memory, elementType.width(), elementType.tagWidth(),
-                  std::vector<std::int64_t>(shape.begin(), shape.end()));
-}
-
-PeSpec PeSpec::spatial(std::vector<PortType> inputTypes,
-                       std::vector<PortType> outputTypes) {
-  return PeSpec(::fabric::Schedule::Spatial, std::move(inputTypes),
-                std::move(outputTypes), std::nullopt);
-}
-
-PeSpec PeSpec::temporal(std::vector<PortType> inputTypes,
-                        std::vector<PortType> outputTypes,
-                        TemporalPeParameters parameters) {
-  return PeSpec(::fabric::Schedule::Temporal, std::move(inputTypes),
-                std::move(outputTypes), std::move(parameters));
-}
-
-BoundarySpec BoundarySpec::s2t(const PortType &dataInput,
-                               const PortType &tagInput,
-                               const PortType &taggedOutput) {
-  return {
-      ::fabric::BoundaryDirection::S2t, {dataInput, tagInput}, {taggedOutput}};
-}
-
-BoundarySpec BoundarySpec::s2tWithConfiguredTag(const PortType &dataInput,
-                                                const PortType &taggedOutput) {
-  return {::fabric::BoundaryDirection::S2t, {dataInput}, {taggedOutput}};
-}
-
-BoundarySpec BoundarySpec::t2s(const PortType &taggedInput,
-                               llvm::ArrayRef<PortType> outputs) {
-  return {::fabric::BoundaryDirection::T2s,
-          {taggedInput},
-          std::vector<PortType>(outputs.begin(), outputs.end())};
-}
-
-SwitchSpec
-SwitchSpec::spatial(std::vector<PortType> inputTypes,
-                    std::vector<PortType> outputTypes,
-                    std::vector<std::vector<std::uint32_t>> sourcesByOutput) {
-  return {::fabric::Schedule::Spatial,
-          std::move(inputTypes),
-          std::move(outputTypes),
-          std::move(sourcesByOutput),
-          std::nullopt,
-          std::nullopt};
-}
-
-SwitchSpec SwitchSpec::temporal(
-    std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
-    std::vector<std::vector<std::uint32_t>> sourcesByOutput,
-    std::uint32_t routeTableSize,
-    std::optional<::fabric::TemporalSwitchGrantPolicy> grantPolicy) {
-  return {::fabric::Schedule::Temporal,
-          std::move(inputTypes),
-          std::move(outputTypes),
-          std::move(sourcesByOutput),
-          routeTableSize,
-          std::move(grantPolicy)};
 }
 
 MemoryEngineSpec MemoryEngineSpec::spatial(
@@ -327,35 +233,6 @@ activeFu(const std::shared_ptr<detail::DesignState> &state,
       !fu.operation)
     return invalid("FU handle has a foreign PE owner");
   return &fu;
-}
-
-llvm::Expected<mlir::IntegerAttr> positiveI32Attr(mlir::MLIRContext &context,
-                                                  std::uint32_t value,
-                                                  llvm::StringRef field) {
-  if (value == 0 || value > static_cast<std::uint32_t>(
-                                std::numeric_limits<std::int32_t>::max()))
-    return invalid(field + " must fit positive i32");
-  return mlir::IntegerAttr::get(mlir::IntegerType::get(&context, 32), value);
-}
-
-llvm::Expected<mlir::IntegerAttr> nonNegativeI32Attr(mlir::MLIRContext &context,
-                                                     std::uint32_t value,
-                                                     llvm::StringRef field) {
-  if (value >
-      static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
-    return invalid(field + " must fit non-negative i32");
-  return mlir::IntegerAttr::get(mlir::IntegerType::get(&context, 32), value);
-}
-
-::fabric::FuConfigMode
-fabricFuConfigMode(FuConfigurationMode configurationMode) {
-  switch (configurationMode) {
-  case FuConfigurationMode::PerInstruction:
-    return ::fabric::FuConfigMode::PerInstructionFuConfig;
-  case FuConfigurationMode::PerFu:
-    return ::fabric::FuConfigMode::PerFuConfig;
-  }
-  llvm_unreachable("all FU configuration modes are handled");
 }
 
 } // namespace
@@ -548,12 +425,13 @@ FuBuilder::addOperation(llvm::ArrayRef<FuValue> inputs,
       mlir::DenseI8ArrayAttr::get(&(*state)->context, signedContractBytes));
   if (llvm::Error error = verifyNewOperation(operation, "operation capability"))
     return std::move(error);
-  if (llvm::Error error =
-          (*state)
-              ->spatialRoots[rootOrdinal_]
-              .domainRelation.noteInternalMember(operation.getOperation(),
-                                                 DomainMemberRole::FuNode, 0))
-    return std::move(error);
+  if (!(*fu)->named && !(*state)->pes[peOrdinal_].named)
+    if (llvm::Error error =
+            (*state)
+                ->spatialRoots[rootOrdinal_]
+                .domainRelation.noteInternalMember(operation.getOperation(),
+                                                   DomainMemberRole::FuNode, 0))
+      return std::move(error);
 
   return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
                 operation.getOperation());
@@ -591,12 +469,13 @@ llvm::Expected<FuNode> FuBuilder::addMux(llvm::ArrayRef<FuValue> inputs) {
                                      mlir::BoolAttr(), mlir::BoolAttr());
   if (llvm::Error error = verifyNewOperation(mux, "FU mux"))
     return std::move(error);
-  if (llvm::Error error =
-          (*state)
-              ->spatialRoots[rootOrdinal_]
-              .domainRelation.noteInternalMember(mux.getOperation(),
-                                                 DomainMemberRole::FuNode, 0))
-    return std::move(error);
+  if (!(*fu)->named && !(*state)->pes[peOrdinal_].named)
+    if (llvm::Error error =
+            (*state)
+                ->spatialRoots[rootOrdinal_]
+                .domainRelation.noteInternalMember(mux.getOperation(),
+                                                   DomainMemberRole::FuNode, 0))
+      return std::move(error);
   return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
                 mux.getOperation());
 }
@@ -628,12 +507,13 @@ llvm::Expected<FuNode> FuBuilder::addDemux(FuValue input,
       mlir::IntegerAttr(), mlir::BoolAttr(), mlir::BoolAttr());
   if (llvm::Error error = verifyNewOperation(demux, "FU demux"))
     return std::move(error);
-  if (llvm::Error error =
-          (*state)
-              ->spatialRoots[rootOrdinal_]
-              .domainRelation.noteInternalMember(demux.getOperation(),
-                                                 DomainMemberRole::FuNode, 0))
-    return std::move(error);
+  if (!(*fu)->named && !(*state)->pes[peOrdinal_].named)
+    if (llvm::Error error =
+            (*state)
+                ->spatialRoots[rootOrdinal_]
+                .domainRelation.noteInternalMember(demux.getOperation(),
+                                                   DomainMemberRole::FuNode, 0))
+      return std::move(error);
 
   return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
                 demux.getOperation());
@@ -641,22 +521,21 @@ llvm::Expected<FuNode> FuBuilder::addDemux(FuValue input,
 
 llvm::Error
 FuBuilder::addCapabilityTemplate(const FuCapabilityTemplateSpec &spec) {
-  auto handle = addCapabilityTemplateWithHandle(spec);
+  auto handle = addCapabilityTemplateImpl(spec, false);
   if (!handle)
     return handle.takeError();
-  auto state = activeState(state_);
-  if (!state)
-    return state.takeError();
-  (*state)
-      ->fus[fuOrdinal_]
-      .capabilityTemplates[handle->draftOrdinal_]
-      .handleExposed = false;
   return llvm::Error::success();
 }
 
 llvm::Expected<FuCapabilityTemplateHandle>
 FuBuilder::addCapabilityTemplateWithHandle(
     const FuCapabilityTemplateSpec &spec) {
+  return addCapabilityTemplateImpl(spec, true);
+}
+
+llvm::Expected<FuCapabilityTemplateHandle>
+FuBuilder::addCapabilityTemplateImpl(const FuCapabilityTemplateSpec &spec,
+                                     bool exposeHandle) {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
@@ -665,6 +544,9 @@ FuBuilder::addCapabilityTemplateWithHandle(
     return fu.takeError();
   if ((*fu)->closed)
     return invalid("FU is already closed");
+  if (exposeHandle && (*fu)->named)
+    return invalid("named FU capability rows do not have a unique finalized "
+                   "occurrence handle");
   if (spec.activeOperations.empty())
     return invalid("FU capability template requires an active operation");
 
@@ -698,12 +580,17 @@ FuBuilder::addCapabilityTemplateWithHandle(
   }
   const std::size_t draftOrdinal = (*fu)->capabilityTemplates.size();
   (*fu)->capabilityTemplates.push_back(std::move(draft));
-  (*fu)->capabilityTemplates.back().handleExposed = true;
+  (*fu)->capabilityTemplates.back().handleExposed = exposeHandle;
   return FuCapabilityTemplateHandle((*state)->identity, rootOrdinal_,
                                     fuOrdinal_, draftOrdinal);
 }
 
 llvm::Error FuBuilder::close(llvm::ArrayRef<FuValue> outputs) {
+  return closeImpl(outputs, false);
+}
+
+llvm::Error FuBuilder::closeImpl(llvm::ArrayRef<FuValue> outputs,
+                                 bool templateClose) {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
@@ -712,9 +599,28 @@ llvm::Error FuBuilder::close(llvm::ArrayRef<FuValue> outputs) {
     return fu.takeError();
   if ((*fu)->closed)
     return invalid("FU is already closed");
+  if ((*fu)->named != templateClose)
+    return invalid((*fu)->named
+                       ? "named FU must be closed with closeTemplate"
+                       : "anonymous FU cannot be closed with closeTemplate");
   if (!(*fu)->unresolvedBackedges.empty())
     return invalid("FU contains an unresolved backedge");
-  if (outputs.size() != (*fu)->operation.getNumResults())
+  llvm::SmallVector<mlir::Type, 4> outerOutputTypes;
+  if ((*fu)->named) {
+    auto functionTypeAttr = (*fu)->operation.getFunctionTypeAttr();
+    auto functionType =
+        functionTypeAttr
+            ? mlir::dyn_cast<mlir::FunctionType>(functionTypeAttr.getValue())
+            : mlir::FunctionType();
+    if (!functionType)
+      return invalid("named FU has no function signature");
+    outerOutputTypes.append(functionType.getResults().begin(),
+                            functionType.getResults().end());
+  } else {
+    outerOutputTypes.append((*fu)->operation.getResultTypes().begin(),
+                            (*fu)->operation.getResultTypes().end());
+  }
+  if (outputs.size() != outerOutputTypes.size())
     return invalid("FU output count does not match its declaration");
 
   if (!(*fu)->capabilityTemplates.empty()) {
@@ -783,7 +689,7 @@ llvm::Error FuBuilder::close(llvm::ArrayRef<FuValue> outputs) {
     auto resolved = resolveValue(*state, output);
     if (!resolved)
       return resolved.takeError();
-    mlir::Type outerType = (*fu)->operation.getResult(ordinal).getType();
+    mlir::Type outerType = outerOutputTypes[ordinal];
     auto innerWidth = ::fabric::getFabricBitsWidth(resolved->getType());
     auto outerWidth = ::fabric::getFabricBitsWidth(outerType);
     if (!innerWidth || !outerWidth || *innerWidth > *outerWidth)
@@ -893,20 +799,23 @@ llvm::Expected<FuBuilder> PeBuilder::addFu(llvm::ArrayRef<PeValue> inputs,
   for (mlir::Type type : innerInputTypes)
     body->addArgument(type, operation.getLoc());
 
-  if (llvm::Error error =
-          (*state)
-              ->spatialRoots[rootOrdinal_]
-              .domainRelation.noteInternalMember(
-                  operation.getOperation(), DomainMemberRole::Occurrence, 0))
-    return std::move(error);
+  if (!(*pe)->named)
+    if (llvm::Error error =
+            (*state)
+                ->spatialRoots[rootOrdinal_]
+                .domainRelation.noteInternalMember(
+                    operation.getOperation(), DomainMemberRole::Occurrence, 0))
+      return std::move(error);
   const std::size_t ordinal = (*state)->fus.size();
-  (*state)->fus.push_back(
-      detail::FuState{operation, rootOrdinal_, peOrdinal_, false, {}, {}});
+  (*state)->fus.push_back(detail::FuState{
+      operation, rootOrdinal_, peOrdinal_, false, false, {}, {}});
   return FuBuilder(*state, rootOrdinal_, peOrdinal_, ordinal,
                    operation.getOperation());
 }
 
-llvm::Error PeBuilder::close() {
+llvm::Error PeBuilder::close() { return closeImpl(false); }
+
+llvm::Error PeBuilder::closeImpl(bool templateClose) {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
@@ -915,19 +824,36 @@ llvm::Error PeBuilder::close() {
     return pe.takeError();
   if ((*pe)->closed)
     return invalid("PE is already closed");
+  if ((*pe)->named != templateClose)
+    return invalid((*pe)->named
+                       ? "named PE must be closed with closeTemplate"
+                       : "anonymous PE cannot be closed with closeTemplate");
 
   bool hasFu = false;
   for (const detail::FuState &fu : (*state)->fus) {
     if (fu.peOrdinal != peOrdinal_)
       continue;
-    hasFu = true;
+    hasFu |= !fu.named;
     if (!fu.closed)
       return invalid("PE contains an FU that is not closed");
   }
+  for ([[maybe_unused]] ::fabric::InstantiateOp instance :
+       (*pe)->operation.getBody().front().getOps<::fabric::InstantiateOp>())
+    hasFu = true;
   if (!hasFu)
     return invalid("PE requires at least one FU");
-  if (mlir::failed(mlir::verify((*pe)->operation)))
+  ::fabric::YieldOp namedYield;
+  if ((*pe)->named) {
+    mlir::OpBuilder builder(&(*state)->context);
+    builder.setInsertionPointToEnd(&(*pe)->operation.getBody().front());
+    namedYield = ::fabric::YieldOp::create(builder, (*pe)->operation.getLoc(),
+                                           mlir::ValueRange{});
+  }
+  if (mlir::failed(mlir::verify((*pe)->operation))) {
+    if (namedYield)
+      namedYield.erase();
     return invalid("Fabric rejected the completed typed PE graph");
+  }
   (*pe)->closed = true;
   return llvm::Error::success();
 }
@@ -1059,7 +985,8 @@ llvm::Expected<std::vector<SpatialValue>> SpatialCoreBuilder::instantiate(
       return resolved.takeError();
     if (!resolved->use_empty())
       return invalid("SpatialCore transport source already has a consumer");
-    if (!sameFabricKind(resolved->getType(), innerType))
+    if (!detail::BuilderSpecMaterializer::samePortKind(resolved->getType(),
+                                                       innerType))
       return invalid("SpatialCore template source and input port have "
                      "different kinds");
     if (mlir::isa<mlir::MemRefType>(innerType) &&
@@ -1156,7 +1083,8 @@ llvm::Expected<FifoResult> SpatialCoreBuilder::addFifo(SpatialValue input,
     return invalid("SpatialCore transport source already has a consumer");
   mlir::Type outputType =
       materializePortType((*state)->context, spec.outputType);
-  if (!sameFabricKind(source->getType(), outputType) ||
+  if (!detail::BuilderSpecMaterializer::samePortKind(source->getType(),
+                                                     outputType) ||
       mlir::isa<mlir::MemRefType>(outputType))
     return invalid("FIFO input and output must have one transport kind");
   if (spec.maxDepth == 0 ||
@@ -1205,7 +1133,8 @@ SpatialCoreBuilder::addBoundary(llvm::ArrayRef<SpatialValue> inputs,
     if (!resolved->use_empty())
       return invalid("SpatialCore transport source already has a consumer");
     mlir::Type inputType = materializePortType((*state)->context, type);
-    if (!sameFabricKind(resolved->getType(), inputType))
+    if (!detail::BuilderSpecMaterializer::samePortKind(resolved->getType(),
+                                                       inputType))
       return invalid("Boundary source and input port have different kinds");
     hasNormalizedInput |= resolved->getType() != inputType;
     values.push_back(*resolved);
@@ -1248,114 +1177,36 @@ SpatialCoreBuilder::addSwitch(llvm::ArrayRef<SpatialValue> inputs,
   detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
   if (root.closed)
     return invalid("SpatialCore is already closed");
-  if (inputs.empty() || spec.outputTypes.empty())
-    return invalid("Switch requires non-empty input and output sets");
   if (inputs.size() != spec.inputTypes.size())
     return invalid("Switch input count does not match its typed contract");
-  if (spec.sourcesByOutput.size() != spec.outputTypes.size())
-    return invalid("Switch connectivity row count does not match its outputs");
-  if (spec.schedule == ::fabric::Schedule::Spatial && spec.routeTableSize)
-    return invalid("Spatial switch cannot declare a route-table capacity");
-  if (spec.schedule == ::fabric::Schedule::Spatial && spec.grantPolicy)
-    return invalid("Spatial switch cannot declare temporal arbitration");
-  if (spec.schedule == ::fabric::Schedule::Temporal &&
-      (!spec.routeTableSize || *spec.routeTableSize == 0))
-    return invalid("Temporal switch requires a positive route-table capacity");
-
-  if (spec.inputTypes.size() > std::numeric_limits<std::uint32_t>::max() ||
-      spec.outputTypes.size() > std::numeric_limits<std::uint32_t>::max())
-    return invalid("Switch port domain exceeds u32");
-  auto resources = ::fabric::SwitchResourceContract::create(
-      {spec.schedule, static_cast<std::uint32_t>(spec.inputTypes.size()),
-       static_cast<std::uint32_t>(spec.outputTypes.size()),
-       spec.sourcesByOutput, spec.grantPolicy});
-  if (!resources)
-    return resources.takeError();
+  auto materialized =
+      detail::BuilderSpecMaterializer::switchSpec((*state)->context, spec);
+  if (!materialized)
+    return materialized.takeError();
 
   llvm::SmallVector<mlir::Value, 8> values;
-  llvm::SmallVector<mlir::Type, 8> inputTypes;
-  llvm::SmallVector<mlir::Type, 8> outputTypes;
   bool hasNormalizedInput = false;
-  for (auto [value, type] : llvm::zip(inputs, spec.inputTypes)) {
+  for (auto [value, inputType] : llvm::zip(inputs, materialized->inputTypes)) {
     auto resolved = resolveValue(*state, value);
     if (!resolved)
       return resolved.takeError();
     if (!resolved->use_empty())
       return invalid("SpatialCore transport source already has a consumer");
-    mlir::Type inputType = materializePortType((*state)->context, type);
-    if (!sameFabricKind(resolved->getType(), inputType))
+    if (!detail::BuilderSpecMaterializer::samePortKind(resolved->getType(),
+                                                       inputType))
       return invalid("Switch source and input port have different kinds");
     hasNormalizedInput |= resolved->getType() != inputType;
     values.push_back(*resolved);
-    inputTypes.push_back(inputType);
   }
-  for (const PortType &type : spec.outputTypes)
-    outputTypes.push_back(materializePortType((*state)->context, type));
-
-  std::vector<bool> inputCovered(inputs.size(), false);
-  llvm::SmallVector<mlir::Attribute, 8> rows;
-  for (llvm::ArrayRef<std::uint32_t> sources : spec.sourcesByOutput) {
-    if (sources.empty())
-      return invalid("Switch output has no physical input source");
-    std::string row(inputs.size(), '0');
-    for (std::uint32_t inputOrdinal : sources) {
-      if (inputOrdinal >= inputs.size())
-        return invalid("Switch connectivity input ordinal is out of range");
-      const std::size_t position = inputs.size() - 1 - inputOrdinal;
-      if (row[position] == '1')
-        return invalid("Switch connectivity row contains a duplicate input");
-      row[position] = '1';
-      inputCovered[inputOrdinal] = true;
-    }
-    rows.push_back(mlir::StringAttr::get(&(*state)->context, row));
-  }
-  for (bool covered : inputCovered)
-    if (!covered)
-      return invalid("Switch input has no physical destination");
-
-  mlir::NamedAttrList hardware;
-  hardware.set("connectivity_table",
-               mlir::ArrayAttr::get(&(*state)->context, rows));
-  if (spec.routeTableSize)
-    hardware.set(
-        "route_table_size",
-        mlir::IntegerAttr::get(mlir::IntegerType::get(&(*state)->context, 32),
-                               *spec.routeTableSize));
-  if (spec.grantPolicy) {
-    mlir::Attribute policy = std::visit(
-        [&](auto &&selected) -> mlir::Attribute {
-          using Policy = std::decay_t<decltype(selected)>;
-          std::vector<std::int64_t> requesters;
-          if constexpr (std::is_same_v<Policy,
-                                       ::fabric::TemporalSwitchFixedPriority>) {
-            requesters.assign(selected.requesterOrder.begin(),
-                              selected.requesterOrder.end());
-            return ::fabric::SwitchFixedPriorityAttr::get(
-                &(*state)->context,
-                mlir::DenseI64ArrayAttr::get(&(*state)->context, requesters));
-          } else {
-            requesters.assign(selected.requesterCycle.begin(),
-                              selected.requesterCycle.end());
-            return ::fabric::SwitchRoundRobinAttr::get(
-                &(*state)->context,
-                mlir::DenseI64ArrayAttr::get(&(*state)->context, requesters),
-                selected.resetRequester);
-          }
-        },
-        *spec.grantPolicy);
-    hardware.set(::fabric::kSwitchGrantPolicyParameterName, policy);
-  }
-  mlir::ArrayAttr hardwareParameters = mlir::ArrayAttr::get(
-      &(*state)->context, {hardware.getDictionary(&(*state)->context)});
 
   mlir::OpBuilder builder(&(*state)->context);
   builder.setInsertionPointToEnd(&root.operation.getBody().front());
   auto sw = ::fabric::SwitchOp::create(
-      builder, root.operation.getLoc(), outputTypes, values, mlir::StringAttr(),
-      mlir::TypeAttr(), spec.schedule,
-      hasNormalizedInput ? llvm::ArrayRef<mlir::Type>(inputTypes)
+      builder, root.operation.getLoc(), materialized->outputTypes, values,
+      mlir::StringAttr(), mlir::TypeAttr(), spec.schedule,
+      hasNormalizedInput ? llvm::ArrayRef<mlir::Type>(materialized->inputTypes)
                          : llvm::ArrayRef<mlir::Type>(),
-      hardwareParameters, mlir::DictionaryAttr());
+      materialized->hardwareParameters, mlir::DictionaryAttr());
   if (llvm::Error error = verifyNewOperation(sw, "Switch"))
     return std::move(error);
   if (llvm::Error error = root.domainRelation.noteInternalMember(
@@ -1385,139 +1236,45 @@ SpatialCoreBuilder::addMemory(llvm::ArrayRef<SpatialValue> inputs,
     return invalid("SpatialCore is already closed");
   if (inputs.size() != spec.inputTypes_.size())
     return invalid("memory input count does not match its typed contract");
+  auto materialized =
+      detail::BuilderSpecMaterializer::memory((*state)->context, spec);
+  if (!materialized)
+    return materialized.takeError();
 
   llvm::SmallVector<mlir::Value, 8> values;
-  llvm::SmallVector<mlir::Type, 8> inputTypes;
-  llvm::SmallVector<mlir::Type, 8> outputTypes;
   bool hasNormalizedInput = false;
-  for (auto [value, type] : llvm::zip(inputs, spec.inputTypes_)) {
+  for (auto [value, inputType] : llvm::zip(inputs, materialized->inputTypes)) {
     auto resolved = resolveValue(*state, value);
     if (!resolved)
       return resolved.takeError();
     if (!mlir::isa<mlir::MemRefType>(resolved->getType()) &&
         !resolved->use_empty())
       return invalid("SpatialCore transport source already has a consumer");
-    mlir::Type inputType = materializePortType((*state)->context, type);
-    if (!sameFabricKind(resolved->getType(), inputType) ||
+    if (!detail::BuilderSpecMaterializer::samePortKind(resolved->getType(),
+                                                       inputType) ||
         (mlir::isa<mlir::MemRefType>(inputType) &&
          resolved->getType() != inputType))
       return invalid("memory source and input port have incompatible types");
     hasNormalizedInput |= resolved->getType() != inputType;
     values.push_back(*resolved);
-    inputTypes.push_back(inputType);
   }
-  for (const PortType &type : spec.outputTypes_)
-    outputTypes.push_back(materializePortType((*state)->context, type));
-
-  auto encodeOrdinals =
-      [&](llvm::ArrayRef<std::uint32_t> ordinals, std::size_t endpointCount,
-          llvm::StringRef role) -> llvm::Expected<mlir::DenseI32ArrayAttr> {
-    llvm::SmallVector<std::int32_t, 4> encoded;
-    encoded.reserve(ordinals.size());
-    std::optional<std::uint32_t> previous;
-    for (std::uint32_t ordinal : ordinals) {
-      if (ordinal >= endpointCount)
-        return invalid(role + " memory endpoint ordinal is out of range");
-      if (ordinal >
-          static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
-        return invalid(role + " memory endpoint ordinal does not fit i32");
-      if (previous && ordinal <= *previous)
-        return invalid(role +
-                       " memory endpoint ordinals must be strictly increasing");
-      previous = ordinal;
-      encoded.push_back(static_cast<std::int32_t>(ordinal));
-    }
-    return mlir::DenseI32ArrayAttr::get(&(*state)->context, encoded);
-  };
-
-  auto managers =
-      encodeOrdinals(spec.managerInputOrdinals_, inputTypes.size(), "manager");
-  if (!managers)
-    return managers.takeError();
-  auto subordinates = encodeOrdinals(spec.subordinateOutputOrdinals_,
-                                     outputTypes.size(), "subordinate");
-  if (!subordinates)
-    return subordinates.takeError();
-
-  mlir::FunctionType functionType =
-      mlir::FunctionType::get(&(*state)->context, inputTypes, outputTypes);
-  auto endpoints =
-      ::fabric::deriveMemoryTransportEndpointInventory(functionType);
-  if (!endpoints)
-    return endpoints.takeError();
-
-  ::fabric::MemoryEngineAttr engineAttr;
-  mlir::ArrayAttr operationPortsAttr;
-  if (spec.engine_) {
-    ::fabric::MemoryResidentContextsAttr residentContexts;
-    if (spec.engine_->residentContextCount_)
-      residentContexts = ::fabric::MemoryResidentContextsAttr::get(
-          &(*state)->context, *spec.engine_->residentContextCount_);
-    engineAttr = ::fabric::MemoryEngineAttr::get(
-        &(*state)->context, spec.engine_->schedule_, residentContexts);
-    llvm::SmallVector<mlir::Attribute, 4> encodedPorts;
-    encodedPorts.reserve(spec.engine_->operationPorts_.size());
-    for (const ::fabric::MemoryOperationPortDeclaration &declaration :
-         spec.engine_->operationPorts_) {
-      auto record = ::fabric::MemoryOperationPortRecord::fromCanonical(
-          &(*state)->context, spec.engine_->schedule_, *endpoints, declaration);
-      if (!record)
-        return record.takeError();
-      auto bytes = ::fabric::encodeMemoryOperationPortRecord(*record);
-      if (!bytes)
-        return bytes.takeError();
-      llvm::SmallVector<std::int8_t, 64> signedBytes;
-      signedBytes.reserve(bytes->size());
-      for (std::uint8_t byte : *bytes)
-        signedBytes.push_back(static_cast<std::int8_t>(byte));
-      encodedPorts.push_back(
-          mlir::DenseI8ArrayAttr::get(&(*state)->context, signedBytes));
-    }
-    operationPortsAttr = mlir::ArrayAttr::get(&(*state)->context, encodedPorts);
-  }
-
-  ::fabric::LocalMemoryServiceAttr localServiceAttr;
-  if (spec.localService_) {
-    llvm::SmallVector<std::int8_t, 64> signedBytes;
-    signedBytes.reserve(spec.localService_->contractBytes_.size());
-    for (std::uint8_t byte : spec.localService_->contractBytes_)
-      signedBytes.push_back(static_cast<std::int8_t>(byte));
-    auto serviceContract = ::fabric::MemoryServiceContractAttr::get(
-        &(*state)->context,
-        mlir::DenseI8ArrayAttr::get(&(*state)->context, signedBytes));
-    localServiceAttr = ::fabric::LocalMemoryServiceAttr::get(
-        &(*state)->context, spec.localService_->capacityBytes_,
-        serviceContract);
-  }
-
-  llvm::SmallVector<std::int8_t, 64> signedConnectivity;
-  signedConnectivity.reserve(spec.connectivity_.canonicalBytes_.size());
-  for (std::uint8_t byte : spec.connectivity_.canonicalBytes_)
-    signedConnectivity.push_back(static_cast<std::int8_t>(byte));
-  auto connectivityAttr = ::fabric::MemoryConnectivityContractAttr::get(
-      &(*state)->context,
-      mlir::DenseI8ArrayAttr::get(&(*state)->context, signedConnectivity));
-
-  auto contract = ::fabric::MemoryContractAttr::get(
-      &(*state)->context, engineAttr, localServiceAttr, connectivityAttr,
-      *managers, *subordinates);
   mlir::OpBuilder builder(&(*state)->context);
   builder.setInsertionPointToEnd(&root.operation.getBody().front());
   auto memory = ::fabric::MemOp::create(
-      builder, root.operation.getLoc(), outputTypes, values, mlir::StringAttr(),
-      mlir::TypeAttr(), contract,
-      hasNormalizedInput ? llvm::ArrayRef<mlir::Type>(inputTypes)
+      builder, root.operation.getLoc(), materialized->outputTypes, values,
+      mlir::StringAttr(), mlir::TypeAttr(), materialized->contract,
+      hasNormalizedInput ? llvm::ArrayRef<mlir::Type>(materialized->inputTypes)
                          : llvm::ArrayRef<mlir::Type>(),
-      mlir::ArrayAttr(), operationPortsAttr);
+      mlir::ArrayAttr(), materialized->operationPorts);
   if (llvm::Error error = verifyNewOperation(memory, "memory"))
     return std::move(error);
   if (llvm::Error error = root.domainRelation.noteInternalMember(
           memory.getOperation(), DomainMemberRole::Occurrence, 0))
     return std::move(error);
   std::vector<ModuleDomainMemberHandle> operationPorts;
-  if (spec.engine_) {
-    operationPorts.reserve(spec.engine_->operationPorts_.size());
-    for (std::size_t port = 0; port < spec.engine_->operationPorts_.size();
+  if (materialized->operationPortCount != 0) {
+    operationPorts.reserve(materialized->operationPortCount);
+    for (std::size_t port = 0; port < materialized->operationPortCount;
          ++port) {
       if (llvm::Error error = root.domainRelation.noteInternalMember(
               memory.getOperation(), DomainMemberRole::MemoryOperationPort,
@@ -1529,7 +1286,7 @@ SpatialCoreBuilder::addMemory(llvm::ArrayRef<SpatialValue> inputs,
     }
   }
   std::optional<ModuleDomainMemberHandle> localService;
-  if (spec.localService_) {
+  if (materialized->hasLocalService) {
     if (llvm::Error error = root.domainRelation.noteInternalMember(
             memory.getOperation(), DomainMemberRole::LocalMemoryService, 0))
       return std::move(error);
@@ -1560,146 +1317,53 @@ SpatialCoreBuilder::addPe(llvm::ArrayRef<SpatialValue> inputs,
   detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
   if (root.closed)
     return invalid("SpatialCore is already closed");
-  if (inputs.empty() || spec.outputTypes_.empty())
-    return invalid("PE requires non-empty input and output port sets");
   if (inputs.size() != spec.inputTypes_.size())
     return invalid("PE input count does not match its typed contract");
 
   llvm::SmallVector<mlir::Value, 8> values;
-  llvm::SmallVector<mlir::Type, 8> innerInputTypes;
-  llvm::SmallVector<mlir::Type, 8> outputTypes;
-  for (auto [value, type] : llvm::zip(inputs, spec.inputTypes_)) {
+  llvm::SmallVector<mlir::Type, 8> boundaryInputTypes;
+  for (const SpatialValue &value : inputs) {
     auto resolved = resolveValue(*state, value);
     if (!resolved)
       return resolved.takeError();
     if (!resolved->use_empty())
       return invalid("SpatialCore transport source already has a consumer");
     values.push_back(*resolved);
-    innerInputTypes.push_back(materializePortType((*state)->context, type));
+    boundaryInputTypes.push_back(resolved->getType());
   }
-  for (const PortType &type : spec.outputTypes_)
-    outputTypes.push_back(materializePortType((*state)->context, type));
-
-  mlir::IntegerAttr tagWidth;
-  mlir::IntegerAttr instructionCapacity;
-  mlir::IntegerAttr registerFifoCount;
-  mlir::IntegerAttr registerFifoDepth;
-  mlir::IntegerAttr registerFifoPorts;
-  ::fabric::FuConfigModeAttr fuConfigurationMode;
-  ::fabric::OperandBufferModeAttr operandBufferMode;
-  mlir::IntegerAttr operandBufferSize;
-
-  if (spec.schedule_ == ::fabric::Schedule::Spatial) {
-    if (spec.temporal_)
-      return invalid("spatial PE cannot carry temporal hardware parameters");
-    auto width = ::fabric::getFabricBitsWidth(innerInputTypes.front());
-    if (!width)
-      return invalid("spatial PE inner ports must be untagged Fabric bits");
-    for (auto [source, inner] : llvm::zip(values, innerInputTypes)) {
-      if (!mlir::isa<::fabric::BitsType>(source.getType()) ||
-          ::fabric::getFabricBitsWidth(inner) != width)
-        return invalid(
-            "spatial PE inputs require one uniform Fabric bits width");
-    }
-    for (mlir::Type output : outputTypes)
-      if (::fabric::getFabricBitsWidth(output) != width)
-        return invalid("spatial PE outputs require the uniform input width");
-  } else {
-    if (!spec.temporal_)
-      return invalid("temporal PE requires temporal hardware parameters");
-    auto firstBoundary =
-        mlir::dyn_cast<::fabric::BitsTagType>(values.front().getType());
-    if (!firstBoundary)
-      return invalid("temporal PE inputs must be tagged Fabric bits");
-    const std::uint32_t dataWidth = firstBoundary.getWidth();
-    const std::uint32_t tagBits = firstBoundary.getTagWidth();
-    for (auto [source, inner] : llvm::zip(values, innerInputTypes)) {
-      auto boundary = mlir::dyn_cast<::fabric::BitsTagType>(source.getType());
-      auto innerBits = mlir::dyn_cast<::fabric::BitsType>(inner);
-      if (!boundary || boundary.getWidth() != dataWidth ||
-          boundary.getTagWidth() != tagBits || !innerBits ||
-          innerBits.getWidth() > dataWidth)
-        return invalid(
-            "temporal PE inputs violate its uniform tagged boundary");
-    }
-    for (mlir::Type output : outputTypes) {
-      auto boundary = mlir::dyn_cast<::fabric::BitsTagType>(output);
-      if (!boundary || boundary.getWidth() != dataWidth ||
-          boundary.getTagWidth() != tagBits)
-        return invalid(
-            "temporal PE outputs violate its uniform tagged boundary");
-    }
-
-    const TemporalPeParameters &parameters = *spec.temporal_;
-    auto tag = positiveI32Attr((*state)->context, tagBits, "PE tag width");
-    if (!tag)
-      return tag.takeError();
-    tagWidth = *tag;
-    auto instructions =
-        positiveI32Attr((*state)->context, parameters.instructionCapacity,
-                        "PE instruction capacity");
-    if (!instructions)
-      return instructions.takeError();
-    instructionCapacity = *instructions;
-    auto bufferSize =
-        positiveI32Attr((*state)->context, parameters.operandBufferSize,
-                        "PE operand-buffer size");
-    if (!bufferSize)
-      return bufferSize.takeError();
-    operandBufferSize = *bufferSize;
-    fuConfigurationMode = ::fabric::FuConfigModeAttr::get(
-        &(*state)->context, fabricFuConfigMode(parameters.fuConfigurationMode));
-    operandBufferMode = ::fabric::OperandBufferModeAttr::get(
-        &(*state)->context, parameters.operandBufferMode);
-
-    if (parameters.registerFifos) {
-      const TemporalRegisterFifoParameters &fifos = *parameters.registerFifos;
-      auto count = positiveI32Attr((*state)->context, fifos.count,
-                                   "PE register-FIFO count");
-      if (!count)
-        return count.takeError();
-      auto depth = positiveI32Attr((*state)->context, fifos.depth,
-                                   "PE register-FIFO depth");
-      if (!depth)
-        return depth.takeError();
-      if (fifos.ports != 1 && fifos.ports != 2)
-        return invalid("PE register-FIFO ports must be one or two");
-      auto ports = nonNegativeI32Attr((*state)->context, fifos.ports,
-                                      "PE register-FIFO ports");
-      if (!ports)
-        return ports.takeError();
-      registerFifoCount = *count;
-      registerFifoDepth = *depth;
-      registerFifoPorts = *ports;
-    }
-  }
+  auto materialized = detail::BuilderSpecMaterializer::pe(
+      (*state)->context, boundaryInputTypes, spec, false);
+  if (!materialized)
+    return materialized.takeError();
 
   mlir::OpBuilder builder(&(*state)->context);
   builder.setInsertionPointToEnd(&root.operation.getBody().front());
   auto operation = ::fabric::PeOp::create(
-      builder, root.operation.getLoc(), outputTypes, mlir::StringAttr(),
-      mlir::TypeAttr(), spec.schedule_, values, tagWidth, instructionCapacity,
-      registerFifoCount, registerFifoDepth, registerFifoPorts,
-      fuConfigurationMode, operandBufferMode, operandBufferSize);
+      builder, root.operation.getLoc(), materialized->outputTypes,
+      mlir::StringAttr(), mlir::TypeAttr(), spec.schedule_, values,
+      materialized->tagWidth, materialized->instructionCapacity,
+      materialized->registerFifoCount, materialized->registerFifoDepth,
+      materialized->registerFifoPorts, materialized->fuConfigurationMode,
+      materialized->operandBufferMode, materialized->operandBufferSize);
   mlir::Block *body = new mlir::Block();
   operation.getBody().push_back(body);
-  for (mlir::Type type : innerInputTypes)
+  for (mlir::Type type : materialized->bodyInputTypes)
     body->addArgument(type, operation.getLoc());
 
-  const std::size_t instructionContexts =
-      spec.temporal_ ? spec.temporal_->instructionCapacity : 1;
   if (llvm::Error error = root.domainRelation.noteInternalMember(
           operation.getOperation(), DomainMemberRole::Occurrence, 0))
     return std::move(error);
-  for (std::size_t context = 0; context < instructionContexts; ++context)
+  for (std::size_t context = 0; context < materialized->instructionContexts;
+       ++context)
     if (llvm::Error error = root.domainRelation.noteInternalMember(
             operation.getOperation(), DomainMemberRole::InstructionContext,
             context))
       return std::move(error);
   const std::size_t ordinal = (*state)->pes.size();
-  (*state)->pes.push_back(detail::PeState{operation, rootOrdinal_, false});
+  (*state)->pes.push_back(
+      detail::PeState{operation, rootOrdinal_, false, false});
   return PeBuilder(*state, rootOrdinal_, ordinal, operation.getOperation(),
-                   instructionContexts);
+                   materialized->instructionContexts);
 }
 
 llvm::Error SpatialCoreBuilder::close(llvm::ArrayRef<SpatialValue> outputs) {
@@ -1729,7 +1393,8 @@ llvm::Error SpatialCoreBuilder::close(llvm::ArrayRef<SpatialValue> outputs) {
       return resolved.takeError();
     if (!resolved->use_empty())
       return invalid("SpatialCore output source already has a consumer");
-    if (!sameFabricKind(resolved->getType(), declared) ||
+    if (!detail::BuilderSpecMaterializer::samePortKind(resolved->getType(),
+                                                       declared) ||
         (mlir::isa<mlir::MemRefType>(declared) &&
          resolved->getType() != declared))
       return invalid(llvm::formatv(

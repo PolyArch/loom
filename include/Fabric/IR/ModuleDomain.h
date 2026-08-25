@@ -151,6 +151,16 @@ public:
                                  InternalMemberRole role,
                                  loom::fabric::FabricOrdinal subOrdinal);
 
+  /// Registers one physical owner that is materialized only after a finite
+  /// non-Module instance path is elaborated. `instancePath` is ordered from
+  /// the root-local use to the innermost use; `targetOwner` belongs to the
+  /// final named target. The path is transient Builder identity and is
+  /// consumed by the existing Fabric elaborator.
+  llvm::Error
+  noteInstantiatedMember(llvm::ArrayRef<mlir::Operation *> instancePath,
+                         mlir::Operation *targetOwner, InternalMemberRole role,
+                         loom::fabric::FabricOrdinal subOrdinal);
+
   llvm::Error assignBoundary(loom::fabric::FabricPortDirection direction,
                              loom::fabric::FabricOrdinal endpointOrdinal,
                              loom::fabric::FabricClockResetKind slotKind,
@@ -159,6 +169,12 @@ public:
                              loom::fabric::FabricOrdinal subOrdinal,
                              loom::fabric::FabricClockResetKind slotKind,
                              loom::fabric::FabricOrdinal slotOrdinal);
+  llvm::Error assignInstantiated(llvm::ArrayRef<mlir::Operation *> instancePath,
+                                 mlir::Operation *targetOwner,
+                                 InternalMemberRole role,
+                                 loom::fabric::FabricOrdinal subOrdinal,
+                                 loom::fabric::FabricClockResetKind slotKind,
+                                 loom::fabric::FabricOrdinal slotOrdinal);
 
   /// No slots declared, no members registered, no assignments made, and no
   /// instance bindings recorded.
@@ -174,10 +190,6 @@ public:
   /// clone. Missing mappings fail closed.
   llvm::Expected<ModuleDomainAuthoringRelation>
   remap(const mlir::IRMapping &mapping) const;
-
-  /// Replaces every operation identity present in a partial physical-instance
-  /// clone map while leaving unrelated Module members unchanged.
-  void remapMappedOperations(const mlir::IRMapping &mapping);
 
   /// Replicates every member and assignment selected by a partial clone map.
   /// Existing members remain unchanged; this is used when an ordinary Builder
@@ -209,6 +221,13 @@ public:
   llvm::Error composeInstance(mlir::Operation *instance,
                               const mlir::IRMapping &childCloneMapping);
 
+  /// Resolves one selected use in every matching non-Module instance path.
+  /// The remaining prefix stays deferred and the nested suffix is remapped
+  /// through the target clone; a fully resolved path becomes an owner row.
+  llvm::Error materializePhysicalInstance(
+      mlir::Operation *instance, mlir::Operation *target,
+      mlir::Operation *occurrence, const mlir::IRMapping &targetCloneMapping);
+
   using BoundaryAssignmentVisitor = llvm::function_ref<llvm::Error(
       loom::fabric::FabricPortDirection, loom::fabric::FabricOrdinal,
       loom::fabric::FabricClockResetKind, loom::fabric::FabricOrdinal)>;
@@ -226,13 +245,14 @@ private:
     loom::fabric::FabricPortDirection direction =
         loom::fabric::FabricPortDirection::Input;
     mlir::Operation *owner = nullptr;
+    std::vector<mlir::Operation *> instancePath;
     InternalMemberRole role = InternalMemberRole::Occurrence;
     loom::fabric::FabricOrdinal ordinal = 0;
 
     friend bool operator==(const MemberKey &lhs, const MemberKey &rhs) {
       return lhs.internal == rhs.internal && lhs.direction == rhs.direction &&
-             lhs.owner == rhs.owner && lhs.role == rhs.role &&
-             lhs.ordinal == rhs.ordinal;
+             lhs.owner == rhs.owner && lhs.instancePath == rhs.instancePath &&
+             lhs.role == rhs.role && lhs.ordinal == rhs.ordinal;
     }
   };
   struct AssignmentRow final {
@@ -245,6 +265,7 @@ private:
   llvm::Error assignOne(MemberKey member,
                         loom::fabric::FabricClockResetKind slotKind,
                         loom::fabric::FabricOrdinal slotOrdinal);
+  llvm::Error noteMember(MemberKey member);
 
   loom::fabric::FabricOrdinal clockSlots_ = 0;
   loom::fabric::FabricOrdinal resetSlots_ = 0;

@@ -34,6 +34,7 @@ namespace loom::adg {
 namespace detail {
 class DesignState;
 class DesignIdentity;
+class BuilderSpecMaterializer;
 struct MeshSwitchNetworkState;
 struct SystemHandleAccess;
 } // namespace detail
@@ -42,6 +43,13 @@ class FuBuilder;
 class FuNode;
 class PeBuilder;
 class ModuleDomainMemberHandle;
+class TemplatePhysicalOwnerHandle;
+class SpatialTemplateInstanceResult;
+class PeTemplateInstanceResult;
+class PeTemplateHandle;
+class FuTemplateHandle;
+class SwitchTemplateHandle;
+class MemoryTemplateHandle;
 class FuCapabilityTemplateHandle;
 class HardwareDomainBuilder;
 class ServiceTransformBuilder;
@@ -184,6 +192,9 @@ public:
 
   llvm::Expected<FuValue> output(std::size_t ordinal) const;
 
+  /// This physical node expressed in its nearest named template scope.
+  llvm::Expected<TemplatePhysicalOwnerHandle> templateOwner() const;
+
   /// This node's own occurrence as one unified domain member handle.
   ModuleDomainMemberHandle domainMember() const;
 
@@ -298,12 +309,23 @@ private:
     return handle;
   }
 
+  static ModuleDomainMemberHandle instantiated(
+      const std::weak_ptr<detail::DesignState> &state, std::size_t rootOrdinal,
+      std::vector<mlir::Operation *> instancePath, mlir::Operation *owner,
+      InternalRole role, loom::fabric::FabricOrdinal subOrdinal) {
+    ModuleDomainMemberHandle handle =
+        internal(state, rootOrdinal, owner, role, subOrdinal);
+    handle.instancePath_ = std::move(instancePath);
+    return handle;
+  }
+
   std::weak_ptr<detail::DesignState> state_;
   std::size_t rootOrdinal_ = 0;
   bool internal_ = false;
   loom::fabric::FabricPortDirection direction_ =
       loom::fabric::FabricPortDirection::Input;
   mlir::Operation *owner_ = nullptr;
+  std::vector<mlir::Operation *> instancePath_;
   InternalRole role_ = InternalRole::Occurrence;
   loom::fabric::FabricOrdinal ordinal_ = 0;
 
@@ -311,6 +333,46 @@ private:
   friend class PeBuilder;
   friend class FuBuilder;
   friend class FuNode;
+};
+
+/// One physical-owner role expressed relative to a named non-Module template.
+/// Its finite instance path is consumed by Fabric elaboration and never enters
+/// persistent identity.
+class TemplatePhysicalOwnerHandle final {
+public:
+  TemplatePhysicalOwnerHandle() = default;
+
+private:
+  using InternalRole =
+      ::fabric::ModuleDomainAuthoringRelation::InternalMemberRole;
+
+  TemplatePhysicalOwnerHandle(
+      const std::shared_ptr<detail::DesignIdentity> &identity,
+      std::size_t rootOrdinal, mlir::Operation *scope,
+      std::vector<mlir::Operation *> instancePath, mlir::Operation *owner,
+      InternalRole role, loom::fabric::FabricOrdinal ordinal)
+      : identity_(identity), rootOrdinal_(rootOrdinal), scope_(scope),
+        instancePath_(std::move(instancePath)), owner_(owner), role_(role),
+        ordinal_(ordinal) {}
+
+  std::weak_ptr<detail::DesignIdentity> identity_;
+  std::size_t rootOrdinal_ = 0;
+  mlir::Operation *scope_ = nullptr;
+  std::vector<mlir::Operation *> instancePath_;
+  mlir::Operation *owner_ = nullptr;
+  InternalRole role_ = InternalRole::Occurrence;
+  loom::fabric::FabricOrdinal ordinal_ = 0;
+
+  friend class FuBuilder;
+  friend class FuNode;
+  friend class PeBuilder;
+  friend class SpatialCoreBuilder;
+  friend class PeTemplateHandle;
+  friend class FuTemplateHandle;
+  friend class SwitchTemplateHandle;
+  friend class MemoryTemplateHandle;
+  friend class SpatialTemplateInstanceResult;
+  friend class PeTemplateInstanceResult;
 };
 
 /// One authoring-only child-to-parent slot row for a Module instance edge.
@@ -396,6 +458,81 @@ private:
   friend class SpatialCoreBuilder;
 };
 
+/// One non-Module instance placed directly in a SpatialCore body. Every
+/// target-local owner can be projected through this exact use before it is
+/// converted to an assignable Module member handle.
+class SpatialTemplateInstanceResult final {
+public:
+  llvm::ArrayRef<SpatialValue> values() const { return values_; }
+  SpatialValue operator[](std::size_t ordinal) const {
+    return values_[ordinal];
+  }
+  std::size_t size() const { return values_.size(); }
+  TemplatePhysicalOwnerHandle occurrenceOwner() const { return occurrence_; }
+  llvm::Expected<TemplatePhysicalOwnerHandle>
+  project(const TemplatePhysicalOwnerHandle &owner) const;
+
+private:
+  SpatialTemplateInstanceResult(
+      std::vector<SpatialValue> values, TemplatePhysicalOwnerHandle occurrence,
+      const std::shared_ptr<detail::DesignState> &state,
+      std::shared_ptr<detail::DesignIdentity> identity, std::size_t rootOrdinal,
+      mlir::Operation *parentScope, mlir::Operation *target,
+      mlir::Operation *instance)
+      : values_(std::move(values)), occurrence_(std::move(occurrence)),
+        state_(state), identity_(std::move(identity)),
+        rootOrdinal_(rootOrdinal), parentScope_(parentScope), target_(target),
+        instance_(instance) {}
+
+  std::vector<SpatialValue> values_;
+  TemplatePhysicalOwnerHandle occurrence_;
+  std::weak_ptr<detail::DesignState> state_;
+  std::shared_ptr<detail::DesignIdentity> identity_;
+  std::size_t rootOrdinal_ = 0;
+  mlir::Operation *parentScope_ = nullptr;
+  mlir::Operation *target_ = nullptr;
+  mlir::Operation *instance_ = nullptr;
+
+  friend class SpatialCoreBuilder;
+};
+
+/// The PE-local counterpart of SpatialTemplateInstanceResult for one named FU
+/// use. Its owner projections remain relative to the containing PE template
+/// until an enclosing PE instance prefixes that path.
+class PeTemplateInstanceResult final {
+public:
+  llvm::ArrayRef<PeValue> values() const { return values_; }
+  PeValue operator[](std::size_t ordinal) const { return values_[ordinal]; }
+  std::size_t size() const { return values_.size(); }
+  TemplatePhysicalOwnerHandle occurrenceOwner() const { return occurrence_; }
+  llvm::Expected<TemplatePhysicalOwnerHandle>
+  project(const TemplatePhysicalOwnerHandle &owner) const;
+
+private:
+  PeTemplateInstanceResult(std::vector<PeValue> values,
+                           TemplatePhysicalOwnerHandle occurrence,
+                           const std::shared_ptr<detail::DesignState> &state,
+                           std::shared_ptr<detail::DesignIdentity> identity,
+                           std::size_t rootOrdinal,
+                           mlir::Operation *parentScope,
+                           mlir::Operation *target, mlir::Operation *instance)
+      : values_(std::move(values)), occurrence_(std::move(occurrence)),
+        state_(state), identity_(std::move(identity)),
+        rootOrdinal_(rootOrdinal), parentScope_(parentScope), target_(target),
+        instance_(instance) {}
+
+  std::vector<PeValue> values_;
+  TemplatePhysicalOwnerHandle occurrence_;
+  std::weak_ptr<detail::DesignState> state_;
+  std::shared_ptr<detail::DesignIdentity> identity_;
+  std::size_t rootOrdinal_ = 0;
+  mlir::Operation *parentScope_ = nullptr;
+  mlir::Operation *target_ = nullptr;
+  mlir::Operation *instance_ = nullptr;
+
+  friend class PeBuilder;
+};
+
 enum class FuConfigurationMode : std::uint8_t { PerInstruction, PerFu };
 
 struct TemporalRegisterFifoParameters final {
@@ -434,6 +571,7 @@ private:
   std::optional<TemporalPeParameters> temporal_;
 
   friend class SpatialCoreBuilder;
+  friend class detail::BuilderSpecMaterializer;
 };
 
 struct FuSpec final {
@@ -637,6 +775,7 @@ private:
 
   friend class MemorySpec;
   friend class SpatialCoreBuilder;
+  friend class detail::BuilderSpecMaterializer;
 };
 
 /// One exact occurrence-level memory dispatch and internal-connectivity
@@ -654,6 +793,7 @@ private:
 
   friend class MemorySpec;
   friend class SpatialCoreBuilder;
+  friend class detail::BuilderSpecMaterializer;
 };
 
 /// One exact optional fabric.mem Local Memory Service declaration.
@@ -674,6 +814,7 @@ private:
 
   friend class MemorySpec;
   friend class SpatialCoreBuilder;
+  friend class detail::BuilderSpecMaterializer;
 };
 
 /// One fabric.mem declaration composed from its two orthogonal resources.
@@ -714,6 +855,92 @@ private:
   MemoryConnectivitySpec connectivity_;
 
   friend class SpatialCoreBuilder;
+  friend class detail::BuilderSpecMaterializer;
+};
+
+class PeTemplateHandle final {
+public:
+  PeTemplateHandle() = default;
+  TemplatePhysicalOwnerHandle occurrenceOwner() const;
+  llvm::Expected<TemplatePhysicalOwnerHandle>
+  instructionContextOwner(std::size_t ordinal) const;
+
+private:
+  PeTemplateHandle(const std::shared_ptr<detail::DesignIdentity> &identity,
+                   std::size_t rootOrdinal, mlir::Operation *operation,
+                   std::size_t instructionContexts)
+      : identity_(identity), rootOrdinal_(rootOrdinal), operation_(operation),
+        instructionContexts_(instructionContexts) {}
+
+  std::weak_ptr<detail::DesignIdentity> identity_;
+  std::size_t rootOrdinal_ = 0;
+  mlir::Operation *operation_ = nullptr;
+  std::size_t instructionContexts_ = 0;
+
+  friend class PeBuilder;
+  friend class SpatialCoreBuilder;
+};
+
+class FuTemplateHandle final {
+public:
+  FuTemplateHandle() = default;
+  TemplatePhysicalOwnerHandle occurrenceOwner() const;
+
+private:
+  FuTemplateHandle(const std::shared_ptr<detail::DesignIdentity> &identity,
+                   std::size_t rootOrdinal, std::size_t peOrdinal,
+                   mlir::Operation *operation)
+      : identity_(identity), rootOrdinal_(rootOrdinal), peOrdinal_(peOrdinal),
+        operation_(operation) {}
+
+  std::weak_ptr<detail::DesignIdentity> identity_;
+  std::size_t rootOrdinal_ = 0;
+  std::size_t peOrdinal_ = 0;
+  mlir::Operation *operation_ = nullptr;
+
+  friend class FuBuilder;
+  friend class PeBuilder;
+};
+
+class SwitchTemplateHandle final {
+public:
+  SwitchTemplateHandle() = default;
+  TemplatePhysicalOwnerHandle occurrenceOwner() const;
+
+private:
+  SwitchTemplateHandle(const std::shared_ptr<detail::DesignIdentity> &identity,
+                       std::size_t rootOrdinal, mlir::Operation *operation)
+      : identity_(identity), rootOrdinal_(rootOrdinal), operation_(operation) {}
+
+  std::weak_ptr<detail::DesignIdentity> identity_;
+  std::size_t rootOrdinal_ = 0;
+  mlir::Operation *operation_ = nullptr;
+
+  friend class SpatialCoreBuilder;
+};
+
+class MemoryTemplateHandle final {
+public:
+  MemoryTemplateHandle() = default;
+  TemplatePhysicalOwnerHandle occurrenceOwner() const;
+  llvm::Expected<TemplatePhysicalOwnerHandle>
+  operationPortOwner(std::size_t ordinal) const;
+  std::optional<TemplatePhysicalOwnerHandle> localServiceOwner() const;
+
+private:
+  MemoryTemplateHandle(const std::shared_ptr<detail::DesignIdentity> &identity,
+                       std::size_t rootOrdinal, mlir::Operation *operation,
+                       std::size_t operationPorts, bool hasLocalService)
+      : identity_(identity), rootOrdinal_(rootOrdinal), operation_(operation),
+        operationPorts_(operationPorts), hasLocalService_(hasLocalService) {}
+
+  std::weak_ptr<detail::DesignIdentity> identity_;
+  std::size_t rootOrdinal_ = 0;
+  mlir::Operation *operation_ = nullptr;
+  std::size_t operationPorts_ = 0;
+  bool hasLocalService_ = false;
+
+  friend class SpatialCoreBuilder;
 };
 
 class FuBuilder final {
@@ -736,12 +963,16 @@ public:
 
   llvm::Error addCapabilityTemplate(const FuCapabilityTemplateSpec &spec);
 
-  /// Adds one capability row and returns its exact authoring handle. The
-  /// ordinary addCapabilityTemplate overload is the handle-discarding form.
+  /// Adds one capability row and returns its exact occurrence-local authoring
+  /// handle. Named FU definitions reject this overload because one definition
+  /// may materialize several occurrence rows; use the ordinary overload there.
   llvm::Expected<FuCapabilityTemplateHandle>
   addCapabilityTemplateWithHandle(const FuCapabilityTemplateSpec &spec);
 
   llvm::Error close(llvm::ArrayRef<FuValue> outputs);
+  llvm::Expected<FuTemplateHandle>
+  closeTemplate(llvm::ArrayRef<FuValue> outputs);
+  llvm::Expected<TemplatePhysicalOwnerHandle> templateOwner() const;
 
 private:
   llvm::Expected<mlir::Value>
@@ -751,6 +982,11 @@ private:
   llvm::Expected<mlir::Operation *>
   resolveNode(const std::shared_ptr<detail::DesignState> &state,
               const FuNode &node) const;
+
+  llvm::Expected<FuCapabilityTemplateHandle>
+  addCapabilityTemplateImpl(const FuCapabilityTemplateSpec &spec,
+                            bool exposeHandle);
+  llvm::Error closeImpl(llvm::ArrayRef<FuValue> outputs, bool templateClose);
 
   FuBuilder(const std::shared_ptr<detail::DesignState> &state,
             std::size_t rootOrdinal, std::size_t peOrdinal,
@@ -784,12 +1020,20 @@ public:
   llvm::Expected<FuBuilder> addFu(llvm::ArrayRef<PeValue> inputs,
                                   const FuSpec &spec);
 
+  llvm::Expected<FuBuilder> createFuTemplate(llvm::StringRef label,
+                                             const FuSpec &spec);
+  llvm::Expected<PeTemplateInstanceResult>
+  instantiate(const FuTemplateHandle &target, llvm::ArrayRef<PeValue> inputs);
+
   llvm::Error close();
+  llvm::Expected<PeTemplateHandle> closeTemplate();
+  llvm::Expected<TemplatePhysicalOwnerHandle> templateOwner() const;
 
 private:
   llvm::Expected<mlir::Value>
   resolveValue(const std::shared_ptr<detail::DesignState> &state,
                const PeValue &value) const;
+  llvm::Error closeImpl(bool templateClose);
 
   PeBuilder(const std::shared_ptr<detail::DesignState> &state,
             std::size_t rootOrdinal, std::size_t peOrdinal,
@@ -845,6 +1089,21 @@ public:
               llvm::ArrayRef<SpatialValue> inputs,
               llvm::ArrayRef<ModuleInstanceDomainSlotBinding> domainBindings);
 
+  llvm::Expected<SpatialTemplateInstanceResult>
+  instantiate(const PeTemplateHandle &target,
+              llvm::ArrayRef<SpatialValue> inputs);
+  llvm::Expected<SpatialTemplateInstanceResult>
+  instantiate(const SwitchTemplateHandle &target,
+              llvm::ArrayRef<SpatialValue> inputs);
+  llvm::Expected<SpatialTemplateInstanceResult>
+  instantiate(const MemoryTemplateHandle &target,
+              llvm::ArrayRef<SpatialValue> inputs);
+
+  /// Converts one root-relative template-owner projection into the existing
+  /// assignable Module member handle.
+  llvm::Expected<ModuleDomainMemberHandle>
+  moduleMember(const TemplatePhysicalOwnerHandle &owner) const;
+
   llvm::Expected<FifoResult> addFifo(SpatialValue input, const FifoSpec &spec);
 
   llvm::Expected<BoundaryResult>
@@ -859,8 +1118,17 @@ public:
   llvm::Expected<MemoryResult> addMemory(llvm::ArrayRef<SpatialValue> inputs,
                                          const MemorySpec &spec);
 
+  llvm::Expected<SwitchTemplateHandle>
+  createSwitchTemplate(llvm::StringRef label, const SwitchSpec &spec);
+  llvm::Expected<MemoryTemplateHandle>
+  createMemoryTemplate(llvm::StringRef label, const MemorySpec &spec);
+
   llvm::Expected<PeBuilder> addPe(llvm::ArrayRef<SpatialValue> inputs,
                                   const PeSpec &spec);
+  llvm::Expected<PeBuilder>
+  createPeTemplate(llvm::StringRef label,
+                   llvm::ArrayRef<PortType> boundaryInputTypes,
+                   const PeSpec &spec);
 
   /// Clones or removes one exact finalized occurrence in this fresh derived
   /// draft. The existing Fabric physical-owner union is the typed selector;
@@ -930,6 +1198,10 @@ private:
   llvm::Expected<mlir::Value>
   resolveValue(const std::shared_ptr<detail::DesignState> &state,
                const SpatialValue &value) const;
+
+  llvm::Expected<SpatialTemplateInstanceResult>
+  instantiateTemplate(mlir::Operation *target,
+                      llvm::ArrayRef<SpatialValue> inputs);
 
   SpatialCoreBuilder(const std::shared_ptr<detail::DesignState> &state,
                      std::size_t rootOrdinal)

@@ -266,6 +266,21 @@ SpatialCoreBuilder::instantiate(
     canonical range<SpatialValue> inputs,
     canonical range<loom::adg::ModuleInstanceDomainSlotBinding> domain_bindings)
   -> Expected<canonical range<SpatialValue>>
+SpatialCoreBuilder::createPeTemplate(label, boundary_input_types, PeSpec)
+  -> Expected<PeBuilder>
+PeBuilder::createFuTemplate(label, FuSpec)
+  -> Expected<FuBuilder>
+FuBuilder::closeTemplate(outputs) -> Expected<FuTemplateHandle>
+PeBuilder::instantiate(FuTemplateHandle, inputs)
+  -> Expected<PeTemplateInstanceResult>
+PeBuilder::closeTemplate() -> Expected<PeTemplateHandle>
+SpatialCoreBuilder::createSwitchTemplate(label, SwitchSpec)
+  -> Expected<SwitchTemplateHandle>
+SpatialCoreBuilder::createMemoryTemplate(label, MemorySpec)
+  -> Expected<MemoryTemplateHandle>
+SpatialCoreBuilder::instantiate(PeTemplateHandle | SwitchTemplateHandle |
+                                MemoryTemplateHandle, inputs)
+  -> Expected<SpatialTemplateInstanceResult>
 ImportedSpatialCore::domainSlots(Clock | Reset)
   -> Expected<canonical range<ImportedModuleDomainSlotHandle>>
 SystemBuilder::spatialCoreDomainSlotMember(
@@ -282,6 +297,42 @@ record. Finalization mechanically resolves its handles to the ordinals in the
 Fabric-owned `::fabric::ModuleInstanceDomainSlotBinding` property specified by
 `docs/spec-fabric-instantiate.md`; it does not define a second persistent
 domain-slot relation.
+
+The four non-Module template handles name only verifier-legal named Fabric
+definitions. They carry no duplicate topology or configuration state. A
+template is closed before it can be instantiated, and an instance accepts
+only a handle owned by its exact SpatialCore or PE symbol scope. The result
+contains the target's ordered SSA results plus the exact occurrence owner for
+that use. A handle from another design, another root, or another PE fails
+closed rather than being resolved by label.
+
+Each template-local physical owner is exposed as a
+`TemplatePhysicalOwnerHandle`. `FuNode::templateOwner`,
+`FuBuilder::templateOwner`, `PeBuilder::templateOwner`, and the typed template
+handles cover PE occurrences and instruction contexts, FU occurrences and
+nodes, switch occurrences, memory occurrences, memory operation ports, and
+local memory services. `SpatialTemplateInstanceResult::project` and its
+PE-local counterpart prefix one exact instance use. Nested FU uses therefore
+form a finite instance path rather than a flattened ordinal or a copied owner
+catalog. `SpatialCoreBuilder::moduleMember` converts only a path relative to
+that same root into the existing `ModuleDomainMemberHandle` consumed by
+`assignDomainSlot`.
+
+`FuCapabilityTemplateHandle` remains occurrence-local: it resolves one exact
+row of one anonymous FU occurrence. A named FU definition may be instantiated
+zero, one, or several times, so its row has no unique occurrence
+correspondence. The handle-returning capability overload rejects that form;
+the ordinary capability declaration remains valid and is cloned into every
+instance. No definition-level capability handle or first-instance fallback is
+introduced.
+
+Fabric elaboration is the sole materialization owner for these paths. At each
+instantiation it replaces the selected path element with the fresh physical
+occurrence, remaps any nested suffix and target-local owner through the same
+IR clone map, and rejects an unresolved path. No instance path enters
+canonical bytes. Consequently an anonymous Builder construction, a typed
+Builder template construction, and equivalent legal Fabric MLIR finalize to
+the same semantics and content identity.
 
 `ModuleDomainMemberHandle` is one opaque, owner-checked authoring handle local
 to an open `SpatialCoreBuilder`. It mechanically projects the closed member
@@ -377,16 +428,17 @@ instruction-context, or other members and rely on containment to assign them.
 They may return typed groups of created handles, but cannot create hidden
 hardware facts or use a private emitter.
 
-`FuBuilder::addCapabilityTemplateWithHandle` returns one owner-checked
-`FuCapabilityTemplateHandle`. Finalization resolves that handle through the
-same FU-node canonical relabeling and normalized capability-record inventory
-that owns the final Fabric artifact. The resulting
+For an anonymous FU, `FuBuilder::addCapabilityTemplateWithHandle` returns one
+owner-checked `FuCapabilityTemplateHandle`. Finalization resolves that handle
+through the same FU-node canonical relabeling and normalized capability-record
+inventory that owns the final Fabric artifact. The resulting
 `ArtifactReference<FabricFuCapabilityTemplateRef>` cannot be inferred from
 insertion order: both source rows and finalized records are canonically sorted,
 and the transient correspondence matches their exact normalized semantics.
 The handle and correspondence are authoring-only and are never serialized.
-`addCapabilityTemplate` is the handle-discarding convenience form over the same
-operation.
+For an anonymous FU, `addCapabilityTemplate` is the handle-discarding form of
+the same operation. A named FU declaration has no unique occurrence before it
+is instantiated, so only the handle-discarding form is admitted there.
 
 ### FU Feedback Edges
 

@@ -1406,6 +1406,299 @@ void publicMemoryRecipeKeepsIndependentEndpointWidths() {
             "general memory changed its independent service beat width");
 }
 
+void nonModuleTemplatesMatchDirectAuthoring() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  const PortType bits0 = take(test, PortType::bits(0));
+  const PortType bits16 = take(test, PortType::bits(16));
+  const PortType bits32 = take(test, PortType::bits(32));
+  const PortType tagged0 = take(test, PortType::taggedBits(0, 4));
+  const PortType tagged32 = take(test, PortType::taggedBits(32, 4));
+  mlir::MLIRContext contractContext(mlir::MLIRContext::Threading::DISABLED);
+
+  {
+    DesignBuilder invalidDesign(store);
+    auto invalidRoot =
+        take(test, invalidDesign.createSpatialCore("invalid-template", {}, {}));
+    auto mismatched = invalidRoot.createPeTemplate(
+        "pe", {bits16, bits32}, PeSpec::spatial({bits16, bits32}, {bits32}));
+    if (mismatched)
+      fail(test, "spatial PE template accepted nonuniform port widths");
+    expectError(test, mismatched.takeError(), "uniform width");
+  }
+
+  const auto makeMemory = [&]() {
+    return take(
+        test,
+        MemorySpec::create(
+            {tagged32, tagged0}, {tagged32, tagged0}, {}, {},
+            MemoryEngineSpec::temporal(4, {loadPortDeclaration()}),
+            take(test, LocalMemoryServiceSpec::create(
+                           4096, localMemoryContract(test, contractContext))),
+            operationConnectivity(test, localMemoryTarget())));
+  };
+
+  const auto build = [&](bool useTemplates) -> loom::ArtifactRootReference {
+    DesignBuilder design(store);
+    auto root =
+        take(test, design.createSpatialCore(
+                       "non-module-template-equivalence",
+                       {bits32, bits32, bits32, bits32, tagged32, tagged0},
+                       {bits32, bits32, tagged32, tagged0}));
+    const auto clock =
+        take(test,
+             root.declareDomainSlot(loom::fabric::FabricClockResetKind::Clock));
+    const auto reset =
+        take(test,
+             root.declareDomainSlot(loom::fabric::FabricClockResetKind::Reset));
+
+    const auto assign = [&](const ModuleDomainMemberHandle &member) {
+      if (llvm::Error error = root.assignDomainSlot(member, clock))
+        fail(test, llvm::toString(std::move(error)));
+      if (llvm::Error error = root.assignDomainSlot(member, reset))
+        fail(test, llvm::toString(std::move(error)));
+    };
+    for (std::size_t ordinal = 0; ordinal != 6; ++ordinal)
+      assign(take(test, root.inputDomainMember(ordinal)));
+    for (std::size_t ordinal = 0; ordinal != 4; ++ordinal)
+      assign(take(test, root.outputDomainMember(ordinal)));
+
+    std::vector<SpatialValue> outputs;
+    if (!useTemplates) {
+      auto pe = take(
+          test,
+          root.addPe({take(test, root.input(0)), take(test, root.input(1))},
+                     PeSpec::spatial({bits32, bits32}, {bits32})));
+      auto fu = take(
+          test, pe.addFu({take(test, pe.input(0)), take(test, pe.input(1))},
+                         FuSpec{{bits32, bits32}, {bits32}}));
+      auto sum = take(
+          test, fu.addOperation(
+                    {take(test, fu.input(0)), take(test, fu.input(1))},
+                    integerCapability(
+                        ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                        ::dataflow::OperationSchemaId::ArithAddI, bits32)));
+      if (llvm::Error error =
+              fu.addCapabilityTemplate(FuCapabilityTemplateSpec{{sum}, {}}))
+        fail(test, llvm::toString(std::move(error)));
+      if (llvm::Error error = fu.close({take(test, sum.output(0))}))
+        fail(test, llvm::toString(std::move(error)));
+      if (llvm::Error error = pe.close())
+        fail(test, llvm::toString(std::move(error)));
+      assign(pe.domainMember());
+      assign(take(test, pe.instructionContextMember(0)));
+      assign(fu.domainMember());
+      assign(sum.domainMember());
+
+      auto sw = take(
+          test, root.addSwitch(
+                    {take(test, root.input(2)), take(test, root.input(3))},
+                    SwitchSpec::spatial({bits32, bits32}, {bits32}, {{0, 1}})));
+      assign(sw.domainMember());
+
+      auto memory = take(test, root.addMemory({take(test, root.input(4)),
+                                               take(test, root.input(5))},
+                                              makeMemory()));
+      assign(memory.domainMember());
+      assign(take(test, memory.operationPortMember(0)));
+      require(test, memory.localServiceMember().has_value(),
+              "direct memory lost its local service handle");
+      assign(*memory.localServiceMember());
+
+      outputs = {take(test, pe.output(0)), sw[0], memory.values()[0],
+                 memory.values()[1]};
+    } else {
+      auto pe = take(test, root.createPeTemplate(
+                               "pe", {bits32, bits32},
+                               PeSpec::spatial({bits32, bits32}, {bits32})));
+      auto fu = take(
+          test, pe.createFuTemplate("fu", FuSpec{{bits32, bits32}, {bits32}}));
+      auto sum = take(
+          test, fu.addOperation(
+                    {take(test, fu.input(0)), take(test, fu.input(1))},
+                    integerCapability(
+                        ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                        ::dataflow::OperationSchemaId::ArithAddI, bits32)));
+      const auto sumOwner = take(test, sum.templateOwner());
+      auto ambiguousCapability = fu.addCapabilityTemplateWithHandle(
+          FuCapabilityTemplateSpec{{sum}, {}});
+      if (ambiguousCapability)
+        fail(test, "named FU returned an occurrence-local capability handle");
+      expectError(test, ambiguousCapability.takeError(),
+                  "do not have a unique finalized occurrence handle");
+      if (llvm::Error error =
+              fu.addCapabilityTemplate(FuCapabilityTemplateSpec{{sum}, {}}))
+        fail(test, llvm::toString(std::move(error)));
+      expectError(test, fu.close({take(test, sum.output(0))}),
+                  "closed with closeTemplate");
+      const auto fuTemplate =
+          take(test, fu.closeTemplate({take(test, sum.output(0))}));
+      auto fuInstance =
+          take(test, pe.instantiate(fuTemplate, {take(test, pe.input(0)),
+                                                 take(test, pe.input(1))}));
+      expectError(test, pe.close(), "closed with closeTemplate");
+      const auto peTemplate = take(test, pe.closeTemplate());
+      auto peInstance =
+          take(test, root.instantiate(peTemplate, {take(test, root.input(0)),
+                                                   take(test, root.input(1))}));
+      assign(take(test, root.moduleMember(peInstance.occurrenceOwner())));
+      assign(take(
+          test, root.moduleMember(take(
+                    test, peInstance.project(take(
+                              test, peTemplate.instructionContextOwner(0)))))));
+      assign(take(
+          test, root.moduleMember(take(
+                    test, peInstance.project(fuInstance.occurrenceOwner())))));
+      assign(take(test, root.moduleMember(take(
+                            test, peInstance.project(take(
+                                      test, fuInstance.project(sumOwner)))))));
+
+      const auto switchTemplate =
+          take(test, root.createSwitchTemplate(
+                         "switch", SwitchSpec::spatial({bits32, bits32},
+                                                       {bits32}, {{0, 1}})));
+      auto sw = take(
+          test, root.instantiate(switchTemplate, {take(test, root.input(2)),
+                                                  take(test, root.input(3))}));
+      assign(take(test, root.moduleMember(sw.occurrenceOwner())));
+
+      const auto memoryTemplate =
+          take(test, root.createMemoryTemplate("memory", makeMemory()));
+      auto memory = take(
+          test, root.instantiate(memoryTemplate, {take(test, root.input(4)),
+                                                  take(test, root.input(5))}));
+      assign(take(test, root.moduleMember(memory.occurrenceOwner())));
+      assign(take(
+          test, root.moduleMember(take(
+                    test, memory.project(take(
+                              test, memoryTemplate.operationPortOwner(0)))))));
+      const auto localService = memoryTemplate.localServiceOwner();
+      require(test, localService.has_value(),
+              "memory template lost its local service handle");
+      assign(take(
+          test, root.moduleMember(take(test, memory.project(*localService)))));
+
+      outputs = {peInstance[0], sw[0], memory[0], memory[1]};
+    }
+
+    if (llvm::Error error = root.close(outputs))
+      fail(test, llvm::toString(std::move(error)));
+    auto finalized = take(test, std::move(design).finalize());
+    require(test, finalized.roots().size() == 1,
+            "template equivalence design published an unexpected root count");
+    return finalized.roots().front().reference();
+  };
+
+  const loom::ArtifactRootReference direct = build(false);
+  const loom::ArtifactRootReference instantiated = build(true);
+  const loom::ArtifactRootReference independent =
+      buildIndependentNonModuleTemplateOracle(test, store);
+  require(test, direct == instantiated && direct == independent,
+          "non-Module authoring paths changed canonical Fabric identity");
+}
+
+void nestedNonModuleTemplatesSurviveModuleComposition() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType bits32 = take(test, PortType::bits(32));
+
+  auto child = take(
+      test, design.createSpatialCore("template-child", {bits32}, {bits32}));
+  const auto childClock = take(
+      test, child.declareDomainSlot(loom::fabric::FabricClockResetKind::Clock));
+  const auto childReset = take(
+      test, child.declareDomainSlot(loom::fabric::FabricClockResetKind::Reset));
+  const auto assignChild = [&](const ModuleDomainMemberHandle &member) {
+    if (llvm::Error error = child.assignDomainSlot(member, childClock))
+      fail(test, llvm::toString(std::move(error)));
+    if (llvm::Error error = child.assignDomainSlot(member, childReset))
+      fail(test, llvm::toString(std::move(error)));
+  };
+  assignChild(take(test, child.inputDomainMember(0)));
+  assignChild(take(test, child.outputDomainMember(0)));
+
+  auto pe =
+      take(test, child.createPeTemplate("pe", {bits32},
+                                        PeSpec::spatial({bits32}, {bits32})));
+  auto fu = take(test, pe.createFuTemplate("fu", FuSpec{{bits32}, {bits32}}));
+  auto add = take(
+      test,
+      fu.addOperation({take(test, fu.input(0)), take(test, fu.input(0))},
+                      integerCapability(
+                          ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                          ::dataflow::OperationSchemaId::ArithAddI, bits32)));
+  const auto nodeOwner = take(test, add.templateOwner());
+  if (llvm::Error error =
+          fu.addCapabilityTemplate(FuCapabilityTemplateSpec{{add}, {}}))
+    fail(test, llvm::toString(std::move(error)));
+  const auto fuTemplate =
+      take(test, fu.closeTemplate({take(test, add.output(0))}));
+  auto fuInstance =
+      take(test, pe.instantiate(fuTemplate, {take(test, pe.input(0))}));
+  const auto peTemplate = take(test, pe.closeTemplate());
+  auto peInstance =
+      take(test, child.instantiate(peTemplate, {take(test, child.input(0))}));
+  assignChild(take(test, child.moduleMember(peInstance.occurrenceOwner())));
+  assignChild(take(
+      test, child.moduleMember(take(
+                test, peInstance.project(take(
+                          test, peTemplate.instructionContextOwner(0)))))));
+  assignChild(
+      take(test, child.moduleMember(take(
+                     test, peInstance.project(fuInstance.occurrenceOwner())))));
+  assignChild(
+      take(test, child.moduleMember(
+                     take(test, peInstance.project(take(
+                                    test, fuInstance.project(nodeOwner)))))));
+  if (llvm::Error error = child.close(peInstance.values()))
+    fail(test, llvm::toString(std::move(error)));
+
+  const auto childClocks =
+      take(test, child.domainSlots(loom::fabric::FabricClockResetKind::Clock));
+  const auto childResets =
+      take(test, child.domainSlots(loom::fabric::FabricClockResetKind::Reset));
+  auto parent = take(
+      test, design.createSpatialCore("template-parent", {bits32}, {bits32}));
+  const auto parentClock =
+      take(test,
+           parent.declareDomainSlot(loom::fabric::FabricClockResetKind::Clock));
+  const auto parentReset =
+      take(test,
+           parent.declareDomainSlot(loom::fabric::FabricClockResetKind::Reset));
+  auto childInstance =
+      take(test, parent.instantiate(child, {take(test, parent.input(0))},
+                                    {{childClocks.front(), parentClock},
+                                     {childResets.front(), parentReset}}));
+  for (const auto &member : {take(test, parent.inputDomainMember(0)),
+                             take(test, parent.outputDomainMember(0))}) {
+    if (llvm::Error error = parent.assignDomainSlot(member, parentClock))
+      fail(test, llvm::toString(std::move(error)));
+    if (llvm::Error error = parent.assignDomainSlot(member, parentReset))
+      fail(test, llvm::toString(std::move(error)));
+  }
+  if (llvm::Error error = parent.close(childInstance))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto finalized = take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 2,
+          "nested non-Module template composition lost a Module root");
+  require(test,
+          finalized.roots()[0].reference() == finalized.roots()[1].reference(),
+          "Module composition changed the nested template identity");
+  for (const auto &root : finalized.roots())
+    require(
+        test,
+        entityCount(root.view(),
+                    loom::fabric::FabricEntityKind::FabricPeOccurrence) == 1 &&
+            entityCount(root.view(),
+                        loom::fabric::FabricEntityKind::FabricFuOccurrence) ==
+                1,
+        "Module composition changed the nested physical inventory");
+}
+
 void runBuilderTests() {
   regularAndIrregularSpatialCoresFinalize();
   foreignHandlesAndIncompleteRootsFailClosed();
@@ -1417,6 +1710,9 @@ void runBuilderTests() {
   publicMemoryLibraryBuildsHybridLocalMemories();
   publicMemoryLibraryBuildsPortVariants();
   publicMemoryRecipeKeepsIndependentEndpointWidths();
+  nonModuleTemplatesMatchDirectAuthoring();
+  nestedNonModuleTemplatesSurviveModuleComposition();
+  runBuilderTemplateTests();
 }
 
 } // namespace loom::adg::test

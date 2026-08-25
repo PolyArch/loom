@@ -84,6 +84,10 @@ void runBuiltinTests();
 void runTopologyTests();
 void runServiceLegCarrierTests();
 void runDomainAuthoringTests();
+void runBuilderTemplateTests();
+ArtifactRootReference
+buildIndependentNonModuleTemplateOracle(llvm::StringRef test,
+                                        const ArtifactStore &store);
 
 void regularAndIrregularSpatialCoresFinalize();
 void temporalResourceGrantFinalizes();

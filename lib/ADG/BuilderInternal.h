@@ -4,9 +4,11 @@
 #include "ADG/Builder.h"
 #include "Fabric/IR/FabricOps.h"
 
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
@@ -22,6 +24,54 @@ namespace loom::adg::detail {
 
 class DesignIdentity final {};
 
+struct PeMaterialization final {
+  llvm::SmallVector<mlir::Type, 8> boundaryInputTypes;
+  llvm::SmallVector<mlir::Type, 8> bodyInputTypes;
+  llvm::SmallVector<mlir::Type, 8> outputTypes;
+  mlir::IntegerAttr tagWidth;
+  mlir::IntegerAttr instructionCapacity;
+  mlir::IntegerAttr registerFifoCount;
+  mlir::IntegerAttr registerFifoDepth;
+  mlir::IntegerAttr registerFifoPorts;
+  ::fabric::FuConfigModeAttr fuConfigurationMode;
+  ::fabric::OperandBufferModeAttr operandBufferMode;
+  mlir::IntegerAttr operandBufferSize;
+  std::size_t instructionContexts = 0;
+};
+
+struct SwitchMaterialization final {
+  llvm::SmallVector<mlir::Type, 8> inputTypes;
+  llvm::SmallVector<mlir::Type, 8> outputTypes;
+  mlir::ArrayAttr hardwareParameters;
+};
+
+struct MemoryMaterialization final {
+  llvm::SmallVector<mlir::Type, 8> inputTypes;
+  llvm::SmallVector<mlir::Type, 8> outputTypes;
+  ::fabric::MemoryContractAttr contract;
+  mlir::ArrayAttr operationPorts;
+  std::size_t operationPortCount = 0;
+  bool hasLocalService = false;
+};
+
+/// Canonical translation from public ADG specifications to Fabric types and
+/// attributes. Anonymous operations and named templates consume the same
+/// result, so declaration form cannot change the hardware contract.
+class BuilderSpecMaterializer final {
+public:
+  static bool samePortKind(mlir::Type left, mlir::Type right);
+
+  static llvm::Expected<PeMaterialization>
+  pe(mlir::MLIRContext &context, llvm::ArrayRef<mlir::Type> boundaryInputTypes,
+     const PeSpec &spec, bool namedTemplate);
+
+  static llvm::Expected<SwitchMaterialization>
+  switchSpec(mlir::MLIRContext &context, const SwitchSpec &spec);
+
+  static llvm::Expected<MemoryMaterialization>
+  memory(mlir::MLIRContext &context, const MemorySpec &spec);
+};
+
 struct SpatialRootState final {
   ::fabric::ModuleOp operation;
   std::string label;
@@ -36,6 +86,7 @@ struct SpatialRootState final {
 struct PeState final {
   ::fabric::PeOp operation;
   std::size_t rootOrdinal = 0;
+  bool named = false;
   bool closed = false;
 };
 
@@ -50,6 +101,7 @@ struct FuState final {
   ::fabric::FuOp operation;
   std::size_t rootOrdinal = 0;
   std::size_t peOrdinal = 0;
+  bool named = false;
   bool closed = false;
   std::vector<mlir::Operation *> unresolvedBackedges;
   std::vector<FuCapabilityTemplateDraft> capabilityTemplates;
