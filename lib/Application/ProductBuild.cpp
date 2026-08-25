@@ -917,7 +917,9 @@ llvm::Error publishProductDeployment(
       target.workspace->artifacts(), 1);
   auto deployment = buildApplicationDeployment(
       *prepared, *mapping, *finalLink.linkedModule,
-      {target.compilerPolicy, {target.workspace->linkerPath().str()}},
+      {target.compilerPolicy,
+       {target.workspace->linkerPath().str()},
+       executionControl},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!deployment) {
     deployment::emitConfigurationImageProjectionSessionStatistics(

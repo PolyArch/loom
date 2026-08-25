@@ -597,28 +597,36 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
   if (llvm::Error error = dse::validateResourceTimeMappingFunnelAccounting(
           resourceTimeFunnel->accounting))
     return std::move(error);
+  const auto incompleteResourceTimePlanning =
+      [&](dse::ResourceTimeFrontierIncompleteReason reason,
+          llvm::StringRef detail) -> ApplicationBuildPreparationOutcome {
+    auto decision = makePreparationPairDecision(
+        completed.sourceProgram, completed.fabric, completed.workload,
+        completed.runtimeInput, completed.candidateInventory,
+        mapResourceTimeFrontierReasonToPairDisposition(reason), detail,
+        completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
+        request.portfolioInput);
+    emitApplicationPairDecisionDiagnostics(decision);
+    return IncompleteApplicationResourceTimePlanning{
+        reason,
+        std::move(*resourceTimeFunnel),
+        std::move(completed.candidateInventory),
+        completed.sourceProgram,
+        completed.fabric,
+        completed.workload,
+        completed.runtimeInput,
+        completed.frontierPolicyDigest,
+        completed.sourceHostOnlyWork};
+  };
   if (resourceTimeFunnel->incompleteReason ==
       dse::ResourceTimeFrontierIncompleteReason::CancelledOrTimeout) {
     emitApplicationResourceTimeFunnelTerminalDiagnostics(
         *resourceTimeFunnel, dse::resourceTimeFrontierIncompleteReasonSpelling(
                                  *resourceTimeFunnel->incompleteReason));
-    auto decision = makePreparationPairDecision(
-        completed.sourceProgram, completed.fabric, completed.workload,
-        completed.runtimeInput, completed.candidateInventory,
-        mapResourceTimeFrontierReasonToPairDisposition(
-            *resourceTimeFunnel->incompleteReason),
+    return incompleteResourceTimePlanning(
+        *resourceTimeFunnel->incompleteReason,
         dse::resourceTimeFrontierIncompleteReasonSpelling(
-            *resourceTimeFunnel->incompleteReason),
-        completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
-        request.portfolioInput);
-    emitApplicationPairDecisionDiagnostics(decision);
-    return ApplicationBuildPreparationOutcome{
-        IncompleteApplicationResourceTimePlanning{
-            *resourceTimeFunnel->incompleteReason,
-            std::move(*resourceTimeFunnel),
-            std::move(completed.candidateInventory), completed.sourceProgram,
-            completed.fabric, completed.workload, completed.runtimeInput,
-            completed.frontierPolicyDigest, completed.sourceHostOnlyWork}};
+            *resourceTimeFunnel->incompleteReason));
   }
   if (resourceTimeFunnel->finalists.empty())
     emitApplicationResourceTimeFunnelTerminalDiagnostics(
@@ -629,38 +637,24 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
             : "no_mapping_finalist");
   if (resourceTimeFunnel->finalists.empty() &&
       resourceTimeFunnel->incompleteReason) {
-    const ApplicationPairDecisionDisposition disposition =
-        mapResourceTimeFrontierReasonToPairDisposition(
-            *resourceTimeFunnel->incompleteReason);
-    auto decision = makePreparationPairDecision(
-        completed.sourceProgram, completed.fabric, completed.workload,
-        completed.runtimeInput, completed.candidateInventory, disposition,
+    return incompleteResourceTimePlanning(
+        *resourceTimeFunnel->incompleteReason,
         dse::resourceTimeFrontierIncompleteReasonSpelling(
-            *resourceTimeFunnel->incompleteReason),
-        completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
-        request.portfolioInput);
-    emitApplicationPairDecisionDiagnostics(decision);
-    return ApplicationBuildPreparationOutcome{
-        IncompleteApplicationResourceTimePlanning{
-            *resourceTimeFunnel->incompleteReason,
-            std::move(*resourceTimeFunnel),
-            std::move(completed.candidateInventory), completed.sourceProgram,
-            completed.fabric, completed.workload, completed.runtimeInput,
-            completed.frontierPolicyDigest, completed.sourceHostOnlyWork}};
+            *resourceTimeFunnel->incompleteReason));
   }
   if (resourceTimeFunnel->finalists.empty()) {
     const bool completeNoPromisingProof =
         completed.completeness.exactComplete() &&
         !resourceTimeFunnel->truncated;
+    if (!completeNoPromisingProof)
+      return incompleteResourceTimePlanning(
+          dse::ResourceTimeFrontierIncompleteReason::BudgetExhausted,
+          "resource-time funnel ended without a complete candidate proof");
     auto decision = makePreparationPairDecision(
         completed.sourceProgram, completed.fabric, completed.workload,
         completed.runtimeInput, completed.candidateInventory,
-        completeNoPromisingProof
-            ? ApplicationPairDecisionDisposition::NoPromisingCandidate
-            : ApplicationPairDecisionDisposition::BudgetExhausted,
-        completeNoPromisingProof
-            ? "resource-time funnel retained no Mapping finalist"
-            : "resource-time funnel ended without a complete candidate proof",
+        ApplicationPairDecisionDisposition::NoPromisingCandidate,
+        "resource-time funnel retained no Mapping finalist",
         completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
         request.portfolioInput);
     emitApplicationPairDecisionDiagnostics(decision);
@@ -875,25 +869,12 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
   if (mappingAlternatives.empty()) {
     emitApplicationResourceTimeFunnelTerminalDiagnostics(
         *resourceTimeFunnel, "all_finalists_rejected_before_mapping");
-    if (resourceTimeFunnel->incompleteReason) {
-      auto decision = makePreparationPairDecision(
-          completed.sourceProgram, completed.fabric, completed.workload,
-          completed.runtimeInput, completed.candidateInventory,
-          mapResourceTimeFrontierReasonToPairDisposition(
-              *resourceTimeFunnel->incompleteReason),
+    if (resourceTimeFunnel->incompleteReason ==
+        dse::ResourceTimeFrontierIncompleteReason::ProofNotEstablished)
+      return incompleteResourceTimePlanning(
+          *resourceTimeFunnel->incompleteReason,
           dse::resourceTimeFrontierIncompleteReasonSpelling(
-              *resourceTimeFunnel->incompleteReason),
-          completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
-          request.portfolioInput);
-      emitApplicationPairDecisionDiagnostics(decision);
-      return ApplicationBuildPreparationOutcome{
-          IncompleteApplicationResourceTimePlanning{
-              *resourceTimeFunnel->incompleteReason,
-              std::move(*resourceTimeFunnel),
-              std::move(completed.candidateInventory), completed.sourceProgram,
-              completed.fabric, completed.workload, completed.runtimeInput,
-              completed.frontierPolicyDigest, completed.sourceHostOnlyWork}};
-    }
+              *resourceTimeFunnel->incompleteReason));
     if (firstUnsupported) {
       auto decision = makePreparationPairDecision(
           completed.sourceProgram, completed.fabric, completed.workload,
@@ -923,18 +904,23 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
               completed.fabric, completed.workload, completed.runtimeInput,
               completed.frontierPolicyDigest, completed.sourceHostOnlyWork}};
     }
+    if (resourceTimeFunnel->incompleteReason)
+      return incompleteResourceTimePlanning(
+          *resourceTimeFunnel->incompleteReason,
+          dse::resourceTimeFrontierIncompleteReasonSpelling(
+              *resourceTimeFunnel->incompleteReason));
     const bool completeNoPromisingProof =
         completed.completeness.exactComplete() &&
         !resourceTimeFunnel->truncated && !resourceTimeFunnel->incompleteReason;
+    if (!completeNoPromisingProof)
+      return incompleteResourceTimePlanning(
+          dse::ResourceTimeFrontierIncompleteReason::BudgetExhausted,
+          "resource-time funnel did not close its bounded candidate domain");
     auto decision = makePreparationPairDecision(
         completed.sourceProgram, completed.fabric, completed.workload,
         completed.runtimeInput, completed.candidateInventory,
-        completeNoPromisingProof
-            ? ApplicationPairDecisionDisposition::NoPromisingCandidate
-            : ApplicationPairDecisionDisposition::BudgetExhausted,
-        completeNoPromisingProof
-            ? "bounded resource-time funnel retained no Mapping finalist"
-            : "resource-time funnel did not close its bounded candidate domain",
+        ApplicationPairDecisionDisposition::NoPromisingCandidate,
+        "bounded resource-time funnel retained no Mapping finalist",
         completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
         request.portfolioInput);
     emitApplicationPairDecisionDiagnostics(decision);

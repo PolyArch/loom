@@ -550,7 +550,8 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       const ArtifactRootReference childMapping = *candidate->childMapping;
       auto childVerified = verifyResourceTimeAlternative(
           prepared.resourceTimeFunnel, childAlternative, {childMapping},
-          artifacts, blobs, candidate->childScheduleHintDigest);
+          artifacts, blobs, candidate->childScheduleHintDigest, {},
+          request.executionControl);
       if (!childVerified)
         return childVerified.takeError();
       if (!*childVerified)
@@ -576,7 +577,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       auto verified = verifyResourceTimeAlternative(
           prepared.resourceTimeFunnel, alternative, transitionMappings,
           artifacts, blobs, candidate->parentScheduleHintDigest,
-          transitionEndpoints);
+          transitionEndpoints, request.executionControl);
       if (!verified)
         return verified.takeError();
       if (!*verified)
@@ -643,7 +644,8 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
         auto verified = verifyResourceTimeAlternative(
             prepared.resourceTimeFunnel, alternative,
             {imported->mapping.reference()}, artifacts, blobs,
-            outcome.resourceTimeScheduleHintDigest);
+            outcome.resourceTimeScheduleHintDigest, {},
+            request.executionControl);
         if (!verified)
           return verified.takeError();
         if (!*verified)

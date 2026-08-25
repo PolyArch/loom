@@ -154,6 +154,7 @@ struct PreparedApplicationBuild final {
 struct ApplicationDeploymentRequest final {
   CompilerTargetPolicy compilerTargetPolicy;
   CompilerTargetLinkWorkspace linkerWorkspace;
+  ExecutionControlView executionControl;
 };
 
 /// Immutable Deployment-bound snapshot of the Mapping repair observation.
