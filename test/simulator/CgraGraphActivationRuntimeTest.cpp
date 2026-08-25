@@ -200,6 +200,83 @@ module attributes {
   return take(dataflow::finalizeCanonicalDataflow(module.get()));
 }
 
+dataflow::CanonicalDataflowArtifact unsupportedMemoryProgram() {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+} {
+  dataflow.graph private @volatile_access(
+      %start: none, %mem: memref<1xi32>) -> (i32)
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %addr = dataflow.constant %start {const_value = 0 : index} : index
+    %value, %done = dataflow.load %mem[%addr] %start
+        {contract = #dataflow.plain_access<is_volatile = true>}
+        : memref<1xi32>
+    dataflow.graph.return values(%value : i32) streams() memories()
+        complete(%done : none)
+  }
+  dataflow.graph private @atomic_access(
+      %start: none, %mem: memref<1xi32>) -> (i32)
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %addr = dataflow.constant %start {const_value = 0 : index} : index
+    %value, %done = dataflow.load %mem[%addr] %start
+        {contract = #dataflow.atomic_access<ordering = acquire,
+                                            sync_scope = <system>,
+                                            source_alignment_bytes = 4>}
+        : memref<1xi32>
+    dataflow.graph.return values(%value : i32) streams() memories()
+        complete(%done : none)
+  }
+  dataflow.graph private @atomic_rmw(
+      %start: none, %mem: memref<1xi32>) -> (i32)
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %addr = dataflow.constant %start {const_value = 0 : index} : index
+    %update = dataflow.constant %start {const_value = 1 : i32} : i32
+    %old, %done = dataflow.atomic_rmw %mem[%addr] %update %start
+        {contract = #dataflow.rmw_contract<
+            kind = add,
+            access = <ordering = monotonic, sync_scope = <system>,
+                      source_alignment_bytes = 4>>}
+        : memref<1xi32>
+    dataflow.graph.return values(%old : i32) streams() memories()
+        complete(%done : none)
+  }
+  dataflow.graph private @compare_exchange(
+      %start: none, %mem: memref<1xi32>) -> (i32, i1)
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 2, 0, 0>} {
+    %addr = dataflow.constant %start {const_value = 0 : index} : index
+    %expected = dataflow.constant %start {const_value = 1 : i32} : i32
+    %desired = dataflow.constant %start {const_value = 2 : i32} : i32
+    %old, %ok, %done = dataflow.cmpxchg
+        %mem[%addr] %expected %desired %start
+        {contract = #dataflow.cmpxchg_contract<
+            success_ordering = acq_rel, failure_ordering = acquire,
+            sync_scope = <system>, source_alignment_bytes = 4>}
+        : memref<1xi32> -> i1
+    dataflow.graph.return values(%old, %ok : i32, i1) streams() memories()
+        complete(%done : none)
+  }
+  dataflow.graph private @fence(%start: none) -> ()
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %done = dataflow.fence %start
+        {contract = #dataflow.fence_contract<ordering = seq_cst,
+                                             sync_scope = <system>>}
+    dataflow.graph.return values() streams() memories()
+        complete(%done : none)
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail("failed to parse unsupported CGRA memory fixture");
+  return take(dataflow::finalizeCanonicalDataflow(module.get()));
+}
+
 dataflow::RootedGraphLaunchRef
 onlyLaunch(const dataflow::CanonicalDataflowProgramView &view) {
   require(view.rootThreadLaunches().size() == 1 &&
@@ -926,11 +1003,96 @@ void graphActivationExecutesExactMemoryInternalConnections() {
           "exact memory internal connections did not feed the store");
 }
 
+void graphActivationRejectsUnsupportedMemoryContracts() {
+  auto artifact = unsupportedMemoryProgram();
+  auto view = take(artifact.view());
+  enum class UnsupportedKind : std::uint8_t {
+    Volatile,
+    AtomicAccess,
+    AtomicRmw,
+    CompareExchange,
+    Fence,
+    Count,
+  };
+  std::array<bool, static_cast<std::size_t>(UnsupportedKind::Count)> seen{};
+  require(view.graphs().size() == seen.size(),
+          "unsupported CGRA memory fixture lost a graph");
+
+  for (const dataflow::CanonicalGraphView &graphView : view.graphs()) {
+    auto graph = mlir::cast<dataflow::GraphOp>(graphView.op);
+    GraphPreparationResult preparedResult =
+        take(prepareGraphExecution(artifact.module(), graph));
+    auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
+    require(prepared, "unsupported CGRA memory graph preparation failed");
+    std::optional<UnsupportedKind> kind;
+    llvm::StringRef actorName;
+    for (const ActorExecutionPlan &actor : prepared->actorPlans) {
+      const auto *memory = std::get_if<dataflow::MemoryContractPayload>(
+          &actor.projection.payload);
+      if (!memory)
+        continue;
+      if (const auto *plain =
+              std::get_if<dataflow::PlainAccessProjection>(memory)) {
+        if (!plain->isVolatile)
+          continue;
+        kind = UnsupportedKind::Volatile;
+      } else if (std::holds_alternative<dataflow::AtomicAccessProjection>(
+                     *memory)) {
+        kind = UnsupportedKind::AtomicAccess;
+      } else if (std::holds_alternative<dataflow::AtomicRmwProjection>(
+                     *memory)) {
+        kind = UnsupportedKind::AtomicRmw;
+      } else if (std::holds_alternative<dataflow::CompareExchangeProjection>(
+                     *memory)) {
+        kind = UnsupportedKind::CompareExchange;
+      } else {
+        require(std::holds_alternative<dataflow::FenceProjection>(*memory),
+                "unsupported CGRA memory fixture has an unknown contract");
+        kind = UnsupportedKind::Fence;
+      }
+      actorName = actor.operation->getName().getStringRef();
+    }
+    require(kind.has_value(),
+            "unsupported CGRA memory graph lacks its contract actor");
+    const std::size_t kindIndex = static_cast<std::size_t>(*kind);
+    require(!seen[kindIndex],
+            "unsupported CGRA memory fixture repeated a contract kind");
+    seen[kindIndex] = true;
+
+    SimulatorState state;
+    state.graphScope = graph.getOperation();
+    initializeRunState(state, *prepared);
+    CgraFrozenExecutionPlan plan;
+    const dataflow::RootedGraphLaunchRef unusedLaunch{
+        {view.identity(), dataflow::RootThreadLaunchId(0)},
+        {view.identity(), dataflow::StaticGraphLaunchId(0)}};
+    auto rejected = CgraGraphActivationRuntime::create(
+        plan, view, unusedLaunch, graphView.ref, *prepared, state,
+        /*captureMicroarchitecture=*/false);
+    require(!rejected,
+            "CGRA activation accepted an unsupported memory contract");
+    std::error_code code;
+    std::string diagnostic;
+    llvm::handleAllErrors(rejected.takeError(),
+                          [&](const llvm::ErrorInfoBase &failure) {
+                            code = failure.convertToErrorCode();
+                            diagnostic = failure.message();
+                          });
+    require(code == std::make_error_code(std::errc::not_supported),
+            "CGRA memory contract rejection was not typed Unsupported");
+    require(llvm::StringRef(diagnostic).contains(actorName),
+            "CGRA memory contract rejection named the wrong actor");
+  }
+  require(llvm::all_of(seen, [](bool value) { return value; }),
+          "CGRA activation rejection did not cover every memory contract");
+}
+
 } // namespace
 
 int main() {
   graphActivationCoordinatesComputeAndTransport();
   graphActivationExecutesSelectedLocalMemory();
   graphActivationExecutesExactMemoryInternalConnections();
+  graphActivationRejectsUnsupportedMemoryContracts();
   return EXIT_SUCCESS;
 }

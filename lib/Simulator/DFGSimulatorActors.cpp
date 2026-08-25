@@ -813,6 +813,32 @@ firePrimitiveActor(mlir::Operation *op,
   return firePrimitiveOperation(op, op->getResult(0), state);
 }
 
+static bool
+hasAtomicAccess(const dataflow::CanonicalActorSchemaProjection &projection) {
+  const auto *memory =
+      std::get_if<dataflow::MemoryContractPayload>(&projection.payload);
+  return memory &&
+         std::holds_alternative<dataflow::AtomicAccessProjection>(*memory);
+}
+
+static bool
+fireLoadActor(mlir::Operation *op,
+              const dataflow::CanonicalActorSchemaProjection &projection,
+              SimulatorState &state) {
+  dataflow::LoadOp load = mlir::cast<dataflow::LoadOp>(op);
+  return hasAtomicAccess(projection) ? fireAtomicLoad(load, state)
+                                     : fireLoad(load, state);
+}
+
+static bool
+fireStoreActor(mlir::Operation *op,
+               const dataflow::CanonicalActorSchemaProjection &projection,
+               SimulatorState &state) {
+  dataflow::StoreOp store = mlir::cast<dataflow::StoreOp>(op);
+  return hasAtomicAccess(projection) ? fireAtomicStore(store, state)
+                                     : fireStore(store, state);
+}
+
 std::optional<ActorRuntimeProvider>
 actorRuntimeProvider(dataflow::OperationSchemaId schema) {
   using Probe = ActorTransitionProbeKind;
@@ -866,11 +892,20 @@ actorRuntimeProvider(dataflow::OperationSchemaId schema) {
     return ActorRuntimeProvider{
         fireTypedActor<dataflow::SerializeOp, fireSerialize>, Probe::Serialize};
   case Schema::DataflowLoad:
-    return ActorRuntimeProvider{fireTypedActor<dataflow::LoadOp, fireLoad>,
-                                Probe::MemoryInputs};
+    return ActorRuntimeProvider{fireLoadActor, Probe::MemoryInputs};
   case Schema::DataflowStore:
-    return ActorRuntimeProvider{fireTypedActor<dataflow::StoreOp, fireStore>,
-                                Probe::MemoryInputs};
+    return ActorRuntimeProvider{fireStoreActor, Probe::MemoryInputs};
+  case Schema::DataflowAtomicRmw:
+    return ActorRuntimeProvider{
+        fireTypedActor<dataflow::AtomicRmwOp, fireAtomicRmw>,
+        Probe::MemoryInputs};
+  case Schema::DataflowCmpXchg:
+    return ActorRuntimeProvider{
+        fireTypedActor<dataflow::CmpXchgOp, fireCompareExchange>,
+        Probe::MemoryInputs};
+  case Schema::DataflowFence:
+    return ActorRuntimeProvider{fireTypedActor<dataflow::FenceOp, fireFence>,
+                                Probe::AllInputs};
   default:
     return std::nullopt;
   }
@@ -879,16 +914,6 @@ actorRuntimeProvider(dataflow::OperationSchemaId schema) {
 ActorProvider actorProvider(dataflow::OperationSchemaId schema) {
   auto runtime = actorRuntimeProvider(schema);
   return runtime ? runtime->commit : nullptr;
-}
-
-static bool hasUnsupportedMemoryContract(
-    const dataflow::CanonicalActorSchemaProjection &projection) {
-  const auto *memory =
-      std::get_if<dataflow::MemoryContractPayload>(&projection.payload);
-  if (!memory)
-    return false;
-  const auto *plain = std::get_if<dataflow::PlainAccessProjection>(memory);
-  return !plain || plain->isVolatile;
 }
 
 bool fireActorOperation(const ActorExecutionPlan &plan, SimulatorState &state) {
@@ -901,12 +926,6 @@ bool fireActorOperation(const ActorExecutionPlan &plan, SimulatorState &state) {
 std::optional<UnsupportedOperation> unsupportedActorProvider(
     mlir::Operation *op,
     const dataflow::CanonicalActorSchemaProjection &projection) {
-  if (hasUnsupportedMemoryContract(projection))
-    return UnsupportedOperation{
-        unsupportedOperationLabel(op),
-        "atomic, volatile, and fence memory contracts have no dynamic "
-        "consistency-domain semantics"};
-
   if (auto reason = unsupportedMemoryActorRepresentation(op))
     return UnsupportedOperation{unsupportedOperationLabel(op),
                                 std::move(*reason)};

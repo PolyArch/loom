@@ -366,7 +366,7 @@ bool CgraMemoryRuntime::ownsActor(std::uint64_t semanticActorOrdinal) const {
 
 llvm::Expected<std::uint64_t>
 CgraMemoryRuntime::allocateFiring(std::uint64_t bindingOrdinal,
-                                  ReadyPlainMemoryAction ready,
+                                  ReadyMemoryAction ready,
                                   std::optional<Token> storeData) {
   ActorBinding &binding = bindings_[bindingOrdinal];
   if (binding.nextOccurrenceOrdinal ==
@@ -459,7 +459,7 @@ CgraMemoryRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
       storeData = peekInputToken(*state_,
                                  *binding.semantic->memory->dataOperandOrdinal);
     }
-    ReadyPlainMemoryAction ready = std::move(admitted->second);
+    ReadyMemoryAction ready = std::move(admitted->second);
     state_->admittedPlainMemoryActions.erase(admitted);
     auto firingSlot =
         allocateFiring(bindingOrdinal, std::move(ready), std::move(storeData));
@@ -512,8 +512,7 @@ CgraMemoryRuntime::commitIssue(std::uint64_t firingSlot,
   ActorBinding &binding = bindings_[firing.bindingOrdinal];
   state_->currentActorPlan = binding.semantic;
   llvm::scope_exit resetPlan([&] { state_->currentActorPlan = nullptr; });
-  consumePlainMemoryIssueInputs(*firing.ready, *binding.semantic->memory,
-                                *state_);
+  consumeMemoryIssueInputs(*firing.ready, *binding.semantic->memory, *state_);
   firing.issueCommitted = true;
   frame.actorEvents.push_back(
       {CgraActorLifecycleKind::Committed, binding.semanticActorOrdinal,
@@ -565,8 +564,7 @@ CgraMemoryRuntime::physicalTraceBinding(
       std::move(*target)};
 }
 
-std::optional<std::uint64_t>
-CgraMemoryRuntime::physicalActionSemanticActor(
+std::optional<std::uint64_t> CgraMemoryRuntime::physicalActionSemanticActor(
     std::uint64_t actionOrdinal, std::uint64_t occurrenceOrdinal) const {
   const auto indexed = actionToFiring_.find({actionOrdinal, occurrenceOrdinal});
   if (indexed == actionToFiring_.end() ||
@@ -593,8 +591,8 @@ llvm::Error CgraMemoryRuntime::linearize(std::uint64_t firingSlot,
   if (binding.semantic->memory->dataOperandOrdinal) {
     if (!firing.storeData)
       return invalid("CGRA store firing lost its data token");
-    write = preparePlainMemoryWrite(*firing.storeData, *firing.ready,
-                                    *binding.semantic->memory, *state_);
+    write = prepareMemoryWrite(*firing.storeData, *firing.ready,
+                               *binding.semantic->memory, *state_);
     if (!write)
       return executionFailure(*state_, "CGRA memory write preparation failed");
   }
@@ -679,8 +677,7 @@ llvm::Error CgraMemoryRuntime::linearize(std::uint64_t firingSlot,
   }
 
   if (!write) {
-    read = preparePlainMemoryRead(*firing.ready, *binding.semantic->memory,
-                                  *state_);
+    read = prepareMemoryRead(*firing.ready, *binding.semantic->memory, *state_);
     if (!read)
       return executionFailure(*state_, "CGRA memory read preparation failed");
   }

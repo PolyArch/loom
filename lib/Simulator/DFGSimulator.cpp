@@ -560,6 +560,7 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
 
   llvm::DenseMap<mlir::Operation *, unsigned> actorOrdinals;
   std::set<std::pair<std::string, std::string>> unsupported;
+  llvm::SmallVector<mlir::Operation *, 16> sourceActorOperations;
   for (mlir::Operation &op : entry.getOperations()) {
     if (isSupportedNonEvent(&op))
       continue;
@@ -567,6 +568,39 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
       unsupported.emplace(unsupportedOperationLabel(&op), "");
       continue;
     }
+    sourceActorOperations.push_back(&op);
+  }
+
+  mlir::ModuleOp canonicalOwner = graph->getParentOfType<mlir::ModuleOp>();
+  auto canonical = dataflow::finalizeCanonicalDataflowWithTrackedEntities(
+      canonicalOwner, {}, sourceActorOperations);
+  std::optional<std::string> canonicalFailure;
+  llvm::SmallVector<std::pair<std::uint64_t, mlir::Operation *>, 16>
+      actorOperations;
+  actorOperations.reserve(sourceActorOperations.size());
+  if (!canonical) {
+    canonicalFailure = llvm::toString(canonical.takeError());
+    for (auto [ordinal, operation] : llvm::enumerate(sourceActorOperations))
+      actorOperations.push_back({ordinal, operation});
+  } else {
+    if (canonical->trackedActors.size() != sourceActorOperations.size())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "DFG canonical actor correspondence has the wrong cardinality");
+    for (auto [operation, actor] :
+         llvm::zip_equal(sourceActorOperations, canonical->trackedActors))
+      actorOperations.push_back({actor.entity.value(), operation});
+  }
+  llvm::sort(actorOperations, [](const auto &lhs, const auto &rhs) {
+    return lhs.first < rhs.first;
+  });
+
+  // One actor contributes at most one candidate to a scheduler decision.
+  // Canonical ActorId is therefore the first distinct component of the exact
+  // model's structural action key for every cross-actor tie.
+  for (auto [actorId, operation] : actorOperations) {
+    (void)actorId;
+    mlir::Operation &op = *operation;
     auto projection = dataflow::projectRegisteredActorSchemaProjection(&op);
     if (!projection) {
       unsupported.emplace(unsupportedOperationLabel(&op),
@@ -579,7 +613,8 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
     }
 
     std::optional<MemoryActorExecutionPlan> memoryActor;
-    if (mlir::isa<dataflow::LoadOp, dataflow::StoreOp>(op)) {
+    if (mlir::isa<dataflow::LoadOp, dataflow::StoreOp, dataflow::AtomicRmwOp,
+                  dataflow::CmpXchgOp>(op)) {
       auto plan = memoryActorExecutionPlan(&op, graph);
       if (!plan)
         return GraphPreparationResult{
@@ -662,6 +697,9 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
     }
     return GraphPreparationResult{std::move(failure)};
   }
+  if (canonicalFailure)
+    return llvm::createStringError(std::errc::invalid_argument, "%s",
+                                   canonicalFailure->c_str());
 
   execution.initialPlainMemoryCandidates.resize(execution.actorPlans.size(),
                                                 false);

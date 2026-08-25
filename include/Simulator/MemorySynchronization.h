@@ -65,8 +65,9 @@ private:
   std::uint64_t value_;
 };
 
-/// The directional halves an effect declares. A seq_cst actor uses AcqRel here;
-/// this engine owns no sequentially consistent total order.
+/// The directional halves an effect declares. A seq_cst actor uses the role
+/// matching its action shape here and separately joins the engine's
+/// sequentially-consistent total order.
 enum class SyncRoleKind {
   Release,
   Acquire,
@@ -89,6 +90,8 @@ public:
     DuplicateEdge,
     CyclicOrder,
     UnknownRole,
+    DuplicateSequentiallyConsistentAssociation,
+    UnknownSequentiallyConsistentAssociation,
   };
 
   static char ID;
@@ -107,8 +110,8 @@ private:
 
 /// Nonpersistent execution-local owner of the software relations that follow
 /// reads-from: release visibility summaries, acquire-imported visibility,
-/// synchronizes-with, happens-before, and the fence-through-reads-from
-/// relation.
+/// synchronizes-with, happens-before, the fence-through-reads-from relation,
+/// and each provider-selected scope/domain sequentially-consistent order.
 ///
 /// It builds on a bound MemoryAtomicOrder and never duplicates it: modification
 /// order and reads-from stay there and are resolved through its record
@@ -117,8 +120,7 @@ private:
 ///
 /// Sequenced-before is explicit caller input from the finalized program. The
 /// engine never infers it from MLIR, container layout, or host scheduling. It
-/// owns no values, no lifecycle state, no timing, no scope interpretation, and
-/// no sequentially consistent order.
+/// owns no values, no lifecycle state, no timing, and no scope interpretation.
 ///
 /// Every relation view is a pure function of the accepted facts, so a caller
 /// that records the same facts in a different valid order observes the same
@@ -171,6 +173,18 @@ public:
   /// an effect that already has a fence role is the same conflict.
   llvm::Error declareFenceRole(SyncEffectId effect, SyncRoleKind kind,
                                SyncDomainId domain);
+
+  /// Appends one effect to the provider-selected sequentially-consistent order
+  /// of its exact resolved domain. This relation is independent of
+  /// sequenced-before and happens-before; appending it never creates either.
+  llvm::Error appendSequentiallyConsistent(SyncEffectId effect,
+                                           SyncDomainId domain);
+
+  /// The preceding effect in the same exact domain's sequentially-consistent
+  /// order. The first effect returns an absent predecessor. An effect that was
+  /// never appended is rejected rather than confused with that first effect.
+  llvm::Expected<std::optional<SyncEffectId>>
+  sequentiallyConsistentPredecessor(SyncEffectId effect) const;
 
   /// True when `origin` publishes a release that `target` imports through a
   /// recorded reads-from relation, with one domain identity across the origin,
@@ -230,6 +244,11 @@ private:
     std::optional<SyncDomainId> fenceDomain;
   };
 
+  struct SequentiallyConsistentAssociation {
+    SyncDomainId domain;
+    std::optional<SyncEffectId> predecessor;
+  };
+
   /// The accepted facts. General updates validate a candidate copy before
   /// installation. Fresh effect declaration validates its complete incoming
   /// frontier before extending these facts and the derived indexes together.
@@ -240,6 +259,9 @@ private:
     std::map<std::uint64_t, Role> roles;
     std::map<std::uint64_t, SyncEffectId> versionOwner;
     std::map<std::uint64_t, SyncEffectId> readOwner;
+    std::map<std::uint64_t, SequentiallyConsistentAssociation>
+        sequentiallyConsistent;
+    std::map<std::uint64_t, SyncEffectId> sequentiallyConsistentTails;
   };
 
   llvm::Error requireKnown(SyncEffectId effect) const;

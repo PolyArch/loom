@@ -117,6 +117,7 @@ memoryActorExecutionPlan(mlir::Operation *operation,
   unsigned memoryOperandOrdinal = 0;
   unsigned addressOperandOrdinal = 0;
   std::optional<unsigned> dataOperandOrdinal;
+  std::optional<unsigned> desiredOperandOrdinal;
   unsigned controlOperandOrdinal = 0;
   std::optional<unsigned> maskOperandOrdinal;
   if (auto load = mlir::dyn_cast<dataflow::LoadOp>(operation)) {
@@ -136,10 +137,29 @@ memoryActorExecutionPlan(mlir::Operation *operation,
     addressOperandOrdinal = store.getAddrMutable().getOperandNumber();
     dataOperandOrdinal = store.getDataMutable().getOperandNumber();
     controlOperandOrdinal = store.getCtrlMutable().getOperandNumber();
+  } else if (auto rmw = mlir::dyn_cast<dataflow::AtomicRmwOp>(operation)) {
+    memory = rmw.getMem();
+    address = rmw.getAddr();
+    dataType = rmw.getValue().getType();
+    mask = rmw.getMask();
+    memoryOperandOrdinal = rmw.getMemMutable().getOperandNumber();
+    addressOperandOrdinal = rmw.getAddrMutable().getOperandNumber();
+    dataOperandOrdinal = rmw.getValueMutable().getOperandNumber();
+    controlOperandOrdinal = rmw.getCtrlMutable().getOperandNumber();
+  } else if (auto cmpxchg = mlir::dyn_cast<dataflow::CmpXchgOp>(operation)) {
+    memory = cmpxchg.getMem();
+    address = cmpxchg.getAddr();
+    dataType = cmpxchg.getExpected().getType();
+    mask = cmpxchg.getMask();
+    memoryOperandOrdinal = cmpxchg.getMemMutable().getOperandNumber();
+    addressOperandOrdinal = cmpxchg.getAddrMutable().getOperandNumber();
+    dataOperandOrdinal = cmpxchg.getExpectedMutable().getOperandNumber();
+    desiredOperandOrdinal = cmpxchg.getDesiredMutable().getOperandNumber();
+    controlOperandOrdinal = cmpxchg.getCtrlMutable().getOperandNumber();
   } else {
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "memory execution plan requires dataflow.load or dataflow.store");
+        "memory execution plan requires an addressed memory actor");
   }
   if (mask)
     maskOperandOrdinal = operation->getNumOperands() - 1;
@@ -164,25 +184,51 @@ memoryActorExecutionPlan(mlir::Operation *operation,
     return dataWidth.takeError();
   return MemoryActorExecutionPlan{
       std::move(*access), memoryOperandOrdinal,  addressOperandOrdinal,
-      dataOperandOrdinal, controlOperandOrdinal, maskOperandOrdinal,
-      *indexWidth,        *addressWidth,         *dataWidth,
-      *elementLayout};
+      dataOperandOrdinal, desiredOperandOrdinal, controlOperandOrdinal,
+      maskOperandOrdinal, *indexWidth,           *addressWidth,
+      *dataWidth,         *elementLayout};
 }
 
 std::optional<std::string>
 unsupportedMemoryActorRepresentation(mlir::Operation *operation) {
-  mlir::Value memory;
-  if (auto load = mlir::dyn_cast<dataflow::LoadOp>(operation))
-    memory = load.getMem();
-  else if (auto store = mlir::dyn_cast<dataflow::StoreOp>(operation))
-    memory = store.getMem();
-  else
+  std::optional<dataflow::semantics::MemoryActorContract> contract =
+      dataflow::semantics::getMemoryActorContract(operation);
+  if (contract && contract->syncScope &&
+      contract->syncScope.getKind() == dataflow::SyncScopeKind::Target)
+    return "target-specific synchronization scope has no DFG-sim domain "
+           "resolver";
+  if (mlir::isa<dataflow::FenceOp>(operation))
     return std::nullopt;
 
-  mlir::Value address =
-      mlir::isa<dataflow::LoadOp>(operation)
-          ? mlir::cast<dataflow::LoadOp>(operation).getAddr()
-          : mlir::cast<dataflow::StoreOp>(operation).getAddr();
+  mlir::Value memory;
+  mlir::Value data;
+  mlir::Value mask;
+  if (auto load = mlir::dyn_cast<dataflow::LoadOp>(operation)) {
+    memory = load.getMem();
+    data = load.getData();
+    mask = load.getMask();
+  } else if (auto store = mlir::dyn_cast<dataflow::StoreOp>(operation)) {
+    memory = store.getMem();
+    data = store.getData();
+    mask = store.getMask();
+  } else if (auto rmw = mlir::dyn_cast<dataflow::AtomicRmwOp>(operation)) {
+    memory = rmw.getMem();
+    data = rmw.getValue();
+    mask = rmw.getMask();
+  } else if (auto cmpxchg = mlir::dyn_cast<dataflow::CmpXchgOp>(operation)) {
+    memory = cmpxchg.getMem();
+    data = cmpxchg.getExpected();
+    mask = cmpxchg.getMask();
+  } else {
+    return std::nullopt;
+  }
+
+  mlir::Value address = operation->getOperand(1);
+  if (contract && (contract->atomic || contract->isVolatile) &&
+      (mlir::isa<mlir::VectorType>(data.getType()) ||
+       mlir::isa<mlir::VectorType>(address.getType()) || mask))
+    return "DFG-sim atomic and volatile memory provider supports scalar "
+           "addressed actions only";
   if (auto addressVector = mlir::dyn_cast<mlir::VectorType>(address.getType()))
     if (mlir::isa<mlir::LLVM::LLVMPointerType>(addressVector.getElementType()))
       return "vector pointer memory addresses have no lane-local pointer "
@@ -945,10 +991,11 @@ void commitDataflowMemoryWrite(const MemoryView &view,
 static MemoryActionRecord projectMemoryAction(const MemoryView &view,
                                               llvm::ArrayRef<std::size_t> slots,
                                               std::size_t elementByteCount,
-                                              bool isWrite) {
+                                              bool isWrite, bool isAtomic) {
   MemoryActionRecord action;
   action.rootId = view.memory->logicalRootId;
   action.isWrite = isWrite;
+  action.isAtomic = isAtomic;
   if (slots.empty())
     return action;
   action.byteRanges.reserve(slots.size());
@@ -961,7 +1008,7 @@ static MemoryActionRecord projectMemoryAction(const MemoryView &view,
   return action;
 }
 
-static MemorySynchronization &memorySynchronization(SimulatorState &state) {
+MemorySynchronization &memorySynchronization(SimulatorState &state) {
   if (!state.memorySync) {
     state.memoryOrder = std::make_unique<MemoryAtomicOrder>();
     state.memorySync =
@@ -1007,34 +1054,35 @@ issueMemoryAction(const MemoryActionRecord &action,
 }
 
 std::optional<DataflowMemoryRead>
-preparePlainMemoryRead(const ReadyPlainMemoryAction &ready,
-                       const MemoryActorExecutionPlan &plan,
-                       SimulatorState &state) {
+prepareMemoryRead(const ReadyMemoryAction &ready,
+                  const MemoryActorExecutionPlan &plan, SimulatorState &state) {
   return prepareDataflowMemoryRead(ready.view, ready.activeLanes, ready.slots,
                                    plan, state);
 }
 
 std::optional<DataflowMemoryWrite>
-preparePlainMemoryWrite(const Token &data, const ReadyPlainMemoryAction &ready,
-                        const MemoryActorExecutionPlan &plan,
-                        SimulatorState &state) {
+prepareMemoryWrite(const Token &data, const ReadyMemoryAction &ready,
+                   const MemoryActorExecutionPlan &plan,
+                   SimulatorState &state) {
   return prepareDataflowMemoryWrite(data, ready.activeLanes, ready.slots, plan,
                                     state);
 }
 
 std::optional<MemoryOrderFrontierId>
-linearizePlainMemoryAction(const ReadyPlainMemoryAction &ready,
+linearizePlainMemoryAction(const ReadyMemoryAction &ready,
                            SimulatorState &state) {
   return issueMemoryAction(ready.action, ready.ctrlFrontier, state);
 }
 
-void consumePlainMemoryIssueInputs(const ReadyPlainMemoryAction &ready,
-                                   const MemoryActorExecutionPlan &plan,
-                                   SimulatorState &state) {
+void consumeMemoryIssueInputs(const ReadyMemoryAction &ready,
+                              const MemoryActorExecutionPlan &plan,
+                              SimulatorState &state) {
   consumeMemoryView(state, plan.memoryOperandOrdinal);
   (void)popInputToken(state, plan.addressOperandOrdinal);
   if (plan.dataOperandOrdinal)
     (void)popInputToken(state, *plan.dataOperandOrdinal);
+  if (plan.desiredOperandOrdinal)
+    (void)popInputToken(state, *plan.desiredOperandOrdinal);
   (void)popInputToken(state, plan.controlOperandOrdinal);
   if (ready.maskOperandOrdinal)
     (void)popInputToken(state, *ready.maskOperandOrdinal);
@@ -1047,102 +1095,62 @@ struct ProjectedMemoryFiring {
 };
 
 static std::optional<ProjectedMemoryFiring>
-projectLoadFiring(dataflow::LoadOp op, SimulatorState &state,
-                  llvm::SmallVectorImpl<std::string> &diagnostics) {
+projectAddressedMemoryFiring(mlir::Operation *operation, SimulatorState &state,
+                             llvm::SmallVectorImpl<std::string> &diagnostics) {
   assert(state.currentActorPlan && state.currentActorPlan->memory &&
-         "admitted load has no execution plan");
+         state.currentActorPlan->operation == operation &&
+         "admitted addressed memory actor has no matching execution plan");
   const MemoryActorExecutionPlan &plan = *state.currentActorPlan->memory;
   if (!hasInputToken(state, plan.addressOperandOrdinal) ||
+      (plan.dataOperandOrdinal &&
+       !hasInputToken(state, *plan.dataOperandOrdinal)) ||
+      (plan.desiredOperandOrdinal &&
+       !hasInputToken(state, *plan.desiredOperandOrdinal)) ||
       !hasInputToken(state, plan.controlOperandOrdinal) ||
       (plan.maskOperandOrdinal &&
        !hasInputToken(state, *plan.maskOperandOrdinal)))
     return std::nullopt;
-  std::optional<MemoryView> view = peekMemoryView(
-      state, op.getMem(), plan.memoryOperandOrdinal, diagnostics);
+  std::optional<MemoryView> view =
+      peekMemoryView(state, operation->getOperand(plan.memoryOperandOrdinal),
+                     plan.memoryOperandOrdinal, diagnostics);
   if (!view)
     return std::nullopt;
   Token addr = peekInputToken(state, plan.addressOperandOrdinal);
   std::optional<Token> mask;
   if (plan.maskOperandOrdinal)
     mask = peekInputToken(state, *plan.maskOperandOrdinal);
-  assert(state.currentActorPlan->operation == op.getOperation() &&
-         "active load plan does not match the operation");
+  mlir::Type maskType =
+      plan.maskOperandOrdinal
+          ? operation->getOperand(*plan.maskOperandOrdinal).getType()
+          : mlir::Type{};
   auto access = projectDataflowMemoryAccess(
-      *view, addr, plan, mask ? &*mask : nullptr,
-      op.getMask() ? op.getMask().getType() : mlir::Type{}, op.getOperation(),
-      diagnostics, state, "dataflow.load");
+      *view, addr, plan, mask ? &*mask : nullptr, maskType, operation,
+      diagnostics, state, operation->getName().getStringRef());
   if (!access)
     return std::nullopt;
   return ProjectedMemoryFiring{std::move(*view), std::move(*access),
                                plan.maskOperandOrdinal};
 }
 
-static std::optional<ProjectedMemoryFiring>
-projectStoreFiring(dataflow::StoreOp op, SimulatorState &state,
-                   llvm::SmallVectorImpl<std::string> &diagnostics) {
-  assert(state.currentActorPlan && state.currentActorPlan->memory &&
-         state.currentActorPlan->memory->dataOperandOrdinal &&
-         "admitted store has no execution plan");
-  const MemoryActorExecutionPlan &plan = *state.currentActorPlan->memory;
-  if (!hasInputToken(state, plan.addressOperandOrdinal) ||
-      !hasInputToken(state, *plan.dataOperandOrdinal) ||
-      !hasInputToken(state, plan.controlOperandOrdinal) ||
-      (plan.maskOperandOrdinal &&
-       !hasInputToken(state, *plan.maskOperandOrdinal)))
-    return std::nullopt;
-  std::optional<MemoryView> view = peekMemoryView(
-      state, op.getMem(), plan.memoryOperandOrdinal, diagnostics);
-  if (!view)
-    return std::nullopt;
-  Token addr = peekInputToken(state, plan.addressOperandOrdinal);
-  std::optional<Token> mask;
-  if (plan.maskOperandOrdinal)
-    mask = peekInputToken(state, *plan.maskOperandOrdinal);
-  assert(state.currentActorPlan->operation == op.getOperation() &&
-         "active store plan does not match the operation");
-  auto access = projectDataflowMemoryAccess(
-      *view, addr, plan, mask ? &*mask : nullptr,
-      op.getMask() ? op.getMask().getType() : mlir::Type{}, op.getOperation(),
-      diagnostics, state, "dataflow.store");
-  if (!access)
-    return std::nullopt;
-  return ProjectedMemoryFiring{std::move(*view), std::move(*access),
-                               plan.maskOperandOrdinal};
-}
-
-PlainMemoryActionProjection
-projectReadyPlainMemoryAction(mlir::Operation *operation,
-                              SimulatorState &state) {
-  PlainMemoryActionProjection result;
-  if (auto op = mlir::dyn_cast<dataflow::LoadOp>(operation)) {
-    auto projected = projectLoadFiring(op, state, result.diagnostics);
-    if (!projected)
-      return result;
-    const auto &plan = *state.currentActorPlan->memory;
-    MemoryActionRecord action = projectMemoryAction(
-        projected->view, projected->access.slots, plan.elementLayout.byteCount,
-        /*isWrite=*/false);
-    result.ready = ReadyPlainMemoryAction{
-        std::move(action),
-        peekMemoryOrderFrontier(state, plan.controlOperandOrdinal),
-        std::move(projected->view),
-        std::move(projected->access.activeLanes),
-        std::move(projected->access.slots),
-        projected->maskOperandOrdinal};
+MemoryActionProjection projectReadyMemoryAction(mlir::Operation *operation,
+                                                SimulatorState &state) {
+  MemoryActionProjection result;
+  if (!state.currentActorPlan || !state.currentActorPlan->memory)
     return result;
-  }
-
-  auto op = mlir::dyn_cast<dataflow::StoreOp>(operation);
-  if (!op)
-    return result;
-  auto projected = projectStoreFiring(op, state, result.diagnostics);
+  auto projected =
+      projectAddressedMemoryFiring(operation, state, result.diagnostics);
   if (!projected)
     return result;
   const auto &plan = *state.currentActorPlan->memory;
+  const auto *contract = std::get_if<dataflow::MemoryContractPayload>(
+      &state.currentActorPlan->projection.payload);
+  const bool isAtomic =
+      contract &&
+      !std::holds_alternative<dataflow::PlainAccessProjection>(*contract);
   MemoryActionRecord action = projectMemoryAction(
       projected->view, projected->access.slots, plan.elementLayout.byteCount,
-      /*isWrite=*/true);
-  result.ready = ReadyPlainMemoryAction{
+      /*isWrite=*/!mlir::isa<dataflow::LoadOp>(operation), isAtomic);
+  result.ready = ReadyMemoryAction{
       std::move(action),
       peekMemoryOrderFrontier(state, plan.controlOperandOrdinal),
       std::move(projected->view),
@@ -1156,17 +1164,17 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   auto admitted = state.admittedPlainMemoryActions.find(op.getOperation());
   if (admitted == state.admittedPlainMemoryActions.end())
     return false;
-  ReadyPlainMemoryAction &ready = admitted->second;
+  ReadyMemoryAction &ready = admitted->second;
   const auto &plan = *state.currentActorPlan->memory;
-  auto read = preparePlainMemoryRead(ready, plan, state);
+  auto read = prepareMemoryRead(ready, plan, state);
   if (!read)
     return false;
   auto publication = linearizePlainMemoryAction(ready, state);
   if (!publication)
     return false;
-  state.admittedPlainMemoryActions.erase(op.getOperation());
 
-  consumePlainMemoryIssueInputs(ready, plan, state);
+  consumeMemoryIssueInputs(ready, plan, state);
+  state.admittedPlainMemoryActions.erase(op.getOperation());
   emitResultTokenWithMemoryOrder(state, 0, read->data, MemoryOrderFrontierId());
   emitResultTokenWithMemoryOrder(state, 1, noneToken(), *publication);
   return true;
@@ -1176,20 +1184,20 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   auto admitted = state.admittedPlainMemoryActions.find(op.getOperation());
   if (admitted == state.admittedPlainMemoryActions.end())
     return false;
-  ReadyPlainMemoryAction &ready = admitted->second;
+  ReadyMemoryAction &ready = admitted->second;
   const auto &plan = *state.currentActorPlan->memory;
   assert(plan.dataOperandOrdinal && "store plan has no data operand");
   Token data = peekInputToken(state, *plan.dataOperandOrdinal);
-  auto write = preparePlainMemoryWrite(data, ready, plan, state);
+  auto write = prepareMemoryWrite(data, ready, plan, state);
   if (!write)
     return false;
   auto publication = linearizePlainMemoryAction(ready, state);
   if (!publication)
     return false;
   MemoryView view = ready.view;
-  state.admittedPlainMemoryActions.erase(op.getOperation());
 
-  consumePlainMemoryIssueInputs(ready, plan, state);
+  consumeMemoryIssueInputs(ready, plan, state);
+  state.admittedPlainMemoryActions.erase(op.getOperation());
   commitDataflowMemoryWrite(view, *write);
   emitResultTokenWithMemoryOrder(state, 0, noneToken(), *publication);
   return true;

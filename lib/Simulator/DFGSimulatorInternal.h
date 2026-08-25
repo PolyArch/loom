@@ -784,6 +784,7 @@ struct MemoryActionRecord {
   // logical root: ascending, non-empty, and neither overlapping nor touching.
   llvm::SmallVector<std::pair<std::int64_t, std::int64_t>, 1> byteRanges;
   bool isWrite = false;
+  bool isAtomic = false;
 };
 
 enum class MemoryByteOrder { Little, Big };
@@ -802,6 +803,7 @@ struct MemoryActorExecutionPlan {
   unsigned memoryOperandOrdinal = 0;
   unsigned addressOperandOrdinal = 0;
   std::optional<unsigned> dataOperandOrdinal;
+  std::optional<unsigned> desiredOperandOrdinal;
   unsigned controlOperandOrdinal = 0;
   std::optional<unsigned> maskOperandOrdinal;
   unsigned indexBitWidth = 0;
@@ -900,7 +902,14 @@ struct ActorExecutionPlan {
   ActorTransitionProbeKind transitionProbe =
       ActorTransitionProbeKind::Unavailable;
 
-  bool isPlainMemory() const { return memory.has_value(); }
+  bool isPlainMemory() const {
+    if (!memory)
+      return false;
+    const auto *payload =
+        std::get_if<dataflow::MemoryContractPayload>(&projection.payload);
+    return payload &&
+           std::holds_alternative<dataflow::PlainAccessProjection>(*payload);
+  }
 };
 
 struct GraphReturnObservation {
@@ -958,7 +967,7 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph);
 void canonicalizeMemoryActionRanges(
     llvm::SmallVectorImpl<std::pair<std::int64_t, std::int64_t>> &ranges);
 
-struct ReadyPlainMemoryAction {
+struct ReadyMemoryAction {
   MemoryActionRecord action;
   llvm::SmallVector<SyncEffectId, 2> ctrlFrontier;
   MemoryView view;
@@ -972,9 +981,19 @@ struct ReadyPlainMemoryAction {
 // one effect covers another and reduces read frontiers.
 class PlainMemoryConflictIndex {
 public:
-  /// The maximal issued hazards `action` meets, without deciding whether any
-  /// of them is ordered before it.
-  llvm::SmallVector<SyncEffectId> query(const MemoryActionRecord &action) const;
+  /// The maximal issued hazards `action` meets in its own access class,
+  /// without deciding whether any of them is ordered before it.
+  llvm::SmallVector<SyncEffectId>
+  querySameKind(const MemoryActionRecord &action) const;
+
+  /// The maximal issued hazards `action` meets in the other access class.
+  llvm::SmallVector<SyncEffectId>
+  queryCrossKind(const MemoryActionRecord &action) const;
+
+  /// True when an overlapping atomic write hazard belongs to a different
+  /// exact atomic object. Equal byte ranges on one logical root are one object;
+  /// partial overlap or a different extent is not.
+  bool hasInexactAtomicHazard(const MemoryActionRecord &action) const;
 
   /// Records one issued access as the new maximal hazard of its byte ranges.
   void retain(const MemoryActionRecord &action, SyncEffectId effect,
@@ -983,12 +1002,21 @@ public:
   bool empty() const { return intervals_.empty(); }
 
 private:
-  struct Hazards {
-    std::optional<SyncEffectId> write;
+  struct AccessHazards {
+    llvm::SmallVector<SyncEffectId, 2> writes;
     llvm::SmallVector<SyncEffectId, 2> reads;
 
+    friend bool operator==(const AccessHazards &lhs, const AccessHazards &rhs) {
+      return lhs.writes == rhs.writes && lhs.reads == rhs.reads;
+    }
+  };
+
+  struct Hazards {
+    AccessHazards plain;
+    AccessHazards atomic;
+
     friend bool operator==(const Hazards &lhs, const Hazards &rhs) {
-      return lhs.write == rhs.write && lhs.reads == rhs.reads;
+      return lhs.plain == rhs.plain && lhs.atomic == rhs.atomic;
     }
     friend bool operator!=(const Hazards &lhs, const Hazards &rhs) {
       return !(lhs == rhs);
@@ -1011,19 +1039,26 @@ private:
     Hazards hazards;
   };
 
-  static void applyAccess(Hazards &hazards, bool isWrite, SyncEffectId effect,
+  static void applyAccess(AccessHazards &hazards, bool isWrite,
+                          SyncEffectId effect,
                           MemorySynchronization &synchronization);
-  static Hazards makeHazards(bool isWrite, SyncEffectId effect,
+  static Hazards makeHazards(bool isWrite, bool isAtomic, SyncEffectId effect,
                              MemorySynchronization &synchronization);
   static void updateRange(RootIntervals &root, std::int64_t begin,
-                          std::int64_t end, bool isWrite, SyncEffectId effect,
+                          std::int64_t end, bool isWrite, bool isAtomic,
+                          SyncEffectId effect,
                           MemorySynchronization &synchronization);
+  llvm::SmallVector<SyncEffectId> queryKind(const MemoryActionRecord &action,
+                                            bool isAtomic) const;
 
   llvm::DenseMap<std::uint64_t, std::unique_ptr<RootIntervals>> intervals_;
+  // Object identity must outlive HB frontier reduction: a later differently
+  // sized write still has to observe every overlapping object ever admitted.
+  std::map<AtomicObjectKey, bool> atomicObjectWrites_;
 };
 
-struct PlainMemoryActionProjection {
-  std::optional<ReadyPlainMemoryAction> ready;
+struct MemoryActionProjection {
+  std::optional<ReadyMemoryAction> ready;
   llvm::SmallVector<std::string, 1> diagnostics;
 };
 
@@ -1123,7 +1158,7 @@ struct SimulatorState {
   // Execution-local cache of the plain actions and ctrl-derived order
   // frontiers admitted for the current scheduler decision. The scheduler
   // clears and derives it again before every wave.
-  llvm::DenseMap<mlir::Operation *, ReadyPlainMemoryAction>
+  llvm::DenseMap<mlir::Operation *, ReadyMemoryAction>
       admittedPlainMemoryActions;
   // The memory-order frontier of the firing in progress. Generic actors
   // propagate it, while memory actors publish only their admitted ctrl/action
@@ -1283,25 +1318,24 @@ void writeMemoryElement(const MemoryView &view, std::size_t byteOffset,
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write);
 std::optional<DataflowMemoryRead>
-preparePlainMemoryRead(const ReadyPlainMemoryAction &ready,
-                       const MemoryActorExecutionPlan &plan,
-                       SimulatorState &state);
+prepareMemoryRead(const ReadyMemoryAction &ready,
+                  const MemoryActorExecutionPlan &plan, SimulatorState &state);
 std::optional<DataflowMemoryWrite>
-preparePlainMemoryWrite(const Token &data, const ReadyPlainMemoryAction &ready,
-                        const MemoryActorExecutionPlan &plan,
-                        SimulatorState &state);
+prepareMemoryWrite(const Token &data, const ReadyMemoryAction &ready,
+                   const MemoryActorExecutionPlan &plan, SimulatorState &state);
 std::optional<MemoryOrderFrontierId>
-linearizePlainMemoryAction(const ReadyPlainMemoryAction &ready,
+linearizePlainMemoryAction(const ReadyMemoryAction &ready,
                            SimulatorState &state);
-void consumePlainMemoryIssueInputs(const ReadyPlainMemoryAction &ready,
-                                   const MemoryActorExecutionPlan &plan,
-                                   SimulatorState &state);
+void consumeMemoryIssueInputs(const ReadyMemoryAction &ready,
+                              const MemoryActorExecutionPlan &plan,
+                              SimulatorState &state);
+MemorySynchronization &memorySynchronization(SimulatorState &state);
 
-/// The plain action one candidate would issue, derived from peeked inputs
+/// The addressed action one candidate would issue, derived from peeked inputs
 /// alone. It answers only what the access covers and what ctrl order it
 /// carries; legality the finalized program already owns is not re-derived.
-PlainMemoryActionProjection
-projectReadyPlainMemoryAction(mlir::Operation *op, SimulatorState &state);
+MemoryActionProjection projectReadyMemoryAction(mlir::Operation *op,
+                                                SimulatorState &state);
 
 /// Admits every ready plain action of one scheduler decision, or rejects the
 /// whole decision. False leaves nothing admitted, so no access of a rejected
@@ -1395,6 +1429,11 @@ evaluatePrimitiveToken(mlir::Operation *op,
 
 bool fireLoad(dataflow::LoadOp op, SimulatorState &state);
 bool fireStore(dataflow::StoreOp op, SimulatorState &state);
+bool fireAtomicLoad(dataflow::LoadOp op, SimulatorState &state);
+bool fireAtomicStore(dataflow::StoreOp op, SimulatorState &state);
+bool fireAtomicRmw(dataflow::AtomicRmwOp op, SimulatorState &state);
+bool fireCompareExchange(dataflow::CmpXchgOp op, SimulatorState &state);
+bool fireFence(dataflow::FenceOp op, SimulatorState &state);
 std::optional<ActorRuntimeProvider>
 actorRuntimeProvider(dataflow::OperationSchemaId schema);
 ActorProvider actorProvider(dataflow::OperationSchemaId schema);

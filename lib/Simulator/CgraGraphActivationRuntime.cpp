@@ -17,6 +17,25 @@ llvm::Error invalid(llvm::Twine message) {
       std::make_error_code(std::errc::invalid_argument), message);
 }
 
+llvm::Error
+rejectUnsupportedMemoryContracts(const PreparedGraphExecution &execution) {
+  for (const ActorExecutionPlan &actor : execution.actorPlans) {
+    const auto *memory = std::get_if<::dataflow::MemoryContractPayload>(
+        &actor.projection.payload);
+    if (!memory)
+      continue;
+    const auto *plain = std::get_if<::dataflow::PlainAccessProjection>(memory);
+    if (plain && !plain->isVolatile)
+      continue;
+    return llvm::createStringError(
+        std::errc::not_supported,
+        "CGRA graph activation does not model atomic, volatile, or fence "
+        "actor '%s'",
+        actor.operation->getName().getStringRef().str().c_str());
+  }
+  return llvm::Error::success();
+}
+
 void selectEarlier(std::optional<SpatialEventCoordinate> candidate,
                    std::optional<SpatialEventCoordinate> &selected) {
   if (candidate &&
@@ -41,6 +60,8 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
     const PreparedGraphExecution &execution, SimulatorState &state,
     bool captureMicroarchitecture,
     CgraExternalMemoryProvider *externalMemoryProvider) {
+  if (llvm::Error error = rejectUnsupportedMemoryContracts(execution))
+    return std::move(error);
   auto physicalRuntime = CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings);
   if (!physicalRuntime)

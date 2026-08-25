@@ -132,6 +132,44 @@ void growingFrontierSharesPublishedPrefixes() {
           "a growing frontier copied previously published effects");
 }
 
+void atomicHazardsRequireExactObjectIdentity() {
+  loom::sim::MemoryAtomicOrder order;
+  loom::sim::MemorySynchronization synchronization(order);
+  PlainMemoryConflictIndex index;
+  MemoryActionRecord original{0, {{0, 4}}, true, true};
+  index.retain(original, synchronization.declareEffect(), synchronization);
+
+  const MemoryActionRecord same{0, {{0, 4}}, true, true};
+  const MemoryActionRecord partial{0, {{2, 6}}, true, true};
+  const MemoryActionRecord disjoint{0, {{4, 8}}, true, true};
+  const MemoryActionRecord otherRoot{1, {{2, 6}}, true, true};
+  require(!index.hasInexactAtomicHazard(same),
+          "one atomic object was split into incompatible identities");
+  require(index.hasInexactAtomicHazard(partial),
+          "partial atomic overlap was assigned one modification order");
+  require(!index.hasInexactAtomicHazard(disjoint) &&
+              !index.hasInexactAtomicHazard(otherRoot),
+          "disjoint atomic objects were treated as overlapping");
+
+  PlainMemoryConflictIndex retainedObjects;
+  const MemoryActionRecord wideRead{0, {{0, 8}}, false, true};
+  const MemoryActionRecord narrowRead{0, {{0, 4}}, false, true};
+  const MemoryActionRecord narrowWrite{0, {{0, 4}}, true, true};
+  const loom::sim::SyncEffectId wideEffect = synchronization.declareEffect();
+  const loom::sim::SyncEffectId narrowEffect = synchronization.declareEffect();
+  if (llvm::Error error =
+          synchronization.sequencedBefore(wideEffect, narrowEffect))
+    fail(llvm::toString(std::move(error)));
+  retainedObjects.retain(wideRead, wideEffect, synchronization);
+  retainedObjects.retain(narrowRead, narrowEffect, synchronization);
+  const llvm::SmallVector<loom::sim::SyncEffectId> frontier =
+      retainedObjects.querySameKind(narrowWrite);
+  require(frontier.size() == 1 && frontier.front() == narrowEffect,
+          "atomic read frontier did not exercise HB reduction");
+  require(retainedObjects.hasInexactAtomicHazard(narrowWrite),
+          "HB reduction discarded a wider atomic object read");
+}
+
 template <typename Input>
 sem::SemanticInputMask consumedMask(std::initializer_list<Input> inputs) {
   sem::SemanticInputMask mask = 0;
@@ -890,12 +928,12 @@ void loadRejectionIsAtomic(dataflow::LoadOp op) {
           indexToken(llvm::APInt(resolvedIndexBits(op.getOperation()), 99)));
   testChannelQueue(state, op.getCtrlMutable()).push_back(noneToken());
 
-  PlainMemoryActionProjection first =
-      projectReadyPlainMemoryAction(op.getOperation(), state);
+  MemoryActionProjection first =
+      projectReadyMemoryAction(op.getOperation(), state);
   require(!first.ready && first.diagnostics.size() == 1,
           "load admission accepted an out-of-range address");
-  PlainMemoryActionProjection second =
-      projectReadyPlainMemoryAction(op.getOperation(), state);
+  MemoryActionProjection second =
+      projectReadyMemoryAction(op.getOperation(), state);
   require(!second.ready && second.diagnostics.size() == 1,
           "a re-polled load rejection is not detectable as a failed attempt");
   require(testChannelQueue(state, op.getMemMutable()).size() == 1 &&
@@ -928,8 +966,8 @@ void inactiveExceptionalGatherAddressIsUnobserved(dataflow::LoadOp op) {
       .push_back(tokenWithBits(op.getMask().getType(), 1));
   testChannelQueue(state, op.getCtrlMutable()).push_back(noneToken());
 
-  PlainMemoryActionProjection projected =
-      projectReadyPlainMemoryAction(op.getOperation(), state);
+  MemoryActionProjection projected =
+      projectReadyMemoryAction(op.getOperation(), state);
   require(projected.ready && projected.diagnostics.empty(),
           "inactive exceptional gather address was observed");
   state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
@@ -970,8 +1008,8 @@ void exceptionalMemoryMaskIsUnsupported(dataflow::LoadOp op) {
           op.getOperation())));
   testChannelQueue(state, op.getCtrlMutable()).push_back(noneToken());
 
-  PlainMemoryActionProjection projected =
-      projectReadyPlainMemoryAction(op.getOperation(), state);
+  MemoryActionProjection projected =
+      projectReadyMemoryAction(op.getOperation(), state);
   require(!projected.ready && !projected.diagnostics.empty(),
           "memory actor accepted an exceptional mask lane");
   require(state.failure == RunFailure::UnsupportedCapability,
@@ -1004,8 +1042,8 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
   ctrl.memoryOrder =
       state.memoryOrderFrontiers.internCanonical(loom::sim::SyncEffectId(99));
   testChannelQueue(state, op.getCtrlMutable()).push_back(std::move(ctrl));
-  PlainMemoryActionProjection projected =
-      projectReadyPlainMemoryAction(op.getOperation(), state);
+  MemoryActionProjection projected =
+      projectReadyMemoryAction(op.getOperation(), state);
   require(projected.ready && projected.diagnostics.empty(),
           "unable to project synchronization-failure store");
   state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
@@ -1052,8 +1090,8 @@ void storeDuplicateScatterIsProviderFailure(dataflow::StoreOp op) {
   testChannelQueue(state, op.getDataMutable())
       .push_back(tokenWithBits(op.getData().getType(), 0xAB43));
   testChannelQueue(state, op.getCtrlMutable()).push_back(noneToken());
-  PlainMemoryActionProjection projected =
-      projectReadyPlainMemoryAction(op.getOperation(), state);
+  MemoryActionProjection projected =
+      projectReadyMemoryAction(op.getOperation(), state);
   require(projected.ready && projected.diagnostics.empty(),
           "admission rejected a duplicate plain scatter it does not own");
 
@@ -1114,6 +1152,7 @@ int main() {
   actorTransitionDescriptorContract();
   publishedWideFrontierForwardsByHandle();
   growingFrontierSharesPublishedPrefixes();
+  atomicHazardsRequireExactObjectIdentity();
 
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();

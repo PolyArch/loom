@@ -584,6 +584,41 @@ llvm::Error MemorySynchronization::declareFenceRole(SyncEffectId effect,
   return commit(std::move(candidate));
 }
 
+llvm::Error
+MemorySynchronization::appendSequentiallyConsistent(SyncEffectId effect,
+                                                    SyncDomainId domain) {
+  if (llvm::Error error = requireKnown(effect))
+    return error;
+  if (facts_.sequentiallyConsistent.count(effect.value()))
+    return reject(Kind::DuplicateSequentiallyConsistentAssociation,
+                  "effect " + llvm::Twine(effect.value()) +
+                      " already belongs to a sequentially-consistent order");
+
+  Facts candidate = facts_;
+  std::optional<SyncEffectId> predecessor;
+  auto tail = candidate.sequentiallyConsistentTails.find(domain.value());
+  if (tail != candidate.sequentiallyConsistentTails.end())
+    predecessor = tail->second;
+  candidate.sequentiallyConsistent.insert(
+      {effect.value(), SequentiallyConsistentAssociation{domain, predecessor}});
+  candidate.sequentiallyConsistentTails.insert_or_assign(domain.value(),
+                                                         effect);
+  return commit(std::move(candidate));
+}
+
+llvm::Expected<std::optional<SyncEffectId>>
+MemorySynchronization::sequentiallyConsistentPredecessor(
+    SyncEffectId effect) const {
+  if (llvm::Error error = requireKnown(effect))
+    return std::move(error);
+  auto association = facts_.sequentiallyConsistent.find(effect.value());
+  if (association == facts_.sequentiallyConsistent.end())
+    return reject(Kind::UnknownSequentiallyConsistentAssociation,
+                  "effect " + llvm::Twine(effect.value()) +
+                      " does not belong to a sequentially-consistent order");
+  return association->second.predecessor;
+}
+
 bool MemorySynchronization::synchronizesWith(SyncEffectId origin,
                                              SyncEffectId target) const {
   bool found = false;

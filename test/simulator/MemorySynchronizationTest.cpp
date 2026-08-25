@@ -759,6 +759,39 @@ void incomingFrontierPreservesReleaseFencePublication() {
   }
 }
 
+// Sequential consistency is an independent provider-selected total order per
+// resolved domain. It must not manufacture happens-before, and the first
+// effect in a second domain has no predecessor from the first domain.
+void sequentialConsistencyHasOneDomainLocalOwner() {
+  MemoryAtomicOrder order;
+  MemorySynchronization sync(order);
+  SyncEffectId first = sync.declareEffect();
+  SyncEffectId second = sync.declareEffect();
+  SyncEffectId away = sync.declareEffect();
+  SyncEffectId ordinary = sync.declareEffect();
+
+  accept(sync.appendSequentiallyConsistent(first, kHome), "first SC effect");
+  accept(sync.appendSequentiallyConsistent(second, kHome), "second SC effect");
+  accept(sync.appendSequentiallyConsistent(away, kAway),
+         "other-domain SC effect");
+
+  require(!takeExpected(sync.sequentiallyConsistentPredecessor(first)),
+          "the first SC effect acquired a predecessor");
+  require(takeExpected(sync.sequentiallyConsistentPredecessor(second)) == first,
+          "the second SC effect did not name the domain tail");
+  require(!takeExpected(sync.sequentiallyConsistentPredecessor(away)),
+          "an SC order crossed synchronization domains");
+  require(!sync.happensBefore(first, second),
+          "SC order was reinterpreted as happens-before");
+
+  expectRejected(sync.appendSequentiallyConsistent(first, kAway),
+                 Kind::DuplicateSequentiallyConsistentAssociation,
+                 "one effect joined two SC orders");
+  expectRejected(sync.sequentiallyConsistentPredecessor(ordinary),
+                 Kind::UnknownSequentiallyConsistentAssociation,
+                 "a non-SC effect was mistaken for the first SC effect");
+}
+
 } // namespace
 
 int main() {
@@ -774,5 +807,6 @@ int main() {
   fenceShapeHoldsInEitherDeclarationOrder();
   acceptedFactsAreInsertionOrderInvariant();
   incomingFrontierPreservesReleaseFencePublication();
+  sequentialConsistencyHasOneDomainLocalOwner();
   return 0;
 }

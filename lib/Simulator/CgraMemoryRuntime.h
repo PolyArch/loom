@@ -101,7 +101,7 @@ private:
     bool active = false;
     std::uint64_t bindingOrdinal = 0;
     std::uint64_t actorOccurrenceOrdinal = 0;
-    std::optional<ReadyPlainMemoryAction> ready;
+    std::optional<ReadyMemoryAction> ready;
     std::optional<Token> storeData;
     std::uint32_t activeChildCount = 0;
     std::uint32_t permittedChildCount = 0;
@@ -130,7 +130,7 @@ private:
 
   llvm::Error scheduleReady(SpatialEventCoordinate coordinate);
   llvm::Expected<std::uint64_t> allocateFiring(std::uint64_t bindingOrdinal,
-                                               ReadyPlainMemoryAction ready,
+                                               ReadyMemoryAction ready,
                                                std::optional<Token> storeData);
   llvm::Expected<CgraPhysicalLifecycleEvent>
   requestAction(std::uint64_t firingSlot, std::uint64_t actionOrdinal,
