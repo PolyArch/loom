@@ -419,8 +419,12 @@ cost, or successful child PnR is not transition proof.
 `ResourceTimeTransitionGraph` is the finite compiler-owned catalog. It names
 one exact Mapping/Deployment entry, unique endpoints, and preverified edges;
 `verifyResourceTimeTransitionGraph` independently imports every endpoint,
-replays every edge closure, and rejects foreign or unreachable states. Runtime
-may select only a graph member and cannot synthesize Mapping or invoke PnR.
+requires one canonical root-launch scope, replays every edge closure, and
+rejects foreign states or an edge whose `completed_before` frontier cannot be
+reached monotonically from the entry. A completion without an edge may advance
+the frontier while staying at the current endpoint; it cannot erase a prior
+completion. Runtime may select only a graph member and cannot synthesize
+Mapping or invoke PnR.
 
 The admitted completion profile requires `completed_before` plus the one
 active completing root to be a unique subset of the Canonical Dataflow root

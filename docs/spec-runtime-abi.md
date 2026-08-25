@@ -268,13 +268,13 @@ completion trigger, completion safe point, and exact canonical
 `completedBefore` subset. An absent child is an explicit stay decision. Edge
 and endpoint ordinals are never priority or replay identity.
 
-The graph verifier currently proves exact endpoint closure, individual edge
-closure, and directed endpoint reachability. It does not yet prove that every
-endpoint path has a monotonically realizable `completedBefore` frontier. The
-selector therefore rechecks the exact completed-root set at each call and
-leaves an unrealizable edge unselected without mutating session state. This
-fail-closed behavior does not upgrade the graph into an executable migration
-schedule; frontier-path realizability remains a PnR graph-owner obligation.
+The graph verifier proves exact endpoint closure, one shared canonical root
+scope, individual edge closure, and monotonically realizable completion
+frontiers from the entry. The selector still rechecks the exact completed-root
+set at each call and leaves an edge unselected unless the caller has committed
+the required frontier. This does not upgrade the graph into an executable
+migration schedule: provider activation and live-state execution remain
+separate owners.
 
 Rejected calls do not change the endpoint, completed-root subset, lifecycle,
 or replay. Replay uses typed roots and full endpoints and re-executes every

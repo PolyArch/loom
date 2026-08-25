@@ -268,8 +268,9 @@ llvm::Error validateResourceTimeTransitionSequence(
 llvm::Error
 validateResourceTimeTransitionGraph(const ResourceTimeTransitionGraph &graph);
 
-/// Strictly imports every graph endpoint, independently verifies every edge,
-/// and proves that all finite states are reachable from `entry`.
+/// Strictly imports every graph endpoint, proves one canonical root scope,
+/// independently verifies every edge, and proves that every edge has a
+/// monotonically realizable completion frontier from `entry`.
 llvm::Error
 verifyResourceTimeTransitionGraph(const ResourceTimeTransitionGraph &graph,
                                   const ArtifactStore &artifacts,

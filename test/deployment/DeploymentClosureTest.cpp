@@ -175,23 +175,24 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   const auto contexts =
       take(test, loom::mapping::projectSystemExecutionContexts(
                      dataflow, parentMapping.view().executionBindings()));
-  const auto resourcesFor = [&](dataflow::RootThreadLaunchRef selected) {
+  const auto resourcesFor = [&](const auto &selectedContexts,
+                                dataflow::RootThreadLaunchRef selected) {
     std::vector<loom::fabric::FabricPhysicalOccurrenceOwnerRef> result;
     const auto appendCore = [&](loom::fabric::AccCoreOccurrenceRef core) {
       result.push_back(
           take(test, loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(
                          loom::fabric::FabricInventoryOwnerRef::of(core))));
     };
-    for (const auto &domain : contexts.instructionDomains)
+    for (const auto &domain : selectedContexts.instructionDomains)
       if (domain.root == selected)
         appendCore(domain.context.accCore);
-    for (const auto &domain : contexts.spatialDomains)
+    for (const auto &domain : selectedContexts.spatialDomains)
       if (domain.graph.rootThreadLaunch == selected)
         appendCore(domain.context.accCore);
     return result;
   };
-  const auto resources = resourcesFor(root);
-  const auto precedingResources = resourcesFor(precedingRoot);
+  const auto resources = resourcesFor(contexts, root);
+  const auto precedingResources = resourcesFor(contexts, precedingRoot);
   deployment::test::require(test, !resources.empty(),
                             "resource-time fixture root has no AccCore");
   deployment::test::require(test, !precedingResources.empty(),
@@ -231,6 +232,36 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
         test, (llvm::Twine("finite transition graph failed closure: ") +
                llvm::toString(std::move(error)))
                   .str());
+
+  const auto childContexts =
+      take(test, loom::mapping::projectSystemExecutionContexts(
+                     dataflow, childMapping.view().executionBindings()));
+  auto regressingDraft = draft;
+  regressingDraft.trigger =
+      dataflow::rootThreadCompletionEventFamily(precedingRoot);
+  regressingDraft.parent = transition.child;
+  regressingDraft.child = transition.parent;
+  regressingDraft.beforeActive = {
+      {precedingRoot, resourcesFor(childContexts, precedingRoot)}};
+  regressingDraft.completedBefore.clear();
+  const auto regressingTransition =
+      take(test, pnr::finalizeResourceTimeTransition(std::move(regressingDraft),
+                                                     artifacts, blobs));
+  const pnr::ResourceTimeTransitionGraph regressingGraph{
+      transition.parent,
+      {transition.parent, transition.child},
+      {transition, regressingTransition}};
+  llvm::Error regressingError =
+      pnr::verifyResourceTimeTransitionGraph(regressingGraph, artifacts, blobs);
+  if (!regressingError)
+    deployment::test::fail(
+        test, "transition graph accepted a regressing completion frontier");
+  const std::string regressingMessage =
+      llvm::toString(std::move(regressingError));
+  deployment::test::require(
+      test, llvm::StringRef(regressingMessage).contains("unrealizable"),
+      regressingMessage);
+
   auto duplicateEdgeGraph = transitionGraph;
   duplicateEdgeGraph.transitions.push_back(transition);
   llvm::Error duplicateEdgeError =

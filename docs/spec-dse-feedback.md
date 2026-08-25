@@ -3426,9 +3426,9 @@ inferred from equal allocation counts. Every resulting edge is retained by
 ApplicationDeploymentArtifacts together with both the parent completion
 spectrum and the independently verified child spectrum that carries active
 work. The application then constructs one `ResourceTimeTransitionGraph` and
-replays its independent endpoint, reachability, and edge closure verifier.
-Visualization derives its endpoint array from that graph and cannot act as a
-second catalog.
+replays its independent endpoint, canonical root-scope, monotonic
+completion-frontier reachability, and edge closure verifier. Visualization
+derives its endpoint array from that graph and cannot act as a second catalog.
 
 The implementation is a compiler-precomputed finite transition graph. It does
 not run online DSE or PnR and does not add a second Mapping-legality owner.
