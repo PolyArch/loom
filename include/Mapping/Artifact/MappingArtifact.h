@@ -619,6 +619,12 @@ private:
   ::loom::fabric::FabricHandshakeSelection handshakeSelection_;
 };
 
+/// Whether the complete selected RouteTree domain contains one exact physical
+/// traversal, including source-local, routed-node, and sink-local selections.
+bool spatialRouteTreeSelectsTraversal(
+    const SpatialRouteTreeView &route,
+    const ::loom::fabric::FabricPhysicalTraversalRef &traversal);
+
 /// Whether one exact selected route disposition uses the physical FIFO
 /// occurrence. Hardware-impact projection and runtime-feedback admission share
 /// this query; Module membership alone never implies Mapping dependence.

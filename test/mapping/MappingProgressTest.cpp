@@ -33,6 +33,70 @@ template <typename T> T take(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
+loom::ArtifactIdentity identity(std::uint8_t value) {
+  std::array<std::uint8_t, loom::ArtifactIdentity::byteSize> bytes{};
+  bytes.fill(value);
+  return take(loom::ArtifactIdentity::fromBytes(bytes));
+}
+
+void sharedFiniteFifoRequiresRecurrenceProof(
+    const loom::mapping::FrozenMappingProgressModel &model,
+    loom::mapping::MappingProgressProjection projection) {
+  const loom::ArtifactIdentity owner = identity(31);
+  const dataflow::CanonicalGraphProducerEndpointRef firstProducer =
+      dataflow::ActorTokenResultRef{
+          dataflow::ActorRef{owner, dataflow::ActorId(1)}, 0};
+  const dataflow::CanonicalGraphProducerEndpointRef secondProducer =
+      dataflow::ActorTokenResultRef{
+          dataflow::ActorRef{owner, dataflow::ActorId(2)}, 0};
+  const dataflow::CanonicalGraphConsumerEndpointRef secondConsumer =
+      dataflow::ActorTokenOperandRef{
+          dataflow::ActorRef{owner, dataflow::ActorId(3)}, 0};
+  const loom::fabric::FabricTransportEndpointRef endpoint{
+      loom::fabric::FabricTransportEndpointOwnerRef::of(
+          loom::fabric::FabricFuOccurrenceRef(1)),
+      0};
+  const auto buffered = loom::fabric::FabricPhysicalTraversalRef::fifoTraversal(
+      loom::fabric::FabricFifoOccurrenceRef(7),
+      loom::fabric::FabricFifoTraversalMode::Buffered);
+  std::vector<loom::mapping::SpatialRouteTreeView> routes;
+  routes.push_back(
+      {firstProducer, endpoint, buffered, /*nodes=*/{}, /*sinks=*/{}});
+  routes.push_back({secondProducer, endpoint, std::nullopt,
+                    /*nodes=*/{},
+                    /*sinks=*/{{secondConsumer, 0, buffered}}});
+  if (!loom::mapping::spatialRouteTreeSelectsTraversal(routes.front(),
+                                                       buffered) ||
+      !loom::mapping::spatialRouteTreeSelectsTraversal(routes.back(), buffered))
+    fail("complete RouteTree traversal domain omitted a local selection");
+
+  const auto recurrence =
+      loom::mapping::projectSpatialFiniteBufferRecurrence(routes);
+  if (recurrence.kind != loom::mapping::MappingRouteProgressObligationKind::
+                             FiniteBufferRecurrence ||
+      recurrence.established)
+    fail("shared finite FIFO recurrence was treated as established");
+  projection.routeObligations = {recurrence};
+  const auto closure =
+      take(loom::mapping::deriveMappingProgressClosure(model, projection));
+  if (closure.kind !=
+          loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
+      closure.reason != loom::mapping::MappingProgressClosureReason::
+                            FiniteBufferRecurrenceNotEstablished)
+    fail("shared finite FIFO produced a general liveness proof");
+  projection.routeObligations.push_back(
+      {loom::mapping::MappingRouteProgressObligationKind::
+           DurableBoundaryAfterDivergence,
+       false});
+  const auto mixedClosure =
+      take(loom::mapping::deriveMappingProgressClosure(model, projection));
+  if (mixedClosure.kind !=
+          loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
+      mixedClosure.reason != loom::mapping::MappingProgressClosureReason::
+                                 FiniteBufferRecurrenceNotEstablished)
+    fail("shared FIFO was hidden by a closed-wait disposition");
+}
+
 void initializedFeedbackProgressBasis() {
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
@@ -78,16 +142,20 @@ module {
       take(loom::mapping::freezeMappingProgressModel(view, /*events=*/{}));
   loom::mapping::MappingProgressProjection projection;
   projection.basis = uncovered;
-  projection.routeObligations.push_back({false});
+  projection.routeObligations.push_back(
+      {loom::mapping::MappingRouteProgressObligationKind::
+           DurableBoundaryAfterDivergence,
+       false});
   if (take(loom::mapping::deriveMappingProgressClosure(model, projection))
           .kind !=
       loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet)
     fail("post-divergence route without a durable boundary passed progress");
-  projection.routeObligations.front().durableBoundaryAfterDivergence = true;
+  projection.routeObligations.front().established = true;
   if (take(loom::mapping::deriveMappingProgressClosure(model, projection))
           .kind !=
       loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
     fail("post-divergence durable boundary did not close route progress");
+  sharedFiniteFifoRequiresRecurrenceProof(model, projection);
   const std::array<dataflow::GraphRef, 1> covered = {view.graphs().front().ref};
   const auto basis =
       take(loom::mapping::deriveMappingDataflowProgressBasis(view, covered));
@@ -127,7 +195,10 @@ module {
       view, {carryTransition, demuxTransition}));
   loom::mapping::MappingProgressProjection eventProjection;
   eventProjection.basis = basis;
-  eventProjection.routeObligations.push_back({true});
+  eventProjection.routeObligations.push_back(
+      {loom::mapping::MappingRouteProgressObligationKind::
+           DurableBoundaryAfterDivergence,
+       true});
   eventProjection.capacityCells.push_back({1, 0});
   const loom::mapping::InstructionExecutionContextKey contextKey{
       loom::fabric::AccCoreOccurrenceRef{}};
