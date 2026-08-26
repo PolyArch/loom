@@ -162,6 +162,27 @@ not reference cycles. Corpus orchestration uses at most
 `min(nproc - 4, memory-derived worker limit, 120)` outer workers and does not
 hide nested oversubscription inside one case.
 
+Host performance observations belong to an explicit fresh diagnostic attempt,
+not ordinary Evaluation Evidence. The ordinary gem5 provider declares no
+performance output and enables no Bridge or engine host-clock accounting. A
+diagnostic preparation declares the profile outputs, requires a fresh external
+attempt, validates the root-local attempt generation, and finalizes the same
+functional result through the Evaluation Evidence owner before attaching an
+invocation-local performance sidecar. The sidecar is neither cached nor an
+input to candidate identity, ordering, legality, or objective selection.
+
+`loom.gem5_system_performance_profile.3` owns three disjoint gem5 host
+intervals: configuration through `m5.instantiate()`, `m5.simulate()` alone,
+and post-simulation observation publication. Each interval reports wall time;
+simulation and observation report process CPU time over the same respective
+window. Managed-engine process CPU, Bridge callback CPU, Bridge engine-wait
+wall time, message count, invocation count, Bridge count, and clock-failure
+count are separate fields. A failed clock sample makes the diagnostic profile
+unavailable. A nonintegral launch-to-retirement reference-cycle distance is
+reported as unavailable for that invocation rather than changing a valid
+functional result. Tool failure, cancellation, and execution limits retain
+their typed Evaluation outcomes and never become infeasibility.
+
 ## Hardware-Implementation And Evidence Anchor
 
 One mapped `vecadd` deployment closes the evidence chain:
