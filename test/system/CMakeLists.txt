@@ -1,4 +1,5 @@
 add_library(LoomExecutionMatrixTestSupport STATIC
+  ExecutionMatrixGuestPrograms.cpp
   ExecutionMatrixTestSupport.cpp
 )
 

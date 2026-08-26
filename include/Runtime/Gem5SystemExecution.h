@@ -10,6 +10,8 @@
 
 namespace loom::runtime {
 
+inline constexpr std::uint64_t gem5MaximumSpatialWork = 1'000'000;
+
 struct Gem5CgraEngineAttemptProfile final {
   std::uint64_t invocationCount = 0;
   std::uint64_t activeWallNanoseconds = 0;

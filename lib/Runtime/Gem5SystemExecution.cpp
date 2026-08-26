@@ -439,7 +439,7 @@ llvm::Expected<std::string> renderProjection(const Gem5SystemFacts &facts,
             json.value("--dataflow");
             json.value(formatArtifactIdentityHex(facts.dataflow.artifact));
             json.value("--maximum-work");
-            json.value(std::to_string(kMaximumSpatialWork));
+            json.value(std::to_string(gem5MaximumSpatialWork));
             json.value("--ticks-per-cycle");
             json.value(std::to_string(ticksPerCycle));
             json.value("--maximum-invocations");

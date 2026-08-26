@@ -15,6 +15,8 @@ enum class ExecutionMatrixCell : std::uint8_t {
   SystemDfg,
   SystemCgra,
   SystemRtl,
+  PairedSpatialCgra,
+  PairedSystemCgra,
 };
 
 llvm::Expected<ExecutionMatrixCell>
@@ -22,6 +24,9 @@ parseExecutionMatrixCell(llvm::StringRef spelling);
 
 void runExecutionMatrixCell(ExecutionMatrixCell cell,
                             llvm::StringRef gem5ReadinessPath);
+
+void runPairedSpatialCgraBatch(std::uint64_t warmupRuns,
+                               std::uint64_t measurementRuns);
 
 void verifyDeterministicSystemReplay(llvm::StringRef gem5ReadinessPath);
 
