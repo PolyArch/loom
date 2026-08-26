@@ -33,7 +33,7 @@ from m5.objects import (
 
 
 CONFIG_SCHEMA = "loom.gem5_system_projection.11"
-PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.4"
+PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.5"
 STATISTICS_BEGIN = "---------- Begin Simulation Statistics ----------"
 STATISTICS_END = "---------- End Simulation Statistics   ----------"
 
@@ -580,11 +580,17 @@ def main() -> None:
         if diagnostics and has_managed_engines
         else None
     )
-    engine_startup_started = time.monotonic_ns() if diagnostics else None
+    engine_readiness_cpu_before = (
+        resource.getrusage(resource.RUSAGE_SELF) if diagnostics else None
+    )
+    engine_readiness_started = time.monotonic_ns() if diagnostics else None
     engines = start_engines(
         projection["bridges"], len(projection["dispatch"]["targets"])
     )
-    engine_startup_finished = time.monotonic_ns() if diagnostics else None
+    engine_readiness_finished = time.monotonic_ns() if diagnostics else None
+    engine_readiness_cpu_after = (
+        resource.getrusage(resource.RUSAGE_SELF) if diagnostics else None
+    )
     performance = None
     try:
         system = build_system(projection, diagnostics)
@@ -629,8 +635,10 @@ def main() -> None:
             if None in (
                 configuration_started,
                 configuration_finished,
-                engine_startup_started,
-                engine_startup_finished,
+                engine_readiness_cpu_before,
+                engine_readiness_started,
+                engine_readiness_finished,
+                engine_readiness_cpu_after,
                 simulation_cpu_before,
                 simulation_started,
                 simulation_finished,
@@ -640,13 +648,24 @@ def main() -> None:
                 bridge_statistics,
             ):
                 raise RuntimeError("gem5 performance accounting is incomplete")
+            engine_readiness = {
+                "wall_nanoseconds": (
+                    engine_readiness_finished - engine_readiness_started
+                ),
+                "self_cpu_nanoseconds": elapsed_cpu_nanoseconds(
+                    engine_readiness_cpu_before, engine_readiness_cpu_after
+                ),
+            }
             performance = {
                 "schema": PERFORMANCE_PROFILE_SCHEMA,
                 "configuration_wall_nanoseconds": (
                     configuration_finished - configuration_started
                 ),
-                "engine_startup_wall_nanoseconds": (
-                    engine_startup_finished - engine_startup_started
+                "managed_engine_startup": (
+                    engine_readiness if has_managed_engines else None
+                ),
+                "external_engine_socket_readiness": (
+                    None if has_managed_engines else engine_readiness
                 ),
                 "simulation_wall_nanoseconds": (
                     simulation_finished - simulation_started

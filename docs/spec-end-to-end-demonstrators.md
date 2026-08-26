@@ -171,15 +171,19 @@ functional result through the Evaluation Evidence owner before attaching an
 invocation-local performance sidecar. The sidecar is neither cached nor an
 input to candidate identity, ordering, legality, or objective selection.
 
-`loom.gem5_system_performance_profile.4` owns three disjoint gem5 host
+`loom.gem5_system_performance_profile.5` owns three disjoint gem5 host
 intervals: configuration through `m5.instantiate()`, `m5.simulate()` alone,
 and post-simulation observation publication. Each interval reports wall time;
 simulation and observation report process CPU time over the same respective
-window. Managed-engine startup wall time is reported as a nested subset of the
-configuration interval. Managed-engine process CPU, Bridge callback CPU,
-Bridge engine-wait wall time, message count, invocation count, Bridge count,
-and clock-failure count are separate fields. A failed clock sample makes the
-diagnostic profile unavailable. A nonintegral launch-to-retirement
+window. Exactly one typed readiness interval is present inside the
+configuration interval. DFG and CGRA report managed-engine startup wall and
+gem5/Python self CPU time. RTL reports external-engine socket-readiness wall
+and gem5/Python self CPU time because its controller already owns the engine
+process. Managed-engine process CPU covers the managed child engine's complete
+lifetime and is absent for RTL. Bridge callback CPU, Bridge engine-wait wall
+time, message count, invocation count, Bridge count, and clock-failure count
+are separate fields. A failed clock sample makes the diagnostic profile
+unavailable. A nonintegral launch-to-retirement
 reference-cycle distance is reported as unavailable for that invocation rather
 than changing a valid functional result. Tool failure, cancellation, and
 execution limits retain their typed Evaluation outcomes and never become

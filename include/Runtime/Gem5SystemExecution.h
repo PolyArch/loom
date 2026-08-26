@@ -93,9 +93,15 @@ struct Gem5CgraEngineAttemptProfile final {
   std::uint64_t eventFrameCount = 0;
 };
 
+struct Gem5HostIntervalProfile final {
+  std::uint64_t wallNanoseconds = 0;
+  std::uint64_t selfProcessCpuNanoseconds = 0;
+};
+
 struct Gem5SystemAttemptProfile final {
   std::uint64_t configurationWallNanoseconds = 0;
-  std::uint64_t engineStartupWallNanoseconds = 0;
+  std::optional<Gem5HostIntervalProfile> managedEngineStartup;
+  std::optional<Gem5HostIntervalProfile> externalEngineSocketReadiness;
   std::uint64_t simulationWallNanoseconds = 0;
   std::uint64_t gem5SimulationProcessCpuNanoseconds = 0;
   std::uint64_t observationWallNanoseconds = 0;
