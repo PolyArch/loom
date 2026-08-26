@@ -16,6 +16,10 @@ class ArtifactStore;
 class BlobStore;
 } // namespace loom
 
+namespace loom::eda::test {
+enum class MappedSpatialHardwareFixtureOperation : std::uint8_t;
+} // namespace loom::eda::test
+
 namespace loom::system_test {
 
 llvm::Error emitExecutionMatrixRunSummary(
@@ -28,6 +32,16 @@ llvm::Error emitExecutionMatrixRunSummary(
 
 enum class ExecutionMatrixLifecycleOperation : std::uint8_t {
   Setup,
+  DataflowConstructionAndPublication,
+  FabricModuleConstructionAndFinalization,
+  TechMapping,
+  SpatialPnr,
+  SystemFabricAndInterconnectConstruction,
+  ConfigurationAbiAndHardwareImplementationGeneration,
+  SystemMappingAndPnr,
+  GuestCompileAndLink,
+  RuntimeBindingAndDeploymentFinalization,
+  WorkloadAndRuntimeInputPublication,
   HostLifecycle,
   Gem5Binding,
   RequestConstruction,
@@ -70,6 +84,9 @@ public:
 
   ExecutionMatrixLifecycleTimer(ExecutionMatrixLifecycleRecorder &recorder,
                                 ExecutionMatrixLifecycleOperation operation);
+  ExecutionMatrixLifecycleTimer(
+      ExecutionMatrixLifecycleRecorder &recorder,
+      eda::test::MappedSpatialHardwareFixtureOperation operation);
   ~ExecutionMatrixLifecycleTimer();
 
   ExecutionMatrixLifecycleTimer(const ExecutionMatrixLifecycleTimer &) = delete;

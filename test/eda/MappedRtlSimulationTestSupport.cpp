@@ -71,6 +71,34 @@ void requireSuccess(llvm::StringRef test, llvm::Error error) {
     deployment::test::fail(test, llvm::toString(std::move(error)));
 }
 
+class MappedSpatialHardwareFixtureObservation final {
+public:
+  MappedSpatialHardwareFixtureObservation(
+      MappedSpatialHardwareFixtureObserver observer,
+      MappedSpatialHardwareFixtureOperation operation)
+      : observer_(observer), operation_(operation) {
+    if (observer_)
+      observer_(operation_, MappedSpatialHardwareFixtureBoundary::Begin);
+  }
+
+  ~MappedSpatialHardwareFixtureObservation() {
+    if (observer_)
+      observer_(operation_, MappedSpatialHardwareFixtureBoundary::End);
+  }
+
+private:
+  MappedSpatialHardwareFixtureObserver observer_;
+  MappedSpatialHardwareFixtureOperation operation_;
+};
+
+template <typename Build>
+auto observeMappedSpatialHardwareFixtureOperation(
+    MappedSpatialHardwareFixtureObserver observer,
+    MappedSpatialHardwareFixtureOperation operation, Build &&build) {
+  MappedSpatialHardwareFixtureObservation observation(observer, operation);
+  return std::forward<Build>(build)();
+}
+
 void writePackedField(std::vector<std::uint8_t> &bytes, std::uint32_t bitOffset,
                       std::uint32_t bitCount, std::uint64_t value) {
   for (std::uint32_t bit = 0; bit != bitCount; ++bit)
@@ -1067,30 +1095,61 @@ MappedSpatialHardwareFixture buildMappedSpatialHardwareFixture(
     mlir::MLIRContext &context, ArtifactStore &artifacts, BlobStore &blobs,
     deployment::test::MappedSpatialSystemSpec systemSpec,
     MappedRtlFixtureTopology topology, MappedRtlRouteCoverage routeCoverage,
-    MappedSystemInterconnect interconnectKind) {
+    MappedSystemInterconnect interconnectKind,
+    MappedSpatialHardwareFixtureObserver observer) {
   const ArtifactRootReference dataflowReference =
-      take(test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
-  auto module = buildSpatialCore(test, artifacts, topology);
-  const ArtifactRootReference techMapping = generateTechMapping(
-      test, dataflowReference, module.reference(), artifacts, blobs);
-  const ArtifactRootReference spatialMappingReference =
-      generateSpatialMapping(test, context, techMapping, module.reference(),
-                             artifacts, blobs, routeCoverage);
-  auto spatialMapping = take(
-      test, mapping::importSpatialMapping(spatialMappingReference, artifacts));
+      observeMappedSpatialHardwareFixtureOperation(
+          observer, MappedSpatialHardwareFixtureOperation::DataflowPublication,
+          [&] {
+            return take(
+                test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
+          });
+  auto module = observeMappedSpatialHardwareFixtureOperation(
+      observer,
+      MappedSpatialHardwareFixtureOperation::
+          FabricModuleConstructionAndFinalization,
+      [&] { return buildSpatialCore(test, artifacts, topology); });
+  const ArtifactRootReference techMapping =
+      observeMappedSpatialHardwareFixtureOperation(
+          observer, MappedSpatialHardwareFixtureOperation::TechMapping, [&] {
+            return generateTechMapping(test, dataflowReference,
+                                       module.reference(), artifacts, blobs);
+          });
+  auto spatialMapping = observeMappedSpatialHardwareFixtureOperation(
+      observer, MappedSpatialHardwareFixtureOperation::SpatialPnr, [&] {
+        const ArtifactRootReference reference = generateSpatialMapping(
+            test, context, techMapping, module.reference(), artifacts, blobs,
+            routeCoverage);
+        return take(test, mapping::importSpatialMapping(reference, artifacts));
+      });
   const std::array<mlir::Type, 3> messagePayloads{
       mlir::NoneType::get(&context), mlir::IntegerType::get(&context, 32),
       mlir::IndexType::get(&context)};
-  auto system =
-      buildSystem(test, module, messagePayloads, artifacts, systemSpec);
-  std::optional<ArtifactRootReference> interconnect;
-  if (interconnectKind == MappedSystemInterconnect::Gem5EventTransport)
-    interconnect = take(
-        test, fabric::finalizeGem5EventInterconnectImplementation(
-                  system.reference(), artifacts))
-                       .reference();
-  auto implementations =
-      buildImplementation(test, module, system, context, artifacts, blobs);
+  auto systemAndInterconnect = observeMappedSpatialHardwareFixtureOperation(
+      observer,
+      MappedSpatialHardwareFixtureOperation::
+          SystemFabricAndInterconnectConstruction,
+      [&] {
+        auto system =
+            buildSystem(test, module, messagePayloads, artifacts, systemSpec);
+        std::optional<ArtifactRootReference> interconnect;
+        if (interconnectKind == MappedSystemInterconnect::Gem5EventTransport)
+          interconnect =
+              take(test, fabric::finalizeGem5EventInterconnectImplementation(
+                             system.reference(), artifacts))
+                  .reference();
+        return std::pair(std::move(system), std::move(interconnect));
+      });
+  auto system = std::move(systemAndInterconnect.first);
+  auto interconnect = std::move(systemAndInterconnect.second);
+  auto implementations = observeMappedSpatialHardwareFixtureOperation(
+      observer,
+      MappedSpatialHardwareFixtureOperation::
+          ConfigurationAbiAndHardwareImplementationGeneration,
+      [&] {
+        return buildImplementation(test, module, system, context, artifacts,
+                                   blobs);
+      });
   return {std::move(module), techMapping, std::move(spatialMapping),
           std::move(system), std::move(interconnect),
           std::move(implementations)};
