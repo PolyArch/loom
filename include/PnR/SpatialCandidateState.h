@@ -577,6 +577,8 @@ public:
   llvm::ArrayRef<PnrIndex> touchedRouteLogicalNets() const;
   llvm::Expected<SpatialTagAssignmentSummary>
   summarizeCurrentTagAssignments() const;
+  llvm::Expected<SpatialTagAssignmentDelta>
+  summarizeCurrentTagAssignmentDelta() const;
   bool hasRouteTreeChange() const;
   bool hasSemanticChange() const;
   llvm::Error commit();

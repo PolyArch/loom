@@ -202,7 +202,7 @@ llvm::Error SpatialActionProbe::commit() {
     return error;
   llvm::Error synchronization =
       negotiatedRouting_ ? owner->routeCosts_->resetFromVerifiedCandidate()
-                         : llvm::Error::success();
+                         : owner->routeCosts_->commitTagProjectionDelta();
   owner->currentObjective_ = objective_;
   owner->activeProbe_ = false;
   owner_ = nullptr;
@@ -219,8 +219,7 @@ llvm::Error SpatialActionProbe::discard() {
                          : owner->routeCosts_->synchronizeCandidateTraversals(
                                owner->routeCostTraversals_);
   if (!synchronization && !negotiatedRouting_ && routeTagsSynchronized_)
-    synchronization =
-        owner->synchronizeCandidateTags(owner->routeCostLogicalNets_);
+    synchronization = owner->routeCosts_->rollbackTagProjectionDelta();
   owner->activeProbe_ = false;
   owner_ = nullptr;
   return synchronization;
@@ -1632,7 +1631,9 @@ SpatialActionExecutorScratch::restoreAfterFailure(SpatialMoveTransaction &move,
   if (!restoration)
     restoration =
         routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_);
-  if (!restoration && !routeCostLogicalNets_.empty())
+  if (!restoration && routeCosts_->hasActiveTagProjectionDelta())
+    restoration = routeCosts_->rollbackTagProjectionDelta();
+  else if (!restoration && !routeCostLogicalNets_.empty())
     restoration = synchronizeCandidateTags(routeCostLogicalNets_);
   if (restoration) {
     llvm::Error fallback = routeCosts_->resetFromVerifiedCandidate();
@@ -1776,12 +1777,10 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
           routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_))
     return restoreAfterFailure(move, std::move(error), negotiatedRouting);
   if (routeTagsSynchronized) {
-    auto tagSummary = move.summarizeCurrentTagAssignments();
-    if (!tagSummary)
-      return restoreAfterFailure(move, tagSummary.takeError(),
-                                 negotiatedRouting);
-    if (llvm::Error error = routeCosts_->synchronizeTagProjection(
-            *tagSummary, routeCostLogicalNets_))
+    auto tagDelta = move.summarizeCurrentTagAssignmentDelta();
+    if (!tagDelta)
+      return restoreAfterFailure(move, tagDelta.takeError(), negotiatedRouting);
+    if (llvm::Error error = routeCosts_->synchronizeTagProjection(*tagDelta))
       return restoreAfterFailure(move, std::move(error), negotiatedRouting);
   }
 

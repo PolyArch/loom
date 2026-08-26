@@ -90,6 +90,23 @@ struct SpatialTagAssignmentSummary final {
   std::vector<std::optional<llvm::APInt>> netTagValues;
 };
 
+/// Exact transaction-local replacement for the affected portion of a tag
+/// assignment. The unassigned count remains candidate-wide; all remaining
+/// arrays are dense over explicit logical-net and match-domain inventories.
+struct SpatialTagAssignmentDelta final {
+  std::uint64_t unassignedCount = 0;
+  std::vector<PnrIndex> domains;
+  std::vector<std::uint64_t> domainResidentCounts;
+  std::vector<std::uint64_t> domainConflictCounts;
+  std::vector<PnrIndex> logicalNets;
+  std::vector<std::size_t> netDomainUseOffsets;
+  std::vector<PnrIndex> netDomainUseDomains;
+  std::vector<std::uint64_t> netDomainMarginalResidentCounts;
+  std::vector<std::uint64_t> netUnassignedCounts;
+  std::vector<std::size_t> netTagValueOffsets;
+  std::vector<std::optional<llvm::APInt>> netTagValues;
+};
+
 /// Reusable transaction storage for route-local Physical Tag updates. The
 /// storage is prepared once per Frozen model and retains prior net buffers so
 /// repeated route moves can reuse capacity.
@@ -150,6 +167,8 @@ private:
                         bool includeDomainDetails = false) const;
   llvm::Expected<SpatialTagAssignmentSummary>
   summarizeCurrentState(bool includeDomainDetails) const;
+  llvm::Expected<SpatialTagAssignmentDelta>
+  summarizeCurrentDelta(const SpatialTagAssignmentScratch &scratch) const;
   llvm::Error verify(llvm::ArrayRef<RouteTreeStateHandle> routes) const;
   llvm::Error stageRouteUpdates(
       llvm::ArrayRef<RouteTreeStateHandle> routes,
