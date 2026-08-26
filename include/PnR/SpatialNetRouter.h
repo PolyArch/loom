@@ -143,6 +143,7 @@ private:
   std::vector<std::uint64_t> bufferedTraversalBits_;
   std::vector<std::uint64_t> arcTimingDelayQuanta_;
   std::vector<std::uint8_t> arcTimingRegisteredDestination_;
+  EndpointRouteInputRevisionOwner physicalTimingRevisionOwner_;
   std::vector<std::uint64_t> routeNodeTimingArrivals_;
   std::vector<std::pair<PnrIndex, std::uint64_t>> routeNodeTimingWorklist_;
   std::vector<std::uint64_t> endpointMarks_;

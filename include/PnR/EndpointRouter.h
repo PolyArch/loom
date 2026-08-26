@@ -12,13 +12,67 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace loom::pnr {
+
+class EndpointRouteInputRevisionOwner;
+
+/// Proof that one owner-backed EndpointRouter input is unchanged. The token
+/// retains its revision state across owner moves while the input view remains
+/// borrowed by the search request.
+class EndpointRouteInputRevision final {
+public:
+  EndpointRouteInputRevision(const EndpointRouteInputRevision &) = default;
+  EndpointRouteInputRevision &
+  operator=(const EndpointRouteInputRevision &) = default;
+
+private:
+  struct State;
+
+  friend class EndpointRouteInputRevisionOwner;
+  friend class EndpointRouteSearchScratch;
+
+  EndpointRouteInputRevision(std::shared_ptr<State> state,
+                             std::uint64_t ownerIdentity,
+                             std::uint64_t revision)
+      : state_(std::move(state)), ownerIdentity_(ownerIdentity),
+        revision_(revision) {}
+
+  std::shared_ptr<State> state_;
+  std::uint64_t ownerIdentity_ = 0;
+  std::uint64_t revision_ = 0;
+};
+
+/// Semantic owner for one independently changing EndpointRouter input.
+class EndpointRouteInputRevisionOwner final {
+public:
+  EndpointRouteInputRevisionOwner();
+  EndpointRouteInputRevisionOwner(const EndpointRouteInputRevisionOwner &) =
+      delete;
+  EndpointRouteInputRevisionOwner &
+  operator=(const EndpointRouteInputRevisionOwner &) = delete;
+  EndpointRouteInputRevisionOwner(
+      EndpointRouteInputRevisionOwner &&other) noexcept;
+  EndpointRouteInputRevisionOwner &
+  operator=(EndpointRouteInputRevisionOwner &&) = delete;
+  ~EndpointRouteInputRevisionOwner();
+
+  EndpointRouteInputRevision revision() const &;
+  EndpointRouteInputRevision revision() && = delete;
+  llvm::Error advance();
+
+private:
+  friend class EndpointRouteSearchScratch;
+
+  std::shared_ptr<EndpointRouteInputRevision::State> state_;
+};
 
 struct EndpointRoutingGraphView final {
   PnrIndex endpointCount = 0;
@@ -73,9 +127,10 @@ struct EndpointRouteSearchRequest final {
   /// Empty means every traversal is eligible beyond width/replication checks.
   /// Otherwise this is the worker-local dense mask for the exact route probe.
   llvm::ArrayRef<std::uint64_t> eligibleTraversalBits;
-  /// Enables exact worker-local heuristic reuse. The owner must increment the
-  /// revision whenever any lower-bound arc cost changes in place.
-  std::optional<std::uint64_t> lowerBoundCostRevision;
+  /// Stable input tokens enable validated worker-local reuse. Each owner must
+  /// advance before the corresponding input view or any value in it changes.
+  std::optional<EndpointRouteInputRevision> lowerBoundArcCostRevision;
+  std::optional<EndpointRouteInputRevision> currentArcCostRevision;
   /// Empty means that no traversal class is mandatory. Otherwise the selected
   /// path must contain at least one traversal named by this dense mask. The
   /// search carries this one monotonic predicate as a two-state product graph;
@@ -99,6 +154,7 @@ struct EndpointRouteSearchRequest final {
   /// and registered boundaries participate in path selection rather than
   /// being scored only after a route is chosen.
   bool physicalTimingEnabled = false;
+  std::optional<EndpointRouteInputRevision> physicalTimingRevision;
   llvm::ArrayRef<std::uint64_t> arcTimingDelayQuanta;
   llvm::ArrayRef<std::uint8_t> arcTimingRegisteredDestination;
   llvm::ArrayRef<std::uint64_t> sourceTimingArrivalQuanta;
@@ -142,6 +198,12 @@ public:
   }
   std::uint64_t heuristicCacheEvictionCount() const {
     return heuristicCacheEvictionCount_;
+  }
+  std::uint64_t arcCostValidationScanCount() const {
+    return arcCostValidationScanCount_;
+  }
+  std::uint64_t physicalTimingValidationScanCount() const {
+    return physicalTimingValidationScanCount_;
   }
   std::size_t heuristicCacheEntryCount() const {
     return heuristicCacheIndex_.size();
@@ -195,6 +257,16 @@ private:
   searchTimingAware(const EndpointRouteSearchRequest &request);
   bool loadCachedHeuristic(const EndpointRouteSearchRequest &request);
   void storeCachedHeuristic(const EndpointRouteSearchRequest &request);
+  bool revisionIsCurrent(const EndpointRouteInputRevision &revision) const;
+  bool
+  arcCostsAlreadyValidated(const EndpointRouteSearchRequest &request) const;
+  void rememberValidatedArcCosts(const EndpointRouteSearchRequest &request);
+  bool physicalTimingAlreadyValidated(
+      const EndpointRouteSearchRequest &request) const;
+  void
+  rememberValidatedPhysicalTiming(const EndpointRouteSearchRequest &request);
+  bool
+  heuristicInputsAreCacheable(const EndpointRouteSearchRequest &request) const;
 
   struct HeuristicCacheWideDistance final {
     PnrIndex endpoint = 0;
@@ -207,6 +279,26 @@ private:
     std::vector<HeuristicCacheWideDistance> wideDistances;
     std::uint64_t lastUse = 0;
     std::uint8_t scaleShift = 0;
+    bool populated = false;
+  };
+
+  struct ValidatedArcCosts final {
+    const RouteCost *lowerBoundData = nullptr;
+    const RouteCost *currentData = nullptr;
+    std::size_t size = 0;
+    std::uint64_t lowerBoundOwnerIdentity = 0;
+    std::uint64_t lowerBoundRevision = 0;
+    std::uint64_t currentOwnerIdentity = 0;
+    std::uint64_t currentRevision = 0;
+    bool populated = false;
+  };
+
+  struct ValidatedPhysicalTiming final {
+    const std::uint64_t *delayData = nullptr;
+    const std::uint8_t *registeredDestinationData = nullptr;
+    std::size_t size = 0;
+    std::uint64_t ownerIdentity = 0;
+    std::uint64_t revision = 0;
     bool populated = false;
   };
 
@@ -293,6 +385,10 @@ private:
   std::uint64_t forwardHeuristicQueryCount_ = 0;
   std::uint64_t forwardHeuristicUnreachableCount_ = 0;
   std::uint64_t heuristicCacheEvictionCount_ = 0;
+  std::uint64_t arcCostValidationScanCount_ = 0;
+  std::uint64_t physicalTimingValidationScanCount_ = 0;
+  ValidatedArcCosts validatedArcCosts_;
+  ValidatedPhysicalTiming validatedPhysicalTiming_;
   HeapMode heapMode_ = HeapMode::ReverseDistance;
   bool prepared_ = false;
 };

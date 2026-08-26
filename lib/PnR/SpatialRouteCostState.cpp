@@ -673,6 +673,14 @@ llvm::Error SpatialRouteCostState::finishUpdate() {
     stagedArcCosts_[arc] = *cost;
   }
 
+  const bool currentArcCostsChanged =
+      llvm::any_of(affectedTagArcs_, [&](PnrIndex arc) {
+        return currentArcCosts_[arc] != stagedArcCosts_[arc];
+      });
+  if (currentArcCostsChanged)
+    if (llvm::Error error = currentArcCostRevisionOwner_.advance())
+      return error;
+
   for (PnrIndex capacity : affectedCapacities_)
     workingCapacityUsageRaw_[capacity] = stagedCapacityUsageRaw_[capacity];
   for (PnrIndex capacity : affectedCapacities_)
@@ -1492,10 +1500,20 @@ llvm::Error SpatialRouteCostState::recomputeAllArcCosts(bool resetTagHistory) {
   }
   if (lowerBoundArcCosts_.empty() || currentArcCosts_.empty())
     return llvm::Error::success();
-  bool lowerBoundChanged = false;
+  bool lowerBoundRevisionAdvanced = false;
+  bool currentRevisionAdvanced = false;
   for (PnrIndex arc = 0; arc < currentArcCosts_.size(); ++arc) {
     if (!problem_->activeRouting().arcIsActive(arc)) {
-      lowerBoundChanged |= lowerBoundArcCosts_[arc] != 0;
+      if (lowerBoundArcCosts_[arc] != 0 && !lowerBoundRevisionAdvanced) {
+        if (llvm::Error error = lowerBoundArcCostRevisionOwner_.advance())
+          return error;
+        lowerBoundRevisionAdvanced = true;
+      }
+      if (currentArcCosts_[arc] != 0 && !currentRevisionAdvanced) {
+        if (llvm::Error error = currentArcCostRevisionOwner_.advance())
+          return error;
+        currentRevisionAdvanced = true;
+      }
       lowerBoundArcCosts_[arc] = 0;
       currentArcCosts_[arc] = 0;
       continue;
@@ -1503,17 +1521,21 @@ llvm::Error SpatialRouteCostState::recomputeAllArcCosts(bool resetTagHistory) {
     auto lower = computeArcCost(arc, false, false, false);
     if (!lower)
       return lower.takeError();
-    lowerBoundChanged |= lowerBoundArcCosts_[arc] != *lower;
+    if (lowerBoundArcCosts_[arc] != *lower && !lowerBoundRevisionAdvanced) {
+      if (llvm::Error error = lowerBoundArcCostRevisionOwner_.advance())
+        return error;
+      lowerBoundRevisionAdvanced = true;
+    }
     lowerBoundArcCosts_[arc] = *lower;
     auto current = computeArcCost(arc, true, false, false);
     if (!current)
       return current.takeError();
+    if (currentArcCosts_[arc] != *current && !currentRevisionAdvanced) {
+      if (llvm::Error error = currentArcCostRevisionOwner_.advance())
+        return error;
+      currentRevisionAdvanced = true;
+    }
     currentArcCosts_[arc] = *current;
-  }
-  if (lowerBoundChanged) {
-    if (lowerBoundCostRevision_ == std::numeric_limits<std::uint64_t>::max())
-      return routeCostStateError("lower-bound cost revision overflows u64");
-    ++lowerBoundCostRevision_;
   }
   return llvm::Error::success();
 }
@@ -1571,21 +1593,26 @@ llvm::Error SpatialRouteCostState::resetFromVerifiedCandidate() {
   }
   llvm::copy(stagedClaimOveruseCosts_, currentClaimOveruseCosts_.begin());
   llvm::copy(stagedTraversalCosts_, currentTraversalCosts_.begin());
-  for (PnrIndex arc = 0; arc < problem_->routing().routingArcs().size();
-       ++arc) {
-    currentArcCosts_[arc] =
-        problem_->activeRouting().arcIsActive(arc)
-            ? currentTraversalCosts_
-                  [problem_->routing().routingArcs()[arc].traversal]
-            : 0;
-  }
+  const auto resetArcCost = [&](PnrIndex arc) {
+    return problem_->activeRouting().arcIsActive(arc)
+               ? currentTraversalCosts_
+                     [problem_->routing().routingArcs()[arc].traversal]
+               : RouteCost{0};
+  };
+  bool currentArcCostsChanged = false;
+  for (PnrIndex arc = 0; arc < problem_->routing().routingArcs().size(); ++arc)
+    currentArcCostsChanged |= currentArcCosts_[arc] != resetArcCost(arc);
+  if (currentArcCostsChanged)
+    if (llvm::Error error = currentArcCostRevisionOwner_.advance())
+      return error;
+  for (PnrIndex arc = 0; arc < problem_->routing().routingArcs().size(); ++arc)
+    currentArcCosts_[arc] = resetArcCost(arc);
   presentPressure_ = policy_.presentPressureInitial;
   std::fill(historyPressure_.begin(), historyPressure_.end(), 0);
   std::fill(selectedLogicalNetClaimBits_.begin(),
             selectedLogicalNetClaimBits_.end(), 0);
   selectedLogicalNetTagUses_.clear();
   selectedLogicalNet_.reset();
-  lowerBoundCostRevision_ = 0;
   return rebuildTagProjectionFromCandidate(true);
 }
 
@@ -1701,6 +1728,14 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
       return cost.takeError();
     stagedArcCosts_[arc] = *cost;
   }
+
+  const bool currentArcCostsChanged =
+      llvm::any_of(affectedTagArcs_, [&](PnrIndex arc) {
+        return currentArcCosts_[arc] != stagedArcCosts_[arc];
+      });
+  if (currentArcCostsChanged)
+    if (llvm::Error error = currentArcCostRevisionOwner_.advance())
+      return error;
 
   presentPressure_ = *nextPressure;
   llvm::copy(stagedHistoryPressure_, historyPressure_.begin());

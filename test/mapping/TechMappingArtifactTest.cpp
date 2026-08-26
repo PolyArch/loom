@@ -1333,7 +1333,6 @@ void artifactRoundTripAndReferenceValidation() {
       fail("PathFinder prospective rip-up did not restore excluded occupancy");
   requireSuccess(routeCostState.selectLogicalNet(std::nullopt));
   if (routeCostState.selectedLogicalNet() ||
-      routeCostState.lowerBoundCostRevision() != 0 ||
       !llvm::equal(routeCostState.currentArcCosts(), baselineCosts) ||
       routeCostState.retainedStorageBytes() != warmedRouteCostBytes)
     fail("PathFinder route-cost overlay did not restore its warmed baseline");

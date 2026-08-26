@@ -70,8 +70,8 @@ struct BuiltSystemServiceRoutes final {
 
 /// Negotiation-local routing state derived once from one frozen System problem.
 /// The scratch borrows the problem and must not outlive it. Lower-bound costs
-/// remain immutable while prepared, so one stable revision admits exact
-/// EndpointRouter heuristic reuse.
+/// remain immutable while prepared, so owner-backed revisions admit exact
+/// EndpointRouter validation and heuristic reuse.
 class SystemServiceRouterScratch final {
 public:
   SystemServiceRouterScratch() = default;
@@ -110,11 +110,11 @@ private:
                            const SystemServiceRouteBuildRequest &request,
                            std::uint64_t &endpointExpansions);
 
-  static constexpr std::uint64_t stableLowerBoundCostRevision = 1;
-
   const FrozenSystemPnrProblem *preparedProblem_ = nullptr;
   SystemServiceRouteAtomicPatternCatalog atomicPatterns_;
   std::vector<RouteCost> lowerBoundArcCosts_;
+  EndpointRouteInputRevisionOwner lowerBoundArcCostRevisionOwner_;
+  EndpointRouteInputRevisionOwner currentArcCostRevisionOwner_;
   EndpointRouteSearchScratch endpointSearch_;
 };
 

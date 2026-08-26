@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <limits>
 #include <tuple>
@@ -18,6 +19,60 @@
 using namespace loom::pnr;
 
 char EndpointRouteSearchFailure::ID;
+
+namespace {
+
+std::uint64_t nextEndpointRouteInputOwnerIdentity() {
+  static std::atomic<std::uint64_t> nextIdentity{1};
+  const std::uint64_t identity =
+      nextIdentity.fetch_add(1, std::memory_order_relaxed);
+  if (identity == 0)
+    llvm::report_fatal_error(
+        "EndpointRouter input owner identity domain exhausted");
+  return identity;
+}
+
+} // namespace
+
+struct EndpointRouteInputRevision::State final {
+  explicit State(std::uint64_t ownerIdentity) : ownerIdentity(ownerIdentity) {}
+
+  std::uint64_t ownerIdentity = 0;
+  std::uint64_t revision = 0;
+  bool ownerAlive = true;
+};
+
+EndpointRouteInputRevisionOwner::EndpointRouteInputRevisionOwner()
+    : state_(std::make_shared<EndpointRouteInputRevision::State>(
+          nextEndpointRouteInputOwnerIdentity())) {}
+
+EndpointRouteInputRevisionOwner::EndpointRouteInputRevisionOwner(
+    EndpointRouteInputRevisionOwner &&other) noexcept = default;
+
+EndpointRouteInputRevisionOwner::~EndpointRouteInputRevisionOwner() {
+  if (state_)
+    state_->ownerAlive = false;
+}
+
+EndpointRouteInputRevision EndpointRouteInputRevisionOwner::revision() const & {
+  if (!state_)
+    return EndpointRouteInputRevision({}, 0, 0);
+  return EndpointRouteInputRevision(state_, state_->ownerIdentity,
+                                    state_->revision);
+}
+
+llvm::Error EndpointRouteInputRevisionOwner::advance() {
+  if (!state_)
+    return llvm::make_error<llvm::StringError>(
+        "cannot advance a moved EndpointRouter input revision owner",
+        std::make_error_code(std::errc::invalid_argument));
+  if (state_->revision == std::numeric_limits<std::uint64_t>::max())
+    return llvm::make_error<llvm::StringError>(
+        "EndpointRouter input revision exceeds uint64_t",
+        std::make_error_code(std::errc::result_out_of_range));
+  ++state_->revision;
+  return llvm::Error::success();
+}
 
 llvm::StringRef loom::pnr::stringifyEndpointRouteSearchFailureKind(
     EndpointRouteSearchFailureKind kind) {
@@ -286,6 +341,10 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   forwardHeuristicQueryCount_ = 0;
   forwardHeuristicUnreachableCount_ = 0;
   heuristicCacheEvictionCount_ = 0;
+  arcCostValidationScanCount_ = 0;
+  physicalTimingValidationScanCount_ = 0;
+  validatedArcCosts_ = {};
+  validatedPhysicalTiming_ = {};
   prepared_ = true;
   return llvm::Error::success();
 }
@@ -640,20 +699,115 @@ llvm::Error EndpointRouteSearchScratch::buildHeuristic(
   return llvm::Error::success();
 }
 
+bool EndpointRouteSearchScratch::revisionIsCurrent(
+    const EndpointRouteInputRevision &revision) const {
+  return revision.state_ && revision.state_->ownerAlive &&
+         revision.ownerIdentity_ != 0 &&
+         revision.state_->ownerIdentity == revision.ownerIdentity_ &&
+         revision.state_->revision == revision.revision_;
+}
+
+bool EndpointRouteSearchScratch::arcCostsAlreadyValidated(
+    const EndpointRouteSearchRequest &request) const {
+  if (!validatedArcCosts_.populated || !request.lowerBoundArcCostRevision ||
+      !request.currentArcCostRevision ||
+      !revisionIsCurrent(*request.lowerBoundArcCostRevision) ||
+      !revisionIsCurrent(*request.currentArcCostRevision))
+    return false;
+  return validatedArcCosts_.lowerBoundData ==
+             request.lowerBoundArcCosts.data() &&
+         validatedArcCosts_.currentData == request.currentArcCosts.data() &&
+         validatedArcCosts_.size == request.lowerBoundArcCosts.size() &&
+         validatedArcCosts_.lowerBoundOwnerIdentity ==
+             request.lowerBoundArcCostRevision->ownerIdentity_ &&
+         validatedArcCosts_.lowerBoundRevision ==
+             request.lowerBoundArcCostRevision->revision_ &&
+         validatedArcCosts_.currentOwnerIdentity ==
+             request.currentArcCostRevision->ownerIdentity_ &&
+         validatedArcCosts_.currentRevision ==
+             request.currentArcCostRevision->revision_;
+}
+
+void EndpointRouteSearchScratch::rememberValidatedArcCosts(
+    const EndpointRouteSearchRequest &request) {
+  assert(request.lowerBoundArcCostRevision && request.currentArcCostRevision);
+  assert(revisionIsCurrent(*request.lowerBoundArcCostRevision) &&
+         revisionIsCurrent(*request.currentArcCostRevision));
+  validatedArcCosts_ = {
+      request.lowerBoundArcCosts.data(),
+      request.currentArcCosts.data(),
+      request.lowerBoundArcCosts.size(),
+      request.lowerBoundArcCostRevision->ownerIdentity_,
+      request.lowerBoundArcCostRevision->revision_,
+      request.currentArcCostRevision->ownerIdentity_,
+      request.currentArcCostRevision->revision_,
+      true,
+  };
+}
+
+bool EndpointRouteSearchScratch::physicalTimingAlreadyValidated(
+    const EndpointRouteSearchRequest &request) const {
+  if (!validatedPhysicalTiming_.populated || !request.physicalTimingRevision ||
+      !revisionIsCurrent(*request.physicalTimingRevision))
+    return false;
+  return validatedPhysicalTiming_.delayData ==
+             request.arcTimingDelayQuanta.data() &&
+         validatedPhysicalTiming_.registeredDestinationData ==
+             request.arcTimingRegisteredDestination.data() &&
+         validatedPhysicalTiming_.size == request.arcTimingDelayQuanta.size() &&
+         validatedPhysicalTiming_.ownerIdentity ==
+             request.physicalTimingRevision->ownerIdentity_ &&
+         validatedPhysicalTiming_.revision ==
+             request.physicalTimingRevision->revision_;
+}
+
+void EndpointRouteSearchScratch::rememberValidatedPhysicalTiming(
+    const EndpointRouteSearchRequest &request) {
+  assert(request.physicalTimingRevision &&
+         revisionIsCurrent(*request.physicalTimingRevision));
+  validatedPhysicalTiming_ = {
+      request.arcTimingDelayQuanta.data(),
+      request.arcTimingRegisteredDestination.data(),
+      request.arcTimingDelayQuanta.size(),
+      request.physicalTimingRevision->ownerIdentity_,
+      request.physicalTimingRevision->revision_,
+      true,
+  };
+}
+
+bool EndpointRouteSearchScratch::heuristicInputsAreCacheable(
+    const EndpointRouteSearchRequest &request) const {
+  if (!request.lowerBoundArcCostRevision ||
+      !revisionIsCurrent(*request.lowerBoundArcCostRevision))
+    return false;
+  return !request.physicalTimingEnabled ||
+         (request.physicalTimingRevision &&
+          revisionIsCurrent(*request.physicalTimingRevision));
+}
+
 std::array<std::uint8_t, 32>
 EndpointRouteSearchScratch::heuristicCacheKeyDigest(
     const EndpointRouteSearchRequest &request) const {
-  assert(request.lowerBoundCostRevision);
+  assert(heuristicInputsAreCacheable(request));
   llvm::SHA256 digest;
   digest.update(llvm::ArrayRef<std::uint8_t>(
       reinterpret_cast<const std::uint8_t *>(
           endpointHeuristicAlgorithmIdentity.data()),
       endpointHeuristicAlgorithmIdentity.size()));
-  updateDigestWord(digest, *request.lowerBoundCostRevision);
+  updateDigestWord(digest, request.lowerBoundArcCostRevision->ownerIdentity_);
+  updateDigestWord(digest, request.lowerBoundArcCostRevision->revision_);
+  updateDigestWord(digest, reinterpret_cast<std::uintptr_t>(
+                               request.lowerBoundArcCosts.data()));
   updateDigestWord(digest, request.lowerBoundArcCosts.size());
   updateDigestWord(digest, request.requiredPayloadWidthBits);
   updateDigestWord(digest, request.requiredTagWidthBits);
   updateDigestWord(digest, request.physicalTimingEnabled ? 1 : 0);
+  if (request.physicalTimingEnabled) {
+    updateDigestWord(digest, request.physicalTimingRevision->ownerIdentity_);
+    updateDigestWord(digest, request.physicalTimingRevision->revision_);
+    updateDigestWord(digest, reinterpret_cast<std::uintptr_t>(
+                                 request.arcTimingDelayQuanta.data()));
+  }
   updateDigestWord(digest, request.requiredTimingQuanta);
   updateDigestWord(digest, request.timingCriticality);
   updateDigestWord(digest, request.targetEndpoints.size());
@@ -688,7 +842,7 @@ EndpointRouteSearchScratch::eligibleTraversalMaskDigest(
 bool EndpointRouteSearchScratch::loadCachedHeuristic(
     const EndpointRouteSearchRequest &request) {
   activeCachedHeuristic_ = nullptr;
-  if (!request.lowerBoundCostRevision || heuristicCache_.empty())
+  if (!heuristicInputsAreCacheable(request) || heuristicCache_.empty())
     return false;
   const auto digest = heuristicCacheKeyDigest(request);
   const auto indexed = heuristicCacheIndex_.find(digest);
@@ -729,7 +883,7 @@ void EndpointRouteSearchScratch::evictHeuristicCacheEntry(std::size_t slot) {
 
 void EndpointRouteSearchScratch::storeCachedHeuristic(
     const EndpointRouteSearchRequest &request) {
-  if (!request.lowerBoundCostRevision || heuristicCache_.empty())
+  if (!heuristicInputsAreCacheable(request) || heuristicCache_.empty())
     return;
   const auto digest = heuristicCacheKeyDigest(request);
   std::size_t selected = 0;
@@ -1084,10 +1238,12 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
     return invalid("lower-bound and current cost arrays must contain E rows");
   const bool timingAware = request.physicalTimingEnabled;
   if (!timingAware &&
-      (!request.arcTimingRegisteredDestination.empty() ||
+      (!request.arcTimingDelayQuanta.empty() ||
+       !request.arcTimingRegisteredDestination.empty() ||
        !request.sourceTimingArrivalQuanta.empty() ||
        !request.targetTimingDelayQuanta.empty() ||
-       request.requiredTimingQuanta != 0 || request.timingCriticality != 0))
+       request.physicalTimingRevision || request.requiredTimingQuanta != 0 ||
+       request.timingCriticality != 0))
     return invalid("partial physical timing search input is not allowed");
   if (timingAware &&
       (request.arcTimingDelayQuanta.size() != graph_.arcs.size() ||
@@ -1098,13 +1254,19 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
            request.targetEndpoints.size() ||
        request.requiredTimingQuanta == 0))
     return invalid("physical timing search arrays have the wrong domain");
-  if (timingAware)
+  if (timingAware && !physicalTimingAlreadyValidated(request)) {
+    validatedPhysicalTiming_ = {};
+    saturatingIncrement(physicalTimingValidationScanCount_);
     for (PnrIndex arc = 0; arc < graph_.arcs.size(); ++arc) {
       if (request.arcTimingDelayQuanta[arc] == 0)
         return invalid("physical timing search has a zero-delay arc");
       if (request.arcTimingRegisteredDestination[arc] > 1)
         return invalid("physical timing boundary flag is not boolean");
     }
+    if (request.physicalTimingRevision &&
+        revisionIsCurrent(*request.physicalTimingRevision))
+      rememberValidatedPhysicalTiming(request);
+  }
   const std::size_t traversalWords =
       (graph_.traversalReplicationGroups.size() + 63) / 64;
   if (!request.eligibleTraversalBits.empty() &&
@@ -1155,13 +1317,21 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   for (PnrIndex endpoint : request.targetEndpoints)
     if (endpoint >= graph_.endpointCount)
       return invalid("target endpoint is out of range: ", endpoint);
-  for (PnrIndex arc = 0; arc < graph_.arcs.size(); ++arc) {
-    const RouteCost lower = request.lowerBoundArcCosts[arc];
-    const RouteCost current = request.currentArcCosts[arc];
-    if (lower == routeCostInfinity || current == routeCostInfinity)
-      return invalid("arc costs must be finite");
-    if (current < lower)
-      return invalid("current arc cost is below its admissible lower bound");
+  if (!arcCostsAlreadyValidated(request)) {
+    validatedArcCosts_ = {};
+    saturatingIncrement(arcCostValidationScanCount_);
+    for (PnrIndex arc = 0; arc < graph_.arcs.size(); ++arc) {
+      const RouteCost lower = request.lowerBoundArcCosts[arc];
+      const RouteCost current = request.currentArcCosts[arc];
+      if (lower == routeCostInfinity || current == routeCostInfinity)
+        return invalid("arc costs must be finite");
+      if (current < lower)
+        return invalid("current arc cost is below its admissible lower bound");
+    }
+    if (request.lowerBoundArcCostRevision && request.currentArcCostRevision &&
+        revisionIsCurrent(*request.lowerBoundArcCostRevision) &&
+        revisionIsCurrent(*request.currentArcCostRevision))
+      rememberValidatedArcCosts(request);
   }
 
   advanceGeneration(timingArcCostEpochs_, timingArcCostGeneration_);
