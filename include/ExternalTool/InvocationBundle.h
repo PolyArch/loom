@@ -214,6 +214,22 @@ struct ExternalToolInvocationExecutionObservation final {
 /// invocation. External tools cannot return negative process exit codes.
 inline constexpr int externalToolExecutionStoppedExitCode = -2;
 
+/// Execution control stopped fence admission before a new durable generation
+/// began. The prior token, completion, and declared outputs remain untouched.
+class ExternalToolExecutionAdmissionStoppedError final
+    : public llvm::ErrorInfo<ExternalToolExecutionAdmissionStoppedError> {
+public:
+  static char ID;
+
+  void log(llvm::raw_ostream &os) const override {
+    os << "external tool execution stopped before generation admission";
+  }
+
+  std::error_code convertToErrorCode() const override {
+    return llvm::inconvertibleErrorCode();
+  }
+};
+
 /// A manifest-frozen bounded fork-join group over adjacent independent frozen
 /// tool commands. Commands outside every group retain ordered execution, and
 /// each group boundary is a barrier.
@@ -407,23 +423,21 @@ finalizeExternalToolInvocationBundle(
     llvm::StringRef bundleRoot,
     const ExternalToolInvocationBundleSpec &specification);
 
+/// Execution-only compatibility projection that discards the sealed receipt.
+/// A current-process import must use the observed executor below instead.
 llvm::Expected<int> executeExternalToolInvocationBundle(
     const PreparedExternalToolInvocation &prepared);
 
 /// Executes according to the caller-owned reuse policy while preserving the
 /// exact cache and external-tool disposition for journals and manifests.
+/// Stopped fence admission returns
+/// ExternalToolExecutionAdmissionStoppedError without starting a generation.
 llvm::Expected<ExternalToolInvocationExecutionObservation>
 executeExternalToolInvocationBundleObserved(
     const PreparedExternalToolInvocation &prepared,
     ExecutionControlView executionControl = {},
     ExternalToolResultReusePolicy reusePolicy =
         ExternalToolResultReusePolicy::AllowExactReuse);
-
-/// Starts one nonsemantic execution generation for a prepared root. The token
-/// is published atomically beside the manifest and changes on every call; it
-/// never enters an invocation identity or persistent result-cache key.
-llvm::Expected<BlobDigest> beginExternalToolInvocationAttempt(
-    const PreparedExternalToolInvocation &prepared);
 
 /// Checks the public generation fields used by operational work accounting.
 /// This does not prove that the ExternalTool executor produced the fields.

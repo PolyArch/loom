@@ -41,6 +41,11 @@ llvm::Expected<VoltusRailObservation> importVoltusRailObservation(
     const external_tool::PreparedExternalToolInvocation &prepared,
     const CadenceBundleInputs &inputs);
 
+llvm::Expected<VoltusRailObservation> importVoltusRailObservation(
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const CadenceBundleInputs &inputs,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution);
+
 /// Registers the exact Evaluation model provider that projects one complete
 /// single-domain static rail invocation from its immutable Request and routed
 /// HardwareImplementation closure.

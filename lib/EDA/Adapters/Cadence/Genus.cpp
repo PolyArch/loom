@@ -151,12 +151,13 @@ prepareProviderWithContracts(llvm::ArrayRef<CandidateGeneratorInputBinding>,
                              const ArtifactStore &, const BlobStore &,
                              const ExternalToolPreparationContext &);
 
-llvm::Expected<CandidateGeneratorProviderResult>
-importProviderWithContracts(llvm::ArrayRef<CandidateGeneratorInputBinding>,
-                            const ResolvedCandidateGeneratorBinding &,
-                            const PreparedExternalToolInvocation &,
-                            const ExternalImplementationContractCatalog &,
-                            const ArtifactStore &, const BlobStore &);
+llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
+    llvm::ArrayRef<CandidateGeneratorInputBinding>,
+    const ResolvedCandidateGeneratorBinding &,
+    const PreparedExternalToolInvocation &,
+    const ExternalImplementationContractCatalog &, const ArtifactStore &,
+    const BlobStore &,
+    const ExternalToolInvocationExecutionObservation * = nullptr);
 
 llvm::Expected<PreparedExternalToolInvocation>
 prepareProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
@@ -178,6 +179,17 @@ importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                                      artifacts, blobs);
 }
 
+llvm::Expected<CandidateGeneratorProviderResult> importProviderWithExecution(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  static const ExternalImplementationContractCatalog contracts;
+  return importProviderWithContracts(inputs, binding, prepared, contracts,
+                                     artifacts, blobs, &execution);
+}
+
 const CandidateGeneratorDescriptor descriptor{
     genusGateNetlistCandidateGeneratorKind,
     "cadence.genus.gate_netlist",
@@ -192,8 +204,9 @@ const CandidateGeneratorDescriptor descriptor{
 };
 
 const CandidateGeneratorProvider provider{
-    descriptor.reference(), CandidateGeneratorExternalPrepareImportProvider{
-                                prepareProvider, importProvider}};
+    descriptor.reference(),
+    CandidateGeneratorExternalPrepareImportProvider{
+        prepareProvider, importProvider, importProviderWithExecution}};
 
 bool isPortableIdentifier(llvm::StringRef value) {
   const auto first = [](char character) {
@@ -831,12 +844,18 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
     const ResolvedCandidateGeneratorBinding &binding,
     const PreparedExternalToolInvocation &prepared,
     const ExternalImplementationContractCatalog &contracts,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolInvocationExecutionObservation *execution) {
   auto facts = invocationFacts(inputs, binding, contracts, artifacts, blobs);
   if (!facts)
     return facts.takeError();
+  ExternalToolInvocationImportExpectation importExpectation =
+      expectation(*facts);
   auto attempt =
-      importExternalToolInvocationAttempt(prepared, expectation(*facts));
+      execution
+          ? importExternalToolInvocationAttempt(prepared, importExpectation,
+                                                *execution)
+          : importExternalToolInvocationAttempt(prepared, importExpectation);
   if (!attempt)
     return attempt.takeError();
   if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))

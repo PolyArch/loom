@@ -602,15 +602,16 @@ execute(Engine engine, llvm::StringRef workspace,
     return invalid(engineName + " is unsupported for the exact Deployment");
   const loom::external_tool::PreparedExternalToolInvocation &external =
       prepared->externalInvocation();
-  auto status =
-      loom::external_tool::executeExternalToolInvocationBundle(external);
-  if (!status)
-    return status.takeError();
-  if (*status != 0)
+  auto execution =
+      loom::external_tool::executeExternalToolInvocationBundleObserved(
+          external);
+  if (!execution)
+    return execution.takeError();
+  if (execution->exitCode != 0)
     return invalid(engineName + " external invocation exited with status " +
-                   llvm::Twine(*status));
+                   llvm::Twine(execution->exitCode));
   auto evidence = loom::evaluation::importEvaluationModelInvocation(
-      *request, resolution, *prepared, artifacts, blobs);
+      *request, resolution, *prepared, *execution, artifacts, blobs);
   if (!evidence)
     return evidence.takeError();
   if (evidence->outcomeKind() !=

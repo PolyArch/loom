@@ -34,6 +34,16 @@
 #include <vector>
 
 namespace loom::eda::open_source {
+
+static llvm::Expected<dse::CandidateGeneratorProviderResult>
+importOpenRoadPlacedInvocationImpl(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation *execution,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
 namespace {
 
 constexpr llvm::StringLiteral kConfigSchema = "loom.openroad_placed_config";
@@ -697,8 +707,7 @@ publishPlacedImplementation(
 
   return hardware::finalizeHardwareImplementation(
       hardware::HardwareImplementationDraft{
-          source->implementation().fabric(),
-          source->implementation().subject(),
+          source->implementation().fabric(), source->implementation().subject(),
           source->implementation().configurationAbi(),
           std::move(*representation),
           source->implementation().implementationPlatform(),
@@ -1023,6 +1032,20 @@ llvm::Expected<dse::CandidateGeneratorProviderResult> importRegisteredOpenRoad(
                                         artifacts, blobs);
 }
 
+llvm::Expected<dse::CandidateGeneratorProviderResult>
+importRegisteredOpenRoadWithExecution(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto contracts = makeYosysStandardCellContractCatalog();
+  if (!contracts)
+    return contracts.takeError();
+  return importOpenRoadPlacedInvocationImpl(
+      inputs, binding, prepared, &execution, *contracts, artifacts, blobs);
+}
+
 } // namespace
 
 llvm::Expected<OpenRoadResolvedExecution> resolveOpenRoadExecution(
@@ -1043,7 +1066,8 @@ llvm::Error registerOpenRoadPlacedCandidateGenerator() {
   static const dse::CandidateGeneratorProvider provider{
       descriptor.reference(),
       dse::CandidateGeneratorExternalPrepareImportProvider{
-          prepareRegisteredOpenRoad, importRegisteredOpenRoad}};
+          prepareRegisteredOpenRoad, importRegisteredOpenRoad,
+          importRegisteredOpenRoadWithExecution}};
   if (llvm::Error error = dse::registerCandidateGeneratorDescriptor(descriptor))
     return error;
   return dse::registerCandidateGeneratorProvider(provider);
@@ -1114,18 +1138,23 @@ prepareOpenRoadPlacedInvocation(
       context.bundleDestination, specification);
 }
 
-llvm::Expected<dse::CandidateGeneratorProviderResult>
-importOpenRoadPlacedInvocation(
+static llvm::Expected<dse::CandidateGeneratorProviderResult>
+importOpenRoadPlacedInvocationImpl(
     llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
     const dse::ResolvedCandidateGeneratorBinding &binding,
     const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation *execution,
     const hardware::ExternalImplementationContractCatalog &contracts,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   auto data = makeInvocationData(inputs, binding, contracts, artifacts, blobs);
   if (!data)
     return data.takeError();
-  auto attempt = external_tool::importExternalToolInvocationAttempt(
-      prepared, importExpectation(*data));
+  external_tool::ExternalToolInvocationImportExpectation expectation =
+      importExpectation(*data);
+  auto attempt = execution ? external_tool::importExternalToolInvocationAttempt(
+                                 prepared, expectation, *execution)
+                           : external_tool::importExternalToolInvocationAttempt(
+                                 prepared, expectation);
   if (!attempt)
     return attempt.takeError();
   if (std::holds_alternative<
@@ -1185,6 +1214,17 @@ importOpenRoadPlacedInvocation(
             {},
             {}}}},
       {{dse::CandidateGeneratorWorkUnitRef(0), 1, 1}}};
+}
+
+llvm::Expected<dse::CandidateGeneratorProviderResult>
+importOpenRoadPlacedInvocation(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importOpenRoadPlacedInvocationImpl(inputs, binding, prepared, nullptr,
+                                            contracts, artifacts, blobs);
 }
 
 llvm::Expected<std::string>

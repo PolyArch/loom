@@ -507,43 +507,138 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
                        "set -u -o pipefail\n"
                        "loom_cache_preflight=0\n"
                        "loom_cache_postflight=0\n"
-                       "if (( $# == 1 )) && [[ \"$1\" == "
-                       "--loom-cache-preflight ]]; then\n"
-                       "  loom_cache_preflight=1\n"
-                       "elif (( $# == 1 )) && [[ \"$1\" == "
-                       "--loom-cache-postflight ]]; then\n"
-                       "  loom_cache_postflight=1\n"
-                       "elif (( $# != 0 )); then\n"
-                       "  exit " +
+                       "loom_inherited_execution_fence=0\n"
+                       "for loom_argument in \"$@\"; do\n"
+                       "  case \"$loom_argument\" in\n"
+                       "    --loom-cache-preflight)\n"
+                       "      if (( loom_cache_preflight != 0 || "
+                       "loom_cache_postflight != 0 )); then exit " +
                        launcherFailure +
-                       "\n"
-                       "fi\n"
+                       "; fi\n"
+                       "      loom_cache_preflight=1\n"
+                       "      ;;\n"
+                       "    --loom-cache-postflight)\n"
+                       "      if (( loom_cache_preflight != 0 || "
+                       "loom_cache_postflight != 0 )); then exit " +
+                       launcherFailure +
+                       "; fi\n"
+                       "      loom_cache_postflight=1\n"
+                       "      ;;\n"
+                       "    " +
+                       shellQuote(kInheritedExecutionFenceArgument) +
+                       ")\n"
+                       "      if (( loom_inherited_execution_fence != 0 )); "
+                       "then exit " +
+                       launcherFailure +
+                       "; fi\n"
+                       "      loom_inherited_execution_fence=1\n"
+                       "      ;;\n"
+                       "    *) exit " +
+                       launcherFailure +
+                       " ;;\n"
+                       "  esac\n"
+                       "done\n"
                        "loom_bundle_root=$(CDPATH= cd -- \"$(dirname -- "
                        "\"${BASH_SOURCE[0]}\")\" && pwd -P)\n";
   script += "cd -- \"$loom_bundle_root\" || exit " + launcherFailure + "\n";
+  script += "loom_completion=" + shellQuote(kCompletionPath) +
+            "\n"
+            "loom_completion_partial=\"${loom_completion}.partial.$$\"\n"
+            "loom_tool_version_file=''\n"
+            "loom_command_observations=''\n"
+            "loom_command_observations_partial=''\n"
+            "loom_command_execution_directory=''\n"
+            "loom_command_pids=()\n"
+            "loom_stdout_fd=''\n"
+            "loom_stderr_fd=''\n"
+            "loom_command_observations_fd=''\n"
+            "loom_manifest_digest=" +
+            shellQuote(manifestDigest) +
+            "\n"
+            "loom_attempt_token=''\n"
+            "loom_attempt_token_partial=''\n"
+            "loom_output_digests='[]'\n";
+  script += "loom_execution_fence=\"${loom_bundle_root}" +
+            kExecutionFenceSuffix.str() + "\"\n";
+  script += "if (( loom_inherited_execution_fence != 0 )); then\n";
+  script += "  if [[ ! -f /proc/$$/fd/" +
+            std::to_string(kInheritedExecutionFenceDescriptor) +
+            " || ! -d /proc/$$/fd/" +
+            std::to_string(kInheritedBundleRootDescriptor) +
+            " || ! \"$loom_execution_fence\" -ef /proc/$$/fd/" +
+            std::to_string(kInheritedExecutionFenceDescriptor) +
+            " || ! \"$loom_bundle_root\" -ef /proc/$$/fd/" +
+            std::to_string(kInheritedBundleRootDescriptor) +
+            " ]] || [[ \"$(stat -Lc '%h' -- /proc/$$/fd/" +
+            std::to_string(kInheritedExecutionFenceDescriptor) +
+            ")\" != 1 ]]; then exit " + launcherFailure + "; fi\n";
+  script += "  exec {loom_execution_fence_probe_fd}>>\"$loom_execution_fence\" "
+            "|| exit " +
+            launcherFailure + "\n";
+  script += "  if flock --exclusive --nonblock "
+            "\"$loom_execution_fence_probe_fd\"; then\n"
+            "    exec {loom_execution_fence_probe_fd}>&-\n"
+            "    exit " +
+            launcherFailure +
+            "\n"
+            "  fi\n"
+            "  exec {loom_execution_fence_probe_fd}>&- || exit " +
+            launcherFailure + "\n";
+  script += "  flock --exclusive --nonblock " +
+            std::to_string(kInheritedExecutionFenceDescriptor) + " || exit " +
+            launcherFailure + "\n";
+  script += "else\n";
+  script += "  if [[ -L \"$loom_execution_fence\" ]]; then exit " +
+            launcherFailure + "; fi\n";
+  script += "  exec " + std::to_string(kInheritedExecutionFenceDescriptor) +
+            ">>\"$loom_execution_fence\" || exit " + launcherFailure + "\n";
+  script += "  if [[ ! -f /proc/$$/fd/" +
+            std::to_string(kInheritedExecutionFenceDescriptor) +
+            " || ! \"$loom_execution_fence\" -ef /proc/$$/fd/" +
+            std::to_string(kInheritedExecutionFenceDescriptor) +
+            " ]] || [[ \"$(stat -Lc '%h' -- /proc/$$/fd/" +
+            std::to_string(kInheritedExecutionFenceDescriptor) +
+            ")\" != 1 ]]; then exit " + launcherFailure + "; fi\n";
+  script += "  flock --exclusive " +
+            std::to_string(kInheritedExecutionFenceDescriptor) + " || exit " +
+            launcherFailure + "\n";
+  script += "  rm -f -- \"$loom_completion\" " +
+            shellQuote(kCommandObservationsPath) + " || exit " +
+            launcherFailure + "\n";
+  script += "  loom_attempt_token_partial=$(mktemp -- " +
+            shellQuote(kAttemptTokenPath.str() + ".partial.XXXXXXXX") +
+            ") || exit " + launcherFailure + "\n";
+  script += "  if ! IFS=' ' read -r loom_attempt_token _ < <(printf "
+            "'%s\\0%s\\0%s\\0%s\\0' \"$loom_manifest_digest\" "
+            "\"$loom_bundle_root\" \"$loom_attempt_token_partial\" \"$$\" | "
+            "sha256sum); then\n"
+            "    rm -f -- \"$loom_attempt_token_partial\"\n"
+            "    exit " +
+            launcherFailure +
+            "\n"
+            "  fi\n";
+  script += "  if [[ ! \"$loom_attempt_token\" =~ ^[0-9a-f]{64}$ ]] || "
+            "! printf '%s' \"$loom_attempt_token\" "
+            ">\"$loom_attempt_token_partial\" || ! mv -f -- "
+            "\"$loom_attempt_token_partial\" " +
+            shellQuote(kAttemptTokenPath) +
+            "; then\n"
+            "    rm -f -- \"$loom_attempt_token_partial\"\n"
+            "    exit " +
+            launcherFailure +
+            "\n"
+            "  fi\n"
+            "  loom_attempt_token_partial=''\n"
+            "fi\n";
   script +=
-      "loom_completion=" + shellQuote(kCompletionPath) +
-      "\n"
-      "loom_completion_partial=\"${loom_completion}.partial.$$\"\n"
-      "loom_tool_version_file=''\n"
-      "loom_command_observations=''\n"
-      "loom_command_observations_partial=''\n"
-      "loom_command_execution_directory=''\n"
-      "loom_command_pids=()\n"
-      "loom_stdout_fd=''\n"
-      "loom_stderr_fd=''\n"
-      "loom_command_observations_fd=''\n"
-      "loom_manifest_digest=" +
-      shellQuote(manifestDigest) +
-      "\n"
-      "loom_attempt_token=''\n"
-      "loom_output_digests='[]'\n"
       "loom_cleanup() {\n"
       "  for loom_command_pid in \"${loom_command_pids[@]}\"; do "
       "kill \"$loom_command_pid\" 2>/dev/null || true; done\n"
       "  for loom_command_pid in \"${loom_command_pids[@]}\"; do "
       "wait \"$loom_command_pid\" 2>/dev/null || true; done\n"
       "  rm -f -- \"$loom_completion_partial\"\n"
+      "  if [[ -n \"$loom_attempt_token_partial\" ]]; then rm -f -- "
+      "\"$loom_attempt_token_partial\"; fi\n"
       "  if [[ -n \"$loom_tool_version_file\" ]]; then rm -f -- "
       "\"$loom_tool_version_file\"; fi\n"
       "  if [[ -n \"$loom_command_observations_partial\" ]]; then rm -f -- "
