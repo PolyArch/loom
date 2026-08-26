@@ -161,17 +161,23 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::vector<ArtifactRootReference> evidence = prepared.satisfiedEvidence;
   evidence.insert(evidence.end(), request.preexistingEvidence.begin(),
                   request.preexistingEvidence.end());
-  std::vector<ArtifactRootReference> qualitySemanticInputs;
+  std::vector<ArtifactRootReference> invocationSemanticInputs;
   if (request.boundedQuality)
-    qualitySemanticInputs = request.boundedQuality->semanticInputs;
-  qualitySemanticInputs.insert(
-      qualitySemanticInputs.end(),
+    invocationSemanticInputs = request.boundedQuality->semanticInputs;
+  invocationSemanticInputs.insert(
+      invocationSemanticInputs.end(),
       {prepared.preMappingSourceProgram, prepared.preMappingFabric,
        prepared.preMappingWorkload, prepared.preMappingRuntimeInput});
-  llvm::sort(qualitySemanticInputs, artifactRootReferenceLess);
-  qualitySemanticInputs.erase(
-      std::unique(qualitySemanticInputs.begin(), qualitySemanticInputs.end()),
-      qualitySemanticInputs.end());
+  for (const PreparedApplicationSoftware &software : prepared.software)
+    for (const sim::SourceBackedDfgReplayCaseReference &replay :
+         software.replayCases)
+      invocationSemanticInputs.insert(invocationSemanticInputs.end(),
+                                      {replay.workload, replay.runtimeInput});
+  llvm::sort(invocationSemanticInputs, artifactRootReferenceLess);
+  invocationSemanticInputs.erase(
+      std::unique(invocationSemanticInputs.begin(),
+                  invocationSemanticInputs.end()),
+      invocationSemanticInputs.end());
   std::vector<const dse::JointDesignExplorationPlan *> plans;
   plans.reserve(prepared.mappingAlternatives.size());
   for (const PreparedApplicationMappingAlternative &alternative :
@@ -394,7 +400,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     reopenRequest.spectrumEndpoint =
         prepared.resourceTimePolicy.spectrumEndpoint;
     reopenRequest.hardwareExplorationScope = request.hardwareExplorationScope;
-    reopenRequest.invocationSemanticInputs = qualitySemanticInputs;
+    reopenRequest.invocationSemanticInputs = invocationSemanticInputs;
     return dse::executeJointDesignWithHardwareReopen(
         tail, prepared.jointPolicy, std::move(reopenRequest), artifacts, blobs);
   };
@@ -438,7 +444,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         std::nullopt,
         request.siteCapacity,
         request.executionPolicy};
-    repairRequest.invocationSemanticInputs = qualitySemanticInputs;
+    repairRequest.invocationSemanticInputs = invocationSemanticInputs;
     return repairRequest;
   };
 
