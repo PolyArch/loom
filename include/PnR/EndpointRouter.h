@@ -3,6 +3,7 @@
 
 #include "PnR/EndpointRoutingTopology.h"
 #include "PnR/RoutingNegotiation.h"
+#include "PnR/SpatialPnrWorkLedger.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -186,7 +187,8 @@ public:
   EndpointRouteSearchScratch &operator=(EndpointRouteSearchScratch &&) = delete;
   ~EndpointRouteSearchScratch() = default;
 
-  llvm::Error prepare(EndpointRoutingGraphView graph);
+  llvm::Error prepare(EndpointRoutingGraphView graph,
+                      SpatialPnrWorkLedgerView workLedger = {});
   llvm::Expected<EndpointRouteSearchResult>
   search(const EndpointRouteSearchRequest &request);
   std::uint64_t endpointExpansionCount() const {
@@ -384,6 +386,7 @@ private:
   std::uint64_t heuristicCacheEvictionCount_ = 0;
   std::uint64_t arcCostValidationScanCount_ = 0;
   std::uint64_t physicalTimingValidationScanCount_ = 0;
+  SpatialPnrWorkLedgerView workLedger_;
   ValidatedArcCosts validatedArcCosts_;
   ValidatedPhysicalTiming validatedPhysicalTiming_;
   HeapMode heapMode_ = HeapMode::ReverseDistance;

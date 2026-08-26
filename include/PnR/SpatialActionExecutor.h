@@ -115,7 +115,8 @@ public:
   SpatialActionExecutorScratch();
   ~SpatialActionExecutorScratch();
 
-  llvm::Error prepare(SpatialCandidateState &candidate);
+  llvm::Error prepare(SpatialCandidateState &candidate,
+                      SpatialPnrWorkLedgerView workLedger = {});
   llvm::Expected<SpatialActionProbe>
   probe(SpatialCandidateState &candidate, const SpatialMappingAction &action,
         SpatialActionExecutionContext context =

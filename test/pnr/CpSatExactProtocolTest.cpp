@@ -107,15 +107,26 @@ void solverCallBudgetLeavesNoPartialAssignment() {
       {x.index(), binaryValues},
       {y.index(), binaryValues},
   }};
+  std::uint64_t plannedSolverCalls = 0;
+  std::uint64_t consumedSolverCalls = 0;
+  std::array<loom::pnr::SpatialPnrWorkCounterRef,
+             loom::pnr::spatialPnrWorkKindCount>
+      counters{};
+  counters[static_cast<std::size_t>(
+      loom::pnr::SpatialPnrWorkKind::ExactRepairSolverCall)] = {
+      &plannedSolverCalls, &consumedSolverCalls};
   const CpSatCanonicalResult result = take(solveCanonicalCpSat(
       model.Build(), variables, std::nullopt, /*maxSolverCalls=*/1,
-      /*randomSeed=*/19));
+      /*randomSeed=*/19, loom::pnr::SpatialPnrWorkLedgerView(counters)));
   require(result.kind == CpSatCanonicalResultKind::UnknownBudgetExhausted,
           "solver-call exhaustion was treated as a proof");
   require(result.assignment.empty(),
           "solver-call exhaustion exposed a partial assignment");
   require(result.solverCalls == 1,
           "solver-call budget was not consumed exactly");
+  require(plannedSolverCalls == result.solverCalls &&
+              consumedSolverCalls == result.solverCalls,
+          "solver-call budget fabricated or lost an admitted work slot");
 }
 
 void overflowingRadixStartsAnotherCanonicalBlock() {

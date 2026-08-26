@@ -108,7 +108,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSpatialPnrCandidateGeneratorKind,
     "mapping.root_complete_spatial_pnr",
-    "loom.mapping.root_complete_spatial_pnr.generator.v22",
+    "loom.mapping.root_complete_spatial_pnr.generator.v23",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -465,8 +465,7 @@ accumulateWorkSummary(llvm::ArrayRef<CandidateGeneratorWorkUnitSummary> source,
 llvm::Error accountUnconsumedSeedHandoff(
     const ::loom::pnr::SpatialPathFinderSeedHandoffHandle &handoff,
     std::vector<CandidateGeneratorWorkUnitSummary> &workSummary,
-    ActiveProblemCacheStatistics &statistics,
-    bool seedPlanAlreadyAccounted = false) {
+    ActiveProblemCacheStatistics &statistics, bool &executionFailed) {
   if (!handoff || handoff->consumed)
     return llvm::Error::success();
   if (handoff->seed.has_value() == handoff->failure.has_value())
@@ -474,20 +473,27 @@ llvm::Error accountUnconsumedSeedHandoff(
         std::make_error_code(std::errc::invalid_argument),
         "root-complete Spatial seed handoff is not a single outcome");
   ::loom::pnr::SpatialPnrGenerationAccounting accounting;
-  accounting.plannedSeedAttemptSlots = seedPlanAlreadyAccounted ? 0 : 1;
-  accounting.seedAttemptSlots = 1;
+  accounting.plannedSeedAttemptSlots = 1;
+  accounting.seedAttemptSlots = handoff->workSummary.seedAttemptCompleted;
   accounting.preparedSeeds = handoff->seed ? 1 : 0;
   accounting.initializerAssignmentAttempts =
       handoff->workSummary.initializerAssignmentAttempts;
   accounting.plannedInitializerAssignmentAttempts =
-      accounting.initializerAssignmentAttempts;
+      handoff->workSummary.plannedInitializerAssignmentAttempts;
   accounting.endpointExpansionSlots = handoff->workSummary.endpointExpansions;
   accounting.plannedEndpointExpansionSlots =
-      accounting.endpointExpansionSlots;
+      handoff->workSummary.plannedEndpointExpansions;
   accounting.negotiationIterationSlots =
       handoff->workSummary.negotiationIterations;
   accounting.plannedNegotiationIterationSlots =
-      accounting.negotiationIterationSlots;
+      handoff->workSummary.plannedNegotiationIterations;
+  const std::vector<CandidateGeneratorWorkUnitSummary> handoffSummary =
+      spatialPnrCandidateGeneratorWorkSummary(accounting);
+  executionFailed |=
+      (handoff->failure && !handoff->workSummary.seedAttemptCompleted) ||
+      llvm::any_of(handoffSummary, [](const auto &unit) {
+        return unit.planned != unit.consumed;
+      });
   if (handoff->failure) {
     llvm::consumeError(std::move(*handoff->failure));
     handoff->failure.reset();
@@ -495,8 +501,7 @@ llvm::Error accountUnconsumedSeedHandoff(
   handoff->seed.reset();
   handoff->consumed = true;
   ++statistics.rankSeedHandoffConsumedCount;
-  return accumulateWorkSummary(
-      spatialPnrCandidateGeneratorWorkSummary(accounting), workSummary);
+  return accumulateWorkSummary(handoffSummary, workSummary);
 }
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
@@ -558,6 +563,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       };
   std::vector<CandidateGeneratorWorkUnitSummary> workSummary =
       spatialPnrCandidateGeneratorWorkSummary({});
+  bool rankExecutionFailed = false;
   const std::optional<std::uint64_t> maximumOutputs =
       invocation.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
   const bool firstVerifiedCandidate =
@@ -578,9 +584,16 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     for (PreparedTechCandidate &candidate : preparedCandidates)
       if (llvm::Error error = accountUnconsumedSeedHandoff(
               candidate.canonicalSeed, workSummary,
-              activeProblemCacheStatistics))
+              activeProblemCacheStatistics, rankExecutionFailed))
         return error;
     return llvm::Error::success();
+  };
+  const auto executionFailedResult = [&]() {
+    applyOutputDemand();
+    return CandidateGeneratorProviderResult{
+        incomplete(CandidateGeneratorIncompleteReason::ExecutionFailed,
+                   std::move(outputs)),
+        std::move(workSummary), encodeFeedback(graphBoundaryFeedback)};
   };
   const auto freezeActiveProblem =
       [&](PreparedTechCandidate &candidate) -> llvm::Expected<bool> {
@@ -886,8 +899,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     if (!hasUncoveredGraph(prepared.tech.view().covers(), coveredGraphs)) {
       ++skippedCoveredTechMappings;
       if (llvm::Error error = accountUnconsumedSeedHandoff(
-              prepared.canonicalSeed, workSummary,
-              activeProblemCacheStatistics))
+              prepared.canonicalSeed, workSummary, activeProblemCacheStatistics,
+              rankExecutionFailed))
         return std::move(error);
       continue;
     }
@@ -941,7 +954,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       return std::move(error);
     if (llvm::Error error = accountUnconsumedSeedHandoff(
             prepared.canonicalSeed, workSummary, activeProblemCacheStatistics,
-            invocationWorkSummary.front().planned != 0))
+            rankExecutionFailed))
       return std::move(error);
     if (auto *generated =
             std::get_if<::loom::pnr::GeneratedSpatialMappings>(&outcome)) {
@@ -1055,6 +1068,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
             outcome)) {
       if (llvm::Error error = settleUnconsumedSeeds())
         return std::move(error);
+      if (rankExecutionFailed)
+        return executionFailedResult();
       applyOutputDemand();
       return CandidateGeneratorProviderResult{
           incomplete(CandidateGeneratorIncompleteReason::Unsupported,
@@ -1065,23 +1080,24 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
             std::get_if<::loom::pnr::InvalidSpatialPnrGeneration>(&outcome)) {
       if (llvm::Error error = settleUnconsumedSeeds())
         return std::move(error);
+      if (rankExecutionFailed)
+        return executionFailedResult();
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "root_complete_spatial_pnr_generator_invalid: " +
               invalid->diagnostic);
     }
-    const auto &internal =
-        std::get<::loom::pnr::InternalSpatialPnrGeneration>(outcome);
+    assert(std::holds_alternative<::loom::pnr::InternalSpatialPnrGeneration>(
+        outcome));
     if (llvm::Error error = settleUnconsumedSeeds())
       return std::move(error);
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "root_complete_spatial_pnr_generator_execution_failed: " +
-            internal.diagnostic);
+    return executionFailedResult();
   }
 
   if (llvm::Error error = settleUnconsumedSeeds())
     return std::move(error);
+  if (rankExecutionFailed)
+    return executionFailedResult();
 
   applyOutputDemand();
 

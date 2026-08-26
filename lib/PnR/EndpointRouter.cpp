@@ -165,6 +165,24 @@ template <typename... Parts> llvm::Error overflow(Parts &&...parts) {
                  std::forward<Parts>(parts)...);
 }
 
+llvm::Error
+completeEndpointExpansionFailure(SpatialPnrWorkLedgerView workLedger,
+                                 llvm::Error failure) {
+  bool completed = false;
+  llvm::Error classified = llvm::handleErrors(
+      std::move(failure),
+      [&](std::unique_ptr<EndpointRouteSearchFailure> typed) -> llvm::Error {
+        completed = typed->kind() != EndpointRouteSearchFailureKind::Invalid;
+        return llvm::Error(std::move(typed));
+      });
+  if (!completed)
+    return classified;
+  if (llvm::Error error =
+          workLedger.consume(SpatialPnrWorkKind::EndpointExpansion))
+    return llvm::joinErrors(std::move(classified), std::move(error));
+  return classified;
+}
+
 llvm::Expected<RouteCost> addFiniteCost(RouteCost lhs, RouteCost rhs,
                                         llvm::StringRef operation) {
   if (lhs == routeCostInfinity || rhs == routeCostInfinity ||
@@ -202,7 +220,8 @@ void advanceGeneration(std::vector<std::uint64_t> &epochs,
 } // namespace
 
 llvm::Error
-EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
+EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph,
+                                    SpatialPnrWorkLedgerView workLedger) {
   if constexpr (sizeof(PnrIndex) >= sizeof(std::size_t)) {
     if (graph.endpointCount >
         static_cast<PnrIndex>(std::numeric_limits<std::size_t>::max() - 1))
@@ -339,6 +358,7 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   heuristicCacheEvictionCount_ = 0;
   arcCostValidationScanCount_ = 0;
   physicalTimingValidationScanCount_ = 0;
+  workLedger_ = workLedger;
   validatedArcCosts_ = {};
   validatedPhysicalTiming_ = {};
   prepared_ = true;
@@ -1049,8 +1069,13 @@ EndpointRouteSearchScratch::searchTimingAware(
     const TimingSearchLabel label = timingLabels_[labelOrdinal];
     if (!label.active)
       continue;
+    if (llvm::Error error =
+            workLedger_.plan(SpatialPnrWorkKind::EndpointExpansion))
+      return std::move(error);
     if (endpointExpansionCount_ == std::numeric_limits<std::uint64_t>::max())
-      return overflow("cumulative endpoint expansion count overflows u64");
+      return completeEndpointExpansionFailure(
+          workLedger_,
+          overflow("cumulative endpoint expansion count overflows u64"));
     ++expansions;
     ++endpointExpansionCount_;
 
@@ -1060,14 +1085,18 @@ EndpointRouteSearchScratch::searchTimingAware(
           llvm::lower_bound(request.targetEndpoints, label.endpoint);
       if (targetPosition == request.targetEndpoints.end() ||
           *targetPosition != label.endpoint)
-        return invalid("physical timing target has no request ordinal");
+        return completeEndpointExpansionFailure(
+            workLedger_,
+            invalid("physical timing target has no request ordinal"));
       const std::size_t targetOrdinal =
           targetPosition - request.targetEndpoints.begin();
       const std::uint64_t terminalDelay =
           request.targetTimingDelayQuanta[targetOrdinal];
       if (terminalDelay >
           std::numeric_limits<std::uint64_t>::max() - label.arrivalQuanta)
-        return overflow("physical timing target arrival exceeds u64");
+        return completeEndpointExpansionFailure(
+            workLedger_,
+            overflow("physical timing target arrival exceeds u64"));
       const std::uint64_t terminalArrival = label.arrivalQuanta + terminalDelay;
       const std::uint64_t oldExcess =
           label.arrivalQuanta > request.requiredTimingQuanta
@@ -1082,13 +1111,16 @@ EndpointRouteSearchScratch::searchTimingAware(
           request.timingCriticality);
       if (!terminalPenalty) {
         llvm::consumeError(terminalPenalty.takeError());
-        return overflow("physical timing target slack penalty exceeds the "
-                        "largest finite route cost");
+        return completeEndpointExpansionFailure(
+            workLedger_,
+            overflow("physical timing target slack penalty exceeds the "
+                     "largest finite route cost"));
       }
       auto targetCost = addFiniteCost(label.distance, *terminalPenalty,
                                       "physical timing target distance");
       if (!targetCost)
-        return targetCost.takeError();
+        return completeEndpointExpansionFailure(workLedger_,
+                                                targetCost.takeError());
       if (*targetCost < bestCost ||
           (*targetCost == bestCost &&
            (bestTargetLabel == invalidLabel ||
@@ -1102,6 +1134,9 @@ EndpointRouteSearchScratch::searchTimingAware(
         bestCost = *targetCost;
         bestTargetArrival = terminalArrival;
       }
+      if (llvm::Error error =
+              workLedger_.consume(SpatialPnrWorkKind::EndpointExpansion))
+        return std::move(error);
       continue;
     }
 
@@ -1116,7 +1151,8 @@ EndpointRouteSearchScratch::searchTimingAware(
         continue;
       if (request.arcTimingDelayQuanta[arc] >
           std::numeric_limits<std::uint64_t>::max() - label.arrivalQuanta)
-        return overflow("physical timing arrival exceeds u64");
+        return completeEndpointExpansionFailure(
+            workLedger_, overflow("physical timing arrival exceeds u64"));
       const std::uint64_t reached =
           label.arrivalQuanta + request.arcTimingDelayQuanta[arc];
       const std::uint64_t oldExcess =
@@ -1132,20 +1168,25 @@ EndpointRouteSearchScratch::searchTimingAware(
           request.timingCriticality);
       if (!penalty) {
         llvm::consumeError(penalty.takeError());
-        return overflow("physical timing slack penalty exceeds the largest "
-                        "finite route cost");
+        return completeEndpointExpansionFailure(
+            workLedger_,
+            overflow("physical timing slack penalty exceeds the largest "
+                     "finite route cost"));
       }
       auto arcCost = searchArcCost(request, arc, true);
       if (!arcCost)
-        return arcCost.takeError();
+        return completeEndpointExpansionFailure(workLedger_,
+                                                arcCost.takeError());
       auto distance = addFiniteCost(label.distance, *arcCost,
                                     "timing-aware forward distance");
       if (!distance)
-        return distance.takeError();
+        return completeEndpointExpansionFailure(workLedger_,
+                                                distance.takeError());
       distance =
           addFiniteCost(*distance, *penalty, "timing-aware slack distance");
       if (!distance)
-        return distance.takeError();
+        return completeEndpointExpansionFailure(workLedger_,
+                                                distance.takeError());
       const PnrIndex traversal = graph_.arcs[arc].traversal;
       const bool selectsRequired =
           !request.requiredTraversalBits.empty() &&
@@ -1158,8 +1199,12 @@ EndpointRouteSearchScratch::searchTimingAware(
           addLabel(successor, label.requirementMet || selectsRequired,
                    successorArrival, *distance, labelOrdinal, arc);
       if (!inserted)
-        return inserted.takeError();
+        return completeEndpointExpansionFailure(workLedger_,
+                                                inserted.takeError());
     }
+    if (llvm::Error error =
+            workLedger_.consume(SpatialPnrWorkKind::EndpointExpansion))
+      return std::move(error);
   }
 
   if (bestTargetLabel == invalidLabel)
@@ -1356,10 +1401,15 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
       return failure(
           EndpointRouteSearchFailureKind::WorkLimit,
           "endpoint expansion limit reached before optimality proof");
+    if (llvm::Error error =
+            workLedger_.plan(SpatialPnrWorkKind::EndpointExpansion))
+      return std::move(error);
     const PnrIndex state = popMinimum();
     const PnrIndex endpoint = searchEndpoint(state);
     if (endpointExpansionCount_ == std::numeric_limits<std::uint64_t>::max())
-      return overflow("cumulative endpoint expansion count overflows u64");
+      return completeEndpointExpansionFailure(
+          workLedger_,
+          overflow("cumulative endpoint expansion count overflows u64"));
     ++expansions;
     ++endpointExpansionCount_;
     const RouteCost endpointDistance = distances_[state];
@@ -1376,6 +1426,9 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
         bestTargetState = state;
         bestCost = endpointDistance;
       }
+      if (llvm::Error error =
+              workLedger_.consume(SpatialPnrWorkKind::EndpointExpansion))
+        return std::move(error);
       continue;
     }
 
@@ -1393,11 +1446,13 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
         continue;
       auto arcCost = searchArcCost(request, arc, true);
       if (!arcCost)
-        return arcCost.takeError();
+        return completeEndpointExpansionFailure(workLedger_,
+                                                arcCost.takeError());
       auto candidateDistance =
           addFiniteCost(endpointDistance, *arcCost, "forward distance");
       if (!candidateDistance)
-        return candidateDistance.takeError();
+        return completeEndpointExpansionFailure(workLedger_,
+                                                candidateDistance.takeError());
       const PnrIndex traversal = graph_.arcs[arc].traversal;
       const bool selectsRequired =
           !request.requiredTraversalBits.empty() &&
@@ -1411,7 +1466,8 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
       auto candidatePriority = addFiniteCost(
           *candidateDistance, successorHeuristic, "A-star priority");
       if (!candidatePriority)
-        return candidatePriority.takeError();
+        return completeEndpointExpansionFailure(workLedger_,
+                                                candidatePriority.takeError());
       distances_[successorState] = *candidateDistance;
       priorities_[successorState] = *candidatePriority;
       predecessorArcs_[successorState] = arc;
@@ -1419,6 +1475,9 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
       distanceEpochs_[successorState] = searchGeneration_;
       insertOrDecrease(successorState);
     }
+    if (llvm::Error error =
+            workLedger_.consume(SpatialPnrWorkKind::EndpointExpansion))
+      return std::move(error);
   }
 
   if (bestTargetState == invalidIndex) {

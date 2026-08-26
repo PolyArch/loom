@@ -2,6 +2,7 @@
 #define LOOM_PNR_SPATIALCANDIDATEINITIALIZER_H
 
 #include "PnR/SpatialCandidateState.h"
+#include "PnR/SpatialPnrWorkLedger.h"
 
 #include "llvm/Support/Error.h"
 
@@ -34,9 +35,10 @@ struct SpatialCandidateInitializerAttempt final {
 /// InitializerDiversification stream. The returned candidate leaves every
 /// RouteTree visibly unrouted for the explicit global routing Action.
 llvm::Expected<SpatialCandidateInitializerAttempt>
-createSpatialCandidateInitializerAttempt(FrozenSpatialPnrProblemHandle problem,
-                                         std::uint32_t attemptOrdinal,
-                                         std::uint64_t &assignmentAttempts);
+createSpatialCandidateInitializerAttempt(
+    FrozenSpatialPnrProblemHandle problem, std::uint32_t attemptOrdinal,
+    std::uint64_t &assignmentAttempts,
+    SpatialPnrWorkLedgerView workLedger = {});
 
 /// Builds the canonical assignment used by initializer attempt zero before
 /// the explicit global routing Action. The implementation walks factorized

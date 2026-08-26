@@ -65,7 +65,7 @@ llvm::Error validateSpatialConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialPnrCandidateGeneratorKind,
     "mapping.spatial_pnr",
-    "loom.mapping.spatial_pnr.generator.v15",
+    "loom.mapping.spatial_pnr.generator.v16",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -166,9 +166,12 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                                        invalid->diagnostic);
   const auto &internal =
       std::get<::loom::pnr::InternalSpatialPnrGeneration>(outcome);
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "spatial_pnr_generator_execution_failed: " +
-                                     internal.diagnostic);
+  return CandidateGeneratorProviderResult{
+      IncompleteCandidateGeneratorResult{
+          CandidateGeneratorIncompleteReason::ExecutionFailed,
+          {{CandidateGeneratorOutputSlotRef(0), {}}},
+          {}},
+      spatialPnrCandidateGeneratorWorkSummary(internal.accounting)};
 }
 
 const CandidateGeneratorProvider provider{

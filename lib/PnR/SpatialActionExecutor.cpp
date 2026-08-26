@@ -248,14 +248,15 @@ SpatialActionProbe::resolve(std::uint64_t temperature,
 }
 
 llvm::Error
-SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate) {
+SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate,
+                                      SpatialPnrWorkLedgerView workLedger) {
   if (activeProbe_)
     return executorError("cannot prepare while a probe is active");
   if (llvm::Error error = candidate.verify())
     return error;
   if (llvm::Error error = candidateScratch_.prepare(candidate.problem()))
     return error;
-  if (llvm::Error error = router_.prepare(candidate.problem()))
+  if (llvm::Error error = router_.prepare(candidate.problem(), workLedger))
     return error;
   auto routeCosts = SpatialRouteCostState::create(candidate);
   if (!routeCosts)

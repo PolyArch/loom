@@ -2,6 +2,7 @@
 #define LOOM_PNR_SPATIALEXACTREPAIR_H
 
 #include "PnR/SpatialActionExecutor.h"
+#include "PnR/SpatialPnrWorkLedger.h"
 
 #include "llvm/Support/Error.h"
 
@@ -51,11 +52,15 @@ public:
   llvm::Expected<SpatialExactRepairResult>
   repair(SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
          std::uint64_t solverCallLimit,
-         DeterministicPnrRandomStream &exactRepairStream);
+         DeterministicPnrRandomStream &exactRepairStream,
+         SpatialPnrWorkLedgerView workLedger = {});
 
   std::size_t retainedStorageBytes() const;
 
 private:
+  llvm::Error planRegionDecision();
+  llvm::Error consumePendingRegionDecisions();
+
   llvm::Expected<SpatialExactRepairResult>
   repairTransportClosure(SpatialCandidateState &candidate,
                          std::uint64_t restartOrdinal,
@@ -87,6 +92,11 @@ private:
   std::vector<std::int64_t> legalValues_;
   std::vector<std::int64_t> elementValues_;
   std::vector<SpatialMappingAction> actions_;
+  SpatialPnrWorkLedgerView workLedger_;
+  std::uint64_t accountedRegionDecisionCount_ = 0;
+  std::uint64_t pendingRegionDecisionCount_ = 0;
+  std::vector<std::uint8_t> accountedRegionDecisions_;
+  std::vector<std::uint8_t> accountedRegionNets_;
 };
 
 } // namespace loom::pnr

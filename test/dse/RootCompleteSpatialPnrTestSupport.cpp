@@ -1,9 +1,21 @@
 #include "RootCompleteSpatialPnrTestSupport.h"
 
 #include "ADG/Builder.h"
+#include "ADG/Builtin.h"
 #include "ADG/FuLibrary.h"
 #include "Common/ArtifactStore.h"
+#include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Frontend/IR/LoomOps.h"
+#include "PnR/MappingObjective.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -11,6 +23,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -35,6 +48,237 @@ void requireSuccess(llvm::Error error) {
 }
 
 } // namespace
+
+mlir::MLIRContext makeContext() {
+  mlir::DialectRegistry registry;
+  registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
+                  mlir::DLTIDialect, mlir::func::FuncDialect,
+                  mlir::LLVM::LLVMDialect, loom::LoomDialect>();
+  return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
+}
+
+dataflow::CanonicalDataflowArtifact buildDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @sync(%start: none, %value: i32) -> i32
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %result:2 = dataflow.sync %start, %value
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%result#1 : i32) streams() memories()
+        complete(%result#0 : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
+      %value: i32) ctrl (%ctrl: none) {
+    %result, %done = dataflow.graph.launch @sync deps(%ctrl)
+        values(%value) stream_inputs() memories() stream_outputs()
+        : (none, i32) -> (i32, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host() {
+    %value = arith.constant 7 : i32
+    %thread = dataflow.thread.launch @worker(%value)
+        : (i32) -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
+buildAlternateDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @sync(%start: none, %value: i32) -> i32
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %result:2 = dataflow.sync %start, %value
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%result#1 : i32) streams() memories()
+        complete(%result#0 : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
+      %value: i32) ctrl (%ctrl: none) {
+    %result, %done = dataflow.graph.launch @sync deps(%ctrl)
+        values(%value) stream_inputs() memories() stream_outputs()
+        : (none, i32) -> (i32, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host() {
+    %value = arith.constant 8 : i32
+    %thread = dataflow.thread.launch @worker(%value)
+        : (i32) -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse alternate Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
+buildVectorDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @add(%start: none, %value: vector<4xi32>)
+      -> vector<4xi32>
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %sum = arith.addi %value, %value : vector<4xi32>
+    %retired:2 = dataflow.sync %start, %sum
+        : (none, vector<4xi32>) -> (none, vector<4xi32>)
+    dataflow.graph.return values(%retired#1 : vector<4xi32>) streams()
+        memories() complete(%retired#0 : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
+      %value: vector<4xi32>)
+      ctrl (%ctrl: none) {
+    %result, %done = dataflow.graph.launch @add deps(%ctrl)
+        values(%value) stream_inputs() memories() stream_outputs()
+        : (none, vector<4xi32>) -> (vector<4xi32>, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host() {
+    %value = arith.constant dense<[1, 2, 3, 4]> : vector<4xi32>
+    %thread = dataflow.thread.launch @worker(%value)
+        : (vector<4xi32>) -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse vector Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+fabric::FinalizedFabricRoot
+buildAlternativeTechSpatialCore(ArtifactStore &store) {
+  constexpr std::uint32_t payloadWidth = 128;
+  const adg::PortType payloadType = take(adg::PortType::bits(payloadWidth));
+  const std::vector<adg::PortType> types(8, payloadType);
+  adg::DesignBuilder builder(store);
+  auto spatial =
+      take(builder.createSpatialCore("alternative-sync", types, types));
+  std::vector<adg::SpatialValue> spatialInputs;
+  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
+    spatialInputs.push_back(take(spatial.input(ordinal)));
+  auto pe =
+      take(spatial.addPe(spatialInputs, adg::PeSpec::spatial(types, types)));
+  std::vector<adg::PeValue> peInputs;
+  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
+    peInputs.push_back(take(pe.input(ordinal)));
+  for (std::uint32_t ordinal = 0; ordinal != 2; ++ordinal) {
+    const std::size_t laneCount = ordinal == 0 ? 4 : 8;
+    const std::vector<adg::PortType> fuTypes(laneCount, payloadType);
+    auto fu = take(
+        pe.addFu(llvm::ArrayRef<adg::PeValue>(peInputs).take_front(laneCount),
+                 adg::FuSpec{fuTypes, fuTypes}));
+    std::vector<adg::FuValue> fuInputs;
+    for (std::size_t input = 0; input != fuTypes.size(); ++input)
+      fuInputs.push_back(take(fu.input(input)));
+    auto operation = take(fu.addOperation(
+        fuInputs, adg::OperationCapabilitySpec{
+                      ::fabric::ImplementationFamilyId::TokenSync,
+                      ::fabric::RoutedTokenParams{
+                          payloadWidth, static_cast<std::uint32_t>(laneCount)},
+                      {::dataflow::OperationSchemaId::DataflowSync},
+                      fuTypes,
+                      ::fabric::oneCycleElasticOperationResourceContract()}));
+    requireSuccess(fu.addCapabilityTemplate(
+        adg::FuCapabilityTemplateSpec{{operation}, {}}));
+    std::vector<adg::FuValue> outputs;
+    for (std::size_t output = 0; output != fuTypes.size(); ++output)
+      outputs.push_back(take(operation.output(output)));
+    requireSuccess(fu.close(outputs));
+  }
+  requireSuccess(pe.close());
+  std::vector<adg::SpatialValue> outputs;
+  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
+    outputs.push_back(take(pe.output(ordinal)));
+  requireSuccess(spatial.close(outputs));
+  auto design = take(std::move(builder).finalize());
+  if (design.roots().size() != 1)
+    fail("alternative Tech fixture did not publish one Fabric root");
+  return design.roots().front();
+}
+
+ResolvedConfig buildSpatialResolvedConfig() {
+  ResolvedObjectiveCatalogs catalogs;
+  constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+  catalogs.dimensions = {
+      {ResolvedMappingViolationObjectiveSource{
+           ResolvedPnrViolationKind::UnroutedObligation},
+       ResolvedObjectiveDirection::Minimize, resolvedObjectiveInteger(0),
+       resolvedObjectiveInteger(1), 0, maximum},
+      {ResolvedMappingViolationObjectiveSource{
+           ResolvedPnrViolationKind::CapacityOveruse},
+       ResolvedObjectiveDirection::Minimize, resolvedObjectiveInteger(0),
+       resolvedObjectiveInteger(1), 0, maximum},
+      {ResolvedMappingMeasureObjectiveSource{static_cast<std::uint32_t>(
+           pnr::MappingMeasureKind::TotalSelectedTraversalClaim)},
+       ResolvedObjectiveDirection::Minimize, resolvedObjectiveInteger(0),
+       resolvedObjectiveInteger(1), 0, maximum},
+  };
+  catalogs.weightedLevels = {
+      {{{0, 1}, {1, 1}, {2, 1}}},
+  };
+  catalogs.totalOrderings = {{{0}}};
+
+  ResolvedConfig resolved = defaultResolvedConfig();
+  resolved.dse.objectiveCatalogs = std::move(catalogs);
+  resolved.dse.spatialPnr.temporaryViolations.admitted = {
+      ResolvedPnrViolationKind::UnroutedObligation,
+      ResolvedPnrViolationKind::CapacityOveruse,
+  };
+  resolved.dse.spatialPnr.objectiveSelection = {0, 0};
+  auto &search = resolved.dse.spatialPnr.search;
+  search.initializer.seedAttemptCount = 2;
+  search.actionProposal = {0, 1, 0};
+  search.annealing.calibrationProposalCount = 1;
+  search.annealing.fallbackTemperature = 1;
+  search.annealing.minimumTemperature = 1;
+  search.annealing.coolingRatio = {1, 2};
+  search.annealing.proposalsPerLevelBase = 1;
+  search.annealing.proposalsPerMovableDecision = 0;
+  search.exactRepair = {ResolvedPnrExactRepairKind::Disabled, 0, 0};
+  return resolved;
+}
+
+pnr::ResolvedPnrConfigView buildSpatialConfig() {
+  return take(
+      pnr::projectResolvedSpatialPnrConfigView(buildSpatialResolvedConfig()));
+}
+
+ResolvedConfig buildSingleCandidateSpatialResolvedConfig() {
+  ResolvedConfig resolved = buildSpatialResolvedConfig();
+  resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 1;
+  return resolved;
+}
+
+pnr::ResolvedPnrConfigView buildSingleCandidateSpatialConfig() {
+  return take(pnr::projectResolvedSpatialPnrConfigView(
+      buildSingleCandidateSpatialResolvedConfig()));
+}
+
+pnr::ResolvedPnrConfigView buildFeedbackSpatialConfig() {
+  ResolvedConfig resolved = buildSpatialResolvedConfig();
+  resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 8;
+  resolved.dse.spatialPnr.search.routing.negotiationIterationLimit = 8;
+  resolved.dse.spatialPnr.search.routing.negotiation = ResolvedPathFinderPolicy{
+      ResolvedPathFinderPriceKernel::Additive, 1, {3, 2}, 1};
+  resolved.dse.spatialPnr.search.actionProposal = {3, 3, 2};
+  resolved.dse.spatialPnr.search.annealing.calibrationProposalCount = 16;
+  resolved.dse.spatialPnr.search.annealing.proposalsPerLevelBase = 64;
+  resolved.dse.spatialPnr.search.annealing.proposalsPerMovableDecision = 4;
+  return take(pnr::projectResolvedSpatialPnrConfigView(resolved));
+}
 
 fabric::FinalizedFabricRoot buildSpatialCore(ArtifactStore &store,
                                              std::uint32_t payloadWidth) {
