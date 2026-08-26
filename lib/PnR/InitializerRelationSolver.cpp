@@ -229,8 +229,10 @@ llvm::Error InitializerRelationModel::verifyChoices(
 
 InitializerRelationSolver::InitializerRelationSolver(
     const InitializerRelationModel &model,
-    llvm::ArrayRef<PnrIndex> independentChoiceCounts)
-    : model_(&model), decisionChoiceOffsets_(model.decisionChoiceOffsets()) {
+    llvm::ArrayRef<PnrIndex> independentChoiceCounts,
+    SpatialPnrWorkLedgerView workLedger)
+    : model_(&model), decisionChoiceOffsets_(model.decisionChoiceOffsets()),
+      workLedger_(workLedger) {
   assert(independentChoiceCounts.size() <=
          getPnrIndexMax() - model.decisionCount());
   decisionChoiceOffsets_.reserve(decisionChoiceOffsets_.size() +
@@ -1370,12 +1372,15 @@ InitializerRelationSolver::search(
   for (PnrIndex selectedChoice : choiceOrder) {
     if (assignmentAttempts_ == assignmentLimit)
       return SearchResult::WorkLimit;
-    ++assignmentAttempts_;
+    if (llvm::Error error =
+            workLedger_.plan(SpatialPnrWorkKind::InitializerAssignment))
+      return std::move(error);
     const std::size_t journalMark = removalJournal_.size();
     bool retainedChoice = true;
     for (PnrIndex choice = 0; choice < choiceCount; ++choice)
       if (choice != selectedChoice && choiceActive(selected, choice))
         retainedChoice &= removeChoice(selected, choice);
+    ++assignmentAttempts_;
     auto result =
         retainedChoice
             ? search(assignmentLimit, diversificationStream, preferredChoices,
@@ -1383,6 +1388,9 @@ InitializerRelationSolver::search(
             : llvm::Expected<SearchResult>(SearchResult::Contradiction);
     if (!result)
       return result.takeError();
+    if (llvm::Error error =
+            workLedger_.consume(SpatialPnrWorkKind::InitializerAssignment))
+      return std::move(error);
     if (*result != SearchResult::Contradiction)
       return *result;
     rollback(journalMark);
@@ -1607,7 +1615,7 @@ InitializerRelationSolver::solveCanonicalWithReleasedChoices(
       projected[decision] = reducedChoices[local];
     return projected;
   };
-  InitializerRelationSolver reducedSolver(*reducedModel);
+  InitializerRelationSolver reducedSolver(*reducedModel, {}, workLedger_);
   auto reducedResult = reducedSolver.solveCanonical(
       assignmentLimit,
       [&](llvm::ArrayRef<PnrIndex> reducedChoices) -> llvm::Expected<bool> {

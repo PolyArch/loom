@@ -3,6 +3,7 @@
 
 #include "PnR/DeterministicSearchProtocol.h"
 #include "PnR/PnrIndex.h"
+#include "PnR/SpatialPnrWorkLedger.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
@@ -160,7 +161,8 @@ class InitializerRelationSolver final {
 public:
   explicit InitializerRelationSolver(
       const InitializerRelationModel &model,
-      llvm::ArrayRef<PnrIndex> independentChoiceCounts = {});
+      llvm::ArrayRef<PnrIndex> independentChoiceCounts = {},
+      SpatialPnrWorkLedgerView workLedger = {});
 
   llvm::Expected<InitializerRelationSolveResult>
   solveCanonical(std::uint64_t assignmentLimit);
@@ -363,6 +365,7 @@ private:
   std::size_t queueTail_ = 0;
   std::size_t queueCount_ = 0;
   std::uint64_t assignmentAttempts_ = 0;
+  SpatialPnrWorkLedgerView workLedger_;
   PnrIndex allDifferentFailureRelation_ = getInvalidPnrIndex();
   PnrIndex allDifferentFailureMatched_ = 0;
   PnrIndex allDifferentFailureMemberCount_ = 0;

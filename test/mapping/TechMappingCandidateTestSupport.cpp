@@ -867,12 +867,32 @@ void loom::test::exerciseCapacityExactRepairNoMutation(
       pnr::DeterministicPnrRandomStream::create(
           problem->config().policy().determinism.masterSeed, 0,
           pnr::PnrRandomStreamPurpose::ExactRepair);
+  std::uint64_t plannedRegionDecisions = 0;
+  std::uint64_t consumedRegionDecisions = 0;
+  std::uint64_t plannedSolverCalls = 0;
+  std::uint64_t consumedSolverCalls = 0;
+  std::array<pnr::SpatialPnrWorkCounterRef, pnr::spatialPnrWorkKindCount>
+      workCounters{};
+  workCounters[static_cast<std::size_t>(
+      pnr::SpatialPnrWorkKind::ExactRepairRegionDecision)] = {
+      &plannedRegionDecisions, &consumedRegionDecisions};
+  workCounters[static_cast<std::size_t>(
+      pnr::SpatialPnrWorkKind::ExactRepairSolverCall)] = {&plannedSolverCalls,
+                                                          &consumedSolverCalls};
   const pnr::SpatialExactRepairResult outcome = take(repair.repair(
       *candidate, 0,
       problem->config().policy().search.exactRepair.maxSolverCalls,
-      exactRepairStream));
+      exactRepairStream, pnr::SpatialPnrWorkLedgerView(workCounters)));
   if (outcome.kind != expected)
     fail("bounded exact repair returned the wrong non-repaired outcome");
+  if (plannedRegionDecisions != consumedRegionDecisions ||
+      plannedSolverCalls != consumedSolverCalls ||
+      consumedSolverCalls != outcome.solverCalls)
+    fail("typed exact-repair outcome left admitted work live");
+  if (expected == pnr::SpatialExactRepairResultKind::RegionTooLarge
+          ? consumedRegionDecisions != 0
+          : consumedRegionDecisions != outcome.regionDecisions)
+    fail("exact-repair region accounting fabricated policy-limit work");
   if (candidate->atomicCapacityOveruse() != initialOveruse)
     fail("non-repaired exact outcome changed the candidate");
   if (expected == pnr::SpatialExactRepairResultKind::RegionTooLarge &&

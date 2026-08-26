@@ -45,7 +45,8 @@ private:
 /// requires every other Mapping violation owner.
 class SpatialGlobalRoutingClosureScratch final {
 public:
-  llvm::Error run(SpatialCandidateState &candidate);
+  llvm::Error run(SpatialCandidateState &candidate,
+                  SpatialPnrWorkLedgerView workLedger = {});
 
   std::uint64_t endpointExpansionCount() const {
     return actionExecutor_.endpointExpansionCount();

@@ -40,6 +40,7 @@ struct SpatialPnrGenerationAccounting final {
   std::uint64_t plannedAnnealingMovableProposalSlots = 0;
   std::uint64_t plannedExactRepairRegionDecisions = 0;
   std::uint64_t plannedExactRepairSolverCalls = 0;
+  std::uint64_t plannedFinalClosureAttempts = 0;
   std::uint64_t seedAttemptSlots = 0;
   std::uint64_t preparedSeeds = 0;
   std::uint64_t initializerAssignmentAttempts = 0;
@@ -75,6 +76,7 @@ struct SpatialPnrGenerationAccounting final {
                rhs.plannedExactRepairRegionDecisions &&
            lhs.plannedExactRepairSolverCalls ==
                rhs.plannedExactRepairSolverCalls &&
+           lhs.plannedFinalClosureAttempts == rhs.plannedFinalClosureAttempts &&
            lhs.seedAttemptSlots == rhs.seedAttemptSlots &&
            lhs.preparedSeeds == rhs.preparedSeeds &&
            lhs.initializerAssignmentAttempts ==
@@ -94,6 +96,12 @@ struct SpatialPnrGenerationAccounting final {
            lhs.publicationSlots == rhs.publicationSlots;
   }
 };
+
+/// Verifies that every ledger counter is monotonic and, when requested,
+/// that no admitted logical slot remains live.
+llvm::Error
+verifySpatialPnrWorkAccounting(const SpatialPnrGenerationAccounting &accounting,
+                               bool requireClosedWork);
 
 struct GeneratedSpatialMappings final {
   std::vector<ArtifactRootReference> candidates;

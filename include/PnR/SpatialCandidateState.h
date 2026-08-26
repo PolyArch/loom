@@ -291,6 +291,11 @@ public:
   std::uint64_t hardProgressViolation() const {
     return progressState_.hardProgressViolation();
   }
+  bool hasTransportClosureViolation() const {
+    return hardProgressViolation() != 0 || unroutedObligationCount() != 0 ||
+           routeCapacityOveruse() != 0 || tagResidentCapacityOveruse() != 0 ||
+           tagUnassignedCount() != 0 || tagConflictCount() != 0;
+  }
   const SpatialProgressState &progress() const { return progressState_; }
   llvm::Expected<std::vector<SpatialFiniteBufferConflictWitness>>
   finiteBufferConflictWitnesses() const {

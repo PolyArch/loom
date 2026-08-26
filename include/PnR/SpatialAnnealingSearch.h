@@ -4,6 +4,7 @@
 #include "Common/ExecutionControl.h"
 #include "PnR/SpatialActionDomain.h"
 #include "PnR/SpatialActionExecutor.h"
+#include "PnR/SpatialPnrWorkLedger.h"
 
 #include "DSE/Objective.h"
 
@@ -97,10 +98,12 @@ class SpatialAnnealingSearchScratch final {
 public:
   llvm::Expected<SpatialAnnealingStatistics>
   run(SpatialCandidateStateHandle &candidate, std::uint64_t seedAttemptOrdinal,
-      ExecutionControlView executionControl = {});
+      ExecutionControlView executionControl = {},
+      SpatialPnrWorkLedgerView workLedger = {});
 
   llvm::Expected<SpatialAnnealingStatistics>
-  run(SpatialPathFinderSeed &seed, ExecutionControlView executionControl = {});
+  run(SpatialPathFinderSeed &seed, ExecutionControlView executionControl = {},
+      SpatialPnrWorkLedgerView workLedger = {});
 
   std::size_t retainedStorageBytes() const;
 

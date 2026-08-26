@@ -185,7 +185,9 @@ struct CandidateGeneratorWorkUnitDescriptor final {
 };
 
 /// Invocation-local execution accounting for one descriptor-owned work-unit
-/// kind. Counts summarize logical slots, not policy limits or wall time.
+/// kind. Counts summarize logical slots, not policy limits or wall time. A
+/// provider plans an admitted slot before its atomic owner boundary and
+/// consumes it only after that boundary executes.
 struct CandidateGeneratorWorkUnitSummary final {
   CandidateGeneratorWorkUnitRef unit;
   std::uint64_t planned = 0;
