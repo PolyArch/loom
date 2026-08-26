@@ -495,6 +495,15 @@ prepareProductTarget(const ProductBuildOptions &options) {
   auto config = resolveConfigProfile(options.accelerationProfile);
   if (!config)
     return config.takeError();
+  // A product build needs one verified Mapping, not the best Mapping in the
+  // configured restart budget. Exhausting every restart multiplies Spatial and
+  // System PnR by the restart count for a result the product path discards, so
+  // the deterministic exhaustive profile stays available to DSE quality search
+  // and the product path stops at its first verified candidate.
+  config->dse.spatialPnr.search.completionGoal =
+      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  config->dse.systemPnr.search.completionGoal =
+      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
   auto publishedConfig = (*workspace)
                              ->artifacts()
                              .put(ResolvedConfig::artifactSchema,

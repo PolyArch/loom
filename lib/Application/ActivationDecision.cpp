@@ -1632,25 +1632,45 @@ llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
     return reject(ApplicationActivationDecisionErrorReason::InvocationMismatch,
                   "DSE invocation failed strict import: " +
                       llvm::toString(invocation.takeError()));
-  const auto *selected =
-      std::get_if<dse::InvocationCompletedSelection>(&invocation->outcome());
-  if (!selected ||
-      !llvm::is_contained(selected->selected, draft.selectedMapping) ||
-      !llvm::is_contained(invocation->closure().semanticInputs(),
-                          draft.sourceProgram) ||
-      !llvm::is_contained(invocation->closure().semanticInputs(),
-                          draft.fabric) ||
-      !llvm::is_contained(invocation->closure().semanticInputs(),
-                          draft.workload) ||
-      !llvm::is_contained(invocation->closure().semanticInputs(),
-                          draft.runtimeInput) ||
-      !llvm::is_contained(invocation->closure().semanticInputs(),
-                          draft.planning.canonicalDataflow) ||
-      !llvm::is_contained(invocation->closure().semanticInputs(),
-                          draft.selectedSystem))
+  // An invocation that stopped because its bounded completion policy was
+  // satisfied still owns a verified Mapping, so it can activate. Only that
+  // reason is admitted here: a timeout, an unestablished proof, or any other
+  // incompleteness leaves the selected Mapping unproven and stays rejected.
+  llvm::ArrayRef<ArtifactRootReference> ownedMappings;
+  if (const auto *selected =
+          std::get_if<dse::InvocationCompletedSelection>(&invocation->outcome()))
+    ownedMappings = selected->selected;
+  else if (const auto *incomplete =
+               std::get_if<dse::InvocationIncomplete>(&invocation->outcome())) {
+    const auto *generatorReason =
+        std::get_if<dse::CandidateGeneratorIncompleteReason>(
+            &incomplete->reason);
+    if (!generatorReason ||
+        *generatorReason !=
+            dse::CandidateGeneratorIncompleteReason::SemanticLimitReached)
+      return reject(
+          ApplicationActivationDecisionErrorReason::InvocationMismatch,
+          "DSE invocation did not complete with a selection: " +
+              dse::toString(incomplete->reason));
+    ownedMappings = incomplete->retainedArtifacts;
+  } else
     return reject(ApplicationActivationDecisionErrorReason::InvocationMismatch,
-                  "DSE invocation does not own the exact application inputs, "
-                  "selected Mapping, and output");
+                  "DSE invocation found no feasible candidate");
+  if (!llvm::is_contained(ownedMappings, draft.selectedMapping))
+    return reject(ApplicationActivationDecisionErrorReason::InvocationMismatch,
+                  "DSE invocation does not own the selected Mapping");
+  for (const auto &[owned, subject] :
+       {std::pair<const ArtifactRootReference &, llvm::StringRef>{
+            draft.sourceProgram, "source program"},
+        {draft.fabric, "Fabric"},
+        {draft.workload, "workload"},
+        {draft.runtimeInput, "runtime input"},
+        {draft.planning.canonicalDataflow, "CanonicalDataflow"},
+        {draft.selectedSystem, "selected System"}})
+    if (!llvm::is_contained(invocation->closure().semanticInputs(), owned))
+      return reject(
+          ApplicationActivationDecisionErrorReason::InvocationMismatch,
+          "DSE invocation does not own the exact application " + subject);
   for (const sim::SourceBackedDfgReplayCaseReference &replay :
        draft.sourceBackedReplayCases)
     if (!llvm::is_contained(invocation->closure().semanticInputs(),
