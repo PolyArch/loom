@@ -3,6 +3,7 @@
 #include "Common/MappingDebugLog.h"
 #include "HandshakeProjectionInternal.h"
 
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Twine.h"
@@ -40,7 +41,12 @@ struct MaterializedHandshakeGraph final {
   std::vector<std::vector<PnrIndex>> arcContributors;
   std::vector<std::vector<PnrIndex>> outgoingArcs;
   std::vector<std::vector<PnrIndex>> reverseArcs;
-  std::map<std::string, PnrIndex> nodeOrdinals;
+  /// Canonical identity key to dense node ordinal. Ordinals are assigned in
+  /// first-encounter order, so the container only decides lookup cost; the
+  /// single consumer that iterates it validates bounds and is order
+  /// independent. A hash map keeps the per-move rebuild off an ordered
+  /// byte-compare tree.
+  llvm::StringMap<PnrIndex> nodeOrdinals;
   std::map<std::pair<PnrIndex, PnrIndex>, PnrIndex> arcOrdinals;
   std::vector<PnrIndex> order;
   std::vector<PnrIndex> ranks;
@@ -112,6 +118,14 @@ template <typename Key, typename Value>
 std::size_t retainedMapBytes(const std::map<Key, Value> &values) {
   return values.size() * (sizeof(typename std::map<Key, Value>::value_type) +
                           4 * sizeof(void *));
+}
+
+template <typename Value>
+std::size_t retainedStringMapBytes(const llvm::StringMap<Value> &values) {
+  std::size_t bytes = values.getNumBuckets() * sizeof(void *);
+  for (const auto &entry : values)
+    bytes += sizeof(llvm::StringMapEntry<Value>) + entry.getKey().size() + 1;
+  return bytes;
 }
 
 llvm::Error increment(PnrIndex &value, llvm::StringRef subject) {
@@ -200,16 +214,18 @@ materializeHandshakeGraph(const FrozenSpatialHandshakeIndex &index,
   std::set<std::pair<PnrIndex, PnrIndex>> fixedArcs;
   std::vector<std::vector<PnrIndex>> localNodeOrdinals(models.size());
 
+  std::string identityKey;
   const auto resolveIdentity =
       [&](detail::HandshakeNodeIdentity identity) -> llvm::Expected<PnrIndex> {
-    const std::string key = nodeKey(identity);
+    detail::assignNodeKey(identity, identityKey);
+    llvm::StringRef key = identityKey;
     auto found = graph.nodeOrdinals.find(key);
     if (found != graph.nodeOrdinals.end())
       return found->second;
     auto ordinal = checkedIndex(graph.nodeSignals.size(), "handshake node");
     if (!ordinal)
       return ordinal.takeError();
-    graph.nodeOrdinals.emplace(key, *ordinal);
+    graph.nodeOrdinals.insert({key, *ordinal});
     graph.nodeSignals.push_back(identity.boundarySignal);
     graph.nodeIdentities.push_back(std::move(identity));
     graph.outgoingArcs.emplace_back();
@@ -714,7 +730,7 @@ ensureHandshakeNode(detail::MaterializedHandshakeGraph &graph,
   auto ordinal = checkedIndex(graph.nodeIdentities.size(), "handshake node");
   if (!ordinal)
     return ordinal.takeError();
-  graph.nodeOrdinals.emplace(key, *ordinal);
+  graph.nodeOrdinals.insert({key, *ordinal});
   graph.nodeSignals.push_back(identity.boundarySignal);
   graph.nodeIdentities.push_back(identity);
   graph.outgoingArcs.emplace_back();
@@ -1161,7 +1177,7 @@ HandshakeCandidateState::materializationStatistics() const {
   addBytes(retainedNestedBytes(graph_->arcContributors));
   addBytes(retainedNestedBytes(graph_->outgoingArcs));
   addBytes(retainedNestedBytes(graph_->reverseArcs));
-  addBytes(retainedMapBytes(graph_->nodeOrdinals));
+  addBytes(retainedStringMapBytes(graph_->nodeOrdinals));
   addBytes(retainedMapBytes(graph_->arcOrdinals));
   addBytes(retainedBytes(graph_->order));
   addBytes(retainedBytes(graph_->ranks));
