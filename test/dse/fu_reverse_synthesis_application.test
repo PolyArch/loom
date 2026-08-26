@@ -15,8 +15,16 @@
 # RUN:   --fu-reverse-synthesis-dataflow \
 # RUN:     %S/../../examples/fu-reverse-synthesis/integer-add-sub.mlir \
 # RUN:   --fu-reverse-synthesis-evidence %t/replay.json 2> %t/replay.log
-# RUN: %python %S/verify_fu_reverse_synthesis_evidence.py \
-# RUN:   %t/initial.json %t/replay.json
+# RUN: mkdir -p %t/independent-run
+# RUN: loom-dse --config %t/config.json --artifact-store %t/artifacts \
+# RUN:   --blob-store %t/blobs --run-root %t/independent-run \
+# RUN:   --producer-build loom.test.fu_reverse_synthesis_application.v1 \
+# RUN:   --workers 1 --site-cpu 1 \
+# RUN:   --progress-jsonl %t/independent-progress.jsonl \
+# RUN:   --fu-reverse-synthesis-dataflow \
+# RUN:     %S/../../examples/fu-reverse-synthesis/integer-add-sub.mlir \
+# RUN:   --fu-reverse-synthesis-evidence %t/independent.json \
+# RUN:   2> %t/independent.log
 # RUN: rm -rf %t/negative && mkdir -p %t/negative/artifacts %t/negative/blobs
 # RUN: not loom-dse --config %t/config.json \
 # RUN:   --artifact-store %t/negative/artifacts --blob-store %t/negative/blobs \
@@ -41,6 +49,10 @@
 # RUN:     %S/Inputs/fu_reverse_synthesis_overflow.mlir \
 # RUN:   --fu-reverse-synthesis-evidence %t/negative/overflow.json 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=OVERFLOW
+# RUN: %python %S/verify_fu_reverse_synthesis_evidence.py \
+# RUN:   %t/initial.json %t/replay.json %t/independent.json \
+# RUN:   %t/negative/multiply.json %t/negative/math.json \
+# RUN:   %t/negative/overflow.json
 
 # MULTIPLY: fu_reverse_synthesis_failure=unsupported_actor_schema
 # MATH: fu_reverse_synthesis_failure=unsupported_actor_schema

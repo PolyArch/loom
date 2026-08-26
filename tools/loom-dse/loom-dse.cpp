@@ -336,6 +336,29 @@ llvm::Error writeJsonObject(llvm::StringRef path, llvm::json::Object report) {
   return llvm::Error::success();
 }
 
+llvm::Error writeFuReverseSynthesisRejectionEvidence(
+    llvm::StringRef path, const ArtifactRootReference &dataflow,
+    FuReverseSynthesisFailure failure, llvm::StringRef diagnostic,
+    const ArtifactStore &artifacts) {
+  auto imported = ::dataflow::importCanonicalDataflow(dataflow, artifacts);
+  if (!imported)
+    return imported.takeError();
+  auto view = imported->view();
+  if (!view)
+    return view.takeError();
+
+  llvm::json::Object report;
+  report["schema"] = "loom.fu_reverse_synthesis.workflow_evidence";
+  report["schema_version"] = "1.0";
+  report["status"] = "rejected";
+  report["search_started"] = false;
+  report["dataflow"] = rootReferenceJson(dataflow);
+  report["graph_count"] = view->graphs().size();
+  report["failure"] = fuReverseSynthesisFailureSpelling(failure);
+  report["diagnostic"] = diagnostic;
+  return writeJsonObject(path, std::move(report));
+}
+
 llvm::Error writeFuReverseSynthesisEvidence(
     llvm::StringRef path, const FuReverseSynthesisCandidateWorkflow &workflow,
     const DsePlanExecutionOutcome &outcome,
@@ -666,8 +689,25 @@ llvm::Expected<int> run() {
       return dataflow.takeError();
     auto workflow =
         buildFuReverseSynthesisCandidateWorkflow(*dataflow, *config, artifacts);
-    if (!workflow)
-      return workflow.takeError();
+    if (!workflow) {
+      std::optional<FuReverseSynthesisFailure> failure;
+      std::string diagnostic;
+      llvm::Error remaining = llvm::handleErrors(
+          workflow.takeError(), [&](const FuReverseSynthesisError &error) {
+            failure = error.failure();
+            diagnostic = error.diagnostic().str();
+          });
+      if (remaining)
+        return std::move(remaining);
+      if (!failure)
+        return invalid("reverse-FU admission lost its typed failure");
+      llvm::Error reportError = writeFuReverseSynthesisRejectionEvidence(
+          fuReverseSynthesisEvidence, *dataflow, *failure, diagnostic,
+          artifacts);
+      return llvm::joinErrors(
+          llvm::make_error<FuReverseSynthesisError>(*failure, diagnostic),
+          std::move(reportError));
+    }
     semanticInputs->push_back(*dataflow);
     *config = workflow->resolvedConfig();
     fuWorkflow.emplace(std::move(*workflow));
