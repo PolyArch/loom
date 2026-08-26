@@ -106,10 +106,14 @@ enum class ExactColoringResult : std::uint8_t {
 class ColoringState final {
 public:
   static llvm::Expected<ColoringState>
-  create(const SpatialTagColoringProblemView &problem) {
+  create(const SpatialTagColoringProblemView &problem,
+         llvm::ArrayRef<SpatialTagColoringVertexIdentity> identities,
+         const SpatialTagColoringCache *previous) {
     const std::size_t vertexCount = problem.vertices.size();
     if (vertexCount > getPnrIndexMax())
       return invalid("vertex inventory exceeds PnrIndex");
+    if ((previous || !identities.empty()) && identities.size() != vertexCount)
+      return invalid("coloring-cache identities do not match the vertices");
     if (problem.vertexDomainOffsets.size() != vertexCount + 1 ||
         problem.vertexIntervalOffsets.size() != vertexCount + 1 ||
         problem.vertexDomainOffsets.empty() ||
@@ -129,7 +133,7 @@ public:
           problem.vertexIntervalOffsets[vertex + 1] > problem.intervals.size())
         return invalid("vertex CSR offsets are not canonical");
 
-    ColoringState state(problem);
+    ColoringState state(problem, identities);
     state.conflictVertices_.resize(vertexCount);
     state.pressure_.assign(vertexCount, 0);
     DisjointSet components(vertexCount);
@@ -220,11 +224,51 @@ public:
       (void)root;
       state.components_.push_back(std::move(members));
     }
+    if (!identities.empty()) {
+      std::vector<SpatialTagColoringVertexIdentity> uniqueIdentities(
+          identities.begin(), identities.end());
+      llvm::sort(uniqueIdentities);
+      if (std::adjacent_find(uniqueIdentities.begin(),
+                             uniqueIdentities.end()) != uniqueIdentities.end())
+        return invalid("coloring-cache identities are not unique");
+    }
+    if (previous)
+      for (const auto &component : previous->components) {
+        if (component.identities.empty())
+          return invalid("cached coloring component has no identity");
+        const auto inserted = state.previousComponents_.emplace(
+            component.identities.front(), &component);
+        if (!inserted.second)
+          return invalid("cached coloring components have duplicate keys");
+      }
     return state;
   }
 
   llvm::Expected<SpatialTagColoringResult> color() {
+    if (!identities_.empty())
+      result_.cache.components.reserve(components_.size());
     for (const auto &component : components_) {
+      std::optional<SpatialTagColoringComponentCache> componentCache;
+      if (!identities_.empty()) {
+        auto built = buildComponentCache(component);
+        if (!built)
+          return built.takeError();
+        componentCache = std::move(*built);
+        auto reused = reuseComponent(component, *componentCache);
+        if (!reused)
+          return reused.takeError();
+        if (*reused) {
+          result_.cache.components.push_back(std::move(*componentCache));
+          continue;
+        }
+        componentCache->exactWorkBefore = exactWork_;
+        result_.recomputedIdentities.insert(result_.recomputedIdentities.end(),
+                                            componentCache->identities.begin(),
+                                            componentCache->identities.end());
+      }
+      const std::uint64_t unassignedBefore = result_.unassignedCount;
+      const std::uint64_t conflictsBefore = result_.conflictCount;
+      bool solvedExactly = false;
       if (component.size() <= spatialTagExactColoringVertexLimit) {
         std::vector<std::vector<llvm::APInt>> candidates;
         candidates.reserve(component.size());
@@ -238,22 +282,118 @@ public:
         if (!exact)
           return exact.takeError();
         if (*exact == ExactColoringResult::Solved)
-          continue;
+          solvedExactly = true;
       }
-      if (llvm::Error error = heuristicColor(component))
-        return std::move(error);
+      if (!solvedExactly)
+        if (llvm::Error error = heuristicColor(component))
+          return std::move(error);
+      if (componentCache) {
+        componentCache->exactWorkAfter = exactWork_;
+        componentCache->unassignedCount =
+            result_.unassignedCount - unassignedBefore;
+        componentCache->conflictCount = result_.conflictCount - conflictsBefore;
+        componentCache->values.reserve(component.size());
+        for (PnrIndex vertex : component)
+          componentCache->values.push_back(result_.values[vertex]);
+        result_.cache.components.push_back(std::move(*componentCache));
+      }
     }
     return std::move(result_);
   }
 
 private:
-  explicit ColoringState(const SpatialTagColoringProblemView &problem)
+  explicit ColoringState(
+      const SpatialTagColoringProblemView &problem,
+      llvm::ArrayRef<SpatialTagColoringVertexIdentity> identities)
       : problem_(problem), result_{std::vector<std::optional<llvm::APInt>>(
                                        problem.vertices.size()),
-                                   0, 0},
+                                   {},
+                                   0,
+                                   0,
+                                   {}},
         colored_(problem.vertices.size(), 0),
         saturationValueCounts_(problem.vertices.size()),
-        domainVertices_(problem.domainCount) {}
+        domainVertices_(problem.domainCount), identities_(identities) {}
+
+  llvm::Expected<SpatialTagColoringComponentCache>
+  buildComponentCache(llvm::ArrayRef<PnrIndex> component) const {
+    SpatialTagColoringComponentCache cache;
+    cache.identities.reserve(component.size());
+    cache.vertices.reserve(component.size());
+    cache.domainOffsets.reserve(component.size() + 1);
+    cache.intervalOffsets.reserve(component.size() + 1);
+    cache.conflictOffsets.reserve(component.size() + 1);
+    cache.domainOffsets.push_back(0);
+    cache.intervalOffsets.push_back(0);
+    cache.conflictOffsets.push_back(0);
+    for (PnrIndex vertex : component) {
+      cache.identities.push_back(identities_[vertex]);
+      cache.vertices.push_back(problem_.vertices[vertex]);
+      const auto localDomains = domains(vertex);
+      cache.domains.insert(cache.domains.end(), localDomains.begin(),
+                           localDomains.end());
+      cache.domainOffsets.push_back(
+          static_cast<PnrIndex>(cache.domains.size()));
+      const auto localIntervals = intervals(vertex);
+      cache.intervals.insert(cache.intervals.end(), localIntervals.begin(),
+                             localIntervals.end());
+      cache.intervalOffsets.push_back(
+          static_cast<PnrIndex>(cache.intervals.size()));
+      for (PnrIndex neighbor : conflictVertices_[vertex]) {
+        const auto found = llvm::lower_bound(component, neighbor);
+        if (found == component.end() || *found != neighbor)
+          return invalid("coloring component is not conflict-closed");
+        cache.conflicts.push_back(
+            static_cast<PnrIndex>(found - component.begin()));
+      }
+      cache.conflictOffsets.push_back(
+          static_cast<PnrIndex>(cache.conflicts.size()));
+    }
+    return cache;
+  }
+
+  static bool sameComponentInput(const SpatialTagColoringComponentCache &lhs,
+                                 const SpatialTagColoringComponentCache &rhs) {
+    return lhs.identities == rhs.identities && lhs.vertices == rhs.vertices &&
+           lhs.domainOffsets == rhs.domainOffsets &&
+           lhs.domains == rhs.domains &&
+           lhs.intervalOffsets == rhs.intervalOffsets &&
+           lhs.intervals == rhs.intervals &&
+           lhs.conflictOffsets == rhs.conflictOffsets &&
+           lhs.conflicts == rhs.conflicts;
+  }
+
+  llvm::Expected<bool> reuseComponent(llvm::ArrayRef<PnrIndex> component,
+                                      SpatialTagColoringComponentCache &cache) {
+    const auto found = previousComponents_.find(cache.identities.front());
+    if (found == previousComponents_.end())
+      return false;
+    const SpatialTagColoringComponentCache &previous = *found->second;
+    if (!sameComponentInput(cache, previous) ||
+        previous.exactWorkBefore != exactWork_)
+      return false;
+    if (previous.values.size() != component.size() ||
+        previous.exactWorkAfter < previous.exactWorkBefore ||
+        previous.exactWorkAfter > exactColoringWorkLimit)
+      return invalid("cached coloring component has inconsistent output");
+
+    const std::uint64_t unassignedBefore = result_.unassignedCount;
+    const std::uint64_t conflictsBefore = result_.conflictCount;
+    for (auto [local, vertex] : llvm::enumerate(component))
+      if (llvm::Error error = assign(vertex, previous.values[local]))
+        return std::move(error);
+    if (result_.unassignedCount - unassignedBefore !=
+            previous.unassignedCount ||
+        result_.conflictCount - conflictsBefore != previous.conflictCount)
+      return invalid("cached coloring component summary is inconsistent");
+    exactWork_ = previous.exactWorkAfter;
+    cache.values = previous.values;
+    cache.exactWorkBefore = previous.exactWorkBefore;
+    cache.exactWorkAfter = previous.exactWorkAfter;
+    cache.unassignedCount = previous.unassignedCount;
+    cache.conflictCount = previous.conflictCount;
+    return true;
+  }
 
   llvm::ArrayRef<PnrIndex> domains(PnrIndex vertex) const {
     return problem_.vertexDomains.slice(
@@ -500,6 +640,10 @@ private:
   std::vector<std::vector<PnrIndex>> conflictVertices_;
   std::vector<std::vector<PnrIndex>> components_;
   std::vector<std::size_t> pressure_;
+  llvm::ArrayRef<SpatialTagColoringVertexIdentity> identities_;
+  std::map<SpatialTagColoringVertexIdentity,
+           const SpatialTagColoringComponentCache *>
+      previousComponents_;
   std::uint64_t exactWork_ = 0;
 };
 
@@ -507,8 +651,10 @@ private:
 
 llvm::Expected<SpatialTagColoringResult>
 loom::pnr::detail::colorSpatialTagInterference(
-    const SpatialTagColoringProblemView &problem) {
-  auto state = ColoringState::create(problem);
+    const SpatialTagColoringProblemView &problem,
+    llvm::ArrayRef<SpatialTagColoringVertexIdentity> identities,
+    const SpatialTagColoringCache *previous) {
+  auto state = ColoringState::create(problem, identities, previous);
   if (!state)
     return state.takeError();
   return state->color();

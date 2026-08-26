@@ -56,11 +56,13 @@ add_mlir_library(LoomPnR
   SpatialPnrTagContinuityIndex.cpp
   SpatialPnrTransferIndex.cpp
   SpatialRouteCostState.cpp
+  SpatialRouteCostTagProjection.cpp
   SpatialRootSupplyAdmission.cpp
   SpatialRouteConstraintModel.cpp
   SpatialRouteResourceState.cpp
   SpatialRouteTreePruning.cpp
   SpatialTagAssignment.cpp
+  SpatialTagAssignmentSummary.cpp
   SpatialTagColoring.cpp
   SpatialTagConstraintModel.cpp
   SpatialTagContinuity.cpp
