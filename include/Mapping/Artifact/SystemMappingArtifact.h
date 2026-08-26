@@ -29,6 +29,20 @@ namespace loom::mapping {
 
 namespace detail {
 class SystemMappingImportSessionState;
+/// The thread-ambient Mapping import session, or null. The session retains
+/// finalized System and Spatial Mapping imports for one verification domain;
+/// the Spatial importer consults it through this hook so both families share
+/// one session owner.
+SystemMappingImportSessionState *activeMappingImportSession();
+std::shared_ptr<const FinalizedSpatialMapping>
+findSessionSpatialMapping(SystemMappingImportSessionState &session,
+                          const ArtifactRootReference &reference);
+std::shared_ptr<const FinalizedSpatialMapping> retainSessionSpatialMapping(
+    SystemMappingImportSessionState &session,
+    const ArtifactRootReference &reference,
+    std::shared_ptr<const FinalizedSpatialMapping> mapping);
+bool sessionOwnsStore(const SystemMappingImportSessionState &session,
+                      const ArtifactStore &store);
 }
 
 enum class SystemMappingImportVerificationDomain : std::uint8_t {

@@ -1680,6 +1680,17 @@ llvm::Expected<SpatialMappingView> SpatialMappingView::import(
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     const ::loom::fabric::FabricHandshakeContext *handshakeContext) {
+  // Building the handshake context is the dominant cost of an import; when
+  // the caller does not own one, acquire the session-shared context so one
+  // Fabric is contextualized once per session instead of once per import.
+  std::shared_ptr<const ::loom::fabric::FabricHandshakeContext> acquired;
+  if (!handshakeContext) {
+    auto sessionContext = ::loom::fabric::acquireFabricHandshakeContext(fabric);
+    if (!sessionContext)
+      return sessionContext.takeError();
+    acquired = std::move(*sessionContext);
+    handshakeContext = acquired.get();
+  }
   auto imported = importView(mappingIdentity, root, dataflow, techMapping,
                              fabric, handshakeContext);
   if (!imported)
@@ -1795,14 +1806,28 @@ importSpatialMapping(const ArtifactRootReference &reference,
   if (reference.schemaIdentity != mappingArtifactSchema.identity ||
       reference.schemaVersion != mappingArtifactSchema.version)
     return invalid("root reference has the wrong Mapping schema");
+  detail::SystemMappingImportSessionState *session =
+      detail::activeMappingImportSession();
+  if (session && !detail::sessionOwnsStore(*session, store))
+    return invalid("SpatialMapping import session crosses its ArtifactStore "
+                   "verification domain");
+  if (session)
+    if (auto cached = detail::findSessionSpatialMapping(*session, reference))
+      return *cached;
   auto canonicalBytes = store.get(reference);
   if (!canonicalBytes)
     return canonicalBytes.takeError();
   auto view = strictImport(reference.artifact, *canonicalBytes, store);
   if (!view)
     return view.takeError();
-  return FinalizedSpatialMapping(reference, std::move(*canonicalBytes),
-                                 std::move(*view));
+  FinalizedSpatialMapping imported(reference, std::move(*canonicalBytes),
+                                   std::move(*view));
+  if (!session)
+    return imported;
+  auto retained = detail::retainSessionSpatialMapping(
+      *session, reference,
+      std::make_shared<const FinalizedSpatialMapping>(std::move(imported)));
+  return *retained;
 }
 
 llvm::Expected<FinalizedSpatialMapping> rebaseSpatialMapping(

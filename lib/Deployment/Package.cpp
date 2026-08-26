@@ -455,7 +455,7 @@ llvm::Error validateStaging(llvm::StringRef staging,
   ArtifactStore artifactStore(objects);
   BlobStore blobStore(blobs);
   mapping::SystemMappingImportSession systemMappingImportSession(artifactStore,
-                                                                 1);
+                                                                 64);
   ConfigurationImageProjectionSession projectionSession(artifactStore, 1);
   auto deployment = importDeployment(root, artifactStore, blobStore);
   if (!deployment)

@@ -103,14 +103,44 @@ public:
     return mapping;
   }
 
+  // Spatial entries share the session lifetime and store binding but stay out
+  // of the session statistics: those counters are the SystemMapping
+  // verification oracle, and several consumers assert their exact per-System
+  // request and construction counts.
+  std::shared_ptr<const FinalizedSpatialMapping>
+  findSpatial(const ArtifactRootReference &reference) {
+    const SystemMappingImportSessionKey key{reference};
+    const auto found = llvm::find_if(
+        spatialEntries_, [&](const auto &entry) { return entry.key == key; });
+    return found == spatialEntries_.end() ? nullptr : found->mapping;
+  }
+
+  std::shared_ptr<const FinalizedSpatialMapping>
+  insertSpatial(const ArtifactRootReference &reference,
+                std::shared_ptr<const FinalizedSpatialMapping> mapping) {
+    if (spatialEntries_.size() >= entryLimit_)
+      return mapping;
+    const std::uint64_t retainedBytes =
+        mapping->canonicalBytes().bytes().size();
+    spatialEntries_.push_back({{reference}, mapping, retainedBytes});
+    return mapping;
+  }
+
   SystemMappingImportSessionStatistics statistics() const {
     return statistics_;
   }
 
 private:
+  struct SpatialEntry final {
+    SystemMappingImportSessionKey key;
+    std::shared_ptr<const FinalizedSpatialMapping> mapping;
+    std::uint64_t retainedBytes = 0;
+  };
+
   const ArtifactStore *store_ = nullptr;
   std::size_t entryLimit_ = 0;
   std::vector<SystemMappingImportSessionEntry> entries_;
+  std::vector<SpatialEntry> spatialEntries_;
   SystemMappingImportSessionStatistics statistics_;
 };
 
@@ -155,6 +185,31 @@ using MonotonicClock = std::chrono::steady_clock;
 
 thread_local detail::SystemMappingImportSessionState
     *currentSystemMappingImportSession = nullptr;
+
+} // namespace
+
+namespace detail {
+SystemMappingImportSessionState *activeMappingImportSession() {
+  return currentSystemMappingImportSession;
+}
+std::shared_ptr<const FinalizedSpatialMapping>
+findSessionSpatialMapping(SystemMappingImportSessionState &session,
+                          const ArtifactRootReference &reference) {
+  return session.findSpatial(reference);
+}
+std::shared_ptr<const FinalizedSpatialMapping> retainSessionSpatialMapping(
+    SystemMappingImportSessionState &session,
+    const ArtifactRootReference &reference,
+    std::shared_ptr<const FinalizedSpatialMapping> mapping) {
+  return session.insertSpatial(reference, std::move(mapping));
+}
+bool sessionOwnsStore(const SystemMappingImportSessionState &session,
+                      const ArtifactStore &store) {
+  return session.owns(store);
+}
+} // namespace detail
+
+namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),

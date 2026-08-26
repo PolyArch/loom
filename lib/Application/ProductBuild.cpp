@@ -947,7 +947,7 @@ llvm::Error publishProductDeployment(
     return mapping.takeError();
   auto deployment = [&]() -> llvm::Expected<ApplicationDeploymentArtifacts> {
     mapping::SystemMappingImportSession systemMappingImportSession(
-        target.workspace->artifacts(), 1);
+        target.workspace->artifacts(), 64);
     deployment::ConfigurationImageProjectionSession projectionSession(
         target.workspace->artifacts(), 1);
     auto built = buildApplicationDeployment(
