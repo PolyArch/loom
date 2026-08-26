@@ -36,6 +36,7 @@
 #include "PnR/System/SystemMappingMigration.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -642,6 +643,19 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (llvm::Error error = registerProductionDseOwners())
     return std::move(error);
+  // One repair imports the same parent and child Fabric roots across plan
+  // construction, freeze and verification, and each strict import recomputes
+  // the canonical labeling and the stored-domain validation. Scope one import
+  // session to the repair so those repeats become cache hits. ReuseEnclosing
+  // keeps an outer session as the single owner when one already exists.
+  ::loom::fabric::FabricArtifactImportSession fabricImportSession;
+  llvm::scope_exit emitFabricImportStatistics([&] {
+    ::loom::fabric::emitFabricArtifactImportSessionStatistics(
+        ::loom::fabric::FabricArtifactImportVerificationDomain::
+            SourceInvocation,
+        ::loom::InvocationDiagnosticStage::SystemPnr,
+        fabricImportSession.statistics());
+  });
   if (parentPlan.pairOutputs.size() != 1)
     return invalid("hardware mutation repair requires one exact parent pair");
   if (request.journalRoot.empty())
