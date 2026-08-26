@@ -444,8 +444,10 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
               0);
     std::fill(cutClaimTraversalRefcounts_.begin(),
               cutClaimTraversalRefcounts_.end(), 0);
-    std::fill(cutSeenTraversals_.begin(), cutSeenTraversals_.end(), 0);
-    std::fill(cutSeenEndpoints_.begin(), cutSeenEndpoints_.end(), 0);
+    if (emitDecisions) {
+      std::fill(cutSeenTraversals_.begin(), cutSeenTraversals_.end(), 0);
+      std::fill(cutSeenEndpoints_.begin(), cutSeenEndpoints_.end(), 0);
+    }
     cutContributingNets_.clear();
     cutForcedNetCuts_.clear();
     std::uint64_t derivedUsage = capacityRecord.initialOccupancy;
