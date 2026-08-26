@@ -25,7 +25,13 @@ MINIMAL_RUNTIME = REPOSITORY_ROOT / "test" / "frontend" / "Inputs" / "minimal-c-
 QUALIFICATION_ROOT = REPOSITORY_ROOT / "temp" / "cgra-budget-qualification"
 COMPILATION_TIMEOUT_SECONDS = 120.0
 SOURCE_PIPELINE_TIMEOUT_SECONDS = 900.0
-PROFILE_TIMEOUT_SECONDS = float(timeout_seconds(Tier.XLONG))
+SPATIAL_PNR_TIMEOUT_SECONDS = float(timeout_seconds(Tier.FAST))
+PROFILE_TIMEOUT_SECONDS = float(timeout_seconds(Tier.MEDIUM))
+PROFILE_TIMEOUT_MARGIN_SECONDS = (
+    PROFILE_TIMEOUT_SECONDS - SPATIAL_PNR_TIMEOUT_SECONDS
+)
+if PROFILE_TIMEOUT_MARGIN_SECONDS <= 0:
+    raise ValueError("CGRA profile wrapper has no deadline margin")
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,7 @@ class ResolvedSourceWorkload:
 
 
 class QualificationDisposition(Enum):
+    COMPLETED_EMPTY = "completed_empty"
     INCOMPLETE = "incomplete"
     PROVEN_INFEASIBLE = "proven_infeasible"
 
@@ -171,7 +178,7 @@ def qualify_workload(
     parsed = json.loads(profiled.stdout)
     if not isinstance(parsed, dict):
         raise RuntimeError(f"CGRA profile for {workload.name} is not an object")
-    if parsed.get("schema") == "loom.cgra_budget_profile_outcome.1":
+    if parsed.get("schema") == "loom.cgra_budget_profile_outcome.2":
         if parsed.get("workload") != workload.name or parsed.get(
             "operator_id"
         ) != workload.operator_id or parsed.get(
@@ -191,8 +198,14 @@ def qualify_workload(
                 None,
                 f"{workload.name}: proven_infeasible",
             )
+        if outcome == "completed" and reason is None:
+            raise QualificationStopped(
+                QualificationDisposition.COMPLETED_EMPTY,
+                None,
+                f"{workload.name}: completed_empty",
+            )
         raise RuntimeError("CGRA PnR outcome has an invalid disposition")
-    if parsed.get("schema") != "loom.cgra_budget_profile.4":
+    if parsed.get("schema") != "loom.cgra_budget_profile.5":
         raise RuntimeError("CGRA profile has a foreign schema")
     return parsed
 
@@ -234,7 +247,7 @@ def main() -> int:
         print(
             json.dumps(
                 {
-                    "schema": "loom.cgra_budget_qualification_outcome.1",
+                    "schema": "loom.cgra_budget_qualification_outcome.2",
                     "disposition": stopped.disposition.value,
                     "reason": stopped.reason,
                     "diagnostic": stopped.diagnostic,
@@ -246,7 +259,7 @@ def main() -> int:
         return 2
     budget = simulation_conformance.derive_cgra_spatial_budget_nanoseconds(profiles)
     output = {
-        "schema": "loom.cgra_simulation_gate.4",
+        "schema": "loom.cgra_simulation_gate.5",
         "policy": {
             "qualification_limit_nanoseconds": (
                 simulation_conformance.CGRA_QUALIFICATION_LIMIT_NANOSECONDS

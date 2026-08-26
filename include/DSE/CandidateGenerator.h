@@ -26,6 +26,8 @@ class ArtifactStore;
 
 namespace loom::dse {
 
+class ResolvedCandidateGeneratorBinding;
+
 /// Host-local execution capacity for independent candidate work. Providers
 /// may cap this further by the number of canonical work slots.
 std::uint32_t defaultCandidateWorkerCount();
@@ -220,6 +222,50 @@ struct CandidateGeneratorOwnerFeedbackPayloadContract final {
       const ArtifactStore &store);
 };
 
+class CandidateGeneratorInfeasibilityProofKindRef final {
+public:
+  explicit constexpr CandidateGeneratorInfeasibilityProofKindRef(
+      std::uint32_t ordinal)
+      : ordinal_(ordinal) {}
+  constexpr std::uint32_t ordinal() const { return ordinal_; }
+
+  friend constexpr bool
+  operator==(CandidateGeneratorInfeasibilityProofKindRef lhs,
+             CandidateGeneratorInfeasibilityProofKindRef rhs) {
+    return lhs.ordinal_ == rhs.ordinal_;
+  }
+  friend constexpr bool
+  operator!=(CandidateGeneratorInfeasibilityProofKindRef lhs,
+             CandidateGeneratorInfeasibilityProofKindRef rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  std::uint32_t ordinal_;
+};
+
+/// Descriptor-owned proof that the exact invocation has no feasible output.
+/// The generic controller preserves the owner-local kind and canonical witness
+/// bytes without interpreting either one.
+struct CandidateGeneratorInfeasibilityProof final {
+  CandidateGeneratorInfeasibilityProofKindRef kind;
+  std::vector<std::uint8_t> witness;
+
+  friend bool operator==(const CandidateGeneratorInfeasibilityProof &lhs,
+                         const CandidateGeneratorInfeasibilityProof &rhs) {
+    return lhs.kind == rhs.kind && lhs.witness == rhs.witness;
+  }
+};
+
+struct CandidateGeneratorOwnerInfeasibilityProofContract final {
+  llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes;
+  llvm::Error (*validateCanonical)(
+      const CandidateGeneratorInfeasibilityProof &proof,
+      llvm::ArrayRef<CandidateGeneratorInputBinding> canonicalInputs,
+      const ResolvedCandidateGeneratorBinding &binding,
+      const ArtifactStore &store, const BlobStore &blobs);
+};
+
 struct CandidateGeneratorOwnerOutcomeContract;
 struct CandidateGeneratorDescriptor;
 
@@ -271,6 +317,8 @@ struct CandidateGeneratorDescriptor final {
   const CandidateGeneratorOwnerFeedbackPayloadContract *ownerFeedbackPayload =
       nullptr;
   const CandidateGeneratorOwnerOutcomeContract *ownerOutcome = nullptr;
+  const CandidateGeneratorOwnerInfeasibilityProofContract
+      *ownerInfeasibilityProof = nullptr;
 
   CandidateGeneratorDescriptorRef reference() const;
   const CandidateGeneratorInputSlotDescriptor *
@@ -343,13 +391,19 @@ struct CandidateGeneratorLineageEdge final {
 /// Descriptor-owned closure across all canonical output slots and lineage
 /// edges. Per-slot cardinality and per-edge payload validation remain generic;
 /// this contract owns semantic relations that span several output artifacts.
+enum class CandidateGeneratorOutcomeKind : std::uint8_t {
+  Completed = 0,
+  ProvenInfeasible = 1,
+  Incomplete = 2,
+};
+
 struct CandidateGeneratorOwnerOutcomeContract final {
   llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes;
   llvm::Error (*validateCanonical)(
       llvm::ArrayRef<CandidateGeneratorInputBinding> canonicalInputs,
       llvm::ArrayRef<CandidateGeneratorOutputBinding> canonicalOutputs,
       llvm::ArrayRef<CandidateGeneratorLineageEdge> canonicalLineageEdges,
-      bool completed, const ArtifactStore &store);
+      CandidateGeneratorOutcomeKind outcomeKind, const ArtifactStore &store);
 };
 
 struct CompletedCandidateGeneratorResult final {
@@ -375,8 +429,14 @@ struct IncompleteCandidateGeneratorResult final {
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
 };
 
+struct ProvenInfeasibleCandidateGeneratorResult final {
+  std::vector<CandidateGeneratorOutputBinding> outputBindings;
+  CandidateGeneratorInfeasibilityProof proof;
+};
+
 using CandidateGeneratorProviderOutcome =
     std::variant<CompletedCandidateGeneratorResult,
+                 ProvenInfeasibleCandidateGeneratorResult,
                  IncompleteCandidateGeneratorResult>;
 
 /// One transient provider report: the outcome variant plus exactly one dense
@@ -539,6 +599,15 @@ deriveExternalToolSemanticContract(
 /// Strictly revalidates one immutable invocation record at an external
 /// consumption boundary. The check imports every exact input, output, parent,
 /// and internal lineage target; it does not create another record authority.
+llvm::Error validateCanonicalCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    llvm::ArrayRef<CandidateGeneratorOutputBinding> outputs,
+    llvm::ArrayRef<CandidateGeneratorLineageEdge> lineageEdges, bool completed,
+    const std::optional<CandidateGeneratorInfeasibilityProof>
+        &infeasibilityProof,
+    const ArtifactStore &store, const BlobStore &blobs);
+
 llvm::Error validateCanonicalCandidateGeneratorInvocation(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     const ResolvedCandidateGeneratorBinding &binding,

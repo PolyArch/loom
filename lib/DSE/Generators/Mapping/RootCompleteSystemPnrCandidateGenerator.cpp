@@ -14,6 +14,8 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <array>
@@ -131,6 +133,53 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
+std::string errorMessage(const llvm::ErrorInfoBase &error) {
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  error.log(stream);
+  return message;
+}
+
+llvm::Error classifyDerivedContextFailure(llvm::Error error,
+                                          bool &proofNotEstablished) {
+  proofNotEstablished = false;
+  return llvm::handleErrors(
+      std::move(error),
+      [&](const ::loom::pnr::SystemPnrFreezeFailure &failure) -> llvm::Error {
+        if (failure.kind() ==
+            ::loom::pnr::SystemPnrFreezeFailureKind::ProvenInfeasible) {
+          proofNotEstablished = true;
+          return llvm::Error::success();
+        }
+        return llvm::createStringError(failure.convertToErrorCode(),
+                                       errorMessage(failure));
+      });
+}
+
+llvm::Expected<bool> classifyUnsupportedSearchDomain(llvm::Error error) {
+  bool unsupported = false;
+  llvm::Error remaining = llvm::handleErrors(
+      std::move(error),
+      [&](const ::loom::pnr::UnsupportedSystemPnrSearchDomain &) {
+        unsupported = true;
+      });
+  if (remaining)
+    return std::move(remaining);
+  return unsupported;
+}
+
+CandidateGeneratorIncompleteReason adaptUnverifiedInfeasibility(
+    ::loom::pnr::SystemPnrInfeasibilityProofKind kind) {
+  switch (kind) {
+  case ::loom::pnr::SystemPnrInfeasibilityProofKind::FrozenStaticContext:
+  case ::loom::pnr::SystemPnrInfeasibilityProofKind::FrozenActiveProblem:
+  case ::loom::pnr::SystemPnrInfeasibilityProofKind::ImportedCapacityRelation:
+  case ::loom::pnr::SystemPnrInfeasibilityProofKind::InitializerRelation:
+    return CandidateGeneratorIncompleteReason::ProofNotEstablished;
+  }
+  llvm_unreachable("unknown System PnR infeasibility kind");
+}
+
 llvm::Error validateCapacityPressureFeedback(
     llvm::ArrayRef<std::uint8_t> bytes,
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
@@ -204,7 +253,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSystemPnrCandidateGeneratorKind,
     "mapping.root_complete_system_pnr",
-    "loom.mapping.root_complete_system_pnr.generator.v11",
+    "loom.mapping.root_complete_system_pnr.generator.v12",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -220,7 +269,7 @@ const CandidateGeneratorDescriptor descriptor{
 const CandidateGeneratorDescriptor applicationDescriptor{
     applicationSystemPnrCandidateGeneratorKind,
     "mapping.application_system_pnr",
-    "loom.mapping.application_system_pnr.generator.v10",
+    "loom.mapping.application_system_pnr.generator.v11",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -465,8 +514,20 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   ::loom::pnr::DerivedContextCacheAccess staticAccess;
   auto staticContext =
       ::loom::pnr::buildSystemStaticContext(*system, &staticAccess);
-  if (!staticContext)
-    return staticContext.takeError();
+  if (!staticContext) {
+    bool proofNotEstablished = false;
+    if (llvm::Error error = classifyDerivedContextFailure(
+            staticContext.takeError(), proofNotEstablished))
+      return std::move(error);
+    if (!proofNotEstablished)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "root_complete_system_pnr_generator_execution_failed: static "
+          "context construction lost its failure cause");
+    return CandidateGeneratorProviderResult{
+        incomplete(CandidateGeneratorIncompleteReason::ProofNotEstablished),
+        rootCompleteSystemPnrCandidateGeneratorWorkSummary({})};
+  }
   ::loom::pnr::emitSystemStaticContextStatistics(
       *staticContext, ::loom::mapping_debug::Stage::SystemPnr,
       staticAccess.hits, staticAccess.misses);
@@ -522,31 +583,49 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       *staticContext, *dataflow, *system, *physicalTimingProfiles, *constraints,
       inputBindings[SpatialMappingCandidatesInput].artifacts, store,
       &activeAccess);
-  if (!activeContext)
-    return activeContext.takeError();
+  if (!activeContext) {
+    bool proofNotEstablished = false;
+    if (llvm::Error error = classifyDerivedContextFailure(
+            activeContext.takeError(), proofNotEstablished))
+      return std::move(error);
+    if (!proofNotEstablished)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "root_complete_system_pnr_generator_execution_failed: active "
+          "context construction lost its failure cause");
+    return CandidateGeneratorProviderResult{
+        incomplete(CandidateGeneratorIncompleteReason::ProofNotEstablished),
+        rootCompleteSystemPnrCandidateGeneratorWorkSummary({})};
+  }
   ::loom::pnr::emitSystemActiveContextStatistics(
       *activeContext, ::loom::mapping_debug::Stage::SystemPnr,
       activeAccess.hits, activeAccess.misses);
   auto partition = ::loom::pnr::projectScheduledPresburgerPartitionPlan(
       *dataflow, constraints->view().rootThreadLaunches(),
       config->systemBindingPartitions(), defaultSystemPartitionCount(*system));
-  if (!partition)
-    return partition.takeError();
+  if (!partition) {
+    auto unsupported = classifyUnsupportedSearchDomain(partition.takeError());
+    if (!unsupported)
+      return unsupported.takeError();
+    if (*unsupported)
+      return CandidateGeneratorProviderResult{
+          incomplete(CandidateGeneratorIncompleteReason::Unsupported),
+          rootCompleteSystemPnrCandidateGeneratorWorkSummary({})};
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "root-complete System partition projection lost its failure cause");
+  }
   ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{
       inputBindings[SpatialMappingCandidatesInput].artifacts};
   auto searchDomain = ::loom::pnr::projectSystemPnrSearchDomain(
       *dataflow, *system, *config, *constraints, *partition, graphSearch, store,
       &*activeContext);
   if (!searchDomain) {
-    bool unsupported = false;
-    llvm::Error remaining = llvm::handleErrors(
-        searchDomain.takeError(),
-        [&](const ::loom::pnr::UnsupportedSystemPnrSearchDomain &) {
-          unsupported = true;
-        });
-    if (remaining)
-      return std::move(remaining);
-    if (unsupported)
+    auto unsupported =
+        classifyUnsupportedSearchDomain(searchDomain.takeError());
+    if (!unsupported)
+      return unsupported.takeError();
+    if (*unsupported)
       return CandidateGeneratorProviderResult{
           incomplete(CandidateGeneratorIncompleteReason::Unsupported),
           rootCompleteSystemPnrCandidateGeneratorWorkSummary({})};
@@ -574,10 +653,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
             generated->accounting)};
   }
   if (const auto *infeasible =
-          std::get_if<::loom::pnr::ProvenInfeasibleSystemMapping>(&outcome))
+          std::get_if<::loom::pnr::ProvenInfeasibleSystemMapping>(&outcome)) {
     return CandidateGeneratorProviderResult{
-        completed({}), rootCompleteSystemPnrCandidateGeneratorWorkSummary(
-                           infeasible->accounting)};
+        incomplete(adaptUnverifiedInfeasibility(infeasible->proofKind)),
+        rootCompleteSystemPnrCandidateGeneratorWorkSummary(
+            infeasible->accounting)};
+  }
   if (const auto *partial =
           std::get_if<::loom::pnr::IncompleteSystemPnrGeneration>(&outcome)) {
     const CandidateGeneratorIncompleteReason reason =
@@ -642,8 +723,20 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
   ::loom::pnr::DerivedContextCacheAccess staticAccess;
   auto staticContext =
       ::loom::pnr::buildSystemStaticContext(*system, &staticAccess);
-  if (!staticContext)
-    return staticContext.takeError();
+  if (!staticContext) {
+    bool proofNotEstablished = false;
+    if (llvm::Error error = classifyDerivedContextFailure(
+            staticContext.takeError(), proofNotEstablished))
+      return std::move(error);
+    if (!proofNotEstablished)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "application_system_pnr_generator_execution_failed: static context "
+          "construction lost its failure cause");
+    return CandidateGeneratorProviderResult{
+        incomplete(CandidateGeneratorIncompleteReason::ProofNotEstablished),
+        rootCompleteSystemPnrCandidateGeneratorWorkSummary({})};
+  }
   ::loom::pnr::emitSystemStaticContextStatistics(
       *staticContext, ::loom::mapping_debug::Stage::SystemPnr,
       staticAccess.hits, staticAccess.misses);
@@ -693,8 +786,20 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
       *staticContext, *dataflow, *system, *physicalTimingProfiles, *constraints,
       inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts, store,
       &activeAccess);
-  if (!activeContext)
-    return activeContext.takeError();
+  if (!activeContext) {
+    bool proofNotEstablished = false;
+    if (llvm::Error error = classifyDerivedContextFailure(
+            activeContext.takeError(), proofNotEstablished))
+      return std::move(error);
+    if (!proofNotEstablished)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "application_system_pnr_generator_execution_failed: active context "
+          "construction lost its failure cause");
+    return CandidateGeneratorProviderResult{
+        incomplete(CandidateGeneratorIncompleteReason::ProofNotEstablished),
+        rootCompleteSystemPnrCandidateGeneratorWorkSummary({})};
+  }
   ::loom::pnr::emitSystemActiveContextStatistics(
       *activeContext, ::loom::mapping_debug::Stage::SystemPnr,
       activeAccess.hits, activeAccess.misses);
@@ -702,23 +807,29 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
   auto partition = ::loom::pnr::projectScheduledPresburgerPartitionPlan(
       *dataflow, constraints->view().rootThreadLaunches(),
       config->systemBindingPartitions(), defaultSystemPartitionCount(*system));
-  if (!partition)
-    return partition.takeError();
+  if (!partition) {
+    auto unsupported = classifyUnsupportedSearchDomain(partition.takeError());
+    if (!unsupported)
+      return unsupported.takeError();
+    if (*unsupported)
+      return CandidateGeneratorProviderResult{
+          incomplete(CandidateGeneratorIncompleteReason::Unsupported),
+          rootCompleteSystemPnrCandidateGeneratorWorkSummary({})};
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "application System partition projection lost its failure cause");
+  }
   ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{
       inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts};
   auto searchDomain = ::loom::pnr::projectSystemPnrSearchDomain(
       *dataflow, *system, *config, *constraints, *partition, graphSearch, store,
       &*activeContext);
   if (!searchDomain) {
-    bool unsupported = false;
-    llvm::Error remaining = llvm::handleErrors(
-        searchDomain.takeError(),
-        [&](const ::loom::pnr::UnsupportedSystemPnrSearchDomain &) {
-          unsupported = true;
-        });
-    if (remaining)
-      return std::move(remaining);
-    if (unsupported)
+    auto unsupported =
+        classifyUnsupportedSearchDomain(searchDomain.takeError());
+    if (!unsupported)
+      return unsupported.takeError();
+    if (*unsupported)
       return CandidateGeneratorProviderResult{
           incomplete(CandidateGeneratorIncompleteReason::Unsupported),
           rootCompleteSystemPnrCandidateGeneratorWorkSummary({})};
@@ -747,10 +858,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
             generated->accounting)};
   }
   if (const auto *infeasible =
-          std::get_if<::loom::pnr::ProvenInfeasibleSystemMapping>(&outcome))
+          std::get_if<::loom::pnr::ProvenInfeasibleSystemMapping>(&outcome)) {
     return CandidateGeneratorProviderResult{
-        completed({}), rootCompleteSystemPnrCandidateGeneratorWorkSummary(
-                           infeasible->accounting)};
+        incomplete(adaptUnverifiedInfeasibility(infeasible->proofKind)),
+        rootCompleteSystemPnrCandidateGeneratorWorkSummary(
+            infeasible->accounting)};
+  }
   if (const auto *partial =
           std::get_if<::loom::pnr::IncompleteSystemPnrGeneration>(&outcome)) {
     const CandidateGeneratorIncompleteReason reason =

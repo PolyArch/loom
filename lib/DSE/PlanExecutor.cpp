@@ -124,6 +124,9 @@ candidateResultRoots(const CandidateGeneratorProviderResult &result) {
             [&]() -> const std::vector<CandidateGeneratorOutputBinding> & {
           if constexpr (std::is_same_v<T, CompletedCandidateGeneratorResult>)
             return outcome.outputBindings;
+          else if constexpr (std::is_same_v<
+                                 T, ProvenInfeasibleCandidateGeneratorResult>)
+            return outcome.outputBindings;
           else
             return outcome.retainedOutputBindings;
         }();
@@ -784,32 +787,52 @@ RecoverablePlanWorkExecutor::executeGenerate(
           *(*record)->finalizedWorkRecord;
       if (reference.schemaIdentity !=
               candidateGeneratorFinalizedWorkRecordSchemaIdentity ||
-          reference.schemaVersion !=
-              candidateGeneratorFinalizedWorkRecordSchemaVersion)
+          (reference.schemaVersion !=
+               candidateGeneratorFinalizedWorkRecordSchemaVersion &&
+           reference.schemaVersion !=
+               candidateGeneratorLegacyFinalizedWorkRecordSchemaVersion))
         return invalid(
             "terminal in-process Generate work has a foreign recovery owner");
       auto recovered = importCandidateGeneratorFinalizedWorkRecord(
-          reference.payloadDigest, journal_.runKey(), *key, inputs, binding,
-          store, blobs);
+          reference.schemaVersion, reference.payloadDigest, journal_.runKey(),
+          *key, inputs, binding, store, blobs);
       if (!recovered)
         return recovered.takeError();
-      const bool completed =
-          std::holds_alternative<CompletedCandidateGeneratorResult>(
-              recovered->outcome);
-      const auto &outputs =
-          completed
-              ? std::get<CompletedCandidateGeneratorResult>(recovered->outcome)
-                    .outputBindings
-              : std::get<IncompleteCandidateGeneratorResult>(recovered->outcome)
-                    .retainedOutputBindings;
-      const auto &edges =
-          completed
-              ? std::get<CompletedCandidateGeneratorResult>(recovered->outcome)
-                    .lineageEdges
-              : std::get<IncompleteCandidateGeneratorResult>(recovered->outcome)
-                    .lineageEdges;
+      const bool completed = !std::holds_alternative<
+          IncompleteCandidateGeneratorResult>(recovered->outcome);
+      const auto &outputs = std::visit(
+          [](const auto &outcome)
+              -> const std::vector<CandidateGeneratorOutputBinding> & {
+            using T = std::decay_t<decltype(outcome)>;
+            if constexpr (std::is_same_v<
+                              T, IncompleteCandidateGeneratorResult>)
+              return outcome.retainedOutputBindings;
+            else
+              return outcome.outputBindings;
+          },
+          recovered->outcome);
+      const auto &edges = std::visit(
+          [](const auto &outcome)
+              -> const std::vector<CandidateGeneratorLineageEdge> & {
+            using T = std::decay_t<decltype(outcome)>;
+            if constexpr (std::is_same_v<
+                              T, ProvenInfeasibleCandidateGeneratorResult>) {
+              static const std::vector<CandidateGeneratorLineageEdge> empty;
+              return empty;
+            } else {
+              return outcome.lineageEdges;
+            }
+          },
+          recovered->outcome);
+      const auto *proven =
+          std::get_if<ProvenInfeasibleCandidateGeneratorResult>(
+              &recovered->outcome);
+      const std::optional<CandidateGeneratorInfeasibilityProof> proof =
+          proven ? std::optional<CandidateGeneratorInfeasibilityProof>(
+                       proven->proof)
+                 : std::nullopt;
       if (llvm::Error error = validateCanonicalCandidateGeneratorInvocation(
-              inputs, binding, outputs, edges, completed, store))
+              inputs, binding, outputs, edges, completed, proof, store, blobs))
         return std::move(error);
       if (llvm::Error error = validateCandidateGeneratorWorkSummary(
               binding.descriptorRef(), recovered->workSummary))

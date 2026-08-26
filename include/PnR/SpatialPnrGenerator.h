@@ -131,11 +131,19 @@ struct SpatialGraphBoundaryEndpointHallDeficit final {
   }
 };
 
+enum class SpatialPnrInfeasibilityProofKind : std::uint8_t {
+  FrozenDerivedContext = 0,
+  FrozenActiveProblem = 1,
+  InitializerRelation = 2,
+  GraphBoundaryEndpointHall = 3,
+};
+
 struct ProvenInfeasibleSpatialMapping final {
   SpatialPnrGenerationAccounting accounting;
   std::string diagnostic;
   std::optional<SpatialGraphBoundaryEndpointHallDeficit>
       graphBoundaryEndpointHall = std::nullopt;
+  SpatialPnrInfeasibilityProofKind proofKind;
 };
 
 enum class IncompleteSpatialPnrGenerationReason : std::uint8_t {

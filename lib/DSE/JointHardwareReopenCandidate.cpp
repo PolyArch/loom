@@ -459,41 +459,6 @@ struct ResolvedGeneratePlanExecution final {
   JointDesignInvocationManifestReference invocationManifest;
 };
 
-InvocationControllerOutcome
-projectGeneratePlanOutcome(const dse::DsePlanExecutionResult &execution,
-                           const DsePlanGenerateInvocationRecords &records) {
-  std::vector<ArtifactRootReference> artifacts;
-  std::vector<ArtifactRootReference> generatedEvidence;
-  const auto append = [&](llvm::ArrayRef<GenerateInvocationRecord> generated) {
-    for (const GenerateInvocationRecord &record : generated)
-      for (const CandidateGeneratorOutputBinding &binding :
-           record.outputBindings)
-        for (const ArtifactRootReference &root : binding.artifacts) {
-          if (root.schemaIdentity ==
-                  evaluation::EvaluationEvidence::artifactSchema.identity &&
-              root.schemaVersion ==
-                  evaluation::EvaluationEvidence::artifactSchema.version)
-            generatedEvidence.push_back(root);
-          else
-            artifacts.push_back(root);
-        }
-  };
-  append(records.completed());
-  append(records.incomplete());
-  canonicalizeRoots(artifacts);
-  canonicalizeRoots(generatedEvidence);
-  if (const auto *incomplete =
-          std::get_if<IncompleteDsePlanExecution>(&execution))
-    return InvocationIncomplete{incomplete->nodeOrdinal(),
-                                incomplete->reason(),
-                                {},
-                                std::move(artifacts),
-                                std::move(generatedEvidence)};
-  if (artifacts.empty())
-    return InvocationCompletedNoFeasibleCandidate{};
-  return InvocationCompletedSelection{std::move(artifacts), {}};
-}
-
 static llvm::Expected<ResolvedGeneratePlanExecution>
 executeResolvedGeneratePlan(
     const ResolvedConfig &config,
@@ -535,10 +500,12 @@ executeResolvedGeneratePlan(
     return execution.takeError();
   DsePlanGenerateInvocationRecords records =
       projectDsePlanGenerateInvocationRecords(*execution);
+  auto outcome = projectDsePlanInvocationOutcome(*configView, *execution);
+  if (!outcome)
+    return outcome.takeError();
   auto manifest = publishJointPlanInvocationManifest(
-      std::move(*closure), config, records,
-      projectGeneratePlanOutcome(*execution, records), *journal, artifacts,
-      blobs);
+      std::move(*closure), config, records, std::move(*outcome), *journal,
+      artifacts, blobs);
   if (!manifest)
     return manifest.takeError();
   return ResolvedGeneratePlanExecution{std::move(*execution),

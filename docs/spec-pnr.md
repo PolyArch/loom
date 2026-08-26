@@ -29,7 +29,8 @@ Diagnostics are observation only. Their level, destination, formatting,
 timestamps, host data, wall time, and message text do not enter Artifact
 identity, candidate ordering, work accounting, or replay. A diagnostic may
 summarize a proof witness, but it cannot replace the typed outcome or the
-independent verifier.
+independent verifier. Diagnostic text is never serialized as the durable
+infeasibility witness.
 
 ## Semantic Owners
 
@@ -487,6 +488,7 @@ Generated {
 
 ProvenInfeasible {
   exhaustive proof over the complete admitted domain
+  typed internal contradiction kind
   exact work accounting
 }
 
@@ -526,6 +528,51 @@ complete admitted invocation domain and every required constraint. A failed
 seed, unreachable route under fixed terminals, local solver `INFEASIBLE`,
 unsupported repair encoding, timeout, budget exhaustion, cyclic progress
 basis, or finite prefix is never enough.
+
+Spatial PnR owns these closed infeasibility-proof kinds:
+
+```text
+SpatialPnrInfeasibilityProofKind =
+    FrozenDerivedContext       // tag 0
+  | FrozenActiveProblem        // tag 1
+  | InitializerRelation        // tag 2
+  | GraphBoundaryEndpointHall  // tag 3
+```
+
+System PnR owns these closed infeasibility-proof kinds:
+
+```text
+SystemPnrInfeasibilityProofKind =
+    FrozenStaticContext        // tag 0
+  | FrozenActiveProblem        // tag 1
+  | ImportedCapacityRelation   // tag 2
+  | InitializerRelation        // tag 3
+```
+
+The kind preserves which internal relation reported the contradiction, but a
+kind and diagnostic do not constitute a durable proof. A DSE adapter may admit
+an internal kind as `ProvenInfeasible` only when its reason-specific witness is
+independently checked against the complete exact input closure. Otherwise it
+maps the result to `Incomplete(ProofNotEstablished)`. A provider may add a new
+durable kind only with an owner validator that proves its complete admitted
+scope rather than merely naming the search site that failed.
+
+These PnR kinds classify the internal relation that reported a contradiction;
+they are not persistent Candidate Generator proofs. No current Spatial or
+System PnR descriptor registers an owner infeasibility-proof contract because
+none carries a reason-specific witness that can be independently reconstructed
+and checked from the exact invocation inputs. Every internal Spatial or System
+`ProvenInfeasible` result therefore maps to
+`Incomplete(ProofNotEstablished)` at the DSE boundary.
+
+The graph-boundary Hall deficit is transient hardware-reopen feedback, not a
+durable infeasibility proof. The current Spatial relation model does not create
+a global graph-boundary all-different relation because legal temporal or
+causally separated endpoint reuse must remain admissible. Counts or diagnostic
+text cannot substitute for that missing constraint and witness. An empty
+root-complete input frontier remains ordinary completed empty output; timeout,
+semantic limits, and unverified contradictions remain typed incomplete
+outcomes.
 
 `Incomplete` is not contagious across independent candidates. A generator
 adapter must retain every already finalized candidate, continue other
@@ -1153,8 +1200,16 @@ must cover:
 * RegFIFO local disposition with legal external fallback;
 * Temporal switch signature packing and row-aware execution;
 * candidate-dependent System wait-for reconstruction;
-* physical timing affecting route and candidate ranking; and
-* rejection of schema or capability claims absent from the provider.
+* physical timing affecting route and candidate ranking;
+* rejection of schema or capability claims absent from the provider;
+* preservation of generic descriptor-validated infeasibility proofs through
+  the Candidate Generator boundary and replay;
+* rejection of a forged or corrupted owner witness against the exact input
+  closure;
+* fail-closed adaptation of current Spatial and System internal
+  contradictions to `ProofNotEstablished`; and
+* preservation of ordinary completed empty output, timeout, and
+  `ProofNotEstablished` without reclassification as infeasible.
 
 Schema-only fixtures and mock success paths do not replace a real application
 tuple. Integration acceptance requires a fresh, independently verified

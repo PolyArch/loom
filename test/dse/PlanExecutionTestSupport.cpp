@@ -44,11 +44,67 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> inputs = {{
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputs = {{
     {CandidateGeneratorOutputSlotRef(0), "candidate",
      PlanValueRole::CandidateSet, &candidateSchema,
-     PlanValueCardinality::NonEmptySet},
+     PlanValueCardinality::FiniteSet},
 }};
 constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 1> workUnits = {{
     {CandidateGeneratorWorkUnitRef(0), "candidate_attempt"},
 }};
+
+constexpr std::array<std::uint8_t, 4> proofSchema = {0x50, 0x52, 0x4f, 0x4f};
+constexpr std::uint8_t ordinarySourceMarker = 0x11;
+constexpr std::uint8_t provenInfeasibleSourceMarker = 0x12;
+
+std::vector<std::uint8_t> proofPreimageFor(
+    const CandidateGeneratorInputBinding &input,
+    const ResolvedCandidateGeneratorBinding &binding) {
+  std::vector<std::uint8_t> preimage;
+  preimage.insert(preimage.end(), input.artifacts.front().artifact.bytes().begin(),
+                  input.artifacts.front().artifact.bytes().end());
+  preimage.insert(preimage.end(), binding.configDigest().bytes().begin(),
+                  binding.configDigest().bytes().end());
+  return preimage;
+}
+
+llvm::Expected<std::vector<std::uint8_t>> publishProofWitness(
+    const CandidateGeneratorInputBinding &input,
+    const ResolvedCandidateGeneratorBinding &binding, const BlobStore &blobs) {
+  auto digest = blobs.put(proofPreimageFor(input, binding));
+  if (!digest)
+    return digest.takeError();
+  return std::vector<std::uint8_t>(digest->bytes().begin(),
+                                   digest->bytes().end());
+}
+
+llvm::Error validateProof(
+    const CandidateGeneratorInfeasibilityProof &proof,
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  if (proof.kind != CandidateGeneratorInfeasibilityProofKindRef(0) ||
+      inputBindings.size() != 1 ||
+      inputBindings.front().artifacts.size() != 1 ||
+      binding.descriptorRef().kind() != CandidateGeneratorKind(0x7fff7600))
+    return invalid("infeasibility proof is not canonical");
+  auto stored = store.get(inputBindings.front().artifacts.front());
+  if (!stored)
+    return stored.takeError();
+  auto witnessDigest = BlobDigest::fromBytes(proof.witness);
+  if (!witnessDigest)
+    return invalid("infeasibility proof is not established by its exact input");
+  auto witnessPreimage = blobs.get(*witnessDigest);
+  if (!witnessPreimage) {
+    llvm::consumeError(witnessPreimage.takeError());
+    return invalid("infeasibility proof is not established by its exact input");
+  }
+  if (stored->bytes() != llvm::ArrayRef<std::uint8_t>(
+                             {provenInfeasibleSourceMarker}) ||
+      *witnessPreimage != proofPreimageFor(inputBindings.front(), binding))
+    return invalid("infeasibility proof is not established by its exact input");
+  return llvm::Error::success();
+}
+
+const CandidateGeneratorOwnerInfeasibilityProofContract proofContract{
+    proofSchema, validateProof};
 
 const CandidateGeneratorDescriptor descriptor{
     CandidateGeneratorKind(0x7fff7600),
@@ -60,7 +116,10 @@ const CandidateGeneratorDescriptor descriptor{
     CandidateGeneratorDeterminism::Deterministic,
     workUnits,
     nullptr,
-    ProviderForm::InProcess};
+    ProviderForm::InProcess,
+    nullptr,
+    nullptr,
+    &proofContract};
 
 std::atomic_uint64_t providerCalls{0};
 std::atomic_uint64_t activeProviders{0};
@@ -68,6 +127,8 @@ std::atomic_uint64_t maximumActiveProviders{0};
 std::atomic_uint64_t requiredConcurrentProviders{1};
 std::atomic_bool waitForStopRequest{false};
 std::atomic_bool observedStopRequest{false};
+std::atomic<PlanExecutionProviderOutcomeKind> providerOutcome{
+    PlanExecutionProviderOutcomeKind::Candidate};
 std::atomic_uint64_t observedCpuBudgetCores{0};
 std::atomic_uint64_t observedMemoryBudgetBytes{0};
 std::mutex concurrencyMutex;
@@ -85,7 +146,7 @@ void observeMaximum(std::uint64_t active) {
 llvm::Expected<CandidateGeneratorProviderResult>
 generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
          const ResolvedCandidateGeneratorBinding &binding,
-         const ArtifactStore &store, const BlobStore &,
+         const ArtifactStore &store, const BlobStore &blobs,
          const CandidateGeneratorInvocationView &invocation) {
   if (binding.descriptorRef() != descriptor.reference() ||
       inputBindings.size() != 1 ||
@@ -141,6 +202,26 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   activeProviders.fetch_sub(1, std::memory_order_relaxed);
   concurrencyChanged.notify_all();
 
+  const PlanExecutionProviderOutcomeKind outcome =
+      providerOutcome.load(std::memory_order_relaxed);
+  if (outcome == PlanExecutionProviderOutcomeKind::ProvenInfeasible) {
+    auto witness =
+        publishProofWitness(inputBindings.front(), binding, blobs);
+    if (!witness)
+      return witness.takeError();
+    return CandidateGeneratorProviderResult{
+        ProvenInfeasibleCandidateGeneratorResult{
+            {{CandidateGeneratorOutputSlotRef(0), {}}},
+            {CandidateGeneratorInfeasibilityProofKindRef(0),
+             std::move(*witness)}},
+        {{CandidateGeneratorWorkUnitRef(0), 1, 1}}};
+  }
+  if (outcome == PlanExecutionProviderOutcomeKind::CompletedEmpty)
+    return CandidateGeneratorProviderResult{
+        CompletedCandidateGeneratorResult{
+            {{CandidateGeneratorOutputSlotRef(0), {}}}, {}},
+        {{CandidateGeneratorWorkUnitRef(0), 1, 1}}};
+
   auto identity = store.put(
       candidateSchema, CanonicalSemanticBytes(std::vector<std::uint8_t>{0x41}));
   if (!identity)
@@ -159,9 +240,9 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
 }
 
 llvm::Expected<ArtifactRootReference>
-publishSource(const ArtifactStore &store) {
+publishSource(const ArtifactStore &store, std::uint8_t marker) {
   auto identity = store.put(
-      sourceSchema, CanonicalSemanticBytes(std::vector<std::uint8_t>{0x11}));
+      sourceSchema, CanonicalSemanticBytes(std::vector<std::uint8_t>{marker}));
   if (!identity)
     return identity.takeError();
   return ArtifactRootReference{sourceSchema.identity.str(),
@@ -179,8 +260,11 @@ llvm::Error registerPlanExecutionTestGenerator() {
 
 llvm::Expected<PlanExecutionFixture>
 makePlanExecutionFixture(const ArtifactStore &store, std::size_t nodeCount,
-                         llvm::StringRef producerIdentity) {
-  auto source = publishSource(store);
+                         llvm::StringRef producerIdentity,
+                         bool provenInfeasibleSource) {
+  auto source = publishSource(
+      store, provenInfeasibleSource ? provenInfeasibleSourceMarker
+                                    : ordinarySourceMarker);
   if (!source)
     return source.takeError();
   auto digest = computeComponentViewDigest(configSchema, {0x01});
@@ -221,6 +305,8 @@ void resetPlanExecutionProviderObservations() {
   requiredConcurrentProviders.store(1, std::memory_order_relaxed);
   waitForStopRequest.store(false, std::memory_order_relaxed);
   observedStopRequest.store(false, std::memory_order_relaxed);
+  providerOutcome.store(PlanExecutionProviderOutcomeKind::Candidate,
+                        std::memory_order_relaxed);
   observedCpuBudgetCores.store(0, std::memory_order_relaxed);
   observedMemoryBudgetBytes.store(0, std::memory_order_relaxed);
 }
@@ -231,6 +317,10 @@ void requireConcurrentPlanExecutionProviders(std::uint64_t count) {
 
 void requirePlanExecutionProviderStopObservation() {
   waitForStopRequest.store(true, std::memory_order_relaxed);
+}
+
+void setPlanExecutionProviderOutcome(PlanExecutionProviderOutcomeKind outcome) {
+  providerOutcome.store(outcome, std::memory_order_relaxed);
 }
 
 bool waitForActivePlanExecutionProvider() {

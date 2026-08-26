@@ -616,8 +616,9 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
             std::move(failure.diagnostic)};
       case FreezeFailureKind::ProvenInfeasible:
         emitProvenInfeasibleFreeze("system_static_context", failure.diagnostic);
-        return ProvenInfeasibleSystemMapping{accounting,
-                                             std::move(failure.diagnostic)};
+        return ProvenInfeasibleSystemMapping{
+            accounting, std::move(failure.diagnostic),
+            SystemPnrInfeasibilityProofKind::FrozenStaticContext};
       case FreezeFailureKind::Internal:
         return internal(
             InternalSystemPnrGenerationReason::FrozenModelConstruction,
@@ -704,8 +705,9 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
           std::move(failure.diagnostic)};
     case FreezeFailureKind::ProvenInfeasible:
       emitProvenInfeasibleFreeze("system_active_problem", failure.diagnostic);
-      return ProvenInfeasibleSystemMapping{accounting,
-                                           std::move(failure.diagnostic)};
+      return ProvenInfeasibleSystemMapping{
+          accounting, std::move(failure.diagnostic),
+          SystemPnrInfeasibilityProofKind::FrozenActiveProblem};
     case FreezeFailureKind::Internal:
       return internal(
           InternalSystemPnrGenerationReason::FrozenModelConstruction,
@@ -908,11 +910,13 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
     if (const auto *infeasible =
             std::get_if<SystemImportedCapacityRelationInfeasible>(
                 &*capacityFit)) {
-      emitProvenInfeasibleFreeze("initializer_relation",
+      emitProvenInfeasibleFreeze("imported_capacity_relation",
                                  infeasible->diagnostic);
       emitInvocationAccounting(
           accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
-      return ProvenInfeasibleSystemMapping{accounting, infeasible->diagnostic};
+      return ProvenInfeasibleSystemMapping{
+          accounting, infeasible->diagnostic,
+          SystemPnrInfeasibilityProofKind::ImportedCapacityRelation};
     }
     requireImportedCapacityClosure = true;
   }
@@ -1007,8 +1011,9 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
         if (candidates.empty()) {
           emitInvocationAccounting(
               accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
-          return ProvenInfeasibleSystemMapping{accounting,
-                                               std::move(failure.diagnostic)};
+          return ProvenInfeasibleSystemMapping{
+              accounting, std::move(failure.diagnostic),
+              SystemPnrInfeasibilityProofKind::InitializerRelation};
         }
         return internal(
             InternalSystemPnrGenerationReason::CandidateInitialization,

@@ -16,7 +16,6 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
-
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -90,6 +89,11 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
 }
 
 dataflow::CanonicalDataflowArtifact
+buildRootCompleteSpatialDataflow(mlir::MLIRContext &context) {
+  return buildDataflow(context);
+}
+
+dataflow::CanonicalDataflowArtifact
 buildAlternateDataflow(mlir::MLIRContext &context) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
@@ -120,6 +124,11 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   if (!module)
     fail("cannot parse alternate Dataflow fixture");
   return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
+buildAlternateRootCompleteSpatialDataflow(mlir::MLIRContext &context) {
+  return buildAlternateDataflow(context);
 }
 
 dataflow::CanonicalDataflowArtifact
@@ -156,6 +165,11 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   if (!module)
     fail("cannot parse vector Dataflow fixture");
   return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
+buildVectorRootCompleteSpatialDataflow(mlir::MLIRContext &context) {
+  return buildVectorDataflow(context);
 }
 
 fabric::FinalizedFabricRoot

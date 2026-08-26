@@ -1311,8 +1311,9 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
             InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
             std::move(failure.diagnostic)};
       case FreezeFailureKind::ProvenInfeasible:
-        return ProvenInfeasibleSpatialMapping{accounting,
-                                              std::move(failure.diagnostic)};
+        return ProvenInfeasibleSpatialMapping{
+            accounting, std::move(failure.diagnostic), std::nullopt,
+            SpatialPnrInfeasibilityProofKind::FrozenDerivedContext};
       case FreezeFailureKind::Internal:
         return internal(
             InternalSpatialPnrGenerationReason::FrozenModelConstruction,
@@ -1353,8 +1354,9 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
           InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
           std::move(failure.diagnostic)};
     case FreezeFailureKind::ProvenInfeasible:
-      return ProvenInfeasibleSpatialMapping{accounting,
-                                            std::move(failure.diagnostic)};
+      return ProvenInfeasibleSpatialMapping{
+          accounting, std::move(failure.diagnostic), std::nullopt,
+          SpatialPnrInfeasibilityProofKind::FrozenActiveProblem};
     case FreezeFailureKind::Internal:
       return internal(
           InternalSpatialPnrGenerationReason::FrozenModelConstruction,
@@ -1558,7 +1560,7 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     case SpatialRestartDisposition::Candidate:
       semanticLimitReached |= restart.semanticLimitReached;
       break;
-    case SpatialRestartDisposition::ProvenInfeasible:
+    case SpatialRestartDisposition::ProvenInfeasible: {
       if (hasCandidateRestart)
         return internal(
             InternalSpatialPnrGenerationReason::CandidateVerification,
@@ -1567,9 +1569,15 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
             "a verified candidate");
       emitInvocationAccounting(
           accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
+      const bool hasGraphBoundaryHall =
+          restart.graphBoundaryEndpointHall.has_value();
       return ProvenInfeasibleSpatialMapping{
           accounting, std::move(restart.diagnostic),
-          std::move(restart.graphBoundaryEndpointHall)};
+          std::move(restart.graphBoundaryEndpointHall),
+          hasGraphBoundaryHall
+              ? SpatialPnrInfeasibilityProofKind::GraphBoundaryEndpointHall
+              : SpatialPnrInfeasibilityProofKind::InitializerRelation};
+    }
     case SpatialRestartDisposition::Incomplete:
       semanticLimitReached |= restart.semanticLimitReached;
       proofNotEstablished |= !restart.semanticLimitReached;

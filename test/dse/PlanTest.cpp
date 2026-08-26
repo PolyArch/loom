@@ -485,7 +485,7 @@ void exerciseOrderedTypedUseDef() {
     fail("outer controller projection lost incomplete Generate provenance");
   const DsePlanGenerateInvocationSummary unavailableSummary =
       take(validateAndSummarizeDsePlanGenerateInvocations(
-          llvm::ArrayRef(&unavailableRecords, 1), store));
+          llvm::ArrayRef(&unavailableRecords, 1), store, blobs));
   if (unavailableSummary.planExecutions != 1 ||
       unavailableSummary.completedInvocations != 1 ||
       unavailableSummary.incompleteInvocations != 1 ||

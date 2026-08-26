@@ -250,7 +250,7 @@ struct Fixture final {
 
 Fixture buildFixture(mlir::MLIRContext &context, loom::ArtifactStore &store,
                      const loom::BlobStore &blobs) {
-  auto dataflow = buildDataflow(context);
+  auto dataflow = loom::test::buildRootCompleteSpatialDataflow(context);
   auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
   auto fabric = loom::test::buildSpatialCore(store);
@@ -584,7 +584,8 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       store));
   auto manifest = take(loom::dse::InvocationManifest::get(
       std::move(closure), 0, std::nullopt, resolved, manifestRecords,
-      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store));
+      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store,
+      blobs));
   auto reorderedClosure = take(loom::dse::DseRunClosure::get(
       take(loom::dse::DseProducerSemanticBuildIdentity::get(
           "loom.test.root_complete_spatial_pnr.v1")),
@@ -592,11 +593,12 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       store));
   auto reorderedManifest = take(loom::dse::InvocationManifest::get(
       std::move(reorderedClosure), 0, std::nullopt, resolved, manifestRecords,
-      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store));
+      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store,
+      blobs));
   if (reorderedManifest.canonicalBytes() != manifest.canonicalBytes())
     fail("semantic-input authoring order changed production Manifest bytes");
   auto adopted = take(loom::dse::adoptInvocationManifest(
-      manifest.canonicalBytes(), resolved, store));
+      manifest.canonicalBytes(), resolved, store, blobs));
   if (adopted.generateRecords().size() != expectedWork.size())
     fail("Manifest dropped a production Generate work summary");
   for (std::size_t invocation = 0; invocation != expectedWork.size();
@@ -701,7 +703,8 @@ void finiteSetTraversesEveryCanonicalTechMapping() {
   const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   Fixture fixture = buildFixture(context, store, blobs);
-  auto alternateDataflow = buildAlternateDataflow(context);
+  auto alternateDataflow =
+      loom::test::buildAlternateRootCompleteSpatialDataflow(context);
   auto alternateDataflowReference =
       take(dataflow::publishCanonicalDataflow(alternateDataflow, store));
   auto alternateTechMapping = generateTechMapping(
@@ -769,10 +772,10 @@ void firstVerifiedAvoidsSpeculativeRouteRanking() {
     fail("cannot create BlobStore directory: " + error.message());
   const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  auto dataflow = buildDataflow(context);
+  auto dataflow = loom::test::buildRootCompleteSpatialDataflow(context);
   const auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
-  auto fabric = buildAlternativeTechSpatialCore(store);
+  auto fabric = loom::test::buildAlternativeTechSpatialCore(store);
   const auto physicalTiming =
       normalizedTimingProfile(fabric.reference(), store);
   const auto techMappings = generateTechMappingSet(
@@ -1256,7 +1259,8 @@ void spatialMappingPromotionExecutesExactCgraCase() {
   auto acquisitionBinding = take(
       loom::dse::resolveSpatialMappingEvaluationPromotionAcquisitionBinding(
           acquisitionConfig));
-  auto alternate = buildAlternateDataflow(context);
+  auto alternate =
+      loom::test::buildAlternateRootCompleteSpatialDataflow(context);
   const loom::ArtifactRootReference alternateReference =
       take(dataflow::publishCanonicalDataflow(alternate, store));
   std::array<loom::ArtifactRootReference, 2> dataflows = {
@@ -1360,7 +1364,7 @@ void spatialMappingPromotionKeepsEveryCandidateLineage() {
     fail("cannot create BlobStore directory: " + error.message());
   const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  auto dataflow = buildDataflow(context);
+  auto dataflow = loom::test::buildRootCompleteSpatialDataflow(context);
   const loom::ArtifactRootReference dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
   auto fabric = loom::test::buildSpatialCore(store);
@@ -1420,7 +1424,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
     fail("cannot create BlobStore directory: " + error.message());
   const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  auto dataflow = buildVectorDataflow(context);
+  auto dataflow = loom::test::buildVectorRootCompleteSpatialDataflow(context);
   const loom::ArtifactRootReference dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
   auto fabric = loom::test::buildLineageSpatialCore(store);
@@ -1705,7 +1709,8 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
            .contains("unmatched record"))
     fail("unmatched Evidence lost its exact rejection");
 
-  auto alternate = buildAlternateDataflow(context);
+  auto alternate =
+      loom::test::buildAlternateRootCompleteSpatialDataflow(context);
   const loom::ArtifactRootReference alternateReference =
       take(dataflow::publishCanonicalDataflow(alternate, store));
   auto ambiguous =
@@ -1919,9 +1924,9 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
       std::move(closure), 0, std::nullopt, feedbackPlanConfig, manifestRecords,
       loom::dse::InvocationCompletedSelection{promoted->selected,
                                               promoted->satisfiedEvidence},
-      store));
+      store, blobs));
   auto adoptedManifest = take(loom::dse::adoptInvocationManifest(
-      manifest.canonicalBytes(), feedbackPlanConfig, store));
+      manifest.canonicalBytes(), feedbackPlanConfig, store, blobs));
   if (adoptedManifest.generateRecords().size() != 1 ||
       adoptedManifest.generateRecords().front().workSummary.units.size() != 1 ||
       adoptedManifest.generateRecords()

@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "DSE/CandidateGeneratorRecovery.h"
 #include "DSE/PlanExecutor.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -15,6 +16,7 @@
 #include <iostream>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -36,6 +38,13 @@ template <typename T> T take(llvm::Expected<T> value) {
 void requireSuccess(llvm::Error error) {
   if (error)
     fail(llvm::toString(std::move(error)));
+}
+
+void requireErrorContains(llvm::Error error, llvm::StringRef needle) {
+  const std::string message = llvm::toString(std::move(error));
+  if (message.find(needle.str()) == std::string::npos)
+    fail("expected error containing '" + needle.str() + "', got: " +
+         message);
 }
 
 class TemporaryDirectory final {
@@ -245,6 +254,136 @@ void testProviderReceivesAdmittedResourceBudget(const ArtifactStore &store,
     fail("Generate provider lost its admitted execution resource budget");
 }
 
+void testProvenInfeasibleRecoveryAndManifest(const ArtifactStore &store,
+                                             const BlobStore &blobs,
+                                             llvm::StringRef runRoot) {
+  PlanExecutionFixture fixture = take(makePlanExecutionFixture(
+      store, 1, "loom.test.plan_executor.proven_infeasible.v1", true));
+  ExecutionJournal journal =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  SiteScheduler scheduler = makeScheduler();
+  resetPlanExecutionProviderObservations();
+  setPlanExecutionProviderOutcome(
+      PlanExecutionProviderOutcomeKind::ProvenInfeasible);
+
+  DsePlanExecutionResult first = take(executeDsePlan(
+      fixture.view, fixture.closure, journal, scheduler, makePolicy(1), store,
+      blobs));
+  const auto *completed = std::get_if<CompletedDsePlanExecution>(&first);
+  if (!completed || completed->generateInvocations().size() != 1 ||
+      !completed->generateInvocations().front().infeasibilityProof ||
+      !completed->resolve(PlanOutputRef{0, 0}).empty())
+    fail("ProvenInfeasible Generate result lost its terminal proof or gained "
+         "an output");
+
+  const auto records = take(journal.workUnits());
+  if (records.size() != 1 ||
+      records.front().status != JournalWorkUnitStatus::Completed ||
+      !records.front().finalizedOutputs.empty() ||
+      !records.front().finalizedWorkRecord ||
+      records.front().finalizedWorkRecord->schemaVersion !=
+          candidateGeneratorFinalizedWorkRecordSchemaVersion)
+    fail("journal did not retain the proof-bearing finalized work owner");
+
+  DsePlanGenerateInvocationRecords generated =
+      projectDsePlanGenerateInvocationRecords(first);
+  const DsePlanGenerateInvocationSummary summary = take(
+      validateAndSummarizeDsePlanGenerateInvocations(generated, store, blobs));
+  if (summary.completedInvocations != 1 ||
+      summary.provenInfeasibleInvocations != 1 ||
+      summary.incompleteInvocations != 0)
+    fail("Generate summary lost the terminal ProvenInfeasible subtype");
+  auto controllerOutcome = take(projectDsePlanInvocationOutcome(
+      fixture.view, static_cast<const DsePlanExecutionOutcome &>(first)));
+  if (!std::holds_alternative<InvocationCompletedNoFeasibleCandidate>(
+          controllerOutcome))
+    fail("proof-bearing empty plan did not project a completed empty selection");
+  const GenerateInvocationRecord &invocation =
+      completed->generateInvocations().front();
+  CandidateGeneratorInfeasibilityProof forgedProof =
+      *invocation.infeasibilityProof;
+  forgedProof.kind = CandidateGeneratorInfeasibilityProofKindRef(1);
+  requireErrorContains(
+      validateCanonicalCandidateGeneratorInvocation(
+          invocation.inputBindings, invocation.generatorBinding,
+          invocation.outputBindings, invocation.lineageEdges, true,
+          forgedProof, store, blobs),
+      "infeasibility proof is not canonical");
+  InvocationManifest manifest = take(InvocationManifest::get(
+      fixture.closure, 0, std::nullopt, fixture.config, generated,
+      std::move(controllerOutcome), store, blobs));
+  InvocationManifest imported =
+      take(adoptInvocationManifest(manifest.canonicalBytes(), fixture.config,
+                                   store, blobs));
+  if (imported.generateRecords().size() != 1 ||
+      !imported.generateRecords().front().invocation.infeasibilityProof ||
+      imported.generateRecords().front().invocation.incompleteReason)
+    fail("InvocationManifest did not round-trip the terminal proof type");
+  std::vector<std::uint8_t> malformed(manifest.canonicalBytes().begin(),
+                                      manifest.canonicalBytes().end());
+  malformed.back() = 0x02;
+  auto rejected =
+      adoptInvocationManifest(malformed, fixture.config, store, blobs);
+  if (rejected)
+    fail("InvocationManifest accepted a noncanonical proof witness");
+  requireErrorContains(rejected.takeError(),
+                       "proof is not established by its exact input");
+
+  setPlanExecutionProviderOutcome(PlanExecutionProviderOutcomeKind::Candidate);
+  DsePlanExecutionResult replay = take(resumeDsePlan(
+      fixture.view, fixture.closure, journal, scheduler, makePolicy(1), store,
+      blobs, InvocationManifestRetention::Release));
+  const auto *replayed = std::get_if<CompletedDsePlanExecution>(&replay);
+  if (!replayed || replayed->generateInvocations().size() != 1 ||
+      !replayed->generateInvocations().front().infeasibilityProof ||
+      replayed->generateInvocationWasDispatched(0) ||
+      planExecutionProviderCalls() != 1)
+    fail("terminal replay lost the proof or redispatched provider work");
+}
+
+void testCompletedEmptyRemainsUnproven(const ArtifactStore &store,
+                                       const BlobStore &blobs,
+                                       llvm::StringRef runRoot) {
+  PlanExecutionFixture fixture = take(makePlanExecutionFixture(
+      store, 1, "loom.test.plan_executor.completed_empty.v1"));
+  ExecutionJournal journal =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  SiteScheduler scheduler = makeScheduler();
+  resetPlanExecutionProviderObservations();
+  setPlanExecutionProviderOutcome(
+      PlanExecutionProviderOutcomeKind::CompletedEmpty);
+
+  DsePlanExecutionResult execution = take(executeDsePlan(
+      fixture.view, fixture.closure, journal, scheduler, makePolicy(1), store,
+      blobs));
+  const auto *completed = std::get_if<CompletedDsePlanExecution>(&execution);
+  if (!completed || completed->generateInvocations().size() != 1 ||
+      completed->generateInvocations().front().infeasibilityProof ||
+      !completed->resolve(PlanOutputRef{0, 0}).empty())
+    fail("completed-empty fixture did not preserve its ordinary outcome");
+  InvocationControllerOutcome projected =
+      take(projectDsePlanInvocationOutcome(fixture.view, execution));
+  if (!std::holds_alternative<InvocationCompletedNoFeasibleCandidate>(
+          projected))
+    fail("completed-empty plan lost its completed empty selection");
+  DsePlanGenerateInvocationRecords records =
+      projectDsePlanGenerateInvocationRecords(execution);
+  const DsePlanGenerateInvocationSummary summary = take(
+      validateAndSummarizeDsePlanGenerateInvocations(records, store, blobs));
+  if (summary.completedInvocations != 1 ||
+      summary.provenInfeasibleInvocations != 0 ||
+      summary.incompleteInvocations != 0)
+    fail("Generate summary changed Completed(empty) into ProvenInfeasible");
+  InvocationManifest manifest = take(InvocationManifest::get(
+      fixture.closure, 0, std::nullopt, fixture.config, records,
+      std::move(projected), store, blobs));
+  InvocationManifest imported = take(adoptInvocationManifest(
+      manifest.canonicalBytes(), fixture.config, store, blobs));
+  if (imported.generateRecords().size() != 1 ||
+      imported.generateRecords().front().invocation.infeasibilityProof)
+    fail("Manifest changed completed-empty Generate into ProvenInfeasible");
+}
+
 void testInvalidRetentionDoesNotLease(const ArtifactStore &store,
                                       const BlobStore &blobs,
                                       llvm::StringRef runRoot) {
@@ -281,6 +420,10 @@ int main() {
   const std::string prefixRun = directory.makeDirectory("prefix-run");
   const std::string resourceBudgetRun =
       directory.makeDirectory("resource-budget-run");
+  const std::string provenInfeasibleRun =
+      directory.makeDirectory("proven-infeasible-run");
+  const std::string completedEmptyRun =
+      directory.makeDirectory("completed-empty-run");
   const std::string invalidRetentionRun =
       directory.makeDirectory("invalid-retention-run");
   ArtifactStore store(storeRoot);
@@ -291,6 +434,8 @@ int main() {
   testRunningProviderObservesStop(store, blobs, inflightStoppedRun);
   testDeterministicDispatchPrefix(store, blobs, prefixRun);
   testProviderReceivesAdmittedResourceBudget(store, blobs, resourceBudgetRun);
+  testProvenInfeasibleRecoveryAndManifest(store, blobs, provenInfeasibleRun);
+  testCompletedEmptyRemainsUnproven(store, blobs, completedEmptyRun);
   testInvalidRetentionDoesNotLease(store, blobs, invalidRetentionRun);
   return 0;
 }

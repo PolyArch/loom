@@ -1362,6 +1362,8 @@ GenerateInvocationRecord {
   resolved_generator_binding
   output_bindings
   lineage_edges: canonical array<CandidateGeneratorLineageContribution>
+  incomplete_reason: absent | CandidateGeneratorIncompleteReason
+  infeasibility_proof: absent | CandidateGeneratorInfeasibilityProof
 }
 
 OutputBinding {
@@ -1387,12 +1389,15 @@ while several distinct edges may target one deduplicated output Artifact.
 Outputs in different slots have no positional pairing; any semantic dependency
 between them belongs to the output Artifacts' own dependency closures.
 
-Every completed or incomplete Generate record contains exactly one input
-binding for every descriptor input slot and exactly one output binding for
-every descriptor output slot. Both binding arrays follow dense descriptor slot
-ordinal. An incomplete record retains an empty or partial canonical Artifact
-set in a slot rather than omitting the slot. The maximum cardinality applies to
-every record; a completed record also satisfies every minimum.
+Every ordinary completed, proven-infeasible, or incomplete Generate record
+contains exactly one input binding for every descriptor input slot and exactly
+one output binding for every descriptor output slot. Both binding arrays
+follow dense descriptor slot ordinal. An incomplete record retains an empty or
+partial canonical Artifact set in a slot rather than omitting the slot. The
+maximum cardinality applies to every record. An ordinary completed record also
+satisfies every minimum. A proven-infeasible record instead has an empty set in
+every output slot, no lineage edge, no incomplete reason, and one
+descriptor-validated owner proof.
 
 Every lineage edge names its exact descriptor output slot. Its target must
 match that slot's exact schema, be independently and durably published, and
@@ -1418,26 +1423,37 @@ schema, and cardinality fields are recovered from the exact descriptor and are
 not copied into the manifest.
 
 Each nested Generate record owns its completion boolean independently of its
-retained output bindings. `ProofNotEstablished` and `SemanticLimitReached`
-preserve fully finalized outputs and allow later plan nodes to consume them;
-later independent or dependent Generate records therefore may follow an
-incomplete record. Other Generate incomplete reasons stop plan traversal after
-retaining that node's valid outputs. An interruption at a non-Generate node
-does not create a Generate record for that node.
+retained output bindings. That boolean means terminal without an incomplete
+reason: it is true for both ordinary `Completed` and `ProvenInfeasible` and is
+false for `Incomplete`. The mutually exclusive incomplete-reason and
+infeasibility-proof fields preserve the three-way semantic outcome.
+`ProofNotEstablished` and `SemanticLimitReached` preserve fully finalized
+outputs and allow later plan nodes to consume them; later independent or
+dependent Generate records therefore may follow an incomplete record. Other
+Generate incomplete reasons stop plan traversal after retaining that node's
+valid outputs. An interruption at a non-Generate node does not create a
+Generate record for that node.
 
-A completed manifest has only completed Generate records. An `Incomplete`
-controller outcome names the blocking node when execution stopped. If all
-incompleteness was retained candidate-domain incompleteness and plan traversal
-finished, it names the first such Generate node in `PlanNodeRef` order. The
-per-record booleans remain the complete authority for which Generate domains
-were exhausted; the outer outcome is not used to infer a completed prefix.
+A completed manifest has only Generate records whose completion boolean is
+true. An `Incomplete` controller outcome names the blocking node when execution
+stopped. If all incompleteness was retained candidate-domain incompleteness and
+plan traversal finished, it names the first such Generate node in
+`PlanNodeRef` order. The per-record boolean remains the authority for terminal
+versus incomplete execution; the optional owner proof is the authority for
+`ProvenInfeasible` versus ordinary `Completed`. The outer outcome is not used
+to infer either distinction.
 
 A higher-level compiler selection may consume the completed downstream Promote
 output of such an execution when it contains a verified incumbent. That
 selection remains usable while its nested Generate records report the
-non-exhaustive search. An empty downstream selection cannot become completed
-infeasibility because the unvisited generator domain may still contain a
-feasible candidate.
+non-exhaustive search. If nested plan execution is incomplete, an empty
+downstream selection remains incomplete because unvisited work may still
+produce a candidate. Once the configured deterministic plan has completed,
+the outer result is selected solely by final selection cardinality: nonempty
+is `CompletedSelection` and empty is `CompletedNoFeasibleCandidate`. This
+outer name records the selection result; it neither asserts mathematical
+infeasibility nor upgrades an ordinary `Completed(empty)` Generate result into
+`ProvenInfeasible`.
 
 Mechanical lowering cannot be represented as an optimization decision, and a
 decision edge cannot replace an Artifact's own dependency closure. If several
@@ -1499,7 +1515,10 @@ Incomplete {
 
 Invalid inputs or resolved configuration fail verification before a run.
 External failure, cancellation, or exhausted Execution Limits can produce only
-`Incomplete`; best-so-far state is not a formal selection.
+`Incomplete`; best-so-far state is not a formal selection. A terminal Generate
+owner proof is the only authority for that Generate invocation's
+`ProvenInfeasible` type. The controller does not infer that type from the outer
+outcome, output cardinality, ordinary completion, or a Promote result.
 
 ## Deterministic Work, Candidate Sets, and Cache
 
@@ -1897,10 +1916,28 @@ input set has one verified SpatialMapping or when a typed limit, cancellation,
 or proven-infeasible frontier prevents closure. Work accounting includes only
 search actually executed for ranking or verification under the selected goal.
 
+Neither Spatial adapter currently registers an owner infeasibility-proof
+contract. Internal `FrozenDerivedContext`, `FrozenActiveProblem`,
+`InitializerRelation`, and `GraphBoundaryEndpointHall` kinds identify where
+the PnR owner observed a contradiction, but none carries a reason-specific
+witness that the descriptor can independently reconstruct and verify from the
+exact invocation inputs. Both adapters therefore return
+`Incomplete(ProofNotEstablished)` for every internal Spatial
+`ProvenInfeasible` result.
+
+The graph-boundary Hall count projection remains transient hardware-reopen
+feedback rather than proof material. The current relation model admits legal
+temporal and causally separated endpoint reuse and does not construct a global
+graph-boundary all-different relation. Counts and diagnostic text cannot imply
+that missing relation. One unverified contradiction, semantic limit, or
+timeout keeps the root-complete aggregate incomplete even when other input
+traversals completed. An empty TechMapping input frontier is ordinary
+`Completed(empty)`.
+
 The built-in root-complete System PnR generator composes the final Mapping
 boundary without widening the central plan. Its descriptor has kind 9,
-spelling `mapping.root_complete_system_pnr`, schema
-`loom.mapping.root_complete_system_pnr.generator.v11`, and exact input slots
+spelling `mapping.root_complete_system_pnr`, implementation semantic identity
+`loom.mapping.root_complete_system_pnr.generator.v12`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, and
 `fabric: ExactlyOne`, `physical_timing_profile: FiniteSet`, and
 `migration_seed: ZeroOrOne`. Its sole output slot is
@@ -1923,9 +1960,12 @@ solver call at ordinals 0 through 8. The ordinary
 System PnR owner supplies those counts; the adapter neither aggregates nor
 reclassifies them. A root-free invocation reports the same catalog with zero
 planned and consumed work. Outputs carry MechanicalDerivation lineage; the
-adapter owns no candidate decision payload. `ProvenInfeasible` completes with
-an empty set, proof or semantic limits remain the corresponding typed
-incomplete result, unsupported `H` projection remains `Unsupported`, and an
+adapter owns no candidate decision payload. Current System proof kinds do not
+carry reason-specific witnesses that the descriptor can independently verify
+from the exact invocation inputs. Every internal System `ProvenInfeasible`
+therefore becomes `Incomplete(ProofNotEstablished)` at the Candidate Generator
+boundary. Semantic limits and timeout remain their corresponding typed
+incomplete outcomes, unsupported `H` projection remains `Unsupported`, and an
 invalid or internal owner result aborts the Generate invocation. Descriptor
 v1, which exposed only assignment and endpoint work, is not compatible and is
 not registered.
@@ -1933,7 +1973,7 @@ not registered.
 The built-in application-scoped System PnR generator is the strict-scope
 counterpart. Its descriptor has kind 22, spelling
 `mapping.application_system_pnr`, implementation semantic identity
-`loom.mapping.application_system_pnr.generator.v10`, and exact input slots
+`loom.mapping.application_system_pnr.generator.v11`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, `fabric: ExactlyOne`, and
 `physical_timing_profile: FiniteSet`, `system_constraints: ExactlyOne`, and
 `migration_seed: ZeroOrOne`. The constraint root must bind exactly that
@@ -2284,7 +2324,9 @@ The manifest records:
   typed campaign-admission failure disposition;
 - canonical Generate invocation records binding exact typed inputs, one
   resolved producer binding, exact descriptor-slot output sets, and
-  single-child `MechanicalDerivation` or `CandidateDecision` lineage edges;
+  single-child `MechanicalDerivation` or `CandidateDecision` lineage edges,
+  plus an exact per-record terminal outcome carrying either an incomplete
+  reason or a descriptor-owned infeasibility proof when required;
 - selected or retained Artifact and Evidence references;
 - owner-local planned/consumed work summaries;
 - retained owner attempt/checkpoint references; and
@@ -2293,12 +2335,16 @@ The manifest records:
 Component digests are verification copies, not configuration owners. Work
 summaries do not copy budget limits. `CompletedSelection` records selected
 Artifact references and satisfied Evidence. `CompletedNoFeasibleCandidate`
-records an empty selection and completed plan. `Incomplete` records unsatisfied
+records an empty selection after the configured deterministic plan completed.
+It does not claim mathematical infeasibility and does not require a Generate
+proof: a root-free plan or a finite candidate set rejected by its quality gates
+may produce the same outer outcome. A Generate `ProvenInfeasible` proof remains
+a distinct nested producer outcome. `Incomplete` records unsatisfied
 obligations and retained finalized material but no formal selected output.
 
 ### Operational Observations
 
-`loom.dse.invocation_manifest 1.5` is the current compatible extension of that
+`loom.dse.invocation_manifest 1.6` is the current compatible extension of that
 persistent record family. Version 1.1 added one optional nonsemantic
 `InvocationOperationalObservations` block to 1.0. Version 1.2 admits incomplete
 Generate records before later executed plan nodes while preserving the same
@@ -2310,8 +2356,13 @@ invocation and per-plan-node external-tool work ledger. Version 1.5 adds an
 optional `CampaignAdmissionFailureReason` alongside, rather than inside, the
 plan-controller outcome. A completed plan can therefore retain its selected
 Artifact set while recording that campaign admission was refused by an active
-time or throughput policy. Versions 1.0 through 1.4 remain importable and
-derive an absent campaign disposition.
+time or throughput policy. Version 1.6 adds one canonical per-Generate outcome
+table. Its tags preserve ordinary `Completed`, `Incomplete` with its exact
+reason, and `ProvenInfeasible` with its owner proof kind and canonical witness.
+Versions 1.0 through 1.5 remain importable and derive an absent Generate proof;
+their historical incomplete records retain an absent per-record reason rather
+than synthesizing one from the outer controller outcome. Versions before 1.5
+also derive an absent campaign disposition.
 
 ```text
 PromotionAcquisitionIncompleteReason =
@@ -2417,6 +2468,22 @@ cache keyed by complete root reference and import algorithm version; the cache
 is removable, preserves every integrity check, and cannot turn a path or object
 address into identity. Terminal recovery reports import/cache work separately
 from newly executed provider work.
+
+`loom.dse.candidate_generator_finalized_work 1.1` is the current in-process
+Generate recovery-record schema. It preserves ordinary `Completed`, typed
+`ProvenInfeasible` with its owner kind and canonical witness, and `Incomplete`
+without collapsing them to output cardinality. Version 1.0 remains importable
+for its original ordinary-completed and incomplete outcomes and cannot carry an
+infeasibility proof. The Journal's owner-record reference version must match the
+embedded record version, and strict import re-encodes under that source version
+before accepting the bytes. It then revalidates a current proof through the
+exact descriptor-owned proof contract and resolved invocation closure.
+
+The Journal may classify both ordinary `Completed` and `ProvenInfeasible` as
+the same `Completed` work-unit lifecycle state because both are terminal. That
+coarse status does not own semantic outcome type: the finalized-work record and
+the `InvocationManifest` Generate record retain the proof, and replay must
+reconstruct the same typed provider outcome without dispatching generation.
 
 For an external-tool attempt, a valid atomic completion permits import of that
 exact bundle only when the completion's attempt token matches the currently
@@ -2562,6 +2629,8 @@ CandidateGeneratorDescriptor {
   resolved_generator_config_view_contract
   optional owner_lineage_payload_contract
   optional owner_feedback_payload_contract
+  optional owner_outcome_contract
+  optional owner_infeasibility_proof_contract
   determinism_contract
   owner_local_work_unit_descriptors
 }
@@ -2596,6 +2665,29 @@ OwnerFeedbackPayloadContract {
   encode(owner-typed invocation-local feedback) -> canonical_payload_bytes
   adopt(canonical_payload_bytes, exact typed input bindings)
     -> owner-typed invocation-local feedback
+}
+
+CandidateGeneratorInfeasibilityProof {
+  owner_kind: uint32
+  witness: canonical byte string
+}
+
+OwnerInfeasibilityProofContract {
+  schema_descriptor_bytes
+  validate(proof,
+           canonical exact typed input bindings,
+           exact ResolvedCandidateGeneratorBinding,
+           ArtifactStore,
+           BlobStore)
+}
+
+OwnerOutcomeContract {
+  schema_descriptor_bytes
+  validate(canonical exact typed input bindings,
+           canonical output bindings,
+           canonical lineage contributions,
+           Completed | ProvenInfeasible | Incomplete,
+           ArtifactStore)
 }
 ```
 
@@ -2660,12 +2752,28 @@ A descriptor without the contract can publish only MechanicalDerivation edges.
 This is an
 owner-typed byte contract, not a universal decision algebra.
 
+The optional owner infeasibility-proof contract is the corresponding authority
+for `ProvenInfeasible`. The generic layer preserves the owner-local kind and
+canonical witness bytes but does not interpret their proof algebra. It validates
+the proof against the exact typed inputs, exact resolved generator binding, and
+stored Artifact and Blob closure through the descriptor callback at provider,
+recovery, Plan, and Manifest boundaries. A descriptor may register the contract
+only when every output slot admits an empty set, so proof termination cannot
+violate a statically promised downstream cardinality. The owner witness is
+allowed to be empty when the owner kind and exact invocation closure carry the
+complete proof; generic validation must not invent a nonempty-witness rule.
+Without this contract the provider cannot return `ProvenInfeasible`.
+Any descriptor-wide owner outcome contract receives the same three-way typed
+outcome rather than a Boolean completion proxy.
+
 Rejected owner-local attempts remain work-summary or attempt records rather
-than fake lineage edges. Every completed or incomplete invocation records a
-dense binding for every descriptor output slot and only fully finalized
-retained outputs. A completed invocation satisfies each descriptor-owned
-minimum and maximum cardinality; an incomplete invocation may remain below a
-minimum but cannot exceed a maximum.
+than fake lineage edges. Every ordinary completed, proven-infeasible, or
+incomplete invocation records a dense binding for every descriptor output
+slot. An ordinary completed invocation satisfies each descriptor-owned minimum
+and maximum cardinality. An incomplete invocation retains only fully finalized
+outputs, may remain below a minimum, and cannot exceed a maximum. A
+proven-infeasible invocation retains no output Artifact or lineage edge and
+therefore cannot be mistaken for ordinary completion of an empty-capable slot.
 
 An invalid typed input, invalid owner tuple, or provider invariant failure is
 not an incomplete search. It aborts the complete Generate invocation and
@@ -2714,6 +2822,11 @@ CandidateGeneratorProviderResult {
       lineage_contributions:
         canonical array<CandidateGeneratorLineageContribution>
     }
+  | ProvenInfeasible {
+      output_bindings:
+        dense array<CandidateGeneratorOutputSlotRef, empty collection>
+      proof: CandidateGeneratorInfeasibilityProof
+    }
   | Incomplete {
       reason: CandidateGeneratorIncompleteReason
       retained_output_bindings:
@@ -2738,13 +2851,21 @@ CandidateGeneratorIncompleteReason =
 ```
 
 `CandidateGeneratorProviderResult` is a transient report to the controller,
-not a persistent invocation outcome. A completed result satisfies every
-descriptor-owned minimum and maximum cardinality. An incomplete result obeys
-every maximum, may remain below a minimum, and carries only fully finalized
-retained outputs. The controller validates either variant, derives the one
-outer manifest outcome, and records the exact nested Generate completion
-boolean. Invalid typed inputs, a violated provider contract, or malformed
-returned data are errors rather than another incomplete reason.
+not a persistent invocation outcome. An ordinary completed result satisfies
+every descriptor-owned minimum and maximum cardinality. A proven-infeasible
+result has dense empty output bindings, no lineage, and a proof accepted by the
+exact descriptor contract. An incomplete result obeys every maximum, may
+remain below a minimum, and carries only fully finalized retained outputs. The
+controller validates all three variants, records the exact nested Generate
+fields, and sets the legacy completion boolean true for both terminal variants
+and false only for `Incomplete`. Invalid typed inputs, a violated provider
+contract, or malformed returned data are errors rather than another incomplete
+reason.
+
+`ProofNotEstablished`, `SemanticLimitReached`, and `CancelledOrTimeout` remain
+members of `Incomplete` even when they retain no candidate. Neither the
+provider nor the controller may promote one of those reasons, a finite prefix,
+or an ordinary completed empty result to `ProvenInfeasible`.
 
 `owner_feedback` is optional, transient, and descriptor-owned. The central
 controller validates its canonical bytes against the exact typed invocation
@@ -4265,12 +4386,22 @@ Only these stable semantic anchors belong at this boundary:
 - Equal admitted closure and local binding produce byte-identical bundles;
   `prepare`, caller execution, and `import` remain independently callable and
   expose no Job, scheduler, or process handle.
-- InvocationManifest 1.0 through 1.4 remain importable; 1.5 round-trips absent
-  and present operational observations, external-tool work, campaign refusal,
+- InvocationManifest 1.0 through 1.5 remain importable; 1.6 round-trips exact
+  ordinary-completed, incomplete-reason, and proven-infeasible Generate
+  outcomes, operational observations, external-tool work, campaign refusal,
   retained incomplete Generate frontiers, and typed promotion timeout
-  canonically, rejects unknown enum values, plan-node references, duplicate or
-  unsorted rows, zero context counts, and arithmetic overflow, and never
-  changes formal selection or Evidence.
+  canonically, rejects unknown outcome tags, proof kinds, enum values,
+  plan-node references, duplicate or unsorted rows, zero context counts, and
+  arithmetic overflow, and never changes formal selection or Evidence.
+- Candidate-generator finalized-work 1.0 remains importable without an
+  infeasibility proof; 1.1 preserves the exact terminal outcome, proof kind,
+  canonical witness, binding, and work summary across recovery without
+  redispatching the provider.
+- Ordinary `Completed(empty)` and proof-bearing `ProvenInfeasible` Generate
+  results remain distinct through persistence and replay. Either may contribute
+  to an outer completed plan with an empty final selection; that outer outcome
+  is not an infeasibility proof. Timeout and `ProofNotEstablished` remain
+  `Incomplete`.
 - Candidate-generator binding identity is derived from the exact descriptor
   and canonical config view, and a caller-authored replacement is rejected.
 - An external generator publishes only complete descriptor output Artifacts;

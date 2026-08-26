@@ -109,9 +109,17 @@ struct GeneratedSystemMappings final {
   SystemPnrGenerationAccounting accounting;
 };
 
+enum class SystemPnrInfeasibilityProofKind : std::uint8_t {
+  FrozenStaticContext = 0,
+  FrozenActiveProblem = 1,
+  ImportedCapacityRelation = 2,
+  InitializerRelation = 3,
+};
+
 struct ProvenInfeasibleSystemMapping final {
   SystemPnrGenerationAccounting accounting;
   std::string diagnostic;
+  SystemPnrInfeasibilityProofKind proofKind;
 };
 
 enum class IncompleteSystemPnrGenerationReason : std::uint8_t {

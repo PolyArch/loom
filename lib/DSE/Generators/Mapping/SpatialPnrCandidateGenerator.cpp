@@ -77,6 +77,18 @@ const CandidateGeneratorDescriptor descriptor{
     ProviderForm::InProcess,
 };
 
+CandidateGeneratorIncompleteReason adaptUnverifiedInfeasibility(
+    ::loom::pnr::SpatialPnrInfeasibilityProofKind kind) {
+  switch (kind) {
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::FrozenDerivedContext:
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::FrozenActiveProblem:
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::InitializerRelation:
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::GraphBoundaryEndpointHall:
+    return CandidateGeneratorIncompleteReason::ProofNotEstablished;
+  }
+  llvm_unreachable("unknown Spatial PnR infeasibility kind");
+}
+
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                       const ResolvedCandidateGeneratorBinding &binding,
@@ -116,8 +128,10 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   if (const auto *infeasible =
           std::get_if<::loom::pnr::ProvenInfeasibleSpatialMapping>(&outcome))
     return CandidateGeneratorProviderResult{
-        CompletedCandidateGeneratorResult{
-            {{CandidateGeneratorOutputSlotRef(0), {}}}, {}},
+        IncompleteCandidateGeneratorResult{
+            adaptUnverifiedInfeasibility(infeasible->proofKind),
+            {{CandidateGeneratorOutputSlotRef(0), {}}},
+            {}},
         spatialPnrCandidateGeneratorWorkSummary(infeasible->accounting)};
   if (const auto *incomplete =
           std::get_if<::loom::pnr::IncompleteSpatialPnrGeneration>(&outcome)) {
