@@ -106,6 +106,26 @@ llvm::Expected<std::string> readFile(llvm::StringRef path) {
   return (*buffer)->getBuffer().str();
 }
 
+std::uint64_t mappedRtlBuildWorkerCount(
+    const eda::open_source::MappedRtlExecutionAttemptOptions &options,
+    std::size_t buildCount) {
+  return std::min<std::uint64_t>({options.buildWorkers, options.buildJobs,
+                                  static_cast<std::uint64_t>(buildCount)});
+}
+
+std::uint64_t mappedRtlBuildJobs(
+    const eda::open_source::MappedRtlExecutionAttemptOptions &options,
+    std::uint64_t workerCount, std::size_t buildCount,
+    std::size_t buildOrdinal) {
+  const std::uint64_t chunkBegin = buildOrdinal / workerCount * workerCount;
+  const std::uint64_t chunkSize = std::min<std::uint64_t>(
+      workerCount, static_cast<std::uint64_t>(buildCount) - chunkBegin);
+  const std::uint64_t chunkOrdinal = buildOrdinal - chunkBegin;
+  const std::uint64_t base = options.buildJobs / chunkSize;
+  const std::uint64_t remainder = options.buildJobs % chunkSize;
+  return base + (chunkOrdinal < remainder ? 1 : 0);
+}
+
 llvm::Expected<std::filesystem::path>
 readinessPath(const LocalToolConfig &config,
               const ExternalToolProviderDescriptor &provider,
@@ -1065,11 +1085,16 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
 
     std::vector<std::vector<std::string>> commands;
     std::vector<std::string> executables;
-    std::vector<std::string> resultPaths;
     std::vector<std::vector<std::string>> engineCommands;
+    const std::uint64_t buildWorkerCount =
+        mappedRtlBuildWorkerCount(*options, facts.spatialLaunches.size());
+    if (buildWorkerCount == 0)
+      return invalid("gem5 RTL execution has no build worker");
+    std::set<std::string> uniqueExecutables;
+    std::set<std::string> uniqueResultPaths;
+    std::set<std::filesystem::path> uniqueWorkDirectories;
     commands.reserve(facts.spatialLaunches.size() + 1);
     executables.reserve(facts.spatialLaunches.size());
-    resultPaths.reserve(facts.spatialLaunches.size());
     engineCommands.reserve(facts.spatialLaunches.size());
     for (const auto indexed : llvm::enumerate(facts.spatialLaunches)) {
       const Gem5SpatialLaunchProjection &launch = indexed.value();
@@ -1083,8 +1108,10 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       const std::string prefix = mappedRtlLaunchPrefix(indexed.index());
       auto projection =
           eda::open_source::deriveMappedRtlExecutionBundleProjection(
-              *closure, options->cycleLimit, options->buildJobs, artifacts,
-              blobs, prefix);
+              *closure, options->cycleLimit,
+              mappedRtlBuildJobs(*options, buildWorkerCount,
+                                 facts.spatialLaunches.size(), indexed.index()),
+              artifacts, blobs, prefix);
       if (!projection)
         return projection.takeError();
       if (const auto *unsupported =
@@ -1092,6 +1119,13 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
         return EvaluationModelProviderPreparation{*unsupported};
       auto rtl = std::get<eda::open_source::MappedRtlExecutionBundleProjection>(
           std::move(*projection));
+      if (!uniqueExecutables.insert(rtl.simulatorExecutablePath).second ||
+          !uniqueResultPaths.insert(rtl.resultPath).second ||
+          !uniqueWorkDirectories
+               .insert(std::filesystem::path(rtl.simulatorExecutablePath)
+                           .parent_path())
+               .second)
+        return invalid("gem5 RTL build worksets are not independent");
       files.push_back(
           {rtl.testbenchPath, std::move(rtl.testbench), std::nullopt, false});
       files.push_back({rtl.bridgedVerilatorDriverPath,
@@ -1122,7 +1156,6 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       commands.push_back(
           {verilatorExecutable, "-f", rtl.bridgedVerilatorDriverPath});
       executables.push_back(rtl.simulatorExecutablePath);
-      resultPaths.push_back(rtl.resultPath);
       std::vector<std::string> engineCommand{
           rtl.simulatorExecutablePath,
           "--socket",
@@ -1184,6 +1217,9 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
         {gem5ExternalFile},
         {},
         std::move(executables)};
+    if (buildWorkerCount > 1)
+      specification.parallelCommandGroups.push_back(
+          {0, facts.spatialLaunches.size(), buildWorkerCount});
     specification.diagnosticCommandOrdinals = {specification.commands.size() -
                                                1};
     llvm::sort(specification.files, [](const auto &lhs, const auto &rhs) {

@@ -27,7 +27,7 @@ namespace loom::external_tool {
 inline constexpr llvm::StringLiteral externalToolInvocationManifestSchema =
     "loom.external_tool_invocation";
 inline constexpr llvm::StringLiteral externalToolInvocationManifestVersion =
-    "2.2";
+    "2.3";
 
 /// The CandidateGenerator closure of one semantic invocation: the exact
 /// typed input bindings and the exact resolved binding as owner-codec
@@ -159,6 +159,21 @@ enum class ExternalToolResultReusePolicy {
   RequireFresh,
 };
 
+/// One launcher-observed command execution. Wall time is operational attempt
+/// state and never enters semantic identity or persistent result reuse.
+struct ExternalToolCommandExecutionObservation final {
+  std::uint64_t commandOrdinal = 0;
+  std::uint64_t wallNanoseconds = 0;
+  int exitCode = 0;
+
+  friend bool operator==(const ExternalToolCommandExecutionObservation &lhs,
+                         const ExternalToolCommandExecutionObservation &rhs) {
+    return lhs.commandOrdinal == rhs.commandOrdinal &&
+           lhs.wallNanoseconds == rhs.wallNanoseconds &&
+           lhs.exitCode == rhs.exitCode;
+  }
+};
+
 /// The exact cache and execution disposition of one invocation attempt. Cache
 /// infrastructure failures remain non-fatal to the external tool, but are no
 /// longer erased into diagnostics. A cache hit never invokes the external
@@ -174,11 +189,28 @@ struct ExternalToolInvocationExecutionObservation final {
   ExternalToolResultCachePublication cachePublication;
   bool waitedForCacheKeyLock;
   bool invokedExternalTool;
+  std::vector<ExternalToolCommandExecutionObservation> commandExecutions = {};
 };
 
 /// Reserved operational result when execution control stops a prepared
 /// invocation. External tools cannot return negative process exit codes.
 inline constexpr int externalToolExecutionStoppedExitCode = -2;
+
+/// A manifest-frozen bounded fork-join group over adjacent independent frozen
+/// tool commands. Commands outside every group retain ordered execution, and
+/// each group boundary is a barrier.
+struct ExternalToolParallelCommandGroup final {
+  std::uint64_t beginCommandOrdinal = 0;
+  std::uint64_t endCommandOrdinal = 0;
+  std::uint64_t workerLimit = 0;
+
+  friend bool operator==(const ExternalToolParallelCommandGroup &lhs,
+                         const ExternalToolParallelCommandGroup &rhs) {
+    return lhs.beginCommandOrdinal == rhs.beginCommandOrdinal &&
+           lhs.endCommandOrdinal == rhs.endCommandOrdinal &&
+           lhs.workerLimit == rhs.workerLimit;
+  }
+};
 
 struct ExternalToolInvocationBundleSpec {
   ExternalToolSemanticContract semanticContract;
@@ -195,6 +227,9 @@ struct ExternalToolInvocationBundleSpec {
   /// Canonical work-relative programs that a preceding frozen-tool command
   /// must create before a later command may execute them.
   std::vector<std::string> toolProducedExecutables = {};
+  /// Canonical sorted nonoverlapping independent command groups. This exact
+  /// execution schedule is serialized and participates in result reuse.
+  std::vector<ExternalToolParallelCommandGroup> parallelCommandGroups = {};
   /// Sorted-unique command ordinals that consume the Common-owned diagnostic
   /// verbosity. Finalization mechanically appends the presentation argument.
   /// This invocation-local projection metadata is not serialized.

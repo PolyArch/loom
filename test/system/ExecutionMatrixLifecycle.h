@@ -1,6 +1,11 @@
 #ifndef LOOM_TEST_SYSTEM_EXECUTIONMATRIXLIFECYCLE_H
 #define LOOM_TEST_SYSTEM_EXECUTIONMATRIXLIFECYCLE_H
 
+#include "ExecutionMatrixInvocation.h"
+
+#include "ExternalTool/InvocationBundle.h"
+
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
@@ -59,8 +64,7 @@ public:
                                 ExecutionMatrixLifecycleOperation operation);
   ~ExecutionMatrixLifecycleTimer();
 
-  ExecutionMatrixLifecycleTimer(const ExecutionMatrixLifecycleTimer &) =
-      delete;
+  ExecutionMatrixLifecycleTimer(const ExecutionMatrixLifecycleTimer &) = delete;
   ExecutionMatrixLifecycleTimer &
   operator=(const ExecutionMatrixLifecycleTimer &) = delete;
 
@@ -75,6 +79,11 @@ struct ExecutionMatrixImportSummary final {
   std::uint64_t gem5FactsUniqueConstructions = 0;
 };
 
+void emitExecutionMatrixExternalCommands(
+    ExecutionMatrixInvocation invocation,
+    llvm::ArrayRef<external_tool::ExternalToolCommandExecutionObservation>
+        commands);
+
 /// Owns every removable immutable import/projection session for one exact
 /// execution-matrix store domain. Independent replay cells construct isolated
 /// instances and never share session attachments.
@@ -86,8 +95,7 @@ public:
                                 const BlobStore &blobs);
   ~ExecutionMatrixImportSessions();
 
-  ExecutionMatrixImportSessions(const ExecutionMatrixImportSessions &) =
-      delete;
+  ExecutionMatrixImportSessions(const ExecutionMatrixImportSessions &) = delete;
   ExecutionMatrixImportSessions &
   operator=(const ExecutionMatrixImportSessions &) = delete;
 

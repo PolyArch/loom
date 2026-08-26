@@ -1,0 +1,6 @@
+# RUN: %loom-execution-matrix-lifecycle-test | FileCheck %s
+
+# CHECK-COUNT-4: execution-matrix-external-command schema=loom.execution_matrix_external_command.1 cell=system-rtl attempt=ordinary{{.*}}command_role=rtl_compile{{.*}}exit_code=0 total_build_jobs={{[1-9][0-9]*}} build_worker_limit={{[1-4]}}
+# CHECK: execution-matrix-external-command schema=loom.execution_matrix_external_command.1 cell=system-rtl attempt=ordinary command_ordinal=4 command_role=rtl_controller wall_ns=5000 exit_code=0 total_build_jobs={{[1-9][0-9]*}} build_worker_limit={{[1-4]}}
+# CHECK-COUNT-4: execution-matrix-external-command schema=loom.execution_matrix_external_command.1 cell=system-rtl attempt=diagnostic{{.*}}command_role=rtl_compile{{.*}}exit_code=0 total_build_jobs={{[1-9][0-9]*}} build_worker_limit={{[1-4]}}
+# CHECK: execution-matrix-external-command schema=loom.execution_matrix_external_command.1 cell=system-rtl attempt=diagnostic command_ordinal=4 command_role=rtl_controller wall_ns=5000 exit_code=0 total_build_jobs={{[1-9][0-9]*}} build_worker_limit={{[1-4]}}
