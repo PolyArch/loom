@@ -234,11 +234,86 @@ bool everyCoreIsUsed(const loom::ArtifactRootReference &systemReference,
       });
 }
 
+/// Selects which hardware mutation families the matrix executes. Each family
+/// owns one independent cold plus preserve-first child PnR, so a selector lets
+/// the families run as separate processes instead of one serial tail. An empty
+/// selector disables the matrix; `allMutationFamilies` runs every family in one
+/// process.
+constexpr llvm::StringLiteral allMutationFamilies = "*";
+
+/// The typed repair dispositions each mutation family must reach. Pinning them
+/// per family keeps the matrix's disposition coverage provable when the
+/// families run as separate processes, and is stricter than asserting that some
+/// family somewhere reached each disposition.
+struct MutationFamilyContract {
+  llvm::StringLiteral label;
+  loom::dse::JointMappingReuseDisposition rebase;
+  loom::dse::JointSystemMappingReuseDisposition system;
+};
+
+constexpr MutationFamilyContract mutationFamilyContracts[] = {
+    {"fu", loom::dse::JointMappingReuseDisposition::ColdFallback,
+     loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+    {"memory", loom::dse::JointMappingReuseDisposition::ColdFallback,
+     loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+    {"fifo", loom::dse::JointMappingReuseDisposition::ColdFallback,
+     loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+    {"operand", loom::dse::JointMappingReuseDisposition::ColdFallback,
+     loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+    {"switch", loom::dse::JointMappingReuseDisposition::LocalRepair,
+     loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+    {"spatial-core", loom::dse::JointMappingReuseDisposition::ColdFallback,
+     loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+    {"acc-core-add", loom::dse::JointMappingReuseDisposition::Preserved,
+     loom::dse::JointSystemMappingReuseDisposition::Preserved},
+    {"acc-core-remove", loom::dse::JointMappingReuseDisposition::Preserved,
+     loom::dse::JointSystemMappingReuseDisposition::Reopened},
+    {"transport", loom::dse::JointMappingReuseDisposition::Preserved,
+     loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+    {"service", loom::dse::JointMappingReuseDisposition::Preserved,
+     loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+    {"combined", loom::dse::JointMappingReuseDisposition::ColdFallback,
+     loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+};
+
+const MutationFamilyContract &mutationFamilyContract(llvm::StringRef label) {
+  for (const MutationFamilyContract &contract : mutationFamilyContracts)
+    if (contract.label == label)
+      return contract;
+  fail("mutation family has no declared disposition contract: " + label.str());
+}
+
+/// Proves, without executing any Mapping work, that the declared family
+/// contracts still span every repair disposition the matrix must witness.
+void requireMutationDispositionCoverage() {
+  bool lowerLayerPreservation = false;
+  bool systemPreservation = false;
+  bool systemReopen = false;
+  bool coldFallback = false;
+  for (const MutationFamilyContract &contract : mutationFamilyContracts) {
+    lowerLayerPreservation |=
+        contract.rebase != loom::dse::JointMappingReuseDisposition::ColdFallback;
+    systemPreservation |=
+        contract.system ==
+        loom::dse::JointSystemMappingReuseDisposition::Preserved;
+    systemReopen |= contract.system ==
+                    loom::dse::JointSystemMappingReuseDisposition::Reopened;
+    coldFallback |=
+        contract.rebase ==
+            loom::dse::JointMappingReuseDisposition::ColdFallback ||
+        contract.system ==
+            loom::dse::JointSystemMappingReuseDisposition::ColdFallback;
+  }
+  if (!lowerLayerPreservation || !systemPreservation || !systemReopen ||
+      !coldFallback)
+    fail("mutation family contracts do not span every repair disposition");
+}
+
 void exerciseJointExploration(bool runFifoHardwareRepair,
                               bool runOperandHardwareRepair,
                               bool runTransportRepair,
                               bool runHardwareQualityPromotion,
-                              bool runMutationMatrix) {
+                              llvm::StringRef mutationFamily) {
   TemporaryDirectory temporary;
   llvm::SmallString<128> blobPath(temporary.path());
   llvm::sys::path::append(blobPath, "blobs");
@@ -1004,17 +1079,21 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       operandEntries == std::numeric_limits<std::uint32_t>::max())
     fail("operand-buffer feedback fixture has no growable Temporal PE");
 
-  if (runMutationMatrix) {
+  if (!mutationFamily.empty()) {
+    const bool runEveryFamily = mutationFamily == allMutationFamilies;
+    requireMutationDispositionCoverage();
     std::uint64_t repairOrdinal = 0;
-    bool sawLowerLayerPreservation = false;
-    bool sawSystemPreservation = false;
-    bool sawSystemReopen = false;
-    bool sawColdFallback = false;
+    std::uint64_t executedFamilies = 0;
     const auto executeMutation =
         [&](llvm::StringRef label, loom::dse::JointHardwareMutationChild child)
-        -> loom::dse::JointHardwareMutationRepair {
+        -> std::optional<loom::dse::JointHardwareMutationRepair> {
       if (child.impacts.empty())
         fail(label + " mutation has no typed impact");
+      // Child materialization stays on every path so the cross-family fixture
+      // lineage is identical regardless of which family this process executes.
+      if (!runEveryFamily && label != mutationFamily)
+        return std::nullopt;
+      ++executedFamilies;
       llvm::SmallString<128> journal(temporary.path());
       llvm::sys::path::append(journal, "mutation-" +
                                            std::to_string(repairOrdinal++) +
@@ -1061,22 +1140,27 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
               repair.rebase.accounting))
         fail(label + " mutation has an open repair cone: " +
              llvm::toString(std::move(error)));
-      sawLowerLayerPreservation |=
-          repair.rebase.accounting.preservedTechMappings != 0 ||
-          repair.rebase.accounting.preservedSpatialMappings != 0 ||
-          repair.rebase.accounting.repairedTechMappings != 0 ||
-          repair.rebase.accounting.repairedSpatialMappings != 0;
-      sawSystemPreservation |=
-          repair.systemDisposition ==
-          loom::dse::JointSystemMappingReuseDisposition::Preserved;
-      sawSystemReopen |=
-          repair.systemDisposition ==
-          loom::dse::JointSystemMappingReuseDisposition::Reopened;
-      sawColdFallback |=
-          repair.rebase.disposition ==
-              loom::dse::JointMappingReuseDisposition::ColdFallback ||
-          repair.systemDisposition ==
-              loom::dse::JointSystemMappingReuseDisposition::ColdFallback;
+      const MutationFamilyContract &contract = mutationFamilyContract(label);
+      if (repair.rebase.disposition != contract.rebase ||
+          repair.systemDisposition != contract.system)
+        fail(label + " mutation reached " +
+             loom::dse::jointMappingReuseDispositionSpelling(
+                 repair.rebase.disposition) +
+             "/" +
+             loom::dse::jointSystemMappingReuseDispositionSpelling(
+                 repair.systemDisposition) +
+             " instead of its declared " +
+             loom::dse::jointMappingReuseDispositionSpelling(contract.rebase) +
+             "/" +
+             loom::dse::jointSystemMappingReuseDispositionSpelling(
+                 contract.system));
+      if (contract.rebase != loom::dse::JointMappingReuseDisposition::ColdFallback &&
+          repair.rebase.accounting.preservedTechMappings == 0 &&
+          repair.rebase.accounting.preservedSpatialMappings == 0 &&
+          repair.rebase.accounting.repairedTechMappings == 0 &&
+          repair.rebase.accounting.repairedSpatialMappings == 0)
+        fail(label + " mutation reported reuse without a preserved or "
+                     "repaired lower-layer Mapping");
       for (const auto *roots :
            {&repair.coldMappings, &repair.incrementalMappings})
         for (const loom::ArtifactRootReference &reference : *roots) {
@@ -1085,6 +1169,15 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           if (mapping.view().fabricIdentity() != repair.child.system.artifact)
             fail(label + " mutation Mapping names a foreign System");
         }
+      // One durable line per family so a sharded run still reports the typed
+      // dispositions its family reached.
+      llvm::outs() << "mutation-family " << label << " rebase="
+                   << loom::dse::jointMappingReuseDispositionSpelling(
+                          repair.rebase.disposition)
+                   << " system="
+                   << loom::dse::jointSystemMappingReuseDispositionSpelling(
+                          repair.systemDisposition)
+                   << "\n";
       return repair;
     };
 
@@ -1307,16 +1400,14 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         std::move(combinedFirst), std::move(combinedSecond), store));
     if (combined.impacts.size() != 2)
       fail("combined mutation lost ordered component impacts");
-    const auto combinedRepair =
-        executeMutation("combined", std::move(combined));
-    if (combinedRepair.rebase.disposition !=
-            loom::dse::JointMappingReuseDisposition::ColdFallback ||
-        combinedRepair.systemDisposition !=
-            loom::dse::JointSystemMappingReuseDisposition::ColdFallback)
-      fail("combined mutation did not retain its typed cold fallback");
-    if (!sawLowerLayerPreservation || !sawSystemPreservation ||
-        !sawSystemReopen || !sawColdFallback)
-      fail("mutation matrix did not exercise every repair disposition");
+    executeMutation("combined", std::move(combined));
+    const std::uint64_t expectedFamilies =
+        runEveryFamily ? std::size(mutationFamilyContracts) : 1;
+    if (executedFamilies != expectedFamilies)
+      fail("mutation family selector matched " +
+           std::to_string(executedFamilies) + " of " +
+           std::to_string(expectedFamilies) + " families: " +
+           mutationFamily.str());
     return;
   }
 
@@ -2041,14 +2132,22 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
 
 int main(int argc, char **argv) {
   const llvm::StringRef mode = argc == 2 ? argv[1] : "";
-  if (argc > 2 || (argc == 2 && mode != "fifo-feedback" &&
-                   mode != "operand-feedback" && mode != "transport-feedback" &&
-                   mode != "quality-promotion" && mode != "mutation-matrix"))
-    fail("expected no workflow, fifo-feedback, operand-feedback, or "
-         "transport-feedback, quality-promotion, or mutation-matrix");
+  // `mutation-matrix` runs every family in one process; `mutation-matrix=NAME`
+  // runs one independent family so the matrix can be sharded across processes.
+  llvm::StringRef mutationFamily;
+  if (mode == "mutation-matrix")
+    mutationFamily = allMutationFamilies;
+  else if (mode.starts_with("mutation-matrix="))
+    mutationFamily = mode.drop_front(llvm::StringRef("mutation-matrix=").size());
+  if (argc > 2 ||
+      (argc == 2 && mutationFamily.empty() && mode != "fifo-feedback" &&
+       mode != "operand-feedback" && mode != "transport-feedback" &&
+       mode != "quality-promotion"))
+    fail("expected no workflow, fifo-feedback, operand-feedback, "
+         "transport-feedback, quality-promotion, mutation-matrix, or "
+         "mutation-matrix=FAMILY");
   exerciseJointExploration(mode == "fifo-feedback", mode == "operand-feedback",
                            mode == "transport-feedback",
-                           mode == "quality-promotion",
-                           mode == "mutation-matrix");
+                           mode == "quality-promotion", mutationFamily);
   return 0;
 }
