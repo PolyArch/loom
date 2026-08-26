@@ -650,7 +650,8 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
       assert(channel != execution.channelOrdinals.end() &&
              "admitted actor input channel was not initialized");
       firstInput = channel->second;
-      for (auto [inputOrdinal, operand] : llvm::enumerate(op.getOpOperands()))
+      for ([[maybe_unused]] auto [inputOrdinal, operand] :
+           llvm::enumerate(op.getOpOperands()))
         assert(execution.channelOrdinals.find(&operand)->second ==
                    firstInput + inputOrdinal &&
                "actor input channels are not contiguous");
