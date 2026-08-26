@@ -536,6 +536,7 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
       "loom_manifest_digest=" +
       shellQuote(manifestDigest) +
       "\n"
+      "loom_attempt_token=''\n"
       "loom_output_digests='[]'\n"
       "loom_cleanup() {\n"
       "  for loom_command_pid in \"${loom_command_pids[@]}\"; do "
@@ -553,16 +554,29 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
       "trap loom_cleanup EXIT\n"
       "loom_publish_completion() {\n"
       "  printf "
-      "'{\"schema\":\"loom.external_tool_completion\",\"version\":\"1.0\","
+      "'{\"schema\":\"" +
+      kInvocationCompletionSchema.str() + "\",\"version\":\"" +
+      kInvocationCompletionVersion.str() +
+      "\","
       "\"status\":\"%s\",\"exit_code\":%s,"
-      "\"manifest_sha256\":\"%s\",\"output_sha256\":%s}\\n' "
-      "\"$1\" \"$2\" \"$loom_manifest_digest\" "
+      "\"manifest_sha256\":\"%s\",\"attempt_sha256\":\"%s\","
+      "\"output_sha256\":%s}\\n' "
+      "\"$1\" \"$2\" \"$loom_manifest_digest\" \"$loom_attempt_token\" "
       "\"$loom_output_digests\" "
       ">\"$loom_completion_partial\" || exit " +
       launcherFailure + "\n";
   script += "  mv -f -- \"$loom_completion_partial\" \"$loom_completion\" "
             "|| exit " +
             launcherFailure + "\n}\n";
+  script += "if [[ ! -f " + shellQuote(kAttemptTokenPath) + " || -L " +
+            shellQuote(kAttemptTokenPath) + " ]]; then exit " +
+            exitCodeText(InvocationLauncherExitCode::BundleContentMismatch) +
+            "; fi\n";
+  script += "loom_attempt_token=$(<" + shellQuote(kAttemptTokenPath) + ")\n";
+  script += "if [[ ! \"$loom_attempt_token\" =~ ^[0-9a-f]{64}$ ]]; then "
+            "exit " +
+            exitCodeText(InvocationLauncherExitCode::BundleContentMismatch) +
+            "; fi\n";
   script +=
       "loom_read_command_text() {\n"
       "  local loom_read_fd=$1\n"
@@ -604,9 +618,7 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
       "\n";
   script += "  loom_command_observations_partial=\"${loom_command_"
             "observations}.partial.$$\"\n";
-  script += "  loom_attempt_token=$(<" + shellQuote(kAttemptTokenPath) + ")\n";
-  script += "  if [[ ! \"$loom_attempt_token\" =~ ^[0-9a-f]{64}$ ]] || "
-            "! rm -f -- \"$loom_command_observations\" "
+  script += "  if ! rm -f -- \"$loom_command_observations\" "
             "\"$loom_command_observations_partial\" || "
             "! printf 'loom.external_tool_command_observations 1.0\\n"
             "manifest %s\\nattempt %s\\nend\\n' \"$loom_manifest_digest\" "

@@ -152,6 +152,7 @@ set(LOOM_TEST_DEPENDS
   loom-external-tool-binding-test
   loom-external-tool-shell-probe-test
   loom-external-tool-invocation-bundle-test
+  loom-external-tool-invocation-receipt-test
   loom-external-tool-command-schedule-test
   loom-external-tool-runtime-binding-test
   loom-external-tool-provider-test

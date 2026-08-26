@@ -2419,12 +2419,13 @@ address into identity. Terminal recovery reports import/cache work separately
 from newly executed provider work.
 
 For an external-tool attempt, a valid atomic completion permits import of that
-exact bundle. A prepared bundle without valid completion remains incomplete;
-the controller cannot infer process liveness, acquire an execution claim, or
-automatically retry it. If the external execution owner explicitly authorizes
-another attempt, it retains the same `WorkUnitKey` and materializes an
-independent bundle. This is owner-attempt recovery, not a new semantic work item
-or generic Job state machine.
+exact bundle only when the completion's attempt token matches the currently
+published execution generation. A prepared bundle without valid completion
+remains incomplete; the controller cannot infer process liveness, acquire an
+execution claim, or automatically retry it. If the external execution owner
+explicitly authorizes another attempt, it retains the same `WorkUnitKey` and
+materializes an independent bundle. This is owner-attempt recovery, not a new
+semantic work item or generic Job state machine.
 
 Attempts and recovery records remain owner-specific. Evaluation uses its
 request-local attempt record; an ExternalToolInvocationBundle retains generated

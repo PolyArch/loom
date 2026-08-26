@@ -29,7 +29,6 @@
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <set>
 #include <signal.h>
@@ -43,77 +42,6 @@
 #include <vector>
 
 namespace loom::external_tool {
-
-struct ExternalToolInvocationExecutionReceipt::State final {
-  std::string bundleRoot;
-  BlobDigest manifestDigest;
-  BlobDigest attemptToken;
-  int exitCode = 0;
-  ExternalToolResultReusePolicy reusePolicy =
-      ExternalToolResultReusePolicy::AllowExactReuse;
-  ExternalToolResultCacheAvailability cacheAvailability =
-      ExternalToolResultCacheAvailability::Disabled;
-  ExternalToolResultCacheLookup cacheLookup =
-      ExternalToolResultCacheLookup::NotAttempted;
-  ExternalToolResultCacheDiscard cacheDiscard =
-      ExternalToolResultCacheDiscard::NotAttempted;
-  ExternalToolResultCachePublication cachePublication =
-      ExternalToolResultCachePublication::NotAttempted;
-  bool waitedForCacheKeyLock = false;
-  bool invokedExternalTool = false;
-  std::vector<ExternalToolCommandExecutionObservation> commandExecutions;
-  std::optional<InvocationCompletion> completion;
-
-  State(const PreparedExternalToolInvocation &prepared,
-        const ExternalToolInvocationExecutionObservation &observation,
-        std::optional<InvocationCompletion> completion)
-      : bundleRoot(prepared.bundleRoot),
-        manifestDigest(observation.manifestDigest),
-        attemptToken(observation.attemptToken), exitCode(observation.exitCode),
-        reusePolicy(observation.reusePolicy),
-        cacheAvailability(observation.cacheAvailability),
-        cacheLookup(observation.cacheLookup),
-        cacheDiscard(observation.cacheDiscard),
-        cachePublication(observation.cachePublication),
-        waitedForCacheKeyLock(observation.waitedForCacheKeyLock),
-        invokedExternalTool(observation.invokedExternalTool),
-        commandExecutions(observation.commandExecutions),
-        completion(std::move(completion)) {}
-
-  bool
-  matches(const PreparedExternalToolInvocation &prepared,
-          const ExternalToolInvocationExecutionObservation &observation) const {
-    return bundleRoot == prepared.bundleRoot &&
-           manifestDigest == prepared.manifestDigest &&
-           manifestDigest == observation.manifestDigest &&
-           attemptToken == observation.attemptToken &&
-           exitCode == observation.exitCode &&
-           reusePolicy == observation.reusePolicy &&
-           cacheAvailability == observation.cacheAvailability &&
-           cacheLookup == observation.cacheLookup &&
-           cacheDiscard == observation.cacheDiscard &&
-           cachePublication == observation.cachePublication &&
-           waitedForCacheKeyLock == observation.waitedForCacheKeyLock &&
-           invokedExternalTool == observation.invokedExternalTool &&
-           commandExecutions == observation.commandExecutions;
-  }
-};
-
-struct ExternalToolInvocationExecutionReceiptAccess final {
-  static ExternalToolInvocationExecutionReceipt
-  create(const PreparedExternalToolInvocation &prepared,
-         const ExternalToolInvocationExecutionObservation &observation,
-         std::optional<InvocationCompletion> completion) {
-    return ExternalToolInvocationExecutionReceipt(
-        std::make_shared<const ExternalToolInvocationExecutionReceipt::State>(
-            prepared, observation, std::move(completion)));
-  }
-
-  static std::shared_ptr<const ExternalToolInvocationExecutionReceipt::State>
-  state(const ExternalToolInvocationExecutionReceipt &receipt) {
-    return receipt.state_;
-  }
-};
 
 namespace {
 
@@ -975,7 +903,8 @@ llvm::Expected<bool>
 restoreEntry(const std::filesystem::path &entryRoot,
              const PreparedExternalToolInvocation &prepared,
              const InvocationManifestData &manifest,
-             const ExternalToolResultCacheKey &key) {
+             const ExternalToolResultCacheKey &key,
+             const BlobDigest &attemptToken) {
   auto entryText = readOrdinaryFile(entryRoot / kCacheEntryName.str());
   if (!entryText)
     return entryText.takeError();
@@ -1012,7 +941,8 @@ restoreEntry(const std::filesystem::path &entryRoot,
   if (llvm::Error error = writeAttemptFile(bundleRoot / kStderrPath.str(), {}))
     return std::move(error);
   const std::string completion = serializeInvocationCompletion(
-      InvocationCompletionStatus::Success, 0, prepared.manifestDigest, outputs);
+      InvocationCompletionStatus::Success, 0, prepared.manifestDigest,
+      attemptToken, outputs);
   if (llvm::Error error =
           writeAttemptFile(bundleRoot / kCompletionPath.str(), completion))
     return std::move(error);
@@ -1040,12 +970,14 @@ makeEntryStaging(const std::filesystem::path &entry) {
 llvm::Error publishEntry(const std::filesystem::path &entryRoot,
                          const PreparedExternalToolInvocation &prepared,
                          const InvocationManifestData &manifest,
-                         const ExternalToolResultCacheKey &key) {
+                         const ExternalToolResultCacheKey &key,
+                         const BlobDigest &attemptToken) {
   auto completion = loadExternalToolInvocationCompletion(prepared);
   if (!completion)
     return completion.takeError();
   if (completion->status != InvocationCompletionStatus::Success ||
       completion->manifestDigest != prepared.manifestDigest ||
+      completion->attemptToken != attemptToken ||
       completion->outputDigests.size() != manifest.declaredOutputs.size())
     return cacheError("only an exact successful completion is cacheable");
   if (llvm::Error error = validateCacheableOutputClosure(prepared, manifest))
@@ -1170,7 +1102,8 @@ cleanupStoppedScriptAttempt(const PreparedExternalToolInvocation &prepared,
 }
 
 llvm::Expected<std::optional<InvocationCompletion>>
-loadPublishedCompletion(const PreparedExternalToolInvocation &prepared) {
+loadPublishedCompletion(const PreparedExternalToolInvocation &prepared,
+                        const BlobDigest &attemptToken) {
   const std::filesystem::path path =
       std::filesystem::path(prepared.bundleRoot) / kCompletionPath.str();
   struct stat status{};
@@ -1185,6 +1118,9 @@ loadPublishedCompletion(const PreparedExternalToolInvocation &prepared) {
   if (completion->manifestDigest != prepared.manifestDigest)
     return cacheError(
         "generated run-script completion does not bind the invocation");
+  if (completion->attemptToken != attemptToken)
+    return cacheError(
+        "generated run-script completion belongs to another attempt");
   return std::optional<InvocationCompletion>(std::move(*completion));
 }
 
@@ -1267,7 +1203,7 @@ runScript(const PreparedExternalToolInvocation &prepared, CacheScriptMode mode,
       if (stopped->ReturnCode >= 0)
         return finishScript(*stopped);
       if (mode == CacheScriptMode::Execute) {
-        auto completion = loadPublishedCompletion(prepared);
+        auto completion = loadPublishedCompletion(prepared, attemptToken);
         if (!completion)
           return completion.takeError();
         if (*completion) {
@@ -1319,12 +1255,15 @@ executeExternalToolInvocationBundleObserved(
   auto attemptToken = beginExternalToolInvocationAttempt(prepared);
   if (!attemptToken)
     return attemptToken.takeError();
-  const auto seal =
-      [&prepared](ExternalToolInvocationExecutionObservation observation)
+  const auto seal = [&prepared, &attemptToken](
+                        ExternalToolInvocationExecutionObservation observation)
       -> llvm::Expected<ExternalToolInvocationExecutionObservation> {
-    auto completion = loadPublishedCompletion(prepared);
+    auto completion = loadPublishedCompletion(prepared, *attemptToken);
     if (!completion)
       return completion.takeError();
+    if (llvm::Error error = validateExternalToolInvocationExecutionObservation(
+            prepared, observation))
+      return std::move(error);
     observation.receipt = ExternalToolInvocationExecutionReceiptAccess::create(
         prepared, observation, std::move(*completion));
     return observation;
@@ -1444,7 +1383,8 @@ executeExternalToolInvocationBundleObserved(
           ExternalToolResultCacheLookup::Miss, discard,
           ExternalToolResultCachePublication::NotAttempted,
           waitedForCacheKeyLock, false});
-    auto restored = restoreEntry(entry, prepared, loaded->second, *key);
+    auto restored =
+        restoreEntry(entry, prepared, loaded->second, *key, *attemptToken);
     if (restored && *restored) {
       cacheDiagnostic(DiagnosticVerbosity::Summary, "hit", keySpelling);
       return seal(ExternalToolInvocationExecutionObservation{
@@ -1535,7 +1475,8 @@ executeExternalToolInvocationBundleObserved(
   }
   ExternalToolResultCachePublication publication =
       ExternalToolResultCachePublication::Published;
-  if (llvm::Error error = publishEntry(entry, prepared, loaded->second, *key)) {
+  if (llvm::Error error =
+          publishEntry(entry, prepared, loaded->second, *key, *attemptToken)) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     llvm::toString(std::move(error)));
     publication = ExternalToolResultCachePublication::Failed;
@@ -1563,23 +1504,20 @@ llvm::Error validateExternalToolInvocationExecutionReceipt(
     return receiptError(
         "the public observation differs from its sealed executor state");
 
-  auto completion = loadPublishedCompletion(prepared);
+  auto completion = loadPublishedCompletion(prepared, observation.attemptToken);
   if (!completion)
     return completion.takeError();
   if (state->completion.has_value() != completion->has_value())
     return receiptError(
         "the published completion presence changed after execution");
-  if (!state->completion)
-    return llvm::Error::success();
-  const InvocationCompletion &sealed = *state->completion;
-  const InvocationCompletion &published = **completion;
-  if (sealed.status != published.status ||
-      sealed.exitCode != published.exitCode ||
-      sealed.manifestDigest != published.manifestDigest ||
-      sealed.outputDigests != published.outputDigests)
-    return receiptError(
-        "the published completion or output snapshot changed after execution");
-  return llvm::Error::success();
+  if (state->completion) {
+    const InvocationCompletion &sealed = *state->completion;
+    const InvocationCompletion &published = **completion;
+    if (!(sealed == published))
+      return receiptError("the published completion changed after execution");
+  }
+  return validateExternalToolInvocationExecutionObservation(prepared,
+                                                            observation);
 }
 
 llvm::Expected<int> executeExternalToolInvocationBundle(

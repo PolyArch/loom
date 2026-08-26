@@ -7,6 +7,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/JSON.h"
 
 #include <optional>
@@ -15,6 +16,90 @@
 #include <vector>
 
 namespace loom::external_tool {
+
+inline constexpr llvm::StringLiteral kInvocationCompletionSchema =
+    "loom.external_tool_completion";
+inline constexpr llvm::StringLiteral kInvocationCompletionVersion = "2.0";
+
+llvm::Error invocationBundleError(const llvm::Twine &message);
+
+struct ExternalToolInvocationExecutionReceipt::State final {
+  std::string bundleRoot;
+  BlobDigest manifestDigest;
+  BlobDigest attemptToken;
+  int exitCode = 0;
+  ExternalToolResultReusePolicy reusePolicy =
+      ExternalToolResultReusePolicy::AllowExactReuse;
+  ExternalToolResultCacheAvailability cacheAvailability =
+      ExternalToolResultCacheAvailability::Disabled;
+  ExternalToolResultCacheLookup cacheLookup =
+      ExternalToolResultCacheLookup::NotAttempted;
+  ExternalToolResultCacheDiscard cacheDiscard =
+      ExternalToolResultCacheDiscard::NotAttempted;
+  ExternalToolResultCachePublication cachePublication =
+      ExternalToolResultCachePublication::NotAttempted;
+  bool waitedForCacheKeyLock = false;
+  bool invokedExternalTool = false;
+  std::vector<ExternalToolCommandExecutionObservation> commandExecutions;
+  std::optional<InvocationCompletion> completion;
+
+  State(const PreparedExternalToolInvocation &prepared,
+        const ExternalToolInvocationExecutionObservation &observation,
+        std::optional<InvocationCompletion> completion)
+      : bundleRoot(prepared.bundleRoot),
+        manifestDigest(observation.manifestDigest),
+        attemptToken(observation.attemptToken), exitCode(observation.exitCode),
+        reusePolicy(observation.reusePolicy),
+        cacheAvailability(observation.cacheAvailability),
+        cacheLookup(observation.cacheLookup),
+        cacheDiscard(observation.cacheDiscard),
+        cachePublication(observation.cachePublication),
+        waitedForCacheKeyLock(observation.waitedForCacheKeyLock),
+        invokedExternalTool(observation.invokedExternalTool),
+        commandExecutions(observation.commandExecutions),
+        completion(std::move(completion)) {}
+
+  bool
+  matches(const PreparedExternalToolInvocation &prepared,
+          const ExternalToolInvocationExecutionObservation &observation) const {
+    return bundleRoot == prepared.bundleRoot &&
+           manifestDigest == prepared.manifestDigest &&
+           manifestDigest == observation.manifestDigest &&
+           attemptToken == observation.attemptToken &&
+           exitCode == observation.exitCode &&
+           reusePolicy == observation.reusePolicy &&
+           cacheAvailability == observation.cacheAvailability &&
+           cacheLookup == observation.cacheLookup &&
+           cacheDiscard == observation.cacheDiscard &&
+           cachePublication == observation.cachePublication &&
+           waitedForCacheKeyLock == observation.waitedForCacheKeyLock &&
+           invokedExternalTool == observation.invokedExternalTool &&
+           commandExecutions == observation.commandExecutions;
+  }
+};
+
+struct ExternalToolInvocationExecutionReceiptAccess final {
+  static ExternalToolInvocationExecutionReceipt
+  create(const PreparedExternalToolInvocation &prepared,
+         const ExternalToolInvocationExecutionObservation &observation,
+         std::optional<InvocationCompletion> completion) {
+    return ExternalToolInvocationExecutionReceipt(
+        std::make_shared<const ExternalToolInvocationExecutionReceipt::State>(
+            prepared, observation, std::move(completion)));
+  }
+
+  static std::shared_ptr<const ExternalToolInvocationExecutionReceipt::State>
+  state(const ExternalToolInvocationExecutionReceipt &receipt) {
+    return receipt.state_;
+  }
+};
+
+struct ImportedExternalToolInvocationBundleAccess final {
+  static ImportedExternalToolInvocationBundle
+  create(std::vector<std::pair<std::string, std::string>> outputs) {
+    return ImportedExternalToolInvocationBundle(std::move(outputs));
+  }
+};
 
 /// The bundle-internal layout names shared by the manifest codec, the
 /// run-script renderer, finalization, execution, and strict import.
@@ -88,7 +173,11 @@ loadPreparedInvocationManifest(const PreparedExternalToolInvocation &prepared);
 std::string
 serializeInvocationCompletion(InvocationCompletionStatus status, int exitCode,
                               const BlobDigest &manifestDigest,
+                              const BlobDigest &attemptToken,
                               llvm::ArrayRef<BlobDigest> outputDigests);
+
+llvm::Expected<InvocationCompletion>
+parseInvocationCompletion(llvm::StringRef contents);
 
 /// The one JSON codec for the exact version probe carried by a manifest and
 /// by the persistent tool-version cache domain.

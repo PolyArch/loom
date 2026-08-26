@@ -11,7 +11,6 @@
 
 #include <array>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -20,7 +19,6 @@
 #include <sstream>
 #include <string>
 #include <sys/wait.h>
-#include <thread>
 #include <tuple>
 #include <unistd.h>
 #include <utility>
@@ -49,20 +47,6 @@ std::string jsonVersionMember(llvm::StringRef version) {
 void require(const char *test, bool condition, const std::string &message) {
   if (!condition)
     fail(test, message);
-}
-
-void requireSuccess(const char *test, llvm::Error error) {
-  if (error)
-    fail(test, llvm::toString(std::move(error)));
-}
-
-void requireErrorContains(const char *test, llvm::Error error,
-                          const std::string &reason) {
-  if (!error)
-    fail(test, "expected a failure containing: " + reason);
-  const std::string message = llvm::toString(std::move(error));
-  require(test, message.find(reason) != std::string::npos,
-          "failure reason mismatch: " + message);
 }
 
 template <typename T> T take(const char *test, llvm::Expected<T> value) {
@@ -256,56 +240,6 @@ void executionResourceBindingIsExact(const std::filesystem::path &root,
   requireFailureContains(
       __func__, deriveExternalToolExecutionBindingDigest(spec.tool, invalid),
       "runtime binding kind");
-}
-
-struct ExecutionDeadline final {
-  std::chrono::steady_clock::time_point notAfter;
-};
-
-bool executionDeadlineReached(const void *opaque) {
-  return std::chrono::steady_clock::now() >=
-         static_cast<const ExecutionDeadline *>(opaque)->notAfter;
-}
-
-std::optional<std::chrono::steady_clock::duration>
-executionDeadlineRemaining(const void *opaque) {
-  const auto notAfter =
-      static_cast<const ExecutionDeadline *>(opaque)->notAfter;
-  const auto now = std::chrono::steady_clock::now();
-  return now >= notAfter ? std::chrono::steady_clock::duration::zero()
-                         : notAfter - now;
-}
-
-void controlledExecutionStopsTheProcessGroup(
-    const std::filesystem::path &root, const std::filesystem::path &tool) {
-  ExternalToolInvocationBundleSpec spec =
-      baseSpec(tool, "outputs/stopped-result.txt");
-  spec.commands = {{tool.string(), "controlled-block", "outputs/entered",
-                    "outputs/child.pid", "outputs/late",
-                    "outputs/stopped-result.txt"}};
-  const PreparedExternalToolInvocation prepared =
-      take(__func__, finalizeExternalToolInvocationBundle(
-                         (root / "controlled-stop").string(), spec));
-  const ExecutionDeadline deadline{std::chrono::steady_clock::now() +
-                                   std::chrono::milliseconds(150)};
-  const loom::ExecutionControlView control{&deadline, executionDeadlineReached,
-                                           executionDeadlineRemaining};
-  const ExternalToolInvocationExecutionObservation observation = take(
-      __func__, executeExternalToolInvocationBundleObserved(prepared, control));
-  require(__func__,
-          observation.exitCode == externalToolExecutionStoppedExitCode &&
-              observation.cacheAvailability ==
-                  ExternalToolResultCacheAvailability::Disabled &&
-              observation.invokedExternalTool,
-          "controlled execution did not report its stopped real dispatch");
-  const std::filesystem::path outputs = root / "controlled-stop" / "outputs";
-  require(__func__, std::filesystem::exists(outputs / "entered"),
-          "controlled fixture did not enter the external tool");
-  require(__func__, !std::filesystem::exists(outputs / "completion.json"),
-          "stopped execution published a completion record");
-  std::this_thread::sleep_for(std::chrono::milliseconds(700));
-  require(__func__, !std::filesystem::exists(outputs / "late"),
-          "a descendant survived the stopped external-tool process group");
 }
 
 void deterministicHostBundleExecutes(const std::filesystem::path &root,
@@ -1027,14 +961,22 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
   requireFailure(__func__, importExternalToolInvocationBundle(prepared, wrong),
                  "wrong declared output membership was accepted");
 
-  const std::string completionBefore =
-      readFile(bundle / "outputs" / "completion.json");
+  const InvocationCompletion completionBefore =
+      take(__func__, loadExternalToolInvocationCompletion(prepared));
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
           "a caller-chosen rerun of a completed bundle was refused");
+  const InvocationCompletion completionAfter =
+      take(__func__, loadExternalToolInvocationCompletion(prepared));
   require(__func__,
-          readFile(bundle / "outputs" / "completion.json") == completionBefore,
-          "a deterministic rerun changed the completion record");
+          completionAfter.status == completionBefore.status &&
+              completionAfter.exitCode == completionBefore.exitCode &&
+              completionAfter.manifestDigest ==
+                  completionBefore.manifestDigest &&
+              completionAfter.outputDigests == completionBefore.outputDigests &&
+              completionAfter.attemptToken != completionBefore.attemptToken,
+          "a deterministic rerun changed semantic completion or reused its "
+          "generation token");
 
   const std::filesystem::path original = root / "strict-import-original";
   std::filesystem::rename(bundle, original);
@@ -1892,24 +1834,6 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
           "fresh execution did not bypass every persistent-cache action");
   require(__func__, readFile(counter) == "7",
           "fresh execution reused the populated cache entry");
-  requireSuccess(__func__, validateExternalToolInvocationExecutionReceipt(
-                               fresh, freshExecution));
-  auto fabricatedFresh = freshExecution;
-  fabricatedFresh.receipt = {};
-  requireErrorContains(
-      __func__,
-      validateExternalToolInvocationExecutionReceipt(fresh, fabricatedFresh),
-      "no executor receipt");
-  auto reboundFresh = freshExecution;
-  reboundFresh.attemptToken =
-      take(__func__, beginExternalToolInvocationAttempt(fresh));
-  requireSuccess(__func__, validateExternalToolInvocationExecutionObservation(
-                               fresh, reboundFresh));
-  requireErrorContains(
-      __func__,
-      validateExternalToolInvocationExecutionReceipt(fresh, reboundFresh),
-      "differs from its sealed executor state");
-
   const std::filesystem::path freshRoot = root / "cache-midflight-fresh";
   const PreparedExternalToolInvocation midflightFresh =
       take(__func__,
@@ -2036,7 +1960,6 @@ int main(int argc, char **argv) {
           "could not isolate the cache fixture");
   resultImporterIdentityUsesCanonicalFraming();
   executionResourceBindingIsExact(root, tool);
-  controlledExecutionStopsTheProcessGroup(root, tool);
   deterministicHostBundleExecutes(root, tool);
   toolProducedExecutableLifecycle(root, tool);
   containerBundleExecutes(root, tool, container);

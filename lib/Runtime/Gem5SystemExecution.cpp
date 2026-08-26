@@ -1354,7 +1354,10 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const PreparedExternalToolInvocation &prepared,
     const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolInvocationExecutionObservation *executionObservation,
     Gem5SystemDiagnosticSidecar *diagnostics) {
+  if ((executionObservation != nullptr) != (diagnostics != nullptr))
+    return invalid("gem5 diagnostic import context is incomplete");
   std::vector<Gem5SpatialInvocationProjection> spatialInvocations;
   auto factsOrUnsupported = deriveFacts(request, resolution, artifacts, blobs);
   if (!factsOrUnsupported)
@@ -1391,9 +1394,13 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
       rtlClosures.push_back(std::move(*closure));
     }
   }
-  auto attempt = importExternalToolInvocationAttempt(
-      prepared, makeExpectation(*contract, facts, diagnostics != nullptr,
-                                mappedRtlInputs, *fingerprint));
+  const ExternalToolInvocationImportExpectation expectation = makeExpectation(
+      *contract, facts, diagnostics != nullptr, mappedRtlInputs, *fingerprint);
+  auto attempt =
+      executionObservation
+          ? importExternalToolInvocationAttempt(prepared, expectation,
+                                                *executionObservation)
+          : importExternalToolInvocationAttempt(prepared, expectation);
   if (!attempt)
     return attempt.takeError();
   if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))
@@ -1726,7 +1733,7 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
     const PreparedExternalToolInvocation &prepared,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   return importGem5SystemInvocationImpl(request, resolution, prepared,
-                                        artifacts, blobs, nullptr);
+                                        artifacts, blobs, nullptr, nullptr);
 }
 
 llvm::Expected<Gem5SystemDiagnosticEvaluation>
@@ -1757,8 +1764,9 @@ importGem5SystemDiagnosticInvocation(
     return finalize(
         terminalResult(ExecutionFailedEvidence{OutcomeReason::ToolFailure}));
   Gem5SystemDiagnosticSidecar diagnostics;
-  auto result = importGem5SystemInvocationImpl(request, resolution, prepared,
-                                               artifacts, blobs, &diagnostics);
+  auto result =
+      importGem5SystemInvocationImpl(request, resolution, prepared, artifacts,
+                                     blobs, &execution, &diagnostics);
   if (!result)
     return result.takeError();
   auto evidence = EvaluationEvidence::get(
