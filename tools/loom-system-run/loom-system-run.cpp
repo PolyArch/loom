@@ -273,56 +273,47 @@ loadInputs(const loom::application::ApplicationRuntimeManifest &manifest,
 llvm::Error consumeTransitionGraph(
     const loom::application::ApplicationRuntimeManifest &manifest,
     const loom::deployment::FinalizedDeployment &deployment,
+    llvm::ArrayRef<loom::sim::SystemRootLifecycleObservation> lifecycle,
     const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
   if (!manifest.transitionGraph())
     return llvm::Error::success();
   auto session = loom::runtime::ResourceTimeTransitionSelectionSession::create(
       *manifest.transitionGraph(), deployment, artifacts, blobs);
   if (!session)
-    return invalid("resource-time transition graph failed runtime selection: " +
-                   llvm::toString(session.takeError()));
+    return session.takeError();
   auto mapping = loom::mapping::importSystemMapping(
       manifest.transitionGraph()->entry.mapping, artifacts);
   if (!mapping)
-    return invalid("resource-time entry Mapping failed runtime import: " +
-                   llvm::toString(mapping.takeError()));
-  const auto roots = mapping->view().executionBindings().rootThreadLaunches();
+    return mapping.takeError();
   const loom::ArtifactRootReference dataflow{
       ::dataflow::canonicalDataflowSchema.identity.str(),
       ::dataflow::canonicalDataflowSchema.version,
       mapping->view().dataflowIdentity()};
-  for (const ::dataflow::RootThreadLaunchRef root : roots) {
-    if (llvm::Error error = session->startRoot(root))
-      return invalid("resource-time runtime selection rejected root start: " +
-                     llvm::toString(std::move(error)));
-    const ::dataflow::EventFamilyKey trigger =
-        ::dataflow::rootThreadCompletionEventFamily(root);
-    std::optional<loom::pnr::ResourceTimeTransitionEndpointReference> child;
-    for (const loom::pnr::ResourceTimeTransition &transition :
-         manifest.transitionGraph()->transitions) {
-      if (transition.parent != session->currentEndpoint() ||
-          transition.trigger != trigger || !transition.safePoint ||
-          transition.safePoint->kind !=
-              loom::pnr::ResourceTimeSafePointKind::Completion ||
-          transition.safePoint->artifact != dataflow ||
-          !llvm::equal(transition.completedBefore, session->completedRoots()))
-        continue;
-      if (child)
-        return invalid("resource-time runtime selection has ambiguous verified "
-                       "completion edges");
-      child = transition.child;
+  auto dataflowArtifact =
+      ::dataflow::importCanonicalDataflow(dataflow, artifacts);
+  if (!dataflowArtifact)
+    return dataflowArtifact.takeError();
+  auto dataflowView = dataflowArtifact->view();
+  if (!dataflowView)
+    return dataflowView.takeError();
+
+  for (const loom::sim::SystemRootLifecycleObservation &observation :
+       lifecycle) {
+    auto root = dataflowView->eventRootThreadLaunch(observation.event);
+    if (!root)
+      return root.takeError();
+    if (observation.event == ::dataflow::rootThreadStartEventFamily(*root)) {
+      if (llvm::Error error = session->startRoot(*root))
+        return error;
+      continue;
     }
-    auto selected = session->completeRoot(root, std::move(child));
-    if (!selected)
-      return invalid(
-          "resource-time runtime selection rejected root completion: " +
-          llvm::toString(selected.takeError()));
+    if (observation.event != ::dataflow::rootThreadCompletionEventFamily(*root))
+      return invalid("resource-time lifecycle contains a non-root event");
+    auto completed = session->completeRoot(*root, std::nullopt);
+    if (!completed)
+      return completed.takeError();
   }
-  if (llvm::Error error = session->joinMappedRoots())
-    return invalid(
-        "resource-time runtime selection could not join mapped roots: " +
-        llvm::toString(std::move(error)));
-  return llvm::Error::success();
+  return session->joinMappedRoots();
 }
 
 llvm::Expected<loom::evaluation::CaseArtifactResolution>
@@ -1089,16 +1080,43 @@ executeSpatial(Engine engine, const SpatialInvocationCase &invocation,
                             artifacts, blobs);
 }
 
+bool haveEquivalentRootLifecycle(
+    llvm::ArrayRef<loom::sim::SystemRootLifecycleObservation> lhs,
+    llvm::ArrayRef<loom::sim::SystemRootLifecycleObservation> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  std::map<std::uint64_t, std::uint64_t> lhsOccurrences;
+  std::map<std::uint64_t, std::uint64_t> rhsOccurrences;
+  const auto normalized = [](auto &occurrences, std::uint64_t occurrence) {
+    const std::uint64_t next = occurrences.size() + 1;
+    return occurrences.try_emplace(occurrence, next).first->second;
+  };
+  for (std::size_t index = 0; index != lhs.size(); ++index)
+    if (lhs[index].event != rhs[index].event ||
+        normalized(lhsOccurrences, lhs[index].occurrence) !=
+            normalized(rhsOccurrences, rhs[index].occurrence))
+      return false;
+  return true;
+}
+
 llvm::Error validateSystemResults(const CompletedRun &dfg,
                                   const CompletedRun &cgra) {
-  const auto &lhs = dfg.importedExecution.system()->functionalObservations;
-  const auto &rhs = cgra.importedExecution.system()->functionalObservations;
+  const loom::sim::SystemSimulationExecution &dfgSystem =
+      *dfg.importedExecution.system();
+  const loom::sim::SystemSimulationExecution &cgraSystem =
+      *cgra.importedExecution.system();
+  const auto &lhs = dfgSystem.functionalObservations;
+  const auto &rhs = cgraSystem.functionalObservations;
   if (!loom::sim::haveExactlyEqualSystemFunctionalObservations(lhs, rhs) ||
       !lhs.externalValueOutputs.empty() || !rhs.externalValueOutputs.empty() ||
       !lhs.externalStreamOutputs.empty() ||
       !rhs.externalStreamOutputs.empty() || !lhs.memories.empty() ||
       !rhs.memories.empty())
     return invalid("System DFG and CGRA functional observations differ");
+  if (!haveEquivalentRootLifecycle(
+          dfgSystem.progressObservations.rootLifecycle,
+          cgraSystem.progressObservations.rootLifecycle))
+    return invalid("System DFG and CGRA root lifecycle observations differ");
   if (expectedI32.getNumOccurrences() == 0)
     return llvm::Error::success();
   if (lhs.valueResults.size() != 1)
@@ -1341,8 +1359,10 @@ llvm::Error run() {
       return cgra.takeError();
     if (llvm::Error error = validateSystemResults(*dfg, *cgra))
       return error;
-    if (llvm::Error error =
-            consumeTransitionGraph(manifest, deployment, artifacts, blobs))
+    if (llvm::Error error = consumeTransitionGraph(
+            manifest, deployment,
+            dfg->importedExecution.system()->progressObservations.rootLifecycle,
+            artifacts, blobs))
       return error;
     if (dfg->spatialInvocations.size() != cgra->spatialInvocations.size())
       return invalid("System engines observed different launch counts");
