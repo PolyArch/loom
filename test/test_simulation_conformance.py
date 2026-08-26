@@ -144,8 +144,10 @@ def _measurement_row(
     )
     return (
         "paired-simulation "
-        "schema=loom.paired_simulation_measurement.1 "
-        f"cell={cell} work_fingerprint={work_fingerprint} "
+        "schema=loom.paired_simulation_measurement.2 "
+        f"cell={cell} "
+        f"attempt={'diagnostic' if system else 'ordinary'} "
+        f"invocation={cell} work_fingerprint={work_fingerprint} "
         f"config_fingerprint={config_fingerprint} "
         f"accelerator_reference_cycles={cycles} cgra_event_frames={frames} "
         f"active_wall_ns={wall} active_cpu_ns=90000000 "
@@ -182,6 +184,11 @@ class PairedMeasurementParsingTest(unittest.TestCase):
             row.replace("config_fingerprint=" + "1" * 64, "config_fingerprint=ABC"),
             row.replace("active_wall_ns=200000000", "active_wall_ns=0"),
             row.replace("gem5_ticks=123", "gem5_ticks=not_applicable"),
+            row.replace("attempt=diagnostic", "attempt=ordinary"),
+            row.replace(
+                "invocation=paired-system-cgra",
+                "invocation=diagnostic-system-cgra",
+            ),
             row + " unexpected=1",
         )
         for invalid in invalid_rows:
@@ -294,8 +301,10 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
                     wall = 200000000 if system else 100000000
                     print(
                         "paired-simulation "
-                        "schema=loom.paired_simulation_measurement.1 "
-                        f"cell={cell} work_fingerprint={work} "
+                        "schema=loom.paired_simulation_measurement.2 "
+                        f"cell={cell} "
+                        f"attempt={'diagnostic' if system else 'ordinary'} "
+                        f"invocation={cell} work_fingerprint={work} "
                         f"config_fingerprint={config} "
                         "accelerator_reference_cycles=50000 "
                         f"cgra_event_frames={frames} active_wall_ns={wall} "
