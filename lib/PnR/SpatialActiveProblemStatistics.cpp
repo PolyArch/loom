@@ -117,6 +117,11 @@ SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
   addTrackedArray(bytes, work, handshake.memoryOperationDomains());
   addTrackedArray(bytes, work, handshake.memoryOperationPlans());
   addTrackedArray(bytes, work, handshake.memoryPlanFragments());
+  addTrackedArray(bytes, work, handshake.projectionArcs());
+  addTrackedArray(bytes, work, handshake.projectionFixedArcs());
+  addTrackedArray(bytes, work, handshake.projectionFragmentArcOffsets());
+  addTrackedArray(bytes, work, handshake.projectionFragmentArcs());
+  addTrackedArray(bytes, work, handshake.projectionOutgoingArcOffsets());
   saturatingAdd(work, result.handshakePotentialContributionCount);
   saturatingAdd(bytes, activeRouting.retainedBytes());
   saturatingAdd(work, activeRouting.deterministicWork());
