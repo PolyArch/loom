@@ -282,6 +282,9 @@ llvm::Error consumeTransitionGraph(
       ::dataflow::canonicalDataflowSchema.version,
       mapping->view().dataflowIdentity()};
   for (const ::dataflow::RootThreadLaunchRef root : roots) {
+    if (llvm::Error error = session->startRoot(root))
+      return invalid("resource-time runtime selection rejected root start: " +
+                     llvm::toString(std::move(error)));
     const ::dataflow::EventFamilyKey trigger =
         ::dataflow::rootThreadCompletionEventFamily(root);
     std::optional<loom::pnr::ResourceTimeTransitionEndpointReference> child;
@@ -292,8 +295,7 @@ llvm::Error consumeTransitionGraph(
           transition.safePoint->kind !=
               loom::pnr::ResourceTimeSafePointKind::Completion ||
           transition.safePoint->artifact != dataflow ||
-          !llvm::equal(transition.completedBefore,
-                       session->completedRoots()))
+          !llvm::equal(transition.completedBefore, session->completedRoots()))
         continue;
       if (child)
         return invalid("resource-time runtime selection has ambiguous verified "

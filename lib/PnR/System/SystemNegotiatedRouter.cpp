@@ -375,6 +375,7 @@ detail::negotiateSystemServiceRoutes(
   const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
 
   mapping_debug::MappingRunStatistics debugStatistics;
+  SystemServiceRouterScratch routerScratch;
   mapping_debug::ClosureStatus closureStatus =
       mapping_debug::ClosureStatus::Failed;
   mapping_debug::emit(
@@ -401,14 +402,29 @@ detail::negotiateSystemServiceRoutes(
           fields["a_star_expansions"] = endpointExpansions;
           fields["negotiated_iterations"] = negotiationIterations;
         });
-    debugStatistics.emit(mapping_debug::Level::Decision,
-                         mapping_debug::Stage::SystemPnr, closureStatus);
+    debugStatistics.emit(
+        mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
+        closureStatus, [&](llvm::json::Object &fields) {
+          const std::uint64_t hits = routerScratch.heuristicCacheHitCount();
+          const std::uint64_t builds = routerScratch.heuristicBuildCount();
+          fields["heuristic_cache_hits"] = hits;
+          fields["heuristic_builds"] = builds;
+          fields["heuristic_cache_evictions"] =
+              routerScratch.heuristicCacheEvictionCount();
+          fields["heuristic_cache_retained_bytes"] =
+              routerScratch.heuristicCacheRetainedBytes();
+          fields["service_router_retained_bytes"] =
+              routerScratch.retainedStorageBytes();
+          if (hits <= std::numeric_limits<std::uint64_t>::max() - builds &&
+              hits + builds != 0)
+            fields["heuristic_cache_hit_ratio"] =
+                static_cast<double>(hits) / static_cast<double>(hits + builds);
+        });
   });
 
-  auto lower = buildSystemServiceRouteLowerBoundArcCosts(topology);
-  if (!lower)
-    return observeArithmeticFailure(lower.takeError(), 0,
-                                    "lower_bound_cost_projection",
+  if (llvm::Error error = routerScratch.prepare(problem))
+    return observeArithmeticFailure(std::move(error), 0,
+                                    "service_router_preparation",
                                     debugStatistics, closureStatus);
 
   std::vector<PnrIndex> order(problem.serviceLegs().size());
@@ -496,9 +512,9 @@ detail::negotiateSystemServiceRoutes(
                                       previous->sinks};
     std::uint64_t iterationExpansions = 0;
     auto built = buildSystemServiceRoutes(
-        problem, threadChoices, graphChoices,
-        {order, *lower, currentCosts, prior, exclusion, repairRegion,
-         reroutedLegs, false},
+        problem, threadChoices, graphChoices, routerScratch,
+        {order, currentCosts, prior, exclusion, repairRegion, reroutedLegs,
+         false},
         iterationExpansions);
     if (llvm::Error error = checkedAdd(iterationExpansions, endpointExpansions,
                                        "endpoint expansion"))

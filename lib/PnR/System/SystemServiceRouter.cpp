@@ -63,10 +63,7 @@ struct MutableSink final {
   PnrIndex node = 0;
 };
 
-struct AtomicPatternCatalog final {
-  std::vector<std::vector<PnrIndex>> traversalsByGroup;
-  std::vector<std::uint64_t> unicastEligibility;
-};
+using AtomicPatternCatalog = detail::SystemServiceRouteAtomicPatternCatalog;
 
 void admitTraversal(std::vector<std::uint64_t> &eligibility,
                     PnrIndex traversal) {
@@ -721,17 +718,17 @@ llvm::Expected<detail::BuiltSystemServiceRoutes>
 loom::pnr::detail::buildSystemServiceRoutes(
     const FrozenSystemPnrProblem &problem,
     llvm::ArrayRef<PnrIndex> threadChoices,
-    llvm::ArrayRef<PnrIndex> graphChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices, SystemServiceRouterScratch &scratch,
     const SystemServiceRouteBuildRequest &request,
     std::uint64_t &endpointExpansions) {
   endpointExpansions = 0;
   BuiltSystemServiceRoutes result;
   const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
+  if (scratch.preparedProblem_ != &problem)
+    return invalid("service router scratch is not prepared for the problem");
   if (llvm::Error error = verifyLegOrder(
           request.legOrder, problem.serviceLegs().size(), !request.priorRoutes))
     return std::move(error);
-  if (request.lowerBoundArcCosts.size() != topology.arcs().size())
-    return invalid("lower-bound arc-cost vector has the wrong width");
   if (request.exclusion &&
       (request.exclusion->leg >= problem.serviceLegs().size() ||
        request.exclusion->traversal >= topology.traversals().size()))
@@ -741,12 +738,8 @@ loom::pnr::detail::buildSystemServiceRoutes(
        request.repairRegion->leg >= problem.serviceLegs().size() ||
        !llvm::is_contained(request.legOrder, request.repairRegion->leg)))
     return invalid("a route repair region has no valid prior route");
-  auto atomicPatterns = buildAtomicPatternCatalog(topology);
-  if (!atomicPatterns)
-    return atomicPatterns.takeError();
-  EndpointRouteSearchScratch search;
-  if (llvm::Error error = search.prepare(endpointRoutingGraphView(topology)))
-    return std::move(error);
+  const AtomicPatternCatalog &atomicPatterns = scratch.atomicPatterns_;
+  EndpointRouteSearchScratch &search = scratch.endpointSearch_;
   std::vector<std::uint64_t> capacityUsage;
   capacityUsage.reserve(topology.capacityCells().size());
   for (const auto &cell : topology.capacityCells())
@@ -873,7 +866,7 @@ loom::pnr::detail::buildSystemServiceRoutes(
       std::vector<PnrIndex> targetRanks(activeSink.endpoints.size());
       for (PnrIndex rank = 0; rank < targetRanks.size(); ++rank)
         targetRanks[rank] = rank;
-      auto eligibility = routeEligibility(topology, *atomicPatterns, nodes);
+      auto eligibility = routeEligibility(topology, atomicPatterns, nodes);
       if (request.exclusion && request.exclusion->leg == legOrdinal)
         rejectTraversal(eligibility, request.exclusion->traversal);
       if (request.enforceCapacity)
@@ -894,12 +887,14 @@ loom::pnr::detail::buildSystemServiceRoutes(
         routeRequest.sourceReplicationGroups = sourceGroups;
         routeRequest.targetEndpoints = activeSink.endpoints;
         routeRequest.targetPreferenceRanks = targetRanks;
-        routeRequest.lowerBoundArcCosts = request.lowerBoundArcCosts;
+        routeRequest.lowerBoundArcCosts = scratch.lowerBoundArcCosts_;
         routeRequest.currentArcCosts = *currentArcCosts;
         routeRequest.requiredPayloadWidthBits = leg.requiredPayloadWidthBits;
         routeRequest.endpointExpansionLimit =
             problem.config().policy().search.routing.endpointExpansionLimit;
         routeRequest.eligibleTraversalBits = eligibleTraversals;
+        routeRequest.lowerBoundCostRevision =
+            SystemServiceRouterScratch::stableLowerBoundCostRevision;
         const std::uint64_t initialEndpointExpansions =
             search.endpointExpansionCount();
         auto routed = search.search(routeRequest);
@@ -959,7 +954,7 @@ loom::pnr::detail::buildSystemServiceRoutes(
                                        eligibility, std::nullopt))
         return std::move(error);
       if (!nodes.empty()) {
-        auto upgrades = findAtomicPatternUpgrades(topology, *atomicPatterns,
+        auto upgrades = findAtomicPatternUpgrades(topology, atomicPatterns,
                                                   nodes, nodeByEndpoint);
         if (!upgrades)
           return upgrades.takeError();
@@ -1080,10 +1075,36 @@ loom::pnr::detail::buildSystemServiceRoutes(
   return result;
 }
 
-llvm::Expected<std::vector<RouteCost>>
-loom::pnr::detail::buildSystemServiceRouteLowerBoundArcCosts(
-    const FrozenEndpointRoutingTopology &topology) {
-  return computeLowerBoundArcCosts(topology);
+llvm::Error loom::pnr::detail::SystemServiceRouterScratch::prepare(
+    const FrozenSystemPnrProblem &problem) {
+  preparedProblem_ = nullptr;
+  auto atomicPatterns = buildAtomicPatternCatalog(problem.routingTopology());
+  if (!atomicPatterns)
+    return atomicPatterns.takeError();
+  auto lowerBoundArcCosts =
+      computeLowerBoundArcCosts(problem.routingTopology());
+  if (!lowerBoundArcCosts)
+    return lowerBoundArcCosts.takeError();
+  if (llvm::Error error = endpointSearch_.prepare(
+          endpointRoutingGraphView(problem.routingTopology())))
+    return error;
+  atomicPatterns_ = std::move(*atomicPatterns);
+  lowerBoundArcCosts_ = std::move(*lowerBoundArcCosts);
+  preparedProblem_ = &problem;
+  return llvm::Error::success();
+}
+
+std::size_t
+loom::pnr::detail::SystemServiceRouterScratch::retainedStorageBytes() const {
+  std::size_t result =
+      endpointSearch_.retainedStorageBytes() +
+      lowerBoundArcCosts_.capacity() * sizeof(RouteCost) +
+      atomicPatterns_.unicastEligibility.capacity() * sizeof(std::uint64_t) +
+      atomicPatterns_.traversalsByGroup.capacity() *
+          sizeof(std::vector<PnrIndex>);
+  for (const std::vector<PnrIndex> &group : atomicPatterns_.traversalsByGroup)
+    result += group.capacity() * sizeof(PnrIndex);
+  return result;
 }
 
 llvm::Expected<std::vector<std::uint64_t>>

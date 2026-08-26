@@ -25,9 +25,11 @@
 #include <cstdlib>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -303,6 +305,90 @@ bool sameRoute(const SystemCandidateState &lhs, const SystemCandidateState &rhs,
   return true;
 }
 
+bool sameRoutes(const detail::CanonicalSystemServiceRoutes &lhs,
+                const detail::CanonicalSystemServiceRoutes &rhs) {
+  if (lhs.routes.size() != rhs.routes.size() ||
+      lhs.nodes.size() != rhs.nodes.size() ||
+      lhs.sinks.size() != rhs.sinks.size())
+    return false;
+  for (const auto &[left, right] : llvm::zip_equal(lhs.routes, rhs.routes))
+    if (std::tie(left.leg, left.rootEndpoint, left.nodeOffset, left.nodeCount,
+                 left.sinkOffset, left.sinkCount) !=
+        std::tie(right.leg, right.rootEndpoint, right.nodeOffset,
+                 right.nodeCount, right.sinkOffset, right.sinkCount))
+      return false;
+  for (const auto &[left, right] : llvm::zip_equal(lhs.nodes, rhs.nodes))
+    if (std::tie(left.endpoint, left.parentNode, left.incomingTraversal) !=
+        std::tie(right.endpoint, right.parentNode, right.incomingTraversal))
+      return false;
+  for (const auto &[left, right] : llvm::zip_equal(lhs.sinks, rhs.sinks))
+    if (std::tie(left.terminal, left.node) !=
+        std::tie(right.terminal, right.node))
+      return false;
+  return true;
+}
+
+void verifyServiceRouterScratchReuse(const SystemCandidateState &baseline) {
+  const FrozenSystemPnrProblem &problem = baseline.problem();
+  detail::SystemServiceRouterScratch scratch;
+  if (llvm::Error error = scratch.prepare(problem))
+    fail(llvm::toString(std::move(error)));
+
+  std::vector<PnrIndex> order(problem.serviceLegs().size());
+  std::iota(order.begin(), order.end(), PnrIndex{0});
+  const auto currentCosts = [&](llvm::ArrayRef<std::uint64_t>)
+      -> llvm::Expected<llvm::ArrayRef<RouteCost>> {
+    return scratch.lowerBoundArcCosts();
+  };
+  const detail::SystemServiceRouteBuildRequest request{
+      order, currentCosts, std::nullopt, std::nullopt, std::nullopt, {}, false};
+  std::uint64_t coldExpansions = 0;
+  auto cold = take(detail::buildSystemServiceRoutes(
+      problem, baseline.threadChoices(), baseline.graphChoices(), scratch,
+      request, coldExpansions));
+  const std::uint64_t coldBuilds = scratch.heuristicBuildCount();
+  const std::uint64_t coldHits = scratch.heuristicCacheHitCount();
+
+  std::uint64_t warmExpansions = 0;
+  auto warm = take(detail::buildSystemServiceRoutes(
+      problem, baseline.threadChoices(), baseline.graphChoices(), scratch,
+      request, warmExpansions));
+  require(scratch.heuristicBuildCount() == coldBuilds &&
+              scratch.heuristicCacheHitCount() > coldHits,
+          "prepared service router did not reuse exact endpoint heuristics");
+  require(coldExpansions == warmExpansions &&
+              sameRoutes(cold.selections, warm.selections),
+          "warm service routing changed canonical work or route selections");
+
+  const auto verifyCold =
+      [&](const detail::CanonicalSystemServiceRoutes &routes) {
+        if (llvm::Error error = detail::verifySystemServiceRoutes(
+                problem, baseline.threadChoices(), baseline.graphChoices(),
+                routes.routes, routes.nodes, routes.sinks))
+          fail(llvm::toString(std::move(error)));
+      };
+  verifyCold(cold.selections);
+  verifyCold(warm.selections);
+
+  const auto candidateFor =
+      [&](const detail::CanonicalSystemServiceRoutes &routes) {
+        return take(SystemCandidateState::create(
+            baseline.problemHandle(),
+            {baseline.threadChoices(), baseline.graphChoices(), routes.routes,
+             routes.nodes, routes.sinks, baseline.serviceTargets(),
+             baseline.instructionResourceUses(),
+             baseline.serviceResourceUses()}));
+      };
+  auto coldCandidate = candidateFor(cold.selections);
+  auto warmCandidate = candidateFor(warm.selections);
+  const auto coldObjective =
+      take(problem.objectiveProgram().evaluate(*coldCandidate));
+  const auto warmObjective =
+      take(problem.objectiveProgram().evaluate(*warmCandidate));
+  require(coldObjective.codes() == warmObjective.codes(),
+          "warm service routing changed the exact objective vector");
+}
+
 struct WorkflowProblem final {
   ResolvedPnrConfigView config;
   SystemPnrSearchDomainView searchDomain;
@@ -520,6 +606,7 @@ void loom::pnr::test::verifySystemNegotiatedRoutingWorkflow(
   auto limited = buildProblem(resolved, 1, dataflow, system, constraints,
                               partition, spatialMapping, store);
   auto first = initializeBottleneckCandidate(limited.problem);
+  verifyServiceRouterScratchReuse(*first.state);
   require(first.negotiationIterations == 1,
           "limited initializer did not exhaust one negotiated iteration");
   require(first.state->capacityOveruse() != 0 &&

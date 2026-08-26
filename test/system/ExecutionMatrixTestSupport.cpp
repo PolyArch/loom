@@ -35,6 +35,7 @@
 #include "Runtime/Gem5BridgeABI.h"
 #include "Runtime/Gem5BuiltinModels.h"
 #include "Runtime/Gem5SimulationBinding.h"
+#include "Runtime/Gem5SystemExecution.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
 #include "Simulator/SpatialObservationComparison.h"
@@ -68,6 +69,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <future>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -1104,7 +1106,12 @@ struct CompletedRun final {
   evaluation::EvaluationEvidence evidence;
   ArtifactRootReference evidenceReference;
   sim::CanonicalSimulationExecution execution;
+  std::optional<runtime::Gem5SystemDiagnosticEvaluation> gem5Diagnostics;
+  std::optional<std::uint64_t> diagnosticDeterministicWork;
 };
+
+std::uint64_t
+deterministicWork(const sim::CanonicalSimulationExecution &execution);
 
 CompletedRun
 importCompleted(llvm::StringRef test, evaluation::EvaluationEvidence evidence,
@@ -1137,7 +1144,7 @@ importCompleted(llvm::StringRef test, evaluation::EvaluationEvidence evidence,
   ArtifactRootReference evidenceReference =
       evaluation::evaluationEvidenceReference(evidence);
   return {std::move(evidence), std::move(evidenceReference),
-          std::move(execution)};
+          std::move(execution), std::nullopt, std::nullopt};
 }
 
 void requireSpatialOracle(llvm::StringRef test,
@@ -1182,28 +1189,15 @@ void requireSystemOracle(llvm::StringRef test,
           "System execution has no valid gem5 progress interval");
 }
 
-CompletedRun
-runExternal(llvm::StringRef test, const evaluation::EvaluationRequest &request,
-            const evaluation::CaseArtifactResolution &resolution,
-            external_tool::LocalToolConfig local, llvm::StringRef bundlePath,
-            const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto preparation =
-      take(test, evaluation::prepareEvaluationModelInvocation(
-                     request, resolution, artifacts, blobs,
-                     external_tool::ExternalToolPreparationContext{
-                         std::move(local), bundlePath.str()}));
-  const auto *prepared =
-      std::get_if<external_tool::PreparedExternalToolInvocation>(&preparation);
-  require(test, prepared != nullptr,
-          "available external provider returned terminal Evidence at prepare");
-  const external_tool::ExternalToolInvocationExecutionObservation execution =
-      take(test,
-           external_tool::executeExternalToolInvocationBundleObserved(
-               *prepared, {},
-               external_tool::ExternalToolResultReusePolicy::RequireFresh));
+void requireFreshAttempt(
+    llvm::StringRef test,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation
+        &execution) {
   require(
       test,
-      execution.reusePolicy ==
+      execution.manifestDigest == prepared.manifestDigest &&
+          execution.reusePolicy ==
               external_tool::ExternalToolResultReusePolicy::RequireFresh &&
           execution.cacheAvailability ==
               external_tool::ExternalToolResultCacheAvailability::Disabled &&
@@ -1214,23 +1208,107 @@ runExternal(llvm::StringRef test, const evaluation::EvaluationRequest &request,
           execution.cachePublication ==
               external_tool::ExternalToolResultCachePublication::NotAttempted &&
           !execution.waitedForCacheKeyLock && execution.invokedExternalTool,
-      "conformance execution did not use a fresh external attempt");
-  if (execution.exitCode != 0) {
-    const std::filesystem::path stderrPath =
-        std::filesystem::path(prepared->bundleRoot) / "outputs/stderr.log";
-    auto buffer =
-        llvm::MemoryBuffer::getFile(stderrPath.string(), false, false);
-    const std::string diagnostic =
-        buffer ? (*buffer)->getBuffer().str() : std::string();
-    fail(test, "external matrix cell exited with " +
-                   std::to_string(execution.exitCode) + ": " + diagnostic);
-  }
+      "conformance execution did not use the exact fresh external attempt");
+}
+
+void requireSuccessfulAttempt(
+    llvm::StringRef test,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation
+        &execution) {
+  if (execution.exitCode == 0)
+    return;
+  const std::filesystem::path stderrPath =
+      std::filesystem::path(prepared.bundleRoot) / "outputs/stderr.log";
+  auto buffer = llvm::MemoryBuffer::getFile(stderrPath.string(), false, false);
+  const std::string diagnostic =
+      buffer ? (*buffer)->getBuffer().str() : std::string();
+  fail(test, "external matrix cell exited with " +
+                 std::to_string(execution.exitCode) + ": " + diagnostic);
+}
+
+CompletedRun
+runExternal(llvm::StringRef test, const evaluation::EvaluationRequest &request,
+            const evaluation::CaseArtifactResolution &resolution,
+            external_tool::LocalToolConfig local, llvm::StringRef bundlePath,
+            const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto preparation =
+      take(test, evaluation::prepareEvaluationModelInvocation(
+                     request, resolution, artifacts, blobs,
+                     external_tool::ExternalToolPreparationContext{
+                         std::move(local), bundlePath.str()}));
+  auto *prepared =
+      std::get_if<external_tool::PreparedExternalToolInvocation>(&preparation);
+  require(test, prepared != nullptr,
+          "available external provider returned terminal Evidence at prepare");
+  const external_tool::ExternalToolInvocationExecutionObservation execution =
+      take(test,
+           external_tool::executeExternalToolInvocationBundleObserved(
+               *prepared, {},
+               external_tool::ExternalToolResultReusePolicy::RequireFresh));
+  requireFreshAttempt(test, *prepared, execution);
+  requireSuccessfulAttempt(test, *prepared, execution);
   auto evidence =
       take(test, evaluation::importEvaluationModelInvocation(
                      request, resolution, *prepared, artifacts, blobs));
   (void)take(test, evaluation::publishEvaluationEvidence(evidence, artifacts));
   return importCompleted(test, std::move(evidence), resolution, artifacts,
                          blobs);
+}
+
+runtime::Gem5SystemDiagnosticEvaluation runGem5Diagnostic(
+    llvm::StringRef test, const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    external_tool::LocalToolConfig local, llvm::StringRef bundlePath,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto preparation =
+      take(test, runtime::prepareGem5SystemDiagnosticInvocation(
+                     request, resolution, artifacts, blobs,
+                     external_tool::ExternalToolPreparationContext{
+                         std::move(local), bundlePath.str()}));
+  auto *prepared =
+      std::get_if<external_tool::PreparedExternalToolInvocation>(&preparation);
+  require(test, prepared != nullptr,
+          "diagnostic gem5 provider rejected an available request");
+  const external_tool::ExternalToolInvocationExecutionObservation execution =
+      take(test,
+           external_tool::executeExternalToolInvocationBundleObserved(
+               *prepared, {},
+               external_tool::ExternalToolResultReusePolicy::RequireFresh));
+  requireFreshAttempt(test, *prepared, execution);
+  requireSuccessfulAttempt(test, *prepared, execution);
+  return take(test,
+              runtime::importGem5SystemDiagnosticInvocation(
+                  request, resolution, *prepared, execution, artifacts, blobs));
+}
+
+sim::CanonicalSimulationExecution importDiagnosticExecution(
+    llvm::StringRef test,
+    const runtime::Gem5SystemDiagnosticEvaluation &diagnostics,
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  require(test,
+          diagnostics.evidence.outcomeKind() ==
+              evaluation::EvidenceOutcomeKind::Completed,
+          "diagnostic gem5 attempt did not complete");
+  require(test,
+          diagnostics.evidence.outputBindings().size() == 1 &&
+              diagnostics.evidence.outputBindings().front().artifacts.size() ==
+                  1,
+          "diagnostic gem5 attempt did not publish one SimulationExecution");
+  auto execution = take(
+      test, sim::importSimulationExecution(
+                diagnostics.evidence.outputBindings().front().artifacts.front(),
+                resolution, artifacts, blobs));
+  require(test,
+          execution.request() ==
+              evaluation::evaluationRequestReference(request),
+          "diagnostic SimulationExecution names a different Request");
+  require(test,
+          std::holds_alternative<sim::RetiredExecution>(execution.terminal()),
+          "diagnostic SimulationExecution did not retire normally");
+  return execution;
 }
 
 CompletedRun runSpatialCell(llvm::StringRef test, ExecutionMatrixCell cell,
@@ -1287,7 +1365,8 @@ CompletedRun runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
                            const SharedFixture &fixture,
                            const Gem5Readiness &readiness,
                            ArtifactStore &artifacts, BlobStore &blobs,
-                           const deployment::test::TemporaryTree &tree) {
+                           const deployment::test::TemporaryTree &tree,
+                           bool collectDiagnostics) {
   auto gem5Binding =
       buildGem5Binding(test, fixture.hardware.system, fixture.interconnect,
                        readiness.buildIdentity, artifacts);
@@ -1319,8 +1398,57 @@ CompletedRun runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
         .providerOptions["build_jobs"] = qualificationBuildJobs();
   }
   CompletedRun completed =
-      runExternal(test, request, resolution, std::move(local),
-                  tree.path("system-bundle"), artifacts, blobs);
+      runExternal(test, request, resolution, local, tree.path("system-bundle"),
+                  artifacts, blobs);
+  if (collectDiagnostics) {
+    runtime::Gem5SystemDiagnosticEvaluation diagnostics = runGem5Diagnostic(
+        test, request, resolution, std::move(local),
+        tree.path("system-diagnostic-bundle"), artifacts, blobs);
+    sim::CanonicalSimulationExecution diagnosticExecution =
+        importDiagnosticExecution(test, diagnostics, request, resolution,
+                                  artifacts, blobs);
+    const auto *ordinarySystem = completed.execution.system();
+    const auto *diagnosticSystem = diagnosticExecution.system();
+    require(
+        test, ordinarySystem && diagnosticSystem,
+        "ordinary and diagnostic attempts did not publish System executions");
+    require(test,
+            sim::haveExactlyEqualSystemFunctionalObservations(
+                ordinarySystem->functionalObservations,
+                diagnosticSystem->functionalObservations),
+            "ordinary and diagnostic functional observations differ");
+    const std::uint64_t ordinaryDeterministicWork =
+        deterministicWork(completed.execution);
+    const std::uint64_t diagnosticDeterministicWork =
+        deterministicWork(diagnosticExecution);
+    completed.diagnosticDeterministicWork = diagnosticDeterministicWork;
+    if (ordinaryDeterministicWork != diagnosticDeterministicWork)
+      llvm::outs() << "execution-matrix cell=" << test
+                   << " simulated_work_replay=timing_variant ordinary="
+                   << ordinaryDeterministicWork
+                   << " diagnostic=" << diagnosticDeterministicWork << '\n';
+    require(test,
+            diagnostics.attemptProfile.bridgeCount == 4 &&
+                diagnostics.attemptProfile.acceleratorInvocationCount ==
+                    diagnostics.spatialInvocations.size() &&
+                !diagnostics.spatialInvocations.empty(),
+            "gem5 diagnostics differ from the exact bridge execution");
+    if (cell == ExecutionMatrixCell::SystemCgra)
+      require(test,
+              diagnostics.attemptProfile.cgraEngine.has_value() &&
+                  diagnostics.attemptProfile.cgraEngine->invocationCount ==
+                      diagnostics.spatialInvocations.size(),
+              "CGRA engine diagnostics differ from bridge retirement");
+    else
+      require(test, !diagnostics.attemptProfile.cgraEngine.has_value(),
+              "non-CGRA execution published a CGRA engine profile");
+    require(
+        test,
+        diagnostics.attemptProfile.engineProcessCpuNanoseconds.has_value() ==
+            (cell != ExecutionMatrixCell::SystemRtl),
+        "gem5 engine CPU observation has the wrong ownership");
+    completed.gem5Diagnostics = std::move(diagnostics);
+  }
   if (cell == ExecutionMatrixCell::SystemCgra) {
     auto sample = take(
         test, evaluation::models::importSystemRuntimeTrainingEvidenceSample(
@@ -1367,7 +1495,7 @@ const char *cellName(ExecutionMatrixCell cell) {
 }
 
 void recordRunStatistics(ExecutionMatrixCell cell,
-                         const sim::CanonicalSimulationExecution &execution,
+                         const CompletedRun &completed,
                          std::chrono::steady_clock::duration activeWall,
                          const rusage &before, const rusage &after) {
   const auto wallMicros =
@@ -1376,9 +1504,64 @@ void recordRunStatistics(ExecutionMatrixCell cell,
       timevalMicros(after.ru_utime) + timevalMicros(after.ru_stime) -
       timevalMicros(before.ru_utime) - timevalMicros(before.ru_stime);
   llvm::outs() << "execution-matrix cell=" << cellName(cell)
-               << " deterministic_work=" << deterministicWork(execution)
-               << " active_wall_us=" << wallMicros << " cpu_us=" << cpuMicros
-               << " peak_rss_kib=" << after.ru_maxrss << '\n';
+               << " deterministic_work="
+               << deterministicWork(completed.execution)
+               << " harness_wall_us=" << wallMicros
+               << " harness_child_cpu_us=" << cpuMicros
+               << " process_lifetime_child_peak_rss_kib=" << after.ru_maxrss;
+  if (completed.diagnosticDeterministicWork)
+    llvm::outs() << " diagnostic_simulated_work="
+                 << *completed.diagnosticDeterministicWork;
+  if (completed.gem5Diagnostics) {
+    const runtime::Gem5SystemAttemptProfile &profile =
+        completed.gem5Diagnostics->attemptProfile;
+    std::uint64_t acceleratorReferenceCycles = 0;
+    std::uint64_t unavailableAcceleratorCycleCount = 0;
+    for (const runtime::Gem5SpatialInvocationProjection &invocation :
+         completed.gem5Diagnostics->spatialInvocations) {
+      if (!invocation.acceleratorReferenceCycles) {
+        ++unavailableAcceleratorCycleCount;
+        continue;
+      }
+      require(cellName(cell),
+              *invocation.acceleratorReferenceCycles <=
+                  std::numeric_limits<std::uint64_t>::max() -
+                      acceleratorReferenceCycles,
+              "accelerator cycle report overflows its domain");
+      acceleratorReferenceCycles += *invocation.acceleratorReferenceCycles;
+    }
+    llvm::outs() << " gem5_configuration_wall_us="
+                 << profile.configurationWallNanoseconds / 1000
+                 << " gem5_simulation_wall_us="
+                 << profile.simulationWallNanoseconds / 1000
+                 << " gem5_simulation_cpu_us="
+                 << profile.gem5SimulationProcessCpuNanoseconds / 1000
+                 << " observation_wall_us="
+                 << profile.observationWallNanoseconds / 1000
+                 << " observation_cpu_us="
+                 << profile.observationProcessCpuNanoseconds / 1000
+                 << " bridge_callback_cpu_us="
+                 << profile.bridgeCallbackCpuNanoseconds / 1000
+                 << " bridge_wait_us="
+                 << profile.bridgeEngineWaitNanoseconds / 1000
+                 << " bridge_messages=" << profile.bridgeMessageCount
+                 << " accelerator_invocations="
+                 << profile.acceleratorInvocationCount
+                 << " accelerator_cycles=" << acceleratorReferenceCycles
+                 << " accelerator_cycle_unavailable_count="
+                 << unavailableAcceleratorCycleCount;
+    if (profile.engineProcessCpuNanoseconds)
+      llvm::outs() << " engine_process_cpu_us="
+                   << *profile.engineProcessCpuNanoseconds / 1000;
+    if (profile.cgraEngine)
+      llvm::outs() << " cgra_engine_active_wall_us="
+                   << profile.cgraEngine->activeWallNanoseconds / 1000
+                   << " cgra_engine_active_cpu_us="
+                   << profile.cgraEngine->activeProcessCpuNanoseconds / 1000
+                   << " cgra_event_frames="
+                   << profile.cgraEngine->eventFrameCount;
+  }
+  llvm::outs() << '\n';
 }
 
 struct ReplaySignature final {
@@ -1421,8 +1604,8 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixCell cell,
         cell == ExecutionMatrixCell::SpatialRtl)
       return runSpatialCell(test, cell, fixture, artifacts, blobs, tree);
     const Gem5Readiness readiness = readGem5Readiness(test, readinessPath);
-    return runSystemCell(test, cell, fixture, readiness, artifacts, blobs,
-                         tree);
+    return runSystemCell(test, cell, fixture, readiness, artifacts, blobs, tree,
+                         emitStatistics);
   }();
   const auto activeEnd = std::chrono::steady_clock::now();
   if (emitStatistics)
@@ -1433,8 +1616,8 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixCell cell,
   else
     requireSystemOracle(test, completed.execution);
   if (emitStatistics)
-    recordRunStatistics(cell, completed.execution, activeEnd - activeStart,
-                        before, after);
+    recordRunStatistics(cell, completed, activeEnd - activeStart, before,
+                        after);
 
   std::vector<ArtifactRootReference> roots{
       fixture.dataflowReference,
@@ -1466,15 +1649,16 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixCell cell,
   // bridge is serviced through host poll events. Keep those timing-dependent
   // result roots out of the structural replay signature; functional
   // observations remain compared exactly below.
-  roots.erase(std::remove_if(roots.begin(), roots.end(),
-                             [](const ArtifactRootReference &root) {
-                               return root.schemaIdentity ==
-                                          evaluation::EvaluationEvidence::
-                                              artifactSchema.identity ||
-                                      root.schemaIdentity ==
-                                          sim::simulationExecutionSchema.identity;
-                             }),
-              roots.end());
+  roots.erase(
+      std::remove_if(roots.begin(), roots.end(),
+                     [](const ArtifactRootReference &root) {
+                       return root.schemaIdentity ==
+                                  evaluation::EvaluationEvidence::artifactSchema
+                                      .identity ||
+                              root.schemaIdentity ==
+                                  sim::simulationExecutionSchema.identity;
+                     }),
+      roots.end());
   std::optional<sim::SystemFunctionalObservations> systemFunctional;
   if (const auto *system = completed.execution.system())
     systemFunctional = system->functionalObservations;
@@ -1536,11 +1720,11 @@ void verifyDeterministicSystemReplay(llvm::StringRef gem5ReadinessPath) {
     }
     require(test, observed.roots == expected->roots,
             "stable artifact roots changed across clean replay");
-    require(test, observed.systemFunctional.has_value() &&
-                      expected->systemFunctional.has_value() &&
-                      sim::haveExactlyEqualSystemFunctionalObservations(
-                          *observed.systemFunctional,
-                          *expected->systemFunctional),
+    require(test,
+            observed.systemFunctional.has_value() &&
+                expected->systemFunctional.has_value() &&
+                sim::haveExactlyEqualSystemFunctionalObservations(
+                    *observed.systemFunctional, *expected->systemFunctional),
             "System functional observations changed across clean replay");
   }
   llvm::outs() << "execution-matrix deterministic_replays=" << replayCount
