@@ -11,6 +11,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
@@ -115,6 +116,16 @@ writeCanonicalFabricBytecode(Operation *operation) {
     return invalid("the Fabric schema writer did not reach a byte-stable "
                    "canonical form");
   return canonical;
+}
+
+llvm::Error verifyCanonicalFabricBytecodeStability(
+    Operation *operation, llvm::ArrayRef<std::uint8_t> canonical) {
+  auto rewritten = writeBytecodeOnce(operation);
+  if (!rewritten)
+    return rewritten.takeError();
+  if (!llvm::equal(*rewritten, canonical))
+    return invalid("canonical MLIR bytecode is not byte stable");
+  return llvm::Error::success();
 }
 
 } // namespace loom::fabric::detail
