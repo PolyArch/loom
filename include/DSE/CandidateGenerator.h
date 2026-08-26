@@ -410,13 +410,25 @@ using CandidateGeneratorPrepareFunction =
         const external_tool::ExternalToolPreparationContext &);
 
 /// The external import callable of one ExternalPrepareImport generator. It
-/// receives the full typed closure again, validates strict completion against
-/// the exact prepared bundle, and returns the provider result.
+/// receives the full typed closure again, validates the current durable
+/// generation of the exact prepared bundle, and returns the provider result.
+/// This form is reserved for recovery when no live execution receipt exists.
 using CandidateGeneratorImportFunction =
     llvm::Expected<CandidateGeneratorProviderResult> (*)(
         llvm::ArrayRef<CandidateGeneratorInputBinding>,
         const ResolvedCandidateGeneratorBinding &,
         const external_tool::PreparedExternalToolInvocation &,
+        const ArtifactStore &, const BlobStore &);
+
+/// The receipt-bound import callable for a generator invocation executed in
+/// the current process. It must pass the sealed execution observation to the
+/// strict ExternalTool importer instead of adopting the durable generation.
+using CandidateGeneratorImportWithExecutionFunction =
+    llvm::Expected<CandidateGeneratorProviderResult> (*)(
+        llvm::ArrayRef<CandidateGeneratorInputBinding>,
+        const ResolvedCandidateGeneratorBinding &,
+        const external_tool::PreparedExternalToolInvocation &,
+        const external_tool::ExternalToolInvocationExecutionObservation &,
         const ArtifactStore &, const BlobStore &);
 
 /// The closed provider implementation forms. The registered form must match
@@ -433,11 +445,13 @@ struct CandidateGeneratorInProcessProvider final {
 struct CandidateGeneratorExternalPrepareImportProvider final {
   CandidateGeneratorPrepareFunction prepare;
   CandidateGeneratorImportFunction import;
+  CandidateGeneratorImportWithExecutionFunction importWithExecution = nullptr;
 
   friend bool
   operator==(const CandidateGeneratorExternalPrepareImportProvider &lhs,
              const CandidateGeneratorExternalPrepareImportProvider &rhs) {
-    return lhs.prepare == rhs.prepare && lhs.import == rhs.import;
+    return lhs.prepare == rhs.prepare && lhs.import == rhs.import &&
+           lhs.importWithExecution == rhs.importWithExecution;
   }
 };
 
@@ -506,6 +520,17 @@ importCandidateGeneratorInvocation(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     const ResolvedCandidateGeneratorBinding &binding,
     const external_tool::PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &store, const BlobStore &blobs);
+
+/// Receipt-bound import for a just-executed invocation. The provider must pass
+/// the sealed observation to the strict ExternalTool importer; a provider
+/// without this callback is valid only for recovery import.
+llvm::Expected<CandidateGeneratorProviderResult>
+importCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
     const ArtifactStore &store, const BlobStore &blobs);
 
 /// The canonical key bytes of one descriptor reference under the shared

@@ -21,6 +21,16 @@
 #include <vector>
 
 namespace loom::eda::open_source {
+
+static llvm::Expected<dse::CandidateGeneratorProviderResult>
+importOpenRoadRoutedInvocationImpl(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation *execution,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
 namespace {
 
 constexpr llvm::StringLiteral kProviderIdentity =
@@ -611,6 +621,20 @@ importRegistered(llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
                                         artifacts, blobs);
 }
 
+llvm::Expected<dse::CandidateGeneratorProviderResult>
+importRegisteredWithExecution(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto contracts = makeKnownAsicStandardCellContractCatalog();
+  if (!contracts)
+    return contracts.takeError();
+  return importOpenRoadRoutedInvocationImpl(
+      inputs, binding, prepared, &execution, *contracts, artifacts, blobs);
+}
+
 } // namespace
 
 const dse::CandidateGeneratorDescriptor &
@@ -656,8 +680,8 @@ llvm::Error registerOpenRoadRoutedCandidateGenerator() {
       openRoadRoutedCandidateGeneratorDescriptor();
   static const dse::CandidateGeneratorProvider provider{
       descriptor.reference(),
-      dse::CandidateGeneratorExternalPrepareImportProvider{prepareRegistered,
-                                                           importRegistered}};
+      dse::CandidateGeneratorExternalPrepareImportProvider{
+          prepareRegistered, importRegistered, importRegisteredWithExecution}};
   if (llvm::Error error = dse::registerCandidateGeneratorDescriptor(descriptor))
     return error;
   return dse::registerCandidateGeneratorProvider(provider);
@@ -834,18 +858,23 @@ prepareOpenRoadRoutedInvocation(
       context.bundleDestination, specification);
 }
 
-llvm::Expected<dse::CandidateGeneratorProviderResult>
-importOpenRoadRoutedInvocation(
+static llvm::Expected<dse::CandidateGeneratorProviderResult>
+importOpenRoadRoutedInvocationImpl(
     llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
     const dse::ResolvedCandidateGeneratorBinding &binding,
     const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation *execution,
     const hardware::ExternalImplementationContractCatalog &contracts,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   auto facts = invocationFacts(inputs, binding, contracts, artifacts, blobs);
   if (!facts)
     return facts.takeError();
-  auto attempt = external_tool::importExternalToolInvocationAttempt(
-      prepared, importExpectation(*facts));
+  external_tool::ExternalToolInvocationImportExpectation expectation =
+      importExpectation(*facts);
+  auto attempt = execution ? external_tool::importExternalToolInvocationAttempt(
+                                 prepared, expectation, *execution)
+                           : external_tool::importExternalToolInvocationAttempt(
+                                 prepared, expectation);
   if (!attempt)
     return attempt.takeError();
   if (std::holds_alternative<
@@ -906,6 +935,17 @@ importOpenRoadRoutedInvocation(
             {},
             {}}}},
       {{dse::CandidateGeneratorWorkUnitRef(0), 1, 1}}};
+}
+
+llvm::Expected<dse::CandidateGeneratorProviderResult>
+importOpenRoadRoutedInvocation(
+    llvm::ArrayRef<dse::CandidateGeneratorInputBinding> inputs,
+    const dse::ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const hardware::ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importOpenRoadRoutedInvocationImpl(inputs, binding, prepared, nullptr,
+                                            contracts, artifacts, blobs);
 }
 
 } // namespace loom::eda::open_source

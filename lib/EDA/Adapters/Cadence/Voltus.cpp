@@ -329,11 +329,13 @@ prepareEvaluationProvider(
   return evaluation::EvaluationModelProviderPreparation{std::move(*prepared)};
 }
 
-llvm::Expected<evaluation::EvaluationModelResult> importEvaluationProvider(
+llvm::Expected<evaluation::EvaluationModelResult> importEvaluationProviderImpl(
     const evaluation::EvaluationRequest &request,
     const evaluation::CaseArtifactResolution &resolution,
     const external_tool::PreparedExternalToolInvocation &prepared,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const external_tool::ExternalToolInvocationExecutionObservation
+        *execution) {
   using namespace evaluation;
   using namespace external_tool;
   auto factsOrUnsupported =
@@ -367,7 +369,9 @@ llvm::Expected<evaluation::EvaluationModelResult> importEvaluationProvider(
           {},
           facts->analysis.providerBinding.powerGridLibraryMembers}}};
   CadenceBundleInputs inputs = bundleInputs(*facts, std::move(frozen));
-  auto observation = importVoltusRailObservation(prepared, inputs);
+  auto observation =
+      execution ? importVoltusRailObservation(prepared, inputs, *execution)
+                : importVoltusRailObservation(prepared, inputs);
   if (!observation)
     return observation.takeError();
   return EvaluationModelResult{
@@ -378,6 +382,26 @@ llvm::Expected<evaluation::EvaluationModelResult> importEvaluationProvider(
                             MetricValue{observation->maximumVoltageDropVolts}},
                         {}}},
           {}}};
+}
+
+llvm::Expected<evaluation::EvaluationModelResult> importEvaluationProvider(
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importEvaluationProviderImpl(request, resolution, prepared, artifacts,
+                                      blobs, nullptr);
+}
+
+llvm::Expected<evaluation::EvaluationModelResult>
+importEvaluationProviderWithExecution(
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importEvaluationProviderImpl(request, resolution, prepared, artifacts,
+                                      blobs, &execution);
 }
 
 } // namespace
@@ -578,10 +602,15 @@ makeVoltusRailBundleSpec(
         std::nullopt, false}});
 }
 
-llvm::Expected<VoltusRailObservation> importVoltusRailObservation(
+static llvm::Expected<VoltusRailObservation> importVoltusRailObservationImpl(
     const external_tool::PreparedExternalToolInvocation &prepared,
-    const CadenceBundleInputs &inputs) {
-  auto imported = importCadenceInvocation(descriptor, prepared, inputs);
+    const CadenceBundleInputs &inputs,
+    const external_tool::ExternalToolInvocationExecutionObservation
+        *execution) {
+  auto imported =
+      execution
+          ? importCadenceInvocation(descriptor, prepared, inputs, *execution)
+          : importCadenceInvocation(descriptor, prepared, inputs);
   if (!imported)
     return imported.takeError();
   auto result = readCadenceDeclaredOutput(descriptor, *imported,
@@ -591,6 +620,20 @@ llvm::Expected<VoltusRailObservation> importVoltusRailObservation(
   return parseVoltusRailObservation(*result);
 }
 
+llvm::Expected<VoltusRailObservation> importVoltusRailObservation(
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const CadenceBundleInputs &inputs) {
+  return importVoltusRailObservationImpl(prepared, inputs, nullptr);
+}
+
+llvm::Expected<VoltusRailObservation> importVoltusRailObservation(
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const CadenceBundleInputs &inputs,
+    const external_tool::ExternalToolInvocationExecutionObservation
+        &execution) {
+  return importVoltusRailObservationImpl(prepared, inputs, &execution);
+}
+
 llvm::Error registerVoltusRailEvaluationProvider() {
   if (llvm::Error error =
           evaluation::models::registerCadenceVoltusStaticRailModel())
@@ -598,7 +641,8 @@ llvm::Error registerVoltusRailEvaluationProvider() {
   static const evaluation::EvaluationModelProvider provider{
       evaluation::models::cadenceVoltusStaticRailModelDescriptorRef(),
       evaluation::EvaluationModelExternalPrepareImportProvider{
-          &prepareEvaluationProvider, &importEvaluationProvider}};
+          &prepareEvaluationProvider, &importEvaluationProvider, nullptr,
+          &importEvaluationProviderWithExecution}};
   return evaluation::registerEvaluationModelProvider(provider);
 }
 

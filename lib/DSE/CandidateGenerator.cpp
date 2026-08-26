@@ -1014,11 +1014,12 @@ prepareCandidateGeneratorInvocation(
       .prepare(inputBindings, binding, store, blobs, context);
 }
 
-llvm::Expected<CandidateGeneratorProviderResult>
-importCandidateGeneratorInvocation(
+static llvm::Expected<CandidateGeneratorProviderResult>
+importCandidateGeneratorInvocationImpl(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation *execution,
     const ArtifactStore &store, const BlobStore &blobs) {
   const CandidateGeneratorDescriptor *descriptor =
       binding.descriptorRef().descriptor();
@@ -1036,15 +1037,43 @@ importCandidateGeneratorInvocation(
       lookupProviderImplementation(binding.descriptorRef());
   if (!implementation)
     return invalid("external prepare/import provider is unavailable");
+  const CandidateGeneratorExternalPrepareImportProvider &provider =
+      std::get<CandidateGeneratorExternalPrepareImportProvider>(
+          *implementation);
+  if (execution && !provider.importWithExecution)
+    return invalid("external provider has no receipt-bound import");
   auto result =
-      std::get<CandidateGeneratorExternalPrepareImportProvider>(*implementation)
-          .import(inputBindings, binding, prepared, store, blobs);
+      execution
+          ? provider.importWithExecution(inputBindings, binding, prepared,
+                                         *execution, store, blobs)
+          : provider.import(inputBindings, binding, prepared, store, blobs);
   if (!result)
     return result.takeError();
   if (llvm::Error error = validateProviderResult(
           *descriptor, binding, inputBindings, *result, store, blobs))
     return std::move(error);
   return result;
+}
+
+llvm::Expected<CandidateGeneratorProviderResult>
+importCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  return importCandidateGeneratorInvocationImpl(
+      inputBindings, binding, prepared, nullptr, store, blobs);
+}
+
+llvm::Expected<CandidateGeneratorProviderResult>
+importCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  return importCandidateGeneratorInvocationImpl(
+      inputBindings, binding, prepared, &execution, store, blobs);
 }
 
 llvm::Error validateCanonicalCandidateGeneratorInvocation(

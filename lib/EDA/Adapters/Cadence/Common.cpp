@@ -443,16 +443,22 @@ makeCadenceInvocationBundleSpec(
       inputs.frozen.externalFileTrees};
 }
 
-llvm::Expected<external_tool::ImportedExternalToolInvocationBundle>
-importCadenceInvocation(
+static llvm::Expected<external_tool::ImportedExternalToolInvocationBundle>
+importCadenceInvocationImpl(
     const CadenceInvocationDescriptor &descriptor,
     const external_tool::PreparedExternalToolInvocation &prepared,
-    const CadenceBundleInputs &inputs) {
+    const CadenceBundleInputs &inputs,
+    const external_tool::ExternalToolInvocationExecutionObservation
+        *execution) {
   if (llvm::Error error = validateInvocationInputs(descriptor, inputs))
     return std::move(error);
 
-  auto attempt = external_tool::importExternalToolInvocationAttempt(
-      prepared, makeExpectation(descriptor, inputs));
+  external_tool::ExternalToolInvocationImportExpectation expectation =
+      makeExpectation(descriptor, inputs);
+  auto attempt = execution ? external_tool::importExternalToolInvocationAttempt(
+                                 prepared, expectation, *execution)
+                           : external_tool::importExternalToolInvocationAttempt(
+                                 prepared, expectation);
   if (!attempt)
     return mapIntegrityError(descriptor, attempt.takeError());
   if (std::holds_alternative<
@@ -474,6 +480,24 @@ importCadenceInvocation(
 
   return makeCadenceFailedInvocationError(
       descriptor.implementationSemanticIdentity, failed);
+}
+
+llvm::Expected<external_tool::ImportedExternalToolInvocationBundle>
+importCadenceInvocation(
+    const CadenceInvocationDescriptor &descriptor,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const CadenceBundleInputs &inputs) {
+  return importCadenceInvocationImpl(descriptor, prepared, inputs, nullptr);
+}
+
+llvm::Expected<external_tool::ImportedExternalToolInvocationBundle>
+importCadenceInvocation(
+    const CadenceInvocationDescriptor &descriptor,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const CadenceBundleInputs &inputs,
+    const external_tool::ExternalToolInvocationExecutionObservation
+        &execution) {
+  return importCadenceInvocationImpl(descriptor, prepared, inputs, &execution);
 }
 
 llvm::Expected<std::string> readCadenceDeclaredOutput(

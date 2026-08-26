@@ -168,6 +168,20 @@ makePrepared(llvm::StringRef runRoot, llvm::StringRef name,
   return {root.string(), computeBlobDigest({digestByte})};
 }
 
+BlobDigest publishAttemptToken(
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    std::uint8_t tokenByte) {
+  const BlobDigest token = computeBlobDigest({tokenByte});
+  std::ofstream output(std::filesystem::path(prepared.bundleRoot) /
+                           ".loom-attempt-token",
+                       std::ios::binary | std::ios::trunc);
+  output << formatBlobDigestHex(token);
+  output.close();
+  if (!output)
+    fail("cannot publish execution attempt token fixture");
+  return token;
+}
+
 void prepare(ExecutionJournal &journal, const WorkUnitKey &key,
              const external_tool::PreparedExternalToolInvocation &prepared) {
   requireSuccess(journal.queue(key));
@@ -474,8 +488,7 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
   const WorkUnitKey missKey = makeKey(4, 0);
   const auto missPrepared = makePrepared(runRoot, "miss", 0x61);
   prepare(journal, missKey, missPrepared);
-  const BlobDigest missAttempt =
-      take(external_tool::beginExternalToolInvocationAttempt(missPrepared));
+  const BlobDigest missAttempt = publishAttemptToken(missPrepared, 0xa1);
   requireSuccess(journal.recordPreparedExecutionInterval(
       missKey, 0, unixNanosecondsNow(),
       external_tool::ExternalToolInvocationExecutionObservation{
@@ -490,8 +503,7 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
   const WorkUnitKey hitKey = makeKey(4, 1);
   const auto hitPrepared = makePrepared(runRoot, "hit", 0x62);
   prepare(journal, hitKey, hitPrepared);
-  const BlobDigest hitAttempt =
-      take(external_tool::beginExternalToolInvocationAttempt(hitPrepared));
+  const BlobDigest hitAttempt = publishAttemptToken(hitPrepared, 0xa2);
   requireSuccess(journal.recordPreparedExecutionInterval(
       hitKey, 0, unixNanosecondsNow(),
       external_tool::ExternalToolInvocationExecutionObservation{
@@ -526,8 +538,7 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
   const WorkUnitKey foreignKey = makeKey(4, 2);
   const auto foreignPrepared = makePrepared(runRoot, "foreign", 0x63);
   prepare(reopened, foreignKey, foreignPrepared);
-  (void)take(
-      external_tool::beginExternalToolInvocationAttempt(foreignPrepared));
+  (void)publishAttemptToken(foreignPrepared, 0xa3);
   const auto beforeForeign = take(reopened.find(foreignKey));
   if (!beforeForeign)
     fail("foreign manifest fixture was not prepared");
@@ -560,11 +571,9 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
     fail("foreign manifest rejection mutated the journal record");
 
   const WorkUnitKey foreignRootKey = makeKey(4, 3);
-  const auto foreignRootPrepared =
-      makePrepared(runRoot, "foreign-root", 0x62);
+  const auto foreignRootPrepared = makePrepared(runRoot, "foreign-root", 0x62);
   prepare(reopened, foreignRootKey, foreignRootPrepared);
-  (void)take(external_tool::beginExternalToolInvocationAttempt(
-      foreignRootPrepared));
+  (void)publishAttemptToken(foreignRootPrepared, 0xa4);
   const auto beforeForeignRoot = take(reopened.find(foreignRootKey));
   external_tool::ExternalToolInvocationExecutionObservation
       foreignRootObservation{
@@ -592,8 +601,7 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
   const WorkUnitKey staleKey = makeKey(4, 4);
   const auto stalePrepared = makePrepared(runRoot, "stale", 0x64);
   prepare(reopened, staleKey, stalePrepared);
-  const BlobDigest staleAttempt =
-      take(external_tool::beginExternalToolInvocationAttempt(stalePrepared));
+  const BlobDigest staleAttempt = publishAttemptToken(stalePrepared, 0xa5);
   external_tool::ExternalToolInvocationExecutionObservation staleObservation{
       stalePrepared.manifestDigest,
       staleAttempt,
@@ -605,7 +613,7 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
       external_tool::ExternalToolResultCachePublication::NotAttempted,
       false,
       true};
-  (void)take(external_tool::beginExternalToolInvocationAttempt(stalePrepared));
+  (void)publishAttemptToken(stalePrepared, 0xa6);
   const auto beforeStale = take(reopened.find(staleKey));
   requireErrorContains(
       reopened.recordPreparedExecutionInterval(

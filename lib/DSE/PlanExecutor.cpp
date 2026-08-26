@@ -293,13 +293,17 @@ findOrQueue(ExecutionJournal &journal, const WorkUnitKey &key) {
   return journal.find(key);
 }
 
-llvm::Expected<std::optional<CandidateGeneratorProviderResult>>
-tryImportPreparedCandidate(
+static llvm::Expected<std::optional<CandidateGeneratorProviderResult>>
+tryImportPreparedCandidateImpl(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     const ResolvedCandidateGeneratorBinding &binding,
     const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation *execution,
     const ArtifactStore &store, const BlobStore &blobs) {
-  auto imported = importCandidateGeneratorInvocation(inputs, binding, prepared,
+  auto imported =
+      execution ? importCandidateGeneratorInvocation(inputs, binding, prepared,
+                                                     *execution, store, blobs)
+                : importCandidateGeneratorInvocation(inputs, binding, prepared,
                                                      store, blobs);
   if (imported)
     return std::optional<CandidateGeneratorProviderResult>(
@@ -315,6 +319,27 @@ tryImportPreparedCandidate(
   if (!incomplete)
     return invalid("candidate import lost its failure");
   return std::optional<CandidateGeneratorProviderResult>{};
+}
+
+llvm::Expected<std::optional<CandidateGeneratorProviderResult>>
+tryImportPreparedCandidate(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  return tryImportPreparedCandidateImpl(inputs, binding, prepared, nullptr,
+                                        store, blobs);
+}
+
+llvm::Expected<std::optional<CandidateGeneratorProviderResult>>
+tryImportPreparedCandidate(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  return tryImportPreparedCandidateImpl(inputs, binding, prepared, &execution,
+                                        store, blobs);
 }
 
 llvm::Expected<std::optional<evaluation::EvaluationEvidence>>
@@ -416,7 +441,8 @@ private:
   llvm::Expected<SiteResourceClaim>
   evidenceLifecycleClaim(const WorkUnitKey &key,
                          const BlobDigest *externalBinding) const;
-  llvm::Expected<external_tool::ExternalToolInvocationExecutionObservation>
+  llvm::Expected<
+      std::optional<external_tool::ExternalToolInvocationExecutionObservation>>
   executePreparedInvocationUnderLease(
       const WorkUnitKey &key,
       const external_tool::PreparedExternalToolInvocation &prepared,
@@ -427,8 +453,9 @@ private:
       const WorkUnitKey &key,
       const external_tool::PreparedExternalToolInvocation &prepared,
       bool reserveNewDispatch);
-  llvm::Error settleStoppedExternalExecution(
-      const WorkUnitKey &key, std::uint64_t activeWallTimeNanoseconds = 0);
+  llvm::Error
+  settleStoppedExternalExecution(const WorkUnitKey &key,
+                                 std::uint64_t activeWallTimeNanoseconds = 0);
   llvm::Expected<PromotionEvidenceExecutionResult>
   executeEvidence(const PromotionEvidenceExecutionTask &task,
                   const ArtifactStore &store, const BlobStore &blobs);
@@ -603,7 +630,8 @@ RecoverablePlanWorkExecutor::evidenceLifecycleClaim(
   return combineEvidenceLifecycleClaims(policy_.inProcessClaim(), *external);
 }
 
-llvm::Expected<external_tool::ExternalToolInvocationExecutionObservation>
+llvm::Expected<
+    std::optional<external_tool::ExternalToolInvocationExecutionObservation>>
 RecoverablePlanWorkExecutor::executePreparedInvocationUnderLease(
     const WorkUnitKey &key,
     const external_tool::PreparedExternalToolInvocation &prepared,
@@ -626,11 +654,27 @@ RecoverablePlanWorkExecutor::executePreparedInvocationUnderLease(
                 external_tool::ExternalToolInvocationExecutionObservation>(
                 *execution)
           : std::nullopt);
-  if (!execution)
-    return llvm::joinErrors(execution.takeError(), std::move(intervalError));
+  if (!execution) {
+    bool admissionStopped = false;
+    llvm::Error remaining = llvm::handleErrors(
+        execution.takeError(),
+        [&](const external_tool::ExternalToolExecutionAdmissionStoppedError &) {
+          admissionStopped = true;
+        });
+    if (remaining)
+      return llvm::joinErrors(std::move(remaining), std::move(intervalError));
+    if (intervalError)
+      return std::move(intervalError);
+    if (!admissionStopped)
+      return invalid("external execution admission lost its typed failure");
+    return std::optional<
+        external_tool::ExternalToolInvocationExecutionObservation>{};
+  }
   if (intervalError)
     return std::move(intervalError);
-  return std::move(*execution);
+  return std::optional<
+      external_tool::ExternalToolInvocationExecutionObservation>(
+      std::move(*execution));
 }
 
 llvm::Expected<
@@ -667,9 +711,7 @@ RecoverablePlanWorkExecutor::executePreparedInvocation(
       executePreparedInvocationUnderLease(key, prepared, executionControl);
   if (!execution)
     return execution.takeError();
-  return std::optional<
-      external_tool::ExternalToolInvocationExecutionObservation>(
-      std::move(*execution));
+  return std::move(*execution);
 }
 
 llvm::Error RecoverablePlanWorkExecutor::settleStoppedExternalExecution(
@@ -678,8 +720,7 @@ llvm::Error RecoverablePlanWorkExecutor::settleStoppedExternalExecution(
   if (!terminalTime)
     return terminalTime.takeError();
   return journal_.markTerminal(key, JournalWorkUnitStatus::TimedOut,
-                               activeWallTimeNanoseconds,
-                               *terminalTime, {});
+                               activeWallTimeNanoseconds, *terminalTime, {});
 }
 
 llvm::Expected<CandidateGeneratorProviderResult>
@@ -727,8 +768,9 @@ RecoverablePlanWorkExecutor::executeGenerate(
             *descriptor,
             CandidateGeneratorIncompleteReason::CancelledOrTimeout);
       }
-      imported = tryImportPreparedCandidate(
-          inputs, binding, *(*record)->preparedInvocation, store, blobs);
+      imported = tryImportPreparedCandidate(inputs, binding,
+                                            *(*record)->preparedInvocation,
+                                            **executed, store, blobs);
       if (!imported)
         return imported.takeError();
       if (!*imported)
@@ -944,8 +986,8 @@ RecoverablePlanWorkExecutor::executeGenerate(
     return makeIncompleteCandidateResult(
         *descriptor, CandidateGeneratorIncompleteReason::CancelledOrTimeout);
   }
-  auto imported =
-      tryImportPreparedCandidate(inputs, binding, *prepared, store, blobs);
+  auto imported = tryImportPreparedCandidate(inputs, binding, *prepared,
+                                             **executed, store, blobs);
   if (!imported)
     return imported.takeError();
   if (!*imported)
@@ -1140,19 +1182,21 @@ RecoverablePlanWorkExecutor::executeEvidence(
           *key, *(*record)->preparedInvocation, executionControl);
       if (!executed)
         return executed.takeError();
-      if (executed->exitCode ==
+      if (!*executed)
+        return PromotionEvidenceExecutionResult{
+            PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+      if ((**executed).exitCode ==
           external_tool::externalToolExecutionStoppedExitCode) {
         auto active = activeNanoseconds(lifecycleBegin);
         if (!active)
           return active.takeError();
-        if (llvm::Error error =
-                settleStoppedExternalExecution(*key, *active))
+        if (llvm::Error error = settleStoppedExternalExecution(*key, *active))
           return std::move(error);
         return PromotionEvidenceExecutionResult{
             PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
       }
       imported = tryImportPreparedEvidence(task.request, *task.resolution,
-                                           *live, *executed, store, blobs);
+                                           *live, **executed, store, blobs);
       if (!imported)
         return imported.takeError();
       if (!*imported)
@@ -1169,9 +1213,9 @@ RecoverablePlanWorkExecutor::executeEvidence(
     if (!active)
       return active.takeError();
     const std::array<ArtifactRootReference, 1> outputs = {*root};
-    if (llvm::Error error = journal_.markTerminal(
-            *key, evidenceJournalStatus(**imported), *active, *terminalTime,
-            outputs))
+    if (llvm::Error error =
+            journal_.markTerminal(*key, evidenceJournalStatus(**imported),
+                                  *active, *terminalTime, outputs))
       return std::move(error);
     return PromotionEvidenceExecutionResult{std::move(**imported)};
   }
@@ -1310,7 +1354,10 @@ RecoverablePlanWorkExecutor::executeEvidence(
           *key, external, providerExecutionControl(preparationStopContext));
       if (!executed)
         return executed.takeError();
-      if (executed->exitCode ==
+      if (!*executed)
+        return PromotionEvidenceExecutionResult{
+            PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+      if ((**executed).exitCode ==
           external_tool::externalToolExecutionStoppedExitCode) {
         if (llvm::Error error = settleStoppedExternalExecution(*key))
           return std::move(error);
@@ -1318,7 +1365,7 @@ RecoverablePlanWorkExecutor::executeEvidence(
             PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
       }
       auto imported = tryImportPreparedEvidence(
-          task.request, *task.resolution, prepared, *executed, store, blobs);
+          task.request, *task.resolution, prepared, **executed, store, blobs);
       if (!imported)
         return imported.takeError();
       if (!*imported)
@@ -1341,8 +1388,8 @@ RecoverablePlanWorkExecutor::executeEvidence(
   active = *lifecycleActive;
   const std::array<ArtifactRootReference, 1> outputs = {*root};
   if (llvm::Error error =
-          journal_.markTerminal(*key, evidenceJournalStatus(*evidence),
-                                active, *terminalTime, outputs))
+          journal_.markTerminal(*key, evidenceJournalStatus(*evidence), active,
+                                *terminalTime, outputs))
     return std::move(error);
   return PromotionEvidenceExecutionResult{std::move(*evidence)};
 }

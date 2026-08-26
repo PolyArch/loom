@@ -209,19 +209,13 @@ script; resource isolation, limits, scheduling, container lifecycle, and
 license services remain external. Independent bundles may be executed in
 parallel without sharing mutable process environment.
 
-After execution, the shared expectation-bound attempt importer verifies the
-prepared handle, exact semantic expectation, attempt integrity, and
-completion-to-manifest and completion-to-generation bindings. Recovery import
-validates the atomic completion against the currently published attempt token.
-A receipt-aware import additionally proves that the executor produced the
-supplied observation and checks the sealed generation both before and after it
-snapshots outputs. The receipt owns no output bytes. The
-`ImportedExternalToolInvocationBundle` is the sole ephemeral immutable owner of
-declared-output bytes. Only successful completion opens declared outputs. The
-same semantic descriptor's `import` operation interprets a successful snapshot
-or derives its own typed non-success outcome from a validated failed attempt;
-the external layer does not infer semantic failure kind from a process exit
-code.
+Execution generations, root fencing, recovery import, receipt-bound live
+import, and declared-output snapshot ownership follow the single contract in
+[External Tool Invocation](spec-external-tool-invocation.md#execution-and-collection).
+The same semantic descriptor's `import` operation interprets a validated
+successful snapshot or derives its own typed non-success outcome from a
+validated failed attempt; the external layer does not infer semantic failure
+kind from a process exit code.
 A generator import finalizes a complete implementation and returns dense
 descriptor output bindings plus lineage contributions but no Evidence; an
 evaluator import finalizes any descriptor output Artifacts and returns their
@@ -513,15 +507,11 @@ Execution distinguishes at least:
 * parser/normalizer failure; and
 * completed Evaluation with adverse typed findings.
 
-The bundle-owned completion record begins only when the finalized bundle's
-script is attempted. Its canonical record binds the manifest digest and exact
-attempt token together with the status, exit code, and successful output
-digests. It distinguishes launch or activation failure, tool execution,
-declared-output failure, and successful driver completion. Bundle
+The External Tool Invocation completion contract owns whether an attempt has a
+valid atomic completion and which typed attempt outcome it exposes. Bundle
 preparation and descriptor-owned import return their own typed API errors and
-do not create or mutate the completion record. An interrupted script without a
-valid atomic completion record is an incomplete attempt, not an
-`ExecutionFailed` Evidence value.
+do not create or mutate that record. An interrupted attempt exposed as
+`Incomplete` is not an `ExecutionFailed` Evidence value.
 
 Infrastructure failures and execution limits do not select a different formal
 candidate. Timeout or cancellation maps to `CancelledOrTimeout`; tool or

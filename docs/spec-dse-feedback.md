@@ -2418,14 +2418,14 @@ is removable, preserves every integrity check, and cannot turn a path or object
 address into identity. Terminal recovery reports import/cache work separately
 from newly executed provider work.
 
-For an external-tool attempt, a valid atomic completion permits import of that
-exact bundle only when the completion's attempt token matches the currently
-published execution generation. A prepared bundle without valid completion
-remains incomplete; the controller cannot infer process liveness, acquire an
-execution claim, or automatically retry it. If the external execution owner
-explicitly authorizes another attempt, it retains the same `WorkUnitKey` and
-materializes an independent bundle. This is owner-attempt recovery, not a new
-semantic work item or generic Job state machine.
+External-tool generation fencing and live-versus-recovery import follow the
+single contract in [External Tool
+Invocation](spec-external-tool-invocation.md#execution-and-collection). A
+prepared bundle exposed as incomplete does not let the DSE controller infer
+process liveness or automatically retry it. If the external execution owner
+explicitly authorizes another generation, it retains the same `WorkUnitKey`.
+This is owner-attempt recovery, not a new semantic work item or generic Job
+state machine.
 
 Attempts and recovery records remain owner-specific. Evaluation uses its
 request-local attempt record; an ExternalToolInvocationBundle retains generated
@@ -2516,12 +2516,12 @@ prepare/execute/import lifecycle. The Journal stores only the raw prepared
 invocation; a recovered `Prepared` work unit opens one new typed context and
 reuses it across its incomplete probe, execution, and final strict import.
 An invocation executed in the current process passes its sealed execution
-observation to the provider's receipt-bound import callback. A provider that
-does not expose that callback is valid for recovery import only; it cannot
-silently import the current generation after a live execution. Active wall
-time includes preparation, context-backed import, Evidence publication, and
-terminal persistence, in addition to external command execution, so campaign
-limits cannot be bypassed by strict host-side lifecycle work.
+observation to the provider's receipt-bound import callback required by the
+External Tool Invocation contract. A provider that does not expose that
+callback is valid for recovery import only. Active wall time includes
+preparation, context-backed import, Evidence publication, and terminal
+persistence, in addition to external command execution, so campaign limits
+cannot be bypassed by strict host-side lifecycle work.
 
 While running, a removable projection reports completed, running, queued,
 failed, timed-out, and unsupported counts; recent throughput; p50 and p90
