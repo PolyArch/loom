@@ -328,7 +328,22 @@ Artifact reference enters the canonical candidate set.
 
 ## System Restart Sequence
 
-System restarts run in canonical attempt order. Each executes:
+The System provider allocates one isolated restart slot per configured fresh
+seed attempt, plus one migration slot when a migration projection is present.
+As in the Spatial sequence, slots may execute in parallel under
+`ExhaustConfiguredWork`, but their results are reduced by original restart
+ordinal: accounting accumulation, incomplete classification, candidate
+publication, and interruption reporting all follow canonical attempt order, so
+scheduling cannot change candidate identity, formal work accounting, or the
+first-incomplete diagnostic. Draft materialization, SystemMapping
+finalization, and publication run only in the ordinal reduction. The migration
+slot executes before the fresh slots because its direct-publication trial and
+its annealed candidate share one state. `FirstVerifiedCandidate` remains a
+serial bounded-prefix execution. Worker allocation is bounded by the
+configured candidate-worker request and the fresh restart count and is
+diagnostic only.
+
+Each restart slot executes:
 
 ```text
 hierarchical binding and service initialization

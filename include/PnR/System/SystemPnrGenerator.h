@@ -279,6 +279,11 @@ struct SystemPnrGenerationInputs final {
   const FinalizedSystemMappingMigrationSeed *migrationSeed = nullptr;
   const FinalizedSystemMappingCheckpointMigrationSeed *checkpointMigrationSeed =
       nullptr;
+  /// Upper bound on parallel fresh restart slots under the exhaustive
+  /// completion goal. Results are always reduced by original restart ordinal,
+  /// so this bound is scheduling only and cannot change candidate identity or
+  /// formal work accounting.
+  std::uint32_t candidateWorkerCount = 1;
 };
 
 /// Runs the canonical System PnR invocation for one exact D/F/R/H/C/K

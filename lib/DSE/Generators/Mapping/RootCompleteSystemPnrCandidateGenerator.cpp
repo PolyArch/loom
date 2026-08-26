@@ -1,5 +1,7 @@
 #include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
 
+#include "DSE/CandidateGenerator.h"
+
 #include "Common/ArtifactLocalReference.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -640,7 +642,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
            *constraints, store, invocation.executionControl(), &*staticContext,
            &*activeContext,
            *finalizedMigrationSeed ? &**finalizedMigrationSeed : nullptr,
-           *migrationSeed ? &**migrationSeed : nullptr});
+           *migrationSeed ? &**migrationSeed : nullptr,
+           defaultCandidateWorkerCount()});
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
     auto reason = pnrGenerationIncompleteReason(generated->termination);
@@ -853,7 +856,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
            *constraints, store, invocation.executionControl(), &*staticContext,
            &*activeContext,
            *finalizedMigrationSeed ? &**finalizedMigrationSeed : nullptr,
-           *migrationSeed ? &**migrationSeed : nullptr});
+           *migrationSeed ? &**migrationSeed : nullptr,
+           defaultCandidateWorkerCount()});
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
     auto reason = pnrGenerationIncompleteReason(generated->termination);
