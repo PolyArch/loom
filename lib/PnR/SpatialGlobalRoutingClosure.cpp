@@ -54,8 +54,6 @@ llvm::Error verifyRoutingClosure(const SpatialCandidateState &candidate) {
 
 llvm::Error
 SpatialGlobalRoutingClosureScratch::run(SpatialCandidateState &candidate) {
-  if (llvm::Error error = candidate.verify())
-    return error;
   if (llvm::Error error = actionExecutor_.prepare(candidate))
     return error;
 
@@ -73,7 +71,7 @@ SpatialGlobalRoutingClosureScratch::run(SpatialCandidateState &candidate) {
   if (llvm::Error error = probe->commit())
     return error;
 
-  if (llvm::Error error = candidate.verify())
+  if (llvm::Error error = candidate.verifyCachedState())
     return error;
   if (llvm::Error error = verifyRoutingClosure(candidate))
     return error;

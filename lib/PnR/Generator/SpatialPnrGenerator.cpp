@@ -75,6 +75,12 @@ void emitActiveHandshakeStatistics(
             statistics.transactionAffectedNodeCount;
         fields["transaction_affected_rank_span"] =
             statistics.transactionAffectedRankSpan;
+        fields["cached_verification_count"] =
+            statistics.cachedVerificationCount;
+        fields["cold_verification_construction_count"] =
+            statistics.coldVerificationConstructionCount;
+        fields["cold_verification_construction_time_ns"] =
+            statistics.coldVerificationConstructionNanoseconds;
       });
 }
 

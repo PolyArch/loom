@@ -1656,6 +1656,11 @@ HandshakeCandidateState::materializationStatistics() const {
   result.transactionRemovedArcCount = transactionRemovedArcCount_;
   result.transactionAffectedNodeCount = transactionAffectedNodeCount_;
   result.transactionAffectedRankSpan = transactionAffectedRankSpan_;
+  result.cachedVerificationCount = cachedVerificationCount_;
+  result.coldVerificationConstructionCount =
+      coldVerificationConstructionCount_;
+  result.coldVerificationConstructionNanoseconds =
+      coldVerificationConstructionNanoseconds_;
   const auto addBytes = [&](std::size_t bytes) {
     addWork(result.retainedBytes, static_cast<std::uint64_t>(bytes));
   };
@@ -1691,7 +1696,10 @@ llvm::ArrayRef<PnrIndex> HandshakeCandidateState::topologicalRanks() const {
   return graph_->ranks;
 }
 
-llvm::Error HandshakeCandidateState::verify() const {
+llvm::Error HandshakeCandidateState::verifyCachedState() const {
+  addWork(cachedVerificationCount_);
+  if (activeTransaction_)
+    return candidateError("cannot verify during a handshake transaction");
   if (!index_ || !graph_ ||
       fragmentRefcounts_.size() != index_->fragments().size() ||
       traversalRefcounts_.size() + 1 !=
@@ -1699,12 +1707,16 @@ llvm::Error HandshakeCandidateState::verify() const {
       allGroupSelectedWitnessCounts_.size() !=
           index_->allTraversalGroups().size())
     return candidateError("candidate shape does not match its frozen index");
-  std::vector<PnrIndex> expectedActive;
-  expectedActive.reserve(activeFragments_.size());
-  for (auto [fragment, refcount] : llvm::enumerate(fragmentRefcounts_))
-    if (refcount != 0)
-      expectedActive.push_back(static_cast<PnrIndex>(fragment));
-  if (expectedActive != activeFragments_)
+  std::size_t activeOrdinal = 0;
+  for (auto [fragment, refcount] : llvm::enumerate(fragmentRefcounts_)) {
+    if (refcount == 0)
+      continue;
+    if (activeOrdinal >= activeFragments_.size() ||
+        activeFragments_[activeOrdinal] != static_cast<PnrIndex>(fragment))
+      return candidateError("active fragment index is stale");
+    ++activeOrdinal;
+  }
+  if (activeOrdinal != activeFragments_.size())
     return candidateError("active fragment index is stale");
 
   if (graph_->nodeSignals.size() != graph_->nodeIdentities.size() ||
@@ -1716,12 +1728,9 @@ llvm::Error HandshakeCandidateState::verify() const {
       graph_->arcs.size() != graph_->fixedArcs.size() ||
       graph_->arcs.size() != graph_->arcContributors.size())
     return candidateError("materialized handshake graph shape is stale");
-  std::vector<std::uint8_t> observedNodes(graph_->order.size(), 0);
   for (auto [rank, node] : llvm::enumerate(graph_->order)) {
-    if (node >= graph_->ranks.size() || observedNodes[node] != 0 ||
-        graph_->ranks[node] != rank)
+    if (node >= graph_->ranks.size() || graph_->ranks[node] != rank)
       return candidateError("materialized handshake topology is not a rank");
-    observedNodes[node] = 1;
   }
   for (auto [arc, record] : llvm::enumerate(graph_->arcs)) {
     if (record.source >= graph_->nodeIdentities.size() ||
@@ -1737,7 +1746,35 @@ llvm::Error HandshakeCandidateState::verify() const {
         graph_->ranks[record.source] >= graph_->ranks[record.destination])
       return candidateError("materialized handshake topology is cyclic");
   }
+  for (auto [groupOrdinal, group] :
+       llvm::enumerate(index_->allTraversalGroups())) {
+    PnrIndex selectedWitnesses = 0;
+    for (PnrIndex traversal : index_->allTraversalGroupWitnesses().slice(
+             group.witnessOffset, group.witnessCount))
+      if (isTraversalSelected(traversal))
+        ++selectedWitnesses;
+    if (selectedWitnesses != allGroupSelectedWitnessCounts_[groupOrdinal])
+      return candidateError("all-traversal witness count is stale");
+    if (selectedWitnesses == group.witnessCount &&
+        fragmentRefcounts_[group.fragment] == 0)
+      return candidateError("satisfied all-traversal group is inactive");
+  }
+  for (PnrIndex fragment : index_->fixedFragments())
+    if (fragmentRefcounts_[fragment] == 0)
+      return candidateError("fixed handshake fragment is inactive");
+  return llvm::Error::success();
+}
 
+llvm::Error HandshakeCandidateState::verify() const {
+  if (llvm::Error error = verifyCachedState())
+    return error;
+
+  const auto begin = std::chrono::steady_clock::now();
+  addWork(coldVerificationConstructionCount_);
+  llvm::scope_exit recordConstructionTime([&] {
+    addWork(coldVerificationConstructionNanoseconds_,
+            elapsedNanoseconds(begin));
+  });
   auto rebuilt = materializeHandshakeGraph(*index_, activeFragments_);
   if (!rebuilt)
     return rebuilt.takeError();
@@ -1756,23 +1793,6 @@ llvm::Error HandshakeCandidateState::verify() const {
   };
   if (activeArcSnapshot(*rebuilt) != activeArcSnapshot(*graph_))
     return candidateError("materialized handshake graph is stale");
-
-  for (auto [groupOrdinal, group] :
-       llvm::enumerate(index_->allTraversalGroups())) {
-    PnrIndex selectedWitnesses = 0;
-    for (PnrIndex traversal : index_->allTraversalGroupWitnesses().slice(
-             group.witnessOffset, group.witnessCount))
-      if (isTraversalSelected(traversal))
-        ++selectedWitnesses;
-    if (selectedWitnesses != allGroupSelectedWitnessCounts_[groupOrdinal])
-      return candidateError("all-traversal witness count is stale");
-    if (selectedWitnesses == group.witnessCount &&
-        fragmentRefcounts_[group.fragment] == 0)
-      return candidateError("satisfied all-traversal group is inactive");
-  }
-  for (PnrIndex fragment : index_->fixedFragments())
-    if (fragmentRefcounts_[fragment] == 0)
-      return candidateError("fixed handshake fragment is inactive");
   return llvm::Error::success();
 }
 

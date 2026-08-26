@@ -1393,9 +1393,9 @@ SpatialCandidateState::recomputeAtomicCapacityOveruse() const {
   return total;
 }
 
-llvm::Error SpatialCandidateState::verify() const {
+llvm::Error SpatialCandidateState::verifyCachedState() const {
   if (activeTransaction_)
-    return candidateError("cannot verify during a move");
+    return candidateError("cannot verify cached state during a move");
   if (!problem_ || !handshake_ ||
       computeBindings_.size() !=
           problem_->realizations().computeRealizations().size() ||
@@ -1417,6 +1417,22 @@ llvm::Error SpatialCandidateState::verify() const {
           problem_->transfers().logicalNets().size() ||
       routeTrees_.size() != problem_->transfers().logicalNets().size())
     return candidateError("candidate shape does not match its frozen problem");
+  for (const RouteTreeStateHandle &route : routeTrees_) {
+    if (!route || &route->routingGraph() != &problem_->routing())
+      return candidateError("RouteTree is bound to a foreign routing graph");
+    if (llvm::Error error = route->verify())
+      return error;
+  }
+  if (llvm::Error error = handshake_->verifyCachedState())
+    return error;
+  if (&handshake_->index() != &problem_->handshake())
+    return candidateError("handshake state is bound to a foreign problem");
+  return progressState_.verifyCachedState(*this);
+}
+
+llvm::Error SpatialCandidateState::verify() const {
+  if (llvm::Error error = verifyCachedState())
+    return error;
   for (PnrIndex index = 0; index < computeBindings_.size(); ++index)
     if (llvm::Error error = validateComputeBinding(index))
       return error;

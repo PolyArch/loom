@@ -41,6 +41,9 @@ struct HandshakeActiveDemandStatistics final {
   std::uint64_t transactionRemovedArcCount = 0;
   std::uint64_t transactionAffectedNodeCount = 0;
   std::uint64_t transactionAffectedRankSpan = 0;
+  std::uint64_t cachedVerificationCount = 0;
+  std::uint64_t coldVerificationConstructionCount = 0;
+  std::uint64_t coldVerificationConstructionNanoseconds = 0;
 };
 
 struct HandshakeProjectionStatistics final {
@@ -165,6 +168,11 @@ public:
   llvm::ArrayRef<PnrIndex> topologicalOrder() const;
   llvm::ArrayRef<PnrIndex> topologicalRanks() const;
 
+  /// Checks only the committed incremental representation. This does not
+  /// reconstruct a graph from the frozen fragment selection.
+  llvm::Error verifyCachedState() const;
+  /// Independently reconstructs the selected graph after checking the cached
+  /// representation. Publication boundaries must use this verifier.
   llvm::Error verify() const;
   llvm::Expected<HandshakeCandidateTransaction>
   beginTransaction(HandshakeCandidateScratch &scratch) &;
@@ -200,6 +208,9 @@ private:
   std::uint64_t transactionRemovedArcCount_ = 0;
   std::uint64_t transactionAffectedNodeCount_ = 0;
   std::uint64_t transactionAffectedRankSpan_ = 0;
+  mutable std::uint64_t cachedVerificationCount_ = 0;
+  mutable std::uint64_t coldVerificationConstructionCount_ = 0;
+  mutable std::uint64_t coldVerificationConstructionNanoseconds_ = 0;
   HandshakeCandidateTransaction *activeTransaction_ = nullptr;
 
   friend class HandshakeCandidateTransaction;

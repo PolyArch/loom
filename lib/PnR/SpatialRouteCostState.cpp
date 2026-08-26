@@ -74,7 +74,7 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate) {
         "frozen routing policy does not select PathFinder");
   if (llvm::Error error = validateResolvedPathFinderPolicy(*policy))
     return std::move(error);
-  if (llvm::Error error = candidate.verify())
+  if (llvm::Error error = candidate.verifyCachedState())
     return std::move(error);
 
   const FrozenSpatialPnrProblem &problem = candidate.problem();

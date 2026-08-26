@@ -389,6 +389,11 @@ public:
                                const llvm::APInt &value) const {
     return tagAssignments_.domainValueConflicts(domain, value);
   }
+  /// Checks committed search-owned structures without reconstructing derived
+  /// facts from RouteTrees. This is only for trusted internal search state.
+  llvm::Error verifyCachedState() const;
+  /// Independently reconstructs derived facts. Publication and
+  /// materialization boundaries must use this verifier.
   llvm::Error verify() const;
   llvm::Expected<SpatialMoveTransaction>
   beginMove(SpatialCandidateScratch &scratch LLVM_LIFETIME_BOUND) &;

@@ -914,6 +914,9 @@ void completeCandidateRoundTrip(
     candidate = std::move(first.candidate);
   }
   loom::pnr::SpatialGlobalRoutingClosureScratch globalRoutingClosure;
+  std::optional<loom::pnr::HandshakeActiveDemandStatistics>
+      handshakeAfterClosure;
+  std::optional<loom::pnr::SpatialProgressStatistics> progressAfterClosure;
   if (forceTagConflict) {
     const std::uint64_t selectedTraversalClaim =
         candidate->totalSelectedTraversalClaim();
@@ -938,6 +941,9 @@ void completeCandidateRoundTrip(
         candidate->tagConflictCount() != tagConflicts)
       fail("rejected global routing closure changed the candidate");
   } else {
+    const auto handshakeBeforeClosure =
+        candidate->handshake().materializationStatistics();
+    const auto progressBeforeClosure = candidate->progress().statistics();
     requireSuccess(globalRoutingClosure.run(*candidate));
     const std::size_t retainedClosureBytes =
         globalRoutingClosure.retainedStorageBytes();
@@ -948,8 +954,33 @@ void completeCandidateRoundTrip(
       fail("warmed global routing closure grew worker-local storage from " +
            std::to_string(retainedClosureBytes) + " to " +
            std::to_string(repeatedClosureBytes));
+    handshakeAfterClosure =
+        candidate->handshake().materializationStatistics();
+    progressAfterClosure = candidate->progress().statistics();
+    if (handshakeAfterClosure->cachedVerificationCount <=
+            handshakeBeforeClosure.cachedVerificationCount ||
+        progressAfterClosure->cachedVerificationCount <=
+            progressBeforeClosure.cachedVerificationCount)
+      fail("global routing closure did not verify incremental candidate state");
+    if (handshakeAfterClosure->coldVerificationConstructionCount !=
+            handshakeBeforeClosure.coldVerificationConstructionCount ||
+        progressAfterClosure->coldVerificationCount !=
+            progressBeforeClosure.coldVerificationCount ||
+        progressAfterClosure->coldProgressScanCount !=
+            progressBeforeClosure.coldProgressScanCount)
+      fail("global routing closure invoked a publication verifier");
   }
   requireSuccess(candidate->verify());
+  if (handshakeAfterClosure &&
+      (candidate->handshake()
+               .materializationStatistics()
+               .coldVerificationConstructionCount !=
+           handshakeAfterClosure->coldVerificationConstructionCount + 1 ||
+       candidate->progress().statistics().coldVerificationCount !=
+           progressAfterClosure->coldVerificationCount + 1 ||
+       candidate->progress().statistics().coldProgressScanCount !=
+           progressAfterClosure->coldProgressScanCount + 1))
+    fail("final candidate verification omitted an independent reconstruction");
 
   std::vector<const loom::pnr::RouteTreeState *> selectedRoutes;
   selectedRoutes.reserve(problem->transfers().logicalNets().size());

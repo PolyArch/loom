@@ -1098,6 +1098,39 @@ void loom::test::exerciseCanonicalCandidateInitialization(
           problem, 0, canonicalAssignmentAttempts));
   const auto &realizations = problem->realizations();
 
+  const auto handshakeBeforeSearch =
+      first->handshake().materializationStatistics();
+  const auto progressBeforeSearch = first->progress().statistics();
+  pnr::SpatialActionExecutorScratch searchScratch;
+  requireSuccess(searchScratch.prepare(*first));
+  const auto handshakeAfterSearch =
+      first->handshake().materializationStatistics();
+  const auto progressAfterSearch = first->progress().statistics();
+  if (handshakeAfterSearch.cachedVerificationCount <=
+          handshakeBeforeSearch.cachedVerificationCount ||
+      progressAfterSearch.cachedVerificationCount <=
+          progressBeforeSearch.cachedVerificationCount)
+    fail("search preparation did not verify incremental candidate state");
+  if (handshakeAfterSearch.coldVerificationConstructionCount !=
+          handshakeBeforeSearch.coldVerificationConstructionCount ||
+      progressAfterSearch.coldVerificationCount !=
+          progressBeforeSearch.coldVerificationCount ||
+      progressAfterSearch.coldProgressScanCount !=
+          progressBeforeSearch.coldProgressScanCount)
+    fail("search preparation invoked an independent publication verifier");
+
+  requireSuccess(first->verify());
+  const auto handshakeAfterPublication =
+      first->handshake().materializationStatistics();
+  const auto progressAfterPublication = first->progress().statistics();
+  if (handshakeAfterPublication.coldVerificationConstructionCount !=
+          handshakeAfterSearch.coldVerificationConstructionCount + 1 ||
+      progressAfterPublication.coldVerificationCount !=
+          progressAfterSearch.coldVerificationCount + 1 ||
+      progressAfterPublication.coldProgressScanCount !=
+          progressAfterSearch.coldProgressScanCount + 1)
+    fail("publication verification omitted an independent reconstruction");
+
   for (pnr::PnrIndex index = 0;
        index < realizations.computeRealizations().size(); ++index) {
     const auto &record = realizations.computeRealizations()[index];
