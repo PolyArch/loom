@@ -1760,9 +1760,6 @@ importGem5SystemDiagnosticInvocation(
   if (execution.exitCode == externalToolExecutionStoppedExitCode)
     return finalize(terminalResult(
         CancelledOrTimeoutEvidence{OutcomeReason::ExternalCancellation}));
-  if (execution.exitCode != 0)
-    return finalize(
-        terminalResult(ExecutionFailedEvidence{OutcomeReason::ToolFailure}));
   Gem5SystemDiagnosticSidecar diagnostics;
   auto result =
       importGem5SystemInvocationImpl(request, resolution, prepared, artifacts,
