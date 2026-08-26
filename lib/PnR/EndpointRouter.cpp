@@ -35,11 +35,9 @@ std::uint64_t nextEndpointRouteInputOwnerIdentity() {
 } // namespace
 
 struct EndpointRouteInputRevision::State final {
-  explicit State(std::uint64_t ownerIdentity) : ownerIdentity(ownerIdentity) {}
+  explicit State(std::uint64_t ownerIdentity) : generation{ownerIdentity, 0} {}
 
-  std::uint64_t ownerIdentity = 0;
-  std::uint64_t revision = 0;
-  bool ownerAlive = true;
+  Generation generation;
 };
 
 EndpointRouteInputRevisionOwner::EndpointRouteInputRevisionOwner()
@@ -49,16 +47,14 @@ EndpointRouteInputRevisionOwner::EndpointRouteInputRevisionOwner()
 EndpointRouteInputRevisionOwner::EndpointRouteInputRevisionOwner(
     EndpointRouteInputRevisionOwner &&other) noexcept = default;
 
-EndpointRouteInputRevisionOwner::~EndpointRouteInputRevisionOwner() {
-  if (state_)
-    state_->ownerAlive = false;
-}
+EndpointRouteInputRevisionOwner::~EndpointRouteInputRevisionOwner() = default;
 
 EndpointRouteInputRevision EndpointRouteInputRevisionOwner::revision() const & {
   if (!state_)
-    return EndpointRouteInputRevision({}, 0, 0);
-  return EndpointRouteInputRevision(state_, state_->ownerIdentity,
-                                    state_->revision);
+    return EndpointRouteInputRevision({}, {});
+  return EndpointRouteInputRevision(
+      std::weak_ptr<const EndpointRouteInputRevision::State>(state_),
+      state_->generation);
 }
 
 llvm::Error EndpointRouteInputRevisionOwner::advance() {
@@ -66,11 +62,11 @@ llvm::Error EndpointRouteInputRevisionOwner::advance() {
     return llvm::make_error<llvm::StringError>(
         "cannot advance a moved EndpointRouter input revision owner",
         std::make_error_code(std::errc::invalid_argument));
-  if (state_->revision == std::numeric_limits<std::uint64_t>::max())
+  if (state_->generation.revision == std::numeric_limits<std::uint64_t>::max())
     return llvm::make_error<llvm::StringError>(
         "EndpointRouter input revision exceeds uint64_t",
         std::make_error_code(std::errc::result_out_of_range));
-  ++state_->revision;
+  ++state_->generation.revision;
   return llvm::Error::success();
 }
 
@@ -130,7 +126,7 @@ constexpr std::size_t maximumHeuristicCacheEntryCount = 4096;
 constexpr std::uint32_t compactHeuristicInfinity =
     std::numeric_limits<std::uint32_t>::max();
 constexpr llvm::StringLiteral endpointHeuristicAlgorithmIdentity =
-    "loom.pnr.endpoint_lower_bound_heuristic.5";
+    "loom.pnr.endpoint_lower_bound_heuristic.6";
 
 void updateDigestWord(llvm::SHA256 &digest, std::uint64_t value) {
   std::array<std::uint8_t, 8> bytes{};
@@ -701,10 +697,10 @@ llvm::Error EndpointRouteSearchScratch::buildHeuristic(
 
 bool EndpointRouteSearchScratch::revisionIsCurrent(
     const EndpointRouteInputRevision &revision) const {
-  return revision.state_ && revision.state_->ownerAlive &&
-         revision.ownerIdentity_ != 0 &&
-         revision.state_->ownerIdentity == revision.ownerIdentity_ &&
-         revision.state_->revision == revision.revision_;
+  const std::shared_ptr<const EndpointRouteInputRevision::State> state =
+      revision.state_.lock();
+  return state && revision.generation_.ownerIdentity != 0 &&
+         state->generation == revision.generation_;
 }
 
 bool EndpointRouteSearchScratch::arcCostsAlreadyValidated(
@@ -714,18 +710,10 @@ bool EndpointRouteSearchScratch::arcCostsAlreadyValidated(
       !revisionIsCurrent(*request.lowerBoundArcCostRevision) ||
       !revisionIsCurrent(*request.currentArcCostRevision))
     return false;
-  return validatedArcCosts_.lowerBoundData ==
-             request.lowerBoundArcCosts.data() &&
-         validatedArcCosts_.currentData == request.currentArcCosts.data() &&
-         validatedArcCosts_.size == request.lowerBoundArcCosts.size() &&
-         validatedArcCosts_.lowerBoundOwnerIdentity ==
-             request.lowerBoundArcCostRevision->ownerIdentity_ &&
-         validatedArcCosts_.lowerBoundRevision ==
-             request.lowerBoundArcCostRevision->revision_ &&
-         validatedArcCosts_.currentOwnerIdentity ==
-             request.currentArcCostRevision->ownerIdentity_ &&
-         validatedArcCosts_.currentRevision ==
-             request.currentArcCostRevision->revision_;
+  return validatedArcCosts_.lowerBoundGeneration ==
+             request.lowerBoundArcCostRevision->generation_ &&
+         validatedArcCosts_.currentGeneration ==
+             request.currentArcCostRevision->generation_;
 }
 
 void EndpointRouteSearchScratch::rememberValidatedArcCosts(
@@ -734,13 +722,8 @@ void EndpointRouteSearchScratch::rememberValidatedArcCosts(
   assert(revisionIsCurrent(*request.lowerBoundArcCostRevision) &&
          revisionIsCurrent(*request.currentArcCostRevision));
   validatedArcCosts_ = {
-      request.lowerBoundArcCosts.data(),
-      request.currentArcCosts.data(),
-      request.lowerBoundArcCosts.size(),
-      request.lowerBoundArcCostRevision->ownerIdentity_,
-      request.lowerBoundArcCostRevision->revision_,
-      request.currentArcCostRevision->ownerIdentity_,
-      request.currentArcCostRevision->revision_,
+      request.lowerBoundArcCostRevision->generation_,
+      request.currentArcCostRevision->generation_,
       true,
   };
 }
@@ -750,15 +733,8 @@ bool EndpointRouteSearchScratch::physicalTimingAlreadyValidated(
   if (!validatedPhysicalTiming_.populated || !request.physicalTimingRevision ||
       !revisionIsCurrent(*request.physicalTimingRevision))
     return false;
-  return validatedPhysicalTiming_.delayData ==
-             request.arcTimingDelayQuanta.data() &&
-         validatedPhysicalTiming_.registeredDestinationData ==
-             request.arcTimingRegisteredDestination.data() &&
-         validatedPhysicalTiming_.size == request.arcTimingDelayQuanta.size() &&
-         validatedPhysicalTiming_.ownerIdentity ==
-             request.physicalTimingRevision->ownerIdentity_ &&
-         validatedPhysicalTiming_.revision ==
-             request.physicalTimingRevision->revision_;
+  return validatedPhysicalTiming_.generation ==
+         request.physicalTimingRevision->generation_;
 }
 
 void EndpointRouteSearchScratch::rememberValidatedPhysicalTiming(
@@ -766,11 +742,7 @@ void EndpointRouteSearchScratch::rememberValidatedPhysicalTiming(
   assert(request.physicalTimingRevision &&
          revisionIsCurrent(*request.physicalTimingRevision));
   validatedPhysicalTiming_ = {
-      request.arcTimingDelayQuanta.data(),
-      request.arcTimingRegisteredDestination.data(),
-      request.arcTimingDelayQuanta.size(),
-      request.physicalTimingRevision->ownerIdentity_,
-      request.physicalTimingRevision->revision_,
+      request.physicalTimingRevision->generation_,
       true,
   };
 }
@@ -794,19 +766,18 @@ EndpointRouteSearchScratch::heuristicCacheKeyDigest(
       reinterpret_cast<const std::uint8_t *>(
           endpointHeuristicAlgorithmIdentity.data()),
       endpointHeuristicAlgorithmIdentity.size()));
-  updateDigestWord(digest, request.lowerBoundArcCostRevision->ownerIdentity_);
-  updateDigestWord(digest, request.lowerBoundArcCostRevision->revision_);
-  updateDigestWord(digest, reinterpret_cast<std::uintptr_t>(
-                               request.lowerBoundArcCosts.data()));
-  updateDigestWord(digest, request.lowerBoundArcCosts.size());
+  updateDigestWord(
+      digest, request.lowerBoundArcCostRevision->generation_.ownerIdentity);
+  updateDigestWord(digest,
+                   request.lowerBoundArcCostRevision->generation_.revision);
   updateDigestWord(digest, request.requiredPayloadWidthBits);
   updateDigestWord(digest, request.requiredTagWidthBits);
   updateDigestWord(digest, request.physicalTimingEnabled ? 1 : 0);
   if (request.physicalTimingEnabled) {
-    updateDigestWord(digest, request.physicalTimingRevision->ownerIdentity_);
-    updateDigestWord(digest, request.physicalTimingRevision->revision_);
-    updateDigestWord(digest, reinterpret_cast<std::uintptr_t>(
-                                 request.arcTimingDelayQuanta.data()));
+    updateDigestWord(digest,
+                     request.physicalTimingRevision->generation_.ownerIdentity);
+    updateDigestWord(digest,
+                     request.physicalTimingRevision->generation_.revision);
   }
   updateDigestWord(digest, request.requiredTimingQuanta);
   updateDigestWord(digest, request.timingCriticality);

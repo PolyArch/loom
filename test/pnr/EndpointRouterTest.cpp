@@ -280,10 +280,17 @@ void timingAwareArrivalAndBoundary() {
   if (combinationalResult.forwardArcs !=
       llvm::ArrayRef<PnrIndex>(timingPreferredPath))
     fail(__func__, "candidate path arrival did not affect route selection");
+  const auto repeatedCombinationalResult =
+      take(__func__, scratch.search(combinational));
+  if (repeatedCombinationalResult.forwardArcs !=
+      combinationalResult.forwardArcs)
+    fail(__func__, "stable timing projection changed its canonical path");
 
   const std::array<std::uint64_t, 7> recharacterizedDelays{
       {1, 5, 1, 5, 8, 5, 8}};
+  requireSuccess(__func__, timingRevisionOwner.advance());
   auto recharacterized = combinational;
+  recharacterized.physicalTimingRevision = timingRevisionOwner.revision();
   recharacterized.arcTimingDelayQuanta = recharacterizedDelays;
   const std::array<PnrIndex, 2> recharacterizedPath{{0, 2}};
   const auto recharacterizedResult =
@@ -294,7 +301,9 @@ void timingAwareArrivalAndBoundary() {
          "recharacterized provider delays did not replay a changed route");
 
   const std::array<std::uint64_t, 1> lateRegisteredSourceArrival{{8}};
+  requireSuccess(__func__, timingRevisionOwner.advance());
   auto lateCombinational = combinational;
+  lateCombinational.physicalTimingRevision = timingRevisionOwner.revision();
   lateCombinational.sourceTimingArrivalQuanta = lateRegisteredSourceArrival;
   const auto lateCombinationalResult =
       take(__func__, scratch.search(lateCombinational));
@@ -331,7 +340,7 @@ void timingAwareArrivalAndBoundary() {
     fail(__func__,
          "source arrival and sink-local traversal slack were not counted "
          "exactly once");
-  if (scratch.heuristicBuildCount() != 4 ||
+  if (scratch.heuristicBuildCount() != 5 ||
       scratch.heuristicCacheHitCount() != 1)
     fail(__func__,
          "timing-aware search did not reuse its admissible route heuristic");
@@ -384,7 +393,11 @@ void exactHeuristicCacheInvalidation() {
   std::array<RouteCost, 7> reboundCurrentCosts = fixture.currentCosts;
   reboundLowerCosts[3] = 20;
   reboundCurrentCosts[3] = 20;
+  requireSuccess(__func__, lowerBoundRevisionOwner.advance());
+  requireSuccess(__func__, currentRevisionOwner.advance());
   auto reboundRequest = cachedRequest;
+  reboundRequest.lowerBoundArcCostRevision = lowerBoundRevisionOwner.revision();
+  reboundRequest.currentArcCostRevision = currentRevisionOwner.revision();
   reboundRequest.lowerBoundArcCosts = reboundLowerCosts;
   reboundRequest.currentArcCosts = reboundCurrentCosts;
   const std::array<PnrIndex, 3> revisedPath{{1, 4, 6}};
@@ -540,6 +553,10 @@ void validatedInputRevisionInvalidation() {
 
   auto unversionedTiming = versioned;
   unversionedTiming.physicalTimingRevision.reset();
+  auto unversionedDelays = delays;
+  auto unversionedBoundaries = boundaries;
+  unversionedTiming.arcTimingDelayQuanta = unversionedDelays;
+  unversionedTiming.arcTimingRegisteredDestination = unversionedBoundaries;
   const std::uint64_t coldTimingValidationBegin =
       scratch.physicalTimingValidationScanCount();
   const std::uint64_t uncachedTimingHeuristicBegin =
@@ -551,38 +568,47 @@ void validatedInputRevisionInvalidation() {
     fail(__func__, "unversioned timing did not retain cold validation");
   if (scratch.heuristicBuildCount() != uncachedTimingHeuristicBegin + 2)
     fail(__func__, "unversioned timing reused a route heuristic");
-  delays[0] = 0;
+  unversionedDelays[0] = 0;
   expectFailure(__func__, scratch.search(unversionedTiming),
                 EndpointRouteSearchFailureKind::Invalid);
-  delays[0] = validDelays[0];
 
   auto unversioned =
       request(fixture, sources, sourceGroups, targets, targetRanks, 1, 128);
+  auto unversionedLowerCosts = fixture.lowerCosts;
+  auto unversionedCurrentCosts = fixture.currentCosts;
+  unversioned.lowerBoundArcCosts = unversionedLowerCosts;
+  unversioned.currentArcCosts = unversionedCurrentCosts;
   const std::uint64_t coldValidationBegin =
       scratch.arcCostValidationScanCount();
   (void)take(__func__, scratch.search(unversioned));
   (void)take(__func__, scratch.search(unversioned));
   if (scratch.arcCostValidationScanCount() != coldValidationBegin + 2)
     fail(__func__, "unversioned costs did not retain cold validation");
-  fixture.currentCosts[0] = routeCostInfinity;
+  unversionedCurrentCosts[0] = routeCostInfinity;
   expectFailure(__func__, scratch.search(unversioned),
                 EndpointRouteSearchFailureKind::Invalid);
 
-  fixture.currentCosts[0] = fixture.lowerCosts[0];
   auto orphanedRevision =
       request(fixture, sources, sourceGroups, targets, targetRanks, 1, 128);
-  orphanedRevision.lowerBoundArcCostRevision =
-      lowerBoundRevisionOwner.revision();
+  orphanedRevision.currentArcCostRevision =
+      movedCurrentRevisionOwner.revision();
   {
     EndpointRouteInputRevisionOwner temporaryOwner;
-    orphanedRevision.currentArcCostRevision = temporaryOwner.revision();
+    orphanedRevision.lowerBoundArcCostRevision = temporaryOwner.revision();
   }
   const std::uint64_t orphanedValidationBegin =
       scratch.arcCostValidationScanCount();
+  const std::uint64_t orphanedHeuristicBuildBegin =
+      scratch.heuristicBuildCount();
+  const std::uint64_t orphanedHeuristicHitBegin =
+      scratch.heuristicCacheHitCount();
   (void)take(__func__, scratch.search(orphanedRevision));
   (void)take(__func__, scratch.search(orphanedRevision));
   if (scratch.arcCostValidationScanCount() != orphanedValidationBegin + 2)
     fail(__func__, "an ownerless revision did not retain cold validation");
+  if (scratch.heuristicBuildCount() != orphanedHeuristicBuildBegin + 2 ||
+      scratch.heuristicCacheHitCount() != orphanedHeuristicHitBegin)
+    fail(__func__, "an ownerless revision reused a retained heuristic");
 }
 
 } // namespace

@@ -25,8 +25,8 @@ namespace loom::pnr {
 class EndpointRouteInputRevisionOwner;
 
 /// Proof that one owner-backed EndpointRouter input is unchanged. The token
-/// retains its revision state across owner moves while the input view remains
-/// borrowed by the search request.
+/// observes stable owner control across moves without extending the lifetime
+/// of either the owner or the borrowed input view.
 class EndpointRouteInputRevision final {
 public:
   EndpointRouteInputRevision(const EndpointRouteInputRevision &) = default;
@@ -34,20 +34,26 @@ public:
   operator=(const EndpointRouteInputRevision &) = default;
 
 private:
+  struct Generation final {
+    std::uint64_t ownerIdentity = 0;
+    std::uint64_t revision = 0;
+
+    bool operator==(const Generation &other) const {
+      return ownerIdentity == other.ownerIdentity && revision == other.revision;
+    }
+  };
+
   struct State;
 
   friend class EndpointRouteInputRevisionOwner;
   friend class EndpointRouteSearchScratch;
 
-  EndpointRouteInputRevision(std::shared_ptr<State> state,
-                             std::uint64_t ownerIdentity,
-                             std::uint64_t revision)
-      : state_(std::move(state)), ownerIdentity_(ownerIdentity),
-        revision_(revision) {}
+  EndpointRouteInputRevision(std::weak_ptr<const State> state,
+                             Generation generation)
+      : state_(std::move(state)), generation_(generation) {}
 
-  std::shared_ptr<State> state_;
-  std::uint64_t ownerIdentity_ = 0;
-  std::uint64_t revision_ = 0;
+  std::weak_ptr<const State> state_;
+  Generation generation_;
 };
 
 /// Semantic owner for one independently changing EndpointRouter input.
@@ -283,22 +289,13 @@ private:
   };
 
   struct ValidatedArcCosts final {
-    const RouteCost *lowerBoundData = nullptr;
-    const RouteCost *currentData = nullptr;
-    std::size_t size = 0;
-    std::uint64_t lowerBoundOwnerIdentity = 0;
-    std::uint64_t lowerBoundRevision = 0;
-    std::uint64_t currentOwnerIdentity = 0;
-    std::uint64_t currentRevision = 0;
+    EndpointRouteInputRevision::Generation lowerBoundGeneration;
+    EndpointRouteInputRevision::Generation currentGeneration;
     bool populated = false;
   };
 
   struct ValidatedPhysicalTiming final {
-    const std::uint64_t *delayData = nullptr;
-    const std::uint8_t *registeredDestinationData = nullptr;
-    std::size_t size = 0;
-    std::uint64_t ownerIdentity = 0;
-    std::uint64_t revision = 0;
+    EndpointRouteInputRevision::Generation generation;
     bool populated = false;
   };
 
