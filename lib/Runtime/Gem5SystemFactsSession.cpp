@@ -8,6 +8,9 @@
 
 #include "llvm/ADT/STLExtras.h"
 
+#include <sys/resource.h>
+#include <time.h>
+
 #include <algorithm>
 #include <chrono>
 #include <limits>
@@ -27,13 +30,58 @@ void addSaturated(std::uint64_t &destination, std::uint64_t value) {
     destination += value;
 }
 
-std::uint64_t retainedFactsBytes(
-    const gem5_system::Gem5SystemFacts &facts) {
+std::optional<std::uint64_t> processCpuNanoseconds() {
+  timespec current{};
+  if (::clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &current) != 0 ||
+      current.tv_sec < 0 || current.tv_nsec < 0 ||
+      current.tv_nsec >= 1'000'000'000)
+    return std::nullopt;
+  constexpr std::uint64_t nanosecondsPerSecond = 1'000'000'000;
+  const std::uint64_t seconds = current.tv_sec;
+  if (seconds > (std::numeric_limits<std::uint64_t>::max() -
+                 static_cast<std::uint64_t>(current.tv_nsec)) /
+                    nanosecondsPerSecond)
+    return std::nullopt;
+  return seconds * nanosecondsPerSecond + current.tv_nsec;
+}
+
+std::optional<std::uint64_t> timevalNanoseconds(const timeval &value) {
+  if (value.tv_sec < 0 || value.tv_usec < 0 || value.tv_usec >= 1'000'000)
+    return std::nullopt;
+  constexpr std::uint64_t nanosecondsPerSecond = 1'000'000'000;
+  const std::uint64_t subsecond =
+      static_cast<std::uint64_t>(value.tv_usec) * 1000;
+  const std::uint64_t seconds = value.tv_sec;
+  if (seconds > (std::numeric_limits<std::uint64_t>::max() - subsecond) /
+                    nanosecondsPerSecond)
+    return std::nullopt;
+  return seconds * nanosecondsPerSecond + subsecond;
+}
+
+std::optional<std::uint64_t> childCpuNanoseconds() {
+  rusage usage{};
+  if (::getrusage(RUSAGE_CHILDREN, &usage) != 0)
+    return std::nullopt;
+  auto user = timevalNanoseconds(usage.ru_utime);
+  auto system = timevalNanoseconds(usage.ru_stime);
+  if (!user || !system ||
+      *system > std::numeric_limits<std::uint64_t>::max() - *user)
+    return std::nullopt;
+  return *user + *system;
+}
+
+std::optional<std::uint64_t> difference(std::optional<std::uint64_t> end,
+                                        std::optional<std::uint64_t> begin) {
+  if (!end || !begin || *end < *begin)
+    return std::nullopt;
+  return *end - *begin;
+}
+
+std::uint64_t retainedFactsBytes(const gem5_system::Gem5SystemFacts &facts) {
   std::uint64_t bytes = sizeof(facts);
   addSaturated(bytes, facts.artifactDependencies.size() *
                           sizeof(ArtifactRootReference));
-  addSaturated(bytes,
-               facts.blobDependencies.size() * sizeof(BlobDigest));
+  addSaturated(bytes, facts.blobDependencies.size() * sizeof(BlobDigest));
   for (const external_tool::MaterializedBundleFile &file :
        facts.semanticInputs) {
     addSaturated(bytes, file.relativePath.size());
@@ -43,6 +91,51 @@ std::uint64_t retainedFactsBytes(
 }
 
 } // namespace
+
+namespace gem5_system {
+
+class Gem5SystemFactsOperationTimer::Impl final {
+public:
+  explicit Impl(Gem5SystemFactsOperationStatistics &statistics)
+      : statistics(&statistics), wallStarted(std::chrono::steady_clock::now()),
+        selfCpuStarted(processCpuNanoseconds()),
+        childCpuStarted(childCpuNanoseconds()) {}
+
+  Gem5SystemFactsOperationStatistics *statistics;
+  std::chrono::steady_clock::time_point wallStarted;
+  std::optional<std::uint64_t> selfCpuStarted;
+  std::optional<std::uint64_t> childCpuStarted;
+};
+
+Gem5SystemFactsOperationTimer::Gem5SystemFactsOperationTimer(
+    Gem5SystemFactsOperationStatistics *statistics) {
+  if (statistics)
+    impl_ = std::make_unique<Impl>(*statistics);
+}
+
+Gem5SystemFactsOperationTimer::~Gem5SystemFactsOperationTimer() {
+  if (!impl_)
+    return;
+  Gem5SystemFactsOperationStatistics &statistics = *impl_->statistics;
+  addSaturated(statistics.invocations, 1);
+  const auto wall = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - impl_->wallStarted);
+  if (wall.count() > 0)
+    addSaturated(statistics.wallNanoseconds,
+                 static_cast<std::uint64_t>(wall.count()));
+  if (auto elapsed =
+          difference(processCpuNanoseconds(), impl_->selfCpuStarted)) {
+    addSaturated(statistics.selfCpuNanoseconds, *elapsed);
+    addSaturated(statistics.selfCpuObservationCount, 1);
+  }
+  if (auto elapsed =
+          difference(childCpuNanoseconds(), impl_->childCpuStarted)) {
+    addSaturated(statistics.childCpuNanoseconds, *elapsed);
+    addSaturated(statistics.childCpuObservationCount, 1);
+  }
+}
+
+} // namespace gem5_system
 
 class Gem5SystemFactsSession::Impl final {
 public:
@@ -54,7 +147,8 @@ public:
     return artifacts_ == &artifacts && blobs_ == &blobs;
   }
 
-  llvm::Expected<std::shared_ptr<const gem5_system::Gem5SystemFactsOrUnsupported>>
+  llvm::Expected<
+      std::shared_ptr<const gem5_system::Gem5SystemFactsOrUnsupported>>
   get(const evaluation::EvaluationRequest &request,
       const evaluation::CaseArtifactResolution &resolution,
       const ArtifactStore &artifacts, const BlobStore &blobs) {
@@ -64,17 +158,15 @@ public:
           "Gem5SystemFacts session crosses its store verification domain");
 
     Key key{evaluation::evaluationRequestReference(request)};
-    const auto found = llvm::find_if(entries_, [&](const Entry &entry) {
-      return entry.key == key;
-    });
+    const auto found = llvm::find_if(
+        entries_, [&](const Entry &entry) { return entry.key == key; });
     if (found != entries_.end()) {
       auto revalidated = revalidate(*found, artifacts, blobs);
       if (!revalidated)
         return revalidated.takeError();
       addSaturated(statistics_.cacheHits, 1);
       addSaturated(statistics_.revalidationCount, 1);
-      addSaturated(statistics_.revalidatedArtifactBytes,
-                   revalidated->first);
+      addSaturated(statistics_.revalidatedArtifactBytes, revalidated->first);
       addSaturated(statistics_.revalidatedBlobBytes, revalidated->second);
       addSaturated(statistics_.constructionNanosecondsSaved,
                    found->constructionNanoseconds);
@@ -84,20 +176,20 @@ public:
     addSaturated(statistics_.cacheMisses, 1);
     addSaturated(statistics_.constructionAttempts, 1);
     const auto begin = std::chrono::steady_clock::now();
-    auto derived = gem5_system::deriveFactsUncached(request, resolution,
-                                                    artifacts, blobs);
+    auto derived = gem5_system::deriveFactsUncached(
+        request, resolution, artifacts, blobs, &statistics_.construction);
     const std::uint64_t constructionNanoseconds =
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - begin)
             .count();
-    addSaturated(statistics_.constructionNanoseconds,
-                 constructionNanoseconds);
+    addSaturated(statistics_.constructionNanoseconds, constructionNanoseconds);
     if (!derived) {
       addSaturated(statistics_.failedConstructions, 1);
       return derived.takeError();
     }
-    auto facts = std::make_shared<const gem5_system::Gem5SystemFactsOrUnsupported>(
-        std::move(*derived));
+    auto facts =
+        std::make_shared<const gem5_system::Gem5SystemFactsOrUnsupported>(
+            std::move(*derived));
     const auto *completed =
         std::get_if<gem5_system::Gem5SystemFacts>(facts.get());
     if (!completed) {
@@ -148,8 +240,7 @@ private:
       return gem5_system::invalid(
           "Gem5SystemFacts cache contains a non-completed entry");
     std::uint64_t artifactBytes = 0;
-    for (const ArtifactRootReference &reference :
-         facts->artifactDependencies) {
+    for (const ArtifactRootReference &reference : facts->artifactDependencies) {
       auto bytes = artifacts.get(reference);
       if (!bytes)
         return bytes.takeError();
@@ -176,9 +267,10 @@ namespace {
 thread_local std::shared_ptr<Gem5SystemFactsSession::Impl> currentFactsSession;
 } // namespace
 
-Gem5SystemFactsSession::Gem5SystemFactsSession(
-    const ArtifactStore &artifacts, const BlobStore &blobs,
-    Gem5SystemFactsSessionMode mode, std::size_t entryLimit)
+Gem5SystemFactsSession::Gem5SystemFactsSession(const ArtifactStore &artifacts,
+                                               const BlobStore &blobs,
+                                               Gem5SystemFactsSessionMode mode,
+                                               std::size_t entryLimit)
     : previous_(currentFactsSession) {
   if (mode == Gem5SystemFactsSessionMode::ReuseEnclosing && previous_ &&
       previous_->owns(artifacts, blobs))

@@ -54,9 +54,8 @@ std::optional<std::uint64_t> timevalNanoseconds(const timeval &value) {
   const std::uint64_t subsecond =
       static_cast<std::uint64_t>(value.tv_usec) * 1000;
   const std::uint64_t seconds = value.tv_sec;
-  if (seconds >
-      (std::numeric_limits<std::uint64_t>::max() - subsecond) /
-          nanosecondsPerSecond)
+  if (seconds > (std::numeric_limits<std::uint64_t>::max() - subsecond) /
+                    nanosecondsPerSecond)
     return std::nullopt;
   return seconds * nanosecondsPerSecond + subsecond;
 }
@@ -89,9 +88,8 @@ ResourceSnapshot captureResources() {
   return snapshot;
 }
 
-std::optional<std::uint64_t>
-difference(std::optional<std::uint64_t> end,
-           std::optional<std::uint64_t> begin) {
+std::optional<std::uint64_t> difference(std::optional<std::uint64_t> end,
+                                        std::optional<std::uint64_t> begin) {
   if (!end || !begin || *end < *begin)
     return std::nullopt;
   return *end - *begin;
@@ -172,16 +170,36 @@ void emitCacheRow(llvm::StringRef cell, const CacheRow &row) {
                << " construction_attempts=" << row.constructionAttempts
                << " unique_constructions=" << row.uniqueConstructions
                << " uncached_constructions=" << row.uncachedConstructions
-               << " unsupported_constructions="
-               << row.unsupportedConstructions
+               << " unsupported_constructions=" << row.unsupportedConstructions
                << " failed_constructions=" << row.failedConstructions
                << " revalidation_count=" << row.revalidationCount
-               << " revalidated_artifact_bytes="
-               << row.revalidatedArtifactBytes
+               << " revalidated_artifact_bytes=" << row.revalidatedArtifactBytes
                << " revalidated_blob_bytes=" << row.revalidatedBlobBytes
                << " construction_wall_ns=" << row.constructionNanoseconds
                << " minimum_retained_bytes=" << row.minimumRetainedBytes
                << " entries=" << row.entryCount << '\n';
+}
+
+void emitFactsOperationRow(
+    llvm::StringRef cell, llvm::StringRef operation,
+    const runtime::Gem5SystemFactsOperationStatistics &statistics) {
+  llvm::outs() << "execution-matrix-facts-operation"
+               << " schema=loom.execution_matrix_facts_operation.1"
+               << " cell=" << cell << " operation=" << operation
+               << " invocations=" << statistics.invocations
+               << " wall_ns=" << statistics.wallNanoseconds << " self_cpu_ns=";
+  printOptional(
+      llvm::outs(),
+      statistics.selfCpuObservationCount == statistics.invocations
+          ? std::optional<std::uint64_t>(statistics.selfCpuNanoseconds)
+          : std::nullopt);
+  llvm::outs() << " child_cpu_ns=";
+  printOptional(
+      llvm::outs(),
+      statistics.childCpuObservationCount == statistics.invocations
+          ? std::optional<std::uint64_t>(statistics.childCpuNanoseconds)
+          : std::nullopt);
+  llvm::outs() << '\n';
 }
 
 } // namespace
@@ -206,13 +224,11 @@ public:
     const auto wall = std::chrono::duration_cast<std::chrono::nanoseconds>(
         end.wall - begin.wall);
     records_.push_back(
-        {sequence,
-         operation,
+        {sequence, operation,
          static_cast<std::uint64_t>(std::max<std::int64_t>(0, wall.count())),
          difference(end.selfCpuNanoseconds, begin.selfCpuNanoseconds),
          difference(end.childCpuNanoseconds, begin.childCpuNanoseconds),
-         end.selfPeakRssKib,
-         end.childPeakRssKib});
+         end.selfPeakRssKib, end.childPeakRssKib});
   }
 
   void emit(llvm::StringRef cell) const {
@@ -225,8 +241,7 @@ public:
                    << " schema=loom.execution_matrix_lifecycle.1"
                    << " cell=" << cell
                    << " operation=" << spelling(record.operation)
-                   << " wall_ns=" << record.wallNanoseconds
-                   << " self_cpu_ns=";
+                   << " wall_ns=" << record.wallNanoseconds << " self_cpu_ns=";
       printOptional(llvm::outs(), record.selfCpuNanoseconds);
       llvm::outs() << " child_cpu_ns=";
       printOptional(llvm::outs(), record.childCpuNanoseconds);
@@ -258,8 +273,7 @@ public:
 
 ExecutionMatrixLifecycleRecorder::ExecutionMatrixLifecycleRecorder()
     : impl_(std::make_unique<Impl>()) {}
-ExecutionMatrixLifecycleRecorder::~ExecutionMatrixLifecycleRecorder() =
-    default;
+ExecutionMatrixLifecycleRecorder::~ExecutionMatrixLifecycleRecorder() = default;
 
 void ExecutionMatrixLifecycleRecorder::emit(llvm::StringRef cell) const {
   impl_->emit(cell);
@@ -269,12 +283,12 @@ ExecutionMatrixLifecycleTimer::ExecutionMatrixLifecycleTimer(
     ExecutionMatrixLifecycleRecorder &recorder,
     ExecutionMatrixLifecycleOperation operation)
     : impl_(std::make_unique<Impl>(recorder, operation,
-                                  recorder.impl_->reserveSequence())) {}
+                                   recorder.impl_->reserveSequence())) {}
 
 ExecutionMatrixLifecycleTimer::~ExecutionMatrixLifecycleTimer() {
   const ResourceSnapshot end = captureResources();
-  impl_->recorder->impl_->record(impl_->sequence, impl_->operation, impl_->begin,
-                                end);
+  impl_->recorder->impl_->record(impl_->sequence, impl_->operation,
+                                 impl_->begin, end);
 }
 
 class ExecutionMatrixImportSessions::Impl final {
@@ -286,8 +300,7 @@ public:
         configurationAbiImports(
             hardware::ConfigurationABIImportSessionMode::Isolated),
         systemMappingImports(artifacts, systemMappingImportEntryLimit),
-        configurationProjections(artifacts,
-                                 configurationProjectionEntryLimit),
+        configurationProjections(artifacts, configurationProjectionEntryLimit),
         gem5Facts(artifacts, blobs,
                   runtime::Gem5SystemFactsSessionMode::Isolated,
                   gem5FactsEntryLimit) {}
@@ -315,69 +328,73 @@ ExecutionMatrixImportSummary ExecutionMatrixImportSessions::summary() const {
 void ExecutionMatrixImportSessions::emitStatistics(llvm::StringRef cell) const {
   const evaluation::ArtifactImportCacheStatistics artifact =
       impl_->artifactImports.statistics();
-  emitCacheRow(cell,
-               {"artifact_import", "artifact_revalidation",
-                artifact.importRequests, artifact.cacheHits,
-                artifact.cacheMisses, artifact.cacheMisses,
-                artifact.uniqueConstructions, artifact.uncachedConstructions,
-                0, 0, artifact.revalidationCount,
-                artifact.revalidatedBytes, 0,
-                artifact.constructionNanoseconds,
-                artifact.minimumRetainedBytes, artifact.entryCount});
+  emitCacheRow(
+      cell, {"artifact_import", "artifact_revalidation",
+             artifact.importRequests, artifact.cacheHits, artifact.cacheMisses,
+             artifact.cacheMisses, artifact.uniqueConstructions,
+             artifact.uncachedConstructions, 0, 0, artifact.revalidationCount,
+             artifact.revalidatedBytes, 0, artifact.constructionNanoseconds,
+             artifact.minimumRetainedBytes, artifact.entryCount});
 
   const fabric::FabricArtifactImportSessionStatistics fabric =
       impl_->fabricImports.statistics();
   emitCacheRow(cell,
-                {"fabric_import", "artifact_revalidation",
-                fabric.importRequests, fabric.cacheHits, fabric.cacheMisses,
-                fabric.cacheMisses, fabric.uniqueConstructions,
-                fabric.uncachedConstructions, 0, 0, fabric.revalidationCount,
-                fabric.revalidatedBytes, 0,
+               {"fabric_import", "artifact_revalidation", fabric.importRequests,
+                fabric.cacheHits, fabric.cacheMisses, fabric.cacheMisses,
+                fabric.uniqueConstructions, fabric.uncachedConstructions, 0, 0,
+                fabric.revalidationCount, fabric.revalidatedBytes, 0,
                 fabric.constructionNanoseconds, fabric.retainedPayloadBytes,
                 fabric.entryCount});
 
   const hardware::ConfigurationABIImportSessionStatistics abi =
       impl_->configurationAbiImports.statistics();
-  emitCacheRow(cell,
-                {"configuration_abi_import", "immutable_session_domain",
-                abi.importRequests, abi.cacheHits, abi.cacheMisses,
-                abi.cacheMisses, abi.uniqueConstructions, 0, 0, 0, 0, 0, 0,
-                abi.constructionNanoseconds, abi.retainedBytes,
-                abi.entryCount});
+  emitCacheRow(cell, {"configuration_abi_import", "immutable_session_domain",
+                      abi.importRequests, abi.cacheHits, abi.cacheMisses,
+                      abi.cacheMisses, abi.uniqueConstructions, 0, 0, 0, 0, 0,
+                      0, abi.constructionNanoseconds, abi.retainedBytes,
+                      abi.entryCount});
 
   const mapping::SystemMappingImportSessionStatistics mapping =
       impl_->systemMappingImports.statistics();
   emitCacheRow(cell,
                {"system_mapping_import", "immutable_session_domain",
-                mapping.importRequests, mapping.cacheHits,
-                mapping.cacheMisses, mapping.cacheMisses,
-                mapping.uniqueConstructions, mapping.uncachedConstructions, 0,
-                0, 0, 0, 0,
+                mapping.importRequests, mapping.cacheHits, mapping.cacheMisses,
+                mapping.cacheMisses, mapping.uniqueConstructions,
+                mapping.uncachedConstructions, 0, 0, 0, 0, 0,
                 mapping.constructionNanoseconds, mapping.retainedBytes,
                 mapping.entryCount});
 
   const deployment::ConfigurationImageProjectionSessionStatistics projection =
       impl_->configurationProjections.statistics();
-  emitCacheRow(cell,
-               {"configuration_image_projection", "immutable_session_domain",
-                projection.requests, projection.cacheHits,
-                projection.cacheMisses, projection.cacheMisses,
-                projection.uniqueConstructions,
-                projection.uncachedConstructions, 0, 0, 0, 0, 0,
-                projection.constructionNanoseconds, projection.retainedBytes,
-                projection.entryCount});
+  emitCacheRow(cell, {"configuration_image_projection",
+                      "immutable_session_domain", projection.requests,
+                      projection.cacheHits, projection.cacheMisses,
+                      projection.cacheMisses, projection.uniqueConstructions,
+                      projection.uncachedConstructions, 0, 0, 0, 0, 0,
+                      projection.constructionNanoseconds,
+                      projection.retainedBytes, projection.entryCount});
 
   const runtime::Gem5SystemFactsSessionStatistics facts =
       impl_->gem5Facts.statistics();
-  emitCacheRow(cell,
-                {"gem5_system_facts", "complete_closure_revalidation",
-                facts.requests, facts.cacheHits, facts.cacheMisses,
-                facts.constructionAttempts, facts.uniqueConstructions,
-                facts.uncachedConstructions, facts.unsupportedConstructions,
-                facts.failedConstructions, facts.revalidationCount,
-                facts.revalidatedArtifactBytes,
-                facts.revalidatedBlobBytes, facts.constructionNanoseconds,
-                facts.minimumRetainedBytes, facts.entryCount});
+  emitCacheRow(cell, {"gem5_system_facts", "complete_closure_revalidation",
+                      facts.requests, facts.cacheHits, facts.cacheMisses,
+                      facts.constructionAttempts, facts.uniqueConstructions,
+                      facts.uncachedConstructions,
+                      facts.unsupportedConstructions, facts.failedConstructions,
+                      facts.revalidationCount, facts.revalidatedArtifactBytes,
+                      facts.revalidatedBlobBytes, facts.constructionNanoseconds,
+                      facts.minimumRetainedBytes, facts.entryCount});
+  emitFactsOperationRow(cell, "derive_facts", facts.construction.deriveFacts);
+  emitFactsOperationRow(cell, "system_inputs_and_deployment_import",
+                        facts.construction.systemInputsAndDeploymentImport);
+  emitFactsOperationRow(cell, "gem5_binding_import",
+                        facts.construction.bindingImport);
+  emitFactsOperationRow(cell, "entire_fabric_root_import",
+                        facts.construction.fabricImport);
+  emitFactsOperationRow(cell, "system_mapping_import",
+                        facts.construction.systemMappingImport);
+  emitFactsOperationRow(cell, "runtime_image_derivation",
+                        facts.construction.runtimeImageDerivation);
 }
 
 } // namespace loom::system_test

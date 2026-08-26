@@ -25,6 +25,24 @@ enum class Gem5SystemFactsSessionMode : std::uint8_t {
   Isolated,
 };
 
+struct Gem5SystemFactsOperationStatistics final {
+  std::uint64_t invocations = 0;
+  std::uint64_t wallNanoseconds = 0;
+  std::uint64_t selfCpuNanoseconds = 0;
+  std::uint64_t selfCpuObservationCount = 0;
+  std::uint64_t childCpuNanoseconds = 0;
+  std::uint64_t childCpuObservationCount = 0;
+};
+
+struct Gem5SystemFactsConstructionStatistics final {
+  Gem5SystemFactsOperationStatistics deriveFacts;
+  Gem5SystemFactsOperationStatistics systemInputsAndDeploymentImport;
+  Gem5SystemFactsOperationStatistics bindingImport;
+  Gem5SystemFactsOperationStatistics fabricImport;
+  Gem5SystemFactsOperationStatistics systemMappingImport;
+  Gem5SystemFactsOperationStatistics runtimeImageDerivation;
+};
+
 struct Gem5SystemFactsSessionStatistics final {
   std::uint64_t requests = 0;
   std::uint64_t cacheHits = 0;
@@ -41,6 +59,7 @@ struct Gem5SystemFactsSessionStatistics final {
   std::uint64_t constructionNanosecondsSaved = 0;
   std::uint64_t minimumRetainedBytes = 0;
   std::uint64_t entryCount = 0;
+  Gem5SystemFactsConstructionStatistics construction;
 };
 
 /// Bounded immutable facts cache for one exact ArtifactStore/BlobStore
@@ -75,6 +94,7 @@ struct Gem5CgraEngineAttemptProfile final {
 
 struct Gem5SystemAttemptProfile final {
   std::uint64_t configurationWallNanoseconds = 0;
+  std::uint64_t engineStartupWallNanoseconds = 0;
   std::uint64_t simulationWallNanoseconds = 0;
   std::uint64_t gem5SimulationProcessCpuNanoseconds = 0;
   std::uint64_t observationWallNanoseconds = 0;

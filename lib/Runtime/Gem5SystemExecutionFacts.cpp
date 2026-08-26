@@ -512,26 +512,41 @@ importCachedSystemInputs(const ArtifactRootReference &workload,
 llvm::Expected<Gem5SystemFactsOrUnsupported>
 deriveFactsUncached(const EvaluationRequest &request,
                     const CaseArtifactResolution &resolution,
-                    const ArtifactStore &artifacts, const BlobStore &blobs) {
+                    const ArtifactStore &artifacts, const BlobStore &blobs,
+                    Gem5SystemFactsConstructionStatistics *statistics) {
+  Gem5SystemFactsOperationTimer deriveTimer(
+      statistics ? &statistics->deriveFacts : nullptr);
   (void)resolution;
   auto subjects = systemSubjects(request);
   if (!subjects)
     return subjects.takeError();
   if (!request.workload() || !request.runtimeInput())
     return invalid("System Request has no workload/runtime pair");
-  auto systemInputs = importCachedSystemInputs(
-      *request.workload(), *request.runtimeInput(), artifacts, blobs);
+  auto systemInputs = [&] {
+    Gem5SystemFactsOperationTimer timer(
+        statistics ? &statistics->systemInputsAndDeploymentImport : nullptr);
+    return importCachedSystemInputs(*request.workload(),
+                                    *request.runtimeInput(), artifacts, blobs);
+  }();
   if (!systemInputs)
     return systemInputs.takeError();
   const sim::ImportedSystemSimulationInputs &inputs = **systemInputs;
   const Gem5SystemEngine engine = selectedEngine(request);
   if (inputs.deployment.reference() != subjects->first)
     return invalid("System workload names a foreign Deployment");
-  auto binding = importGem5SimulationBinding(subjects->second, artifacts);
+  auto binding = [&] {
+    Gem5SystemFactsOperationTimer timer(statistics ? &statistics->bindingImport
+                                                   : nullptr);
+    return importGem5SimulationBinding(subjects->second, artifacts);
+  }();
   if (!binding)
     return binding.takeError();
-  auto fabricRoot =
-      fabric::importEntireFabricRoot(binding->binding().fabric(), artifacts);
+  auto fabricRoot = [&] {
+    Gem5SystemFactsOperationTimer timer(statistics ? &statistics->fabricImport
+                                                   : nullptr);
+    return fabric::importEntireFabricRoot(binding->binding().fabric(),
+                                          artifacts);
+  }();
   if (!fabricRoot)
     return fabricRoot.takeError();
   auto system = fabric::requireSystemRoot(fabricRoot->view());
@@ -539,8 +554,12 @@ deriveFactsUncached(const EvaluationRequest &request,
     return system.takeError();
   if (binding->binding().fabric().artifact !=
       inputs.deployment.deployment().systemMapping().artifact) {
-    auto mapping = mapping::importSystemMapping(
-        inputs.deployment.deployment().systemMapping(), artifacts);
+    auto mapping = [&] {
+      Gem5SystemFactsOperationTimer timer(
+          statistics ? &statistics->systemMappingImport : nullptr);
+      return mapping::importSystemMapping(
+          inputs.deployment.deployment().systemMapping(), artifacts);
+    }();
     if (!mapping)
       return mapping.takeError();
     if (mapping->view().fabricIdentity() !=
@@ -555,8 +574,11 @@ deriveFactsUncached(const EvaluationRequest &request,
   if (!deployment.spatialLaunchImage())
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-  auto systemMapping =
-      mapping::importSystemMapping(deployment.systemMapping(), artifacts);
+  auto systemMapping = [&] {
+    Gem5SystemFactsOperationTimer timer(
+        statistics ? &statistics->systemMappingImport : nullptr);
+    return mapping::importSystemMapping(deployment.systemMapping(), artifacts);
+  }();
   if (!systemMapping)
     return systemMapping.takeError();
   ArtifactRootReference dataflowReference{
@@ -1152,6 +1174,9 @@ deriveFactsUncached(const EvaluationRequest &request,
   semanticInputs.push_back({kAdmissionPath.str(), bytesToString(admissionBytes),
                             inputs.deployment.reference(), false});
 
+  std::optional<Gem5SystemFactsOperationTimer> runtimeImageTimer;
+  runtimeImageTimer.emplace(statistics ? &statistics->runtimeImageDerivation
+                                       : nullptr);
   std::uint64_t cursor = runtimeArenaBegin;
   std::vector<Gem5RuntimeImage> runtimeImages;
   auto reserveRuntimeRange =
@@ -1473,6 +1498,7 @@ deriveFactsUncached(const EvaluationRequest &request,
                               *request.runtimeInput(), false});
   }
 
+  runtimeImageTimer.reset();
   std::vector<Gem5MemoryObservationProjection> memoryObservations;
   memoryObservations.reserve(
       systemWorkload->observableContract.memories.size());

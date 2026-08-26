@@ -675,10 +675,10 @@ parseGem5SystemAttemptProfile(llvm::StringRef text) {
   if (!value)
     return invalid("gem5 performance profile is not valid JSON");
   const llvm::json::Object *object = value->getAsObject();
-  if (!object || object->size() != 13)
+  if (!object || object->size() != 14)
     return invalid("gem5 performance profile has the wrong shape");
   const auto schema = object->getString("schema");
-  if (!schema || *schema != "loom.gem5_system_performance_profile.3")
+  if (!schema || *schema != "loom.gem5_system_performance_profile.4")
     return invalid("gem5 performance profile has the wrong schema");
   Gem5SystemAttemptProfile profile;
   const auto assign = [&](llvm::StringRef field,
@@ -687,6 +687,9 @@ parseGem5SystemAttemptProfile(llvm::StringRef text) {
   };
   if (llvm::Error error = assign("configuration_wall_nanoseconds",
                                  profile.configurationWallNanoseconds))
+    return std::move(error);
+  if (llvm::Error error = assign("engine_startup_wall_nanoseconds",
+                                 profile.engineStartupWallNanoseconds))
     return std::move(error);
   if (llvm::Error error = assign("simulation_wall_nanoseconds",
                                  profile.simulationWallNanoseconds))

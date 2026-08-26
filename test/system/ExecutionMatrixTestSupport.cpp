@@ -1533,6 +1533,8 @@ void recordRunStatistics(ExecutionMatrixInvocation matrixInvocation,
     }
     llvm::outs() << " gem5_configuration_wall_us="
                  << profile.configurationWallNanoseconds / 1000
+                 << " engine_startup_wall_us="
+                 << profile.engineStartupWallNanoseconds / 1000
                  << " gem5_simulation_wall_us="
                  << profile.simulationWallNanoseconds / 1000
                  << " gem5_simulation_cpu_us="

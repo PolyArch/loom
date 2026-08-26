@@ -33,7 +33,7 @@ from m5.objects import (
 
 
 CONFIG_SCHEMA = "loom.gem5_system_projection.11"
-PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.3"
+PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.4"
 STATISTICS_BEGIN = "---------- Begin Simulation Statistics ----------"
 STATISTICS_END = "---------- End Simulation Statistics   ----------"
 
@@ -49,9 +49,7 @@ BRIDGE_STAT_SUFFIXES = {
 def load_timeout_seconds(tier: str) -> int:
     bundled_path = pathlib.Path(__file__).with_name("timeout-budgets.json")
     repository_path = (
-        pathlib.Path(__file__).resolve().parents[2]
-        / "config"
-        / "timeout-budgets.json"
+        pathlib.Path(__file__).resolve().parents[2] / "config" / "timeout-budgets.json"
     )
     budget_path = bundled_path if bundled_path.is_file() else repository_path
     document = json.loads(budget_path.read_text(encoding="utf-8"))
@@ -532,9 +530,7 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
         processors.append(cpu)
     system.cpu = processors
 
-    system.memory = SimpleMemory(
-        range=system.mem_ranges[0], latency=memory["latency"]
-    )
+    system.memory = SimpleMemory(range=system.mem_ranges[0], latency=memory["latency"])
     system.memory.port = system.membus.mem_side_ports
 
     system.loom_thread_dispatch = LoomThreadDispatch(
@@ -584,9 +580,11 @@ def main() -> None:
         if diagnostics and has_managed_engines
         else None
     )
+    engine_startup_started = time.monotonic_ns() if diagnostics else None
     engines = start_engines(
         projection["bridges"], len(projection["dispatch"]["targets"])
     )
+    engine_startup_finished = time.monotonic_ns() if diagnostics else None
     performance = None
     try:
         system = build_system(projection, diagnostics)
@@ -631,6 +629,8 @@ def main() -> None:
             if None in (
                 configuration_started,
                 configuration_finished,
+                engine_startup_started,
+                engine_startup_finished,
                 simulation_cpu_before,
                 simulation_started,
                 simulation_finished,
@@ -644,6 +644,9 @@ def main() -> None:
                 "schema": PERFORMANCE_PROFILE_SCHEMA,
                 "configuration_wall_nanoseconds": (
                     configuration_finished - configuration_started
+                ),
+                "engine_startup_wall_nanoseconds": (
+                    engine_startup_finished - engine_startup_started
                 ),
                 "simulation_wall_nanoseconds": (
                     simulation_finished - simulation_started
