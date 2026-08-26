@@ -39,6 +39,9 @@ struct CgraSimulationAttemptLimits final {
   std::optional<std::chrono::steady_clock::time_point> executionDeadline;
 };
 
+/// Invocation-local host measurements for one in-process CGRA attempt. These
+/// observations are not Evaluation Evidence and never participate in request,
+/// candidate, Mapping, or cache identity.
 struct CgraSimulationAttemptProfile final {
   std::uint64_t activeWallNanoseconds = 0;
   std::optional<std::uint64_t> processCpuNanoseconds;
@@ -57,7 +60,7 @@ struct CgraSimulationEvaluation final {
   EvaluationEvidence evidence;
   std::optional<sim::CgraClosedWaitSetDiagnostic> closedWait;
   std::optional<sim::CgraUnsupportedMemoryContract> unsupportedMemoryContract;
-  CgraSimulationAttemptProfile attemptProfile;
+  std::optional<CgraSimulationAttemptProfile> attemptProfile;
 };
 
 llvm::Error registerCgraSimulationModel();
@@ -97,6 +100,14 @@ evaluateCgraSimulation(const PreparedCgraSimulationEvaluation &prepared,
 /// feedback loop. The diagnostic is ephemeral and cannot replace Evidence or
 /// Mapping verification.
 llvm::Expected<CgraSimulationEvaluation> evaluateCgraSimulationWithDiagnostics(
+    const PreparedCgraSimulationEvaluation &prepared,
+    CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore);
+
+/// Retains the same typed diagnostics and adds invocation-local host timing.
+/// Timing remains outside Evaluation Evidence and semantic identity.
+llvm::Expected<CgraSimulationEvaluation>
+evaluateCgraSimulationWithAttemptProfile(
     const PreparedCgraSimulationEvaluation &prepared,
     CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
     const BlobStore &blobStore);

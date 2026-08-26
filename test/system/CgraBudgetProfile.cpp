@@ -113,8 +113,8 @@ llvm::json::Value infeasibilityProofJson(
       {"witness", llvm::toHex(proven->proof.witness, true)}};
 }
 
-const std::vector<loom::ArtifactRootReference> &candidateArtifacts(
-    const loom::dse::CandidateGeneratorProviderResult &result) {
+const std::vector<loom::ArtifactRootReference> &
+candidateArtifacts(const loom::dse::CandidateGeneratorProviderResult &result) {
   const std::vector<loom::dse::CandidateGeneratorOutputBinding> *bindings =
       nullptr;
   if (const auto *completed =
@@ -122,8 +122,7 @@ const std::vector<loom::ArtifactRootReference> &candidateArtifacts(
               &result.outcome))
     bindings = &completed->outputBindings;
   else if (const auto *proven =
-               std::get_if<
-                   loom::dse::ProvenInfeasibleCandidateGeneratorResult>(
+               std::get_if<loom::dse::ProvenInfeasibleCandidateGeneratorResult>(
                    &result.outcome))
     bindings = &proven->outputBindings;
   else
@@ -146,9 +145,8 @@ llvm::json::Object candidateGeneratorResultJson(
           std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
               &result.outcome)) {
     outcome = "incomplete";
-    incompleteReason =
-        loom::dse::candidateGeneratorIncompleteReasonSpelling(
-            incomplete->reason);
+    incompleteReason = loom::dse::candidateGeneratorIncompleteReasonSpelling(
+        incomplete->reason);
   } else if (std::holds_alternative<
                  loom::dse::ProvenInfeasibleCandidateGeneratorResult>(
                  result.outcome)) {
@@ -160,7 +158,8 @@ llvm::json::Object candidateGeneratorResultJson(
   }
 
   llvm::json::Array candidates;
-  for (const loom::ArtifactRootReference &candidate : candidateArtifacts(result))
+  for (const loom::ArtifactRootReference &candidate :
+       candidateArtifacts(result))
     candidates.push_back(referenceJson(candidate));
   llvm::json::Array workUnits;
   for (const auto [ordinal, entry] : llvm::enumerate(result.workSummary)) {
@@ -176,9 +175,9 @@ llvm::json::Object candidateGeneratorResultJson(
   }
   return llvm::json::Object{
       {"outcome", outcome.str()},
-      {"incomplete_reason",
-       incompleteReason ? llvm::json::Value(incompleteReason->str())
-                        : llvm::json::Value(nullptr)},
+      {"incomplete_reason", incompleteReason
+                                ? llvm::json::Value(incompleteReason->str())
+                                : llvm::json::Value(nullptr)},
       {"infeasibility_proof", infeasibilityProofJson(result)},
       {"candidates", std::move(candidates)},
       {"work_units", std::move(workUnits)}};
@@ -201,13 +200,11 @@ llvm::json::Object spatialPnrResultJson(
           std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
               &result.outcome)) {
     outcome = "incomplete";
-    incompleteReason =
-        loom::dse::candidateGeneratorIncompleteReasonSpelling(
-            incomplete->reason);
-  } else if (const auto *proven =
-                 std::get_if<
-                     loom::dse::ProvenInfeasibleCandidateGeneratorResult>(
-                     &result.outcome)) {
+    incompleteReason = loom::dse::candidateGeneratorIncompleteReasonSpelling(
+        incomplete->reason);
+  } else if (const auto *proven = std::get_if<
+                 loom::dse::ProvenInfeasibleCandidateGeneratorResult>(
+                 &result.outcome)) {
     require(proven->outputBindings.size() == 1 &&
                 proven->outputBindings.front().artifacts.empty(),
             "proven-infeasible qualification PnR retained a candidate");
@@ -241,7 +238,8 @@ llvm::json::Object spatialPnrResultJson(
   }
 
   llvm::json::Array candidates;
-  for (const loom::ArtifactRootReference &candidate : candidateArtifacts(result))
+  for (const loom::ArtifactRootReference &candidate :
+       candidateArtifacts(result))
     candidates.push_back(referenceJson(candidate));
 
   return llvm::json::Object{
@@ -250,9 +248,9 @@ llvm::json::Object spatialPnrResultJson(
       {"configured_seed_attempts",
        config.policy().search.initializer.seedAttemptCount},
       {"outcome", outcome.str()},
-      {"incomplete_reason",
-       incompleteReason ? llvm::json::Value(incompleteReason->str())
-                        : llvm::json::Value(nullptr)},
+      {"incomplete_reason", incompleteReason
+                                ? llvm::json::Value(incompleteReason->str())
+                                : llvm::json::Value(nullptr)},
       {"infeasibility_proof", infeasibilityProofJson(result)},
       {"candidates", std::move(candidates)},
       {"work_units", std::move(generatorSummary)}};
@@ -402,7 +400,9 @@ llvm::json::Object measurementJson(
     const loom::evaluation::models::CgraSimulationEvaluation &evaluation,
     const loom::ArtifactRootReference &evidence) {
   const std::uint64_t cycles = referenceCycles(evaluation);
-  const auto &profile = evaluation.attemptProfile;
+  require(evaluation.attemptProfile.has_value(),
+          "CGRA qualification did not collect an attempt profile");
+  const auto &profile = *evaluation.attemptProfile;
   const auto &counters = profile.counters;
   require(profile.activeWallNanoseconds > 0 && counters.eventFrameCount > 0,
           "CGRA execution produced no measurable active work");
@@ -559,7 +559,7 @@ int main(int argc, char **argv) {
   const auto warmupDeadline =
       std::chrono::steady_clock::now() + kQualificationLimit;
   auto warmup =
-      take(loom::evaluation::models::evaluateCgraSimulationWithDiagnostics(
+      take(loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
           prepared, {loom::runtime::gem5MaximumSpatialWork, warmupDeadline},
           artifacts, blobs));
   std::optional<loom::ArtifactRootReference> preRepairEvidence;
@@ -611,8 +611,8 @@ int main(int argc, char **argv) {
               source.runtimeInput, resolvedConfig, artifacts, blobs));
       const auto candidateDeadline =
           std::chrono::steady_clock::now() + kQualificationLimit;
-      auto candidateWarmup =
-          take(loom::evaluation::models::evaluateCgraSimulationWithDiagnostics(
+      auto candidateWarmup = take(
+          loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
               candidatePrepared,
               {loom::runtime::gem5MaximumSpatialWork, candidateDeadline},
               artifacts, blobs));
@@ -648,7 +648,7 @@ int main(int argc, char **argv) {
     const auto deadline =
         std::chrono::steady_clock::now() + kQualificationLimit;
     auto evaluated =
-        take(loom::evaluation::models::evaluateCgraSimulationWithDiagnostics(
+        take(loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
             prepared, {loom::runtime::gem5MaximumSpatialWork, deadline},
             artifacts, blobs));
     const auto evidence = take(loom::evaluation::publishEvaluationEvidence(
@@ -678,8 +678,7 @@ int main(int argc, char **argv) {
       {"transport_repair",
        parentSystemMapping && preRepairEvidence
            ? llvm::json::Value(llvm::json::Object{
-                 {"parent_system_mapping",
-                  referenceJson(*parentSystemMapping)},
+                 {"parent_system_mapping", referenceJson(*parentSystemMapping)},
                  {"pre_repair_evidence", referenceJson(*preRepairEvidence)},
                  {"attempts", std::move(transportRepairAttempts)}})
            : llvm::json::Value(nullptr)},
