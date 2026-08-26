@@ -40,31 +40,10 @@ namespace loom::external_tool {
 
 char IncompleteExternalToolInvocationError::ID = 0;
 
-llvm::StringRef completionStatusSpelling(InvocationCompletionStatus status) {
-  switch (status) {
-  case InvocationCompletionStatus::Success:
-    return "success";
-  case InvocationCompletionStatus::MissingEnvironment:
-    return "missing_environment";
-  case InvocationCompletionStatus::ModuleActivationFailed:
-    return "module_activation_failed";
-  case InvocationCompletionStatus::VersionMismatch:
-    return "version_mismatch";
-  case InvocationCompletionStatus::BundleContentMismatch:
-    return "bundle_content_mismatch";
-  case InvocationCompletionStatus::ToolExit:
-    return "tool_exit";
-  case InvocationCompletionStatus::MissingOutput:
-    return "missing_output";
-  }
-  llvm_unreachable("closed invocation completion status");
-}
-
 namespace {
 
 llvm::Error bundleError(const llvm::Twine &message) {
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "invocation_bundle_invalid: " + message);
+  return invocationBundleError(message);
 }
 
 bool containsNull(llvm::StringRef value) {
@@ -148,22 +127,6 @@ parseRuntimeKind(llvm::StringRef spelling) {
   if (spelling == runtimeKindName(InvocationRuntimeKind::PolyArchContainer))
     return InvocationRuntimeKind::PolyArchContainer;
   return bundleError("runtime binding kind is unknown");
-}
-
-std::optional<InvocationCompletionStatus>
-parseCompletionStatus(llvm::StringRef spelling) {
-  constexpr std::array statuses{
-      InvocationCompletionStatus::Success,
-      InvocationCompletionStatus::MissingEnvironment,
-      InvocationCompletionStatus::ModuleActivationFailed,
-      InvocationCompletionStatus::VersionMismatch,
-      InvocationCompletionStatus::BundleContentMismatch,
-      InvocationCompletionStatus::ToolExit,
-      InvocationCompletionStatus::MissingOutput};
-  for (InvocationCompletionStatus status : statuses)
-    if (spelling == completionStatusSpelling(status))
-      return status;
-  return std::nullopt;
 }
 
 llvm::Error validateBinding(const ResolvedToolBinding &binding,
@@ -317,6 +280,10 @@ validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
     return bundleError(
         "every tool-produced executable must be used directly or named by a "
         "generated controller command");
+  if (llvm::Error error = validateParallelCommandGroups(
+          specification.parallelCommandGroups, specification.commands,
+          specification.tool.executable, specification.toolProducedExecutables))
+    return error;
 
   std::set<std::string> environmentNames;
   for (const std::string &name : specification.inheritEnvironment)
@@ -368,10 +335,15 @@ validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
     }
   }
 
-  std::set<std::string> paths{
-      kManifestName.str(),   kRunScriptName.str(), kCompletionPath.str(),
-      kStdoutPath.str(),     kStderrPath.str(),    kToolVersionPath.str(),
-      kAttemptTokenPath.str()};
+  std::set<std::string> paths{kManifestName.str(),
+                              kRunScriptName.str(),
+                              kCompletionPath.str(),
+                              kStdoutPath.str(),
+                              kStderrPath.str(),
+                              kToolVersionPath.str(),
+                              kAttemptTokenPath.str(),
+                              kCommandObservationsPath.str(),
+                              kCommandExecutionDirectory.str()};
   for (const MaterializedBundleFile &file : specification.files) {
     llvm::Expected<std::string> path =
         normalizedRelativePath(file.relativePath, "materialized file");
@@ -479,7 +451,9 @@ makeManifest(const ExternalToolInvocationBundleSpec &specification) {
                                   specification.externalFiles,
                                   specification.externalFileTrees,
                                   specification.declaredOutputs,
-                                  specification.toolProducedExecutables};
+                                  specification.toolProducedExecutables,
+                                  specification.parallelCommandGroups,
+                                  kCurrentManifestVersion.str()};
   manifest.materializedFiles.reserve(specification.files.size());
   for (const MaterializedBundleFile &file : specification.files)
     manifest.materializedFiles.push_back(ManifestMaterializedFile{
@@ -502,6 +476,7 @@ makeValidationSpecification(const InvocationManifestData &manifest) {
   specification.externalFiles = manifest.externalFiles;
   specification.externalFileTrees = manifest.externalFileTrees;
   specification.toolProducedExecutables = manifest.toolProducedExecutables;
+  specification.parallelCommandGroups = manifest.parallelCommandGroups;
   specification.files.reserve(manifest.materializedFiles.size());
   for (const ManifestMaterializedFile &file : manifest.materializedFiles)
     specification.files.push_back(MaterializedBundleFile{
@@ -823,8 +798,8 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
            "result_importer_identity", "tool_binding", "tool_version_probe",
            "runtime_binding", "commands", "inherit_environment",
            "materialized_files", "external_files", "external_file_trees",
-           "tool_produced_executables", "declared_outputs", "stdout", "stderr",
-           "completion_record"}))
+           "tool_produced_executables", "parallel_command_groups",
+           "declared_outputs", "stdout", "stderr", "completion_record"}))
     return std::move(error);
   auto schema = requireString(*root, "schema", "invocation manifest");
   if (!schema)
@@ -839,16 +814,22 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
                        "not supported");
   if (*version != kTypedClosureManifestVersion &&
       *version != kExternalFileTreeManifestVersion &&
-      *version != kToolProducedExecutableManifestVersion)
+      *version != kToolProducedExecutableManifestVersion &&
+      *version != kParallelCommandGroupManifestVersion)
     return bundleError("invocation manifest schema or version is unsupported");
   if (*version == kTypedClosureManifestVersion &&
       root->get("external_file_trees"))
     return bundleError(
         "invocation manifest 2.0 cannot contain external file trees");
   if (*version != kToolProducedExecutableManifestVersion &&
+      *version != kParallelCommandGroupManifestVersion &&
       root->get("tool_produced_executables"))
     return bundleError("invocation manifest before 2.2 cannot contain "
                        "tool-produced executables");
+  if (*version != kParallelCommandGroupManifestVersion &&
+      root->get("parallel_command_groups"))
+    return bundleError("invocation manifest before 2.3 cannot contain "
+                       "parallel command groups");
   auto provider =
       requireString(*root, "provider_identity", "invocation manifest");
   if (!provider)
@@ -893,7 +874,8 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
     return externalArray.takeError();
   const llvm::json::Array *externalTreeArray = nullptr;
   if (*version == kExternalFileTreeManifestVersion ||
-      *version == kToolProducedExecutableManifestVersion) {
+      *version == kToolProducedExecutableManifestVersion ||
+      *version == kParallelCommandGroupManifestVersion) {
     auto trees =
         requireArray(*root, "external_file_trees", "invocation manifest");
     if (!trees)
@@ -901,13 +883,17 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
     externalTreeArray = *trees;
   }
   std::vector<std::string> toolProducedExecutables;
-  if (*version == kToolProducedExecutableManifestVersion) {
+  if (*version == kToolProducedExecutableManifestVersion ||
+      *version == kParallelCommandGroupManifestVersion) {
     auto produced = parseStringArray(*root, "tool_produced_executables",
                                      "invocation manifest");
     if (!produced)
       return produced.takeError();
     toolProducedExecutables = std::move(*produced);
   }
+  auto parallelCommandGroups = parseParallelCommandGroups(*root);
+  if (!parallelCommandGroups)
+    return parallelCommandGroups.takeError();
   auto declared =
       parseStringArray(*root, "declared_outputs", "invocation manifest");
   if (!declared)
@@ -1084,12 +1070,14 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
       std::move(externalFiles),
       std::move(externalFileTrees),
       std::move(*declared),
-      std::move(toolProducedExecutables)};
+      std::move(toolProducedExecutables),
+      std::move(*parallelCommandGroups),
+      version->str()};
   ExternalToolInvocationBundleSpec validation =
       makeValidationSpecification(manifest);
   if (llvm::Error error = validateSpecification(validation))
     return std::move(error);
-  if (contents != serializeManifest(manifest, *version))
+  if (contents != serializeManifest(manifest))
     return bundleError("invocation manifest is not canonical");
   return manifest;
 }
@@ -1285,76 +1273,6 @@ readOrdinaryBundleFile(int bundleRoot, llvm::StringRef relativePath) {
   return contents;
 }
 
-std::string serializeCompletion(InvocationCompletionStatus status, int exitCode,
-                                const BlobDigest &manifestDigest,
-                                llvm::ArrayRef<BlobDigest> outputDigests) {
-  std::string canonical =
-      "{\"schema\":\"loom.external_tool_completion\",\"version\":\"1.0\","
-      "\"status\":\"" +
-      completionStatusSpelling(status).str() +
-      "\",\"exit_code\":" + std::to_string(exitCode) +
-      ",\"manifest_sha256\":\"" + formatBlobDigestHex(manifestDigest) +
-      "\",\"output_sha256\":[";
-  for (std::size_t index = 0; index < outputDigests.size(); ++index) {
-    if (index != 0)
-      canonical += ',';
-    canonical += "\"" + formatBlobDigestHex(outputDigests[index]) + "\"";
-  }
-  canonical += "]}\n";
-  return canonical;
-}
-
-llvm::Expected<InvocationCompletion> parseCompletion(llvm::StringRef contents) {
-  llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(contents);
-  if (!parsed)
-    return bundleError("completion record is malformed: " +
-                       llvm::toString(parsed.takeError()));
-  const llvm::json::Object *object = parsed->getAsObject();
-  if (!object || object->size() != 6)
-    return bundleError("completion record has an invalid shape");
-  const std::optional<llvm::StringRef> schema = object->getString("schema");
-  const std::optional<llvm::StringRef> version = object->getString("version");
-  const std::optional<llvm::StringRef> status = object->getString("status");
-  const std::optional<std::int64_t> exitCode = object->getInteger("exit_code");
-  const std::optional<llvm::StringRef> manifestText =
-      object->getString("manifest_sha256");
-  const llvm::json::Array *outputArray = object->getArray("output_sha256");
-  if (!schema || *schema != "loom.external_tool_completion" || !version ||
-      *version != "1.0" || !status || !exitCode || *exitCode < 0 ||
-      *exitCode > 255 || !manifestText || !outputArray)
-    return bundleError("completion record fields are invalid");
-  std::optional<InvocationCompletionStatus> parsedStatus =
-      parseCompletionStatus(*status);
-  if (!parsedStatus ||
-      ((*parsedStatus == InvocationCompletionStatus::Success) !=
-       (*exitCode == 0)))
-    return bundleError("completion status and exit code are inconsistent");
-  auto manifestDigest = parseBlobDigestHex(*manifestText);
-  if (!manifestDigest)
-    return manifestDigest.takeError();
-  std::vector<BlobDigest> outputDigests;
-  outputDigests.reserve(outputArray->size());
-  for (const llvm::json::Value &value : *outputArray) {
-    std::optional<llvm::StringRef> digestText = value.getAsString();
-    if (!digestText)
-      return bundleError("completion output digest must be a string");
-    auto digest = parseBlobDigestHex(*digestText);
-    if (!digest)
-      return digest.takeError();
-    outputDigests.push_back(std::move(*digest));
-  }
-  if (*parsedStatus != InvocationCompletionStatus::Success &&
-      !outputDigests.empty())
-    return bundleError("failed completion record contains output digests");
-  if (contents != serializeCompletion(*parsedStatus,
-                                      static_cast<int>(*exitCode),
-                                      *manifestDigest, outputDigests))
-    return bundleError("completion record is not canonical");
-  return InvocationCompletion{*parsedStatus, static_cast<int>(*exitCode),
-                              std::move(*manifestDigest),
-                              std::move(outputDigests)};
-}
-
 /// Reads and parses the completion record through one already-open bundle
 /// root descriptor; the single completion consumer shared by strict import
 /// and the diagnostic reader.
@@ -1362,7 +1280,32 @@ llvm::Expected<InvocationCompletion> readCompletionFromRoot(int bundleRoot) {
   auto contents = readOrdinaryBundleFile(bundleRoot, kCompletionPath);
   if (!contents)
     return contents.takeError();
-  return parseCompletion(*contents);
+  return parseInvocationCompletion(*contents);
+}
+
+llvm::Expected<std::optional<InvocationCompletion>>
+readOptionalCompletionFromRoot(int bundleRoot) {
+  struct stat status{};
+  if (::fstatat(bundleRoot, kCompletionPath.str().c_str(), &status,
+                AT_SYMLINK_NOFOLLOW) != 0) {
+    if (errno == ENOENT)
+      return std::optional<InvocationCompletion>{};
+    return bundleSystemError("could not inspect invocation completion");
+  }
+  auto completion = readCompletionFromRoot(bundleRoot);
+  if (!completion)
+    return completion.takeError();
+  return std::optional<InvocationCompletion>(std::move(*completion));
+}
+
+llvm::Expected<BlobDigest> readAttemptTokenFromRoot(int bundleRoot) {
+  auto tokenText = readOrdinaryBundleFile(bundleRoot, kAttemptTokenPath);
+  if (!tokenText)
+    return tokenText.takeError();
+  auto token = parseBlobDigestHex(*tokenText);
+  if (!token)
+    return bundleError("execution attempt token is malformed");
+  return token;
 }
 
 /// One owning view of a prepared bundle: the open root descriptor plus the
@@ -1425,13 +1368,6 @@ loadPreparedInvocationManifest(const PreparedExternalToolInvocation &prepared) {
   if (!manifest)
     return manifest.takeError();
   return std::make_pair(std::move(bundle->manifestBytes), std::move(*manifest));
-}
-
-std::string
-serializeInvocationCompletion(InvocationCompletionStatus status, int exitCode,
-                              const BlobDigest &manifestDigest,
-                              llvm::ArrayRef<BlobDigest> outputDigests) {
-  return serializeCompletion(status, exitCode, manifestDigest, outputDigests);
 }
 
 llvm::Expected<BlobDigest> deriveExternalToolExecutionBindingDigest(
@@ -1526,14 +1462,13 @@ llvm::Expected<std::string> deriveExternalToolResultImporterIdentity(
   return formatBlobDigestHex(computeBlobDigest(preimage));
 }
 
-std::string serializeManifest(const InvocationManifestData &manifest,
-                              llvm::StringRef version) {
+std::string serializeManifest(const InvocationManifestData &manifest) {
   llvm::SmallString<4096> storage;
   llvm::raw_svector_ostream output(storage);
   llvm::json::OStream json(output, 2);
   json.object([&] {
     json.attribute("schema", externalToolInvocationManifestSchema);
-    json.attribute("version", version);
+    json.attribute("version", manifest.version);
     json.attribute("provider_identity",
                    manifest.semanticContract.providerIdentity);
     json.attributeObject("semantic_closure", [&] {
@@ -1583,7 +1518,11 @@ std::string serializeManifest(const InvocationManifestData &manifest,
       for (const std::vector<std::string> &command : manifest.commands)
         writeStringArray(json, command);
     });
-    if (version == kToolProducedExecutableManifestVersion) {
+    if (manifest.version == kParallelCommandGroupManifestVersion &&
+        !manifest.parallelCommandGroups.empty())
+      writeParallelCommandGroups(json, manifest.parallelCommandGroups);
+    if (manifest.version == kToolProducedExecutableManifestVersion ||
+        manifest.version == kParallelCommandGroupManifestVersion) {
       json.attributeBegin("tool_produced_executables");
       writeStringArray(json, manifest.toolProducedExecutables);
       json.attributeEnd();
@@ -1617,8 +1556,9 @@ std::string serializeManifest(const InvocationManifestData &manifest,
         });
       }
     });
-    if (version == kExternalFileTreeManifestVersion ||
-        version == kToolProducedExecutableManifestVersion)
+    if (manifest.version == kExternalFileTreeManifestVersion ||
+        manifest.version == kToolProducedExecutableManifestVersion ||
+        manifest.version == kParallelCommandGroupManifestVersion)
       json.attributeArray("external_file_trees", [&] {
         for (const ResolvedExternalFileTree &tree :
              manifest.externalFileTrees) {
@@ -1746,6 +1686,13 @@ llvm::Expected<BlobDigest> beginExternalToolInvocationAttempt(
   if (!bundleRoot)
     return bundleRoot.takeError();
 
+  for (const llvm::StringRef operationalPath :
+       {kCompletionPath, kCommandObservationsPath}) {
+    if (::unlinkat(bundleRoot->get(), operationalPath.str().c_str(), 0) != 0 &&
+        errno != ENOENT)
+      return bundleSystemError("could not clear prior invocation state");
+  }
+
   llvm::SmallString<256> model(prepared.bundleRoot);
   llvm::sys::path::append(model, ".loom-attempt-%%%%%%%%%%%%%%%%");
   llvm::SmallString<256> unique;
@@ -1764,8 +1711,8 @@ llvm::Expected<BlobDigest> beginExternalToolInvocationAttempt(
       std::filesystem::path(prepared.bundleRoot) / kAttemptTokenPath.str();
   const std::filesystem::path temporary =
       destination.string() + ".partial." + formatBlobDigestHex(token);
-  if (llvm::Error error = writeFile(temporary, formatBlobDigestHex(token),
-                                    false))
+  if (llvm::Error error =
+          writeFile(temporary, formatBlobDigestHex(token), false))
     return std::move(error);
   std::error_code publishError;
   std::filesystem::rename(temporary, destination, publishError);
@@ -1784,16 +1731,19 @@ llvm::Error validateExternalToolInvocationExecutionObservation(
   if (observation.manifestDigest != prepared.manifestDigest)
     return bundleError(
         "execution observation manifest differs from prepared invocation");
+  if (!llvm::all_of(
+          llvm::enumerate(observation.commandExecutions), [&](const auto row) {
+            return row.index() == row.value().commandOrdinal &&
+                   (observation.exitCode != 0 || row.value().exitCode == 0);
+          }))
+    return bundleError(
+        "execution observation command results are inconsistent");
   auto bundle = openPreparedBundle(prepared);
   if (!bundle)
     return bundle.takeError();
-  auto tokenText =
-      readOrdinaryBundleFile(bundle->root.get(), kAttemptTokenPath);
-  if (!tokenText)
-    return tokenText.takeError();
-  auto token = parseBlobDigestHex(*tokenText);
+  auto token = readAttemptTokenFromRoot(bundle->root.get());
   if (!token)
-    return bundleError("execution attempt token is malformed");
+    return token.takeError();
   if (*token != observation.attemptToken)
     return bundleError(
         "execution observation belongs to another attempt generation");
@@ -1808,14 +1758,32 @@ llvm::Expected<InvocationCompletion> loadExternalToolInvocationCompletion(
   return readCompletionFromRoot(bundle->root.get());
 }
 
+namespace {
+
 llvm::Expected<ExternalToolInvocationAttemptOutcome>
-importExternalToolInvocationAttempt(
+importExternalToolInvocationAttemptImpl(
     const PreparedExternalToolInvocation &prepared,
-    const ExternalToolInvocationImportExpectation &expectation) {
+    const ExternalToolInvocationImportExpectation &expectation,
+    const ExternalToolInvocationExecutionObservation *execution) {
+  const auto receiptState =
+      execution ? ExternalToolInvocationExecutionReceiptAccess::state(
+                      execution->receipt)
+                : nullptr;
+  if (execution) {
+    if (!receiptState)
+      return bundleError("execution observation has no executor receipt");
+    if (!receiptState->matches(prepared, *execution))
+      return bundleError(
+          "execution observation differs from its sealed executor state");
+    if (llvm::Error error = validateInvocationCompletionExecutionBoundary(
+            prepared, execution->attemptToken, execution->exitCode,
+            receiptState->completion))
+      return std::move(error);
+  }
+
   auto bundle = openPreparedBundle(prepared);
   if (!bundle)
     return bundle.takeError();
-  const int bundleRoot = bundle->root.get();
   auto manifest = parseManifest(bundle->manifestBytes);
   if (!manifest)
     return manifest.takeError();
@@ -1853,25 +1821,79 @@ importExternalToolInvocationAttempt(
   if (manifest->declaredOutputs != expectation.declaredOutputs)
     return bundleError("invocation declared outputs do not match importer");
 
-  // Only an absent completion record is the typed incomplete-attempt signal;
-  // every present-but-unreadable or malformed record stays an ordinary
-  // integrity failure through the shared reader below.
-  struct stat completionStatus{};
-  if (::fstatat(bundleRoot, kCompletionPath.str().c_str(), &completionStatus,
-                AT_SYMLINK_NOFOLLOW) != 0 &&
-      errno == ENOENT)
+  const int bundleRoot = bundle->root.get();
+  auto currentManifest = readOrdinaryBundleFile(bundleRoot, kManifestName);
+  if (!currentManifest)
+    return currentManifest.takeError();
+  if (*currentManifest != bundle->manifestBytes)
+    return bundleError("invocation manifest changed during import");
+
+  // Preserve the raw recovery projection for a never-started bundle: only an
+  // absent completion is incomplete, and a token is required once a
+  // completion exists. Receipt-aware import additionally anchors absence to
+  // the executor's sealed generation.
+  auto initialCompletion = readOptionalCompletionFromRoot(bundleRoot);
+  if (!initialCompletion)
+    return initialCompletion.takeError();
+  if (!*initialCompletion && !execution)
     return ExternalToolInvocationAttemptOutcome(
         IncompleteExternalToolInvocationAttempt{});
-  auto completion = readCompletionFromRoot(bundleRoot);
+
+  auto initialToken = readAttemptTokenFromRoot(bundleRoot);
+  if (!initialToken)
+    return initialToken.takeError();
+  auto completion = readOptionalCompletionFromRoot(bundleRoot);
   if (!completion)
     return completion.takeError();
-  if (completion->manifestDigest != contentDigest(bundle->manifestBytes))
-    return bundleError("completion does not bind the imported manifest");
-  if (completion->status != InvocationCompletionStatus::Success)
+  if (receiptState) {
+    if (*initialToken != execution->attemptToken ||
+        *completion != receiptState->completion)
+      return bundleError(
+          "invocation generation changed before declared outputs were read");
+  } else if (!*completion) {
     return ExternalToolInvocationAttemptOutcome(
-        FailedExternalToolInvocationAttempt{completion->status,
-                                            completion->exitCode});
-  if (completion->outputDigests.size() != manifest->declaredOutputs.size())
+        IncompleteExternalToolInvocationAttempt{});
+  }
+
+  const auto validateFinalBoundary = [&]() -> llvm::Error {
+    auto finalManifest = readOrdinaryBundleFile(bundleRoot, kManifestName);
+    if (!finalManifest)
+      return finalManifest.takeError();
+    auto finalCompletion = readOptionalCompletionFromRoot(bundleRoot);
+    if (!finalCompletion)
+      return finalCompletion.takeError();
+    auto finalToken = readAttemptTokenFromRoot(bundleRoot);
+    if (!finalToken)
+      return finalToken.takeError();
+    const std::optional<InvocationCompletion> &expectedCompletion =
+        receiptState ? receiptState->completion : *completion;
+    const BlobDigest &expectedToken =
+        receiptState ? execution->attemptToken : (*completion)->attemptToken;
+    if (*finalManifest != bundle->manifestBytes ||
+        *finalCompletion != expectedCompletion || *finalToken != expectedToken)
+      return bundleError(
+          "invocation generation changed while declared outputs were read");
+    return llvm::Error::success();
+  };
+
+  if (!*completion) {
+    if (llvm::Error error = validateFinalBoundary())
+      return std::move(error);
+    return ExternalToolInvocationAttemptOutcome(
+        IncompleteExternalToolInvocationAttempt{});
+  }
+  if ((*completion)->manifestDigest != contentDigest(bundle->manifestBytes))
+    return bundleError("completion does not bind the imported manifest");
+  if ((*completion)->attemptToken != *initialToken)
+    return bundleError("completion belongs to another attempt generation");
+  if ((*completion)->status != InvocationCompletionStatus::Success) {
+    if (llvm::Error error = validateFinalBoundary())
+      return std::move(error);
+    return ExternalToolInvocationAttemptOutcome(
+        FailedExternalToolInvocationAttempt{(*completion)->status,
+                                            (*completion)->exitCode});
+  }
+  if ((*completion)->outputDigests.size() != manifest->declaredOutputs.size())
     return bundleError("completion output digest count is invalid");
 
   std::vector<std::pair<std::string, std::string>> outputs;
@@ -1882,12 +1904,33 @@ importExternalToolInvocationAttempt(
     auto output = readOrdinaryBundleFile(bundleRoot, path);
     if (!output)
       return output.takeError();
-    if (contentDigest(*output) != completion->outputDigests[index])
+    if (contentDigest(*output) != (*completion)->outputDigests[index])
       return bundleError("declared output does not match completion digest");
     outputs.emplace_back(path, std::move(*output));
   }
+  if (llvm::Error error = validateFinalBoundary())
+    return std::move(error);
   return ExternalToolInvocationAttemptOutcome(
-      ImportedExternalToolInvocationBundle(std::move(outputs)));
+      ImportedExternalToolInvocationBundleAccess::create(std::move(outputs)));
+}
+
+} // namespace
+
+llvm::Expected<ExternalToolInvocationAttemptOutcome>
+importExternalToolInvocationAttempt(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationImportExpectation &expectation) {
+  return importExternalToolInvocationAttemptImpl(prepared, expectation,
+                                                 nullptr);
+}
+
+llvm::Expected<ExternalToolInvocationAttemptOutcome>
+importExternalToolInvocationAttempt(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationImportExpectation &expectation,
+    const ExternalToolInvocationExecutionObservation &execution) {
+  return importExternalToolInvocationAttemptImpl(prepared, expectation,
+                                                 &execution);
 }
 
 llvm::Expected<ImportedExternalToolInvocationBundle>
@@ -1895,6 +1938,22 @@ importExternalToolInvocationBundle(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationImportExpectation &expectation) {
   auto attempt = importExternalToolInvocationAttempt(prepared, expectation);
+  if (!attempt)
+    return attempt.takeError();
+  if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))
+    return llvm::make_error<IncompleteExternalToolInvocationError>();
+  if (std::holds_alternative<FailedExternalToolInvocationAttempt>(*attempt))
+    return bundleError("invocation did not complete successfully");
+  return std::get<ImportedExternalToolInvocationBundle>(std::move(*attempt));
+}
+
+llvm::Expected<ImportedExternalToolInvocationBundle>
+importExternalToolInvocationBundle(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationImportExpectation &expectation,
+    const ExternalToolInvocationExecutionObservation &execution) {
+  auto attempt =
+      importExternalToolInvocationAttempt(prepared, expectation, execution);
   if (!attempt)
     return attempt.takeError();
   if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))

@@ -385,7 +385,7 @@ those services.
 The manifest schema owned by this section is:
 
 ```text
-loom.external_tool_invocation 2.2
+loom.external_tool_invocation 2.3
 
 SemanticInvocationClosure =
     CandidateGenerator {
@@ -441,8 +441,10 @@ Manifest 2.1 compatibly adds `external_file_trees`; the 2.0 form remains
 importable and denotes an empty tree-input list. A 2.0 manifest cannot contain
 the new field. Manifest 2.2 compatibly adds `tool_produced_executables`; the
 2.0 and 2.1 forms remain importable and denote an empty produced-executable
-list. An older manifest cannot contain the new field. Bundle finalization is
-failure-atomic. A complete bundle contains:
+list. Manifest 2.3 compatibly adds optional `parallel_command_groups`; its
+absence and all older forms denote fully ordered command execution. An older
+manifest cannot contain a field introduced by a newer form. Bundle
+finalization is failure-atomic. A complete bundle contains:
 
 ```text
 tool-invocation.json
@@ -475,6 +477,9 @@ outputs/...
   the frozen tool or one exact listed tool-produced executable; a generated
   controller command may additionally name other listed produced executables
   as exact argument tokens;
+- canonical sorted, nonoverlapping parallel command groups, each an
+  end-exclusive range of adjacent frozen-tool commands plus a bounded worker
+  limit;
 - canonical `work/`-relative tool-produced executable paths, when a compiler
   must generate a program that a later command executes;
 - required inherited environment-variable names, never their values;
@@ -537,8 +542,9 @@ needed, validates every materialized content digest, rehashes every directly
 referenced external ordinary file and every member and membership count of a
 referenced external file tree, validates the frozen provider version with the
 descriptor's exact exit-code and stable-line rules, invokes the provider
-driver, retains raw stdout/stderr and reports in declared locations, and
-atomically publishes one completion record.
+driver, executes only the manifest-frozen command schedule, retains raw
+stdout/stderr and reports in declared locations, and atomically publishes one
+completion record.
 
 Inputs and expected workload observations are materialized from exact owner
 Artifacts. Explicit PDK, library, macro, or IP files may be materialized beneath
@@ -563,7 +569,42 @@ Bundle preparation is the default operation. A Loom command may optionally
 execute the generated top-level script and wait for its exit, but that launcher
 is a thin script invocation. It does not implement a second environment model,
 process-tree supervisor, cgroup manager, memory controller, container runtime,
-retry engine, scheduler, or license manager.
+retry engine, dynamic scheduler, or license manager. Its only command-level
+concurrency is the exact bounded fork-join schedule frozen in manifest 2.3.
+
+A parallel group contains at least two commands, has at least two and no more
+workers than commands, and may contain only commands whose executable is the
+frozen tool. It cannot consume a tool-produced executable. Group ranges are
+canonical, sorted, and nonoverlapping. Commands outside a group execute in
+ordinal order; every group boundary and every worker-sized chunk within a
+group is a barrier. The launcher starts no more than the frozen worker limit,
+waits for the complete chunk, and then collects stdout and stderr in command
+ordinal order. If several commands fail, the lowest failing command ordinal
+selects the tool exit code. A launcher infrastructure failure retains its
+typed launcher exit code and cannot be hidden by a tool failure.
+
+The launcher opens every chunk's ordinary command streams before starting any
+tool process and collects only through those retained descriptors. A tool
+cannot replace a scratch path with a link, pipe, device, or growing file to
+redirect or block collection. Status is bounded to four bytes, timing output
+to 64 KiB, and each command stdout or stderr stream to 1 GiB; exceeding a
+bound is a launcher infrastructure failure rather than a tool exit.
+
+Each started command produces an attempt-bound operational observation with
+its command ordinal, wall duration, and exit code. The observation file is
+published atomically and bound to both the manifest digest and fresh attempt
+token. It is not semantic input, declared output, cache content, or evidence;
+a cache hit therefore has no command-execution observations. These timings
+identify provider compile and controller costs without relabeling them as
+simulation time.
+
+Provider-local build options may freeze one total inner build-job budget and
+one outer build-worker limit. The provider deterministically divides the total
+budget across each simultaneously active chunk, writes the resulting inner
+job counts into generated drivers, and freezes the outer limit in the manifest
+group. It cannot multiply the total job budget by the number of commands.
+Machine policy selects the worker limit from available memory; the generic
+launcher neither infers RSS capacity nor expands it to the host thread count.
 
 Each concurrent work unit receives an independent finalized bundle and work
 directory. Make, Ninja, Slurm, a shell, a container orchestrator, or another
@@ -674,8 +715,9 @@ external-file slot and every external-file-tree member by logical slot,
 relative member path, and expected fingerprint. `execution_configuration_sha256`
 covers the exact provider and semantic closure, importer identity, structured
 commands, inherited environment names, normalized generated-file bytes,
-declared outputs, and tool-produced executable closure. Generated-file and
-command normalization replaces only manifest-known bundle, executable,
+declared outputs, and tool-produced executable closure, including the exact
+parallel command groups and worker limits. Generated-file and command
+normalization replaces only manifest-known bundle, executable,
 external-file, and external-tree paths with typed logical tokens; it does not
 apply textual timestamp heuristics or reinterpret provider languages.
 `tool_version_sha256` covers the logical tool key, normalized exact version

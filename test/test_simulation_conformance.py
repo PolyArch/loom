@@ -4,7 +4,11 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
+import tempfile
+import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -30,9 +34,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                 simulation_conformance.DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS
             ),
         )
-        absolute_budget = (
-            simulation_conformance.DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS
-        )
+        absolute_budget = simulation_conformance.DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS
         capped = simulation_conformance.paired_system_budget(
             [absolute_budget + 1.0] * 3,
             spatial_absolute_budget_seconds=absolute_budget,
@@ -122,6 +124,262 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                 cpu_count=4, memory_derived_limit=128
             ),
             1,
+        )
+
+
+def _measurement_row(
+    cell: str,
+    *,
+    work_fingerprint: str = "0" * 64,
+    config_fingerprint: str = "1" * 64,
+    cycles: int = 50_000,
+    frames: int = 49_999,
+    active_wall_ns: int | None = None,
+) -> str:
+    system = cell == "paired-system-cgra"
+    wall = (
+        active_wall_ns
+        if active_wall_ns is not None
+        else (200_000_000 if system else 100_000_000)
+    )
+    return (
+        "paired-simulation "
+        "schema=loom.paired_simulation_measurement.1 "
+        f"cell={cell} work_fingerprint={work_fingerprint} "
+        f"config_fingerprint={config_fingerprint} "
+        f"accelerator_reference_cycles={cycles} cgra_event_frames={frames} "
+        f"active_wall_ns={wall} active_cpu_ns=90000000 "
+        f"gem5_ticks={123 if system else 'not_applicable'} "
+        "setup_wall_ns=5000000 process_peak_rss_bytes=4096 "
+        f"measurement_source={'fresh_system_diagnostic' if system else 'direct_spatial_attempt'} "
+        f"rss_scope={'child_process_lifetime' if system else 'self_process_lifetime'}"
+    )
+
+
+class PairedMeasurementParsingTest(unittest.TestCase):
+    def test_parser_preserves_reference_cycles_and_gem5_ticks(self) -> None:
+        spatial = simulation_conformance.parse_execution_matrix_measurement(
+            _measurement_row("paired-spatial-cgra"), "paired-spatial-cgra"
+        )
+        system = simulation_conformance.parse_execution_matrix_measurement(
+            _measurement_row("paired-system-cgra"), "paired-system-cgra"
+        )
+
+        self.assertEqual(spatial.timing.reference_cycles, 50_000)
+        self.assertIsNone(spatial.gem5_ticks)
+        self.assertEqual(system.timing.reference_cycles, 50_000)
+        self.assertEqual(system.gem5_ticks, 123)
+        self.assertEqual(system.timing.event_count, 49_999)
+        self.assertEqual(system.config_fingerprint, "1" * 64)
+        self.assertEqual(spatial.timing.engine_cpu_seconds, 0.09)
+        self.assertEqual(spatial.timing.host_cpu_seconds, 0.0)
+        self.assertEqual(system.timing.engine_cpu_seconds, 0.0)
+        self.assertEqual(system.timing.host_cpu_seconds, 0.09)
+
+    def test_parser_rejects_noncanonical_or_wrongly_owned_rows(self) -> None:
+        row = _measurement_row("paired-system-cgra")
+        invalid_rows = (
+            row.replace("config_fingerprint=" + "1" * 64, "config_fingerprint=ABC"),
+            row.replace("active_wall_ns=200000000", "active_wall_ns=0"),
+            row.replace("gem5_ticks=123", "gem5_ticks=not_applicable"),
+            row + " unexpected=1",
+        )
+        for invalid in invalid_rows:
+            with self.subTest(row=invalid):
+                with self.assertRaises(ValueError):
+                    simulation_conformance.parse_execution_matrix_measurement(
+                        invalid, "paired-system-cgra"
+                    )
+
+
+class ProcessGroupExecutionTest(unittest.TestCase):
+    def _assert_not_live(self, process_id: int) -> None:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            stat_path = Path("/proc") / str(process_id) / "stat"
+            if not stat_path.exists():
+                return
+            stat = stat_path.read_text(encoding="ascii")
+            if stat[stat.rfind(")") + 2 :].split()[0] == "Z":
+                return
+            time.sleep(0.01)
+        self.fail(f"process {process_id} remained live")
+
+    def test_timeout_kills_a_descendant_that_ignores_sigterm(self) -> None:
+        scratch_root = ROOT / "temp"
+        scratch_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch_root) as directory:
+            child_pid_path = Path(directory) / "child.pid"
+            child_code = (
+                "import signal,time;"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                "time.sleep(30)"
+            )
+            parent_code = (
+                "import subprocess,sys,time;"
+                f"p=subprocess.Popen([sys.executable,'-c',{child_code!r}]);"
+                f"open({str(child_pid_path)!r},'w').write(str(p.pid));"
+                "time.sleep(30)"
+            )
+            result = simulation_conformance.execute_process(
+                (sys.executable, "-c", parent_code),
+                0.1,
+                termination_grace_seconds=0.1,
+            )
+            self.assertIs(
+                result.disposition,
+                simulation_conformance.ProcessDisposition.TIMED_OUT,
+            )
+            self.assertTrue(result.process_group_terminated)
+            child_pid = int(child_pid_path.read_text(encoding="ascii"))
+            self._assert_not_live(child_pid)
+
+    def test_leaked_descendant_is_cleaned_and_reported(self) -> None:
+        scratch_root = ROOT / "temp"
+        scratch_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch_root) as directory:
+            child_pid_path = Path(directory) / "child.pid"
+            parent_code = (
+                "import subprocess,sys;"
+                "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],"
+                "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+                f"open({str(child_pid_path)!r},'w').write(str(p.pid))"
+            )
+            result = simulation_conformance.execute_process(
+                (sys.executable, "-c", parent_code),
+                1.0,
+                termination_grace_seconds=0.1,
+            )
+            self.assertIs(
+                result.disposition,
+                simulation_conformance.ProcessDisposition.CLEANUP_FAILED,
+            )
+            self.assertTrue(result.process_group_terminated)
+            self._assert_not_live(int(child_pid_path.read_text(encoding="ascii")))
+
+    def test_nonzero_exit_remains_distinct_from_timeout(self) -> None:
+        result = simulation_conformance.execute_process(
+            (sys.executable, "-c", "raise SystemExit(7)"), 1.0
+        )
+        self.assertIs(
+            result.disposition,
+            simulation_conformance.ProcessDisposition.NONZERO_EXIT,
+        )
+        self.assertEqual(result.return_code, 7)
+
+
+class PairedMeasurementRunnerTest(unittest.TestCase):
+    def _write_runner(self, directory: str) -> tuple[Path, Path]:
+        runner = Path(directory) / "matrix-runner"
+        runner.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env python3
+                import os
+                import sys
+                import time
+
+                requested = sys.argv[1]
+                batch = requested == "paired-spatial-cgra-batch"
+                cell = "paired-spatial-cgra" if batch else requested
+                system = cell == "paired-system-cgra"
+                if os.environ.get("LOOM_TEST_SLEEP") == ("system" if system else "spatial"):
+                    time.sleep(30)
+                count = int(sys.argv[3]) if batch else 1
+                mismatch = os.environ.get("LOOM_TEST_MISMATCH", "")
+                work = ("2" if system and mismatch == "work" else "0") * 64
+                config = ("3" if system and mismatch == "config" else "1") * 64
+                frames = 50001 if system and mismatch == "frames" else 49999
+                for _ in range(count):
+                    wall = 200000000 if system else 100000000
+                    print(
+                        "paired-simulation "
+                        "schema=loom.paired_simulation_measurement.1 "
+                        f"cell={cell} work_fingerprint={work} "
+                        f"config_fingerprint={config} "
+                        "accelerator_reference_cycles=50000 "
+                        f"cgra_event_frames={frames} active_wall_ns={wall} "
+                        "active_cpu_ns=90000000 "
+                        f"gem5_ticks={123 if system else 'not_applicable'} "
+                        "setup_wall_ns=5000000 process_peak_rss_bytes=4096 "
+                        f"measurement_source={'fresh_system_diagnostic' if system else 'direct_spatial_attempt'} "
+                        f"rss_scope={'child_process_lifetime' if system else 'self_process_lifetime'}"
+                    )
+                """
+            ),
+            encoding="ascii",
+        )
+        runner.chmod(0o755)
+        readiness = Path(directory) / "readiness.json"
+        readiness.write_text("{}\n", encoding="ascii")
+        return runner, readiness
+
+    def test_real_process_pair_produces_a_provisional_measurement(self) -> None:
+        scratch_root = ROOT / "temp"
+        scratch_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch_root) as directory:
+            runner, readiness = self._write_runner(directory)
+            report = simulation_conformance.run_paired_execution_matrix(
+                runner,
+                readiness,
+                spatial_warmup_runs=1,
+                spatial_measurement_runs=3,
+                termination_grace_seconds=0.1,
+            )
+
+        self.assertIs(
+            report.disposition,
+            simulation_conformance.MeasurementDisposition.MEASURED,
+        )
+        self.assertEqual(len(report.spatial_measurements), 3)
+        self.assertIsNotNone(report.system_measurement)
+        projected = simulation_conformance.report_json(report)
+        self.assertEqual(projected["publication_status"], "provisional_bootstrap_only")
+        self.assertEqual(projected["durable_replay_profiles"], 0)
+
+    def test_pair_rejects_each_exact_work_or_config_mismatch(self) -> None:
+        scratch_root = ROOT / "temp"
+        scratch_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch_root) as directory:
+            runner, readiness = self._write_runner(directory)
+            for mismatch in ("work", "config", "frames"):
+                with self.subTest(mismatch=mismatch):
+                    os.environ["LOOM_TEST_MISMATCH"] = mismatch
+                    try:
+                        report = simulation_conformance.run_paired_execution_matrix(
+                            runner,
+                            readiness,
+                            spatial_warmup_runs=1,
+                            spatial_measurement_runs=2,
+                            termination_grace_seconds=0.1,
+                        )
+                    finally:
+                        del os.environ["LOOM_TEST_MISMATCH"]
+                    self.assertIs(
+                        report.disposition,
+                        simulation_conformance.MeasurementDisposition.PAIRED_WORK_MISMATCH,
+                    )
+                    self.assertIsNotNone(report.system_measurement)
+
+    def test_runner_preserves_spatial_timeout_as_incomplete(self) -> None:
+        scratch_root = ROOT / "temp"
+        scratch_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch_root) as directory:
+            runner, readiness = self._write_runner(directory)
+            os.environ["LOOM_TEST_SLEEP"] = "spatial"
+            try:
+                report = simulation_conformance.run_paired_execution_matrix(
+                    runner,
+                    readiness,
+                    spatial_process_timeout_seconds=0.1,
+                    system_process_timeout_seconds=1.0,
+                    termination_grace_seconds=0.1,
+                )
+            finally:
+                del os.environ["LOOM_TEST_SLEEP"]
+        self.assertIs(
+            report.disposition,
+            simulation_conformance.MeasurementDisposition.SPATIAL_TIMED_OUT,
         )
 
 

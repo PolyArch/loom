@@ -14,8 +14,9 @@ Every report field that describes a semantic fact resolves to one exact owner:
 - a Fabric Hardware Description owns hardware structure and capability;
 - a complete Mapping Artifact owns selected realization, placement, routes,
   resource use, tags, buffers, and other profile-specific decisions;
-- a `SimulationExecution` 1.0 owns typed terminal workload observations and
-  activity summaries but no trace field;
+- a `SimulationExecution` 2.0 owns typed terminal workload observations,
+  activity summaries, and the mandatory narrow root-lifecycle progress
+  sequence for System execution, but no general diagnostic-trace field;
 - an `EvaluationRequest` owns the exact evaluation question;
 - an `EvaluationEvidence` owns normalized outcome, metric results, and finding
   results;
@@ -65,8 +66,9 @@ activity only from the exact `SimulationExecution`. It obtains normalized
 outcome, metrics, and findings only from exact `EvaluationEvidence`, with query
 meaning recovered through the corresponding `EvaluationRequest` and
 registries. Persistent trace projection is unavailable in
-`loom.simulation_execution 1.0`; an invocation-local diagnostic trace may be
-projected only when the current attempt explicitly supplies it.
+`loom.simulation_execution 2.0` except for the narrow System root-lifecycle
+progress sequence. An invocation-local diagnostic trace may be projected only
+when the current attempt explicitly supplies it.
 
 A simulator progress counter, event count, raw tool exit status, or
 human-oriented score is not a cycle metric unless an Evaluation model has

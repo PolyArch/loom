@@ -12,6 +12,8 @@
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Runtime/Gem5BuiltinModels.h"
 #include "Runtime/Gem5DispatchABI.h"
+#include "Runtime/Gem5SimulationBinding.h"
+#include "Runtime/Gem5SystemExecution.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -34,6 +36,8 @@ inline constexpr llvm::StringLiteral kSystemResultPath =
     "outputs/system-result.json";
 inline constexpr llvm::StringLiteral kMemoryResultPath =
     "outputs/system-memory.result";
+inline constexpr llvm::StringLiteral kRootLifecycleResultPath =
+    "outputs/system-root-lifecycle.result";
 inline constexpr llvm::StringLiteral kGem5PerformanceProfilePath =
     "outputs/gem5-attempt-performance.json";
 inline constexpr llvm::StringLiteral kCgraEnginePerformanceProfilePath =
@@ -71,7 +75,6 @@ inline constexpr std::uint64_t kGem5SpatialInvocationTickBudget = 15'000'000;
 inline constexpr std::uint64_t kMaximumGem5Ticks =
     kGem5StartupTickBudget +
     gem5MaximumDynamicSpatialInvocations * kGem5SpatialInvocationTickBudget;
-inline constexpr std::uint64_t kMaximumSpatialWork = 1'000'000;
 inline constexpr std::uint64_t kGem5PageBytes = 4096;
 inline constexpr std::uint64_t kGem5StackBytes = 64 * 1024;
 
@@ -150,7 +153,7 @@ struct Gem5SpatialBridgeSession final {
 struct Gem5SystemFacts final {
   Gem5SystemEngine engine;
   ArtifactRootReference deployment;
-  ArtifactRootReference binding;
+  FinalizedGem5SimulationBinding binding;
   ArtifactRootReference dataflow;
   std::vector<Gem5SpatialLaunchProjection> spatialLaunches;
   std::vector<Gem5SpatialBridgeSession> spatialBridgeSessions;
@@ -169,6 +172,8 @@ struct Gem5SystemFacts final {
   std::uint64_t stackBase = 0;
   std::uint64_t stackStride = 0;
   Gem5SimpleMemoryParameters memory;
+  std::vector<ArtifactRootReference> artifactDependencies;
+  std::vector<BlobDigest> blobDependencies;
 };
 
 using Gem5SystemFactsOrUnsupported =
@@ -195,10 +200,32 @@ importCachedSystemInputs(const ArtifactRootReference &workload,
                          const ArtifactStore &artifacts,
                          const BlobStore &blobs);
 
-llvm::Expected<Gem5SystemFactsOrUnsupported>
+llvm::Expected<std::shared_ptr<const Gem5SystemFactsOrUnsupported>>
 deriveFacts(const evaluation::EvaluationRequest &request,
             const evaluation::CaseArtifactResolution &resolution,
             const ArtifactStore &artifacts, const BlobStore &blobs);
+
+llvm::Expected<Gem5SystemFactsOrUnsupported> deriveFactsUncached(
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    Gem5SystemFactsConstructionStatistics *statistics = nullptr);
+
+class Gem5SystemFactsOperationTimer final {
+public:
+  class Impl;
+
+  explicit Gem5SystemFactsOperationTimer(
+      Gem5SystemFactsOperationStatistics *statistics);
+  ~Gem5SystemFactsOperationTimer();
+
+  Gem5SystemFactsOperationTimer(const Gem5SystemFactsOperationTimer &) = delete;
+  Gem5SystemFactsOperationTimer &
+  operator=(const Gem5SystemFactsOperationTimer &) = delete;
+
+private:
+  std::unique_ptr<Impl> impl_;
+};
 
 } // namespace loom::runtime::gem5_system
 

@@ -126,7 +126,10 @@ target_include_directories(LoomApplicationDeploymentRuntime PUBLIC
 
 target_link_libraries(LoomApplicationDeploymentRuntime PUBLIC
   LoomApplicationRuntimeManifest
+  LoomCommon
+  LoomDeployment
   LoomRuntimeResourceTime
+  LoomSimulator
   LLVMSupport
 )
 
@@ -165,6 +168,7 @@ target_link_libraries(LoomApplicationBuild PUBLIC
 
 target_link_libraries(LoomApplicationBuild PRIVATE
   LoomADGBuilder
+  LoomApplicationDeploymentRuntime
   LoomApplicationPortfolio
   LoomExternalTool
 )

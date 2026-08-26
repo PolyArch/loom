@@ -379,13 +379,15 @@ reinterpreted as plain load/store.
 
 ## Trace And Termination
 
-`loom.simulation_execution 1.0` has no trace field. DFG-sim may produce the
-current invocation-local `SpatialDiagnosticTrace` owned by Simulation
-Artifacts and retain it only in the attempt context or scratch storage. It
-cannot place paths, opaque bytes, unchecked Artifact references, or diagnostic
-events in `SimulationExecution` or `EvaluationEvidence`. Frames are strictly
-ordered by `EventCoordinate` and use canonical within-frame event order. The
-diagnostic value makes no complete, prefix, or gap-coverage claim.
+`loom.simulation_execution 2.0` has no general diagnostic-trace field. Its
+narrow root-lifecycle progress field applies only to System executions and is
+not a carrier for DFG diagnostic events. DFG-sim may produce the current
+invocation-local `SpatialDiagnosticTrace` owned by Simulation Artifacts and
+retain it only in the attempt context or scratch storage. It cannot place
+paths, opaque bytes, unchecked Artifact references, or diagnostic events in
+`SimulationExecution` or `EvaluationEvidence`. Frames are strictly ordered by
+`EventCoordinate` and use canonical within-frame event order. The diagnostic
+value makes no complete, prefix, or gap-coverage claim.
 
 DFG-sim supports the exact `Firing` and `Semantic` levels owned by Simulation
 Artifacts. `Firing` contains `ActorCommitted` and `ActorRetired`.
@@ -499,8 +501,8 @@ Stable anchor tests cover:
 * at-most-once volatile MMIO observation through an exact external model;
 * ordered progress anchors and required retirement presence;
 * complete and partial actor-activity inventory semantics;
-* rejection of every persistent trace field in
-  `loom.simulation_execution 1.0` and diagnostic capture noninterference;
+* rejection of every persistent Spatial diagnostic-trace field in
+  `loom.simulation_execution 2.0` and diagnostic capture noninterference;
 * exact terminal and Evidence outcome mapping, including deadlock witnesses;
 * explicit unsupported and deadlock outcomes; and
 * deterministic or oracle-governed comparison with one legal CGRA-sim

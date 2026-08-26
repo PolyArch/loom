@@ -128,6 +128,8 @@ public:
              std::uint64_t exactRegionalLogicalNetLimit = 0);
 
   const dse::ObjectiveVector &currentObjective() const;
+  /// Coldly reconstructs the bound candidate's route-cost projection.
+  llvm::Error verifyCandidateProjection() const;
   std::uint64_t endpointExpansionCount() const {
     return router_.endpointExpansionCount();
   }
@@ -221,6 +223,7 @@ private:
                                   bool resetNegotiationState);
   llvm::Error
   synchronizeCandidateTags(llvm::ArrayRef<PnrIndex> changedLogicalNets);
+  llvm::Error restoreCandidateTagDelta();
 
   SpatialCandidateScratch candidateScratch_;
   SpatialPathFinderRouterScratch router_;
@@ -236,6 +239,8 @@ private:
   SpatialFiniteBufferConflictWitness hardProgressWitness_;
   std::vector<PnrIndex> routeCostTraversals_;
   std::vector<PnrIndex> routeCostLogicalNets_;
+  std::vector<PnrIndex> routeTagLogicalNets_;
+  std::vector<PnrIndex> routeTagDomains_;
   std::vector<std::uint64_t> localTransferClaimBits_;
   std::vector<PnrIndex> localTransferClaimWords_;
   std::unique_ptr<detail::InitializerRelationSolver> relationSolver_;

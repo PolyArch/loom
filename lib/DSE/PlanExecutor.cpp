@@ -274,7 +274,7 @@ llvm::Expected<std::optional<evaluation::EvaluationEvidence>>
 tryImportPreparedEvidence(
     const evaluation::EvaluationRequest &request,
     const evaluation::CaseArtifactResolution &resolution,
-    const external_tool::PreparedExternalToolInvocation &prepared,
+    const evaluation::EvaluationModelPreparedInvocation &prepared,
     const ArtifactStore &store, const BlobStore &blobs) {
   auto imported = evaluation::importEvaluationModelInvocation(
       request, resolution, prepared, store, blobs);
@@ -292,6 +292,11 @@ tryImportPreparedEvidence(
     return invalid("Evidence import lost its failure");
   return std::optional<evaluation::EvaluationEvidence>{};
 }
+
+struct ResourceBoundEvidenceImport final {
+  bool admitted = false;
+  std::optional<evaluation::EvaluationEvidence> evidence;
+};
 
 class RecoverablePlanWorkExecutor final : public detail::DsePlanWorkExecutor {
 public:
@@ -347,6 +352,11 @@ private:
       const WorkUnitKey &key,
       const external_tool::PreparedExternalToolInvocation &prepared,
       bool reserveNewDispatch);
+  llvm::Expected<ResourceBoundEvidenceImport> importPreparedEvidence(
+      const WorkUnitKey &key, const evaluation::EvaluationRequest &request,
+      const evaluation::CaseArtifactResolution &resolution,
+      const external_tool::PreparedExternalToolInvocation &prepared,
+      const ArtifactStore &store, const BlobStore &blobs);
   llvm::Error settleStoppedExternalExecution(const WorkUnitKey &key);
   llvm::Expected<PromotionEvidenceExecutionResult>
   executeEvidence(const PromotionEvidenceExecutionTask &task,
@@ -549,6 +559,32 @@ RecoverablePlanWorkExecutor::executePreparedInvocation(
     return std::move(intervalError);
   return std::optional<
       external_tool::ExternalToolInvocationExecutionObservation>(*execution);
+}
+
+llvm::Expected<ResourceBoundEvidenceImport>
+RecoverablePlanWorkExecutor::importPreparedEvidence(
+    const WorkUnitKey &key, const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  const ProviderExecutionStopContext stopContext{
+      &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
+  auto acquired = scheduler_.acquire(key, policy_.inProcessClaim(),
+                                     providerExecutionControl(stopContext));
+  if (!acquired)
+    return acquired.takeError();
+  if (!*acquired)
+    return ResourceBoundEvidenceImport{};
+  SiteResourceLease lease = std::move(**acquired);
+  auto live = evaluation::bindPreparedEvaluationModelInvocation(
+      request, resolution, prepared, store, blobs);
+  if (!live)
+    return live.takeError();
+  auto imported =
+      tryImportPreparedEvidence(request, resolution, *live, store, blobs);
+  if (!imported)
+    return imported.takeError();
+  return ResourceBoundEvidenceImport{true, std::move(*imported)};
 }
 
 llvm::Error RecoverablePlanWorkExecutor::settleStoppedExternalExecution(
@@ -967,11 +1003,14 @@ RecoverablePlanWorkExecutor::executeEvidence(
         !(*record)->preparedInvocation)
       return invalid("prepared Evidence record has the wrong provider form");
     auto imported =
-        tryImportPreparedEvidence(task.request, *task.resolution,
-                                  *(*record)->preparedInvocation, store, blobs);
+        importPreparedEvidence(*key, task.request, *task.resolution,
+                               *(*record)->preparedInvocation, store, blobs);
     if (!imported)
       return imported.takeError();
-    if (!*imported) {
+    if (!imported->admitted)
+      return PromotionEvidenceExecutionResult{
+          PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+    if (!imported->evidence) {
       auto executed =
           executePreparedInvocation(*key, *(*record)->preparedInvocation, true);
       if (!executed)
@@ -988,16 +1027,20 @@ RecoverablePlanWorkExecutor::executeEvidence(
         return PromotionEvidenceExecutionResult{
             PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
       }
-      imported = tryImportPreparedEvidence(task.request, *task.resolution,
-                                           *(*record)->preparedInvocation,
-                                           store, blobs);
+      imported =
+          importPreparedEvidence(*key, task.request, *task.resolution,
+                                 *(*record)->preparedInvocation, store, blobs);
       if (!imported)
         return imported.takeError();
-      if (!*imported)
+      if (!imported->admitted)
+        return PromotionEvidenceExecutionResult{
+            PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+      if (!imported->evidence)
         return PromotionEvidenceExecutionResult{
             PromotionAcquisitionIncompleteReason::ProviderUnavailable};
     }
-    auto root = evaluation::publishEvaluationEvidence(**imported, store);
+    auto root =
+        evaluation::publishEvaluationEvidence(*imported->evidence, store);
     if (!root)
       return root.takeError();
     auto terminalTime = terminalUnixNanoseconds();
@@ -1005,9 +1048,10 @@ RecoverablePlanWorkExecutor::executeEvidence(
       return terminalTime.takeError();
     const std::array<ArtifactRootReference, 1> outputs = {*root};
     if (llvm::Error error = journal_.markTerminal(
-            *key, evidenceJournalStatus(**imported), 0, *terminalTime, outputs))
+            *key, evidenceJournalStatus(*imported->evidence), 0, *terminalTime,
+            outputs))
       return std::move(error);
-    return PromotionEvidenceExecutionResult{std::move(**imported)};
+    return PromotionEvidenceExecutionResult{std::move(*imported->evidence)};
   }
 
   const bool terminal = (*record)->status == JournalWorkUnitStatus::Completed ||
@@ -1104,8 +1148,12 @@ RecoverablePlanWorkExecutor::executeEvidence(
         return preparationActive.takeError();
       active = *preparationActive;
     } else {
-      auto prepared = std::get<external_tool::PreparedExternalToolInvocation>(
-          std::move(*preparation));
+      std::optional<external_tool::PreparedExternalToolInvocation> external;
+      {
+        auto prepared = std::get<evaluation::EvaluationModelPreparedInvocation>(
+            std::move(*preparation));
+        external = prepared.externalInvocation();
+      }
       auto preparationActive = activeNanoseconds(preparationBegin);
       if (!preparationActive)
         return preparationActive.takeError();
@@ -1113,14 +1161,14 @@ RecoverablePlanWorkExecutor::executeEvidence(
       if (!preparationEnd)
         return preparationEnd.takeError();
       if (llvm::Error error = journal_.recordPrepared(
-              *key, prepared, *preparationActive, *preparationEnd))
+              *key, *external, *preparationActive, *preparationEnd))
         return std::move(error);
       preparationLease.release();
       if (policy_.externalSite()->disposition ==
           ExternalAttemptDisposition::PrepareOnly)
         return PromotionEvidenceExecutionResult{
             PromotionAcquisitionIncompleteReason::ProviderUnavailable};
-      auto executed = executePreparedInvocation(*key, prepared, false);
+      auto executed = executePreparedInvocation(*key, *external, false);
       if (!executed)
         return executed.takeError();
       if (!*executed)
@@ -1135,14 +1183,17 @@ RecoverablePlanWorkExecutor::executeEvidence(
         return PromotionEvidenceExecutionResult{
             PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
       }
-      auto imported = tryImportPreparedEvidence(task.request, *task.resolution,
-                                                prepared, store, blobs);
+      auto imported = importPreparedEvidence(
+          *key, task.request, *task.resolution, *external, store, blobs);
       if (!imported)
         return imported.takeError();
-      if (!*imported)
+      if (!imported->admitted)
+        return PromotionEvidenceExecutionResult{
+            PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+      if (!imported->evidence)
         return PromotionEvidenceExecutionResult{
             PromotionAcquisitionIncompleteReason::ProviderUnavailable};
-      evidence = std::move(**imported);
+      evidence = std::move(*imported->evidence);
       active = 0;
     }
   }

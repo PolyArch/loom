@@ -24,6 +24,11 @@ struct SpatialRouteCostSwitchRowState;
 struct SpatialTagDomainUse final {
   PnrIndex domain = 0;
   std::uint64_t marginalResidentCount = 0;
+
+  friend bool operator==(SpatialTagDomainUse lhs, SpatialTagDomainUse rhs) {
+    return lhs.domain == rhs.domain &&
+           lhs.marginalResidentCount == rhs.marginalResidentCount;
+  }
 };
 
 /// Worker-local PathFinder cost projection over one exact Spatial candidate.
@@ -55,6 +60,12 @@ public:
   llvm::Error
   synchronizeTagProjection(const SpatialTagAssignmentSummary &summary,
                            llvm::ArrayRef<PnrIndex> changedLogicalNets = {});
+  llvm::Error synchronizeTagProjection(const SpatialTagAssignmentDelta &delta);
+  llvm::Error commitTagProjectionDelta();
+  llvm::Error rollbackTagProjectionDelta();
+  bool hasActiveTagProjectionDelta() const {
+    return inverseTagDelta_.has_value();
+  }
   llvm::Error synchronizeCandidateTags();
   llvm::Error
   synchronizeCandidateTraversals(llvm::ArrayRef<PnrIndex> traversals);
@@ -168,6 +179,8 @@ private:
 
   std::vector<std::vector<SpatialTagDomainUse>> logicalNetTagUses_;
   std::vector<std::uint64_t> logicalNetTagUnassignedCounts_;
+  std::uint64_t tagUnassignedCount_ = 0;
+  std::vector<std::vector<std::optional<llvm::APInt>>> logicalNetTagValues_;
   std::vector<SpatialTagDomainUse> selectedLogicalNetTagUses_;
   std::vector<std::uint64_t> workingTagDomainUsage_;
   std::vector<std::uint64_t> tagDomainConflictCounts_;
@@ -200,6 +213,7 @@ private:
   std::vector<PnrIndex> affectedTagDomains_;
   std::vector<PnrIndex> affectedTagArcs_;
   std::unique_ptr<detail::SpatialRouteCostSwitchRowState> switchRows_;
+  std::optional<SpatialTagAssignmentDelta> inverseTagDelta_;
   std::uint64_t updateEpoch_ = 0;
 
   friend class SpatialActionExecutorScratch;

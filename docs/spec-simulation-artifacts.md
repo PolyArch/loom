@@ -12,13 +12,17 @@ The fixed schema descriptors are:
 ```text
 loom.simulation_workload      1.1
 loom.simulation_runtime_input 2.0
-loom.simulation_execution     1.0
+loom.simulation_execution     2.0
 ```
 
 Each family has one typed C++ model and one canonical serializer/parser.
 Schema versions use `X.Y`: `X` denotes an incompatible change and `Y` denotes
 a compatible extension. Simulator-specific request, result, trace, activity,
 or report Artifact families are forbidden.
+
+`loom.simulation_execution 2.0` incompatibly adds the mandatory narrow System
+root-lifecycle sequence defined below. It does not add a general diagnostic
+trace, provider payload, or replay field.
 
 ## SimulationWorkload
 
@@ -521,9 +525,10 @@ request_ref
 
 The root field order, terminal record, Spatial and System functional and
 progress observations, and activity summaries are closed below. Together they
-define the complete `loom.simulation_execution 1.0` wire. The invocation-local
+define the complete `loom.simulation_execution 2.0` wire. The invocation-local
 typed Spatial diagnostic algebra defined below has no field in that Artifact
-root.
+root; the narrow System root-lifecycle progress sequence is a distinct
+mandatory observation.
 
 The closed terminal algebra is:
 
@@ -807,6 +812,13 @@ SystemProgressObservations {
   program_entry_accepted: SystemEventCoordinate
   program_exit_visible: optional<SystemEventCoordinate>
   terminal_observed: SystemEventCoordinate
+  root_lifecycle: array<SystemRootLifecycleObservation>
+}
+
+SystemRootLifecycleObservation {
+  event: EventFamilyKey
+  occurrence: uint64
+  coordinate: SystemEventCoordinate
 }
 
 SystemEventCoordinate {
@@ -828,12 +840,39 @@ program_entry_accepted
   <= terminal_observed
 ```
 
-These anchors do not copy a tick frequency, wall time, exit-code policy, or
-gem5 event priority. Evaluation derives metrics through the exact model. The
-first System wire does not standardize a typed gem5 event trace; its
-root has no trace field and raw gem5 traces remain attempt or scratch material.
-DFG and CGRA diagnostic traces use the current typed Spatial event algebra
-below only outside `loom.simulation_execution 1.0` identity.
+`root_lifecycle` is a required ordered progress field, although it may be empty
+when no mapped root is invoked. Each `event` is the canonical Dataflow
+`EventFamilyKey` for either `RootThreadStart` or `RootThreadCompletion`, derived
+from the exact Request's Deployment, SystemMapping, and Canonical Dataflow
+closure. The event key is the sole event identity. `occurrence` is a nonzero
+execution-local dynamic invocation identity assigned by the System provider;
+it does not redefine the event family or root.
+
+Lifecycle coordinates are strictly increasing across the array and lie in the
+closed interval from `program_entry_accepted` through `program_exit_visible`
+when present, otherwise through `terminal_observed`. A start introduces a
+fresh occurrence. Its completion must use the same occurrence and root, follow
+that start, and occur at most once. One static root may have any number of
+distinct occurrences. A mapped root that was never invoked has no lifecycle
+obligation. `Retired` requires every started occurrence to have completed;
+`Halted` and retained `StoppedByLimit` may retain started occurrences without a
+completion.
+
+The System progress wire encodes the three anchors in declaration order,
+followed by an unsigned 64-bit big-endian lifecycle count. Each lifecycle
+entry contains a length-framed canonical local `EventFamilyKey`, the unsigned
+64-bit big-endian occurrence, and the coordinate's unsigned 64-bit big-endian
+tick and delta. Foreign Dataflow references, non-root boundary families,
+unmapped roots, zero or reused occurrences, completion before start, duplicate
+completion, non-increasing coordinates, and out-of-interval coordinates are
+invalid identity bytes.
+
+These observations do not copy a tick frequency, wall time, exit-code policy,
+or gem5 event priority. Evaluation derives metrics through the exact model.
+The root lifecycle is not a general gem5 event trace and does not admit raw
+provider records or diagnostic events. Raw gem5 traces remain attempt or
+scratch material. DFG and CGRA diagnostic traces use the current typed Spatial
+event algebra below only outside `loom.simulation_execution 2.0` identity.
 
 ## Activity Summaries
 
@@ -956,15 +995,16 @@ sorts by those zero-based enum discriminants. This order mechanically defines
 the `activity_summary_ordinal` used by Evaluation. Within each table, keys sort
 by their owner-defined canonical reference bytes.
 
-The schema-1.0 activity payloads and windows above are Spatial-only because
-their duration-bearing fields use the selected Spatial reference cycle.
+The activity payloads and windows above remain Spatial-only in schema 2.0
+because their duration-bearing fields use the selected Spatial reference
+cycle.
 `SystemSimulationExecution.activity_summaries` is therefore required to be
 empty. A later System activity payload must name its gem5-tick or hardware
 clock-domain time basis explicitly; it cannot reinterpret these exact-ratio
 cycle integrals or copy raw gem5 statistics into this root.
 
 This specification is the semantic owner contract consumed by
-`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 1.0` root,
+`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 2.0` root,
 publisher, and importer are current owners, but Evaluation consumption also
 requires an activity-summary adopter, ordinal resolver, same-Request validator,
 and exact source-to-target lineage adapter. Until that adapter is registered,
@@ -998,11 +1038,13 @@ progress anchors, normalized metrics, or findings.
 
 ## Invocation-Local Spatial Diagnostic Trace
 
-`loom.simulation_execution 1.0` contains no trace field. The current trace is
-an invocation-local `SpatialDiagnosticTrace`: it has no Artifact identity,
-persistent wire, manifest, chunk, coverage claim, or Evidence reference. It
-may be retained only in the current attempt context or scratch material and
-never enters SimulationExecution or Evaluation identity.
+`loom.simulation_execution 2.0` contains no general diagnostic-trace field.
+Its mandatory narrow System root-lifecycle progress sequence is not a
+`SpatialDiagnosticTrace` and cannot carry the event algebra below. The current
+Spatial diagnostic trace is an invocation-local `SpatialDiagnosticTrace`: it
+has no Artifact identity, persistent wire, manifest, chunk, coverage claim, or
+Evidence reference. It may be retained only in the current attempt context or
+scratch material and never enters SimulationExecution or Evaluation identity.
 
 ```text
 TraceCaptureLevel = Firing | Semantic | Microarchitecture
@@ -1385,8 +1427,10 @@ that excludes `delta`.
 
 System execution anchors cover positional functional arrays, retired versus
 partial publication, exact gem5 tick ordering, mandatory program-exit presence
-for `Retired`, and absence of any trace field in
-`loom.simulation_execution 1.0`.
+for `Retired`, canonical root event-family ownership, globally ordered root
+lifecycle coordinates, occurrence reuse and duplicate rejection,
+start-before-completion, repeated occurrences of one root, legality of an
+unstarted mapped root, and closure of every started occurrence at `Retired`.
 
 Activity anchors cover the two progress-defined windows, rejection of a
 missing retirement anchor, complete versus partial target inventories,
@@ -1401,8 +1445,9 @@ signals.
 Diagnostic-trace anchors cover the three capture levels, seven event variants,
 typed occurrence references, nonempty canonically ordered frames, strictly
 increasing coordinates, duplicate-key rejection, and capture
-noninterference. Persistent `loom.simulation_execution 1.0` import rejects any
-trace, manifest, chunk, coverage, path, or opaque diagnostic field.
+noninterference. Persistent `loom.simulation_execution 2.0` import admits only
+the narrow System root-lifecycle progress field and rejects any general trace,
+manifest, chunk, coverage, path, or opaque diagnostic field.
 
 Tests do not pin report layouts, simulator class hierarchies, broad workload
 matrices, every finding kind, every witness payload, every partial-output

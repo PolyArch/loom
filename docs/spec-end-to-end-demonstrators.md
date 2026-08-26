@@ -171,17 +171,39 @@ functional result through the Evaluation Evidence owner before attaching an
 invocation-local performance sidecar. The sidecar is neither cached nor an
 input to candidate identity, ordering, legality, or objective selection.
 
-`loom.gem5_system_performance_profile.3` owns three disjoint gem5 host
+`loom.gem5_system_performance_profile.5` owns three disjoint gem5 host
 intervals: configuration through `m5.instantiate()`, `m5.simulate()` alone,
 and post-simulation observation publication. Each interval reports wall time;
 simulation and observation report process CPU time over the same respective
-window. Managed-engine process CPU, Bridge callback CPU, Bridge engine-wait
-wall time, message count, invocation count, Bridge count, and clock-failure
-count are separate fields. A failed clock sample makes the diagnostic profile
-unavailable. A nonintegral launch-to-retirement reference-cycle distance is
-reported as unavailable for that invocation rather than changing a valid
-functional result. Tool failure, cancellation, and execution limits retain
-their typed Evaluation outcomes and never become infeasibility.
+window. Exactly one typed readiness interval is present inside the
+configuration interval. DFG and CGRA report managed-engine startup wall and
+gem5/Python self CPU time. RTL reports external-engine socket-readiness wall
+and gem5/Python self CPU time because its controller already owns the engine
+process. Managed-engine process CPU covers the managed child engine's complete
+lifetime and is absent for RTL. Bridge callback CPU, Bridge engine-wait wall
+time, message count, invocation count, Bridge count, and clock-failure count
+are separate fields. A failed clock sample makes the diagnostic profile
+unavailable. A nonintegral launch-to-retirement
+reference-cycle distance is reported as unavailable for that invocation rather
+than changing a valid functional result. Tool failure, cancellation, and
+execution limits retain their typed Evaluation outcomes and never become
+infeasibility.
+
+The execution-matrix harness reports setup through
+`loom.execution_matrix_lifecycle.4.0`. The inclusive `setup` aggregate has no
+parent. Its inclusive children name the stable operations
+`dataflow_construction_and_publication`,
+`fabric_module_construction_and_finalization`, `tech_mapping`, `spatial_pnr`,
+`system_fabric_and_interconnect_construction`,
+`configuration_abi_and_hardware_implementation_generation`,
+`system_mapping_and_pnr`, `guest_compile_and_link`,
+`runtime_binding_and_deployment_finalization`, and
+`workload_and_runtime_input_publication`; every child names `setup` as its
+parent. Every aggregate and child reports wall time, self CPU time, waited-child
+CPU time, the self-process lifetime high-water RSS snapshot, and the maximum
+waited-descendant RSS snapshot. These observations do not alter construction
+order, cache policy, identity, or evidence. Inclusive rows overlap and must not
+be summed; RSS snapshots are not interval deltas.
 
 ## Hardware-Implementation And Evidence Anchor
 

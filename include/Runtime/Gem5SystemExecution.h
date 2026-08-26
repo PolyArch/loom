@@ -4,11 +4,111 @@
 #include "Evaluation/ModelProvider.h"
 #include "Simulator/SimulationExecution.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
 namespace loom::runtime {
+
+inline constexpr std::uint64_t gem5MaximumSpatialWork = 1'000'000;
+
+/// Returns the exact integral distance between launch acceptance and graph
+/// retirement. Fractional endpoint coordinates are accepted when their
+/// difference is an unsigned integer.
+std::optional<std::uint64_t> integralSpatialReferenceCycleDistance(
+    const sim::SpatialProgressObservations &progress);
+
+enum class Gem5SystemFactsSessionMode : std::uint8_t {
+  ReuseEnclosing,
+  Isolated,
+};
+
+struct Gem5SystemFactsOperationStatistics final {
+  std::uint64_t invocations = 0;
+  std::uint64_t wallNanoseconds = 0;
+  std::uint64_t selfCpuNanoseconds = 0;
+  std::uint64_t selfCpuObservationCount = 0;
+  std::uint64_t childCpuNanoseconds = 0;
+  std::uint64_t childCpuObservationCount = 0;
+};
+
+struct Gem5SystemFactsConstructionStatistics final {
+  Gem5SystemFactsOperationStatistics deriveFacts;
+  Gem5SystemFactsOperationStatistics systemInputsAndDeploymentImport;
+  Gem5SystemFactsOperationStatistics bindingImport;
+  Gem5SystemFactsOperationStatistics fabricImport;
+  Gem5SystemFactsOperationStatistics systemMappingImport;
+  Gem5SystemFactsOperationStatistics guestRuntimeImageProjection;
+};
+
+struct Gem5SystemFactsSessionStatistics final {
+  std::uint64_t requests = 0;
+  std::uint64_t cacheHits = 0;
+  std::uint64_t cacheMisses = 0;
+  std::uint64_t constructionAttempts = 0;
+  std::uint64_t uniqueConstructions = 0;
+  std::uint64_t uncachedConstructions = 0;
+  std::uint64_t unsupportedConstructions = 0;
+  std::uint64_t failedConstructions = 0;
+  std::uint64_t revalidationCount = 0;
+  std::uint64_t revalidatedArtifactBytes = 0;
+  std::uint64_t revalidatedBlobBytes = 0;
+  std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t constructionNanosecondsSaved = 0;
+  std::uint64_t minimumRetainedBytes = 0;
+  std::uint64_t entryCount = 0;
+  Gem5SystemFactsConstructionStatistics construction;
+};
+
+/// Bounded immutable facts cache for one exact ArtifactStore/BlobStore
+/// verification domain. Hits revalidate the complete cold-construction
+/// closure. Hits reuse the cold typed result after that revalidation; Request
+/// verification remains owned by the prepare/import facade.
+class Gem5SystemFactsSession final {
+public:
+  class Impl;
+
+  class Attachment final {
+  public:
+    Attachment() = default;
+    explicit operator bool() const { return static_cast<bool>(state_); }
+
+  private:
+    explicit Attachment(std::shared_ptr<Impl> state)
+        : state_(std::move(state)) {}
+
+    std::shared_ptr<Impl> state_;
+    friend class Gem5SystemFactsSession;
+  };
+
+  Gem5SystemFactsSession(const ArtifactStore &artifacts, const BlobStore &blobs,
+                         Gem5SystemFactsSessionMode mode =
+                             Gem5SystemFactsSessionMode::ReuseEnclosing,
+                         std::size_t entryLimit = 8);
+  explicit Gem5SystemFactsSession(const Attachment &attachment);
+  ~Gem5SystemFactsSession();
+
+  Gem5SystemFactsSession(const Gem5SystemFactsSession &) = delete;
+  Gem5SystemFactsSession &operator=(const Gem5SystemFactsSession &) = delete;
+
+  Attachment attachment() const { return Attachment(active_); }
+  Gem5SystemFactsSessionStatistics statistics() const;
+
+private:
+  std::shared_ptr<Impl> active_;
+  std::shared_ptr<Impl> previous_;
+};
+
+/// Opens the removable Gem5 facts context retained by Evaluation's live
+/// prepared-invocation owner. The context never enters persistent identity.
+llvm::Expected<
+    std::shared_ptr<const evaluation::EvaluationModelInvocationContext>>
+openGem5SystemInvocationContext(
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
 
 struct Gem5CgraEngineAttemptProfile final {
   std::uint64_t invocationCount = 0;
@@ -17,8 +117,15 @@ struct Gem5CgraEngineAttemptProfile final {
   std::uint64_t eventFrameCount = 0;
 };
 
+struct Gem5HostIntervalProfile final {
+  std::uint64_t wallNanoseconds = 0;
+  std::uint64_t selfProcessCpuNanoseconds = 0;
+};
+
 struct Gem5SystemAttemptProfile final {
   std::uint64_t configurationWallNanoseconds = 0;
+  std::optional<Gem5HostIntervalProfile> managedEngineStartup;
+  std::optional<Gem5HostIntervalProfile> externalEngineSocketReadiness;
   std::uint64_t simulationWallNanoseconds = 0;
   std::uint64_t gem5SimulationProcessCpuNanoseconds = 0;
   std::uint64_t observationWallNanoseconds = 0;
@@ -61,9 +168,9 @@ prepareGem5SystemInvocation(
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const external_tool::ExternalToolPreparationContext &context);
 
-/// Prepares an explicitly diagnostic gem5 invocation. Performance outputs are
-/// part of this dedicated bundle contract and never part of ordinary model
-/// preparation.
+/// Validates the Request and prepares an explicitly diagnostic gem5
+/// invocation. Performance outputs are part of this dedicated bundle contract
+/// and never part of ordinary model preparation.
 llvm::Expected<evaluation::EvaluationModelProviderPreparation>
 prepareGem5SystemDiagnosticInvocation(
     const evaluation::EvaluationRequest &request,
@@ -79,8 +186,9 @@ llvm::Expected<evaluation::EvaluationModelResult> importGem5SystemInvocation(
     const external_tool::PreparedExternalToolInvocation &prepared,
     const ArtifactStore &artifacts, const BlobStore &blobs);
 
-/// Imports the dedicated diagnostic contract after proving that the caller
-/// executed the exact bundle as a fresh external attempt.
+/// Validates the Request and imports the dedicated diagnostic contract after
+/// proving that the caller executed the exact bundle as a fresh external
+/// attempt. No execution artifact is published before both checks succeed.
 llvm::Expected<Gem5SystemDiagnosticEvaluation>
 importGem5SystemDiagnosticInvocation(
     const evaluation::EvaluationRequest &request,

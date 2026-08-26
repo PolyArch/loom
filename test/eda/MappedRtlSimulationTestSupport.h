@@ -8,6 +8,7 @@
 
 #include "DeploymentTestSupport.h"
 
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
@@ -40,6 +41,26 @@ enum class MappedSystemInterconnect : std::uint8_t {
   Gem5EventTransport,
 };
 
+enum class MappedSpatialHardwareFixtureOperation : std::uint8_t {
+  DataflowPublication,
+  FabricModuleConstructionAndFinalization,
+  TechMapping,
+  SpatialPnr,
+  SystemFabricAndInterconnectConstruction,
+  ConfigurationAbiAndHardwareImplementationGeneration,
+};
+
+enum class MappedSpatialHardwareFixtureBoundary : std::uint8_t {
+  Begin,
+  End,
+};
+
+/// Synchronously brackets each operation. End is emitted on normal return and
+/// C++ stack unwinding; observers must not throw.
+using MappedSpatialHardwareFixtureObserver =
+    llvm::function_ref<void(MappedSpatialHardwareFixtureOperation,
+                            MappedSpatialHardwareFixtureBoundary)>;
+
 struct MappedRtlRequestFixture final {
   evaluation::EvaluationRequest request;
   evaluation::CaseArtifactResolution resolution;
@@ -68,7 +89,8 @@ MappedSpatialHardwareFixture buildMappedSpatialHardwareFixture(
     MappedRtlFixtureTopology topology =
         MappedRtlFixtureTopology::HeterogeneousPortable,
     MappedRtlRouteCoverage routeCoverage = MappedRtlRouteCoverage::BypassFifo,
-    MappedSystemInterconnect interconnect = MappedSystemInterconnect::None);
+    MappedSystemInterconnect interconnect = MappedSystemInterconnect::None,
+    MappedSpatialHardwareFixtureObserver observer = {});
 
 MappedRtlRequestFixture buildMappedRtlRequestFixture(
     llvm::StringRef test, llvm::StringRef stableSimulatorBuildIdentity,

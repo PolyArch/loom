@@ -1301,7 +1301,7 @@ and permanent wire slop. Raw material therefore remains owner-attempt or
 scratch state; this contract does not predefine a future bundle reference.
 
 The `evaluation.request.1.0`, `evaluation.evidence.1.0`, and
-`loom.simulation_execution 1.0` dependency direction is therefore:
+`loom.simulation_execution 2.0` dependency direction is therefore:
 
 ```text
 SimulationExecution -> EvaluationRequest
@@ -1312,10 +1312,11 @@ A simulator that executes a workload retains the exact `SimulationExecution`
 as a typed Artifact. It owns terminal
 execution observations, output values and streams, visible logical-memory final
 state or diffs, completion and retirement observations, typed activity
-summaries. `loom.simulation_execution 1.0` contains no trace field; diagnostic
-traces and waveforms remain attempt or scratch state. A simulator cannot
-replace them with paths, opaque bytes, or provider-private references in the
-Artifact. `SimulationExecution` contains no
+summaries, and the mandatory narrow root-lifecycle progress sequence for
+System execution. `loom.simulation_execution 2.0` contains no general
+diagnostic-trace field; diagnostic traces and waveforms remain attempt or
+scratch state. A simulator cannot replace them with paths, opaque bytes, or
+provider-private references in the Artifact. `SimulationExecution` contains no
 normalized metrics, findings, Evaluation outcome, DSE decisions, or second
 simulator result schema.
 
@@ -2418,12 +2419,13 @@ address into identity. Terminal recovery reports import/cache work separately
 from newly executed provider work.
 
 For an external-tool attempt, a valid atomic completion permits import of that
-exact bundle. A prepared bundle without valid completion remains incomplete;
-the controller cannot infer process liveness, acquire an execution claim, or
-automatically retry it. If the external execution owner explicitly authorizes
-another attempt, it retains the same `WorkUnitKey` and materializes an
-independent bundle. This is owner-attempt recovery, not a new semantic work item
-or generic Job state machine.
+exact bundle only when the completion's attempt token matches the currently
+published execution generation. A prepared bundle without valid completion
+remains incomplete; the controller cannot infer process liveness, acquire an
+execution claim, or automatically retry it. If the external execution owner
+explicitly authorizes another attempt, it retains the same `WorkUnitKey` and
+materializes an independent bundle. This is owner-attempt recovery, not a new
+semantic work item or generic Job state machine.
 
 Attempts and recovery records remain owner-specific. Evaluation uses its
 request-local attempt record; an ExternalToolInvocationBundle retains generated

@@ -9,6 +9,7 @@
 #include "SpatialMemoryCompatibility.h"
 #include "SpatialMemoryConstraintModel.h"
 #include "SpatialRouteConstraintModel.h"
+#include "SpatialRouteCostStateInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -202,7 +203,7 @@ llvm::Error SpatialActionProbe::commit() {
     return error;
   llvm::Error synchronization =
       negotiatedRouting_ ? owner->routeCosts_->resetFromVerifiedCandidate()
-                         : llvm::Error::success();
+                         : owner->routeCosts_->commitTagProjectionDelta();
   owner->currentObjective_ = objective_;
   owner->activeProbe_ = false;
   owner_ = nullptr;
@@ -219,8 +220,7 @@ llvm::Error SpatialActionProbe::discard() {
                          : owner->routeCosts_->synchronizeCandidateTraversals(
                                owner->routeCostTraversals_);
   if (!synchronization && !negotiatedRouting_ && routeTagsSynchronized_)
-    synchronization =
-        owner->synchronizeCandidateTags(owner->routeCostLogicalNets_);
+    synchronization = owner->restoreCandidateTagDelta();
   owner->activeProbe_ = false;
   owner_ = nullptr;
   return synchronization;
@@ -267,6 +267,8 @@ SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate) {
   routeCosts_.emplace(std::move(*routeCosts));
   routeCostTraversals_.clear();
   routeCostLogicalNets_.clear();
+  routeTagLogicalNets_.clear();
+  routeTagDomains_.clear();
   const detail::SpatialBindingRelationModel &bindings =
       candidate.problem().bindingRelations();
   relationSolver_ =
@@ -359,6 +361,50 @@ SpatialActionExecutorScratch::currentObjective() const {
   return *currentObjective_;
 }
 
+llvm::Error SpatialActionExecutorScratch::verifyCandidateProjection() const {
+  if (!candidate_ || !routeCosts_)
+    return executorError("route-cost verification is not prepared");
+  if (activeProbe_ || routeCosts_->selectedLogicalNet_ ||
+      routeCosts_->inverseTagDelta_)
+    return executorError("route-cost verification requires a settled probe");
+  auto cold = SpatialRouteCostState::create(*candidate_);
+  if (!cold)
+    return cold.takeError();
+  const auto sameSwitchRows = [&] {
+    if (static_cast<bool>(routeCosts_->switchRows_) !=
+        static_cast<bool>(cold->switchRows_))
+      return false;
+    if (!routeCosts_->switchRows_)
+      return true;
+    return routeCosts_->switchRows_->enabled == cold->switchRows_->enabled &&
+           routeCosts_->switchRows_->netDemands ==
+               cold->switchRows_->netDemands &&
+           routeCosts_->switchRows_->netDemandsSettled ==
+               cold->switchRows_->netDemandsSettled &&
+           routeCosts_->switchRows_->selectedNetDemands.empty() &&
+           routeCosts_->switchRows_->demandJournal.empty();
+  };
+  if (routeCosts_->workingCapacityUsageRaw_ != cold->workingCapacityUsageRaw_ ||
+      routeCosts_->currentClaimOveruseCosts_ !=
+          cold->currentClaimOveruseCosts_ ||
+      routeCosts_->currentTraversalCosts_ != cold->currentTraversalCosts_ ||
+      routeCosts_->currentArcCosts_ != cold->currentArcCosts_ ||
+      routeCosts_->logicalNetTagUses_ != cold->logicalNetTagUses_ ||
+      routeCosts_->logicalNetTagUnassignedCounts_ !=
+          cold->logicalNetTagUnassignedCounts_ ||
+      routeCosts_->tagUnassignedCount_ != cold->tagUnassignedCount_ ||
+      routeCosts_->logicalNetTagValues_ != cold->logicalNetTagValues_ ||
+      routeCosts_->workingTagDomainUsage_ != cold->workingTagDomainUsage_ ||
+      routeCosts_->tagDomainConflictCounts_ != cold->tagDomainConflictCounts_ ||
+      routeCosts_->tagResidentOveruseCosts_ != cold->tagResidentOveruseCosts_ ||
+      routeCosts_->tagEncodingPressureCosts_ !=
+          cold->tagEncodingPressureCosts_ ||
+      !sameSwitchRows())
+    return executorError(
+        "route-cost projection diverged from the bound candidate");
+  return llvm::Error::success();
+}
+
 void SpatialActionExecutorScratch::beginDependencyClosure() {
   ++netEpoch_;
   if (netEpoch_ == 0) {
@@ -385,6 +431,9 @@ void SpatialActionExecutorScratch::beginDependencyClosure() {
   }
   affectedNets_.clear();
   routeCostTraversals_.clear();
+  routeCostLogicalNets_.clear();
+  routeTagLogicalNets_.clear();
+  routeTagDomains_.clear();
   for (PnrIndex word : localTransferClaimWords_)
     localTransferClaimBits_[word] = 0;
   localTransferClaimWords_.clear();
@@ -1633,7 +1682,7 @@ SpatialActionExecutorScratch::restoreAfterFailure(SpatialMoveTransaction &move,
     restoration =
         routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_);
   if (!restoration && !routeCostLogicalNets_.empty())
-    restoration = synchronizeCandidateTags(routeCostLogicalNets_);
+    restoration = restoreCandidateTagDelta();
   if (restoration) {
     llvm::Error fallback = routeCosts_->resetFromVerifiedCandidate();
     if (fallback)
@@ -1652,6 +1701,23 @@ llvm::Error SpatialActionExecutorScratch::synchronizeCandidateTags(
   if (!summary)
     return summary.takeError();
   return routeCosts_->synchronizeTagProjection(*summary, changedLogicalNets);
+}
+
+llvm::Error SpatialActionExecutorScratch::restoreCandidateTagDelta() {
+  if (!candidate_ || !routeCosts_)
+    return executorError("candidate tag restoration is not prepared");
+  if (routeCosts_->hasActiveTagProjectionDelta())
+    if (llvm::Error error = routeCosts_->commitTagProjectionDelta())
+      return error;
+  if (routeTagLogicalNets_.empty())
+    return synchronizeCandidateTags(routeCostLogicalNets_);
+  auto delta = candidate_->summarizeCurrentTagAssignmentDelta(
+      routeTagLogicalNets_, routeTagDomains_);
+  if (!delta)
+    return delta.takeError();
+  if (llvm::Error error = routeCosts_->synchronizeTagProjection(*delta))
+    return error;
+  return routeCosts_->commitTagProjectionDelta();
 }
 
 llvm::Expected<SpatialActionProbe>
@@ -1776,12 +1842,12 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
           routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_))
     return restoreAfterFailure(move, std::move(error), negotiatedRouting);
   if (routeTagsSynchronized) {
-    auto tagSummary = move.summarizeCurrentTagAssignments();
-    if (!tagSummary)
-      return restoreAfterFailure(move, tagSummary.takeError(),
-                                 negotiatedRouting);
-    if (llvm::Error error = routeCosts_->synchronizeTagProjection(
-            *tagSummary, routeCostLogicalNets_))
+    auto tagDelta = move.summarizeCurrentTagAssignmentDelta();
+    if (!tagDelta)
+      return restoreAfterFailure(move, tagDelta.takeError(), negotiatedRouting);
+    routeTagLogicalNets_ = tagDelta->logicalNets;
+    routeTagDomains_ = tagDelta->domains;
+    if (llvm::Error error = routeCosts_->synchronizeTagProjection(*tagDelta))
       return restoreAfterFailure(move, std::move(error), negotiatedRouting);
   }
 

@@ -16,6 +16,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -24,10 +25,26 @@
 
 namespace loom::external_tool {
 
+class ExternalToolInvocationExecutionReceipt final {
+public:
+  ExternalToolInvocationExecutionReceipt() = default;
+
+private:
+  struct State;
+
+  explicit ExternalToolInvocationExecutionReceipt(
+      std::shared_ptr<const State> state)
+      : state_(std::move(state)) {}
+
+  std::shared_ptr<const State> state_;
+
+  friend struct ExternalToolInvocationExecutionReceiptAccess;
+};
+
 inline constexpr llvm::StringLiteral externalToolInvocationManifestSchema =
     "loom.external_tool_invocation";
 inline constexpr llvm::StringLiteral externalToolInvocationManifestVersion =
-    "2.2";
+    "2.3";
 
 /// The CandidateGenerator closure of one semantic invocation: the exact
 /// typed input bindings and the exact resolved binding as owner-codec
@@ -159,6 +176,21 @@ enum class ExternalToolResultReusePolicy {
   RequireFresh,
 };
 
+/// One launcher-observed command execution. Wall time is operational attempt
+/// state and never enters semantic identity or persistent result reuse.
+struct ExternalToolCommandExecutionObservation final {
+  std::uint64_t commandOrdinal = 0;
+  std::uint64_t wallNanoseconds = 0;
+  int exitCode = 0;
+
+  friend bool operator==(const ExternalToolCommandExecutionObservation &lhs,
+                         const ExternalToolCommandExecutionObservation &rhs) {
+    return lhs.commandOrdinal == rhs.commandOrdinal &&
+           lhs.wallNanoseconds == rhs.wallNanoseconds &&
+           lhs.exitCode == rhs.exitCode;
+  }
+};
+
 /// The exact cache and execution disposition of one invocation attempt. Cache
 /// infrastructure failures remain non-fatal to the external tool, but are no
 /// longer erased into diagnostics. A cache hit never invokes the external
@@ -174,11 +206,29 @@ struct ExternalToolInvocationExecutionObservation final {
   ExternalToolResultCachePublication cachePublication;
   bool waitedForCacheKeyLock;
   bool invokedExternalTool;
+  std::vector<ExternalToolCommandExecutionObservation> commandExecutions = {};
+  ExternalToolInvocationExecutionReceipt receipt = {};
 };
 
 /// Reserved operational result when execution control stops a prepared
 /// invocation. External tools cannot return negative process exit codes.
 inline constexpr int externalToolExecutionStoppedExitCode = -2;
+
+/// A manifest-frozen bounded fork-join group over adjacent independent frozen
+/// tool commands. Commands outside every group retain ordered execution, and
+/// each group boundary is a barrier.
+struct ExternalToolParallelCommandGroup final {
+  std::uint64_t beginCommandOrdinal = 0;
+  std::uint64_t endCommandOrdinal = 0;
+  std::uint64_t workerLimit = 0;
+
+  friend bool operator==(const ExternalToolParallelCommandGroup &lhs,
+                         const ExternalToolParallelCommandGroup &rhs) {
+    return lhs.beginCommandOrdinal == rhs.beginCommandOrdinal &&
+           lhs.endCommandOrdinal == rhs.endCommandOrdinal &&
+           lhs.workerLimit == rhs.workerLimit;
+  }
+};
 
 struct ExternalToolInvocationBundleSpec {
   ExternalToolSemanticContract semanticContract;
@@ -195,6 +245,9 @@ struct ExternalToolInvocationBundleSpec {
   /// Canonical work-relative programs that a preceding frozen-tool command
   /// must create before a later command may execute them.
   std::vector<std::string> toolProducedExecutables = {};
+  /// Canonical sorted nonoverlapping independent command groups. This exact
+  /// execution schedule is serialized and participates in result reuse.
+  std::vector<ExternalToolParallelCommandGroup> parallelCommandGroups = {};
   /// Sorted-unique command ordinals that consume the Common-owned diagnostic
   /// verbosity. Finalization mechanically appends the presentation argument.
   /// This invocation-local projection metadata is not serialized.
@@ -215,20 +268,33 @@ enum class InvocationCompletionStatus {
 /// their native nonzero exit codes; only launcher-authored failures use this
 /// closed domain.
 enum class InvocationLauncherExitCode : int {
+  LauncherFailure = 119,
   ToolProducedExecutableUnavailable = 120,
   BundleContentMismatch = 121,
   MissingOutput = 122,
   VersionMismatch = 123,
   ModuleActivationFailed = 124,
   MissingEnvironment = 125,
-  LauncherFailure = 126,
 };
 
 struct InvocationCompletion {
   InvocationCompletionStatus status;
   int exitCode;
   BlobDigest manifestDigest;
+  BlobDigest attemptToken;
   std::vector<BlobDigest> outputDigests;
+
+  friend bool operator==(const InvocationCompletion &lhs,
+                         const InvocationCompletion &rhs) {
+    return lhs.status == rhs.status && lhs.exitCode == rhs.exitCode &&
+           lhs.manifestDigest == rhs.manifestDigest &&
+           lhs.attemptToken == rhs.attemptToken &&
+           lhs.outputDigests == rhs.outputDigests;
+  }
+  friend bool operator!=(const InvocationCompletion &lhs,
+                         const InvocationCompletion &rhs) {
+    return !(lhs == rhs);
+  }
 };
 
 struct ExternalToolInvocationSemanticInput final {
@@ -307,9 +373,15 @@ private:
   importExternalToolInvocationAttempt(
       const PreparedExternalToolInvocation &prepared,
       const ExternalToolInvocationImportExpectation &expectation);
+  friend llvm::Expected<ExternalToolInvocationAttemptOutcome>
+  importExternalToolInvocationAttempt(
+      const PreparedExternalToolInvocation &prepared,
+      const ExternalToolInvocationImportExpectation &expectation,
+      const ExternalToolInvocationExecutionObservation &execution);
   friend llvm::Expected<std::string> readExternalToolInvocationDeclaredOutput(
       const ImportedExternalToolInvocationBundle &bundle,
       llvm::StringRef relativePath);
+  friend struct ImportedExternalToolInvocationBundleAccess;
 };
 
 /// The success-only import wrapper's typed projection of an incomplete
@@ -353,9 +425,17 @@ executeExternalToolInvocationBundleObserved(
 llvm::Expected<BlobDigest> beginExternalToolInvocationAttempt(
     const PreparedExternalToolInvocation &prepared);
 
-/// Proves that an observation belongs to the currently published execution
-/// generation of the exact prepared root.
+/// Checks the public generation fields used by operational work accounting.
+/// This does not prove that the ExternalTool executor produced the fields.
 llvm::Error validateExternalToolInvocationExecutionObservation(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &observation);
+
+/// Proves that the ExternalTool executor produced the complete observation for
+/// the currently published generation and that its atomic completion record
+/// has not changed since execution returned. Declared output bytes are owned
+/// only by ImportedExternalToolInvocationBundle after strict import.
+llvm::Error validateExternalToolInvocationExecutionReceipt(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationExecutionObservation &observation);
 
@@ -385,13 +465,24 @@ llvm::Expected<InvocationCompletion> loadExternalToolInvocationCompletion(
     const PreparedExternalToolInvocation &prepared);
 
 /// Imports one canonical attempt against the exact prepared handle and full
-/// semantic expectation. The completion must bind the validated manifest
-/// before any outcome is exposed. Only Success verifies and snapshots every
-/// declared ordinary output as owned immutable bytes from the same directory.
+/// semantic expectation. A present completion must bind both the validated
+/// manifest and the current attempt token before any outcome is exposed. Only
+/// Success verifies and snapshots every declared ordinary output as owned
+/// immutable bytes from the same directory.
 llvm::Expected<ExternalToolInvocationAttemptOutcome>
 importExternalToolInvocationAttempt(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationImportExpectation &expectation);
+
+/// Receipt-aware strict import for a caller that just executed the bundle.
+/// The sealed execution generation, completion record, and expectation-bound
+/// declared outputs are checked as one import operation before an immutable
+/// output snapshot can escape.
+llvm::Expected<ExternalToolInvocationAttemptOutcome>
+importExternalToolInvocationAttempt(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationImportExpectation &expectation,
+    const ExternalToolInvocationExecutionObservation &execution);
 
 /// Success-only compatibility wrapper over importExternalToolInvocationAttempt.
 /// Incomplete and failed outcomes are projected back to import errors.
@@ -399,6 +490,13 @@ llvm::Expected<ImportedExternalToolInvocationBundle>
 importExternalToolInvocationBundle(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationImportExpectation &expectation);
+
+/// Success-only projection of the receipt-aware strict attempt importer.
+llvm::Expected<ImportedExternalToolInvocationBundle>
+importExternalToolInvocationBundle(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationImportExpectation &expectation,
+    const ExternalToolInvocationExecutionObservation &execution);
 
 /// Reads one declared output from the immutable import snapshot.
 llvm::Expected<std::string> readExternalToolInvocationDeclaredOutput(

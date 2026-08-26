@@ -32,8 +32,8 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.10"
-PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.3"
+CONFIG_SCHEMA = "loom.gem5_system_projection.11"
+PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.5"
 STATISTICS_BEGIN = "---------- Begin Simulation Statistics ----------"
 STATISTICS_END = "---------- End Simulation Statistics   ----------"
 
@@ -49,9 +49,7 @@ BRIDGE_STAT_SUFFIXES = {
 def load_timeout_seconds(tier: str) -> int:
     bundled_path = pathlib.Path(__file__).with_name("timeout-budgets.json")
     repository_path = (
-        pathlib.Path(__file__).resolve().parents[2]
-        / "config"
-        / "timeout-budgets.json"
+        pathlib.Path(__file__).resolve().parents[2] / "config" / "timeout-budgets.json"
     )
     budget_path = bundled_path if bundled_path.is_file() else repository_path
     document = json.loads(budget_path.read_text(encoding="utf-8"))
@@ -425,6 +423,7 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
             "pio_latency",
             "stack_base",
             "stack_stride",
+            "root_event_trace_path",
             "targets",
         },
         "dispatch",
@@ -531,15 +530,14 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
         processors.append(cpu)
     system.cpu = processors
 
-    system.memory = SimpleMemory(
-        range=system.mem_ranges[0], latency=memory["latency"]
-    )
+    system.memory = SimpleMemory(range=system.mem_ranges[0], latency=memory["latency"])
     system.memory.port = system.membus.mem_side_ports
 
     system.loom_thread_dispatch = LoomThreadDispatch(
         pio_addr=dispatch["pio_address"],
         pio_latency=dispatch["pio_latency"],
         workload=system.workload,
+        root_event_trace_path=dispatch["root_event_trace_path"],
     )
     system.loom_thread_dispatch.pio = system.membus.mem_side_ports
 
@@ -582,8 +580,16 @@ def main() -> None:
         if diagnostics and has_managed_engines
         else None
     )
+    engine_readiness_cpu_before = (
+        resource.getrusage(resource.RUSAGE_SELF) if diagnostics else None
+    )
+    engine_readiness_started = time.monotonic_ns() if diagnostics else None
     engines = start_engines(
         projection["bridges"], len(projection["dispatch"]["targets"])
+    )
+    engine_readiness_finished = time.monotonic_ns() if diagnostics else None
+    engine_readiness_cpu_after = (
+        resource.getrusage(resource.RUSAGE_SELF) if diagnostics else None
     )
     performance = None
     try:
@@ -629,6 +635,10 @@ def main() -> None:
             if None in (
                 configuration_started,
                 configuration_finished,
+                engine_readiness_cpu_before,
+                engine_readiness_started,
+                engine_readiness_finished,
+                engine_readiness_cpu_after,
                 simulation_cpu_before,
                 simulation_started,
                 simulation_finished,
@@ -638,10 +648,24 @@ def main() -> None:
                 bridge_statistics,
             ):
                 raise RuntimeError("gem5 performance accounting is incomplete")
+            engine_readiness = {
+                "wall_nanoseconds": (
+                    engine_readiness_finished - engine_readiness_started
+                ),
+                "self_cpu_nanoseconds": elapsed_cpu_nanoseconds(
+                    engine_readiness_cpu_before, engine_readiness_cpu_after
+                ),
+            }
             performance = {
                 "schema": PERFORMANCE_PROFILE_SCHEMA,
                 "configuration_wall_nanoseconds": (
                     configuration_finished - configuration_started
+                ),
+                "managed_engine_startup": (
+                    engine_readiness if has_managed_engines else None
+                ),
+                "external_engine_socket_readiness": (
+                    None if has_managed_engines else engine_readiness
                 ),
                 "simulation_wall_nanoseconds": (
                     simulation_finished - simulation_started
