@@ -793,6 +793,8 @@ loom::pnr::detail::buildSystemServiceRoutes(
               topology, *traversals, capacityUsage))
         return std::move(error);
     }
+    if (llvm::Error error = scratch.currentArcCostRevisionOwner_.advance())
+      return error;
     auto currentArcCosts = request.currentArcCosts(capacityUsage);
     if (!currentArcCosts)
       return currentArcCosts.takeError();
@@ -893,8 +895,10 @@ loom::pnr::detail::buildSystemServiceRoutes(
         routeRequest.endpointExpansionLimit =
             problem.config().policy().search.routing.endpointExpansionLimit;
         routeRequest.eligibleTraversalBits = eligibleTraversals;
-        routeRequest.lowerBoundCostRevision =
-            SystemServiceRouterScratch::stableLowerBoundCostRevision;
+        routeRequest.lowerBoundArcCostRevision =
+            scratch.lowerBoundArcCostRevisionOwner_.revision();
+        routeRequest.currentArcCostRevision =
+            scratch.currentArcCostRevisionOwner_.revision();
         const std::uint64_t initialEndpointExpansions =
             search.endpointExpansionCount();
         auto routed = search.search(routeRequest);
@@ -1087,6 +1091,8 @@ llvm::Error loom::pnr::detail::SystemServiceRouterScratch::prepare(
     return lowerBoundArcCosts.takeError();
   if (llvm::Error error = endpointSearch_.prepare(
           endpointRoutingGraphView(problem.routingTopology())))
+    return error;
+  if (llvm::Error error = lowerBoundArcCostRevisionOwner_.advance())
     return error;
   atomicPatterns_ = std::move(*atomicPatterns);
   lowerBoundArcCosts_ = std::move(*lowerBoundArcCosts);

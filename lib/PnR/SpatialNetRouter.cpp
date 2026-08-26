@@ -90,6 +90,8 @@ SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem) {
       bufferedTraversalBits_[traversal / 64] |= std::uint64_t{1}
                                                 << (traversal % 64);
   }
+  if (llvm::Error error = physicalTimingRevisionOwner_.advance())
+    return error;
   arcTimingDelayQuanta_.clear();
   arcTimingRegisteredDestination_.clear();
   arcTimingDelayQuanta_.reserve(problem.routing().routingArcs().size());
@@ -659,11 +661,14 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
         candidate.logicalNetPayloadWidth(logicalNet);
     routeRequest.endpointExpansionLimit = endpointExpansionLimit;
     routeRequest.eligibleTraversalBits = *eligibleTraversals;
-    routeRequest.lowerBoundCostRevision = costs.lowerBoundCostRevision();
+    routeRequest.lowerBoundArcCostRevision = costs.lowerBoundArcCostRevision();
+    routeRequest.currentArcCostRevision = costs.currentArcCostRevision();
     routeRequest.requiredTraversalBits = requiredTraversals;
     routeRequest.forbidSourceReentry = requiresBufferedTraversal;
     routeRequest.targetRequiresTraversal = targetRequiresTraversal_;
     routeRequest.physicalTimingEnabled = true;
+    routeRequest.physicalTimingRevision =
+        physicalTimingRevisionOwner_.revision();
     routeRequest.arcTimingDelayQuanta = arcTimingDelayQuanta_;
     routeRequest.arcTimingRegisteredDestination =
         arcTimingRegisteredDestination_;

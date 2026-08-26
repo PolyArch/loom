@@ -2,6 +2,7 @@
 #define LOOM_PNR_SPATIALROUTECOSTSTATE_H
 
 #include "Common/ResolvedPnrPolicy.h"
+#include "PnR/EndpointRouter.h"
 #include "PnR/RoutingNegotiation.h"
 #include "PnR/SpatialCandidateState.h"
 
@@ -97,10 +98,13 @@ public:
   llvm::ArrayRef<RouteCost> lowerBoundArcCosts() const {
     return lowerBoundArcCosts_;
   }
-  std::uint64_t lowerBoundCostRevision() const {
-    return lowerBoundCostRevision_;
+  EndpointRouteInputRevision lowerBoundArcCostRevision() const {
+    return lowerBoundArcCostRevisionOwner_.revision();
   }
   llvm::ArrayRef<RouteCost> currentArcCosts() const { return currentArcCosts_; }
+  EndpointRouteInputRevision currentArcCostRevision() const {
+    return currentArcCostRevisionOwner_.revision();
+  }
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -160,7 +164,8 @@ private:
   std::size_t routeClaimWordCount_ = 0;
   std::optional<PnrIndex> selectedLogicalNet_;
   std::uint64_t presentPressure_ = 0;
-  std::uint64_t lowerBoundCostRevision_ = 0;
+  EndpointRouteInputRevisionOwner lowerBoundArcCostRevisionOwner_;
+  EndpointRouteInputRevisionOwner currentArcCostRevisionOwner_;
 
   std::vector<std::uint64_t> workingCapacityUsageRaw_;
   std::vector<std::uint64_t> historyPressure_;
