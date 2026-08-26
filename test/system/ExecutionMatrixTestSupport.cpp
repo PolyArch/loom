@@ -1,6 +1,7 @@
 #include "ExecutionMatrixTestSupport.h"
 
 #include "ExecutionMatrixGuestPrograms.h"
+#include "ExecutionMatrixLifecycle.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
@@ -89,10 +90,9 @@
 namespace loom::system_test {
 namespace {
 
-#ifndef LOOM_TEST_BUILD_JOBS
-#error "LOOM_TEST_BUILD_JOBS must be defined"
+#if !defined(LOOM_TEST_BUILD_JOBS) || !defined(LOOM_TEST_RTL_BUILD_WORKER_LIMIT)
+#error "Loom test build limits must be defined"
 #endif
-
 using deployment::test::fail;
 using deployment::test::require;
 
@@ -739,21 +739,45 @@ void traceSpatialFixture(llvm::StringRef test, const SharedFixture &fixture,
                    << '\n';
   }
 }
-
-SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
-                                 ArtifactStore &artifacts, BlobStore &blobs,
-                                 const deployment::test::TemporaryTree &tree) {
+SharedFixture
+buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
+                   ArtifactStore &artifacts, BlobStore &blobs,
+                   const deployment::test::TemporaryTree &tree,
+                   ExecutionMatrixLifecycleRecorder *lifecycle = nullptr) {
+  std::optional<ExecutionMatrixLifecycleTimer> setupChildTimer;
+  if (lifecycle)
+    setupChildTimer.emplace(
+        *lifecycle,
+        ExecutionMatrixLifecycleOperation::DataflowConstructionAndPublication);
   auto context = makeContext();
   const bool paired = isPairedCell(cell);
   auto dataflow = buildCanonicalApplication(test, *context, paired);
   const ArtifactRootReference dataflowReference =
       take(test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
+  const auto observeHardwareConstruction = [&](const auto operation,
+                                               const auto boundary) {
+    using Boundary = eda::test::MappedSpatialHardwareFixtureBoundary;
+    using HardwareOperation = eda::test::MappedSpatialHardwareFixtureOperation;
+    if (!lifecycle)
+      return;
+    if (operation == HardwareOperation::DataflowPublication) {
+      require(test, setupChildTimer.has_value(),
+              "Dataflow publication escaped its setup interval");
+      if (boundary == Boundary::End)
+        setupChildTimer.reset();
+      return;
+    }
+    setupChildTimer.reset();
+    if (boundary == Boundary::Begin)
+      setupChildTimer.emplace(*lifecycle, operation);
+  };
   auto hardware = eda::test::buildMappedSpatialHardwareFixture(
       test, dataflow, *context, artifacts, blobs,
       deployment::test::MappedSpatialSystemSpec{paired ? 1U : 4U, true, true},
       eda::test::MappedRtlFixtureTopology::HeterogeneousPortable,
       eda::test::MappedRtlRouteCoverage::AnyLegal,
-      eda::test::MappedSystemInterconnect::Gem5EventTransport);
+      eda::test::MappedSystemInterconnect::Gem5EventTransport,
+      observeHardwareConstruction);
   require(test, hardware.interconnect.has_value(),
           "System fixture omitted its typed interconnect implementation");
   const ArtifactRootReference interconnect = *hardware.interconnect;
@@ -765,11 +789,17 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
   const auto dataflowView = take(test, dataflow.view());
   require(test, cores.size() == dataflowView.rootThreadLaunches().size(),
           "anchor core count does not match its root launch count");
+  if (lifecycle)
+    setupChildTimer.emplace(
+        *lifecycle, ExecutionMatrixLifecycleOperation::SystemMappingAndPnr);
   auto systemMapping = deployment::test::buildMappedSystemMapping(
       test, dataflow, hardware.system, {hardware.spatialMapping.reference()},
       artifacts, cores);
-
+  setupChildTimer.reset();
   deployment::test::MappedSystemExecutablePrograms programs;
+  if (lifecycle)
+    setupChildTimer.emplace(
+        *lifecycle, ExecutionMatrixLifecycleOperation::GuestCompileAndLink);
   const bool orderedSequence = cell == ExecutionMatrixCell::SystemDfg ||
                                cell == ExecutionMatrixCell::SystemCgra;
   const llvm::StringRef hostSource =
@@ -782,6 +812,11 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
   programs.instructionProgramBytes = compileGuest(
       test, tree, "spatial-dispatch", spatialInstructionProgramSource(),
       kInstructionLoadAddress, "__loom_thread_entry_0", false);
+  setupChildTimer.reset();
+  if (lifecycle)
+    setupChildTimer.emplace(*lifecycle,
+                            ExecutionMatrixLifecycleOperation::
+                                RuntimeBindingAndDeploymentFinalization);
   programs.hostEntries = {{0, "loom_host_entry", {}, {}, {0}}};
   programs.hostInterfaces = {{0, deployment::HostExternalInterfaceKind::Memory,
                               deployment::HostExternalInterfaceDirection::InOut,
@@ -789,6 +824,11 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
   auto deployment = deployment::test::buildMappedSystemDeployment(
       test, dataflow, hardware.system, systemMapping, hardware.implementations,
       std::move(programs), artifacts, blobs, tree);
+  setupChildTimer.reset();
+  if (lifecycle)
+    setupChildTimer.emplace(
+        *lifecycle,
+        ExecutionMatrixLifecycleOperation::WorkloadAndRuntimeInputPublication);
   const auto [spatialWorkload, spatialRuntimeInput] =
       publishSpatialInputs(test, dataflow, artifacts, paired);
   auto spatialInputs =
@@ -810,6 +850,7 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
           "Deployment selected an implementation outside the fixture");
   auto implementation = *selectedImplementation;
   auto systemInputs = publishSystemInputs(test, deployment, artifacts);
+  setupChildTimer.reset();
   return {std::move(context),
           std::move(dataflow),
           dataflowReference,
@@ -822,7 +863,6 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
           spatialRuntimeInput,
           std::move(systemInputs)};
 }
-
 evaluation::CaseArtifactResolution
 buildResolution(llvm::StringRef test, const SharedFixture &fixture,
                 const std::optional<ArtifactRootReference> &gem5Binding,
@@ -959,8 +999,6 @@ struct ToolBinding final {
   external_tool::ResolvedToolBinding resolved;
 };
 
-std::uint64_t qualificationBuildJobs() { return LOOM_TEST_BUILD_JOBS; }
-
 ToolBinding
 resolveHostTool(llvm::StringRef test,
                 const external_tool::ExternalToolProviderDescriptor &provider,
@@ -982,21 +1020,32 @@ resolveHostTool(llvm::StringRef test,
 }
 
 struct CompletedRun final {
+  struct DiagnosticSummary final {
+    std::vector<runtime::Gem5SpatialInvocationProjection> spatialInvocations;
+    runtime::Gem5SystemAttemptProfile attemptProfile;
+    std::uint64_t gem5Ticks = 0;
+  };
+
   evaluation::EvaluationEvidence evidence;
   ArtifactRootReference evidenceReference;
   sim::CanonicalSimulationExecution execution;
-  std::optional<runtime::Gem5SystemDiagnosticEvaluation> gem5Diagnostics;
-  std::optional<std::uint64_t> diagnosticDeterministicWork;
-  std::optional<std::uint64_t> diagnosticGem5Ticks;
+  std::optional<DiagnosticSummary> gem5Diagnostics;
+  std::vector<external_tool::ExternalToolCommandExecutionObservation>
+      externalCommands;
 };
 
-std::uint64_t
-deterministicWork(const sim::CanonicalSimulationExecution &execution);
-
-CompletedRun
-importCompleted(llvm::StringRef test, evaluation::EvaluationEvidence evidence,
-                const evaluation::CaseArtifactResolution &resolution,
-                const ArtifactStore &artifacts, const BlobStore &blobs) {
+CompletedRun importCompleted(
+    llvm::StringRef test, evaluation::EvaluationEvidence evidence,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    ExecutionMatrixLifecycleRecorder *lifecycle = nullptr,
+    ExecutionMatrixLifecycleOperation operation =
+        ExecutionMatrixLifecycleOperation::OrdinaryExecutionImport,
+    std::vector<external_tool::ExternalToolCommandExecutionObservation>
+        externalCommands = {}) {
+  std::optional<ExecutionMatrixLifecycleTimer> timer;
+  if (lifecycle)
+    timer.emplace(*lifecycle, operation);
   if (evidence.outcomeKind() != evaluation::EvidenceOutcomeKind::Completed) {
     std::string diagnostic = evaluation::toString(evidence.outcomeKind()).str();
     std::visit(
@@ -1023,9 +1072,8 @@ importCompleted(llvm::StringRef test, evaluation::EvaluationEvidence evidence,
           "execution did not retire normally");
   ArtifactRootReference evidenceReference =
       evaluation::evaluationEvidenceReference(evidence);
-  return {std::move(evidence),  std::move(evidenceReference),
-          std::move(execution), std::nullopt,
-          std::nullopt,         std::nullopt};
+  return {std::move(evidence), std::move(evidenceReference),
+          std::move(execution), std::nullopt, std::move(externalCommands)};
 }
 
 void requireSpatialOracle(llvm::StringRef test,
@@ -1124,84 +1172,129 @@ CompletedRun
 runExternal(llvm::StringRef test, const evaluation::EvaluationRequest &request,
             const evaluation::CaseArtifactResolution &resolution,
             external_tool::LocalToolConfig local, llvm::StringRef bundlePath,
-            const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto preparation =
-      take(test, evaluation::prepareEvaluationModelInvocation(
-                     request, resolution, artifacts, blobs,
-                     external_tool::ExternalToolPreparationContext{
-                         std::move(local), bundlePath.str()}));
+            const ArtifactStore &artifacts, const BlobStore &blobs,
+            ExecutionMatrixLifecycleRecorder *lifecycle = nullptr) {
+  auto preparation = [&] {
+    std::optional<ExecutionMatrixLifecycleTimer> timer;
+    if (lifecycle)
+      timer.emplace(*lifecycle,
+                    ExecutionMatrixLifecycleOperation::OrdinaryPrepare);
+    return take(test, evaluation::prepareEvaluationModelInvocation(
+                          request, resolution, artifacts, blobs,
+                          external_tool::ExternalToolPreparationContext{
+                              std::move(local), bundlePath.str()}));
+  }();
   auto *prepared =
-      std::get_if<external_tool::PreparedExternalToolInvocation>(&preparation);
+      std::get_if<evaluation::EvaluationModelPreparedInvocation>(&preparation);
   require(test, prepared != nullptr,
           "available external provider returned terminal Evidence at prepare");
+  const external_tool::PreparedExternalToolInvocation &external =
+      prepared->externalInvocation();
   const external_tool::ExternalToolInvocationExecutionObservation execution =
-      take(test,
-           external_tool::executeExternalToolInvocationBundleObserved(
-               *prepared, {},
-               external_tool::ExternalToolResultReusePolicy::RequireFresh));
-  requireFreshAttempt(test, *prepared, execution);
-  requireSuccessfulAttempt(test, *prepared, execution);
-  auto evidence =
-      take(test, evaluation::importEvaluationModelInvocation(
-                     request, resolution, *prepared, artifacts, blobs));
-  (void)take(test, evaluation::publishEvaluationEvidence(evidence, artifacts));
-  return importCompleted(test, std::move(evidence), resolution, artifacts,
-                         blobs);
+      [&] {
+        std::optional<ExecutionMatrixLifecycleTimer> timer;
+        if (lifecycle)
+          timer.emplace(
+              *lifecycle,
+              ExecutionMatrixLifecycleOperation::OrdinaryExternalExecution);
+        return take(
+            test,
+            external_tool::executeExternalToolInvocationBundleObserved(
+                external, {},
+                external_tool::ExternalToolResultReusePolicy::RequireFresh));
+      }();
+  requireFreshAttempt(test, external, execution);
+  requireSuccessfulAttempt(test, external, execution);
+  auto evidence = [&] {
+    std::optional<ExecutionMatrixLifecycleTimer> timer;
+    if (lifecycle)
+      timer.emplace(
+          *lifecycle,
+          ExecutionMatrixLifecycleOperation::OrdinaryImportAndEvidenceAssembly);
+    return take(test, evaluation::importEvaluationModelInvocation(
+                          request, resolution, *prepared, artifacts, blobs));
+  }();
+  {
+    std::optional<ExecutionMatrixLifecycleTimer> timer;
+    if (lifecycle)
+      timer.emplace(
+          *lifecycle,
+          ExecutionMatrixLifecycleOperation::OrdinaryEvidencePublication);
+    (void)take(test,
+               evaluation::publishEvaluationEvidence(evidence, artifacts));
+  }
+  return importCompleted(
+      test, std::move(evidence), resolution, artifacts, blobs, lifecycle,
+      ExecutionMatrixLifecycleOperation::OrdinaryExecutionImport,
+      execution.commandExecutions);
 }
 
-runtime::Gem5SystemDiagnosticEvaluation runGem5Diagnostic(
+CompletedRun runGem5Diagnostic(
     llvm::StringRef test, const evaluation::EvaluationRequest &request,
     const evaluation::CaseArtifactResolution &resolution,
     external_tool::LocalToolConfig local, llvm::StringRef bundlePath,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto preparation =
-      take(test, runtime::prepareGem5SystemDiagnosticInvocation(
-                     request, resolution, artifacts, blobs,
-                     external_tool::ExternalToolPreparationContext{
-                         std::move(local), bundlePath.str()}));
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    ExecutionMatrixLifecycleRecorder &lifecycle) {
+  auto preparation = [&] {
+    ExecutionMatrixLifecycleTimer timer(
+        lifecycle, ExecutionMatrixLifecycleOperation::DiagnosticPrepare);
+    return take(test, runtime::prepareGem5SystemDiagnosticInvocation(
+                          request, resolution, artifacts, blobs,
+                          external_tool::ExternalToolPreparationContext{
+                              std::move(local), bundlePath.str()}));
+  }();
   auto *prepared =
       std::get_if<external_tool::PreparedExternalToolInvocation>(&preparation);
   require(test, prepared != nullptr,
           "diagnostic gem5 provider rejected an available request");
   const external_tool::ExternalToolInvocationExecutionObservation execution =
-      take(test,
-           external_tool::executeExternalToolInvocationBundleObserved(
-               *prepared, {},
-               external_tool::ExternalToolResultReusePolicy::RequireFresh));
+      [&] {
+        ExecutionMatrixLifecycleTimer timer(
+            lifecycle,
+            ExecutionMatrixLifecycleOperation::DiagnosticExternalExecution);
+        return take(
+            test,
+            external_tool::executeExternalToolInvocationBundleObserved(
+                *prepared, {},
+                external_tool::ExternalToolResultReusePolicy::RequireFresh));
+      }();
   requireFreshAttempt(test, *prepared, execution);
   requireSuccessfulAttempt(test, *prepared, execution);
-  return take(test,
-              runtime::importGem5SystemDiagnosticInvocation(
+  runtime::Gem5SystemDiagnosticEvaluation diagnostics = [&] {
+    ExecutionMatrixLifecycleTimer timer(
+        lifecycle,
+        ExecutionMatrixLifecycleOperation::DiagnosticImportAndEvidenceAssembly);
+    return take(
+        test, runtime::importGem5SystemDiagnosticInvocation(
                   request, resolution, *prepared, execution, artifacts, blobs));
-}
-
-sim::CanonicalSimulationExecution importDiagnosticExecution(
-    llvm::StringRef test,
-    const runtime::Gem5SystemDiagnosticEvaluation &diagnostics,
-    const evaluation::EvaluationRequest &request,
-    const evaluation::CaseArtifactResolution &resolution,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  }();
+  {
+    ExecutionMatrixLifecycleTimer timer(
+        lifecycle,
+        ExecutionMatrixLifecycleOperation::DiagnosticEvidencePublication);
+    (void)take(test, evaluation::publishEvaluationEvidence(diagnostics.evidence,
+                                                           artifacts));
+  }
+  std::vector<runtime::Gem5SpatialInvocationProjection> spatialInvocations =
+      std::move(diagnostics.spatialInvocations);
+  runtime::Gem5SystemAttemptProfile attemptProfile =
+      std::move(diagnostics.attemptProfile);
+  CompletedRun completed = importCompleted(
+      test, std::move(diagnostics.evidence), resolution, artifacts, blobs,
+      &lifecycle, ExecutionMatrixLifecycleOperation::DiagnosticExecutionImport,
+      execution.commandExecutions);
+  const sim::SystemSimulationExecution *system = completed.execution.system();
+  require(test, system != nullptr,
+          "diagnostic attempt did not publish a System execution");
   require(test,
-          diagnostics.evidence.outcomeKind() ==
-              evaluation::EvidenceOutcomeKind::Completed,
-          "diagnostic gem5 attempt did not complete");
-  require(test,
-          diagnostics.evidence.outputBindings().size() == 1 &&
-              diagnostics.evidence.outputBindings().front().artifacts.size() ==
-                  1,
-          "diagnostic gem5 attempt did not publish one SimulationExecution");
-  auto execution = take(
-      test, sim::importSimulationExecution(
-                diagnostics.evidence.outputBindings().front().artifacts.front(),
-                resolution, artifacts, blobs));
-  require(test,
-          execution.request() ==
-              evaluation::evaluationRequestReference(request),
-          "diagnostic SimulationExecution names a different Request");
-  require(test,
-          std::holds_alternative<sim::RetiredExecution>(execution.terminal()),
-          "diagnostic SimulationExecution did not retire normally");
-  return execution;
+          system->progressObservations.terminalObserved.gem5Tick >=
+              system->progressObservations.programEntryAccepted.gem5Tick,
+          "diagnostic gem5 progress interval is reversed");
+  completed.gem5Diagnostics = CompletedRun::DiagnosticSummary{
+      std::move(spatialInvocations), std::move(attemptProfile),
+      system->progressObservations.terminalObserved.gem5Tick -
+          system->progressObservations.programEntryAccepted.gem5Tick};
+  return completed;
 }
 
 CompletedRun runSpatialCell(llvm::StringRef test, ExecutionMatrixCell cell,
@@ -1249,85 +1342,77 @@ CompletedRun runSpatialCell(llvm::StringRef test, ExecutionMatrixCell cell,
   verilator.local.tools[external_tool::verilatorProvider().binding.key]
       .providerOptions["max_cycles"] = 128;
   verilator.local.tools[external_tool::verilatorProvider().binding.key]
-      .providerOptions["build_jobs"] = qualificationBuildJobs();
+      .providerOptions["build_jobs"] = LOOM_TEST_BUILD_JOBS;
   return runExternal(test, request, resolution, std::move(verilator.local),
                      tree.path("spatial-rtl-bundle"), artifacts, blobs);
 }
 
 CompletedRun runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
+                           ExecutionMatrixAttemptKind attempt,
                            const SharedFixture &fixture,
                            const Gem5Readiness &readiness,
                            ArtifactStore &artifacts, BlobStore &blobs,
                            const deployment::test::TemporaryTree &tree,
-                           bool collectDiagnostics) {
-  auto gem5Binding =
-      buildGem5Binding(test, fixture.hardware.system, fixture.interconnect,
-                       readiness.buildIdentity, artifacts);
-  std::string verilatorIdentity;
-  std::optional<ToolBinding> verilator;
-  if (cell == ExecutionMatrixCell::SystemRtl) {
-    verilator.emplace(
-        resolveHostTool(test, external_tool::verilatorProvider(), tree));
-    verilatorIdentity = verilator->resolved.version;
-  }
-  auto resolution =
-      buildResolution(test, fixture, gem5Binding.reference(),
-                      fixture.systemInputs.workloadReference,
-                      fixture.systemInputs.runtimeInputReference, true);
-  auto request =
-      buildSystemRequest(test, cell, fixture, gem5Binding, verilatorIdentity,
-                         resolution, artifacts, blobs);
-  external_tool::LocalToolConfig local;
-  local.runtimePolicy = external_tool::RuntimePolicy::Host;
-  auto &gem5 = local.tools[external_tool::gem5Provider().binding.key];
-  gem5.binding.executable = readiness.binary;
-  gem5.providerOptions["readiness"] = readiness.path;
-  if (verilator) {
-    local.tools[external_tool::verilatorProvider().binding.key] = std::move(
-        verilator->local.tools[external_tool::verilatorProvider().binding.key]);
-    local.tools[external_tool::verilatorProvider().binding.key]
-        .providerOptions["max_cycles"] = 128;
-    local.tools[external_tool::verilatorProvider().binding.key]
-        .providerOptions["build_jobs"] = qualificationBuildJobs();
-  }
+                           ExecutionMatrixLifecycleRecorder &lifecycle) {
+  runtime::FinalizedGem5SimulationBinding gem5Binding = [&] {
+    ExecutionMatrixLifecycleTimer timer(
+        lifecycle, ExecutionMatrixLifecycleOperation::Gem5Binding);
+    return buildGem5Binding(test, fixture.hardware.system, fixture.interconnect,
+                            readiness.buildIdentity, artifacts);
+  }();
+  struct InvocationInputs final {
+    evaluation::CaseArtifactResolution resolution;
+    evaluation::EvaluationRequest request;
+    external_tool::LocalToolConfig local;
+  };
+  InvocationInputs inputs = [&] {
+    ExecutionMatrixLifecycleTimer timer(
+        lifecycle, ExecutionMatrixLifecycleOperation::RequestConstruction);
+    std::string verilatorIdentity;
+    std::optional<ToolBinding> verilator;
+    if (cell == ExecutionMatrixCell::SystemRtl) {
+      verilator.emplace(
+          resolveHostTool(test, external_tool::verilatorProvider(), tree));
+      verilatorIdentity = verilator->resolved.version;
+    }
+    auto resolution =
+        buildResolution(test, fixture, gem5Binding.reference(),
+                        fixture.systemInputs.workloadReference,
+                        fixture.systemInputs.runtimeInputReference, true);
+    auto request =
+        buildSystemRequest(test, cell, fixture, gem5Binding, verilatorIdentity,
+                           resolution, artifacts, blobs);
+    external_tool::LocalToolConfig local;
+    local.runtimePolicy = external_tool::RuntimePolicy::Host;
+    auto &gem5 = local.tools[external_tool::gem5Provider().binding.key];
+    gem5.binding.executable = readiness.binary;
+    gem5.providerOptions["readiness"] = readiness.path;
+    if (verilator) {
+      auto &verilatorConfig =
+          local.tools[external_tool::verilatorProvider().binding.key];
+      verilatorConfig =
+          std::move(verilator->local
+                        .tools[external_tool::verilatorProvider().binding.key]);
+      verilatorConfig.providerOptions["max_cycles"] = 128;
+      verilatorConfig.providerOptions["build_jobs"] = LOOM_TEST_BUILD_JOBS;
+      verilatorConfig.providerOptions["build_workers"] =
+          LOOM_TEST_RTL_BUILD_WORKER_LIMIT;
+    }
+    return InvocationInputs{std::move(resolution), std::move(request),
+                            std::move(local)};
+  }();
   CompletedRun completed =
-      runExternal(test, request, resolution, local, tree.path("system-bundle"),
-                  artifacts, blobs);
-  if (collectDiagnostics) {
-    runtime::Gem5SystemDiagnosticEvaluation diagnostics = runGem5Diagnostic(
-        test, request, resolution, std::move(local),
-        tree.path("system-diagnostic-bundle"), artifacts, blobs);
-    sim::CanonicalSimulationExecution diagnosticExecution =
-        importDiagnosticExecution(test, diagnostics, request, resolution,
-                                  artifacts, blobs);
-    const auto *ordinarySystem = completed.execution.system();
-    const auto *diagnosticSystem = diagnosticExecution.system();
-    require(
-        test, ordinarySystem && diagnosticSystem,
-        "ordinary and diagnostic attempts did not publish System executions");
-    require(test,
-            sim::haveExactlyEqualSystemFunctionalObservations(
-                ordinarySystem->functionalObservations,
-                diagnosticSystem->functionalObservations),
-            "ordinary and diagnostic functional observations differ");
-    const std::uint64_t ordinaryDeterministicWork =
-        deterministicWork(completed.execution);
-    const std::uint64_t diagnosticDeterministicWork =
-        deterministicWork(diagnosticExecution);
-    completed.diagnosticDeterministicWork = diagnosticDeterministicWork;
-    require(test,
-            diagnosticSystem->progressObservations.terminalObserved.gem5Tick >=
-                diagnosticSystem->progressObservations.programEntryAccepted
-                    .gem5Tick,
-            "diagnostic gem5 progress interval is reversed");
-    completed.diagnosticGem5Ticks =
-        diagnosticSystem->progressObservations.terminalObserved.gem5Tick -
-        diagnosticSystem->progressObservations.programEntryAccepted.gem5Tick;
-    if (ordinaryDeterministicWork != diagnosticDeterministicWork)
-      llvm::outs() << "execution-matrix cell=" << test
-                   << " simulated_work_replay=timing_variant ordinary="
-                   << ordinaryDeterministicWork
-                   << " diagnostic=" << diagnosticDeterministicWork << '\n';
+      attempt == ExecutionMatrixAttemptKind::Ordinary
+          ? runExternal(test, inputs.request, inputs.resolution,
+                        std::move(inputs.local), tree.path("system-bundle"),
+                        artifacts, blobs, &lifecycle)
+          : runGem5Diagnostic(test, inputs.request, inputs.resolution,
+                              std::move(inputs.local),
+                              tree.path("system-diagnostic-bundle"), artifacts,
+                              blobs, lifecycle);
+  if (completed.gem5Diagnostics) {
+    const CompletedRun::DiagnosticSummary &diagnostics =
+        *completed.gem5Diagnostics;
     const std::uint64_t expectedBridgeCount = isPairedCell(cell) ? 1 : 4;
     require(test,
             diagnostics.attemptProfile.bridgeCount == expectedBridgeCount &&
@@ -1349,14 +1434,14 @@ CompletedRun runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
         diagnostics.attemptProfile.engineProcessCpuNanoseconds.has_value() ==
             (usesCgraEngine(cell) || cell == ExecutionMatrixCell::SystemDfg),
         "gem5 engine CPU observation has the wrong ownership");
-    completed.gem5Diagnostics = std::move(diagnostics);
   }
   if (cell == ExecutionMatrixCell::PairedSystemCgra)
     require(test,
             completed.gem5Diagnostics.has_value() &&
                 completed.gem5Diagnostics->spatialInvocations.size() == 1,
             "paired System execution did not contain exactly one launch");
-  if (cell == ExecutionMatrixCell::SystemCgra) {
+  if (cell == ExecutionMatrixCell::SystemCgra &&
+      attempt == ExecutionMatrixAttemptKind::Ordinary) {
     auto sample = take(
         test, evaluation::models::importSystemRuntimeTrainingEvidenceSample(
                   completed.evidenceReference, artifacts, blobs));
@@ -1377,32 +1462,6 @@ deterministicWork(const sim::CanonicalSimulationExecution &execution) {
     return spatial->progressObservations.terminalObserved.referenceCycle
         .numerator();
   return execution.system()->progressObservations.terminalObserved.gem5Tick;
-}
-
-std::uint64_t timevalMicros(const timeval &value) {
-  return static_cast<std::uint64_t>(value.tv_sec) * 1000000 + value.tv_usec;
-}
-
-const char *cellName(ExecutionMatrixCell cell) {
-  switch (cell) {
-  case ExecutionMatrixCell::SpatialDfg:
-    return "spatial-dfg";
-  case ExecutionMatrixCell::SpatialCgra:
-    return "spatial-cgra";
-  case ExecutionMatrixCell::SpatialRtl:
-    return "spatial-rtl";
-  case ExecutionMatrixCell::SystemDfg:
-    return "system-dfg";
-  case ExecutionMatrixCell::SystemCgra:
-    return "system-cgra";
-  case ExecutionMatrixCell::SystemRtl:
-    return "system-rtl";
-  case ExecutionMatrixCell::PairedSpatialCgra:
-    return "paired-spatial-cgra";
-  case ExecutionMatrixCell::PairedSystemCgra:
-    return "paired-system-cgra";
-  }
-  llvm_unreachable("closed execution matrix cell");
 }
 
 std::uint64_t durationNanoseconds(std::chrono::steady_clock::duration value) {
@@ -1463,15 +1522,21 @@ struct PairedMeasurement final {
 void recordPairedMeasurement(ExecutionMatrixCell cell,
                              const PairedFingerprints &fingerprints,
                              const PairedMeasurement &measurement) {
-  llvm::StringRef test = cellName(cell);
+  llvm::StringRef test = executionMatrixCellName(cell);
   require(test,
           isPairedCell(cell) && measurement.acceleratorReferenceCycles != 0 &&
               measurement.eventFrames != 0 &&
               measurement.activeWallNanoseconds != 0,
           "paired measurement contains no completed active work");
+  const ExecutionMatrixInvocation invocation{
+      cell, cell == ExecutionMatrixCell::PairedSystemCgra
+                ? ExecutionMatrixAttemptKind::Diagnostic
+                : ExecutionMatrixAttemptKind::Ordinary};
   llvm::outs() << "paired-simulation"
-               << " schema=loom.paired_simulation_measurement.1"
-               << " cell=" << cellName(cell)
+               << " schema=loom.paired_simulation_measurement.2"
+               << " cell=" << executionMatrixCellName(cell)
+               << " attempt=" << executionMatrixAttemptName(invocation.attempt)
+               << " invocation=" << executionMatrixInvocationName(invocation)
                << " work_fingerprint=" << fingerprints.work
                << " config_fingerprint=" << fingerprints.config
                << " accelerator_reference_cycles="
@@ -1490,74 +1555,20 @@ void recordPairedMeasurement(ExecutionMatrixCell cell,
                << " rss_scope=" << measurement.rssScope << '\n';
 }
 
-void recordRunStatistics(ExecutionMatrixCell cell,
-                         const CompletedRun &completed,
-                         std::chrono::steady_clock::duration activeWall,
-                         const rusage &before, const rusage &after) {
-  const auto wallMicros =
-      std::chrono::duration_cast<std::chrono::microseconds>(activeWall).count();
-  const std::uint64_t cpuMicros =
-      timevalMicros(after.ru_utime) + timevalMicros(after.ru_stime) -
-      timevalMicros(before.ru_utime) - timevalMicros(before.ru_stime);
-  llvm::outs() << "execution-matrix cell=" << cellName(cell)
-               << " deterministic_work="
-               << deterministicWork(completed.execution)
-               << " harness_wall_us=" << wallMicros
-               << " harness_child_cpu_us=" << cpuMicros
-               << " process_lifetime_child_peak_rss_kib=" << after.ru_maxrss;
-  if (completed.diagnosticDeterministicWork)
-    llvm::outs() << " diagnostic_simulated_work="
-                 << *completed.diagnosticDeterministicWork;
-  if (completed.gem5Diagnostics) {
-    const runtime::Gem5SystemAttemptProfile &profile =
-        completed.gem5Diagnostics->attemptProfile;
-    std::uint64_t acceleratorReferenceCycles = 0;
-    std::uint64_t unavailableAcceleratorCycleCount = 0;
-    for (const runtime::Gem5SpatialInvocationProjection &invocation :
-         completed.gem5Diagnostics->spatialInvocations) {
-      if (!invocation.acceleratorReferenceCycles) {
-        ++unavailableAcceleratorCycleCount;
-        continue;
-      }
-      require(cellName(cell),
-              *invocation.acceleratorReferenceCycles <=
-                  std::numeric_limits<std::uint64_t>::max() -
-                      acceleratorReferenceCycles,
-              "accelerator cycle report overflows its domain");
-      acceleratorReferenceCycles += *invocation.acceleratorReferenceCycles;
-    }
-    llvm::outs() << " gem5_configuration_wall_us="
-                 << profile.configurationWallNanoseconds / 1000
-                 << " gem5_simulation_wall_us="
-                 << profile.simulationWallNanoseconds / 1000
-                 << " gem5_simulation_cpu_us="
-                 << profile.gem5SimulationProcessCpuNanoseconds / 1000
-                 << " observation_wall_us="
-                 << profile.observationWallNanoseconds / 1000
-                 << " observation_cpu_us="
-                 << profile.observationProcessCpuNanoseconds / 1000
-                 << " bridge_callback_cpu_us="
-                 << profile.bridgeCallbackCpuNanoseconds / 1000
-                 << " bridge_wait_us="
-                 << profile.bridgeEngineWaitNanoseconds / 1000
-                 << " bridge_messages=" << profile.bridgeMessageCount
-                 << " accelerator_invocations="
-                 << profile.acceleratorInvocationCount
-                 << " accelerator_cycles=" << acceleratorReferenceCycles
-                 << " accelerator_cycle_unavailable_count="
-                 << unavailableAcceleratorCycleCount;
-    if (profile.engineProcessCpuNanoseconds)
-      llvm::outs() << " engine_process_cpu_us="
-                   << *profile.engineProcessCpuNanoseconds / 1000;
-    if (profile.cgraEngine)
-      llvm::outs() << " cgra_engine_active_wall_us="
-                   << profile.cgraEngine->activeWallNanoseconds / 1000
-                   << " cgra_engine_active_cpu_us="
-                   << profile.cgraEngine->activeProcessCpuNanoseconds / 1000
-                   << " cgra_event_frames="
-                   << profile.cgraEngine->eventFrameCount;
-  }
-  llvm::outs() << '\n';
+void recordRunStatistics(ExecutionMatrixInvocation matrixInvocation,
+                         const CompletedRun &completed, const rusage &after) {
+  emitExecutionMatrixExternalCommands(matrixInvocation,
+                                      completed.externalCommands);
+  const CompletedRun::DiagnosticSummary *diagnostics =
+      completed.gem5Diagnostics ? &*completed.gem5Diagnostics : nullptr;
+  requireSuccess(
+      executionMatrixCellName(matrixInvocation.cell),
+      emitExecutionMatrixRunSummary(
+          matrixInvocation, deterministicWork(completed.execution),
+          after.ru_maxrss, diagnostics ? &diagnostics->attemptProfile : nullptr,
+          diagnostics
+              ? llvm::ArrayRef(diagnostics->spatialInvocations)
+              : llvm::ArrayRef<runtime::Gem5SpatialInvocationProjection>{}));
 }
 
 struct ReplaySignature final {
@@ -1566,172 +1577,161 @@ struct ReplaySignature final {
   std::optional<sim::SystemFunctionalObservations> systemFunctional;
 };
 
-ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixCell cell,
+ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixInvocation invocation,
                                            llvm::StringRef readinessPath,
                                            llvm::StringRef treeName,
                                            bool emitStatistics) {
-  const llvm::StringRef test = cellName(cell);
-  deployment::test::TemporaryTree tree(treeName);
-  ArtifactStore artifacts(tree.path("artifacts"));
-  BlobStore blobs(tree.path("blobs"));
+  const ExecutionMatrixCell cell = invocation.cell;
+  const llvm::StringRef test = executionMatrixCellName(cell);
+  ExecutionMatrixLifecycleRecorder lifecycle;
+  std::optional<ExecutionMatrixLifecycleTimer> cleanupTimer;
+  ReplaySignature signature = [&]() -> ReplaySignature {
+    deployment::test::TemporaryTree tree(treeName);
+    ArtifactStore artifacts(tree.path("artifacts"));
+    BlobStore blobs(tree.path("blobs"));
 
-  const auto setupStart = std::chrono::steady_clock::now();
-  SharedFixture fixture =
-      buildSharedFixture(test, cell, artifacts, blobs, tree);
-  const std::optional<PairedFingerprints> pairedFingerprintsValue =
-      isPairedCell(cell)
-          ? std::optional<PairedFingerprints>(pairedFingerprints(test, fixture))
-          : std::nullopt;
-  traceSpatialFixture(test, fixture, artifacts);
-  const auto setupEnd = std::chrono::steady_clock::now();
-  if (emitStatistics)
-    llvm::outs() << "execution-matrix cell=" << cellName(cell)
-                 << " setup_wall_us="
-                 << std::chrono::duration_cast<std::chrono::microseconds>(
-                        setupEnd - setupStart)
-                        .count()
-                 << '\n';
+    const auto setupStart = std::chrono::steady_clock::now();
+    std::optional<ExecutionMatrixLifecycleTimer> setupTimer;
+    setupTimer.emplace(lifecycle, ExecutionMatrixLifecycleOperation::Setup);
+    SharedFixture fixture =
+        buildSharedFixture(test, cell, artifacts, blobs, tree, &lifecycle);
+    const std::optional<PairedFingerprints> pairedFingerprintsValue =
+        isPairedCell(cell) ? std::optional<PairedFingerprints>(
+                                 pairedFingerprints(test, fixture))
+                           : std::nullopt;
+    traceSpatialFixture(test, fixture, artifacts);
+    const auto setupEnd = std::chrono::steady_clock::now();
+    setupTimer.reset();
 
-  rusage before{};
-  rusage after{};
-  if (emitStatistics)
-    require(test, getrusage(RUSAGE_CHILDREN, &before) == 0,
-            "cannot sample child resource use");
-  const auto activeStart = std::chrono::steady_clock::now();
-  CompletedRun completed = [&] {
-    if (isSpatialCell(cell))
-      return runSpatialCell(test, cell, fixture, artifacts, blobs, tree);
-    const Gem5Readiness readiness = readGem5Readiness(test, readinessPath);
-    return runSystemCell(test, cell, fixture, readiness, artifacts, blobs, tree,
-                         emitStatistics);
+    ExecutionMatrixImportSessions importSessions(artifacts, blobs);
+
+    rusage after{};
+    CompletedRun completed = [&] {
+      ExecutionMatrixLifecycleTimer hostTimer(
+          lifecycle, ExecutionMatrixLifecycleOperation::HostLifecycle);
+      if (isSpatialCell(cell))
+        return runSpatialCell(test, cell, fixture, artifacts, blobs, tree);
+      const Gem5Readiness readiness = readGem5Readiness(test, readinessPath);
+      return runSystemCell(test, cell, invocation.attempt, fixture, readiness,
+                           artifacts, blobs, tree, lifecycle);
+    }();
+    if (emitStatistics)
+      require(test, getrusage(RUSAGE_CHILDREN, &after) == 0,
+              "cannot sample child resource use");
+    {
+      ExecutionMatrixLifecycleTimer oracleTimer(
+          lifecycle, ExecutionMatrixLifecycleOperation::OracleVerification);
+      if (completed.execution.spatial())
+        requireSpatialOracle(test, completed.execution, isPairedCell(cell));
+      else
+        requireSystemOracle(test, completed.execution);
+    }
+    if (emitStatistics && cell == ExecutionMatrixCell::PairedSystemCgra) {
+      require(test,
+              pairedFingerprintsValue.has_value() &&
+                  completed.gem5Diagnostics.has_value() &&
+                  invocation.attempt == ExecutionMatrixAttemptKind::Diagnostic,
+              "paired System measurement lost its attempt-local diagnostics");
+      const CompletedRun::DiagnosticSummary &diagnostics =
+          *completed.gem5Diagnostics;
+      require(test,
+              diagnostics.attemptProfile.cgraEngine.has_value() &&
+                  diagnostics.spatialInvocations.size() == 1 &&
+                  diagnostics.spatialInvocations.front()
+                      .acceleratorReferenceCycles.has_value(),
+              "paired System measurement lacks exact CGRA work");
+      const runtime::Gem5CgraEngineAttemptProfile &engine =
+          *diagnostics.attemptProfile.cgraEngine;
+      recordPairedMeasurement(
+          cell, *pairedFingerprintsValue,
+          {*diagnostics.spatialInvocations.front().acceleratorReferenceCycles,
+           engine.eventFrameCount,
+           diagnostics.attemptProfile.simulationWallNanoseconds,
+           diagnostics.attemptProfile.gem5SimulationProcessCpuNanoseconds,
+           diagnostics.gem5Ticks, durationNanoseconds(setupEnd - setupStart),
+           peakResidentBytes(test, after), "fresh_system_diagnostic",
+           "child_process_lifetime"});
+    } else if (emitStatistics)
+      recordRunStatistics(invocation, completed, after);
+
+    std::vector<ArtifactRootReference> roots{
+        fixture.dataflowReference,
+        fixture.hardware.module.reference(),
+        fixture.hardware.system.reference(),
+        fixture.hardware.techMapping,
+        fixture.hardware.spatialMapping.reference(),
+        fixture.systemMapping.reference(),
+        fixture.interconnect,
+        fixture.deployment.reference(),
+    };
+    for (const hardware::FinalizedHardwareImplementation &implementation :
+         fixture.hardware.implementations)
+      roots.push_back(implementation.reference());
+    if (isSpatialCell(cell)) {
+      roots.push_back(fixture.spatialWorkload);
+      roots.push_back(fixture.spatialRuntimeInput);
+    } else {
+      roots.push_back(fixture.systemInputs.workloadReference);
+      roots.push_back(fixture.systemInputs.runtimeInputReference);
+    }
+    roots.push_back(completed.evidence.requestRef());
+    roots.push_back(completed.evidenceReference);
+    roots.push_back(
+        completed.evidence.outputBindings().front().artifacts.front());
+    // Gem5 System progress is anchored to the EventQueue, while the external
+    // bridge is serviced through host poll events. Keep those timing-dependent
+    // result roots out of the structural replay signature; functional
+    // observations remain compared exactly below.
+    roots.erase(std::remove_if(
+                    roots.begin(), roots.end(),
+                    [](const ArtifactRootReference &root) {
+                      return root.schemaIdentity ==
+                                 evaluation::EvaluationEvidence::artifactSchema
+                                     .identity ||
+                             root.schemaIdentity ==
+                                 sim::simulationExecutionSchema.identity;
+                    }),
+                roots.end());
+    std::optional<sim::SystemFunctionalObservations> systemFunctional;
+    if (const auto *system = completed.execution.system())
+      systemFunctional = system->functionalObservations;
+    if (!isSpatialCell(cell))
+      require(test, importSessions.reusedOneExactGem5FactsClosure(),
+              "System execution did not reuse one exact Gem5 facts closure");
+    if (emitStatistics)
+      importSessions.emitStatistics(invocation);
+    cleanupTimer.emplace(lifecycle, ExecutionMatrixLifecycleOperation::Cleanup);
+    return {std::move(roots), deterministicWork(completed.execution),
+            std::move(systemFunctional)};
   }();
-  const auto activeEnd = std::chrono::steady_clock::now();
+  cleanupTimer.reset();
   if (emitStatistics)
-    require(test, getrusage(RUSAGE_CHILDREN, &after) == 0,
-            "cannot sample child resource use");
-  if (completed.execution.spatial())
-    requireSpatialOracle(test, completed.execution, isPairedCell(cell));
-  else
-    requireSystemOracle(test, completed.execution);
-  if (emitStatistics && cell == ExecutionMatrixCell::PairedSystemCgra) {
-    require(test,
-            pairedFingerprintsValue.has_value() &&
-                completed.gem5Diagnostics.has_value() &&
-                completed.diagnosticGem5Ticks.has_value(),
-            "paired System measurement lost its attempt-local diagnostics");
-    const runtime::Gem5SystemDiagnosticEvaluation &diagnostics =
-        *completed.gem5Diagnostics;
-    require(test,
-            diagnostics.attemptProfile.cgraEngine.has_value() &&
-                diagnostics.spatialInvocations.size() == 1 &&
-                diagnostics.spatialInvocations.front()
-                    .acceleratorReferenceCycles.has_value(),
-            "paired System measurement lacks exact CGRA work");
-    const runtime::Gem5CgraEngineAttemptProfile &engine =
-        *diagnostics.attemptProfile.cgraEngine;
-    recordPairedMeasurement(
-        cell, *pairedFingerprintsValue,
-        {*diagnostics.spatialInvocations.front().acceleratorReferenceCycles,
-         engine.eventFrameCount,
-         diagnostics.attemptProfile.simulationWallNanoseconds,
-         diagnostics.attemptProfile.gem5SimulationProcessCpuNanoseconds,
-         *completed.diagnosticGem5Ticks,
-         durationNanoseconds(setupEnd - setupStart),
-         peakResidentBytes(test, after), "fresh_system_diagnostic",
-         "child_process_lifetime"});
-  } else if (emitStatistics)
-    recordRunStatistics(cell, completed, activeEnd - activeStart, before,
-                        after);
-
-  std::vector<ArtifactRootReference> roots{
-      fixture.dataflowReference,
-      fixture.hardware.module.reference(),
-      fixture.hardware.system.reference(),
-      fixture.hardware.techMapping,
-      fixture.hardware.spatialMapping.reference(),
-      fixture.systemMapping.reference(),
-      fixture.interconnect,
-      fixture.deployment.reference(),
-  };
-  for (const hardware::FinalizedHardwareImplementation &implementation :
-       fixture.hardware.implementations)
-    roots.push_back(implementation.reference());
-  if (isSpatialCell(cell)) {
-    roots.push_back(fixture.spatialWorkload);
-    roots.push_back(fixture.spatialRuntimeInput);
-  } else {
-    roots.push_back(fixture.systemInputs.workloadReference);
-    roots.push_back(fixture.systemInputs.runtimeInputReference);
-  }
-  roots.push_back(completed.evidence.requestRef());
-  roots.push_back(completed.evidenceReference);
-  roots.push_back(
-      completed.evidence.outputBindings().front().artifacts.front());
-  // Gem5 System progress is anchored to the EventQueue, while the external
-  // bridge is serviced through host poll events. Keep those timing-dependent
-  // result roots out of the structural replay signature; functional
-  // observations remain compared exactly below.
-  roots.erase(
-      std::remove_if(roots.begin(), roots.end(),
-                     [](const ArtifactRootReference &root) {
-                       return root.schemaIdentity ==
-                                  evaluation::EvaluationEvidence::artifactSchema
-                                      .identity ||
-                              root.schemaIdentity ==
-                                  sim::simulationExecutionSchema.identity;
-                     }),
-      roots.end());
-  std::optional<sim::SystemFunctionalObservations> systemFunctional;
-  if (const auto *system = completed.execution.system())
-    systemFunctional = system->functionalObservations;
-  return {std::move(roots), deterministicWork(completed.execution),
-          std::move(systemFunctional)};
+    lifecycle.emit(invocation);
+  return signature;
 }
 
 } // namespace
 
-llvm::Expected<ExecutionMatrixCell>
-parseExecutionMatrixCell(llvm::StringRef spelling) {
-  if (spelling == "spatial-dfg")
-    return ExecutionMatrixCell::SpatialDfg;
-  if (spelling == "spatial-cgra")
-    return ExecutionMatrixCell::SpatialCgra;
-  if (spelling == "spatial-rtl")
-    return ExecutionMatrixCell::SpatialRtl;
-  if (spelling == "system-dfg")
-    return ExecutionMatrixCell::SystemDfg;
-  if (spelling == "system-cgra")
-    return ExecutionMatrixCell::SystemCgra;
-  if (spelling == "system-rtl")
-    return ExecutionMatrixCell::SystemRtl;
-  if (spelling == "paired-spatial-cgra")
-    return ExecutionMatrixCell::PairedSpatialCgra;
-  if (spelling == "paired-system-cgra")
-    return ExecutionMatrixCell::PairedSystemCgra;
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "unknown execution matrix cell '%s'",
-                                 spelling.str().c_str());
-}
-
-void runExecutionMatrixCell(ExecutionMatrixCell cell,
+void runExecutionMatrixCell(ExecutionMatrixInvocation invocation,
                             llvm::StringRef gem5ReadinessPath) {
+  const ExecutionMatrixCell cell = invocation.cell;
   if (cell == ExecutionMatrixCell::PairedSpatialCgra) {
     runPairedSpatialCgraBatch(1, 1);
     return;
   }
-  requireSuccess(cellName(cell),
+  requireSuccess(executionMatrixCellName(cell),
                  evaluation::registerProductionEvaluationRegistry());
-  requireSuccess(cellName(cell),
+  requireSuccess(executionMatrixCellName(cell),
                  eda::open_source::registerMappedRtlSimulationProvider());
   (void)runExecutionMatrixCellOnce(
-      cell, gem5ReadinessPath,
-      ("execution-matrix-" + llvm::StringRef(cellName(cell))).str(), true);
+      invocation, gem5ReadinessPath,
+      "execution-matrix-" + executionMatrixInvocationName(invocation), true);
 }
 
 void runPairedSpatialCgraBatch(std::uint64_t warmupRuns,
                                std::uint64_t measurementRuns) {
   constexpr ExecutionMatrixCell cell = ExecutionMatrixCell::PairedSpatialCgra;
-  const llvm::StringRef test = cellName(cell);
+  const llvm::StringRef test = executionMatrixCellName(cell);
   require(test,
           warmupRuns != 0 && measurementRuns != 0 &&
               warmupRuns <=
@@ -1824,8 +1824,11 @@ void verifyDeterministicSystemReplay(llvm::StringRef gem5ReadinessPath) {
   std::array<std::future<ReplaySignature>, replayCount> pending;
   for (std::size_t replay = 0; replay < replayCount; ++replay) {
     pending[replay] = std::async(std::launch::async, [=] {
+      const ExecutionMatrixAttemptKind attempt =
+          replay + 1 == replayCount ? ExecutionMatrixAttemptKind::Diagnostic
+                                    : ExecutionMatrixAttemptKind::Ordinary;
       return runExecutionMatrixCellOnce(
-          ExecutionMatrixCell::SystemCgra, gem5ReadinessPath,
+          {ExecutionMatrixCell::SystemCgra, attempt}, gem5ReadinessPath,
           test.str() + "-" + std::to_string(replay), false);
     });
   }
@@ -1845,7 +1848,8 @@ void verifyDeterministicSystemReplay(llvm::StringRef gem5ReadinessPath) {
                     *observed.systemFunctional, *expected->systemFunctional),
             "System functional observations changed across clean replay");
   }
-  llvm::outs() << "execution-matrix deterministic_replays=" << replayCount
+  llvm::outs() << "execution-matrix ordinary_replays=" << replayCount - 1
+               << " diagnostic_replays=1"
                << " roots=" << expected->roots.size()
                << " deterministic_work=" << expected->work << '\n';
 }

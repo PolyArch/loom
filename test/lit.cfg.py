@@ -31,6 +31,10 @@ except ValueError:
 if _test_jobs < 1:
     _test_jobs = max(1, min((os.cpu_count() or 1) - 4, 120))
 lit_config.parallelism_groups["resource-intensive"] = _test_jobs
+# Each full-budget RTL invocation partitions the complete configured host job
+# budget among its independent compiler commands. More than one such test in
+# the same lit run would multiply that budget across processes.
+lit_config.parallelism_groups["full-budget-rtl"] = 1
 
 if getattr(config, "loom_have_circt", False):
     config.available_features.add("circt")

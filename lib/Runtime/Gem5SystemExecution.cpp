@@ -106,6 +106,26 @@ llvm::Expected<std::string> readFile(llvm::StringRef path) {
   return (*buffer)->getBuffer().str();
 }
 
+std::uint64_t mappedRtlBuildWorkerCount(
+    const eda::open_source::MappedRtlExecutionAttemptOptions &options,
+    std::size_t buildCount) {
+  return std::min<std::uint64_t>({options.buildWorkers, options.buildJobs,
+                                  static_cast<std::uint64_t>(buildCount)});
+}
+
+std::uint64_t mappedRtlBuildJobs(
+    const eda::open_source::MappedRtlExecutionAttemptOptions &options,
+    std::uint64_t workerCount, std::size_t buildCount,
+    std::size_t buildOrdinal) {
+  const std::uint64_t chunkBegin = buildOrdinal / workerCount * workerCount;
+  const std::uint64_t chunkSize = std::min<std::uint64_t>(
+      workerCount, static_cast<std::uint64_t>(buildCount) - chunkBegin);
+  const std::uint64_t chunkOrdinal = buildOrdinal - chunkBegin;
+  const std::uint64_t base = options.buildJobs / chunkSize;
+  const std::uint64_t remainder = options.buildJobs % chunkSize;
+  return base + (chunkOrdinal < remainder ? 1 : 0);
+}
+
 llvm::Expected<std::filesystem::path>
 readinessPath(const LocalToolConfig &config,
               const ExternalToolProviderDescriptor &provider,
@@ -669,16 +689,38 @@ llvm::Error assignProfileInteger(const llvm::json::Object &object,
   return llvm::Error::success();
 }
 
+llvm::Expected<std::optional<Gem5HostIntervalProfile>>
+optionalHostIntervalProfile(const llvm::json::Object &object,
+                            llvm::StringRef field) {
+  const llvm::json::Value *value = object.get(field);
+  if (!value)
+    return invalid("gem5 performance profile field '" + field + "' is missing");
+  if (value->getAsNull())
+    return std::optional<Gem5HostIntervalProfile>{};
+  const llvm::json::Object *interval = value->getAsObject();
+  if (!interval || interval->size() != 2)
+    return invalid("gem5 performance profile field '" + field +
+                   "' is not an exact host interval");
+  Gem5HostIntervalProfile profile;
+  if (llvm::Error error = assignProfileInteger(*interval, "wall_nanoseconds",
+                                               profile.wallNanoseconds))
+    return std::move(error);
+  if (llvm::Error error = assignProfileInteger(
+          *interval, "self_cpu_nanoseconds", profile.selfProcessCpuNanoseconds))
+    return std::move(error);
+  return std::optional<Gem5HostIntervalProfile>{profile};
+}
+
 llvm::Expected<Gem5SystemAttemptProfile>
 parseGem5SystemAttemptProfile(llvm::StringRef text) {
   auto value = llvm::json::parse(text);
   if (!value)
     return invalid("gem5 performance profile is not valid JSON");
   const llvm::json::Object *object = value->getAsObject();
-  if (!object || object->size() != 13)
+  if (!object || object->size() != 15)
     return invalid("gem5 performance profile has the wrong shape");
   const auto schema = object->getString("schema");
-  if (!schema || *schema != "loom.gem5_system_performance_profile.3")
+  if (!schema || *schema != "loom.gem5_system_performance_profile.5")
     return invalid("gem5 performance profile has the wrong schema");
   Gem5SystemAttemptProfile profile;
   const auto assign = [&](llvm::StringRef field,
@@ -688,6 +730,17 @@ parseGem5SystemAttemptProfile(llvm::StringRef text) {
   if (llvm::Error error = assign("configuration_wall_nanoseconds",
                                  profile.configurationWallNanoseconds))
     return std::move(error);
+  auto managedEngineStartup =
+      optionalHostIntervalProfile(*object, "managed_engine_startup");
+  if (!managedEngineStartup)
+    return managedEngineStartup.takeError();
+  profile.managedEngineStartup = std::move(*managedEngineStartup);
+  auto externalEngineSocketReadiness =
+      optionalHostIntervalProfile(*object, "external_engine_socket_readiness");
+  if (!externalEngineSocketReadiness)
+    return externalEngineSocketReadiness.takeError();
+  profile.externalEngineSocketReadiness =
+      std::move(*externalEngineSocketReadiness);
   if (llvm::Error error = assign("simulation_wall_nanoseconds",
                                  profile.simulationWallNanoseconds))
     return std::move(error);
@@ -729,6 +782,16 @@ parseGem5SystemAttemptProfile(llvm::StringRef text) {
     return std::move(error);
   if (llvm::Error error = assign("bridge_count", profile.bridgeCount))
     return std::move(error);
+  if (profile.managedEngineStartup.has_value() ==
+      profile.externalEngineSocketReadiness.has_value())
+    return invalid("gem5 performance profile must contain exactly one engine "
+                   "readiness interval");
+  const Gem5HostIntervalProfile &readiness =
+      profile.managedEngineStartup ? *profile.managedEngineStartup
+                                   : *profile.externalEngineSocketReadiness;
+  if (readiness.wallNanoseconds > profile.configurationWallNanoseconds)
+    return invalid("gem5 engine readiness interval exceeds its configuration "
+                   "interval");
   return profile;
 }
 
@@ -765,8 +828,8 @@ parseCgraEngineAttemptProfile(llvm::StringRef text) {
 llvm::Error validateFreshDiagnosticExecution(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationExecutionObservation &execution) {
-  if (llvm::Error error = validateExternalToolInvocationExecutionObservation(
-          prepared, execution))
+  if (llvm::Error error =
+          validateExternalToolInvocationExecutionReceipt(prepared, execution))
     return error;
   if (execution.reusePolicy != ExternalToolResultReusePolicy::RequireFresh ||
       execution.cacheAvailability !=
@@ -968,10 +1031,10 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
   if (!factsOrUnsupported)
     return factsOrUnsupported.takeError();
   if (const auto *unsupported =
-          std::get_if<UnsupportedEvidence>(&*factsOrUnsupported))
+          std::get_if<UnsupportedEvidence>(factsOrUnsupported->get()))
     return EvaluationModelProviderPreparation{*unsupported};
-  Gem5SystemFacts facts =
-      std::get<Gem5SystemFacts>(std::move(*factsOrUnsupported));
+  const Gem5SystemFacts &facts =
+      std::get<Gem5SystemFacts>(**factsOrUnsupported);
   if (facts.engine == Gem5SystemEngine::Rtl &&
       llvm::any_of(facts.spatialBridgeSessions, [](const auto &session) {
         return session.launchOrdinals.size() != 1;
@@ -979,12 +1042,6 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
     return EvaluationModelProviderPreparation{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
-  auto subjects = systemSubjects(request);
-  if (!subjects)
-    return subjects.takeError();
-  auto binding = importGem5SimulationBinding(subjects->second, artifacts);
-  if (!binding)
-    return binding.takeError();
   const ExternalToolProviderDescriptor &gem5ToolProvider = gem5Provider();
   const std::filesystem::path destination(context.bundleDestination);
   const std::filesystem::path probeRoot = destination.parent_path();
@@ -995,7 +1052,7 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       captureToolEnvironment(gem5ToolProvider.binding), gem5Probe);
   if (!gem5Tool)
     return gem5Tool.takeError();
-  auto readiness = verifyReadiness(facts, *binding, context.localConfig,
+  auto readiness = verifyReadiness(facts, facts.binding, context.localConfig,
                                    gem5ToolProvider, *gem5Tool);
   if (!readiness)
     return readiness.takeError();
@@ -1016,7 +1073,7 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
   auto timeoutBudgets = readFile(LOOM_TIMEOUT_BUDGETS_PATH);
   if (!timeoutBudgets)
     return timeoutBudgets.takeError();
-  std::vector<MaterializedBundleFile> files = std::move(facts.semanticInputs);
+  std::vector<MaterializedBundleFile> files = facts.semanticInputs;
   files.push_back({kConfigurationScriptPath.str(), std::move(*configuration),
                    std::nullopt, false});
   files.push_back({kTimeoutBudgetsPath.str(), std::move(*timeoutBudgets),
@@ -1071,11 +1128,16 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
 
     std::vector<std::vector<std::string>> commands;
     std::vector<std::string> executables;
-    std::vector<std::string> resultPaths;
     std::vector<std::vector<std::string>> engineCommands;
+    const std::uint64_t buildWorkerCount =
+        mappedRtlBuildWorkerCount(*options, facts.spatialLaunches.size());
+    if (buildWorkerCount == 0)
+      return invalid("gem5 RTL execution has no build worker");
+    std::set<std::string> uniqueExecutables;
+    std::set<std::string> uniqueResultPaths;
+    std::set<std::filesystem::path> uniqueWorkDirectories;
     commands.reserve(facts.spatialLaunches.size() + 1);
     executables.reserve(facts.spatialLaunches.size());
-    resultPaths.reserve(facts.spatialLaunches.size());
     engineCommands.reserve(facts.spatialLaunches.size());
     for (const auto indexed : llvm::enumerate(facts.spatialLaunches)) {
       const Gem5SpatialLaunchProjection &launch = indexed.value();
@@ -1089,8 +1151,10 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       const std::string prefix = mappedRtlLaunchPrefix(indexed.index());
       auto projection =
           eda::open_source::deriveMappedRtlExecutionBundleProjection(
-              *closure, options->cycleLimit, options->buildJobs, artifacts,
-              blobs, prefix);
+              *closure, options->cycleLimit,
+              mappedRtlBuildJobs(*options, buildWorkerCount,
+                                 facts.spatialLaunches.size(), indexed.index()),
+              artifacts, blobs, prefix);
       if (!projection)
         return projection.takeError();
       if (const auto *unsupported =
@@ -1098,6 +1162,13 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
         return EvaluationModelProviderPreparation{*unsupported};
       auto rtl = std::get<eda::open_source::MappedRtlExecutionBundleProjection>(
           std::move(*projection));
+      if (!uniqueExecutables.insert(rtl.simulatorExecutablePath).second ||
+          !uniqueResultPaths.insert(rtl.resultPath).second ||
+          !uniqueWorkDirectories
+               .insert(std::filesystem::path(rtl.simulatorExecutablePath)
+                           .parent_path())
+               .second)
+        return invalid("gem5 RTL build worksets are not independent");
       files.push_back(
           {rtl.testbenchPath, std::move(rtl.testbench), std::nullopt, false});
       files.push_back({rtl.bridgedVerilatorDriverPath,
@@ -1128,7 +1199,6 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       commands.push_back(
           {verilatorExecutable, "-f", rtl.bridgedVerilatorDriverPath});
       executables.push_back(rtl.simulatorExecutablePath);
-      resultPaths.push_back(rtl.resultPath);
       std::vector<std::string> engineCommand{
           rtl.simulatorExecutablePath,
           "--socket",
@@ -1190,6 +1260,9 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
         {gem5ExternalFile},
         {},
         std::move(executables)};
+    if (buildWorkerCount > 1)
+      specification.parallelCommandGroups.push_back(
+          {0, facts.spatialLaunches.size(), buildWorkerCount});
     specification.diagnosticCommandOrdinals = {specification.commands.size() -
                                                1};
     llvm::sort(specification.files, [](const auto &lhs, const auto &rhs) {
@@ -1269,6 +1342,10 @@ prepareGem5SystemDiagnosticInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const ExternalToolPreparationContext &context) {
+  ArtifactImportCacheScope cacheScope(artifacts, &blobs);
+  RequestVerifier verifier(resolution, artifacts, blobs);
+  if (llvm::Error error = verifier.verify(request))
+    return std::move(error);
   return prepareGem5SystemInvocationImpl(request, resolution, artifacts, blobs,
                                          context, true);
 }
@@ -1277,25 +1354,22 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const PreparedExternalToolInvocation &prepared,
     const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolInvocationExecutionObservation *executionObservation,
     Gem5SystemDiagnosticSidecar *diagnostics) {
+  if ((executionObservation != nullptr) != (diagnostics != nullptr))
+    return invalid("gem5 diagnostic import context is incomplete");
   std::vector<Gem5SpatialInvocationProjection> spatialInvocations;
   auto factsOrUnsupported = deriveFacts(request, resolution, artifacts, blobs);
   if (!factsOrUnsupported)
     return factsOrUnsupported.takeError();
-  if (std::holds_alternative<UnsupportedEvidence>(*factsOrUnsupported))
+  if (std::holds_alternative<UnsupportedEvidence>(**factsOrUnsupported))
     return invalid("prepared gem5 invocation is outside provider capability");
-  Gem5SystemFacts facts =
-      std::get<Gem5SystemFacts>(std::move(*factsOrUnsupported));
+  const Gem5SystemFacts &facts =
+      std::get<Gem5SystemFacts>(**factsOrUnsupported);
   auto contract = deriveExternalToolSemanticContract(request);
   if (!contract)
     return contract.takeError();
-  auto subjects = systemSubjects(request);
-  if (!subjects)
-    return subjects.takeError();
-  auto binding = importGem5SimulationBinding(subjects->second, artifacts);
-  if (!binding)
-    return binding.takeError();
-  auto fingerprint = gem5BinaryFingerprint(*binding);
+  auto fingerprint = gem5BinaryFingerprint(facts.binding);
   if (!fingerprint)
     return fingerprint.takeError();
   std::vector<ExternalToolInvocationSemanticInput> mappedRtlInputs;
@@ -1320,9 +1394,13 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
       rtlClosures.push_back(std::move(*closure));
     }
   }
-  auto attempt = importExternalToolInvocationAttempt(
-      prepared, makeExpectation(*contract, facts, diagnostics != nullptr,
-                                mappedRtlInputs, *fingerprint));
+  const ExternalToolInvocationImportExpectation expectation = makeExpectation(
+      *contract, facts, diagnostics != nullptr, mappedRtlInputs, *fingerprint);
+  auto attempt =
+      executionObservation
+          ? importExternalToolInvocationAttempt(prepared, expectation,
+                                                *executionObservation)
+          : importExternalToolInvocationAttempt(prepared, expectation);
   if (!attempt)
     return attempt.takeError();
   if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))
@@ -1365,6 +1443,14 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
     return terminalResult(
         CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
   if (attemptProfile) {
+    const bool ownsEngineProcess = facts.engine != Gem5SystemEngine::Rtl;
+    if (attemptProfile->engineProcessCpuNanoseconds.has_value() !=
+            ownsEngineProcess ||
+        attemptProfile->managedEngineStartup.has_value() != ownsEngineProcess ||
+        attemptProfile->externalEngineSocketReadiness.has_value() ==
+            ownsEngineProcess)
+      return invalid("gem5 performance profile has inconsistent engine "
+                     "readiness or CPU ownership");
     if (attemptProfile->bridgeCount != facts.spatialBridgeSessions.size())
       return invalid("gem5 performance profile bridge count differs from "
                      "the exact System projection");
@@ -1647,7 +1733,7 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
     const PreparedExternalToolInvocation &prepared,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   return importGem5SystemInvocationImpl(request, resolution, prepared,
-                                        artifacts, blobs, nullptr);
+                                        artifacts, blobs, nullptr, nullptr);
 }
 
 llvm::Expected<Gem5SystemDiagnosticEvaluation>
@@ -1656,6 +1742,10 @@ importGem5SystemDiagnosticInvocation(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationExecutionObservation &execution,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
+  ArtifactImportCacheScope cacheScope(artifacts, &blobs);
+  RequestVerifier verifier(resolution, artifacts, blobs);
+  if (llvm::Error error = verifier.verify(request))
+    return std::move(error);
   if (llvm::Error error = validateFreshDiagnosticExecution(prepared, execution))
     return std::move(error);
   const auto finalize = [&](EvaluationModelResult result)
@@ -1670,12 +1760,10 @@ importGem5SystemDiagnosticInvocation(
   if (execution.exitCode == externalToolExecutionStoppedExitCode)
     return finalize(terminalResult(
         CancelledOrTimeoutEvidence{OutcomeReason::ExternalCancellation}));
-  if (execution.exitCode != 0)
-    return finalize(
-        terminalResult(ExecutionFailedEvidence{OutcomeReason::ToolFailure}));
   Gem5SystemDiagnosticSidecar diagnostics;
-  auto result = importGem5SystemInvocationImpl(request, resolution, prepared,
-                                               artifacts, blobs, &diagnostics);
+  auto result =
+      importGem5SystemInvocationImpl(request, resolution, prepared, artifacts,
+                                     blobs, &execution, &diagnostics);
   if (!result)
     return result.takeError();
   auto evidence = EvaluationEvidence::get(

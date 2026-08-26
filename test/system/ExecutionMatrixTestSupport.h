@@ -1,28 +1,15 @@
 #ifndef LOOM_TEST_SYSTEM_EXECUTIONMATRIXTESTSUPPORT_H
 #define LOOM_TEST_SYSTEM_EXECUTIONMATRIXTESTSUPPORT_H
 
+#include "ExecutionMatrixInvocation.h"
+
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/Error.h"
 
 #include <cstdint>
 
 namespace loom::system_test {
 
-enum class ExecutionMatrixCell : std::uint8_t {
-  SpatialDfg,
-  SpatialCgra,
-  SpatialRtl,
-  SystemDfg,
-  SystemCgra,
-  SystemRtl,
-  PairedSpatialCgra,
-  PairedSystemCgra,
-};
-
-llvm::Expected<ExecutionMatrixCell>
-parseExecutionMatrixCell(llvm::StringRef spelling);
-
-void runExecutionMatrixCell(ExecutionMatrixCell cell,
+void runExecutionMatrixCell(ExecutionMatrixInvocation invocation,
                             llvm::StringRef gem5ReadinessPath);
 
 void runPairedSpatialCgraBatch(std::uint64_t warmupRuns,

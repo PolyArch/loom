@@ -22,7 +22,8 @@ bool verifySpatialReferenceCycleDistance() {
     return false;
   }
   const loom::sim::SpatialProgressObservations progress{
-      {*launch, 0}, loom::sim::SpatialEventCoordinate{*retirement, 0},
+      {*launch, 0},
+      loom::sim::SpatialEventCoordinate{*retirement, 0},
       {*retirement, 1}};
   return loom::runtime::integralSpatialReferenceCycleDistance(progress) == 1;
 }
@@ -54,7 +55,9 @@ int main(int argc, char **argv) {
     llvm::errs() << "usage: " << argv[0]
                  << " <spatial-dfg|spatial-cgra|spatial-rtl|system-dfg|"
                     "system-cgra|system-rtl|paired-spatial-cgra|"
-                    "paired-system-cgra> [gem5-readiness]\n"
+                    "paired-system-cgra|diagnostic-system-dfg|"
+                    "diagnostic-system-cgra|diagnostic-system-rtl> "
+                    "[gem5-readiness]\n"
                  << "       " << argv[0]
                  << " deterministic-system-replay <gem5-readiness>\n";
     llvm::errs() << "       " << argv[0]
@@ -62,12 +65,12 @@ int main(int argc, char **argv) {
                     "<measurement-runs>\n";
     return EXIT_FAILURE;
   }
-  auto cell = loom::system_test::parseExecutionMatrixCell(argv[1]);
-  if (!cell) {
-    llvm::errs() << llvm::toString(cell.takeError()) << '\n';
+  auto invocation = loom::system_test::parseExecutionMatrixInvocation(argv[1]);
+  if (!invocation) {
+    llvm::errs() << llvm::toString(invocation.takeError()) << '\n';
     return EXIT_FAILURE;
   }
   loom::system_test::runExecutionMatrixCell(
-      *cell, argc == 3 ? llvm::StringRef(argv[2]) : llvm::StringRef());
+      *invocation, argc == 3 ? llvm::StringRef(argv[2]) : llvm::StringRef());
   return EXIT_SUCCESS;
 }

@@ -330,6 +330,14 @@ public:
   struct Entry {
     ArtifactRootReference artifact;
     std::vector<ArtifactRootReference> dependencyClosure;
+
+    friend bool operator==(const Entry &lhs, const Entry &rhs) {
+      return lhs.artifact == rhs.artifact &&
+             lhs.dependencyClosure == rhs.dependencyClosure;
+    }
+    friend bool operator!=(const Entry &lhs, const Entry &rhs) {
+      return !(lhs == rhs);
+    }
   };
 
   static llvm::Expected<CaseArtifactResolution> get(std::vector<Entry> entries);
@@ -340,6 +348,15 @@ public:
   /// semantic dependency closure.
   static bool reaches(const Entry &entry,
                       const ArtifactRootReference &dependency);
+
+  friend bool operator==(const CaseArtifactResolution &lhs,
+                         const CaseArtifactResolution &rhs) {
+    return lhs.entries_ == rhs.entries_;
+  }
+  friend bool operator!=(const CaseArtifactResolution &lhs,
+                         const CaseArtifactResolution &rhs) {
+    return !(lhs == rhs);
+  }
 
 private:
   explicit CaseArtifactResolution(std::vector<Entry> entries)

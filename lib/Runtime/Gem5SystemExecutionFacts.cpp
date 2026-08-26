@@ -113,6 +113,11 @@ struct PendingChannelBuffer final {
   std::uint64_t address = 0;
 };
 
+struct CachedGem5SystemInputs final {
+  sim::ImportedSystemSimulationInputs inputs;
+  deployment::DeploymentPackageClosure deploymentClosure;
+};
+
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
@@ -243,20 +248,22 @@ findMemoryBinding(const sim::SystemSimulationRuntimeInput &runtime,
   return &*found;
 }
 
-llvm::Expected<std::vector<MaterializedBundleFile>>
-materializeDeploymentPackage(const deployment::FinalizedDeployment &deployment,
-                             const ArtifactStore &artifacts,
-                             const BlobStore &blobs) {
-  auto closure =
-      deployment::deriveDeploymentPackageClosure(deployment, artifacts, blobs);
-  if (!closure)
-    return closure.takeError();
+struct MaterializedDeploymentPackage final {
   std::vector<MaterializedBundleFile> files;
-  files.reserve(closure->artifacts().size() + closure->blobs().size() + 1);
+  std::vector<ArtifactRootReference> artifacts;
+  std::vector<BlobDigest> blobs;
+};
+
+llvm::Expected<MaterializedDeploymentPackage> materializeDeploymentPackage(
+    const deployment::FinalizedDeployment &deployment,
+    const deployment::DeploymentPackageClosure &closure,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  std::vector<MaterializedBundleFile> files;
+  files.reserve(closure.artifacts().size() + closure.blobs().size() + 1);
   files.push_back({"inputs/package/root",
                    formatArtifactIdentityHex(deployment.reference().artifact),
                    deployment.reference(), false});
-  for (const ArtifactRootReference &reference : closure->artifacts()) {
+  for (const ArtifactRootReference &reference : closure.artifacts()) {
     auto contents = artifacts.getStoredObject(reference);
     if (!contents)
       return contents.takeError();
@@ -264,14 +271,18 @@ materializeDeploymentPackage(const deployment::FinalizedDeployment &deployment,
                          formatArtifactIdentityHex(reference.artifact),
                      bytesToString(*contents), reference, false});
   }
-  for (const BlobDigest &digest : closure->blobs()) {
+  for (const BlobDigest &digest : closure.blobs()) {
     auto contents = blobs.get(digest);
     if (!contents)
       return contents.takeError();
     files.push_back({"inputs/package/blobs/" + formatBlobDigestHex(digest),
                      bytesToString(*contents), deployment.reference(), false});
   }
-  return files;
+  return MaterializedDeploymentPackage{
+      std::move(files),
+      std::vector<ArtifactRootReference>(closure.artifacts().begin(),
+                                         closure.artifacts().end()),
+      std::vector<BlobDigest>(closure.blobs().begin(), closure.blobs().end())};
 }
 
 llvm::Error appendStoredObject(std::vector<MaterializedBundleFile> &files,
@@ -485,42 +496,109 @@ findServicePlan(const mapping::SystemServiceRealizationView &realization,
   return found == realization.plans.end() ? nullptr : &*found;
 }
 
+void addRevalidatedBytes(std::uint64_t &total, std::uint64_t bytes) {
+  total = bytes > std::numeric_limits<std::uint64_t>::max() - total
+              ? std::numeric_limits<std::uint64_t>::max()
+              : total + bytes;
+}
+
+llvm::Expected<std::uint64_t>
+revalidateSystemInputsClosure(const CachedGem5SystemInputs &cached,
+                              const ArtifactStore &artifacts,
+                              const BlobStore &blobs) {
+  std::uint64_t bytes = 0;
+  for (const ArtifactRootReference &reference :
+       cached.deploymentClosure.artifacts()) {
+    auto object = artifacts.getStoredObject(reference);
+    if (!object)
+      return object.takeError();
+    addRevalidatedBytes(bytes, object->size());
+  }
+  for (const BlobDigest &digest : cached.deploymentClosure.blobs()) {
+    auto size = blobs.verify(digest);
+    if (!size)
+      return size.takeError();
+    addRevalidatedBytes(bytes, *size);
+  }
+  return bytes;
+}
+
+llvm::Expected<std::shared_ptr<const CachedGem5SystemInputs>>
+importCachedGem5SystemInputs(const ArtifactRootReference &workload,
+                             const ArtifactRootReference &runtimeInput,
+                             const ArtifactStore &artifacts,
+                             const BlobStore &blobs) {
+  const std::array<ArtifactRootReference, 2> references{workload, runtimeInput};
+  return evaluation::importCachedArtifact<CachedGem5SystemInputs>(
+      artifacts, &blobs, references,
+      [&] {
+        auto inputs = sim::importSystemSimulationInputs(workload, runtimeInput,
+                                                        artifacts, blobs);
+        if (!inputs)
+          return llvm::Expected<CachedGem5SystemInputs>(inputs.takeError());
+        auto closure = deployment::deriveDeploymentPackageClosure(
+            inputs->deployment, artifacts, blobs);
+        if (!closure)
+          return llvm::Expected<CachedGem5SystemInputs>(closure.takeError());
+        return llvm::Expected<CachedGem5SystemInputs>(
+            CachedGem5SystemInputs{std::move(*inputs), std::move(*closure)});
+      },
+      [&](const CachedGem5SystemInputs &cached) {
+        return revalidateSystemInputsClosure(cached, artifacts, blobs);
+      });
+}
+
 llvm::Expected<std::shared_ptr<const sim::ImportedSystemSimulationInputs>>
 importCachedSystemInputs(const ArtifactRootReference &workload,
                          const ArtifactRootReference &runtimeInput,
                          const ArtifactStore &artifacts,
                          const BlobStore &blobs) {
-  const std::array<ArtifactRootReference, 2> references{workload, runtimeInput};
-  return evaluation::importCachedArtifact<sim::ImportedSystemSimulationInputs>(
-      artifacts, &blobs, references, [&] {
-        return sim::importSystemSimulationInputs(workload, runtimeInput,
-                                                 artifacts, blobs);
-      });
+  auto cached =
+      importCachedGem5SystemInputs(workload, runtimeInput, artifacts, blobs);
+  if (!cached)
+    return cached.takeError();
+  return std::shared_ptr<const sim::ImportedSystemSimulationInputs>(
+      *cached, &(*cached)->inputs);
 }
 
 llvm::Expected<Gem5SystemFactsOrUnsupported>
-deriveFacts(const EvaluationRequest &request,
-            const CaseArtifactResolution &resolution,
-            const ArtifactStore &artifacts, const BlobStore &blobs) {
+deriveFactsUncached(const EvaluationRequest &request,
+                    const CaseArtifactResolution &resolution,
+                    const ArtifactStore &artifacts, const BlobStore &blobs,
+                    Gem5SystemFactsConstructionStatistics *statistics) {
+  Gem5SystemFactsOperationTimer deriveTimer(
+      statistics ? &statistics->deriveFacts : nullptr);
   (void)resolution;
   auto subjects = systemSubjects(request);
   if (!subjects)
     return subjects.takeError();
   if (!request.workload() || !request.runtimeInput())
     return invalid("System Request has no workload/runtime pair");
-  auto systemInputs = importCachedSystemInputs(
-      *request.workload(), *request.runtimeInput(), artifacts, blobs);
+  auto systemInputs = [&] {
+    Gem5SystemFactsOperationTimer timer(
+        statistics ? &statistics->systemInputsAndDeploymentImport : nullptr);
+    return importCachedGem5SystemInputs(
+        *request.workload(), *request.runtimeInput(), artifacts, blobs);
+  }();
   if (!systemInputs)
     return systemInputs.takeError();
-  const sim::ImportedSystemSimulationInputs &inputs = **systemInputs;
+  const sim::ImportedSystemSimulationInputs &inputs = (*systemInputs)->inputs;
   const Gem5SystemEngine engine = selectedEngine(request);
   if (inputs.deployment.reference() != subjects->first)
     return invalid("System workload names a foreign Deployment");
-  auto binding = importGem5SimulationBinding(subjects->second, artifacts);
+  auto binding = [&] {
+    Gem5SystemFactsOperationTimer timer(statistics ? &statistics->bindingImport
+                                                   : nullptr);
+    return importGem5SimulationBinding(subjects->second, artifacts);
+  }();
   if (!binding)
     return binding.takeError();
-  auto fabricRoot =
-      fabric::importEntireFabricRoot(binding->binding().fabric(), artifacts);
+  auto fabricRoot = [&] {
+    Gem5SystemFactsOperationTimer timer(statistics ? &statistics->fabricImport
+                                                   : nullptr);
+    return fabric::importEntireFabricRoot(binding->binding().fabric(),
+                                          artifacts);
+  }();
   if (!fabricRoot)
     return fabricRoot.takeError();
   auto system = fabric::requireSystemRoot(fabricRoot->view());
@@ -528,8 +606,12 @@ deriveFacts(const EvaluationRequest &request,
     return system.takeError();
   if (binding->binding().fabric().artifact !=
       inputs.deployment.deployment().systemMapping().artifact) {
-    auto mapping = mapping::importSystemMapping(
-        inputs.deployment.deployment().systemMapping(), artifacts);
+    auto mapping = [&] {
+      Gem5SystemFactsOperationTimer timer(
+          statistics ? &statistics->systemMappingImport : nullptr);
+      return mapping::importSystemMapping(
+          inputs.deployment.deployment().systemMapping(), artifacts);
+    }();
     if (!mapping)
       return mapping.takeError();
     if (mapping->view().fabricIdentity() !=
@@ -544,8 +626,11 @@ deriveFacts(const EvaluationRequest &request,
   if (!deployment.spatialLaunchImage())
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-  auto systemMapping =
-      mapping::importSystemMapping(deployment.systemMapping(), artifacts);
+  auto systemMapping = [&] {
+    Gem5SystemFactsOperationTimer timer(
+        statistics ? &statistics->systemMappingImport : nullptr);
+    return mapping::importSystemMapping(deployment.systemMapping(), artifacts);
+  }();
   if (!systemMapping)
     return systemMapping.takeError();
   ArtifactRootReference dataflowReference{
@@ -1054,19 +1139,21 @@ deriveFacts(const EvaluationRequest &request,
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
-  auto semanticInputs =
-      materializeDeploymentPackage(inputs.deployment, artifacts, blobs);
-  if (!semanticInputs)
-    return semanticInputs.takeError();
+  auto package = materializeDeploymentPackage(
+      inputs.deployment, (*systemInputs)->deploymentClosure, artifacts, blobs);
+  if (!package)
+    return package.takeError();
+  std::vector<MaterializedBundleFile> semanticInputs =
+      std::move(package->files);
   for (const PendingSpatialLaunch &launch : pendingLaunches) {
     if (!launch.spatialWorkload)
       return invalid("pending Spatial launch has no finalized workload");
     if (llvm::Error error = appendStoredObject(
-            *semanticInputs, *launch.spatialWorkload, artifacts))
+            semanticInputs, *launch.spatialWorkload, artifacts))
       return std::move(error);
     if (launch.spatialRuntimeInput)
       if (llvm::Error error = appendStoredObject(
-              *semanticInputs, *launch.spatialRuntimeInput, artifacts))
+              semanticInputs, *launch.spatialRuntimeInput, artifacts))
         return std::move(error);
   }
   auto hostElf = blobs.get(deployment.hostProgram().programBlob());
@@ -1085,8 +1172,8 @@ deriveFacts(const EvaluationRequest &request,
           *hostSegments, memory->baseAddress, runtimeArenaBegin, "HostCore ELF",
           executableIntervals))
     return std::move(error);
-  semanticInputs->push_back({kHostElfPath.str(), bytesToString(*hostElf),
-                             inputs.deployment.reference(), true});
+  semanticInputs.push_back({kHostElfPath.str(), bytesToString(*hostElf),
+                            inputs.deployment.reference(), true});
   std::vector<Gem5InstructionImage> instructionImages;
   instructionImages.reserve(deployment.instructionCoreBinaries().size());
   for (const auto indexed :
@@ -1116,7 +1203,7 @@ deriveFacts(const EvaluationRequest &request,
             executableIntervals))
       return std::move(error);
     const std::string path = instructionImagePath(indexed.index());
-    semanticInputs->push_back(
+    semanticInputs.push_back(
         {path, bytesToString(*bytes), indexed.value(), true});
     instructionImages.push_back({indexed.value(), path});
   }
@@ -1130,16 +1217,18 @@ deriveFacts(const EvaluationRequest &request,
   const auto &admissionBytes =
       deployment.admissionImage().canonicalBytes().bytes();
   for (std::size_t ordinal = 0; ordinal != pendingLaunches.size(); ++ordinal)
-    semanticInputs->push_back({spatialLaunchPath(ordinal),
-                               bytesToString(launchBytes),
-                               inputs.deployment.reference(), false});
-  semanticInputs->push_back({kThreadDispatchPath.str(),
-                             bytesToString(threadBytes),
-                             inputs.deployment.reference(), false});
-  semanticInputs->push_back({kAdmissionPath.str(),
-                             bytesToString(admissionBytes),
-                             inputs.deployment.reference(), false});
+    semanticInputs.push_back({spatialLaunchPath(ordinal),
+                              bytesToString(launchBytes),
+                              inputs.deployment.reference(), false});
+  semanticInputs.push_back({kThreadDispatchPath.str(),
+                            bytesToString(threadBytes),
+                            inputs.deployment.reference(), false});
+  semanticInputs.push_back({kAdmissionPath.str(), bytesToString(admissionBytes),
+                            inputs.deployment.reference(), false});
 
+  std::optional<Gem5SystemFactsOperationTimer> runtimeImageTimer;
+  runtimeImageTimer.emplace(
+      statistics ? &statistics->guestRuntimeImageProjection : nullptr);
   std::uint64_t cursor = runtimeArenaBegin;
   std::vector<Gem5RuntimeImage> runtimeImages;
   auto reserveRuntimeRange =
@@ -1173,9 +1262,9 @@ deriveFacts(const EvaluationRequest &request,
       placeRuntimeImage(kHostReturnPath, hostReturnBytes.size());
   if (!hostReturnAddress)
     return hostReturnAddress.takeError();
-  semanticInputs->push_back({kHostReturnPath.str(),
-                             bytesToString(hostReturnBytes),
-                             inputs.deployment.reference(), false});
+  semanticInputs.push_back({kHostReturnPath.str(),
+                            bytesToString(hostReturnBytes),
+                            inputs.deployment.reference(), false});
 
   std::optional<Gem5ProgramResultProjection> programResult;
   if (!systemWorkload->observableContract.valueResults.empty()) {
@@ -1207,9 +1296,9 @@ deriveFacts(const EvaluationRequest &request,
     auto resultAddress = placeRuntimeImage(kHostResultPath, resultBytes);
     if (!resultAddress)
       return resultAddress.takeError();
-    semanticInputs->push_back({kHostResultPath.str(),
-                               std::string(resultBytes, '\0'),
-                               *request.workload(), false});
+    semanticInputs.push_back({kHostResultPath.str(),
+                              std::string(resultBytes, '\0'),
+                              *request.workload(), false});
     programResult = Gem5ProgramResultProjection{0, *resultAddress, resultBytes,
                                                 shape, shapes->littleEndian};
   }
@@ -1255,7 +1344,7 @@ deriveFacts(const EvaluationRequest &request,
       buffer.address = *address;
       const std::string path = spatialChannelBufferPath(indexed.index());
       runtimeImages.push_back({path, *address});
-      semanticInputs->push_back(
+      semanticInputs.push_back(
           {path, std::string(gem5SpatialChannelBufferHeaderBytes, '\0'),
            inputs.deployment.reference(), false});
     }
@@ -1368,9 +1457,9 @@ deriveFacts(const EvaluationRequest &request,
         spatialChannelProjectionPath(indexed.index());
     const std::string enginePlanPath =
         spatialChannelEnginePlanPath(indexed.index());
-    semanticInputs->push_back({channelPath, bytesToString(*encodedProjection),
-                               inputs.deployment.reference(), false});
-    semanticInputs->push_back(
+    semanticInputs.push_back({channelPath, bytesToString(*encodedProjection),
+                              inputs.deployment.reference(), false});
+    semanticInputs.push_back(
         {enginePlanPath,
          encodeGem5SpatialChannelEnginePlan(std::move(enginePlan)),
          inputs.deployment.reference(), false});
@@ -1408,7 +1497,7 @@ deriveFacts(const EvaluationRequest &request,
     contents.reserve(object.initialBytes.size());
     for (const sim::SemanticMemoryByte &byte : object.initialBytes)
       contents.push_back(static_cast<char>(byte.value));
-    semanticInputs->push_back(
+    semanticInputs.push_back(
         {path, std::move(contents), *request.runtimeInput(), false});
   }
 
@@ -1456,11 +1545,12 @@ deriveFacts(const EvaluationRequest &request,
     if (!address)
       return address.takeError();
     memoryTableAddress = *address;
-    semanticInputs->push_back({kMemoryTablePath.str(),
-                               bytesToString(memoryTable),
-                               *request.runtimeInput(), false});
+    semanticInputs.push_back({kMemoryTablePath.str(),
+                              bytesToString(memoryTable),
+                              *request.runtimeInput(), false});
   }
 
+  runtimeImageTimer.reset();
   std::vector<Gem5MemoryObservationProjection> memoryObservations;
   memoryObservations.reserve(
       systemWorkload->observableContract.memories.size());
@@ -1501,18 +1591,46 @@ deriveFacts(const EvaluationRequest &request,
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
-  llvm::sort(*semanticInputs, [](const auto &lhs, const auto &rhs) {
+  llvm::sort(semanticInputs, [](const auto &lhs, const auto &rhs) {
     return lhs.relativePath < rhs.relativePath;
   });
+
+  std::vector<ArtifactRootReference> artifactDependencies =
+      std::move(package->artifacts);
+  std::vector<BlobDigest> blobDependencies = std::move(package->blobs);
+  artifactDependencies.push_back(subjects->first);
+  artifactDependencies.push_back(subjects->second);
+  artifactDependencies.push_back(binding->binding().fabric());
+  artifactDependencies.push_back(
+      binding->binding().interconnectImplementation());
+  artifactDependencies.push_back(*request.workload());
+  artifactDependencies.push_back(*request.runtimeInput());
+  for (const ModelInputBinding &input : request.modelBinding().inputBindings())
+    artifactDependencies.insert(artifactDependencies.end(),
+                                input.artifacts.begin(), input.artifacts.end());
+  for (const MaterializedBundleFile &file : semanticInputs)
+    if (file.sourceArtifact)
+      artifactDependencies.push_back(*file.sourceArtifact);
+  llvm::sort(artifactDependencies, artifactRootReferenceLess);
+  artifactDependencies.erase(
+      std::unique(artifactDependencies.begin(), artifactDependencies.end()),
+      artifactDependencies.end());
+  llvm::sort(blobDependencies,
+             [](const BlobDigest &lhs, const BlobDigest &rhs) {
+               return lhs.bytes() < rhs.bytes();
+             });
+  blobDependencies.erase(
+      std::unique(blobDependencies.begin(), blobDependencies.end()),
+      blobDependencies.end());
 
   return Gem5SystemFactsOrUnsupported{
       Gem5SystemFacts{engine,
                       inputs.deployment.reference(),
-                      binding->reference(),
+                      std::move(*binding),
                       std::move(dataflowReference),
                       std::move(spatialLaunches),
                       std::move(spatialBridgeSessions),
-                      std::move(*semanticInputs),
+                      std::move(semanticInputs),
                       std::move(processors),
                       (*hostEntry)->abiSymbol,
                       hostCpuId,
@@ -1526,7 +1644,9 @@ deriveFacts(const EvaluationRequest &request,
                       dispatchAddress,
                       stackBase,
                       kGem5StackBytes,
-                      *memory}};
+                      *memory,
+                      std::move(artifactDependencies),
+                      std::move(blobDependencies)}};
 }
 
 } // namespace loom::runtime::gem5_system

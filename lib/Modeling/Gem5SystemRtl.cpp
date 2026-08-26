@@ -7,8 +7,8 @@
 namespace loom::evaluation::models {
 
 EvaluationModelDescriptorRef gem5SystemRtlModelDescriptorRef() {
-  return llvm::cantFail(
-      builtinEvaluationModelDescriptorRef(BuiltinEvaluationModel::Gem5SystemRtl));
+  return llvm::cantFail(builtinEvaluationModelDescriptorRef(
+      BuiltinEvaluationModel::Gem5SystemRtl));
 }
 
 llvm::Error registerGem5SystemRtlProvider() {
@@ -16,7 +16,8 @@ llvm::Error registerGem5SystemRtlProvider() {
       gem5SystemRtlModelDescriptorRef(),
       EvaluationModelExternalPrepareImportProvider{
           &runtime::prepareGem5SystemInvocation,
-          &runtime::importGem5SystemInvocation}};
+          &runtime::importGem5SystemInvocation,
+          &runtime::openGem5SystemInvocationContext}};
   return registerEvaluationModelProvider(provider);
 }
 

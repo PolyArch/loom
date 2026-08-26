@@ -13,8 +13,8 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Error.h"
 
-#include <cstdint>
 #include <chrono>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <system_error>
@@ -156,7 +156,7 @@ llvm::Expected<FinalizedDeployment> buildDeploymentFromLinkedProgram(
            std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now() - staticMemoryBegin)
                .count()),
-       staticMemory ? staticMemory->size() : 0});
+       staticMemory ? staticMemory->size() : 0, std::nullopt, std::nullopt});
   if (!staticMemory)
     return staticMemory.takeError();
 
