@@ -6,6 +6,7 @@
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Deployment/Deployment.h"
 #include "Deployment/DeploymentReference.h"
@@ -245,7 +246,7 @@ llvm::Expected<std::string> renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.10");
+    json.attribute("schema", "loom.gem5_system_projection.11");
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
@@ -300,6 +301,7 @@ llvm::Expected<std::string> renderProjection(const Gem5SystemFacts &facts,
       json.attribute("pio_latency", std::to_string(ticksPerCycle) + "ps");
       json.attribute("stack_base", facts.stackBase);
       json.attribute("stack_stride", facts.stackStride);
+      json.attribute("root_event_trace_path", kRootLifecycleResultPath);
       json.attributeArray("targets", [&] {
         for (const Gem5SpatialLaunchProjection &launch :
              facts.spatialLaunches) {
@@ -470,7 +472,8 @@ llvm::Expected<std::string> renderProjection(const Gem5SystemFacts &facts,
 std::vector<std::string> gem5AttemptOutputPaths(const Gem5SystemFacts &facts,
                                                 bool diagnostics) {
   std::vector<std::string> outputs{kSystemResultPath.str(),
-                                   kMemoryResultPath.str()};
+                                   kMemoryResultPath.str(),
+                                   kRootLifecycleResultPath.str()};
   for (std::size_t ordinal = 0; ordinal != facts.spatialBridgeSessions.size();
        ++ordinal)
     outputs.push_back(spatialBridgeResultPath(ordinal));
@@ -573,6 +576,60 @@ struct Gem5AttemptResult final {
   std::uint64_t exitTick = 0;
   std::string cause;
 };
+
+std::uint32_t readBigEndianU32(llvm::StringRef bytes, std::size_t offset) {
+  std::uint32_t value = 0;
+  for (std::size_t index = 0; index != 4; ++index)
+    value = (value << 8) | static_cast<unsigned char>(bytes[offset + index]);
+  return value;
+}
+
+std::uint64_t readBigEndianU64(llvm::StringRef bytes, std::size_t offset) {
+  std::uint64_t value = 0;
+  for (std::size_t index = 0; index != 8; ++index)
+    value = (value << 8) | static_cast<unsigned char>(bytes[offset + index]);
+  return value;
+}
+
+llvm::Expected<std::vector<sim::SystemRootLifecycleObservation>>
+parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
+  constexpr std::size_t headerBytes = 4;
+  constexpr std::size_t recordBytes = 36;
+  if (bytes.size() < headerBytes ||
+      readBigEndianU32(bytes, 0) != gem5RootLifecycleTraceMagic)
+    return invalid("gem5 root lifecycle result has the wrong header");
+  if ((bytes.size() - headerBytes) % recordBytes != 0)
+    return invalid("gem5 root lifecycle result has a partial record");
+  const std::size_t recordCount = (bytes.size() - headerBytes) / recordBytes;
+  const std::size_t sessionCount =
+      std::max<std::size_t>(facts.spatialBridgeSessions.size(), 1);
+  if (recordCount >
+      2 * static_cast<std::size_t>(gem5MaximumDynamicSpatialInvocations) *
+          sessionCount)
+    return invalid("gem5 root lifecycle result exceeds its invocation bound");
+
+  std::vector<sim::SystemRootLifecycleObservation> observations;
+  observations.reserve(recordCount);
+  for (std::size_t offset = headerBytes; offset != bytes.size();
+       offset += recordBytes) {
+    const std::uint64_t entity = readBigEndianU64(bytes, offset);
+    const std::uint64_t occurrence = readBigEndianU64(bytes, offset + 8);
+    const std::uint32_t action = readBigEndianU32(bytes, offset + 16);
+    const std::uint64_t tick = readBigEndianU64(bytes, offset + 20);
+    const std::uint64_t delta = readBigEndianU64(bytes, offset + 28);
+    if (action >
+        static_cast<std::uint32_t>(Gem5RootLifecycleAction::Completion))
+      return invalid("gem5 root lifecycle result has an unknown action");
+    const dataflow::RootThreadLaunchRef root{
+        facts.dataflow.artifact, dataflow::RootThreadLaunchId(entity)};
+    const dataflow::EventFamilyKey event =
+        action == static_cast<std::uint32_t>(Gem5RootLifecycleAction::Start)
+            ? dataflow::rootThreadStartEventFamily(root)
+            : dataflow::rootThreadCompletionEventFamily(root);
+    observations.push_back({event, occurrence, {tick, delta}});
+  }
+  return observations;
+}
 
 llvm::Expected<Gem5AttemptResult> parseAttemptResult(llvm::StringRef text) {
   auto value = llvm::json::parse(text);
@@ -1522,6 +1579,13 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
       projectSystemObservations(facts, **systemInputs, *snapshots);
   if (!functional)
     return functional.takeError();
+  auto lifecycleText = readExternalToolInvocationDeclaredOutput(
+      imported, kRootLifecycleResultPath);
+  if (!lifecycleText)
+    return lifecycleText.takeError();
+  auto rootLifecycle = parseRootLifecycleResult(*lifecycleText, facts);
+  if (!rootLifecycle)
+    return rootLifecycle.takeError();
 
   sim::SystemSimulationExecution execution{
       evaluationRequestReference(request),
@@ -1529,7 +1593,8 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
       std::move(*functional),
       {{systemResult->entryTick, 0},
        sim::SystemEventCoordinate{systemResult->exitTick, 0},
-       {systemResult->exitTick, 0}},
+       {systemResult->exitTick, 0},
+       std::move(*rootLifecycle)},
       {}};
   auto finalized =
       sim::finalizeSimulationExecution(execution, resolution, artifacts, blobs);
