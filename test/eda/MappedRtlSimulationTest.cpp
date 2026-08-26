@@ -35,6 +35,13 @@
 
 namespace {
 
+const loom::external_tool::PreparedExternalToolInvocation *
+externalInvocation(loom::evaluation::EvaluationModelPreparation &preparation) {
+  auto *live = std::get_if<loom::evaluation::EvaluationModelPreparedInvocation>(
+      &preparation);
+  return live ? &live->externalInvocation() : nullptr;
+}
+
 constexpr int kFakeToolUsageExitCode = 64;
 constexpr std::int64_t kExpectedMappedCycleCount = 8;
 
@@ -459,10 +466,8 @@ void authoredLifecycleImportsExactEvidence() {
         take(prepareEvaluationModelInvocation(
             fixture.request, fixture.resolution, artifacts, blobs,
             ExternalToolPreparationContext{std::move(local), bundle.string()}));
-    auto *invocation =
-        std::get_if<PreparedExternalToolInvocation>(&preparation);
-    require(invocation,
-            "supported request did not prepare a Verilator bundle");
+    auto *invocation = externalInvocation(preparation);
+    require(invocation, "supported request did not prepare a Verilator bundle");
     require(!std::filesystem::exists(bundle / mappedRtlResultPath.str()),
             "preparation manufactured a simulation result");
     require(llvm::StringRef(readFile(bundle / mappedRtlTestbenchPath.str()))
@@ -478,8 +483,7 @@ void authoredLifecycleImportsExactEvidence() {
       prepared.fixture.request, prepared.fixture.resolution,
       prepared.invocation, artifacts, blobs));
   require(requireCompletedEvidence(prepared.fixture, evidence, artifacts,
-                                   blobs) ==
-              kExpectedMappedCycleCount,
+                                   blobs) == kExpectedMappedCycleCount,
           "authored lifecycle changed its exact cycle count");
 }
 
@@ -508,8 +512,7 @@ void authoredResultTamperIsRejected() {
       take(prepareEvaluationModelInvocation(
           fixture.request, fixture.resolution, artifacts, blobs,
           ExternalToolPreparationContext{std::move(local), bundle.string()}));
-  const auto *prepared =
-      std::get_if<PreparedExternalToolInvocation>(&preparation);
+  const auto *prepared = externalInvocation(preparation);
   require(prepared, "result-tamper request did not prepare a bundle");
   require(take(executeExternalToolInvocationBundle(*prepared)) == 0,
           "result-tamper lifecycle failed");
@@ -579,8 +582,7 @@ void authoredFailure(AuthoredFailureCase selected) {
         take(prepareEvaluationModelInvocation(
             fixture.request, fixture.resolution, artifacts, blobs,
             ExternalToolPreparationContext{std::move(local), bundle.string()}));
-    const auto *prepared =
-        std::get_if<PreparedExternalToolInvocation>(&preparation);
+    const auto *prepared = externalInvocation(preparation);
     require(prepared, "authored failure did not prepare a bundle");
     return *prepared;
   };
@@ -721,8 +723,7 @@ void realVerilatorLifecycle() {
       take(prepareEvaluationModelInvocation(
           fixture.request, fixture.resolution, artifacts, blobs,
           ExternalToolPreparationContext{std::move(local), bundle.string()}));
-  const auto *prepared =
-      std::get_if<PreparedExternalToolInvocation>(&preparation);
+  const auto *prepared = externalInvocation(preparation);
   require(prepared, "real Verilator request did not prepare a bundle");
   const int status = take(executeExternalToolInvocationBundle(*prepared));
   if (status != 0)

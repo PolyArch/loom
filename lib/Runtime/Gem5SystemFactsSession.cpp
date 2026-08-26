@@ -15,6 +15,7 @@
 #include <chrono>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -152,6 +153,7 @@ public:
   get(const evaluation::EvaluationRequest &request,
       const evaluation::CaseArtifactResolution &resolution,
       const ArtifactStore &artifacts, const BlobStore &blobs) {
+    std::lock_guard<std::mutex> lock(mutex_);
     addSaturated(statistics_.requests, 1);
     if (!owns(artifacts, blobs))
       return gem5_system::invalid(
@@ -211,7 +213,10 @@ public:
     return facts;
   }
 
-  Gem5SystemFactsSessionStatistics statistics() const { return statistics_; }
+  Gem5SystemFactsSessionStatistics statistics() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return statistics_;
+  }
 
 private:
   struct Key final {
@@ -259,6 +264,7 @@ private:
   const ArtifactStore *artifacts_ = nullptr;
   const BlobStore *blobs_ = nullptr;
   std::size_t entryLimit_ = 0;
+  mutable std::mutex mutex_;
   std::vector<Entry> entries_;
   Gem5SystemFactsSessionStatistics statistics_;
 };
@@ -280,12 +286,75 @@ Gem5SystemFactsSession::Gem5SystemFactsSession(const ArtifactStore &artifacts,
   currentFactsSession = active_;
 }
 
+Gem5SystemFactsSession::Gem5SystemFactsSession(const Attachment &attachment)
+    : active_(attachment.state_), previous_(currentFactsSession) {
+  currentFactsSession = active_;
+}
+
 Gem5SystemFactsSession::~Gem5SystemFactsSession() {
   currentFactsSession = previous_;
 }
 
 Gem5SystemFactsSessionStatistics Gem5SystemFactsSession::statistics() const {
   return active_ ? active_->statistics() : Gem5SystemFactsSessionStatistics{};
+}
+
+namespace {
+
+class Gem5SystemInvocationContextActivation final
+    : public evaluation::EvaluationModelInvocationContext::Activation {
+public:
+  explicit Gem5SystemInvocationContextActivation(
+      const Gem5SystemFactsSession::Attachment &attachment)
+      : session_(attachment) {}
+
+private:
+  Gem5SystemFactsSession session_;
+};
+
+class Gem5SystemInvocationContext final
+    : public evaluation::EvaluationModelInvocationContext {
+public:
+  Gem5SystemInvocationContext(const ArtifactStore &artifacts,
+                              const BlobStore &blobs,
+                              Gem5SystemFactsSession::Attachment attachment)
+      : artifacts_(&artifacts), blobs_(&blobs),
+        attachment_(std::move(attachment)) {}
+
+  llvm::Expected<std::unique_ptr<Activation>>
+  activate(const ArtifactStore &artifacts,
+           const BlobStore &blobs) const override {
+    if (&artifacts != artifacts_ || &blobs != blobs_)
+      return gem5_system::invalid(
+          "Gem5 System invocation context crosses its store verification "
+          "domain");
+    if (!attachment_)
+      return gem5_system::invalid(
+          "Gem5 System invocation context has no facts session");
+    return std::unique_ptr<Activation>(
+        std::make_unique<Gem5SystemInvocationContextActivation>(attachment_));
+  }
+
+private:
+  const ArtifactStore *artifacts_ = nullptr;
+  const BlobStore *blobs_ = nullptr;
+  Gem5SystemFactsSession::Attachment attachment_;
+};
+
+} // namespace
+
+llvm::Expected<
+    std::shared_ptr<const evaluation::EvaluationModelInvocationContext>>
+openGem5SystemInvocationContext(
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  (void)request;
+  (void)resolution;
+  Gem5SystemFactsSession session(artifacts, blobs);
+  return std::shared_ptr<const evaluation::EvaluationModelInvocationContext>(
+      std::make_shared<const Gem5SystemInvocationContext>(
+          artifacts, blobs, session.attachment()));
 }
 
 namespace gem5_system {

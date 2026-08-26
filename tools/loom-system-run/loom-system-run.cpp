@@ -579,12 +579,14 @@ execute(Engine engine, llvm::StringRef workspace,
   if (!preparation)
     return preparation.takeError();
   const auto *prepared =
-      std::get_if<loom::external_tool::PreparedExternalToolInvocation>(
+      std::get_if<loom::evaluation::EvaluationModelPreparedInvocation>(
           &*preparation);
   if (!prepared)
     return invalid(engineName + " is unsupported for the exact Deployment");
+  const loom::external_tool::PreparedExternalToolInvocation &external =
+      prepared->externalInvocation();
   auto status =
-      loom::external_tool::executeExternalToolInvocationBundle(*prepared);
+      loom::external_tool::executeExternalToolInvocationBundle(external);
   if (!status)
     return status.takeError();
   if (*status != 0)
@@ -616,7 +618,7 @@ execute(Engine engine, llvm::StringRef workspace,
           imported->terminal()) ||
       !imported->system())
     return invalid(engineName + " did not retire a System execution");
-  auto spatialInvocations = readSpatialInvocations(*prepared);
+  auto spatialInvocations = readSpatialInvocations(external);
   if (!spatialInvocations)
     return spatialInvocations.takeError();
   return CompletedRun{
