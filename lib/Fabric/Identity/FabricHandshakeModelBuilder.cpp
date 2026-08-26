@@ -378,13 +378,18 @@ HandshakeOwnerModel::fragment(std::uint32_t ordinal) const {
   const auto &record =
       storage_->instances[instance]
           .structure->fragments[ordinal - layout.fragmentOffset];
-  const detail::HandshakeFragmentSelector selector = fragmentSelector(ordinal);
+  const auto &instanceStorage = storage_->instances[instance];
+  const auto switchActivation =
+      instanceStorage.switchActivationOverride
+          ? instanceStorage.switchActivationOverride
+          : (*instanceStorage.selectors)[ordinal - layout.fragmentOffset]
+                .switchActivation;
   return {record.contributionOffset + layout.contributionOffset,
           record.contributionCount,
           record.activationKind,
           record.witnessOffset + layout.witnessOffset,
           record.witnessCount,
-          selector.switchActivation};
+          switchActivation};
 }
 
 std::uint32_t HandshakeOwnerModel::fragmentContributionCount() const {
