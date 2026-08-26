@@ -11,6 +11,7 @@
 #include "Deployment/DeploymentSpatialLaunchSelection.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Deployment/Package.h"
+#include "DSE/ProductionOwners.h"
 #include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelProvider.h"
@@ -1306,8 +1307,7 @@ writeManifest(llvm::StringRef workspace,
 }
 
 llvm::Error run() {
-  if (llvm::Error error =
-          loom::evaluation::registerProductionEvaluationRegistry())
+  if (llvm::Error error = loom::dse::registerProductionDseOwners())
     return error;
   if (llvm::Error error = loom::runtime::registerRuntimeProvider(
           loom::runtime::fabricModelRuntimeProviderDescriptor()))

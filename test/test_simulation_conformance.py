@@ -449,6 +449,11 @@ class PairedMeasurementParsingTest(unittest.TestCase):
             row.replace("attempt=diagnostic", "attempt=ordinary"),
             row.replace("active_wall_ns=200000000", "active_wall_ns=0"),
             row.replace("gem5_ticks=123", "gem5_ticks=not_applicable"),
+            row.replace("attempt=diagnostic", "attempt=ordinary"),
+            row.replace(
+                "invocation=paired-system-cgra",
+                "invocation=diagnostic-system-cgra",
+            ),
             row + " unexpected=1",
         )
         for invalid in invalid_rows:

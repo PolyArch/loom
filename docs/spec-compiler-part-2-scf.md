@@ -727,14 +727,23 @@ supply a finite coordinate for the same root.
 Loop-carried values and reductions, nested conditionals, non-unit steps,
 unresolved aliases, unknown effects, access or dependence relations with
 Presburger local variables, and provider failures remain typed local
-refusals. The exact access relation is the footprint authority; the referenced
-source memref retains its physical layout. Polly/ISL consumes only the frozen
-MLIR-owned domains and dependence relations and returns exact typed schedule
-maps. No provider object, textual ISL spelling, or alternate dependence
-relation persists beyond the analysis call. The SCoP view freezes the exact
-source-entity order of the provider's global parameter columns so every
-schedule coefficient remains interpretable without reconstructing an ISL
-space.
+refusals. The exact logical access relation is the footprint authority only
+after the referenced memref layout is proved injective over its complete
+in-bounds logical domain. Identity layouts are injective. A layout with
+statically known positive strides is admitted only when those strides, ordered
+from minor to major, each exceed the complete span of all preceding
+dimensions; only the major-most active extent may remain dynamic. This
+sufficient proof admits padding, dense permutations, and nonzero offsets.
+Otherwise unproved nonidentity layouts, dynamic strides, zero strides, and
+overlapping strides receive `PhysicalLayoutProofNotEstablished`. The source
+memref remains the sole physical-layout owner; no second physical dependence
+relation is constructed.
+Polly/ISL consumes only the frozen MLIR-owned domains and dependence relations
+and returns exact typed schedule maps. No provider object, textual ISL
+spelling, or alternate dependence relation persists beyond the analysis call.
+The SCoP view freezes the exact source-entity order of the provider's global
+parameter columns so every schedule coefficient remains interpretable without
+reconstructing an ISL space.
 
 Before releasing the provider objects, the same owner classifies the exact
 schedule relation against four canonical perfect-nest forms: source order,
@@ -743,18 +752,53 @@ distribution, and statement-major distribution followed by that exchange.
 Classification compares the frozen integer relation itself; it is not a
 heuristic inferred from band counts. Source order is already materialized by
 the parent. Each other form that passes its structural gates produces one
-factorless `PolyhedralSchedule` proposal bound to the frozen general SCoP. A
-selected statement-major schedule clones the perfect loop nest once per source
-statement and retains exactly one statement in each clone. Cross-statement
-scalar SSA prevents this fission, because Loom does not invent scalar-expansion
-storage. An adjacent exchange additionally requires homogeneous SCF or Affine
-loops and inner bounds that remain invariant at the exchanged scope. General
-multi-band relations,
-imperfect nests, nonuniform statement depth, unsupported bound motion, and
-distribution requiring scalar expansion retain
-`PolyhedralMaterializationUnavailable`. Thus a provider schedule is either
-already present, replayably materialized into ordinary MLIR, or explicitly
-typed unavailable; no schedule map is silently approximated.
+factorless `PolyhedralSchedule` proposal bound to the frozen general SCoP. The
+closed-form materializers remain fast paths: a selected statement-major
+schedule clones the perfect loop nest once per source statement and retains
+exactly one statement in each clone, while an adjacent exchange additionally
+requires homogeneous SCF or Affine loops and inner bounds that remain
+invariant at the exchanged scope.
+
+A schedule outside those closed forms is reconstructed from its frozen
+Presburger pieces and intersected with the exact frozen statement domains.
+The pinned provider must prove complete domain coverage and a single-valued
+schedule before deriving one bounded invocation-local AST. AST statement calls
+carry the inverse source coordinates; the materializer substitutes those
+coordinates for the source induction values and emits sequential SCF, Arith,
+and MemRef IR. This realizes multi-band schedules, imperfect nests, nonuniform
+statement depth, piecewise bounds, skewed coordinates, fusion, and fission
+without translating the relation into a guessed sequence of local transforms.
+The AST and its loop names are removable derived state and never candidate
+identity or another schedule authority.
+
+The same typed schedule budget covers host-side relation reconstruction,
+parameter projection, AST node count, expression count, and recursive depth in
+addition to the ISL operation quota. Global parameter ordinals are indexed once
+per invocation. Enumeration and later selected materialization are separate
+invocations, but each constructs at most one materialization plan and one AST;
+no removable AST enters a proposal or persisted cache.
+
+Scalar SSA validity remains strict. The provider may use scalar edges as a
+proximity preference, but only the exact validity relation proves legality.
+Before a General proposal enters the decision domain, an abstract
+materialization pass proves that every scalar producer is lexically available
+at the consumer and that their common source-dimension prefix has identical
+AST coordinates. A schedule that instead requires scalar-expansion storage
+retains `PolyhedralMaterializationUnavailable`; no implicit memory space,
+lifetime, or allocation policy is invented. The same pass derives the smallest
+exact 32- or 64-bit schedule arithmetic width from the root index-width owner
+and the complete AST expression closure. An unproved width is locally
+unavailable, and every emitted registered actor is checked against the exact
+proposal Fabric before publication. Floor division is expanded into the
+registered signed division, remainder, comparison, and selection closure.
+
+General materialization is sequential. The aggregate frozen band summary is
+not sufficient to reconstruct per-band coincidence, so it is never used to
+claim a parallel loop; independent parallel decisions retain their own exact
+dependence proof. Thus a provider schedule is either already present,
+replayably materialized into ordinary MLIR, or explicitly typed unavailable;
+no schedule map is silently approximated and no incomplete result is renamed
+infeasible.
 
 The exact vector SCoP domain is deliberately closed. Its root is one `scf.for`
 or `affine.for` with zero lower bound, unit stride, and a static trip count. A
@@ -772,7 +816,11 @@ integer equalities and inequalities, explicit local floor divisions, and
 source/schedule/parameter dimensions. These rows are analysis views, not a
 second dependence owner or a persistent Schedule Artifact. The provider is
 bounded by a fixed operation quota and rejects a changed statement domain or
-missing finite schedule band. Domain admission, unavailable schedule, and
+missing finite schedule band. Unknown existential divisions are first made
+explicit on the complete map, then read from a wrapped set local space that
+preserves source, schedule, parameter, and division column order. The frozen
+relation is reconstructed and compared with the original map before provider
+state is released. Domain admission, unavailable schedule, and
 operation-quota exhaustion are distinct local refusals; provider corruption
 remains an error. Same-iteration RAW, WAR, and WAW relations come directly
 from the MLIR dependence polyhedra and join the scalar SSA precedence graph
@@ -962,7 +1010,7 @@ or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v11`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v12`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator

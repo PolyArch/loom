@@ -1792,17 +1792,26 @@ module attributes {dlti.dl_spec = #layout} {
       store, loom::adg::BuiltinTargetPreset::Small));
   auto domain = take(loom::frontend::enumerateStructuredScheduleDecisions(
       parent, design.roots().front(), 3));
+  const bool hasGeneralProposal =
+      llvm::any_of(domain.proposals, [&](const auto &proposal) {
+        return proposal.decision().loop == *loop &&
+               proposal.decision().kind ==
+                   loom::frontend::StructuredScheduleDecisionKind::
+                       PolyhedralSchedule;
+      });
   if (domain.polyhedralScops.size() != 2 ||
       llvm::none_of(
           domain.polyhedralScops,
           [&](const auto &candidate) { return candidate.root == *loop; }) ||
       domain.inspectedPolyhedralDependenceQueries != 17 ||
-      llvm::none_of(domain.refusals,
-                    [](const auto &refusal) {
-                      return refusal.kind ==
-                             loom::frontend::StructuredScopRefusalKind::
-                                 PolyhedralMaterializationUnavailable;
-                    }) ||
+      !hasGeneralProposal ||
+      llvm::any_of(domain.refusals,
+                   [&](const auto &refusal) {
+                     return refusal.loop == *loop &&
+                            refusal.kind ==
+                                loom::frontend::StructuredScopRefusalKind::
+                                    PolyhedralMaterializationUnavailable;
+                   }) ||
       llvm::none_of(domain.refusals, [](const auto &refusal) {
         return refusal.kind ==
                loom::frontend::StructuredScopRefusalKind::NestedAffineRoot;
@@ -1818,25 +1827,20 @@ module attributes {dlti.dl_spec = #layout} {
   auto config =
       take(loom::dse::projectResolvedStructuredScheduleGeneratorConfigView(
           loom::defaultResolvedConfig(),
-          loom::dse::StructuredScheduleGenerationIntent::Balanced, 3));
+          loom::dse::StructuredScheduleGenerationIntent::Balanced,
+          std::nullopt));
   auto binding = take(
       loom::dse::resolveStructuredScheduleCandidateGeneratorBinding(config));
   auto generated =
       take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
-  const auto *incomplete =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+  const auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
           &generated.outcome);
-  // Nested general 9 + flat exact 6 + flat general 2.
-  if (!incomplete ||
-      incomplete->reason !=
-          loom::dse::CandidateGeneratorIncompleteReason::ProofNotEstablished ||
+  if (!completed || completed->lineageEdges.empty() ||
       generated.workSummary.size() != 5 ||
       generated.workSummary[4].planned != 17 ||
       generated.workSummary[4].consumed != 17)
-    fail("production work ledger dropped exact dependence queries: " +
-         std::to_string(generated.workSummary.size() == 5
-                            ? generated.workSummary[4].consumed
-                            : 0));
+    fail("production generator lost exact dependence work");
   llvm::sys::fs::remove_directories(directory);
 }
 
