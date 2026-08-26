@@ -306,6 +306,43 @@ struct CgraSimulationOutcome final {
   std::optional<CgraClosedWaitSetDiagnostic> closedWaitSet;
 };
 
+/// Removable invocation-local admission projection for repeated execution of
+/// one exact workload/runtime-input pair on one PreparedCgraExecution.
+class PreparedCgraWorkloadExecution final {
+public:
+  PreparedCgraWorkloadExecution(PreparedCgraWorkloadExecution &&) noexcept;
+  PreparedCgraWorkloadExecution &
+  operator=(PreparedCgraWorkloadExecution &&) noexcept;
+  ~PreparedCgraWorkloadExecution();
+
+  PreparedCgraWorkloadExecution(const PreparedCgraWorkloadExecution &) =
+      delete;
+  PreparedCgraWorkloadExecution &
+  operator=(const PreparedCgraWorkloadExecution &) = delete;
+
+private:
+  struct Impl;
+  explicit PreparedCgraWorkloadExecution(std::unique_ptr<Impl> impl);
+
+  std::unique_ptr<Impl> impl_;
+
+  friend llvm::Expected<PreparedCgraWorkloadExecution>
+  prepareCgraWorkloadExecution(const PreparedCgraExecution &,
+                               const CanonicalSimulationWorkload &,
+                               const CanonicalSimulationRuntimeInput &);
+  friend llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
+      const PreparedCgraWorkloadExecution &,
+      const CanonicalSimulationWorkload &,
+      const CanonicalSimulationRuntimeInput &,
+      std::optional<TraceCaptureLevel>, CgraExternalMemoryProvider *);
+};
+
+llvm::Expected<PreparedCgraWorkloadExecution>
+prepareCgraWorkloadExecution(
+    const PreparedCgraExecution &prepared,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput);
+
 class CgraExecutionSession final {
 public:
   CgraExecutionSession(CgraExecutionSession &&) noexcept;
@@ -337,8 +374,19 @@ private:
       const PreparedCgraExecution &, const CanonicalSimulationWorkload &,
       const CanonicalSimulationRuntimeInput &, std::optional<TraceCaptureLevel>,
       CgraExternalMemoryProvider *);
+  friend llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
+      const PreparedCgraWorkloadExecution &,
+      const CanonicalSimulationWorkload &,
+      const CanonicalSimulationRuntimeInput &,
+      std::optional<TraceCaptureLevel>, CgraExternalMemoryProvider *);
   friend llvm::Expected<CgraSimulationOutcome>
   simulateCgraWorkload(const PreparedCgraExecution &,
+                       const CanonicalSimulationWorkload &,
+                       const CanonicalSimulationRuntimeInput &, std::uint64_t,
+                       std::optional<std::chrono::steady_clock::time_point>,
+                       CgraExternalMemoryProvider *);
+  friend llvm::Expected<CgraSimulationOutcome>
+  simulateCgraWorkload(const PreparedCgraWorkloadExecution &,
                        const CanonicalSimulationWorkload &,
                        const CanonicalSimulationRuntimeInput &, std::uint64_t,
                        std::optional<std::chrono::steady_clock::time_point>,
@@ -352,8 +400,24 @@ llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
     std::optional<TraceCaptureLevel> traceLevel = std::nullopt,
     CgraExternalMemoryProvider *externalMemoryProvider = nullptr);
 
+llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
+    const PreparedCgraWorkloadExecution &prepared,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::optional<TraceCaptureLevel> traceLevel = std::nullopt,
+    CgraExternalMemoryProvider *externalMemoryProvider = nullptr);
+
 llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     const PreparedCgraExecution &prepared,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t maxEventFrames,
+    std::optional<std::chrono::steady_clock::time_point> executionDeadline =
+        std::nullopt,
+    CgraExternalMemoryProvider *externalMemoryProvider = nullptr);
+
+llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
+    const PreparedCgraWorkloadExecution &prepared,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
     std::uint64_t maxEventFrames,

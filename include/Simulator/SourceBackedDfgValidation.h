@@ -59,6 +59,7 @@ struct SourceBackedDfgValidationResult final {
   double simulationSeconds = 0.0;
   std::map<dataflow::OperationSchemaId, std::uint64_t> operationFireCounts;
   std::optional<CanonicalValueSequence> sourceReturnValue;
+  std::uint64_t replayCaseOccurrences = 0;
   std::vector<SourceBackedDfgReplayCaseReference> replayCases;
 };
 

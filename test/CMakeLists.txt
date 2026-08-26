@@ -244,6 +244,7 @@ set(LOOM_TEST_DEPENDS
   loom-runtime-ordered-channel-abi-test
   loom-runtime-deployment-loader-test
   loom-runtime-dynamic-work-test
+  loom-cgra-budget-profile
   loom-system-execution-matrix-test
   loom-heterogeneous-system-anchor-test
   loom-simulator-atomic-order-test

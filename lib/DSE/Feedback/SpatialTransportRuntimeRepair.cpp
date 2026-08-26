@@ -35,12 +35,6 @@ bool deadlineReached(const PlanExecutionPolicy &policy) {
                  .count()) >= *deadline;
 }
 
-bool hasVerifiedMapping(const JointDesignExecution &execution) {
-  return llvm::any_of(execution.mappedPairs, [](const auto &pair) {
-    return !pair.systemMappings.empty();
-  });
-}
-
 } // namespace
 
 llvm::Expected<JointSpatialTransportMappingRepair>
@@ -173,10 +167,6 @@ executeSpatialTransportRuntimeRepair(
     result.reuseDispositions.push_back(
         JointMappingReuseDisposition::ColdFallback);
     result.executions.push_back(std::move(*execution));
-    if (hasVerifiedMapping(result.executions.back())) {
-      result.candidatesRejected += result.candidateLimit - ordinal - 1;
-      break;
-    }
   }
   if (result.candidatesReserved != result.candidatesConsumed +
                                        result.candidatesRejected +

@@ -74,7 +74,7 @@ Resolution replaces that enum with the selected ADG template identity,
 template schema version, and complete typed parameter values. The enum spelling
 is recorded only as invocation provenance and is excluded from canonical
 ResolvedConfig bytes. All builtin presets resolve to
-`loom.adg.builtin.general_purpose` version `7.0`; only their default parameter
+`loom.adg.builtin.general_purpose` version `8.0`; only their default parameter
 values differ. Omitting hardware selection resolves the `Coverage` scale; it
 does not produce a target-less configuration.
 
@@ -129,7 +129,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 10.1`. Version 2.0 was an
+The current schema is `loom.config.resolved 11.0`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -246,6 +246,15 @@ Version 10.1 compatibly extends the Mapping objective catalog with
 `SharedOperandIngressPressure`. Existing ordinals and meanings are unchanged;
 the new measure is a derived Spatial QoR signal and never a legality or
 liveness proof.
+
+Version 11.0 adds the required positive
+`hardware_target.parameters.spatial_mesh_lanes_per_direction` and
+`hardware_target.parameters.temporal_mesh_lanes_per_direction` fields. Each
+field is the sole semantic owner of the corresponding mesh network's uniform
+directed-link lane multiplicity. Version 10 left both multiplicities hidden in
+the builtin expansion, so it cannot reconstruct a resolved hardware candidate
+or its identity after either network is resized. The replacement is therefore
+incompatible rather than assigning a compatibility default.
 
 `dse.evaluation_and_objective_catalogs` materializes exactly the owner tables
 of the [Resolved Configuration View](spec-dse-feedback.md#resolved-configuration-view):

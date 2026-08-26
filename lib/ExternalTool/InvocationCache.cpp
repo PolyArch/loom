@@ -1132,18 +1132,21 @@ llvm::Expected<ExternalToolResultCacheKey> deriveExternalToolResultCacheKey(
 llvm::Expected<ExternalToolInvocationExecutionObservation>
 executeExternalToolInvocationBundleObserved(
     const PreparedExternalToolInvocation &prepared,
-    ExecutionControlView executionControl) {
-  const auto stopped = [](ExternalToolResultCacheAvailability availability,
-                          bool waited, bool invoked) {
-    return ExternalToolInvocationExecutionObservation{
-        externalToolExecutionStoppedExitCode,
-        availability,
-        ExternalToolResultCacheLookup::NotAttempted,
-        ExternalToolResultCacheDiscard::NotAttempted,
-        ExternalToolResultCachePublication::NotAttempted,
-        waited,
-        invoked};
-  };
+    ExecutionControlView executionControl,
+    ExternalToolResultReusePolicy reusePolicy) {
+  const auto stopped =
+      [reusePolicy](ExternalToolResultCacheAvailability availability,
+                    bool waited, bool invoked) {
+        return ExternalToolInvocationExecutionObservation{
+            externalToolExecutionStoppedExitCode,
+            reusePolicy,
+            availability,
+            ExternalToolResultCacheLookup::NotAttempted,
+            ExternalToolResultCacheDiscard::NotAttempted,
+            ExternalToolResultCachePublication::NotAttempted,
+            waited,
+            invoked};
+      };
   auto executeWithoutCache =
       [&](ExternalToolResultCacheAvailability availability,
           bool waitedForCacheKeyLock = false)
@@ -1152,8 +1155,21 @@ executeExternalToolInvocationBundleObserved(
         runScript(prepared, CacheScriptMode::Execute, executionControl);
     if (!execution)
       return execution.takeError();
+    if (execution->exitCode == 0 &&
+        reusePolicy == ExternalToolResultReusePolicy::RequireFresh) {
+      auto postflight =
+          runScript(prepared, CacheScriptMode::Postflight, executionControl);
+      if (!postflight)
+        return postflight.takeError();
+      if (postflight->exitCode == externalToolExecutionStoppedExitCode)
+        return stopped(availability, waitedForCacheKeyLock, execution->invoked);
+      if (postflight->exitCode != 0)
+        return cacheError(
+            "fresh invocation inputs or tool changed during execution");
+    }
     return ExternalToolInvocationExecutionObservation{
         execution->exitCode,
+        reusePolicy,
         availability,
         ExternalToolResultCacheLookup::NotAttempted,
         ExternalToolResultCacheDiscard::NotAttempted,
@@ -1162,8 +1178,13 @@ executeExternalToolInvocationBundleObserved(
         execution->invoked};
   };
   if (executionControl.stopRequested())
-    return stopped(ExternalToolResultCacheAvailability::Unavailable, false,
-                   false);
+    return stopped(reusePolicy == ExternalToolResultReusePolicy::RequireFresh
+                       ? ExternalToolResultCacheAvailability::Disabled
+                       : ExternalToolResultCacheAvailability::Unavailable,
+                   false, false);
+  if (reusePolicy == ExternalToolResultReusePolicy::RequireFresh)
+    return executeWithoutCache(ExternalToolResultCacheAvailability::Disabled);
+
   auto root = cacheRoot(executionControl);
   if (!root) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
@@ -1225,6 +1246,7 @@ executeExternalToolInvocationBundleObserved(
     if (preflight->exitCode != 0)
       return ExternalToolInvocationExecutionObservation{
           preflight->exitCode,
+          reusePolicy,
           ExternalToolResultCacheAvailability::Available,
           ExternalToolResultCacheLookup::Miss,
           discard,
@@ -1236,6 +1258,7 @@ executeExternalToolInvocationBundleObserved(
       cacheDiagnostic(DiagnosticVerbosity::Summary, "hit", keySpelling);
       return ExternalToolInvocationExecutionObservation{
           0,
+          reusePolicy,
           ExternalToolResultCacheAvailability::Available,
           ExternalToolResultCacheLookup::Hit,
           discard,
@@ -1259,6 +1282,7 @@ executeExternalToolInvocationBundleObserved(
   if (execution->exitCode == externalToolExecutionStoppedExitCode)
     return ExternalToolInvocationExecutionObservation{
         execution->exitCode,
+        reusePolicy,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss,
         discard,
@@ -1268,6 +1292,7 @@ executeExternalToolInvocationBundleObserved(
   if (execution->exitCode != 0)
     return ExternalToolInvocationExecutionObservation{
         execution->exitCode,
+        reusePolicy,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss,
         discard,
@@ -1277,6 +1302,7 @@ executeExternalToolInvocationBundleObserved(
   if (discard == ExternalToolResultCacheDiscard::Failed)
     return ExternalToolInvocationExecutionObservation{
         0,
+        reusePolicy,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss,
         discard,
@@ -1290,6 +1316,7 @@ executeExternalToolInvocationBundleObserved(
                     llvm::toString(postflight.takeError()));
     return ExternalToolInvocationExecutionObservation{
         0,
+        reusePolicy,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss,
         discard,
@@ -1297,11 +1324,22 @@ executeExternalToolInvocationBundleObserved(
         waitedForCacheKeyLock,
         true};
   }
+  if (postflight->exitCode == externalToolExecutionStoppedExitCode)
+    return ExternalToolInvocationExecutionObservation{
+        externalToolExecutionStoppedExitCode,
+        reusePolicy,
+        ExternalToolResultCacheAvailability::Available,
+        ExternalToolResultCacheLookup::Miss,
+        discard,
+        ExternalToolResultCachePublication::NotAttempted,
+        waitedForCacheKeyLock,
+        true};
   if (postflight->exitCode != 0) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     "invocation inputs or tool changed during execution");
     return ExternalToolInvocationExecutionObservation{
         0,
+        reusePolicy,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss,
         discard,
@@ -1319,6 +1357,7 @@ executeExternalToolInvocationBundleObserved(
                       "cache-key material changed during execution");
     return ExternalToolInvocationExecutionObservation{
         0,
+        reusePolicy,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss,
         discard,
@@ -1337,6 +1376,7 @@ executeExternalToolInvocationBundleObserved(
   }
   return ExternalToolInvocationExecutionObservation{
       0,
+      reusePolicy,
       ExternalToolResultCacheAvailability::Available,
       ExternalToolResultCacheLookup::Miss,
       discard,

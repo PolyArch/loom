@@ -1,4 +1,5 @@
 add_library(LoomExecutionMatrixTestSupport STATIC
+  ExecutionMatrixGuestPrograms.cpp
   ExecutionMatrixTestSupport.cpp
 )
 
@@ -31,6 +32,15 @@ add_executable(loom-system-execution-matrix-test
 
 target_link_libraries(loom-system-execution-matrix-test PRIVATE
   LoomExecutionMatrixTestSupport
+)
+
+add_executable(loom-cgra-budget-profile
+  CgraBudgetProfile.cpp
+)
+
+target_link_libraries(loom-cgra-budget-profile PRIVATE
+  LoomDSEFeedback
+  LoomMappedRtlSimulationTestSupport
 )
 
 add_executable(loom-heterogeneous-system-anchor-test

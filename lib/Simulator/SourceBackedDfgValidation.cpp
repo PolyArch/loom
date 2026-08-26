@@ -817,6 +817,7 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
         auto replayCase = publishReplayCase(*replayWorkload, *replayInput);
         if (!replayCase)
           return replayCase.takeError();
+        ++result.replayCaseOccurrences;
         result.replayCases.push_back(std::move(*replayCase));
       }
       auto nativeFinalObjects = canonicalizeNativeFinalObjects(

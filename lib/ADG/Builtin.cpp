@@ -524,17 +524,18 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
         std::vector<PortType>(crossSchedulePortsPerTemporalPe, *tagged128),
         std::vector<PortType>(crossSchedulePortsPerTemporalPe, *tagged128)));
 
-  auto spatialNetworkSpec =
-      MeshSwitchNetworkSpec::spatial(meshDimension, meshDimension, 2, *bits128,
-                                     std::move(spatialAttachmentSpecs));
+  auto spatialNetworkSpec = MeshSwitchNetworkSpec::spatial(
+      meshDimension, meshDimension, scale.spatialMeshLanesPerDirection,
+      *bits128, std::move(spatialAttachmentSpecs));
   if (!spatialNetworkSpec)
     return spatialNetworkSpec.takeError();
   auto spatialNetwork = spatial->addMeshSwitchNetwork(*spatialNetworkSpec);
   if (!spatialNetwork)
     return spatialNetwork.takeError();
   auto temporalNetworkSpec = MeshSwitchNetworkSpec::temporal(
-      meshDimension, meshDimension, 2, *tagged128,
-      scale.temporalResidentContexts, MeshSwitchGrantPolicyKind::RoundRobin,
+      meshDimension, meshDimension, scale.temporalMeshLanesPerDirection,
+      *tagged128, scale.temporalResidentContexts,
+      MeshSwitchGrantPolicyKind::RoundRobin,
       std::move(temporalAttachmentSpecs));
   if (!temporalNetworkSpec)
     return temporalNetworkSpec.takeError();

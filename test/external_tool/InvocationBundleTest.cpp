@@ -1535,6 +1535,8 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
       take(__func__, executeExternalToolInvocationBundleObserved(first));
   require(__func__,
           population.exitCode == 0 &&
+              population.reusePolicy ==
+                  ExternalToolResultReusePolicy::AllowExactReuse &&
               population.cacheAvailability ==
                   ExternalToolResultCacheAvailability::Available &&
               population.cacheLookup == ExternalToolResultCacheLookup::Miss &&
@@ -1547,6 +1549,30 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
           "the cache population invocation failed");
   require(__func__, readFile(counter) == "1",
           "cache population did not enter the tool exactly once");
+
+  const PreparedExternalToolInvocation fresh =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         (root / "cache-fresh").string(), firstSpec));
+  const ExternalToolInvocationExecutionObservation freshExecution = take(
+      __func__, executeExternalToolInvocationBundleObserved(
+                    fresh, {}, ExternalToolResultReusePolicy::RequireFresh));
+  require(__func__,
+          freshExecution.exitCode == 0 &&
+              freshExecution.reusePolicy ==
+                  ExternalToolResultReusePolicy::RequireFresh &&
+              freshExecution.cacheAvailability ==
+                  ExternalToolResultCacheAvailability::Disabled &&
+              freshExecution.cacheLookup ==
+                  ExternalToolResultCacheLookup::NotAttempted &&
+              freshExecution.cacheDiscard ==
+                  ExternalToolResultCacheDiscard::NotAttempted &&
+              freshExecution.cachePublication ==
+                  ExternalToolResultCachePublication::NotAttempted &&
+              !freshExecution.waitedForCacheKeyLock &&
+              freshExecution.invokedExternalTool,
+          "fresh execution did not bypass every persistent-cache action");
+  require(__func__, readFile(counter) == "2",
+          "fresh execution reused the populated cache entry");
 
   const std::filesystem::path relocatedTool = root / "relocated" / "fake tool";
   writeExecutable(relocatedTool, readFile(tool));
@@ -1596,6 +1622,8 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
       take(__func__, executeExternalToolInvocationBundleObserved(relocated));
   require(__func__,
           cacheHit.exitCode == 0 &&
+              cacheHit.reusePolicy ==
+                  ExternalToolResultReusePolicy::AllowExactReuse &&
               cacheHit.cacheAvailability ==
                   ExternalToolResultCacheAvailability::Available &&
               cacheHit.cacheLookup == ExternalToolResultCacheLookup::Hit &&
@@ -1605,7 +1633,7 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
                   ExternalToolResultCachePublication::NotAttempted &&
               !cacheHit.invokedExternalTool,
           "the path-relocated cache lookup failed");
-  require(__func__, readFile(counter) == "1",
+  require(__func__, readFile(counter) == "2",
           "a cache hit re-entered the external tool");
   const InvocationCompletion relocatedCompletion =
       take(__func__, loadExternalToolInvocationCompletion(relocated));
@@ -1641,7 +1669,7 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
           take(__func__,
                executeExternalToolInvocationBundle(launcherInvocation)) == 0,
           "changed launcher did not execute as a cache miss");
-  require(__func__, readFile(counter) == "2",
+  require(__func__, readFile(counter) == "3",
           "changed launcher bytes were incorrectly reused");
 
   const std::filesystem::path entry =
@@ -1666,7 +1694,7 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
                   ExternalToolResultCachePublication::Published &&
               recovered.invokedExternalTool,
           "a corrupt cache entry did not fall back to real execution");
-  require(__func__, readFile(counter) == "3",
+  require(__func__, readFile(counter) == "4",
           "a corrupt cache entry was adopted as a hit");
 
   ExternalToolInvocationBundleSpec changedInput = firstSpec;
@@ -1736,7 +1764,7 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
           take(__func__,
                executeExternalToolInvocationBundle(versionInvocation)) == 0,
           "changed tool version did not execute as a cache miss");
-  require(__func__, readFile(counter) == "6",
+  require(__func__, readFile(counter) == "7",
           "one of the three key-domain changes was incorrectly reused");
 
   const std::filesystem::path failureCounter = root / "failure-entry-count";
@@ -1849,6 +1877,38 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
   require(__func__,
           std::filesystem::exists(replayRoot / "outputs" / "tool-entry.log"),
           "an unpublished midflight result was incorrectly reused");
+
+  const std::filesystem::path freshRoot = root / "cache-midflight-fresh";
+  const PreparedExternalToolInvocation midflightFresh =
+      take(__func__,
+           finalizeExternalToolInvocationBundle(freshRoot.string(), midflight));
+  const pid_t freshChild = ::fork();
+  require(__func__, freshChild >= 0,
+          "could not fork the fresh midflight fixture");
+  if (freshChild == 0) {
+    auto execution = executeExternalToolInvocationBundleObserved(
+        midflightFresh, {}, ExternalToolResultReusePolicy::RequireFresh);
+    if (execution)
+      ::_exit(252);
+    llvm::consumeError(execution.takeError());
+    ::_exit(0);
+  }
+  const std::filesystem::path freshEntered =
+      freshRoot / "outputs" / "tool-entry.log";
+  for (unsigned attempt = 0;
+       attempt != 5000 && !std::filesystem::exists(freshEntered); ++attempt)
+    ::usleep(1000);
+  if (!std::filesystem::exists(freshEntered)) {
+    writeText(freshRoot / "outputs" / "release", "");
+    waitForChild(__func__, freshChild);
+    fail(__func__, "fresh midflight fixture did not enter the tool");
+  }
+  writeText(midflightExternal, "changed-during-fresh-execution\n");
+  writeText(freshRoot / "outputs" / "release", "");
+  const int freshStatus = waitForChild(__func__, freshChild);
+  require(__func__, WIFEXITED(freshStatus) && WEXITSTATUS(freshStatus) == 0,
+          "fresh execution accepted an input changed during execution");
+  writeText(midflightExternal, midflightContents);
   require(__func__, ::unsetenv("LOOM_EXTERNAL_TOOL_CACHE_ROOT") == 0,
           "could not disable the result cache");
 }

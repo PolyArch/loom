@@ -86,6 +86,15 @@ llvm::Expected<ExactRatio> ExactRatio::get(std::uint64_t numerator,
   return ExactRatio(numerator / divisor, denominator / divisor);
 }
 
+llvm::Expected<ExactRatio> ExactRatio::addInteger(std::uint64_t value) const {
+  using u128 = unsigned __int128;
+  const u128 numerator = static_cast<u128>(numerator_) +
+                         static_cast<u128>(value) * denominator_;
+  if (numerator > std::numeric_limits<std::uint64_t>::max())
+    return detail::evaluationError("exact ratio overflow during integer add");
+  return ExactRatio(static_cast<std::uint64_t>(numerator), denominator_);
+}
+
 llvm::Expected<ExactRatio> ExactRatio::reducedModulo(ExactRatio modulus) const {
   if (modulus.numerator_ == 0)
     return detail::evaluationError("exact ratio modulus must be positive");

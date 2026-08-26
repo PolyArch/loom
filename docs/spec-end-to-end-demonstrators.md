@@ -141,17 +141,33 @@ floor meaningful. A ratio at or above ten is always a conformance failure.
 The factor three is an initial suite-wide policy and may change only from
 aggregate profiling evidence, never as a per-case exception.
 
-CGRA Spatial-only bring-up uses a 45-second bootstrap ceiling while at least
-the ten representative workloads in this specification establish warmed
-active-wall, reference-cycle-rate, event-count, contention, and peak-memory
-evidence. Before System + CGRA conformance begins, the conformance owner must
-publish one suite-wide CGRA Spatial-only absolute budget in tracked gate
-configuration. Its value is selected from that aggregate evidence and the
-100 k reference-cycles-per-wall-second target. It is not an Artifact field,
-semantic limit, model parameter, or per-case override. A later change requires
-new aggregate evidence and one tracked gate update. The paired System + CGRA
-budget consumes that exact published Spatial-only budget through the formula
-above; no caller or simulator may supply a hidden second value.
+CGRA Spatial-only qualification uses a 45-second per-attempt ceiling for the
+exact ten representative LoomBench rows selected by the tracked operator gate.
+Each row discards one warm-up execution and records three measured executions.
+Every measurement includes runtime-input loading, engine execution, and
+observation projection in active wall time. Artifact publication is measured
+separately and excluded. Peak resident memory is the high-water mark of the
+whole workload batch, not a per-execution sample. The profile binds the current
+operator-gate digest and exact Dataflow, workload, runtime-input, Fabric,
+TechMapping, and SpatialMapping roots.
+
+The conformance owner derives the sole suite-wide CGRA Spatial-only absolute
+budget with integer arithmetic:
+
+```text
+case_target_ns = ceil(reference_cycles * 1,000,000,000 / 100,000)
+spatial_absolute_budget_ns = max(case_target_ns across the ten rows)
+```
+
+Every measured active wall time must be no greater than its `case_target_ns`
+and the 45-second qualification ceiling. Qualification rejects a profile that
+misses either bound; it does not add headroom, round to a coarser quantum, or
+publish an inflated budget. The tracked gate records the complete profiles,
+the operator-gate digest, and the derived integer value. That value is not an
+Artifact field, semantic limit, model parameter, or per-case override. A later
+change requires new aggregate evidence and one tracked gate update. The paired
+System + CGRA budget consumes that exact published Spatial-only budget through
+the formula above; no caller or simulator may supply a hidden second value.
 
 Every paired result reports active wall time, the System-to-Spatial ratio,
 reference cycles per wall second, engine/Bridge/host/observation CPU time,

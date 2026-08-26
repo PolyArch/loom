@@ -41,8 +41,9 @@ therefore elaborates immediately into the same ordinary Builder operations and
 returns only owner-checked attachment handles. It introduces no persistent
 mesh object and no second topology graph.
 
-Two physical lanes in each cardinal direction make an interior transit switch
-exactly `8 x 8`. Local traffic cannot add a ninth port to that crossbar, so
+The resolved one-through-four physical lanes in each cardinal direction make
+an interior transit switch range from `4 x 4` through `16 x 16`. Local traffic
+cannot add ports to that crossbar, so
 injection, ejection, fanout, and merge are separate bounded switches. This
 decomposition preserves realistic local contention while allowing one
 resource's ports to use several attachment banks. It also prevents a memory
@@ -63,10 +64,12 @@ A schedule-wide crossbar was rejected for the builtin interconnect. Its port
 count scales with the complete preset, it creates unrealistic wiring and
 timing, and every route competes at one physical occurrence. It also turns PnR
 failures into an ambiguous mixture of a fabricated central bottleneck and
-search quality. The bounded two-lane mesh recipe instead supplies several real
-paths, finite local bottlenecks, and enough pressure to exercise placement and
-routing. It remains an example recipe rather than a Fabric assumption: custom
-hardware can use any explicit directed topology, including a non-grid graph.
+search quality. The bounded mesh recipe instead supplies several real paths,
+finite local bottlenecks, and enough pressure to exercise placement and
+routing; builtin presets default to two lanes while typed scales may select up
+to four within the switch crosspoint limit. It remains an example recipe
+rather than a Fabric assumption: custom hardware can use any explicit directed
+topology, including a non-grid graph.
 
 The same physical argument applies one level below the network. A PE's external
 ports are selected onto its internal FU-facing ports by mux and demux logic, so

@@ -21,6 +21,7 @@ inline constexpr std::uint64_t gem5ThreadDispatchWorkerCompletion = 0x00;
 inline constexpr std::uint64_t gem5ThreadDispatchWorkerFailure = 0x04;
 inline constexpr std::uint64_t gem5ThreadDispatchApertureBytes = 0x10000;
 inline constexpr std::uint64_t gem5MaximumDynamicSpatialInvocations = 4096;
+inline constexpr std::uint64_t gem5MaximumSpatialWork = 1'000'000;
 
 inline constexpr std::uint32_t gem5ThreadDispatchStart = 1U << 0;
 inline constexpr std::uint32_t gem5ThreadDispatchReset = 1U << 1;

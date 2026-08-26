@@ -90,18 +90,20 @@ void builtinPresetsExpandThroughPublicBuilder() {
   }};
 
   for (const Expectation &expected : expectations) {
-    const auto &descriptor = *take(
-        test, loom::adg::getBuiltinTargetDescriptor(expected.preset));
+    const auto &descriptor =
+        *take(test, loom::adg::getBuiltinTargetDescriptor(expected.preset));
     require(
         test,
         descriptor.scale.accCoreCount == expected.accCores &&
             descriptor.scale.meshDimension == expected.meshDimension &&
+            descriptor.scale.spatialMeshLanesPerDirection == 2 &&
+            descriptor.scale.temporalMeshLanesPerDirection == 2 &&
             descriptor.scale.spatialPeCount == expected.spatialPes &&
             descriptor.scale.temporalPeCount == expected.temporalPes &&
             descriptor.scale.spatialMemoryCount == expected.spatialMemories &&
             descriptor.scale.temporalMemoryCount == expected.temporalMemories,
         "builtin descriptor changed its scale contract");
-    require(test, descriptor.schemaMajor == 7 && descriptor.schemaMinor == 0,
+    require(test, descriptor.schemaMajor == 8 && descriptor.schemaMinor == 0,
             "builtin descriptor did not select the parameterized mesh recipe");
 
     auto target =
@@ -181,8 +183,10 @@ void builtinPresetsExpandThroughPublicBuilder() {
         clockContract->phaseFs() == 0 &&
         resetContract->polarity() == loom::fabric::ResetPolarity::ActiveHigh &&
         resetContract->assertion() == loom::fabric::ResetTiming::Synchronous &&
-        resetContract->deassertion() == loom::fabric::ResetTiming::Synchronous &&
-        resetContract->initialState() == loom::fabric::ResetInitialState::Asserted &&
+        resetContract->deassertion() ==
+            loom::fabric::ResetTiming::Synchronous &&
+        resetContract->initialState() ==
+            loom::fabric::ResetInitialState::Asserted &&
         resetContract->synchronousTo() ==
             std::optional<loom::fabric::ClockDomainRef>(
                 loom::fabric::ClockDomainRef(*clockDomain)) &&
@@ -190,8 +194,7 @@ void builtinPresetsExpandThroughPublicBuilder() {
         systemView.hardwareDomainMembers(*clockDomain).size() ==
             systemView.hardwareDomainMembers(*resetDomain).size();
     auto clockReset = loom::fabric::validateClockReset(systemView);
-    require(test,
-            domainCheck && static_cast<bool>(clockReset),
+    require(test, domainCheck && static_cast<bool>(clockReset),
             "builtin lost its exact Clock and Reset contract");
     if (!clockReset)
       llvm::consumeError(clockReset.takeError());
@@ -430,8 +433,10 @@ void builtinPresetsExpandThroughPublicBuilder() {
             "builtin TokenControl resident-context capacity changed");
 
     const std::uint64_t expectedMeshLinkFifos =
-        16 * descriptor.scale.meshDimension *
-        (descriptor.scale.meshDimension - 1);
+        4 * descriptor.scale.meshDimension *
+        (descriptor.scale.meshDimension - 1) *
+        (descriptor.scale.spatialMeshLanesPerDirection +
+         descriptor.scale.temporalMeshLanesPerDirection);
     // Converter supply is a typed hardware-scale dimension independent of the
     // SpatialCore's external module gateway width.
     const std::uint64_t expectedDomainConverters =
@@ -1015,9 +1020,9 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
   auto systemView = take(
       test, loom::fabric::requireSystemRoot(system.roots().front().view()));
   const auto attachments = systemView.serviceLegCarrierAttachments();
-  const auto &descriptor = *take(
-      test, loom::adg::getBuiltinTargetDescriptor(
-                loom::adg::BuiltinTargetPreset::Small));
+  const auto &descriptor =
+      *take(test, loom::adg::getBuiltinTargetDescriptor(
+                      loom::adg::BuiltinTargetPreset::Small));
   const std::size_t expectedAttachmentCount =
       4 * (descriptor.scale.accCoreCount + 1);
   require(test, attachments.size() == expectedAttachmentCount,

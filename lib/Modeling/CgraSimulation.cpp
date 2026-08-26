@@ -17,6 +17,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <ctime>
 #include <limits>
 #include <optional>
 #include <string>
@@ -34,6 +35,37 @@ constexpr CaseSubjectRoleRef kHardwareRole(1);
 constexpr CaseSubjectRoleRef kSpatialMappingRole(2);
 constexpr ModelOutputSlotRef kExecutionOutputSlot(0);
 constexpr ScopeFormRef kWholeExactCaseScope(0);
+
+std::optional<std::uint64_t> clockNanoseconds(std::clock_t before,
+                                              std::clock_t after) {
+  if (before == static_cast<std::clock_t>(-1) ||
+      after == static_cast<std::clock_t>(-1) || after < before)
+    return std::nullopt;
+  const long double nanoseconds = static_cast<long double>(after - before) *
+                                  1'000'000'000.0L /
+                                  static_cast<long double>(CLOCKS_PER_SEC);
+  if (nanoseconds < 0.0L ||
+      nanoseconds >
+          static_cast<long double>(std::numeric_limits<std::uint64_t>::max()))
+    return std::nullopt;
+  return static_cast<std::uint64_t>(nanoseconds);
+}
+
+std::uint64_t wallNanoseconds(std::chrono::steady_clock::time_point before,
+                              std::chrono::steady_clock::time_point after) {
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(after - before)
+          .count();
+  return elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0;
+}
+
+std::optional<std::uint64_t>
+sumCpuNanoseconds(std::optional<std::uint64_t> lhs,
+                  std::optional<std::uint64_t> rhs) {
+  if (!lhs || !rhs || *lhs > std::numeric_limits<std::uint64_t>::max() - *rhs)
+    return std::nullopt;
+  return *lhs + *rhs;
+}
 
 EvaluationCaseSignatureRef caseSignatureRef() {
   return llvm::cantFail(EvaluationCaseSignatureRef::get(
@@ -351,9 +383,12 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
     const BlobStore &blobStore,
+    const sim::PreparedCgraWorkloadExecution *workloadExecution = nullptr,
+    const sim::PreparedSpatialExecutionContext *executionContext = nullptr,
     std::optional<sim::CgraClosedWaitSetDiagnostic> *closedWait = nullptr,
     std::optional<sim::CgraUnsupportedMemoryContract> *unsupportedMemory =
-        nullptr) {
+        nullptr,
+    CgraSimulationAttemptProfile *attemptProfile = nullptr) {
   if (closedWait)
     closedWait->reset();
   if (unsupportedMemory)
@@ -374,10 +409,42 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
     return llvm::createStringError(
         std::errc::invalid_argument,
         "cgra_simulation_model_invalid: runtime input is not Spatial");
+  const auto inputLoadStart = std::chrono::steady_clock::now();
+  const std::clock_t inputLoadCpuStart = std::clock();
   RuntimeInputCgraMemoryProvider externalMemory(*spatialInput);
-  auto outcome = sim::simulateCgraWorkload(
-      execution, workload, runtimeInput, limits.maxEventFrames,
-      limits.executionDeadline, &externalMemory);
+  const std::clock_t inputLoadCpuEnd = std::clock();
+  const auto inputLoadEnd = std::chrono::steady_clock::now();
+  const auto engineStart = std::chrono::steady_clock::now();
+  const std::clock_t engineCpuStart = std::clock();
+  auto outcome = workloadExecution
+                     ? sim::simulateCgraWorkload(
+                           *workloadExecution, workload, runtimeInput,
+                           limits.maxEventFrames, limits.executionDeadline,
+                           &externalMemory)
+                     : sim::simulateCgraWorkload(
+                           execution, workload, runtimeInput,
+                           limits.maxEventFrames, limits.executionDeadline,
+                           &externalMemory);
+  const std::clock_t engineCpuEnd = std::clock();
+  const auto engineEnd = std::chrono::steady_clock::now();
+  if (attemptProfile) {
+    attemptProfile->inputLoadWallNanoseconds =
+        wallNanoseconds(inputLoadStart, inputLoadEnd);
+    attemptProfile->inputLoadCpuNanoseconds =
+        clockNanoseconds(inputLoadCpuStart, inputLoadCpuEnd);
+    attemptProfile->engineActiveWallNanoseconds =
+        wallNanoseconds(engineStart, engineEnd);
+    attemptProfile->engineActiveCpuNanoseconds =
+        clockNanoseconds(engineCpuStart, engineCpuEnd);
+    attemptProfile->activeWallNanoseconds =
+        attemptProfile->inputLoadWallNanoseconds +
+        attemptProfile->engineActiveWallNanoseconds;
+    attemptProfile->processCpuNanoseconds =
+        sumCpuNanoseconds(attemptProfile->inputLoadCpuNanoseconds,
+                          attemptProfile->engineActiveCpuNanoseconds);
+    if (outcome)
+      attemptProfile->counters = outcome->counters;
+  }
   if (!outcome)
     return classifyExecutionFailure(outcome.takeError(), unsupportedMemory);
   if (outcome->state == sim::SpatialExecutionSessionState::StoppedByLimit)
@@ -425,8 +492,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             fields["operand_queue_group_count"] =
                 outcome->closedWaitSet->operandQueueGroupCount;
             fields["operand_queue_potentially_blocking_group_count"] =
-                outcome->closedWaitSet->
-                    operandQueuePotentiallyBlockingGroupCount;
+                outcome->closedWaitSet
+                    ->operandQueuePotentiallyBlockingGroupCount;
             fields["operand_queue_shared_ingress_pressure"] =
                 outcome->closedWaitSet->operandQueueSharedIngressPressure;
             fields["operand_queue_distinct_ingress_count"] =
@@ -444,21 +511,22 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             else
               fields["operand_queue_projection_digest"] = nullptr;
             llvm::json::Array operandQueueHeads;
-            for (const auto indexed : llvm::enumerate(
-                     outcome->closedWaitSet->operandQueueHeads)) {
+            for (const auto indexed :
+                 llvm::enumerate(outcome->closedWaitSet->operandQueueHeads)) {
               if (indexed.index() == 16)
                 break;
               const auto &head = indexed.value();
               llvm::json::Array consumers;
               for (const auto &[actor, input] : head.consumers)
-                consumers.push_back(llvm::json::Object{
-                    {"actor", actor}, {"input", input}});
+                consumers.push_back(
+                    llvm::json::Object{{"actor", actor}, {"input", input}});
               llvm::SmallString<32> tagSpelling;
               head.headTag.toStringUnsigned(tagSpelling, 16);
               operandQueueHeads.push_back(llvm::json::Object{
                   {"queue_context",
-                   llvm::toHex(::loom::fabric::canonicalFabricBytes(
-                       head.queue.context), true)},
+                   llvm::toHex(
+                       ::loom::fabric::canonicalFabricBytes(head.queue.context),
+                       true)},
                   {"queue_fu_occurrence", head.queue.fuOccurrence},
                   {"queue_fu_input", head.queue.fuInput},
                   {"fu",
@@ -470,8 +538,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                   {"reservations", head.reservations},
                   {"head_binding", head.headBindingOrdinal},
                   {"head_occurrence", head.headOccurrenceOrdinal},
-                  {"head_producer_sequence",
-                   head.headProducerSequenceOrdinal},
+                  {"head_producer_sequence", head.headProducerSequenceOrdinal},
                   {"head_tag", tagSpelling.str().str()},
                   {"exact_head", head.exactHead},
                   {"consumers", std::move(consumers)}});
@@ -494,8 +561,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             }
             fields["closed_wait_actors"] = std::move(actors);
             llvm::json::Array blockedActorInputs;
-            for (const auto &input :
-                 outcome->closedWaitSet->blockedActorInputs)
+            for (const auto &input : outcome->closedWaitSet->blockedActorInputs)
               blockedActorInputs.push_back(llvm::json::Object{
                   {"actor", input.semanticActorOrdinal},
                   {"actor_entity", input.actorEntityId},
@@ -529,13 +595,15 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                 operandQueueWaits.push_back(llvm::json::Object{
                     {"context",
                      llvm::toHex(::loom::fabric::canonicalFabricBytes(
-                         wait.queue.context), true)},
+                                     wait.queue.context),
+                                 true)},
                     {"fu",
                      llvm::toHex(::loom::fabric::canonicalFabricBytes(wait.fu),
                                  true)},
                     {"ingress",
-                     llvm::toHex(::loom::fabric::canonicalFabricBytes(
-                         wait.ingress), true)},
+                     llvm::toHex(
+                         ::loom::fabric::canonicalFabricBytes(wait.ingress),
+                         true)},
                     {"fu_input", wait.queue.fuInput},
                     {"tag", tag.str().str()},
                     {"allocation_unit", wait.allocationUnit},
@@ -562,10 +630,10 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                   {"blocking_storage", transfer.blockingStorageOrdinal},
                   {"blocking_fifo",
                    transfer.blockingFifoOccurrence
-                       ? llvm::json::Value(llvm::toHex(
-                             ::loom::fabric::canonicalFabricBytes(
-                                 *transfer.blockingFifoOccurrence),
-                             true))
+                       ? llvm::json::Value(
+                             llvm::toHex(::loom::fabric::canonicalFabricBytes(
+                                             *transfer.blockingFifoOccurrence),
+                                         true))
                        : llvm::json::Value(nullptr)},
                   {"blocking_storage_occupancy",
                    transfer.blockingStorageOccupancy},
@@ -594,8 +662,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             }
             fields["closed_wait_transfers"] = std::move(transfers);
             llvm::json::Array transferCycle;
-            for (const auto &edge :
-                 outcome->closedWaitSet->transferWaitCycle)
+            for (const auto &edge : outcome->closedWaitSet->transferWaitCycle)
               transferCycle.push_back(llvm::json::Object{
                   {"waiting_binding", edge.waitingBindingOrdinal},
                   {"waiting_occurrence", edge.waitingOccurrenceOrdinal},
@@ -629,15 +696,12 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                        : llvm::json::Value(nullptr)},
                   {"granted", action.granted},
                   {"has_commit", action.hasCommit},
-                  {"requires_causal_release",
-                   action.requiresCausalRelease},
-                  {"intrinsic_release_reached",
-                   action.intrinsicReleaseReached},
+                  {"requires_causal_release", action.requiresCausalRelease},
+                  {"intrinsic_release_reached", action.intrinsicReleaseReached},
                   {"causal_release_reached", action.causalReleaseReached},
               });
             }
-            fields["closed_wait_physical_actions"] =
-                std::move(physicalActions);
+            fields["closed_wait_physical_actions"] = std::move(physicalActions);
           }
           return llvm::json::Value(std::move(fields));
         });
@@ -705,16 +769,14 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             counters.memoryLinearizationCount;
         direct["physical_request_count"] = counters.physicalRequestCount;
         direct["physical_grant_count"] = counters.physicalGrantCount;
-        direct["physical_retirement_count"] =
-            counters.physicalRetirementCount;
+        direct["physical_retirement_count"] = counters.physicalRetirementCount;
         direct["request_grant_gap"] =
             counters.physicalRequestCount >= counters.physicalGrantCount
                 ? counters.physicalRequestCount - counters.physicalGrantCount
                 : 0;
         direct["grant_retirement_gap"] =
             counters.physicalGrantCount >= counters.physicalRetirementCount
-                ? counters.physicalGrantCount -
-                      counters.physicalRetirementCount
+                ? counters.physicalGrantCount - counters.physicalRetirementCount
                 : 0;
         const sim::CgraExecutionPlanSummary plan = execution.summary();
         llvm::json::Object staticPlan{
@@ -725,7 +787,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
              plan.semanticConfigurationFieldCount},
             {"memory_actor_count", plan.memoryActorCount},
             {"memory_rooted_use_count", plan.memoryRootedUseCount},
-            {"memory_child_transaction_count", plan.memoryChildTransactionCount},
+            {"memory_child_transaction_count",
+             plan.memoryChildTransactionCount},
             {"memory_result_assembly_count", plan.memoryResultAssemblyCount},
             {"compute_transition_physical_use_count",
              plan.computeTransitionPhysicalUseCount},
@@ -775,8 +838,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             plan.consumedTransportMaxReleaseRank;
         staticPlan["traversal_transport_max_release_rank"] =
             plan.traversalTransportMaxReleaseRank;
-        staticPlan["maximum_route_node_depth"] =
-            plan.maximumRouteNodeDepth;
+        staticPlan["maximum_route_node_depth"] = plan.maximumRouteNodeDepth;
         staticPlan["temporal_compute_actor_count"] =
             plan.temporalComputeActorCount;
         staticPlan["spatial_compute_actor_count"] =
@@ -793,10 +855,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
           return llvm::json::Object{{"numerator", numerator},
                                     {"denominator", denominator}};
         };
-        derived["actor_ipc"] =
-            rate(counters.actorCommitCount, cycleCount);
-        derived["actor_cpi"] =
-            rate(cycleCount, counters.actorCommitCount);
+        derived["actor_ipc"] = rate(counters.actorCommitCount, cycleCount);
+        derived["actor_cpi"] = rate(cycleCount, counters.actorCommitCount);
         derived["physical_action_rate"] =
             rate(counters.physicalRetirementCount, cycleCount);
         derived["cycles_per_physical_action"] =
@@ -818,8 +878,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                    retirement->referenceCycle.numerator()},
               {"denominator", 1}};
         else
-          derived["post_retirement_drain_cycles"] =
-              llvm::json::Value(nullptr);
+          derived["post_retirement_drain_cycles"] = llvm::json::Value(nullptr);
         derived["memory_load_store_split"] = "unsupported_by_cgra_counter";
         derived["recurrence_or_ii"] = "unsupported_single_activation";
         fields["measurement_kind"] = "direct_and_derived";
@@ -845,31 +904,57 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             counters.memoryLinearizationCount;
         fields["physical_request_count"] = counters.physicalRequestCount;
         fields["physical_grant_count"] = counters.physicalGrantCount;
-        fields["physical_retirement_count"] =
-            counters.physicalRetirementCount;
+        fields["physical_retirement_count"] = counters.physicalRetirementCount;
         fields["request_grant_gap"] =
             counters.physicalRequestCount >= counters.physicalGrantCount
                 ? counters.physicalRequestCount - counters.physicalGrantCount
                 : 0;
         fields["grant_retirement_gap"] =
             counters.physicalGrantCount >= counters.physicalRetirementCount
-                ? counters.physicalGrantCount -
-                      counters.physicalRetirementCount
+                ? counters.physicalGrantCount - counters.physicalRetirementCount
                 : 0;
         return llvm::json::Value(std::move(fields));
       });
 
+  const auto projectionStart = std::chrono::steady_clock::now();
+  const std::clock_t projectionCpuStart = std::clock();
   sim::SpatialSimulationExecution model{
       evaluationRequestReference(request),
       sim::RetiredExecution{},
       std::move(outcome->retired->observations),
       std::move(outcome->retired->progress),
       {}};
-  auto finalized = sim::finalizeSimulationExecution(model, resolution,
-                                                    artifactStore, blobStore);
+  auto finalized = executionContext
+                       ? sim::finalizeSimulationExecution(model,
+                                                          *executionContext)
+                       : sim::finalizeSimulationExecution(
+                             model, resolution, artifactStore, blobStore);
   if (!finalized)
     return finalized.takeError();
+  const std::clock_t projectionCpuEnd = std::clock();
+  const auto projectionEnd = std::chrono::steady_clock::now();
+  if (attemptProfile) {
+    attemptProfile->observationProjectionWallNanoseconds =
+        wallNanoseconds(projectionStart, projectionEnd);
+    attemptProfile->observationProjectionCpuNanoseconds =
+        clockNanoseconds(projectionCpuStart, projectionCpuEnd);
+    attemptProfile->activeWallNanoseconds +=
+        attemptProfile->observationProjectionWallNanoseconds;
+    attemptProfile->processCpuNanoseconds =
+        sumCpuNanoseconds(attemptProfile->processCpuNanoseconds,
+                          attemptProfile->observationProjectionCpuNanoseconds);
+  }
+  const auto publicationStart = std::chrono::steady_clock::now();
+  const std::clock_t publicationCpuStart = std::clock();
   auto reference = sim::publishSimulationExecution(*finalized, artifactStore);
+  const std::clock_t publicationCpuEnd = std::clock();
+  const auto publicationEnd = std::chrono::steady_clock::now();
+  if (attemptProfile) {
+    attemptProfile->artifactPublicationWallNanoseconds =
+        wallNanoseconds(publicationStart, publicationEnd);
+    attemptProfile->artifactPublicationCpuNanoseconds =
+        clockNanoseconds(publicationCpuStart, publicationCpuEnd);
+  }
   if (!reference)
     return reference.takeError();
   std::vector<MetricResult> metrics;
@@ -911,7 +996,7 @@ evaluate(const EvaluationRequest &request,
     return classifyExecutionFailure(inputs.takeError());
   return evaluateWithPrepared(request, resolution, *execution, inputs->workload,
                               inputs->runtimeInput, {}, artifactStore,
-                              blobStore, nullptr);
+                              blobStore);
 }
 
 const EvaluationModelProvider kProvider{
@@ -1039,9 +1124,18 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
   auto published = publishEvaluationRequest(*request, artifactStore);
   if (!published)
     return published.takeError();
+  auto workloadExecution = sim::prepareCgraWorkloadExecution(
+      *execution, inputs->workload, inputs->runtimeInput);
+  if (!workloadExecution)
+    return workloadExecution.takeError();
+  auto executionContext = sim::prepareSpatialExecutionContext(
+      *published, *resolution, artifactStore, blobStore);
+  if (!executionContext)
+    return executionContext.takeError();
   return PreparedCgraSimulationEvaluation{
       std::move(*request), std::move(*resolution), std::move(*execution),
-      std::move(inputs->workload), std::move(inputs->runtimeInput)};
+      std::move(inputs->workload), std::move(inputs->runtimeInput),
+      std::move(*workloadExecution), std::move(*executionContext)};
 }
 
 llvm::Expected<EvaluationEvidence>
@@ -1056,8 +1150,7 @@ evaluateCgraSimulation(const PreparedCgraSimulationEvaluation &prepared,
   return std::move(evaluated->evidence);
 }
 
-llvm::Expected<CgraSimulationEvaluation>
-evaluateCgraSimulationWithDiagnostics(
+llvm::Expected<CgraSimulationEvaluation> evaluateCgraSimulationWithDiagnostics(
     const PreparedCgraSimulationEvaluation &prepared,
     CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
     const BlobStore &blobStore) {
@@ -1066,10 +1159,14 @@ evaluateCgraSimulationWithDiagnostics(
     return std::move(error);
   std::optional<sim::CgraClosedWaitSetDiagnostic> closedWait;
   std::optional<sim::CgraUnsupportedMemoryContract> unsupportedMemory;
-  auto result = evaluateWithPrepared(
-      prepared.request, prepared.resolution, prepared.execution,
-      prepared.workload, prepared.runtimeInput, std::move(limits),
-      artifactStore, blobStore, &closedWait, &unsupportedMemory);
+  CgraSimulationAttemptProfile attemptProfile;
+  auto result = evaluateWithPrepared(prepared.request, prepared.resolution,
+                                     prepared.execution, prepared.workload,
+                                     prepared.runtimeInput, std::move(limits),
+                                     artifactStore, blobStore,
+                                     &prepared.workloadExecution,
+                                     &prepared.executionContext, &closedWait,
+                                     &unsupportedMemory, &attemptProfile);
   if (!result)
     return result.takeError();
   auto evidence = EvaluationEvidence::get(
@@ -1079,7 +1176,8 @@ evaluateCgraSimulationWithDiagnostics(
   if (!evidence)
     return evidence.takeError();
   return CgraSimulationEvaluation{std::move(*evidence), std::move(closedWait),
-                                  unsupportedMemory};
+                                  std::move(unsupportedMemory),
+                                  std::move(attemptProfile)};
 }
 
 } // namespace loom::evaluation::models

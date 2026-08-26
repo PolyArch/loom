@@ -39,6 +39,18 @@ bool isAt(const std::optional<SpatialEventCoordinate> &candidate,
          compareSpatialEventCoordinates(*candidate, coordinate) == 0;
 }
 
+template <typename Key, typename Value>
+Value &lookupOrAppend(
+    llvm::SmallVectorImpl<std::pair<Key, Value>> &entries, const Key &key) {
+  auto found = llvm::find_if(entries, [&](const auto &entry) {
+    return entry.first == key;
+  });
+  if (found != entries.end())
+    return found->second;
+  entries.emplace_back(key, Value{});
+  return entries.back().second;
+}
+
 } // namespace
 
 llvm::Expected<std::vector<CgraTransportCompletion>>
@@ -58,9 +70,13 @@ CgraTransportRuntime::acceptPhysicalEvents(
     std::uint32_t retired = 0;
   };
   using ActionKey = std::pair<std::uint64_t, std::uint64_t>;
-  llvm::DenseMap<ActionKey, ActionLifecycleState> projectedStates;
-  llvm::DenseMap<std::uint64_t, CountDelta> countDeltas;
-  llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, PublicationCountDelta>
+  llvm::SmallVector<std::pair<ActionKey, ActionLifecycleState>, 8>
+      projectedStates;
+  llvm::SmallVector<std::pair<std::uint64_t, CountDelta>, 8> countDeltas;
+  llvm::SmallVector<
+      std::pair<std::pair<std::uint64_t, std::uint64_t>,
+                PublicationCountDelta>,
+      8>
       publicationDeltas;
   for (std::uint64_t storageOrdinal : touchedStorageFrameCommits_)
     storageFrameCommits_[storageOrdinal] = StorageFrameCommit{};
@@ -69,7 +85,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
       newlyPermittedTraversals;
   const auto addTraversalPermission = [&](std::uint64_t slot,
                                           std::uint64_t node) -> llvm::Error {
-    CountDelta &delta = countDeltas[slot];
+    CountDelta &delta = lookupOrAppend(countDeltas, slot);
     if (delta.traversalPermitted == std::numeric_limits<std::uint32_t>::max())
       return invalid("CGRA storage permit count exceeds u32");
     ++delta.traversalPermitted;
@@ -171,7 +187,9 @@ CgraTransportRuntime::acceptPhysicalEvents(
       return invalid("CGRA endpoint lifecycle carries a traversal node");
     }
 
-    auto projected = projectedStates.find(key);
+    auto projected = llvm::find_if(projectedStates, [&](const auto &entry) {
+      return entry.first == key;
+    });
     ActionLifecycleState state =
         projected == projectedStates.end() ? owner.state : projected->second;
     const bool requiresCommit =
@@ -201,8 +219,11 @@ CgraTransportRuntime::acceptPhysicalEvents(
       retired = true;
       break;
     }
-    projectedStates[key] = state;
-    CountDelta &delta = countDeltas[owner.transferSlot];
+    if (projected == projectedStates.end())
+      projectedStates.emplace_back(key, state);
+    else
+      projected->second = state;
+    CountDelta &delta = lookupOrAppend(countDeltas, owner.transferSlot);
     std::uint32_t *permittedDelta = nullptr;
     std::uint32_t *retiredDelta = nullptr;
     switch (owner.stage) {
@@ -288,7 +309,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
           return std::move(error);
       }
       if (retired && hasDequeue) {
-        CountDelta &dequeueDelta = countDeltas[dequeueSlot];
+        CountDelta &dequeueDelta = lookupOrAppend(countDeltas, dequeueSlot);
         if (dequeueDelta.traversalRetired ==
             std::numeric_limits<std::uint32_t>::max())
           return invalid("CGRA storage retire count exceeds u32");
@@ -320,7 +341,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
       }
       if (retired && hasEnqueue &&
           storage.kind != CgraTraversalStorageKind::BufferedFifo) {
-        CountDelta &enqueueDelta = countDeltas[enqueueSlot];
+        CountDelta &enqueueDelta = lookupOrAppend(countDeltas, enqueueSlot);
         if (enqueueDelta.traversalRetired ==
             std::numeric_limits<std::uint32_t>::max())
           return invalid("CGRA storage retire count exceeds u32");
@@ -343,8 +364,9 @@ CgraTransportRuntime::acceptPhysicalEvents(
     *permittedDelta += permitted;
     *retiredDelta += retired;
     if (owner.stage == ActionStage::Consumed) {
-      PublicationCountDelta &publication =
-          publicationDeltas[{owner.transferSlot, owner.publicationBinding}];
+      PublicationCountDelta &publication = lookupOrAppend(
+          publicationDeltas,
+          std::make_pair(owner.transferSlot, owner.publicationBinding));
       if ((permitted && publication.permitted ==
                             std::numeric_limits<std::uint32_t>::max()) ||
           (retired &&
@@ -366,7 +388,8 @@ CgraTransportRuntime::acceptPhysicalEvents(
       return invalid("CGRA storage frame violates cycle-start capacity");
   }
 
-  llvm::DenseMap<std::uint64_t, std::uint32_t> successorDeltas;
+  llvm::SmallVector<std::pair<std::uint64_t, std::uint32_t>, 8>
+      successorDeltas;
   for (const auto &[slot, nodeOrdinal] : newlyPermittedTraversals) {
     const TraversalNodeBinding &node = traversalNodes_[nodeOrdinal];
     if (node.successorOffset > traversalSuccessors_.size() ||
@@ -380,7 +403,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
           traversalNodeTransferSlots_[successor] != slot ||
           traversalNodeStates_[successor] != TraversalNodeState::Idle)
         return invalid("CGRA traversal successor has inconsistent state");
-      std::uint32_t &delta = successorDeltas[successor];
+      std::uint32_t &delta = lookupOrAppend(successorDeltas, successor);
       if (delta == std::numeric_limits<std::uint32_t>::max())
         return invalid("CGRA traversal predecessor count exceeds u32");
       ++delta;

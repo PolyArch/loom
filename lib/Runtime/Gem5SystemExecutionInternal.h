@@ -34,6 +34,10 @@ inline constexpr llvm::StringLiteral kSystemResultPath =
     "outputs/system-result.json";
 inline constexpr llvm::StringLiteral kMemoryResultPath =
     "outputs/system-memory.result";
+inline constexpr llvm::StringLiteral kGem5PerformanceProfilePath =
+    "outputs/gem5-attempt-performance.json";
+inline constexpr llvm::StringLiteral kCgraEnginePerformanceProfilePath =
+    "outputs/cgra-engine-performance.json";
 inline constexpr llvm::StringLiteral kProjectionPath =
     "drivers/gem5-system-projection.json";
 inline constexpr llvm::StringLiteral kConfigurationScriptPath =
@@ -65,7 +69,6 @@ inline constexpr std::uint64_t kGem5SpatialInvocationTickBudget = 15'000'000;
 inline constexpr std::uint64_t kMaximumGem5Ticks =
     kGem5StartupTickBudget +
     gem5MaximumDynamicSpatialInvocations * kGem5SpatialInvocationTickBudget;
-inline constexpr std::uint64_t kMaximumSpatialWork = 1'000'000;
 inline constexpr std::uint64_t kGem5PageBytes = 4096;
 inline constexpr std::uint64_t kGem5StackBytes = 64 * 1024;
 

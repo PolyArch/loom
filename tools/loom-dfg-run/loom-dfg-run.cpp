@@ -370,6 +370,14 @@ selectedSourceFiles(const loom::dse::SelectedPreMappingCompilation &selected) {
   return files;
 }
 
+llvm::json::Object
+artifactReferenceJson(const loom::ArtifactRootReference &reference) {
+  return llvm::json::Object{
+      {"schema", reference.schemaIdentity},
+      {"schema_version", loom::formatSchemaVersion(reference.schemaVersion)},
+      {"artifact", loom::formatArtifactIdentityHex(reference.artifact)}};
+}
+
 llvm::Error
 writeReport(llvm::StringRef path,
             llvm::ArrayRef<std::string> selectedSourceFiles,
@@ -432,6 +440,16 @@ writeReport(llvm::StringRef path,
                 replay.simulationSeconds
           : 0.0;
   root["operation_firings"] = std::move(firings);
+  root["replay_case_occurrences"] = replay.replayCaseOccurrences;
+  llvm::json::Array replayCases;
+  for (const loom::sim::SourceBackedDfgReplayCaseReference &replayCase :
+       replay.replayCases) {
+    llvm::json::Object reference;
+    reference["workload"] = artifactReferenceJson(replayCase.workload);
+    reference["runtime_input"] = artifactReferenceJson(replayCase.runtimeInput);
+    replayCases.push_back(std::move(reference));
+  }
+  root["replay_cases"] = std::move(replayCases);
   llvm::json::Object sourceOracle;
   sourceOracle["comparison"] = "equivalent";
   if (replay.sourceReturnValue && replay.sourceReturnValue->tokenCount == 1 &&

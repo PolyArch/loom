@@ -4,12 +4,16 @@
 #include "Runtime/Gem5BridgeWire.h"
 
 #include "base/pollevent.hh"
+#include "base/stats/group.hh"
+#include "base/stats/units.hh"
 #include "dev/dma_device.hh"
 #include "params/LoomSpatialBridge.hh"
 #include "sim/eventq.hh"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -44,6 +48,15 @@ private:
     Failed = 4,
   };
 
+  struct PerformanceStatistics final : public statistics::Group {
+    explicit PerformanceStatistics(statistics::Group *parent);
+
+    statistics::Scalar callbackCpuNanoseconds;
+    statistics::Scalar engineWaitNanoseconds;
+    statistics::Scalar messageCount;
+    statistics::Scalar invocationCount;
+  } performanceStatistics;
+
   static constexpr std::uint32_t statusBusy = 1u << 0;
   static constexpr std::uint32_t statusDone = 1u << 1;
   static constexpr std::uint32_t statusError = 1u << 2;
@@ -77,6 +90,7 @@ private:
   loom::runtime::Gem5BridgeMemoryRequest pendingMemory;
   loom::runtime::Gem5BridgeCompletion pendingCompletion;
   loom::runtime::Gem5BridgeResultCollection completedResults;
+  std::optional<std::chrono::steady_clock::time_point> engineWaitStarted;
 
   EventFunctionWrapper launchEvent;
   EventFunctionWrapper staticLaunchCompletionEvent;
@@ -87,6 +101,9 @@ private:
   bool connectEngine();
   bool sendMessage(const loom::runtime::Gem5BridgeMessage &message);
   bool receiveMessage(loom::runtime::Gem5BridgeMessage &message);
+  void runAccounted(void (LoomSpatialBridge::*action)());
+  void startEngineWait();
+  void finishEngineWait();
   void fetchStaticLaunch();
   void fetchInvocation();
   void startLaunch();

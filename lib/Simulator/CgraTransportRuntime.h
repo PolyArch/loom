@@ -34,10 +34,10 @@ struct CgraTransportCompletion final {
 
 struct CgraTransportFrame final {
   SpatialEventCoordinate coordinate;
-  std::vector<CgraPhysicalLifecycleEvent> physicalEvents;
-  std::vector<CgraTokenPublication> publications;
-  std::vector<CgraTransportCompletion> completions;
-  std::vector<std::uint64_t> blockedTransfers;
+  llvm::SmallVector<CgraPhysicalLifecycleEvent, 8> physicalEvents;
+  llvm::SmallVector<CgraTokenPublication, 4> publications;
+  llvm::SmallVector<CgraTransportCompletion, 4> completions;
+  llvm::SmallVector<std::uint64_t, 4> blockedTransfers;
 };
 
 struct CgraPendingTransferDiagnostic final {
@@ -445,7 +445,7 @@ private:
                          std::uint64_t producerSequenceOrdinal, Token token);
   llvm::Error acceptTransfers(const SpatialEventCoordinate &coordinate,
                               llvm::ArrayRef<PendingTransfer> transfers);
-  llvm::Expected<std::vector<CgraPhysicalLifecycleEvent>>
+  llvm::Expected<llvm::SmallVector<CgraPhysicalLifecycleEvent, 8>>
   requestActions(llvm::ArrayRef<PendingActionTransfer> transfers,
                  ActionStage stage, const SpatialEventCoordinate &coordinate);
   llvm::Error scheduleArrival(std::uint64_t slot,
@@ -520,6 +520,8 @@ private:
   std::vector<bool> traversalStorageReserved_;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorSourceBindings_;
+  std::vector<llvm::SmallVector<std::uint64_t, 2>>
+      actorSourceBindingOrdinals_;
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorInputQueueBindings_;

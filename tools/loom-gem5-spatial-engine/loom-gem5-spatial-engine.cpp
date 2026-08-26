@@ -19,12 +19,15 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -35,6 +38,7 @@
 #include <string>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -92,6 +96,10 @@ llvm::cl::opt<std::uint64_t> bridgeCount(
     "bridge-count",
     llvm::cl::desc("Number of bridge connections sharing this System session"),
     llvm::cl::init(1));
+llvm::cl::opt<std::string> performanceProfilePath(
+    "performance-profile",
+    llvm::cl::desc("CGRA engine active performance profile output"),
+    llvm::cl::init(""));
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -681,16 +689,125 @@ runDfg(const loom::sim::PreparedDfgExecution &prepared,
 }
 
 #else
+struct CgraPerformanceProfile final {
+  std::uint64_t invocationCount = 0;
+  std::uint64_t activeWallNanoseconds = 0;
+  std::uint64_t activeCpuNanoseconds = 0;
+  std::uint64_t eventFrameCount = 0;
+};
+
+llvm::Expected<std::uint64_t> engineProcessCpuNanoseconds() {
+  timespec current{};
+  if (::clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &current) != 0) {
+    const int errorNumber = errno;
+    return invalid(llvm::Twine("cannot read engine process CPU clock: ") +
+                   std::strerror(errorNumber));
+  }
+  constexpr std::uint64_t nanosecondsPerSecond = 1'000'000'000;
+  if (current.tv_sec < 0 || current.tv_nsec < 0 ||
+      static_cast<std::uint64_t>(current.tv_nsec) >= nanosecondsPerSecond ||
+      static_cast<std::uint64_t>(current.tv_sec) >
+          (std::numeric_limits<std::uint64_t>::max() -
+           static_cast<std::uint64_t>(current.tv_nsec)) /
+              nanosecondsPerSecond)
+    return invalid("engine process CPU clock is outside the profile domain");
+  return static_cast<std::uint64_t>(current.tv_sec) * nanosecondsPerSecond +
+         static_cast<std::uint64_t>(current.tv_nsec);
+}
+
+llvm::Error addProfileValue(std::uint64_t &total, std::uint64_t value,
+                            llvm::StringRef field) {
+  if (value > std::numeric_limits<std::uint64_t>::max() - total)
+    return invalid(llvm::Twine("CGRA performance profile overflows '") + field +
+                   "'");
+  total += value;
+  return llvm::Error::success();
+}
+
+llvm::Error writeCgraPerformanceProfile(llvm::StringRef path,
+                                        const CgraPerformanceProfile &profile) {
+  std::error_code openError;
+  llvm::raw_fd_ostream output(path, openError, llvm::sys::fs::OF_Text);
+  if (openError)
+    return invalid(llvm::Twine("cannot open CGRA performance profile '") +
+                   path + "': " + openError.message());
+  {
+    llvm::json::OStream json(output);
+    json.object([&] {
+      json.attribute("schema", "loom.gem5_spatial_engine_performance.1");
+      json.attribute("engine", "cgra");
+      json.attribute("invocation_count", profile.invocationCount);
+      json.attribute("active_wall_nanoseconds", profile.activeWallNanoseconds);
+      json.attribute("active_cpu_nanoseconds", profile.activeCpuNanoseconds);
+      json.attribute("event_frame_count", profile.eventFrameCount);
+    });
+  }
+  output << '\n';
+  output.close();
+  if (std::error_code writeError = output.error()) {
+    output.clear_error();
+    return invalid(llvm::Twine("cannot write CGRA performance profile '") +
+                   path + "': " + writeError.message());
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error
+recordCgraPerformanceProfile(CgraPerformanceProfile &profile,
+                             const loom::sim::RetiredCgraSimulation &retired,
+                             std::uint64_t activeWallNanoseconds,
+                             std::uint64_t activeCpuNanoseconds) {
+  CgraPerformanceProfile updated = profile;
+  if (llvm::Error error =
+          addProfileValue(updated.invocationCount, 1, "invocation_count"))
+    return error;
+  if (llvm::Error error =
+          addProfileValue(updated.activeWallNanoseconds, activeWallNanoseconds,
+                          "active_wall_nanoseconds"))
+    return error;
+  if (llvm::Error error =
+          addProfileValue(updated.activeCpuNanoseconds, activeCpuNanoseconds,
+                          "active_cpu_nanoseconds"))
+    return error;
+  if (llvm::Error error = addProfileValue(updated.eventFrameCount,
+                                          retired.counters.eventFrameCount,
+                                          "event_frame_count"))
+    return error;
+  if (llvm::Error error =
+          writeCgraPerformanceProfile(performanceProfilePath, updated))
+    return error;
+  profile = updated;
+  return llvm::Error::success();
+}
+
 llvm::Expected<loom::sim::SpatialEngineBoundaryResult>
 runCgra(const loom::sim::PreparedCgraExecution &prepared,
         const loom::sim::ImportedSpatialSimulationWorkload &workload,
         const loom::sim::CanonicalSimulationRuntimeInput &runtimeInput,
-        loom::sim::CgraExternalMemoryProvider *externalMemoryProvider) {
+        loom::sim::CgraExternalMemoryProvider *externalMemoryProvider,
+        CgraPerformanceProfile *performanceProfile) {
+  std::optional<std::uint64_t> cpuStarted;
+  std::optional<std::chrono::steady_clock::time_point> wallStarted;
+  if (performanceProfile) {
+    auto currentCpu = engineProcessCpuNanoseconds();
+    if (!currentCpu)
+      return currentCpu.takeError();
+    cpuStarted = *currentCpu;
+    wallStarted = std::chrono::steady_clock::now();
+  }
   auto outcome = loom::sim::simulateCgraWorkload(
       prepared, workload.workload, runtimeInput, maximumWork, std::nullopt,
       externalMemoryProvider);
+  const auto wallFinished = std::chrono::steady_clock::now();
   if (!outcome)
     return outcome.takeError();
+  std::optional<std::uint64_t> cpuFinished;
+  if (performanceProfile) {
+    auto currentCpu = engineProcessCpuNanoseconds();
+    if (!currentCpu)
+      return currentCpu.takeError();
+    cpuFinished = *currentCpu;
+  }
   if (outcome->state == loom::sim::SpatialExecutionSessionState::StoppedByLimit)
     return llvm::createStringError(
         std::make_error_code(std::errc::timed_out),
@@ -951,6 +1068,19 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
                << ", causal_release=" << action.causalReleaseReached << "}";
     return invalid(diagnostic);
   }
+  if (performanceProfile) {
+    const auto elapsedWall =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(wallFinished -
+                                                             *wallStarted)
+            .count();
+    if (elapsedWall < 0 || *cpuFinished < *cpuStarted)
+      return invalid("CGRA performance clock moved backwards");
+    if (llvm::Error error = recordCgraPerformanceProfile(
+            *performanceProfile, *outcome->retired,
+            static_cast<std::uint64_t>(elapsedWall),
+            *cpuFinished - *cpuStarted))
+      return std::move(error);
+  }
   return loom::sim::SpatialEngineBoundaryResult{
       loom::sim::RetiredExecution{},
       std::move(outcome->retired->observations),
@@ -1046,6 +1176,11 @@ int main(int argc, char **argv) {
       bridgeCount == 0 || bridgeCount > std::numeric_limits<int>::max())
     return report(invalid("work, timing, and invocation limits must be "
                           "positive"));
+#if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+  if (!performanceProfilePath.empty())
+    return report(
+        invalid("DFG engine does not provide a CGRA performance profile"));
+#endif
 
   loom::ArtifactStore store(artifactStorePath);
   auto dataflow = root(dataflowIdentity, dataflow::canonicalDataflowSchema);
@@ -1234,6 +1369,9 @@ int main(int argc, char **argv) {
   connections.reserve(static_cast<std::size_t>(bridgeCount));
   std::uint64_t acceptedConnections = 0;
   std::uint64_t channelGeneration = 0;
+#if !defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+  CgraPerformanceProfile performanceProfile;
+#endif
   const auto completeLaunch =
       [&](BridgeConnection &bridge,
           PendingLaunchCompletion &pending) -> llvm::Expected<bool> {
@@ -1454,7 +1592,8 @@ int main(int argc, char **argv) {
                                      requestId);
     auto result = runCgra(
         preparedExecutions[entry.preparedOrdinal], entry.workload, *runtime,
-        externalMemoryProvider ? &*externalMemoryProvider : nullptr);
+        externalMemoryProvider ? &*externalMemoryProvider : nullptr,
+        performanceProfilePath.empty() ? nullptr : &performanceProfile);
     std::optional<loom::sim::SpatialEventCoordinate> externallyServicedThrough;
     if (externalMemoryProvider)
       externallyServicedThrough = externalMemoryProvider->lastCoordinate();

@@ -46,8 +46,7 @@ void requireSuccess(llvm::Error error) {
 void requireErrorContains(llvm::Error error, llvm::StringRef needle) {
   const std::string message = llvm::toString(std::move(error));
   if (message.find(needle.str()) == std::string::npos)
-    fail("expected error containing '" + needle.str() + "', got: " +
-         message);
+    fail("expected error containing '" + needle.str() + "', got: " + message);
 }
 
 class TemporaryDirectory final {
@@ -97,9 +96,9 @@ Fixture makeFixture(const ArtifactStore &store, std::uint8_t sourceByte,
     fail("resolved config publication changed its identity");
   ResolvedDseConfigView view = take(projectResolvedDseConfigView(config));
   ArtifactRootReference source = publish(store, sourceByte);
-  DseRunClosure closure = take(DseRunClosure::get(
-      take(DseProducerSemanticBuildIdentity::get(producer)), {source}, config,
-      {}, store));
+  DseRunClosure closure = take(
+      DseRunClosure::get(take(DseProducerSemanticBuildIdentity::get(producer)),
+                         {source}, config, {}, store));
   return {std::move(config), std::move(view), std::move(closure),
           std::move(source)};
 }
@@ -151,14 +150,13 @@ void testRecoveryAndTerminalAdmission(const ArtifactStore &store,
   auto running = take(recovered.find(runningKey));
   if (!running || running->status != JournalWorkUnitStatus::Queued)
     fail("reopen did not return interrupted work to its stable queued key");
-  const std::uint64_t recoveredActive =
-      running->activeWallTimeNanoseconds();
+  const std::uint64_t recoveredActive = running->activeWallTimeNanoseconds();
 
   requireSuccess(recovered.markRunning(runningKey));
   const std::uint64_t terminalTime = unixNanosecondsNow();
-  requireSuccess(recovered.markTerminal(
-      runningKey, JournalWorkUnitStatus::Completed, 17, terminalTime,
-      {fixture.source}));
+  requireSuccess(recovered.markTerminal(runningKey,
+                                        JournalWorkUnitStatus::Completed, 17,
+                                        terminalTime, {fixture.source}));
   auto completed = take(recovered.find(runningKey));
   if (!completed || completed->status != JournalWorkUnitStatus::Completed ||
       completed->activeWallTimeNanoseconds() < recoveredActive + 17 ||
@@ -167,9 +165,9 @@ void testRecoveryAndTerminalAdmission(const ArtifactStore &store,
           std::vector<ArtifactRootReference>{fixture.source})
     fail("terminal work record lost its exact observations or roots");
 
-  llvm::Error overwrite = recovered.markTerminal(
-      runningKey, JournalWorkUnitStatus::Failed, 17, terminalTime,
-      {fixture.source});
+  llvm::Error overwrite =
+      recovered.markTerminal(runningKey, JournalWorkUnitStatus::Failed, 17,
+                             terminalTime, {fixture.source});
   requireErrorContains(std::move(overwrite), "cannot be overwritten");
 
   const WorkUnitKey preparedKey = makeKey(3, 1);
@@ -198,16 +196,14 @@ void testRecoveryAndTerminalAdmission(const ArtifactStore &store,
   if (stopped.gracefulStopRequested())
     fail("resume did not clear the durable graceful-stop flag");
 
-  Fixture foreign =
-      makeFixture(store, 0x12, "loom.test.execution.build.v1");
+  Fixture foreign = makeFixture(store, 0x12, "loom.test.execution.build.v1");
   auto rejected = openExecutionJournal(runRoot, foreign.closure, foreign.view);
   if (rejected)
     fail("journal accepted a different semantic run closure");
   requireErrorContains(rejected.takeError(), "another semantic run");
 }
 
-void testStrictAdmission(const ArtifactStore &store,
-                         llvm::StringRef runRoot) {
+void testStrictAdmission(const ArtifactStore &store, llvm::StringRef runRoot) {
   Fixture fixture = makeFixture(store, 0x31, "loom.test.execution.build.v2");
   auto badDescriptor =
       WorkUnitDescriptorRef::get("bad owner", SchemaVersion{1, 0}, 0);
@@ -222,12 +218,12 @@ void testStrictAdmission(const ArtifactStore &store,
   requireErrorContains(std::move(unqueued), "unqueued");
   requireSuccess(journal.queue(key));
   requireSuccess(journal.markRunning(key));
-  llvm::Error nonterminal = journal.markTerminal(
-      key, JournalWorkUnitStatus::Running, 1, 2, {});
+  llvm::Error nonterminal =
+      journal.markTerminal(key, JournalWorkUnitStatus::Running, 1, 2, {});
   requireErrorContains(std::move(nonterminal), "terminal status");
-  llvm::Error unordered = journal.markTerminal(
-      key, JournalWorkUnitStatus::Completed, 1, 2,
-      {publish(store, 0x42), publish(store, 0x41)});
+  llvm::Error unordered =
+      journal.markTerminal(key, JournalWorkUnitStatus::Completed, 1, 2,
+                           {publish(store, 0x42), publish(store, 0x41)});
   requireErrorContains(std::move(unordered), "canonical and unique");
 }
 
@@ -243,7 +239,8 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
   requireSuccess(journal.recordPreparedExecutionInterval(
       missKey, 0, unixNanosecondsNow(),
       external_tool::ExternalToolInvocationExecutionObservation{
-          0, external_tool::ExternalToolResultCacheAvailability::Available,
+          0, external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
+          external_tool::ExternalToolResultCacheAvailability::Available,
           external_tool::ExternalToolResultCacheLookup::Miss,
           external_tool::ExternalToolResultCacheDiscard::Discarded,
           external_tool::ExternalToolResultCachePublication::Published, false,
@@ -254,7 +251,8 @@ void testExternalToolWorkLedger(const ArtifactStore &store,
   requireSuccess(journal.recordPreparedExecutionInterval(
       hitKey, 0, unixNanosecondsNow(),
       external_tool::ExternalToolInvocationExecutionObservation{
-          0, external_tool::ExternalToolResultCacheAvailability::Available,
+          0, external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
+          external_tool::ExternalToolResultCacheAvailability::Available,
           external_tool::ExternalToolResultCacheLookup::Hit,
           external_tool::ExternalToolResultCacheDiscard::NotAttempted,
           external_tool::ExternalToolResultCachePublication::NotAttempted, true,
@@ -332,7 +330,8 @@ void testLegacyPreparedLedgerAdoption(const ArtifactStore &store,
   requireSuccess(adopted.recordPreparedExecutionInterval(
       key, 0, unixNanosecondsNow(),
       external_tool::ExternalToolInvocationExecutionObservation{
-          0, external_tool::ExternalToolResultCacheAvailability::Disabled,
+          0, external_tool::ExternalToolResultReusePolicy::AllowExactReuse,
+          external_tool::ExternalToolResultCacheAvailability::Disabled,
           external_tool::ExternalToolResultCacheLookup::NotAttempted,
           external_tool::ExternalToolResultCacheDiscard::NotAttempted,
           external_tool::ExternalToolResultCachePublication::NotAttempted,

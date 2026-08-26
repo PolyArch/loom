@@ -74,7 +74,7 @@ struct ResolvedEvaluationConfig final {
 
 struct ResolvedConfig {
   static constexpr ArtifactSchemaDescriptor artifactSchema{
-      "loom.config.resolved", SchemaVersion{10, 1}};
+      "loom.config.resolved", SchemaVersion{11, 0}};
 
   ResolvedHardwareTargetConfig hardwareTarget;
   ResolvedDseConfig dse;

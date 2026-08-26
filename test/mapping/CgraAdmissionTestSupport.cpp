@@ -41,7 +41,7 @@ template <typename T> T take(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
-bool rejected(llvm::Expected<loom::sim::PreparedCgraExecution> value) {
+template <typename T> bool rejected(llvm::Expected<T> value) {
   if (value)
     return false;
   llvm::consumeError(value.takeError());
@@ -281,9 +281,11 @@ void loom::test::exerciseCgraAdmission(
       take(sim::admitCgraSpatialSimulation(prepared, workload, runtime));
   if (graph != view.graphs().front().ref)
     fail("CGRA admission resolved a different graph");
+  auto preparedWorkload = take(
+      sim::prepareCgraWorkloadExecution(prepared, workload, runtime));
 
   auto session = take(sim::startCgraExecutionSession(
-      prepared, workload, runtime, sim::TraceCaptureLevel::Semantic));
+      preparedWorkload, workload, runtime, sim::TraceCaptureLevel::Semantic));
   while (session.state() == sim::SpatialExecutionSessionState::Runnable)
     take(session.advance(/*maxEventFrames=*/1));
   if (session.state() != sim::SpatialExecutionSessionState::Retired)
@@ -423,10 +425,19 @@ void loom::test::exerciseCgraAdmission(
           projectTrace(*trace, sim::TraceCaptureLevel::Firing)))
     fail("CGRA semantic trace does not include the firing trace");
 
-  auto limited = take(sim::simulateCgraWorkload(prepared, workload, runtime,
-                                                /*maxEventFrames=*/1));
+  auto limited = take(sim::simulateCgraWorkload(
+      preparedWorkload, workload, runtime, /*maxEventFrames=*/1));
   if (limited.state != sim::SpatialExecutionSessionState::StoppedByLimit)
     fail("CGRA event budget did not produce StoppedByLimit");
+  sim::SpatialSimulationRuntimeInputDraft foreignRuntimeDraft{
+      workload.identity()};
+  foreignRuntimeDraft.runtimeValues = {
+      {0, {1, {sim::SemanticLane::defined(llvm::APInt(32, 8))}}}};
+  auto foreignRuntime = take(sim::finalizeSimulationRuntimeInput(
+      foreignRuntimeDraft, workload, view));
+  if (!rejected(sim::startCgraExecutionSession(
+          preparedWorkload, workload, foreignRuntime)))
+    fail("prepared CGRA workload execution accepted a foreign runtime input");
 
   auto preparedDfg = take(evaluation::models::prepareDfgSimulationEvaluation(
       dataflowReference, workloadReference, runtimeReference,

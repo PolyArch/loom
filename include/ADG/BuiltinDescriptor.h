@@ -65,6 +65,8 @@ isValidBuiltinFuOccurrenceCounts(const BuiltinFuOccurrenceCounts &counts,
 struct BuiltinTargetScale final {
   std::uint32_t accCoreCount;
   std::uint32_t meshDimension;
+  std::uint32_t spatialMeshLanesPerDirection;
+  std::uint32_t temporalMeshLanesPerDirection;
   std::uint32_t spatialPeCount;
   std::uint32_t temporalPeCount;
   BuiltinFuOccurrenceCounts spatialFuOccurrences;
@@ -80,6 +82,10 @@ struct BuiltinTargetScale final {
 
 constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
   return scale.accCoreCount != 0 && scale.meshDimension > 1 &&
+         scale.spatialMeshLanesPerDirection != 0 &&
+         scale.spatialMeshLanesPerDirection <= maximumMeshLanesPerDirection &&
+         scale.temporalMeshLanesPerDirection != 0 &&
+         scale.temporalMeshLanesPerDirection <= maximumMeshLanesPerDirection &&
          scale.spatialPeCount != 0 && scale.temporalPeCount != 0 &&
          isValidBuiltinFuOccurrenceCounts(scale.spatialFuOccurrences,
                                           scale.spatialPeCount) &&
@@ -105,9 +111,9 @@ inline constexpr BuiltinTargetDescriptor builtinSmallTarget{
     BuiltinTargetPreset::Small,
     "small",
     "loom.adg.builtin.general_purpose",
-    7,
+    8,
     0,
-    {4, 4, 12, 4, builtinBalancedFuOccurrences(12),
+    {4, 4, 2, 2, 12, 4, builtinBalancedFuOccurrences(12),
      builtinBalancedFuOccurrences(4), 1, 1, 2,
      LocalMemoryPortVariant::SharedElementVector, 5, 2, 64 * 1024}};
 
@@ -115,9 +121,9 @@ inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
     BuiltinTargetPreset::Coverage,
     "coverage",
     "loom.adg.builtin.general_purpose",
-    7,
+    8,
     0,
-    {8, 6, 27, 9, builtinCoverageSpatialFuOccurrences(),
+    {8, 6, 2, 2, 27, 9, builtinCoverageSpatialFuOccurrences(),
      builtinBalancedFuOccurrences(9), 4, 4, 4,
      LocalMemoryPortVariant::SharedElementVector, 5, 4, 256 * 1024}};
 
@@ -125,9 +131,9 @@ inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
     BuiltinTargetPreset::Large,
     "large",
     "loom.adg.builtin.general_purpose",
-    7,
+    8,
     0,
-    {16, 8, 48, 16, builtinBalancedFuOccurrences(48),
+    {16, 8, 2, 2, 48, 16, builtinBalancedFuOccurrences(48),
      builtinBalancedFuOccurrences(16), 4, 4, 8,
      LocalMemoryPortVariant::SharedElementVector, 5, 8, 1024 * 1024}};
 
@@ -141,9 +147,8 @@ getBuiltinTargetDescriptor(BuiltinTargetPreset preset) {
   case BuiltinTargetPreset::Large:
     return &builtinLargeTarget;
   }
-  return llvm::createStringError(
-      std::errc::invalid_argument,
-      "invalid builtin target preset enum value");
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "invalid builtin target preset enum value");
 }
 
 inline const BuiltinTargetDescriptor *

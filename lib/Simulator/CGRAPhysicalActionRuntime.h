@@ -7,6 +7,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -46,7 +47,7 @@ struct CgraPhysicalLifecycleEvent final {
 
 struct CgraPhysicalLifecycleFrame final {
   SpatialEventCoordinate coordinate;
-  std::vector<CgraPhysicalLifecycleEvent> events;
+  llvm::SmallVector<CgraPhysicalLifecycleEvent, 8> events;
 };
 
 struct CgraPhysicalActionRequest final {
@@ -85,7 +86,7 @@ public:
   request(std::uint64_t actionOrdinal, std::uint64_t occurrenceOrdinal,
           SpatialEventCoordinate coordinate);
 
-  llvm::Expected<std::vector<CgraPhysicalLifecycleEvent>>
+  llvm::Expected<llvm::SmallVector<CgraPhysicalLifecycleEvent, 8>>
   requestBatch(llvm::ArrayRef<CgraPhysicalActionRequest> requests,
                SpatialEventCoordinate coordinate);
 

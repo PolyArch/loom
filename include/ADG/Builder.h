@@ -671,6 +671,14 @@ enum class MeshSwitchGrantPolicyKind : std::uint8_t {
   RoundRobin,
 };
 
+inline constexpr std::uint32_t maximumMeshLanesPerDirection = 4;
+static_assert(16ULL * maximumMeshLanesPerDirection *
+                  maximumMeshLanesPerDirection <=
+              ::fabric::kSwitchCrosspointLimit);
+static_assert(16ULL * (maximumMeshLanesPerDirection + 1) *
+                  (maximumMeshLanesPerDirection + 1) >
+              ::fabric::kSwitchCrosspointLimit);
+
 /// One ordered local ingress/egress bank placed at an authoring-only cell.
 struct MeshCellAttachmentSpec final {
   std::uint32_t x;
@@ -1158,12 +1166,12 @@ public:
                             loom::fabric::FabricPeOccurrenceRef prototype);
   llvm::Error resizeInstructionStore(loom::fabric::FabricPeOccurrenceRef target,
                                      std::uint32_t instructionCapacity);
-  llvm::Error changeTemporalOperandBufferMode(
-      loom::fabric::FabricPeOccurrenceRef target,
-      ::fabric::OperandBufferMode mode);
-  llvm::Error resizeTemporalOperandBuffer(
-      loom::fabric::FabricPeOccurrenceRef target,
-      std::uint32_t entriesPerAllocationUnit);
+  llvm::Error
+  changeTemporalOperandBufferMode(loom::fabric::FabricPeOccurrenceRef target,
+                                  ::fabric::OperandBufferMode mode);
+  llvm::Error
+  resizeTemporalOperandBuffer(loom::fabric::FabricPeOccurrenceRef target,
+                              std::uint32_t entriesPerAllocationUnit);
   llvm::Error replaceFuInventory(
       loom::fabric::FabricPeOccurrenceRef target,
       llvm::ArrayRef<loom::fabric::FabricFuOccurrenceRef> prototypes);
@@ -1332,9 +1340,9 @@ public:
   HardwareDomainMember domainMember() const;
   HardwareDomainMember instructionCoreDomainMember() const;
   HardwareDomainMember spatialCoreDomainMember() const;
-  HardwareDomainMember spatialCoreDomainMember(
-      loom::fabric::FabricClockResetKind kind,
-      loom::fabric::FabricOrdinal ordinal = 0) const;
+  HardwareDomainMember
+  spatialCoreDomainMember(loom::fabric::FabricClockResetKind kind,
+                          loom::fabric::FabricOrdinal ordinal = 0) const;
   HardwareDomainMember spatialCoreResetDomainMember() const {
     return spatialCoreDomainMember(loom::fabric::FabricClockResetKind::Reset);
   }

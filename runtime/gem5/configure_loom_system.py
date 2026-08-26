@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import pathlib
+import resource
 import subprocess
 import time
 
@@ -32,6 +33,15 @@ from m5.objects import (
 
 
 CONFIG_SCHEMA = "loom.gem5_system_projection.10"
+PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.2"
+PERFORMANCE_PROFILE_NAME = "loom-performance-profile.json"
+
+BRIDGE_STAT_SUFFIXES = {
+    "bridge_callback_cpu_nanoseconds": ".loomPerformance.callbackCpuNanoseconds",
+    "bridge_engine_wait_nanoseconds": ".loomPerformance.engineWaitNanoseconds",
+    "bridge_message_count": ".loomPerformance.messageCount",
+    "accelerator_invocation_count": ".loomPerformance.invocationCount",
+}
 
 PROCESSOR_FIELDS = {
     "cpu_id",
@@ -63,6 +73,7 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--projection", required=True)
     parser.add_argument("--result", required=True)
+    parser.add_argument("--performance-profile")
     return parser.parse_args()
 
 
@@ -117,6 +128,42 @@ def verify_running_binary(expected_sha256: str) -> None:
             digest.update(block)
     if digest.hexdigest() != expected_sha256:
         raise RuntimeError("running gem5 binary differs from the exact binding")
+
+
+def cpu_seconds(usage: resource.struct_rusage) -> float:
+    return usage.ru_utime + usage.ru_stime
+
+
+def elapsed_cpu_nanoseconds(
+    before: resource.struct_rusage, after: resource.struct_rusage
+) -> int:
+    elapsed = cpu_seconds(after) - cpu_seconds(before)
+    if elapsed < 0.0:
+        raise RuntimeError("process CPU accounting moved backwards")
+    return round(elapsed * 1_000_000_000)
+
+
+def read_bridge_statistics(path: pathlib.Path) -> dict[str, int]:
+    totals = {field: 0 for field in BRIDGE_STAT_SUFFIXES}
+    counts = {field: 0 for field in BRIDGE_STAT_SUFFIXES}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name, value = parts[0], parts[1]
+        for field, suffix in BRIDGE_STAT_SUFFIXES.items():
+            if not name.endswith(suffix):
+                continue
+            parsed = int(value)
+            if parsed < 0:
+                raise RuntimeError(f"gem5 bridge statistic {field} is negative")
+            totals[field] += parsed
+            counts[field] += 1
+    bridge_count = counts["bridge_callback_cpu_nanoseconds"]
+    if any(count != bridge_count for count in counts.values()):
+        raise RuntimeError("gem5 bridge statistics are not structurally total")
+    totals["bridge_count"] = bridge_count
+    return totals
 
 
 def start_engines(
@@ -453,9 +500,7 @@ def build_system(projection: dict) -> RiscvSystem:
         processors.append(cpu)
     system.cpu = processors
 
-    system.memory = SimpleMemory(
-        range=system.mem_ranges[0], latency=memory["latency"]
-    )
+    system.memory = SimpleMemory(range=system.mem_ranges[0], latency=memory["latency"])
     system.memory.port = system.membus.mem_side_ports
 
     system.loom_thread_dispatch = LoomThreadDispatch(
@@ -493,16 +538,29 @@ def main() -> None:
     arguments = parse_arguments()
     projection = load_projection(pathlib.Path(arguments.projection))
     verify_running_binary(projection["gem5_binary_sha256"])
+    configuration_started = time.monotonic_ns()
+    engine_cpu_before = resource.getrusage(resource.RUSAGE_CHILDREN)
     engines = start_engines(
         projection["bridges"], len(projection["dispatch"]["targets"])
     )
+    performance = None
     try:
         system = build_system(projection)
         Root(full_system=True, system=system)
+        simulation_cpu_before = resource.getrusage(resource.RUSAGE_SELF)
+        simulation_started = time.monotonic_ns()
         m5.instantiate()
         entry_tick = int(m5.curTick())
         event = m5.simulate(projection["maximum_ticks"])
+        simulation_finished = time.monotonic_ns()
+        simulation_cpu_after = resource.getrusage(resource.RUSAGE_SELF)
         finish_engines(engines)
+        observation_cpu_before = resource.getrusage(resource.RUSAGE_SELF)
+        observation_started = time.monotonic_ns()
+        m5.stats.dump()
+        bridge_statistics = read_bridge_statistics(
+            pathlib.Path(m5.options.outdir, "stats.txt")
+        )
         system.workload.writeMemoryObservations()
         result = {
             "schema": "loom.gem5_system_attempt.1",
@@ -514,8 +572,45 @@ def main() -> None:
             json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
+        observation_finished = time.monotonic_ns()
+        observation_cpu_after = resource.getrusage(resource.RUSAGE_SELF)
+        performance = {
+            "schema": PERFORMANCE_PROFILE_SCHEMA,
+            "configuration_wall_nanoseconds": (
+                simulation_started - configuration_started
+            ),
+            "active_wall_nanoseconds": (
+                simulation_finished
+                - simulation_started
+                + observation_finished
+                - observation_started
+            ),
+            "gem5_active_cpu_nanoseconds": elapsed_cpu_nanoseconds(
+                simulation_cpu_before, simulation_cpu_after
+            ),
+            "observation_wall_nanoseconds": (
+                observation_finished - observation_started
+            ),
+            "observation_cpu_nanoseconds": elapsed_cpu_nanoseconds(
+                observation_cpu_before, observation_cpu_after
+            ),
+            **bridge_statistics,
+        }
     finally:
         stop_engines(engines)
+    if performance is None:
+        raise RuntimeError("gem5 attempt produced no performance observation")
+    performance["engine_process_cpu_nanoseconds"] = elapsed_cpu_nanoseconds(
+        engine_cpu_before, resource.getrusage(resource.RUSAGE_CHILDREN)
+    )
+    performance_path = pathlib.Path(
+        arguments.performance_profile
+        or pathlib.Path(m5.options.outdir, PERFORMANCE_PROFILE_NAME)
+    )
+    performance_path.write_text(
+        json.dumps(performance, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__m5_main__":

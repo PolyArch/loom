@@ -30,6 +30,8 @@ struct PreparedCgraSimulationEvaluation final {
   sim::PreparedCgraExecution execution;
   sim::CanonicalSimulationWorkload workload;
   sim::CanonicalSimulationRuntimeInput runtimeInput;
+  sim::PreparedCgraWorkloadExecution workloadExecution;
+  sim::PreparedSpatialExecutionContext executionContext;
 };
 
 struct CgraSimulationAttemptLimits final {
@@ -37,10 +39,25 @@ struct CgraSimulationAttemptLimits final {
   std::optional<std::chrono::steady_clock::time_point> executionDeadline;
 };
 
+struct CgraSimulationAttemptProfile final {
+  std::uint64_t activeWallNanoseconds = 0;
+  std::optional<std::uint64_t> processCpuNanoseconds;
+  std::uint64_t inputLoadWallNanoseconds = 0;
+  std::optional<std::uint64_t> inputLoadCpuNanoseconds;
+  std::uint64_t engineActiveWallNanoseconds = 0;
+  std::optional<std::uint64_t> engineActiveCpuNanoseconds;
+  std::uint64_t observationProjectionWallNanoseconds = 0;
+  std::optional<std::uint64_t> observationProjectionCpuNanoseconds;
+  std::uint64_t artifactPublicationWallNanoseconds = 0;
+  std::optional<std::uint64_t> artifactPublicationCpuNanoseconds;
+  sim::CgraSimulationCounters counters;
+};
+
 struct CgraSimulationEvaluation final {
   EvaluationEvidence evidence;
   std::optional<sim::CgraClosedWaitSetDiagnostic> closedWait;
   std::optional<sim::CgraUnsupportedMemoryContract> unsupportedMemoryContract;
+  CgraSimulationAttemptProfile attemptProfile;
 };
 
 llvm::Error registerCgraSimulationModel();
@@ -79,8 +96,7 @@ evaluateCgraSimulation(const PreparedCgraSimulationEvaluation &prepared,
 /// in-process halt diagnostic retained for a caller that owns a typed hardware
 /// feedback loop. The diagnostic is ephemeral and cannot replace Evidence or
 /// Mapping verification.
-llvm::Expected<CgraSimulationEvaluation>
-evaluateCgraSimulationWithDiagnostics(
+llvm::Expected<CgraSimulationEvaluation> evaluateCgraSimulationWithDiagnostics(
     const PreparedCgraSimulationEvaluation &prepared,
     CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
     const BlobStore &blobStore);
