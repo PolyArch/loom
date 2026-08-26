@@ -70,21 +70,45 @@ class Gem5SystemFactsSession final {
 public:
   class Impl;
 
+  class Attachment final {
+  public:
+    Attachment() = default;
+    explicit operator bool() const { return static_cast<bool>(state_); }
+
+  private:
+    explicit Attachment(std::shared_ptr<Impl> state)
+        : state_(std::move(state)) {}
+
+    std::shared_ptr<Impl> state_;
+    friend class Gem5SystemFactsSession;
+  };
+
   Gem5SystemFactsSession(const ArtifactStore &artifacts, const BlobStore &blobs,
                          Gem5SystemFactsSessionMode mode =
                              Gem5SystemFactsSessionMode::ReuseEnclosing,
                          std::size_t entryLimit = 8);
+  explicit Gem5SystemFactsSession(const Attachment &attachment);
   ~Gem5SystemFactsSession();
 
   Gem5SystemFactsSession(const Gem5SystemFactsSession &) = delete;
   Gem5SystemFactsSession &operator=(const Gem5SystemFactsSession &) = delete;
 
+  Attachment attachment() const { return Attachment(active_); }
   Gem5SystemFactsSessionStatistics statistics() const;
 
 private:
   std::shared_ptr<Impl> active_;
   std::shared_ptr<Impl> previous_;
 };
+
+/// Opens the removable Gem5 facts context retained by Evaluation's live
+/// prepared-invocation owner. The context never enters persistent identity.
+llvm::Expected<
+    std::shared_ptr<const evaluation::EvaluationModelInvocationContext>>
+openGem5SystemInvocationContext(
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
 
 struct Gem5CgraEngineAttemptProfile final {
   std::uint64_t invocationCount = 0;

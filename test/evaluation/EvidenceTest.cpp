@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <initializer_list>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -341,6 +342,24 @@ const EvaluationModelDescriptor unsupportedExternalModelDescriptor{
     {},
     ProviderForm::ExternalPrepareImport};
 
+const EvaluationModelDescriptor contextAwareExternalModelDescriptor{
+    EvaluationModelKind(50),
+    "evidence_test_context_aware_external_model",
+    "loom.test.evidence.context_aware_external_model",
+    signatureRef(),
+    {},
+    metricCapabilities,
+    findingCapabilities,
+    {},
+    outputSlots,
+    modelConfigView,
+    {},
+    EvaluationExecutionMethod::Analytic,
+    {},
+    DeterminismContract::Deterministic,
+    {},
+    ProviderForm::ExternalPrepareImport};
+
 llvm::Expected<EvaluationModelResult>
 evaluateTestModel(const EvaluationRequest &request,
                   const CaseArtifactResolution &, const ArtifactStore &,
@@ -426,6 +445,93 @@ importTestModelAlternate(const EvaluationRequest &,
                                  "test external import stub");
 }
 
+struct InvocationContextProbeState final {
+  std::uint64_t openCount = 0;
+  std::uint64_t activationCount = 0;
+  std::uint64_t nextContextIdentity = 0;
+  std::uint64_t prepareContextIdentity = 0;
+  std::uint64_t importContextIdentity = 0;
+};
+
+InvocationContextProbeState invocationContextProbe;
+thread_local std::uint64_t activeInvocationContextIdentity = 0;
+
+class InvocationContextProbeActivation final
+    : public EvaluationModelInvocationContext::Activation {
+public:
+  explicit InvocationContextProbeActivation(std::uint64_t identity)
+      : previous_(activeInvocationContextIdentity) {
+    activeInvocationContextIdentity = identity;
+  }
+
+  ~InvocationContextProbeActivation() override {
+    activeInvocationContextIdentity = previous_;
+  }
+
+private:
+  std::uint64_t previous_ = 0;
+};
+
+class InvocationContextProbe final : public EvaluationModelInvocationContext {
+public:
+  InvocationContextProbe(const ArtifactStore &artifacts, const BlobStore &blobs,
+                         std::uint64_t identity)
+      : artifacts_(&artifacts), blobs_(&blobs), identity_(identity) {}
+
+  llvm::Expected<std::unique_ptr<Activation>>
+  activate(const ArtifactStore &artifacts,
+           const BlobStore &blobs) const override {
+    if (&artifacts != artifacts_ || &blobs != blobs_)
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "invocation context crossed stores");
+    ++invocationContextProbe.activationCount;
+    return std::unique_ptr<Activation>(
+        std::make_unique<InvocationContextProbeActivation>(identity_));
+  }
+
+private:
+  const ArtifactStore *artifacts_ = nullptr;
+  const BlobStore *blobs_ = nullptr;
+  std::uint64_t identity_ = 0;
+};
+
+llvm::Expected<std::shared_ptr<const EvaluationModelInvocationContext>>
+openInvocationContextProbe(const EvaluationRequest &,
+                           const CaseArtifactResolution &,
+                           const ArtifactStore &artifacts,
+                           const BlobStore &blobs) {
+  const std::uint64_t identity = ++invocationContextProbe.nextContextIdentity;
+  ++invocationContextProbe.openCount;
+  return std::shared_ptr<const EvaluationModelInvocationContext>(
+      std::make_shared<const InvocationContextProbe>(artifacts, blobs,
+                                                     identity));
+}
+
+llvm::Expected<EvaluationModelProviderPreparation> prepareContextAwareModel(
+    const EvaluationRequest &, const CaseArtifactResolution &,
+    const ArtifactStore &, const BlobStore &,
+    const external_tool::ExternalToolPreparationContext &) {
+  if (activeInvocationContextIdentity == 0)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "prepare has no invocation context");
+  invocationContextProbe.prepareContextIdentity =
+      activeInvocationContextIdentity;
+  return external_tool::PreparedExternalToolInvocation{"context-aware",
+                                                       computeBlobDigest({})};
+}
+
+llvm::Expected<EvaluationModelResult> importContextAwareModel(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  if (activeInvocationContextIdentity == 0)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "import has no invocation context");
+  invocationContextProbe.importContextIdentity =
+      activeInvocationContextIdentity;
+  return importTestModelValid(request, resolution, prepared, artifacts, blobs);
+}
+
 const EvaluationModelProvider modelProvider{
     modelDescriptor.reference(),
     EvaluationModelInProcessProvider{&evaluateTestModel}};
@@ -444,6 +550,12 @@ const EvaluationModelProvider unsupportedExternalProvider{
     unsupportedExternalModelDescriptor.reference(),
     EvaluationModelExternalPrepareImportProvider{&prepareUnsupportedModel,
                                                  &importTestModel}};
+
+const EvaluationModelProvider contextAwareExternalProvider{
+    contextAwareExternalModelDescriptor.reference(),
+    EvaluationModelExternalPrepareImportProvider{&prepareContextAwareModel,
+                                                 &importContextAwareModel,
+                                                 &openInvocationContextProbe}};
 
 EvaluationSubjectBindings subjectBindings(const char *test) {
   return takeExpected(test, EvaluationSubjectBindings::get(
@@ -1038,6 +1150,75 @@ void externalPreparationFinalizesTypedUnsupported() {
           "Evaluation did not finalize dense empty output bindings");
 }
 
+void externalInvocationContextSpansPrepareAndImport() {
+  TemporaryDirectory directory(__func__);
+  llvm::SmallString<128> blobRoot(directory.path());
+  llvm::sys::path::append(blobRoot, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobRoot))
+    fail(__func__, "could not create blob directory: " + error.message());
+  const ArtifactStore store(directory.path());
+  const BlobStore blobs(blobRoot);
+  const EvaluationRequest request = requestForDescriptor(
+      __func__, store, contextAwareExternalModelDescriptor.reference());
+  takeExpected(__func__, publishEvaluationRequest(request, store));
+  const CaseArtifactResolution resolution = caseResolution(__func__);
+  external_tool::ExternalToolPreparationContext preparationContext{
+      external_tool::defaultLocalToolConfig(), directory.path().str()};
+
+  invocationContextProbe = {};
+  EvaluationModelPreparation preparation = takeExpected(
+      __func__, prepareEvaluationModelInvocation(request, resolution, store,
+                                                 blobs, preparationContext));
+  auto *live = std::get_if<EvaluationModelPreparedInvocation>(&preparation);
+  require(__func__, live != nullptr,
+          "context-aware provider did not return a live invocation");
+  require(__func__,
+          invocationContextProbe.openCount == 1 &&
+              invocationContextProbe.activationCount == 1 &&
+              invocationContextProbe.prepareContextIdentity != 0,
+          "prepare did not open and activate exactly one context");
+  const std::uint64_t preparedIdentity =
+      invocationContextProbe.prepareContextIdentity;
+
+  (void)takeExpected(__func__, importEvaluationModelInvocation(
+                                   request, resolution, *live, store, blobs));
+  require(__func__,
+          invocationContextProbe.openCount == 1 &&
+              invocationContextProbe.activationCount == 2 &&
+              invocationContextProbe.importContextIdentity == preparedIdentity,
+          "live import did not reuse the prepare context");
+
+  (void)takeExpected(__func__, importEvaluationModelInvocation(
+                                   request, resolution,
+                                   live->externalInvocation(), store, blobs));
+  require(__func__,
+          invocationContextProbe.openCount == 2 &&
+              invocationContextProbe.activationCount == 3 &&
+              invocationContextProbe.importContextIdentity != preparedIdentity,
+          "raw recovery import did not use a fresh context");
+
+  EvaluationModelPreparedInvocation rebound =
+      takeExpected(__func__, bindPreparedEvaluationModelInvocation(
+                                 request, resolution,
+                                 live->externalInvocation(), store, blobs));
+  require(__func__,
+          invocationContextProbe.openCount == 3 &&
+              invocationContextProbe.activationCount == 3,
+          "binding did not open one inactive recovery context");
+  (void)takeExpected(__func__, importEvaluationModelInvocation(
+                                   request, resolution, rebound, store, blobs));
+  const std::uint64_t reboundIdentity =
+      invocationContextProbe.importContextIdentity;
+  (void)takeExpected(__func__, importEvaluationModelInvocation(
+                                   request, resolution, rebound, store, blobs));
+  require(__func__,
+          invocationContextProbe.openCount == 3 &&
+              invocationContextProbe.activationCount == 5 &&
+              reboundIdentity != 0 &&
+              invocationContextProbe.importContextIdentity == reboundIdentity,
+          "bound recovery imports did not reuse their context");
+}
+
 void providerDispatchUsesEvidenceOwner() {
   TemporaryDirectory directory(__func__);
   llvm::SmallString<128> blobRoot(directory.path());
@@ -1087,6 +1268,9 @@ int main() {
   if (llvm::Error error =
           registerEvaluationModelDescriptor(unsupportedExternalModelDescriptor))
     fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error = registerEvaluationModelDescriptor(
+          contextAwareExternalModelDescriptor))
+    fail("registration", llvm::toString(std::move(error)));
   if (llvm::Error error =
           registerEvaluationModelProvider(importingExternalProvider))
     fail("registration", llvm::toString(std::move(error)));
@@ -1096,8 +1280,12 @@ int main() {
   if (llvm::Error error =
           registerEvaluationModelProvider(unsupportedExternalProvider))
     fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerEvaluationModelProvider(contextAwareExternalProvider))
+    fail("registration", llvm::toString(std::move(error)));
   externalModelProviderFormAdmission();
   externalPreparationFinalizesTypedUnsupported();
+  externalInvocationContextSpansPrepareAndImport();
   providerAbsenceProducesTypedUnsupported();
   if (llvm::Error error = registerEvaluationModelProvider(modelProvider))
     fail("registration", llvm::toString(std::move(error)));

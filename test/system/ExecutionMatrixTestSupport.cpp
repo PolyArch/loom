@@ -1145,9 +1145,11 @@ runExternal(llvm::StringRef test, const evaluation::EvaluationRequest &request,
                               std::move(local), bundlePath.str()}));
   }();
   auto *prepared =
-      std::get_if<external_tool::PreparedExternalToolInvocation>(&preparation);
+      std::get_if<evaluation::EvaluationModelPreparedInvocation>(&preparation);
   require(test, prepared != nullptr,
           "available external provider returned terminal Evidence at prepare");
+  const external_tool::PreparedExternalToolInvocation &external =
+      prepared->externalInvocation();
   const external_tool::ExternalToolInvocationExecutionObservation execution =
       [&] {
         std::optional<ExecutionMatrixLifecycleTimer> timer;
@@ -1158,11 +1160,11 @@ runExternal(llvm::StringRef test, const evaluation::EvaluationRequest &request,
         return take(
             test,
             external_tool::executeExternalToolInvocationBundleObserved(
-                *prepared, {},
+                external, {},
                 external_tool::ExternalToolResultReusePolicy::RequireFresh));
       }();
-  requireFreshAttempt(test, *prepared, execution);
-  requireSuccessfulAttempt(test, *prepared, execution);
+  requireFreshAttempt(test, external, execution);
+  requireSuccessfulAttempt(test, external, execution);
   auto evidence = [&] {
     std::optional<ExecutionMatrixLifecycleTimer> timer;
     if (lifecycle)
