@@ -281,7 +281,20 @@ struct InvocationCompletion {
   InvocationCompletionStatus status;
   int exitCode;
   BlobDigest manifestDigest;
+  BlobDigest attemptToken;
   std::vector<BlobDigest> outputDigests;
+
+  friend bool operator==(const InvocationCompletion &lhs,
+                         const InvocationCompletion &rhs) {
+    return lhs.status == rhs.status && lhs.exitCode == rhs.exitCode &&
+           lhs.manifestDigest == rhs.manifestDigest &&
+           lhs.attemptToken == rhs.attemptToken &&
+           lhs.outputDigests == rhs.outputDigests;
+  }
+  friend bool operator!=(const InvocationCompletion &lhs,
+                         const InvocationCompletion &rhs) {
+    return !(lhs == rhs);
+  }
 };
 
 struct ExternalToolInvocationSemanticInput final {
@@ -360,9 +373,15 @@ private:
   importExternalToolInvocationAttempt(
       const PreparedExternalToolInvocation &prepared,
       const ExternalToolInvocationImportExpectation &expectation);
+  friend llvm::Expected<ExternalToolInvocationAttemptOutcome>
+  importExternalToolInvocationAttempt(
+      const PreparedExternalToolInvocation &prepared,
+      const ExternalToolInvocationImportExpectation &expectation,
+      const ExternalToolInvocationExecutionObservation &execution);
   friend llvm::Expected<std::string> readExternalToolInvocationDeclaredOutput(
       const ImportedExternalToolInvocationBundle &bundle,
       llvm::StringRef relativePath);
+  friend struct ImportedExternalToolInvocationBundleAccess;
 };
 
 /// The success-only import wrapper's typed projection of an incomplete
@@ -413,8 +432,9 @@ llvm::Error validateExternalToolInvocationExecutionObservation(
     const ExternalToolInvocationExecutionObservation &observation);
 
 /// Proves that the ExternalTool executor produced the complete observation for
-/// the currently published generation and that the completion/output snapshot
-/// has not changed since execution returned.
+/// the currently published generation and that its atomic completion record
+/// has not changed since execution returned. Declared output bytes are owned
+/// only by ImportedExternalToolInvocationBundle after strict import.
 llvm::Error validateExternalToolInvocationExecutionReceipt(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationExecutionObservation &observation);
@@ -445,13 +465,24 @@ llvm::Expected<InvocationCompletion> loadExternalToolInvocationCompletion(
     const PreparedExternalToolInvocation &prepared);
 
 /// Imports one canonical attempt against the exact prepared handle and full
-/// semantic expectation. The completion must bind the validated manifest
-/// before any outcome is exposed. Only Success verifies and snapshots every
-/// declared ordinary output as owned immutable bytes from the same directory.
+/// semantic expectation. A present completion must bind both the validated
+/// manifest and the current attempt token before any outcome is exposed. Only
+/// Success verifies and snapshots every declared ordinary output as owned
+/// immutable bytes from the same directory.
 llvm::Expected<ExternalToolInvocationAttemptOutcome>
 importExternalToolInvocationAttempt(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationImportExpectation &expectation);
+
+/// Receipt-aware strict import for a caller that just executed the bundle.
+/// The sealed execution generation, completion record, and expectation-bound
+/// declared outputs are checked as one import operation before an immutable
+/// output snapshot can escape.
+llvm::Expected<ExternalToolInvocationAttemptOutcome>
+importExternalToolInvocationAttempt(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationImportExpectation &expectation,
+    const ExternalToolInvocationExecutionObservation &execution);
 
 /// Success-only compatibility wrapper over importExternalToolInvocationAttempt.
 /// Incomplete and failed outcomes are projected back to import errors.
@@ -459,6 +490,13 @@ llvm::Expected<ImportedExternalToolInvocationBundle>
 importExternalToolInvocationBundle(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationImportExpectation &expectation);
+
+/// Success-only projection of the receipt-aware strict attempt importer.
+llvm::Expected<ImportedExternalToolInvocationBundle>
+importExternalToolInvocationBundle(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationImportExpectation &expectation,
+    const ExternalToolInvocationExecutionObservation &execution);
 
 /// Reads one declared output from the immutable import snapshot.
 llvm::Expected<std::string> readExternalToolInvocationDeclaredOutput(
