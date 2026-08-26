@@ -72,8 +72,8 @@ struct ResourceSnapshot final {
   std::chrono::steady_clock::time_point wall;
   std::optional<std::uint64_t> selfCpuNanoseconds;
   std::optional<std::uint64_t> childCpuNanoseconds;
-  std::optional<std::uint64_t> selfPeakRssKib;
-  std::optional<std::uint64_t> childPeakRssKib;
+  std::optional<std::uint64_t> selfProcessLifetimeHighWaterRssKib;
+  std::optional<std::uint64_t> maximumWaitedDescendantProcessRssKib;
 };
 
 ResourceSnapshot captureResources() {
@@ -82,7 +82,7 @@ ResourceSnapshot captureResources() {
   snapshot.selfCpuNanoseconds = processCpuNanoseconds();
   rusage selfUsage{};
   if (::getrusage(RUSAGE_SELF, &selfUsage) == 0 && selfUsage.ru_maxrss >= 0)
-    snapshot.selfPeakRssKib = selfUsage.ru_maxrss;
+    snapshot.selfProcessLifetimeHighWaterRssKib = selfUsage.ru_maxrss;
   rusage usage{};
   if (::getrusage(RUSAGE_CHILDREN, &usage) == 0) {
     auto user = timevalNanoseconds(usage.ru_utime);
@@ -91,7 +91,7 @@ ResourceSnapshot captureResources() {
         *system <= std::numeric_limits<std::uint64_t>::max() - *user)
       snapshot.childCpuNanoseconds = *user + *system;
     if (usage.ru_maxrss >= 0)
-      snapshot.childPeakRssKib = usage.ru_maxrss;
+      snapshot.maximumWaitedDescendantProcessRssKib = usage.ru_maxrss;
   }
   return snapshot;
 }
@@ -316,7 +316,7 @@ llvm::StringRef systemRtlCommandRole(std::size_t commandOrdinal) {
 llvm::Error emitExecutionMatrixRunSummary(
     const ExecutionMatrixInvocation &invocation,
     std::uint64_t deterministicWork,
-    std::uint64_t processLifetimeChildPeakRssKib,
+    std::uint64_t maximumWaitedDescendantProcessRssKib,
     const runtime::Gem5SystemAttemptProfile *profile,
     llvm::ArrayRef<runtime::Gem5SpatialInvocationProjection>
         spatialInvocations) {
@@ -325,11 +325,11 @@ llvm::Error emitExecutionMatrixRunSummary(
         llvm::inconvertibleErrorCode(),
         "ordinary execution has diagnostic invocation projections");
   llvm::outs() << "execution-matrix"
-               << " schema=loom.execution_matrix_summary.2";
+               << " schema=loom.execution_matrix_summary.3";
   emitInvocationKey(llvm::outs(), invocation);
   llvm::outs() << " deterministic_work=" << deterministicWork
-               << " process_lifetime_child_peak_rss_kib="
-               << processLifetimeChildPeakRssKib;
+               << " maximum_waited_descendant_process_rss_kib="
+               << maximumWaitedDescendantProcessRssKib;
   if (profile) {
     std::uint64_t acceleratorReferenceCycles = 0;
     std::uint64_t unavailableAcceleratorCycleCount = 0;
@@ -392,8 +392,8 @@ public:
     std::uint64_t wallNanoseconds = 0;
     std::optional<std::uint64_t> selfCpuNanoseconds;
     std::optional<std::uint64_t> childCpuNanoseconds;
-    std::optional<std::uint64_t> selfPeakRssKib;
-    std::optional<std::uint64_t> childPeakRssKib;
+    std::optional<std::uint64_t> selfProcessLifetimeHighWaterRssKib;
+    std::optional<std::uint64_t> maximumWaitedDescendantProcessRssKib;
   };
 
   std::uint64_t reserveSequence() { return nextSequence_++; }
@@ -408,7 +408,8 @@ public:
          static_cast<std::uint64_t>(std::max<std::int64_t>(0, wall.count())),
          difference(end.selfCpuNanoseconds, begin.selfCpuNanoseconds),
          difference(end.childCpuNanoseconds, begin.childCpuNanoseconds),
-         end.selfPeakRssKib, end.childPeakRssKib});
+         end.selfProcessLifetimeHighWaterRssKib,
+         end.maximumWaitedDescendantProcessRssKib});
   }
 
   void emit(const ExecutionMatrixInvocation &invocation) const {
@@ -418,7 +419,7 @@ public:
     });
     for (const Record &record : ordered) {
       llvm::outs() << "execution-matrix-lifecycle"
-                   << " schema=loom.execution_matrix_lifecycle.2";
+                   << " schema=loom.execution_matrix_lifecycle.3";
       emitInvocationKey(llvm::outs(), invocation);
       llvm::outs() << " interval_kind=inclusive parent="
                    << lifecycleParent(record.operation)
@@ -427,10 +428,10 @@ public:
       printOptional(llvm::outs(), record.selfCpuNanoseconds);
       llvm::outs() << " child_cpu_ns=";
       printOptional(llvm::outs(), record.childCpuNanoseconds);
-      llvm::outs() << " self_process_lifetime_peak_rss_kib=";
-      printOptional(llvm::outs(), record.selfPeakRssKib);
-      llvm::outs() << " child_process_lifetime_peak_rss_kib=";
-      printOptional(llvm::outs(), record.childPeakRssKib);
+      llvm::outs() << " self_process_lifetime_high_water_rss_kib_snapshot=";
+      printOptional(llvm::outs(), record.selfProcessLifetimeHighWaterRssKib);
+      llvm::outs() << " maximum_waited_descendant_process_rss_kib_snapshot=";
+      printOptional(llvm::outs(), record.maximumWaitedDescendantProcessRssKib);
       llvm::outs() << '\n';
     }
   }

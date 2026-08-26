@@ -21,7 +21,7 @@ namespace loom::system_test {
 llvm::Error emitExecutionMatrixRunSummary(
     const ExecutionMatrixInvocation &invocation,
     std::uint64_t deterministicWork,
-    std::uint64_t processLifetimeChildPeakRssKib,
+    std::uint64_t maximumWaitedDescendantProcessRssKib,
     const runtime::Gem5SystemAttemptProfile *profile,
     llvm::ArrayRef<runtime::Gem5SpatialInvocationProjection>
         spatialInvocations);
