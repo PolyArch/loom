@@ -171,6 +171,10 @@ class PairedMeasurementParsingTest(unittest.TestCase):
         self.assertEqual(system.gem5_ticks, 123)
         self.assertEqual(system.timing.event_count, 49_999)
         self.assertEqual(system.config_fingerprint, "1" * 64)
+        self.assertEqual(spatial.timing.engine_cpu_seconds, 0.09)
+        self.assertEqual(spatial.timing.host_cpu_seconds, 0.0)
+        self.assertEqual(system.timing.engine_cpu_seconds, 0.0)
+        self.assertEqual(system.timing.host_cpu_seconds, 0.09)
 
     def test_parser_rejects_noncanonical_or_wrongly_owned_rows(self) -> None:
         row = _measurement_row("paired-system-cgra")

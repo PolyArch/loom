@@ -211,6 +211,7 @@ class ExecutionMatrixMeasurement:
     config_fingerprint: str
     gem5_ticks: int | None
     setup_wall_seconds: float
+    active_process_cpu_seconds: float
     measurement_source: str
     rss_scope: str
     timing: ActiveExecutionTiming
@@ -465,12 +466,16 @@ def _parse_measurement_row(row: str, expected_cell: str) -> ExecutionMatrixMeasu
         if fields["gem5_ticks"] != "not_applicable":
             raise ValueError("Spatial measurement contains gem5 ticks")
         gem5_ticks = None
+        engine_cpu_seconds = active_cpu_ns / 1_000_000_000.0
+        host_cpu_seconds = 0.0
     else:
         expected_source = "fresh_system_diagnostic"
         expected_rss_scope = "child_process_lifetime"
         gem5_ticks = _parse_u64(fields["gem5_ticks"])
         if gem5_ticks == 0:
             raise ValueError("System measurement contains no gem5 progress")
+        engine_cpu_seconds = 0.0
+        host_cpu_seconds = active_cpu_ns / 1_000_000_000.0
     if (
         fields["measurement_source"] != expected_source
         or fields["rss_scope"] != expected_rss_scope
@@ -483,12 +488,14 @@ def _parse_measurement_row(row: str, expected_cell: str) -> ExecutionMatrixMeasu
         config_fingerprint=config_fingerprint,
         gem5_ticks=gem5_ticks,
         setup_wall_seconds=setup_wall_ns / 1_000_000_000.0,
+        active_process_cpu_seconds=active_cpu_ns / 1_000_000_000.0,
         measurement_source=expected_source,
         rss_scope=expected_rss_scope,
         timing=ActiveExecutionTiming(
             active_wall_seconds=active_wall_ns / 1_000_000_000.0,
             reference_cycles=cycles,
-            engine_cpu_seconds=active_cpu_ns / 1_000_000_000.0,
+            engine_cpu_seconds=engine_cpu_seconds,
+            host_cpu_seconds=host_cpu_seconds,
             event_count=frames,
             peak_resident_bytes=peak_rss_bytes,
         ),
@@ -729,7 +736,7 @@ def _measurement_json(
         "accelerator_reference_cycles": measurement.timing.reference_cycles,
         "cgra_event_frames": measurement.timing.event_count,
         "active_wall_seconds": measurement.timing.active_wall_seconds,
-        "active_process_cpu_seconds": measurement.timing.engine_cpu_seconds,
+        "active_process_cpu_seconds": measurement.active_process_cpu_seconds,
         "gem5_ticks": measurement.gem5_ticks,
         "setup_wall_seconds": measurement.setup_wall_seconds,
         "process_peak_rss_bytes": measurement.timing.peak_resident_bytes,

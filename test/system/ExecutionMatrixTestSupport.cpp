@@ -1632,8 +1632,10 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixCell cell,
     recordPairedMeasurement(
         cell, *pairedFingerprintsValue,
         {*diagnostics.spatialInvocations.front().acceleratorReferenceCycles,
-         engine.eventFrameCount, engine.activeWallNanoseconds,
-         engine.activeProcessCpuNanoseconds, *completed.diagnosticGem5Ticks,
+         engine.eventFrameCount,
+         diagnostics.attemptProfile.simulationWallNanoseconds,
+         diagnostics.attemptProfile.gem5SimulationProcessCpuNanoseconds,
+         *completed.diagnosticGem5Ticks,
          durationNanoseconds(setupEnd - setupStart),
          peakResidentBytes(test, after), "fresh_system_diagnostic",
          "child_process_lifetime"});
