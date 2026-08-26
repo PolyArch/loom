@@ -1,7 +1,6 @@
 #include "TechMappingCandidateTestSupport.h"
-#include "../TestAllocationProbe.h"
+#include "HandshakeProjectionTestSupport.h"
 
-#include "ADG/FuLibrary.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -419,78 +418,6 @@ loom::ResolvedConfig loom::test::buildSpatialPnrTestResolvedConfig() {
   return config;
 }
 
-namespace {
-
-loom::adg::FinalizedFabricDesign
-buildTemporalComputeFabric(const loom::ArtifactStore &store,
-                           bool routeThroughPackedSwitch,
-                           std::uint64_t residentRows = 2) {
-  using namespace loom::adg;
-
-  DesignBuilder design(store);
-  const PortType bits128 = take(PortType::bits(128));
-  const PortType tagged128 = take(PortType::taggedBits(128, 4));
-  const std::vector<PortType> moduleInputs(10, tagged128);
-  const std::vector<PortType> moduleOutputs(8, tagged128);
-  auto spatial = take(design.createSpatialCore(
-      routeThroughPackedSwitch ? "switch-row-packing" : "capacity-envelope",
-      moduleInputs, moduleOutputs));
-
-  std::vector<SpatialValue> outputs;
-  outputs.reserve(moduleOutputs.size());
-  for (unsigned peOrdinal = 0; peOrdinal != 2; ++peOrdinal) {
-    std::vector<SpatialValue> peInputs;
-    peInputs.reserve(5);
-    for (unsigned input = 0; input != 5; ++input)
-      peInputs.push_back(take(spatial.input(peOrdinal * 5 + input)));
-    if (routeThroughPackedSwitch) {
-      const std::vector<PortType> switchTypes(5, tagged128);
-      const std::vector<std::uint32_t> switchInputsByPriority{0, 1, 2, 3, 4};
-      const std::vector<std::vector<std::uint32_t>> sourcesByOutput(
-          5, switchInputsByPriority);
-      auto switched = take(spatial.addSwitch(
-          peInputs,
-          SwitchSpec::temporal(
-              switchTypes, switchTypes, sourcesByOutput, residentRows,
-              ::fabric::TemporalSwitchFixedPriority{switchInputsByPriority})));
-      peInputs.assign(switched.values().begin(), switched.values().end());
-    }
-    const ::fabric::OperandBufferMode mode =
-        peOrdinal == 0 ? ::fabric::OperandBufferMode::AllFuShare
-                       : ::fabric::OperandBufferMode::PerInstruction;
-    auto pe = take(spatial.addPe(
-        peInputs, PeSpec::temporal(std::vector<PortType>(5, bits128),
-                                   std::vector<PortType>(4, tagged128),
-                                   TemporalPeParameters{
-                                       2, FuConfigurationMode::PerInstruction,
-                                       mode, 2, std::nullopt})));
-    std::vector<PeValue> fuInputs;
-    fuInputs.reserve(5);
-    for (unsigned input = 0; input != 5; ++input)
-      fuInputs.push_back(take(pe.input(input)));
-    requireSuccess(
-        addTokenControlFu(pe, fuInputs, TokenControlFuParameters{128, 64}));
-    requireSuccess(pe.close());
-    for (unsigned output = 0; output != 4; ++output)
-      outputs.push_back(take(pe.output(output)));
-  }
-  requireSuccess(spatial.close(outputs));
-  return take(std::move(design).finalize());
-}
-
-} // namespace
-
-loom::adg::FinalizedFabricDesign
-loom::test::buildTemporalCapacityFabric(const ArtifactStore &store) {
-  return buildTemporalComputeFabric(store, false);
-}
-
-loom::adg::FinalizedFabricDesign
-loom::test::buildTemporalSwitchPackingFabric(const ArtifactStore &store,
-                                             std::uint64_t residentRows) {
-  return buildTemporalComputeFabric(store, true, residentRows);
-}
-
 void loom::test::exerciseHandshakeCandidateRefcounts(
     const pnr::FrozenSpatialPnrProblemHandle &problem) {
   const auto &handshake = problem->handshake();
@@ -515,29 +442,7 @@ void loom::test::exerciseHandshakeCandidateRefcounts(
   if (!observedFragment)
     fail("compute placement has no observable handshake contribution");
 
-  pnr::HandshakeProjectionScratch projectionScratch;
-  requireSuccess(projectionScratch.prepare(handshake));
-  std::vector<pnr::PnrIndex> traversalUses(
-      handshake.traversalFragmentOffsets().size() - 1, 0);
-  const bool coldProjection = take(
-      pnr::independentlyVerifyHandshakeProjectionAcyclic(
-          handshake, fragments, traversalUses));
-  const bool activeProjection = take(
-      projectionScratch.projectAcyclic(handshake, fragments, traversalUses));
-  if (activeProjection != coldProjection)
-    fail("active-only handshake projection disagrees with its cold oracle");
-  const std::size_t warmedProjectionBytes =
-      projectionScratch.retainedStorageBytes();
-  const bool repeatedProjection = take(
-      projectionScratch.projectAcyclic(handshake, fragments, traversalUses));
-  const auto projectionStatistics = projectionScratch.statistics();
-  if (repeatedProjection != coldProjection ||
-      projectionStatistics.projectionCount != 2 ||
-      projectionStatistics.peakActiveNodeCount == 0 ||
-      projectionStatistics.peakActiveArcCount == 0 ||
-      projectionScratch.retainedStorageBytes() != warmedProjectionBytes)
-    fail("warmed active-only handshake projection changed its exact result or "
-         "retained storage");
+  exerciseDenseHandshakeProjection(problem);
 
   const std::size_t baseContributionCount =
       candidate->activeArcContributionCount();
