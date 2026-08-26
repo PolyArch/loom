@@ -113,6 +113,11 @@ struct PendingChannelBuffer final {
   std::uint64_t address = 0;
 };
 
+struct CachedGem5SystemInputs final {
+  sim::ImportedSystemSimulationInputs inputs;
+  deployment::DeploymentPackageClosure deploymentClosure;
+};
+
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
@@ -249,20 +254,16 @@ struct MaterializedDeploymentPackage final {
   std::vector<BlobDigest> blobs;
 };
 
-llvm::Expected<MaterializedDeploymentPackage>
-materializeDeploymentPackage(const deployment::FinalizedDeployment &deployment,
-                             const ArtifactStore &artifacts,
-                             const BlobStore &blobs) {
-  auto closure =
-      deployment::deriveDeploymentPackageClosure(deployment, artifacts, blobs);
-  if (!closure)
-    return closure.takeError();
+llvm::Expected<MaterializedDeploymentPackage> materializeDeploymentPackage(
+    const deployment::FinalizedDeployment &deployment,
+    const deployment::DeploymentPackageClosure &closure,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
   std::vector<MaterializedBundleFile> files;
-  files.reserve(closure->artifacts().size() + closure->blobs().size() + 1);
+  files.reserve(closure.artifacts().size() + closure.blobs().size() + 1);
   files.push_back({"inputs/package/root",
                    formatArtifactIdentityHex(deployment.reference().artifact),
                    deployment.reference(), false});
-  for (const ArtifactRootReference &reference : closure->artifacts()) {
+  for (const ArtifactRootReference &reference : closure.artifacts()) {
     auto contents = artifacts.getStoredObject(reference);
     if (!contents)
       return contents.takeError();
@@ -270,7 +271,7 @@ materializeDeploymentPackage(const deployment::FinalizedDeployment &deployment,
                          formatArtifactIdentityHex(reference.artifact),
                      bytesToString(*contents), reference, false});
   }
-  for (const BlobDigest &digest : closure->blobs()) {
+  for (const BlobDigest &digest : closure.blobs()) {
     auto contents = blobs.get(digest);
     if (!contents)
       return contents.takeError();
@@ -279,10 +280,9 @@ materializeDeploymentPackage(const deployment::FinalizedDeployment &deployment,
   }
   return MaterializedDeploymentPackage{
       std::move(files),
-      std::vector<ArtifactRootReference>(closure->artifacts().begin(),
-                                         closure->artifacts().end()),
-      std::vector<BlobDigest>(closure->blobs().begin(),
-                              closure->blobs().end())};
+      std::vector<ArtifactRootReference>(closure.artifacts().begin(),
+                                         closure.artifacts().end()),
+      std::vector<BlobDigest>(closure.blobs().begin(), closure.blobs().end())};
 }
 
 llvm::Error appendStoredObject(std::vector<MaterializedBundleFile> &files,
@@ -496,17 +496,69 @@ findServicePlan(const mapping::SystemServiceRealizationView &realization,
   return found == realization.plans.end() ? nullptr : &*found;
 }
 
+void addRevalidatedBytes(std::uint64_t &total, std::uint64_t bytes) {
+  total = bytes > std::numeric_limits<std::uint64_t>::max() - total
+              ? std::numeric_limits<std::uint64_t>::max()
+              : total + bytes;
+}
+
+llvm::Expected<std::uint64_t>
+revalidateSystemInputsClosure(const CachedGem5SystemInputs &cached,
+                              const ArtifactStore &artifacts,
+                              const BlobStore &blobs) {
+  std::uint64_t bytes = 0;
+  for (const ArtifactRootReference &reference :
+       cached.deploymentClosure.artifacts()) {
+    auto object = artifacts.getStoredObject(reference);
+    if (!object)
+      return object.takeError();
+    addRevalidatedBytes(bytes, object->size());
+  }
+  for (const BlobDigest &digest : cached.deploymentClosure.blobs()) {
+    auto size = blobs.verify(digest);
+    if (!size)
+      return size.takeError();
+    addRevalidatedBytes(bytes, *size);
+  }
+  return bytes;
+}
+
+llvm::Expected<std::shared_ptr<const CachedGem5SystemInputs>>
+importCachedGem5SystemInputs(const ArtifactRootReference &workload,
+                             const ArtifactRootReference &runtimeInput,
+                             const ArtifactStore &artifacts,
+                             const BlobStore &blobs) {
+  const std::array<ArtifactRootReference, 2> references{workload, runtimeInput};
+  return evaluation::importCachedArtifact<CachedGem5SystemInputs>(
+      artifacts, &blobs, references,
+      [&] {
+        auto inputs = sim::importSystemSimulationInputs(workload, runtimeInput,
+                                                        artifacts, blobs);
+        if (!inputs)
+          return llvm::Expected<CachedGem5SystemInputs>(inputs.takeError());
+        auto closure = deployment::deriveDeploymentPackageClosure(
+            inputs->deployment, artifacts, blobs);
+        if (!closure)
+          return llvm::Expected<CachedGem5SystemInputs>(closure.takeError());
+        return llvm::Expected<CachedGem5SystemInputs>(
+            CachedGem5SystemInputs{std::move(*inputs), std::move(*closure)});
+      },
+      [&](const CachedGem5SystemInputs &cached) {
+        return revalidateSystemInputsClosure(cached, artifacts, blobs);
+      });
+}
+
 llvm::Expected<std::shared_ptr<const sim::ImportedSystemSimulationInputs>>
 importCachedSystemInputs(const ArtifactRootReference &workload,
                          const ArtifactRootReference &runtimeInput,
                          const ArtifactStore &artifacts,
                          const BlobStore &blobs) {
-  const std::array<ArtifactRootReference, 2> references{workload, runtimeInput};
-  return evaluation::importCachedArtifact<sim::ImportedSystemSimulationInputs>(
-      artifacts, &blobs, references, [&] {
-        return sim::importSystemSimulationInputs(workload, runtimeInput,
-                                                 artifacts, blobs);
-      });
+  auto cached =
+      importCachedGem5SystemInputs(workload, runtimeInput, artifacts, blobs);
+  if (!cached)
+    return cached.takeError();
+  return std::shared_ptr<const sim::ImportedSystemSimulationInputs>(
+      *cached, &(*cached)->inputs);
 }
 
 llvm::Expected<Gem5SystemFactsOrUnsupported>
@@ -525,12 +577,12 @@ deriveFactsUncached(const EvaluationRequest &request,
   auto systemInputs = [&] {
     Gem5SystemFactsOperationTimer timer(
         statistics ? &statistics->systemInputsAndDeploymentImport : nullptr);
-    return importCachedSystemInputs(*request.workload(),
-                                    *request.runtimeInput(), artifacts, blobs);
+    return importCachedGem5SystemInputs(
+        *request.workload(), *request.runtimeInput(), artifacts, blobs);
   }();
   if (!systemInputs)
     return systemInputs.takeError();
-  const sim::ImportedSystemSimulationInputs &inputs = **systemInputs;
+  const sim::ImportedSystemSimulationInputs &inputs = (*systemInputs)->inputs;
   const Gem5SystemEngine engine = selectedEngine(request);
   if (inputs.deployment.reference() != subjects->first)
     return invalid("System workload names a foreign Deployment");
@@ -1087,8 +1139,8 @@ deriveFactsUncached(const EvaluationRequest &request,
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
-  auto package =
-      materializeDeploymentPackage(inputs.deployment, artifacts, blobs);
+  auto package = materializeDeploymentPackage(
+      inputs.deployment, (*systemInputs)->deploymentClosure, artifacts, blobs);
   if (!package)
     return package.takeError();
   std::vector<MaterializedBundleFile> semanticInputs =
@@ -1175,8 +1227,8 @@ deriveFactsUncached(const EvaluationRequest &request,
                             inputs.deployment.reference(), false});
 
   std::optional<Gem5SystemFactsOperationTimer> runtimeImageTimer;
-  runtimeImageTimer.emplace(statistics ? &statistics->runtimeImageDerivation
-                                       : nullptr);
+  runtimeImageTimer.emplace(
+      statistics ? &statistics->guestRuntimeImageProjection : nullptr);
   std::uint64_t cursor = runtimeArenaBegin;
   std::vector<Gem5RuntimeImage> runtimeImages;
   auto reserveRuntimeRange =

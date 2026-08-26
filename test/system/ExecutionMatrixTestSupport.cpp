@@ -1484,9 +1484,15 @@ void recordPairedMeasurement(ExecutionMatrixCell cell,
               measurement.eventFrames != 0 &&
               measurement.activeWallNanoseconds != 0,
           "paired measurement contains no completed active work");
+  const ExecutionMatrixInvocation invocation{
+      cell, cell == ExecutionMatrixCell::PairedSystemCgra
+                ? ExecutionMatrixAttemptKind::Diagnostic
+                : ExecutionMatrixAttemptKind::Ordinary};
   llvm::outs() << "paired-simulation"
-               << " schema=loom.paired_simulation_measurement.1"
+               << " schema=loom.paired_simulation_measurement.2"
                << " cell=" << executionMatrixCellName(cell)
+               << " attempt=" << executionMatrixAttemptName(invocation.attempt)
+               << " invocation=" << executionMatrixInvocationName(invocation)
                << " work_fingerprint=" << fingerprints.work
                << " config_fingerprint=" << fingerprints.config
                << " accelerator_reference_cycles="
@@ -1507,64 +1513,16 @@ void recordPairedMeasurement(ExecutionMatrixCell cell,
 
 void recordRunStatistics(ExecutionMatrixInvocation matrixInvocation,
                          const CompletedRun &completed, const rusage &after) {
-  llvm::outs() << "execution-matrix cell="
-               << executionMatrixCellName(matrixInvocation.cell) << " attempt="
-               << executionMatrixAttemptName(matrixInvocation.attempt)
-               << " deterministic_work="
-               << deterministicWork(completed.execution)
-               << " process_lifetime_child_peak_rss_kib=" << after.ru_maxrss;
-  if (completed.gem5Diagnostics) {
-    const runtime::Gem5SystemAttemptProfile &profile =
-        completed.gem5Diagnostics->attemptProfile;
-    std::uint64_t acceleratorReferenceCycles = 0;
-    std::uint64_t unavailableAcceleratorCycleCount = 0;
-    for (const runtime::Gem5SpatialInvocationProjection &invocation :
-         completed.gem5Diagnostics->spatialInvocations) {
-      if (!invocation.acceleratorReferenceCycles) {
-        ++unavailableAcceleratorCycleCount;
-        continue;
-      }
-      require(executionMatrixCellName(matrixInvocation.cell),
-              *invocation.acceleratorReferenceCycles <=
-                  std::numeric_limits<std::uint64_t>::max() -
-                      acceleratorReferenceCycles,
-              "accelerator cycle report overflows its domain");
-      acceleratorReferenceCycles += *invocation.acceleratorReferenceCycles;
-    }
-    llvm::outs() << " gem5_configuration_wall_us="
-                 << profile.configurationWallNanoseconds / 1000
-                 << " engine_startup_wall_us="
-                 << profile.engineStartupWallNanoseconds / 1000
-                 << " gem5_simulation_wall_us="
-                 << profile.simulationWallNanoseconds / 1000
-                 << " gem5_simulation_cpu_us="
-                 << profile.gem5SimulationProcessCpuNanoseconds / 1000
-                 << " observation_wall_us="
-                 << profile.observationWallNanoseconds / 1000
-                 << " observation_cpu_us="
-                 << profile.observationProcessCpuNanoseconds / 1000
-                 << " bridge_callback_cpu_us="
-                 << profile.bridgeCallbackCpuNanoseconds / 1000
-                 << " bridge_wait_us="
-                 << profile.bridgeEngineWaitNanoseconds / 1000
-                 << " bridge_messages=" << profile.bridgeMessageCount
-                 << " accelerator_invocations="
-                 << profile.acceleratorInvocationCount
-                 << " accelerator_cycles=" << acceleratorReferenceCycles
-                 << " accelerator_cycle_unavailable_count="
-                 << unavailableAcceleratorCycleCount;
-    if (profile.engineProcessCpuNanoseconds)
-      llvm::outs() << " engine_process_cpu_us="
-                   << *profile.engineProcessCpuNanoseconds / 1000;
-    if (profile.cgraEngine)
-      llvm::outs() << " cgra_engine_active_wall_us="
-                   << profile.cgraEngine->activeWallNanoseconds / 1000
-                   << " cgra_engine_active_cpu_us="
-                   << profile.cgraEngine->activeProcessCpuNanoseconds / 1000
-                   << " cgra_event_frames="
-                   << profile.cgraEngine->eventFrameCount;
-  }
-  llvm::outs() << '\n';
+  const CompletedRun::DiagnosticSummary *diagnostics =
+      completed.gem5Diagnostics ? &*completed.gem5Diagnostics : nullptr;
+  requireSuccess(
+      executionMatrixCellName(matrixInvocation.cell),
+      emitExecutionMatrixRunSummary(
+          matrixInvocation, deterministicWork(completed.execution),
+          after.ru_maxrss, diagnostics ? &diagnostics->attemptProfile : nullptr,
+          diagnostics
+              ? llvm::ArrayRef(diagnostics->spatialInvocations)
+              : llvm::ArrayRef<runtime::Gem5SpatialInvocationProjection>{}));
 }
 
 struct ReplaySignature final {
@@ -1691,24 +1649,18 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixInvocation invocation,
     std::optional<sim::SystemFunctionalObservations> systemFunctional;
     if (const auto *system = completed.execution.system())
       systemFunctional = system->functionalObservations;
-    if (!isSpatialCell(cell)) {
-      const ExecutionMatrixImportSummary imports = importSessions.summary();
-      require(test,
-              imports.gem5FactsRequests >= 2 && imports.gem5FactsMisses == 1 &&
-                  imports.gem5FactsUniqueConstructions == 1 &&
-                  imports.gem5FactsHits + imports.gem5FactsMisses ==
-                      imports.gem5FactsRequests,
+    if (!isSpatialCell(cell))
+      require(test, importSessions.reusedOneExactGem5FactsClosure(),
               "System execution did not reuse one exact Gem5 facts closure");
-    }
     if (emitStatistics)
-      importSessions.emitStatistics(executionMatrixInvocationName(invocation));
+      importSessions.emitStatistics(invocation);
     cleanupTimer.emplace(lifecycle, ExecutionMatrixLifecycleOperation::Cleanup);
     return {std::move(roots), deterministicWork(completed.execution),
             std::move(systemFunctional)};
   }();
   cleanupTimer.reset();
   if (emitStatistics)
-    lifecycle.emit(executionMatrixInvocationName(invocation));
+    lifecycle.emit(invocation);
   return signature;
 }
 
@@ -1826,10 +1778,12 @@ void verifyDeterministicSystemReplay(llvm::StringRef gem5ReadinessPath) {
   std::array<std::future<ReplaySignature>, replayCount> pending;
   for (std::size_t replay = 0; replay < replayCount; ++replay) {
     pending[replay] = std::async(std::launch::async, [=] {
+      const ExecutionMatrixAttemptKind attempt =
+          replay + 1 == replayCount ? ExecutionMatrixAttemptKind::Diagnostic
+                                    : ExecutionMatrixAttemptKind::Ordinary;
       return runExecutionMatrixCellOnce(
-          {ExecutionMatrixCell::SystemCgra,
-           ExecutionMatrixAttemptKind::Ordinary},
-          gem5ReadinessPath, test.str() + "-" + std::to_string(replay), false);
+          {ExecutionMatrixCell::SystemCgra, attempt}, gem5ReadinessPath,
+          test.str() + "-" + std::to_string(replay), false);
     });
   }
   std::optional<ReplaySignature> expected;
@@ -1848,7 +1802,8 @@ void verifyDeterministicSystemReplay(llvm::StringRef gem5ReadinessPath) {
                     *observed.systemFunctional, *expected->systemFunctional),
             "System functional observations changed across clean replay");
   }
-  llvm::outs() << "execution-matrix deterministic_replays=" << replayCount
+  llvm::outs() << "execution-matrix ordinary_replays=" << replayCount - 1
+               << " diagnostic_replays=1"
                << " roots=" << expected->roots.size()
                << " deterministic_work=" << expected->work << '\n';
 }

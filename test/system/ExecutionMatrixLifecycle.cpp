@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Deployment/DeploymentDiagnostics.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Evaluation/ArtifactImportCache.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -141,6 +142,37 @@ void printOptional(llvm::raw_ostream &output,
     output << "unavailable";
 }
 
+void emitInvocationKey(llvm::raw_ostream &output,
+                       const ExecutionMatrixInvocation &invocation) {
+  output << " cell=" << executionMatrixCellName(invocation.cell)
+         << " attempt=" << executionMatrixAttemptName(invocation.attempt)
+         << " invocation=" << executionMatrixInvocationName(invocation);
+}
+
+llvm::StringRef lifecycleParent(ExecutionMatrixLifecycleOperation operation) {
+  switch (operation) {
+  case ExecutionMatrixLifecycleOperation::Gem5Binding:
+  case ExecutionMatrixLifecycleOperation::RequestConstruction:
+  case ExecutionMatrixLifecycleOperation::OrdinaryPrepare:
+  case ExecutionMatrixLifecycleOperation::OrdinaryExternalExecution:
+  case ExecutionMatrixLifecycleOperation::OrdinaryImportAndEvidenceAssembly:
+  case ExecutionMatrixLifecycleOperation::OrdinaryEvidencePublication:
+  case ExecutionMatrixLifecycleOperation::OrdinaryExecutionImport:
+  case ExecutionMatrixLifecycleOperation::DiagnosticPrepare:
+  case ExecutionMatrixLifecycleOperation::DiagnosticExternalExecution:
+  case ExecutionMatrixLifecycleOperation::DiagnosticImportAndEvidenceAssembly:
+  case ExecutionMatrixLifecycleOperation::DiagnosticEvidencePublication:
+  case ExecutionMatrixLifecycleOperation::DiagnosticExecutionImport:
+    return "host_lifecycle";
+  case ExecutionMatrixLifecycleOperation::Setup:
+  case ExecutionMatrixLifecycleOperation::HostLifecycle:
+  case ExecutionMatrixLifecycleOperation::OracleVerification:
+  case ExecutionMatrixLifecycleOperation::Cleanup:
+    return "none";
+  }
+  llvm_unreachable("unknown execution-matrix lifecycle operation");
+}
+
 struct CacheRow final {
   llvm::StringRef cache;
   llvm::StringRef hitValidation;
@@ -160,10 +192,12 @@ struct CacheRow final {
   std::uint64_t entryCount = 0;
 };
 
-void emitCacheRow(llvm::StringRef cell, const CacheRow &row) {
+void emitCacheRow(const ExecutionMatrixInvocation &invocation,
+                  const CacheRow &row) {
   llvm::outs() << "execution-matrix-cache"
-               << " schema=loom.execution_matrix_cache.1"
-               << " cell=" << cell << " cache=" << row.cache
+               << " schema=loom.execution_matrix_cache.2";
+  emitInvocationKey(llvm::outs(), invocation);
+  llvm::outs() << " cache=" << row.cache
                << " hit_validation=" << row.hitValidation
                << " requests=" << row.requests << " hits=" << row.hits
                << " misses=" << row.misses
@@ -181,11 +215,14 @@ void emitCacheRow(llvm::StringRef cell, const CacheRow &row) {
 }
 
 void emitFactsOperationRow(
-    llvm::StringRef cell, llvm::StringRef operation,
+    const ExecutionMatrixInvocation &invocation, llvm::StringRef operation,
     const runtime::Gem5SystemFactsOperationStatistics &statistics) {
   llvm::outs() << "execution-matrix-facts-operation"
-               << " schema=loom.execution_matrix_facts_operation.1"
-               << " cell=" << cell << " operation=" << operation
+               << " schema=loom.execution_matrix_facts_operation.2";
+  emitInvocationKey(llvm::outs(), invocation);
+  llvm::outs() << " interval_kind=inclusive parent="
+               << (operation == "derive_facts" ? "none" : "derive_facts")
+               << " operation=" << operation
                << " invocations=" << statistics.invocations
                << " wall_ns=" << statistics.wallNanoseconds << " self_cpu_ns=";
   printOptional(
@@ -202,7 +239,138 @@ void emitFactsOperationRow(
   llvm::outs() << '\n';
 }
 
+struct DeploymentOperationRow final {
+  deployment::DeploymentConstructionMode mode;
+  deployment::DeploymentConstructionOperation operation;
+  std::uint64_t invocations = 0;
+  std::uint64_t wallNanoseconds = 0;
+  std::optional<std::uint64_t> selfCpuNanoseconds = 0;
+  std::optional<std::uint64_t> childCpuNanoseconds = 0;
+};
+
+void addSaturated(std::uint64_t &destination, std::uint64_t value) {
+  destination = value > std::numeric_limits<std::uint64_t>::max() - destination
+                    ? std::numeric_limits<std::uint64_t>::max()
+                    : destination + value;
+}
+
+void emitDeploymentOperationRows(
+    const ExecutionMatrixInvocation &invocation,
+    llvm::ArrayRef<deployment::DeploymentConstructionOperationStatistics>
+        observations) {
+  std::vector<DeploymentOperationRow> rows;
+  for (const auto &observation : observations) {
+    auto row =
+        llvm::find_if(rows, [&](const DeploymentOperationRow &candidate) {
+          return candidate.mode == observation.mode &&
+                 candidate.operation == observation.operation;
+        });
+    if (row == rows.end()) {
+      rows.push_back({observation.mode, observation.operation});
+      row = std::prev(rows.end());
+    }
+    addSaturated(row->invocations, 1);
+    addSaturated(row->wallNanoseconds, observation.durationNanoseconds);
+    if (row->selfCpuNanoseconds && observation.selfCpuNanoseconds)
+      addSaturated(*row->selfCpuNanoseconds, *observation.selfCpuNanoseconds);
+    else
+      row->selfCpuNanoseconds = std::nullopt;
+    if (row->childCpuNanoseconds && observation.childCpuNanoseconds)
+      addSaturated(*row->childCpuNanoseconds, *observation.childCpuNanoseconds);
+    else
+      row->childCpuNanoseconds = std::nullopt;
+  }
+  for (const DeploymentOperationRow &row : rows) {
+    llvm::outs() << "execution-matrix-deployment-operation"
+                 << " schema=loom.execution_matrix_deployment_operation.2";
+    emitInvocationKey(llvm::outs(), invocation);
+    llvm::outs() << " interval_kind=exclusive parent=none"
+                 << " mode="
+                 << deployment::deploymentConstructionModeName(row.mode)
+                 << " operation="
+                 << deployment::deploymentConstructionOperationName(
+                        row.operation)
+                 << " invocations=" << row.invocations
+                 << " wall_ns=" << row.wallNanoseconds << " self_cpu_ns=";
+    printOptional(llvm::outs(), row.selfCpuNanoseconds);
+    llvm::outs() << " child_cpu_ns=";
+    printOptional(llvm::outs(), row.childCpuNanoseconds);
+    llvm::outs() << '\n';
+  }
+}
+
 } // namespace
+
+llvm::Error emitExecutionMatrixRunSummary(
+    const ExecutionMatrixInvocation &invocation,
+    std::uint64_t deterministicWork,
+    std::uint64_t processLifetimeChildPeakRssKib,
+    const runtime::Gem5SystemAttemptProfile *profile,
+    llvm::ArrayRef<runtime::Gem5SpatialInvocationProjection>
+        spatialInvocations) {
+  if (!profile && !spatialInvocations.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "ordinary execution has diagnostic invocation projections");
+  llvm::outs() << "execution-matrix"
+               << " schema=loom.execution_matrix_summary.2";
+  emitInvocationKey(llvm::outs(), invocation);
+  llvm::outs() << " deterministic_work=" << deterministicWork
+               << " process_lifetime_child_peak_rss_kib="
+               << processLifetimeChildPeakRssKib;
+  if (profile) {
+    std::uint64_t acceleratorReferenceCycles = 0;
+    std::uint64_t unavailableAcceleratorCycleCount = 0;
+    for (const runtime::Gem5SpatialInvocationProjection &spatial :
+         spatialInvocations) {
+      if (!spatial.acceleratorReferenceCycles) {
+        ++unavailableAcceleratorCycleCount;
+        continue;
+      }
+      if (*spatial.acceleratorReferenceCycles >
+          std::numeric_limits<std::uint64_t>::max() -
+              acceleratorReferenceCycles)
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "accelerator cycle report overflows its domain");
+      acceleratorReferenceCycles += *spatial.acceleratorReferenceCycles;
+    }
+    llvm::outs() << " gem5_configuration_wall_us="
+                 << profile->configurationWallNanoseconds / 1000
+                 << " engine_startup_wall_us="
+                 << profile->engineStartupWallNanoseconds / 1000
+                 << " gem5_simulation_wall_us="
+                 << profile->simulationWallNanoseconds / 1000
+                 << " gem5_simulation_cpu_us="
+                 << profile->gem5SimulationProcessCpuNanoseconds / 1000
+                 << " observation_wall_us="
+                 << profile->observationWallNanoseconds / 1000
+                 << " observation_cpu_us="
+                 << profile->observationProcessCpuNanoseconds / 1000
+                 << " bridge_callback_cpu_us="
+                 << profile->bridgeCallbackCpuNanoseconds / 1000
+                 << " bridge_wait_us="
+                 << profile->bridgeEngineWaitNanoseconds / 1000
+                 << " bridge_messages=" << profile->bridgeMessageCount
+                 << " accelerator_invocations="
+                 << profile->acceleratorInvocationCount
+                 << " accelerator_cycles=" << acceleratorReferenceCycles
+                 << " accelerator_cycle_unavailable_count="
+                 << unavailableAcceleratorCycleCount;
+    if (profile->engineProcessCpuNanoseconds)
+      llvm::outs() << " engine_process_cpu_us="
+                   << *profile->engineProcessCpuNanoseconds / 1000;
+    if (profile->cgraEngine)
+      llvm::outs() << " cgra_engine_active_wall_us="
+                   << profile->cgraEngine->activeWallNanoseconds / 1000
+                   << " cgra_engine_active_cpu_us="
+                   << profile->cgraEngine->activeProcessCpuNanoseconds / 1000
+                   << " cgra_event_frames="
+                   << profile->cgraEngine->eventFrameCount;
+  }
+  llvm::outs() << '\n';
+  return llvm::Error::success();
+}
 
 class ExecutionMatrixLifecycleRecorder::Impl final {
 public:
@@ -231,15 +399,17 @@ public:
          end.selfPeakRssKib, end.childPeakRssKib});
   }
 
-  void emit(llvm::StringRef cell) const {
+  void emit(const ExecutionMatrixInvocation &invocation) const {
     std::vector<Record> ordered = records_;
     llvm::sort(ordered, [](const Record &lhs, const Record &rhs) {
       return lhs.sequence < rhs.sequence;
     });
     for (const Record &record : ordered) {
       llvm::outs() << "execution-matrix-lifecycle"
-                   << " schema=loom.execution_matrix_lifecycle.1"
-                   << " cell=" << cell
+                   << " schema=loom.execution_matrix_lifecycle.2";
+      emitInvocationKey(llvm::outs(), invocation);
+      llvm::outs() << " interval_kind=inclusive parent="
+                   << lifecycleParent(record.operation)
                    << " operation=" << spelling(record.operation)
                    << " wall_ns=" << record.wallNanoseconds << " self_cpu_ns=";
       printOptional(llvm::outs(), record.selfCpuNanoseconds);
@@ -275,8 +445,9 @@ ExecutionMatrixLifecycleRecorder::ExecutionMatrixLifecycleRecorder()
     : impl_(std::make_unique<Impl>()) {}
 ExecutionMatrixLifecycleRecorder::~ExecutionMatrixLifecycleRecorder() = default;
 
-void ExecutionMatrixLifecycleRecorder::emit(llvm::StringRef cell) const {
-  impl_->emit(cell);
+void ExecutionMatrixLifecycleRecorder::emit(
+    const ExecutionMatrixInvocation &invocation) const {
+  impl_->emit(invocation);
 }
 
 ExecutionMatrixLifecycleTimer::ExecutionMatrixLifecycleTimer(
@@ -294,7 +465,8 @@ ExecutionMatrixLifecycleTimer::~ExecutionMatrixLifecycleTimer() {
 class ExecutionMatrixImportSessions::Impl final {
 public:
   Impl(const ArtifactStore &artifacts, const BlobStore &blobs)
-      : artifactImports(artifacts, &blobs, artifactImportEntryLimit),
+      : deploymentConstruction(),
+        artifactImports(artifacts, &blobs, artifactImportEntryLimit),
         fabricImports(fabric::FabricArtifactImportSessionMode::Isolated,
                       fabricImportEntryLimit),
         configurationAbiImports(
@@ -305,6 +477,7 @@ public:
                   runtime::Gem5SystemFactsSessionMode::Isolated,
                   gem5FactsEntryLimit) {}
 
+  deployment::DeploymentConstructionStatisticsSession deploymentConstruction;
   evaluation::ArtifactImportCacheScope artifactImports;
   fabric::FabricArtifactImportSession fabricImports;
   hardware::ConfigurationABIImportSession configurationAbiImports;
@@ -319,26 +492,66 @@ ExecutionMatrixImportSessions::ExecutionMatrixImportSessions(
 ExecutionMatrixImportSessions::~ExecutionMatrixImportSessions() = default;
 
 ExecutionMatrixImportSummary ExecutionMatrixImportSessions::summary() const {
-  const runtime::Gem5SystemFactsSessionStatistics facts =
-      impl_->gem5Facts.statistics();
-  return {facts.requests, facts.cacheHits, facts.cacheMisses,
-          facts.uniqueConstructions};
-}
-
-void ExecutionMatrixImportSessions::emitStatistics(llvm::StringRef cell) const {
   const evaluation::ArtifactImportCacheStatistics artifact =
       impl_->artifactImports.statistics();
-  emitCacheRow(
-      cell, {"artifact_import", "artifact_revalidation",
-             artifact.importRequests, artifact.cacheHits, artifact.cacheMisses,
-             artifact.cacheMisses, artifact.uniqueConstructions,
-             artifact.uncachedConstructions, 0, 0, artifact.revalidationCount,
-             artifact.revalidatedBytes, 0, artifact.constructionNanoseconds,
-             artifact.minimumRetainedBytes, artifact.entryCount});
+  const fabric::FabricArtifactImportSessionStatistics fabric =
+      impl_->fabricImports.statistics();
+  const hardware::ConfigurationABIImportSessionStatistics abi =
+      impl_->configurationAbiImports.statistics();
+  const mapping::SystemMappingImportSessionStatistics mapping =
+      impl_->systemMappingImports.statistics();
+  const deployment::ConfigurationImageProjectionSessionStatistics projection =
+      impl_->configurationProjections.statistics();
+  const runtime::Gem5SystemFactsSessionStatistics facts =
+      impl_->gem5Facts.statistics();
+  return {facts.requests,
+          facts.cacheHits,
+          facts.cacheMisses,
+          facts.uniqueConstructions,
+          facts.revalidatedArtifactBytes,
+          facts.revalidatedBlobBytes,
+          facts.constructionNanosecondsSaved,
+          artifact.cacheHits,
+          fabric.cacheHits,
+          abi.cacheHits,
+          mapping.cacheHits,
+          projection.cacheHits};
+}
+
+bool ExecutionMatrixImportSessions::reusedOneExactGem5FactsClosure() const {
+  const ExecutionMatrixImportSummary imports = summary();
+  return imports.gem5FactsRequests == 2 && imports.gem5FactsMisses == 1 &&
+         imports.gem5FactsUniqueConstructions == 1 &&
+         imports.gem5FactsHits == 1 &&
+         imports.gem5FactsHits + imports.gem5FactsMisses ==
+             imports.gem5FactsRequests &&
+         imports.gem5FactsRevalidatedArtifactBytes != 0 &&
+         imports.gem5FactsRevalidatedBlobBytes != 0 &&
+         imports.gem5FactsConstructionNanosecondsSaved != 0 &&
+         imports.artifactImportHits != 0 && imports.fabricImportHits != 0 &&
+         imports.configurationAbiImportHits != 0 &&
+         imports.systemMappingImportHits != 0 &&
+         imports.configurationProjectionHits != 0;
+}
+
+void ExecutionMatrixImportSessions::emitStatistics(
+    const ExecutionMatrixInvocation &invocation) const {
+  emitDeploymentOperationRows(invocation,
+                              impl_->deploymentConstruction.statistics());
+  const evaluation::ArtifactImportCacheStatistics artifact =
+      impl_->artifactImports.statistics();
+  emitCacheRow(invocation,
+               {"artifact_import", "artifact_revalidation",
+                artifact.importRequests, artifact.cacheHits,
+                artifact.cacheMisses, artifact.cacheMisses,
+                artifact.uniqueConstructions, artifact.uncachedConstructions, 0,
+                0, artifact.revalidationCount, artifact.revalidatedBytes, 0,
+                artifact.constructionNanoseconds, artifact.minimumRetainedBytes,
+                artifact.entryCount});
 
   const fabric::FabricArtifactImportSessionStatistics fabric =
       impl_->fabricImports.statistics();
-  emitCacheRow(cell,
+  emitCacheRow(invocation,
                {"fabric_import", "artifact_revalidation", fabric.importRequests,
                 fabric.cacheHits, fabric.cacheMisses, fabric.cacheMisses,
                 fabric.uniqueConstructions, fabric.uncachedConstructions, 0, 0,
@@ -348,15 +561,16 @@ void ExecutionMatrixImportSessions::emitStatistics(llvm::StringRef cell) const {
 
   const hardware::ConfigurationABIImportSessionStatistics abi =
       impl_->configurationAbiImports.statistics();
-  emitCacheRow(cell, {"configuration_abi_import", "immutable_session_domain",
-                      abi.importRequests, abi.cacheHits, abi.cacheMisses,
-                      abi.cacheMisses, abi.uniqueConstructions, 0, 0, 0, 0, 0,
-                      0, abi.constructionNanoseconds, abi.retainedBytes,
-                      abi.entryCount});
+  emitCacheRow(invocation,
+               {"configuration_abi_import", "immutable_session_domain",
+                abi.importRequests, abi.cacheHits, abi.cacheMisses,
+                abi.cacheMisses, abi.uniqueConstructions, 0, 0, 0, 0, 0, 0,
+                abi.constructionNanoseconds, abi.retainedBytes,
+                abi.entryCount});
 
   const mapping::SystemMappingImportSessionStatistics mapping =
       impl_->systemMappingImports.statistics();
-  emitCacheRow(cell,
+  emitCacheRow(invocation,
                {"system_mapping_import", "immutable_session_domain",
                 mapping.importRequests, mapping.cacheHits, mapping.cacheMisses,
                 mapping.cacheMisses, mapping.uniqueConstructions,
@@ -366,35 +580,38 @@ void ExecutionMatrixImportSessions::emitStatistics(llvm::StringRef cell) const {
 
   const deployment::ConfigurationImageProjectionSessionStatistics projection =
       impl_->configurationProjections.statistics();
-  emitCacheRow(cell, {"configuration_image_projection",
-                      "immutable_session_domain", projection.requests,
-                      projection.cacheHits, projection.cacheMisses,
-                      projection.cacheMisses, projection.uniqueConstructions,
-                      projection.uncachedConstructions, 0, 0, 0, 0, 0,
-                      projection.constructionNanoseconds,
-                      projection.retainedBytes, projection.entryCount});
+  emitCacheRow(invocation,
+               {"configuration_image_projection", "immutable_session_domain",
+                projection.requests, projection.cacheHits,
+                projection.cacheMisses, projection.cacheMisses,
+                projection.uniqueConstructions,
+                projection.uncachedConstructions, 0, 0, 0, 0, 0,
+                projection.constructionNanoseconds, projection.retainedBytes,
+                projection.entryCount});
 
   const runtime::Gem5SystemFactsSessionStatistics facts =
       impl_->gem5Facts.statistics();
-  emitCacheRow(cell, {"gem5_system_facts", "complete_closure_revalidation",
-                      facts.requests, facts.cacheHits, facts.cacheMisses,
-                      facts.constructionAttempts, facts.uniqueConstructions,
-                      facts.uncachedConstructions,
-                      facts.unsupportedConstructions, facts.failedConstructions,
-                      facts.revalidationCount, facts.revalidatedArtifactBytes,
-                      facts.revalidatedBlobBytes, facts.constructionNanoseconds,
-                      facts.minimumRetainedBytes, facts.entryCount});
-  emitFactsOperationRow(cell, "derive_facts", facts.construction.deriveFacts);
-  emitFactsOperationRow(cell, "system_inputs_and_deployment_import",
+  emitCacheRow(invocation,
+               {"gem5_system_facts", "complete_closure_revalidation",
+                facts.requests, facts.cacheHits, facts.cacheMisses,
+                facts.constructionAttempts, facts.uniqueConstructions,
+                facts.uncachedConstructions, facts.unsupportedConstructions,
+                facts.failedConstructions, facts.revalidationCount,
+                facts.revalidatedArtifactBytes, facts.revalidatedBlobBytes,
+                facts.constructionNanoseconds, facts.minimumRetainedBytes,
+                facts.entryCount});
+  emitFactsOperationRow(invocation, "derive_facts",
+                        facts.construction.deriveFacts);
+  emitFactsOperationRow(invocation, "system_inputs_and_deployment_import",
                         facts.construction.systemInputsAndDeploymentImport);
-  emitFactsOperationRow(cell, "gem5_binding_import",
+  emitFactsOperationRow(invocation, "gem5_binding_import",
                         facts.construction.bindingImport);
-  emitFactsOperationRow(cell, "entire_fabric_root_import",
+  emitFactsOperationRow(invocation, "entire_fabric_root_import",
                         facts.construction.fabricImport);
-  emitFactsOperationRow(cell, "system_mapping_import",
+  emitFactsOperationRow(invocation, "system_mapping_import",
                         facts.construction.systemMappingImport);
-  emitFactsOperationRow(cell, "runtime_image_derivation",
-                        facts.construction.runtimeImageDerivation);
+  emitFactsOperationRow(invocation, "gem5_guest_runtime_image_projection",
+                        facts.construction.guestRuntimeImageProjection);
 }
 
 } // namespace loom::system_test

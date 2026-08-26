@@ -6,8 +6,8 @@
 #include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
-#include "Deployment/HardwareConfigurationImage.h"
 #include "Deployment/DeploymentDiagnostics.h"
+#include "Deployment/HardwareConfigurationImage.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -16,17 +16,22 @@
 #include "Frontend/Executable/InstructionCoreBinary.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
-#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "Mapping/IR/MappingSchema.h"
 #include "Runtime/RuntimePlatformBinding.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/JSON.h"
 
+#include <sys/resource.h>
+#include <time.h>
+
 #include <algorithm>
 #include <chrono>
 #include <iterator>
+#include <limits>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -37,16 +42,77 @@ namespace {
 
 using MonotonicClock = std::chrono::steady_clock;
 
+struct OperationResourceSnapshot final {
+  MonotonicClock::time_point wall;
+  std::optional<std::uint64_t> selfCpuNanoseconds;
+  std::optional<std::uint64_t> childCpuNanoseconds;
+};
+
+std::optional<std::uint64_t> timevalNanoseconds(const timeval &value) {
+  if (value.tv_sec < 0 || value.tv_usec < 0 || value.tv_usec >= 1'000'000)
+    return std::nullopt;
+  constexpr std::uint64_t nanosecondsPerSecond = 1'000'000'000;
+  const std::uint64_t subsecond =
+      static_cast<std::uint64_t>(value.tv_usec) * 1000;
+  const std::uint64_t seconds = value.tv_sec;
+  if (seconds > (std::numeric_limits<std::uint64_t>::max() - subsecond) /
+                    nanosecondsPerSecond)
+    return std::nullopt;
+  return seconds * nanosecondsPerSecond + subsecond;
+}
+
+std::optional<std::uint64_t> processCpuNanoseconds() {
+  timespec current{};
+  if (::clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &current) != 0 ||
+      current.tv_sec < 0 || current.tv_nsec < 0 ||
+      current.tv_nsec >= 1'000'000'000)
+    return std::nullopt;
+  constexpr std::uint64_t nanosecondsPerSecond = 1'000'000'000;
+  const std::uint64_t seconds = current.tv_sec;
+  if (seconds > (std::numeric_limits<std::uint64_t>::max() -
+                 static_cast<std::uint64_t>(current.tv_nsec)) /
+                    nanosecondsPerSecond)
+    return std::nullopt;
+  return seconds * nanosecondsPerSecond + current.tv_nsec;
+}
+
+std::optional<std::uint64_t> childCpuNanoseconds() {
+  rusage usage{};
+  if (::getrusage(RUSAGE_CHILDREN, &usage) != 0)
+    return std::nullopt;
+  auto user = timevalNanoseconds(usage.ru_utime);
+  auto system = timevalNanoseconds(usage.ru_stime);
+  if (!user || !system ||
+      *system > std::numeric_limits<std::uint64_t>::max() - *user)
+    return std::nullopt;
+  return *user + *system;
+}
+
+OperationResourceSnapshot captureOperationResources() {
+  return {MonotonicClock::now(), processCpuNanoseconds(),
+          childCpuNanoseconds()};
+}
+
+std::optional<std::uint64_t> elapsedCpu(std::optional<std::uint64_t> end,
+                                        std::optional<std::uint64_t> begin) {
+  if (!begin || !end || *end < *begin)
+    return std::nullopt;
+  return *end - *begin;
+}
+
 void emitElapsed(DeploymentConstructionMode mode,
                  DeploymentConstructionOperation operation,
-                 MonotonicClock::time_point begin,
+                 const OperationResourceSnapshot &begin,
                  std::uint64_t deterministicWork = 1) {
+  const OperationResourceSnapshot end = captureOperationResources();
   const std::uint64_t duration =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          MonotonicClock::now() - begin)
+      std::chrono::duration_cast<std::chrono::nanoseconds>(end.wall -
+                                                           begin.wall)
           .count();
   emitDeploymentConstructionOperationStatistics(
-      {mode, operation, duration, deterministicWork});
+      {mode, operation, duration, deterministicWork,
+       elapsedCpu(end.selfCpuNanoseconds, begin.selfCpuNanoseconds),
+       elapsedCpu(end.childCpuNanoseconds, begin.childCpuNanoseconds)});
 }
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -300,8 +366,8 @@ validateHardwareBindingCoverage(
     if (implementation->implementation().fabric() != fabricReference)
       return invalid("HardwareImplementation has a foreign Fabric System");
     actualSubjects.push_back(implementation->implementation().subject());
-    if (commonAbi && *commonAbi !=
-                         implementation->implementation().configurationAbi())
+    if (commonAbi &&
+        *commonAbi != implementation->implementation().configurationAbi())
       return invalid("hardware_bindings do not share one ConfigurationABI");
     commonAbi = implementation->implementation().configurationAbi();
 
@@ -339,9 +405,8 @@ validateHardwareBindingCoverage(
   return std::optional<hardware::FinalizedConfigurationABI>(std::move(*abi));
 }
 
-bool containsSubject(
-    llvm::ArrayRef<fabric::SpatialCoreOccurrenceRef> subjects,
-    fabric::SpatialCoreOccurrenceRef subject) {
+bool containsSubject(llvm::ArrayRef<fabric::SpatialCoreOccurrenceRef> subjects,
+                     fabric::SpatialCoreOccurrenceRef subject) {
   return llvm::is_contained(subjects, subject);
 }
 
@@ -449,9 +514,9 @@ validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
       *dataflowView, systemMapping->view().executionBindings());
   if (!subjects)
     return subjects.takeError();
-  auto abi = validateHardwareBindingCoverage(
-      deployment.hardwareBindings, *subjects, fabricReference, artifacts,
-      blobs);
+  auto abi =
+      validateHardwareBindingCoverage(deployment.hardwareBindings, *subjects,
+                                      fabricReference, artifacts, blobs);
   if (!abi)
     return abi.takeError();
   if (!*abi) {
@@ -522,9 +587,10 @@ bool sameBytes(const CanonicalSemanticBytes &lhs,
   return lhs.bytes().equals(rhs.bytes());
 }
 
-llvm::Expected<FinalizedDeployment> finishFinalizedDeployment(
-    detail::ParsedDeployment parsed, detail::DerivedRuntimeImages images,
-    const ArtifactStore &artifacts) {
+llvm::Expected<FinalizedDeployment>
+finishFinalizedDeployment(detail::ParsedDeployment parsed,
+                          detail::DerivedRuntimeImages images,
+                          const ArtifactStore &artifacts) {
   auto canonical = detail::serializeDeployment(parsed, images);
   if (!canonical)
     return canonical.takeError();
@@ -547,6 +613,42 @@ llvm::Expected<FinalizedDeployment> finishFinalizedDeployment(
       std::move(reference), std::move(*canonical), std::move(deployment));
 }
 
+llvm::Expected<detail::DerivedRuntimeImages> validateDeploymentClosureImpl(
+    const detail::ParsedDeployment &deployment, const ArtifactStore &artifacts,
+    const BlobStore &blobs,
+    std::optional<DeploymentConstructionMode> statisticsMode) {
+  auto operationBegin = captureOperationResources();
+  if (llvm::Error error = requireCanonicalTopLevel(deployment, artifacts)) {
+    if (statisticsMode)
+      emitElapsed(*statisticsMode,
+                  DeploymentConstructionOperation::ExecutableClosureValidation,
+                  operationBegin);
+    return std::move(error);
+  }
+  if (llvm::Error error =
+          validateExecutableAndHardwareClosure(deployment, artifacts, blobs)) {
+    if (statisticsMode)
+      emitElapsed(*statisticsMode,
+                  DeploymentConstructionOperation::ExecutableClosureValidation,
+                  operationBegin);
+    return std::move(error);
+  }
+  if (statisticsMode)
+    emitElapsed(*statisticsMode,
+                DeploymentConstructionOperation::ExecutableClosureValidation,
+                operationBegin);
+
+  operationBegin = captureOperationResources();
+  auto images = detail::deriveRuntimeImages(
+      deployment.systemMapping, deployment.instructionCoreBinaries,
+      deployment.configurationImages, artifacts, blobs);
+  if (statisticsMode)
+    emitElapsed(*statisticsMode,
+                DeploymentConstructionOperation::RuntimeImageDerivation,
+                operationBegin);
+  return images;
+}
+
 } // namespace
 
 namespace detail {
@@ -555,14 +657,8 @@ llvm::Expected<DerivedRuntimeImages>
 validateDeploymentClosure(const ParsedDeployment &deployment,
                           const ArtifactStore &artifacts,
                           const BlobStore &blobs) {
-  if (llvm::Error error = requireCanonicalTopLevel(deployment, artifacts))
-    return error;
-  if (llvm::Error error =
-          validateExecutableAndHardwareClosure(deployment, artifacts, blobs))
-    return error;
-  return deriveRuntimeImages(deployment.systemMapping,
-                             deployment.instructionCoreBinaries,
-                             deployment.configurationImages, artifacts, blobs);
+  return validateDeploymentClosureImpl(deployment, artifacts, blobs,
+                                       std::nullopt);
 }
 
 Deployment materializeDeployment(ParsedDeployment deployment,
@@ -620,7 +716,7 @@ importDeployment(const ArtifactRootReference &reference,
   if (reference.schemaIdentity != deploymentSchema.identity ||
       reference.schemaVersion != deploymentSchema.version)
     return invalid("root reference has the wrong schema descriptor");
-  auto operationBegin = MonotonicClock::now();
+  auto operationBegin = captureOperationResources();
   auto bytes = artifacts.get(deploymentSchema, reference.artifact);
   if (!bytes)
     return bytes.takeError();
@@ -630,14 +726,11 @@ importDeployment(const ArtifactRootReference &reference,
               operationBegin);
   if (!parsed)
     return parsed.takeError();
-  operationBegin = MonotonicClock::now();
-  auto images = detail::validateDeploymentClosure(*parsed, artifacts, blobs);
-  emitElapsed(DeploymentConstructionMode::Import,
-              DeploymentConstructionOperation::ExecutableClosureValidation,
-              operationBegin);
+  auto images = validateDeploymentClosureImpl(
+      *parsed, artifacts, blobs, DeploymentConstructionMode::Import);
   if (!images)
     return images.takeError();
-  operationBegin = MonotonicClock::now();
+  operationBegin = captureOperationResources();
   auto canonical = detail::serializeDeployment(*parsed, *images);
   if (!canonical)
     return canonical.takeError();
@@ -656,7 +749,7 @@ importDeployment(const ArtifactRootReference &reference,
 llvm::Expected<FinalizedDeployment>
 buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
                 const BlobStore &blobs) {
-  auto operationBegin = MonotonicClock::now();
+  auto operationBegin = captureOperationResources();
   if (llvm::Error error = canonicalizeRoots(inputs.instructionCoreBinaries,
                                             "instruction_core_binary_refs"))
     return error;
@@ -667,7 +760,7 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
   emitElapsed(DeploymentConstructionMode::Build,
               DeploymentConstructionOperation::InputCanonicalization,
               operationBegin);
-  operationBegin = MonotonicClock::now();
+  operationBegin = captureOperationResources();
   auto systemMapping =
       mapping::importSystemMapping(inputs.systemMapping, artifacts);
   if (!systemMapping)
@@ -689,7 +782,7 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
       fabric::fabricArtifactSchema.identity.str(),
       fabric::fabricArtifactSchema.version,
       systemMapping->view().fabricIdentity()};
-  operationBegin = MonotonicClock::now();
+  operationBegin = captureOperationResources();
   auto abi = validateHardwareBindingCoverage(inputs.hardwareBindings, *subjects,
                                              fabricReference, artifacts, blobs);
   emitElapsed(DeploymentConstructionMode::Build,
@@ -699,7 +792,7 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
     return abi.takeError();
 
   std::vector<ArtifactRootReference> images;
-  operationBegin = MonotonicClock::now();
+  operationBegin = captureOperationResources();
   if (*abi) {
     auto units = requiredProgrammingUnits((*abi)->abi(), *subjects);
     if (!units)
@@ -709,8 +802,7 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
       auto image = finalizeHardwareConfigurationImage(
           {(*abi)->reference(),
            unit,
-           {ConfigurationImageSourceKind::SystemMapping,
-            inputs.systemMapping}},
+           {ConfigurationImageSourceKind::SystemMapping, inputs.systemMapping}},
           artifacts);
       if (!image)
         return image.takeError();
@@ -722,7 +814,7 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
   emitElapsed(DeploymentConstructionMode::Build,
               DeploymentConstructionOperation::ConfigurationImageDerivation,
               operationBegin, images.size());
-  operationBegin = MonotonicClock::now();
+  operationBegin = captureOperationResources();
   auto runtimeImages = detail::deriveRuntimeImages(
       inputs.systemMapping, inputs.instructionCoreBinaries, images, artifacts,
       blobs);
@@ -731,9 +823,9 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
   emitElapsed(DeploymentConstructionMode::Build,
               DeploymentConstructionOperation::RuntimeImageDerivation,
               operationBegin);
-  operationBegin = MonotonicClock::now();
-  auto thread =
-      parseInlineBytes(runtimeImages->threadDispatch, threadDispatchImageSchema);
+  operationBegin = captureOperationResources();
+  auto thread = parseInlineBytes(runtimeImages->threadDispatch,
+                                 threadDispatchImageSchema);
   auto admission =
       parseInlineBytes(runtimeImages->admission, admissionImageSchema);
   if (!thread)
@@ -748,16 +840,15 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
       return value.takeError();
     spatial = std::move(*value);
   }
-  detail::ParsedDeployment parsed{
-      std::move(inputs.systemMapping),
-      std::move(inputs.hostProgram),
-      std::move(inputs.instructionCoreBinaries),
-      std::move(inputs.hardwareBindings),
-      std::move(images),
-      std::move(inputs.staticMemoryImages),
-      std::move(*thread),
-      std::move(spatial),
-      std::move(*admission)};
+  detail::ParsedDeployment parsed{std::move(inputs.systemMapping),
+                                  std::move(inputs.hostProgram),
+                                  std::move(inputs.instructionCoreBinaries),
+                                  std::move(inputs.hardwareBindings),
+                                  std::move(images),
+                                  std::move(inputs.staticMemoryImages),
+                                  std::move(*thread),
+                                  std::move(spatial),
+                                  std::move(*admission)};
   if (llvm::Error error = requireCanonicalTopLevel(parsed, artifacts))
     return error;
   if (llvm::Error error =
@@ -766,7 +857,7 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
   emitElapsed(DeploymentConstructionMode::Build,
               DeploymentConstructionOperation::ExecutableClosureValidation,
               operationBegin);
-  operationBegin = MonotonicClock::now();
+  operationBegin = captureOperationResources();
   auto finalized = finishFinalizedDeployment(
       std::move(parsed), std::move(*runtimeImages), artifacts);
   emitElapsed(DeploymentConstructionMode::Build,

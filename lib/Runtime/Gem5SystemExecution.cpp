@@ -732,6 +732,10 @@ parseGem5SystemAttemptProfile(llvm::StringRef text) {
     return std::move(error);
   if (llvm::Error error = assign("bridge_count", profile.bridgeCount))
     return std::move(error);
+  if (profile.engineStartupWallNanoseconds >
+      profile.configurationWallNanoseconds)
+    return invalid("gem5 engine startup interval exceeds its configuration "
+                   "interval");
   return profile;
 }
 
@@ -1360,6 +1364,11 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
     return terminalResult(
         CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
   if (attemptProfile) {
+    const bool ownsEngineProcess = facts.engine != Gem5SystemEngine::Rtl;
+    if (attemptProfile->engineProcessCpuNanoseconds.has_value() !=
+        ownsEngineProcess)
+      return invalid("gem5 performance profile has inconsistent engine CPU "
+                     "ownership");
     if (attemptProfile->bridgeCount != facts.spatialBridgeSessions.size())
       return invalid("gem5 performance profile bridge count differs from "
                      "the exact System projection");

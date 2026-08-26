@@ -1,6 +1,10 @@
 #ifndef LOOM_TEST_SYSTEM_EXECUTIONMATRIXLIFECYCLE_H
 #define LOOM_TEST_SYSTEM_EXECUTIONMATRIXLIFECYCLE_H
 
+#include "ExecutionMatrixInvocation.h"
+#include "Runtime/Gem5SystemExecution.h"
+
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
@@ -12,6 +16,14 @@ class BlobStore;
 } // namespace loom
 
 namespace loom::system_test {
+
+llvm::Error emitExecutionMatrixRunSummary(
+    const ExecutionMatrixInvocation &invocation,
+    std::uint64_t deterministicWork,
+    std::uint64_t processLifetimeChildPeakRssKib,
+    const runtime::Gem5SystemAttemptProfile *profile,
+    llvm::ArrayRef<runtime::Gem5SpatialInvocationProjection>
+        spatialInvocations);
 
 enum class ExecutionMatrixLifecycleOperation : std::uint8_t {
   Setup,
@@ -44,7 +56,7 @@ public:
   ExecutionMatrixLifecycleRecorder &
   operator=(const ExecutionMatrixLifecycleRecorder &) = delete;
 
-  void emit(llvm::StringRef cell) const;
+  void emit(const ExecutionMatrixInvocation &invocation) const;
 
 private:
   std::unique_ptr<Impl> impl_;
@@ -59,8 +71,7 @@ public:
                                 ExecutionMatrixLifecycleOperation operation);
   ~ExecutionMatrixLifecycleTimer();
 
-  ExecutionMatrixLifecycleTimer(const ExecutionMatrixLifecycleTimer &) =
-      delete;
+  ExecutionMatrixLifecycleTimer(const ExecutionMatrixLifecycleTimer &) = delete;
   ExecutionMatrixLifecycleTimer &
   operator=(const ExecutionMatrixLifecycleTimer &) = delete;
 
@@ -73,6 +84,14 @@ struct ExecutionMatrixImportSummary final {
   std::uint64_t gem5FactsHits = 0;
   std::uint64_t gem5FactsMisses = 0;
   std::uint64_t gem5FactsUniqueConstructions = 0;
+  std::uint64_t gem5FactsRevalidatedArtifactBytes = 0;
+  std::uint64_t gem5FactsRevalidatedBlobBytes = 0;
+  std::uint64_t gem5FactsConstructionNanosecondsSaved = 0;
+  std::uint64_t artifactImportHits = 0;
+  std::uint64_t fabricImportHits = 0;
+  std::uint64_t configurationAbiImportHits = 0;
+  std::uint64_t systemMappingImportHits = 0;
+  std::uint64_t configurationProjectionHits = 0;
 };
 
 /// Owns every removable immutable import/projection session for one exact
@@ -86,13 +105,13 @@ public:
                                 const BlobStore &blobs);
   ~ExecutionMatrixImportSessions();
 
-  ExecutionMatrixImportSessions(const ExecutionMatrixImportSessions &) =
-      delete;
+  ExecutionMatrixImportSessions(const ExecutionMatrixImportSessions &) = delete;
   ExecutionMatrixImportSessions &
   operator=(const ExecutionMatrixImportSessions &) = delete;
 
   ExecutionMatrixImportSummary summary() const;
-  void emitStatistics(llvm::StringRef cell) const;
+  bool reusedOneExactGem5FactsClosure() const;
+  void emitStatistics(const ExecutionMatrixInvocation &invocation) const;
 
 private:
   std::unique_ptr<Impl> impl_;

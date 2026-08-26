@@ -40,7 +40,7 @@ struct Gem5SystemFactsConstructionStatistics final {
   Gem5SystemFactsOperationStatistics bindingImport;
   Gem5SystemFactsOperationStatistics fabricImport;
   Gem5SystemFactsOperationStatistics systemMappingImport;
-  Gem5SystemFactsOperationStatistics runtimeImageDerivation;
+  Gem5SystemFactsOperationStatistics guestRuntimeImageProjection;
 };
 
 struct Gem5SystemFactsSessionStatistics final {
@@ -64,7 +64,8 @@ struct Gem5SystemFactsSessionStatistics final {
 
 /// Bounded immutable facts cache for one exact ArtifactStore/BlobStore
 /// verification domain. Hits revalidate the complete cold-construction
-/// closure and never bypass Request verification or typed importers.
+/// closure. Hits reuse the cold typed result after that revalidation; Request
+/// verification remains owned by the prepare/import facade.
 class Gem5SystemFactsSession final {
 public:
   class Impl;
