@@ -528,6 +528,15 @@ void centralPlanEvaluatesScheduleChildren() {
         selection->candidateInventory[*selected.planningRecordOrdinal];
     if (!record.candidateIdentity)
       fail("central schedule candidate did not publish a stable identity");
+    if (!record.structuredProgram)
+      fail("central schedule candidate lost its planning program");
+    auto planningProgram = take(
+        loom::frontend::importStructuredProgram(*record.structuredProgram,
+                                                store));
+    auto planningView = take(planningProgram.view());
+    for (const loom::frontend::StructuredEntityRef &root :
+         record.ownedProtocolRoots)
+      (void)take(planningView.resolve(root));
     auto recomputed = take(loom::dse::computePreMappingCandidateIdentity(
         record, selection->sourceProgram, selection->fabric,
         selection->workload, selection->runtimeInput,
