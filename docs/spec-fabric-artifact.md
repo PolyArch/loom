@@ -695,6 +695,26 @@ redefine them.
 These owners may reference a Fabric artifact. They may not copy its topology,
 capability, identity catalog, or canonicalization rules.
 
+### Implementation Responsibility Review
+
+`lib/Fabric/Artifact/FabricArtifact.cpp` is the transaction composition owner
+for Module/System finalization and strict import. It assembles the canonical
+root view, runs the complete owner validation sequence, and publishes only the
+root that the same strict importer reconstructs. Bytecode framing, dependency
+closure, canonical labeling and materialization, Module view helpers, System
+validation, interconnect realization, configuration-field relations, and
+import-session caching already have independent modules and remain outside
+this composition owner.
+
+The remaining Module and System paths intentionally stay together because
+they share one strict-import result, one dependency-resolution transaction,
+and one publication invariant. Splitting either path further would require a
+new intermediate view or pass-through protocol with no independent semantic
+owner. That would duplicate or disperse the strict-import authority rather
+than improve cohesion. The file therefore remains above the ordinary review
+threshold after this responsibility review; future extraction is warranted
+only when a new independently testable semantic owner appears.
+
 ## Anchor Verification
 
 Anchor tests cover:
