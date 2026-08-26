@@ -13,6 +13,7 @@ add_library(LoomFrontendCompilation
   StructuredSpecialMathAccuracy.cpp
   StructuredMemoryChannelPromotion.cpp
   StructuredMemoryCommunication.cpp
+  StructuredPolyhedralMaterializer.cpp
   StructuredPolyhedralProvider.cpp
   StructuredSchedule.cpp
   StructuredScop.cpp

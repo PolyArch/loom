@@ -46,6 +46,7 @@ enum class StructuredScopRefusalKind : std::uint32_t {
   ProviderScheduleNotEstablished = 25,
   ProviderScheduleBudgetExhausted = 26,
   PolyhedralMaterializationUnavailable = 27,
+  PhysicalLayoutProofNotEstablished = 28,
 };
 
 enum class StructuredScopAccessKind : std::uint32_t {
