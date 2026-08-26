@@ -37,7 +37,7 @@ llvm::Expected<std::string>
 readObservationFile(const std::filesystem::path &path,
                     std::uint64_t maximumBytes) {
   const int descriptor =
-      ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+      ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0)
     return observationError(llvm::Twine("cannot open command observations: ") +
                             std::strerror(errno));
@@ -65,6 +65,9 @@ readObservationFile(const std::filesystem::path &path,
           llvm::Twine("cannot read command observations: ") +
           std::strerror(errno));
     }
+    if (static_cast<std::uint64_t>(count) >
+        maximumBytes - static_cast<std::uint64_t>(contents.size()))
+      return observationError("command observations exceed their byte bound");
     contents.append(buffer, static_cast<std::size_t>(count));
   }
   struct stat after{};

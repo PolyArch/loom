@@ -1044,7 +1044,17 @@ llvm::Error publishEntry(const std::filesystem::path &entryRoot,
 
 enum class CacheScriptMode { Execute, Preflight, Postflight };
 
-llvm::Error stopProcessGroup(const llvm::sys::ProcessInfo &process) {
+llvm::Error
+terminateSurvivingProcessGroup(const llvm::sys::ProcessInfo &process) {
+  const pid_t processId = static_cast<pid_t>(process.Pid);
+  if (::kill(-processId, SIGKILL) != 0 && errno != ESRCH)
+    return cacheSystemError(
+        "cannot stop surviving generated run-script process group");
+  return llvm::Error::success();
+}
+
+llvm::Expected<llvm::sys::ProcessInfo>
+stopProcessGroup(const llvm::sys::ProcessInfo &process) {
   const pid_t processId = static_cast<pid_t>(process.Pid);
   if (::kill(-processId, SIGKILL) != 0) {
     if (errno != ESRCH)
@@ -1057,7 +1067,7 @@ llvm::Error stopProcessGroup(const llvm::sys::ProcessInfo &process) {
       llvm::sys::Wait(process, std::nullopt, &message);
   if (waited.Pid != process.Pid)
     return cacheError("cannot reap stopped generated run script: " + message);
-  return llvm::Error::success();
+  return waited;
 }
 
 llvm::Error
@@ -1078,6 +1088,25 @@ cleanupStoppedScriptAttempt(const PreparedExternalToolInvocation &prepared,
                         error.message());
   }
   return llvm::Error::success();
+}
+
+llvm::Expected<std::optional<InvocationCompletion>>
+loadPublishedCompletion(const PreparedExternalToolInvocation &prepared) {
+  const std::filesystem::path path =
+      std::filesystem::path(prepared.bundleRoot) / kCompletionPath.str();
+  struct stat status{};
+  if (::lstat(path.c_str(), &status) != 0) {
+    if (errno == ENOENT)
+      return std::optional<InvocationCompletion>{};
+    return cacheSystemError("cannot inspect generated run-script completion");
+  }
+  auto completion = loadExternalToolInvocationCompletion(prepared);
+  if (!completion)
+    return completion.takeError();
+  if (completion->manifestDigest != prepared.manifestDigest)
+    return cacheError(
+        "generated run-script completion does not bind the invocation");
+  return std::optional<InvocationCompletion>(std::move(*completion));
 }
 
 llvm::Expected<ScriptExecution>
@@ -1106,47 +1135,77 @@ runScript(const PreparedExternalToolInvocation &prepared, CacheScriptMode mode,
                                &executionFailed, nullptr, true);
   if (executionFailed || process.Pid == 0)
     return cacheError("could not execute generated run script: " + message);
-  while (true) {
-    if (executionControl.stopRequested()) {
-      if (llvm::Error error = stopProcessGroup(process))
+  const auto finishExit =
+      [&](int returnCode) -> llvm::Expected<ScriptExecution> {
+    if (llvm::Error error = terminateSurvivingProcessGroup(process))
+      return std::move(error);
+    std::vector<ExternalToolCommandExecutionObservation> observations;
+    if (mode == CacheScriptMode::Execute &&
+        manifest->second.version == kParallelCommandGroupManifestVersion) {
+      auto loaded = loadCommandExecutionObservations(
+          prepared, attemptToken, manifest->second.commands.size());
+      if (!loaded) {
+        if (returnCode == 0)
+          return loaded.takeError();
+        llvm::consumeError(loaded.takeError());
+      } else {
+        observations = std::move(*loaded);
+      }
+      if (returnCode == 0 &&
+          (observations.size() != manifest->second.commands.size() ||
+           !llvm::all_of(llvm::enumerate(observations), [](const auto row) {
+             return row.index() == row.value().commandOrdinal &&
+                    row.value().exitCode == 0;
+           })))
+        return cacheError(
+            "successful run script has inconsistent command observations");
+    }
+    return ScriptExecution{returnCode, true, std::move(observations)};
+  };
+  const auto finishScript = [&](const llvm::sys::ProcessInfo &waited)
+      -> llvm::Expected<ScriptExecution> {
+    if (waited.ReturnCode < 0) {
+      if (llvm::Error error = terminateSurvivingProcessGroup(process))
         return std::move(error);
       if (llvm::Error error = cleanupStoppedScriptAttempt(prepared, process))
         return std::move(error);
-      return ScriptExecution{externalToolExecutionStoppedExitCode, true, {}};
+      return cacheError("generated run script terminated abnormally: " +
+                        message);
     }
+    return finishExit(waited.ReturnCode);
+  };
+  while (true) {
     const llvm::sys::ProcessInfo waited =
         llvm::sys::Wait(process, 0, &message, nullptr, true);
-    if (waited.Pid == process.Pid) {
-      if (waited.ReturnCode < 0)
-        return cacheError("generated run script terminated abnormally: " +
-                          message);
-      std::vector<ExternalToolCommandExecutionObservation> observations;
-      if (mode == CacheScriptMode::Execute &&
-          manifest->second.version == kParallelCommandGroupManifestVersion) {
-        auto loaded = loadCommandExecutionObservations(
-            prepared, attemptToken, manifest->second.commands.size());
-        if (!loaded)
-          return loaded.takeError();
-        observations = std::move(*loaded);
-        if (waited.ReturnCode == 0 &&
-            (observations.size() != manifest->second.commands.size() ||
-             !llvm::all_of(llvm::enumerate(observations), [](const auto row) {
-               return row.index() == row.value().commandOrdinal;
-             })))
-          return cacheError(
-              "successful run script omitted a command observation");
-      }
-      return ScriptExecution{waited.ReturnCode, true, std::move(observations)};
-    }
+    if (waited.Pid == process.Pid)
+      return finishScript(waited);
     if (waited.Pid != 0)
       return cacheError("could not wait for generated run script: " + message);
-    if (!waitForExecutionControl(executionControl)) {
-      if (llvm::Error error = stopProcessGroup(process))
-        return std::move(error);
+    if (executionControl.stopRequested()) {
+      auto stopped = stopProcessGroup(process);
+      if (!stopped)
+        return stopped.takeError();
+      if (stopped->ReturnCode >= 0)
+        return finishScript(*stopped);
+      if (mode == CacheScriptMode::Execute) {
+        auto completion = loadPublishedCompletion(prepared);
+        if (!completion)
+          return completion.takeError();
+        if (*completion) {
+          auto finished = finishExit((*completion)->exitCode);
+          if (!finished)
+            return finished.takeError();
+          if (llvm::Error error =
+                  cleanupStoppedScriptAttempt(prepared, process))
+            return std::move(error);
+          return finished;
+        }
+      }
       if (llvm::Error error = cleanupStoppedScriptAttempt(prepared, process))
         return std::move(error);
       return ScriptExecution{externalToolExecutionStoppedExitCode, true, {}};
     }
+    (void)waitForExecutionControl(executionControl);
   }
 }
 

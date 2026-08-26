@@ -295,8 +295,8 @@ void emitExecutionMatrixExternalCommands(
                  << " wall_ns=" << command.wallNanoseconds
                  << " exit_code=" << command.exitCode
                  << " total_build_jobs=" << LOOM_TEST_BUILD_JOBS
-                 << " build_worker_limit="
-                 << LOOM_TEST_RTL_BUILD_WORKER_LIMIT << '\n';
+                 << " build_worker_limit=" << LOOM_TEST_RTL_BUILD_WORKER_LIMIT
+                 << '\n';
   }
 }
 

@@ -8,6 +8,7 @@
 #include "llvm/Support/Error.h"
 
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -46,6 +47,15 @@ void requireFailureContains(const char *test, llvm::Expected<T> value,
   if (value)
     fail(test, "expected failure containing " + reason.str());
   const std::string message = llvm::toString(value.takeError());
+  require(test, message.find(reason.str()) != std::string::npos,
+          "unexpected failure: " + message);
+}
+
+void requireFailureContains(const char *test, llvm::Error error,
+                            llvm::StringRef reason) {
+  if (!error)
+    fail(test, "expected failure containing " + reason.str());
+  const std::string message = llvm::toString(std::move(error));
   require(test, message.find(reason.str()) != std::string::npos,
           "unexpected failure: " + message);
 }
@@ -174,6 +184,17 @@ void parallelBuildsJoinBeforeController(const std::filesystem::path &root,
             !llvm::StringRef(entry.path().filename().string())
                  .starts_with(".loom-command-observations.partial."),
             "successful parallel execution left a partial observation");
+  ExternalToolInvocationExecutionObservation inconsistent = observation;
+  inconsistent.commandExecutions.front().exitCode = 1;
+  requireFailureContains(__func__,
+                         validateExternalToolInvocationExecutionObservation(
+                             prepared, inconsistent),
+                         "command results are inconsistent");
+  (void)take(__func__, beginExternalToolInvocationAttempt(prepared));
+  require(__func__,
+          !std::filesystem::exists(bundle / ".loom-command-observations") &&
+              !std::filesystem::exists(bundle / "outputs/completion.json"),
+          "a new attempt retained prior operational sidecars");
   const std::string manifest = readText(bundle / "tool-invocation.json");
   require(__func__,
           manifest.find("\"parallel_command_groups\"") != std::string::npos &&
@@ -210,6 +231,68 @@ void lowestOrdinalFailureWins(const std::filesystem::path &root,
           "failed command logs are not canonical");
 }
 
+void signaledCommandRetainsTypedExit(const std::filesystem::path &root,
+                                     const std::filesystem::path &tool) {
+  ExternalToolInvocationBundleSpec specification = baseSpec(tool);
+  specification.commands = {{tool.string(), "crash"}};
+  const std::filesystem::path bundle = root / "signal-failure";
+  const PreparedExternalToolInvocation prepared =
+      take(__func__, finalizeExternalToolInvocationBundle(bundle.string(),
+                                                          specification));
+  const ExternalToolInvocationExecutionObservation observation = take(
+      __func__, executeExternalToolInvocationBundleObserved(
+                    prepared, {}, ExternalToolResultReusePolicy::RequireFresh));
+  const int expectedExitCode = 128 + SIGSEGV;
+  require(__func__,
+          observation.exitCode == expectedExitCode &&
+              observation.commandExecutions.size() == 1 &&
+              observation.commandExecutions.front().exitCode ==
+                  expectedExitCode,
+          "signaled command was not reported as its typed shell exit");
+  require(__func__,
+          readText(bundle / "outputs/stderr.log").find("Segmentation fault") !=
+              std::string::npos,
+          "signaled command diagnostic was not retained in stderr");
+}
+
+void observationStateObstructionFailsBeforeLaunch(
+    const std::filesystem::path &root, const std::filesystem::path &tool) {
+  ExternalToolInvocationBundleSpec specification = baseSpec(tool);
+  specification.commands = {{tool.string(), "noop"}};
+  const std::filesystem::path bundle = root / "observation-initialization";
+  const PreparedExternalToolInvocation prepared =
+      take(__func__, finalizeExternalToolInvocationBundle(bundle.string(),
+                                                          specification));
+  std::error_code directoryError;
+  std::filesystem::create_directory(bundle / ".loom-command-observations",
+                                    directoryError);
+  require(__func__, !directoryError,
+          "cannot obstruct the observation path: " + directoryError.message());
+  requireFailureContains(
+      __func__,
+      executeExternalToolInvocationBundleObserved(
+          prepared, {}, ExternalToolResultReusePolicy::RequireFresh),
+      "could not clear prior invocation state");
+}
+
+void completedScriptKillsSurvivingChildren(const std::filesystem::path &root,
+                                           const std::filesystem::path &tool) {
+  ExternalToolInvocationBundleSpec specification = baseSpec(tool);
+  specification.commands = {{tool.string(), "orphan", "outputs/late"}};
+  const std::filesystem::path bundle = root / "surviving-child";
+  const PreparedExternalToolInvocation prepared =
+      take(__func__, finalizeExternalToolInvocationBundle(bundle.string(),
+                                                          specification));
+  const ExternalToolInvocationExecutionObservation observation = take(
+      __func__, executeExternalToolInvocationBundleObserved(
+                    prepared, {}, ExternalToolResultReusePolicy::RequireFresh));
+  require(__func__, observation.exitCode == 0,
+          "parent command with a surviving child did not complete");
+  std::this_thread::sleep_for(std::chrono::milliseconds(650));
+  require(__func__, !std::filesystem::exists(bundle / "outputs/late"),
+          "completed run script left a surviving tool child");
+}
+
 void scheduleValidationAndCacheIdentity(const std::filesystem::path &root,
                                         const std::filesystem::path &tool) {
   ExternalToolInvocationBundleSpec invalid = baseSpec(tool);
@@ -243,6 +326,36 @@ void scheduleValidationAndCacheIdentity(const std::filesystem::path &root,
               twoKey.executionConfigurationDigest !=
                   threeKey.executionConfigurationDigest,
           "worker limit did not change only execution configuration identity");
+
+  ExternalToolInvocationBundleSpec ordered = baseSpec(tool);
+  ordered.commands = invalid.commands;
+  const std::filesystem::path currentRoot = root / "ordered-current";
+  const PreparedExternalToolInvocation current =
+      take(__func__,
+           finalizeExternalToolInvocationBundle(currentRoot.string(), ordered));
+  std::string legacyManifest = readText(currentRoot / "tool-invocation.json");
+  const std::string currentVersion = "\"version\": \"2.3\"";
+  const std::size_t versionPosition = legacyManifest.find(currentVersion);
+  require(__func__, versionPosition != std::string::npos,
+          "current manifest version is absent");
+  legacyManifest.replace(versionPosition, currentVersion.size(),
+                         "\"version\": \"2.2\"");
+  const std::filesystem::path legacyRoot = root / "ordered-legacy";
+  std::error_code copyError;
+  std::filesystem::copy(currentRoot, legacyRoot,
+                        std::filesystem::copy_options::recursive, copyError);
+  require(__func__, !copyError,
+          "cannot construct the legacy manifest fixture: " +
+              copyError.message());
+  writeText(legacyRoot / "tool-invocation.json", legacyManifest);
+  const PreparedExternalToolInvocation legacy{legacyRoot.string(),
+                                              digest(legacyManifest)};
+  const ExternalToolResultCacheKey currentKey =
+      take(__func__, deriveExternalToolResultCacheKey(current));
+  const ExternalToolResultCacheKey legacyKey =
+      take(__func__, deriveExternalToolResultCacheKey(legacy));
+  require(__func__, currentKey == legacyKey,
+          "empty 2.3 schedule changed the ordered 2.2 cache identity");
 }
 
 struct ExecutionDeadline final {
@@ -349,6 +462,12 @@ LOOM_SIMULATOR
     printf 'fail-%s\n' "$2"
     exit "$3"
     ;;
+  crash)
+    kill -SEGV "$$"
+    ;;
+  orphan)
+    (sleep 0.5; printf '%s' late >"$2") &
+    ;;
   noop)
     :
     ;;
@@ -366,6 +485,9 @@ esac
           "cannot isolate persistent result reuse");
   parallelBuildsJoinBeforeController(root, tool);
   lowestOrdinalFailureWins(root, tool);
+  signaledCommandRetainsTypedExit(root, tool);
+  observationStateObstructionFailsBeforeLaunch(root, tool);
+  completedScriptKillsSurvivingChildren(root, tool);
   scheduleValidationAndCacheIdentity(root, tool);
   controlledStopKillsParallelDescendants(root, tool);
   return 0;
