@@ -5,6 +5,7 @@
 
 #include "Common/BlobDigest.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/JSON.h"
 
@@ -24,9 +25,14 @@ constexpr llvm::StringLiteral kStdoutPath = "outputs/stdout.log";
 constexpr llvm::StringLiteral kStderrPath = "outputs/stderr.log";
 constexpr llvm::StringLiteral kToolVersionPath = "outputs/.loom-tool-version";
 constexpr llvm::StringLiteral kAttemptTokenPath = ".loom-attempt-token";
+constexpr llvm::StringLiteral kCommandObservationsPath =
+    ".loom-command-observations";
+constexpr llvm::StringLiteral kCommandExecutionDirectory =
+    ".loom-command-execution";
 constexpr llvm::StringLiteral kTypedClosureManifestVersion = "2.0";
 constexpr llvm::StringLiteral kExternalFileTreeManifestVersion = "2.1";
 constexpr llvm::StringLiteral kToolProducedExecutableManifestVersion = "2.2";
+constexpr llvm::StringLiteral kParallelCommandGroupManifestVersion = "2.3";
 constexpr llvm::StringLiteral kCurrentManifestVersion =
     externalToolInvocationManifestVersion;
 
@@ -50,7 +56,27 @@ struct InvocationManifestData final {
   std::vector<ResolvedExternalFileTree> externalFileTrees;
   std::vector<std::string> declaredOutputs;
   std::vector<std::string> toolProducedExecutables;
+  std::vector<ExternalToolParallelCommandGroup> parallelCommandGroups;
+  std::string version;
 };
+
+llvm::Error validateParallelCommandGroups(
+    llvm::ArrayRef<ExternalToolParallelCommandGroup> groups,
+    llvm::ArrayRef<std::vector<std::string>> commands,
+    llvm::StringRef toolExecutable,
+    llvm::ArrayRef<std::string> toolProducedExecutables);
+
+llvm::Expected<std::vector<ExternalToolParallelCommandGroup>>
+parseParallelCommandGroups(const llvm::json::Object &manifest);
+
+void writeParallelCommandGroups(
+    llvm::json::OStream &json,
+    llvm::ArrayRef<ExternalToolParallelCommandGroup> groups);
+
+llvm::Expected<std::vector<ExternalToolCommandExecutionObservation>>
+loadCommandExecutionObservations(const PreparedExternalToolInvocation &prepared,
+                                 const BlobDigest &attemptToken,
+                                 std::uint64_t commandCount);
 
 /// Opens the prepared root through the bundle integrity path and returns the
 /// exact canonical manifest bytes and parsed typed manifest.
@@ -78,9 +104,7 @@ BlobDigest contentDigest(llvm::StringRef contents);
 llvm::StringRef completionStatusSpelling(InvocationCompletionStatus status);
 
 /// The canonical manifest JSON bytes of one invocation bundle.
-std::string
-serializeManifest(const InvocationManifestData &manifest,
-                  llvm::StringRef version = kCurrentManifestVersion);
+std::string serializeManifest(const InvocationManifestData &manifest);
 
 /// The deterministic run.sh bytes of one invocation bundle.
 std::string renderRunScript(const InvocationManifestData &manifest);

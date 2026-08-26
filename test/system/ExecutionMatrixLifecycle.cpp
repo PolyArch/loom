@@ -10,6 +10,8 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Runtime/Gem5SystemExecution.h"
 
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <sys/resource.h>
@@ -24,6 +26,10 @@
 #include <utility>
 #include <vector>
 
+#if !defined(LOOM_TEST_BUILD_JOBS) || !defined(LOOM_TEST_RTL_BUILD_WORKER_LIMIT)
+#error "system execution test build limits must be configured"
+#endif
+
 namespace loom::system_test {
 namespace {
 
@@ -32,6 +38,7 @@ inline constexpr std::size_t fabricImportEntryLimit = 64;
 inline constexpr std::size_t systemMappingImportEntryLimit = 64;
 inline constexpr std::size_t configurationProjectionEntryLimit = 64;
 inline constexpr std::size_t gem5FactsEntryLimit = 8;
+inline constexpr std::size_t systemRtlBuildCommandCount = 4;
 
 std::optional<std::uint64_t> processCpuNanoseconds() {
   timespec current{};
@@ -299,6 +306,11 @@ void emitDeploymentOperationRows(
   }
 }
 
+llvm::StringRef systemRtlCommandRole(std::size_t commandOrdinal) {
+  return commandOrdinal < systemRtlBuildCommandCount ? "rtl_compile"
+                                                     : "rtl_controller";
+}
+
 } // namespace
 
 llvm::Error emitExecutionMatrixRunSummary(
@@ -448,6 +460,35 @@ ExecutionMatrixLifecycleRecorder::~ExecutionMatrixLifecycleRecorder() = default;
 void ExecutionMatrixLifecycleRecorder::emit(
     const ExecutionMatrixInvocation &invocation) const {
   impl_->emit(invocation);
+}
+
+void emitExecutionMatrixExternalCommands(
+    ExecutionMatrixInvocation invocation,
+    llvm::ArrayRef<external_tool::ExternalToolCommandExecutionObservation>
+        commands) {
+  if (invocation.cell != ExecutionMatrixCell::SystemRtl)
+    return;
+  constexpr std::size_t expectedCommandCount = systemRtlBuildCommandCount + 1;
+  if (commands.size() != expectedCommandCount)
+    llvm::report_fatal_error(
+        "System RTL execution did not report four builds and one controller");
+  for (const auto indexed : llvm::enumerate(commands)) {
+    const external_tool::ExternalToolCommandExecutionObservation &command =
+        indexed.value();
+    if (command.commandOrdinal != indexed.index() || command.exitCode != 0)
+      llvm::report_fatal_error(
+          "System RTL command observations are not canonical successes");
+    llvm::outs() << "execution-matrix-external-command"
+                 << " schema=loom.execution_matrix_external_command.2";
+    emitInvocationKey(llvm::outs(), invocation);
+    llvm::outs() << " command_ordinal=" << command.commandOrdinal
+                 << " command_role=" << systemRtlCommandRole(indexed.index())
+                 << " wall_ns=" << command.wallNanoseconds
+                 << " exit_code=" << command.exitCode
+                 << " total_build_jobs=" << LOOM_TEST_BUILD_JOBS
+                 << " build_worker_limit=" << LOOM_TEST_RTL_BUILD_WORKER_LIMIT
+                 << '\n';
+  }
 }
 
 ExecutionMatrixLifecycleTimer::ExecutionMatrixLifecycleTimer(

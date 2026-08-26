@@ -13,7 +13,9 @@ namespace {
 
 constexpr std::uint64_t kDefaultCycleLimit = 1'000'000;
 constexpr std::uint64_t kDefaultBuildJobs = 4;
+constexpr std::uint64_t kDefaultBuildWorkers = 1;
 constexpr std::uint64_t kMaximumBuildJobs = 256;
+constexpr std::uint64_t kMaximumBuildWorkers = 4;
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(
@@ -84,7 +86,8 @@ resolveMappedRtlExecutionAttemptOptions(
   const auto configured = localConfig.tools.find(provider.binding.key);
   if (configured != localConfig.tools.end()) {
     for (const auto &option : configured->second.providerOptions) {
-      if (option.first != "max_cycles" && option.first != "build_jobs")
+      if (option.first != "max_cycles" && option.first != "build_jobs" &&
+          option.first != "build_workers")
         return invalid(
             llvm::Twine("verilator.provider_options contains unknown field ") +
             option.first.str());
@@ -95,12 +98,16 @@ resolveMappedRtlExecutionAttemptOptions(
                      std::numeric_limits<std::uint64_t>::max());
   auto buildJobs = positiveOption(localConfig, "build_jobs", kDefaultBuildJobs,
                                   kMaximumBuildJobs);
-  if (!cycleLimit || !buildJobs)
-    return llvm::joinErrors(
-        cycleLimit ? llvm::Error::success() : cycleLimit.takeError(),
-        buildJobs ? llvm::Error::success() : buildJobs.takeError());
+  auto buildWorkers = positiveOption(
+      localConfig, "build_workers", kDefaultBuildWorkers, kMaximumBuildWorkers);
+  if (!cycleLimit)
+    return cycleLimit.takeError();
+  if (!buildJobs)
+    return buildJobs.takeError();
+  if (!buildWorkers)
+    return buildWorkers.takeError();
   return MappedRtlExecutionAttemptOptions{
-      *cycleLimit, *buildJobs,
+      *cycleLimit, *buildJobs, *buildWorkers,
       configured == localConfig.tools.end()
           ? std::vector<std::string>{}
           : configured->second.inheritEnvironment};

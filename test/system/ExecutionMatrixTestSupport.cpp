@@ -90,10 +90,9 @@
 namespace loom::system_test {
 namespace {
 
-#ifndef LOOM_TEST_BUILD_JOBS
-#error "LOOM_TEST_BUILD_JOBS must be defined"
+#if !defined(LOOM_TEST_BUILD_JOBS) || !defined(LOOM_TEST_RTL_BUILD_WORKER_LIMIT)
+#error "Loom test build limits must be defined"
 #endif
-
 using deployment::test::fail;
 using deployment::test::require;
 
@@ -960,8 +959,6 @@ struct ToolBinding final {
   external_tool::ResolvedToolBinding resolved;
 };
 
-std::uint64_t qualificationBuildJobs() { return LOOM_TEST_BUILD_JOBS; }
-
 ToolBinding
 resolveHostTool(llvm::StringRef test,
                 const external_tool::ExternalToolProviderDescriptor &provider,
@@ -993,10 +990,9 @@ struct CompletedRun final {
   ArtifactRootReference evidenceReference;
   sim::CanonicalSimulationExecution execution;
   std::optional<DiagnosticSummary> gem5Diagnostics;
+  std::vector<external_tool::ExternalToolCommandExecutionObservation>
+      externalCommands;
 };
-
-std::uint64_t
-deterministicWork(const sim::CanonicalSimulationExecution &execution);
 
 CompletedRun importCompleted(
     llvm::StringRef test, evaluation::EvaluationEvidence evidence,
@@ -1004,7 +1000,9 @@ CompletedRun importCompleted(
     const ArtifactStore &artifacts, const BlobStore &blobs,
     ExecutionMatrixLifecycleRecorder *lifecycle = nullptr,
     ExecutionMatrixLifecycleOperation operation =
-        ExecutionMatrixLifecycleOperation::OrdinaryExecutionImport) {
+        ExecutionMatrixLifecycleOperation::OrdinaryExecutionImport,
+    std::vector<external_tool::ExternalToolCommandExecutionObservation>
+        externalCommands = {}) {
   std::optional<ExecutionMatrixLifecycleTimer> timer;
   if (lifecycle)
     timer.emplace(*lifecycle, operation);
@@ -1035,7 +1033,7 @@ CompletedRun importCompleted(
   ArtifactRootReference evidenceReference =
       evaluation::evaluationEvidenceReference(evidence);
   return {std::move(evidence), std::move(evidenceReference),
-          std::move(execution), std::nullopt};
+          std::move(execution), std::nullopt, std::move(externalCommands)};
 }
 
 void requireSpatialOracle(llvm::StringRef test,
@@ -1185,7 +1183,8 @@ runExternal(llvm::StringRef test, const evaluation::EvaluationRequest &request,
   }
   return importCompleted(
       test, std::move(evidence), resolution, artifacts, blobs, lifecycle,
-      ExecutionMatrixLifecycleOperation::OrdinaryExecutionImport);
+      ExecutionMatrixLifecycleOperation::OrdinaryExecutionImport,
+      execution.commandExecutions);
 }
 
 CompletedRun runGem5Diagnostic(
@@ -1240,7 +1239,8 @@ CompletedRun runGem5Diagnostic(
       std::move(diagnostics.attemptProfile);
   CompletedRun completed = importCompleted(
       test, std::move(diagnostics.evidence), resolution, artifacts, blobs,
-      &lifecycle, ExecutionMatrixLifecycleOperation::DiagnosticExecutionImport);
+      &lifecycle, ExecutionMatrixLifecycleOperation::DiagnosticExecutionImport,
+      execution.commandExecutions);
   const sim::SystemSimulationExecution *system = completed.execution.system();
   require(test, system != nullptr,
           "diagnostic attempt did not publish a System execution");
@@ -1300,7 +1300,7 @@ CompletedRun runSpatialCell(llvm::StringRef test, ExecutionMatrixCell cell,
   verilator.local.tools[external_tool::verilatorProvider().binding.key]
       .providerOptions["max_cycles"] = 128;
   verilator.local.tools[external_tool::verilatorProvider().binding.key]
-      .providerOptions["build_jobs"] = qualificationBuildJobs();
+      .providerOptions["build_jobs"] = LOOM_TEST_BUILD_JOBS;
   return runExternal(test, request, resolution, std::move(verilator.local),
                      tree.path("spatial-rtl-bundle"), artifacts, blobs);
 }
@@ -1346,13 +1346,15 @@ CompletedRun runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
     gem5.binding.executable = readiness.binary;
     gem5.providerOptions["readiness"] = readiness.path;
     if (verilator) {
-      local.tools[external_tool::verilatorProvider().binding.key] =
+      auto &verilatorConfig =
+          local.tools[external_tool::verilatorProvider().binding.key];
+      verilatorConfig =
           std::move(verilator->local
                         .tools[external_tool::verilatorProvider().binding.key]);
-      local.tools[external_tool::verilatorProvider().binding.key]
-          .providerOptions["max_cycles"] = 128;
-      local.tools[external_tool::verilatorProvider().binding.key]
-          .providerOptions["build_jobs"] = qualificationBuildJobs();
+      verilatorConfig.providerOptions["max_cycles"] = 128;
+      verilatorConfig.providerOptions["build_jobs"] = LOOM_TEST_BUILD_JOBS;
+      verilatorConfig.providerOptions["build_workers"] =
+          LOOM_TEST_RTL_BUILD_WORKER_LIMIT;
     }
     return InvocationInputs{std::move(resolution), std::move(request),
                             std::move(local)};
@@ -1513,6 +1515,8 @@ void recordPairedMeasurement(ExecutionMatrixCell cell,
 
 void recordRunStatistics(ExecutionMatrixInvocation matrixInvocation,
                          const CompletedRun &completed, const rusage &after) {
+  emitExecutionMatrixExternalCommands(matrixInvocation,
+                                      completed.externalCommands);
   const CompletedRun::DiagnosticSummary *diagnostics =
       completed.gem5Diagnostics ? &*completed.gem5Diagnostics : nullptr;
   requireSuccess(

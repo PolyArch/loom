@@ -2,6 +2,7 @@
 #define LOOM_TEST_SYSTEM_EXECUTIONMATRIXLIFECYCLE_H
 
 #include "ExecutionMatrixInvocation.h"
+#include "ExternalTool/InvocationBundle.h"
 #include "Runtime/Gem5SystemExecution.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -93,6 +94,11 @@ struct ExecutionMatrixImportSummary final {
   std::uint64_t systemMappingImportHits = 0;
   std::uint64_t configurationProjectionHits = 0;
 };
+
+void emitExecutionMatrixExternalCommands(
+    ExecutionMatrixInvocation invocation,
+    llvm::ArrayRef<external_tool::ExternalToolCommandExecutionObservation>
+        commands);
 
 /// Owns every removable immutable import/projection session for one exact
 /// execution-matrix store domain. Independent replay cells construct isolated
