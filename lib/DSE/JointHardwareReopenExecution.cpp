@@ -1,13 +1,17 @@
 #include "JointHardwareReopenExecution.h"
 
+#include "JointHardwareReopenInternal.h"
+
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/ExecutionJournal.h"
 #include "DSE/ResolvedConfigView.h"
+#include "Evaluation/Evidence.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
@@ -15,6 +19,77 @@
 #include <system_error>
 
 namespace loom::dse {
+
+class JointDesignExecutionManifestBinder final {
+public:
+  static llvm::Error
+  bind(JointDesignExecution &execution,
+       JointDesignInvocationManifestReference invocationManifest) {
+    if (llvm::Error error = validateJournalOwnership(invocationManifest))
+      return error;
+    if (execution.invocationManifest_)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "joint execution already has an invocation manifest");
+    execution.invocationManifest_.emplace(std::move(invocationManifest));
+    return llvm::Error::success();
+  }
+
+  static llvm::Error
+  appendSupporting(JointDesignExecution &execution,
+                   JointDesignInvocationManifestReference invocationManifest) {
+    if (llvm::Error error = validateJournalOwnership(invocationManifest))
+      return error;
+    const auto sameReference =
+        [&](const JointDesignInvocationManifestReference &other) {
+          return other.resolvedConfig() ==
+                     invocationManifest.resolvedConfig() &&
+                 other.blob() == invocationManifest.blob() &&
+                 other.occurrence() == invocationManifest.occurrence();
+        };
+    const auto sameOccurrence =
+        [&](const JointDesignInvocationManifestReference &other) {
+          return other.occurrence() == invocationManifest.occurrence();
+        };
+    if (execution.invocationManifest_ &&
+        sameOccurrence(*execution.invocationManifest_)) {
+      if (!sameReference(*execution.invocationManifest_))
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "one DSE occurrence has conflicting manifests");
+      return llvm::Error::success();
+    }
+    auto existing =
+        llvm::find_if(execution.supportingInvocationManifests_, sameOccurrence);
+    if (existing != execution.supportingInvocationManifests_.end()) {
+      if (!sameReference(*existing))
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "one DSE occurrence has conflicting manifests");
+      return llvm::Error::success();
+    }
+    execution.supportingInvocationManifests_.push_back(
+        std::move(invocationManifest));
+    return llvm::Error::success();
+  }
+
+private:
+  static llvm::Error validateJournalOwnership(
+      const JointDesignInvocationManifestReference &reference) {
+    if (!reference.journalReceipt())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "joint execution manifest has no ExecutionJournal receipt");
+    if (reference.journalReceipt()->occurrence() != reference.occurrence() ||
+        reference.journalReceipt()->manifest() != reference.blob())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "joint execution manifest differs from its ExecutionJournal "
+          "receipt");
+    return llvm::Error::success();
+  }
+};
+
 namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -23,7 +98,179 @@ llvm::Error invalid(const llvm::Twine &message) {
       "joint_hardware_reopen_execution_invalid: " + message);
 }
 
+std::vector<ArtifactRootReference>
+mappingRoots(const JointDesignExecution &execution) {
+  std::vector<ArtifactRootReference> roots;
+  for (const JointMappedPair &pair : execution.mappedPairs)
+    roots.insert(roots.end(), pair.systemMappings.begin(),
+                 pair.systemMappings.end());
+  std::sort(roots.begin(), roots.end(), artifactRootReferenceLess);
+  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+  return roots;
+}
+
+struct RetainedInvocationRoots final {
+  std::vector<ArtifactRootReference> artifacts;
+  std::vector<ArtifactRootReference> evidence;
+};
+
+RetainedInvocationRoots
+retainedInvocationRoots(const DsePlanGenerateInvocationRecords &records,
+                        llvm::ArrayRef<ArtifactRootReference> mappings) {
+  RetainedInvocationRoots retained;
+  retained.artifacts.assign(mappings.begin(), mappings.end());
+  const auto append = [&](llvm::ArrayRef<GenerateInvocationRecord> generated) {
+    for (const GenerateInvocationRecord &record : generated)
+      for (const CandidateGeneratorOutputBinding &binding :
+           record.outputBindings)
+        for (const ArtifactRootReference &root : binding.artifacts) {
+          if (root.schemaIdentity ==
+                  evaluation::EvaluationEvidence::artifactSchema.identity &&
+              root.schemaVersion ==
+                  evaluation::EvaluationEvidence::artifactSchema.version)
+            retained.evidence.push_back(root);
+          else
+            retained.artifacts.push_back(root);
+        }
+  };
+  append(records.completed());
+  append(records.incomplete());
+  const auto canonicalize = [](std::vector<ArtifactRootReference> &roots) {
+    std::sort(roots.begin(), roots.end(), artifactRootReferenceLess);
+    roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+  };
+  canonicalize(retained.artifacts);
+  canonicalize(retained.evidence);
+  return retained;
+}
+
+InvocationControllerOutcome
+projectInvocationOutcome(const JointDesignExecution &execution,
+                         const DsePlanGenerateInvocationRecords &records) {
+  std::vector<ArtifactRootReference> mappings = mappingRoots(execution);
+  if (const auto *incomplete =
+          std::get_if<IncompleteDsePlanExecution>(&execution.planExecution)) {
+    RetainedInvocationRoots retained =
+        retainedInvocationRoots(records, mappings);
+    return InvocationIncomplete{incomplete->nodeOrdinal(),
+                                incomplete->reason(),
+                                {},
+                                std::move(retained.artifacts),
+                                std::move(retained.evidence)};
+  }
+  if (mappings.empty())
+    return InvocationCompletedNoFeasibleCandidate{};
+  return InvocationCompletedSelection{std::move(mappings), {}};
+}
+
+llvm::Expected<std::optional<ArtifactRootReference>>
+finalizeJointRepairSelection(JointDesignExecution &execution,
+                             JointDesignStoppingPolicy stoppingPolicy);
+
 } // namespace
+
+llvm::Expected<JointDesignInvocationManifestReference>
+publishJointPlanInvocationManifest(
+    DseRunClosure closure, const ResolvedConfig &config,
+    const DsePlanGenerateInvocationRecords &generateRecords,
+    InvocationControllerOutcome outcome, ExecutionJournal &journal,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const auto releaseWith = [&](llvm::Error error) {
+    return llvm::joinErrors(std::move(error),
+                            journal.releaseInvocationOccurrence());
+  };
+  auto occurrence = journal.currentInvocationOccurrence();
+  if (!occurrence)
+    return occurrence.takeError();
+  auto externalToolWork = journal.externalToolWorkLedger();
+  if (!externalToolWork)
+    return releaseWith(externalToolWork.takeError());
+  auto manifest = InvocationManifest::get(
+      std::move(closure), occurrence->first.occurrenceOrdinal,
+      std::move(occurrence->second), config, generateRecords,
+      std::move(outcome), artifacts, std::nullopt,
+      std::move(*externalToolWork));
+  if (!manifest)
+    return releaseWith(manifest.takeError());
+  auto reference =
+      publishJointDesignInvocationManifest(*manifest, config, artifacts, blobs);
+  if (!reference)
+    return releaseWith(reference.takeError());
+  if (llvm::Error error = journal.commitInvocationManifest(
+          reference->occurrence(), reference->blob())) {
+    if (error.isA<ExecutionJournalPersistenceError>())
+      return std::move(error);
+    return releaseWith(std::move(error));
+  }
+  auto receipt = journal.lastCommittedInvocationManifest();
+  if (!receipt)
+    return releaseWith(receipt.takeError());
+  if (!*receipt)
+    return releaseWith(
+        invalid("journal did not retain its invocation manifest receipt"));
+  auto committed =
+      bindInvocationManifestReceipt(std::move(*reference), **receipt);
+  if (!committed)
+    return releaseWith(committed.takeError());
+  if (llvm::Error error = journal.releaseInvocationOccurrence())
+    return std::move(error);
+  return committed;
+}
+
+llvm::Error bindJointDesignInvocationManifest(
+    JointDesignExecution &execution,
+    JointDesignInvocationManifestReference invocationManifest) {
+  return JointDesignExecutionManifestBinder::bind(
+      execution, std::move(invocationManifest));
+}
+
+llvm::Error appendJointDesignSupportingInvocationManifest(
+    JointDesignExecution &execution,
+    JointDesignInvocationManifestReference invocationManifest) {
+  return JointDesignExecutionManifestBinder::appendSupporting(
+      execution, std::move(invocationManifest));
+}
+
+llvm::Error retainJointDesignInvocationManifest(
+    std::vector<JointDesignInvocationManifestReference> &retained,
+    const JointDesignInvocationManifestReference &invocationManifest) {
+  auto existing = llvm::find_if(retained, [&](const auto &candidate) {
+    return candidate.occurrence() == invocationManifest.occurrence();
+  });
+  if (existing == retained.end()) {
+    retained.push_back(invocationManifest);
+    return llvm::Error::success();
+  }
+  if (existing->resolvedConfig() != invocationManifest.resolvedConfig() ||
+      existing->blob() != invocationManifest.blob())
+    return invalid("one DSE occurrence has conflicting manifests");
+  return llvm::Error::success();
+}
+
+llvm::Error retainJointDesignExecutionInvocations(
+    std::vector<JointDesignInvocationManifestReference> &retained,
+    const JointDesignExecution &execution) {
+  if (execution.invocationManifest())
+    if (llvm::Error error = retainJointDesignInvocationManifest(
+            retained, *execution.invocationManifest()))
+      return error;
+  for (const JointDesignInvocationManifestReference &supporting :
+       execution.supportingInvocationManifests())
+    if (llvm::Error error =
+            retainJointDesignInvocationManifest(retained, supporting))
+      return error;
+  return llvm::Error::success();
+}
+
+llvm::Error attachJointDesignSupportingInvocationManifests(
+    JointDesignExecution &execution,
+    llvm::ArrayRef<JointDesignInvocationManifestReference> retained) {
+  for (const JointDesignInvocationManifestReference &supporting : retained)
+    if (llvm::Error error = appendJointDesignSupportingInvocationManifest(
+            execution, supporting))
+      return error;
+  return llvm::Error::success();
+}
 
 llvm::Expected<JointDesignExecution>
 executeJointPlan(const JointDesignExplorationPlan &plan,
@@ -65,11 +312,90 @@ executeJointPlan(const JointDesignExplorationPlan &plan,
   auto journal = openExecutionJournal(journalPath, *closure, *configView);
   if (!journal)
     return journal.takeError();
-  return executeJointDesignExploration(
+  auto execution = executeJointDesignExploration(
       plan, *closure, *journal, scheduler,
       executionPolicy ? *executionPolicy : request.executionPolicy, artifacts,
       blobs);
+  if (!execution)
+    return execution.takeError();
+  DsePlanGenerateInvocationRecords records =
+      projectDsePlanGenerateInvocationRecords(execution->planExecution);
+  auto manifest = publishJointPlanInvocationManifest(
+      std::move(*closure), config, records,
+      projectInvocationOutcome(*execution, records), *journal, artifacts,
+      blobs);
+  if (!manifest)
+    return manifest.takeError();
+  if (llvm::Error error =
+          bindJointDesignInvocationManifest(*execution, std::move(*manifest)))
+    return std::move(error);
+  return execution;
 }
+
+llvm::Expected<JointDesignExecution>
+executeJointRepairPlan(const JointDesignExplorationPlan &plan,
+                       const JointDesignPolicy &policy,
+                       JointHardwareReopenRequest request,
+                       const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const JointDesignStoppingPolicy stoppingPolicy = request.stoppingPolicy;
+  llvm::Expected<JointDesignExecution> execution = [&]()
+      -> llvm::Expected<JointDesignExecution> {
+    if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality) {
+      if (!request.boundedQuality)
+        return invalid("bounded repair has no quality policy");
+      request.hardwareExplorationScope =
+          JointHardwareExplorationScope::FixedSystemFrontier;
+      const JointDesignExplorationPlan *planPointer = &plan;
+      return executeJointDesignWithHardwareReopen(
+          llvm::ArrayRef<const JointDesignExplorationPlan *>(&planPointer, 1),
+          policy, std::move(request), artifacts, blobs);
+    }
+    if (request.boundedQuality)
+      return invalid("first-verified repair carries a quality policy");
+    auto scheduler = SiteScheduler::create(request.siteCapacity);
+    if (!scheduler)
+      return scheduler.takeError();
+    return executeJointPlan(plan, request.evidence, request, *scheduler,
+                            artifacts, blobs);
+  }();
+  if (!execution)
+    return execution.takeError();
+  auto selected = finalizeJointRepairSelection(*execution, stoppingPolicy);
+  if (!selected)
+    return selected.takeError();
+  return std::move(*execution);
+}
+
+namespace {
+
+llvm::Expected<std::optional<ArtifactRootReference>>
+finalizeJointRepairSelection(JointDesignExecution &execution,
+                             JointDesignStoppingPolicy stoppingPolicy) {
+  if (stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality) {
+    if (execution.summary.qualityDisposition !=
+        JointDesignQualityDisposition::Complete) {
+      execution.summary.selectedMapping.reset();
+      execution.summary.selectedPlanOrdinal.reset();
+      return std::nullopt;
+    }
+    if (!execution.summary.selectedMapping)
+      return invalid("completed bounded repair has no selected Mapping");
+    const std::vector<ArtifactRootReference> mappings =
+        joint_reopen_detail::mappingRoots(execution);
+    if (!llvm::is_contained(mappings, *execution.summary.selectedMapping))
+      return invalid("bounded repair selected a Mapping outside its output");
+    return execution.summary.selectedMapping;
+  }
+
+  std::optional<ArtifactRootReference> selected =
+      joint_reopen_detail::firstMapping(execution);
+  execution.summary.selectedMapping = selected;
+  execution.summary.selectedPlanOrdinal =
+      selected ? std::optional<std::uint64_t>(0) : std::nullopt;
+  return selected;
+}
+
+} // namespace
 
 llvm::Expected<std::vector<ArtifactRootReference>>
 normalizedTimingProfiles(const ArtifactRootReference &system,

@@ -1,5 +1,6 @@
 #include "Frontend/Payload/AcceleratorFinalLink.h"
 #include "Common/Artifact.h"
+#include "Common/TimeoutBudgets.h"
 #include "Config/ResolvedConfig.h"
 #include "Frontend/Payload/FrontendConfigView.h"
 #include "Frontend/Payload/PayloadCarrier.h"
@@ -245,7 +246,8 @@ void runProgram(const char *test, llvm::StringRef program,
   std::string error;
   bool executionFailed = false;
   const int result = llvm::sys::ExecuteAndWait(
-      program, arguments, std::nullopt, {}, /*SecondsToWait=*/60,
+      program, arguments, std::nullopt, {},
+      static_cast<unsigned>(timeout::seconds(timeout::Tier::Fast)),
       /*MemoryLimit=*/1024, &error, &executionFailed);
   require(test, !executionFailed,
           "failed to execute " + program.str() + ": " + error);

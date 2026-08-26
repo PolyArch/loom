@@ -31,8 +31,8 @@ using namespace loom::hardware;
 namespace {
 
 constexpr llvm::StringLiteral kSyntheticBuild =
-    "OpenROAD synthetic cbc7678e45cc";
-constexpr llvm::StringLiteral kPinnedBuild = "26Q3-1297-gcbc7678e45";
+    "OpenROAD synthetic 21512b0ab68c";
+constexpr llvm::StringLiteral kPinnedBuild = "21512b0";
 constexpr std::array<MetricKind, 4> kAllFpaMetrics{
     MetricKind::LeakagePower, MetricKind::LimitingClockFrequency,
     MetricKind::DynamicPower, MetricKind::TotalArea};
@@ -154,7 +154,7 @@ writeAuthoredGpdkRouteTool(const std::filesystem::path &root) {
   const std::string body = R"sh(#!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "-version" || "${1:-}" == "--version" ]]; then
-  printf '%s\n' '26Q3-1297-gcbc7678e45'
+  printf '%s\n' '21512b0'
   exit 0
 fi
 if [[ "$#" -ne 7 || "$1" != "-no_init" || "$2" != "-no_splash" ||
@@ -236,6 +236,12 @@ prepareAt(const RequestFixture &request, const std::filesystem::path &root,
               prepareEvaluationModelInvocation(
                   request.request, request.resolution, artifacts, blobs,
                   {local, (root / bundleName.str()).string()}));
+}
+
+const PreparedExternalToolInvocation *
+externalInvocation(EvaluationModelPreparation &preparation) {
+  auto *live = std::get_if<EvaluationModelPreparedInvocation>(&preparation);
+  return live ? &live->externalInvocation() : nullptr;
 }
 
 void requireFailureOutcome(llvm::StringRef test,
@@ -392,8 +398,7 @@ void authoredLifecycleSeparatesAllOutcomes(const std::filesystem::path &root) {
 
   EvaluationModelPreparation preparation =
       prepareAt(request, root, "fpa-complete", local, artifacts, blobs);
-  const auto *prepared =
-      std::get_if<PreparedExternalToolInvocation>(&preparation);
+  const auto *prepared = externalInvocation(preparation);
   require(__func__, prepared,
           "supported FPA request did not prepare an invocation");
   const std::string manifest =
@@ -450,8 +455,7 @@ void authoredLifecycleSeparatesAllOutcomes(const std::filesystem::path &root) {
                   1050, leakageMetric, false);
   EvaluationModelPreparation leakagePreparation =
       prepareAt(leakageRequest, root, "fpa-leakage", local, artifacts, blobs);
-  const auto *leakagePrepared =
-      std::get_if<PreparedExternalToolInvocation>(&leakagePreparation);
+  const auto *leakagePrepared = externalInvocation(leakagePreparation);
   require(__func__, leakagePrepared,
           "leakage-only request without activity did not prepare");
   const std::string leakageDriver =
@@ -525,8 +529,7 @@ void authoredLifecycleSeparatesAllOutcomes(const std::filesystem::path &root) {
       makeOpenRoadLocalToolConfig(fixture, failedTool);
   EvaluationModelPreparation failedPreparation =
       prepareAt(request, root, "fpa-failed", failedLocal, artifacts, blobs);
-  const auto *failedPrepared =
-      std::get_if<PreparedExternalToolInvocation>(&failedPreparation);
+  const auto *failedPrepared = externalInvocation(failedPreparation);
   require(__func__, failedPrepared,
           "tool-failure request did not prepare an invocation");
   require(__func__,
@@ -546,8 +549,7 @@ void authoredLifecycleSeparatesAllOutcomes(const std::filesystem::path &root) {
       makeOpenRoadLocalToolConfig(fixture, malformedTool);
   EvaluationModelPreparation adapterPreparation =
       prepareAt(request, root, "fpa-adapter", malformedLocal, artifacts, blobs);
-  const auto *adapterPrepared =
-      std::get_if<PreparedExternalToolInvocation>(&adapterPreparation);
+  const auto *adapterPrepared = externalInvocation(adapterPreparation);
   require(__func__, adapterPrepared,
           "adapter-failure request did not prepare an invocation");
   require(__func__,
@@ -575,8 +577,7 @@ void evaluateRealOpenRoadFpa(const std::filesystem::path &root,
       makeOpenRoadLocalToolConfig(fixture, executable.str());
   EvaluationModelPreparation preparation =
       prepareAt(request, root, "fpa", realLocal, artifacts, blobs);
-  const auto *prepared =
-      std::get_if<PreparedExternalToolInvocation>(&preparation);
+  const auto *prepared = externalInvocation(preparation);
   require(__func__, prepared, "real FPA request did not prepare an invocation");
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(*prepared)) == 0,

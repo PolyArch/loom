@@ -31,6 +31,7 @@
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
+#include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialPnrGenerator.h"
 #include "PnR/SpatialPnrProblem.h"
 #include "RootCompleteSpatialFeedbackTestSupport.h"
@@ -977,6 +978,22 @@ void finiteSetTraversesEveryCanonicalTechMapping() {
   }
   if (!foundFirst || !foundSecond)
     fail("finite traversal skipped a canonical TechMapping input");
+
+  const std::array<loom::dse::CandidateGeneratorOutputDemand, 1> outputDemands =
+      {{{loom::dse::CandidateGeneratorOutputSlotRef(0), 1}}};
+  const loom::dse::CandidateGeneratorInvocationView limitedInvocation(
+      {}, outputDemands);
+  auto limitedOutcome = take(loom::dse::invokeCandidateGenerator(
+      inputs, binding, store, blobs, limitedInvocation));
+  const auto *limitedCompleted =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &limitedOutcome.outcome);
+  if (!limitedCompleted || limitedCompleted->outputBindings.size() != 1 ||
+      limitedCompleted->outputBindings.front().artifacts.size() != 1 ||
+      limitedCompleted->lineageEdges.size() != 1 ||
+      limitedOutcome.workSummary != outcome.workSummary)
+    fail("root-complete output demand truncated or reclassified exhaustive "
+         "TechMapping work");
 }
 
 void firstVerifiedAvoidsSpeculativeRouteRanking() {
@@ -1044,30 +1061,66 @@ void candidateWorkerCountPreservesFormalResult() {
   auto constraints =
       take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
           dataflow, tech.view(), fixture.fabric.view(), store));
-  auto config = buildSpatialConfig();
+  loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
+  resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 4;
+  auto config = take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
   auto physicalTiming =
       take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
           fixture.fabric.view()));
-
-  const auto run = [&](std::uint32_t workerCount) {
-    return loom::pnr::generateSpatialMappings(
-        {dataflow, tech.view(), fixture.fabric.view(), physicalTiming, config,
-         constraints.view(), store, workerCount});
+  const auto run = [&](std::uint32_t workerCount,
+                       loom::ExecutionResourceBudget executionBudget,
+                       std::optional<std::uint64_t> maximumPublications =
+                           std::nullopt) {
+    loom::pnr::SpatialPnrGenerationInputs inputs{
+        dataflow,       tech.view(), fixture.fabric.view(),
+        physicalTiming, config,      constraints.view(),
+        store,          workerCount};
+    inputs.executionBudget = executionBudget;
+    inputs.maximumCandidatePublications = maximumPublications;
+    return loom::pnr::generateSpatialMappings(inputs);
   };
-  const auto single = run(1);
-  const auto parallel = run(2);
-  if (single.index() != parallel.index())
+  const auto single = run(4, {1, std::nullopt});
+  const auto memoryConstrained = run(4, {4, 1});
+  const auto parallel = run(4, {3, 0});
+  const auto publicationBounded = run(4, {3, 0}, 1);
+  if (single.index() != memoryConstrained.index() ||
+      single.index() != parallel.index() ||
+      single.index() != publicationBounded.index())
     fail("candidate worker count changed the Spatial PnR outcome kind");
   const auto *singleGenerated =
       std::get_if<loom::pnr::GeneratedSpatialMappings>(&single);
+  const auto *memoryConstrainedGenerated =
+      std::get_if<loom::pnr::GeneratedSpatialMappings>(&memoryConstrained);
   const auto *parallelGenerated =
       std::get_if<loom::pnr::GeneratedSpatialMappings>(&parallel);
-  if (!singleGenerated || !parallelGenerated)
+  const auto *publicationBoundedGenerated =
+      std::get_if<loom::pnr::GeneratedSpatialMappings>(&publicationBounded);
+  if (!singleGenerated || !memoryConstrainedGenerated || !parallelGenerated ||
+      !publicationBoundedGenerated)
     fail("worker-invariance fixture did not produce Spatial Mappings");
-  if (singleGenerated->termination != parallelGenerated->termination ||
+  if (singleGenerated->termination != memoryConstrainedGenerated->termination ||
+      singleGenerated->termination != parallelGenerated->termination ||
+      !(singleGenerated->accounting ==
+        memoryConstrainedGenerated->accounting) ||
       !(singleGenerated->accounting == parallelGenerated->accounting) ||
+      singleGenerated->candidates != memoryConstrainedGenerated->candidates ||
       singleGenerated->candidates != parallelGenerated->candidates)
     fail("candidate worker count changed formal Spatial PnR output or work");
+  loom::pnr::SpatialPnrGenerationAccounting publicationWork =
+      publicationBoundedGenerated->accounting;
+  publicationWork.finalizedRestarts =
+      parallelGenerated->accounting.finalizedRestarts;
+  publicationWork.publicationSlots =
+      parallelGenerated->accounting.publicationSlots;
+  if (publicationBoundedGenerated->termination !=
+          parallelGenerated->termination ||
+      publicationBoundedGenerated->accounting.seedAttemptSlots != 4 ||
+      publicationBoundedGenerated->accounting.publicationSlots != 1 ||
+      publicationBoundedGenerated->accounting.finalizedRestarts != 1 ||
+      publicationBoundedGenerated->candidates.size() > 1 ||
+      !(publicationWork == parallelGenerated->accounting))
+    fail("publication demand serialized, truncated, or reclassified exhaustive "
+         "Spatial work");
   for (std::size_t index = 0; index != singleGenerated->candidates.size();
        ++index) {
     auto singleMapping = take(loom::mapping::importSpatialMapping(
@@ -1078,6 +1131,105 @@ void candidateWorkerCountPreservesFormalResult() {
         parallelMapping.canonicalBytes().bytes())
       fail("candidate worker count changed canonical Spatial Mapping bytes");
   }
+  llvm::outs() << "spatial_worker_budget constrained_workers=1"
+               << " parallel_workers=3 exhaustive_restart_slots="
+               << publicationBoundedGenerated->accounting.seedAttemptSlots
+               << " bounded_publications="
+               << publicationBoundedGenerated->accounting.publicationSlots
+               << '\n';
+}
+
+void canonicalSeedHandoffPreservesFormalResult() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
+  mlir::MLIRContext context = makeContext();
+  Fixture fixture = buildFixture(context, store, blobs);
+  auto dataflow = take(fixture.dataflow.view());
+  auto tech = take(
+      loom::mapping::importTechMapping(fixture.techMappingReference, store));
+  auto constraints =
+      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+          dataflow, tech.view(), fixture.fabric.view(), store));
+  loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
+  resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 4;
+  auto config = take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
+  auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fixture.fabric.view()));
+  auto problem = take(loom::pnr::freezeSpatialPnrProblem(
+      dataflow, tech.view(), fixture.fabric.view(), physicalTiming, config,
+      constraints.view()));
+
+  const auto makeHandoff = [&]() {
+    loom::pnr::SpatialPathFinderSeedWorkSummary work;
+    auto seed = take(loom::pnr::createPathFinderSpatialSeed(problem, 0, work));
+    auto handoff =
+        std::make_shared<loom::pnr::SpatialPathFinderSeedHandoff>();
+    handoff->attemptOrdinal = 0;
+    handoff->problemCacheKey = problem->cacheKey();
+    handoff->workSummary = work;
+    handoff->seed = std::move(seed);
+    return handoff;
+  };
+  const auto run = [&](loom::ExecutionResourceBudget budget,
+                       loom::pnr::SpatialPathFinderSeedHandoffHandle handoff) {
+    loom::pnr::SpatialPnrGenerationInputs inputs{
+        dataflow,       tech.view(), fixture.fabric.view(), physicalTiming,
+        config,         constraints.view(), store, 4};
+    inputs.preparedActiveProblem = problem;
+    inputs.executionBudget = budget;
+    inputs.preparedCanonicalSeed = std::move(handoff);
+    return loom::pnr::generateSpatialMappings(inputs);
+  };
+  auto malformed = makeHandoff();
+  malformed->seed->attemptOrdinal = 1;
+  const auto malformedOutcome = run({3, 0}, std::move(malformed));
+  const auto *malformedInvalid =
+      std::get_if<loom::pnr::InvalidSpatialPnrGeneration>(&malformedOutcome);
+  if (!malformedInvalid ||
+      malformedInvalid->reason !=
+          loom::pnr::InvalidSpatialPnrGenerationReason::FrozenInput)
+    fail("malformed canonical seed handoff was not rejected as FrozenInput");
+  auto failedHandoff = makeHandoff();
+  failedHandoff->seed.reset();
+  failedHandoff->failure = llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument),
+      "synthetic transferred seed failure");
+  const auto failedOutcome = run({3, 0}, std::move(failedHandoff));
+  if (!std::get_if<loom::pnr::InternalSpatialPnrGeneration>(&failedOutcome))
+    fail("transferred seed failure changed its typed internal classification");
+  const auto cold = run({3, 0}, nullptr);
+  const auto warm = run({3, 0}, makeHandoff());
+  const auto coldMemory = run({4, 1}, nullptr);
+  const auto warmMemory = run({4, 1}, makeHandoff());
+  const auto compare = [&](const auto &lhs, const auto &rhs,
+                           llvm::StringRef label) {
+    if (lhs.index() != rhs.index())
+      fail(llvm::Twine(label) + " changed the formal outcome kind");
+    const auto *lhsGenerated =
+        std::get_if<loom::pnr::GeneratedSpatialMappings>(&lhs);
+    const auto *rhsGenerated =
+        std::get_if<loom::pnr::GeneratedSpatialMappings>(&rhs);
+    if (!lhsGenerated || !rhsGenerated ||
+        lhsGenerated->termination != rhsGenerated->termination ||
+        !(lhsGenerated->accounting == rhsGenerated->accounting) ||
+        lhsGenerated->candidates != rhsGenerated->candidates)
+      fail(llvm::Twine(label) +
+           " changed termination, work accounting, or candidates");
+  };
+  compare(cold, warm, "canonical seed handoff");
+  compare(coldMemory, warmMemory, "memory-calibrated canonical seed handoff");
+  llvm::outs() << "spatial_seed_handoff reused_ordinal=0"
+               << " memory_calibration=verified"
+               << " seed_slots="
+               << std::get<loom::pnr::GeneratedSpatialMappings>(warm)
+                      .accounting.seedAttemptSlots
+               << '\n';
 }
 
 void firstVerifiedCandidateRetainsTypedPrefix() {
@@ -1122,6 +1274,7 @@ void firstVerifiedCandidateRetainsTypedPrefix() {
       boundedGenerated->termination !=
           loom::pnr::PnrGenerationTermination::SemanticLimitReached ||
       boundedGenerated->candidates.size() != 1 ||
+      boundedGenerated->accounting.plannedSeedAttemptSlots != 2 ||
       boundedGenerated->accounting.seedAttemptSlots != 1 ||
       boundedGenerated->accounting.calibrationProposalSlots != 0 ||
       boundedGenerated->accounting.annealingBaseProposalSlots != 0 ||
@@ -1163,6 +1316,8 @@ void interruptionReturnsTypedSpatialSnapshot() {
   if (!interrupted ||
       interrupted->snapshot.stage !=
           loom::pnr::SpatialPnrInterruptionStage::InputAdmission ||
+      interrupted->accounting.plannedSeedAttemptSlots != 2 ||
+      interrupted->accounting.seedAttemptSlots != 0 ||
       interrupted->snapshot.frontier.seedAttemptSlots != 0 ||
       interrupted->snapshot.bestSelectedRank ||
       interrupted->snapshot.closureResidual.violationValues ||
@@ -2009,6 +2164,8 @@ int main(int argc, char **argv) {
           .Case("first-verified-lazy-ranking",
                 firstVerifiedAvoidsSpeculativeRouteRanking)
           .Case("worker-invariance", candidateWorkerCountPreservesFormalResult)
+          .Case("canonical-seed-handoff",
+                canonicalSeedHandoffPreservesFormalResult)
           .Case("first-verified-prefix",
                 firstVerifiedCandidateRetainsTypedPrefix)
           .Case("typed-interruption", interruptionReturnsTypedSpatialSnapshot)

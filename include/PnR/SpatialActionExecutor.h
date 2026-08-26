@@ -128,6 +128,8 @@ public:
              std::uint64_t exactRegionalLogicalNetLimit = 0);
 
   const dse::ObjectiveVector &currentObjective() const;
+  /// Coldly reconstructs the bound candidate's route-cost projection.
+  llvm::Error verifyCandidateProjection() const;
   std::uint64_t endpointExpansionCount() const {
     return router_.endpointExpansionCount();
   }
@@ -136,6 +138,12 @@ public:
   }
   std::uint64_t heuristicBuildCount() const {
     return router_.heuristicBuildCount();
+  }
+  std::uint64_t forwardHeuristicQueryCount() const {
+    return router_.forwardHeuristicQueryCount();
+  }
+  std::uint64_t forwardHeuristicUnreachableCount() const {
+    return router_.forwardHeuristicUnreachableCount();
   }
   std::uint64_t heuristicCacheEvictionCount() const {
     return router_.heuristicCacheEvictionCount();
@@ -148,6 +156,9 @@ public:
   }
   std::uint64_t negotiationIterationCount() const {
     return router_.negotiationIterationCount();
+  }
+  HandshakeProjectionStatistics handshakeProjectionStatistics() const {
+    return candidateScratch_.handshakeProjectionStatistics();
   }
   std::uint64_t regionalLogicalNetCount() const {
     return router_.regionalLogicalNetCount();
@@ -215,6 +226,7 @@ private:
                                   bool resetNegotiationState);
   llvm::Error
   synchronizeCandidateTags(llvm::ArrayRef<PnrIndex> changedLogicalNets);
+  llvm::Error restoreCandidateTagDelta();
 
   SpatialCandidateScratch candidateScratch_;
   SpatialPathFinderRouterScratch router_;
@@ -227,9 +239,13 @@ private:
   std::vector<SpatialWholeNetDispositionKind> explicitNetDispositions_;
   std::vector<PnrIndex> explicitRegisterFifoTransfers_;
   std::vector<PnrIndex> affectedNets_;
+  SpatialFiniteBufferConflictWitness hardProgressWitness_;
   std::vector<PnrIndex> routeCostTraversals_;
   std::vector<PnrIndex> routeCostLogicalNets_;
+  std::vector<PnrIndex> routeTagLogicalNets_;
+  std::vector<PnrIndex> routeTagDomains_;
   std::vector<std::uint64_t> localTransferClaimBits_;
+  std::vector<PnrIndex> localTransferClaimWords_;
   std::unique_ptr<detail::InitializerRelationSolver> relationSolver_;
   std::unique_ptr<detail::SpatialMemoryConstraintScratch>
       memoryConstraintScratch_;
@@ -255,6 +271,7 @@ private:
   std::vector<PnrIndex> explicitMemoryExposureSelections_;
   std::vector<std::uint8_t> explicitMemoryExposureMarks_;
   std::uint64_t netEpoch_ = 0;
+  std::uint8_t dependencyEpoch_ = 0;
   SpatialCandidateState *candidate_ = nullptr;
   bool activeProbe_ = false;
   bool globalRouting_ = false;

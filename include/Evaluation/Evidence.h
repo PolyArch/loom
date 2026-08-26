@@ -227,6 +227,20 @@ llvm::Expected<ArtifactRootReference>
 importEvaluationEvidenceRequestReference(const ArtifactRootReference &reference,
                                          const ArtifactStore &artifactStore);
 
+struct EvaluationEvidenceDependencyProjection final {
+  ArtifactRootReference request;
+  std::vector<ModelOutputBinding> outputBindings;
+  EvidenceOutcomeKind outcomeKind = EvidenceOutcomeKind::Unsupported;
+};
+
+/// Reads the owner-framed Request and output Artifact references required to
+/// assemble an independent import closure. This validates the stored schema,
+/// outer envelope, output slots, and typed root codecs; full Evidence
+/// validation remains exclusively in `importEvaluationEvidence`.
+llvm::Expected<EvaluationEvidenceDependencyProjection>
+importEvaluationEvidenceDependencyProjection(
+    const ArtifactRootReference &reference, const ArtifactStore &artifactStore);
+
 } // namespace loom::evaluation
 
 #endif // LOOM_EVALUATION_EVIDENCE_H

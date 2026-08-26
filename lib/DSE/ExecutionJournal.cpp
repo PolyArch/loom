@@ -19,9 +19,11 @@
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <system_error>
@@ -33,9 +35,12 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral kSnapshotName = "execution-journal.snapshot";
+constexpr llvm::StringLiteral kLockName = "execution-journal.lock";
 constexpr llvm::StringLiteral kSnapshotIdentity = "loom.dse.execution_journal";
 constexpr SchemaVersion kLegacySnapshotVersion{1, 1};
-constexpr SchemaVersion kSnapshotVersion{1, 2};
+constexpr SchemaVersion kExternalToolWorkSnapshotVersion{1, 2};
+constexpr SchemaVersion kOccurrenceSnapshotVersion{1, 3};
+constexpr SchemaVersion kSnapshotVersion{1, 4};
 constexpr std::uint64_t kMaximumSnapshotBytes = 64ULL * 1024ULL * 1024ULL;
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -475,7 +480,8 @@ decodeRecord(Decoder &decoder, SchemaVersion snapshotVersion) {
         std::move(*schema), {*major, *minor}, std::move(*digest)};
   }
   ExternalToolWorkLedger externalToolWork;
-  if (snapshotVersion == kSnapshotVersion) {
+  if (snapshotVersion == kExternalToolWorkSnapshotVersion ||
+      snapshotVersion == kSnapshotVersion) {
     auto decoded = decodeExternalToolWorkLedger(decoder);
     if (!decoded)
       return decoded.takeError();
@@ -506,6 +512,63 @@ llvm::Error closeDescriptor(int descriptor, llvm::StringRef description) {
   if (::close(descriptor) == 0)
     return llvm::Error::success();
   return filesystemError(("cannot close " + description).str());
+}
+
+class OwnedDescriptor final {
+public:
+  explicit OwnedDescriptor(int descriptor) : descriptor_(descriptor) {}
+  OwnedDescriptor(const OwnedDescriptor &) = delete;
+  OwnedDescriptor &operator=(const OwnedDescriptor &) = delete;
+  ~OwnedDescriptor() {
+    if (descriptor_ >= 0)
+      (void)::close(descriptor_);
+  }
+
+  int get() const { return descriptor_; }
+  int release() {
+    const int descriptor = descriptor_;
+    descriptor_ = -1;
+    return descriptor;
+  }
+
+private:
+  int descriptor_ = -1;
+};
+
+llvm::Expected<int> acquireRunLock(int directory) {
+  const int descriptor =
+      ::openat(directory, kLockName.str().c_str(),
+               O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (descriptor < 0)
+    return filesystemError("cannot open run lock");
+  OwnedDescriptor owned(descriptor);
+  struct stat status{};
+  if (::fstat(descriptor, &status) != 0)
+    return filesystemError("cannot stat run lock");
+  if (!S_ISREG(status.st_mode))
+    return invalid("run lock is not a regular file");
+  while (::flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
+    if (errno == EINTR)
+      continue;
+    if (errno == EWOULDBLOCK || errno == EAGAIN)
+      return invalid("run directory is owned by another process");
+    return filesystemError("cannot acquire run lock");
+  }
+  return owned.release();
+}
+
+llvm::Error validateLockBinding(int directory, int lockDescriptor) {
+  struct stat opened{};
+  struct stat named{};
+  if (::fstat(lockDescriptor, &opened) != 0)
+    return filesystemError("cannot stat owned run lock");
+  if (::fstatat(directory, kLockName.str().c_str(), &named,
+                AT_SYMLINK_NOFOLLOW) != 0)
+    return filesystemError("cannot stat named run lock");
+  if (!S_ISREG(named.st_mode) || opened.st_dev != named.st_dev ||
+      opened.st_ino != named.st_ino)
+    return invalid("run lock inode changed while the journal was active");
+  return llvm::Error::success();
 }
 
 llvm::Expected<std::optional<std::vector<std::uint8_t>>>
@@ -564,7 +627,13 @@ llvm::Error writeAll(int file, llvm::ArrayRef<std::uint8_t> bytes) {
   return llvm::Error::success();
 }
 
-llvm::Error publishSnapshot(int directory, llvm::ArrayRef<std::uint8_t> bytes) {
+struct SnapshotPublication final {
+  bool durable = true;
+  std::error_code directorySyncError;
+};
+
+llvm::Expected<SnapshotPublication>
+publishSnapshot(int directory, llvm::ArrayRef<std::uint8_t> bytes) {
   static std::atomic<std::uint64_t> counter{0};
   constexpr std::uint64_t maximumNameAttempts = 1024;
   std::string temporary;
@@ -598,23 +667,62 @@ llvm::Error publishSnapshot(int directory, llvm::ArrayRef<std::uint8_t> bytes) {
     (void)::unlinkat(directory, temporary.c_str(), 0);
     return filesystemError("cannot publish snapshot atomically");
   }
-  if (::fsync(directory) != 0)
-    return filesystemError("cannot sync run directory");
-  return llvm::Error::success();
+  while (::fsync(directory) != 0) {
+    if (errno == EINTR)
+      continue;
+    return SnapshotPublication{false,
+                               std::error_code(errno, std::generic_category())};
+  }
+  return SnapshotPublication{};
 }
 
 } // namespace
 
+char ExecutionJournalPersistenceError::ID = 0;
+
+void ExecutionJournalPersistenceError::log(llvm::raw_ostream &stream) const {
+  stream << "execution_journal_persistence: published snapshot directory "
+            "sync pending: "
+         << error_.message();
+}
+
+std::error_code ExecutionJournalPersistenceError::convertToErrorCode() const {
+  return error_;
+}
+
 struct ExecutionJournal::State final {
   State(std::string localRunRoot, DseRunKey runKey,
-        ComponentViewDigest viewDigest)
+        ComponentViewDigest viewDigest, int directoryDescriptor,
+        int lockDescriptor)
       : localRunRoot(std::move(localRunRoot)), runKey(std::move(runKey)),
-        viewDigest(viewDigest) {}
+        viewDigest(viewDigest), directoryDescriptor(directoryDescriptor),
+        lockDescriptor(lockDescriptor), ownerProcess(::getpid()) {}
+
+  ~State() {
+    if (lockDescriptor >= 0 && ::getpid() == ownerProcess)
+      (void)::flock(lockDescriptor, LOCK_UN);
+    if (lockDescriptor >= 0)
+      (void)::close(lockDescriptor);
+    if (directoryDescriptor >= 0)
+      (void)::close(directoryDescriptor);
+  }
 
   std::string localRunRoot;
   DseRunKey runKey;
   ComponentViewDigest viewDigest;
+  int directoryDescriptor = -1;
+  int lockDescriptor = -1;
+  pid_t ownerProcess = -1;
   bool stopRequested = false;
+  std::uint64_t nextOccurrenceOrdinal = 0;
+  std::optional<InvocationOccurrenceRef> lastCommittedOccurrence;
+  std::optional<BlobDigest> lastCommittedManifest;
+  std::optional<InvocationOccurrenceRef> currentOccurrence;
+  std::optional<InvocationOccurrenceRef> currentResumedFrom;
+  bool currentOccurrenceCommitted = false;
+  bool workStateSealed = false;
+  bool publishedDirectorySyncPending = false;
+  std::error_code pendingDirectorySyncError;
   std::vector<JournalWorkUnitRecord> workUnits;
   mutable std::mutex mutex;
 };
@@ -675,25 +783,101 @@ std::vector<std::uint8_t> encodeState(const StateT &state) {
   encoder.bytes(state.runKey.bytes());
   encoder.bytes(state.viewDigest.bytes());
   encoder.u32(state.stopRequested ? 1 : 0);
+  encoder.u64(state.nextOccurrenceOrdinal);
+  encoder.u32(state.lastCommittedOccurrence ? 1 : 0);
+  if (state.lastCommittedOccurrence) {
+    encoder.u64(state.lastCommittedOccurrence->occurrenceOrdinal);
+    encoder.bytes(state.lastCommittedManifest->bytes());
+  }
   encoder.u64(state.workUnits.size());
   for (const JournalWorkUnitRecord &record : state.workUnits)
     encodeRecord(encoder, record);
   return encoder.take();
 }
 
-template <typename StateT> llvm::Error flushLocked(const StateT &state) {
-  auto directory = openRunDirectory(state.localRunRoot);
-  if (!directory)
-    return directory.takeError();
+template <typename StateT>
+llvm::Expected<SnapshotPublication> publishStateLocked(const StateT &state) {
+  if (llvm::Error error =
+          validateLockBinding(state.directoryDescriptor, state.lockDescriptor))
+    return std::move(error);
   std::vector<std::uint8_t> bytes = encodeState(state);
-  llvm::Error error = bytes.size() > kMaximumSnapshotBytes
-                          ? invalid("encoded snapshot exceeds the size bound")
-                          : publishSnapshot(*directory, bytes);
-  return llvm::joinErrors(std::move(error),
-                          closeDescriptor(*directory, "run directory"));
+  if (bytes.size() > kMaximumSnapshotBytes)
+    return invalid("encoded snapshot exceeds the size bound");
+  return publishSnapshot(state.directoryDescriptor, bytes);
 }
 
-llvm::Expected<std::pair<bool, std::vector<JournalWorkUnitRecord>>>
+llvm::Error pendingDirectorySyncError(const std::error_code &error) {
+  return llvm::make_error<ExecutionJournalPersistenceError>(
+      ExecutionJournalPersistenceErrorReason::PublishedDirectorySyncPending,
+      error);
+}
+
+llvm::Error synchronizeDirectoryBarrier(int directory, int lock,
+                                        std::error_code &observedError) {
+  if (llvm::Error error = validateLockBinding(directory, lock))
+    return error;
+  while (::fsync(directory) != 0) {
+    if (errno == EINTR)
+      continue;
+    observedError = std::error_code(errno, std::generic_category());
+    return pendingDirectorySyncError(observedError);
+  }
+  observedError.clear();
+  return llvm::Error::success();
+}
+
+template <typename StateT>
+llvm::Error synchronizePublishedDirectoryLocked(StateT &state) {
+  if (!state.publishedDirectorySyncPending)
+    return llvm::Error::success();
+  if (llvm::Error error = synchronizeDirectoryBarrier(
+          state.directoryDescriptor, state.lockDescriptor,
+          state.pendingDirectorySyncError))
+    return error;
+  state.publishedDirectorySyncPending = false;
+  return llvm::Error::success();
+}
+
+template <typename StateT>
+llvm::Error recordPublicationLocked(StateT &state,
+                                    SnapshotPublication publication) {
+  if (publication.durable)
+    return llvm::Error::success();
+  state.publishedDirectorySyncPending = true;
+  state.pendingDirectorySyncError = publication.directorySyncError;
+  return pendingDirectorySyncError(publication.directorySyncError);
+}
+
+template <typename StateT> llvm::Error persistStateLocked(StateT &state) {
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(state))
+    return error;
+  auto publication = publishStateLocked(state);
+  if (!publication)
+    return publication.takeError();
+  return recordPublicationLocked(state, std::move(*publication));
+}
+
+struct SnapshotStateView final {
+  int directoryDescriptor = -1;
+  int lockDescriptor = -1;
+  const DseRunKey &runKey;
+  const ComponentViewDigest &viewDigest;
+  bool stopRequested = false;
+  std::uint64_t nextOccurrenceOrdinal = 0;
+  const std::optional<InvocationOccurrenceRef> &lastCommittedOccurrence;
+  const std::optional<BlobDigest> &lastCommittedManifest;
+  const std::vector<JournalWorkUnitRecord> &workUnits;
+};
+
+struct DecodedState final {
+  bool stopRequested = false;
+  std::uint64_t nextOccurrenceOrdinal = 0;
+  std::optional<InvocationOccurrenceRef> lastCommittedOccurrence;
+  std::optional<BlobDigest> lastCommittedManifest;
+  std::vector<JournalWorkUnitRecord> workUnits;
+};
+
+llvm::Expected<DecodedState>
 decodeState(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
             const ComponentViewDigest &viewDigest) {
   Decoder decoder(bytes);
@@ -709,8 +893,13 @@ decodeState(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
   const SchemaVersion snapshotVersion{*major, *minor};
   if (*identity != kSnapshotIdentity ||
       (snapshotVersion != kLegacySnapshotVersion &&
+       snapshotVersion != kExternalToolWorkSnapshotVersion &&
+       snapshotVersion != kOccurrenceSnapshotVersion &&
        snapshotVersion != kSnapshotVersion))
     return invalid("snapshot schema is unsupported");
+  if (snapshotVersion != kSnapshotVersion)
+    return invalid("historical journal snapshot predates committed invocation "
+                   "manifest ownership");
   auto runKeyBytes = decoder.bytes(DseRunKey::byteSize, "run key");
   if (!runKeyBytes)
     return runKeyBytes.takeError();
@@ -733,6 +922,41 @@ decodeState(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
     return stopRequested.takeError();
   if (*stopRequested > 1)
     return invalid("graceful stop flag is not boolean");
+  auto nextOccurrenceOrdinal =
+      decoder.u64("next invocation occurrence ordinal");
+  if (!nextOccurrenceOrdinal)
+    return nextOccurrenceOrdinal.takeError();
+  auto committed = decoder.u32("committed invocation presence");
+  if (!committed)
+    return committed.takeError();
+  if (*committed > 1)
+    return invalid("committed invocation presence is not boolean");
+  std::optional<InvocationOccurrenceRef> lastCommittedOccurrence;
+  std::optional<BlobDigest> lastCommittedManifest;
+  if (*committed == 1) {
+    auto ordinal = decoder.u64("committed invocation occurrence ordinal");
+    if (!ordinal)
+      return ordinal.takeError();
+    if (*ordinal == std::numeric_limits<std::uint64_t>::max())
+      return invalid("committed invocation ordinal is exhausted");
+    if (*ordinal >= *nextOccurrenceOrdinal)
+      return invalid("committed invocation ordinal was not reserved");
+    auto digestBytes =
+        decoder.bytes(BlobDigest::byteSize, "committed invocation manifest");
+    if (!digestBytes)
+      return digestBytes.takeError();
+    auto digest = BlobDigest::fromBytes(*digestBytes);
+    if (!digest)
+      return digest.takeError();
+    lastCommittedOccurrence = InvocationOccurrenceRef{runKey, *ordinal};
+    lastCommittedManifest = std::move(*digest);
+  }
+  const std::uint64_t expectedNextOccurrenceOrdinal =
+      lastCommittedOccurrence ? lastCommittedOccurrence->occurrenceOrdinal + 1
+                              : 0;
+  if (*nextOccurrenceOrdinal != expectedNextOccurrenceOrdinal)
+    return invalid("snapshot contains an unowned invocation occurrence "
+                   "reservation");
   auto count = decoder.u64("work record count");
   if (!count)
     return count.takeError();
@@ -752,7 +976,9 @@ decodeState(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
   }
   if (!decoder.empty())
     return invalid("snapshot has trailing bytes");
-  return std::make_pair(*stopRequested == 1, std::move(records));
+  return DecodedState{*stopRequested == 1, *nextOccurrenceOrdinal,
+                      std::move(lastCommittedOccurrence),
+                      std::move(lastCommittedManifest), std::move(records)};
 }
 
 auto findRecord(std::vector<JournalWorkUnitRecord> &records,
@@ -770,24 +996,61 @@ llvm::Expected<ExecutionJournal>
 ExecutionJournal::open(llvm::StringRef localRunRoot,
                        const DseRunClosure &closure,
                        const ResolvedDseConfigView &view) {
-  auto directory = openRunDirectory(localRunRoot);
-  if (!directory)
-    return directory.takeError();
-  auto snapshot = readSnapshot(*directory);
-  llvm::Error closeError = closeDescriptor(*directory, "run directory");
+  auto openedDirectory = openRunDirectory(localRunRoot);
+  if (!openedDirectory)
+    return openedDirectory.takeError();
+  OwnedDescriptor directory(*openedDirectory);
+  struct stat directoryStatus{};
+  if (::fstat(directory.get(), &directoryStatus) != 0)
+    return filesystemError("cannot stat run directory");
+  const std::pair<std::uint64_t, std::uint64_t> directoryKey{
+      static_cast<std::uint64_t>(directoryStatus.st_dev),
+      static_cast<std::uint64_t>(directoryStatus.st_ino)};
+  static std::mutex registryMutex;
+  static std::map<std::pair<std::uint64_t, std::uint64_t>, std::weak_ptr<State>>
+      registry;
+  std::lock_guard<std::mutex> registryLock(registryMutex);
+  if (auto state = registry[directoryKey].lock()) {
+    if (state->ownerProcess != ::getpid())
+      return invalid("journal handle was inherited across a process fork");
+    if (state->runKey != closure.runKey())
+      return invalid("active journal belongs to another semantic run");
+    if (state->viewDigest != view.digest())
+      return invalid("active journal belongs to another resolved DSE plan");
+    std::lock_guard<std::mutex> stateLock(state->mutex);
+    if (llvm::Error error = synchronizePublishedDirectoryLocked(*state))
+      return error;
+    return ExecutionJournal(std::move(state));
+  }
+
+  auto acquiredLock = acquireRunLock(directory.get());
+  if (!acquiredLock)
+    return acquiredLock.takeError();
+  OwnedDescriptor runLock(*acquiredLock);
+  auto snapshot = readSnapshot(directory.get());
   if (!snapshot)
-    return llvm::joinErrors(snapshot.takeError(), std::move(closeError));
-  if (closeError)
-    return std::move(closeError);
+    return snapshot.takeError();
+  if (*snapshot) {
+    std::error_code barrierError;
+    if (llvm::Error error = synchronizeDirectoryBarrier(
+            directory.get(), runLock.get(), barrierError))
+      return error;
+  }
 
   auto state = std::make_shared<State>(localRunRoot.str(), closure.runKey(),
-                                       view.digest());
+                                       view.digest(), directory.release(),
+                                       runLock.release());
   if (*snapshot) {
     auto decoded = decodeState(**snapshot, closure.runKey(), view.digest());
     if (!decoded)
       return decoded.takeError();
-    state->stopRequested = decoded->first;
-    state->workUnits = std::move(decoded->second);
+    state->stopRequested = decoded->stopRequested;
+    state->nextOccurrenceOrdinal = decoded->nextOccurrenceOrdinal;
+    state->lastCommittedOccurrence =
+        std::move(decoded->lastCommittedOccurrence);
+    state->lastCommittedManifest = std::move(decoded->lastCommittedManifest);
+    state->workStateSealed = state->lastCommittedOccurrence.has_value();
+    state->workUnits = std::move(decoded->workUnits);
     bool recoveredActiveWork = false;
     for (JournalWorkUnitRecord &record : state->workUnits) {
       if (record.activeAttemptStartUnixTimeNanoseconds != 0) {
@@ -804,11 +1067,12 @@ ExecutionJournal::open(llvm::StringRef localRunRoot,
       }
     }
     if (recoveredActiveWork)
-      if (llvm::Error error = flushLocked(*state))
+      if (llvm::Error error = persistStateLocked(*state))
         return error;
-  } else if (llvm::Error error = flushLocked(*state)) {
+  } else if (llvm::Error error = persistStateLocked(*state)) {
     return error;
   }
+  registry[directoryKey] = state;
   return ExecutionJournal(std::move(state));
 }
 
@@ -823,14 +1087,51 @@ llvm::StringRef ExecutionJournal::localRunRoot() const {
   return state_->localRunRoot;
 }
 
+llvm::Error ExecutionJournal::validateProcessOwner() const {
+  return state_->ownerProcess == ::getpid()
+             ? llvm::Error::success()
+             : invalid("journal handle was inherited across a process fork");
+}
+
+llvm::Expected<
+    std::pair<InvocationOccurrenceRef, std::optional<InvocationOccurrenceRef>>>
+ExecutionJournal::currentInvocationOccurrence() const {
+  if (llvm::Error error = validateProcessOwner())
+    return std::move(error);
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if (!state_->currentOccurrence)
+    return invalid("journal has not opened an invocation occurrence");
+  return std::make_pair(*state_->currentOccurrence, state_->currentResumedFrom);
+}
+
+llvm::Expected<std::optional<InvocationManifestReceipt>>
+ExecutionJournal::lastCommittedInvocationManifest() const {
+  if (llvm::Error error = validateProcessOwner())
+    return std::move(error);
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return std::move(error);
+  if (state_->lastCommittedOccurrence.has_value() !=
+      state_->lastCommittedManifest.has_value())
+    return invalid("journal manifest receipt is internally inconsistent");
+  if (!state_->lastCommittedOccurrence)
+    return std::optional<InvocationManifestReceipt>{};
+  return std::optional<InvocationManifestReceipt>{InvocationManifestReceipt{
+      *state_->lastCommittedOccurrence, *state_->lastCommittedManifest}};
+}
+
 llvm::Expected<std::vector<JournalWorkUnitRecord>>
 ExecutionJournal::workUnits() const {
+  if (llvm::Error error = validateProcessOwner())
+    return std::move(error);
   std::lock_guard<std::mutex> lock(state_->mutex);
   return state_->workUnits;
 }
 
 llvm::Expected<InvocationExternalToolWorkLedger>
 ExecutionJournal::externalToolWorkLedger() const {
+  if (llvm::Error error = validateProcessOwner())
+    return std::move(error);
   std::lock_guard<std::mutex> lock(state_->mutex);
   std::vector<PlanNodeExternalToolWorkLedger> planNodes;
   for (const JournalWorkUnitRecord &record : state_->workUnits) {
@@ -850,6 +1151,8 @@ ExecutionJournal::externalToolWorkLedger() const {
 
 llvm::Expected<std::optional<JournalWorkUnitRecord>>
 ExecutionJournal::find(const WorkUnitKey &key) const {
+  if (llvm::Error error = validateProcessOwner())
+    return std::move(error);
   std::lock_guard<std::mutex> lock(state_->mutex);
   auto found = findRecord(state_->workUnits, key);
   if (found == state_->workUnits.end() || !(found->key == key))
@@ -858,7 +1161,13 @@ ExecutionJournal::find(const WorkUnitKey &key) const {
 }
 
 llvm::Error ExecutionJournal::queue(const WorkUnitKey &key) {
+  if (llvm::Error error = validateProcessOwner())
+    return error;
   std::lock_guard<std::mutex> lock(state_->mutex);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return error;
+  if (state_->workStateSealed)
+    return invalid("committed invocation work is immutable");
   auto found = findRecord(state_->workUnits, key);
   if (found != state_->workUnits.end() && found->key == key) {
     if (terminal(found->status) ||
@@ -890,11 +1199,17 @@ llvm::Error ExecutionJournal::queue(const WorkUnitKey &key) {
                                      std::nullopt,
                                      {}});
   }
-  return flushLocked(*state_);
+  return persistStateLocked(*state_);
 }
 
 llvm::Error ExecutionJournal::markRunning(const WorkUnitKey &key) {
+  if (llvm::Error error = validateProcessOwner())
+    return error;
   std::lock_guard<std::mutex> lock(state_->mutex);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return error;
+  if (state_->workStateSealed)
+    return invalid("committed invocation work is immutable");
   auto found = findRecord(state_->workUnits, key);
   if (found == state_->workUnits.end() || !(found->key == key))
     return invalid("cannot run an unqueued work unit");
@@ -905,7 +1220,7 @@ llvm::Error ExecutionJournal::markRunning(const WorkUnitKey &key) {
     return now.takeError();
   found->status = JournalWorkUnitStatus::Running;
   found->activeAttemptStartUnixTimeNanoseconds = *now;
-  return flushLocked(*state_);
+  return persistStateLocked(*state_);
 }
 
 llvm::Error ExecutionJournal::recordPrepared(
@@ -913,9 +1228,15 @@ llvm::Error ExecutionJournal::recordPrepared(
     const external_tool::PreparedExternalToolInvocation &prepared,
     std::uint64_t activeWallTimeNanoseconds,
     std::uint64_t observedUnixTimeNanoseconds) {
+  if (llvm::Error error = validateProcessOwner())
+    return error;
   if (prepared.bundleRoot.empty())
     return invalid("prepared invocation has an empty bundle root");
   std::lock_guard<std::mutex> lock(state_->mutex);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return error;
+  if (state_->workStateSealed)
+    return invalid("committed invocation work is immutable");
   auto found = findRecord(state_->workUnits, key);
   if (found == state_->workUnits.end() || !(found->key == key))
     return invalid("cannot prepare an unknown work unit");
@@ -946,11 +1267,17 @@ llvm::Error ExecutionJournal::recordPrepared(
   if (llvm::Error error = validateRecord(updated))
     return error;
   *found = std::move(updated);
-  return flushLocked(*state_);
+  return persistStateLocked(*state_);
 }
 
 llvm::Error ExecutionJournal::beginPreparedExecution(const WorkUnitKey &key) {
+  if (llvm::Error error = validateProcessOwner())
+    return error;
   std::lock_guard<std::mutex> lock(state_->mutex);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return error;
+  if (state_->workStateSealed)
+    return invalid("committed invocation work is immutable");
   auto found = findRecord(state_->workUnits, key);
   if (found == state_->workUnits.end() || !(found->key == key))
     return invalid("cannot execute an unknown prepared work unit");
@@ -969,7 +1296,7 @@ llvm::Error ExecutionJournal::beginPreparedExecution(const WorkUnitKey &key) {
   if (found->externalToolWork.reserved == 0)
     found->externalToolWork.reserved = 1;
   found->activeAttemptStartUnixTimeNanoseconds = *now;
-  return flushLocked(*state_);
+  return persistStateLocked(*state_);
 }
 
 llvm::Error ExecutionJournal::recordPreparedExecutionInterval(
@@ -977,15 +1304,26 @@ llvm::Error ExecutionJournal::recordPreparedExecutionInterval(
     std::uint64_t observedUnixTimeNanoseconds,
     std::optional<external_tool::ExternalToolInvocationExecutionObservation>
         executionObservation) {
+  if (llvm::Error error = validateProcessOwner())
+    return error;
   if (observedUnixTimeNanoseconds == 0)
     return invalid("prepared execution interval requires an observation time");
   std::lock_guard<std::mutex> lock(state_->mutex);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return error;
+  if (state_->workStateSealed)
+    return invalid("committed invocation work is immutable");
   auto found = findRecord(state_->workUnits, key);
   if (found == state_->workUnits.end() || !(found->key == key))
     return invalid("cannot observe an unknown prepared work unit");
   if (found->status != JournalWorkUnitStatus::Prepared ||
       !found->preparedInvocation)
     return invalid("only prepared work can record an execution interval");
+  if (executionObservation)
+    if (llvm::Error error =
+            external_tool::validateExternalToolInvocationExecutionObservation(
+                *found->preparedInvocation, *executionObservation))
+      return error;
   JournalWorkUnitRecord updated = *found;
   if (llvm::Error error = addInterval(updated, activeWallTimeNanoseconds,
                                       observedUnixTimeNanoseconds))
@@ -1044,7 +1382,7 @@ llvm::Error ExecutionJournal::recordPreparedExecutionInterval(
   if (llvm::Error error = validateRecord(updated))
     return error;
   *found = std::move(updated);
-  return flushLocked(*state_);
+  return persistStateLocked(*state_);
 }
 
 llvm::Error ExecutionJournal::markTerminal(
@@ -1053,6 +1391,8 @@ llvm::Error ExecutionJournal::markTerminal(
     std::uint64_t terminalUnixTimeNanoseconds,
     llvm::ArrayRef<ArtifactRootReference> finalizedOutputs,
     std::optional<OwnerFinalizedWorkRecordRef> finalizedWorkRecord) {
+  if (llvm::Error error = validateProcessOwner())
+    return error;
   if (!terminal(status))
     return invalid("terminal transition requires a terminal status");
   if (terminalUnixTimeNanoseconds == 0)
@@ -1062,6 +1402,10 @@ llvm::Error ExecutionJournal::markTerminal(
           finalizedOutputs.end())
     return invalid("terminal outputs are not canonical and unique");
   std::lock_guard<std::mutex> lock(state_->mutex);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return error;
+  if (state_->workStateSealed)
+    return invalid("committed invocation work is immutable");
   auto found = findRecord(state_->workUnits, key);
   if (found == state_->workUnits.end() || !(found->key == key))
     return invalid("cannot complete an unknown work unit");
@@ -1094,19 +1438,35 @@ llvm::Error ExecutionJournal::markTerminal(
   if (llvm::Error error = validateRecord(updated))
     return error;
   *found = std::move(updated);
-  return flushLocked(*state_);
+  return persistStateLocked(*state_);
 }
 
 llvm::Error ExecutionJournal::requestGracefulStop() {
+  if (llvm::Error error = validateProcessOwner())
+    return error;
   std::lock_guard<std::mutex> lock(state_->mutex);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return error;
   state_->stopRequested = true;
-  return flushLocked(*state_);
+  return persistStateLocked(*state_);
 }
 
 llvm::Error ExecutionJournal::beginResume() {
-  std::lock_guard<std::mutex> lock(state_->mutex);
-  state_->stopRequested = false;
-  for (JournalWorkUnitRecord &record : state_->workUnits) {
+  if (llvm::Error error = validateProcessOwner())
+    return error;
+  std::lock_guard<std::mutex> stateLock(state_->mutex);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return error;
+  if (state_->currentOccurrence)
+    return invalid("journal handle already opened an invocation occurrence");
+  if (state_->nextOccurrenceOrdinal ==
+      std::numeric_limits<std::uint64_t>::max())
+    return invalid("invocation occurrence ordinal is exhausted");
+  const std::uint64_t occurrenceOrdinal = state_->nextOccurrenceOrdinal;
+  const std::optional<InvocationOccurrenceRef> resumedFrom =
+      state_->lastCommittedOccurrence;
+  std::vector<JournalWorkUnitRecord> resumedWork = state_->workUnits;
+  for (JournalWorkUnitRecord &record : resumedWork) {
     if (record.activeAttemptStartUnixTimeNanoseconds != 0) {
       auto now = unixNanosecondsNow();
       if (!now)
@@ -1117,17 +1477,103 @@ llvm::Error ExecutionJournal::beginResume() {
     if (record.status == JournalWorkUnitStatus::Running)
       record.status = JournalWorkUnitStatus::Queued;
   }
-  return flushLocked(*state_);
+  const SnapshotStateView snapshot{state_->directoryDescriptor,
+                                   state_->lockDescriptor,
+                                   state_->runKey,
+                                   state_->viewDigest,
+                                   false,
+                                   occurrenceOrdinal,
+                                   state_->lastCommittedOccurrence,
+                                   state_->lastCommittedManifest,
+                                   resumedWork};
+  auto publication = publishStateLocked(snapshot);
+  if (!publication)
+    return publication.takeError();
+  state_->stopRequested = false;
+  state_->workUnits = std::move(resumedWork);
+  if (llvm::Error error =
+          recordPublicationLocked(*state_, std::move(*publication)))
+    return error;
+  state_->currentOccurrence =
+      InvocationOccurrenceRef{state_->runKey, occurrenceOrdinal};
+  state_->currentResumedFrom = resumedFrom;
+  state_->currentOccurrenceCommitted = false;
+  state_->workStateSealed = false;
+  return llvm::Error::success();
+}
+
+llvm::Error ExecutionJournal::commitInvocationManifest(
+    const InvocationOccurrenceRef &occurrence,
+    const BlobDigest &manifestDigest) {
+  if (llvm::Error error = validateProcessOwner())
+    return error;
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return error;
+  if (!state_->currentOccurrence || *state_->currentOccurrence != occurrence)
+    return invalid("manifest does not name the active invocation occurrence");
+  if (state_->currentOccurrenceCommitted) {
+    if (state_->lastCommittedOccurrence == occurrence &&
+        state_->lastCommittedManifest == manifestDigest)
+      return llvm::Error::success();
+    return invalid("active invocation occurrence already owns a manifest");
+  }
+  if (llvm::any_of(state_->workUnits, [](const JournalWorkUnitRecord &record) {
+        return record.status == JournalWorkUnitStatus::Running ||
+               record.activeAttemptStartUnixTimeNanoseconds != 0;
+      }))
+    return invalid("manifest commit requires quiescent work records");
+  const std::optional<InvocationOccurrenceRef> committedOccurrence = occurrence;
+  const std::optional<BlobDigest> committedManifest = manifestDigest;
+  const std::uint64_t nextOccurrenceOrdinal = occurrence.occurrenceOrdinal + 1;
+  const SnapshotStateView snapshot{state_->directoryDescriptor,
+                                   state_->lockDescriptor,
+                                   state_->runKey,
+                                   state_->viewDigest,
+                                   state_->stopRequested,
+                                   nextOccurrenceOrdinal,
+                                   committedOccurrence,
+                                   committedManifest,
+                                   state_->workUnits};
+  auto publication = publishStateLocked(snapshot);
+  if (!publication)
+    return publication.takeError();
+  state_->nextOccurrenceOrdinal = nextOccurrenceOrdinal;
+  state_->lastCommittedOccurrence = committedOccurrence;
+  state_->lastCommittedManifest = committedManifest;
+  state_->currentOccurrenceCommitted = true;
+  state_->workStateSealed = true;
+  return recordPublicationLocked(*state_, std::move(*publication));
+}
+
+llvm::Error ExecutionJournal::releaseInvocationOccurrence() {
+  if (llvm::Error error = validateProcessOwner())
+    return error;
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return error;
+  if (!state_->currentOccurrence)
+    return invalid("journal has no invocation occurrence to release");
+  state_->currentOccurrence.reset();
+  state_->currentResumedFrom.reset();
+  state_->currentOccurrenceCommitted = false;
+  return llvm::Error::success();
 }
 
 bool ExecutionJournal::gracefulStopRequested() const {
+  if (state_->ownerProcess != ::getpid())
+    return true;
   std::lock_guard<std::mutex> lock(state_->mutex);
   return state_->stopRequested;
 }
 
 llvm::Error ExecutionJournal::flush() const {
+  if (llvm::Error error = validateProcessOwner())
+    return error;
   std::lock_guard<std::mutex> lock(state_->mutex);
-  return flushLocked(*state_);
+  if (llvm::Error error = synchronizePublishedDirectoryLocked(*state_))
+    return error;
+  return persistStateLocked(*state_);
 }
 
 llvm::Expected<ExecutionJournal>

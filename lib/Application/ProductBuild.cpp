@@ -4,6 +4,7 @@
 #include "Application/Build.h"
 #include "Application/BuildDiagnostics.h"
 #include "Application/Manifest.h"
+#include "Application/Package.h"
 #include "Application/ProductVisualization.h"
 #include "Application/SourceAdmission.h"
 #include "Common/ArtifactStore.h"
@@ -11,8 +12,8 @@
 #include "Common/BlobStore.h"
 #include "Common/ExecutionControl.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/CandidateGenerator.h"
 #include "Deployment/HardwareConfigurationImage.h"
-#include "Deployment/Package.h"
 #include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/ProductionRegistry.h"
@@ -494,10 +495,6 @@ prepareProductTarget(const ProductBuildOptions &options) {
   auto config = resolveConfigProfile(options.accelerationProfile);
   if (!config)
     return config.takeError();
-  config->dse.spatialPnr.search.completionGoal =
-      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
-  config->dse.systemPnr.search.completionGoal =
-      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
   auto publishedConfig = (*workspace)
                              ->artifacts()
                              .put(ResolvedConfig::artifactSchema,
@@ -762,15 +759,17 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
                       PreparedProductTarget &target,
                       const ProductBuildOptions &options,
                       const external_tool::LocalToolConfig &localToolConfig,
-                      std::uint64_t dispatchNotAfterUnixNanoseconds) {
+                      std::uint64_t dispatchNotAfterUnixNanoseconds,
+                      ExecutionControlView executionControl) {
   auto producer = dse::DseProducerSemanticBuildIdentity::get(
       applicationBuildProducerIdentity);
   if (!producer)
     return producer.takeError();
-  auto capacity = dse::SiteCapacity::get(1, 0, 0);
+  const std::uint32_t candidateWorkerCount = dse::defaultCandidateWorkerCount();
+  auto capacity = dse::SiteCapacity::get(candidateWorkerCount, 0, 0);
   if (!capacity)
     return capacity.takeError();
-  auto claim = dse::SiteResourceClaim::get(1, 0, 0);
+  auto claim = dse::SiteResourceClaim::get(candidateWorkerCount, 0, 0);
   if (!claim)
     return claim.takeError();
   std::optional<dse::ExternalExecutionSite> externalSite;
@@ -807,7 +806,8 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
        std::move(*policy),
        options.externalHardwarePath.empty()
            ? dse::JointHardwareExplorationScope::BoundedHardwareReopen
-           : dse::JointHardwareExplorationScope::FixedSystemFrontier},
+           : dse::JointHardwareExplorationScope::FixedSystemFrontier,
+       executionControl},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!execution)
     return execution.takeError();
@@ -833,16 +833,37 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
                               " with reason " +
                               dse::toString(incomplete->reason()));
   }
-  if (mappingCount == 0)
+  if (mappingCount == 0 &&
+      !execution->execution.summary.qualityIncompleteCandidate)
     return productError("loom_mapping_no_feasible_candidate",
                         "joint Mapping selected no SystemMapping");
   if (options.mappingStoppingPolicy ==
-          dse::JointDesignStoppingPolicy::BoundedQuality &&
-      execution->execution.summary.qualityDisposition !=
-          dse::JointDesignQualityDisposition::Complete)
-    return productError(
-        "loom_mapping_quality_incomplete",
-        "BoundedQuality did not establish a complete application QoR result");
+      dse::JointDesignStoppingPolicy::BoundedQuality) {
+    switch (execution->execution.summary.qualityDisposition) {
+    case dse::JointDesignQualityDisposition::Complete:
+      break;
+    case dse::JointDesignQualityDisposition::Unsupported:
+      return productError("loom_mapping_quality_unsupported",
+                          "application QoR acquisition was unsupported");
+    case dse::JointDesignQualityDisposition::ProofNotEstablished:
+      return productError(
+          "loom_mapping_quality_proof_not_established",
+          "application QoR acquisition did not establish proof");
+    case dse::JointDesignQualityDisposition::ExecutionFailed:
+      return productError("loom_mapping_quality_execution_failed",
+                          "application QoR acquisition execution failed");
+    case dse::JointDesignQualityDisposition::CancelledOrTimeout:
+      return productError("loom_mapping_quality_cancelled_or_timeout",
+                          "application QoR acquisition was cancelled or "
+                          "timed out");
+    case dse::JointDesignQualityDisposition::NotRequested:
+      return productError("loom_mapping_quality_not_requested",
+                          "bounded application QoR acquisition did not run");
+    }
+  }
+  if (mappingCount == 0)
+    return productError("loom_mapping_no_feasible_candidate",
+                        "joint Mapping selected no SystemMapping");
   if (!execution->execution.summary.selectedMapping)
     return productError("loom_mapping_selection_incomplete",
                         "Mapping returned candidates without a selected root");
@@ -904,20 +925,22 @@ llvm::Error publishProductDeployment(
                                            options, executionControl);
   if (!prepared)
     return prepared.takeError();
-  auto mapping =
-      executeProductMapping(*prepared, target, options, localToolConfig,
-                            deadline->notAfterUnixNanoseconds);
+  auto mapping = executeProductMapping(
+      *prepared, target, options, localToolConfig,
+      deadline->notAfterUnixNanoseconds, executionControl);
   if (!mapping)
     return mapping.takeError();
-  mapping::SystemMappingImportSession systemMappingImportSession(
-      target.workspace->artifacts(), 1);
-  deployment::ConfigurationImageProjectionSession projectionSession(
-      target.workspace->artifacts(), 1);
-  auto deployment = buildApplicationDeployment(
-      *prepared, *mapping, *finalLink.linkedModule,
-      {target.compilerPolicy, {target.workspace->linkerPath().str()}},
-      target.workspace->artifacts(), target.workspace->blobs());
-  if (!deployment) {
+  auto deployment = [&]() -> llvm::Expected<ApplicationDeploymentArtifacts> {
+    mapping::SystemMappingImportSession systemMappingImportSession(
+        target.workspace->artifacts(), 1);
+    deployment::ConfigurationImageProjectionSession projectionSession(
+        target.workspace->artifacts(), 1);
+    auto built = buildApplicationDeployment(
+        *prepared, *mapping, *finalLink.linkedModule,
+        {target.compilerPolicy,
+         {target.workspace->linkerPath().str()},
+         executionControl},
+        target.workspace->artifacts(), target.workspace->blobs());
     deployment::emitConfigurationImageProjectionSessionStatistics(
         deployment::ConfigurationImageProjectionVerificationDomain::
             SourceInvocation,
@@ -925,8 +948,10 @@ llvm::Error publishProductDeployment(
     mapping::emitSystemMappingImportSessionStatistics(
         mapping::SystemMappingImportVerificationDomain::SourceInvocation,
         systemMappingImportSession.statistics());
+    return built;
+  }();
+  if (!deployment)
     return deployment.takeError();
-  }
   if (!options.visualizationPath.empty())
     if (llvm::Error error = exportProductVisualization(
             options.visualizationPath, target.system, *prepared, *mapping,
@@ -934,19 +959,12 @@ llvm::Error publishProductDeployment(
             target.workspace->blobs()))
       return error;
   const auto packageBegin = MonotonicClock::now();
-  llvm::Error packageError = deployment::publishDeploymentPackage(
-      deployment->deployment, target.workspace->deploymentPath(),
+  llvm::Error packageError = publishApplicationPackage(
+      *deployment, target.workspace->deploymentPath(),
       target.workspace->artifacts(), target.workspace->blobs());
   emitApplicationBuildOperationStatistics(
       {ApplicationBuildOperation::PackagePublication,
        elapsedNanoseconds(packageBegin), 1});
-  deployment::emitConfigurationImageProjectionSessionStatistics(
-      deployment::ConfigurationImageProjectionVerificationDomain::
-          SourceInvocation,
-      projectionSession.statistics());
-  mapping::emitSystemMappingImportSessionStatistics(
-      mapping::SystemMappingImportVerificationDomain::SourceInvocation,
-      systemMappingImportSession.statistics());
   return packageError;
 }
 
@@ -1092,6 +1110,15 @@ ProductBuildInvocation::create(ProductBuildOptions options) {
   auto target = prepareProductTarget(options);
   if (!target)
     return target.takeError();
+  if (target->portfolioInput) {
+    if (!options.operatorProtocolSymbols.empty())
+      return productError(
+          "loom_portfolio_build_invalid",
+          "a portfolio selection derives operator protocol symbols from the "
+          "manifest");
+    options.operatorProtocolSymbols =
+        target->portfolioInput->selection.build.operatorProtocolSymbols;
+  }
   if (target->portfolioInput &&
       (target->portfolioInput->selection.input.profile.warmupSamples != 0 ||
        target->portfolioInput->selection.input.profile.measuredSamples != 1)) {

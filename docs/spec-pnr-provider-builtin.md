@@ -11,7 +11,7 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.0
+  loom.spatial_pnr.config.15.1
   loom.spatial_pnr.freeze.2.22
   loom.mapping.pnr.objective 3.1
   selected FabricPhysicalTimingProfile descriptor and digest
@@ -123,16 +123,40 @@ System providers query it only between atomic owner work units. Their typed
 interruption snapshot contains the owner stage, the exact consumed frontier,
 the best selected rank when one is defined, a per-violation closure residual
 when it can be reconstructed, retained finalized references, active wall time,
-allocator observation, and peak resident memory when the host provides it.
-Unavailable rank or residual dimensions remain absent; they are never replaced
-with zero. Mapping debug output serializes this snapshot as one nested payload,
-and is disabled without constructing that payload.
+process CPU-time delta, allocator observation, and process peak resident memory
+when the host provides them. Process values can include concurrent work and
+are not invocation-local attribution. Unavailable rank or residual dimensions
+remain absent; they are never replaced with zero. Mapping debug output
+serializes this snapshot as one nested payload, and is disabled without
+constructing that payload.
 
 ## Spatial Restart Sequence
 
 The Spatial provider allocates exactly `seed_attempt_count` isolated restart
 slots. Slots may execute in parallel, but their results are reduced by original
 restart ordinal.
+
+`ExhaustConfiguredWork` bounds parallel restart workers by the configured
+candidate-worker request, restart count, active RouteGraph unit count, the
+admitted CPU claim, and the admitted memory reservation. A missing or zero
+resource dimension is unconstrained. The active RouteGraph unit count is the
+saturated sum of active endpoints, traversals, and routing arcs, with one as
+the minimum serial execution capacity. When a memory reservation is present,
+canonical restart zero supplies a deterministic retained-scratch estimate for
+the active problem; that already-required result is retained and is not
+generated again. The shared frozen-problem projection is charged once.
+Root-complete exhaustive ranking may transfer its already constructed
+ordinal-zero seed to this same owner; the handoff is consumed once and its
+initializer and routing work is charged once. The formal owner still performs
+the normal candidate verification. A failed transferred seed retains its typed
+failure and is classified by the formal restart owner without a cold retry.
+Root active-problem diagnostics report both prepared and consumed handoff
+counts so this transfer remains independently auditable.
+`FirstVerifiedCandidate` remains a serial bounded-prefix execution. A plan
+publication bound is applied only after the exhaustive restart sequence and
+cannot reduce, serialize, or reclassify its configured work. Worker allocation
+and host-process observations are diagnostic only and cannot change restart
+streams, ordinal reduction, candidate identity, or formal work accounting.
 
 Each slot executes:
 
@@ -263,7 +287,11 @@ add a no-good over the complete observed placement, attachment, and local versus
 external disposition tuple. A fixed-terminal certificate excludes only
 assignments for which its separating capacity proof remains valid. Certificate
 growth is monotonic inside one invocation and cannot become persistent Mapping
-state.
+state. A successful probe that realizes its assignment, removes the primary
+witness, and preserves atomic capacity is legal even when its selected
+objective rank does not improve. Objective preference cannot turn that legal
+assignment into a hard no-good; the cold closure and verifier remain the
+legality gates.
 
 ### Final Spatial Closure
 

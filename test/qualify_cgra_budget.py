@@ -9,47 +9,50 @@ import shutil
 import sys
 from argparse import ArgumentParser
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Sequence
 
-import simulation_conformance
-
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
+import simulation_conformance  # noqa: E402
+
+
 MINIMAL_RUNTIME = REPOSITORY_ROOT / "test" / "frontend" / "Inputs" / "minimal-c-runtime"
 QUALIFICATION_ROOT = REPOSITORY_ROOT / "temp" / "cgra-budget-qualification"
 COMPILATION_TIMEOUT_SECONDS = 120.0
 SOURCE_PIPELINE_TIMEOUT_SECONDS = 900.0
-PROFILE_TIMEOUT_SECONDS = 300.0
-
-
-@dataclass(frozen=True)
-class SourceWorkload:
-    name: str
-    operator: str
+PROFILE_TIMEOUT_SECONDS = float(timeout_seconds(Tier.XLONG))
 
 
 @dataclass(frozen=True)
 class ResolvedSourceWorkload:
     name: str
     source: Path
-    operator: str
     operator_id: str
+    protocol_symbol: str
     compiler_flags: tuple[str, ...]
 
 
-WORKLOADS = (
-    SourceWorkload("vecadd", "vecadd"),
-    SourceWorkload("vector_pack", "vector_pack_kernel"),
-    SourceWorkload("matmul", "matmul_kernel"),
-    SourceWorkload("spmm", "spmm_kernel"),
-    SourceWorkload("gather", "gather"),
-    SourceWorkload("edge_update", "edge_update_kernel"),
-    SourceWorkload("fir_filter", "fir_filter_kernel"),
-    SourceWorkload("conv2d", "conv2d_kernel"),
-    SourceWorkload("stencil3d", "stencil3d_kernel"),
-    SourceWorkload("attention", "attention_kernel"),
-)
+class QualificationDisposition(Enum):
+    INCOMPLETE = "incomplete"
+    PROVEN_INFEASIBLE = "proven_infeasible"
+
+
+class QualificationStopped(RuntimeError):
+    def __init__(
+        self,
+        disposition: QualificationDisposition,
+        reason: str | None,
+        diagnostic: str,
+    ) -> None:
+        super().__init__(diagnostic)
+        self.disposition = disposition
+        self.reason = reason
+        self.diagnostic = diagnostic
 
 
 def resolve_workloads() -> tuple[str, tuple[ResolvedSourceWorkload, ...]]:
@@ -57,13 +60,13 @@ def resolve_workloads() -> tuple[str, tuple[ResolvedSourceWorkload, ...]]:
     rows_by_workload = {row.workload: row for row in operator_rows}
     resolved = tuple(
         ResolvedSourceWorkload(
-            workload.name,
-            Path(rows_by_workload[workload.name].source),
-            workload.operator,
-            rows_by_workload[workload.name].operator_id,
-            rows_by_workload[workload.name].compiler_flags,
+            workload,
+            Path(rows_by_workload[workload].source),
+            rows_by_workload[workload].operator_id,
+            rows_by_workload[workload].protocol_symbol,
+            rows_by_workload[workload].compiler_flags,
         )
-        for workload in WORKLOADS
+        for workload in simulation_conformance.CGRA_REPRESENTATIVE_WORKLOADS
     )
     for workload in resolved:
         if workload.source.suffix not in {".c", ".cpp"}:
@@ -80,10 +83,18 @@ def run(
         command,
         timeout_seconds,
         environment=environment,
-        working_directory=REPOSITORY_ROOT,
     )
     if completed.disposition is not simulation_conformance.ProcessDisposition.COMPLETED:
         diagnostic = completed.stderr.strip() or completed.stdout.strip()
+        if completed.disposition in {
+            simulation_conformance.ProcessDisposition.TIMED_OUT,
+            simulation_conformance.ProcessDisposition.CLEANUP_FAILED,
+        }:
+            raise QualificationStopped(
+                QualificationDisposition.INCOMPLETE,
+                completed.disposition.value,
+                diagnostic,
+            )
         raise RuntimeError(
             f"command failed with disposition {completed.disposition.value}: "
             f"{' '.join(command)}\n{diagnostic}"
@@ -136,7 +147,7 @@ def qualify_workload(
             str(loom_dfg_run),
             f"--artifact-store={store}",
             "--candidate-jobs=4",
-            f"--operator-protocol-symbol={workload.operator}",
+            f"--operator-protocol-symbol={workload.protocol_symbol}",
             "--expected-entry-result=0",
             f"--canonical-output={canonical}",
             f"--output={report}",
@@ -152,6 +163,7 @@ def qualify_workload(
             str(report),
             workload.name,
             workload.operator_id,
+            workload.protocol_symbol,
         ),
         PROFILE_TIMEOUT_SECONDS,
         environment,
@@ -159,6 +171,29 @@ def qualify_workload(
     parsed = json.loads(profiled.stdout)
     if not isinstance(parsed, dict):
         raise RuntimeError(f"CGRA profile for {workload.name} is not an object")
+    if parsed.get("schema") == "loom.cgra_budget_profile_outcome.1":
+        if parsed.get("workload") != workload.name or parsed.get(
+            "operator_id"
+        ) != workload.operator_id or parsed.get(
+            "protocol_symbol"
+        ) != workload.protocol_symbol:
+            raise RuntimeError("CGRA profile outcome has a foreign workload")
+        outcome, reason = simulation_conformance.validate_cgra_profile_outcome(parsed)
+        if outcome == "incomplete" and reason is not None:
+            raise QualificationStopped(
+                QualificationDisposition.INCOMPLETE,
+                reason,
+                f"{workload.name}: {reason}",
+            )
+        if outcome == "proven_infeasible" and reason is None:
+            raise QualificationStopped(
+                QualificationDisposition.PROVEN_INFEASIBLE,
+                None,
+                f"{workload.name}: proven_infeasible",
+            )
+        raise RuntimeError("CGRA PnR outcome has an invalid disposition")
+    if parsed.get("schema") != "loom.cgra_budget_profile.4":
+        raise RuntimeError("CGRA profile has a foreign schema")
     return parsed
 
 
@@ -169,6 +204,7 @@ def main() -> int:
     parser.add_argument("--cgra-profile", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     arguments = parser.parse_args()
+    arguments.output.unlink(missing_ok=True)
     loom_cc = arguments.loom_cc.resolve(strict=True)
     loom_dfg_run = arguments.loom_dfg_run.resolve(strict=True)
     cgra_profile = arguments.cgra_profile.resolve(strict=True)
@@ -182,20 +218,35 @@ def main() -> int:
     environment = dict(os.environ)
     environment["TMPDIR"] = str(QUALIFICATION_ROOT)
     profiles: list[dict[str, object]] = []
-    for workload in workloads:
-        print(f"qualifying {workload.name}", file=sys.stderr, flush=True)
-        profiles.append(
-            qualify_workload(
-                workload,
-                loom_cc,
-                loom_dfg_run,
-                cgra_profile,
-                environment,
+    try:
+        for workload in workloads:
+            print(f"qualifying {workload.name}", file=sys.stderr, flush=True)
+            profiles.append(
+                qualify_workload(
+                    workload,
+                    loom_cc,
+                    loom_dfg_run,
+                    cgra_profile,
+                    environment,
+                )
             )
+    except QualificationStopped as stopped:
+        print(
+            json.dumps(
+                {
+                    "schema": "loom.cgra_budget_qualification_outcome.1",
+                    "disposition": stopped.disposition.value,
+                    "reason": stopped.reason,
+                    "diagnostic": stopped.diagnostic,
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
         )
+        return 2
     budget = simulation_conformance.derive_cgra_spatial_budget_nanoseconds(profiles)
     output = {
-        "schema": "loom.cgra_simulation_gate.2",
+        "schema": "loom.cgra_simulation_gate.4",
         "policy": {
             "qualification_limit_nanoseconds": (
                 simulation_conformance.CGRA_QUALIFICATION_LIMIT_NANOSECONDS

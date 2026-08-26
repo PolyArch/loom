@@ -55,6 +55,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
+
+from config.timeout_budgets import Tier, seconds as timeout_seconds
+
 try:
     from resolve_experiment_root import (
         EXTERNAL_TOOL_CACHE_DIRECTORY,
@@ -126,8 +132,9 @@ except ModuleNotFoundError:
 
 resolve_compiler_executable = _resolve_compiler_executable
 
-MAX_LOCK_TIMEOUT = 3600.0
-CHILD_TERMINATION_GRACE = 1.0
+DEFAULT_LOCK_TIMEOUT = float(timeout_seconds(Tier.XLONG))
+MAX_LOCK_TIMEOUT = float(timeout_seconds(Tier.NIGHTLY))
+CHILD_TERMINATION_GRACE = float(timeout_seconds(Tier.ULTRAFAST))
 _LIBC = ctypes.CDLL(None, use_errno=True) if sys.platform.startswith("linux") else None
 _PR_SET_PDEATHSIG = 1
 _SUPERVISE_COMMAND = "--internal-supervise-command"
@@ -1086,6 +1093,7 @@ def configure_loom(
         "-B",
         str(paths.loom_build),
         "-DCMAKE_BUILD_TYPE=Release",
+        "-DLOOM_ENABLE_ASSERTIONS=OFF",
         f"-DCMAKE_C_COMPILER={LOOM_C_COMPILER}",
         f"-DCMAKE_CXX_COMPILER={LOOM_CXX_COMPILER}",
         f"-DMLIR_DIR={paths.mlir_dir}",
@@ -1850,7 +1858,7 @@ def main() -> None:
     p.add_argument(
         "--lock-timeout",
         type=validate_lock_timeout,
-        default=1800.0,
+        default=DEFAULT_LOCK_TIMEOUT,
         help="seconds to wait for the shared LLVM lock",
     )
     sub = p.add_subparsers(dest="command", required=True)

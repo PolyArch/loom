@@ -82,6 +82,12 @@ public:
   std::uint64_t heuristicBuildCount() const {
     return endpointSearch_.heuristicBuildCount();
   }
+  std::uint64_t forwardHeuristicQueryCount() const {
+    return endpointSearch_.forwardHeuristicQueryCount();
+  }
+  std::uint64_t forwardHeuristicUnreachableCount() const {
+    return endpointSearch_.forwardHeuristicUnreachableCount();
+  }
   std::uint64_t heuristicCacheEvictionCount() const {
     return endpointSearch_.heuristicCacheEvictionCount();
   }
@@ -137,6 +143,7 @@ private:
   std::vector<std::uint64_t> bufferedTraversalBits_;
   std::vector<std::uint64_t> arcTimingDelayQuanta_;
   std::vector<std::uint8_t> arcTimingRegisteredDestination_;
+  EndpointRouteInputRevisionOwner physicalTimingRevisionOwner_;
   std::vector<std::uint64_t> routeNodeTimingArrivals_;
   std::vector<std::pair<PnrIndex, std::uint64_t>> routeNodeTimingWorklist_;
   std::vector<std::uint64_t> endpointMarks_;

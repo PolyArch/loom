@@ -19,12 +19,14 @@ from typing import Any, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_ROOT = ROOT / "test"
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TEST_ROOT))
 
 from simulation_conformance import (  # noqa: E402
     MAX_OUTER_WORKERS,
     outer_worker_limit,
 )
+from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
 
 
 BUILTIN_PRESETS = ("small", "default", "large")
@@ -32,12 +34,10 @@ TARGET_PROFILE_UNSUPPORTED = "target-profile-unsupported"
 MAX_PEAK_RESIDENT_BYTES = 1024 * 1024 * 1024
 SMALL_GRAPH_MAX_ACTORS = 256
 P95_GENERATION_CPU_TARGET_SECONDS = 0.5
-MAX_GENERATION_WALL_SECONDS = 10.0
-PROCESS_SETUP_ALLOWANCE_SECONDS = 5.0
-DEFAULT_CASE_TIMEOUT_SECONDS = (
-    len(BUILTIN_PRESETS) * MAX_GENERATION_WALL_SECONDS + PROCESS_SETUP_ALLOWANCE_SECONDS
-)
-DEFAULT_BUILTIN_TIMEOUT_SECONDS = 120.0
+MAX_GENERATION_WALL_SECONDS = float(timeout_seconds(Tier.ULTRAFAST))
+DEFAULT_CASE_TIMEOUT_SECONDS = float(timeout_seconds(Tier.FAST))
+DEFAULT_BUILTIN_TIMEOUT_SECONDS = float(timeout_seconds(Tier.FAST))
+PROCESS_TERMINATION_TIMEOUT_SECONDS = float(timeout_seconds(Tier.ULTRAFAST))
 
 
 class CoverageError(ValueError):
@@ -439,7 +439,7 @@ def _terminate_process_group(pid: int) -> None:
         os.killpg(pid, signal.SIGTERM)
     except ProcessLookupError:
         return
-    deadline = time.monotonic() + 0.25
+    deadline = time.monotonic() + PROCESS_TERMINATION_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         try:
             reaped, _, _ = os.wait4(pid, os.WNOHANG)

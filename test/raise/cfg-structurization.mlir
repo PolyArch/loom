@@ -8,6 +8,8 @@
 // RUN: loom-raise-opt --loom-lift-cf-to-scf %t/orphan-loop-hint.mlir | FileCheck %s --check-prefix=ORPHAN --implicit-check-not=cf.cond_br
 // RUN: loom-raise-opt --loom-lift-cf-to-scf %t/numbered-default.mlir -o %t/numbered-default.out.mlir
 // RUN: loom-raise-opt %t/numbered-default.out.mlir | FileCheck %s --check-prefix=NUMBERED-DEFAULT
+// RUN: loom-raise-opt --loom-lift-cf-to-scf %t/local-regions.mlir -o %t/local-regions.out.mlir
+// RUN: loom-raise-opt --loom-lift-cf-to-scf %t/local-regions.out.mlir | FileCheck %s --check-prefix=LOCAL --implicit-check-not=scf.execute_region
 
 // Mechanical CFG recovery runs on the callable region where it stands. What
 // an imported LLVM callable spells differently is respelled by an adapter, and
@@ -97,6 +99,69 @@
 // NUMBERED-DEFAULT: arith.cmpi eq
 // NUMBERED-DEFAULT: cf.cond_br
 // NUMBERED-DEFAULT-NOT: cf.switch
+
+// A profile-bearing or unsupported branch blocks only the SESE region that
+// contains it. Independently closed regions before it, after it, and inside
+// one of its arms still structure. The original branch remains the sole owner
+// of its profile or address semantics. Local loop recovery also carries the
+// original loop annotation, and direct SSA live-outs remain ordinary values
+// after the temporary extraction boundary is removed.
+// LOCAL: #[[LOCAL_LOOP:.*]] = #llvm.loop_annotation<mustProgress = true>
+// LOCAL-LABEL: llvm.func @weighted_then_plain
+// LOCAL: cf.cond_br %arg0 weights([1, 9])
+// LOCAL: scf.if %arg1
+// LOCAL-LABEL: llvm.func @plain_then_weighted
+// LOCAL: scf.if %arg0
+// LOCAL: cf.cond_br %arg1 weights([2, 8])
+// LOCAL-LABEL: llvm.func @nested_weighted_arm
+// LOCAL: cf.cond_br %arg0 weights([3, 7])
+// LOCAL: scf.if %arg1
+// LOCAL-LABEL: llvm.func @unsupported_then_plain
+// LOCAL: llvm.indirectbr %arg0
+// LOCAL: scf.if %arg1
+// LOCAL-LABEL: llvm.func @weighted_then_loop
+// LOCAL: cf.cond_br %arg0 weights([4, 6])
+// LOCAL: scf.while
+// LOCAL: attributes {llvm.loop_annotation = #[[LOCAL_LOOP]]}
+// LOCAL-LABEL: llvm.func @local_wide_switch
+// LOCAL: cf.cond_br %arg0 weights([5, 5])
+// LOCAL: cf.switch %arg1 : i64
+// LOCAL-NOT: scf.index_switch
+// LOCAL: scf.if %arg2
+// LOCAL-LABEL: llvm.func @direct_liveout
+// LOCAL: cf.cond_br %arg0 weights([6, 4])
+// LOCAL: %[[SEVEN:.*]] = arith.constant 7 : i32
+// LOCAL: %[[LIVEOUT:.*]] = scf.if %arg1 -> (i32)
+// LOCAL: scf.yield %[[SEVEN]] : i32
+// LOCAL: llvm.return %[[LIVEOUT]] : i32
+// LOCAL-LABEL: llvm.func @dead_ingress
+// LOCAL: cf.cond_br %arg0 weights([7, 3])
+// LOCAL: scf.if %arg1
+// LOCAL-LABEL: llvm.func @tagged_dead_ingress
+// LOCAL: cf.cond_br %arg0 weights([8, 2])
+// LOCAL: llvm.blocktag <id = 0>
+// LOCAL: cf.cond_br %arg1
+// LOCAL-NOT: scf.if
+// LOCAL-LABEL: llvm.func @tagged_dead_unrelated
+// LOCAL: scf.if %arg0
+// LOCAL: arith.addi
+// LOCAL: llvm.blocktag <id = 1>
+// LOCAL: llvm.return
+// LOCAL-LABEL: llvm.func @tagged_reachable_then_plain
+// LOCAL: llvm.blocktag <id = 2>
+// LOCAL: scf.if %arg0
+// LOCAL-LABEL: llvm.func @tagged_diamond
+// LOCAL: cf.cond_br %arg0
+// LOCAL: llvm.blocktag <id = 3>
+// LOCAL-NOT: scf.if
+// LOCAL-LABEL: llvm.mlir.global private @tagged_dead_ingress_address
+// LOCAL: llvm.blockaddress <function = @tagged_dead_ingress, tag = <id = 0>>
+// LOCAL-LABEL: llvm.mlir.global private @tagged_dead_unrelated_address
+// LOCAL: llvm.blockaddress <function = @tagged_dead_unrelated, tag = <id = 1>>
+// LOCAL-LABEL: llvm.mlir.global private @tagged_reachable_address
+// LOCAL: llvm.blockaddress <function = @tagged_reachable_then_plain, tag = <id = 2>>
+// LOCAL-LABEL: llvm.mlir.global private @tagged_diamond_address
+// LOCAL: llvm.blockaddress <function = @tagged_diamond, tag = <id = 3>>
 
 //--- counted.ll
 target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
@@ -279,4 +344,228 @@ func.func @numbered_default_dispatch(%flag: i32) {
   llvm.unreachable
 ^loop(%arg: i32):
   cf.br ^loop(%arg : i32)
+}
+
+//--- local-regions.mlir
+#local_loop = #llvm.loop_annotation<mustProgress = true>
+
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+} {
+llvm.func @weighted_then_plain(%weighted: i1, %plain: i1, %a: i32, %b: i32) -> i32 {
+  cf.cond_br %weighted weights([1, 9]), ^weighted_true, ^weighted_false
+^weighted_true:
+  cf.br ^plain_entry(%a : i32)
+^weighted_false:
+  cf.br ^plain_entry(%b : i32)
+^plain_entry(%seed: i32):
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^plain_true:
+  cf.br ^exit(%seed : i32)
+^plain_false:
+  cf.br ^exit(%seed : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @plain_then_weighted(%plain: i1, %weighted: i1, %a: i32, %b: i32) -> i32 {
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^plain_true:
+  cf.br ^weighted_entry(%a : i32)
+^plain_false:
+  cf.br ^weighted_entry(%b : i32)
+^weighted_entry(%seed: i32):
+  cf.cond_br %weighted weights([2, 8]), ^weighted_true, ^weighted_false
+^weighted_true:
+  cf.br ^exit(%seed : i32)
+^weighted_false:
+  cf.br ^exit(%seed : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @nested_weighted_arm(%weighted: i1, %plain: i1, %a: i32, %b: i32) -> i32 {
+  cf.cond_br %weighted weights([3, 7]), ^left, ^right
+^left:
+  cf.cond_br %plain, ^left_true, ^left_false
+^left_true:
+  cf.br ^exit(%a : i32)
+^left_false:
+  cf.br ^exit(%b : i32)
+^right:
+  cf.br ^exit(%b : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @unsupported_then_plain(%address: !llvm.ptr, %plain: i1, %a: i32, %b: i32) -> i32 {
+  llvm.indirectbr %address : !llvm.ptr, [^target]
+^target:
+  cf.cond_br %plain, ^yes, ^no
+^yes:
+  cf.br ^exit(%a : i32)
+^no:
+  cf.br ^exit(%b : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @weighted_then_loop(%weighted: i1, %limit: i32) -> i32 {
+  %zero = arith.constant 0 : i32
+  %one = arith.constant 1 : i32
+  cf.cond_br %weighted weights([4, 6]), ^left, ^right
+^left:
+  cf.br ^header(%zero : i32)
+^right:
+  cf.br ^header(%one : i32)
+^header(%iv: i32):
+  %done = arith.cmpi eq, %iv, %limit : i32
+  cf.cond_br %done, ^exit, ^latch
+^latch:
+  %next = arith.addi %iv, %one : i32
+  cf.br ^header(%next : i32) {llvm.loop_annotation = #local_loop}
+^exit:
+  llvm.return %iv : i32
+}
+
+llvm.func @local_wide_switch(%weighted: i1, %selector: i64, %plain: i1, %a: i32, %b: i32) -> i32 {
+  cf.cond_br %weighted weights([5, 5]), ^left, ^right
+^left:
+  cf.br ^switch_entry
+^right:
+  cf.br ^switch_entry
+^switch_entry:
+  cf.switch %selector : i64, [
+    default: ^default,
+    0: ^case
+  ]
+^case:
+  cf.br ^plain_entry(%a : i32)
+^default:
+  cf.br ^plain_entry(%b : i32)
+^plain_entry(%seed: i32):
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^plain_true:
+  cf.br ^exit(%seed : i32)
+^plain_false:
+  cf.br ^exit(%seed : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @direct_liveout(%weighted: i1, %plain: i1) -> i32 {
+  cf.cond_br %weighted weights([6, 4]), ^left, ^right
+^left:
+  cf.br ^plain_entry
+^right:
+  cf.br ^plain_entry
+^plain_entry:
+  %seven = arith.constant 7 : i32
+  cf.cond_br %plain, ^yes, ^no
+^yes:
+  cf.br ^exit
+^no:
+  cf.br ^exit
+^exit:
+  llvm.return %seven : i32
+}
+
+llvm.func @dead_ingress(%weighted: i1, %plain: i1, %a: i32, %b: i32) -> i32 {
+  cf.cond_br %weighted weights([7, 3]), ^left, ^right
+^left:
+  cf.br ^plain_entry
+^right:
+  cf.br ^plain_entry
+^dead:
+  cf.br ^plain_true
+^plain_entry:
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^plain_true:
+  cf.br ^exit(%a : i32)
+^plain_false:
+  cf.br ^exit(%b : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @tagged_dead_ingress(%weighted: i1, %plain: i1, %a: i32, %b: i32) -> i32 {
+  cf.cond_br %weighted weights([8, 2]), ^left, ^right
+^left:
+  cf.br ^plain_entry
+^right:
+  cf.br ^plain_entry
+^dead:
+  llvm.blocktag <id = 0>
+  cf.br ^plain_true
+^plain_entry:
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^plain_true:
+  cf.br ^exit(%a : i32)
+^plain_false:
+  cf.br ^exit(%b : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @tagged_dead_unrelated(%plain: i1, %a: i32, %b: i32) -> i32 {
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^dead_definition:
+  %dead_value = arith.addi %a, %b : i32
+  llvm.return %dead_value : i32
+^dead_tag:
+  llvm.blocktag <id = 1>
+  cf.br ^dead_exit(%dead_value : i32)
+^dead_exit(%dead_result: i32):
+  llvm.return %dead_result : i32
+^plain_true:
+  cf.br ^exit(%a : i32)
+^plain_false:
+  cf.br ^exit(%b : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @tagged_reachable_then_plain(%plain: i1, %a: i32, %b: i32) -> i32 {
+  llvm.blocktag <id = 2>
+  cf.br ^plain_entry
+^plain_entry:
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^plain_true:
+  cf.br ^exit(%a : i32)
+^plain_false:
+  cf.br ^exit(%b : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.func @tagged_diamond(%plain: i1, %a: i32, %b: i32) -> i32 {
+  cf.cond_br %plain, ^plain_true, ^plain_false
+^plain_true:
+  llvm.blocktag <id = 3>
+  cf.br ^exit(%a : i32)
+^plain_false:
+  cf.br ^exit(%b : i32)
+^exit(%result: i32):
+  llvm.return %result : i32
+}
+
+llvm.mlir.global private @tagged_dead_ingress_address() : !llvm.ptr {
+  %address = llvm.blockaddress <function = @tagged_dead_ingress, tag = <id = 0>> : !llvm.ptr
+  llvm.return %address : !llvm.ptr
+}
+
+llvm.mlir.global private @tagged_dead_unrelated_address() : !llvm.ptr {
+  %address = llvm.blockaddress <function = @tagged_dead_unrelated, tag = <id = 1>> : !llvm.ptr
+  llvm.return %address : !llvm.ptr
+}
+
+llvm.mlir.global private @tagged_reachable_address() : !llvm.ptr {
+  %address = llvm.blockaddress <function = @tagged_reachable_then_plain, tag = <id = 2>> : !llvm.ptr
+  llvm.return %address : !llvm.ptr
+}
+
+llvm.mlir.global private @tagged_diamond_address() : !llvm.ptr {
+  %address = llvm.blockaddress <function = @tagged_diamond, tag = <id = 3>> : !llvm.ptr
+  llvm.return %address : !llvm.ptr
+}
 }

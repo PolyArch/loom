@@ -69,6 +69,29 @@ tagValueViews(const SpatialTagAssignmentState &assignments,
   return result;
 }
 
+llvm::Expected<std::vector<llvm::ArrayRef<std::optional<llvm::APInt>>>>
+tagValueViews(const SpatialTagAssignmentSummary &assignments,
+              std::size_t logicalNetCount) {
+  if (assignments.netTagValueOffsets.size() != logicalNetCount + 1 ||
+      assignments.netTagValueOffsets.empty() ||
+      assignments.netTagValueOffsets.front() != 0 ||
+      assignments.netTagValueOffsets.back() != assignments.netTagValues.size())
+    return candidateError(
+        "projected tag assignment has incomplete logical-net offsets");
+  std::vector<llvm::ArrayRef<std::optional<llvm::APInt>>> result;
+  result.reserve(logicalNetCount);
+  for (std::size_t logicalNet = 0; logicalNet < logicalNetCount; ++logicalNet) {
+    const std::size_t begin = assignments.netTagValueOffsets[logicalNet];
+    const std::size_t end = assignments.netTagValueOffsets[logicalNet + 1];
+    if (begin > end || end > assignments.netTagValues.size())
+      return candidateError(
+          "projected tag assignment logical-net range is invalid");
+    result.push_back(llvm::ArrayRef(assignments.netTagValues)
+                         .slice(begin, end - begin));
+  }
+  return result;
+}
+
 llvm::Expected<HandshakeCandidateStateHandle> createInitialHandshakeState(
     const FrozenSpatialPnrProblemHandle &problem,
     llvm::ArrayRef<SpatialComputeBindingSelection> computeBindings,
@@ -120,7 +143,8 @@ llvm::Expected<bool> projectHandshakeSelections(
     llvm::ArrayRef<PnrIndex> memoryOperationPlans,
     llvm::ArrayRef<PnrIndex> registerFifoTransfers,
     llvm::ArrayRef<const RouteTreeState *> routes,
-    llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>> tagValues) {
+    llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>> tagValues,
+    HandshakeProjectionScratch &projectionScratch) {
   std::vector<PnrIndex> selectedFragments;
   for (const SpatialComputeBindingSelection &binding : computeBindings)
     llvm::append_range(
@@ -176,8 +200,8 @@ llvm::Expected<bool> projectHandshakeSelections(
   if (!switchFragments)
     return switchFragments.takeError();
   llvm::append_range(selectedFragments, *switchFragments);
-  return independentlyVerifyHandshakeProjectionAcyclic(
-      problem.handshake(), selectedFragments, traversalUses);
+  return projectionScratch.projectAcyclic(problem.handshake(),
+                                          selectedFragments, traversalUses);
 }
 
 } // namespace
@@ -207,6 +231,9 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   if (llvm::Error error = tagScratch_.prepare(problem))
     return error;
   if (llvm::Error error = handshakeScratch_.prepare(problem.handshake()))
+    return error;
+  if (llvm::Error error =
+          handshakeProjectionScratch_.prepare(problem.handshake()))
     return error;
   if (!routeConstraintScratch_)
     routeConstraintScratch_ =
@@ -288,10 +315,22 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   traversalRemoved_.assign(traversalCount, 0);
   traversalAdded_.assign(traversalCount, 0);
   touchedTraversals_.reserve(traversalCount);
+  progressRecordedRouteDeltaCounts_.assign(netCount, 0);
+  progressRecordedRouteDeltaEpochs_.assign(netCount, 0);
+  progressTerminalActive_.assign(netCount, 0);
+  progressTraversalDeltas_.clear();
+  progressTraversalDeltas_.reserve(traversalCount);
+  progressDirtyNetMarks_.assign(netCount, 0);
+  progressDirtyNets_.clear();
+  progressDirtyNets_.reserve(netCount);
+  progressDependencyJournalMarks_.assign(netCount, 0);
+  progressDependencyDeltas_.clear();
+  progressDependencyDeltas_.reserve(netCount);
 
   decisionEpoch_ = 0;
   affectedEpoch_ = 0;
   traversalEpoch_ = 0;
+  progressRecordedRouteDeltaEpoch_ = 0;
   preparedProblem_ = &problem;
   resetTransaction();
   return llvm::Error::success();
@@ -302,6 +341,7 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(routeScratch_) + retainedBytes(routeTransactions_) +
       tagScratch_.retainedStorageBytes() +
       handshakeScratch_.retainedStorageBytes() +
+      handshakeProjectionScratch_.retainedStorageBytes() +
       (routeConstraintScratch_ ? routeConstraintScratch_->retainedStorageBytes()
                                : 0) +
       (memoryConstraintScratch_
@@ -346,7 +386,15 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(removedSwitchHandshakeFragments_) +
       retainedBytes(addedSwitchHandshakeFragments_) +
       retainedBytes(traversalDeltaMarks_) + retainedBytes(traversalRemoved_) +
-      retainedBytes(traversalAdded_) + retainedBytes(touchedTraversals_);
+      retainedBytes(traversalAdded_) + retainedBytes(touchedTraversals_) +
+      retainedBytes(progressRecordedRouteDeltaCounts_) +
+      retainedBytes(progressRecordedRouteDeltaEpochs_) +
+      retainedBytes(progressTerminalActive_) +
+      retainedBytes(progressTraversalDeltas_) +
+      retainedBytes(progressDirtyNetMarks_) +
+      retainedBytes(progressDirtyNets_) +
+      retainedBytes(progressDependencyJournalMarks_) +
+      retainedBytes(progressDependencyDeltas_);
   return bytes;
 }
 
@@ -357,7 +405,8 @@ void SpatialCandidateScratch::beginTransaction() {
                 &boundaryJournalMarks_, &memoryPlanJournalMarks_,
                 &logicalMemoryJournalMarks_, &memoryDispatchJournalMarks_,
                 &memoryExposureJournalMarks_,
-                &registerFifoTransferJournalMarks_});
+                &registerFifoTransferJournalMarks_,
+                &progressDependencyJournalMarks_});
   advanceEpoch(
       affectedEpoch_,
       {&affectedComputeMarks_, &affectedMemoryMarks_, &affectedPortMarks_,
@@ -366,11 +415,21 @@ void SpatialCandidateScratch::beginTransaction() {
        &affectedMemoryServiceGroupMarks_, &affectedMemoryExposureMarks_,
        &affectedNetMarks_, &affectedBindingRelationMarks_});
   advanceEpoch(traversalEpoch_, {&traversalDeltaMarks_});
+  advanceProgressRouteDeltaEpoch();
+}
+
+void SpatialCandidateScratch::advanceProgressRouteDeltaEpoch() {
+  if (++progressRecordedRouteDeltaEpoch_ == 0) {
+    std::fill(progressRecordedRouteDeltaEpochs_.begin(),
+              progressRecordedRouteDeltaEpochs_.end(), 0);
+    progressRecordedRouteDeltaEpoch_ = 1;
+  }
 }
 
 void SpatialCandidateScratch::resetTransaction() {
-  for (PnrIndex net : touchedRoutes_)
+  for (PnrIndex net : touchedRoutes_) {
     routeTransactions_[net].reset();
+  }
   touchedRoutes_.clear();
   routeViews_.clear();
   tagValueViews_.clear();
@@ -383,6 +442,11 @@ void SpatialCandidateScratch::resetTransaction() {
   addedSwitchHandshakeFragments_.clear();
   switchHandshakeBaselineCaptured_ = false;
   touchedTraversals_.clear();
+  for (PnrIndex logicalNet : progressDirtyNets_)
+    progressDirtyNetMarks_[logicalNet] = 0;
+  progressDirtyNets_.clear();
+  progressTraversalDeltas_.clear();
+  progressDependencyDeltas_.clear();
   decisionDeltas_.clear();
   affectedComputes_.clear();
   affectedMemories_.clear();
@@ -618,6 +682,10 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   if (!recurrenceTiming)
     return recurrenceTiming.takeError();
   candidate->recurrenceTiming_ = std::move(*recurrenceTiming);
+  auto progressState = SpatialProgressState::create(*candidate);
+  if (!progressState)
+    return progressState.takeError();
+  candidate->progressState_ = std::move(*progressState);
   if (llvm::Error error = candidate->verify())
     return std::move(error);
   return candidate;
@@ -987,7 +1055,8 @@ SpatialCandidateState::routeTree(PnrIndex logicalNet) const {
 llvm::Expected<SpatialCandidateRouteProjection>
 SpatialCandidateState::projectVerifiedRoutes(
     llvm::ArrayRef<const RouteTreeState *> routes,
-    SpatialTagAssignmentSummary *tagSummary) const {
+    SpatialTagAssignmentSummary *tagSummary,
+    HandshakeProjectionScratch &handshakeProjectionScratch) const {
   if (routes.size() != routeTrees_.size())
     return candidateError("projected route count does not match the candidate");
   std::uint64_t unrouted = 0;
@@ -1029,33 +1098,38 @@ SpatialCandidateState::projectVerifiedRoutes(
       graphBoundaryAttachments_);
   if (!physicalTiming)
     return physicalTiming.takeError();
-  auto recurrenceTiming = detail::projectSpatialRecurrenceTiming(*this, routes);
-  if (!recurrenceTiming)
-    return recurrenceTiming.takeError();
-  auto tags =
-      tagAssignments_.projectVerifiedRoutes(routes, tagSummary != nullptr);
+  SpatialRecurrenceTimingProjection recurrenceTiming = recurrenceTiming_;
+  if (problem_->objectiveProgram().selectsMeasure(
+          MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)) {
+    auto projectedRecurrence =
+        detail::projectSpatialRecurrenceTiming(*this, routes);
+    if (!projectedRecurrence)
+      return projectedRecurrence.takeError();
+    recurrenceTiming = std::move(*projectedRecurrence);
+  }
+  auto tags = tagAssignments_.projectVerifiedRoutes(
+      routes, /*includeDomainDetails=*/true);
   if (!tags)
     return tags.takeError();
   const std::uint64_t tagResidentCapacityOveruse =
       tags->residentCapacityOveruse;
   const std::uint64_t tagUnassignedCount = tags->unassignedCount;
   const std::uint64_t tagConflictCount = tags->conflictCount;
-  if (tagSummary)
-    *tagSummary = std::move(*tags);
-  const auto tagValues = tagValueViews(tagAssignments_, routes.size());
+  auto tagValues = tagValueViews(*tags, routes.size());
+  if (!tagValues)
+    return tagValues.takeError();
   auto handshakeAcyclic = projectHandshakeSelections(
       *problem_, computeBindings_, portAttachments_, memoryOperationPlans_,
-      registerFifoTransfers_, routes, tagValues);
+      registerFifoTransfers_, routes, *tagValues, handshakeProjectionScratch);
   if (!handshakeAcyclic)
     return handshakeAcyclic.takeError();
+  if (tagSummary)
+    *tagSummary = std::move(*tags);
   std::uint64_t hardProgressViolation = 0;
   switch (problem_->progressBasis().kind) {
   case ::loom::mapping::MappingDataflowProgressBasisKind::Acyclic:
   case ::loom::mapping::MappingDataflowProgressBasisKind::InitializedFeedback: {
-    auto count = spatialCandidateClosedWaitCount(*this);
-    if (!count)
-      return count.takeError();
-    hardProgressViolation = *count;
+    hardProgressViolation = progressState_.hardProgressViolation();
     break;
   }
   case ::loom::mapping::MappingDataflowProgressBasisKind::Cyclic:
@@ -1073,7 +1147,7 @@ SpatialCandidateState::projectVerifiedRoutes(
       routeResources->totalSelectedTraversalClaim(),
       routeResources->routeReleaseLatencyCycles(),
       routeResources->routeMinimumInitiationIntervalCycles(),
-      std::move(*recurrenceTiming),
+      std::move(recurrenceTiming),
       routeResources->transportBitCycleDemand(),
       physicalTiming->worstArrivalDelayQuanta,
       physicalTiming->totalNegativeSlackQuanta,
@@ -1084,6 +1158,13 @@ SpatialCandidateState::projectVerifiedRoutes(
 llvm::Expected<SpatialTagAssignmentSummary>
 SpatialCandidateState::summarizeCurrentTagAssignments() const {
   return tagAssignments_.summarizeCurrentState(true);
+}
+
+llvm::Expected<SpatialTagAssignmentDelta>
+SpatialCandidateState::summarizeCurrentTagAssignmentDelta(
+    llvm::ArrayRef<PnrIndex> logicalNets,
+    llvm::ArrayRef<PnrIndex> changedDomains) const {
+  return tagAssignments_.summarizeCurrentDelta(logicalNets, changedDomains);
 }
 
 llvm::Error
@@ -1409,6 +1490,8 @@ llvm::Error SpatialCandidateState::verify() const {
   if (llvm::Error error =
           routeResources_.verify(routeTrees_, registerFifoTransfers_))
     return error;
+  if (llvm::Error error = progressState_.verify(*this))
+    return error;
   std::vector<const RouteTreeState *> routes;
   routes.reserve(routeTrees_.size());
   for (const RouteTreeStateHandle &route : routeTrees_)
@@ -1429,12 +1512,16 @@ llvm::Error SpatialCandidateState::verify() const {
           totalRouteNegativeSlackQuanta_)
     return candidateError(
         "cached physical timing diverges from selected routes");
-  auto recurrenceTiming = detail::projectSpatialRecurrenceTiming(*this, routes);
-  if (!recurrenceTiming)
-    return recurrenceTiming.takeError();
-  if (!(*recurrenceTiming == recurrenceTiming_))
-    return candidateError(
-        "cached recurrence timing diverges from selected Mapping");
+  if (problem_->objectiveProgram().selectsMeasure(
+          MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)) {
+    auto recurrenceTiming =
+        detail::projectSpatialRecurrenceTiming(*this, routes);
+    if (!recurrenceTiming)
+      return recurrenceTiming.takeError();
+    if (!(*recurrenceTiming == recurrenceTiming_))
+      return candidateError(
+          "cached recurrence timing diverges from selected Mapping");
+  }
   if (llvm::Error error = tagAssignments_.verify(routeTrees_))
     return error;
   return verifyHandshakeProjection();
@@ -1462,6 +1549,7 @@ SpatialCandidateState::beginMove(SpatialCandidateScratch &scratch) & {
       scratch.memoryExposureJournalMarks_.size() !=
           memoryExposureSelections_.size() ||
       scratch.routeTransactions_.size() != routeTrees_.size() ||
+      scratch.progressTerminalActive_.size() != routeTrees_.size() ||
       scratch.traversalDeltaMarks_.size() !=
           problem_->routing().traversals().size() ||
       scratch.affectedBindingRelationMarks_.size() !=

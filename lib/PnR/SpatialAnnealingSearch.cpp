@@ -75,12 +75,17 @@ llvm::Error addCount(std::uint64_t &target, std::uint64_t amount,
 }
 
 llvm::Expected<bool>
-spatialMappingIsCapacityRepairReady(const SpatialCandidateState &candidate) {
+spatialMappingIsExactRepairReady(const SpatialCandidateState &candidate) {
   for (std::uint32_t ordinal = 0;
        ordinal != resolvedPnrViolationKindCount; ++ordinal) {
     const auto kind = static_cast<ResolvedPnrViolationKind>(ordinal);
     if (kind == ResolvedPnrViolationKind::CapacityOveruse)
       continue;
+    if (kind == ResolvedPnrViolationKind::HardProgressViolation) {
+      if (candidate.progress().routeDependencyViolationCount() != 0)
+        return false;
+      continue;
+    }
     auto value = spatialMappingViolationValue(candidate, kind);
     if (!value)
       return value.takeError();
@@ -99,6 +104,27 @@ multiplyCount(std::uint64_t lhs, std::uint64_t rhs, llvm::StringRef subject) {
 
 template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
   return values.capacity() * sizeof(T);
+}
+
+void emitHandshakeProjectionStatistics(
+    const HandshakeProjectionStatistics &statistics,
+    std::uint64_t seedAttemptOrdinal) {
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "spatial_provisional_handshake";
+        fields["seed_attempt"] = seedAttemptOrdinal;
+        fields["projection_count"] = statistics.projectionCount;
+        fields["construction_time_ns"] = statistics.constructionNanoseconds;
+        fields["deterministic_work"] = statistics.deterministicWork;
+        fields["retained_bytes"] = statistics.retainedBytes;
+        fields["peak_active_node_count"] = statistics.peakActiveNodeCount;
+        fields["peak_active_arc_count"] = statistics.peakActiveArcCount;
+        fields["cold_verification_count"] =
+            statistics.coldVerificationCount;
+        fields["cold_verification_time_ns"] =
+            statistics.coldVerificationNanoseconds;
+      });
 }
 
 void encodeSpatialAction(llvm::json::Object &fields,
@@ -359,6 +385,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                               });
     if (llvm::Error error = candidate.verify())
       return std::move(error);
+    emitHandshakeProjectionStatistics(
+        actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   }
   if (llvm::Error error = actionDomain_.prepare(problem))
@@ -482,6 +510,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     }
     if (llvm::Error error = candidateHandle->verify())
       return std::move(error);
+    emitHandshakeProjectionStatistics(
+        actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   };
   const auto finishAtCompletionGoal =
@@ -504,6 +534,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["seed_attempt"] = seedAttemptOrdinal;
                                 fields["reason"] = "completion_goal_reached";
                               });
+    emitHandshakeProjectionStatistics(
+        actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   };
   const auto finishAtRepairReadyHandoff =
@@ -520,10 +552,12 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                               [&](llvm::json::Object &fields) {
                                 fields["operation"] = "annealing_incumbent";
                                 fields["seed_attempt"] = seedAttemptOrdinal;
-                                fields["reason"] = "capacity_repair_handoff";
+                                fields["reason"] = "exact_repair_handoff";
                                 fields["temperature_levels"] =
                                     statistics.temperatureLevelCount;
                               });
+    emitHandshakeProjectionStatistics(
+        actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   };
   DeterministicPnrRandomStream calibrationStream =
@@ -534,6 +568,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     return std::move(error);
   if (llvm::Error error = reserveInactiveActionCapacity())
     return std::move(error);
+  statistics.plannedCalibrationProposalSlots =
+      annealing.calibrationProposalCount;
   for (std::uint64_t slot = 0; slot < annealing.calibrationProposalCount;
        ++slot) {
     if (executionControl.stopRequested())
@@ -664,6 +700,10 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
         actionExecutor_.heuristicCacheHitCount();
     const std::uint64_t levelHeuristicBuildBegin =
         actionExecutor_.heuristicBuildCount();
+    const std::uint64_t levelForwardHeuristicQueryBegin =
+        actionExecutor_.forwardHeuristicQueryCount();
+    const std::uint64_t levelForwardHeuristicUnreachableBegin =
+        actionExecutor_.forwardHeuristicUnreachableCount();
     const std::uint64_t movableDecisionCount =
         actionDomain_.selectableMovableDecisionCount(
             policy.search.actionProposal);
@@ -682,6 +722,16 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
             *proposalCount)
       return searchError(
           "proposal work projection disagrees with the search domain");
+    if (llvm::Error error = addCount(
+            statistics.plannedAnnealingBaseProposalSlots,
+            annealing.proposalsPerLevelBase,
+            "planned base annealing proposal slot"))
+      return std::move(error);
+    if (llvm::Error error = addCount(
+            statistics.plannedAnnealingMovableProposalSlots,
+            *movableProposalCount,
+            "planned movable-decision annealing proposal slot"))
+      return std::move(error);
     if (llvm::Error error = addCount(statistics.temperatureLevelCount, 1,
                                      "annealing temperature level"))
       return std::move(error);
@@ -845,10 +895,39 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
               statistics.cachedInactiveActionCount - levelCachedBegin;
           fields["transition_failures"] =
               statistics.annealingTransitionFailureCount - levelFailureBegin;
-          fields["heuristic_cache_hits"] =
+          const std::uint64_t heuristicCacheHits =
               actionExecutor_.heuristicCacheHitCount() - levelHeuristicHitBegin;
-          fields["heuristic_builds"] =
+          const std::uint64_t heuristicBuilds =
               actionExecutor_.heuristicBuildCount() - levelHeuristicBuildBegin;
+          fields["heuristic_cache_hits"] = heuristicCacheHits;
+          fields["heuristic_builds"] = heuristicBuilds;
+          const std::uint64_t forwardHeuristicQueries =
+              actionExecutor_.forwardHeuristicQueryCount() -
+              levelForwardHeuristicQueryBegin;
+          const std::uint64_t forwardHeuristicUnreachable =
+              actionExecutor_.forwardHeuristicUnreachableCount() -
+              levelForwardHeuristicUnreachableBegin;
+          fields["forward_heuristic_queries"] = forwardHeuristicQueries;
+          fields["forward_heuristic_unreachable_queries"] =
+              forwardHeuristicUnreachable;
+          if (forwardHeuristicQueries != 0)
+            fields["forward_heuristic_unreachable_ratio"] =
+                static_cast<double>(forwardHeuristicUnreachable) /
+                static_cast<double>(forwardHeuristicQueries);
+          else
+            fields["forward_heuristic_unreachable_ratio"] = nullptr;
+          const std::uint64_t heuristicLookups =
+              heuristicBuilds > std::numeric_limits<std::uint64_t>::max() -
+                                    heuristicCacheHits
+                  ? std::numeric_limits<std::uint64_t>::max()
+                  : heuristicCacheHits + heuristicBuilds;
+          fields["heuristic_cache_lookups"] = heuristicLookups;
+          if (heuristicLookups != 0)
+            fields["heuristic_cache_hit_ratio"] =
+                static_cast<double>(heuristicCacheHits) /
+                static_cast<double>(heuristicLookups);
+          else
+            fields["heuristic_cache_hit_ratio"] = nullptr;
           fields["heuristic_cache_entries"] =
               actionExecutor_.heuristicCacheEntryCount();
           fields["heuristic_cache_evictions"] =
@@ -874,7 +953,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
           fields["objective_codes"] = std::move(objectiveCodes);
           fields["exact_closure"] = statistics.exactClosureReached;
         });
-    auto repairReady = spatialMappingIsCapacityRepairReady(candidate);
+    auto repairReady = spatialMappingIsExactRepairReady(candidate);
     if (!repairReady)
       return repairReady.takeError();
     if (*repairReady &&
@@ -946,6 +1025,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                     statistics.incumbentSnapshotCount;
                               });
   }
+  emitHandshakeProjectionStatistics(
+      actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
   return statistics;
 }
 

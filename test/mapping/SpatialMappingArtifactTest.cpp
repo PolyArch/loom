@@ -1088,6 +1088,10 @@ void completeCandidateRoundTrip(
 
     loom::pnr::SpatialCandidateScratch tagScratch;
     requireSuccess(tagScratch.prepare(*problem));
+    auto tagCosts = take(loom::pnr::SpatialRouteCostState::create(*candidate));
+    const std::vector<loom::pnr::RouteCost> originalTagCosts(
+        tagCosts.currentArcCosts().begin(), tagCosts.currentArcCosts().end());
+    const bool originalTagPressure = tagCosts.hasTagPressureViolation();
     auto move = take(candidate->beginMove(tagScratch));
     requireSuccess(move.ripUpWholeRoute(0));
     const auto provisional = take(move.projectCurrentRoutes());
@@ -1095,11 +1099,31 @@ void completeCandidateRoundTrip(
         provisional.unroutedObligationCount !=
             problem->transfers().logicalNets()[0].sinkCount)
       fail("active Spatial move did not project its provisional RouteTree");
-    if (!take(move.close()))
+    const bool closed = take(move.close());
+    if (closed != provisional.selectedHandshakeAcyclic)
+      fail("provisional tag-aware handshake projection disagrees with move "
+           "closure");
+    const auto projectionStatistics =
+        tagScratch.handshakeProjectionStatistics();
+    if (projectionStatistics.projectionCount != 1 ||
+        projectionStatistics.peakActiveNodeCount == 0 ||
+        projectionStatistics.peakActiveArcCount == 0)
+      fail("provisional handshake projection omitted its worker-local "
+           "construction statistics");
+    if (!closed)
       fail("Physical Tag rollback fixture closed a handshake cycle");
+    const auto tagDelta = take(move.summarizeCurrentTagAssignmentDelta());
+    requireSuccess(tagCosts.synchronizeTagProjection(tagDelta));
+    if (!tagCosts.hasActiveTagProjectionDelta())
+      fail("Physical Tag route-cost delta did not retain its inverse");
     if (!candidate->tagSegments(0).empty() || !candidate->tagValues(0).empty())
       fail("route rip-up retained stale Physical Tag decisions");
     move.rollback();
+    requireSuccess(tagCosts.rollbackTagProjectionDelta());
+    if (tagCosts.hasActiveTagProjectionDelta() ||
+        tagCosts.hasTagPressureViolation() != originalTagPressure ||
+        !llvm::equal(tagCosts.currentArcCosts(), originalTagCosts))
+      fail("Physical Tag route-cost rollback changed its exact projection");
     if (!llvm::equal(candidate->tagSegments(0), originalSegments) ||
         !llvm::equal(candidate->tagValues(0), originalValues) ||
         candidate->tagUnassignedCount() != 0 ||

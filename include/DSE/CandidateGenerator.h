@@ -123,15 +123,19 @@ struct CandidateGeneratorOutputDemand final {
 };
 
 /// Immutable invocation policy derived from the resolved plan. Output demand
-/// is semantic work policy owned by that plan; interruption remains transient
-/// execution policy. Neither is mutable candidate state.
+/// is semantic visibility policy owned by that plan and bounds provider work
+/// only when the provider contract explicitly permits it. Interruption and
+/// resource budgets remain transient execution policy. None is mutable
+/// candidate state.
 class CandidateGeneratorInvocationView final {
 public:
   constexpr CandidateGeneratorInvocationView() = default;
   constexpr CandidateGeneratorInvocationView(
       ExecutionControlView executionControl,
-      llvm::ArrayRef<CandidateGeneratorOutputDemand> outputDemands)
-      : executionControl_(executionControl), outputDemands_(outputDemands) {}
+      llvm::ArrayRef<CandidateGeneratorOutputDemand> outputDemands,
+      ExecutionResourceBudget executionBudget = {})
+      : executionControl_(executionControl), outputDemands_(outputDemands),
+        executionBudget_(executionBudget) {}
 
   ExecutionControlView executionControl() const { return executionControl_; }
   bool stopRequested() const { return executionControl_.stopRequested(); }
@@ -140,10 +144,12 @@ public:
   llvm::ArrayRef<CandidateGeneratorOutputDemand> outputDemands() const {
     return outputDemands_;
   }
+  ExecutionResourceBudget executionBudget() const { return executionBudget_; }
 
 private:
   ExecutionControlView executionControl_;
   llvm::ArrayRef<CandidateGeneratorOutputDemand> outputDemands_;
+  ExecutionResourceBudget executionBudget_;
 };
 
 struct CandidateGeneratorInputSlotDescriptor final {
@@ -357,6 +363,9 @@ enum class CandidateGeneratorIncompleteReason : std::uint32_t {
   ExecutionFailed = 4,
   CancelledOrTimeout = 5,
 };
+
+llvm::StringRef candidateGeneratorIncompleteReasonSpelling(
+    CandidateGeneratorIncompleteReason reason);
 
 struct IncompleteCandidateGeneratorResult final {
   CandidateGeneratorIncompleteReason reason;

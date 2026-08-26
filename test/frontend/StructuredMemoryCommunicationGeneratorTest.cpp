@@ -86,10 +86,10 @@ module attributes {dlti.dl_spec = #layout} {
   } else {
     source += "  memref.global constant @table : memref<4xi32> = dense<[";
     source += std::to_string(options.firstValue);
-    source += ", 2, 3, 4]> {alignment = 64}\n";
+    source += ", 2, 3, 4]> alignment = 64\n";
   }
   source += "  memref.global constant @other_table : memref<4xi32> = "
-            "dense<[10, 11, 12, 13]> {alignment = 64}\n";
+            "dense<[10, 11, 12, 13]> alignment = 64\n";
   source += R"mlir(
   memref.global @mutable : memref<1xi32> = dense<[9]>
   memref.global @mutable_table : memref<4xi32> = dense<[5, 6, 7, 8]>
@@ -111,11 +111,11 @@ module attributes {dlti.dl_spec = #layout} {
 )mlir";
   source += "        %a = memref.load %table_input[%c0]";
   if (options.loadAlignment)
-    source += " {alignment = " + std::to_string(options.loadAlignment) + "}";
+    source += " alignment (" + std::to_string(options.loadAlignment) + ")";
   source += " : memref<4xi32>\n";
   source += "        %b = memref.load %table_input[%c1]";
   if (options.loadAlignment && options.misalignedSecondLoad)
-    source += " {alignment = " + std::to_string(options.loadAlignment) + "}";
+    source += " alignment (" + std::to_string(options.loadAlignment) + ")";
   source += R"mlir( : memref<4xi32>
         %ignored = memref.load %mutable_input[%c0] : memref<1xi32>
 )mlir";

@@ -1,6 +1,7 @@
 #ifndef LOOM_PNR_SYSTEM_SYSTEMSERVICEROUTER_H
 #define LOOM_PNR_SYSTEM_SYSTEMSERVICEROUTER_H
 
+#include "PnR/EndpointRouter.h"
 #include "PnR/RoutingNegotiation.h"
 #include "PnR/System/SystemCandidateState.h"
 
@@ -8,6 +9,8 @@
 #include "llvm/ADT/FunctionExtras.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -47,7 +50,6 @@ using SystemRouteArcCostProjection =
 
 struct SystemServiceRouteBuildRequest final {
   llvm::ArrayRef<PnrIndex> legOrder;
-  llvm::ArrayRef<RouteCost> lowerBoundArcCosts;
   SystemRouteArcCostProjection currentArcCosts;
   std::optional<SystemServiceRoutesView> priorRoutes;
   std::optional<SystemServiceRouteTraversalExclusion> exclusion;
@@ -56,9 +58,64 @@ struct SystemServiceRouteBuildRequest final {
   bool enforceCapacity = true;
 };
 
+struct SystemServiceRouteAtomicPatternCatalog final {
+  std::vector<std::vector<PnrIndex>> traversalsByGroup;
+  std::vector<std::uint64_t> unicastEligibility;
+};
+
 struct BuiltSystemServiceRoutes final {
   CanonicalSystemServiceRoutes selections;
   std::vector<std::uint64_t> capacityUsage;
+};
+
+/// Negotiation-local routing state derived once from one frozen System problem.
+/// The scratch borrows the problem and must not outlive it. Lower-bound costs
+/// remain immutable while prepared, so owner-backed revisions admit exact
+/// EndpointRouter validation and heuristic reuse.
+class SystemServiceRouterScratch final {
+public:
+  SystemServiceRouterScratch() = default;
+  SystemServiceRouterScratch(const SystemServiceRouterScratch &) = delete;
+  SystemServiceRouterScratch &
+  operator=(const SystemServiceRouterScratch &) = delete;
+  SystemServiceRouterScratch(SystemServiceRouterScratch &&) = delete;
+  SystemServiceRouterScratch &operator=(SystemServiceRouterScratch &&) = delete;
+  ~SystemServiceRouterScratch() = default;
+
+  llvm::Error prepare(const FrozenSystemPnrProblem &problem);
+
+  std::uint64_t heuristicCacheHitCount() const {
+    return endpointSearch_.heuristicCacheHitCount();
+  }
+  std::uint64_t heuristicBuildCount() const {
+    return endpointSearch_.heuristicBuildCount();
+  }
+  std::uint64_t heuristicCacheEvictionCount() const {
+    return endpointSearch_.heuristicCacheEvictionCount();
+  }
+  std::size_t heuristicCacheRetainedBytes() const {
+    return endpointSearch_.heuristicCacheRetainedBytes();
+  }
+  llvm::ArrayRef<RouteCost> lowerBoundArcCosts() const {
+    return lowerBoundArcCosts_;
+  }
+  std::size_t retainedStorageBytes() const;
+
+private:
+  friend llvm::Expected<BuiltSystemServiceRoutes>
+  buildSystemServiceRoutes(const FrozenSystemPnrProblem &problem,
+                           llvm::ArrayRef<PnrIndex> threadChoices,
+                           llvm::ArrayRef<PnrIndex> graphChoices,
+                           SystemServiceRouterScratch &scratch,
+                           const SystemServiceRouteBuildRequest &request,
+                           std::uint64_t &endpointExpansions);
+
+  const FrozenSystemPnrProblem *preparedProblem_ = nullptr;
+  SystemServiceRouteAtomicPatternCatalog atomicPatterns_;
+  std::vector<RouteCost> lowerBoundArcCosts_;
+  EndpointRouteInputRevisionOwner lowerBoundArcCostRevisionOwner_;
+  EndpointRouteInputRevisionOwner currentArcCostRevisionOwner_;
+  EndpointRouteSearchScratch endpointSearch_;
 };
 
 struct SystemFixedTerminalCapacityLegEvidence final {
@@ -83,10 +140,6 @@ struct SystemFixedTerminalCapacityConflict final {
   bool hasCertificate() const { return mandatoryUsage > capacity; }
 };
 
-llvm::Expected<std::vector<RouteCost>>
-buildSystemServiceRouteLowerBoundArcCosts(
-    const FrozenEndpointRoutingTopology &topology);
-
 llvm::Expected<std::vector<PnrIndex>>
 buildSystemServiceRouteLegOrder(const FrozenEndpointRoutingTopology &topology,
                                 SystemServiceRoutesView routes,
@@ -110,6 +163,7 @@ llvm::Expected<BuiltSystemServiceRoutes>
 buildSystemServiceRoutes(const FrozenSystemPnrProblem &problem,
                          llvm::ArrayRef<PnrIndex> threadChoices,
                          llvm::ArrayRef<PnrIndex> graphChoices,
+                         SystemServiceRouterScratch &scratch,
                          const SystemServiceRouteBuildRequest &request,
                          std::uint64_t &endpointExpansions);
 

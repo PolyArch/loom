@@ -31,7 +31,10 @@ enum class ResourceTimeSelectionErrorReason : std::uint8_t {
   UnsupportedTransitionProfile,
   ActiveDeploymentMismatch,
   UnknownMappedRoot,
+  DuplicateStart,
+  CompletionBeforeStart,
   DuplicateCompletion,
+  ActiveSetMismatch,
   TransitionUnavailable,
   IncompleteMappedRootJoin,
   InvalidLifecycle,
@@ -65,22 +68,24 @@ struct ResourceTimeCompletionDecision final {
 };
 
 enum class ResourceTimeSelectionAction : std::uint8_t {
+  StartRoot,
   CompleteRoot,
   JoinMappedRoots,
   Cancel,
 };
 
 struct ResourceTimeSelectionReplayRecord final {
-  ResourceTimeSelectionAction action =
-      ResourceTimeSelectionAction::CompleteRoot;
+  ResourceTimeSelectionAction action = ResourceTimeSelectionAction::StartRoot;
+  std::optional<::dataflow::RootThreadLaunchRef> startedRoot;
   std::optional<ResourceTimeCompletionDecision> completion;
 };
 
 class LoadedDeployment;
 
 /// Invocation-local selector for one immutable compiler-preverified graph.
-/// It can coordinate an atomic child activation replacement for the admitted
-/// completion-only profile but does not snapshot or move live runtime state.
+/// It tracks the exact started, active, and completed root sets and can
+/// coordinate an atomic child activation replacement for the admitted
+/// completion-only profile. It does not snapshot or move live runtime state.
 class ResourceTimeTransitionSelectionSession final {
 public:
   static llvm::Expected<ResourceTimeTransitionSelectionSession>
@@ -115,11 +120,14 @@ public:
   currentEndpoint() const {
     return current_;
   }
-  llvm::ArrayRef<::dataflow::RootThreadLaunchRef> completedRoots() const {
-    return completedRoots_;
-  }
+  std::vector<::dataflow::RootThreadLaunchRef> activeRoots() const;
+  std::vector<::dataflow::RootThreadLaunchRef> completedRoots() const;
   bool mappedRootsJoined() const { return state_ == State::Joined; }
   bool cancelled() const { return state_ == State::Cancelled; }
+
+  /// Records one root start. After a transition, every root in the edge's
+  /// child active set must be started before another completion is accepted.
+  llvm::Error startRoot(::dataflow::RootThreadLaunchRef root);
 
   /// Records one collective root completion in caller commit order. A child
   /// is selected only through an exact verified edge; graph order is never a
@@ -154,6 +162,7 @@ public:
 
 private:
   enum class State : std::uint8_t { Running, Joined, Cancelled };
+  enum class RootState : std::uint8_t { NotStarted, Active, Completed };
 
   ResourceTimeTransitionSelectionSession(
       ::loom::pnr::ResourceTimeTransitionGraph graph,
@@ -161,7 +170,8 @@ private:
       std::vector<::dataflow::RootThreadLaunchRef> mappedRoots)
       : graph_(std::move(graph)), dataflow_(std::move(dataflow)),
         mappedRoots_(std::move(mappedRoots)),
-        completedMarks_(mappedRoots_.size(), false), current_(graph_.entry) {}
+        rootStates_(mappedRoots_.size(), RootState::NotStarted),
+        current_(graph_.entry) {}
 
   llvm::Error
   applyReplayRecord(const ResourceTimeSelectionReplayRecord &record);
@@ -169,8 +179,8 @@ private:
   ::loom::pnr::ResourceTimeTransitionGraph graph_;
   ArtifactRootReference dataflow_;
   std::vector<::dataflow::RootThreadLaunchRef> mappedRoots_;
-  std::vector<bool> completedMarks_;
-  std::vector<::dataflow::RootThreadLaunchRef> completedRoots_;
+  std::vector<RootState> rootStates_;
+  std::vector<::dataflow::RootThreadLaunchRef> requiredStarts_;
   ::loom::pnr::ResourceTimeTransitionEndpointReference current_;
   std::shared_ptr<const detail::ResourceTimeActivationToken>
       preparedActivationToken_;

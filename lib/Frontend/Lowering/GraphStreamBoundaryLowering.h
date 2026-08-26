@@ -10,6 +10,8 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace loom {
@@ -42,6 +44,7 @@ struct StreamScheduleNode {
 
 struct StreamBindingPlan {
   ::mlir::Block *scope = nullptr;
+  unsigned recurrenceBits = 0;
   std::unique_ptr<StreamScheduleNode> schedule;
 };
 
@@ -91,15 +94,19 @@ collectStreamEndpoints(::mlir::Value channel, bool input);
 analyzeStreamBoundary(::dataflow::GraphOp graph);
 
 ::mlir::FailureOr<std::unique_ptr<StreamBindingPlan>>
-analyzeStreamBinding(::mlir::Value channel, bool input);
+analyzeStreamBinding(::mlir::Value channel, bool input, unsigned indexBits);
+
+std::optional<std::string>
+explainStreamScheduleRejection(::mlir::Operation *scope, unsigned indexBits);
 
 ::mlir::LogicalResult
 checkStreamBoundaryUses(::dataflow::GraphOp graph,
-                        const StreamBoundaryInfo &boundary);
+                        const StreamBoundaryInfo &boundary, unsigned indexBits);
 
 StreamScheduleMaterialization
 materializeStreamSchedule(const StreamScheduleNode &schedule,
-                          ::mlir::Value execution, ::mlir::OpBuilder &builder,
+                          unsigned recurrenceBits, ::mlir::Value execution,
+                          ::mlir::OpBuilder &builder,
                           ::mlir::Operation *anchor);
 
 StreamSelectiveRouterMaterialization

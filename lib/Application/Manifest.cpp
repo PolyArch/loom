@@ -6,6 +6,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 
 #include <algorithm>
+#include <array>
 #include <initializer_list>
 #include <limits>
 #include <optional>
@@ -163,18 +164,6 @@ llvm::Expected<OracleCoverage> parseOracleCoverage(llvm::StringRef value) {
   return invalid("oracle coverage must be 'all_measured_samples'");
 }
 
-llvm::Expected<ExecutionSelection>
-parseExecutionSelection(llvm::StringRef value) {
-  if (value == "smoke")
-    return ExecutionSelection::Smoke;
-  if (value == "validation")
-    return ExecutionSelection::Validation;
-  if (value == "scale_eda")
-    return ExecutionSelection::ScaleEda;
-  return invalid(
-      "execution selection must be 'smoke', 'validation', or 'scale_eda'");
-}
-
 llvm::Expected<std::vector<std::string>>
 parseStringArray(const llvm::json::Array &array, const std::string &context,
                  bool pathValues, bool requireCanonicalOrder) {
@@ -236,7 +225,8 @@ llvm::Expected<BuildSelection> parseBuild(const llvm::json::Object &object,
                                           const std::string &context) {
   if (llvm::Error error = rejectUnknownFields(
           object, context,
-          {"entry", "language", "sources", "compiler_options", "link_options"}))
+          {"entry", "language", "sources", "compiler_options", "link_options",
+           "operator_protocol_symbols"}))
     return std::move(error);
   auto entry = requireString(object, "entry", context);
   if (!entry)
@@ -253,6 +243,10 @@ llvm::Expected<BuildSelection> parseBuild(const llvm::json::Object &object,
   auto linkArray = requireArray(object, "link_options", context);
   if (!linkArray)
     return linkArray.takeError();
+  auto protocolSymbolsArray =
+      requireArray(object, "operator_protocol_symbols", context);
+  if (!protocolSymbolsArray)
+    return protocolSymbolsArray.takeError();
   if (llvm::Error error = validateRelativePath(*entry, context + " entry"))
     return std::move(error);
   auto language = parseLanguageMode(*languageText);
@@ -270,6 +264,15 @@ llvm::Expected<BuildSelection> parseBuild(const llvm::json::Object &object,
       parseStringArray(**linkArray, context + " link_options", false, false);
   if (!linkOptions)
     return linkOptions.takeError();
+  auto operatorProtocolSymbols =
+      parseStringArray(**protocolSymbolsArray,
+                       context + " operator_protocol_symbols", false, false);
+  if (!operatorProtocolSymbols)
+    return operatorProtocolSymbols.takeError();
+  if (std::set<std::string>(operatorProtocolSymbols->begin(),
+                            operatorProtocolSymbols->end())
+          .size() != operatorProtocolSymbols->size())
+    return invalid(context + " operator_protocol_symbols must be unique");
   if (sources->empty())
     return invalid(context + " requires a nonempty exact source selection");
   if (!std::binary_search(sources->begin(), sources->end(), entry->str()))
@@ -278,8 +281,12 @@ llvm::Expected<BuildSelection> parseBuild(const llvm::json::Object &object,
     if (!hasSourceExtension(source, *language))
       return invalid(context + " source '" + source +
                      "' is outside the selected C/C++ language mode");
-  return BuildSelection{entry->str(), *language, std::move(*sources),
-                        std::move(*compilerOptions), std::move(*linkOptions)};
+  return BuildSelection{entry->str(),
+                        *language,
+                        std::move(*sources),
+                        std::move(*compilerOptions),
+                        std::move(*linkOptions),
+                        std::move(*operatorProtocolSymbols)};
 }
 
 llvm::Expected<CachedInput> parseCachedInput(const llvm::json::Object &object,
@@ -365,10 +372,10 @@ parseWorkloadExecutionProfile(const llvm::json::Object &object,
 llvm::Expected<WorkloadInputSelection>
 parseWorkloadInput(const llvm::json::Object &object,
                    const std::string &context) {
-  if (llvm::Error error =
-          rejectUnknownFields(object, context,
-                              {"name", "workload", "runtime_input",
-                               "cached_inputs", "oracle", "profile"}))
+  if (llvm::Error error = rejectUnknownFields(
+          object, context,
+          {"name", "workload", "runtime_input", "cached_inputs",
+           "compiler_options", "oracle", "profile"}))
     return std::move(error);
   auto name = requireString(object, "name", context);
   if (!name)
@@ -382,6 +389,9 @@ parseWorkloadInput(const llvm::json::Object &object,
   auto cachedArray = requireArray(object, "cached_inputs", context);
   if (!cachedArray)
     return cachedArray.takeError();
+  auto compilerOptionsArray = requireArray(object, "compiler_options", context);
+  if (!compilerOptionsArray)
+    return compilerOptionsArray.takeError();
   auto oracleObject = requireObject(object, "oracle", context);
   if (!oracleObject)
     return oracleObject.takeError();
@@ -399,6 +409,10 @@ parseWorkloadInput(const llvm::json::Object &object,
       parseStringArray(**cachedArray, context + " cached_inputs", false, true);
   if (!cached)
     return cached.takeError();
+  auto compilerOptions = parseStringArray(
+      **compilerOptionsArray, context + " compiler_options", false, false);
+  if (!compilerOptions)
+    return compilerOptions.takeError();
   for (const std::string &logicalName : *cached)
     if (llvm::Error error = validateLogicalName(
             logicalName, context + " cached input reference"))
@@ -410,9 +424,13 @@ parseWorkloadInput(const llvm::json::Object &object,
       parseWorkloadExecutionProfile(**profileObject, context + " profile");
   if (!profile)
     return profile.takeError();
-  return WorkloadInputSelection{name->str(),         workload->str(),
-                                runtimeInput->str(), std::move(*cached),
-                                std::move(*oracle),  std::move(*profile)};
+  return WorkloadInputSelection{name->str(),
+                                workload->str(),
+                                runtimeInput->str(),
+                                std::move(*cached),
+                                std::move(*compilerOptions),
+                                std::move(*oracle),
+                                std::move(*profile)};
 }
 
 llvm::Expected<ApplicationDefinition>
@@ -421,7 +439,7 @@ parseApplication(const llvm::json::Object &object, std::size_t ordinal) {
   if (llvm::Error error =
           rejectUnknownFields(object, context,
                               {"identity", "source", "build", "cached_inputs",
-                               "inputs", "selections"}))
+                               "inputs", "selection_inputs"}))
     return std::move(error);
   auto identity = requireString(object, "identity", context);
   if (!identity)
@@ -438,9 +456,10 @@ parseApplication(const llvm::json::Object &object, std::size_t ordinal) {
   auto inputsArray = requireArray(object, "inputs", context);
   if (!inputsArray)
     return inputsArray.takeError();
-  auto selectionsArray = requireArray(object, "selections", context);
-  if (!selectionsArray)
-    return selectionsArray.takeError();
+  auto selectionInputsObject =
+      requireObject(object, "selection_inputs", context);
+  if (!selectionInputsObject)
+    return selectionInputsObject.takeError();
   if (llvm::Error error = validateLogicalName(*identity, context + " identity"))
     return std::move(error);
   auto source = parseSource(**sourceObject, context + " source");
@@ -510,30 +529,58 @@ parseApplication(const llvm::json::Object &object, std::size_t ordinal) {
   if (referencedCacheInputs.size() != cachedInputs.size())
     return invalid(context + " declares an unused cached input");
 
-  std::vector<ExecutionSelection> selections;
-  selections.reserve((*selectionsArray)->size());
-  for (const llvm::json::Value &value : **selectionsArray) {
-    std::optional<llvm::StringRef> spelling = value.getAsString();
-    if (!spelling)
-      return invalid(context + " selections entries must be strings");
-    auto parsed = parseExecutionSelection(*spelling);
-    if (!parsed)
-      return parsed.takeError();
-    selections.push_back(*parsed);
-  }
-  if (selections.empty())
-    return invalid(context + " requires an execution selection");
-  if (llvm::Error error = requireStrictOrder(
-          selections,
-          [](ExecutionSelection selection) {
-            return static_cast<std::uint8_t>(selection);
-          },
-          context + " selections"))
+  if (llvm::Error error = rejectUnknownFields(
+          **selectionInputsObject, context + " selection_inputs",
+          {"smoke", "validation", "scale_eda"}))
     return std::move(error);
+  constexpr std::array executionSelections = {ExecutionSelection::Smoke,
+                                              ExecutionSelection::Validation,
+                                              ExecutionSelection::ScaleEda};
+  std::vector<ExecutionSelectionInputs> selectionInputs;
+  std::set<std::string> selectedInputNames;
+  for (ExecutionSelection selection : executionSelections) {
+    const std::string selectionName = toString(selection).str();
+    const llvm::json::Value *value =
+        (*selectionInputsObject)->get(selectionName);
+    if (!value)
+      continue;
+    const llvm::json::Array *array = value->getAsArray();
+    if (!array)
+      return invalid(context + " selection_inputs field '" + selectionName +
+                     "' must be an array");
+    auto inputNames = parseStringArray(
+        *array, context + " selection_inputs " + selectionName, false, true);
+    if (!inputNames)
+      return inputNames.takeError();
+    if (inputNames->empty())
+      return invalid(context + " selection_inputs field '" + selectionName +
+                     "' cannot be empty");
+    for (const std::string &inputName : *inputNames) {
+      if (llvm::Error error = validateLogicalName(
+              inputName, context + " selection_inputs input name"))
+        return std::move(error);
+      const auto input = std::lower_bound(
+          inputs.begin(), inputs.end(), inputName,
+          [](const WorkloadInputSelection &candidate, llvm::StringRef name) {
+            return candidate.name < name;
+          });
+      if (input == inputs.end() || input->name != inputName)
+        return invalid(context +
+                       " selection_inputs references unknown input '" +
+                       inputName + "'");
+      selectedInputNames.insert(inputName);
+    }
+    selectionInputs.push_back(
+        ExecutionSelectionInputs{selection, std::move(*inputNames)});
+  }
+  if (selectionInputs.empty())
+    return invalid(context + " requires an execution selection input set");
+  if (selectedInputNames.size() != inputs.size())
+    return invalid(context + " has an input outside every execution selection");
 
   return ApplicationDefinition{identity->str(),   std::move(*source),
                                std::move(*build), std::move(cachedInputs),
-                               std::move(inputs), std::move(selections)};
+                               std::move(inputs), std::move(selectionInputs)};
 }
 
 } // namespace
@@ -586,6 +633,18 @@ llvm::StringRef toString(ExecutionSelection selection) {
     return "scale_eda";
   }
   llvm_unreachable("unknown ExecutionSelection");
+}
+
+llvm::Expected<ExecutionSelection>
+parseExecutionSelection(llvm::StringRef spelling) {
+  if (spelling == "smoke")
+    return ExecutionSelection::Smoke;
+  if (spelling == "validation")
+    return ExecutionSelection::Validation;
+  if (spelling == "scale_eda")
+    return ExecutionSelection::ScaleEda;
+  return invalid(
+      "execution selection must be 'smoke', 'validation', or 'scale_eda'");
 }
 
 llvm::Expected<ApplicationManifest>
@@ -646,14 +705,104 @@ loadApplicationManifest(llvm::StringRef path) {
   return parseApplicationManifest((*buffer)->getBuffer());
 }
 
-std::vector<std::string>
-selectApplicationIdentities(const ApplicationManifest &manifest,
-                            ExecutionSelection selection) {
-  std::vector<std::string> identities;
-  for (const ApplicationDefinition &application : manifest.applications())
-    if (llvm::is_contained(application.selections, selection))
-      identities.push_back(application.identity);
-  return identities;
+llvm::json::Object
+projectSelectedApplicationInputJson(const SelectedApplicationInput &selection) {
+  llvm::json::Array sources;
+  for (const std::string &source : selection.build.sources)
+    sources.push_back(source);
+  llvm::json::Array compilerOptions;
+  for (const std::string &option : selection.build.compilerOptions)
+    compilerOptions.push_back(option);
+  llvm::json::Array linkOptions;
+  for (const std::string &option : selection.build.linkOptions)
+    linkOptions.push_back(option);
+  llvm::json::Array operatorProtocolSymbols;
+  for (const std::string &symbol : selection.build.operatorProtocolSymbols)
+    operatorProtocolSymbols.push_back(symbol);
+  llvm::json::Array inputCompilerOptions;
+  for (const std::string &option : selection.input.compilerOptions)
+    inputCompilerOptions.push_back(option);
+  llvm::json::Array cachedInputs;
+  for (const CachedInput &input : selection.cachedInputs)
+    cachedInputs.push_back(
+        llvm::json::Object{{"logical_name", input.logicalName},
+                           {"path", input.path},
+                           {"sha256", formatBlobDigestHex(input.digest)}});
+  return llvm::json::Object{
+      {"application_identity", selection.applicationIdentity},
+      {"input_name", selection.input.name},
+      {"source", llvm::json::Object{{"kind", toString(selection.source.kind)},
+                                    {"root", selection.source.root}}},
+      {"build",
+       llvm::json::Object{
+           {"entry", selection.build.entry},
+           {"language", toString(selection.build.language)},
+           {"sources", std::move(sources)},
+           {"compiler_options", std::move(compilerOptions)},
+           {"link_options", std::move(linkOptions)},
+           {"operator_protocol_symbols", std::move(operatorProtocolSymbols)}}},
+      {"workload", selection.input.workload},
+      {"runtime_input", selection.input.runtimeInput},
+      {"input_compiler_options", std::move(inputCompilerOptions)},
+      {"cached_inputs", std::move(cachedInputs)},
+      {"oracle",
+       llvm::json::Object{{"kind", toString(selection.input.oracle.kind)},
+                          {"entry", selection.input.oracle.entry}}}};
+}
+
+void writeApplicationManifestInventoryJson(
+    llvm::raw_ostream &output, const ApplicationManifest &manifest) {
+  llvm::json::OStream json(output, 2);
+  json.object([&] {
+    json.attribute("schema", "loom.application_portfolio_inventory");
+    json.attribute("version", "1.0");
+    json.attribute("manifest_schema", ApplicationManifest::schemaIdentity);
+    json.attribute("manifest_version", ApplicationManifest::schemaVersion);
+    json.attributeArray("rows", [&] {
+      for (const ApplicationDefinition &application : manifest.applications()) {
+        for (const WorkloadInputSelection &input : application.inputs) {
+          SelectedApplicationInput selection =
+              llvm::cantFail(selectApplicationInput(
+                  manifest, application.identity, input.name));
+          llvm::json::Object row =
+              projectSelectedApplicationInputJson(selection);
+          row["profile"] = llvm::json::Object{
+              {"warmup_samples", input.profile.warmupSamples},
+              {"measured_samples", input.profile.measuredSamples},
+              {"oracle_coverage", toString(input.profile.oracleCoverage)},
+              {"deadline_milliseconds", input.profile.deadlineMilliseconds}};
+          llvm::json::Array executionSelections;
+          for (const ExecutionSelectionInputs &binding :
+               application.selectionInputs)
+            if (std::binary_search(binding.inputNames.begin(),
+                                   binding.inputNames.end(), input.name))
+              executionSelections.push_back(toString(binding.selection));
+          row["execution_selections"] = std::move(executionSelections);
+          json.value(std::move(row));
+        }
+      }
+    });
+  });
+  output << '\n';
+}
+
+std::vector<SelectedApplicationInput>
+selectApplicationInputs(const ApplicationManifest &manifest,
+                        ExecutionSelection selection) {
+  std::vector<SelectedApplicationInput> selected;
+  for (const ApplicationDefinition &application : manifest.applications()) {
+    const auto binding =
+        llvm::find_if(application.selectionInputs,
+                      [&](const ExecutionSelectionInputs &candidate) {
+                        return candidate.selection == selection;
+                      });
+    if (binding == application.selectionInputs.end())
+      continue;
+    for (const std::string &inputName : binding->inputNames)
+      selected.push_back(llvm::cantFail(
+          selectApplicationInput(manifest, application.identity, inputName)));
+  }
+  return selected;
 }
 
 llvm::Expected<SelectedApplicationInput>
@@ -687,8 +836,12 @@ selectApplicationInput(const ApplicationManifest &manifest,
                            input->cachedInputs.end(), cached.logicalName))
       cachedInputs.push_back(cached);
 
+  BuildSelection build = application->build;
+  build.compilerOptions.insert(build.compilerOptions.end(),
+                               input->compilerOptions.begin(),
+                               input->compilerOptions.end());
   return SelectedApplicationInput{application->identity, application->source,
-                                  application->build, std::move(cachedInputs),
+                                  std::move(build), std::move(cachedInputs),
                                   *input};
 }
 

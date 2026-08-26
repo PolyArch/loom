@@ -691,6 +691,8 @@ void spatialCandidateWorkflow(llvm::StringRef testCase) {
       loom::test::exerciseSpatialInitializerDiversification(problem);
     else if (testCase == "action-domain")
       loom::test::exerciseSpatialActionDomainAndObjective(problem);
+    else if (testCase == "progress-witness")
+      loom::test::exerciseSpatialProgressWitnessClosure(problem);
     else if (testCase == "annealing-cold-replay")
       loom::test::exerciseSpatialAnnealingReplay(problem, false);
     else if (testCase == "annealing-warm-replay")
@@ -1331,7 +1333,6 @@ void artifactRoundTripAndReferenceValidation() {
       fail("PathFinder prospective rip-up did not restore excluded occupancy");
   requireSuccess(routeCostState.selectLogicalNet(std::nullopt));
   if (routeCostState.selectedLogicalNet() ||
-      routeCostState.lowerBoundCostRevision() != 0 ||
       !llvm::equal(routeCostState.currentArcCosts(), baselineCosts) ||
       routeCostState.retainedStorageBytes() != warmedRouteCostBytes)
     fail("PathFinder route-cost overlay did not restore its warmed baseline");

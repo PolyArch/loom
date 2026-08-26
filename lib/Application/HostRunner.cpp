@@ -456,28 +456,49 @@ llvm::StringRef executionStatus(const ApplicationHostRunReport &report) {
   llvm_unreachable("unknown ApplicationHostRunOutcome");
 }
 
-void writeNullable(llvm::json::OStream &json, llvm::StringRef name,
-                   const std::optional<std::string> &value) {
-  if (value)
-    json.attribute(name, *value);
-  else
-    json.attribute(name, llvm::json::Value(nullptr));
+template <typename Value>
+llvm::json::Value optionalJson(const std::optional<Value> &value) {
+  return value ? llvm::json::Value(*value) : llvm::json::Value(nullptr);
 }
 
-void writeNullable(llvm::json::OStream &json, llvm::StringRef name,
-                   const std::optional<int> &value) {
-  if (value)
-    json.attribute(name, *value);
-  else
-    json.attribute(name, llvm::json::Value(nullptr));
-}
-
-void writeNullable(llvm::json::OStream &json, llvm::StringRef name,
-                   const std::optional<std::uint64_t> &value) {
-  if (value)
-    json.attribute(name, *value);
-  else
-    json.attribute(name, llvm::json::Value(nullptr));
+llvm::json::Object
+projectApplicationHostRunReportJson(const ApplicationHostRunReport &report) {
+  llvm::json::Object sourceAdmission{
+      {"status", report.unavailableSource ? "unavailable" : "admitted"},
+      {"reason",
+       report.unavailableSource
+           ? llvm::json::Value(toString(report.unavailableSource->reason))
+           : llvm::json::Value(nullptr)},
+      {"path", report.unavailableSource
+                   ? llvm::json::Value(report.unavailableSource->path)
+                   : llvm::json::Value(nullptr)}};
+  return llvm::json::Object{
+      {"schema", ApplicationHostRunReport::schemaIdentity},
+      {"version", ApplicationHostRunReport::schemaVersion},
+      {"selection", projectSelectedApplicationInputJson(report.selection)},
+      {"profile",
+       llvm::json::Object{
+           {"warmup_samples", report.selection.input.profile.warmupSamples},
+           {"measured_samples", report.selection.input.profile.measuredSamples},
+           {"oracle_coverage",
+            toString(report.selection.input.profile.oracleCoverage)},
+           {"deadline_milliseconds",
+            report.selection.input.profile.deadlineMilliseconds}}},
+      {"source_admission", std::move(sourceAdmission)},
+      {"compile",
+       llvm::json::Object{
+           {"status", compileStatus(report)},
+           {"compiler", optionalJson(report.compilerExecutable)},
+           {"exit_status", optionalJson(report.compileExitStatus)}}},
+      {"execution",
+       llvm::json::Object{
+           {"status", executionStatus(report)},
+           {"exit_status", optionalJson(report.executionExitStatus)},
+           {"host_wall_time_nanoseconds",
+            optionalJson(report.hostWallTimeNanoseconds)}}},
+      {"oracle_result",
+       llvm::json::Object{{"status", toString(report.oracleStatus)}}},
+      {"outcome", toString(report.outcome)}};
 }
 
 } // namespace
@@ -611,6 +632,7 @@ runApplicationInputOnHost(const ApplicationManifest &manifest,
   compileArguments.insert(compileArguments.end(),
                           report.selection.build.compilerOptions.begin(),
                           report.selection.build.compilerOptions.end());
+  compileArguments.push_back("-DLOOM_APPLICATION_HOST_EXECUTION=1");
   compileArguments.push_back("-x");
   compileArguments.push_back(toString(report.selection.build.language).str());
   compileArguments.insert(compileArguments.end(), admitted.sourcePaths.begin(),
@@ -686,95 +708,56 @@ runApplicationInputOnHost(const ApplicationManifest &manifest,
   return report;
 }
 
+llvm::Expected<ApplicationHostSelectionRunReport> runApplicationSelectionOnHost(
+    const ApplicationManifest &manifest,
+    const ApplicationHostSelectionRunRequest &request) {
+  ApplicationHostSelectionRunReport result{request.selection, {}};
+  const std::vector<SelectedApplicationInput> selections =
+      selectApplicationInputs(manifest, request.selection);
+  result.reports.reserve(selections.size());
+  for (const SelectedApplicationInput &selection : selections) {
+    auto report = runApplicationInputOnHost(
+        manifest, ApplicationHostRunRequest{
+                      selection.applicationIdentity, selection.input.name,
+                      request.repositoryRoot, request.cacheRoot,
+                      request.compilerExecutable});
+    if (!report)
+      return report.takeError();
+    result.reports.push_back(std::move(*report));
+  }
+  return result;
+}
+
 void writeApplicationHostRunReportJson(llvm::raw_ostream &output,
                                        const ApplicationHostRunReport &report) {
   llvm::json::OStream json(output, 2);
-  json.object([&] {
-    json.attribute("schema", ApplicationHostRunReport::schemaIdentity);
-    json.attribute("version", ApplicationHostRunReport::schemaVersion);
-    json.attributeObject("selection", [&] {
-      json.attribute("application_identity",
-                     report.selection.applicationIdentity);
-      json.attribute("input_name", report.selection.input.name);
-      json.attributeObject("source", [&] {
-        json.attribute("kind", toString(report.selection.source.kind));
-        json.attribute("root", report.selection.source.root);
-      });
-      json.attributeObject("build", [&] {
-        json.attribute("entry", report.selection.build.entry);
-        json.attribute("language", toString(report.selection.build.language));
-        json.attributeArray("sources", [&] {
-          for (const std::string &source : report.selection.build.sources)
-            json.value(source);
-        });
-        json.attributeArray("compiler_options", [&] {
-          for (const std::string &option :
-               report.selection.build.compilerOptions)
-            json.value(option);
-        });
-        json.attributeArray("link_options", [&] {
-          for (const std::string &option : report.selection.build.linkOptions)
-            json.value(option);
-        });
-      });
-      json.attribute("workload", report.selection.input.workload);
-      json.attribute("runtime_input", report.selection.input.runtimeInput);
-      json.attributeArray("cached_inputs", [&] {
-        for (const CachedInput &input : report.selection.cachedInputs) {
-          json.object([&] {
-            json.attribute("logical_name", input.logicalName);
-            json.attribute("path", input.path);
-            json.attribute("sha256", formatBlobDigestHex(input.digest));
-          });
-        }
-      });
-      json.attributeObject("oracle", [&] {
-        json.attribute("kind", toString(report.selection.input.oracle.kind));
-        json.attribute("entry", report.selection.input.oracle.entry);
-      });
-    });
-    json.attributeObject("profile", [&] {
-      json.attribute("warmup_samples",
-                     report.selection.input.profile.warmupSamples);
-      json.attribute("measured_samples",
-                     report.selection.input.profile.measuredSamples);
-      json.attribute("oracle_coverage",
-                     toString(report.selection.input.profile.oracleCoverage));
-      json.attribute("deadline_milliseconds",
-                     report.selection.input.profile.deadlineMilliseconds);
-    });
-    json.attributeObject("source_admission", [&] {
-      json.attribute("status",
-                     report.unavailableSource ? "unavailable" : "admitted");
-      if (report.unavailableSource) {
-        json.attribute("reason", toString(report.unavailableSource->reason));
-        json.attribute("path", report.unavailableSource->path);
-      } else {
-        json.attribute("reason", llvm::json::Value(nullptr));
-        json.attribute("path", llvm::json::Value(nullptr));
-      }
-    });
-    json.attributeObject("compile", [&] {
-      json.attribute("status", compileStatus(report));
-      writeNullable(json, "compiler", report.compilerExecutable);
-      writeNullable(json, "exit_status", report.compileExitStatus);
-    });
-    json.attributeObject("execution", [&] {
-      json.attribute("status", executionStatus(report));
-      writeNullable(json, "exit_status", report.executionExitStatus);
-      writeNullable(json, "host_wall_time_nanoseconds",
-                    report.hostWallTimeNanoseconds);
-    });
-    json.attributeObject("oracle_result", [&] {
-      json.attribute("status", toString(report.oracleStatus));
-    });
-    json.attribute("outcome", toString(report.outcome));
-  });
+  json.value(projectApplicationHostRunReportJson(report));
+  output << '\n';
+}
+
+void writeApplicationHostSelectionRunReportJson(
+    llvm::raw_ostream &output,
+    const ApplicationHostSelectionRunReport &report) {
+  llvm::json::Array reports;
+  for (const ApplicationHostRunReport &member : report.reports)
+    reports.push_back(projectApplicationHostRunReportJson(member));
+  llvm::json::OStream json(output, 2);
+  json.value(llvm::json::Object{
+      {"schema", ApplicationHostSelectionRunReport::schemaIdentity},
+      {"version", ApplicationHostSelectionRunReport::schemaVersion},
+      {"execution_selection", toString(report.selection)},
+      {"reports", std::move(reports)}});
   output << '\n';
 }
 
 bool applicationHostRunSucceeded(const ApplicationHostRunReport &report) {
   return report.outcome == ApplicationHostRunOutcome::Succeeded;
+}
+
+bool applicationHostSelectionRunSucceeded(
+    const ApplicationHostSelectionRunReport &report) {
+  return !report.reports.empty() &&
+         llvm::all_of(report.reports, applicationHostRunSucceeded);
 }
 
 } // namespace loom::application

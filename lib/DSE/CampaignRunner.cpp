@@ -290,24 +290,12 @@ conservativeRemainingEstimate(const ResolvedDsePlan &plan,
 }
 
 llvm::Expected<PlanExecutionPolicy>
-pilotPolicy(const PlanExecutionPolicy &base,
-            const CampaignExecutionPolicy &campaign) {
-  std::uint64_t dispatches = campaign.pilotDispatchCount();
-  if (base.maximumDispatches())
-    dispatches = std::min(dispatches, *base.maximumDispatches());
-  return PlanExecutionPolicy::get(base.workerCount(), base.inProcessClaim(),
-                                  base.externalSite(), base.resourceBindings(),
-                                  dispatches,
-                                  base.dispatchNotAfterUnixNanoseconds());
-}
-
-llvm::Expected<PlanExecutionPolicy>
-admittedPolicy(const PlanExecutionPolicy &base, std::uint64_t campaignActive,
-               const CampaignExecutionPolicy &campaign) {
-  if (campaignActive >= campaign.campaignActiveWallTimeLimitNanoseconds())
-    return invalid("campaign has no remaining active-time budget");
+boundedPolicy(const PlanExecutionPolicy &base, std::uint64_t campaignActive,
+              const CampaignExecutionPolicy &campaign,
+              std::optional<std::uint64_t> maximumDispatches) {
+  const std::uint64_t limit = campaign.campaignActiveWallTimeLimitNanoseconds();
   const std::uint64_t remaining =
-      campaign.campaignActiveWallTimeLimitNanoseconds() - campaignActive;
+      campaignActive >= limit ? 0 : limit - campaignActive;
   auto now = unixNanosecondsNow();
   if (!now)
     return now.takeError();
@@ -318,7 +306,27 @@ admittedPolicy(const PlanExecutionPolicy &base, std::uint64_t campaignActive,
     deadline = std::min(deadline, *base.dispatchNotAfterUnixNanoseconds());
   return PlanExecutionPolicy::get(base.workerCount(), base.inProcessClaim(),
                                   base.externalSite(), base.resourceBindings(),
-                                  base.maximumDispatches(), deadline);
+                                  maximumDispatches, deadline);
+}
+
+llvm::Expected<PlanExecutionPolicy>
+pilotPolicy(const PlanExecutionPolicy &base, std::uint64_t campaignActive,
+            const CampaignExecutionPolicy &campaign,
+            std::uint64_t consumedDispatches) {
+  std::uint64_t dispatches =
+      consumedDispatches >= campaign.pilotDispatchCount()
+          ? 0
+          : campaign.pilotDispatchCount() - consumedDispatches;
+  if (base.maximumDispatches())
+    dispatches = std::min(dispatches, *base.maximumDispatches());
+  return boundedPolicy(base, campaignActive, campaign, dispatches);
+}
+
+llvm::Expected<PlanExecutionPolicy>
+admittedPolicy(const PlanExecutionPolicy &base, std::uint64_t campaignActive,
+               const CampaignExecutionPolicy &campaign) {
+  return boundedPolicy(base, campaignActive, campaign,
+                       base.maximumDispatches());
 }
 
 CampaignExecutionResult refuse(CampaignAdmissionFailureReason reason,
@@ -367,11 +375,11 @@ llvm::Expected<CampaignExecutionPolicy> CampaignExecutionPolicy::get(
   if (sampleActiveWallTimeLimitNanoseconds == 0 ||
       sampleActiveWallTimeLimitNanoseconds >
           maximumSampleActiveWallTimeNanoseconds)
-    return invalid("sample active-time limit exceeds the 600-second bound");
+    return invalid("sample active-time limit exceeds its configured bound");
   if (campaignActiveWallTimeLimitNanoseconds == 0 ||
       campaignActiveWallTimeLimitNanoseconds >
           maximumCampaignActiveWallTimeNanoseconds)
-    return invalid("campaign active-time limit exceeds the 23-hour bound");
+    return invalid("campaign active-time limit exceeds its configured bound");
   return CampaignExecutionPolicy(pilotDispatchCount,
                                  minimumObservedPilotWorkUnits,
                                  sampleActiveWallTimeLimitNanoseconds,
@@ -385,25 +393,38 @@ runGroundTruthCampaign(const ResolvedDseConfigView &view,
                        const PlanExecutionPolicy &executionPolicy,
                        SiteScheduler &scheduler, ExecutionJournal &journal,
                        const ArtifactStore &store, const BlobStore &blobs) {
-  auto pilotExecutionPolicy = pilotPolicy(executionPolicy, campaignPolicy);
-  if (!pilotExecutionPolicy)
-    return pilotExecutionPolicy.takeError();
-  auto pilot = resumeDsePlan(view, closure, journal, scheduler,
-                             *pilotExecutionPolicy, store, blobs);
-  if (!pilot)
-    return pilot.takeError();
   auto records = journal.workUnits();
   if (!records)
     return records.takeError();
+  auto active = campaignActiveNanoseconds(*records);
+  if (!active)
+    return active.takeError();
+  const std::uint64_t consumedDispatches = terminalObservationCount(*records);
+  auto pilotExecutionPolicy =
+      pilotPolicy(executionPolicy, *active, campaignPolicy, consumedDispatches);
+  if (!pilotExecutionPolicy)
+    return pilotExecutionPolicy.takeError();
+  auto pilot =
+      resumeDsePlan(view, closure, journal, scheduler, *pilotExecutionPolicy,
+                    store, blobs, InvocationManifestRetention::Retain);
+  if (!pilot)
+    return pilot.takeError();
+  const auto releaseWith = [&](llvm::Error error) {
+    return llvm::joinErrors(std::move(error),
+                            journal.releaseInvocationOccurrence());
+  };
+  records = journal.workUnits();
+  if (!records)
+    return releaseWith(records.takeError());
   auto projection = projectDseOperationalState(journal, scheduler,
                                                executionPolicy.workerCount());
   if (!projection)
-    return projection.takeError();
+    return releaseWith(projection.takeError());
 
   auto limitFailure =
       validateObservedLimits(view.plan(), *records, campaignPolicy);
   if (!limitFailure)
-    return limitFailure.takeError();
+    return releaseWith(limitFailure.takeError());
   if (*limitFailure)
     return refuse(**limitFailure, std::move(*pilot), std::move(*projection));
 
@@ -420,13 +441,13 @@ runGroundTruthCampaign(const ResolvedDseConfigView &view,
     auto estimate = conservativeRemainingEstimate(view.plan(), *pilot, *records,
                                                   *projection);
     if (!estimate)
-      return estimate.takeError();
+      return releaseWith(estimate.takeError());
     projection->estimatedRemainingNanoseconds = *estimate;
   }
 
-  auto active = campaignActiveNanoseconds(*records);
+  active = campaignActiveNanoseconds(*records);
   if (!active)
-    return active.takeError();
+    return releaseWith(active.takeError());
   if (!projection->estimatedRemainingNanoseconds) {
     return refuse(CampaignAdmissionFailureReason::ThroughputUnavailable,
                   std::move(*pilot), std::move(*projection));
@@ -439,21 +460,21 @@ runGroundTruthCampaign(const ResolvedDseConfigView &view,
   auto fullExecutionPolicy =
       admittedPolicy(executionPolicy, *active, campaignPolicy);
   if (!fullExecutionPolicy)
-    return fullExecutionPolicy.takeError();
-  auto outcome = resumeDsePlan(view, closure, journal, scheduler,
-                               *fullExecutionPolicy, store, blobs);
+    return releaseWith(fullExecutionPolicy.takeError());
+  auto outcome = executeDsePlan(view, closure, journal, scheduler,
+                                *fullExecutionPolicy, store, blobs);
   if (!outcome)
-    return outcome.takeError();
+    return releaseWith(outcome.takeError());
   records = journal.workUnits();
   if (!records)
-    return records.takeError();
+    return releaseWith(records.takeError());
   projection = projectDseOperationalState(journal, scheduler,
                                           executionPolicy.workerCount());
   if (!projection)
-    return projection.takeError();
+    return releaseWith(projection.takeError());
   limitFailure = validateObservedLimits(view.plan(), *records, campaignPolicy);
   if (!limitFailure)
-    return limitFailure.takeError();
+    return releaseWith(limitFailure.takeError());
   if (*limitFailure)
     return refuse(**limitFailure, std::move(*outcome), std::move(*projection));
   return CampaignExecutionResult{

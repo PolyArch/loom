@@ -52,6 +52,7 @@ struct HardwareRecipeGrowth final {
   std::optional<ChangeFifoBypassCapability> fifoBypassChange;
   std::optional<ChangeTemporalOperandBufferMode> operandBufferModeChange;
   std::optional<ResizeTemporalOperandBuffer> operandBufferResize;
+  std::optional<SpatialMicroarchitectureDecisionDomain> moduleDecision;
   std::uint64_t resizedInstructionStoreCount = 0;
   std::uint64_t maximumInstructionStoreCapacity = 0;
   std::uint64_t addedContexts = 0;
@@ -78,6 +79,7 @@ struct MaterializedHardwareCandidate final {
   std::uint64_t resultingGateways = 0;
   std::uint64_t addedAccCores = 0;
   std::uint64_t resultingAccCores = 0;
+  std::optional<JointDesignInvocationManifestReference> constructionInvocation;
 };
 
 struct TechGateExecution final {
@@ -107,6 +109,9 @@ boundTechMappingFrontierForRepair(
 
 std::vector<ArtifactRootReference>
 mappingRoots(const JointDesignExecution &execution);
+
+void mergeMappedPairs(JointDesignExecution &target,
+                      const JointDesignExecution &source);
 
 std::optional<ArtifactRootReference>
 firstMapping(const JointDesignExecution &execution);

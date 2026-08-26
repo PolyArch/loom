@@ -3,28 +3,20 @@
 #include "Common/BlobStore.h"
 #include "Common/ExecutionControl.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/MappingCandidateGenerator.h"
+#include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "DSE/SpatialRuntimeFeedback.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
-#include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/ProductionRegistry.h"
-#include "Fabric/IR/FabricDialect.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
-#include "Mapping/IR/MappingDialect.h"
+#include "Mapping/Tech/TechMappingConfig.h"
 #include "PnR/PnrConfig.h"
-#include "Runtime/Gem5DispatchABI.h"
+#include "Runtime/Gem5SystemExecution.h"
 
 #include "MappedRtlSimulationTestSupport.h"
-
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/DLTI/DLTI.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/DialectRegistry.h"
-#include "mlir/IR/MLIRContext.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
@@ -36,7 +28,6 @@
 
 #include <sys/resource.h>
 
-#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -52,51 +43,10 @@ constexpr std::uint64_t kWarmupRuns = 1;
 constexpr std::uint64_t kMeasurementRuns = 3;
 constexpr std::uint64_t kQualificationLimitNanoseconds = 45'000'000'000ULL;
 constexpr auto kQualificationLimit = std::chrono::seconds(45);
-constexpr auto kSpatialPnrLimit = std::chrono::seconds(240);
-constexpr std::uint32_t kSpatialPnrProposalsPerLevel = 128;
-constexpr std::uint32_t kQualificationMeshDimension = 12;
-constexpr std::uint32_t kQualificationSpatialMeshLanesPerDirection = 4;
 
 [[noreturn]] void fail(const llvm::Twine &message) {
   llvm::errs() << "CGRA budget profile: " << message << '\n';
   std::exit(EXIT_FAILURE);
-}
-
-struct DeadlineControl final {
-  std::chrono::steady_clock::time_point deadline;
-
-  static bool stopRequested(const void *context) {
-    return std::chrono::steady_clock::now() >=
-           static_cast<const DeadlineControl *>(context)->deadline;
-  }
-
-  static std::optional<std::chrono::steady_clock::duration>
-  remainingTime(const void *context) {
-    const auto remaining =
-        static_cast<const DeadlineControl *>(context)->deadline -
-        std::chrono::steady_clock::now();
-    return std::max(remaining, std::chrono::steady_clock::duration::zero());
-  }
-
-  loom::ExecutionControlView view() const {
-    return {this, stopRequested, remainingTime};
-  }
-};
-
-loom::adg::BuiltinTargetScale qualificationTargetScale() {
-  loom::adg::BuiltinTargetScale scale = loom::adg::builtinLargeTarget.scale;
-  scale.meshDimension = kQualificationMeshDimension;
-  scale.spatialMeshLanesPerDirection =
-      kQualificationSpatialMeshLanesPerDirection;
-  scale.spatialFuOccurrences = {scale.spatialPeCount, scale.spatialPeCount,
-                                scale.spatialPeCount, scale.spatialPeCount,
-                                scale.spatialPeCount, scale.spatialPeCount,
-                                scale.spatialPeCount, scale.spatialPeCount};
-  scale.temporalFuOccurrences = {scale.temporalPeCount, scale.temporalPeCount,
-                                 scale.temporalPeCount, scale.temporalPeCount,
-                                 scale.temporalPeCount, scale.temporalPeCount,
-                                 scale.temporalPeCount, scale.temporalPeCount};
-  return scale;
 }
 
 template <typename T> T take(llvm::Expected<T> value) {
@@ -115,6 +65,132 @@ llvm::json::Object referenceJson(const loom::ArtifactRootReference &reference) {
       {"schema", reference.schemaIdentity},
       {"schema_version", loom::formatSchemaVersion(reference.schemaVersion)},
       {"artifact", loom::formatArtifactIdentityHex(reference.artifact)}};
+}
+
+const std::vector<loom::ArtifactRootReference> &candidateArtifacts(
+    const loom::dse::CandidateGeneratorProviderResult &result) {
+  const std::vector<loom::dse::CandidateGeneratorOutputBinding> *bindings =
+      nullptr;
+  if (const auto *completed =
+          std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+              &result.outcome))
+    bindings = &completed->outputBindings;
+  else
+    bindings =
+        &std::get<loom::dse::IncompleteCandidateGeneratorResult>(result.outcome)
+             .retainedOutputBindings;
+  require(bindings->size() == 1,
+          "qualification generator changed its output shape");
+  return bindings->front().artifacts;
+}
+
+llvm::json::Object candidateGeneratorResultJson(
+    const loom::dse::CandidateGeneratorDescriptor &descriptor,
+    const loom::dse::CandidateGeneratorProviderResult &result) {
+  require(result.workSummary.size() == descriptor.workUnits.size(),
+          "qualification generator work summary has the wrong width");
+  llvm::StringRef outcome = "completed";
+  std::optional<llvm::StringRef> incompleteReason;
+  if (const auto *incomplete =
+          std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+              &result.outcome)) {
+    outcome = "incomplete";
+    incompleteReason =
+        loom::dse::candidateGeneratorIncompleteReasonSpelling(
+            incomplete->reason);
+  } else if (candidateArtifacts(result).empty()) {
+    outcome = "proven_infeasible";
+  }
+
+  llvm::json::Array candidates;
+  for (const loom::ArtifactRootReference &candidate : candidateArtifacts(result))
+    candidates.push_back(referenceJson(candidate));
+  llvm::json::Array workUnits;
+  for (const auto [ordinal, entry] : llvm::enumerate(result.workSummary)) {
+    require(entry.unit.ordinal() == ordinal && entry.consumed <= entry.planned,
+            "qualification generator work summary is not canonical");
+    if (outcome == "completed")
+      require(entry.planned == entry.consumed,
+              "completed qualification generator left planned work unconsumed");
+    workUnits.push_back(llvm::json::Object{
+        {"unit", descriptor.workUnits[ordinal].spelling.str()},
+        {"planned", entry.planned},
+        {"consumed", entry.consumed}});
+  }
+  return llvm::json::Object{
+      {"outcome", outcome.str()},
+      {"incomplete_reason",
+       incompleteReason ? llvm::json::Value(incompleteReason->str())
+                        : llvm::json::Value(nullptr)},
+      {"candidates", std::move(candidates)},
+      {"work_units", std::move(workUnits)}};
+}
+
+llvm::json::Object spatialPnrResultJson(
+    const loom::pnr::ResolvedPnrConfigView &config,
+    const loom::dse::CandidateGeneratorProviderResult &result) {
+  const auto completionGoal = config.policy().search.completionGoal;
+  require(completionGoal ==
+              loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork,
+          "qualification PnR did not select exhaustive configured work");
+  require(result.workSummary.size() ==
+              loom::dse::pnrCandidateGeneratorWorkUnits.size(),
+          "qualification PnR work summary has the wrong width");
+
+  llvm::StringRef outcome = "completed";
+  std::optional<llvm::StringRef> incompleteReason;
+  if (const auto *incomplete =
+          std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+              &result.outcome)) {
+    outcome = "incomplete";
+    incompleteReason =
+        loom::dse::candidateGeneratorIncompleteReasonSpelling(
+            incomplete->reason);
+  } else {
+    const auto &completed =
+        std::get<loom::dse::CompletedCandidateGeneratorResult>(result.outcome);
+    require(completed.outputBindings.size() == 1,
+            "qualification PnR changed its output shape");
+    if (completed.outputBindings.front().artifacts.empty())
+      outcome = "proven_infeasible";
+  }
+  if (outcome == "completed") {
+    const std::uint64_t configuredSeedAttempts =
+        config.policy().search.initializer.seedAttemptCount;
+    require(result.workSummary.front().unit.ordinal() == 0 &&
+                result.workSummary.front().planned >= configuredSeedAttempts,
+            "qualification PnR restart plan disagrees with ResolvedConfig");
+  }
+
+  llvm::json::Array generatorSummary;
+  for (const auto [ordinal, entry] : llvm::enumerate(result.workSummary)) {
+    require(entry.unit.ordinal() == ordinal && entry.consumed <= entry.planned,
+            "qualification PnR work summary is not canonical");
+    if (outcome == "completed")
+      require(entry.planned == entry.consumed,
+              "completed qualification PnR left planned work unconsumed");
+    generatorSummary.push_back(llvm::json::Object{
+        {"unit",
+         loom::dse::pnrCandidateGeneratorWorkUnits[ordinal].spelling.str()},
+        {"planned", entry.planned},
+        {"consumed", entry.consumed}});
+  }
+
+  llvm::json::Array candidates;
+  for (const loom::ArtifactRootReference &candidate : candidateArtifacts(result))
+    candidates.push_back(referenceJson(candidate));
+
+  return llvm::json::Object{
+      {"completion_goal",
+       loom::resolvedPnrCompletionGoalSpelling(completionGoal).str()},
+      {"configured_seed_attempts",
+       config.policy().search.initializer.seedAttemptCount},
+      {"outcome", outcome.str()},
+      {"incomplete_reason",
+       incompleteReason ? llvm::json::Value(incompleteReason->str())
+                        : llvm::json::Value(nullptr)},
+      {"candidates", std::move(candidates)},
+      {"work_units", std::move(generatorSummary)}};
 }
 
 struct SourceCase final {
@@ -155,15 +231,6 @@ SourceCase readSourceCase(llvm::StringRef path) {
            take(loom::parseArtifactIdentityHex(*dataflowSpelling))},
           take(loom::parseArtifactRootReferenceJson(*workload)),
           take(loom::parseArtifactRootReferenceJson(*runtimeInput))};
-}
-
-mlir::MLIRContext makeContext() {
-  mlir::DialectRegistry registry;
-  registry.insert<::dataflow::DataflowDialect, ::fabric::FabricDialect,
-                  ::mapping::MappingDialect, mlir::arith::ArithDialect,
-                  mlir::DLTIDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect>();
-  return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
 }
 
 void emitClosedWaitDiagnostic(
@@ -323,9 +390,10 @@ llvm::json::Object measurementJson(
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 5) {
+  if (argc != 6) {
     llvm::errs() << "usage: " << argv[0]
-                 << " ARTIFACT_STORE SOURCE_REPORT WORKLOAD_NAME OPERATOR_ID\n";
+                 << " ARTIFACT_STORE SOURCE_REPORT WORKLOAD_NAME OPERATOR_ID "
+                    "PROTOCOL_SYMBOL\n";
     return EXIT_FAILURE;
   }
 
@@ -337,18 +405,13 @@ int main(int argc, char **argv) {
   llvm::sys::path::append(blobPath, "blobs");
   loom::BlobStore blobs(blobPath);
   const SourceCase source = readSourceCase(argv[2]);
-  const loom::adg::BuiltinTargetScale targetScale = qualificationTargetScale();
-  loom::ResolvedConfig resolvedConfig =
-      take(loom::resolveConfigProfile("quick_explore"));
-  resolvedConfig.hardwareTarget.parameters = targetScale;
-  auto &spatialAnnealing = resolvedConfig.dse.spatialPnr.search.annealing;
-  spatialAnnealing.coolingRatio = {1, 2};
-  spatialAnnealing.proposalsPerLevelBase = kSpatialPnrProposalsPerLevel;
-  spatialAnnealing.proposalsPerMovableDecision = 0;
-  resolvedConfig.dse.spatialPnr.search.completionGoal =
-      loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  loom::ResolvedConfig resolvedConfig = loom::defaultResolvedConfig();
+  const loom::adg::BuiltinTargetScale targetScale =
+      resolvedConfig.hardwareTarget.parameters;
   const loom::pnr::ResolvedPnrConfigView spatialPnrConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(resolvedConfig));
+  const loom::mapping::ResolvedTechMappingConfigView techMappingConfig =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolvedConfig));
   const loom::ArtifactIdentity resolvedConfigIdentity =
       take(artifacts.put(loom::ResolvedConfig::artifactSchema,
                          loom::canonicalResolvedConfigBytes(resolvedConfig)));
@@ -357,15 +420,60 @@ int main(int argc, char **argv) {
       loom::ResolvedConfig::artifactSchema.version, resolvedConfigIdentity};
   auto dataflow =
       take(dataflow::importCanonicalDataflow(source.dataflow, artifacts));
-  auto context = makeContext();
-  const DeadlineControl spatialPnrDeadline{std::chrono::steady_clock::now() +
-                                           kSpatialPnrLimit};
-  const loom::ExecutionControlView spatialPnrExecution =
-      spatialPnrDeadline.view();
-  auto hardware = loom::eda::test::buildMappedBuiltinSpatialMappingFixture(
-      "cgra-budget-profile", dataflow, targetScale, context, spatialPnrConfig,
-      spatialPnrExecution, artifacts, blobs,
-      loom::eda::test::MappedRtlRouteCoverage::AnyLegal);
+  const loom::ExecutionControlView spatialPnrExecution;
+  auto pnrInvocation =
+      take(loom::eda::test::invokeMappedBuiltinSpatialPnrFixture(
+          "cgra-budget-profile", dataflow, targetScale, techMappingConfig,
+          spatialPnrConfig, spatialPnrExecution, artifacts, blobs));
+  llvm::json::Object techMappingResult = candidateGeneratorResultJson(
+      loom::dse::rootCompleteTechMappingCandidateGeneratorDescriptor(),
+      pnrInvocation.techMappingResult);
+  if (!pnrInvocation.spatialPnrResult) {
+    llvm::json::Object report{
+        {"schema", "loom.cgra_budget_profile_outcome.1"},
+        {"workload", argv[3]},
+        {"operator_id", argv[4]},
+        {"protocol_symbol", argv[5]},
+        {"stage", "tech_mapping"},
+        {"resolved_config", referenceJson(resolvedConfigReference)},
+        {"fabric", referenceJson(pnrInvocation.module.reference())},
+        {"tech_mapping_search", std::move(techMappingResult)},
+        {"spatial_pnr", llvm::json::Value(nullptr)}};
+    llvm::outs() << llvm::formatv("{0:2}\n",
+                                  llvm::json::Value(std::move(report)));
+    return EXIT_SUCCESS;
+  }
+  llvm::json::Object pnrResult =
+      spatialPnrResultJson(spatialPnrConfig, *pnrInvocation.spatialPnrResult);
+  const auto *completedPnr =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &pnrInvocation.spatialPnrResult->outcome);
+  if (!completedPnr || completedPnr->outputBindings.front().artifacts.empty()) {
+    llvm::json::Object report{
+        {"schema", "loom.cgra_budget_profile_outcome.1"},
+        {"workload", argv[3]},
+        {"operator_id", argv[4]},
+        {"protocol_symbol", argv[5]},
+        {"stage", "spatial_pnr"},
+        {"resolved_config", referenceJson(resolvedConfigReference)},
+        {"fabric", referenceJson(pnrInvocation.module.reference())},
+        {"tech_mapping_search", std::move(techMappingResult)},
+        {"spatial_pnr", std::move(pnrResult)}};
+    llvm::outs() << llvm::formatv("{0:2}\n",
+                                  llvm::json::Value(std::move(report)));
+    return EXIT_SUCCESS;
+  }
+  const loom::ArtifactRootReference selectedSpatialMapping =
+      completedPnr->outputBindings.front().artifacts.front();
+  auto importedSpatialMapping = take(
+      loom::mapping::importSpatialMapping(selectedSpatialMapping, artifacts));
+  const loom::ArtifactRootReference selectedTechMapping{
+      loom::mapping::mappingArtifactSchema.identity.str(),
+      loom::mapping::mappingArtifactSchema.version,
+      importedSpatialMapping.view().techMappingIdentity()};
+  auto hardware = loom::eda::test::MappedSpatialMappingFixture{
+      std::move(pnrInvocation.module), selectedTechMapping,
+      std::move(importedSpatialMapping)};
   const loom::ArtifactRootReference initialSpatialMapping =
       hardware.spatialMapping.reference();
   const auto [bufferedFifoTraversals, bypassFifoTraversals] =
@@ -387,9 +495,8 @@ int main(int argc, char **argv) {
           prepared, {loom::runtime::gem5MaximumSpatialWork, warmupDeadline},
           artifacts, blobs));
   std::optional<loom::ArtifactRootReference> preRepairEvidence;
-  std::optional<loom::ArtifactRootReference> repairConstraint;
   std::optional<loom::ArtifactRootReference> parentSystemMapping;
-  std::optional<loom::ArtifactRootReference> repairedSpatialMapping;
+  llvm::json::Array transportRepairAttempts;
   if (!completed(warmup)) {
     preRepairEvidence = take(loom::evaluation::publishEvaluationEvidence(
         warmup.evidence, artifacts));
@@ -413,9 +520,22 @@ int main(int argc, char **argv) {
       auto repaired = take(loom::eda::test::rerouteMappedSpatialMappingFixture(
           "cgra-budget-profile", dataflow, hardware, alternative,
           spatialPnrConfig, spatialPnrExecution, artifacts, blobs));
-      if (!repaired.spatialMapping)
+      const loom::ArtifactRootReference repairParent =
+          hardware.spatialMapping.reference();
+      llvm::json::Object repairPnr =
+          spatialPnrResultJson(spatialPnrConfig, repaired.pnrResult);
+      if (!repaired.spatialMapping) {
+        transportRepairAttempts.push_back(llvm::json::Object{
+            {"parent_spatial_mapping", referenceJson(repairParent)},
+            {"constraint_set", referenceJson(repaired.constraintSet)},
+            {"spatial_pnr", std::move(repairPnr)},
+            {"child_spatial_mapping", llvm::json::Value(nullptr)},
+            {"accepted_for_simulation", false}});
         continue;
+      }
       auto candidateSpatial = std::move(*repaired.spatialMapping);
+      const loom::ArtifactRootReference candidateReference =
+          candidateSpatial.reference();
       auto candidatePrepared =
           take(loom::evaluation::models::prepareCgraSimulationEvaluation(
               source.dataflow, hardware.module.reference(),
@@ -428,10 +548,21 @@ int main(int argc, char **argv) {
               candidatePrepared,
               {loom::runtime::gem5MaximumSpatialWork, candidateDeadline},
               artifacts, blobs));
-      if (!completed(candidateWarmup))
+      if (!completed(candidateWarmup)) {
+        transportRepairAttempts.push_back(llvm::json::Object{
+            {"parent_spatial_mapping", referenceJson(repairParent)},
+            {"constraint_set", referenceJson(repaired.constraintSet)},
+            {"spatial_pnr", std::move(repairPnr)},
+            {"child_spatial_mapping", referenceJson(candidateReference)},
+            {"accepted_for_simulation", false}});
         continue;
-      repairConstraint = repaired.constraintSet;
-      repairedSpatialMapping = candidateSpatial.reference();
+      }
+      transportRepairAttempts.push_back(llvm::json::Object{
+          {"parent_spatial_mapping", referenceJson(repairParent)},
+          {"constraint_set", referenceJson(repaired.constraintSet)},
+          {"spatial_pnr", std::move(repairPnr)},
+          {"child_spatial_mapping", referenceJson(candidateReference)},
+          {"accepted_for_simulation", true}});
       hardware.spatialMapping = std::move(candidateSpatial);
       prepared = std::move(candidatePrepared);
       warmup = std::move(candidateWarmup);
@@ -458,9 +589,10 @@ int main(int argc, char **argv) {
   }
 
   llvm::json::Object report{
-      {"schema", "loom.cgra_budget_profile.2"},
+      {"schema", "loom.cgra_budget_profile.4"},
       {"workload", argv[3]},
       {"operator_id", argv[4]},
+      {"protocol_symbol", argv[5]},
       {"qualification_limit_nanoseconds", kQualificationLimitNanoseconds},
       {"warmup_runs", kWarmupRuns},
       {"measurement_runs", kMeasurementRuns},
@@ -471,22 +603,18 @@ int main(int argc, char **argv) {
       {"resolved_config", referenceJson(resolvedConfigReference)},
       {"fabric", referenceJson(hardware.module.reference())},
       {"tech_mapping", referenceJson(hardware.techMapping)},
+      {"tech_mapping_search", std::move(techMappingResult)},
       {"initial_spatial_mapping", referenceJson(initialSpatialMapping)},
       {"spatial_mapping", referenceJson(hardware.spatialMapping.reference())},
-      {"repaired_spatial_mapping",
-       repairedSpatialMapping
-           ? llvm::json::Value(referenceJson(*repairedSpatialMapping))
+      {"spatial_pnr", std::move(pnrResult)},
+      {"transport_repair",
+       parentSystemMapping && preRepairEvidence
+           ? llvm::json::Value(llvm::json::Object{
+                 {"parent_system_mapping",
+                  referenceJson(*parentSystemMapping)},
+                 {"pre_repair_evidence", referenceJson(*preRepairEvidence)},
+                 {"attempts", std::move(transportRepairAttempts)}})
            : llvm::json::Value(nullptr)},
-      {"parent_system_mapping",
-       parentSystemMapping
-           ? llvm::json::Value(referenceJson(*parentSystemMapping))
-           : llvm::json::Value(nullptr)},
-      {"transport_repair_constraint",
-       repairConstraint ? llvm::json::Value(referenceJson(*repairConstraint))
-                        : llvm::json::Value(nullptr)},
-      {"pre_repair_evidence",
-       preRepairEvidence ? llvm::json::Value(referenceJson(*preRepairEvidence))
-                         : llvm::json::Value(nullptr)},
       {"warmup_evidence", referenceJson(warmupEvidence)},
       {"measurements", std::move(measurements)},
   };

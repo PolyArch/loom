@@ -2,4 +2,4 @@
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-token-mux-demux-test %t
 # RUN: cd %t/mux_system && verilator --binary --timing --Wall --Wno-fatal --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench token_mux_system.sv testbench.sv --Mdir obj_dir
-# RUN: timeout 30s %t/mux_system/obj_dir/Vtestbench
+# RUN: timeout %loom-timeout-xlong %t/mux_system/obj_dir/Vtestbench

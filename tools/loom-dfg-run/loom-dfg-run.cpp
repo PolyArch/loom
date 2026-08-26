@@ -2,6 +2,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
+#include "Common/TimeoutBudgets.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
 #include "Dataflow/IR/OperationSchema.h"
@@ -102,7 +103,8 @@ llvm::cl::opt<std::uint64_t>
 llvm::cl::opt<double> maxSimulationWallSeconds(
     "max-simulation-wall-seconds",
     llvm::cl::desc("maximum aggregate DFG replay wall time"),
-    llvm::cl::init(15.0));
+    llvm::cl::init(static_cast<double>(
+        loom::timeout::seconds(loom::timeout::Tier::Fast))));
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(

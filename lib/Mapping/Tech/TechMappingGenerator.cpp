@@ -124,6 +124,12 @@ interruptionPayload(const TechMappingInterruptionSnapshot &snapshot) {
   llvm::json::Object resources;
   resources["active_wall_time_ns"] =
       snapshot.resources.activeWallTimeNanoseconds;
+  if (snapshot.resources.processCpuTimeDeltaNanoseconds)
+    resources["process_cpu_time_delta_ns"] =
+        *snapshot.resources.processCpuTimeDeltaNanoseconds;
+  else
+    resources["process_cpu_time_delta_ns"] = nullptr;
+  resources["resource_observation_scope"] = "process";
   resources["allocated_memory_bytes"] = snapshot.resources.allocatedMemoryBytes;
   if (snapshot.resources.peakResidentMemoryBytes)
     resources["peak_resident_memory_bytes"] =

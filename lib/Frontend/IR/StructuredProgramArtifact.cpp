@@ -118,6 +118,7 @@ llvm::Expected<std::uint64_t> readU64(llvm::ArrayRef<std::uint8_t> bytes,
 bool isTransientAttribute(StringRef name) {
   return name == "loom.source_hint" ||
          name == structuredCandidateHintAttrName ||
+         name == structuredCandidateLoopHintAttrName ||
          name == "loom.visual_metadata" || name == "graph_name";
 }
 
@@ -852,6 +853,105 @@ extractBytecode(const CanonicalSemanticBytes &semanticBytes) {
   return bytes.drop_front(offset);
 }
 
+bool sourceLineageFrameLess(const StructuredSourceLineageFrame &lhs,
+                            const StructuredSourceLineageFrame &rhs) {
+  return std::tie(lhs.sourceFile, lhs.position.line, lhs.position.column) <
+         std::tie(rhs.sourceFile, rhs.position.line, rhs.position.column);
+}
+
+bool sourceCallLineageLess(const StructuredSourceCallLineage &lhs,
+                           const StructuredSourceCallLineage &rhs) {
+  return std::lexicographical_compare(lhs.frames.begin(), lhs.frames.end(),
+                                      rhs.frames.begin(), rhs.frames.end(),
+                                      sourceLineageFrameLess);
+}
+
+bool sourceCallLineagesAreCanonical(
+    ArrayRef<StructuredSourceCallLineage> lineages) {
+  if (!std::is_sorted(lineages.begin(), lineages.end(), sourceCallLineageLess))
+    return false;
+  for (const StructuredSourceCallLineage &lineage : lineages) {
+    if (lineage.frames.empty() ||
+        llvm::any_of(lineage.frames, [](const auto &frame) {
+          return frame.sourceFile.empty();
+        }))
+      return false;
+  }
+  return std::adjacent_find(lineages.begin(), lineages.end()) == lineages.end();
+}
+
+void collectSourceCallLineages(
+    Location location, std::vector<StructuredSourceCallLineage> &lineages) {
+  if (auto file = dyn_cast<FileLineColLoc>(location)) {
+    StructuredSourceCallLineage lineage;
+    lineage.frames.push_back({file.getFilename().getValue().str(),
+                              {file.getLine(), file.getColumn()}});
+    lineages.push_back(std::move(lineage));
+    return;
+  }
+  if (auto callSite = dyn_cast<CallSiteLoc>(location)) {
+    std::vector<StructuredSourceCallLineage> callees;
+    std::vector<StructuredSourceCallLineage> callers;
+    collectSourceCallLineages(callSite.getCallee(), callees);
+    collectSourceCallLineages(callSite.getCaller(), callers);
+    if (callees.empty())
+      return;
+    if (callers.empty()) {
+      lineages.insert(lineages.end(), std::make_move_iterator(callees.begin()),
+                      std::make_move_iterator(callees.end()));
+      return;
+    }
+    for (const StructuredSourceCallLineage &callee : callees)
+      for (const StructuredSourceCallLineage &caller : callers) {
+        StructuredSourceCallLineage combined = callee;
+        combined.frames.insert(combined.frames.end(), caller.frames.begin(),
+                               caller.frames.end());
+        lineages.push_back(std::move(combined));
+      }
+    return;
+  }
+  if (auto fused = dyn_cast<FusedLoc>(location)) {
+    for (Location nested : fused.getLocations())
+      collectSourceCallLineages(nested, lineages);
+    return;
+  }
+  if (auto named = dyn_cast<NameLoc>(location))
+    collectSourceCallLineages(named.getChildLoc(), lineages);
+}
+
+std::vector<StructuredSourceCallLineage> sourceCallLineages(Location location) {
+  std::vector<StructuredSourceCallLineage> lineages;
+  collectSourceCallLineages(location, lineages);
+  llvm::sort(lineages, sourceCallLineageLess);
+  lineages.erase(std::unique(lineages.begin(), lineages.end()), lineages.end());
+  return lineages;
+}
+
+Location sourceLineageLocation(const StructuredSourceCallLineage &lineage,
+                               MLIRContext *context) {
+  auto frameLocation = [&](const StructuredSourceLineageFrame &frame) {
+    return FileLineColLoc::get(context, frame.sourceFile, frame.position.line,
+                               frame.position.column);
+  };
+  Location result = frameLocation(lineage.frames.back());
+  for (std::size_t index = lineage.frames.size() - 1; index != 0; --index)
+    result = CallSiteLoc::get(frameLocation(lineage.frames[index - 1]), result);
+  return result;
+}
+
+Attribute sourceFileMetadata(ArrayRef<std::string> sourceFiles,
+                             MLIRContext *context) {
+  SmallVector<Attribute> files;
+  files.reserve(sourceFiles.size());
+  for (const std::string &sourceFile : sourceFiles) {
+    StringRef path(sourceFile);
+    files.push_back(LLVM::DIFileAttr::get(context,
+                                          llvm::sys::path::filename(path),
+                                          llvm::sys::path::parent_path(path)));
+  }
+  return ArrayAttr::get(context, files);
+}
+
 } // namespace
 
 llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>>
@@ -871,8 +971,16 @@ cloneStructuredProgramWithSourceLocations(
       return invalid("source provenance has the wrong Structured owner");
     if (entry.sourceFiles.empty() || !llvm::is_sorted(entry.sourceFiles) ||
         std::adjacent_find(entry.sourceFiles.begin(),
-                           entry.sourceFiles.end()) != entry.sourceFiles.end())
+                           entry.sourceFiles.end()) !=
+            entry.sourceFiles.end() ||
+        !sourceCallLineagesAreCanonical(entry.callLineages))
       return invalid("source provenance files are not canonical");
+    for (const StructuredSourceCallLineage &lineage : entry.callLineages)
+      for (const StructuredSourceLineageFrame &frame : lineage.frames)
+        if (!std::binary_search(entry.sourceFiles.begin(),
+                                entry.sourceFiles.end(), frame.sourceFile))
+          return invalid(
+              "source provenance lineage is outside its file inventory");
     if (!locatedOperations.insert(entry.operation.ordinal).second)
       return invalid("source provenance duplicates an operation");
     auto parentOperation = parentView->resolve(entry.operation);
@@ -881,12 +989,13 @@ cloneStructuredProgramWithSourceLocations(
     mlir::Operation *mapped = mapping.lookupOrNull(parentOperation->operation);
     if (!mapped)
       return invalid("source-backed operation was not cloned");
-    llvm::SmallVector<mlir::Location> fileLocations;
-    fileLocations.reserve(entry.sourceFiles.size());
-    for (const std::string &sourceFile : entry.sourceFiles)
-      fileLocations.push_back(
-          mlir::FileLineColLoc::get(clone->getContext(), sourceFile, 0, 0));
-    mapped->setLoc(mlir::FusedLoc::get(clone->getContext(), fileLocations));
+    llvm::SmallVector<mlir::Location> locations;
+    locations.reserve(entry.callLineages.size());
+    for (const StructuredSourceCallLineage &lineage : entry.callLineages)
+      locations.push_back(sourceLineageLocation(lineage, clone->getContext()));
+    mapped->setLoc(mlir::FusedLoc::get(
+        clone->getContext(), locations,
+        sourceFileMetadata(entry.sourceFiles, clone->getContext())));
   }
   return clone;
 }
@@ -921,6 +1030,8 @@ struct CanonicalizedClone {
   std::vector<std::uint64_t> trackedBlockOrdinals;
   std::vector<std::uint64_t> trackedOperationOrdinals;
   std::vector<std::vector<std::string>> operationSourceFiles;
+  std::vector<std::vector<StructuredSourceCallLineage>>
+      operationSourceCallLineages;
 };
 
 void addDebugFile(LLVM::DIFileAttr file, std::set<std::string> &paths) {
@@ -966,15 +1077,7 @@ std::vector<std::string> sourceFiles(Location location) {
     return WalkResult::advance();
   });
 
-  for (const std::string &locationFile : locationFiles) {
-    bool representedByDebugFile =
-        llvm::any_of(debugFiles, [&](const std::string &debugFile) {
-          return debugFile == locationFile ||
-                 llvm::sys::path::filename(debugFile) == locationFile;
-        });
-    if (!representedByDebugFile)
-      debugFiles.insert(locationFile);
-  }
+  debugFiles.insert(locationFiles.begin(), locationFiles.end());
   return {debugFiles.begin(), debugFiles.end()};
 }
 
@@ -1043,6 +1146,9 @@ canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks,
           ->canonicalToLexical[kindIndex(StructuredEntityKind::Operation)];
   std::vector<std::vector<std::string>> operationSourceFiles;
   operationSourceFiles.reserve(canonicalOperations.size());
+  std::vector<std::vector<StructuredSourceCallLineage>>
+      operationSourceCallLineages;
+  operationSourceCallLineages.reserve(canonicalOperations.size());
   for (std::uint32_t lexicalOrdinal : canonicalOperations) {
     if (lexicalOrdinal >=
         lexical[kindIndex(StructuredEntityKind::Operation)].size())
@@ -1051,6 +1157,8 @@ canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks,
         lexical[kindIndex(StructuredEntityKind::Operation)][lexicalOrdinal]
             .operation;
     operationSourceFiles.push_back(sourceFiles(operation->getLoc()));
+    operationSourceCallLineages.push_back(
+        sourceCallLineages(operation->getLoc()));
   }
   DenseMap<Block *, std::uint64_t> lexicalOrdinals;
   for (auto item :
@@ -1091,10 +1199,12 @@ canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks,
     trackedOperationOrdinals.push_back(
         lexicalOperationToCanonical[lexicalOrdinal->second]);
   }
-  return CanonicalizedClone{std::move(clone), std::move(*entityProjection),
+  return CanonicalizedClone{std::move(clone),
+                            std::move(*entityProjection),
                             std::move(trackedOrdinals),
                             std::move(trackedOperationOrdinals),
-                            std::move(operationSourceFiles)};
+                            std::move(operationSourceFiles),
+                            std::move(operationSourceCallLineages)};
 }
 
 } // namespace
@@ -1206,9 +1316,11 @@ finalizeStructuredProgramWithTrackedEntities(
   for (auto item : llvm::enumerate(clone->operationSourceFiles)) {
     if (item.value().empty())
       continue;
-    sourceProvenance.push_back({{identity, StructuredEntityKind::Operation,
-                                 static_cast<std::uint64_t>(item.index())},
-                                std::move(item.value())});
+    sourceProvenance.push_back(
+        {{identity, StructuredEntityKind::Operation,
+          static_cast<std::uint64_t>(item.index())},
+         std::move(item.value()),
+         std::move(clone->operationSourceCallLineages[item.index()])});
   }
   return FinalizedStructuredProgramProjection{
       StructuredProgramCandidate(identity, std::move(semantic),

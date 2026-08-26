@@ -1,7 +1,5 @@
 #include "DeploymentTestSupport.h"
 
-#include "Application/Build.h"
-#include "Application/DeploymentRuntime.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Common/ComponentViewDigest.h"
@@ -10,6 +8,7 @@
 #include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricRefs.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "PnR/System/SystemMappingMigration.h"
@@ -233,10 +232,31 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
                             "resource-time fixture has no execution root");
   deployment::test::require(test, dataflow.rootThreadLaunches().size() == 2,
                             "resource-time fixture needs two execution roots");
-  const dataflow::RootThreadLaunchRef root =
+  const dataflow::RootThreadLaunchRef firstRoot =
       dataflow.rootThreadLaunches().front().ref;
-  const dataflow::RootThreadLaunchRef precedingRoot =
+  const dataflow::RootThreadLaunchRef secondRoot =
       dataflow.rootThreadLaunches()[1].ref;
+  const std::array<dataflow::EventFamilyKey, 4> boundaryEvents = {
+      dataflow::rootThreadStartEventFamily(firstRoot),
+      dataflow::rootThreadCompletionEventFamily(firstRoot),
+      dataflow::rootThreadStartEventFamily(secondRoot),
+      dataflow::rootThreadCompletionEventFamily(secondRoot)};
+  const auto causality =
+      take(test,
+           loom::mapping::freezeMappingProgressModel(dataflow, boundaryEvents));
+  const bool firstPrecedesSecond = take(
+      test, loom::mapping::mappingEventPrecedes(
+                causality, dataflow::rootThreadCompletionEventFamily(firstRoot),
+                dataflow::rootThreadStartEventFamily(secondRoot)));
+  const bool secondPrecedesFirst =
+      take(test,
+           loom::mapping::mappingEventPrecedes(
+               causality, dataflow::rootThreadCompletionEventFamily(secondRoot),
+               dataflow::rootThreadStartEventFamily(firstRoot)));
+  deployment::test::require(test, !firstPrecedesSecond && !secondPrecedesFirst,
+                            "resource-time fixture roots are not independent");
+  const dataflow::RootThreadLaunchRef precedingRoot = firstRoot;
+  const dataflow::RootThreadLaunchRef root = secondRoot;
   const auto contexts =
       take(test, loom::mapping::projectSystemExecutionContexts(
                      dataflow, parentMapping.view().executionBindings()));
@@ -262,6 +282,11 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
                             "resource-time fixture root has no AccCore");
   deployment::test::require(test, !precedingResources.empty(),
                             "resource-time fixture prior root has no AccCore");
+  const auto startRoot = [&](auto &selector,
+                             dataflow::RootThreadLaunchRef startedRoot) {
+    if (llvm::Error error = selector.startRoot(startedRoot))
+      deployment::test::fail(test, llvm::toString(std::move(error)));
+  };
 
   pnr::ResourceTimeTransition draft{
       dataflow::rootThreadCompletionEventFamily(root),
@@ -345,6 +370,13 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
       take(test, runtime::ResourceTimeTransitionSelectionSession::create(
                      transitionGraph, parent, artifacts, blobs));
   expectSelectionError(
+      test, premature.completeRoot(precedingRoot, std::nullopt),
+      runtime::ResourceTimeSelectionErrorReason::CompletionBeforeStart);
+  startRoot(premature, root);
+  expectSelectionError(
+      test, premature.startRoot(root),
+      runtime::ResourceTimeSelectionErrorReason::DuplicateStart);
+  expectSelectionError(
       test, premature.completeRoot(root, transition.child),
       runtime::ResourceTimeSelectionErrorReason::TransitionUnavailable);
   expectSelectionError(
@@ -353,7 +385,8 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   deployment::test::require(test,
                             premature.currentEndpoint() == transition.parent &&
                                 premature.completedRoots().empty() &&
-                                premature.replay().empty(),
+                                premature.activeRoots() == std::vector{root} &&
+                                premature.replay().size() == 1,
                             "rejected transition mutated selector state");
 
   const auto implementations =
@@ -362,6 +395,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
                                  {{implementations, std::nullopt, {}}}));
   auto loaded = take(
       test, runtime::loadDeployment(parent, {provider, 0}, artifacts, blobs));
+  startRoot(premature, precedingRoot);
   (void)take(test, premature.completeRootAndActivate(precedingRoot,
                                                      std::nullopt, loaded));
   const auto unpreparedReason = expectActivationReplacementError(
@@ -385,6 +419,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
       provider->statistics().activationPreparationCount == 1 &&
           provider->statistics().activationReplacementCount == 0,
       "resource-time child endpoint was not prepared before execution");
+  startRoot(selector, precedingRoot);
   auto stayed = take(test, selector.completeRootAndActivate(
                                precedingRoot, std::nullopt, loaded));
   deployment::test::require(
@@ -400,6 +435,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   auto foreignLoaded =
       take(test, runtime::loadDeployment(parent, {foreignProvider, 0},
                                          artifacts, blobs));
+  startRoot(selector, root);
   const auto foreignReason = expectActivationReplacementError(
       test,
       selector.completeRootAndActivate(root, transition.child, foreignLoaded));
@@ -436,7 +472,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   if (llvm::Error error = selector.joinMappedRoots())
     deployment::test::fail(test, llvm::toString(std::move(error)));
   deployment::test::require(
-      test, selector.mappedRootsJoined() && selector.replay().size() == 3,
+      test, selector.mappedRootsJoined() && selector.replay().size() == 5,
       "selector did not join the complete mapped-root inventory");
 
   auto replayed = take(
@@ -449,95 +485,11 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
           replayed.completedRoots() == selector.completedRoots(),
       "selector replay diverged from the accepted transition sequence");
 
-  const auto applicationImplementation = take(
-      test,
-      hardware::importHardwareImplementation(
-          parent.deployment().hardwareBindings().front().hardwareImplementation,
-          artifacts, blobs));
-  application::ApplicationDeploymentArtifacts applicationDeployment{
-      applicationImplementation.implementation().configurationAbi(),
-      {},
-      std::vector<DeploymentHardwareBinding>(
-          parent.deployment().hardwareBindings().begin(),
-          parent.deployment().hardwareBindings().end()),
-      std::vector<ArtifactRootReference>(
-          parent.deployment().instructionCoreBinaries().begin(),
-          parent.deployment().instructionCoreBinaries().end()),
-      transitionGraph,
-      {},
-      std::nullopt,
-      parent};
-  auto applicationProvider =
-      take(test, runtime::createInProcessRuntimeProvider(
-                     {{implementations, std::nullopt, {}}}));
-  auto loadedApplication =
-      take(test, application::loadApplicationDeployment(
-                     applicationDeployment, {applicationProvider, 0}, artifacts,
-                     blobs));
-  auto *applicationSelector = loadedApplication.resourceTimeSelection();
-  deployment::test::require(
-      test,
-      applicationSelector &&
-          loadedApplication.loadedDeployment().deployment().reference() ==
-              parent.reference() &&
-          applicationProvider->statistics().activationPreparationCount == 1,
-      "Application runtime dropped the verified resource-time graph");
-  (void)take(test, applicationSelector->completeRootAndActivate(
-                       precedingRoot, std::nullopt,
-                       loadedApplication.loadedDeployment()));
-  (void)take(test,
-             applicationSelector->completeRootAndActivate(
-                 root, transition.child, loadedApplication.loadedDeployment()));
-  if (llvm::Error error = applicationSelector->joinMappedRoots())
-    deployment::test::fail(test, llvm::toString(std::move(error)));
-  deployment::test::require(
-      test,
-      applicationSelector->mappedRootsJoined() &&
-          loadedApplication.loadedDeployment().deployment().reference() ==
-              child.reference() &&
-          applicationProvider->activeDeployment(0) == child.reference(),
-      "Application runtime did not join the exact loaded Deployment session");
-
-  auto staticApplicationDeployment = applicationDeployment;
-  staticApplicationDeployment.resourceTimeTransitionGraph.reset();
-  auto staticProvider = take(test, runtime::createInProcessRuntimeProvider(
-                                       {{implementations, std::nullopt, {}}}));
-  auto staticApplication =
-      take(test, application::loadApplicationDeployment(
-                     staticApplicationDeployment, {staticProvider, 0},
-                     artifacts, blobs));
-  deployment::test::require(
-      test,
-      !staticApplication.resourceTimeSelection() &&
-          staticApplication.loadedDeployment().deployment().reference() ==
-              parent.reference() &&
-          staticProvider->statistics().activationPreparationCount == 0,
-      "static Application runtime synthesized a resource-time session");
-
-  auto mismatchedApplicationDeployment = applicationDeployment;
-  mismatchedApplicationDeployment.deployment = child;
-  auto mismatchedProvider =
-      take(test, runtime::createInProcessRuntimeProvider(
-                     {{implementations, std::nullopt, {}}}));
-  expectSelectionError(
-      test,
-      application::loadApplicationDeployment(mismatchedApplicationDeployment,
-                                             {mismatchedProvider, 0}, artifacts,
-                                             blobs),
-      runtime::ResourceTimeSelectionErrorReason::EntryDeploymentMismatch);
-  deployment::test::require(
-      test,
-      !mismatchedProvider->activeDeployment(0) &&
-          mismatchedProvider->statistics().activationPreparationCount == 0 &&
-          mismatchedProvider->statistics().resetCount == 2 &&
-          mismatchedProvider->statistics().leaseReleaseCount == 1 &&
-          !mismatchedProvider->isQuarantined(0),
-      "failed Application graph join did not restore the loaded device");
-
   auto firstCycleDraft = draft;
   firstCycleDraft.trigger =
       dataflow::rootThreadCompletionEventFamily(precedingRoot);
   firstCycleDraft.beforeActive = {{precedingRoot, precedingResources}};
+  firstCycleDraft.afterActive = {{root, resourcesFor(childContexts, root)}};
   firstCycleDraft.completedBefore.clear();
   const auto firstCycle =
       take(test, pnr::finalizeResourceTimeTransition(std::move(firstCycleDraft),
@@ -565,8 +517,15 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
     auto cycleSelector = take(
         test, runtime::ResourceTimeTransitionSelectionSession::createPrepared(
                   cycleGraph, cycleLoaded, artifacts, blobs));
+    startRoot(cycleSelector, precedingRoot);
     (void)take(test, cycleSelector.completeRootAndActivate(
                          precedingRoot, firstCycle.child, cycleLoaded));
+    expectSelectionError(
+        test,
+        cycleSelector.completeRootAndActivate(root, secondCycle.child,
+                                              cycleLoaded),
+        runtime::ResourceTimeSelectionErrorReason::CompletionBeforeStart);
+    startRoot(cycleSelector, root);
     (void)take(test, cycleSelector.completeRootAndActivate(
                          root, secondCycle.child, cycleLoaded));
     if (llvm::Error error = cycleSelector.joinMappedRoots())
@@ -628,6 +587,9 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
       "selector cancellation was not idempotent");
   expectSelectionError(
       test, cancelled.completeRoot(precedingRoot, std::nullopt),
+      runtime::ResourceTimeSelectionErrorReason::InvalidLifecycle);
+  expectSelectionError(
+      test, cancelled.startRoot(precedingRoot),
       runtime::ResourceTimeSelectionErrorReason::InvalidLifecycle);
   auto cancelledReplay = take(
       test, runtime::ResourceTimeTransitionSelectionSession::replay(
@@ -723,8 +685,10 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   auto failingSelector = take(
       test, runtime::ResourceTimeTransitionSelectionSession::createPrepared(
                 transitionGraph, failingLoaded, artifacts, blobs));
+  startRoot(failingSelector, precedingRoot);
   (void)take(test, failingSelector.completeRootAndActivate(
                        precedingRoot, std::nullopt, failingLoaded));
+  startRoot(failingSelector, root);
   const auto replacementReason = expectActivationReplacementError(
       test, failingSelector.completeRootAndActivate(root, transition.child,
                                                     failingLoaded));
@@ -735,7 +699,8 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
           failingSelector.currentEndpoint() == transition.parent &&
           failingSelector.completedRoots().size() == 1 &&
           failingSelector.completedRoots().front() == precedingRoot &&
-          failingSelector.replay().size() == 1 &&
+          failingSelector.activeRoots() == std::vector{root} &&
+          failingSelector.replay().size() == 3 &&
           failingLoaded.deployment().reference() == parent.reference() &&
           failingProvider->activeDeployment(0) == parent.reference() &&
           failingProvider->statistics().activationPreparationCount == 1 &&
@@ -747,7 +712,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
       test,
       retried && failingSelector.currentEndpoint() == transition.child &&
           failingSelector.completedRoots().size() == 2 &&
-          failingSelector.replay().size() == 2 &&
+          failingSelector.replay().size() == 4 &&
           failingLoaded.deployment().reference() == child.reference() &&
           failingProvider->activeDeployment(0) == child.reference() &&
           failingProvider->statistics().activationPreparationCount == 1 &&
@@ -894,22 +859,28 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   const std::array parentEndpointOnly = {
       dse::ResourceTimeMappingDeploymentEndpoint{parentMapping.reference(),
                                                  parent.reference()}};
-  const auto incompleteApplicationFunnel =
-      take(test, dse::verifyResourceTimeMappingFinalists(
-                     {applicationHint}, applicationRegions, applicationBounds,
-                     applicationMappings, artifacts, {},
-                     dse::ResourceTimeConcurrencyBounds{
-                         1, 1, dse::ResourceTimeEstimateSupport::Exact},
-                     &blobs, parentEndpointOnly));
-  const auto *incompleteApplication =
-      std::get_if<dse::IncompleteResourceTimeSpectrum>(
-          &incompleteApplicationFunnel.verification);
-  deployment::test::require(
-      test,
-      incompleteApplication &&
-          incompleteApplication->reason ==
-              dse::ResourceTimeSpectrumIncompleteReason::ProofNotEstablished,
-      "missing child Deployment did not remain typed proof-not-established");
+  expectError(test,
+              dse::verifyResourceTimeMappingFinalists(
+                  {applicationHint}, applicationRegions, applicationBounds,
+                  applicationMappings, artifacts, {},
+                  dse::ResourceTimeConcurrencyBounds{
+                      1, 1, dse::ResourceTimeEstimateSupport::Exact},
+                  &blobs, parentEndpointOnly),
+              "must cover every Mapping finalist exactly once");
+
+  const std::array mismatchedEndpoints = {
+      dse::ResourceTimeMappingDeploymentEndpoint{parentMapping.reference(),
+                                                 child.reference()},
+      dse::ResourceTimeMappingDeploymentEndpoint{childMapping.reference(),
+                                                 parent.reference()}};
+  expectError(test,
+              dse::verifyResourceTimeMappingFinalists(
+                  {applicationHint}, applicationRegions, applicationBounds,
+                  applicationMappings, artifacts, {},
+                  dse::ResourceTimeConcurrencyBounds{
+                      1, 1, dse::ResourceTimeEstimateSupport::Exact},
+                  &blobs, mismatchedEndpoints),
+              "does not select its paired SystemMapping");
 
   constexpr llvm::StringLiteral mutationOwner =
       "loom.test.resource_time_delta_mutation";
@@ -980,7 +951,6 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   tokenCorrespondence.tokenLiveStateCorrespondence = dataflowReference;
   requireFinalizationFailure(std::move(tokenCorrespondence),
                              "unproved live or token");
-
   const FinalizedDeployment multiRootParent =
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
   const FinalizedDeployment multiRootChild =
@@ -1041,8 +1011,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
 
   auto repeatedCompletion = draft;
   repeatedCompletion.completedBefore.push_back(precedingRoot);
-  requireFinalizationFailure(std::move(repeatedCompletion),
-                             "canonical root-launch subset");
+  requireFinalizationFailure(std::move(repeatedCompletion), "duplicate region");
 
   const FinalizedDeployment changedProgramming =
       deployment::test::buildRetargetedSharedProgrammingEndpointDeployment(

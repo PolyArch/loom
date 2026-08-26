@@ -1,24 +1,150 @@
 // RUN: %loom-cc -O0 -S -emit-llvm %S/Inputs/candidate_hint_valid.c -o %t.ll
-// RUN: FileCheck %s --check-prefix=LLVM < %t.ll
+// RUN: FileCheck %s --check-prefix=LLVM --implicit-check-not=@llvm.global.annotations --implicit-check-not=llvm.annotation --implicit-check-not=loom.candidate.loop.marker < %t.ll
+// RUN: not %loom-cc -save-temps=obj -O0 -S -emit-llvm %S/Inputs/candidate_hint_valid.c -o %t.replay.ll 2>&1 | FileCheck %s --check-prefix=PREPROCESSING
 // RUN: %loom-raise %t.ll -o %t.mlir
 // RUN: FileCheck %s --check-prefix=RAISED < %t.mlir
 // RUN: %loom-cc -O0 -S -emit-llvm %S/Inputs/candidate_hint_multiline.c -o %t.multiline.ll
+// RUN: FileCheck %s --check-prefix=MULTILINE-LLVM < %t.multiline.ll
 // RUN: %loom-raise %t.multiline.ll -o %t.multiline.mlir
 // RUN: FileCheck %s --check-prefix=MULTILINE < %t.multiline.mlir
 // RUN: %loom-cc -O0 -S -emit-llvm %S/Inputs/candidate_hint_remapped.c -o %t.remapped.ll
 // RUN: %loom-raise %t.remapped.ll -o %t.remapped.mlir
 // RUN: FileCheck %s --check-prefix=REMAPPED < %t.remapped.mlir
+// RUN: %loom-cc -O1 -S -emit-llvm %S/Inputs/candidate_hint_unrelated.c -o %t.unrelated.ll
+// RUN: FileCheck %s --check-prefix=UNRELATED --implicit-check-not='ptr @projected_candidate' < %t.unrelated.ll
 // RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_misplaced.c 2>&1 | FileCheck %s --check-prefix=MISPLACED
 // RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_nested.c 2>&1 | FileCheck %s --check-prefix=NESTED
 // RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_dangling.c 2>&1 | FileCheck %s --check-prefix=DANGLING
-// RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_loop.c 2>&1 | FileCheck %s --check-prefix=LOOP
-// RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_internal.c 2>&1 | FileCheck %s --check-prefix=INTERNAL
-// RUN: not %loom-c++ -std=c++17 -fsyntax-only %S/Inputs/candidate_hint_inline.cpp 2>&1 | FileCheck %s --check-prefix=INLINE
+// RUN: not %loom-c++ -fsyntax-only %S/Inputs/candidate_hint_template.cpp 2>&1 | FileCheck %s --check-prefix=TEMPLATE
+// RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_macro_loop.c 2>&1 | FileCheck %s --check-prefix=MACRO
+// RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_switch_label.c 2>&1 | FileCheck %s --check-prefix=SWITCH-LABEL
+// RUN: not %loom-c++ -std=c++17 -fsyntax-only %S/Inputs/candidate_hint_lambda.cpp 2>&1 | FileCheck %s --check-prefix=LAMBDA
+// RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_syntax_guard.c 2>&1 | FileCheck %s --check-prefix=SYNTAX-GUARD
+// RUN: not %loom-cc -cc1 -loom-internal-candidate-replay=consume-retain:7:2f6465762f6e756c6c -fsyntax-only -x c %S/Inputs/candidate_hint_valid.c 2>&1 | FileCheck %s --check-prefix=INTERNAL-REPLAY
+// RUN: not %loom-cc -Xclang -loom-internal-candidate-replay=consume-retain:7: -fsyntax-only %S/Inputs/candidate_hint_valid.c 2>&1 | FileCheck %s --check-prefix=RESERVED-REPLAY
+// RUN: echo "-loom-internal-candidate-replay=consume-retain:7:" > %t.replay.rsp
+// RUN: not %loom-cc -fintegrated-cc1 -Wp,@%t.replay.rsp -fsyntax-only %S/Inputs/candidate_hint_valid.c 2>&1 | FileCheck %s --check-prefix=RESERVED-REPLAY
+// RUN: not %loom-cc -fno-integrated-cc1 -Wp,@%t.replay.rsp -fsyntax-only %S/Inputs/candidate_hint_valid.c 2>&1 | FileCheck %s --check-prefix=RESERVED-REPLAY
+// RUN: not %loom-cc -S -emit-llvm -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_valid.c -o %t.disabled.ll 2>&1 | FileCheck %s --check-prefix=DISABLED-PIPELINE
+// RUN: not %loom-cc -c -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_valid.c -o %t.disabled.o 2>&1 | FileCheck %s --check-prefix=DISABLED-PIPELINE
+// RUN: %loom-cc -S -emit-llvm -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_internal.c -o %t.disabled-plain.ll
+// RUN: FileCheck %s --check-prefix=DISABLED-PLAIN --implicit-check-not=loom.candidate < %t.disabled-plain.ll
+// RUN: %loom-cc -c -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_internal.c -o %t.disabled-plain.o
+// RUN: %loom-cc -S -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_internal.c -o %t.disabled-plain.s
+// RUN: %loom-cc -c -Xclang -fsyntax-only -Xclang -disable-llvm-passes %S/Inputs/candidate_hint_valid.c
+// RUN: not %loom-cc -fsyntax-only %S/Inputs/candidate_hint_pragma_operator.c 2>&1 | FileCheck %s --check-prefix=PRAGMA-OPERATOR
+// RUN: not %loom-cc -fintegrated-cc1 -save-temps=obj -O0 -S -emit-llvm %S/Inputs/candidate_hint_valid.c -o %t.integrated.ll 2>&1 | FileCheck %s --check-prefix=PREPROCESSING
+// RUN: not %loom-cc -fno-integrated-cc1 -save-temps=obj -O0 -S -emit-llvm %S/Inputs/candidate_hint_valid.c -o %t.spawned.ll 2>&1 | FileCheck %s --check-prefix=PREPROCESSING
+// RUN: not %loom-cc -save-temps=obj -P -O0 -S -emit-llvm %S/Inputs/candidate_hint_valid.c -o %t.no-line-markers.ll 2>&1 | FileCheck %s --check-prefix=PREPROCESSING
+// RUN: %loom-cc -### -save-temps=obj -O0 -S -emit-llvm %S/Inputs/candidate_hint_valid.c -o %t.dry-run.ll 2>&1 | FileCheck %s --check-prefix=DRYCMD --implicit-check-not=-loom-internal-candidate-replay --implicit-check-not=loom-candidate-ranges
+// RUN: %loom-cc -O0 -S -emit-llvm -x c - -o %t.stdin.ll < %S/Inputs/candidate_hint_valid.c
+// RUN: FileCheck %s --check-prefix=STDIN-LLVM < %t.stdin.ll
+// RUN: not %loom-cc -save-temps=obj -O0 -S -emit-llvm -x c - -o %t.stdin-replay.ll < %S/Inputs/candidate_hint_valid.c 2>&1 | FileCheck %s --check-prefix=PREPROCESSING
+// RUN: %loom-cc -save-temps=obj -O0 -S -x c - -o %t.stdin-no-candidate.s < %S/Inputs/candidate_hint_internal.c
+// RUN: FileCheck %s --check-prefix=STDIN-NO-CANDIDATE --implicit-check-not=loom.candidate < %t.stdin-no-candidate.s
+// RUN: not %loom-cc -O0 -S -emit-llvm %S/Inputs/candidate_hint_forged.c -o %t.forged.ll 2>&1 | FileCheck %s --check-prefix=FORGED
+// RUN: not %loom-cc -DLOOM_CANDIDATE_HINTS -E -P %S/Inputs/candidate_hint_loop.c -o %t.loop.hinted.i 2>&1 | FileCheck %s --check-prefix=PREPROCESSING
+// RUN: %loom-cc -E -P %S/Inputs/candidate_hint_loop.c -o %t.loop.baseline.i
+// RUN: not %loom-cc -save-temps=obj -DLOOM_CANDIDATE_HINTS -E -P %S/Inputs/candidate_hint_loop.c -o %t.loop.hinted-save.i 2>&1 | FileCheck %s --check-prefix=PREPROCESSING
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O1 -S -emit-llvm %S/Inputs/candidate_hint_loop.c -o %t.loop.ll
+// RUN: FileCheck %s --check-prefix=LOOP-LLVM --implicit-check-not=@llvm.global.annotations --implicit-check-not=llvm.annotation --implicit-check-not=loom.candidate.loop.marker < %t.loop.ll
+// RUN: not %loom-cc -save-temps=obj -DLOOM_CANDIDATE_HINTS -O1 -S -emit-llvm %S/Inputs/candidate_hint_loop.c -o %t.loop.replay.ll 2>&1 | FileCheck %s --check-prefix=PREPROCESSING
+// RUN: %loom-raise %t.loop.ll -o %t.loop.mlir
+// RUN: FileCheck %s --check-prefix=LOOP-RAISED < %t.loop.mlir
+// RUN: %loom-cc -O1 -S -emit-llvm %S/Inputs/candidate_hint_loop.c -o %t.loop.baseline.ll
+// RUN: %loom-raise %t.loop.baseline.ll -o %t.loop.baseline.mlir
+// RUN: cmp %t.loop.mlir %t.loop.baseline.mlir
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O1 %S/Inputs/candidate_hint_loop.c -o %t.loop.exe
+// RUN: %t.loop.exe
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O3 -S -emit-llvm %S/Inputs/candidate_hint_loop.c -o %t.loop.erased.ll
+// RUN: not %loom-raise %t.loop.erased.ll -o %t.loop.erased.mlir 2>&1 | FileCheck %s --check-prefix=LOOP-ERASED
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -S -emit-llvm %S/Inputs/candidate_hint_internal.c -o %t.internal.ll
+// RUN: %loom-raise %t.internal.ll -o %t.internal.mlir
+// RUN: FileCheck %s --check-prefix=INTERNAL < %t.internal.mlir
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -flto -S -emit-llvm %S/Inputs/candidate_hint_internal.c -o %t.explicit-lto.ll
+// RUN: FileCheck %s --check-prefix=LLVM-LTO --implicit-check-not=loom.relocatable_accelerator_payload < %t.explicit-lto.ll
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -c -Xlinker -S %S/Inputs/candidate_hint_internal.c -o %t.linker-option.o
+// RUN: %loom-payload --bitcode-output=%t.linker-option.bc %t.linker-option.o
+// RUN: llvm-dis %t.linker-option.bc -o - | FileCheck %s --check-prefix=LINKER-OPTION
+// RUN: %loom-cc -O0 -c -Xlinker -S %S/Inputs/candidate_hint_internal.c -o %t.linker-option-baseline.o
+// RUN: llvm-nm --defined-only %t.linker-option.o > %t.linker-option.nm
+// RUN: llvm-nm --defined-only %t.linker-option-baseline.o > %t.linker-option-baseline.nm
+// RUN: cmp %t.linker-option.nm %t.linker-option-baseline.nm
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -c -fno-integrated-as %S/Inputs/candidate_hint_internal.c -o %t.external-as.o
+// RUN: %loom-payload --bitcode-output=%t.external-as.bc %t.external-as.o
+// RUN: llvm-dis %t.external-as.bc -o - | FileCheck %s --check-prefix=LINKER-OPTION
+// RUN: %loom-cc -O0 -c -fno-integrated-as %S/Inputs/candidate_hint_internal.c -o %t.external-as-baseline.o
+// RUN: llvm-nm --defined-only %t.external-as.o > %t.external-as.nm
+// RUN: llvm-nm --defined-only %t.external-as-baseline.o > %t.external-as-baseline.nm
+// RUN: cmp %t.external-as.nm %t.external-as-baseline.nm
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -femit-all-decls -c %S/Inputs/candidate_hint_internal.c -o %t.emit-all.o
+// RUN: %loom-cc -O0 -femit-all-decls -c %S/Inputs/candidate_hint_internal.c -o %t.emit-all-baseline.o
+// RUN: llvm-nm --defined-only %t.emit-all.o > %t.emit-all.nm
+// RUN: llvm-nm --defined-only %t.emit-all-baseline.o > %t.emit-all-baseline.nm
+// RUN: cmp %t.emit-all.nm %t.emit-all-baseline.nm
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -femit-all-decls -S -emit-llvm %S/Inputs/candidate_hint_internal.c -o %t.emit-all.ll
+// RUN: FileCheck %s --check-prefix=EMIT-ALL --implicit-check-not=llvm.compiler.used < %t.emit-all.ll
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -c %S/Inputs/candidate_hint_annotated_internal.c -o %t.annotated.o
+// RUN: %loom-cc -O0 -c %S/Inputs/candidate_hint_annotated_internal.c -o %t.annotated-baseline.o
+// RUN: llvm-nm --defined-only %t.annotated.o > %t.annotated.nm
+// RUN: llvm-nm --defined-only %t.annotated-baseline.o > %t.annotated-baseline.nm
+// RUN: cmp %t.annotated.nm %t.annotated-baseline.nm
+// RUN: llvm-readobj --sections %t.annotated.o | FileCheck %s --check-prefix=ANNOTATED-SECTIONS --implicit-check-not=.rodata.str
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O2 -femit-all-decls -c %S/Inputs/candidate_hint_annotated_internal.c -o %t.annotated-required.o
+// RUN: %loom-cc -O2 -femit-all-decls -c %S/Inputs/candidate_hint_annotated_internal.c -o %t.annotated-required-baseline.o
+// RUN: llvm-nm --defined-only %t.annotated-required.o > %t.annotated-required.nm
+// RUN: llvm-nm --defined-only %t.annotated-required-baseline.o > %t.annotated-required-baseline.nm
+// RUN: cmp %t.annotated-required.nm %t.annotated-required-baseline.nm
+// RUN: not %loom-cc -O0 -c %S/Inputs/candidate_hint_annotated_arguments.c -o %t.annotated-arguments.o 2>&1 | FileCheck %s --check-prefix=ANNOTATED-ARGUMENTS
+// RUN: not %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -fprofile-instr-generate -c %S/Inputs/candidate_hint_internal.c -o %t.profile.o 2>&1 | FileCheck %s --check-prefix=INSTRUMENTATION
+// RUN: not %loom-cc -DLOOM_CANDIDATE_HINTS -O0 --coverage -c %S/Inputs/candidate_hint_internal.c -o %t.coverage.o 2>&1 | FileCheck %s --check-prefix=INSTRUMENTATION
+// RUN: %loom-cc -O0 -fprofile-instr-generate -c %S/Inputs/candidate_hint_internal.c -o %t.profile-baseline.o
+// RUN: %loom-cc -O0 --coverage -c %S/Inputs/candidate_hint_internal.c -o %t.coverage-baseline.o
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -c -flto %S/Inputs/candidate_hint_internal.c -o %t.lto-object.o
+// RUN: %loom-payload --bitcode-output=%t.lto-object.bc %t.lto-object.o
+// RUN: llvm-dis %t.lto-object.bc -o - | FileCheck %s --check-prefix=LINKER-OPTION
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -c %S/Inputs/candidate_hint_internal_helper.c -o %t.helper.o
+// RUN: %loom-cc -O0 -c %S/Inputs/candidate_hint_internal_helper.c -o %t.helper-baseline.o
+// RUN: llvm-nm --defined-only %t.helper.o > %t.helper.nm
+// RUN: llvm-nm --defined-only %t.helper-baseline.o > %t.helper-baseline.nm
+// RUN: cmp %t.helper.nm %t.helper-baseline.nm
+// RUN: %loom-c++ -DLOOM_CANDIDATE_HINTS -std=c++17 -O0 -c %S/Inputs/candidate_hint_inline_helper.cpp -o %t.inline-helper.o
+// RUN: %loom-c++ -std=c++17 -O0 -c %S/Inputs/candidate_hint_inline_helper.cpp -o %t.inline-helper-baseline.o
+// RUN: llvm-nm --defined-only %t.inline-helper.o > %t.inline-helper.nm
+// RUN: llvm-nm --defined-only %t.inline-helper-baseline.o > %t.inline-helper-baseline.nm
+// RUN: cmp %t.inline-helper.nm %t.inline-helper-baseline.nm
+// RUN: rm -rf %t.output-name
+// RUN: mkdir -p %t.output-name
+// RUN: cd %t.output-name && %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -c %S/Inputs/candidate_hint_internal.c -o -S
+// RUN: %loom-payload --bitcode-output=%t.output-name.bc %t.output-name/-S
+// RUN: llvm-dis %t.output-name.bc -o - | FileCheck %s --check-prefix=LINKER-OPTION
+// RUN: cd %t.output-name && %loom-cc -O0 -c %S/Inputs/candidate_hint_internal.c -o -loom-internal-candidate-replay=ordinary-output
+// RUN: test -f %t.output-name/-loom-internal-candidate-replay=ordinary-output
+// RUN: cd %t.output-name && %loom-cc -O0 -c %S/Inputs/candidate_hint_internal.c -o -disable-llvm-passes
+// RUN: test -f %t.output-name/-disable-llvm-passes
+// RUN: not %loom-cc -save-temps=obj -DLOOM_CANDIDATE_HINTS -O0 -c %S/Inputs/candidate_hint_internal.c -o %t.save-object.o 2>&1 | FileCheck %s --check-prefix=PREPROCESSING
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O0 -S -Xclang -emit-obj %S/Inputs/candidate_hint_internal.c -o %t.cc1-object.o
+// RUN: %loom-payload --bitcode-output=%t.cc1-object.bc %t.cc1-object.o
+// RUN: llvm-dis %t.cc1-object.bc -o - | FileCheck %s --check-prefix=LINKER-OPTION
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O3 -c -Xclang -S %S/Inputs/candidate_hint_internal.c -o %t.cc1-assembly.s
+// RUN: FileCheck %s --check-prefix=CC1-ASSEMBLY --implicit-check-not=loom.candidate < %t.cc1-assembly.s
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O3 -S %S/Inputs/candidate_hint_internal.c -o %t.internal.s
+// RUN: %loom-cc -O3 -S %S/Inputs/candidate_hint_internal.c -o %t.internal.baseline.s
+// RUN: cmp %t.internal.s %t.internal.baseline.s
+// RUN: not %loom-cc -save-temps=obj -DLOOM_CANDIDATE_HINTS -O3 -S %S/Inputs/candidate_hint_internal.c -o %t.internal.replay.s 2>&1 | FileCheck %s --check-prefix=PREPROCESSING
+// RUN: %loom-cc -DLOOM_CANDIDATE_HINTS -O1 -S %S/Inputs/candidate_hint_loop.c -o %t.loop.s
+// RUN: %loom-cc -O1 -S %S/Inputs/candidate_hint_loop.c -o %t.loop.baseline.s
+// RUN: cmp %t.loop.s %t.loop.baseline.s
+// RUN: %loom-c++ -DLOOM_CANDIDATE_HINTS -std=c++17 -O1 -gline-tables-only -S -emit-llvm %S/Inputs/candidate_hint_inline.cpp -o %t.inline.ll
+// RUN: %loom-raise %t.inline.ll -o %t.inline.mlir
+// RUN: FileCheck %s --check-prefix=INLINE < %t.inline.mlir
+// RUN: %loom-c++ -DLOOM_CANDIDATE_HINTS -std=c++17 -O3 -S %S/Inputs/candidate_hint_inline.cpp -o %t.inline.s
+// RUN: %loom-c++ -std=c++17 -O3 -S %S/Inputs/candidate_hint_inline.cpp -o %t.inline.baseline.s
+// RUN: cmp %t.inline.s %t.inline.baseline.s
 
-// LLVM: c"loom.candidate.function.1.0|
-// LLVM: @llvm.global.annotations = appending global
-// LLVM-SAME: ptr @hinted
-// LLVM-NOT: ptr @plain
+// LLVM: define {{.*}} @hinted({{.*}}) {{.*}} !loom.candidate.function ![[FUNCTION:[0-9]+]]
+// LLVM: define {{.*}} @plain(
+// LLVM: ![[FUNCTION]] = !{!"loom.candidate.function.2.0|{{[0-9]+}}|{{.*}}candidate_hint_valid.c|2|11|1|1|2|1|2|59"
 
 // RAISED: llvm.func @hinted
 // RAISED: llvm.func @plain
@@ -27,13 +153,63 @@
 
 // MULTILINE: llvm.func @hinted_multiline
 // MULTILINE-NOT: loom.candidate
+// MULTILINE-LLVM: !{!"loom.candidate.function.2.0|{{[0-9]+}}|{{.*}}candidate_hint_multiline.c|3|1|1|1|2|1|3|50"}
 
-// REMAPPED: llvm.func @hinted_remapped
+// REMAPPED-DAG: llvm.func @hinted_remapped
+// REMAPPED-DAG: llvm.func @hinted_nonmonotonic
 // REMAPPED-NOT: loom.candidate
 
-// MISPLACED: error: '#pragma loom candidate' must immediately precede a function definition
-// NESTED: error: '#pragma loom candidate' is only valid at file scope before a function definition
-// DANGLING: error: dangling '#pragma loom candidate' has no function definition
-// LOOP: error: loop candidate hints are unsupported by this provider
-// INTERNAL: error: '#pragma loom candidate' requires a non-inline externally visible function definition
-// INLINE: error: '#pragma loom candidate' requires a non-inline externally visible function definition
+// UNRELATED: c"keep.annotation\00"
+// UNRELATED: @llvm.global.annotations = appending global [1 x
+// UNRELATED-SAME: ptr @preserved_annotation
+// UNRELATED: define {{.*}} @projected_candidate({{.*}}) {{.*}} !loom.candidate.function ![[UNRELATED_FUNCTION:[0-9]+]]
+// UNRELATED: ![[UNRELATED_FUNCTION]] = !{!"loom.candidate.function.2.0|
+
+// MISPLACED: error: candidate_hint_invalid_placement: '#pragma loom candidate' must immediately precede a function definition
+// NESTED: error: candidate_hint_invalid_placement: '#pragma loom candidate' must immediately precede a function definition or loop
+// DANGLING: error: candidate_hint_invalid_placement: dangling '#pragma loom candidate' has no function or loop
+// TEMPLATE: error: candidate_hint_unsupported_construct: '#pragma loom candidate' does not support function templates
+// TEMPLATE: error: candidate_hint_unsupported_construct: '#pragma loom candidate' does not support member functions
+// MACRO: error: candidate_hint_unsupported_construct: '#pragma loom candidate' does not support a macro-expanded target boundary
+// SWITCH-LABEL: error: candidate_hint_unsupported_construct: '#pragma loom candidate' does not support a loop body with a switch label owned outside the loop
+// LAMBDA: error: candidate_hint_unsupported_construct: '#pragma loom candidate' does not support lambda-local loops
+// SYNTAX-GUARD: error: 'case' statement not in switch statement
+// INTERNAL-REPLAY: loom_internal_invocation_invalid: candidate replay argument is unsupported
+// RESERVED-REPLAY: loom_internal_invocation_invalid: candidate replay argument is unsupported
+// DISABLED-PIPELINE: candidate_hint_unsupported_construct: candidate projection requires the LLVM pass pipeline
+// DISABLED-PLAIN: target triple =
+// PRAGMA-OPERATOR: candidate_hint_unsupported_construct: '#pragma loom candidate' cannot use a macro pragma introducer
+// DRYCMD: "-cc1"
+// PREPROCESSING: candidate_hint_unsupported_construct: preprocessing-only actions cannot preserve exact candidate source ranges
+// STDIN-LLVM: !{!"loom.candidate.function.2.0|{{[0-9]+}}|{{.*}}|2|11|1|1|2|1|2|59"
+// STDIN-NO-CANDIDATE: .file "<stdin>"
+// FORGED: candidate_hint_projection_proof_not_established: candidate function carrier disagrees with its payload
+// LOOP-LLVM: define {{.*}} @loop_candidate({{.*}}) {{.*}} !loom.candidate.loops ![[LOOPS:[0-9]+]]
+// LOOP-LLVM: define {{.*}} @controlled_loop_candidate({{.*}}) {{.*}} !loom.candidate.function ![[FUNCTION:[0-9]+]] !loom.candidate.loops ![[CONTROLLED_LOOPS:[0-9]+]]
+// LOOP-LLVM-DAG: ![[LOOPS]] = !{!"loom.candidate.loop.1.0|1|{{[0-9]+}}|{{.*}}candidate_hint_loop.c|1|5|3|1|5|3|6|27", !"loom.candidate.loop.1.0|2|{{[0-9]+}}|{{.*}}candidate_hint_loop.c|1|5|10|1|12|3|15|4", !"loom.candidate.loop.1.0|3|{{[0-9]+}}|{{.*}}candidate_hint_loop.c|1|5|18|1|20|3|23|24"
+// LOOP-LLVM-DAG: ![[CONTROLLED_LOOPS]] = !{!"loom.candidate.loop.1.0|4|{{[0-9]+}}|{{.*}}candidate_hint_loop.c|30|5|33|1|35|5|36|29"
+// LOOP-LLVM-DAG: !{!"llvm.loop.loom.candidate", !"loom.candidate.loop.1.0|1|
+// LOOP-LLVM-DAG: !{!"llvm.loop.loom.candidate", !"loom.candidate.loop.1.0|2|
+// LOOP-LLVM-DAG: !{!"llvm.loop.loom.candidate", !"loom.candidate.loop.1.0|3|
+// LOOP-LLVM-DAG: ![[FUNCTION]] = !{!"loom.candidate.function.2.0|
+// LOOP-LLVM-DAG: !{!"llvm.loop.loom.candidate", !"loom.candidate.loop.1.0|4|
+// LOOP-RAISED: llvm.func {{.*}}@loop_candidate
+// LOOP-RAISED-COUNT-4: scf.{{for|while}}
+// LOOP-RAISED-NOT: llvm.annotation
+// LOOP-RAISED-NOT: llvm.global.annotations
+// LOOP-RAISED-NOT: loom.candidate
+// LOOP-ERASED: candidate_hint_projection_proof_not_established: optimization erased or rewrote a candidate loop target
+// INTERNAL: llvm.func internal @hinted_internal
+// INTERNAL-NOT: loom.candidate
+// LLVM-LTO: define internal i32 @hinted_internal
+// LLVM-LTO-SAME: !loom.candidate.function
+// EMIT-ALL: define internal i32 @hinted_internal
+// EMIT-ALL: define internal i32 @unrelated_internal
+// ANNOTATED-SECTIONS: Name: .loom.relocatable_accelerator_payload
+// ANNOTATED-ARGUMENTS: candidate_hint_unsupported_construct: a temporary candidate has an unrelated annotation with arguments
+// INSTRUMENTATION: candidate_hint_unsupported_construct: a temporary candidate cannot preserve profiling or coverage support data
+// LINKER-OPTION: define internal i32 @hinted_internal
+// CC1-ASSEMBLY: .file
+// INLINE: llvm.func linkonce_odr @_Z13hinted_inlinei
+// INLINE: llvm.func {{.*}}@_Z18call_hinted_inlinei
+// INLINE-NOT: loom.candidate

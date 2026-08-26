@@ -32,7 +32,22 @@ shapes remain as specified below; no prior-version reference is reinterpreted
 with a different accepted dependency schema.
 
 Concrete device handles, leases, addresses, queues, and process state remain
-transient. There is no generic runtime manifest or public manual-launch schema.
+transient. There is no generic runtime-owned manifest or public manual-launch
+schema. The Application layer does publish the incompatible
+`loom.application.runtime_manifest 2.0` activation closure. It references one
+strictly imported StructuredProgram source workload/runtime pair, the exact
+source-backed Spatial replay cases, one completed pair decision, the selected
+SystemMapping and Deployment, completed runtime/oracle Evidence, the exact
+Deployment-owned System workload/runtime pair, and an optional finite verified
+resource-time transition graph. These references authorize no new Mapping,
+route, entry, or input construction at runtime.
+
+An Application package contains the exact object/blob closure of that
+manifest and every endpoint Deployment. Execution first validates the source
+package, copies its immutable stores into a new workspace, and strictly imports
+the workspace copy in isolated import sessions. The System runner consumes the
+manifest's Deployment-owned activation roots. A command-line program-entry or
+freshly published workload/runtime pair cannot override the package.
 
 ## Immutable Mapping Contract
 
@@ -556,7 +571,7 @@ entry by the session-local ordinal described below, rather than by the
 provider's process-wide entry index.
 
 The current strict gem5 System projection schema is
-`loom.gem5_system_projection.10`. For every Bridge session it records aligned
+`loom.gem5_system_projection.11`. For every Bridge session it records aligned
 arrays of dispatch-target ordinals, execution-context keys, and Spatial
 workload identities. These arrays are derived together from the immutable
 Deployment and System execution projection. Provider command arguments only
@@ -564,6 +579,43 @@ start the shared or per-Bridge engine; they are not a semantic source from
 which an importer may infer target ownership. Sharing one engine across
 several Bridges therefore does not move workloads into the command-owning
 Bridge.
+
+Projection 11 also requires `dispatch.root_event_trace_path`. The path names a
+declared ordinary invocation output, not an optional diagnostic sidecar. The
+Thread Dispatch device writes one transient big-endian root-lifecycle stream:
+
+```text
+RootLifecycleStream {
+  magic: u32 = LRE1
+  records: array<RootLifecycleRecord>
+}
+
+RootLifecycleRecord {
+  root_thread_launch_entity: u64
+  occurrence: u64
+  action: u32 = Start(0) | Completion(1)
+  gem5_tick: u64
+  delta: u64
+}
+```
+
+The device assigns a globally increasing nonzero `occurrence` when it accepts
+a `Start` command and returns that value through the root-occurrence MMIO
+registers. A `Completion` command must supply that same occurrence. Record
+coordinates are globally ordered by gem5 tick and a device-assigned delta
+within one tick. A partial record, unknown action, zero occurrence, or failed
+declared output is an invocation failure.
+
+Generated Host glue emits `Start` only after every point-specific Thread
+Dispatch submission for the root invocation has been accepted. It emits
+`Completion` only after the collective wait has observed the matching dynamic
+occurrence complete for every point and reset those target records. Repeated
+invocation of one static root receives a new occurrence. The ordinary System
+result importer consumes this stream, derives the canonical Dataflow
+`RootThreadStart` or `RootThreadCompletion` `EventFamilyKey`, and supplies the
+typed sequence to `SimulationExecution` finalization. The raw stream has no
+Artifact identity and cannot bypass the exact Request, Mapping, coordinate,
+lifecycle, or `Retired` closure checks.
 
 The current incompatible invocation-result envelope has magic `LGX3`. In
 addition to the exact invocation bytes, effective runtime-input snapshot, and
@@ -677,6 +729,22 @@ sends or only top-level receives. For each receiver branch, all of its receive
 events must already be covered by earlier complete producer launches. A mixed,
 nested, dynamic-grid, or insufficiently supplied launch is typed Unsupported
 before any callback can expose an unwritten receive slot.
+
+That proof also derives the finite flat producer and per-branch consumer event
+counts for the complete logical channel invocation. The generated adapter
+opens the `OrderedChannelABI` generation with those counts before the first
+endpoint call and requires producer finish, every consumer terminal, and
+collective join after the selected entry returns. Runtime does not infer these
+counts from queue occupancy or observed execution.
+
+The adapter transports every rejected ABI outcome as its original typed
+`OrderedChannelABIError`; it does not flatten backpressure, sequence
+exhaustion, rate excess, cancellation, or lifecycle misuse into a generic
+execution string. Any failure after entry cancels every generation that has
+not joined, including failures while finishing endpoints or deinitializing the
+native image. A fully terminal path alone joins. Each native execution owns a
+fresh transient ABI instance; reset and reuse of one direct ABI session are
+separate conformance evidence rather than an adapter lifecycle guarantee.
 
 The Spatial Bridge binding's `maximumMessageBytes` is a separate provider wire
 and staging limit. It may reject an unrepresentable invocation or message with
@@ -1154,10 +1222,13 @@ later Linux/full-system provider from registering a distinct exact binding.
 ## Diagnostics And Evidence
 
 Runtime waits, actual arbitration, completion events, terminal observables,
-and typed activity summaries belong to `SimulationExecution` 1.0. Diagnostic
-traces and tool payloads remain attempt or scratch material and have no
-persistent runtime schema. Attempt timestamps, host/tool bindings, retries, and
-execution-limit outcomes belong to the runtime owner's attempt record.
+the narrow System root-lifecycle sequence, and typed activity summaries belong
+to `SimulationExecution` 2.0. General diagnostic traces and tool payloads
+remain attempt or scratch material and have no persistent runtime schema. The
+raw `LRE1` stream is only the provider-to-importer carrier for the mandatory
+typed root-lifecycle observations; it is not a persistent diagnostic trace.
+Attempt timestamps, host/tool bindings, retries, and execution-limit outcomes
+belong to the runtime owner's attempt record.
 Normalized outcome, metrics, and findings belong only to
 `EvaluationEvidence`; human-readable runtime reports are projections of those
 records. Their exact Request recovers Deployment, Mapping, Fabric,

@@ -1,1 +1,1 @@
-# RUN: timeout 15s %loom-mapped-rtl-simulation-test --result-protocol
+# RUN: timeout %loom-timeout-ultrafast %loom-mapped-rtl-simulation-test --result-protocol

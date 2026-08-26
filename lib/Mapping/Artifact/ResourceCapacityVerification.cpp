@@ -8,6 +8,7 @@
 #include "llvm/ADT/StringMap.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -427,10 +428,13 @@ llvm::Expected<FrozenResourceCapacityIndex> freezeResourceCapacityIndex(
   return result;
 }
 
+namespace {
+
 llvm::Expected<std::vector<std::uint64_t>>
-deriveResourceCapacityBaselineOccupancy(
+deriveResourceCapacityBaselineOccupancyFromSegments(
     const FrozenResourceCapacityIndex &index,
-    llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals) {
+    llvm::ArrayRef<llvm::ArrayRef<FrozenResourceCapacityRouteSelection>>
+        routeSegments) {
   struct SelectedClaim final {
     std::size_t cell = 0;
     std::uint64_t amount = 0;
@@ -439,39 +443,48 @@ deriveResourceCapacityBaselineOccupancy(
   usage.reserve(index.cells().size());
   for (const FrozenResourceCapacityCell &cell : index.cells())
     usage.push_back(cell.initialOccupancy);
-  for (const FrozenResourceCapacityRouteSelection &route : routeTraversals) {
-    std::map<std::string, SelectedClaim> selectedClaims;
-    for (std::size_t traversalOrdinal : route.traversalOrdinals) {
-      if (traversalOrdinal >= index.traversals().size())
-        return invalid("route selection names a foreign traversal");
-      for (const FrozenResourceCapacityRouteClaim &claim :
-           index.traversals()[traversalOrdinal].claims) {
-        auto [position, inserted] = selectedClaims.try_emplace(
-            claim.canonicalKey, SelectedClaim{claim.cell, claim.amount});
-        if (!inserted && (position->second.cell != claim.cell ||
-                          position->second.amount != claim.amount))
-          return invalid(
-              "one route claim key has inconsistent capacity demand");
+  for (llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routes :
+       routeSegments)
+    for (const FrozenResourceCapacityRouteSelection &route : routes) {
+      std::map<std::string, SelectedClaim> selectedClaims;
+      for (std::size_t traversalOrdinal : route.traversalOrdinals) {
+        if (traversalOrdinal >= index.traversals().size())
+          return invalid("route selection names a foreign traversal");
+        for (const FrozenResourceCapacityRouteClaim &claim :
+             index.traversals()[traversalOrdinal].claims) {
+          auto [position, inserted] = selectedClaims.try_emplace(
+              claim.canonicalKey, SelectedClaim{claim.cell, claim.amount});
+          if (!inserted && (position->second.cell != claim.cell ||
+                            position->second.amount != claim.amount))
+            return invalid(
+                "one route claim key has inconsistent capacity demand");
+        }
+      }
+      for (const auto &[key, claim] : selectedClaims) {
+        (void)key;
+        if (claim.cell >= usage.size())
+          return invalid("route claim names a foreign capacity cell");
+        if (llvm::Error error = checkedAdd(claim.amount, usage[claim.cell],
+                                           "route capacity usage"))
+          return std::move(error);
       }
     }
-    for (const auto &[key, claim] : selectedClaims) {
-      (void)key;
-      if (claim.cell >= usage.size())
-        return invalid("route claim names a foreign capacity cell");
-      if (llvm::Error error = checkedAdd(claim.amount, usage[claim.cell],
-                                         "route capacity usage"))
-        return std::move(error);
-    }
-  }
   return usage;
 }
 
-llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
+struct ResourceCapacityProjectionWithBaseline final {
+  ResourceCapacityOveruseProjection capacity;
+  std::vector<std::uint64_t> baselineOccupancy;
+};
+
+llvm::Expected<ResourceCapacityProjectionWithBaseline>
+deriveResourceCapacityProjection(
     const FrozenResourceCapacityIndex &index,
     llvm::ArrayRef<FrozenResourceCapacityUseSelection> resourceUses,
-    llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals) {
+    llvm::ArrayRef<llvm::ArrayRef<FrozenResourceCapacityRouteSelection>>
+        routeSegments) {
   auto baseline =
-      deriveResourceCapacityBaselineOccupancy(index, routeTraversals);
+      deriveResourceCapacityBaselineOccupancyFromSegments(index, routeSegments);
   if (!baseline)
     return baseline.takeError();
   std::vector<std::uint64_t> usage = std::move(*baseline);
@@ -573,15 +586,51 @@ llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
                                     result.firstWitness->canonicalOccupancyKey)
       result.firstWitness = std::move(witness);
   }
-  return result;
+  return ResourceCapacityProjectionWithBaseline{std::move(result),
+                                                std::move(usage)};
+}
+
+} // namespace
+
+llvm::Expected<std::vector<std::uint64_t>>
+deriveResourceCapacityBaselineOccupancy(
+    const FrozenResourceCapacityIndex &index,
+    llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals) {
+  const std::array<llvm::ArrayRef<FrozenResourceCapacityRouteSelection>, 1>
+      routeSegments{routeTraversals};
+  return deriveResourceCapacityBaselineOccupancyFromSegments(index,
+                                                             routeSegments);
+}
+
+llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
+    const FrozenResourceCapacityIndex &index,
+    llvm::ArrayRef<FrozenResourceCapacityUseSelection> resourceUses,
+    llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals) {
+  const std::array<llvm::ArrayRef<FrozenResourceCapacityRouteSelection>, 1>
+      routeSegments{routeTraversals};
+  auto projection =
+      deriveResourceCapacityProjection(index, resourceUses, routeSegments);
+  if (!projection)
+    return projection.takeError();
+  return std::move(projection->capacity);
 }
 
 llvm::Expected<ResourcePhysicalDemandProjection> deriveResourcePhysicalDemand(
     const FrozenResourceCapacityIndex &index,
     llvm::ArrayRef<FrozenResourceCapacityUseSelection> resourceUses,
     llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals) {
+  const std::array<llvm::ArrayRef<FrozenResourceCapacityRouteSelection>, 1>
+      routeSegments{routeTraversals};
+  return deriveResourcePhysicalDemand(index, resourceUses, routeSegments);
+}
+
+llvm::Expected<ResourcePhysicalDemandProjection> deriveResourcePhysicalDemand(
+    const FrozenResourceCapacityIndex &index,
+    llvm::ArrayRef<FrozenResourceCapacityUseSelection> resourceUses,
+    llvm::ArrayRef<llvm::ArrayRef<FrozenResourceCapacityRouteSelection>>
+        routeSegments) {
   auto capacity =
-      deriveResourceCapacityOveruse(index, resourceUses, routeTraversals);
+      deriveResourceCapacityProjection(index, resourceUses, routeSegments);
   if (!capacity)
     return capacity.takeError();
 
@@ -603,33 +652,35 @@ llvm::Expected<ResourcePhysicalDemandProjection> deriveResourcePhysicalDemand(
                  static_cast<std::uint64_t>(
                      pattern.timing.minimumInitiationIntervalCycles));
   }
-  for (const FrozenResourceCapacityRouteSelection &route : routeTraversals)
-    for (std::size_t traversal : route.traversalOrdinals) {
-      if (traversal >= index.traversals().size())
-        return invalid("progress route selection names a foreign traversal");
-      const FrozenResourceCapacityTraversal &selected =
-          index.traversals()[traversal];
-      const auto &uses = selected.progressUses;
-      progressUses.insert(progressUses.end(), uses.begin(), uses.end());
-      if (llvm::Error error =
-              checkedAdd(selected.timing.releaseLatencyCycles,
-                         timing.releaseLatencyCycles, "route release latency"))
-        return std::move(error);
-      timing.minimumInitiationIntervalCycles =
-          std::max(timing.minimumInitiationIntervalCycles,
-                   static_cast<std::uint64_t>(
-                       selected.timing.minimumInitiationIntervalCycles));
-      auto bitCycles =
-          checkedMultiply(route.payloadWidthBits,
-                          selected.timing.minimumInitiationIntervalCycles,
-                          "route transport bit-cycle demand");
-      if (!bitCycles)
-        return bitCycles.takeError();
-      if (llvm::Error error =
-              checkedAdd(*bitCycles, timing.transportBitCycleDemand,
-                         "route transport bit-cycle demand"))
-        return std::move(error);
-    }
+  for (llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routes :
+       routeSegments)
+    for (const FrozenResourceCapacityRouteSelection &route : routes)
+      for (std::size_t traversal : route.traversalOrdinals) {
+        if (traversal >= index.traversals().size())
+          return invalid("progress route selection names a foreign traversal");
+        const FrozenResourceCapacityTraversal &selected =
+            index.traversals()[traversal];
+        const auto &uses = selected.progressUses;
+        progressUses.insert(progressUses.end(), uses.begin(), uses.end());
+        if (llvm::Error error = checkedAdd(selected.timing.releaseLatencyCycles,
+                                           timing.releaseLatencyCycles,
+                                           "route release latency"))
+          return std::move(error);
+        timing.minimumInitiationIntervalCycles =
+            std::max(timing.minimumInitiationIntervalCycles,
+                     static_cast<std::uint64_t>(
+                         selected.timing.minimumInitiationIntervalCycles));
+        auto bitCycles =
+            checkedMultiply(route.payloadWidthBits,
+                            selected.timing.minimumInitiationIntervalCycles,
+                            "route transport bit-cycle demand");
+        if (!bitCycles)
+          return bitCycles.takeError();
+        if (llvm::Error error =
+                checkedAdd(*bitCycles, timing.transportBitCycleDemand,
+                           "route transport bit-cycle demand"))
+          return std::move(error);
+      }
   llvm::sort(progressUses, [](const auto &lhs, const auto &rhs) {
     return std::tie(lhs.physicalOwnerKey, lhs.grantPolicy, lhs.requester) <
            std::tie(rhs.physicalOwnerKey, rhs.grantPolicy, rhs.requester);
@@ -642,8 +693,9 @@ llvm::Expected<ResourcePhysicalDemandProjection> deriveResourcePhysicalDemand(
                                           lhs.grantPolicy == rhs.grantPolicy;
                                  }),
                      progressUses.end());
-  return ResourcePhysicalDemandProjection{std::move(*capacity),
-                                          std::move(progressUses), timing};
+  return ResourcePhysicalDemandProjection{
+      std::move(capacity->capacity), std::move(capacity->baselineOccupancy),
+      std::move(progressUses), timing};
 }
 
 namespace {

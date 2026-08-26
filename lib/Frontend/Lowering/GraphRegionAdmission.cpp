@@ -1,6 +1,8 @@
 #include "GraphRegionAdmission.h"
 #include "GraphRegionLowering.h"
+#include "GraphStreamBoundaryLowering.h"
 
+#include "Common/IndexWidth.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
@@ -12,6 +14,7 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/Support/Error.h"
 
 namespace loom::lowering {
 namespace {
@@ -64,6 +67,14 @@ explainGraphRegionStructuralRejectionImpl(mlir::Operation *scope,
                     .str();
     return mlir::WalkResult::interrupt();
   });
+  if (!rejection) {
+    llvm::Expected<unsigned> indexBits = loom::getIndexBitWidth(scope);
+    if (!indexBits)
+      rejection =
+          "loom-lower-graph-memory: " + llvm::toString(indexBits.takeError());
+    else
+      rejection = detail::explainStreamScheduleRejection(scope, *indexBits);
+  }
   return rejection;
 }
 

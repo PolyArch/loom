@@ -1,16 +1,23 @@
 #include "GraphStreamBoundaryLowering.h"
 
-#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Frontend/Lowering/StreamLoopAttrs.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <utility>
 
 namespace {
@@ -23,7 +30,7 @@ using ::loom::lowering::detail::StreamSelectiveRouterMaterialization;
 
 struct StreamChoiceLeg {
   ::mlir::Operation *choice;
-  bool onTrue;
+  unsigned lane;
 };
 
 struct ScheduledStreamEndpoint {
@@ -59,10 +66,9 @@ bool isNestedInParallelRegion(::mlir::Operation *op,
   return false;
 }
 
-bool containsStreamEndpoint(::mlir::Operation *op, ::mlir::Value channel,
-                            bool input) {
-  for (::mlir::Operation *endpoint :
-       ::loom::lowering::detail::collectStreamEndpoints(channel, input))
+bool containsStreamEndpoint(::mlir::Operation *op,
+                            ::llvm::ArrayRef<::mlir::Operation *> endpoints) {
+  for (::mlir::Operation *endpoint : endpoints)
     for (::mlir::Operation *current = endpoint; current;
          current = current->getParentOp())
       if (current == op)
@@ -128,12 +134,13 @@ void collectScheduledEndpoints(
     return;
   }
   if (schedule.kind == StreamScheduleNode::Kind::Choice) {
-    assert(schedule.children.size() == 2 &&
-           "stream choice must have false and true paths");
-    path.push_back({schedule.choice, false});
-    collectScheduledEndpoints(*schedule.children[0], path, endpoints);
-    path.back().onTrue = true;
-    collectScheduledEndpoints(*schedule.children[1], path, endpoints);
+    assert(schedule.children.size() > 1 &&
+           "stream choice must have multiple paths");
+    path.push_back({schedule.choice, 0});
+    for (auto [lane, child] : ::llvm::enumerate(schedule.children)) {
+      path.back().lane = lane;
+      collectScheduledEndpoints(*child, path, endpoints);
+    }
     path.pop_back();
     return;
   }
@@ -150,6 +157,22 @@ void collectScheduledEndpoints(
     collectScheduledEndpoints(*child, path, endpoints);
 }
 
+::mlir::Value choiceConstant(::mlir::Value control, ::mlir::Type type,
+                             int64_t value, ::mlir::Location loc,
+                             ::mlir::OpBuilder &builder,
+                             ::mlir::Operation *anchor) {
+  setInsertionPoint(builder, anchor);
+  if (::llvm::isa<::mlir::IndexType>(type))
+    return ::dataflow::ConstantOp::create(builder, loc, type, control,
+                                          builder.getIndexAttr(value))
+        .getValue();
+  assert(::llvm::isa<::mlir::IntegerType>(type) &&
+         "structured choice selector must be integer-like");
+  return ::dataflow::ConstantOp::create(builder, loc, type, control,
+                                        builder.getIntegerAttr(type, value))
+      .getValue();
+}
+
 ::mlir::Value
 materializeEndpointActivity(const ScheduledStreamEndpoint &endpoint,
                             ::mlir::Value event, ::mlir::OpBuilder &builder,
@@ -159,20 +182,72 @@ materializeEndpointActivity(const ScheduledStreamEndpoint &endpoint,
   ::mlir::Location loc = endpoint.endpoint->getLoc();
   ::mlir::Value active = scheduleConstant(event, i1, 1, loc, builder, anchor);
   for (const StreamChoiceLeg &leg : ::llvm::reverse(endpoint.path)) {
-    ::mlir::Value condition =
-        ::mlir::cast<::mlir::scf::IfOp>(leg.choice).getCondition();
+    if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(leg.choice)) {
+      setInsertionPoint(builder, anchor);
+      auto synchronized = ::dataflow::SyncOp::create(
+          builder, loc, ::mlir::TypeRange{i1, builder.getNoneType()},
+          ::mlir::ValueRange{ifOp.getCondition(), event});
+      ::mlir::Value condition = synchronized.getOutputs()[0];
+      event = synchronized.getOutputs()[1];
+      ::mlir::Value inactive =
+          scheduleConstant(event, i1, 0, loc, builder, anchor);
+      active = leg.lane == 1
+                   ? mux(condition, ::mlir::ValueRange{inactive, active}, loc,
+                         builder, anchor)
+                   : mux(condition, ::mlir::ValueRange{active, inactive}, loc,
+                         builder, anchor);
+      materialization.choiceSelectorUses.push_back(
+          {leg.choice, synchronized.getOperation()});
+      continue;
+    }
+
+    auto switchOp = ::mlir::cast<::mlir::scf::IndexSwitchOp>(leg.choice);
+    ::mlir::Value selector = switchOp.getArg();
+    if (switchOp.getNumCases() == 1) {
+      ::mlir::Value caseValue =
+          choiceConstant(event, selector.getType(), switchOp.getCases().front(),
+                         loc, builder, anchor);
+      setInsertionPoint(builder, anchor);
+      ::mlir::Value condition =
+          ::mlir::arith::CmpIOp::create(builder, loc,
+                                        ::mlir::arith::CmpIPredicate::eq,
+                                        selector, caseValue)
+              .getResult();
+      auto synchronized = ::dataflow::SyncOp::create(
+          builder, loc, ::mlir::TypeRange{i1, builder.getNoneType()},
+          ::mlir::ValueRange{condition, event});
+      condition = synchronized.getOutputs()[0];
+      event = synchronized.getOutputs()[1];
+      ::mlir::Value inactive =
+          scheduleConstant(event, i1, 0, loc, builder, anchor);
+      active = leg.lane == 1
+                   ? mux(condition, ::mlir::ValueRange{inactive, active}, loc,
+                         builder, anchor)
+                   : mux(condition, ::mlir::ValueRange{active, inactive}, loc,
+                         builder, anchor);
+      materialization.choiceSelectorUses.push_back(
+          {leg.choice, synchronized.getOperation()});
+      continue;
+    }
+
     setInsertionPoint(builder, anchor);
     auto synchronized = ::dataflow::SyncOp::create(
-        builder, loc, ::mlir::TypeRange{i1, builder.getNoneType()},
-        ::mlir::ValueRange{condition, event});
-    condition = synchronized.getOutputs()[0];
+        builder, loc,
+        ::mlir::TypeRange{selector.getType(), builder.getNoneType()},
+        ::mlir::ValueRange{selector, event});
+    selector = synchronized.getOutputs()[0];
     event = synchronized.getOutputs()[1];
+    ::mlir::Value lane = choiceConstant(event, selector.getType(), leg.lane,
+                                        loc, builder, anchor);
+    setInsertionPoint(builder, anchor);
+    ::mlir::Value selected =
+        ::mlir::arith::CmpIOp::create(
+            builder, loc, ::mlir::arith::CmpIPredicate::eq, selector, lane)
+            .getResult();
     ::mlir::Value inactive =
         scheduleConstant(event, i1, 0, loc, builder, anchor);
-    active = leg.onTrue ? mux(condition, ::mlir::ValueRange{inactive, active},
-                              loc, builder, anchor)
-                        : mux(condition, ::mlir::ValueRange{active, inactive},
-                              loc, builder, anchor);
+    active = mux(selected, ::mlir::ValueRange{inactive, active}, loc, builder,
+                 anchor);
     materialization.choiceSelectorUses.push_back(
         {leg.choice, synchronized.getOperation()});
   }
@@ -194,36 +269,115 @@ materializeEndpointActivity(const ScheduledStreamEndpoint &endpoint,
   return active;
 }
 
+bool containsRepeat(const StreamScheduleNode &schedule);
+bool containsChoice(const StreamScheduleNode &schedule);
+
+bool blockEncloses(::mlir::Block *outer, ::mlir::Block *inner) {
+  if (outer == inner)
+    return true;
+  for (::mlir::Operation *parent = inner->getParentOp(); parent;
+       parent = parent->getParentOp())
+    if (parent->getBlock() == outer)
+      return true;
+  return false;
+}
+
+bool isAvailableAtScheduleActivation(
+    ::mlir::Value value, ::mlir::Block *scope,
+    ::llvm::DenseMap<::mlir::Value, bool> &known,
+    ::llvm::DenseSet<::mlir::Value> &visiting) {
+  if (auto found = known.find(value); found != known.end())
+    return found->second;
+  if (!visiting.insert(value).second)
+    return false;
+
+  bool available = false;
+  if (auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(value)) {
+    available = blockEncloses(argument.getOwner(), scope);
+  } else if (::mlir::Operation *definition = value.getDefiningOp()) {
+    available =
+        !::llvm::isa<::dataflow::ChannelReceiveOp>(definition) &&
+        definition->getNumRegions() == 0 &&
+        definition->getNumSuccessors() == 0 &&
+        ::mlir::isMemoryEffectFree(definition) &&
+        ::llvm::all_of(definition->getOperands(), [&](::mlir::Value operand) {
+          return isAvailableAtScheduleActivation(operand, scope, known,
+                                                 visiting);
+        });
+  }
+
+  visiting.erase(value);
+  known.try_emplace(value, available);
+  return available;
+}
+
+bool repeatDomainIsAvailableAtScheduleActivation(::mlir::scf::ForOp loop,
+                                                 ::mlir::Block *scope) {
+  ::llvm::DenseMap<::mlir::Value, bool> known;
+  ::llvm::DenseSet<::mlir::Value> visiting;
+  return ::llvm::all_of(
+      ::mlir::ValueRange{loop.getLowerBound(), loop.getUpperBound(),
+                         loop.getStep()},
+      [&](::mlir::Value value) {
+        return isAvailableAtScheduleActivation(value, scope, known, visiting);
+      });
+}
+
+::mlir::LogicalResult rejectStreamSchedule(::mlir::Operation *operation,
+                                           ::llvm::StringRef message,
+                                           std::string *rejection) {
+  if (rejection) {
+    *rejection = message.str();
+    return ::mlir::failure();
+  }
+  return operation->emitError(message);
+}
+
 ::mlir::LogicalResult
-buildStreamSchedule(::mlir::Block &block, ::mlir::Value channel, bool input,
+buildStreamSchedule(::mlir::Block &block,
+                    ::llvm::ArrayRef<::mlir::Operation *> endpoints,
                     std::unique_ptr<StreamScheduleNode> &schedule,
-                    ::llvm::ArrayRef<::mlir::scf::ForOp> repetitions = {}) {
+                    ::mlir::Block *activationScope,
+                    ::llvm::ArrayRef<::mlir::scf::ForOp> repetitions = {},
+                    std::string *rejection = nullptr) {
   std::vector<std::unique_ptr<StreamScheduleNode>> children;
   unsigned siteCount = 0;
   for (::mlir::Operation &op : block.without_terminator()) {
-    if (isStreamEndpoint(&op, channel, input)) {
+    if (::llvm::is_contained(endpoints, &op)) {
       children.push_back(makeEndpointSchedule(&op));
       ++siteCount;
       continue;
     }
 
     auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(&op);
-    if (ifOp && containsStreamEndpoint(&op, channel, input)) {
+    if (ifOp && containsStreamEndpoint(&op, endpoints)) {
       std::unique_ptr<StreamScheduleNode> falseSchedule;
       std::unique_ptr<StreamScheduleNode> trueSchedule;
-      if (::mlir::failed(buildStreamSchedule(ifOp.getThenRegion().front(),
-                                             channel, input, trueSchedule,
-                                             repetitions)))
+      if (::mlir::failed(buildStreamSchedule(
+              ifOp.getThenRegion().front(), endpoints, trueSchedule,
+              activationScope, repetitions, rejection)))
         return ::mlir::failure();
       if (!ifOp.getElseRegion().empty() &&
-          ::mlir::failed(buildStreamSchedule(ifOp.getElseRegion().front(),
-                                             channel, input, falseSchedule,
-                                             repetitions)))
+          ::mlir::failed(buildStreamSchedule(
+              ifOp.getElseRegion().front(), endpoints, falseSchedule,
+              activationScope, repetitions, rejection)))
         return ::mlir::failure();
       if (!falseSchedule)
         falseSchedule = makeEmptySchedule(ifOp.getLoc());
       if (!trueSchedule)
         trueSchedule = makeEmptySchedule(ifOp.getLoc());
+      if (containsChoice(*falseSchedule) || containsChoice(*trueSchedule))
+        return rejectStreamSchedule(
+            ifOp,
+            "loom-lower-graph-memory: nested stream choices require a "
+            "hierarchical conditional-event projection",
+            rejection);
+      if (containsRepeat(*falseSchedule) || containsRepeat(*trueSchedule))
+        return rejectStreamSchedule(
+            ifOp,
+            "loom-lower-graph-memory: conditional stream repetition "
+            "requires a conditional event-count projection",
+            rejection);
 
       auto choice = std::make_unique<StreamScheduleNode>(
           StreamScheduleNode::Kind::Choice, ifOp.getLoc());
@@ -236,29 +390,85 @@ buildStreamSchedule(::mlir::Block &block, ::mlir::Value channel, bool input,
       continue;
     }
 
+    auto switchOp = ::llvm::dyn_cast<::mlir::scf::IndexSwitchOp>(&op);
+    if (switchOp && containsStreamEndpoint(&op, endpoints)) {
+      if (switchOp.getNumCases() == 0)
+        return rejectStreamSchedule(
+            switchOp,
+            "loom-lower-graph-memory: zero-case scf.index_switch has no "
+            "multi-lane stream event projection",
+            rejection);
+      auto choice = std::make_unique<StreamScheduleNode>(
+          StreamScheduleNode::Kind::Choice, switchOp.getLoc());
+      choice->choice = switchOp;
+      auto appendRegion = [&](::mlir::Region &region) -> ::mlir::LogicalResult {
+        std::unique_ptr<StreamScheduleNode> child;
+        if (::mlir::failed(buildStreamSchedule(region.front(), endpoints, child,
+                                               activationScope, repetitions,
+                                               rejection)))
+          return ::mlir::failure();
+        if (!child)
+          child = makeEmptySchedule(switchOp.getLoc());
+        if (containsChoice(*child))
+          return rejectStreamSchedule(
+              switchOp,
+              "loom-lower-graph-memory: nested stream choices require a "
+              "hierarchical conditional-event projection",
+              rejection);
+        if (containsRepeat(*child))
+          return rejectStreamSchedule(
+              switchOp,
+              "loom-lower-graph-memory: conditional stream repetition "
+              "requires a conditional event-count projection",
+              rejection);
+        choice->siteCount += child->siteCount;
+        choice->children.push_back(std::move(child));
+        return ::mlir::success();
+      };
+      if (::mlir::failed(appendRegion(switchOp.getDefaultRegion())))
+        return ::mlir::failure();
+      for (::mlir::Region &region : switchOp.getCaseRegions())
+        if (::mlir::failed(appendRegion(region)))
+          return ::mlir::failure();
+      siteCount += choice->siteCount;
+      children.push_back(std::move(choice));
+      continue;
+    }
+
     auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(&op);
-    if (forOp && containsStreamEndpoint(&op, channel, input)) {
+    if (forOp && containsStreamEndpoint(&op, endpoints)) {
       auto stepKind = ::loom::lowering::inferStreamStepKind(forOp);
       auto predicate = ::loom::lowering::inferStreamPredicate(forOp);
       if (::mlir::failed(stepKind) || ::mlir::failed(predicate) ||
           *stepKind != ::dataflow::StreamStepKind::Add ||
           *predicate != ::mlir::arith::CmpIPredicate::slt)
-        return forOp.emitError(
+        return rejectStreamSchedule(
+            forOp,
             "loom-lower-graph-memory: cross-scope stream repetition requires "
-            "an additive increasing scf.for domain");
+            "an additive increasing scf.for domain",
+            rejection);
       for (::mlir::scf::ForOp repetition : repetitions)
         if (!repetition.isDefinedOutsideOfLoop(forOp.getLowerBound()) ||
             !repetition.isDefinedOutsideOfLoop(forOp.getUpperBound()) ||
             !repetition.isDefinedOutsideOfLoop(forOp.getStep()))
-          return forOp.emitError(
+          return rejectStreamSchedule(
+              forOp,
               "loom-lower-graph-memory: nested cross-scope stream repetition "
-              "requires a loop-invariant inner domain");
+              "requires a loop-invariant inner domain",
+              rejection);
+      if (!repeatDomainIsAvailableAtScheduleActivation(forOp, activationScope))
+        return rejectStreamSchedule(
+            forOp,
+            "loom-lower-graph-memory: cross-scope stream repetition domain "
+            "is not available at schedule activation",
+            rejection);
 
       std::unique_ptr<StreamScheduleNode> bodySchedule;
       ::llvm::SmallVector<::mlir::scf::ForOp, 4> nested(repetitions);
       nested.push_back(forOp);
-      if (::mlir::failed(buildStreamSchedule(forOp.getRegion().front(), channel,
-                                             input, bodySchedule, nested)))
+      if (::mlir::failed(buildStreamSchedule(
+              forOp.getRegion().front(), endpoints, bodySchedule,
+              activationScope, nested, rejection)))
         return ::mlir::failure();
       auto repeat = std::make_unique<StreamScheduleNode>(
           StreamScheduleNode::Kind::Repeat, forOp.getLoc());
@@ -271,15 +481,19 @@ buildStreamSchedule(::mlir::Block &block, ::mlir::Value channel, bool input,
     }
 
     if (::llvm::isa<::mlir::scf::WhileOp>(&op) &&
-        containsStreamEndpoint(&op, channel, input))
-      return op.emitError(
+        containsStreamEndpoint(&op, endpoints))
+      return rejectStreamSchedule(
+          &op,
           "loom-lower-graph-memory: cross-scope stream repetition through "
-          "scf.while requires an online ordered event transfer");
+          "scf.while requires an online ordered event transfer",
+          rejection);
 
-    if (containsStreamEndpoint(&op, channel, input))
-      return op.emitError(
+    if (containsStreamEndpoint(&op, endpoints))
+      return rejectStreamSchedule(
+          &op,
           "loom-lower-graph-memory: multiple stream endpoint sites must "
-          "share one structured sequential or mutually exclusive scope");
+          "share one structured sequential or mutually exclusive scope",
+          rejection);
   }
 
   if (children.empty()) {
@@ -306,15 +520,112 @@ bool containsRepeat(const StreamScheduleNode &schedule) {
   });
 }
 
+bool containsChoice(const StreamScheduleNode &schedule) {
+  if (schedule.kind == StreamScheduleNode::Kind::Choice)
+    return true;
+  return ::llvm::any_of(schedule.children, [](const auto &child) {
+    return containsChoice(*child);
+  });
+}
+
+::llvm::APInt narrowToActiveBits(::llvm::APInt value) {
+  return value.zextOrTrunc(std::max(1U, value.getActiveBits()));
+}
+
+std::optional<::llvm::APInt>
+maximumScheduleEventCount(const StreamScheduleNode &schedule,
+                          unsigned indexBits) {
+  switch (schedule.kind) {
+  case StreamScheduleNode::Kind::Empty:
+    return ::llvm::APInt(1, 0);
+  case StreamScheduleNode::Kind::Endpoint:
+    return ::llvm::APInt(1, 1);
+  case StreamScheduleNode::Kind::Sequence:
+  case StreamScheduleNode::Kind::Choice: {
+    ::llvm::APInt total(1, 0);
+    for (const auto &child : schedule.children) {
+      std::optional<::llvm::APInt> childCount =
+          maximumScheduleEventCount(*child, indexBits);
+      if (!childCount)
+        return std::nullopt;
+      if (childCount->isZero())
+        continue;
+      if (total.isZero()) {
+        total = *childCount;
+        continue;
+      }
+      unsigned activeBits =
+          std::max(total.getActiveBits(), childCount->getActiveBits());
+      unsigned width = std::min(::mlir::IntegerType::kMaxWidth, activeBits + 1);
+      bool overflow = false;
+      ::llvm::APInt sum = total.zextOrTrunc(width).uadd_ov(
+          childCount->zextOrTrunc(width), overflow);
+      if (overflow)
+        return std::nullopt;
+      total = narrowToActiveBits(std::move(sum));
+    }
+    return total;
+  }
+  case StreamScheduleNode::Kind::Repeat: {
+    assert(schedule.children.size() == 1 && "stream repeat must have one body");
+    auto loop = ::llvm::cast<::mlir::scf::ForOp>(schedule.repeat);
+    unsigned domainBits = indexBits;
+    if (auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(
+            loop.getLowerBound().getType()))
+      domainBits = integer.getWidth();
+    else
+      assert(::llvm::isa<::mlir::IndexType>(loop.getLowerBound().getType()) &&
+             "scf.for stream schedule domain must be integer-like");
+
+    std::optional<::llvm::APInt> childCount =
+        maximumScheduleEventCount(*schedule.children.front(), indexBits);
+    if (!childCount)
+      return std::nullopt;
+    if (childCount->isZero())
+      return ::llvm::APInt(1, 0);
+    if (childCount->isOne())
+      return ::llvm::APInt::getAllOnes(domainBits);
+    unsigned childBits = std::max(1U, childCount->getActiveBits());
+    unsigned width = domainBits > ::mlir::IntegerType::kMaxWidth - childBits
+                         ? ::mlir::IntegerType::kMaxWidth
+                         : domainBits + childBits;
+    ::llvm::APInt maximumIterations =
+        ::llvm::APInt::getAllOnes(domainBits).zextOrTrunc(width);
+    bool overflow = false;
+    ::llvm::APInt product =
+        maximumIterations.umul_ov(childCount->zextOrTrunc(width), overflow);
+    if (overflow)
+      return std::nullopt;
+    return narrowToActiveBits(std::move(product));
+  }
+  }
+  llvm_unreachable("unknown stream schedule node kind");
+}
+
+std::optional<unsigned>
+requiredScheduleRecurrenceBits(const StreamScheduleNode &schedule,
+                               unsigned indexBits) {
+  std::optional<::llvm::APInt> maximum =
+      maximumScheduleEventCount(schedule, indexBits);
+  if (!maximum)
+    return std::nullopt;
+  unsigned required =
+      std::max(indexBits, std::max(1U, maximum->getActiveBits()));
+  if (required > ::mlir::IntegerType::kMaxWidth)
+    return std::nullopt;
+  return required;
+}
+
 class ScheduleNetworkBuilder {
 public:
   ScheduleNetworkBuilder(const StreamScheduleNode &schedule,
                          ::mlir::Value execution, ::mlir::OpBuilder &builder,
                          ::mlir::Operation *anchor,
-                         ::llvm::ArrayRef<ScheduledStreamEndpoint> endpoints)
+                         ::llvm::ArrayRef<ScheduledStreamEndpoint> endpoints,
+                         unsigned recurrenceBits)
       : execution(execution), builder(builder), anchor(anchor),
-        recurrenceType(::mlir::IntegerType::get(builder.getContext(),
-                                                ::loom::getIndexWidth())) {
+        recurrenceType(
+            ::mlir::IntegerType::get(builder.getContext(), recurrenceBits)) {
     for (auto [lane, endpoint] : ::llvm::enumerate(endpoints))
       laneByEndpoint.try_emplace(endpoint.endpoint, lane);
     (void)count(schedule);
@@ -477,11 +788,16 @@ private:
   ::mlir::Value castToRecurrence(::mlir::Value value, ::mlir::Location loc) {
     if (value.getType() == recurrenceType)
       return value;
-    assert(::llvm::isa<::mlir::IndexType>(value.getType()) &&
-           "scf.for schedule domains must use index values");
     setInsertionPoint(builder, anchor);
-    return ::mlir::arith::IndexCastOp::create(builder, loc, recurrenceType,
-                                              value)
+    if (::llvm::isa<::mlir::IndexType>(value.getType()))
+      return ::mlir::arith::IndexCastOp::create(builder, loc, recurrenceType,
+                                                value)
+          .getResult();
+    assert(::llvm::isa<::mlir::IntegerType>(value.getType()) &&
+           ::llvm::cast<::mlir::IntegerType>(value.getType()).getWidth() <
+               recurrenceType.getWidth() &&
+           "stream schedule recurrence must hold its source domain");
+    return ::mlir::arith::ExtSIOp::create(builder, loc, recurrenceType, value)
         .getResult();
   }
 
@@ -667,6 +983,56 @@ void routeStreamInputNode(const StreamSelectiveRouter &router, unsigned count,
              anchor);
 }
 
+::mlir::FailureOr<std::unique_ptr<StreamBindingPlan>>
+analyzeStreamEndpoints(::llvm::ArrayRef<::mlir::Operation *> endpoints,
+                       unsigned indexBits, std::string *rejection = nullptr) {
+  assert(!endpoints.empty() &&
+         "stream analysis requires at least one endpoint");
+
+  ::llvm::SmallVector<::mlir::Block *, 4> candidateScopes;
+  for (::mlir::Block *scope = endpoints.front()->getBlock(); scope;) {
+    candidateScopes.push_back(scope);
+    ::mlir::Operation *parent = scope->getParentOp();
+    scope = parent ? parent->getBlock() : nullptr;
+  }
+
+  ::mlir::Block *scope = nullptr;
+  for (::mlir::Block *candidate : candidateScopes)
+    if (::llvm::all_of(endpoints, [&](::mlir::Operation *endpoint) {
+          return isNestedWithinBlock(endpoint, candidate);
+        })) {
+      scope = candidate;
+      break;
+    }
+  assert(scope && "stream endpoints must share an enclosing block");
+  while (::llvm::isa_and_nonnull<::mlir::scf::IfOp>(scope->getParentOp()))
+    scope = scope->getParentOp()->getBlock();
+
+  auto plan = std::make_unique<StreamBindingPlan>();
+  plan->scope = scope;
+  if (::mlir::failed(buildStreamSchedule(*scope, endpoints, plan->schedule,
+                                         scope, {}, rejection)))
+    return ::mlir::failure();
+  assert(plan->schedule && "common stream scope must contain every endpoint");
+  assert(plan->schedule->siteCount == endpoints.size() &&
+         "stream schedule must own every endpoint exactly once");
+  std::optional<unsigned> recurrenceBits =
+      requiredScheduleRecurrenceBits(*plan->schedule, indexBits);
+  if (!recurrenceBits) {
+    ::mlir::Operation *owner = scope->getParentOp();
+    if (!owner)
+      owner = endpoints.front();
+    if (::mlir::failed(rejectStreamSchedule(
+            owner,
+            "loom-lower-graph-memory: stream event cardinality has no exact "
+            "fixed-width representation",
+            rejection)))
+      return ::mlir::failure();
+  }
+  plan->recurrenceBits = *recurrenceBits;
+  return plan;
+}
+
 } // namespace
 
 namespace loom {
@@ -736,45 +1102,51 @@ collectStreamEndpoints(::mlir::Value channel, bool input) {
 }
 
 ::mlir::FailureOr<std::unique_ptr<StreamBindingPlan>>
-analyzeStreamBinding(::mlir::Value channel, bool input) {
+analyzeStreamBinding(::mlir::Value channel, bool input, unsigned indexBits) {
   ::llvm::SmallVector<::mlir::Operation *, 4> endpoints =
       collectStreamEndpoints(channel, input);
-  assert(!endpoints.empty() &&
-         "stream analysis requires at least one endpoint");
+  return analyzeStreamEndpoints(endpoints, indexBits);
+}
 
-  ::llvm::SmallVector<::mlir::Block *, 4> candidateScopes;
-  for (::mlir::Block *scope = endpoints.front()->getBlock(); scope;) {
-    candidateScopes.push_back(scope);
-    ::mlir::Operation *parent = scope->getParentOp();
-    scope = parent ? parent->getBlock() : nullptr;
-  }
+std::optional<std::string>
+explainStreamScheduleRejection(::mlir::Operation *scope, unsigned indexBits) {
+  ::llvm::MapVector<::mlir::Value, ::llvm::SmallVector<::mlir::Operation *, 4>>
+      receives;
+  ::llvm::MapVector<::mlir::Value, ::llvm::SmallVector<::mlir::Operation *, 4>>
+      sends;
+  scope->walk([&](::mlir::Operation *operation) {
+    if (operation != scope &&
+        ::llvm::isa<::mlir::FunctionOpInterface>(operation))
+      return ::mlir::WalkResult::skip();
+    if (auto receive =
+            ::llvm::dyn_cast<::dataflow::ChannelReceiveOp>(operation))
+      receives[receive.getChannel()].push_back(operation);
+    else if (auto send = ::llvm::dyn_cast<::dataflow::ChannelSendOp>(operation))
+      sends[send.getChannel()].push_back(operation);
+    return ::mlir::WalkResult::advance();
+  });
 
-  ::mlir::Block *scope = nullptr;
-  for (::mlir::Block *candidate : candidateScopes)
-    if (::llvm::all_of(endpoints, [&](::mlir::Operation *endpoint) {
-          return isNestedWithinBlock(endpoint, candidate);
-        })) {
-      scope = candidate;
-      break;
+  auto explain = [indexBits](auto &bindings) -> std::optional<std::string> {
+    for (auto &binding : bindings) {
+      std::string rejection;
+      if (::mlir::failed(
+              analyzeStreamEndpoints(binding.second, indexBits, &rejection))) {
+        if (rejection.empty())
+          rejection = "stream endpoints have no ordered event projection";
+        return rejection;
+      }
     }
-  assert(scope && "stream endpoints must share their graph entry block");
-  while (::llvm::isa_and_nonnull<::mlir::scf::IfOp>(scope->getParentOp()))
-    scope = scope->getParentOp()->getBlock();
-
-  auto plan = std::make_unique<StreamBindingPlan>();
-  plan->scope = scope;
-  if (::mlir::failed(
-          buildStreamSchedule(*scope, channel, input, plan->schedule)))
-    return ::mlir::failure();
-  assert(plan->schedule && "common stream scope must contain every endpoint");
-  assert(plan->schedule->siteCount == endpoints.size() &&
-         "stream schedule must own every endpoint exactly once");
-  return plan;
+    return std::nullopt;
+  };
+  if (std::optional<std::string> rejection = explain(receives))
+    return rejection;
+  return explain(sends);
 }
 
 ::mlir::LogicalResult
 checkStreamBoundaryUses(::dataflow::GraphOp graph,
-                        const StreamBoundaryInfo &boundary) {
+                        const StreamBoundaryInfo &boundary,
+                        unsigned indexBits) {
   auto checkBinding = [&](::mlir::BlockArgument channel,
                           bool input) -> ::mlir::LogicalResult {
     unsigned endpointCount = 0;
@@ -799,7 +1171,7 @@ checkStreamBoundaryUses(::dataflow::GraphOp graph,
                                << " binding requires at least one static "
                                << (input ? "receive" : "send")
                                << " site for mechanical publication";
-    if (::mlir::failed(analyzeStreamBinding(channel, input)))
+    if (::mlir::failed(analyzeStreamBinding(channel, input, indexBits)))
       return ::mlir::failure();
     return ::mlir::success();
   };
@@ -815,7 +1187,8 @@ checkStreamBoundaryUses(::dataflow::GraphOp graph,
 
 StreamScheduleMaterialization
 materializeStreamSchedule(const StreamScheduleNode &schedule,
-                          ::mlir::Value execution, ::mlir::OpBuilder &builder,
+                          unsigned recurrenceBits, ::mlir::Value execution,
+                          ::mlir::OpBuilder &builder,
                           ::mlir::Operation *anchor) {
   StreamScheduleMaterialization result;
   ::llvm::SmallVector<StreamChoiceLeg, 4> path;
@@ -835,9 +1208,9 @@ materializeStreamSchedule(const StreamScheduleNode &schedule,
   std::unique_ptr<ScheduleNetworkBuilder> network;
   if (repeated)
     network = std::make_unique<ScheduleNetworkBuilder>(
-        schedule, execution, builder, anchor, endpoints);
+        schedule, execution, builder, anchor, endpoints, recurrenceBits);
   auto recurrenceType =
-      ::mlir::IntegerType::get(builder.getContext(), ::loom::getIndexWidth());
+      ::mlir::IntegerType::get(builder.getContext(), recurrenceBits);
   ::mlir::Value init = scheduleConstant(execution, recurrenceType, 0,
                                         schedule.loc, builder, anchor);
   ::mlir::Value limit =
@@ -849,7 +1222,7 @@ materializeStreamSchedule(const StreamScheduleNode &schedule,
   setInsertionPoint(builder, anchor);
   auto stream = ::dataflow::StreamOp::create(
       builder, schedule.loc, recurrenceType, builder.getI1Type(), init, limit,
-      step, ::dataflow::StreamStepKind::Add, ::mlir::arith::CmpIPredicate::slt);
+      step, ::dataflow::StreamStepKind::Add, ::mlir::arith::CmpIPredicate::ult);
   auto activations = ::dataflow::InvariantOp::create(
       builder, schedule.loc, builder.getNoneType(), stream.getPhase(),
       execution);

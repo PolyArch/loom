@@ -16,6 +16,10 @@ import tempfile
 
 
 REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
+
 CONFIG_SCRIPT = REPOSITORY_ROOT / "runtime" / "gem5" / "configure_loom_system.py"
 M5OP_SOURCE = REPOSITORY_ROOT / "externals" / "gem5" / "util" / "m5" / "src" / "abi" / "riscv" / "m5op.S"
 M5_INCLUDE = REPOSITORY_ROOT / "externals" / "gem5" / "include"
@@ -31,6 +35,7 @@ RESULT_HEADER = struct.Struct(">4sIQQQ")
 RESULT_COLLECTION_HEADER = struct.Struct(">4sQ")
 SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQQ")
 INVOCATION_RESULT_HEADER = struct.Struct("<4sQQQQ32s")
+ROOT_LIFECYCLE_RECORD = struct.Struct(">QQIQQ")
 MEMORY_REQUEST_HEADER = struct.Struct(">IQQQQ")
 MEMORY_RESPONSE_HEADER = struct.Struct(">QIQ")
 COMPLETION_HEADER = struct.Struct(">QIQ")
@@ -59,6 +64,7 @@ STACK_STRIDE = 0x00010000
 EXPECTED_VALUE = 0x1122334455667788
 EXPECTED_SYSTEM_MEMORY = 0x8877665544332211
 ACC_CORE_OCCURRENCE_KIND = 9
+ROOT_THREAD_ENTITY = 17
 
 
 def acc_core_reference(entity_id: int) -> str:
@@ -126,6 +132,18 @@ loom_host_entry:
   addi s4, s4, 1
   j 4b
 6:
+  li t0, {ROOT_THREAD_ENTITY}
+  sw t0, 40(s0)
+  sw zero, 44(s0)
+  sw zero, 52(s0)
+  sw zero, 56(s0)
+  fence iorw, iorw
+  sw zero, 48(s0)
+  lwu s5, 52(s0)
+  lwu t0, 56(s0)
+  slli t0, t0, 32
+  or s5, s5, t0
+  beqz s5, 3f
   li s4, 0
 7:
   bgeu s4, s3, 5f
@@ -141,6 +159,15 @@ loom_host_entry:
   addi s4, s4, 1
   j 7b
 5:
+  li t0, {ROOT_THREAD_ENTITY}
+  sw t0, 40(s0)
+  sw zero, 44(s0)
+  sw s5, 52(s0)
+  srli t0, s5, 32
+  sw t0, 56(s0)
+  li t0, 1
+  fence iorw, iorw
+  sw t0, 48(s0)
   li t2, {EXTERNAL_VALUE_ADDRESS}
   ld t3, 0(t2)
   li t4, {EXPECTED_VALUE}
@@ -499,6 +526,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             root / f"spatial-result-{ordinal}.bin" for ordinal in range(2)
         ]
         system_result_path = root / "system-result.json"
+        root_lifecycle_path = root / "system-root-lifecycle.result"
         engine_trace_paths = [
             root / f"engine-trace-{ordinal}.json" for ordinal in range(2)
         ]
@@ -560,7 +588,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             )
         engine_commands = [engine_command, []]
         projection = {
-            "schema": "loom.gem5_system_projection.10",
+            "schema": "loom.gem5_system_projection.11",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
             "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns"},
@@ -595,6 +623,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 "pio_latency": "10ns",
                 "stack_base": STACK_BASE,
                 "stack_stride": STACK_STRIDE,
+                "root_event_trace_path": str(root_lifecycle_path),
                 "targets": [
                     {
                         "cpu_id": 1,
@@ -685,7 +714,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 text=True,
                 stdout=gem5_log,
                 stderr=subprocess.STDOUT,
-                timeout=60,
+                timeout=timeout_seconds(Tier.XLONG),
             )
         if completed.returncode != 0:
             sys.stderr.write(gem5_log_path.read_text(encoding="utf-8"))
@@ -695,7 +724,36 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         if system_result["schema"] != "loom.gem5_system_attempt.1":
             raise RuntimeError("gem5 system result has the wrong schema")
         if "m5_exit instruction encountered" not in system_result["cause"]:
-            raise RuntimeError(f"guest did not retire normally: {system_result['cause']}")
+            retained_root = root.with_name(root.name + "-failed")
+            root.replace(retained_root)
+            raise RuntimeError(
+                "guest did not retire normally: "
+                f"{system_result['cause']}; artifacts: {retained_root}"
+            )
+        lifecycle_bytes = root_lifecycle_path.read_bytes()
+        if not lifecycle_bytes.startswith(b"LRE1") or (
+            len(lifecycle_bytes) - 4
+        ) % ROOT_LIFECYCLE_RECORD.size:
+            raise RuntimeError("root lifecycle trace is not structurally canonical")
+        lifecycle = [
+            ROOT_LIFECYCLE_RECORD.unpack_from(lifecycle_bytes, offset)
+            for offset in range(4, len(lifecycle_bytes), ROOT_LIFECYCLE_RECORD.size)
+        ]
+        if len(lifecycle) != 2:
+            raise RuntimeError("root lifecycle trace does not contain one occurrence")
+        start, completion = lifecycle
+        if (
+            start[0] != ROOT_THREAD_ENTITY
+            or completion[0] != ROOT_THREAD_ENTITY
+            or start[1] == 0
+            or completion[1] != start[1]
+            or start[2] != 0
+            or completion[2] != 1
+            or (start[3], start[4]) >= (completion[3], completion[4])
+            or start[3] < system_result["entry_tick"]
+            or completion[3] > system_result["exit_tick"]
+        ):
+            raise RuntimeError("root lifecycle trace disagrees with the Host boundary")
         completion_ticks = []
         for ordinal, (bridge_result_path, engine_trace_path) in enumerate(
             zip(bridge_result_paths, engine_trace_paths, strict=True)
@@ -738,6 +796,8 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         )
         if memory_observation_path.read_bytes() != expected_observation:
             raise RuntimeError("System memory observation differs from the guest write")
+        if completion[3] < max(completion_ticks):
+            raise RuntimeError("root completion precedes a collective member")
 
         print(
             json.dumps(
@@ -746,6 +806,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "cause": system_result["cause"],
                     "exit_tick": system_result["exit_tick"],
                     "memory_value": EXPECTED_VALUE,
+                    "root_lifecycle_occurrence": start[1],
                     "system_memory_value": EXPECTED_SYSTEM_MEMORY,
                 },
                 sort_keys=True,

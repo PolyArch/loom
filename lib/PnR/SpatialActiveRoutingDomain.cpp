@@ -184,14 +184,24 @@ buildFrozenSpatialActiveRoutingDomain(
   const auto sinkBindings = transfers.logicalNetSinkBindings();
   if (sourceBindings.size() != nets.size())
     return invalid("logical-net source binding table is incomplete");
-  std::vector<std::uint8_t> reverseReachable(endpoints.size(), 0);
-  std::vector<std::uint8_t> forwardReachable(endpoints.size(), 0);
+  std::vector<std::uint8_t> reverseReachableGeneration(endpoints.size(), 0);
+  std::vector<std::uint8_t> forwardReachableGeneration(endpoints.size(), 0);
+  std::uint8_t reachabilityGeneration = 0;
   std::vector<PnrIndex> worklist;
   worklist.reserve(endpoints.size());
   std::vector<PnrIndex> sources;
   std::vector<PnrIndex> targets;
 
   for (auto [logicalNet, net] : llvm::enumerate(nets)) {
+    if (reachabilityGeneration == std::numeric_limits<std::uint8_t>::max()) {
+      std::fill(reverseReachableGeneration.begin(),
+                reverseReachableGeneration.end(), 0);
+      std::fill(forwardReachableGeneration.begin(),
+                forwardReachableGeneration.end(), 0);
+      reachabilityGeneration = 1;
+    } else {
+      ++reachabilityGeneration;
+    }
     incrementWork(result.deterministicWork_);
     if (net.sinkOffset > sinkBindings.size() ||
         net.sinkCount > sinkBindings.size() - net.sinkOffset)
@@ -210,15 +220,14 @@ buildFrozenSpatialActiveRoutingDomain(
     llvm::sort(targets);
     targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
 
-    std::fill(reverseReachable.begin(), reverseReachable.end(), 0);
     worklist.clear();
     for (PnrIndex endpoint : targets) {
       if (endpoint >= endpoints.size())
         return invalid("logical-net sink endpoint is out of range");
       if (llvm::Error error = markEndpoint(endpoint))
         return std::move(error);
-      if (!reverseReachable[endpoint]) {
-        reverseReachable[endpoint] = 1;
+      if (reverseReachableGeneration[endpoint] != reachabilityGeneration) {
+        reverseReachableGeneration[endpoint] = reachabilityGeneration;
         worklist.push_back(endpoint);
       }
     }
@@ -231,22 +240,23 @@ buildFrozenSpatialActiveRoutingDomain(
         if (arc >= arcs.size() || arcSources[arc] >= endpoints.size())
           return invalid("reverse routing incidence is out of range");
         if (arcs[arc].payloadCapacityBits < net.payloadWidthBits ||
-            reverseReachable[arcSources[arc]])
+            reverseReachableGeneration[arcSources[arc]] ==
+                reachabilityGeneration)
           continue;
-        reverseReachable[arcSources[arc]] = 1;
+        reverseReachableGeneration[arcSources[arc]] = reachabilityGeneration;
         worklist.push_back(arcSources[arc]);
       }
     }
 
-    std::fill(forwardReachable.begin(), forwardReachable.end(), 0);
     worklist.clear();
     for (PnrIndex endpoint : sources) {
       if (endpoint >= endpoints.size())
         return invalid("logical-net source endpoint is out of range");
       if (llvm::Error error = markEndpoint(endpoint))
         return std::move(error);
-      if (reverseReachable[endpoint] && !forwardReachable[endpoint]) {
-        forwardReachable[endpoint] = 1;
+      if (reverseReachableGeneration[endpoint] == reachabilityGeneration &&
+          forwardReachableGeneration[endpoint] != reachabilityGeneration) {
+        forwardReachableGeneration[endpoint] = reachabilityGeneration;
         worklist.push_back(endpoint);
       }
     }
@@ -258,12 +268,14 @@ buildFrozenSpatialActiveRoutingDomain(
         if (arc >= arcs.size() || arcs[arc].target >= endpoints.size())
           return invalid("forward routing incidence is out of range");
         if (arcs[arc].payloadCapacityBits < net.payloadWidthBits ||
-            !reverseReachable[arcs[arc].target])
+            reverseReachableGeneration[arcs[arc].target] !=
+                reachabilityGeneration)
           continue;
         if (llvm::Error error = markArc(arc))
           return std::move(error);
-        if (!forwardReachable[arcs[arc].target]) {
-          forwardReachable[arcs[arc].target] = 1;
+        if (forwardReachableGeneration[arcs[arc].target] !=
+            reachabilityGeneration) {
+          forwardReachableGeneration[arcs[arc].target] = reachabilityGeneration;
           worklist.push_back(arcs[arc].target);
         }
       }

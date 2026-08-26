@@ -1,1 +1,1 @@
-# RUN: timeout 15s loom-structured-memory-pipeline-test
+# RUN: timeout %loom-timeout-ultrafast loom-structured-memory-pipeline-test

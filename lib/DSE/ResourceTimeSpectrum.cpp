@@ -165,6 +165,19 @@ findHintAllocation(const ResourceTimeHintState &state,
   return found == state.active.end() ? nullptr : &*found;
 }
 
+bool sameHintAllocations(llvm::ArrayRef<ResourceTimeHintAllocation> lhs,
+                         llvm::ArrayRef<ResourceTimeHintAllocation> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (auto [left, right] : llvm::zip(lhs, rhs))
+    if (left.region != right.region ||
+        left.speedupPointOrdinal != right.speedupPointOrdinal ||
+        left.resourceUnits != right.resourceUnits ||
+        left.completionTimePicoseconds != right.completionTimePicoseconds)
+      return false;
+  return true;
+}
+
 bool mappingMatchesState(const ImportedMappingProjection &mapping,
                          const ResourceTimeHintState &state,
                          ResourceTimeSpectrumFunnelAccounting &accounting) {
@@ -192,7 +205,8 @@ materializeHint(
     llvm::ArrayRef<ImportedMappingProjection> mappings,
     llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> mappingPath,
     const ArtifactStore &store, const BlobStore *blobs,
-    ResourceTimeSpectrumFunnelAccounting &accounting) {
+    ResourceTimeSpectrumFunnelAccounting &accounting,
+    std::optional<std::string> &firstTransitionProofDiagnostic) {
   if (hint.states.size() != hint.actions.size() + 1)
     return invalid("resource-time hint action/state lineage is incomplete");
   // A resource-time schedule may change allocation at an event boundary.
@@ -257,6 +271,18 @@ materializeHint(
       if (!selectedStates[index])
         return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
     }
+  }
+
+  const bool mappingChanges = llvm::any_of(
+      llvm::zip(llvm::drop_begin(selectedStates), selectedStates),
+      [](auto pair) { return std::get<0>(pair) != std::get<1>(pair); });
+  if (mappingChanges &&
+      llvm::any_of(hint.actions, [](const ResourceTimeActionDelta &action) {
+        return action.kind == ResourceTimeActionKind::AdvanceEvent &&
+               action.completedRegions.size() > 1;
+      })) {
+    ++accounting.transitionUnsupportedHints;
+    return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
   }
 
   ::loom::pnr::ResourceTimeScheduleScenario scenario;
@@ -334,24 +360,62 @@ materializeHint(
     return active;
   };
 
+  const auto appendState =
+      [&](const ImportedMappingProjection &mapping,
+          const ResourceTimeHintState &state, ::dataflow::EventFamilyKey event)
+      -> llvm::Error {
+    auto active = materializeAllocations(mapping, state);
+    if (!active)
+      return active.takeError();
+    scenario.states.push_back({mapping.reference, std::move(event),
+                               state.timePicoseconds, std::move(*active)});
+    return llvm::Error::success();
+  };
+
   for (std::size_t snapshot = 1; snapshot != hint.states.size(); ++snapshot) {
     const ResourceTimeActionDelta &action = hint.actions[snapshot - 1];
     if (action.kind != ResourceTimeActionKind::AdmitRegion &&
         action.completedRegions.empty())
       continue;
     const ResourceTimeHintState &state = hint.states[snapshot];
-    ::dataflow::EventFamilyKey event =
-        action.kind == ResourceTimeActionKind::AdmitRegion
-            ? ::dataflow::rootThreadStartEventFamily(*action.admittedRegion)
-            : ::dataflow::rootThreadCompletionEventFamily(
-                  action.completedRegions.front());
-    auto active = materializeAllocations(*selectedStates[snapshot], state);
-    if (!active)
-      return active.takeError();
-    ::loom::pnr::ResourceTimeScheduleState materialized{
-        selectedStates[snapshot]->reference, std::move(event),
-        state.timePicoseconds, std::move(*active)};
-    scenario.states.push_back(std::move(materialized));
+    if (action.kind == ResourceTimeActionKind::AdmitRegion) {
+      if (llvm::Error error = appendState(
+              *selectedStates[snapshot], state,
+              ::dataflow::rootThreadStartEventFamily(*action.admittedRegion)))
+        return std::move(error);
+      continue;
+    }
+
+    if (action.completedRegions.size() == 1) {
+      if (llvm::Error error = appendState(
+              *selectedStates[snapshot], state,
+              ::dataflow::rootThreadCompletionEventFamily(
+                  action.completedRegions.front())))
+        return std::move(error);
+      continue;
+    }
+
+    if (selectedStates[snapshot - 1] != selectedStates[snapshot])
+      return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
+    ResourceTimeHintState boundary = hint.states[snapshot - 1];
+    boundary.timePicoseconds = state.timePicoseconds;
+    for (const ::dataflow::RootThreadLaunchRef completed :
+         action.completedRegions) {
+      const auto active =
+          llvm::find_if(boundary.active, [&](const auto &allocation) {
+            return allocation.region == completed;
+          });
+      if (active == boundary.active.end())
+        return invalid("resource-time event completes an inactive region");
+      boundary.active.erase(active);
+      if (llvm::Error error = appendState(
+              *selectedStates[snapshot], boundary,
+              ::dataflow::rootThreadCompletionEventFamily(completed)))
+        return std::move(error);
+    }
+    if (!sameHintAllocations(boundary.active, state.active))
+      return invalid("resource-time simultaneous completion does not match "
+                     "the event frontier state");
   }
   if (scenario.states.empty())
     return std::optional<::loom::pnr::ResourceTimeScheduleScenario>{};
@@ -413,8 +477,12 @@ materializeHint(
             transition, store, *blobs);
         if (finalized)
           transition = std::move(*finalized);
-        else
-          llvm::consumeError(finalized.takeError());
+        else {
+          ++accounting.transitionProofFailures;
+          std::string diagnostic = llvm::toString(finalized.takeError());
+          if (!firstTransitionProofDiagnostic)
+            firstTransitionProofDiagnostic = std::move(diagnostic);
+        }
       }
     }
     scenario.transitions.transitions.push_back(std::move(transition));
@@ -423,14 +491,10 @@ materializeHint(
       std::move(scenario));
 }
 
-bool hasUnrepresentableCompositeEvent(const ResourceTimeScheduleHint &hint) {
+bool hasUnrepresentableEvent(const ResourceTimeScheduleHint &hint) {
   return llvm::any_of(hint.actions, [](const ResourceTimeActionDelta &action) {
     return action.kind == ResourceTimeActionKind::AdvanceEvent &&
-           ((!action.completedRegions.empty() &&
-             (action.completedRegions.size() > 1 ||
-              !action.tokenReadyProducers.empty())) ||
-            (action.completedRegions.empty() &&
-             !action.tokenReadyProducers.empty()));
+           !action.tokenReadyProducers.empty();
   });
 }
 
@@ -460,6 +524,19 @@ bool hasExplicitTemporalActiveSet(
 }
 
 } // namespace
+
+llvm::StringRef resourceTimeSpectrumIncompleteReasonSpelling(
+    ResourceTimeSpectrumIncompleteReason reason) {
+  switch (reason) {
+  case ResourceTimeSpectrumIncompleteReason::Unsupported:
+    return "unsupported";
+  case ResourceTimeSpectrumIncompleteReason::ProofNotEstablished:
+    return "proof_not_established";
+  case ResourceTimeSpectrumIncompleteReason::CancelledOrTimeout:
+    return "cancelled_or_timeout";
+  }
+  llvm_unreachable("unknown resource-time Spectrum incomplete reason");
+}
 
 llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
     const ::loom::pnr::ResourceTimeScheduleWitness &witness,
@@ -783,6 +860,7 @@ verifyResourceTimeMappingFinalists(
     llvm::ArrayRef<ResourceTimeMappingDeploymentEndpoint> mappingPath) {
   const auto begin = std::chrono::steady_clock::now();
   ResourceTimeSpectrumFunnelAccounting accounting;
+  std::optional<std::string> firstTransitionProofDiagnostic;
   accounting.hintCandidates = hints.size();
   if (hints.empty() || regions.empty() || bounds.size() != regions.size() ||
       systemMappings.empty())
@@ -821,6 +899,12 @@ verifyResourceTimeMappingFinalists(
       canonicalMappings.end());
   std::vector<ArtifactRootReference> endpointMappings;
   endpointMappings.reserve(mappingPath.size());
+  if (!mappingPath.empty() && !blobs)
+    return invalid(
+        "resource-time Mapping path requires a Deployment BlobStore");
+  if (!mappingPath.empty() && mappingPath.size() != canonicalMappings.size())
+    return invalid("resource-time Mapping path must cover every Mapping "
+                   "finalist exactly once");
   for (const ResourceTimeMappingDeploymentEndpoint &endpoint : mappingPath) {
     if (!llvm::is_contained(canonicalMappings, endpoint.mapping))
       return invalid("resource-time Mapping path names a foreign "
@@ -870,6 +954,27 @@ verifyResourceTimeMappingFinalists(
     else
       ++accounting.mappingProgressProofNotEstablished;
     imported.push_back(std::move(*projection));
+  }
+  if (!mappingPath.empty()) {
+    const ArtifactRootReference &endpointDataflow = imported.front().dataflow;
+    const ArtifactRootReference &endpointFabric = imported.front().fabric;
+    for (const ImportedMappingProjection &mapping : imported) {
+      if (mapping.dataflow != endpointDataflow)
+        return invalid("resource-time Mapping path changes Canonical Dataflow "
+                       "without a typed correspondence owner");
+      if (mapping.fabric != endpointFabric)
+        return invalid("resource-time Mapping path changes the immutable "
+                       "Fabric");
+    }
+    for (const ResourceTimeMappingDeploymentEndpoint &endpoint : mappingPath) {
+      auto deployment = ::loom::deployment::importDeployment(
+          endpoint.deployment, store, *blobs);
+      if (!deployment)
+        return deployment.takeError();
+      if (deployment->deployment().systemMapping() != endpoint.mapping)
+        return invalid("resource-time Deployment endpoint does not select its "
+                       "paired SystemMapping");
+    }
   }
   const auto importStats = importSession.statistics();
   accounting.mappingImportRequests = importStats.importRequests;
@@ -939,16 +1044,17 @@ verifyResourceTimeMappingFinalists(
         ::loom::pnr::ResourceTimeConcurrencyBoundStatus::ProofNotEstablished;
   }
   for (const ResourceTimeScheduleHint &hint : hints) {
-    // Dataflow currently owns canonical root-start and root-completion event
-    // families, but no token-publication or composite-completion family.
-    // Never encode either shape as one arbitrary event; keep it as a typed
-    // unsupported spectrum candidate until the event owner is extended.
-    if (hasUnrepresentableCompositeEvent(hint)) {
+    // Equal-time root completions are emitted as a deterministic sequence of
+    // canonical completion families when no Mapping edge is crossed. Token
+    // publication and a Mapping change across a composite frontier still lack
+    // an owner event/correspondence and remain typed unsupported.
+    if (hasUnrepresentableEvent(hint)) {
       ++accounting.transitionUnsupportedHints;
       continue;
     }
-    auto scenario = materializeHint(hint, regions, imported, mappingPath, store,
-                                    blobs, accounting);
+    auto scenario =
+        materializeHint(hint, regions, imported, mappingPath, store, blobs,
+                        accounting, firstTransitionProofDiagnostic);
     if (!scenario)
       return scenario.takeError();
     if (*scenario) {
@@ -980,6 +1086,11 @@ verifyResourceTimeMappingFinalists(
                                              executionControl, blobs);
   if (!verified)
     return verified.takeError();
+  if (firstTransitionProofDiagnostic)
+    if (auto *incomplete =
+            std::get_if<IncompleteResourceTimeSpectrum>(&*verified))
+      incomplete->diagnostic += ": transition finalization failed: " +
+                                *firstTransitionProofDiagnostic;
   // The independent verifier reuses the same invocation-owned immutable
   // SystemMapping session. Refresh the accounting after it runs so the
   // evidence covers both finalist projection and verifier imports.

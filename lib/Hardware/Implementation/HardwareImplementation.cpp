@@ -1075,7 +1075,7 @@ canonicalize(HardwareImplementationDraft draft,
     for (ImplementationInterfaceSemanticRef &semantic : *semantics)
       expectedModelInterfaces->push_back(
           {std::move(semantic), draft.representationRoot.top, std::nullopt});
-    llvm::sort(*expectedModelInterfaces, interfaceLess);
+    canonicalizeHardwareImplementationInterfaceOrder(*expectedModelInterfaces);
   }
 
   std::optional<platform::FinalizedImplementationPlatform> platform;
@@ -1093,7 +1093,7 @@ canonicalize(HardwareImplementationDraft draft,
         "non-RTL representation requires an implementation platform");
   }
 
-  llvm::sort(draft.interfaces, interfaceLess);
+  canonicalizeHardwareImplementationInterfaceOrder(draft.interfaces);
   for (std::size_t ordinal = 0; ordinal < draft.interfaces.size(); ++ordinal) {
     const ImplementationInterface &interface = draft.interfaces[ordinal];
     if (ordinal != 0 && draft.interfaces[ordinal - 1] == interface)
@@ -1247,6 +1247,11 @@ decode(llvm::StringRef canonicalJson,
 }
 
 } // namespace
+
+void canonicalizeHardwareImplementationInterfaceOrder(
+    std::vector<ImplementationInterface> &interfaces) {
+  llvm::sort(interfaces, interfaceLess);
+}
 
 llvm::Expected<FinalizedHardwareImplementation>
 finalizeHardwareImplementation(HardwareImplementationDraft draft,

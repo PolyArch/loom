@@ -26,7 +26,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_ROOT = ROOT / "test"
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TEST_ROOT))
+
+from config.timeout_budgets import Tier, seconds as timeout_seconds
 
 import corpus_gate  # noqa: E402
 import corpus_inventory  # noqa: E402
@@ -279,7 +282,7 @@ class CorpusGateExecutionPolicyTest(unittest.TestCase):
             failure = corpus_gate.run_step(
                 [sys.executable, "-c", script],
                 root_path / "step.log",
-                time.monotonic() + 5.0,
+                time.monotonic() + timeout_seconds(Tier.ULTRAFAST),
                 corpus_gate.CATEGORY_COMPILE,
             )
             pgid = int(pgid_path.read_text())
@@ -338,15 +341,15 @@ class CorpusGateExecutionPolicyTest(unittest.TestCase):
 
         self.assertEqual(
             corpus_gate.parse_args(["--stage", "dfg-sim"]).case_timeout,
-            30.0,
+            corpus_gate.default_case_timeout("dfg-sim"),
         )
         self.assertEqual(
             corpus_gate.parse_args(["--stage", "dfg-sim"]).dfg_simulation_timeout,
-            15.0,
+            corpus_gate.DEFAULT_DFG_SIMULATION_TIMEOUT_SECONDS,
         )
         self.assertEqual(
             corpus_gate.parse_args(["--stage", "d0"]).case_timeout,
-            120.0,
+            corpus_gate.default_case_timeout("d0"),
         )
         dfg_args = corpus_gate.parse_args(["--stage", "dfg-sim"])
         self.assertEqual(dfg_args.dfg_max_wavefront_steps, 1_000_000)
@@ -1118,7 +1121,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 corpus_inventory.resolve_externals_root(ROOT),
                 self.out_dir,
                 jobs=2,
-                timeout=5.0,
+                timeout=timeout_seconds(Tier.ULTRAFAST),
             )
 
         self.assertIsInstance(
@@ -1169,7 +1172,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 corpus_inventory.resolve_externals_root(ROOT),
                 self.out_dir,
                 jobs=2,
-                timeout=5.0,
+                timeout=timeout_seconds(Tier.ULTRAFAST),
             )[workload.identity]
 
         self.assertIsInstance(result, corpus_gate.StepFailure)
@@ -1217,7 +1220,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 corpus_inventory.resolve_externals_root(ROOT),
                 self.out_dir,
                 jobs=2,
-                timeout=5.0,
+                timeout=timeout_seconds(Tier.ULTRAFAST),
             )[workload.identity]
 
         self.assertIsInstance(result, corpus_gate.ProducedWorkload)
@@ -1311,7 +1314,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
             ),
             toolchain,
             case_dir,
-            time.monotonic() + 5.0,
+            time.monotonic() + timeout_seconds(Tier.ULTRAFAST),
             corpus_gate.CaseResourceUsage(),
         )
 

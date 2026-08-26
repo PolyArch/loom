@@ -1,6 +1,7 @@
 #ifndef LOOM_DSE_CAMPAIGNRUNNER_H
 #define LOOM_DSE_CAMPAIGNRUNNER_H
 
+#include "Common/TimeoutBudgets.h"
 #include "DSE/PlanExecutor.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -60,9 +61,9 @@ llvm::Error writeDseOperationalProjectionJsonLine(
 class CampaignExecutionPolicy final {
 public:
   static constexpr std::uint64_t maximumSampleActiveWallTimeNanoseconds =
-      600ULL * 1000ULL * 1000ULL * 1000ULL;
+      timeout::nanoseconds(timeout::Tier::Long);
   static constexpr std::uint64_t maximumCampaignActiveWallTimeNanoseconds =
-      23ULL * 60ULL * 60ULL * 1000ULL * 1000ULL * 1000ULL;
+      timeout::nanoseconds(timeout::Tier::Nightly);
 
   static llvm::Expected<CampaignExecutionPolicy>
   get(std::uint64_t pilotDispatchCount,
@@ -125,6 +126,8 @@ struct CampaignAdmissionRefusal final {
 using CampaignExecutionResult =
     std::variant<CampaignExecution, CampaignAdmissionRefusal>;
 
+/// Returns with the journal occurrence retained so the caller can publish and
+/// commit one InvocationManifest for either execution or refusal.
 llvm::Expected<CampaignExecutionResult> runGroundTruthCampaign(
     const ResolvedDseConfigView &view, const DseRunClosure &closure,
     const CampaignExecutionPolicy &campaignPolicy,

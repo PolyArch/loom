@@ -48,6 +48,13 @@ private:
     Failed = 4,
   };
 
+  enum class ResultPublication {
+    Published,
+    TooLarge,
+    OpenFailed,
+    WriteFailed,
+  };
+
   struct PerformanceStatistics final : public statistics::Group {
     explicit PerformanceStatistics(statistics::Group *parent);
 
@@ -55,7 +62,13 @@ private:
     statistics::Scalar engineWaitNanoseconds;
     statistics::Scalar messageCount;
     statistics::Scalar invocationCount;
+    statistics::Scalar clockFailureCount;
   } performanceStatistics;
+
+  struct CallbackAccounting final {
+    std::uint64_t started = 0;
+    bool valid = false;
+  };
 
   static constexpr std::uint32_t statusBusy = 1u << 0;
   static constexpr std::uint32_t statusDone = 1u << 1;
@@ -69,9 +82,11 @@ private:
   const std::string resultPath;
   const std::uint64_t maximumMessageBytes;
   const std::uint64_t maximumInvocations;
+  const bool collectPerformance;
 
   int engineSocket = -1;
   std::unique_ptr<EngineResponseEvent> engineResponseEvent;
+  bool engineCompletionReceived = false;
   State state = State::Idle;
   std::uint32_t errorCode = 0;
   std::uint64_t nextSequence = 0;
@@ -97,13 +112,19 @@ private:
   EventFunctionWrapper invocationCompletionEvent;
   EventFunctionWrapper dmaCompletionEvent;
   EventFunctionWrapper completionEvent;
+  EventFunctionWrapper engineDisconnectEvent;
 
   bool connectEngine();
+  void scheduleEngineDisconnect();
+  void disconnectEngine();
   bool sendMessage(const loom::runtime::Gem5BridgeMessage &message);
   bool receiveMessage(loom::runtime::Gem5BridgeMessage &message);
+  CallbackAccounting beginCallbackAccounting();
+  void finishCallbackAccounting(CallbackAccounting accounting);
   void runAccounted(void (LoomSpatialBridge::*action)());
   void startEngineWait();
   void finishEngineWait();
+  ResultPublication publishResults();
   void fetchStaticLaunch();
   void fetchInvocation();
   void startLaunch();

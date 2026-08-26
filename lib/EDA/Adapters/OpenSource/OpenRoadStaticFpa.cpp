@@ -516,11 +516,13 @@ prepareProvider(const evaluation::EvaluationRequest &request,
   return EvaluationModelProviderPreparation{std::move(*prepared)};
 }
 
-llvm::Expected<evaluation::EvaluationModelResult>
-importProvider(const evaluation::EvaluationRequest &request,
-               const evaluation::CaseArtifactResolution &resolution,
-               const external_tool::PreparedExternalToolInvocation &prepared,
-               const ArtifactStore &artifacts, const BlobStore &blobs) {
+llvm::Expected<evaluation::EvaluationModelResult> importProviderImpl(
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const external_tool::ExternalToolInvocationExecutionObservation
+        *executionObservation = nullptr) {
   using namespace evaluation;
   auto factsOrUnsupported =
       invocationFacts(request, resolution, artifacts, blobs);
@@ -529,8 +531,12 @@ importProvider(const evaluation::EvaluationRequest &request,
   const auto *facts = std::get_if<FpaInvocationFacts>(&*factsOrUnsupported);
   if (!facts)
     return invalid("prepared invocation is no longer in stable capability");
-  auto attempt = external_tool::importExternalToolInvocationAttempt(
-      prepared, importExpectation(*facts));
+  auto attempt =
+      executionObservation
+          ? external_tool::importExternalToolInvocationAttempt(
+                prepared, importExpectation(*facts), *executionObservation)
+          : external_tool::importExternalToolInvocationAttempt(
+                prepared, importExpectation(*facts));
   if (!attempt)
     return attempt.takeError();
   if (std::holds_alternative<
@@ -562,8 +568,8 @@ importProvider(const evaluation::EvaluationRequest &request,
       imported, kResultOutput);
   if (!contents)
     return contents.takeError();
-  auto observation = parseOpenRoadStaticFpaResult(
-      *contents, facts->top, facts->analysis.metrics);
+  auto observation = parseOpenRoadStaticFpaResult(*contents, facts->top,
+                                                  facts->analysis.metrics);
   if (!observation) {
     llvm::consumeError(observation.takeError());
     return EvaluationModelResult{
@@ -582,6 +588,24 @@ importProvider(const evaluation::EvaluationRequest &request,
   return EvaluationModelResult{{}, CompletedEvidence{std::move(results), {}}};
 }
 
+llvm::Expected<evaluation::EvaluationModelResult>
+importProvider(const evaluation::EvaluationRequest &request,
+               const evaluation::CaseArtifactResolution &resolution,
+               const external_tool::PreparedExternalToolInvocation &prepared,
+               const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importProviderImpl(request, resolution, prepared, artifacts, blobs);
+}
+
+llvm::Expected<evaluation::EvaluationModelResult> importProviderWithExecution(
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importProviderImpl(request, resolution, prepared, artifacts, blobs,
+                            &execution);
+}
+
 } // namespace
 
 llvm::Expected<std::string> renderOpenRoadStaticFpaDriver(
@@ -597,9 +621,8 @@ llvm::Expected<std::string> renderOpenRoadStaticFpaDriver(
   auto metricFields = resolveMetricFields(analysis.metrics);
   if (!metricFields)
     return metricFields.takeError();
-  const bool needsFrequency =
-      hasMetric(analysis.metrics,
-                evaluation::MetricKind::LimitingClockFrequency);
+  const bool needsFrequency = hasMetric(
+      analysis.metrics, evaluation::MetricKind::LimitingClockFrequency);
   const bool needsArea =
       hasMetric(analysis.metrics, evaluation::MetricKind::TotalArea);
   const bool needsDynamic =
@@ -668,8 +691,8 @@ llvm::Expected<std::string> renderOpenRoadStaticFpaDriver(
             "$loom_temperature_celsius\n";
   driver += "set_voltage $loom_voltage\n";
   if (analysis.activityAssumption) {
-    const std::string activity = ratioExpression(
-        analysis.activityAssumption->transitionsPerClock);
+    const std::string activity =
+        ratioExpression(analysis.activityAssumption->transitionsPerClock);
     const std::string duty =
         ratioExpression(analysis.activityAssumption->staticProbability);
     driver += "set_power_activity -global -activity " + activity + " -duty " +
@@ -680,8 +703,7 @@ llvm::Expected<std::string> renderOpenRoadStaticFpaDriver(
   driver += "if {$loom_rseg_count == 0} { error {OpenRCX produced no "
             "parasitic segments} }\n";
   if (needsFrequency) {
-    driver +=
-        "set loom_min_period [sta::find_clk_min_period $loom_clock 0]\n";
+    driver += "set loom_min_period [sta::find_clk_min_period $loom_clock 0]\n";
     driver +=
         "if {$loom_min_period <= 0.0} { error {timing report has no finite "
         "limiting period} }\n";
@@ -752,15 +774,15 @@ set loom_decimal {^[+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-][0-9]+)$}
       publisher += "if {$loom_values(" + std::string(field->rawKey) +
                    ") <= 0.0} { error {OpenROAD FPA raw report has a "
                    "non-positive metric} }\n";
-  publisher += R"tcl(set loom_output [open {outputs/openroad-static-fpa-result.json} w]
+  publisher +=
+      R"tcl(set loom_output [open {outputs/openroad-static-fpa-result.json} w]
 puts -nonewline $loom_output "{\"schema\":\"loom.openroad_static_fpa_result\",\"version\":\"1.0\",\"top\":\"$loom_values(top)\""
 )tcl";
   for (const FpaMetricField *field : *fields)
     publisher += "puts -nonewline $loom_output \",\\\"" +
                  std::string(field->resultKey) +
-                 "\\\":{\\\"value\\\":\\\"$loom_values(" +
-                 field->rawKey + ")\\\",\\\"unit\\\":\\\"" + field->unit +
-                 "\\\"}\"\n";
+                 "\\\":{\\\"value\\\":\\\"$loom_values(" + field->rawKey +
+                 ")\\\",\\\"unit\\\":\\\"" + field->unit + "\\\"}\"\n";
   publisher += "puts $loom_output \"}\"\nclose $loom_output\n";
   return publisher;
 }
@@ -792,8 +814,8 @@ parseOpenRoadStaticFpaResult(llvm::StringRef contents,
     auto encoded = metricField(*root, field->resultKey, field->unit);
     if (!encoded)
       return encoded.takeError();
-    auto value = parseDecimal(encoded->first, field->resultKey,
-                              field->requirePositive);
+    auto value =
+        parseDecimal(encoded->first, field->resultKey, field->requirePositive);
     if (!value)
       return value.takeError();
     switch (field->kind) {
@@ -822,7 +844,8 @@ llvm::Error registerOpenRoadStaticFpaEvaluationProvider() {
   static const evaluation::EvaluationModelProvider provider{
       evaluation::models::openRoadStaticFpaModelDescriptorRef(),
       evaluation::EvaluationModelExternalPrepareImportProvider{
-          &prepareProvider, &importProvider}};
+          &prepareProvider, &importProvider, nullptr,
+          &importProviderWithExecution}};
   return evaluation::registerEvaluationModelProvider(provider);
 }
 

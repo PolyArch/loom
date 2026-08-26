@@ -387,6 +387,30 @@ void cancelledGenerationInvalidatesTicketsAndReopens() {
           "zero-rate replacement generation did not join");
 }
 
+void rejectedSendStatesRetainTypedErrors() {
+  require(!orderedChannelSendError(OrderedChannelSendKind::Accepted),
+          "accepted send produced an ABI error");
+  expectABIError(orderedChannelSendError(OrderedChannelSendKind::WouldBlock),
+                 OrderedChannelABIError::Kind::WouldBlock,
+                 "send backpressure lost its typed outcome");
+  expectABIError(
+      orderedChannelSendError(OrderedChannelSendKind::SequenceExhausted),
+      OrderedChannelABIError::Kind::SequenceExhausted,
+      "send sequence exhaustion lost its typed outcome");
+  expectABIError(
+      orderedChannelSendError(OrderedChannelSendKind::StaticRateExceeded),
+      OrderedChannelABIError::Kind::StaticRateExceeded,
+      "send rate rejection lost its typed outcome");
+  expectABIError(
+      orderedChannelSendError(OrderedChannelSendKind::InvalidLifecycle),
+      OrderedChannelABIError::Kind::InvalidLifecycle,
+      "send lifecycle rejection lost its typed outcome");
+  expectABIError(
+      orderedChannelSendError(OrderedChannelSendKind::GenerationCancelled),
+      OrderedChannelABIError::Kind::GenerationCancelled,
+      "cancelled send lost its typed outcome");
+}
+
 } // namespace
 
 int main() {
@@ -396,5 +420,6 @@ int main() {
   boundedGenerationCompletesAndRepeats();
   generationDeficitsAndLifecycleAreTyped();
   cancelledGenerationInvalidatesTicketsAndReopens();
+  rejectedSendStatesRetainTypedErrors();
   return EXIT_SUCCESS;
 }

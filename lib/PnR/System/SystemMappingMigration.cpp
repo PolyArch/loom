@@ -1429,6 +1429,44 @@ SystemExecutionBindingCorrespondence::getIdentity(
              std::move(transferPatterns), std::move(modules), store);
 }
 
+llvm::Expected<SystemExecutionBindingCorrespondence>
+composeSystemExecutionBindingCorrespondence(
+    const SystemExecutionBindingCorrespondence &first,
+    const SystemExecutionBindingCorrespondence &second,
+    const ArtifactStore &store) {
+  if (first.childSystem() != second.parentSystem())
+    return invalid("System correspondence composition is not consecutive");
+  std::vector<::loom::fabric::FabricSystemEntityCorrespondence> entities;
+  for (const auto &entry : first.entities()) {
+    const auto next = llvm::find_if(second.entities(), [&](const auto &value) {
+      return value.source == entry.target;
+    });
+    if (next != second.entities().end())
+      entities.push_back({entry.source, next->target});
+  }
+  std::vector<::loom::fabric::FabricSystemTransferPatternCorrespondence>
+      transferPatterns;
+  for (const auto &entry : first.transferPatterns()) {
+    const auto next =
+        llvm::find_if(second.transferPatterns(), [&](const auto &value) {
+          return value.source == entry.target;
+        });
+    if (next != second.transferPatterns().end())
+      transferPatterns.push_back({entry.source, next->target});
+  }
+  std::vector<SystemModuleCorrespondence> modules;
+  for (const SystemModuleCorrespondence &entry : first.modules()) {
+    const auto next = llvm::find_if(second.modules(), [&](const auto &value) {
+      return value.parent == entry.child;
+    });
+    if (next != second.modules().end())
+      modules.push_back({entry.parent, next->child});
+  }
+  return SystemExecutionBindingCorrespondence::get(
+      first.parentSystem(), second.childSystem(), std::move(entities),
+      std::move(transferPatterns), std::move(modules), store);
+}
+
 llvm::Expected<FinalizedSystemMappingMigrationSeed>
 finalizeSystemMappingMigrationSeed(
     const ArtifactRootReference &parentMappingReference,
@@ -1808,12 +1846,35 @@ SystemMappingMigrationProjectionOutcome projectSystemMappingMigrationSeed(
     return SystemMappingMigrationFallback{
         SystemMappingMigrationFallbackReason::ChildRebaseRejected};
   }
-  if (!seed.reopenedRoots().empty()) {
-    routeSeed->reroutedLegs.clear();
-    routeSeed->reroutedLegs.reserve(childProblem.serviceLegs().size());
-    for (PnrIndex leg = 0; leg != childProblem.serviceLegs().size(); ++leg)
+  for (PnrIndex leg = 0; leg != childProblem.serviceLegs().size(); ++leg) {
+    const FrozenSystemServiceLeg &serviceLeg = childProblem.serviceLegs()[leg];
+    if (serviceLeg.serviceContext >= childProblem.serviceContexts().size())
+      return SystemMappingMigrationFallback{
+          SystemMappingMigrationFallbackReason::ChildRebaseRejected};
+    const FrozenSystemServiceContext &context =
+        childProblem.serviceContexts()[serviceLeg.serviceContext];
+    bool reopened = false;
+    if (context.threadDecision != getInvalidPnrIndex()) {
+      if (context.threadDecision >= childProblem.threadDecisions().size())
+        return SystemMappingMigrationFallback{
+            SystemMappingMigrationFallbackReason::ChildRebaseRejected};
+      reopened |= llvm::is_contained(
+          seed.reopenedRoots(),
+          childProblem.threadDecisions()[context.threadDecision].root);
+    }
+    if (context.graphDecision != getInvalidPnrIndex()) {
+      if (context.graphDecision >= childProblem.graphDecisions().size())
+        return SystemMappingMigrationFallback{
+            SystemMappingMigrationFallbackReason::ChildRebaseRejected};
+      reopened |= llvm::is_contained(
+          seed.reopenedRoots(),
+          childProblem.graphDecisions()[context.graphDecision]
+              .launch.rootThreadLaunch);
+    }
+    if (reopened && !llvm::is_contained(routeSeed->reroutedLegs, leg))
       routeSeed->reroutedLegs.push_back(leg);
   }
+  llvm::sort(routeSeed->reroutedLegs);
   result.preservedServiceLegs =
       childProblem.serviceLegs().size() - routeSeed->reroutedLegs.size();
   result.reopenedServiceLegs = routeSeed->reroutedLegs.size();

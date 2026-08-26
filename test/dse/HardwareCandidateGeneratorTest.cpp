@@ -10,6 +10,7 @@
 #include "DSE/TechMappingHardwareFeedback.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Mapping/Tech/TechMappingHardwareDemand.h"
 
@@ -66,6 +67,11 @@ void requireError(llvm::Error error, llvm::StringRef expected) {
   std::string message = llvm::toString(std::move(error));
   if (message.find(expected.str()) == std::string::npos)
     fail("unexpected error: " + message);
+}
+
+void requireSuccess(llvm::Error error) {
+  if (error)
+    fail(llvm::toString(std::move(error)));
 }
 
 class TemporaryDirectory final {
@@ -1079,6 +1085,38 @@ void systemRelationalNoOps(Fixture &fixture,
 
   const auto core = system.view().accCoreOccurrences().front();
   const auto transport = system.view().pointConnections().front();
+  if (system.view().pointConnections().size() > 1) {
+    auto first = system.view().pointConnections().front().destination;
+    auto second = system.view().pointConnections().back().destination;
+    if (first != second) {
+      if (loom::fabric::canonicalFabricBytes(first) <
+          loom::fabric::canonicalFabricBytes(second))
+        std::swap(first, second);
+      const std::array canonicalSwap = {loom::dse::SystemCompositionDecision(
+          loom::dse::SwapTransportConnectionSources{second, first})};
+      const std::array reverseSwap = {loom::dse::SystemCompositionDecision(
+          loom::dse::SwapTransportConnectionSources{first, second})};
+      const auto canonicalBytes =
+          loom::dse::encodeSystemCompositionRewriteConfig(canonicalSwap, 1);
+      const auto reverseBytes =
+          loom::dse::encodeSystemCompositionRewriteConfig(reverseSwap, 1);
+      require(canonicalBytes == reverseBytes,
+              "symmetric transport swap has multiple encodings");
+      const auto adopted =
+          take(loom::dse::adoptSystemCompositionRewriteConfig(reverseBytes));
+      const auto *swap = std::get_if<loom::dse::SwapTransportConnectionSources>(
+          &adopted.first.front());
+      require(swap && swap->firstDestination == second &&
+                  swap->secondDestination == first,
+              "transport swap codec did not retain canonical endpoint order");
+      std::vector<loom::dse::SystemCompositionDecisionDomain> noncanonicalSwap =
+          {loom::dse::SwapTransportConnectionSourcesDomain{first, {second}}};
+      requireError(
+          loom::dse::resolveSystemCompositionRewriteConfig(noncanonicalSwap, 1)
+              .takeError(),
+          "order is not canonical");
+    }
+  }
   std::vector<loom::dse::SystemCompositionDecisionDomain> domains = {
       loom::dse::SelectInstructionCoreRealizationDomain{
           loom::fabric::InstructionCoreContextRef{core},
@@ -1230,6 +1268,8 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
       view, dataflow::OperationSchemaId::ArithAddI, 0);
   const dataflow::GraphRef sub = graphOccurrenceContaining(
       view, dataflow::OperationSchemaId::ArithSubI, 0);
+  const dataflow::GraphRef subClone = graphOccurrenceContaining(
+      view, dataflow::OperationSchemaId::ArithSubI, 1);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 2;
@@ -1243,14 +1283,26 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
       view, reverse, mappingConfig, fixture.store));
   require(synthesized.fabric().reference() == reordered.fabric().reference(),
           "graph-set order changed synthesized Fabric identity");
-  require(synthesized.mappings().size() == 2 &&
-              reordered.mappings().size() == 2,
+  require(synthesized.perGraphMappings().size() == 2 &&
+              reordered.perGraphMappings().size() == 2,
           "bounded synthesis did not materialize every graph independently");
-  for (std::size_t ordinal = 0; ordinal < synthesized.mappings().size();
+  for (std::size_t ordinal = 0; ordinal < synthesized.perGraphMappings().size();
        ++ordinal)
-    require(synthesized.mappings()[ordinal].reference() ==
-                reordered.mappings()[ordinal].reference(),
+    require(synthesized.perGraphMappings()[ordinal].reference() ==
+                reordered.perGraphMappings()[ordinal].reference(),
             "graph-set order changed materialized TechMapping identity");
+  require(synthesized.jointMapping().reference() ==
+                  reordered.jointMapping().reference() &&
+              synthesized.jointMapping().view().covers().size() == 2,
+          "graph-set order changed the whole-domain TechMapping");
+  requireSuccess(loom::dse::verifyScalarIntegerAddSubFuFabricLineage(
+      view, forward, synthesized.fabric(), fixture.store));
+  for (const auto &mapping : synthesized.perGraphMappings())
+    requireSuccess(loom::dse::verifyScalarIntegerAddSubFuMappingLineage(
+        view, forward, synthesized.fabric(), mapping, fixture.store));
+  requireSuccess(loom::dse::verifyScalarIntegerAddSubFuJointMappingLineage(
+      view, forward, synthesized.fabric(), synthesized.jointMapping(),
+      fixture.store));
 
   const auto templates = synthesized.fabric().view().fuTemplates();
   require(templates.size() == 1,
@@ -1316,15 +1368,55 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
   auto providerResult = take(loom::dse::invokeCandidateGenerator(
       providerInputs, providerBinding, fixture.store, fixture.blobs));
   const auto &providerCompleted = completed(providerResult);
-  require(providerCompleted.outputBindings.size() == 2 &&
+  require(providerCompleted.outputBindings.size() == 6 &&
               providerCompleted.outputBindings[0].artifacts.size() == 1 &&
-              providerCompleted.outputBindings[1].artifacts.size() == 3,
+              providerCompleted.outputBindings[1].artifacts.size() == 3 &&
+              providerCompleted.outputBindings[2].artifacts.size() == 1 &&
+              providerCompleted.outputBindings[3].artifacts.size() == 1 &&
+              providerCompleted.outputBindings[4].artifacts.size() == 1 &&
+              providerCompleted.outputBindings[5].artifacts.size() == 1,
           "production reverse synthesis provider omitted an output");
+  const std::array<dataflow::GraphRef, 3> completeDomain = {add, sub, subClone};
+  auto completeSynthesis = take(loom::dse::synthesizeScalarIntegerAddSubFu(
+      view, completeDomain, mappingConfig, fixture.store));
   require(providerCompleted.outputBindings[0].artifacts.front() ==
-              synthesized.fabric().reference(),
-          "equivalent graph cardinality changed synthesized Fabric identity");
-  require(providerCompleted.lineageEdges.size() == 4,
+                  completeSynthesis.fabric().reference() &&
+              providerCompleted.outputBindings[2].artifacts.front() ==
+                  completeSynthesis.jointMapping().reference(),
+          "production provider changed complete-domain synthesis identity");
+  require(providerCompleted.lineageEdges.size() == 8,
           "production reverse synthesis provider omitted derivation lineage");
+
+  auto singleProgram = scalarIntegerAddProgram();
+  const loom::ArtifactRootReference singleProgramReference =
+      take(dataflow::publishCanonicalDataflow(singleProgram, fixture.store));
+  auto singleInputs =
+      take(loom::dse::bindFuReverseSynthesisCandidateGeneratorInputs(
+          singleProgramReference));
+  auto singleResult = take(loom::dse::invokeCandidateGenerator(
+      singleInputs, providerBinding, fixture.store, fixture.blobs));
+  const auto &singleCompleted = completed(singleResult);
+  require(singleCompleted.outputBindings[1].artifacts.size() == 1 &&
+              singleCompleted.outputBindings[2].artifacts.size() == 1 &&
+              singleCompleted.outputBindings[1].artifacts.front() ==
+                  singleCompleted.outputBindings[2].artifacts.front(),
+          "single-graph synthesis did not share its exact per-graph and "
+          "joint TechMapping artifact");
+  const loom::ArtifactRootReference sharedMapping =
+      singleCompleted.outputBindings[1].artifacts.front();
+  require(llvm::count_if(
+              singleCompleted.lineageEdges,
+              [&](const auto &edge) {
+                return edge.output == sharedMapping &&
+                       (edge.outputSlot ==
+                            loom::dse::CandidateGeneratorOutputSlotRef(1) ||
+                        edge.outputSlot ==
+                            loom::dse::CandidateGeneratorOutputSlotRef(2));
+              }) == 2,
+          "single-graph synthesis lost one semantic mapping-slot lineage");
+  requireSuccess(loom::dse::validateCanonicalCandidateGeneratorInvocation(
+      singleInputs, providerBinding, singleCompleted.outputBindings,
+      singleCompleted.lineageEdges, true, fixture.store));
 
   auto truncatedOutputs = providerCompleted.outputBindings;
   const loom::ArtifactRootReference omittedMapping =
@@ -1342,9 +1434,13 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
                    truncatedLineage, true, fixture.store),
                "complete graph domain");
 
-  const std::array<loom::dse::CandidateGeneratorOutputDemand, 2> limits = {{
+  const std::array<loom::dse::CandidateGeneratorOutputDemand, 6> limits = {{
       {loom::dse::CandidateGeneratorOutputSlotRef(0), 1},
       {loom::dse::CandidateGeneratorOutputSlotRef(1), 2},
+      {loom::dse::CandidateGeneratorOutputSlotRef(2), 1},
+      {loom::dse::CandidateGeneratorOutputSlotRef(3), 1},
+      {loom::dse::CandidateGeneratorOutputSlotRef(4), 1},
+      {loom::dse::CandidateGeneratorOutputSlotRef(5), 1},
   }};
   auto limitedResult = take(loom::dse::invokeCandidateGenerator(
       providerInputs, providerBinding, fixture.store, fixture.blobs,
@@ -1352,11 +1448,12 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
   const auto &limited = incomplete(limitedResult);
   require(limited.reason == loom::dse::CandidateGeneratorIncompleteReason::
                                 SemanticLimitReached &&
-              limited.retainedOutputBindings.size() == 2 &&
-              limited.retainedOutputBindings[0].artifacts.empty() &&
-              limited.retainedOutputBindings[1].artifacts.empty() &&
+              limited.retainedOutputBindings.size() == 6 &&
+              llvm::all_of(
+                  limited.retainedOutputBindings,
+                  [](const auto &slot) { return slot.artifacts.empty(); }) &&
               limitedResult.workSummary.front().planned ==
-                  providerCompleted.outputBindings[1].artifacts.size() &&
+                  providerCompleted.outputBindings[1].artifacts.size() + 1 &&
               limitedResult.workSummary.front().consumed == 0,
           "reverse synthesis ignored its atomic output demand");
 
@@ -1367,9 +1464,10 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
   const auto &cancelled = incomplete(cancelledResult);
   require(cancelled.reason == loom::dse::CandidateGeneratorIncompleteReason::
                                   CancelledOrTimeout &&
-              cancelled.retainedOutputBindings.size() == 2 &&
-              cancelled.retainedOutputBindings[0].artifacts.empty() &&
-              cancelled.retainedOutputBindings[1].artifacts.empty() &&
+              cancelled.retainedOutputBindings.size() == 6 &&
+              llvm::all_of(
+                  cancelled.retainedOutputBindings,
+                  [](const auto &slot) { return slot.artifacts.empty(); }) &&
               cancelledResult.workSummary.front().consumed == 0,
           "reverse synthesis ignored cancellation before its atomic work");
 
@@ -1377,7 +1475,7 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
   auto calibrated = take(loom::dse::attemptScalarIntegerAddSubFuSynthesis(
       view, {add}, mappingConfig, fixture.store,
       loom::ExecutionControlView(&calibration, stopAfterCalls)));
-  require(calibrated.complete() && calibrated.mappings().size() == 1 &&
+  require(calibrated.complete() && calibrated.perGraphMappings().size() == 1 &&
               calibration.calls > 0,
           "reverse synthesis cancellation boundary calibration failed");
   StopAfterCalls midRun{0, calibration.calls + 1};
@@ -1385,15 +1483,28 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
       providerInputs, providerBinding, fixture.store, fixture.blobs,
       loom::ExecutionControlView(&midRun, stopAfterCalls)));
   const auto &interrupted = incomplete(interruptedResult);
+  const std::size_t retainedPerGraph =
+      interrupted.retainedOutputBindings[1].artifacts.size();
+  const std::size_t retainedJoint =
+      interrupted.retainedOutputBindings[2].artifacts.size();
   require(interrupted.reason == loom::dse::CandidateGeneratorIncompleteReason::
                                     CancelledOrTimeout &&
-              interrupted.retainedOutputBindings.size() == 2 &&
+              interrupted.retainedOutputBindings.size() == 6 &&
               interrupted.retainedOutputBindings[0].artifacts.size() == 1 &&
-              interrupted.retainedOutputBindings[1].artifacts.size() == 1 &&
-              interrupted.lineageEdges.size() == 2 &&
-              interruptedResult.workSummary.front().planned ==
+              retainedPerGraph <=
                   providerCompleted.outputBindings[1].artifacts.size() &&
-              interruptedResult.workSummary.front().consumed == 1,
+              retainedJoint <= 1 &&
+              interrupted.retainedOutputBindings[3].artifacts.size() == 1 &&
+              interrupted.retainedOutputBindings[4].artifacts.size() == 1 &&
+              interrupted.retainedOutputBindings[5].artifacts.size() == 1 &&
+              interrupted.lineageEdges.size() ==
+                  4 + retainedPerGraph + retainedJoint &&
+              interruptedResult.workSummary.front().planned ==
+                  providerCompleted.outputBindings[1].artifacts.size() + 1 &&
+              interruptedResult.workSummary.front().consumed >=
+                  retainedPerGraph &&
+              interruptedResult.workSummary.front().consumed <=
+                  retainedPerGraph + 1,
           "mid-run cancellation lost its finalized synthesis prefix");
 
   const auto &descriptor =
@@ -1451,12 +1562,13 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
   auto unsupportedResult = take(loom::dse::invokeCandidateGenerator(
       unsupportedInputs, providerBinding, fixture.store, fixture.blobs));
   const auto &unsupported = incomplete(unsupportedResult);
-  require(unsupported.reason ==
-                  loom::dse::CandidateGeneratorIncompleteReason::Unsupported &&
-              unsupported.retainedOutputBindings.size() == 2 &&
-              unsupported.retainedOutputBindings[0].artifacts.empty() &&
-              unsupported.retainedOutputBindings[1].artifacts.empty(),
-          "production reverse synthesis did not type unsupported input");
+  require(
+      unsupported.reason ==
+              loom::dse::CandidateGeneratorIncompleteReason::Unsupported &&
+          unsupported.retainedOutputBindings.size() == 6 &&
+          llvm::all_of(unsupported.retainedOutputBindings,
+                       [](const auto &slot) { return slot.artifacts.empty(); }),
+      "production reverse synthesis did not type unsupported input");
 }
 
 } // namespace

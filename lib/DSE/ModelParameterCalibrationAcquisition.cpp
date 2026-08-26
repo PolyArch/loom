@@ -22,6 +22,13 @@ constexpr PromotionAcquisitionInputSlotRef kEvidenceInput(1);
 constexpr evaluation::CaseSubjectRoleRef kCandidateRole(0);
 constexpr evaluation::CaseSubjectRoleRef kEvidenceRole(1);
 
+const std::array<evaluation::ExactRatio, 2> &calibrationErrorQuantiles() {
+  static const std::array<evaluation::ExactRatio, 2> quantiles = {
+      llvm::cantFail(evaluation::ExactRatio::get(1, 2)),
+      llvm::cantFail(evaluation::ExactRatio::get(9, 10))};
+  return quantiles;
+}
+
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       llvm::inconvertibleErrorCode(),
@@ -250,7 +257,7 @@ llvm::Error registerModelParameterCalibrationPromotionAcquisitions() {
 llvm::Expected<EvidenceObligationTemplate>
 prepareModelParameterCalibrationEvidenceObligationTemplate(
     ModelParameterCalibrationTarget target, CalibrationPartitionRole partition,
-    evaluation::ExactRatio quantile, const ResolvedConfig &resolvedConfig) {
+    const ResolvedConfig &resolvedConfig) {
   if (partition == CalibrationPartitionRole::Training)
     return invalid("Training Evidence cannot be a calibration obligation");
   if (llvm::Error error =
@@ -270,8 +277,6 @@ prepareModelParameterCalibrationEvidenceObligationTemplate(
   if (!binding)
     return binding.takeError();
 
-  const evaluation::EvaluationCondition quantileCondition{
-      evaluation::QuantileCondition{quantile}};
   std::vector<MetricRequestTemplate> metrics;
   if (target == ModelParameterCalibrationTarget::Fpa) {
     for (evaluation::MetricKind metric :
@@ -279,15 +284,19 @@ prepareModelParameterCalibrationEvidenceObligationTemplate(
           evaluation::MetricKind::TotalAreaPredictionError,
           evaluation::MetricKind::DynamicPowerPredictionError,
           evaluation::MetricKind::LeakagePowerPredictionError})
-      metrics.push_back(
-          {{metric,
-            evaluation::EvaluationScope{evaluation::ScopeFormRef(0), {}}},
-           {quantileCondition}});
+      for (evaluation::ExactRatio quantile : calibrationErrorQuantiles())
+        metrics.push_back(
+            {{metric,
+              evaluation::EvaluationScope{evaluation::ScopeFormRef(0), {}}},
+             {evaluation::EvaluationCondition{
+                 evaluation::QuantileCondition{quantile}}}});
   } else {
-    metrics.push_back(
-        {{evaluation::MetricKind::RuntimePredictionError,
-          evaluation::EvaluationScope{evaluation::ScopeFormRef(0), {}}},
-         {quantileCondition}});
+    for (evaluation::ExactRatio quantile : calibrationErrorQuantiles())
+      metrics.push_back(
+          {{evaluation::MetricKind::RuntimePredictionError,
+            evaluation::EvaluationScope{evaluation::ScopeFormRef(0), {}}},
+           {evaluation::EvaluationCondition{
+               evaluation::QuantileCondition{quantile}}}});
   }
   llvm::sort(metrics, [](const MetricRequestTemplate &lhs,
                          const MetricRequestTemplate &rhs) {

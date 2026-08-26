@@ -29,15 +29,16 @@ module {
   }
 
   // MULTI-LABEL: dataflow.graph private @index_switch_multiple_cases
-  // MULTI: %[[LANE_ZERO:.*]] = dataflow.constant %arg0 {const_value = 0 : index} : index
+  // MULTI: %[[LANE_ZERO:.*]] = dataflow.constant %arg0 {const_value = 0 : i32} : i32
   // MULTI: %[[CASE_TWO:.*]] = dataflow.constant %arg0 {const_value = 2 : index} : index
   // MULTI: %[[MATCH_TWO:.*]] = arith.cmpi eq, %arg1, %[[CASE_TWO]] : index
-  // MULTI: %[[LANE_ONE:.*]] = dataflow.constant %arg0 {const_value = 1 : index} : index
-  // MULTI: %[[AFTER_TWO:.*]] = arith.select %[[MATCH_TWO]], %[[LANE_ONE]], %[[LANE_ZERO]] : index
+  // MULTI: %[[LANE_ONE:.*]] = dataflow.constant %arg0 {const_value = 1 : i32} : i32
+  // MULTI: %[[AFTER_TWO:.*]] = arith.select %[[MATCH_TWO]], %[[LANE_ONE]], %[[LANE_ZERO]] : i32
   // MULTI: %[[CASE_FIVE:.*]] = dataflow.constant %arg0 {const_value = 5 : index} : index
   // MULTI: %[[MATCH_FIVE:.*]] = arith.cmpi eq, %arg1, %[[CASE_FIVE]] : index
-  // MULTI: %[[LANE_TWO:.*]] = dataflow.constant %arg0 {const_value = 2 : index} : index
-  // MULTI: %[[LANE:.*]] = arith.select %[[MATCH_FIVE]], %[[LANE_TWO]], %[[AFTER_TWO]] : index
+  // MULTI: %[[LANE_TWO:.*]] = dataflow.constant %arg0 {const_value = 2 : i32} : i32
+  // MULTI: %[[LANE_INTEGER:.*]] = arith.select %[[MATCH_FIVE]], %[[LANE_TWO]], %[[AFTER_TWO]] : i32
+  // MULTI: %[[LANE:.*]] = arith.index_cast %[[LANE_INTEGER]] : i32 to index
   // MULTI: %[[EXECUTION:.*]]:3 = dataflow.demux %[[LANE]], %arg0 : (index, none) -> (none, none, none)
   // MULTI: %[[WRITE:.*]]:3 = dataflow.demux %[[LANE]], %arg0 : (index, none) -> (none, none, none)
   // MULTI: %[[READ:.*]]:3 = dataflow.demux %[[LANE]], %arg0 : (index, none) -> (none, none, none)

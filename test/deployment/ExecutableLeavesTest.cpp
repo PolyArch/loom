@@ -3,6 +3,7 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Common/TimeoutBudgets.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
@@ -192,8 +193,9 @@ linkedHostExecutable(llvm::StringRef test,
   std::string error;
   bool executionFailed = false;
   const int result = llvm::sys::ExecuteAndWait(
-      LOOM_TEST_LLD_PATH, arguments, std::nullopt, {}, 30, 1024, &error,
-      &executionFailed);
+      LOOM_TEST_LLD_PATH, arguments, std::nullopt, {},
+      static_cast<unsigned>(timeout::seconds(timeout::Tier::UltraFast)), 1024,
+      &error, &executionFailed);
   require(test, !executionFailed && result == 0, "ld.lld failed: " + error);
   auto buffer = llvm::MemoryBuffer::getFile(executablePath, false, false);
   if (!buffer)

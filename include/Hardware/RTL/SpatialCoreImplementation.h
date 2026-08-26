@@ -19,8 +19,23 @@ class BlobStore;
 
 namespace loom::hardware::rtl {
 
+/// Uses the canonical portable provider registry and an isolated lowering
+/// context to materialize one SpatialCore implementation.
+llvm::Expected<FinalizedHardwareImplementation>
+finalizePortableSpatialCoreHardwareImplementation(
+    const FinalizedConfigurationABI &configurationAbi,
+    fabric::SpatialCoreOccurrenceRef subject,
+    std::optional<ArtifactRootReference> implementationPlatform,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
+/// Re-derives the canonical portable operation-leaf specialization and checks
+/// one imported implementation without publishing artifacts or payloads.
+llvm::Error verifyPortableSpatialCoreHardwareImplementation(
+    const FinalizedConfigurationABI &configurationAbi,
+    const FinalizedHardwareImplementation &implementation);
+
 /// Materializes and publishes one self-contained portable RTL implementation
-/// for one exact SpatialCore occurrence in a finalized System.
+/// for one exact SpatialCore occurrence with an explicit provider catalog.
 llvm::Expected<FinalizedHardwareImplementation>
 finalizePortableSpatialCoreHardwareImplementation(
     mlir::MLIRContext &context,

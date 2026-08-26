@@ -241,18 +241,22 @@ memory family retains a deterministic row frontier bounded by the resolved
 row, evaluation, and publication limits. Reaching that frontier makes the
 domain non-exhaustive; it never becomes an infeasibility proof.
 
-When the rectangular actor-by-row search surface exceeds the resolved partial
-cover budget, Tech cover search uses a bounded constructive exact-cover
-frontier. It selects the uncovered actor with the smallest current row domain,
-prefers rows that cover more actors, prefers Temporal memory supply and wider
-physical occurrence domains, and validates every completed cover with the
-same exact compute-context and memory-occurrence relations. An empty bounded
-frontier is `ProofNotEstablished`; exhaustive best-first search is not entered
-after the bound has already shown that its search surface cannot fit the
-invocation budget. Final TechMapping and downstream Mapping verifiers remain
-independent and authoritative. Summary diagnostics expose memory-row frontier
-limits, constructive-search invocations, completed-cover checks, publications,
-and the existing deterministic row and cover work counters.
+When the rectangular actor-by-row search surface exceeds the stable constructive
+search switch threshold of 4096, Tech cover search uses a bounded constructive
+exact-cover frontier. This algorithm-selection threshold is independent of the
+resolved expansion budget so that changing a budget does not silently change
+the search family or canonical candidate order; the resolved budget still
+limits the frontier's expansions. The frontier selects the uncovered actor
+with the smallest current row domain, prefers rows that cover more actors,
+prefers Temporal memory supply and wider physical occurrence domains, and
+validates every completed cover with the same exact compute-context and
+memory-occurrence relations. An empty or budget-limited frontier is
+`ProofNotEstablished`; exhaustive best-first search is not entered after the
+constructive bound has taken ownership of the search. Final TechMapping and
+downstream Mapping verifiers remain independent and authoritative. Summary
+diagnostics expose memory-row frontier limits, constructive-search invocations,
+completed-cover checks, publications, and the existing deterministic row and
+cover work counters.
 
 ### Spatial PnR
 
@@ -269,7 +273,7 @@ MappingConstraintSet over the exact `D/T/F` tuple. All upstream identities must
 match exactly. The empty constraint set is a real Artifact; absence is invalid.
 
 The current in-tree Spatial config descriptor is
-`loom.spatial_pnr.config.15.0`. A config digest from another domain or version
+`loom.spatial_pnr.config.15.1`. A config digest from another domain or version
 cannot be adopted. The config is invocation input and does not enter the
 semantic identity of a published SpatialMapping.
 

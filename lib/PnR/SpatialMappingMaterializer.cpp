@@ -13,6 +13,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -924,8 +925,9 @@ finalizeSpatialMappingCandidate(
   context.loadDialect<::mapping::MappingDialect>();
   mlir::OpBuilder builder(&context);
   const mlir::Location location = builder.getUnknownLoc();
-  auto module = mlir::ModuleOp::create(location);
-  builder.setInsertionPointToStart(module.getBody());
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::ModuleOp::create(location);
+  builder.setInsertionPointToStart(module->getBody());
   auto root = ::mapping::SpatialOp::create(
       builder, location, identityAttr(&context, techMapping.identity()),
       identityAttr(&context, dataflow.identity()),

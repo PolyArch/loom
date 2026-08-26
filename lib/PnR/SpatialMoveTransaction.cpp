@@ -187,7 +187,11 @@ SpatialMoveTransaction::SpatialMoveTransaction(
           state_->worstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
           state_->totalRouteNegativeSlackQuanta_),
-      initialRecurrenceTiming_(state_->recurrenceTiming_) {
+      recurrenceTimingSelected_(state_->problem().objectiveProgram().selectsMeasure(
+          MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)),
+      initialRecurrenceTiming_(recurrenceTimingSelected_
+                                   ? state_->recurrenceTiming_
+                                   : SpatialRecurrenceTimingProjection{}) {
   state_->activeTransaction_ = this;
   scratch_->activeTransaction_ = this;
 }
@@ -206,6 +210,7 @@ SpatialMoveTransaction::SpatialMoveTransaction(
           other.initialWorstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
           other.initialTotalRouteNegativeSlackQuanta_),
+      recurrenceTimingSelected_(other.recurrenceTimingSelected_),
       initialRecurrenceTiming_(std::move(other.initialRecurrenceTiming_)) {
   other.scratch_ = nullptr;
   if (state_)
@@ -436,10 +441,22 @@ void SpatialMoveTransaction::markMemoryExposure(PnrIndex exposure) {
 }
 
 void SpatialMoveTransaction::markNet(PnrIndex logicalNet) {
+  markProgressNetDirty(logicalNet);
   if (scratch_->affectedNetMarks_[logicalNet] == scratch_->affectedEpoch_)
     return;
   scratch_->affectedNetMarks_[logicalNet] = scratch_->affectedEpoch_;
   scratch_->affectedNets_.push_back(logicalNet);
+}
+
+void SpatialMoveTransaction::markProgressNetDirty(PnrIndex logicalNet) {
+  assert(logicalNet < scratch_->progressDirtyNetMarks_.size());
+  if (scratch_->progressDirtyNetMarks_[logicalNet])
+    return;
+  scratch_->progressTerminalActive_[logicalNet] =
+      !state_->usesRegisterFifo(logicalNet) &&
+      state_->routeTrees_[logicalNet]->isRouted();
+  scratch_->progressDirtyNetMarks_[logicalNet] = 1;
+  scratch_->progressDirtyNets_.push_back(logicalNet);
 }
 
 void SpatialMoveTransaction::markBindingRelations(PnrIndex decision) {
@@ -477,6 +494,110 @@ SpatialMoveTransaction::changeTraversal(std::optional<PnrIndex> oldTraversal,
       return error;
   if (newTraversal)
     return scratch_->handshakeTransaction_->addTraversalUses(*newTraversal, 1);
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialMoveTransaction::changeProgressTraversal(
+    PnrIndex logicalNet, std::optional<PnrIndex> oldTraversal,
+    std::optional<PnrIndex> newTraversal) {
+  if (oldTraversal == newTraversal)
+    return llvm::Error::success();
+  const std::size_t journalBegin =
+      scratch_->progressTraversalDeltas_.size();
+  if (oldTraversal)
+    if (llvm::Error error = applyProgressTraversalDelta(
+            logicalNet, *oldTraversal, 1, 0))
+      return error;
+  if (newTraversal)
+    if (llvm::Error error = applyProgressTraversalDelta(
+            logicalNet, *newTraversal, 0, 1)) {
+      for (std::size_t index = scratch_->progressTraversalDeltas_.size();
+           index != journalBegin; --index) {
+        const auto &delta = scratch_->progressTraversalDeltas_[index - 1];
+        state_->progressState_.revertTraversalDelta(
+            delta.logicalNet, delta.traversal, delta.removed, delta.added);
+      }
+      scratch_->progressTraversalDeltas_.resize(journalBegin);
+      return error;
+    }
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialMoveTransaction::changeProgressTerminalSelections(
+    PnrIndex logicalNet, bool oldActive, bool newActive) {
+  if (oldActive == newActive)
+    return llvm::Error::success();
+  const FrozenSpatialTransferIndex &transfers = state_->problem_->transfers();
+  if (logicalNet >= transfers.logicalNets().size() ||
+      logicalNet >= transfers.logicalNetSourceBindings().size())
+    return candidateError("progress terminal logical net is out of range");
+  const auto selectedTraversal =
+      [&](FrozenSpatialTerminalBinding terminal)
+      -> llvm::Expected<std::optional<PnrIndex>> {
+    PnrIndex option = getInvalidPnrIndex();
+    switch (terminal.kind) {
+    case FrozenSpatialTerminalBindingKind::PortDemand:
+      if (terminal.index >= state_->portAttachments_.size())
+        return candidateError("progress PortDemand is out of range");
+      option = state_->portAttachments_[terminal.index];
+      break;
+    case FrozenSpatialTerminalBindingKind::GraphBoundary:
+      if (terminal.index >= state_->graphBoundaryAttachments_.size())
+        return candidateError("progress graph boundary is out of range");
+      option = state_->graphBoundaryAttachments_[terminal.index];
+      break;
+    }
+    return attachmentTraversal(state_->problem_->ports(), option);
+  };
+
+  const std::size_t journalBegin =
+      scratch_->progressTraversalDeltas_.size();
+  const auto rollbackJournal = [&]() {
+    for (std::size_t index = scratch_->progressTraversalDeltas_.size();
+         index != journalBegin; --index) {
+      const auto &delta = scratch_->progressTraversalDeltas_[index - 1];
+      state_->progressState_.revertTraversalDelta(
+          delta.logicalNet, delta.traversal, delta.removed, delta.added);
+    }
+    scratch_->progressTraversalDeltas_.resize(journalBegin);
+  };
+  const auto applySelectedTraversal = [&](std::optional<PnrIndex> traversal)
+      -> llvm::Error {
+    if (!traversal)
+      return llvm::Error::success();
+    return applyProgressTraversalDelta(logicalNet, *traversal,
+                                       oldActive ? 1 : 0,
+                                       newActive ? 1 : 0);
+  };
+  auto source =
+      selectedTraversal(transfers.logicalNetSourceBindings()[logicalNet]);
+  if (!source) {
+    rollbackJournal();
+    return source.takeError();
+  }
+  if (llvm::Error error = applySelectedTraversal(*source)) {
+    rollbackJournal();
+    return error;
+  }
+  const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
+  const auto sinks = transfers.logicalNetSinkBindings();
+  if (net.sinkOffset > sinks.size() ||
+      net.sinkCount > sinks.size() - net.sinkOffset) {
+    rollbackJournal();
+    return candidateError("progress sink terminal range is inconsistent");
+  }
+  for (FrozenSpatialTerminalBinding sink :
+       sinks.slice(net.sinkOffset, net.sinkCount)) {
+    auto traversal = selectedTraversal(sink);
+    if (!traversal) {
+      rollbackJournal();
+      return traversal.takeError();
+    }
+    if (llvm::Error error = applySelectedTraversal(*traversal)) {
+      rollbackJournal();
+      return error;
+    }
+  }
   return llvm::Error::success();
 }
 
@@ -821,6 +942,13 @@ SpatialMoveTransaction::setPortAttachment(PnrIndex demand,
           attachmentTraversal(state_->problem_->ports(), old),
           attachmentTraversal(state_->problem_->ports(), attachmentOption)))
     return error;
+  const PnrIndex logicalNet =
+      state_->problem_->ports().portDemands()[demand].logicalNet;
+  if (scratch_->progressTerminalActive_[logicalNet])
+    if (llvm::Error error = changeProgressTraversal(
+            logicalNet, attachmentTraversal(state_->problem_->ports(), old),
+            attachmentTraversal(state_->problem_->ports(), attachmentOption)))
+      return error;
   state_->portAttachments_[demand] = attachmentOption;
   state_->bindingRelationChoices_
       [state_->problem_->bindingRelations().portDecisionOffset() + demand] =
@@ -865,6 +993,12 @@ SpatialMoveTransaction::setGraphBoundaryAttachment(PnrIndex boundary,
     return llvm::Error::success();
   recordBoundary(boundary);
   markBoundary(boundary);
+  if (scratch_->progressTerminalActive_[record.logicalNet])
+    if (llvm::Error error = changeProgressTraversal(
+            record.logicalNet,
+            attachmentTraversal(state_->problem_->ports(), old),
+            attachmentTraversal(state_->problem_->ports(), attachmentOption)))
+      return error;
   state_->graphBoundaryAttachments_[boundary] = attachmentOption;
   state_->bindingRelationChoices_[state_->problem_->bindingRelations()
                                       .graphBoundaryDecisionOffset() +
@@ -998,8 +1132,8 @@ SpatialMoveTransaction::routeTransaction(PnrIndex logicalNet) {
       return transaction.takeError();
     scratch_->routeTransactions_[logicalNet].emplace(std::move(*transaction));
     scratch_->touchedRoutes_.push_back(logicalNet);
-    markNet(logicalNet);
   }
+  markNet(logicalNet);
   return &*scratch_->routeTransactions_[logicalNet];
 }
 
@@ -1110,20 +1244,22 @@ llvm::Error SpatialMoveTransaction::ripUpWholeRoute(PnrIndex logicalNet) {
 }
 
 llvm::Expected<SpatialCandidateRouteProjection>
-SpatialMoveTransaction::projectCurrentRoutes() const {
+SpatialMoveTransaction::projectCurrentRoutes() {
   return projectCurrentRoutesImpl(nullptr);
 }
 
 llvm::Expected<SpatialCandidateRouteProjection>
 SpatialMoveTransaction::projectCurrentRoutes(
-    SpatialTagAssignmentSummary &tagSummary) const {
+    SpatialTagAssignmentSummary &tagSummary) {
   return projectCurrentRoutesImpl(&tagSummary);
 }
 
 llvm::Expected<SpatialCandidateRouteProjection>
 SpatialMoveTransaction::projectCurrentRoutesImpl(
-    SpatialTagAssignmentSummary *tagSummary) const {
+    SpatialTagAssignmentSummary *tagSummary) {
   if (llvm::Error error = ensureCollecting())
+    return std::move(error);
+  if (llvm::Error error = synchronizeProgressProjection())
     return std::move(error);
 
   std::vector<const RouteTreeState *> routes;
@@ -1140,7 +1276,8 @@ SpatialMoveTransaction::projectCurrentRoutesImpl(
     }
     routes.push_back(route);
   }
-  return state_->projectVerifiedRoutes(routes, tagSummary);
+  return state_->projectVerifiedRoutes(
+      routes, tagSummary, scratch_->handshakeProjectionScratch_);
 }
 
 llvm::Error SpatialMoveTransaction::validateAffectedState() const {
@@ -1300,9 +1437,9 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
     state_->worstRouteArrivalDelayQuanta_ = worstArrival;
     state_->totalRouteNegativeSlackQuanta_ = totalNegativeSlack;
   }
-  {
-    auto recurrenceTiming =
-        detail::projectSpatialRecurrenceTiming(*state_, scratch_->routeViews_);
+  if (recurrenceTimingSelected_) {
+    auto recurrenceTiming = detail::projectSpatialRecurrenceTiming(
+        *state_, scratch_->routeViews_);
     if (!recurrenceTiming)
       return recurrenceTiming.takeError();
     state_->recurrenceTiming_ = std::move(*recurrenceTiming);
@@ -1342,6 +1479,13 @@ SpatialMoveTransaction::summarizeCurrentTagAssignments() const {
   if (!scratch_ || !closed_)
     return candidateError("Physical Tag summary requires a closed active move");
   return state_->tagAssignments_.summarizeCurrentState(true);
+}
+
+llvm::Expected<SpatialTagAssignmentDelta>
+SpatialMoveTransaction::summarizeCurrentTagAssignmentDelta() const {
+  if (!scratch_ || !closed_)
+    return candidateError("Physical Tag delta requires a closed active move");
+  return state_->tagAssignments_.summarizeCurrentDelta(scratch_->tagScratch_);
 }
 
 bool SpatialMoveTransaction::hasRouteTreeChange() const {
@@ -1543,7 +1687,8 @@ void SpatialMoveTransaction::rollback() noexcept {
   state_->worstRouteArrivalDelayQuanta_ = initialWorstRouteArrivalDelayQuanta_;
   state_->totalRouteNegativeSlackQuanta_ =
       initialTotalRouteNegativeSlackQuanta_;
-  state_->recurrenceTiming_ = initialRecurrenceTiming_;
+  if (recurrenceTimingSelected_)
+    state_->recurrenceTiming_ = initialRecurrenceTiming_;
   finish();
 }
 

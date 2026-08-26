@@ -13,6 +13,8 @@ add_mlir_library(LoomFrontendRaising
   SCFWhileToForPass.cpp
   StructuredRaising.cpp
 
+  PARTIAL_SOURCES_INTENDED
+
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Frontend/Raising
 
@@ -52,4 +54,19 @@ mlir_target_link_libraries(LoomFrontendRaising PUBLIC
   LLVMipo
   LLVMPasses
   LLVMTransformUtils
+)
+
+add_llvm_pass_plugin(LoomCandidateProjectionPass
+  CandidateProjectionPass.cpp
+
+  PARTIAL_SOURCES_INTENDED
+)
+
+target_link_libraries(LoomCandidateProjectionPass PRIVATE
+  LoomFrontendPayload
+  LoomFrontendRaising
+)
+
+set_target_properties(LoomCandidateProjectionPass PROPERTIES
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/loom"
 )

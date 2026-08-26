@@ -307,7 +307,8 @@ struct CgraSimulationOutcome final {
 };
 
 /// Removable invocation-local admission projection for repeated execution of
-/// one exact workload/runtime-input pair on one PreparedCgraExecution.
+/// one exact workload/runtime-input pair. The projection shares ownership of
+/// its immutable PreparedCgraExecution closure.
 class PreparedCgraWorkloadExecution final {
 public:
   PreparedCgraWorkloadExecution(PreparedCgraWorkloadExecution &&) noexcept;

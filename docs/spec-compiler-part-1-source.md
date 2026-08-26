@@ -96,13 +96,74 @@ misapplied pragmas are source diagnostics. Begin/end regions, required
 variants, a companion macro header, and parallel attribute spellings are not
 part of the first source contract.
 
+The initial provider admits translation-unit free-function definitions and
+loops whose emitted LLVM carrier is that function. Namespace members, member
+functions, function templates, and lambda-local loops are not in this admitted
+source domain; the provider returns a typed unsupported-construct diagnostic
+instead of guessing a different carrier.
+Macro-expanded target boundaries are outside the admitted domain for the same
+reason: their presumed expansion range cannot serve as the source identity of
+the immediately following spelled target.
+Likewise, a selected loop body cannot contain a `case` or `default` label owned
+by an enclosing switch. Such a label changes the ownership of the compiler-only
+loop marker wrapper and receives a typed unsupported-construct diagnostic.
+
 The clang provider lowers the hint through one provider-owned metadata
-encoding. Function candidates use a typed function annotation; loop candidates
-use a loop metadata operand. The mutable raising workspace projects both to one
-internal unit attribute on the owning callable or loop. Part 2 must consume or
-explicitly discard that hint before publishing S0 or any later candidate; it
-cannot enter Structured Program canonical bytes or remain as unresolved
-target-specific metadata in Sn.
+encoding. Function candidates use a typed function annotation. Loop candidates
+use a function-carried source payload and a compiler-only annotation expression
+as the selector of a zero-case `switch` whose default statement is the loop.
+The wrapper and loop therefore remain one source statement even under an
+unbraced `if`, `else`, or outer loop. At the start of the LLVM pipeline, the
+frontend pass proves and removes that wrapper, binds the marker to one exact
+LLVM loop and unique latch, and moves the complete payload into a nonsemantic
+loop metadata property. A carrier-local manifest remains independently of the
+loop metadata so optimization cannot silently erase a source candidate.
+Raising consumes only this projected metadata; an unprojected raw Loom
+annotation is a typed unsupported input rather than a second interpretation of
+the wrapper. Raising requires a one-to-one manifest-to-surviving-loop relation,
+removes both metadata forms, and validates the complete ordered CFG edge
+relation again after LLVM import. It then projects the payload to one internal
+unit attribute on the recovered loop. A missing, ambiguous, erased, cloned, or
+split marker-to-loop relation is a typed unsupported or unproven projection,
+never a guessed owner.
+
+The payload records the presumed source file, one-based carrier and pragma
+positions, and the selected definition or loop's begin and exclusive-end
+positions. The pipeline-start projection requires the LLVM annotation's file
+and line anchor to match the payload carrier before accepting that function.
+A function hint remains attached to the retained source definition; ordinary
+LLVM debug locations separately carry any inlined operation through its exact
+callee-to-caller source-location chain. The hint is not copied onto every
+inline clone. Internal and inline definitions are retained long enough for
+raising to consume their annotations without changing call semantics.
+Malformed encodings, invalid placements, unsupported source constructs, and
+unproven projections report the stable typed categories
+`candidate_hint_invalid_encoding`, `candidate_hint_invalid_placement`,
+`candidate_hint_unsupported_construct`, and
+`candidate_hint_projection_proof_not_established`, respectively.
+Preprocessing-only actions cannot preserve the selected AST target's exact
+source range. This includes the separate preprocessing job created by
+`-save-temps`. Encountering a candidate in such an action returns
+`candidate_hint_unsupported_construct`; the driver does not run a hidden
+second frontend invocation or invent a public preprocessed carrier. Inputs
+without a candidate retain Clang's ordinary preprocessing, dependency, stdin,
+plugin, pass-pipeline, and failure-artifact behavior. A code-generating action
+that selects a candidate while disabling LLVM passes likewise returns
+`candidate_hint_unsupported_construct`, because the source provider cannot
+project that target without its pipeline-start pass.
+
+For an internal definition emitted only by the candidate provider, temporary
+retention is released after the relocatable payload is captured. Existing LLVM
+annotations remain live only when the source compilation would have emitted
+the definition independently. An unrelated annotation with arguments on an
+otherwise unreferenced temporary definition is rejected as an unsupported
+construct because its arbitrary support graph has no local removal proof.
+Profiling and coverage are likewise rejected for a temporary definition when
+their translation-unit support data would outlive that definition.
+
+Part 2 must consume or explicitly discard the transient hint before publishing
+S0 or any later candidate; it cannot enter Structured Program canonical bytes
+or remain as unresolved target-specific metadata in Sn.
 
 ## 4. Boundary Principle
 

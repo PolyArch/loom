@@ -2,6 +2,7 @@
 #define LOOM_EVALUATION_MODELS_CALIBRATEDFPA_H
 
 #include "Common/Artifact.h"
+#include "Common/ComponentViewDigest.h"
 #include "Evaluation/Case.h"
 #include "Evaluation/ModelDescriptor.h"
 #include "Evaluation/Models/FpaParameterContract.h"
@@ -24,6 +25,25 @@ struct PreparedCanonicalDataflowFabricCalibratedFpaEvaluation final {
 };
 
 llvm::Error registerCalibratedFpaProviders();
+
+struct CanonicalDataflowFabricFpaInference final {
+  ModelParameterInferenceOutcome outcome;
+  /// Removable digest of the exact canonical Evaluation case. The immutable
+  /// weight remains a separate semantic input and must be combined by the
+  /// consuming cache owner.
+  ComponentViewDigest contextDigest;
+};
+
+/// Projects the existing FPA parameter-contract feature view for one exact
+/// Canonical Dataflow/Fabric pair and evaluates only the immutable weight.
+/// This is an in-process model inference boundary: it never dispatches EDA or
+/// creates a second parameter, cache, or prediction schema.
+llvm::Expected<CanonicalDataflowFabricFpaInference>
+inferCanonicalDataflowFabricFpa(
+    const ArtifactRootReference &canonicalDataflow,
+    const ArtifactRootReference &fabric, const EdaPredictionModelWeight &weight,
+    llvm::ArrayRef<EvaluationCondition> operatingConditions,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
 /// Constructs and publishes one in-process calibrated FPA Request for an exact
 /// Canonical Dataflow/Fabric pair and immutable FPA parameter bundle. The

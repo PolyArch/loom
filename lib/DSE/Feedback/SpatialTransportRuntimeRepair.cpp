@@ -35,6 +35,12 @@ bool deadlineReached(const PlanExecutionPolicy &policy) {
                  .count()) >= *deadline;
 }
 
+bool hasVerifiedMapping(const JointDesignExecution &execution) {
+  return llvm::any_of(execution.mappedPairs, [](const auto &pair) {
+    return !pair.systemMappings.empty();
+  });
+}
+
 } // namespace
 
 llvm::Expected<JointSpatialTransportMappingRepair>
@@ -51,9 +57,12 @@ executeSpatialTransportRuntimeRepair(
     return result;
   if (!feedback.parentMapping || !feedback.owners)
     return invalid("exact feedback has no immutable Mapping owners");
-  if (!parentExecution.summary.selectedMapping ||
-      *parentExecution.summary.selectedMapping != *feedback.parentMapping)
-    return invalid("feedback does not name the selected parent Mapping");
+  const std::optional<ArtifactRootReference> &parentCandidate =
+      parentExecution.summary.selectedMapping
+          ? parentExecution.summary.selectedMapping
+          : parentExecution.summary.qualityIncompleteCandidate;
+  if (!parentCandidate || *parentCandidate != *feedback.parentMapping)
+    return invalid("feedback does not name the parent quality candidate");
   if (feedback.alternatives.empty())
     return invalid("exact feedback has no repair alternative");
 
@@ -115,9 +124,6 @@ executeSpatialTransportRuntimeRepair(
       std::min(policy.maximumSpatialMappingsPerPair(), feedbackProbeLimit));
   result.candidatesPlanned = result.candidateLimit;
   result.candidatesReserved = result.candidatesPlanned;
-  auto scheduler = SiteScheduler::create(request.siteCapacity);
-  if (!scheduler)
-    return scheduler.takeError();
   for (std::size_t ordinal = 0; ordinal != result.candidateLimit; ++ordinal) {
     if (deadlineReached(request.executionPolicy)) {
       result.candidatesCancelled += result.candidateLimit - ordinal;
@@ -158,8 +164,8 @@ executeSpatialTransportRuntimeRepair(
                             "spatial-transport-" + std::to_string(ordinal));
     JointHardwareReopenRequest childRequest = request;
     childRequest.journalRoot = journal.str().str();
-    auto execution = executeJointPlan(*plan, request.evidence, childRequest,
-                                      *scheduler, artifacts, blobs);
+    auto execution = executeJointRepairPlan(
+        *plan, *repairPolicy, std::move(childRequest), artifacts, blobs);
     if (!execution)
       return execution.takeError();
     ++result.candidatesConsumed;
@@ -167,6 +173,11 @@ executeSpatialTransportRuntimeRepair(
     result.reuseDispositions.push_back(
         JointMappingReuseDisposition::ColdFallback);
     result.executions.push_back(std::move(*execution));
+    if (!request.boundedQuality &&
+        hasVerifiedMapping(result.executions.back())) {
+      result.candidatesRejected += result.candidateLimit - ordinal - 1;
+      break;
+    }
   }
   if (result.candidatesReserved != result.candidatesConsumed +
                                        result.candidatesRejected +

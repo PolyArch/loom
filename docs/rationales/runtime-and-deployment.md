@@ -244,8 +244,17 @@ is loaded first, and its optional compiler-built transition graph is prepared
 against that same lease. This composition owns no new schema and does not
 reconcile the build result's reporting projections. Without a graph, the
 Application retains an ordinary loaded Deployment and no resource-time
-selector is invented. This invocation-local composition does not by itself
-persist the graph or its endpoint Deployment closures in a deployment package.
+selector is invented.
+
+The Application activation manifest and package persist the exact join needed
+to reproduce that composition. Source StructuredProgram workload/runtime roots
+remain distinct from the Deployment-owned System workload/runtime roots. The
+source-backed replay set joins the former to the selected canonical Dataflow;
+the activation pair names its Deployment owner directly. Package import
+replays both domains, the runtime/oracle Evidence, every transition endpoint,
+and the copied workspace closure. This avoids reconstructing an entry or input
+from command-line values and avoids treating package presence as execution
+evidence.
 
 Memory capability failure is narrower than generic execution failure. The CGRA
 provider reports the exact unsupported contract kind and canonical actor, so

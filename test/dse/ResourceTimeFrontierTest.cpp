@@ -588,6 +588,130 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
       "partitioned temporal epoch was incorrectly rejected before Mapping");
 }
 
+void outOfDomainScreeningRemainsMeasuredButInadmissible() {
+  auto regions = fiveRegionFeatures(2);
+  for (auto &region : regions)
+    for (auto &candidate : region.speedupCurve)
+      candidate.support = loom::dse::ResourceTimeEstimateSupport::Analytic;
+  loom::dse::ResourceTimeMappingCandidateInput candidate{
+      digest(102),       0, 5, 5, 50, 2, invocation(), {reference(20)},
+      std::move(regions)};
+  candidate.physicalModelSupport =
+      loom::dse::ResourceTimeEstimateSupport::OutOfDomain;
+  auto bounded = policy();
+  bounded.maximumMappingFinalists = 1;
+  const auto selected =
+      take(loom::dse::selectResourceTimeMappingFinalists({candidate}, bounded));
+  require(selected.accounting.screeningComparisonCandidates == 1 &&
+              selected.accounting.screeningOutOfDomainCandidates == 1 &&
+              selected.accounting.screeningPhysicalOutOfDomainCandidates == 1 &&
+              selected.accounting.screeningCalibratedPhysicalCandidates == 0 &&
+              selected.accounting.screeningAdmissibleCandidates == 0 &&
+              selected.accounting.screeningDetailedFeasibleIntersection == 0 &&
+              selected.evaluations.front().physicalModelSupport ==
+                  loom::dse::ResourceTimeEstimateSupport::OutOfDomain &&
+              !loom::dse::validateResourceTimeMappingFunnelAccounting(
+                  selected.accounting),
+          "out-of-domain screening was presented as admissible evidence");
+}
+
+void screeningCombinesIndependentLowerBoundSupport() {
+  const auto screeningPoint =
+      [](std::uint64_t resources, std::uint64_t execution,
+         loom::dse::ResourceTimeEstimateSupport support) {
+        return loom::dse::ResourceTimeSpeedupPoint{
+            {resources}, execution, std::nullopt, std::nullopt, 0,
+            0,           0,         support};
+      };
+  std::vector<loom::dse::ResourceTimeRegionFeature> regions{
+      {root(120),
+       {},
+       {screeningPoint(2, 2, loom::dse::ResourceTimeEstimateSupport::Analytic),
+        screeningPoint(1, 3,
+                       loom::dse::ResourceTimeEstimateSupport::Unsupported)},
+       0,
+       false,
+       {}},
+      {root(121),
+       {},
+       {screeningPoint(2, 2, loom::dse::ResourceTimeEstimateSupport::Analytic),
+        screeningPoint(1, 3,
+                       loom::dse::ResourceTimeEstimateSupport::Unsupported)},
+       0,
+       false,
+       {}}};
+  loom::dse::ResourceTimeMappingCandidateInput candidate{
+      digest(120),       0, 2, 2, 2, 2, invocation(), {reference(20)},
+      std::move(regions)};
+  auto bounded = policy();
+  bounded.availableResourceUnits = {2};
+  bounded.maximumMappingFinalists = 1;
+  const auto selected =
+      take(loom::dse::selectResourceTimeMappingFinalists({candidate}, bounded));
+  require(selected.evaluations.size() == 1 &&
+              selected.evaluations.front().screeningLowerBoundPicoseconds ==
+                  3 &&
+              selected.evaluations.front()
+                      .screeningCriticalPathLowerBoundPicoseconds == 2 &&
+              selected.evaluations.front().screeningCriticalPathSupport ==
+                  loom::dse::ResourceTimeEstimateSupport::Analytic &&
+              selected.evaluations.front()
+                      .screeningResourceWorkLowerBoundPicoseconds == 3 &&
+              selected.evaluations.front().screeningResourceWorkSupport ==
+                  loom::dse::ResourceTimeEstimateSupport::Unsupported &&
+              selected.evaluations.front().screeningSupport ==
+                  loom::dse::ResourceTimeEstimateSupport::Unsupported &&
+              selected.evaluations.front().screeningConfidence ==
+                  loom::dse::ResourceTimeEstimateConfidence::None &&
+              selected.accounting.screeningComparisonCandidates == 1 &&
+              selected.accounting.screeningAdmissibleCandidates == 0,
+          "mixed-support screening presented an unsupported work bound as "
+          "analytic");
+
+  std::vector<loom::dse::ResourceTimeRegionFeature> criticalRegions{
+      {root(122),
+       {},
+       {screeningPoint(2, 10, loom::dse::ResourceTimeEstimateSupport::Analytic),
+        screeningPoint(1, 20,
+                       loom::dse::ResourceTimeEstimateSupport::Unsupported)},
+       0,
+       false,
+       {}}};
+  loom::dse::ResourceTimeMappingCandidateInput criticalCandidate{
+      digest(122),
+      0,
+      1,
+      1,
+      1,
+      2,
+      invocation(),
+      {reference(20)},
+      std::move(criticalRegions)};
+  criticalCandidate.physicalModelSupport =
+      loom::dse::ResourceTimeEstimateSupport::Calibrated;
+  auto criticalPolicy = bounded;
+  criticalPolicy.availableResourceUnits = {4};
+  const auto critical = take(loom::dse::selectResourceTimeMappingFinalists(
+      {criticalCandidate}, criticalPolicy));
+  require(critical.evaluations.size() == 1 &&
+              critical.evaluations.front().screeningLowerBoundPicoseconds ==
+                  10 &&
+              critical.evaluations.front().screeningSupport ==
+                  loom::dse::ResourceTimeEstimateSupport::Analytic &&
+              critical.evaluations.front()
+                      .screeningCriticalPathLowerBoundPicoseconds == 10 &&
+              critical.evaluations.front()
+                      .screeningResourceWorkLowerBoundPicoseconds == 5 &&
+              critical.evaluations.front().screeningResourceWorkSupport ==
+                  loom::dse::ResourceTimeEstimateSupport::Unsupported &&
+              critical.accounting.screeningCalibratedPhysicalCandidates == 1 &&
+              critical.accounting.screeningPhysicalOutOfDomainCandidates == 0 &&
+              !loom::dse::validateResourceTimeMappingFunnelAccounting(
+                  critical.accounting),
+          "inactive resource-work support overwrote the winning critical-path "
+          "bound");
+}
+
 void exactMemoSupportsWarmAndConcurrentReuse() {
   auto bounded = policy();
   bounded.maximumMappingFinalists = 1;
@@ -709,6 +833,8 @@ int main() {
   dependencyCyclesRemainTyped();
   replayIsDeterministic();
   mappingFunnelAdmitsOnlyBoundedFinalists();
+  outOfDomainScreeningRemainsMeasuredButInadmissible();
+  screeningCombinesIndependentLowerBoundSupport();
   exactMemoSupportsWarmAndConcurrentReuse();
   return 0;
 }

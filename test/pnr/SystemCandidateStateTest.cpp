@@ -39,6 +39,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -275,7 +276,7 @@ mlir::MLIRContext makeContext() {
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
                   mapping::MappingDialect, mlir::DLTIDialect,
-                  mlir::func::FuncDialect>();
+                  mlir::func::FuncDialect, mlir::LLVM::LLVMDialect>();
   return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
 }
 
@@ -300,14 +301,14 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
         : (none, i32) -> (i32, none)
     dataflow.thread.yield %second_done : none
   }
-  func.func private @host() {
+  llvm.func internal @host() {
     %value = arith.constant 7 : i32
     %extent = arith.constant 8 : index
     %first = dataflow.thread.launch @worker(%value) grid(%extent)
         : (i32) -> !dataflow.thread_token
     %second = dataflow.thread.launch @worker(%value) grid(%extent)
         : (i32) -> !dataflow.thread_token
-    return
+    llvm.return
   }
 }
 )mlir",
@@ -1788,6 +1789,8 @@ void graphBindingWorkflow() {
           scheduleMappings->accounting.migrationPreservedGraphBindings +
                   scheduleMappings->accounting.migrationReopenedGraphBindings ==
               scheduleProblem->graphDecisions().size() &&
+          scheduleMappings->accounting.migrationReopenedServiceLegs != 0 &&
+          scheduleMappings->accounting.migrationPreservedServiceLegs +
           scheduleMappings->accounting.migrationReopenedServiceLegs ==
               scheduleProblem->serviceLegs().size(),
       "resource-time root delta did not drive bounded System repair");

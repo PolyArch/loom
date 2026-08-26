@@ -3,6 +3,8 @@
 #include "Mapping/Artifact/SystemMappingClosureProjection.h"
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
+#include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -348,7 +350,7 @@ atomicActivationKey(const ArtifactIdentity &dataflowIdentity,
 struct ProgressActivationGroup final {
   std::vector<std::uint64_t> activationOrdinals;
   std::optional<::dataflow::RootThreadLaunchRef> relationRoot;
-  std::vector<SystemPresburgerCell> relationDomain;
+  llvm::ArrayRef<SystemPresburgerCell> relationDomain;
   std::vector<std::uint32_t> triggers;
   std::vector<std::vector<std::uint32_t>> releases;
   std::map<std::uint64_t, std::uint64_t> claims;
@@ -391,6 +393,10 @@ relationDomainsIntersect(const ProgressActivationGroup &lhs,
     return true;
   for (const SystemPresburgerCell &left : lhs.relationDomain)
     for (const SystemPresburgerCell &right : rhs.relationDomain) {
+      // Frozen relation domains are canonical. Identical cells are a common
+      // single-partition case and are necessarily non-empty here.
+      if (left == right)
+        return true;
       auto intersects = systemPresburgerCellsIntersect(left, right);
       if (!intersects)
         return intersects.takeError();
@@ -455,6 +461,27 @@ initializedFeedbackInputOrdinals(const ::dataflow::CanonicalActorView &actor) {
 llvm::Error buildSystemEventDependencies(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     SystemEventDependencyGraph &graph) {
+  std::map<mlir::Operation *, ::dataflow::RootThreadLaunchRef> rootByLaunch;
+  for (const auto &root : dataflow.rootThreadLaunches())
+    rootByLaunch.emplace(root.op, root.ref);
+  for (const auto &root : dataflow.rootThreadLaunches()) {
+    auto launch = mlir::dyn_cast<::dataflow::ThreadLaunchOp>(root.op);
+    if (!launch)
+      return invalid("root thread inventory contains a non-launch operation");
+    for (mlir::Value dependency : launch.getAsyncDependencies()) {
+      auto producer = dependency.getDefiningOp<::dataflow::ThreadLaunchOp>();
+      if (!producer)
+        continue;
+      const auto producerRoot = rootByLaunch.find(producer.getOperation());
+      if (producerRoot == rootByLaunch.end())
+        continue;
+      if (llvm::Error error = graph.addEdge(
+              ::dataflow::rootThreadCompletionEventFamily(producerRoot->second),
+              ::dataflow::rootThreadStartEventFamily(root.ref)))
+        return error;
+    }
+  }
+
   std::set<std::pair<std::uint64_t, std::uint32_t>> initializedFeedbackInputs;
   for (const ::dataflow::CanonicalActorView &actor : dataflow.actors()) {
     auto inputs = initializedFeedbackInputOrdinals(actor);
@@ -971,6 +998,147 @@ mappingEventPrecedes(const FrozenMappingProgressModel &model,
   return false;
 }
 
+llvm::Expected<bool> mappingCompletionFrontierIsAdmissible(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> mappedRoots,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> completedBefore,
+    ::dataflow::RootThreadLaunchRef completing,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> activeAfter) {
+  if (mappedRoots.empty() || !llvm::is_contained(mappedRoots, completing))
+    return false;
+  const auto hasDuplicate = [](auto values) {
+    for (std::size_t index = 0; index != values.size(); ++index)
+      if (llvm::is_contained(values.take_front(index), values[index]))
+        return true;
+    return false;
+  };
+  if (hasDuplicate(mappedRoots) || hasDuplicate(completedBefore) ||
+      hasDuplicate(activeAfter))
+    return false;
+  for (const auto root : completedBefore)
+    if (!llvm::is_contained(mappedRoots, root) || root == completing ||
+        llvm::is_contained(activeAfter, root))
+      return false;
+  for (const auto root : activeAfter)
+    if (!llvm::is_contained(mappedRoots, root) || root == completing)
+      return false;
+
+  mlir::ModuleOp module = dataflow.rootThreadLaunches()
+                              .front()
+                              .op->getParentOfType<mlir::ModuleOp>();
+  if (!module)
+    return invalid("root thread launch has no canonical module owner");
+  bool hasStoredProgramWait = false;
+  module.walk([&](::dataflow::ThreadWaitOp) { hasStoredProgramWait = true; });
+  if (hasStoredProgramWait)
+    return false;
+
+  std::vector<::dataflow::RootThreadLaunchRef> canonicalRoots;
+  std::map<mlir::Operation *, ::dataflow::RootThreadLaunchRef> rootByLaunch;
+  canonicalRoots.reserve(dataflow.rootThreadLaunches().size());
+  std::vector<::dataflow::EventFamilyKey> boundaryEvents;
+  boundaryEvents.reserve(dataflow.rootThreadLaunches().size() * 2);
+  for (const auto &root : dataflow.rootThreadLaunches()) {
+    canonicalRoots.push_back(root.ref);
+    rootByLaunch.emplace(root.op, root.ref);
+    boundaryEvents.push_back(::dataflow::rootThreadStartEventFamily(root.ref));
+    boundaryEvents.push_back(
+        ::dataflow::rootThreadCompletionEventFamily(root.ref));
+  }
+  for (const auto root : mappedRoots) {
+    if (!llvm::is_contained(canonicalRoots, root))
+      return false;
+  }
+  auto model = freezeMappingProgressModel(dataflow, boundaryEvents);
+  if (!model)
+    return model.takeError();
+
+  const ::dataflow::EventFamilyKey trigger =
+      ::dataflow::rootThreadCompletionEventFamily(completing);
+  const auto causallyReady =
+      [&](::dataflow::RootThreadLaunchRef root,
+          llvm::ArrayRef<::dataflow::RootThreadLaunchRef> satisfied)
+      -> llvm::Expected<bool> {
+    const ::dataflow::EventFamilyKey start =
+        ::dataflow::rootThreadStartEventFamily(root);
+    for (const auto predecessor : canonicalRoots) {
+      if (predecessor == root)
+        continue;
+      auto completionPrecedes = mappingEventPrecedes(
+          *model, ::dataflow::rootThreadCompletionEventFamily(predecessor),
+          start);
+      if (!completionPrecedes)
+        return completionPrecedes.takeError();
+      auto startPrecedes = mappingEventPrecedes(
+          *model, ::dataflow::rootThreadStartEventFamily(predecessor), start);
+      if (!startPrecedes)
+        return startPrecedes.takeError();
+      if ((*completionPrecedes || *startPrecedes) &&
+          !llvm::is_contained(satisfied, predecessor))
+        return false;
+    }
+    return true;
+  };
+
+  for (const auto completed : completedBefore) {
+    auto ready = causallyReady(completed, completedBefore);
+    if (!ready)
+      return ready.takeError();
+    if (!*ready)
+      return false;
+    auto orderedAfterTrigger = mappingEventPrecedes(
+        *model, trigger,
+        ::dataflow::rootThreadCompletionEventFamily(completed));
+    if (!orderedAfterTrigger)
+      return orderedAfterTrigger.takeError();
+    if (*orderedAfterTrigger)
+      return false;
+  }
+
+  auto completingReady = causallyReady(completing, completedBefore);
+  if (!completingReady)
+    return completingReady.takeError();
+  if (!*completingReady)
+    return false;
+  auto completingStarted = mappingEventPrecedes(
+      *model, ::dataflow::rootThreadStartEventFamily(completing), trigger);
+  if (!completingStarted)
+    return completingStarted.takeError();
+  if (!*completingStarted)
+    return false;
+
+  std::vector<::dataflow::RootThreadLaunchRef> completedAfter(
+      completedBefore.begin(), completedBefore.end());
+  completedAfter.push_back(completing);
+  for (const auto active : activeAfter) {
+    const auto activeRoot = llvm::find_if(
+        dataflow.rootThreadLaunches(),
+        [&](const auto &candidate) { return candidate.ref == active; });
+    if (activeRoot == dataflow.rootThreadLaunches().end())
+      return false;
+    auto launch = mlir::dyn_cast<::dataflow::ThreadLaunchOp>(activeRoot->op);
+    if (!launch)
+      return false;
+    for (mlir::Value dependency : launch.getAsyncDependencies()) {
+      auto producer = dependency.getDefiningOp<::dataflow::ThreadLaunchOp>();
+      if (!producer || !rootByLaunch.count(producer.getOperation()))
+        return false;
+    }
+    auto alreadyStarted = mappingEventPrecedes(
+        *model, ::dataflow::rootThreadStartEventFamily(active), trigger);
+    if (!alreadyStarted)
+      return alreadyStarted.takeError();
+    if (*alreadyStarted)
+      return false;
+    auto ready = causallyReady(active, completedAfter);
+    if (!ready)
+      return ready.takeError();
+    if (!*ready)
+      return false;
+  }
+  return true;
+}
+
 llvm::Expected<MappingProgressProjection> projectSystemMappingProgress(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
@@ -1042,6 +1210,15 @@ llvm::Expected<MappingProgressProjection> projectSystemMappingProgress(
 llvm::Expected<MappingProgressClosure>
 deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
                              const MappingProgressProjection &projection) {
+  return deriveMappingProgressClosure(
+      model, MappingProgressProjectionView{
+                 projection.basis, projection.routeObligations,
+                 projection.capacityCells, projection.resourceActivations});
+}
+
+llvm::Expected<MappingProgressClosure>
+deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
+                             MappingProgressProjectionView projection) {
   if (projection.basis.kind == MappingDataflowProgressBasisKind::Cyclic)
     return MappingProgressClosure{
         MappingProgressClosureKind::ProofNotEstablished,
@@ -1351,8 +1528,7 @@ llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
   return deriveMappingProgressClosure(*model, *projection);
 }
 
-llvm::Expected<MappingProgressClosure>
-qualifySystemMappingResourceTimeProgress(
+llvm::Expected<MappingProgressClosure> qualifySystemMappingResourceTimeProgress(
     const FinalizedSystemMapping &mapping,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric) {

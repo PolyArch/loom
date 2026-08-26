@@ -99,11 +99,17 @@ executeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
                const PlanExecutionPolicy &policy, const ArtifactStore &store,
                const BlobStore &blobs);
 
+enum class InvocationManifestRetention : std::uint8_t {
+  Release,
+  Retain,
+};
+
 llvm::Expected<DsePlanExecutionResult>
 resumeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
               ExecutionJournal &journal, SiteScheduler &scheduler,
               const PlanExecutionPolicy &policy, const ArtifactStore &store,
-              const BlobStore &blobs);
+              const BlobStore &blobs,
+              InvocationManifestRetention manifestRetention);
 
 namespace detail {
 

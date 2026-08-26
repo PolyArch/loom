@@ -29,6 +29,8 @@ constexpr llvm::StringLiteral resourceTimeTransitionCacheDescriptor{
     "loom.dse.resource_time_transition_cache.1"};
 constexpr llvm::StringLiteral resourceTimeAnalyticModelDescriptor{
     "loom.dse.resource_time_analytic_model.1"};
+constexpr llvm::StringLiteral resourceTimePhysicalModelSnapshotDescriptor{
+    "loom.dse.resource_time_physical_model_snapshot.1"};
 constexpr llvm::StringLiteral resourceTimeProjectionMemoDescriptor{
     "loom.dse.resource_time_projection_memo.1"};
 
@@ -99,6 +101,22 @@ llvm::Expected<ComponentViewDigest> resourceTimeAnalyticModelSnapshotDigest() {
       {});
 }
 
+llvm::Expected<ComponentViewDigest> resourceTimePhysicalModelSnapshotDigest(
+    const ArtifactRootReference &edaPredictionModelWeight,
+    const ComponentViewDigest &inferenceContextDigest) {
+  if (edaPredictionModelWeight.schemaIdentity.empty())
+    return invalid("physical model snapshot has an empty schema identity");
+  std::vector<std::uint8_t> bytes;
+  appendString(bytes, resourceTimePhysicalModelSnapshotDescriptor);
+  appendRoot(bytes, edaPredictionModelWeight);
+  appendDigest(bytes, inferenceContextDigest);
+  return computeComponentViewDigest(
+      {reinterpret_cast<const std::uint8_t *>(
+           resourceTimePhysicalModelSnapshotDescriptor.data()),
+       resourceTimePhysicalModelSnapshotDescriptor.size()},
+      bytes);
+}
+
 llvm::Expected<ComponentViewDigest> deriveResourceTimeProjectionCacheKey(
     const ResourceTimeInvocationKey &invocation) {
   if (invocation.sourceLineage.schemaIdentity.empty() ||
@@ -122,9 +140,15 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &system,
     llvm::StringRef entrySymbol,
-    std::optional<std::uint64_t> estimatedRuntimePicoseconds) {
+    std::optional<std::uint64_t> estimatedRuntimePicoseconds,
+    ResourceTimeEstimateSupport physicalModelSupport) {
   if (entrySymbol.empty())
     return invalid("resource-time projection requires an ABI entry symbol");
+  if (physicalModelSupport != ResourceTimeEstimateSupport::Calibrated &&
+      physicalModelSupport != ResourceTimeEstimateSupport::OutOfDomain &&
+      physicalModelSupport != ResourceTimeEstimateSupport::Unsupported)
+    return invalid("resource-time physical model has a non-physical support "
+                   "grade");
   auto reachable =
       dataflow.projectRootThreadLaunchesReachableFromAbiEntry(entrySymbol);
   if (!reachable)
@@ -254,6 +278,7 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
                                     fabric::fabricArtifactSchema.version,
                                     system.artifact().identity()});
   result.availableResourceUnits.push_back(availableAccCores);
+  result.physicalModelSupport = physicalModelSupport;
   result.regions.reserve(reachable->size());
   result.regionBounds.reserve(reachable->size());
   for (std::size_t ordinal = 0; ordinal != reachable->size(); ++ordinal) {
@@ -261,12 +286,6 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
                                       logicalEpochCounts[ordinal], false, {}};
     feature.allocationDomainExhaustive = true;
     feature.analyticFeatures = analyticFeatures[ordinal];
-    feature.analyticFeatures.launchSynchronizationCost =
-        feature.dependencies.size();
-    feature.analyticFeatures.parallelismLowerBound =
-        std::max<std::uint64_t>(1, logicalEpochCounts[ordinal]);
-    feature.analyticFeatures.topologyCongestionProxy =
-        feature.analyticFeatures.actorCount + feature.dependencies.size();
     for (std::size_t producer = 0; producer != reachable->size(); ++producer) {
       if (producer == ordinal)
         continue;
@@ -296,6 +315,12 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
     llvm::sort(feature.dependencies, [](const auto &lhs, const auto &rhs) {
       return rootLess(lhs.producer, rhs.producer);
     });
+    feature.analyticFeatures.launchSynchronizationCost =
+        feature.dependencies.size();
+    feature.analyticFeatures.parallelismLowerBound =
+        std::max<std::uint64_t>(1, logicalEpochCounts[ordinal]);
+    feature.analyticFeatures.topologyCongestionProxy =
+        feature.analyticFeatures.actorCount + feature.dependencies.size();
     const unsigned __int128 scaled =
         static_cast<unsigned __int128>(
             estimatedRuntimePicoseconds.value_or(totalWeight)) *
@@ -320,7 +345,12 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
     result.regions.push_back(std::move(feature));
     result.regionBounds.push_back(
         {(*reachable)[ordinal], maximumUseful[ordinal], boundSupport[ordinal],
-         0, ResourceTimeEstimateSupport::Unsupported});
+         boundSupport[ordinal] == ResourceTimeEstimateSupport::Exact
+             ? std::uint64_t{1}
+             : std::uint64_t{0},
+         boundSupport[ordinal] == ResourceTimeEstimateSupport::Exact
+             ? ResourceTimeEstimateSupport::Exact
+             : ResourceTimeEstimateSupport::Unsupported});
   }
   return result;
 }

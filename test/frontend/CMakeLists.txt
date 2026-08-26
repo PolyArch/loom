@@ -200,6 +200,28 @@ target_link_libraries(loom-structured-schedule-generator-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-structured-polyhedral-schedule-test
+  StructuredPolyhedralScheduleTest.cpp
+)
+
+target_link_libraries(loom-structured-polyhedral-schedule-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomDSECompilerGenerator
+  LoomFrontendCompilation
+  MLIRAffineDialect
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLoom
+  MLIRMemRefDialect
+  MLIRParser
+  MLIRSCFDialect
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-candidate-hint-test
   CandidateHintTest.cpp
 )

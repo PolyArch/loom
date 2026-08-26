@@ -19,6 +19,21 @@ if(NOT LOOM_TEST_JOBS MATCHES "^[1-9][0-9]*$" OR
     "LOOM_TEST_JOBS must be a positive integer no greater than ${LOOM_MAX_TEST_JOBS}")
 endif()
 
+if(LOOM_TEST_JOBS GREATER 3)
+  set(LOOM_DEFAULT_TEST_RTL_BUILD_WORKER_LIMIT 4)
+else()
+  set(LOOM_DEFAULT_TEST_RTL_BUILD_WORKER_LIMIT ${LOOM_TEST_JOBS})
+endif()
+set(LOOM_TEST_RTL_BUILD_WORKER_LIMIT
+  "${LOOM_DEFAULT_TEST_RTL_BUILD_WORKER_LIMIT}" CACHE STRING
+  "Simultaneous System RTL builds selected for the test runner RSS budget")
+if(NOT LOOM_TEST_RTL_BUILD_WORKER_LIMIT MATCHES "^[1-9][0-9]*$" OR
+   LOOM_TEST_RTL_BUILD_WORKER_LIMIT GREATER 4 OR
+   LOOM_TEST_RTL_BUILD_WORKER_LIMIT GREATER LOOM_TEST_JOBS)
+  message(FATAL_ERROR
+    "LOOM_TEST_RTL_BUILD_WORKER_LIMIT must be positive and no greater than 4 or LOOM_TEST_JOBS")
+endif()
+
 function(loom_enable_allocation_probe target)
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(${target} PRIVATE
@@ -85,6 +100,8 @@ set(LOOM_TEST_DEPENDS
   loom-common-special-math-accuracy-test
   loom-application-host-run-test
   loom-application-manifest-test
+  loom-application-pair-outcome-test
+  loom-application-product-build-policy-test
   loom-dataflow-activity-definedness-test
   loom-dataflow-ordered-cardinality-handshake-test
   loom-dataflow-rewrite-decision-test
@@ -107,6 +124,7 @@ set(LOOM_TEST_DEPENDS
   loom-dse-model-parameter-training-test
   loom-dse-ground-truth-campaign-integration-test
   loom-dse-fpa-ground-truth-collection-test
+  loom-dse-fu-reverse-synthesis-workflow-test
   loom-dse-joint-design-exploration-test
   loom-dse-production-candidate-generator-registration-test
   loom-dse-portable-spatial-core-rtl-generator-test
@@ -134,6 +152,8 @@ set(LOOM_TEST_DEPENDS
   loom-external-tool-binding-test
   loom-external-tool-shell-probe-test
   loom-external-tool-invocation-bundle-test
+  loom-external-tool-invocation-receipt-test
+  loom-external-tool-command-schedule-test
   loom-external-tool-runtime-binding-test
   loom-external-tool-provider-test
   loom-implementation-platform-test
@@ -193,6 +213,7 @@ set(LOOM_TEST_DEPENDS
   loom-structured-ownership-lineage-index-test
   loom-structured-call-ownership-test
   loom-structured-schedule-generator-test
+  loom-structured-polyhedral-schedule-test
   loom-structured-memory-communication-generator-test
   loom-structured-memory-communication-lineage-test
   loom-structured-memory-channel-test
@@ -246,6 +267,7 @@ set(LOOM_TEST_DEPENDS
   loom-runtime-dynamic-work-test
   loom-cgra-budget-profile
   loom-system-execution-matrix-test
+  loom-execution-matrix-lifecycle-test
   loom-heterogeneous-system-anchor-test
   loom-simulator-atomic-order-test
   loom-simulator-cgra-event-queue-test
@@ -310,7 +332,7 @@ add_test(
 set_tests_properties(loom-semantic-baseline PROPERTIES
   LABELS semantic-baseline
   RUN_SERIAL TRUE
-  TIMEOUT 1800
+  TIMEOUT ${LOOM_TIMEOUT_XLONG_SECONDS}
 )
 
 add_custom_target(check-loom-semantic-baseline

@@ -44,15 +44,17 @@ The repository-owned `mlperf-tiny-anomaly-detection` runner consumes the exact
 int8 anomaly-detection model and DCASE feature dataset from the pinned
 `mlperf-tiny` Gitlink. It validates the model's ten-layer fully connected
 TFLite topology, executes every quantized layer, and exposes one warm-up plus
-four measured samples under a ten-second deadline. Its exact oracle records
+four measured samples for `smoke`, plus two warm-up and two measured samples
+for `validation`, under a ten-second deadline. The exact smoke oracle records
 all 2,560 measured output bytes independently reproduced with both the
 `ai-edge-litert` 2.2.0 `BUILTIN_REF` kernel and its default XNNPACK delegate,
-using one thread. The host runner uses real-valued requantization compatible
-with those reference semantics; it does not claim bit equivalence to optimized
-fixed-point builtin or TFLite Micro kernels, or complete MLPerf anomaly MSE
-reporting. This is bounded host inference with admitted source, model, dataset,
-profile, and oracle provenance. It is not a TFLite product frontend and does
-not establish canonical Simulation or Evaluation Evidence.
+using one thread. The validation oracle covers the next two measured samples
+after its longer warm-up. The host runner uses real-valued requantization
+compatible with those reference semantics; it does not claim bit equivalence
+to optimized fixed-point builtin or TFLite Micro kernels, or complete MLPerf
+anomaly MSE reporting. This is bounded host inference with admitted source,
+model, dataset, profile, and oracle provenance. It is not a TFLite product
+frontend and does not establish canonical Simulation or Evaluation Evidence.
 
 ## Manifest Contract
 
@@ -66,16 +68,16 @@ application:
 * the independent oracle or typed invariant bound to each selection;
 * the bounded warm-up, measured-sample, oracle-coverage, and execution-deadline
   profile bound to each input; and
-* membership in the `smoke`, `validation`, and `scale_eda` execution
-  selections.
+* the exact input rows selected by the `smoke`, `validation`, and `scale_eda`
+  execution policies.
 
 The tracked JSON contract is schema `loom.application_portfolio` version
-`2.0`. Its exact structural shape is:
+`3.0`. Its exact structural shape is:
 
 ```text
 {
   "schema": "loom.application_portfolio",
-  "version": "2.0",
+  "version": "3.0",
   "applications": [{
     "identity": <stable logical name>,
     "source": {"kind": "gitlink" | "repository", "root": <repo path>},
@@ -84,7 +86,8 @@ The tracked JSON contract is schema `loom.application_portfolio` version
       "language": "c" | "c++",
       "sources": [<source-relative translation units>],
       "compiler_options": [<argument>],
-      "link_options": [<argument>]
+      "link_options": [<argument>],
+      "operator_protocol_symbols": [<linked symbol>]
     },
     "cached_inputs": [
       {"logical_name": <name>, "path": <cache path>, "sha256": <digest>}
@@ -94,6 +97,7 @@ The tracked JSON contract is schema `loom.application_portfolio` version
       "workload": <logical workload selection>,
       "runtime_input": <logical runtime-input selection>,
       "cached_inputs": [<cached logical name>],
+      "compiler_options": [<input-specific argument>],
       "oracle": {"kind": "exact" | "typed_invariant", "entry": <repo path>},
       "profile": {
         "warmup_samples": <unsigned integer>,
@@ -102,20 +106,36 @@ The tracked JSON contract is schema `loom.application_portfolio` version
         "deadline_milliseconds": <positive unsigned integer>
       }
     }],
-    "selections": ["smoke" | "validation" | "scale_eda"]
+    "selection_inputs": {
+      "smoke": [<input name>],
+      "validation": [<input name>],
+      "scale_eda": [<input name>]
+    }
   }]
 }
 ```
 
 Applications, source selections, cached inputs, named inputs, cache
-references, and execution selections are strictly ordered and unique.
-Compiler and link option order remains semantic. A consumer either preserves
-that order or consumes a documented option through an existing semantic
-owner. All paths are normalized visible-ASCII relative paths; stable logical
-names use lowercase ASCII letters, digits, `.`, `_`, or `-`.
-Execution-selection order is `smoke`, `validation`, then `scale_eda`. The build
-entry is one member of the exact source selection. Every cached declaration
-is referenced by a named input.
+references, and input names within each execution selection are strictly
+ordered and unique.
+Compiler and link option order remains semantic. The exact selected compiler
+sequence is derived by appending the input-specific options to the build
+options. Host and product consumers use that one derived sequence; the
+inventory additionally retains the input-specific subsequence so a tier's
+compile-time input provenance is inspectable. A consumer either preserves the
+option order or consumes a documented option through an existing semantic
+owner. Operator-protocol symbols are ordered, unique linked entry symbols owned
+by the build selection; their order retains the candidate preference previously
+expressed by the product invocation. A portfolio invocation cannot supply a
+competing CLI symbol list. All paths are normalized visible-ASCII relative
+paths; stable logical names use lowercase ASCII letters, digits, `.`, `_`, or
+`-`.
+The optional execution-selection fields are interpreted in the fixed order
+`smoke`, `validation`, then `scale_eda`. Every present field has a nonempty
+exact input-name set, every name resolves within the same application, and
+every input belongs to at least one execution selection. The build entry is
+one member of the exact source selection. Every cached declaration is
+referenced by a named input.
 Unknown fields are invalid, so a Gitlink row cannot copy a revision, version
 alias, tolerance, or untyped property into the manifest. Workload and
 runtime-input names are repository selections for their existing owners, not
@@ -129,10 +149,15 @@ product runtime owns their implementation. This interpretation preserves the
 manifest as the build dependency owner without inventing an empty target
 library or importing a host library into the product image.
 
-The current manifest selects only `smoke`. It has no `validation` or
-`scale_eda` member, so neither name carries a current coverage claim. Those
-values remain schema vocabulary for future real rows; adding one requires an
-actual bounded input and oracle under the same contract.
+The current manifest binds all five applications to real bounded `smoke` and
+`validation` rows. `gapbs-pagerank`, `loom-multisensor-attention`, and
+`vecadd-memory` also own exact `scale_eda` rows, covering irregular memory,
+Attention, and regular contiguous memory respectively. Every declared tier
+selects its own actual bounded input row, runtime-input name, and exact oracle.
+For compiled fixtures, input-specific constants make the selected values and
+memory footprint part of the derived source build. `selection_inputs` is the
+only tier-to-row relation; a runner never infers it from an input name. Adding
+a tier requires another real bounded input and oracle under the same contract.
 
 The profile owns no duplicated total or oracle sample count. Its exact input
 budget is derived as `warmup_samples + measured_samples`; the sum must fit in
@@ -167,18 +192,23 @@ in-process compile-to-Deployment invocation. The standalone final-link replay
 helper cannot attach a portfolio selection because it cannot prove that the
 input link was produced from that selection.
 
+The pair decision and product build derive operator-protocol symbols from the
+selected build. They do not accept an independent symbol list, so candidate
+discovery and the portfolio report cannot silently name different kernels.
+
 The current product source binding admits exactly zero warm-up samples and one
 measured sample. A profile with any other sample count is typed unsupported
 until an application runner executes the declared counts; the product path
 does not silently reinterpret or ignore a larger profile. Consequently, the
-TinyML member's one-warm-up/four-measured profile is directly executable by
-its bounded host runner but returns `loom_portfolio_profile_unsupported` from
+TinyML member's smoke and validation profiles are directly executable by its
+bounded host runner but each returns `loom_portfolio_profile_unsupported` from
 the current product source-binding path.
 
-The pair decision projects the resolved application identity, input name,
-source/build selection, declared workload and runtime-input names, declared
-oracle and bounded profile, and referenced cache digests. Its typed execution
-binding is `declared_only`, `canonical_simulation`, or
+The versioned `loom.application_pair_decision` projection records the resolved
+application identity, input name, source/build selection, input-specific
+compiler options, declared workload and runtime-input names, declared oracle
+and bounded profile, and referenced cache digests. Its typed execution binding
+is `declared_only`, `canonical_simulation`, or
 `canonical_simulation_and_oracle`. The last state is reached only after the
 existing Mapping runtime owner completes source-backed DFG and CGRA
 Simulation and a native `SimulationComparison` reports no finding. Its exact
@@ -195,6 +225,23 @@ runtime input, Fabric, Mapping, and execution Evidence remain owned by their
 existing Artifacts; the portfolio projection is repository provenance, not a
 second copy of those payloads.
 
+A successful decision is published inside
+`loom.application_pair_evidence` version `1.0`. That envelope is the canonical
+join of candidate and analytic-gate inventories, actual Tech/Spatial/System
+work, selected Mapping checkpoint, failure-cone counters, work ledgers,
+Mapping outcome inventory, and the pair decision. A pre-admission or causal
+failure uses `loom.application_pair_disposition` version `1.0` and retains the
+same typed decision without fabricating Mapping work. Area, power, and energy
+remain explicit unsupported observations with null values when no owning
+Evidence exists.
+
+The selected candidate may retain several Mapping observations. The envelope's
+selected plan ordinal and Mapping root must identify exactly one of them; that
+same observation owns the selected System, completed runtime and comparison
+Evidence references, and measured DFG, CGRA, and resource-cost values projected
+into the final objective. Candidate-level convenience fields cannot select a
+different observation or combine facts from several plans.
+
 The referenced source package owns program sources and build semantics. Existing
 Loom owners produce the linked LLVM module, Structured Program Candidate,
 Canonical Dataflow Program, Mapping, Deployment, HardwareImplementation,
@@ -203,9 +250,11 @@ EvaluationEvidence. The manifest does not copy any of those payloads or define
 an `ApplicationArtifact`.
 
 One application identity may have several named input selections. Those
-selections change exact workload or runtime-input identity, not application
-membership. The three execution selections are scheduling and conformance
-policy over the same inventory:
+inputs change exact workload or runtime-input identity, not application
+membership. `selection_inputs` is the sole mapping from each scheduling tier
+to exact rows; no runner may substitute every application input or infer a row
+named after the tier. The three execution selections are scheduling and
+conformance policy over the same inventory:
 
 * `smoke` is the bounded, deterministic developer gate;
 * `validation` exercises representative functional and quality behavior; and
@@ -220,9 +269,11 @@ different membership inventory or weaken the selected row's oracle.
 ## Bounded Host Runner
 
 The bounded host runner is an operational conformance path for one exact
-application/input selection. It consumes `ApplicationManifest` and
-`SourceAdmission`; it does not parse a second manifest shape, repeat source or
-cache admission, enumerate applications, or infer a source set. It selects
+application/input selection or one explicit manifest tier. It consumes
+`ApplicationManifest` and `SourceAdmission`; it does not parse a second
+manifest shape, repeat source or cache admission, or infer a source set. A tier
+run resolves exact rows through `selectApplicationInputs` and invokes the same
+single-row runner for each member. It selects
 `clang` for C and `clang++` for C++ from `PATH` unless the invocation names an
 explicit compiler executable. Compilation runs with the repository root as
 the compiler working directory, preserves manifest compiler and link option
@@ -231,6 +282,11 @@ admitted order. The runner likewise consumes admission-owned oracle and cache
 paths instead of resolving manifest paths again. Compiler outputs and captures
 live in one unique invocation directory below the repository's ignored `temp`
 directory and are removed when the invocation returns.
+
+Host compilation defines `LOOM_APPLICATION_HOST_EXECUTION=1` after the selected
+manifest options. Fixtures use that host-only boundary to emit their independent
+observable oracle values; product compilation does not define it and retains
+the ordinary source-to-Deployment behavior.
 
 The host executable ABI is derived only for selections that reference cached
 inputs. Such an executable receives the admitted absolute cache paths in the
@@ -265,6 +321,10 @@ workload and runtime-input names, cached-input declarations and digests,
 oracle selection, complete profile, source-admission status, selected compiler
 and compile exit status, host exit status and wall nanoseconds, oracle status,
 and the typed outcome.
+An explicit tier run wraps its unchanged member reports in
+`loom.application_host_selection_run` version `1.0` and records the exact
+execution-selection name. The wrapper has no aggregate performance metric and
+cannot turn a failed member into a successful tier.
 Signal and timeout sentinels are not exit statuses. Human compiler and runtime
 diagnostics are preserved on the report across successful and failed stages but
 remain outside that JSON projection.
@@ -329,14 +389,21 @@ Training, Validation, and HeldOut Evidence sets through the central DSE
 contract; a held-out release gate must pass before an updated parameter bundle
 is promoted.
 
-The derived evidence manifest joins each exact manifest row independently to
+`loom-application-manifest-inspect` emits the deterministic
+`loom.application_portfolio_inventory` projection only after the canonical C++
+manifest parser accepts the source document. The evidence generator consumes
+that projection and refuses raw manifest JSON, so it cannot become a second
+manifest parser or normalize a document rejected by the semantic owner.
+
+The derived evidence manifest joins each exact inventory row independently to
 its bounded host report and pair decision. It publishes separate host
 conformance, typed pair-disposition, and canonical application-QoR gates. An
-explicit unsupported, timeout, or proof-not-established pair can therefore
-close the typed disposition gate without being reported as canonical QoR.
-The per-member evaluation records every contributing report and pair count so
-an untyped duplicate cannot be hidden by a valid row. Unsupported objective
-dimensions retain a null value.
+explicit unsupported, timeout, or proof-not-established pair closes only the
+typed disposition gate. Every non-TinyML selected row also requires canonical
+QoR; the current TinyML product-profile refusal is the sole explicit
+host-plus-typed-residual exception. The per-member evaluation records every
+contributing report and pair count so an untyped duplicate cannot be hidden by
+a valid row. Unsupported objective dimensions retain a null value.
 
 Raw longitudinal measurements, direct EDA Evidence, reports, databases,
 waveforms, bitfiles, and training corpora remain in ignored or user-owned
@@ -397,12 +464,12 @@ which files happen to exist.
 
 ## Anchor Verification
 
-Stable tests currently validate manifest schema and uniqueness, source-root
-and Gitlink resolution, selected-input cache and oracle admission, bounded
-profile parsing, deterministic smoke inventory, native host output for the
-five admitted rows, byte-exact bounded TinyML inference under its declared
-deadline, product-driver argument projection, and rejection of partial,
-injected, replayed, target-conflicting, or unsupported-profile selections.
+Stable tests validate manifest schema and uniqueness, exact tier-to-input
+selection, source-root and Gitlink resolution, selected-input cache and oracle
+admission, bounded profile parsing, native host output for the five admitted
+rows, byte-exact bounded TinyML inference under its declared deadline,
+product-driver argument projection, and rejection of partial, injected,
+replayed, target-conflicting, or unsupported-profile selections.
 
 Canonical release closure remains pair-local. The Attention, Llama kernel,
 regular `vecadd-memory`, and irregular PageRank anchors require exact manifest
@@ -410,7 +477,9 @@ selection, completed source-backed Simulation and oracle Evidence, one
 selected Mapping candidate, host baseline, and complete application QoR. The
 bounded TinyML row independently proves its real one-warm-up/four-measured
 host profile and exact oracle, while its current product profile limit is a
-typed unsupported pair rather than fabricated Mapping or QoR. Future
-`validation` or `scale_eda` rows, complete cross-domain release sets, and
-additional runtime profile shapes require production Evidence from their
-existing runtime, Mapping, and Evaluation owners before they can be claimed.
+typed unsupported pair rather than fabricated Mapping or QoR. The derived
+evidence manifest verifies each host and pair projection against the exact
+manifest row, reports every tier independently, and retains null unsupported
+QoR dimensions as typed residuals. Additional runtime profile shapes require
+production Evidence from their existing runtime, Mapping, and Evaluation
+owners before they can be selected.

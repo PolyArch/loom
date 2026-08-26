@@ -798,11 +798,12 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
   auto outcome = loom::sim::simulateCgraWorkload(
       prepared, workload.workload, runtimeInput, maximumWork, std::nullopt,
       externalMemoryProvider);
-  const auto wallFinished = std::chrono::steady_clock::now();
   if (!outcome)
     return outcome.takeError();
   std::optional<std::uint64_t> cpuFinished;
+  std::optional<std::chrono::steady_clock::time_point> wallFinished;
   if (performanceProfile) {
+    wallFinished = std::chrono::steady_clock::now();
     auto currentCpu = engineProcessCpuNanoseconds();
     if (!currentCpu)
       return currentCpu.takeError();
@@ -1070,7 +1071,7 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
   }
   if (performanceProfile) {
     const auto elapsedWall =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(wallFinished -
+        std::chrono::duration_cast<std::chrono::nanoseconds>(*wallFinished -
                                                              *wallStarted)
             .count();
     if (elapsedWall < 0 || *cpuFinished < *cpuStarted)
@@ -1350,6 +1351,13 @@ int main(int argc, char **argv) {
     }
   }
 
+#if !defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+  CgraPerformanceProfile performanceProfile;
+  if (!performanceProfilePath.empty())
+    if (llvm::Error error = writeCgraPerformanceProfile(performanceProfilePath,
+                                                        performanceProfile))
+      return report(std::move(error));
+#endif
   auto server = openServer();
   if (!server)
     return report(server.takeError());
@@ -1369,9 +1377,6 @@ int main(int argc, char **argv) {
   connections.reserve(static_cast<std::size_t>(bridgeCount));
   std::uint64_t acceptedConnections = 0;
   std::uint64_t channelGeneration = 0;
-#if !defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
-  CgraPerformanceProfile performanceProfile;
-#endif
   const auto completeLaunch =
       [&](BridgeConnection &bridge,
           PendingLaunchCompletion &pending) -> llvm::Expected<bool> {

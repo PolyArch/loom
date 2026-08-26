@@ -337,9 +337,6 @@ private:
           switchActivationBaseFragments;
       std::map<std::pair<SwitchActivationKey, PnrIndex>, std::vector<PnrIndex>>
           switchTraversalFragments;
-      for (auto [ordinal, traversal] : llvm::enumerate(routing_.traversals()))
-        traversalOrdinals_.try_emplace(refKey(traversal.reference),
-                                       static_cast<PnrIndex>(ordinal));
 
       const auto switchDomain = [&](FabricSwitchOccurrenceRef occurrence)
           -> llvm::Expected<PnrIndex> {

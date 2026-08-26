@@ -281,8 +281,8 @@ void loom::test::exerciseCgraAdmission(
       take(sim::admitCgraSpatialSimulation(prepared, workload, runtime));
   if (graph != view.graphs().front().ref)
     fail("CGRA admission resolved a different graph");
-  auto preparedWorkload = take(
-      sim::prepareCgraWorkloadExecution(prepared, workload, runtime));
+  auto preparedWorkload =
+      take(sim::prepareCgraWorkloadExecution(prepared, workload, runtime));
 
   auto session = take(sim::startCgraExecutionSession(
       preparedWorkload, workload, runtime, sim::TraceCaptureLevel::Semantic));
@@ -425,8 +425,13 @@ void loom::test::exerciseCgraAdmission(
           projectTrace(*trace, sim::TraceCaptureLevel::Firing)))
     fail("CGRA semantic trace does not include the firing trace");
 
+  auto detachedPreparedWorkload = take([&] {
+    auto owner = take(sim::prepareCgraExecution(
+        dataflowReference, fabricReference, spatialMappingReference, store));
+    return sim::prepareCgraWorkloadExecution(owner, workload, runtime);
+  }());
   auto limited = take(sim::simulateCgraWorkload(
-      preparedWorkload, workload, runtime, /*maxEventFrames=*/1));
+      detachedPreparedWorkload, workload, runtime, /*maxEventFrames=*/1));
   if (limited.state != sim::SpatialExecutionSessionState::StoppedByLimit)
     fail("CGRA event budget did not produce StoppedByLimit");
   sim::SpatialSimulationRuntimeInputDraft foreignRuntimeDraft{
@@ -435,8 +440,8 @@ void loom::test::exerciseCgraAdmission(
       {0, {1, {sim::SemanticLane::defined(llvm::APInt(32, 8))}}}};
   auto foreignRuntime = take(sim::finalizeSimulationRuntimeInput(
       foreignRuntimeDraft, workload, view));
-  if (!rejected(sim::startCgraExecutionSession(
-          preparedWorkload, workload, foreignRuntime)))
+  if (!rejected(sim::startCgraExecutionSession(preparedWorkload, workload,
+                                               foreignRuntime)))
     fail("prepared CGRA workload execution accepted a foreign runtime input");
 
   auto preparedDfg = take(evaluation::models::prepareDfgSimulationEvaluation(

@@ -1774,6 +1774,17 @@ Emitted lowering skeleton:
   their outputs. True lanes enter after and feed the next before activation;
   false lanes are the loop exits. This preserves memory effects performed by
   the final condition-checking iteration.
+* A static stream endpoint inside either region is projected by this same
+  recurrence and may fire once per dynamic execution of its enclosing region.
+  Multiple endpoint sites wholly inside one before or after block form a finite
+  local schedule for each execution of that block. A schedule that crosses the
+  before/after boundary, or combines an endpoint repeated by the while with an
+  endpoint outside that while, requires an online ordered-event transfer.
+  Nested conditional endpoint schedules likewise require a hierarchical event
+  projection: an inner selector does not fire when its outer lane is inactive.
+  Until those transfers have one canonical owner, only the affected Spatial
+  candidate is rejected; unrelated graphs and ownership candidates remain
+  valid.
 
 For `K = 2`, the dynamic sequence is:
 
@@ -2243,6 +2254,11 @@ firing and leaves no residue.
   by token broadcast.
 * Multi-result `scf.index_switch` lowers one result mux per result
   position, all driven by the same normalized selector.
+* Transient graph stream endpoints in the default and case regions reuse this
+  exact normalized selector. The selector is synchronized with each scheduled
+  endpoint event before its activity bit is formed, so default, one-case, and
+  multi-case stream routing cannot disagree with the execution and memory
+  lane selected by recursive graph lowering.
 * If a live-in is used by only some selected regions, projections for
   unused lanes are dead outputs and are discarded by target lowering.
 * A zero-case form is rejected atomically before recursive graph lowering.
@@ -3076,9 +3092,12 @@ contract:
   with inactive choice sites filtered from that sequence. Repeated launch
   instances concatenate their contributions in deterministic issue order;
   producer and consumer events correspond by flat sequence ordinal, not by a
-  one-to-one activation relation. Publication does not invent routing,
-  endpoint creation, a parallel channel mode, or a traversal order for
-  ambiguous parallel endpoint sites.
+  one-to-one activation relation. A repeat nested under any selected region is
+  refused until a conditional event-count projection can prove how inactive
+  lanes suppress every repeated event; an invariant repeat bound alone is not
+  such a proof. Publication does not invent routing, endpoint creation, a
+  parallel channel mode, or a traversal order for ambiguous parallel endpoint
+  sites.
 
 ## 11. References
 

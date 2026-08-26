@@ -36,7 +36,8 @@
 ROOT          := $(abspath $(CURDIR))
 PYTHON        ?= python3
 JOBS          ?= $(shell nproc)
-LOCK_TIMEOUT  ?= 1800
+TIMEOUT_BUDGETS := $(ROOT)/config/timeout_budgets.py
+LOCK_TIMEOUT  ?= $(shell $(PYTHON) $(TIMEOUT_BUDGETS) xlong)
 
 WT_SCRIPT     := $(ROOT)/scripts/make-worktree.py
 SYNC_SCRIPT   := $(ROOT)/scripts/sync_branches.py

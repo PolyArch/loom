@@ -3,6 +3,7 @@
 
 #include "ADG/BuiltinDescriptor.h"
 #include "Deployment/Deployment.h"
+#include "DSE/CandidateGenerator.h"
 #include "Evaluation/Request.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "Mapping/Artifact/MappingArtifact.h"
@@ -10,6 +11,7 @@
 #include "DeploymentTestSupport.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <cstddef>
@@ -23,6 +25,9 @@ class BlobStore;
 class ExecutionControlView;
 namespace dse {
 struct SpatialTransportRepairAlternative;
+}
+namespace mapping {
+class ResolvedTechMappingConfigView;
 }
 namespace pnr {
 class ResolvedPnrConfigView;
@@ -51,6 +56,26 @@ enum class MappedSystemInterconnect : std::uint8_t {
   Gem5EventTransport,
 };
 
+enum class MappedSpatialHardwareFixtureOperation : std::uint8_t {
+  DataflowPublication,
+  FabricModuleConstructionAndFinalization,
+  TechMapping,
+  SpatialPnr,
+  SystemFabricAndInterconnectConstruction,
+  ConfigurationAbiAndHardwareImplementationGeneration,
+};
+
+enum class MappedSpatialHardwareFixtureBoundary : std::uint8_t {
+  Begin,
+  End,
+};
+
+/// Synchronously brackets each operation. End is emitted on normal return and
+/// C++ stack unwinding; observers must not throw.
+using MappedSpatialHardwareFixtureObserver =
+    llvm::function_ref<void(MappedSpatialHardwareFixtureOperation,
+                            MappedSpatialHardwareFixtureBoundary)>;
+
 struct MappedRtlRequestFixture final {
   evaluation::EvaluationRequest request;
   evaluation::CaseArtifactResolution resolution;
@@ -78,9 +103,16 @@ struct MappedSpatialMappingFixture final {
   mapping::FinalizedSpatialMapping spatialMapping;
 };
 
+struct MappedBuiltinSpatialPnrInvocation final {
+  fabric::FinalizedFabricRoot module;
+  dse::CandidateGeneratorProviderResult techMappingResult;
+  std::optional<dse::CandidateGeneratorProviderResult> spatialPnrResult;
+};
+
 struct MappedSpatialMappingRepairFixture final {
   std::optional<mapping::FinalizedSpatialMapping> spatialMapping;
   ArtifactRootReference constraintSet;
+  dse::CandidateGeneratorProviderResult pnrResult;
 };
 
 MappedSpatialMappingFixture buildMappedSpatialMappingFixture(
@@ -98,6 +130,15 @@ MappedSpatialMappingFixture buildMappedBuiltinSpatialMappingFixture(
     const ExecutionControlView &executionControl, ArtifactStore &artifacts,
     BlobStore &blobs,
     MappedRtlRouteCoverage routeCoverage = MappedRtlRouteCoverage::AnyLegal);
+
+llvm::Expected<MappedBuiltinSpatialPnrInvocation>
+invokeMappedBuiltinSpatialPnrFixture(
+    llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
+    const adg::BuiltinTargetScale &scale,
+    const mapping::ResolvedTechMappingConfigView &techMappingConfig,
+    const pnr::ResolvedPnrConfigView &spatialPnrConfig,
+    const ExecutionControlView &executionControl, ArtifactStore &artifacts,
+    BlobStore &blobs);
 
 llvm::Expected<MappedSpatialMappingRepairFixture>
 rerouteMappedSpatialMappingFixture(
@@ -124,6 +165,7 @@ MappedSpatialHardwareFixture buildMappedSpatialHardwareFixture(
         MappedRtlFixtureTopology::HeterogeneousPortable,
     MappedRtlRouteCoverage routeCoverage = MappedRtlRouteCoverage::BypassFifo,
     MappedSystemInterconnect interconnect = MappedSystemInterconnect::None,
+    MappedSpatialHardwareFixtureObserver observer = {},
     std::size_t spatialMemoryOccurrenceCount = 1);
 
 MappedRtlRequestFixture buildMappedRtlRequestFixture(

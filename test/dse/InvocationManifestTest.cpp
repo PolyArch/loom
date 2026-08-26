@@ -4,6 +4,8 @@
 #include "Common/BlobStore.h"
 #include "Common/ComponentViewDigest.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/CampaignRunner.h"
+#include "DSE/JointDesignExploration.h"
 #include "DSE/ResolvedConfigView.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelDescriptor.h"
@@ -292,7 +294,6 @@ Fixture makeFixture(const ArtifactStore &store, const BlobStore &blobs,
   ResolvedConfig config = defaultResolvedConfig();
   config.dse.modelAuthorizations.clear();
   config.dse.evidenceObligationTemplates.clear();
-  config.dse.objectiveCatalogs = {};
   config.dse.qualityGatePolicies.clear();
   ArtifactRootReference source = publish(store, sourceSchema, 0x11);
   config.dse.planNodes.reserve(planNodeCount);
@@ -372,6 +373,24 @@ void testRunKeyAndRoundTrip(const ArtifactStore &store,
       adopted.generateRecords().size() != 1 ||
       !adopted.generateRecords().front().completed)
     fail("canonical manifest roundtrip changed the record");
+  JointDesignInvocationManifestReference reference =
+      take(publishJointDesignInvocationManifest(manifest, fixture.config, store,
+                                                blobs));
+  InvocationManifest imported =
+      take(importJointDesignInvocationManifest(reference, store, blobs));
+  if (reference.occurrence() != manifest.occurrence() ||
+      reference.resolvedConfig().artifact !=
+          resolvedConfigIdentity(fixture.config) ||
+      imported.canonicalBytes() != manifest.canonicalBytes())
+    fail("validated joint invocation reference changed its manifest owner");
+  InvocationOccurrenceRef wrongOccurrence = manifest.occurrence();
+  ++wrongOccurrence.occurrenceOrdinal;
+  auto mismatched = JointDesignInvocationManifestReference::get(
+      reference.resolvedConfig(), reference.blob(), std::move(wrongOccurrence),
+      store, blobs);
+  if (mismatched)
+    fail("joint invocation reference accepted a mismatched occurrence");
+  requireErrorContains(mismatched.takeError(), "occurrence differs");
   auto totals = [](const InvocationManifest &value) {
     std::pair<std::uint64_t, std::uint64_t> result{0, 0};
     for (const InvocationGenerateRecord &record : value.generateRecords())
@@ -474,11 +493,12 @@ constexpr std::size_t encodedExternalToolWorkWidth =
     externalToolWorkLedgerCounterCount * sizeof(std::uint64_t);
 constexpr std::size_t encodedEmptyExternalToolWorkWidth =
     encodedExternalToolWorkWidth + sizeof(std::uint64_t);
+constexpr std::size_t encodedAbsentCampaignAdmissionWidth =
+    sizeof(std::uint32_t);
 
 InvocationExternalToolWorkLedger externalToolWork() {
   return take(InvocationExternalToolWorkLedger::get(
-      {{0, ExternalToolWorkLedger{2, 2, 1, 1, 0, 2, 0, 1, 1, 1, 1, 0, 1,
-                                  0}}}));
+      {{0, ExternalToolWorkLedger{2, 2, 1, 1, 0, 2, 0, 1, 1, 1, 1, 0, 1, 0}}}));
 }
 
 void testOperationalObservationCompatibility(const ArtifactStore &store,
@@ -521,17 +541,29 @@ void testOperationalObservationCompatibility(const ArtifactStore &store,
       absentSelection->satisfiedEvidence != presentSelection->satisfiedEvidence)
     fail("operational observations changed formal invocation semantics");
 
-  std::vector<std::uint8_t> preExternalToolWork(
-      absent.canonicalBytes().begin(), absent.canonicalBytes().end());
-  if (preExternalToolWork.size() < encodedEmptyExternalToolWorkWidth)
-    fail("current absent manifest is unexpectedly short");
   const std::size_t minorOffset =
       8 + InvocationManifest::schemaIdentity.size() + 4;
+  std::vector<std::uint8_t> preCampaignAdmission(
+      absent.canonicalBytes().begin(), absent.canonicalBytes().end());
+  if (preCampaignAdmission.size() < encodedAbsentCampaignAdmissionWidth)
+    fail("current absent manifest lacks its campaign disposition field");
+  preCampaignAdmission.resize(preCampaignAdmission.size() -
+                              encodedAbsentCampaignAdmissionWidth);
+  writeU32(preCampaignAdmission, minorOffset, 4);
+  InvocationManifest adoptedPreCampaignAdmission = take(
+      adoptInvocationManifest(preCampaignAdmission, fixture.config, store));
+  if (adoptedPreCampaignAdmission.canonicalBytes() != absent.canonicalBytes() ||
+      adoptedPreCampaignAdmission.campaignAdmissionFailure())
+    fail("schema 1.4 import did not derive an absent campaign disposition");
+
+  std::vector<std::uint8_t> preExternalToolWork = preCampaignAdmission;
+  if (preExternalToolWork.size() < encodedEmptyExternalToolWorkWidth)
+    fail("current absent manifest is unexpectedly short");
   preExternalToolWork.resize(preExternalToolWork.size() -
                              encodedEmptyExternalToolWorkWidth);
   writeU32(preExternalToolWork, minorOffset, 3);
-  InvocationManifest adoptedPreExternalToolWork = take(
-      adoptInvocationManifest(preExternalToolWork, fixture.config, store));
+  InvocationManifest adoptedPreExternalToolWork =
+      take(adoptInvocationManifest(preExternalToolWork, fixture.config, store));
   if (adoptedPreExternalToolWork.canonicalBytes() != absent.canonicalBytes() ||
       !adoptedPreExternalToolWork.externalToolWork().planNodes().empty())
     fail("schema 1.3 import did not derive an empty external-tool ledger");
@@ -578,40 +610,69 @@ void testExternalToolWorkRoundTrip(const ArtifactStore &store,
 
   constexpr std::size_t encodedLedgerWidth =
       2 * encodedExternalToolWorkWidth + 2 * sizeof(std::uint64_t);
-  if (manifest.canonicalBytes().size() < encodedLedgerWidth)
+  if (manifest.canonicalBytes().size() <
+      encodedLedgerWidth + encodedAbsentCampaignAdmissionWidth)
     fail("external-tool work ledger suffix is unexpectedly short");
   std::vector<std::uint8_t> inconsistent(manifest.canonicalBytes().begin(),
                                          manifest.canonicalBytes().end());
-  const std::size_t suffix = inconsistent.size() - encodedLedgerWidth;
+  const std::size_t suffix = inconsistent.size() -
+                             encodedAbsentCampaignAdmissionWidth -
+                             encodedLedgerWidth;
   writeU64(inconsistent, suffix, 3);
-  auto rejected =
-      adoptInvocationManifest(inconsistent, fixture.config, store);
+  auto rejected = adoptInvocationManifest(inconsistent, fixture.config, store);
   if (rejected)
     fail("manifest importer accepted an external-tool total unlike its rows");
   requireErrorContains(rejected.takeError(), "differs from plan-node rows");
 
   auto duplicate = InvocationExternalToolWorkLedger::get(
-      {{0, work.planNodes().front().work},
-       {0, work.planNodes().front().work}});
+      {{0, work.planNodes().front().work}, {0, work.planNodes().front().work}});
   if (duplicate)
     fail("external-tool ledger accepted duplicate plan-node rows");
   requireErrorContains(duplicate.takeError(), "strictly increasing");
 
-  auto zero = InvocationExternalToolWorkLedger::get(
-      {{0, ExternalToolWorkLedger{}}});
+  auto zero =
+      InvocationExternalToolWorkLedger::get({{0, ExternalToolWorkLedger{}}});
   if (zero)
     fail("external-tool ledger accepted a zero plan-node row");
   requireErrorContains(zero.takeError(), "no planned work");
 
   auto unknownWork = take(InvocationExternalToolWorkLedger::get(
       {{1, work.planNodes().front().work}}));
-  auto unknown = InvocationManifest::get(
-      makeClosure(fixture, store, {fixture.source}), 12, std::nullopt,
-      fixture.config, fixture.records, outcome, store, std::nullopt,
-      unknownWork);
+  auto unknown =
+      InvocationManifest::get(makeClosure(fixture, store, {fixture.source}), 12,
+                              std::nullopt, fixture.config, fixture.records,
+                              outcome, store, std::nullopt, unknownWork);
   if (unknown)
     fail("manifest accepted external-tool work for an unknown plan node");
   requireErrorContains(unknown.takeError(), "unknown plan node");
+}
+
+void testCampaignAdmissionFailureRoundTrip(const ArtifactStore &store,
+                                           const BlobStore &blobs) {
+  Fixture fixture = makeFixture(store, blobs);
+  InvocationManifest manifest = take(InvocationManifest::get(
+      makeClosure(fixture, store, {fixture.source}), 13, std::nullopt,
+      fixture.config, fixture.records,
+      InvocationCompletedSelection{{fixture.selected},
+                                   {fixture.preexistingEvidence}},
+      store, std::nullopt, std::nullopt,
+      CampaignAdmissionFailureReason::CampaignActiveWallTimeLimit));
+  InvocationManifest adopted = take(adoptInvocationManifest(
+      manifest.canonicalBytes(), fixture.config, store));
+  if (adopted.campaignAdmissionFailure() !=
+          CampaignAdmissionFailureReason::CampaignActiveWallTimeLimit ||
+      adopted.canonicalBytes() != manifest.canonicalBytes())
+    fail("campaign admission failure did not round-trip exactly");
+
+  std::vector<std::uint8_t> unknown(manifest.canonicalBytes().begin(),
+                                    manifest.canonicalBytes().end());
+  writeU32(unknown, unknown.size() - sizeof(std::uint32_t),
+           std::numeric_limits<std::uint32_t>::max());
+  auto rejected = adoptInvocationManifest(unknown, fixture.config, store);
+  if (rejected)
+    fail("manifest importer accepted an unknown campaign admission failure");
+  requireErrorContains(rejected.takeError(),
+                       "unknown campaign admission failure reason");
 }
 
 void testOperationalObservationRejections(const ArtifactStore &store,
@@ -625,9 +686,11 @@ void testOperationalObservationRejections(const ArtifactStore &store,
       operationalObservations({{0, 7, 11}, {1, 13, 17}})));
   constexpr std::size_t observationSuffixWidth = 4 + 5 * 8 + 8 + 2 * 24;
   if (valid.canonicalBytes().size() <
-      observationSuffixWidth + encodedEmptyExternalToolWorkWidth)
+      observationSuffixWidth + encodedEmptyExternalToolWorkWidth +
+          encodedAbsentCampaignAdmissionWidth)
     fail("schema 1.1 observation suffix is unexpectedly short");
   const std::size_t suffix = valid.canonicalBytes().size() -
+                             encodedAbsentCampaignAdmissionWidth -
                              encodedEmptyExternalToolWorkWidth -
                              observationSuffixWidth;
 
@@ -672,7 +735,8 @@ void testOperationalObservationRejections(const ArtifactStore &store,
 
   std::vector<std::uint8_t> partial(valid.canonicalBytes().begin(),
                                     valid.canonicalBytes().end());
-  partial.resize(partial.size() - encodedEmptyExternalToolWorkWidth);
+  partial.resize(partial.size() - encodedAbsentCampaignAdmissionWidth -
+                 encodedEmptyExternalToolWorkWidth);
   const std::size_t minorOffset =
       8 + InvocationManifest::schemaIdentity.size() + 4;
   writeU32(partial, minorOffset, 3);
@@ -747,6 +811,7 @@ int main(int argc, char **argv) {
   testIncompleteReasonRoundTripCoverage(store, blobs);
   testOperationalObservationCompatibility(store, blobs);
   testExternalToolWorkRoundTrip(store, blobs);
+  testCampaignAdmissionFailureRoundTrip(store, blobs);
   testOperationalObservationRejections(store, blobs);
   testStrictFailures(store, blobs);
   return 0;

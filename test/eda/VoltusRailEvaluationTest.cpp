@@ -361,8 +361,9 @@ tclsh drivers/voltus-rail-publish.tcl
       take(__func__, prepareEvaluationModelInvocation(
                          fixture.request, fixture.resolution, artifacts, blobs,
                          {localConfig(tool, pgvRoot), bundle.string()}));
-  const auto *prepared =
-      std::get_if<PreparedExternalToolInvocation>(&preparation);
+  const auto *live =
+      std::get_if<EvaluationModelPreparedInvocation>(&preparation);
+  const auto *prepared = live ? &live->externalInvocation() : nullptr;
   require(__func__, prepared,
           "supported rail request did not prepare a bundle");
   const std::string driver = readFile(bundle / "drivers/voltus-rail.tcl");

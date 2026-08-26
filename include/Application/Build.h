@@ -2,6 +2,7 @@
 #define LOOM_APPLICATION_BUILD_H
 
 #include "Application/Manifest.h"
+#include "Application/RuntimeManifest.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/InvocationManifest.h"
 #include "DSE/JointDesignExploration.h"
@@ -154,12 +155,57 @@ struct PreparedApplicationBuild final {
 struct ApplicationDeploymentRequest final {
   CompilerTargetPolicy compilerTargetPolicy;
   CompilerTargetLinkWorkspace linkerWorkspace;
+  ExecutionControlView executionControl;
+};
+
+/// Exact provider ledger projection for one Mapping execution. Invocation is
+/// reconciled as either a provider dispatch or an execution-journal replay;
+/// the three provider domains remain distinct.
+struct ApplicationMappingProviderWorkObservation final {
+  std::uint64_t techMappingInvocations = 0;
+  std::uint64_t spatialPnrInvocations = 0;
+  std::uint64_t systemPnrInvocations = 0;
+  std::uint64_t techMappingDispatches = 0;
+  std::uint64_t spatialPnrDispatches = 0;
+  std::uint64_t systemPnrDispatches = 0;
+  std::uint64_t techMappingJournalReplays = 0;
+  std::uint64_t spatialPnrJournalReplays = 0;
+  std::uint64_t systemPnrJournalReplays = 0;
+};
+
+/// Immutable Deployment-bound snapshot of the Mapping repair observation.
+/// The compiler-side observation remains the semantic owner; this derived
+/// record makes the exact repair cone and paired evidence replayable with the
+/// preverified runtime transition.
+struct ApplicationResourceTimeRepairEvidence final {
+  std::vector<dataflow::RootThreadLaunchRef> reopenedRoots;
+  dse::JointMappingReuseDisposition reuseDisposition =
+      dse::JointMappingReuseDisposition::ColdFallback;
+  std::uint64_t preservedTechMappings = 0;
+  std::uint64_t preservedSpatialMappings = 0;
+  std::uint64_t repairedTechMappings = 0;
+  std::uint64_t repairedSpatialMappings = 0;
+  std::uint64_t preservedSystemBindings = 0;
+  std::uint64_t reopenedSystemBindings = 0;
+  std::uint64_t coldWallTimeNanoseconds = 0;
+  std::uint64_t incrementalWallTimeNanoseconds = 0;
+  std::uint64_t coldVerifierRetainedBytes = 0;
+  std::uint64_t incrementalVerifierRetainedBytes = 0;
+  std::uint64_t coldVerifierWork = 0;
+  std::uint64_t incrementalVerifierWork = 0;
+  ApplicationMappingProviderWorkObservation coldProviderWork;
+  ApplicationMappingProviderWorkObservation incrementalProviderWork;
+  std::optional<std::uint64_t> coldDfgCycles;
+  std::optional<std::uint64_t> coldCgraCycles;
+  std::optional<std::uint64_t> incrementalDfgCycles;
+  std::optional<std::uint64_t> incrementalCgraCycles;
 };
 
 struct ApplicationResourceTimeTransitionEvidence final {
   pnr::ResourceTimeTransition transition;
   dse::ResourceTimeSpectrumFunnelResult parentSpectrum;
   dse::ResourceTimeSpectrumFunnelResult childSpectrum;
+  ApplicationResourceTimeRepairEvidence repair;
 };
 
 struct ApplicationDeploymentArtifacts final {
@@ -167,9 +213,6 @@ struct ApplicationDeploymentArtifacts final {
   hardware::ConfigurationABIConstructionStatistics configurationAbiConstruction;
   std::vector<deployment::DeploymentHardwareBinding> hardwareBindings;
   std::vector<ArtifactRootReference> instructionCoreBinaries;
-  /// Exact compiler-built finite Mapping/Deployment graph. Runtime selection
-  /// is restricted to this catalog and cannot synthesize Mapping work.
-  std::optional<pnr::ResourceTimeTransitionGraph> resourceTimeTransitionGraph;
   /// Every compiler-preverified adjacency together with the parent completion
   /// schedule and the child schedule which carries real active work.
   std::vector<ApplicationResourceTimeTransitionEvidence>
@@ -177,6 +220,7 @@ struct ApplicationDeploymentArtifacts final {
   /// Independent replay of the selected schedule after endpoint Deployment
   /// construction. A missing closure remains typed incomplete here.
   std::optional<dse::ResourceTimeSpectrumFunnelResult> resourceTimeSpectrum;
+  FinalizedApplicationRuntimeManifest runtimeManifest;
   deployment::FinalizedDeployment deployment;
 };
 
@@ -192,6 +236,10 @@ struct ApplicationMappingExecutionRequest final {
   /// loop without changing Mapping legality or candidate identity.
   dse::JointHardwareExplorationScope hardwareExplorationScope =
       dse::JointHardwareExplorationScope::BoundedHardwareReopen;
+  /// Cooperative application deadline shared with Spectrum verification.
+  /// PlanExecutionPolicy remains the Mapping-dispatch owner; this view keeps
+  /// verifier work inside the same invocation boundary.
+  ExecutionControlView executionControl;
 };
 
 enum class ApplicationMappingRuntimeDisposition : std::uint8_t {
@@ -300,7 +348,31 @@ struct ApplicationPairMappingObservation final {
   /// Completed SimulationComparison Evidence against the source-backed native
   /// oracle. Runtime Evidence remains the owner; this is its typed subset.
   std::vector<ArtifactRootReference> oracleEvidence;
+  std::optional<std::uint64_t> dfgCycles;
+  std::optional<std::uint64_t> cgraCycles;
+  std::optional<std::uint64_t> resourceCoreCost;
   std::optional<dse::PreMappingSpectrumClass> verifiedSpectrum;
+  std::optional<dse::ResourceTimeSpectrumIncompleteReason>
+      resourceTimeSpectrumIncompleteReason;
+};
+
+/// Quality facts from one exact joint-design invocation. Application runtime
+/// retries may execute distinct tail plans, so their facts retain their own
+/// InvocationManifest key and local plan-ordinal base instead of being folded
+/// into the final JointDesignExecutionSummary.
+struct ApplicationPairQualityInvocationRecord final {
+  std::uint64_t planOrdinalBase = 0;
+  std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
+  dse::JointDesignQualityDisposition qualityDisposition =
+      dse::JointDesignQualityDisposition::NotRequested;
+  std::optional<ArtifactRootReference> qualityIncompleteCandidate;
+  std::vector<std::string> qualityObjectiveDimensionLabels;
+  std::vector<dse::JointDesignQualityObservation> qualityObservations;
+  std::vector<std::string> hardwarePromotionObjectiveDimensionLabels;
+  std::vector<dse::JointHardwarePromotionObservation>
+      hardwarePromotionObservations;
+  std::optional<std::uint64_t> selectedPlanOrdinal;
+  std::optional<ArtifactRootReference> selectedMapping;
 };
 
 /// One identity-based reference into the existing candidate inventory and
@@ -319,6 +391,9 @@ struct ApplicationPairCandidateRecord final {
   std::optional<dse::DsePlanIncompleteReason> planningIncompleteReason;
   std::optional<dse::PreMappingSpectrumClass> verifiedSpectrum;
   std::size_t planningRecordOrdinal = 0;
+  /// Selected Mapping plan for this candidate. Mapping observations own the
+  /// complete per-plan inventory when one candidate is evaluated more than
+  /// once.
   std::optional<std::uint64_t> planOrdinal;
   bool enteredMapping = false;
   bool selected = false;
@@ -357,11 +432,27 @@ struct ApplicationPairDecisionRecord final {
   /// list contains only records with a complete stable candidate identity.
   std::uint64_t planningRecordCount = 0;
   std::uint64_t nonCandidatePlanningRecordCount = 0;
+  /// Exact final-invocation quality state. ObjectiveProgram remains the
+  /// ordering owner; codes retain their SystemMapping and Evidence joins.
+  std::vector<std::string> qualityObjectiveDimensionLabels;
+  dse::JointDesignQualityDisposition qualityDisposition =
+      dse::JointDesignQualityDisposition::NotRequested;
+  std::optional<ArtifactRootReference> qualityIncompleteCandidate;
+  std::vector<dse::JointDesignQualityObservation> qualityObservations;
+  /// Exact labels and observations from pre-Mapping hardware promotion. The
+  /// promoted bit identifies the bounded finalist set that entered ordinary
+  /// Mapping/PnR work; it is not a physical feasibility claim.
+  std::vector<std::string> hardwarePromotionObjectiveDimensionLabels;
+  std::vector<dse::JointHardwarePromotionObservation>
+      hardwarePromotionObservations;
+  std::vector<ApplicationPairQualityInvocationRecord> qualityInvocations;
   std::vector<ApplicationObjectiveObservation> hostOnlyBaseline;
   std::vector<ApplicationPairCandidateRecord> candidates;
+  /// Causal decisions retain every dimension as an explicit null residual.
   std::vector<ApplicationObjectiveObservation> selectedObjective;
   std::optional<ComponentViewDigest> selectedCandidateIdentity;
   std::optional<ArtifactRootReference> selectedSystem;
+  std::optional<ArtifactRootReference> selectedSystemMapping;
   bool hostOnlyBaselineComplete = false;
   bool finalApplicationQorComplete = false;
   std::optional<std::string> detail;
@@ -436,11 +527,27 @@ struct ApplicationIncrementalMappingObservation final {
   std::uint64_t coldWallTimeNanoseconds = 0;
   std::uint64_t incrementalWallTimeNanoseconds = 0;
   std::uint64_t wallTimeNanoseconds = 0;
+  std::uint64_t coldVerifierRetainedBytes = 0;
+  std::uint64_t incrementalVerifierRetainedBytes = 0;
+  std::uint64_t coldVerifierWork = 0;
+  std::uint64_t incrementalVerifierWork = 0;
+  ApplicationMappingProviderWorkObservation coldProviderWork;
+  ApplicationMappingProviderWorkObservation incrementalProviderWork;
   std::optional<std::uint64_t> coldDfgCycles;
   std::optional<std::uint64_t> coldCgraCycles;
   std::optional<std::uint64_t> incrementalDfgCycles;
   std::optional<std::uint64_t> incrementalCgraCycles;
   bool verified = false;
+};
+
+/// Ordered join from one selected schedule to its bounded adjacent Mapping
+/// repairs. Observation ordinals are the canonical edge lineage; a Deployment
+/// may publish only the longest prefix which closes as one independently
+/// verified spectrum scenario.
+struct ApplicationResourceTimeMappingPath final {
+  std::uint64_t scheduleOwnerPlanOrdinal = 0;
+  ComponentViewDigest scheduleHintDigest;
+  std::vector<std::uint64_t> observationOrdinals;
 };
 
 struct ApplicationMappingProvenance final {
@@ -461,6 +568,7 @@ struct ApplicationMappingProvenance final {
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
   std::vector<ApplicationIncrementalMappingObservation>
       incrementalMappingObservations;
+  std::optional<ApplicationResourceTimeMappingPath> resourceTimeMappingPath;
   /// Derived application decision view. All detailed evidence remains owned by
   /// the records referenced above; this field only closes the pair-level join.
   std::optional<ApplicationPairDecisionRecord> pairDecision;

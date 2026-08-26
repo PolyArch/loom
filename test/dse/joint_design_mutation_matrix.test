@@ -1,0 +1,1 @@
+# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-dse-joint-design-exploration-test mutation-matrix

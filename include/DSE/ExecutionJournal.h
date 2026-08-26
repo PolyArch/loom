@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace loom::dse {
@@ -96,6 +97,34 @@ enum class JournalWorkUnitStatus : std::uint32_t {
   Unsupported = 6,
 };
 
+enum class ExecutionJournalPersistenceErrorReason : std::uint8_t {
+  PublishedDirectorySyncPending = 0,
+};
+
+/// A snapshot rename completed, so the visible journal already owns the new
+/// state, but the directory durability barrier failed. A later journal
+/// operation first retries that barrier; callers must not assume rollback.
+/// Invocation begin and manifest commit are specifically idempotent across
+/// this outcome.
+class ExecutionJournalPersistenceError final
+    : public llvm::ErrorInfo<ExecutionJournalPersistenceError> {
+public:
+  static char ID;
+
+  ExecutionJournalPersistenceError(
+      ExecutionJournalPersistenceErrorReason reason, std::error_code error)
+      : reason_(reason), error_(error) {}
+
+  ExecutionJournalPersistenceErrorReason reason() const { return reason_; }
+  const std::error_code &underlyingError() const { return error_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  ExecutionJournalPersistenceErrorReason reason_;
+  std::error_code error_;
+};
+
 struct JournalActiveWallInterval final {
   std::uint64_t beginUnixTimeNanoseconds = 0;
   std::uint64_t endUnixTimeNanoseconds = 0;
@@ -151,6 +180,15 @@ public:
   const ComponentViewDigest &resolvedDseConfigViewDigest() const;
   llvm::StringRef localRunRoot() const;
 
+  /// The occurrence opened by the most recent beginResume transaction and
+  /// its durable predecessor, if any. The ordinal remains a transient lease
+  /// until commitInvocationManifest atomically publishes its manifest receipt.
+  llvm::Expected<std::pair<InvocationOccurrenceRef,
+                           std::optional<InvocationOccurrenceRef>>>
+  currentInvocationOccurrence() const;
+  llvm::Expected<std::optional<InvocationManifestReceipt>>
+  lastCommittedInvocationManifest() const;
+
   llvm::Expected<std::vector<JournalWorkUnitRecord>> workUnits() const;
   llvm::Expected<InvocationExternalToolWorkLedger>
   externalToolWorkLedger() const;
@@ -180,6 +218,10 @@ public:
 
   llvm::Error requestGracefulStop();
   llvm::Error beginResume();
+  llvm::Error releaseInvocationOccurrence();
+  llvm::Error
+  commitInvocationManifest(const InvocationOccurrenceRef &occurrence,
+                           const BlobDigest &manifestDigest);
   bool gracefulStopRequested() const;
   llvm::Error flush() const;
 
@@ -187,6 +229,8 @@ private:
   struct State;
   explicit ExecutionJournal(std::shared_ptr<State> state)
       : state_(std::move(state)) {}
+
+  llvm::Error validateProcessOwner() const;
 
   std::shared_ptr<State> state_;
 };

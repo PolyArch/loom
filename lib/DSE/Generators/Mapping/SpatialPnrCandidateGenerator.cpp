@@ -65,7 +65,7 @@ llvm::Error validateSpatialConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialPnrCandidateGeneratorKind,
     "mapping.spatial_pnr",
-    "loom.mapping.spatial_pnr.generator.v14",
+    "loom.mapping.spatial_pnr.generator.v15",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -86,8 +86,8 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
       invokeSpatialPnrCandidateGenerator(
           inputs, binding, store, defaultCandidateWorkerCount(),
           invocation.executionControl(),
-          invocation.maximumOutputArtifacts(
-              CandidateGeneratorOutputSlotRef(0)));
+          invocation.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0)),
+          invocation.executionBudget());
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSpatialMappings>(&outcome)) {
     std::vector<CandidateGeneratorLineageEdge> lineageEdges;
@@ -198,6 +198,18 @@ std::vector<CandidateGeneratorWorkUnitSummary>
 spatialPnrCandidateGeneratorWorkSummary(
     const ::loom::pnr::SpatialPnrGenerationAccounting &accounting) {
   const std::array<std::uint64_t, pnrCandidateGeneratorWorkUnits.size()>
+      planned = {
+          accounting.plannedSeedAttemptSlots,
+          accounting.plannedInitializerAssignmentAttempts,
+          accounting.plannedEndpointExpansionSlots,
+          accounting.plannedNegotiationIterationSlots,
+          accounting.plannedCalibrationProposalSlots,
+          accounting.plannedAnnealingBaseProposalSlots,
+          accounting.plannedAnnealingMovableProposalSlots,
+          accounting.plannedExactRepairRegionDecisions,
+          accounting.plannedExactRepairSolverCalls,
+      };
+  const std::array<std::uint64_t, pnrCandidateGeneratorWorkUnits.size()>
       consumed = {
           accounting.seedAttemptSlots,
           accounting.initializerAssignmentAttempts,
@@ -212,8 +224,8 @@ spatialPnrCandidateGeneratorWorkSummary(
   std::vector<CandidateGeneratorWorkUnitSummary> summary;
   summary.reserve(consumed.size());
   for (std::size_t ordinal = 0; ordinal != consumed.size(); ++ordinal)
-    summary.push_back({CandidateGeneratorWorkUnitRef(ordinal),
-                       consumed[ordinal], consumed[ordinal]});
+    summary.push_back({CandidateGeneratorWorkUnitRef(ordinal), planned[ordinal],
+                       consumed[ordinal]});
   return summary;
 }
 
@@ -273,7 +285,8 @@ resolveSpatialPnrCandidateGeneratorBinding(
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, std::uint32_t candidateWorkerCount,
     const ExecutionControlView &executionControl,
-    std::optional<std::uint64_t> maximumCandidatePublications) {
+    std::optional<std::uint64_t> maximumCandidatePublications,
+    ExecutionResourceBudget executionBudget) {
   if (binding.descriptorRef() != descriptor.reference())
     return invalidOutcome("binding does not select the Spatial PnR generator");
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
@@ -322,7 +335,8 @@ resolveSpatialPnrCandidateGeneratorBinding(
   return ::loom::pnr::generateSpatialMappings(
       {*dataflow, tech->view(), fabric->view(), *physicalTiming, *config,
        constraints->view(), store, candidateWorkerCount, executionControl,
-       nullptr, nullptr, nullptr, true, maximumCandidatePublications});
+       nullptr, nullptr, nullptr, true, maximumCandidatePublications,
+       executionBudget});
 }
 
 } // namespace loom::dse

@@ -14,6 +14,7 @@
 #include "SpatialBindingRelationModel.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/raw_ostream.h"
@@ -87,17 +88,33 @@ void emitInvocationAccounting(const SpatialPnrGenerationAccounting &accounting,
         fields["closure_status"] =
             mapping_debug::closureStatusSpelling(closureStatus);
         fields["candidate_publications"] = candidatePublications;
+        fields["planned_seed_attempt_slots"] =
+            accounting.plannedSeedAttemptSlots;
         fields["seed_attempt_slots"] = accounting.seedAttemptSlots;
         fields["prepared_seeds"] = accounting.preparedSeeds;
         fields["initializer_assignment_attempts"] =
             accounting.initializerAssignmentAttempts;
+        fields["planned_initializer_assignment_attempts"] =
+            accounting.plannedInitializerAssignmentAttempts;
+        fields["planned_endpoint_expansion_slots"] =
+            accounting.plannedEndpointExpansionSlots;
+        fields["a_star_expansions"] = accounting.endpointExpansionSlots;
         fields["endpoint_expansion_slots"] = accounting.endpointExpansionSlots;
+        fields["negotiation_iterations"] = accounting.negotiationIterationSlots;
+        fields["planned_negotiation_iteration_slots"] =
+            accounting.plannedNegotiationIterationSlots;
         fields["negotiation_iteration_slots"] =
             accounting.negotiationIterationSlots;
         fields["calibration_proposal_slots"] =
             accounting.calibrationProposalSlots;
+        fields["planned_calibration_proposal_slots"] =
+            accounting.plannedCalibrationProposalSlots;
+        fields["planned_annealing_base_proposal_slots"] =
+            accounting.plannedAnnealingBaseProposalSlots;
         fields["annealing_base_proposal_slots"] =
             accounting.annealingBaseProposalSlots;
+        fields["planned_annealing_movable_proposal_slots"] =
+            accounting.plannedAnnealingMovableProposalSlots;
         fields["annealing_movable_proposal_slots"] =
             accounting.annealingMovableProposalSlots;
         fields["annealing_accepted_actions"] =
@@ -105,10 +122,159 @@ void emitInvocationAccounting(const SpatialPnrGenerationAccounting &accounting,
         fields["exact_repair_invocations"] = accounting.exactRepairInvocations;
         fields["exact_repair_region_decisions"] =
             accounting.exactRepairRegionDecisions;
+        fields["planned_exact_repair_region_decisions"] =
+            accounting.plannedExactRepairRegionDecisions;
+        fields["planned_exact_repair_solver_calls"] =
+            accounting.plannedExactRepairSolverCalls;
         fields["exact_repair_solver_calls"] = accounting.exactRepairSolverCalls;
         fields["final_closure_attempts"] = accounting.finalClosureAttempts;
         fields["finalized_restarts"] = accounting.finalizedRestarts;
         fields["publication_slots"] = accounting.publicationSlots;
+      });
+}
+
+struct SpatialPnrWorkerAllocation final {
+  std::uint32_t configuredWorkerCount = 1;
+  std::uint32_t restartCount = 1;
+  std::uint32_t actualWorkerCount = 1;
+  std::uint64_t activeRouteGraphUnitCount = 1;
+  std::uint64_t workerScratchReservationBytes = 0;
+  std::uint64_t maximumObservedWorkerScratchBytes = 0;
+  std::uint64_t sharedProblemRetainedBytes = 0;
+  std::optional<std::uint32_t> cpuLimitedWorkerCount;
+  std::optional<std::uint32_t> memoryLimitedWorkerCount;
+  std::uint32_t routeGraphLimitedWorkerCount = 1;
+  bool serialPrefix = false;
+  bool memoryCalibrated = false;
+};
+
+SpatialPnrWorkerAllocation
+resolveWorkerAllocation(std::uint32_t configuredWorkerCount,
+                        std::uint32_t restartCount,
+                        const SpatialActiveProblemStatistics &problemStatistics,
+                        std::uint64_t workerScratchReservationBytes,
+                        ExecutionResourceBudget executionBudget,
+                        bool serialPrefix, bool memoryCalibrated) {
+  SpatialPnrWorkerAllocation allocation;
+  allocation.configuredWorkerCount = configuredWorkerCount;
+  allocation.restartCount = restartCount;
+  allocation.sharedProblemRetainedBytes =
+      problemStatistics.context.retainedBytes;
+  const auto saturatingAdd = [](std::uint64_t lhs, std::uint64_t rhs) {
+    return rhs > std::numeric_limits<std::uint64_t>::max() - lhs
+               ? std::numeric_limits<std::uint64_t>::max()
+               : lhs + rhs;
+  };
+  allocation.activeRouteGraphUnitCount =
+      saturatingAdd(saturatingAdd(problemStatistics.activeEndpointCount,
+                                  problemStatistics.activeTraversalCount),
+                    problemStatistics.activeRoutingArcCount);
+  allocation.activeRouteGraphUnitCount =
+      std::max(UINT64_C(1), allocation.activeRouteGraphUnitCount);
+  allocation.routeGraphLimitedWorkerCount = static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(allocation.activeRouteGraphUnitCount,
+                              std::numeric_limits<std::uint32_t>::max()));
+  allocation.workerScratchReservationBytes = workerScratchReservationBytes;
+  allocation.actualWorkerCount =
+      std::min({configuredWorkerCount, restartCount,
+                allocation.routeGraphLimitedWorkerCount});
+  if (executionBudget.cpuCores) {
+    allocation.cpuLimitedWorkerCount = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(*executionBudget.cpuCores,
+                                std::numeric_limits<std::uint32_t>::max()));
+    allocation.actualWorkerCount = std::min(allocation.actualWorkerCount,
+                                            *allocation.cpuLimitedWorkerCount);
+  }
+  if (executionBudget.memoryBytes) {
+    const std::uint64_t workerBytes =
+        *executionBudget.memoryBytes > allocation.sharedProblemRetainedBytes
+            ? *executionBudget.memoryBytes -
+                  allocation.sharedProblemRetainedBytes
+            : 0;
+    const std::uint64_t memoryWorkers =
+        allocation.workerScratchReservationBytes == 0
+            ? 1
+            : std::max(UINT64_C(1),
+                       workerBytes / allocation.workerScratchReservationBytes);
+    allocation.memoryLimitedWorkerCount =
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+            memoryWorkers, std::numeric_limits<std::uint32_t>::max()));
+    allocation.actualWorkerCount = std::min(
+        allocation.actualWorkerCount, *allocation.memoryLimitedWorkerCount);
+  }
+  if (serialPrefix)
+    allocation.actualWorkerCount = 1;
+  allocation.serialPrefix = serialPrefix;
+  allocation.memoryCalibrated = memoryCalibrated;
+  return allocation;
+}
+
+void emitInvocationExecutionStatistics(
+    const SpatialPnrWorkerAllocation &allocation,
+    const SpatialActiveProblemStatistics &problemStatistics,
+    ExecutionResourceBudget executionBudget,
+    const ExecutionResourceTracker &resources,
+    bool preparedSeedHandoff) {
+  if (!mapping_debug::enabled(mapping_debug::Level::Summary))
+    return;
+  const ExecutionResourceStatistics observation = resources.observe();
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
+      mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
+        fields["statistics_kind"] = "spatial_pnr_execution";
+        fields["prepared_seed_handoff"] = preparedSeedHandoff;
+        fields["configured_worker_count"] = allocation.configuredWorkerCount;
+        fields["restart_count"] = allocation.restartCount;
+        fields["serial_prefix"] = allocation.serialPrefix;
+        fields["worker_count"] = allocation.actualWorkerCount;
+        fields["thread_count"] = allocation.actualWorkerCount;
+        fields["active_route_graph_unit_count"] =
+            allocation.activeRouteGraphUnitCount;
+        fields["route_graph_limited_worker_count"] =
+            allocation.routeGraphLimitedWorkerCount;
+        fields["worker_scratch_reservation_bytes"] =
+            allocation.workerScratchReservationBytes;
+        fields["maximum_observed_worker_scratch_bytes"] =
+            allocation.maximumObservedWorkerScratchBytes;
+        fields["shared_problem_retained_bytes"] =
+            allocation.sharedProblemRetainedBytes;
+        fields["memory_calibrated"] = allocation.memoryCalibrated;
+        if (allocation.cpuLimitedWorkerCount)
+          fields["cpu_limited_worker_count"] =
+              *allocation.cpuLimitedWorkerCount;
+        else
+          fields["cpu_limited_worker_count"] = nullptr;
+        if (allocation.memoryLimitedWorkerCount)
+          fields["memory_limited_worker_count"] =
+              *allocation.memoryLimitedWorkerCount;
+        else
+          fields["memory_limited_worker_count"] = nullptr;
+        if (executionBudget.memoryBytes)
+          fields["memory_budget_bytes"] = *executionBudget.memoryBytes;
+        else
+          fields["memory_budget_bytes"] = nullptr;
+        if (executionBudget.cpuCores)
+          fields["cpu_budget_cores"] = *executionBudget.cpuCores;
+        else
+          fields["cpu_budget_cores"] = nullptr;
+        fields["active_endpoint_count"] = problemStatistics.activeEndpointCount;
+        fields["active_traversal_count"] =
+            problemStatistics.activeTraversalCount;
+        fields["active_routing_arc_count"] =
+            problemStatistics.activeRoutingArcCount;
+        fields["active_wall_time_ns"] = observation.activeWallTimeNanoseconds;
+        if (observation.processCpuTimeDeltaNanoseconds)
+          fields["process_cpu_time_delta_ns"] =
+              *observation.processCpuTimeDeltaNanoseconds;
+        else
+          fields["process_cpu_time_delta_ns"] = nullptr;
+        fields["resource_observation_scope"] = "process";
+        fields["allocated_memory_bytes"] = observation.allocatedMemoryBytes;
+        if (observation.peakResidentMemoryBytes)
+          fields["peak_resident_memory_bytes"] =
+              *observation.peakResidentMemoryBytes;
+        else
+          fields["peak_resident_memory_bytes"] = nullptr;
       });
 }
 
@@ -243,22 +409,46 @@ internal(InternalSpatialPnrGenerationReason reason,
 
 llvm::Error accumulateAnnealing(const SpatialAnnealingStatistics &source,
                                 SpatialPnrGenerationAccounting &target) {
+  if (llvm::Error error = checkedAdd(
+          source.plannedCalibrationProposalSlots,
+          target.plannedCalibrationProposalSlots,
+          "planned calibration proposal slots"))
+    return error;
   if (llvm::Error error = checkedAdd(source.calibrationProposalSlots,
                                      target.calibrationProposalSlots,
                                      "calibration proposal slots"))
     return error;
+  if (llvm::Error error = checkedAdd(
+          source.plannedAnnealingBaseProposalSlots,
+          target.plannedAnnealingBaseProposalSlots,
+          "planned base annealing proposal slots"))
+    return error;
   if (llvm::Error error = checkedAdd(source.annealingBaseProposalSlots,
                                      target.annealingBaseProposalSlots,
                                      "base annealing proposal slots"))
+    return error;
+  if (llvm::Error error = checkedAdd(
+          source.plannedAnnealingMovableProposalSlots,
+          target.plannedAnnealingMovableProposalSlots,
+          "planned movable-decision annealing proposal slots"))
     return error;
   if (llvm::Error error =
           checkedAdd(source.annealingMovableProposalSlots,
                      target.annealingMovableProposalSlots,
                      "movable-decision annealing proposal slots"))
     return error;
+  if (llvm::Error error = checkedAdd(
+          source.endpointExpansions, target.plannedEndpointExpansionSlots,
+          "planned annealing endpoint expansions"))
+    return error;
   if (llvm::Error error =
           checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
                      "annealing endpoint expansions"))
+    return error;
+  if (llvm::Error error = checkedAdd(
+          source.negotiationIterations,
+          target.plannedNegotiationIterationSlots,
+          "planned annealing negotiation iterations"))
     return error;
   if (llvm::Error error = checkedAdd(source.negotiationIterations,
                                      target.negotiationIterationSlots,
@@ -309,6 +499,33 @@ struct SpatialRestartResult final {
       SpatialPnrInterruptionStage::SeedConstruction;
   std::optional<SpatialGraphBoundaryEndpointHallDeficit>
       graphBoundaryEndpointHall = std::nullopt;
+  std::uint64_t workerScratchRetainedBytes = 0;
+};
+
+struct SpatialRestartScratch final {
+  SpatialAnnealingSearchScratch annealing;
+  SpatialExactRepairScratch repair;
+  SpatialGlobalRoutingClosureScratch finalClosure;
+
+  std::uint64_t retainedStorageBytes() const {
+    std::uint64_t total = 0;
+    const auto add = [&](std::size_t bytes) {
+      std::uint64_t amount = 0;
+      if constexpr (sizeof(std::size_t) > sizeof(std::uint64_t))
+        amount = bytes > std::numeric_limits<std::uint64_t>::max()
+                     ? std::numeric_limits<std::uint64_t>::max()
+                     : static_cast<std::uint64_t>(bytes);
+      else
+        amount = static_cast<std::uint64_t>(bytes);
+      total = amount > std::numeric_limits<std::uint64_t>::max() - total
+                  ? std::numeric_limits<std::uint64_t>::max()
+                  : total + amount;
+    };
+    add(annealing.retainedStorageBytes());
+    add(repair.retainedStorageBytes());
+    add(finalClosure.retainedStorageBytes());
+    return total;
+  }
 };
 
 llvm::StringRef spelling(SpatialRestartDisposition disposition) {
@@ -423,31 +640,80 @@ restartInterrupted(SpatialPnrInterruptionStage stage,
   return result;
 }
 
-SpatialRestartResult
-runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
-                  std::uint32_t attempt,
-                  ExecutionControlView executionControl) {
+SpatialRestartResult runSpatialRestartImpl(
+    const FrozenSpatialPnrProblemHandle &problem, std::uint32_t attempt,
+    ExecutionControlView executionControl, SpatialRestartScratch &scratch,
+    SpatialPathFinderSeedHandoffHandle preparedSeedHandoff = nullptr) {
   SpatialPnrGenerationAccounting accounting;
-  if (executionControl.stopRequested())
+  if (!preparedSeedHandoff && executionControl.stopRequested())
     return restartInterrupted(SpatialPnrInterruptionStage::SeedConstruction,
                               std::move(accounting));
   accounting.seedAttemptSlots = 1;
   const auto &search = problem->config().policy().search;
-  SpatialAnnealingSearchScratch annealing;
-  SpatialExactRepairScratch repair;
-  SpatialGlobalRoutingClosureScratch finalClosure;
+  SpatialAnnealingSearchScratch &annealing = scratch.annealing;
+  SpatialExactRepairScratch &repair = scratch.repair;
+  SpatialGlobalRoutingClosureScratch &finalClosure = scratch.finalClosure;
 
   SpatialPathFinderSeedWorkSummary seedWork;
-  auto seed = createPathFinderSpatialSeed(problem, attempt, seedWork);
+  llvm::Expected<SpatialPathFinderSeed> seed = [&]() {
+    if (!preparedSeedHandoff)
+      return createPathFinderSpatialSeed(problem, attempt, seedWork);
+    if (preparedSeedHandoff->consumed)
+      return llvm::Expected<SpatialPathFinderSeed>(llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "Spatial seed handoff was consumed more than once"));
+    if (preparedSeedHandoff->attemptOrdinal != attempt)
+      return llvm::Expected<SpatialPathFinderSeed>(llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "Spatial seed handoff ordinal does not match restart ordinal"));
+    preparedSeedHandoff->consumed = true;
+    seedWork = preparedSeedHandoff->workSummary;
+    if (preparedSeedHandoff->seed) {
+      auto prepared = llvm::Expected<SpatialPathFinderSeed>(
+          std::move(*preparedSeedHandoff->seed));
+      preparedSeedHandoff->seed.reset();
+      return prepared;
+    }
+    if (preparedSeedHandoff->failure) {
+      auto failure = llvm::Expected<SpatialPathFinderSeed>(
+          std::move(*preparedSeedHandoff->failure));
+      preparedSeedHandoff->failure.reset();
+      return failure;
+    }
+    return llvm::Expected<SpatialPathFinderSeed>(llvm::createStringError(
+        std::make_error_code(std::errc::invalid_argument),
+        "Spatial seed handoff contains neither a seed nor a failure"));
+  }();
+  if (llvm::Error error = checkedAdd(
+          seedWork.initializerAssignmentAttempts,
+          accounting.plannedInitializerAssignmentAttempts,
+          "planned initializer assignment attempts"))
+    return restartInternal(
+        InternalSpatialPnrGenerationReason::AccountingOverflow,
+        std::move(accounting), std::move(error));
   if (llvm::Error error = checkedAdd(seedWork.initializerAssignmentAttempts,
                                      accounting.initializerAssignmentAttempts,
                                      "initializer assignment attempts"))
     return restartInternal(
         InternalSpatialPnrGenerationReason::AccountingOverflow,
         std::move(accounting), std::move(error));
+  if (llvm::Error error = checkedAdd(
+          seedWork.endpointExpansions,
+          accounting.plannedEndpointExpansionSlots,
+          "planned seed endpoint expansions"))
+    return restartInternal(
+        InternalSpatialPnrGenerationReason::AccountingOverflow,
+        std::move(accounting), std::move(error));
   if (llvm::Error error = checkedAdd(seedWork.endpointExpansions,
                                      accounting.endpointExpansionSlots,
                                      "seed endpoint expansions"))
+    return restartInternal(
+        InternalSpatialPnrGenerationReason::AccountingOverflow,
+        std::move(accounting), std::move(error));
+  if (llvm::Error error = checkedAdd(
+          seedWork.negotiationIterations,
+          accounting.plannedNegotiationIterationSlots,
+          "planned seed negotiation iterations"))
     return restartInternal(
         InternalSpatialPnrGenerationReason::AccountingOverflow,
         std::move(accounting), std::move(error));
@@ -514,7 +780,8 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
                               std::move(seed->candidate));
 
   const auto hasTransportClosureViolation = [&]() {
-    return seed->candidate->unroutedObligationCount() != 0 ||
+    return seed->candidate->hardProgressViolation() != 0 ||
+           seed->candidate->unroutedObligationCount() != 0 ||
            seed->candidate->routeCapacityOveruse() != 0 ||
            seed->candidate->tagResidentCapacityOveruse() != 0 ||
            seed->candidate->tagUnassignedCount() != 0 ||
@@ -573,18 +840,28 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
       if (!repaired)
         return restartInternal(InternalSpatialPnrGenerationReason::ExactRepair,
                                std::move(accounting), repaired.takeError());
-      if (executionControl.stopRequested())
-        return restartInterrupted(SpatialPnrInterruptionStage::ExactRepair,
-                                  std::move(accounting),
-                                  std::move(seed->candidate));
       if (repaired->solverCalls > remainingSolverCalls)
         return restartInternal(
             InternalSpatialPnrGenerationReason::ExactRepair,
             std::move(accounting),
             "exact repair exceeded the restart solver-call budget");
+      if (llvm::Error error = checkedAdd(
+              repaired->regionDecisions,
+              accounting.plannedExactRepairRegionDecisions,
+              "planned exact-repair region decisions"))
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::AccountingOverflow,
+            std::move(accounting), std::move(error));
       if (llvm::Error error = checkedAdd(repaired->regionDecisions,
                                          accounting.exactRepairRegionDecisions,
                                          "exact-repair region decisions"))
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::AccountingOverflow,
+            std::move(accounting), std::move(error));
+      if (llvm::Error error = checkedAdd(
+              repaired->solverCalls,
+              accounting.plannedExactRepairSolverCalls,
+              "planned exact-repair solver calls"))
         return restartInternal(
             InternalSpatialPnrGenerationReason::AccountingOverflow,
             std::move(accounting), std::move(error));
@@ -594,9 +871,23 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
         return restartInternal(
             InternalSpatialPnrGenerationReason::AccountingOverflow,
             std::move(accounting), std::move(error));
+      if (llvm::Error error = checkedAdd(
+              repaired->endpointExpansions,
+              accounting.plannedEndpointExpansionSlots,
+              "planned exact-repair endpoint expansions"))
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::AccountingOverflow,
+            std::move(accounting), std::move(error));
       if (llvm::Error error = checkedAdd(repaired->endpointExpansions,
                                          accounting.endpointExpansionSlots,
                                          "exact-repair endpoint expansions"))
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::AccountingOverflow,
+            std::move(accounting), std::move(error));
+      if (llvm::Error error = checkedAdd(
+              repaired->negotiationIterations,
+              accounting.plannedNegotiationIterationSlots,
+              "planned exact-repair negotiation iterations"))
         return restartInternal(
             InternalSpatialPnrGenerationReason::AccountingOverflow,
             std::move(accounting), std::move(error));
@@ -606,6 +897,10 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
         return restartInternal(
             InternalSpatialPnrGenerationReason::AccountingOverflow,
             std::move(accounting), std::move(error));
+      if (executionControl.stopRequested())
+        return restartInterrupted(SpatialPnrInterruptionStage::ExactRepair,
+                                  std::move(accounting),
+                                  std::move(seed->candidate));
       switch (repaired->kind) {
       case SpatialExactRepairResultKind::Repaired:
         if (repaired->solverCalls == 0)
@@ -643,9 +938,23 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
           InternalSpatialPnrGenerationReason::AccountingOverflow,
           std::move(accounting), std::move(error));
     llvm::Error closureError = finalClosure.run(*seed->candidate);
+    if (llvm::Error error = checkedAdd(
+            finalClosure.endpointExpansionCount(),
+            accounting.plannedEndpointExpansionSlots,
+            "planned final-closure endpoint expansions"))
+      return restartInternal(
+          InternalSpatialPnrGenerationReason::AccountingOverflow,
+          std::move(accounting), std::move(error));
     if (llvm::Error error = checkedAdd(finalClosure.endpointExpansionCount(),
                                        accounting.endpointExpansionSlots,
                                        "final-closure endpoint expansions"))
+      return restartInternal(
+          InternalSpatialPnrGenerationReason::AccountingOverflow,
+          std::move(accounting), std::move(error));
+    if (llvm::Error error = checkedAdd(
+            finalClosure.negotiationIterationCount(),
+            accounting.plannedNegotiationIterationSlots,
+            "planned final-closure negotiation iterations"))
       return restartInternal(
           InternalSpatialPnrGenerationReason::AccountingOverflow,
           std::move(accounting), std::move(error));
@@ -714,12 +1023,41 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
           {}};
 }
 
+SpatialRestartResult
+runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
+                  std::uint32_t attempt,
+                  ExecutionControlView executionControl,
+                  SpatialPathFinderSeedHandoffHandle preparedSeedHandoff =
+                      nullptr) {
+  SpatialRestartScratch scratch;
+  SpatialRestartResult result = runSpatialRestartImpl(
+      problem, attempt, executionControl, scratch, std::move(preparedSeedHandoff));
+  result.workerScratchRetainedBytes = scratch.retainedStorageBytes();
+  return result;
+}
+
 llvm::Error
 accumulateRestartAccounting(const SpatialPnrGenerationAccounting &source,
                             SpatialPnrGenerationAccounting &target) {
 #define LOOM_ACCUMULATE_SPATIAL_FIELD(Field, Label)                            \
   if (llvm::Error error = checkedAdd(source.Field, target.Field, Label))       \
   return error
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedInitializerAssignmentAttempts,
+                                "planned initializer assignment attempts");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedEndpointExpansionSlots,
+                                "planned endpoint expansion slots");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedNegotiationIterationSlots,
+                                "planned negotiation iteration slots");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedCalibrationProposalSlots,
+                                "planned calibration proposal slots");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedAnnealingBaseProposalSlots,
+                                "planned base annealing proposal slots");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedAnnealingMovableProposalSlots,
+                                "planned movable annealing proposal slots");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedExactRepairRegionDecisions,
+                                "planned exact repair region decisions");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedExactRepairSolverCalls,
+                                "planned exact repair solver calls");
   LOOM_ACCUMULATE_SPATIAL_FIELD(seedAttemptSlots, "seed attempt slots");
   LOOM_ACCUMULATE_SPATIAL_FIELD(preparedSeeds, "prepared seeds");
   LOOM_ACCUMULATE_SPATIAL_FIELD(initializerAssignmentAttempts,
@@ -870,6 +1208,12 @@ interruptionPayload(const SpatialPnrInterruptionSnapshot &snapshot) {
   llvm::json::Object resourceValues;
   resourceValues["active_wall_time_ns"] =
       snapshot.resources.activeWallTimeNanoseconds;
+  if (snapshot.resources.processCpuTimeDeltaNanoseconds)
+    resourceValues["process_cpu_time_delta_ns"] =
+        *snapshot.resources.processCpuTimeDeltaNanoseconds;
+  else
+    resourceValues["process_cpu_time_delta_ns"] = nullptr;
+  resourceValues["resource_observation_scope"] = "process";
   resourceValues["allocated_memory_bytes"] =
       snapshot.resources.allocatedMemoryBytes;
   if (snapshot.resources.peakResidentMemoryBytes)
@@ -947,6 +1291,13 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     return InvalidSpatialPnrGeneration{
         InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
         "maximum candidate publications must be positive"};
+  ExecutionResourceBudget executionBudget = inputs.executionBudget;
+  if (executionBudget.cpuCores && *executionBudget.cpuCores == 0)
+    executionBudget.cpuCores.reset();
+  if (executionBudget.memoryBytes && *executionBudget.memoryBytes == 0)
+    executionBudget.memoryBytes.reset();
+  accounting.plannedSeedAttemptSlots =
+      inputs.config.policy().search.initializer.seedAttemptCount;
   if (inputs.executionControl.stopRequested())
     return interruptedOutcome(SpatialPnrInterruptionStage::InputAdmission,
                               std::nullopt, accounting, {}, {}, resources);
@@ -1061,22 +1412,71 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
 
   const std::uint32_t restartCount =
       inputs.config.policy().search.initializer.seedAttemptCount;
-  const std::uint32_t workerCount =
-      std::min(inputs.candidateWorkerCount, restartCount);
-  if (workerCount == 0)
+  if (inputs.candidateWorkerCount == 0)
     return InvalidSpatialPnrGeneration{
         InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
         "candidate worker count must be positive"};
-
-  const FrozenSpatialPnrProblemHandle frozenProblem = *problem;
-  std::vector<SpatialRestartResult> restartResults;
-  const auto runRestart = [&](std::uint32_t attempt) {
-    return runSpatialRestart(frozenProblem, attempt, inputs.executionControl);
-  };
   const bool firstVerifiedCandidate =
       inputs.config.policy().search.completionGoal ==
       ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
-  if (firstVerifiedCandidate || inputs.maximumCandidatePublications) {
+  const bool serialPrefix = firstVerifiedCandidate;
+  if (inputs.preparedCanonicalSeed) {
+    const SpatialPathFinderSeedHandoff &handoff =
+        *inputs.preparedCanonicalSeed;
+    if (firstVerifiedCandidate || handoff.attemptOrdinal != 0 ||
+        !handoff.problemCacheKey ||
+        *handoff.problemCacheKey != (*problem)->cacheKey() ||
+        (handoff.seed.has_value() == handoff.failure.has_value()))
+      return InvalidSpatialPnrGeneration{
+          InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
+          "prepared Spatial seed handoff is incompatible with the selected "
+          "completion goal or ordinal"};
+    if (handoff.seed &&
+        (!handoff.seed->candidate ||
+         handoff.seed->attemptOrdinal != handoff.attemptOrdinal ||
+         handoff.seed->candidate->problem().cacheKey() !=
+             (*problem)->cacheKey()))
+      return InvalidSpatialPnrGeneration{
+          InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
+          "prepared Spatial seed handoff does not bind the exact frozen "
+          "problem"};
+  }
+  const FrozenSpatialPnrProblemHandle frozenProblem = *problem;
+  std::vector<SpatialRestartResult> restartResults;
+  const auto runRestart = [&](std::uint32_t attempt) {
+    SpatialPathFinderSeedHandoffHandle handoff;
+    if (attempt == 0)
+      handoff = inputs.preparedCanonicalSeed;
+    return runSpatialRestart(frozenProblem, attempt, inputs.executionControl,
+                             std::move(handoff));
+  };
+  const bool calibrateWorkerMemory =
+      executionBudget.memoryBytes && !serialPrefix && restartCount > 1;
+  std::uint32_t firstPendingRestart = 0;
+  std::uint64_t workerScratchReservationBytes = 0;
+  if (calibrateWorkerMemory) {
+    restartResults.resize(restartCount);
+    restartResults.front() = runRestart(0);
+    workerScratchReservationBytes =
+        restartResults.front().workerScratchRetainedBytes;
+    firstPendingRestart = 1;
+  }
+  SpatialPnrWorkerAllocation workerAllocation = resolveWorkerAllocation(
+      inputs.candidateWorkerCount, restartCount, (*problem)->statistics(),
+      workerScratchReservationBytes, executionBudget, serialPrefix,
+      calibrateWorkerMemory);
+  if (calibrateWorkerMemory)
+    workerAllocation.actualWorkerCount =
+        std::max(1U, std::min(workerAllocation.actualWorkerCount,
+                              restartCount - firstPendingRestart));
+  const std::uint32_t workerCount = workerAllocation.actualWorkerCount;
+  auto emitExecutionStatisticsOnExit = llvm::scope_exit([&] {
+    emitInvocationExecutionStatistics(
+        workerAllocation, (*problem)->statistics(), executionBudget, resources,
+        inputs.preparedCanonicalSeed != nullptr);
+  });
+
+  if (serialPrefix) {
     restartResults.reserve(restartCount);
     std::uint64_t candidateRestarts = 0;
     for (std::uint32_t attempt = 0; attempt != restartCount; ++attempt) {
@@ -1086,20 +1486,25 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
         ++candidateRestarts;
       if (restartResults.back().disposition ==
               SpatialRestartDisposition::ProvenInfeasible ||
-          (firstVerifiedCandidate && candidateRestarts != 0) ||
-          (inputs.maximumCandidatePublications &&
-           candidateRestarts >= *inputs.maximumCandidatePublications))
+          (firstVerifiedCandidate && candidateRestarts != 0))
         break;
     }
   } else if (workerCount == 1) {
-    restartResults.reserve(restartCount);
-    for (std::uint32_t attempt = 0; attempt != restartCount; ++attempt)
-      restartResults.push_back(runRestart(attempt));
+    if (!calibrateWorkerMemory)
+      restartResults.reserve(restartCount);
+    for (std::uint32_t attempt = firstPendingRestart; attempt != restartCount;
+         ++attempt) {
+      if (calibrateWorkerMemory)
+        restartResults[attempt] = runRestart(attempt);
+      else
+        restartResults.push_back(runRestart(attempt));
+    }
   } else {
-    restartResults.resize(restartCount);
+    if (!calibrateWorkerMemory)
+      restartResults.resize(restartCount);
     llvm::DefaultThreadPool pool(llvm::heavyweight_hardware_concurrency(
         static_cast<unsigned>(workerCount)));
-    std::atomic_uint32_t nextRestart{0};
+    std::atomic_uint32_t nextRestart{firstPendingRestart};
     for (std::uint32_t worker = 0; worker != workerCount; ++worker)
       pool.async([&] {
         while (true) {
@@ -1112,6 +1517,13 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
       });
     pool.wait();
   }
+  for (const SpatialRestartResult &restart : restartResults)
+    workerAllocation.maximumObservedWorkerScratchBytes =
+        std::max(workerAllocation.maximumObservedWorkerScratchBytes,
+                 restart.workerScratchRetainedBytes);
+  if (!executionBudget.memoryBytes)
+    workerAllocation.workerScratchReservationBytes =
+        workerAllocation.maximumObservedWorkerScratchBytes;
 
   std::vector<ArtifactRootReference> candidates;
   bool semanticLimitReached = restartResults.size() != restartCount;
@@ -1170,6 +1582,10 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     case SpatialRestartDisposition::Internal:
       return internal(restart.internalReason, accounting, restart.diagnostic);
     }
+
+    if (inputs.maximumCandidatePublications &&
+        accounting.publicationSlots >= *inputs.maximumCandidatePublications)
+      continue;
 
     if (inputs.executionControl.stopRequested())
       return interruptedOutcome(

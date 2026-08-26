@@ -52,11 +52,12 @@ constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
      PlanValueCardinality::FiniteSet},
 }};
 
-constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 4> workUnits = {{
+constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 5> workUnits = {{
     {CandidateGeneratorWorkUnitRef(0), "loop_scope"},
     {CandidateGeneratorWorkUnitRef(1), "candidate_materialization"},
     {CandidateGeneratorWorkUnitRef(2), "schedule_coordinate"},
     {CandidateGeneratorWorkUnitRef(3), "bounded_candidate"},
+    {CandidateGeneratorWorkUnitRef(4), "polyhedral_dependence_query"},
 }};
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -169,8 +170,12 @@ llvm::Error validateDecisionPayload(
   auto loop = view->resolve(adopted->loop);
   if (!loop)
     return loop.takeError();
+  const bool acceptsAffineLoop =
+      adopted->kind == frontend::StructuredScheduleDecisionKind::Vectorize ||
+      adopted->kind ==
+          frontend::StructuredScheduleDecisionKind::PolyhedralSchedule;
   const bool exactLoop =
-      adopted->kind == frontend::StructuredScheduleDecisionKind::Vectorize
+      acceptsAffineLoop
           ? llvm::isa_and_nonnull<mlir::scf::ForOp, mlir::affine::AffineForOp>(
                 loop->operation)
           : llvm::isa_and_nonnull<mlir::scf::ForOp>(loop->operation);
@@ -189,7 +194,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v9",
+    "loom.compiler.structured_schedule.generator.v11",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -250,6 +255,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
   std::uint64_t inspectedLoopScopes = 0;
   std::uint64_t inspectedDecisionCoordinates = 0;
+  std::uint64_t inspectedPolyhedralDependenceQueries = 0;
   std::uint64_t generatedProposalCount = 0;
   std::uint64_t selectedProposalCount = 0;
   std::uint64_t materializationAttempts = 0;
@@ -264,9 +270,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
   const auto recordScopRefusal = [&](const frontend::StructuredEntityRef &loop,
                                      frontend::StructuredScopRefusalKind kind) {
     ++scopRefusalCount;
-    proofIncomplete |=
-        kind ==
-        frontend::StructuredScopRefusalKind::ProviderScheduleBudgetExhausted;
+    proofIncomplete |= kind == frontend::StructuredScopRefusalKind::
+                                   ProviderScheduleBudgetExhausted ||
+                       kind == frontend::StructuredScopRefusalKind::
+                                   PolyhedralMaterializationUnavailable;
     mapping_debug::emit(
         mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
         mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
@@ -350,6 +357,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
             inspectedDecisionCoordinates)
       return invalid("schedule-coordinate accounting overflows u64");
     inspectedDecisionCoordinates += decisions->inspectedDecisionCoordinates;
+    if (decisions->inspectedPolyhedralDependenceQueries >
+        std::numeric_limits<std::uint64_t>::max() -
+            inspectedPolyhedralDependenceQueries)
+      return invalid("polyhedral dependence-query accounting overflows u64");
+    inspectedPolyhedralDependenceQueries +=
+        decisions->inspectedPolyhedralDependenceQueries;
     for (const frontend::StructuredScheduleProposal &proposal :
          decisions->proposals) {
       if (invocationView.stopRequested()) {
@@ -507,7 +520,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
        {CandidateGeneratorWorkUnitRef(2), inspectedDecisionCoordinates,
         inspectedDecisionCoordinates},
        {CandidateGeneratorWorkUnitRef(3), generatedProposalCount,
-        selectedProposalCount}}};
+        selectedProposalCount},
+       {CandidateGeneratorWorkUnitRef(4), inspectedPolyhedralDependenceQueries,
+        inspectedPolyhedralDependenceQueries}}};
 }
 
 const CandidateGeneratorProvider provider{

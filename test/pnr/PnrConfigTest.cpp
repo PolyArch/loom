@@ -59,7 +59,7 @@ void projectionAndAdoptionAreDomainTyped() {
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               spatial.schemaDescriptorBytes().data()),
                           spatial.schemaDescriptorBytes().size()) ==
-              "loom.spatial_pnr.config.15.0",
+              "loom.spatial_pnr.config.15.1",
           "Spatial PnR view has the wrong schema descriptor");
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               system.schemaDescriptorBytes().data()),

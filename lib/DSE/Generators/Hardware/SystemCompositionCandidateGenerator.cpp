@@ -26,7 +26,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.system_composition_rewrite.config.1.0";
+    "loom.system_composition_rewrite.config.1.1";
 
 enum InputSlot : std::uint32_t {
   SystemParentInput,
@@ -112,6 +112,20 @@ llvm::Error validateDecisionAgainstParent(
                   loom::fabric::validateFabricRef(parent, value.destination))
             return error;
           return loom::fabric::validateFabricRef(parent, value.source);
+        } else if constexpr (std::is_same_v<Value,
+                                            SwapTransportConnectionSources>) {
+          if (!(loom::fabric::canonicalFabricBytes(value.firstDestination) <
+                loom::fabric::canonicalFabricBytes(value.secondDestination)))
+            return invalid("transport connection swap order is not canonical");
+          if (llvm::Error error = loom::fabric::validateFabricRef(
+                  parent, value.firstDestination))
+            return error;
+          return loom::fabric::validateFabricRef(parent,
+                                                 value.secondDestination);
+        } else if constexpr (std::is_same_v<Value, ResizeSystemMemoryRegion>) {
+          if (value.sizeBytes == 0)
+            return invalid("System memory region size must be positive");
+          return loom::fabric::validateFabricRef(parent, value.service);
         } else {
           return std::visit(
               [&](const auto &attachment) -> llvm::Error {
@@ -170,6 +184,13 @@ applyDecision(loom::adg::SystemBuilder &builder,
         } else if constexpr (std::is_same_v<Value, ChangeTransportConnection>) {
           return builder.replaceTransportConnection(value.destination,
                                                     value.source);
+        } else if constexpr (std::is_same_v<Value,
+                                            SwapTransportConnectionSources>) {
+          return builder.swapTransportConnectionSources(
+              value.firstDestination, value.secondDestination);
+        } else if constexpr (std::is_same_v<Value, ResizeSystemMemoryRegion>) {
+          return builder.resizeSystemMemoryRegion(
+              value.service, value.regionOrdinal, value.sizeBytes);
         } else {
           return std::visit(
               [&](const auto &attachment) -> llvm::Error {
@@ -459,7 +480,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     systemCompositionCandidateGeneratorKind,
     "system_composition_rewrite",
-    "loom.system_composition_rewrite.generator.v2",
+    "loom.system_composition_rewrite.generator.v3",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},

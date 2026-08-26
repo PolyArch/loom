@@ -136,6 +136,7 @@ func.func @pre_tested_counted_uplifts(%buf: memref<?xf32>, %n: index) {
 // CHECK: return %[[KEPT]] : index
 func.func @observable_result_kept(%n: index) -> index {
     %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
     %c3 = arith.constant 3 : index
     %kept = scf.while (%iv = %c0) : (index) -> index {
       %cond = arith.cmpi slt, %iv, %n : index
@@ -150,7 +151,7 @@ func.func @observable_result_kept(%n: index) -> index {
       scf.condition(%cond) %iv, %j : index, index
     } do {
     ^bb0(%iv: index, %j: index):
-      %iv_n = arith.addi %iv, %c3 : index
+      %iv_n = arith.addi %iv, %c1 : index
       %j_n = arith.addi %j, %c3 : index
       scf.yield %iv_n, %j_n : index, index
     }

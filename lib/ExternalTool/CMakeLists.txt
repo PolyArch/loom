@@ -3,7 +3,10 @@ find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 add_mlir_library(LoomExternalTool
   Binding.cpp
   ExternalFile.cpp
+  InvocationCommandObservation.cpp
+  InvocationCommandSchedule.cpp
   InvocationBundle.cpp
+  InvocationCompletion.cpp
   InvocationCache.cpp
   InvocationBundleScript.cpp
   LocalConfig.cpp

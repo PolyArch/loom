@@ -39,6 +39,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -81,16 +82,17 @@ struct GatedValue {
 
 struct StreamLoweringPlan {
   StreamLoweringPlan(::mlir::Block *scope, ::mlir::Value channel, bool input,
-                     unsigned boundaryIndex,
+                     unsigned boundaryIndex, unsigned recurrenceBits,
                      std::unique_ptr<StreamScheduleNode> schedule)
       : scope(scope), channel(channel), input(input),
-        boundaryIndex(boundaryIndex), loc(schedule->loc),
-        schedule(std::move(schedule)) {}
+        boundaryIndex(boundaryIndex), recurrenceBits(recurrenceBits),
+        loc(schedule->loc), schedule(std::move(schedule)) {}
 
   ::mlir::Block *scope;
   ::mlir::Value channel;
   bool input;
   unsigned boundaryIndex;
+  unsigned recurrenceBits;
   ::mlir::Location loc;
   std::unique_ptr<StreamScheduleNode> schedule;
   ::mlir::Value activation;
@@ -151,7 +153,7 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
       !::llvm::isa<::mlir::NoneType>(entry.getArgument(0).getType()))
     return graph.emitError(
         "loom-lower-graph-memory: graph entry must start with none");
-  if (::mlir::failed(checkStreamBoundaryUses(graph, boundary)))
+  if (::mlir::failed(checkStreamBoundaryUses(graph, boundary, indexBits)))
     return ::mlir::failure();
 
   ::mlir::WalkResult result = graph.getBody().walk([&](::mlir::Operation *op)
@@ -217,6 +219,13 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
         switchOp.emitError(
             "loom-lower-graph-memory: zero-case scf.index_switch requires "
             "upstream normalization before graph-region lowering");
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (indexBits < std::numeric_limits<std::size_t>::digits &&
+          switchOp.getNumCases() >= (std::size_t{1} << indexBits)) {
+        switchOp.emitError(
+            "loom-lower-graph-memory: scf.index_switch lane count exceeds "
+            "the configured index width");
         return ::mlir::WalkResult::interrupt();
       }
       ::mlir::Type memory = findMemoryCapability(switchOp.getResultTypes());
@@ -409,13 +418,13 @@ private:
 
   void registerStreamPlan(::mlir::Value channel, bool input,
                           unsigned boundaryIndex) {
-    auto plan = analyzeStreamBinding(channel, input);
+    auto plan = analyzeStreamBinding(channel, input, indexBits);
     assert(::mlir::succeeded(plan) &&
            "stream plan preflight must agree with graph lowering");
     if ((*plan)->schedule->kind == StreamScheduleNode::Kind::Endpoint && !input)
       return;
     auto loweringPlan = std::make_unique<StreamLoweringPlan>(
-        (*plan)->scope, channel, input, boundaryIndex,
+        (*plan)->scope, channel, input, boundaryIndex, (*plan)->recurrenceBits,
         std::move((*plan)->schedule));
     streamPlans.push_back(std::move(loweringPlan));
   }
@@ -458,7 +467,7 @@ private:
         continue;
 
       auto materialization = materializeStreamSchedule(
-          *plan->schedule, execution, builder, anchor);
+          *plan->schedule, plan->recurrenceBits, execution, builder, anchor);
       plan->activation = materialization.activation;
       plan->phase = materialization.phase;
       plan->ordinal = materialization.ordinal;
@@ -569,8 +578,7 @@ private:
   void eraseTransientChannelArguments() {
     size_t canonicalArgumentCount = graph.getFunctionType().getNumInputs() + 1;
     while (entry.getNumArguments() > canonicalArgumentCount) {
-      ::mlir::BlockArgument argument = entry.getArguments().back();
-      assert(argument.use_empty() &&
+      assert(entry.getArguments().back().use_empty() &&
              "stream endpoint lowering must remove every channel use");
       entry.eraseArgument(entry.getNumArguments() - 1);
     }
@@ -1578,16 +1586,27 @@ private:
     if (switchOp.getNumCases() == 1)
       return caseMatch(switchOp.getCases().front());
 
-    ::mlir::Value selector = controlledIndex(0);
+    ::mlir::Type laneType = builder.getIntegerType(indexBits);
+    auto controlledLane = [&](int64_t value) {
+      setInsertionPoint(loc);
+      return ::dataflow::ConstantOp::create(
+                 builder, loc, laneType, execution,
+                 builder.getIntegerAttr(laneType, value))
+          .getValue();
+    };
+    ::mlir::Value selector = controlledLane(0);
     for (auto [caseIndex, caseValue] : ::llvm::enumerate(switchOp.getCases())) {
       ::mlir::Value match = caseMatch(caseValue);
-      ::mlir::Value lane = controlledIndex(caseIndex + 1);
+      ::mlir::Value lane = controlledLane(caseIndex + 1);
       setInsertionPoint(loc);
       selector =
           ::mlir::arith::SelectOp::create(builder, loc, match, lane, selector)
               .getResult();
     }
-    return selector;
+    setInsertionPoint(loc);
+    return ::mlir::arith::IndexCastOp::create(builder, loc,
+                                              builder.getIndexType(), selector)
+        .getResult();
   }
 
   RegionResult lowerIf(::mlir::scf::IfOp ifOp, ::mlir::Value execution,

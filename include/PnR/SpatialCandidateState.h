@@ -4,6 +4,7 @@
 #include "PnR/HandshakeCandidateState.h"
 #include "PnR/RouteTreeState.h"
 #include "PnR/SpatialPnrProblem.h"
+#include "PnR/SpatialProgressState.h"
 #include "PnR/SpatialRecurrenceTiming.h"
 #include "PnR/SpatialRouteResourceState.h"
 #include "PnR/SpatialTagAssignment.h"
@@ -93,6 +94,9 @@ public:
 
   llvm::Error prepare(const FrozenSpatialPnrProblem &problem);
   std::size_t retainedStorageBytes() const;
+  HandshakeProjectionStatistics handshakeProjectionStatistics() const {
+    return handshakeProjectionScratch_.statistics();
+  }
 
 private:
   enum class DecisionKind : std::uint8_t {
@@ -116,13 +120,27 @@ private:
     std::uint64_t oldWideValue = 0;
   };
 
+  struct ProgressTraversalDelta final {
+    PnrIndex logicalNet = getInvalidPnrIndex();
+    PnrIndex traversal = getInvalidPnrIndex();
+    PnrIndex removed = 0;
+    PnrIndex added = 0;
+  };
+
+  struct ProgressDependencyDelta final {
+    PnrIndex logicalNet = getInvalidPnrIndex();
+    std::uint64_t oldCount = 0;
+  };
+
   void beginTransaction();
+  void advanceProgressRouteDeltaEpoch();
   void resetTransaction();
 
   std::vector<std::unique_ptr<RouteTreeTransactionScratch>> routeScratch_;
   std::vector<std::optional<RouteTreeTransaction>> routeTransactions_;
   SpatialTagAssignmentScratch tagScratch_;
   HandshakeCandidateScratch handshakeScratch_;
+  HandshakeProjectionScratch handshakeProjectionScratch_;
   std::optional<HandshakeCandidateTransaction> handshakeTransaction_;
 
   std::vector<std::uint64_t> computeJournalMarks_;
@@ -183,6 +201,16 @@ private:
   std::uint64_t traversalEpoch_ = 0;
   std::size_t resourceFullyAppliedRouteCount_ = 0;
   std::size_t resourcePartiallyAppliedDeltaCount_ = 0;
+
+  std::vector<std::size_t> progressRecordedRouteDeltaCounts_;
+  std::vector<std::uint64_t> progressRecordedRouteDeltaEpochs_;
+  std::uint64_t progressRecordedRouteDeltaEpoch_ = 0;
+  std::vector<std::uint8_t> progressTerminalActive_;
+  std::vector<ProgressTraversalDelta> progressTraversalDeltas_;
+  std::vector<std::uint8_t> progressDirtyNetMarks_;
+  std::vector<PnrIndex> progressDirtyNets_;
+  std::vector<std::uint64_t> progressDependencyJournalMarks_;
+  std::vector<ProgressDependencyDelta> progressDependencyDeltas_;
 
   std::unique_ptr<detail::SpatialRouteConstraintScratch>
       routeConstraintScratch_;
@@ -259,6 +287,19 @@ public:
   }
   std::uint64_t routeCapacityOveruse() const {
     return routeResources_.totalCapacityOveruseRaw();
+  }
+  std::uint64_t hardProgressViolation() const {
+    return progressState_.hardProgressViolation();
+  }
+  const SpatialProgressState &progress() const { return progressState_; }
+  llvm::Expected<std::vector<SpatialFiniteBufferConflictWitness>>
+  finiteBufferConflictWitnesses() const {
+    return progressState_.finiteBufferConflictWitnesses(*this);
+  }
+  llvm::Error rebuildFiniteBufferConflictWitness(
+      PnrIndex owner, SpatialFiniteBufferConflictWitness &witness) const {
+    return progressState_.rebuildFiniteBufferConflictWitness(*this, owner,
+                                                             witness);
   }
   /// Exact selected envelope cache. FrozenSpatialCapacityIndex remains the
   /// sole owner of envelope semantics; these dense views are rebuildable.
@@ -450,9 +491,13 @@ private:
   terminalPayloadWidth(FrozenSpatialTerminalBinding binding) const;
   llvm::Expected<SpatialCandidateRouteProjection> projectVerifiedRoutes(
       llvm::ArrayRef<const RouteTreeState *> routeTrees,
-      SpatialTagAssignmentSummary *tagSummary = nullptr) const;
+      SpatialTagAssignmentSummary *tagSummary,
+      HandshakeProjectionScratch &handshakeProjectionScratch) const;
   llvm::Expected<SpatialTagAssignmentSummary>
   summarizeCurrentTagAssignments() const;
+  llvm::Expected<SpatialTagAssignmentDelta> summarizeCurrentTagAssignmentDelta(
+      llvm::ArrayRef<PnrIndex> logicalNets,
+      llvm::ArrayRef<PnrIndex> changedDomains) const;
 
   FrozenSpatialPnrProblemHandle problem_;
   std::vector<SpatialComputeBindingSelection> computeBindings_;
@@ -479,6 +524,7 @@ private:
   std::vector<RouteTreeStateHandle> routeTrees_;
   HandshakeCandidateStateHandle handshake_;
   SpatialRouteResourceState routeResources_;
+  SpatialProgressState progressState_;
   SpatialTagAssignmentState tagAssignments_;
   std::uint64_t unroutedObligationCount_ = 0;
   std::uint64_t atomicCapacityOveruse_ = 0;
@@ -529,9 +575,9 @@ public:
   llvm::Error ripUpRouteSubtree(PnrIndex logicalNet,
                                 PnrIndex subtreeRootEndpoint);
   llvm::Error ripUpWholeRoute(PnrIndex logicalNet);
-  llvm::Expected<SpatialCandidateRouteProjection> projectCurrentRoutes() const;
+  llvm::Expected<SpatialCandidateRouteProjection> projectCurrentRoutes();
   llvm::Expected<SpatialCandidateRouteProjection>
-  projectCurrentRoutes(SpatialTagAssignmentSummary &tagSummary) const;
+  projectCurrentRoutes(SpatialTagAssignmentSummary &tagSummary);
 
   llvm::Expected<bool> close();
   llvm::ArrayRef<PnrIndex> cycleWitness() const;
@@ -539,6 +585,8 @@ public:
   llvm::ArrayRef<PnrIndex> touchedRouteLogicalNets() const;
   llvm::Expected<SpatialTagAssignmentSummary>
   summarizeCurrentTagAssignments() const;
+  llvm::Expected<SpatialTagAssignmentDelta>
+  summarizeCurrentTagAssignmentDelta() const;
   bool hasRouteTreeChange() const;
   bool hasSemanticChange() const;
   llvm::Error commit();
@@ -549,7 +597,7 @@ private:
                          SpatialCandidateScratch &scratch);
 
   llvm::Expected<SpatialCandidateRouteProjection>
-  projectCurrentRoutesImpl(SpatialTagAssignmentSummary *tagSummary) const;
+  projectCurrentRoutesImpl(SpatialTagAssignmentSummary *tagSummary);
   llvm::Error ensureCollecting() const;
   llvm::Expected<RouteTreeTransaction *> routeTransaction(PnrIndex logicalNet);
   llvm::Error captureSwitchHandshakeBaseline();
@@ -574,11 +622,18 @@ private:
   void markMemoryServiceGroup(PnrIndex group);
   void markMemoryExposure(PnrIndex exposure);
   void markNet(PnrIndex logicalNet);
+  void markProgressNetDirty(PnrIndex logicalNet);
   void markBindingRelations(PnrIndex decision);
   llvm::Error changeFragments(llvm::ArrayRef<PnrIndex> oldFragments,
                               llvm::ArrayRef<PnrIndex> newFragments);
   llvm::Error changeTraversal(std::optional<PnrIndex> oldTraversal,
                               std::optional<PnrIndex> newTraversal);
+  llvm::Error changeProgressTraversal(
+      PnrIndex logicalNet, std::optional<PnrIndex> oldTraversal,
+      std::optional<PnrIndex> newTraversal);
+  llvm::Error changeProgressTerminalSelections(PnrIndex logicalNet,
+                                               bool oldActive,
+                                               bool newActive);
   llvm::Error
   changeRegisterFifoTransferResources(PnrIndex logicalNet,
                                       std::optional<PnrIndex> oldOption,
@@ -586,6 +641,12 @@ private:
   llvm::Error recordTraversalSelectionDelta(PnrIndex traversal,
                                             PnrIndex removed, PnrIndex added);
   llvm::Error collectRouteTraversalDeltas();
+  llvm::Error applyProgressTraversalDelta(PnrIndex logicalNet,
+                                          PnrIndex traversal,
+                                          PnrIndex removed, PnrIndex added);
+  llvm::Error synchronizeProgressProjection();
+  void rollbackProgressProjection() noexcept;
+  void acceptProgressProjection() noexcept;
   void rollbackAppliedRouteResources() noexcept;
   void acceptAppliedRouteResources() noexcept;
   llvm::Error validateAffectedState() const;
@@ -603,6 +664,7 @@ private:
   std::uint64_t initialStaticSchedulePressure_ = 0;
   std::uint64_t initialWorstRouteArrivalDelayQuanta_ = 0;
   std::uint64_t initialTotalRouteNegativeSlackQuanta_ = 0;
+  bool recurrenceTimingSelected_ = false;
   SpatialRecurrenceTimingProjection initialRecurrenceTiming_;
   friend class SpatialCandidateState;
   friend class SpatialCandidateScratch;

@@ -43,6 +43,27 @@ llvm::Expected<SpatialEventCoordinate> launchCoordinate() {
   return SpatialEventCoordinate{std::move(*cycle), 0};
 }
 
+std::optional<std::uint64_t>
+integralReferenceCycleDistance(const SpatialEventCoordinate &from,
+                               const SpatialEventCoordinate &to) {
+  if (compareSpatialEventCoordinates(to, from) < 0)
+    return std::nullopt;
+  using u128 = unsigned __int128;
+  const u128 fromValue = static_cast<u128>(from.referenceCycle.numerator()) *
+                         to.referenceCycle.denominator();
+  const u128 toValue = static_cast<u128>(to.referenceCycle.numerator()) *
+                       from.referenceCycle.denominator();
+  const u128 commonDenominator = static_cast<u128>(
+      from.referenceCycle.denominator()) *
+      to.referenceCycle.denominator();
+  const u128 difference = toValue - fromValue;
+  if (commonDenominator == 0 || difference % commonDenominator != 0 ||
+      difference / commonDenominator >
+          std::numeric_limits<std::uint64_t>::max())
+    return std::nullopt;
+  return static_cast<std::uint64_t>(difference / commonDenominator);
+}
+
 std::vector<std::uint64_t> findTransferWaitCycle(
     llvm::ArrayRef<CgraClosedWaitSetDiagnostic::Transfer> transfers) {
   const std::uint64_t absent = std::numeric_limits<std::uint64_t>::max();
@@ -106,9 +127,9 @@ std::vector<std::uint64_t> findTransferWaitCycle(
   return cycle;
 }
 
-CgraClosedWaitSetDiagnostic::TransferWaitKind
-transferWaitKind(const CgraClosedWaitSetDiagnostic::Transfer &waiting,
-                 const CgraClosedWaitSetDiagnostic::Transfer &blocking) {
+CgraClosedWaitSetDiagnostic::TransferWaitKind transferWaitKind(
+    const CgraClosedWaitSetDiagnostic::Transfer &waiting,
+    const CgraClosedWaitSetDiagnostic::Transfer &blocking) {
   const auto matches = [&](const auto &head) {
     return head && blocking.bindingOrdinal == head->bindingOrdinal &&
            blocking.occurrenceOrdinal == head->occurrenceOrdinal;
@@ -117,7 +138,8 @@ transferWaitKind(const CgraClosedWaitSetDiagnostic::Transfer &waiting,
       matches(waiting.blockingStorageHead))
     return CgraClosedWaitSetDiagnostic::TransferWaitKind::StorageHead;
   if (matches(waiting.blockingDownstreamStorageHead))
-    return CgraClosedWaitSetDiagnostic::TransferWaitKind::DownstreamStorageHead;
+    return CgraClosedWaitSetDiagnostic::TransferWaitKind::
+        DownstreamStorageHead;
   return CgraClosedWaitSetDiagnostic::TransferWaitKind::ActorPublication;
 }
 
@@ -135,9 +157,9 @@ struct ActorWaitState final {
 using ActorTransitionProbeTable =
     std::vector<std::optional<detail::ActorTransitionProbeResult>>;
 
-ActorTransitionProbeTable
-deriveActorTransitionProbes(const detail::PreparedGraphExecution &execution,
-                            const detail::SimulatorState &state) {
+ActorTransitionProbeTable deriveActorTransitionProbes(
+    const detail::PreparedGraphExecution &execution,
+    const detail::SimulatorState &state) {
   ActorTransitionProbeTable probes(execution.actorPlans.size());
   for (const auto [ordinal, actor] : llvm::enumerate(execution.actorPlans)) {
     if (actor.transitionProbe == detail::ActorTransitionProbeKind::Unavailable)
@@ -183,11 +205,10 @@ deriveActorWaitCycle(
       if (!head || (head->bindingOrdinal == transfer.bindingOrdinal &&
                     head->occurrenceOrdinal == transfer.occurrenceOrdinal))
         return;
-      const auto owner =
-          llvm::find_if(closedWait.transfers, [&](const auto &c) {
-            return c.bindingOrdinal == head->bindingOrdinal &&
-                   c.occurrenceOrdinal == head->occurrenceOrdinal;
-          });
+      const auto owner = llvm::find_if(closedWait.transfers, [&](const auto &c) {
+        return c.bindingOrdinal == head->bindingOrdinal &&
+               c.occurrenceOrdinal == head->occurrenceOrdinal;
+      });
       if (owner != closedWait.transfers.end() &&
           owner->producerActorOrdinal < actorCount)
         wait.outputBackpressure.push_back(owner->producerActorOrdinal);
@@ -198,9 +219,10 @@ deriveActorWaitCycle(
   }
   for (ActorWaitState &wait : waits) {
     llvm::sort(wait.outputBackpressure);
-    wait.outputBackpressure.erase(std::unique(wait.outputBackpressure.begin(),
-                                              wait.outputBackpressure.end()),
-                                  wait.outputBackpressure.end());
+    wait.outputBackpressure.erase(
+        std::unique(wait.outputBackpressure.begin(),
+                    wait.outputBackpressure.end()),
+        wait.outputBackpressure.end());
   }
 
   for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
@@ -234,8 +256,8 @@ deriveActorWaitCycle(
         continue;
       hasMissingInput = true;
       mlir::Operation *producer = value.getDefiningOp();
-      const auto found =
-          producer ? actorByOperation.find(producer) : actorByOperation.end();
+      const auto found = producer ? actorByOperation.find(producer)
+                                  : actorByOperation.end();
       if (found == actorByOperation.end()) {
         hasUnownedMissingInput = true;
         continue;
@@ -264,15 +286,16 @@ deriveActorWaitCycle(
       const ActorWaitState &wait = waits[actor];
       bool internallyBlocked = false;
       if (wait.usesOutputBackpressure) {
-        internallyBlocked =
-            llvm::any_of(wait.outputBackpressure,
-                         [&](std::uint64_t target) { return closed[target]; });
+        internallyBlocked = llvm::any_of(
+            wait.outputBackpressure,
+            [&](std::uint64_t target) { return closed[target]; });
       } else {
         internallyBlocked = llvm::all_of(
             wait.missingInputCases, [&](const ActorWaitCase &blockedCase) {
-              return llvm::any_of(
-                  blockedCase.internalProducers,
-                  [&](std::uint64_t producer) { return closed[producer]; });
+              return llvm::any_of(blockedCase.internalProducers,
+                                  [&](std::uint64_t producer) {
+                                    return closed[producer];
+                                  });
             });
       }
       if (!internallyBlocked) {
@@ -293,8 +316,8 @@ deriveActorWaitCycle(
       for (std::uint64_t target : wait.outputBackpressure)
         if (closed[target])
           edges[actor].push_back(
-              {target,
-               CgraClosedWaitSetDiagnostic::ActorWaitKind::OutputBackpressure});
+              {target, CgraClosedWaitSetDiagnostic::ActorWaitKind::
+                           OutputBackpressure});
     } else {
       for (const ActorWaitCase &blockedCase : wait.missingInputCases)
         for (std::uint64_t producer : blockedCase.internalProducers)
@@ -304,7 +327,8 @@ deriveActorWaitCycle(
                  CgraClosedWaitSetDiagnostic::ActorWaitKind::MissingInput});
     }
     llvm::sort(edges[actor], [](const Edge &lhs, const Edge &rhs) {
-      return std::tie(lhs.first, lhs.second) < std::tie(rhs.first, rhs.second);
+      return std::tie(lhs.first, lhs.second) <
+             std::tie(rhs.first, rhs.second);
     });
     edges[actor].erase(std::unique(edges[actor].begin(), edges[actor].end()),
                        edges[actor].end());
@@ -357,17 +381,17 @@ deriveActorWaitCycle(
 } // namespace
 
 struct PreparedCgraWorkloadExecution::Impl final {
-  const PreparedCgraExecution::Impl *prepared = nullptr;
+  std::shared_ptr<const PreparedCgraExecution::Impl> prepared;
   const detail::PreparedCgraGraph *graphExecution = nullptr;
   detail::ResolvedLaunchContext context;
   ArtifactIdentity workload;
   ArtifactIdentity runtimeInput;
 
-  Impl(const PreparedCgraExecution::Impl &prepared,
+  Impl(std::shared_ptr<const PreparedCgraExecution::Impl> prepared,
        const detail::PreparedCgraGraph &graphExecution,
        detail::ResolvedLaunchContext context, ArtifactIdentity workload,
        ArtifactIdentity runtimeInput)
-      : prepared(&prepared), graphExecution(&graphExecution),
+      : prepared(std::move(prepared)), graphExecution(&graphExecution),
         context(std::move(context)), workload(workload),
         runtimeInput(runtimeInput) {}
 };
@@ -382,6 +406,7 @@ PreparedCgraWorkloadExecution &PreparedCgraWorkloadExecution::operator=(
 PreparedCgraWorkloadExecution::~PreparedCgraWorkloadExecution() = default;
 
 struct CgraExecutionSession::Impl final {
+  std::shared_ptr<const PreparedCgraExecution::Impl> preparedOwner;
   const PreparedCgraExecution::Impl *prepared = nullptr;
   const CanonicalSimulationWorkload *workload = nullptr;
   const CanonicalSimulationRuntimeInput *runtimeInput = nullptr;
@@ -396,21 +421,20 @@ struct CgraExecutionSession::Impl final {
   std::optional<SpatialEventCoordinate> lastCoordinate;
   std::optional<CgraClosedWaitSetDiagnostic> closedWait;
   std::optional<SpatialDiagnosticTrace> trace;
-  llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>,
-                 SpatialEventCoordinate>
+  std::map<std::pair<std::uint64_t, std::uint64_t>, SpatialEventCoordinate>
       physicalRequestCoordinates;
-  llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>,
-                 SpatialEventCoordinate>
+  std::map<std::pair<std::uint64_t, std::uint64_t>, SpatialEventCoordinate>
       physicalGrantCoordinates;
   bool resultTaken = false;
 
-  Impl(const PreparedCgraExecution::Impl &prepared,
+  Impl(std::shared_ptr<const PreparedCgraExecution::Impl> prepared,
        const CanonicalSimulationWorkload &workload,
        const CanonicalSimulationRuntimeInput &runtimeInput,
        const detail::PreparedCgraGraph &graphExecution,
        detail::ResolvedLaunchContext context,
        std::optional<TraceCaptureLevel> traceLevel)
-      : prepared(&prepared), workload(&workload), runtimeInput(&runtimeInput),
+      : preparedOwner(std::move(prepared)), prepared(preparedOwner.get()),
+        workload(&workload), runtimeInput(&runtimeInput),
         graphExecution(&graphExecution), context(std::move(context)) {
     if (traceLevel)
       trace.emplace(SpatialDiagnosticTrace{*traceLevel, {}});
@@ -533,8 +557,7 @@ struct CgraExecutionSession::Impl final {
         {::dataflow::canonicalDataflowSchema.identity.str(),
          ::dataflow::canonicalDataflowSchema.version,
          prepared->dataflow.identity()},
-        prepared->fabric.reference(),
-        prepared->tech.reference(),
+        prepared->fabric.reference(), prepared->tech.reference(),
         prepared->spatial.reference()};
     const auto &operandProgress = runtime->operandQueueProgress();
     closedWait->operandQueueGroupCount = operandProgress.groupCount;
@@ -544,18 +567,28 @@ struct CgraExecutionSession::Impl final {
         operandProgress.sharedIngressPressure;
     closedWait->operandQueueDistinctIngressCount =
         operandProgress.distinctIngressCount;
-    closedWait->operandQueuePairingKeyCount = operandProgress.pairingKeyCount;
+    closedWait->operandQueuePairingKeyCount =
+        operandProgress.pairingKeyCount;
     closedWait->operandQueueProgressStatus =
         static_cast<std::uint8_t>(operandProgress.status);
     closedWait->operandQueueProgressSupport =
         static_cast<std::uint8_t>(operandProgress.support);
-    closedWait->operandQueueProjectionDigest = operandProgress.projectionDigest;
+    closedWait->operandQueueProjectionDigest =
+        operandProgress.projectionDigest;
     for (const auto &head : runtime->pendingOperandQueueHeadDiagnostics())
       closedWait->operandQueueHeads.push_back(
-          {head.queue, head.fu, head.allocationUnit, head.capacity,
-           head.occupancy, head.reservations, head.headBindingOrdinal,
-           head.headOccurrenceOrdinal, head.headProducerSequenceOrdinal,
-           head.headTag, head.exactHead, head.consumers});
+          {head.queue,
+           head.fu,
+           head.allocationUnit,
+           head.capacity,
+           head.occupancy,
+           head.reservations,
+           head.headBindingOrdinal,
+           head.headOccurrenceOrdinal,
+           head.headProducerSequenceOrdinal,
+           head.headTag,
+           head.exactHead,
+           head.consumers});
     for (const auto &firing : runtime->pendingActorFiringDiagnostics())
       closedWait->actorFirings.push_back(
           {firing.semanticActorOrdinal, firing.occurrenceOrdinal,
@@ -563,8 +596,8 @@ struct CgraExecutionSession::Impl final {
            firing.completedTransfers, firing.physicalComplete,
            firing.causalReleaseSatisfied});
     const auto projectStorageHead =
-        [](const std::optional<
-            detail::CgraPendingTransferDiagnostic::StorageHead> &head)
+        [](const std::optional<detail::CgraPendingTransferDiagnostic::StorageHead>
+               &head)
         -> std::optional<CgraClosedWaitSetDiagnostic::Transfer::StorageHead> {
       if (!head)
         return std::nullopt;
@@ -635,8 +668,8 @@ struct CgraExecutionSession::Impl final {
            transfer.blockingDownstreamTraversals});
     }
     const std::size_t actorCount = graphExecution->execution.actorPlans.size();
-    ActorTransitionProbeTable probes =
-        deriveActorTransitionProbes(graphExecution->execution, dynamicState);
+    ActorTransitionProbeTable probes = deriveActorTransitionProbes(
+        graphExecution->execution, dynamicState);
     llvm::DenseMap<mlir::Operation *, std::uint64_t> actorByOperation;
     actorByOperation.reserve(actorCount);
     for (const auto [ordinal, actor] :
@@ -654,8 +687,7 @@ struct CgraExecutionSession::Impl final {
           plan.operation->getAttrOfType<dataflow::EntityIdAttr>(
               dataflow::kEntityIdAttrName);
       const std::uint64_t actorEntityId =
-          actorEntity ? actorEntity.getId()
-                      : detail::invalidCgraTransportOrdinal;
+          actorEntity ? actorEntity.getId() : detail::invalidCgraTransportOrdinal;
       for (std::uint32_t input : probes[actor]->shape.requiredInputs) {
         const std::uint64_t channel = plan.firstInputChannel + input;
         if (channel >= dynamicState.channelSlots.size())
@@ -666,7 +698,8 @@ struct CgraExecutionSession::Impl final {
         CgraClosedWaitSetDiagnostic::ActorInputSourceKind sourceKind =
             CgraClosedWaitSetDiagnostic::ActorInputSourceKind::Unknown;
         std::uint64_t definingActor = detail::invalidCgraTransportOrdinal;
-        std::uint64_t definingActorEntity = detail::invalidCgraTransportOrdinal;
+        std::uint64_t definingActorEntity =
+            detail::invalidCgraTransportOrdinal;
         bool definingActorTerminal = false;
         const bool memoryCapability =
             plan.memory && input == plan.memory->memoryOperandOrdinal &&
@@ -677,11 +710,12 @@ struct CgraExecutionSession::Impl final {
         if (mlir::Operation *producer = value.getDefiningOp()) {
           auto found = actorByOperation.find(producer);
           if (found != actorByOperation.end()) {
-            sourceKind =
-                CgraClosedWaitSetDiagnostic::ActorInputSourceKind::ActorResult;
+            sourceKind = CgraClosedWaitSetDiagnostic::ActorInputSourceKind::
+                ActorResult;
             definingActor = found->second;
-            if (auto entity = producer->getAttrOfType<dataflow::EntityIdAttr>(
-                    dataflow::kEntityIdAttrName))
+            if (auto entity =
+                    producer->getAttrOfType<dataflow::EntityIdAttr>(
+                        dataflow::kEntityIdAttrName))
               definingActorEntity = entity.getId();
             definingActorTerminal =
                 probes[definingActor] &&
@@ -701,8 +735,8 @@ struct CgraExecutionSession::Impl final {
     for (const auto &action : runtime->pendingPhysicalActionDiagnostics())
       closedWait->physicalActions.push_back(
           {action.action.actionOrdinal, action.action.occurrenceOrdinal,
-           static_cast<std::uint8_t>(action.client),
-           action.semanticActorOrdinal, action.action.granted,
+           static_cast<std::uint8_t>(action.client), action.semanticActorOrdinal,
+           action.action.granted,
            action.action.hasCommit, action.action.requiresCausalRelease,
            action.action.intrinsicReleaseReached,
            action.action.causalReleaseReached});
@@ -716,8 +750,8 @@ struct CgraExecutionSession::Impl final {
            waiting.blockingActorOrdinal, blocking.bindingOrdinal,
            blocking.occurrenceOrdinal, transferWaitKind(waiting, blocking)});
     }
-    auto actorCycle = deriveActorWaitCycle(graphExecution->execution,
-                                           dynamicState, probes, *closedWait);
+    auto actorCycle = deriveActorWaitCycle(
+        graphExecution->execution, dynamicState, probes, *closedWait);
     if (!actorCycle)
       return actorCycle.takeError();
     closedWait->actorWaitCycle = std::move(*actorCycle);
@@ -788,11 +822,11 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
     impl_->lastCoordinate = (**frame).coordinate;
     ++impl_->counters.eventFrameCount;
     ++advanced;
-    impl_->counters.maximumReferenceCycleNumerator =
-        std::max(impl_->counters.maximumReferenceCycleNumerator,
-                 (**frame).coordinate.referenceCycle.numerator());
-    impl_->counters.maximumEventDelta =
-        std::max(impl_->counters.maximumEventDelta, (**frame).coordinate.delta);
+    impl_->counters.maximumReferenceCycleNumerator = std::max(
+        impl_->counters.maximumReferenceCycleNumerator,
+        (**frame).coordinate.referenceCycle.numerator());
+    impl_->counters.maximumEventDelta = std::max(
+        impl_->counters.maximumEventDelta, (**frame).coordinate.delta);
     impl_->counters.emptyEventFrameCount +=
         (**frame).physicalEvents.empty() && (**frame).actorEvents.empty() &&
         (**frame).publications.empty() &&
@@ -813,12 +847,12 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
         (**frame).memoryLinearizations.size();
     for (const detail::CgraPhysicalLifecycleEvent &event :
          (**frame).physicalEvents) {
-      const auto key =
-          std::make_pair(event.actionOrdinal, event.occurrenceOrdinal);
+      const auto key = std::make_pair(event.actionOrdinal,
+                                      event.occurrenceOrdinal);
       switch (event.kind) {
       case detail::CgraPhysicalLifecycleKind::Requested:
         ++impl_->counters.physicalRequestCount;
-        if (!impl_->physicalRequestCoordinates.try_emplace(key, event.coordinate)
+        if (!impl_->physicalRequestCoordinates.emplace(key, event.coordinate)
                  .second) {
           impl_->lifecycle = SpatialExecutionSessionState::Failed;
           return invalid("CGRA physical request was observed twice");
@@ -831,8 +865,8 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
           impl_->lifecycle = SpatialExecutionSessionState::Failed;
           return invalid("CGRA physical grant has no request observation");
         } else {
-          auto wait = integralSpatialReferenceCycleDistance(request->second,
-                                                            event.coordinate);
+          auto wait = integralReferenceCycleDistance(request->second,
+                                                     event.coordinate);
           if (!wait) {
             ++impl_->counters.nonIntegralTimingObservationCount;
           } else if (*wait == 0) {
@@ -840,8 +874,8 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
           } else {
             ++impl_->counters.physicalGrantDelayedCount;
             impl_->counters.physicalGrantWaitCycleSum += *wait;
-            impl_->counters.physicalGrantWaitCycleMax =
-                std::max(impl_->counters.physicalGrantWaitCycleMax, *wait);
+            impl_->counters.physicalGrantWaitCycleMax = std::max(
+                impl_->counters.physicalGrantWaitCycleMax, *wait);
           }
         }
         impl_->physicalGrantCoordinates.insert_or_assign(key, event.coordinate);
@@ -854,7 +888,7 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
             request == impl_->physicalRequestCoordinates.end()) {
           impl_->lifecycle = SpatialExecutionSessionState::Failed;
           return invalid("CGRA physical retirement has no request observation");
-        } else if (auto lifetime = integralSpatialReferenceCycleDistance(
+        } else if (auto lifetime = integralReferenceCycleDistance(
                        request->second, event.coordinate)) {
           impl_->counters.physicalActionLifetimeCycleSum += *lifetime;
           impl_->counters.physicalActionLifetimeCycleMax = std::max(
@@ -864,7 +898,7 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
         }
         if (auto grant = impl_->physicalGrantCoordinates.find(key);
             grant != impl_->physicalGrantCoordinates.end()) {
-          if (auto active = integralSpatialReferenceCycleDistance(
+          if (auto active = integralReferenceCycleDistance(
                   grant->second, event.coordinate)) {
             impl_->counters.physicalGrantedLifetimeCycleSum += *active;
             impl_->counters.physicalGrantedLifetimeCycleMax = std::max(
@@ -874,7 +908,8 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
           }
         } else {
           impl_->lifecycle = SpatialExecutionSessionState::Failed;
-          return invalid("CGRA physical retirement has no grant observation");
+          return invalid(
+              "CGRA physical retirement has no grant observation");
         }
         impl_->physicalRequestCoordinates.erase(key);
         impl_->physicalGrantCoordinates.erase(key);
@@ -959,7 +994,7 @@ prepareCgraWorkloadExecution(
 
   return PreparedCgraWorkloadExecution(
       std::make_unique<PreparedCgraWorkloadExecution::Impl>(
-          *prepared.impl_, *graphExecution, std::move(*context),
+          prepared.impl_, *graphExecution, std::move(*context),
           workload.identity(), runtimeInput.identity()));
 }
 
@@ -996,8 +1031,8 @@ llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
       *prepared.impl_->graphExecution;
 
   auto impl = std::make_unique<CgraExecutionSession::Impl>(
-      *prepared.impl_->prepared, workload, runtimeInput,
-      *prepared.impl_->graphExecution, prepared.impl_->context, traceLevel);
+      prepared.impl_->prepared, workload, runtimeInput, graphExecution,
+      prepared.impl_->context, traceLevel);
 
   llvm::SmallVector<detail::GraphIngressEmission, 4> ingress;
   impl->dynamicState.graphIngressCapture = &ingress;
@@ -1038,30 +1073,13 @@ llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     CgraExternalMemoryProvider *externalMemoryProvider) {
   if (maxEventFrames == 0)
     return invalid("CGRA simulation requires a positive event-frame limit");
-  auto session = startCgraExecutionSession(
-      prepared, workload, runtimeInput, std::nullopt, externalMemoryProvider);
-  if (!session)
-    return session.takeError();
-  auto advanced = session->advance(maxEventFrames, executionDeadline);
-  if (!advanced)
-    return advanced.takeError();
-  SpatialExecutionSessionState state = *advanced;
-  if (state == SpatialExecutionSessionState::Runnable) {
-    session->impl_->lifecycle = SpatialExecutionSessionState::StoppedByLimit;
-    state = session->impl_->lifecycle;
-  }
-
-  CgraSimulationOutcome result;
-  result.state = state;
-  result.counters = session->counters();
-  result.closedWaitSet = session->closedWaitSet();
-  if (state == SpatialExecutionSessionState::Retired) {
-    auto retired = session->takeRetiredSimulation();
-    if (!retired)
-      return retired.takeError();
-    result.retired = std::move(*retired);
-  }
-  return result;
+  auto preparedWorkload =
+      prepareCgraWorkloadExecution(prepared, workload, runtimeInput);
+  if (!preparedWorkload)
+    return preparedWorkload.takeError();
+  return simulateCgraWorkload(*preparedWorkload, workload, runtimeInput,
+                              maxEventFrames, executionDeadline,
+                              externalMemoryProvider);
 }
 
 llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(

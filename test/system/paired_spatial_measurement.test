@@ -1,0 +1,8 @@
+# RUN: loom-system-execution-matrix-test paired-spatial-cgra-batch 1 2 | FileCheck %s
+
+# CHECK-COUNT-2: paired-simulation schema=loom.paired_simulation_measurement.2 cell=paired-spatial-cgra
+# CHECK-SAME: attempt=ordinary invocation=paired-spatial-cgra
+# CHECK-SAME: work_fingerprint={{[0-9a-f]+}} config_fingerprint={{[0-9a-f]+}}
+# CHECK-SAME: accelerator_reference_cycles={{[1-9][0-9]*}} cgra_event_frames={{[1-9][0-9]*}}
+# CHECK-SAME: active_wall_ns={{[1-9][0-9]*}} active_cpu_ns={{[0-9]+}} gem5_ticks=not_applicable
+# CHECK-SAME: measurement_source=direct_spatial_attempt rss_scope=self_process_lifetime

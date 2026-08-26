@@ -1,0 +1,2 @@
+# REQUIRES: gem5-25.1.0.1
+# RUN: timeout %loom-timeout-medium loom-system-execution-matrix-test diagnostic-system-dfg %loom-gem5-readiness | FileCheck -DCELL=system-dfg -DATTEMPT=diagnostic -DINVOCATION=diagnostic-system-dfg %S/execution_matrix_setup_timing.check

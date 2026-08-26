@@ -9,6 +9,7 @@
 #include "DSE/JointMappingMigration.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
+#include "JointHardwareReopenExecution.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/Evidence.h"
@@ -129,7 +130,9 @@ publishApplicationWorkload(const dataflow::CanonicalDataflowArtifact &artifact,
   dataflow::RootedGraphLaunchRef launch{view.rootThreadLaunches().front().ref,
                                         view.staticGraphLaunches().front().ref};
   loom::sim::SpatialSimulationWorkload draft{launch};
-  draft.denseCoordinates = {0};
+  auto logicalDomain =
+      take(view.projectRootThreadLogicalDomain(launch.rootThreadLaunch));
+  draft.denseCoordinates.assign(logicalDomain.coordinateRank, 0);
   auto shapes =
       take(loom::sim::projectSpatialSimulationBoundaryShapes(view, launch));
   draft.valueInputPlan.assign(shapes.valueInputs.size(),
@@ -234,7 +237,8 @@ bool everyCoreIsUsed(const loom::ArtifactRootReference &systemReference,
 void exerciseJointExploration(bool runFifoHardwareRepair,
                               bool runOperandHardwareRepair,
                               bool runTransportRepair,
-                              bool runHardwareQualityPromotion) {
+                              bool runHardwareQualityPromotion,
+                              bool runMutationMatrix) {
   TemporaryDirectory temporary;
   llvm::SmallString<128> blobPath(temporary.path());
   llvm::sys::path::append(blobPath, "blobs");
@@ -345,6 +349,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       fail("joint Mapping output lost its exact pair owners");
   }
 
+  std::optional<loom::dse::JointBoundedQualityPolicy> incompleteRepairQuality;
   if (runHardwareQualityPromotion) {
     if (llvm::Error error =
             loom::evaluation::registerProductionEvaluationRegistry())
@@ -493,6 +498,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         !firstPhysicalObjectives->front().evidence ||
         !alternatePhysicalObjectives->front().evidence)
       fail("application FPA promotion did not publish completed Evidence");
+    const loom::ArtifactRootReference sharedQualityEvidence =
+        *firstPhysicalObjectives->front().evidence;
     for (const auto *objectives :
          {firstPhysicalObjectives, alternatePhysicalObjectives}) {
       const loom::ArtifactRootReference &evidence =
@@ -524,29 +531,33 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     auto sharedObjectiveProgram =
         std::make_shared<const loom::dse::ObjectiveProgram>(
             std::move(objectiveProgram));
+    auto qualityAcquisitionCount = std::make_shared<std::uint64_t>(0);
 
     loom::dse::JointBoundedQualityPolicy quality;
     quality.objectiveProgram = sharedObjectiveProgram;
     quality.objectiveDimensionLabels = {"mapping_quality"};
     quality.paretoDimensions = {0};
     quality.finalTotalOrdering = 0;
-    quality.acquire =
-        [sharedObjectiveProgram](const loom::dse::JointDesignExecution &result,
-                                 std::uint64_t)
+    quality.acquire = [sharedObjectiveProgram, qualityAcquisitionCount](
+                          const loom::dse::JointDesignExecution &result,
+                          std::uint64_t planOrdinal)
         -> llvm::Expected<loom::dse::JointDesignQualityAcquisition> {
+      ++*qualityAcquisitionCount;
       if (!result.summary.selectedMapping)
         return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                        "quality fixture has no Mapping");
       loom::dse::ObjectiveVector objective =
           sharedObjectiveProgram->makeVector();
-      const std::array<std::uint64_t, 1> measures = {0};
+      const std::array<std::uint64_t, 1> measures = {
+          planOrdinal == 1 ? UINT64_C(0) : UINT64_C(1)};
       if (llvm::Error error = sharedObjectiveProgram->evaluateCandidateMeasures(
               measures, objective))
         return std::move(error);
       return loom::dse::JointDesignQualityAcquisition{
           std::vector<loom::dse::JointDesignQualityCandidate>{
               {{*result.summary.selectedMapping, std::move(objective)},
-               std::nullopt}}};
+               std::nullopt,
+               {{loom::resolvedObjectiveInteger(measures[0])}, {}, {}}}}};
     };
     quality.hardwarePromotion = loom::dse::JointHardwarePromotionQualityPolicy{
         sharedObjectiveProgram,
@@ -571,11 +582,26 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           return loom::dse::JointDesignQualityAcquisition{
               std::vector<loom::dse::JointDesignQualityCandidate>{
                   {{candidate.frontier.systemFrontier.front(),
-                    std::move(objective)},
-                   std::nullopt}}};
+                   std::move(objective)},
+                   std::nullopt,
+                   {{loom::resolvedObjectiveInteger(measures[0])}, {}, {}}}}};
         }};
     quality.maximumHardwareSpectrumParents = 1;
     quality.maximumHardwareRepairProbes = 1;
+    const loom::dse::JointBoundedQualityPolicy repairQuality = quality;
+    incompleteRepairQuality = repairQuality;
+    incompleteRepairQuality->acquire =
+        [](const loom::dse::JointDesignExecution &result, std::uint64_t)
+        -> llvm::Expected<loom::dse::JointDesignQualityAcquisition> {
+      if (!result.summary.selectedMapping)
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "incomplete quality fixture has no "
+                                       "Mapping");
+      return loom::dse::JointDesignQualityAcquisition{
+          loom::dse::IncompleteJointDesignQuality{
+              loom::dse::JointDesignQualityIncompleteReason::Unsupported,
+              result.summary.selectedMapping, std::nullopt}};
+    };
 
     llvm::SmallString<128> promotionJournal(temporary.path());
     llvm::sys::path::append(promotionJournal, "hardware-quality-promotion");
@@ -596,6 +622,30 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         promoted.summary.hardwareReopensDeferredByQuality == 0 ||
         promoted.summary.hardwarePromotionObservations.size() != 2)
       fail("bounded hardware promotion lost its exact work ledger");
+    if (!promoted.invocationManifest() ||
+        promoted.supportingInvocationManifests().empty())
+      fail("bounded hardware promotion lost its production DSE occurrences");
+    take(loom::dse::importJointDesignInvocationManifest(
+        *promoted.invocationManifest(), store, blobs));
+    auto contentOnly = take(loom::dse::InvocationManifestReference::get(
+        promoted.invocationManifest()->resolvedConfig(),
+        promoted.invocationManifest()->blob(),
+        promoted.invocationManifest()->occurrence(), store, blobs));
+    if (contentOnly.journalReceipt())
+      fail("strict manifest import forged an ExecutionJournal receipt");
+    llvm::Error foreignBinding =
+        loom::dse::appendJointDesignSupportingInvocationManifest(
+            promoted, std::move(contentOnly));
+    if (!foreignBinding)
+      fail("joint execution accepted a manifest without its journal receipt");
+    const std::string foreignBindingMessage =
+        llvm::toString(std::move(foreignBinding));
+    if (foreignBindingMessage.find("no ExecutionJournal receipt") ==
+        std::string::npos)
+      fail("foreign manifest rejection lost its journal ownership reason");
+    for (const auto &supporting : promoted.supportingInvocationManifests())
+      take(loom::dse::importJointDesignInvocationManifest(supporting, store,
+                                                          blobs));
     for (const auto &observation :
          promoted.summary.hardwarePromotionObservations) {
       const bool expectedPromotion = observation.planOrdinal == 1;
@@ -604,6 +654,242 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           observation.objectiveCodes.size() != 1)
         fail("bounded hardware promotion ignored its objective order");
     }
+    if (!promoted.summary.selectedMapping)
+      fail("bounded hardware promotion produced no selected Mapping");
+    const loom::ArtifactRootReference promotedMapping =
+        *promoted.summary.selectedMapping;
+    llvm::SmallString<128> repairJournal(temporary.path());
+    llvm::sys::path::append(repairJournal, "repair-quality-selection");
+    const loom::dse::JointDesignExplorationPlan *firstRepairPlan = &firstPlan;
+    auto firstRepair = take(loom::dse::executeJointDesignWithHardwareReopen(
+        llvm::ArrayRef<const loom::dse::JointDesignExplorationPlan *>(
+            &firstRepairPlan, 1),
+        promotionPolicy,
+        {take(loom::dse::DseProducerSemanticBuildIdentity::get(
+             "loom.test.repair_quality_selection.v1")),
+         repairJournal.str().str(),
+         {},
+         loom::dse::JointDesignStoppingPolicy::BoundedQuality,
+         repairQuality,
+         5,
+         take(loom::dse::SiteCapacity::get(2, 0, 0)),
+         take(loom::dse::PlanExecutionPolicy::get(
+             32, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+        store, blobs));
+    if (!firstRepair.summary.selectedMapping ||
+        firstRepair.summary.qualityDisposition !=
+            loom::dse::JointDesignQualityDisposition::Complete)
+      fail("single-plan repair quality execution produced no exact Mapping");
+    const loom::ArtifactRootReference firstRepairMapping =
+        *firstRepair.summary.selectedMapping;
+    std::vector<loom::dse::JointDesignExecution> repairExecutions;
+    repairExecutions.push_back(std::move(firstRepair));
+    repairExecutions.push_back(std::move(promoted));
+    const std::uint64_t acquisitionsBeforeRepairSelection =
+        *qualityAcquisitionCount;
+    auto repairSelection = take(loom::dse::selectJointRepairMappingByQuality(
+        repairExecutions, repairQuality, store));
+    const auto *selectedRepair =
+        std::get_if<loom::dse::JointRepairQualitySelection>(&repairSelection);
+    if (!selectedRepair || selectedRepair->executionOrdinal != 1 ||
+        selectedRepair->mapping != promotedMapping)
+      fail("repair quality selection ignored the shared objective order");
+    if (*qualityAcquisitionCount != acquisitionsBeforeRepairSelection)
+      fail("repair quality selection repeated an acquired objective");
+    bool foundFirstEvidenceDomain = false;
+    bool foundSecondEvidenceDomain = false;
+    std::vector<loom::dse::JointDesignQualityObservation *>
+        sharedEvidenceObservations;
+    for (loom::dse::JointDesignExecution &execution : repairExecutions)
+      for (loom::dse::JointDesignQualityObservation &observation :
+           execution.summary.qualityObservations) {
+        if (observation.candidate == firstRepairMapping)
+          foundFirstEvidenceDomain = true;
+        else if (observation.candidate == promotedMapping)
+          foundSecondEvidenceDomain = true;
+        else
+          continue;
+        observation.evidence = sharedQualityEvidence;
+        sharedEvidenceObservations.push_back(&observation);
+      }
+    if (!foundFirstEvidenceDomain || !foundSecondEvidenceDomain)
+      fail("repair quality lost its selected Mapping observation");
+    auto foreignEvidenceSelection =
+        loom::dse::selectJointRepairMappingByQuality(
+            repairExecutions, repairQuality, store);
+    if (foreignEvidenceSelection)
+      fail("repair quality accepted Evidence across pair domains");
+    const std::string foreignEvidenceError =
+        llvm::toString(foreignEvidenceSelection.takeError());
+    if (!llvm::StringRef(foreignEvidenceError).contains("Evidence crossed"))
+      fail("repair quality Evidence-domain rejection lost its reason");
+    for (loom::dse::JointDesignQualityObservation *observation :
+         sharedEvidenceObservations)
+      observation->evidence.reset();
+    loom::dse::CandidateMeasureObjectiveCatalogs runtimeCatalogs;
+    runtimeCatalogs.dimensions = {
+        {0, loom::ResolvedObjectiveDirection::Minimize, 0, 100},
+        {1, loom::ResolvedObjectiveDirection::Minimize, 0, 100},
+        {2, loom::ResolvedObjectiveDirection::Minimize, 0, 100}};
+    runtimeCatalogs.weightedLevels = {
+        {{{0, 1}}}, {{{1, 1}}}, {{{2, 1}}}};
+    runtimeCatalogs.totalOrderings = {{{0, 1, 2}}};
+    auto runtimeProgram =
+        std::make_shared<const loom::dse::ObjectiveProgram>(
+            take(loom::dse::ObjectiveProgram::getCandidateMeasures(
+                runtimeCatalogs)));
+    loom::dse::JointBoundedQualityPolicy runtimeRepairQuality = repairQuality;
+    runtimeRepairQuality.objectiveProgram = runtimeProgram;
+    runtimeRepairQuality.objectiveDimensionLabels = {
+        "dfg_cycles", "cgra_cycles", "acc_core_count"};
+    runtimeRepairQuality.provenanceDomain =
+        loom::dse::JointDesignQualityProvenanceDomain::ApplicationRuntime;
+    runtimeRepairQuality.paretoDimensions = {0, 1, 2};
+    std::vector<loom::dse::JointDesignExecutionSummary> savedRuntimeSummaries;
+    for (const loom::dse::JointDesignExecution &execution : repairExecutions)
+      savedRuntimeSummaries.push_back(execution.summary);
+    for (auto indexed : llvm::enumerate(repairExecutions)) {
+      indexed.value().summary.qualityObjectiveDimensionLabels =
+          runtimeRepairQuality.objectiveDimensionLabels;
+      for (loom::dse::JointDesignQualityObservation &observation :
+           indexed.value().summary.qualityObservations) {
+        observation.provenance.rawMeasures = {
+            loom::resolvedObjectiveInteger(indexed.index() + 1),
+            loom::resolvedObjectiveInteger(2),
+            loom::resolvedObjectiveInteger(3)};
+        observation.provenance.resourceCoreCost = 3;
+        loom::dse::ObjectiveVector objective = runtimeProgram->makeVector();
+        if (llvm::Error error = runtimeProgram->evaluateCandidateMeasures(
+                observation.provenance.rawMeasures, objective))
+          fail(llvm::toString(std::move(error)));
+        observation.objectiveCodes.assign(objective.codes().begin(),
+                                          objective.codes().end());
+      }
+    }
+    repairExecutions[0].summary.qualityDisposition =
+        loom::dse::JointDesignQualityDisposition::Unsupported;
+    repairExecutions[0].summary.qualityIncompleteCandidate =
+        firstRepairMapping;
+    repairExecutions[0].summary.selectedMapping.reset();
+    repairExecutions[0].summary.selectedPlanOrdinal.reset();
+    for (loom::dse::JointDesignQualityObservation &observation :
+         repairExecutions[0].summary.qualityObservations)
+      if (observation.candidate == firstRepairMapping) {
+        observation.objectiveCodes.clear();
+        observation.incompleteReason =
+            loom::dse::JointDesignQualityIncompleteReason::Unsupported;
+        observation.provenance.rawMeasures.clear();
+      }
+    repairExecutions[1]
+        .summary.qualityObservations.front()
+        .provenance.resourceCoreCost.reset();
+    auto missingLaterResource = loom::dse::selectJointRepairMappingByQuality(
+        repairExecutions, runtimeRepairQuality, store);
+    if (missingLaterResource)
+      fail("repair quality returned incomplete before validating a later "
+           "runtime provenance");
+    const std::string missingLaterResourceError =
+        llvm::toString(missingLaterResource.takeError());
+    if (!llvm::StringRef(missingLaterResourceError)
+             .contains("lost its exact resource count"))
+      fail("repair quality runtime provenance rejection lost its reason");
+    for (auto indexed : llvm::enumerate(repairExecutions))
+      indexed.value().summary =
+          std::move(savedRuntimeSummaries[indexed.index()]);
+    auto savedForeignMappedPairs = repairExecutions[1].mappedPairs;
+    auto savedForeignSelectedMapping =
+        repairExecutions[1].summary.selectedMapping;
+    auto savedForeignQualityObservations =
+        repairExecutions[1].summary.qualityObservations;
+    repairExecutions[1].mappedPairs = repairExecutions[0].mappedPairs;
+    repairExecutions[1].summary.selectedMapping =
+        repairExecutions[0].summary.selectedMapping;
+    repairExecutions[1].summary.qualityObservations =
+        repairExecutions[0].summary.qualityObservations;
+    auto &foreignPair = repairExecutions[1].mappedPairs.front().pair;
+    foreignPair.system = foreignPair.system == system ? alternateSystem : system;
+    auto foreignDomainSelection =
+        loom::dse::selectJointRepairMappingByQuality(
+            repairExecutions, repairQuality, store);
+    if (foreignDomainSelection)
+      fail("repair quality accepted one Mapping across pair domains");
+    const std::string foreignDomainError =
+        llvm::toString(foreignDomainSelection.takeError());
+    if (!llvm::StringRef(foreignDomainError).contains("crossed pair"))
+      fail("repair quality pair-domain rejection lost its reason");
+    repairExecutions[1].mappedPairs = std::move(savedForeignMappedPairs);
+    repairExecutions[1].summary.selectedMapping = savedForeignSelectedMapping;
+    repairExecutions[1].summary.qualityObservations =
+        std::move(savedForeignQualityObservations);
+    repairExecutions[0].summary.qualityDisposition =
+        loom::dse::JointDesignQualityDisposition::Unsupported;
+    repairExecutions[0].summary.qualityIncompleteCandidate = firstRepairMapping;
+    repairExecutions[0].summary.selectedMapping.reset();
+    repairExecutions[0].summary.selectedPlanOrdinal.reset();
+    for (loom::dse::JointDesignQualityObservation &observation :
+         repairExecutions[0].summary.qualityObservations) {
+      if (observation.candidate != firstRepairMapping)
+        continue;
+      observation.objectiveCodes.clear();
+      observation.incompleteReason =
+          loom::dse::JointDesignQualityIncompleteReason::Unsupported;
+    }
+    for (loom::dse::JointDesignQualityObservation &observation :
+         repairExecutions[1].summary.qualityObservations) {
+      if (observation.candidate != firstRepairMapping)
+        continue;
+      observation.objectiveCodes.clear();
+      observation.incompleteReason =
+          loom::dse::JointDesignQualityIncompleteReason::Unsupported;
+    }
+    const auto later = llvm::find_if(
+        repairExecutions[1].summary.qualityObservations,
+        [&](const loom::dse::JointDesignQualityObservation &observation) {
+          return observation.candidate != firstRepairMapping &&
+                 !observation.incompleteReason;
+        });
+    if (later == repairExecutions[1].summary.qualityObservations.end())
+      fail("repair quality fixture has no later complete observation");
+    auto &laterObservation = *later;
+    const auto laterRawMeasures = laterObservation.provenance.rawMeasures;
+    laterObservation.provenance.rawMeasures = {
+        loom::resolvedObjectiveInteger(99)};
+    auto invalidLaterObservation =
+        loom::dse::selectJointRepairMappingByQuality(repairExecutions,
+                                                     repairQuality, store);
+    if (invalidLaterObservation)
+      fail("repair quality returned incomplete before validating all "
+           "executions");
+    const std::string invalidLaterObservationError =
+        llvm::toString(invalidLaterObservation.takeError());
+    if (!llvm::StringRef(invalidLaterObservationError)
+             .contains("raw measures disagree"))
+      fail("repair quality later-provenance rejection lost its reason");
+    laterObservation.provenance.rawMeasures = laterRawMeasures;
+    auto incompleteRepair = take(loom::dse::selectJointRepairMappingByQuality(
+        repairExecutions, repairQuality, store));
+    const auto *incomplete =
+        std::get_if<loom::dse::JointRepairQualityIncomplete>(
+            &incompleteRepair);
+    if (!incomplete ||
+        incomplete->executionOrdinal != 0 ||
+        incomplete->incomplete.reason !=
+            loom::dse::JointDesignQualityIncompleteReason::Unsupported ||
+        incomplete->incomplete.candidate != firstRepairMapping)
+      fail("repair quality selection ranked a typed incomplete candidate");
+    if (*qualityAcquisitionCount != acquisitionsBeforeRepairSelection)
+      fail("repair quality incomplete selection repeated acquisition");
+    repairExecutions[0].summary.qualityObservations.clear();
+    auto missingIncompleteObservation =
+        loom::dse::selectJointRepairMappingByQuality(repairExecutions,
+                                                     repairQuality, store);
+    if (missingIncompleteObservation)
+      fail("repair quality accepted a missing incomplete observation");
+    const std::string missingObservationError =
+        llvm::toString(missingIncompleteObservation.takeError());
+    if (!llvm::StringRef(missingObservationError)
+             .contains("has no observation"))
+      fail("repair quality missing-observation rejection lost its reason");
   }
 
   auto mappedDataflow = take(dataflow::importCanonicalDataflow(
@@ -636,22 +922,46 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         systemView.transportResources().front());
   const auto preservedFrontier = take(loom::dse::rebaseJointMappingFrontier(
       plan, parentExecution, system, identityModuleCorrespondence,
-      &systemOnlyImpact, store));
+      systemOnlyImpact, store));
   if (preservedFrontier.disposition !=
           loom::dse::JointMappingReuseDisposition::Preserved ||
       preservedFrontier.seed.techMappings.empty() ||
       preservedFrontier.seed.spatialMappings.empty() ||
       preservedFrontier.accounting.invalidatedTechMappings != 0 ||
-      preservedFrontier.accounting.invalidatedSpatialMappings != 0 ||
-      preservedFrontier.accounting.parentThreadBindingCount == 0 ||
-      preservedFrontier.accounting.parentGraphBindingCount == 0 ||
-      preservedFrontier.accounting.preservedThreadBindingCount !=
-          preservedFrontier.accounting.parentThreadBindingCount ||
-      preservedFrontier.accounting.preservedGraphBindingCount !=
-          preservedFrontier.accounting.parentGraphBindingCount ||
-      preservedFrontier.accounting.reopenedThreadBindingCount != 0 ||
-      preservedFrontier.accounting.reopenedGraphBindingCount != 0)
+      preservedFrontier.accounting.invalidatedSpatialMappings != 0)
     fail("System-only impact did not preserve lower Mapping layers");
+  if (preservedFrontier.accounting.parentThreadBindingCount == 0 ||
+      preservedFrontier.accounting.parentGraphBindingCount == 0 ||
+      preservedFrontier.accounting.reopenedThreadBindingCount !=
+          preservedFrontier.accounting.parentThreadBindingCount ||
+      preservedFrontier.accounting.reopenedGraphBindingCount !=
+          preservedFrontier.accounting.parentGraphBindingCount ||
+      preservedFrontier.accounting.preservedThreadBindingCount != 0 ||
+      preservedFrontier.accounting.preservedGraphBindingCount != 0)
+    fail("System transport impact did not reopen its exact binding cone");
+
+  auto rootlessTechImpact = systemOnlyImpact;
+  rootlessTechImpact.tech.kind = loom::dse::HardwareMappingImpactKind::Reopen;
+  auto rootlessTech = loom::dse::rebaseJointMappingFrontier(
+      plan, parentExecution, system, identityModuleCorrespondence,
+      rootlessTechImpact, store);
+  if (rootlessTech ||
+      llvm::toString(rootlessTech.takeError())
+              .find("typed Tech impact has no realization root") ==
+          std::string::npos)
+    fail("rootless Tech reopen was not rejected");
+
+  auto rootlessSpatialImpact = systemOnlyImpact;
+  rootlessSpatialImpact.spatial.kind =
+      loom::dse::HardwareMappingImpactKind::Reopen;
+  auto rootlessSpatial = loom::dse::rebaseJointMappingFrontier(
+      plan, parentExecution, system, identityModuleCorrespondence,
+      rootlessSpatialImpact, store);
+  if (rootlessSpatial ||
+      llvm::toString(rootlessSpatial.takeError())
+              .find("typed Spatial impact has no placement or route root") ==
+          std::string::npos)
+    fail("rootless Spatial reopen was not rejected");
 
   auto targetModule =
       take(loom::fabric::importEntireFabricRoot(targetModules.front(), store));
@@ -693,6 +1003,323 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   if (!operandMode || operandEntries == 0 ||
       operandEntries == std::numeric_limits<std::uint32_t>::max())
     fail("operand-buffer feedback fixture has no growable Temporal PE");
+
+  if (runMutationMatrix) {
+    std::uint64_t repairOrdinal = 0;
+    bool sawLowerLayerPreservation = false;
+    bool sawSystemPreservation = false;
+    bool sawSystemReopen = false;
+    bool sawColdFallback = false;
+    const auto executeMutation =
+        [&](llvm::StringRef label, loom::dse::JointHardwareMutationChild child)
+        -> loom::dse::JointHardwareMutationRepair {
+      if (child.impacts.empty())
+        fail(label + " mutation has no typed impact");
+      llvm::SmallString<128> journal(temporary.path());
+      llvm::sys::path::append(journal, "mutation-" +
+                                           std::to_string(repairOrdinal++) +
+                                           "-" + label.str());
+      const std::string producer =
+          "loom.test.hardware_mutation_matrix." + label.str() + ".v1";
+      auto repair = take(loom::dse::executeJointHardwareMutationRepair(
+          plan, parentExecution, policy, mappings.front(), std::move(child),
+          {take(loom::dse::DseProducerSemanticBuildIdentity::get(producer)),
+           journal.str().str(),
+           {},
+           loom::dse::JointDesignStoppingPolicy::FirstVerified,
+           std::nullopt,
+           std::nullopt,
+           take(loom::dse::SiteCapacity::get(2, 0, 0)),
+           take(loom::dse::PlanExecutionPolicy::get(
+               2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+          store, blobs));
+      const auto verified = [](const auto &statistics, std::size_t count) {
+        return statistics.importRequests == count &&
+               statistics.cacheMisses == count &&
+               statistics.uniqueConstructions == count &&
+               statistics.deterministicWork != 0 &&
+               statistics.retainedBytes != 0;
+      };
+      if (repair.coldMappings.empty() || repair.incrementalMappings.empty() ||
+          repair.coldExecution.summary.techMappingDispatchCount == 0 ||
+          repair.coldExecution.summary.spatialPnrDispatchCount == 0 ||
+          repair.coldExecution.summary.systemPnrDispatchCount == 0 ||
+          repair.incrementalExecution.summary.systemPnrDispatchCount == 0 ||
+          repair.coldExecution.summary.coldReopenWallTimeNanoseconds == 0 ||
+          (repair.rebase.disposition ==
+                   loom::dse::JointMappingReuseDisposition::ColdFallback
+               ? repair.incrementalExecution.summary
+                         .coldReopenWallTimeNanoseconds == 0
+               : repair.incrementalExecution.summary
+                         .incrementalReopenWallTimeNanoseconds == 0) ||
+          !verified(repair.coldVerification, repair.coldMappings.size()) ||
+          !verified(repair.incrementalVerification,
+                    repair.incrementalMappings.size()))
+        fail(label + " mutation did not execute and independently verify both "
+                     "cold and preserve-first Mapping paths");
+      if (llvm::Error error = loom::dse::validateJointMappingRebaseAccounting(
+              repair.rebase.accounting))
+        fail(label + " mutation has an open repair cone: " +
+             llvm::toString(std::move(error)));
+      sawLowerLayerPreservation |=
+          repair.rebase.accounting.preservedTechMappings != 0 ||
+          repair.rebase.accounting.preservedSpatialMappings != 0 ||
+          repair.rebase.accounting.repairedTechMappings != 0 ||
+          repair.rebase.accounting.repairedSpatialMappings != 0;
+      sawSystemPreservation |=
+          repair.systemDisposition ==
+          loom::dse::JointSystemMappingReuseDisposition::Preserved;
+      sawSystemReopen |=
+          repair.systemDisposition ==
+          loom::dse::JointSystemMappingReuseDisposition::Reopened;
+      sawColdFallback |=
+          repair.rebase.disposition ==
+              loom::dse::JointMappingReuseDisposition::ColdFallback ||
+          repair.systemDisposition ==
+              loom::dse::JointSystemMappingReuseDisposition::ColdFallback;
+      for (const auto *roots :
+           {&repair.coldMappings, &repair.incrementalMappings})
+        for (const loom::ArtifactRootReference &reference : *roots) {
+          auto mapping =
+              take(loom::mapping::importSystemMapping(reference, store));
+          if (mapping.view().fabricIdentity() != repair.child.system.artifact)
+            fail(label + " mutation Mapping names a foreign System");
+        }
+      return repair;
+    };
+
+    const auto materializeModule =
+        [&](llvm::StringRef label,
+            loom::dse::SpatialMicroarchitectureDecisionDomain decision) {
+          auto child = take(loom::dse::materializeJointModuleHardwareMutation(
+              config, system, targetModules.front(), std::move(decision), store,
+              blobs));
+          if (child.system == system || child.impacts.size() != 1)
+            fail(label + " did not materialize one distinct hardware child");
+          return child;
+        };
+    const auto materializeSystem =
+        [&](llvm::StringRef label, const loom::ArtifactRootReference &parent,
+            loom::dse::SystemCompositionDecisionDomain decision,
+            llvm::ArrayRef<loom::ArtifactRootReference> modules) {
+          auto child = take(loom::dse::materializeJointSystemHardwareMutation(
+              config, parent, std::move(decision), modules, store, blobs));
+          if (child.system == parent || child.impacts.size() != 1)
+            fail(label + " did not materialize one distinct hardware child");
+          return child;
+        };
+
+    std::optional<loom::dse::JointHardwareMutationChild> fuChild;
+    for (const auto pe : targetModule.view().peOccurrences()) {
+      std::vector<loom::fabric::FabricFuOccurrenceRef> inventory;
+      for (const auto fu : targetModule.view().fuOccurrences())
+        if (targetModule.view().parentPeOf(fu) == pe)
+          inventory.push_back(fu);
+      for (const auto prototype : targetModule.view().fuOccurrences()) {
+        if (targetModule.view().parentPeOf(prototype) == pe)
+          continue;
+        auto candidateInventory = inventory;
+        candidateInventory.push_back(prototype);
+        auto candidate = loom::dse::materializeJointModuleHardwareMutation(
+            config, system, targetModules.front(),
+            loom::dse::ChangeFuInventoryDomain{pe,
+                                               {std::move(candidateInventory)}},
+            store, blobs);
+        if (!candidate) {
+          llvm::consumeError(candidate.takeError());
+          continue;
+        }
+        fuChild = std::move(*candidate);
+        break;
+      }
+      if (fuChild)
+        break;
+    }
+    if (!fuChild)
+      fail("FU mutation fixture has no valid inventory rewrite");
+    executeMutation("fu", std::move(*fuChild));
+
+    const auto memory = targetModule.view().memoryOccurrences().front();
+    const std::uint64_t memoryCapacity =
+        targetModule.view().localMemoryServiceCapacityBytes(memory);
+    if (memoryCapacity == 0 ||
+        memoryCapacity == std::numeric_limits<std::uint64_t>::max())
+      fail("memory mutation fixture has no growable Local Memory Service");
+    auto memoryChild = materializeModule(
+        "memory", loom::dse::ResizeMemoryDomain{memory, {memoryCapacity + 1}});
+    const loom::dse::JointHardwareMutationChild memorySpatialChild =
+        memoryChild;
+    executeMutation("memory", std::move(memoryChild));
+
+    auto fifoChild = materializeModule(
+        "fifo", loom::dse::ResizeFifoDomain{
+                    targetModule.view().fifoOccurrences().front(), {257}});
+    const loom::dse::JointHardwareMutationChild combinedFirst = fifoChild;
+    executeMutation("fifo", std::move(fifoChild));
+
+    executeMutation("operand",
+                    materializeModule(
+                        "operand", loom::dse::ResizeTemporalOperandBufferDomain{
+                                       *operandPe, {operandEntries + 1}}));
+
+    std::optional<loom::fabric::FabricSwitchOccurrenceRef> temporalSwitch;
+    for (const auto target : targetModule.view().switchOccurrences()) {
+      if (targetModule.view().switchSchedule(target) ==
+          ::fabric::Schedule::Temporal) {
+        temporalSwitch = target;
+        break;
+      }
+    }
+    if (!temporalSwitch ||
+        targetModule.view().switchRouteTableSize(*temporalSwitch) ==
+            std::numeric_limits<std::uint32_t>::max())
+      fail("switch mutation fixture has no growable Temporal switch");
+    executeMutation(
+        "switch",
+        materializeModule(
+            "switch",
+            loom::dse::ResizeSwitchRouteTableDomain{
+                *temporalSwitch,
+                {static_cast<std::uint32_t>(
+                    targetModule.view().switchRouteTableSize(*temporalSwitch) +
+                    1)}}));
+
+    const auto &moduleLineage =
+        memorySpatialChild.executionBindingCorrespondence->modules();
+    const auto replacedModule =
+        llvm::find_if(moduleLineage, [&](const auto &entry) {
+          return entry.parent == targetModules.front() &&
+                 entry.child != entry.parent;
+        });
+    if (replacedModule == moduleLineage.end())
+      fail("SpatialCore mutation fixture lost replacement Module lineage");
+    const std::array replacementModules = {replacedModule->child};
+    executeMutation("spatial-core",
+                    materializeSystem(
+                        "spatial-core", system,
+                        loom::dse::ReplaceSpatialAttachmentDomain{
+                            systemView.artifact().accCoreOccurrences().front(),
+                            {replacedModule->child}},
+                        replacementModules));
+
+    executeMutation("acc-core-add",
+                    materializeSystem(
+                        "acc-core-add", system,
+                        loom::dse::AddAccCoreDomain{
+                            systemView.artifact().accCoreOccurrences().front(),
+                            {targetModules.front()}},
+                        targetModules));
+
+    executeMutation(
+        "acc-core-remove",
+        materializeSystem(
+            "acc-core-remove", system,
+            loom::dse::RemoveAccCoreDomain{
+                {systemView.artifact().accCoreOccurrences().front()}},
+            targetModules));
+
+    std::optional<loom::dse::JointHardwareMutationChild> transportChild;
+    for (auto indexedFirst :
+         llvm::enumerate(systemView.artifact().pointConnections())) {
+      for (const auto &second :
+           systemView.artifact().pointConnections().drop_front(
+               indexedFirst.index() + 1)) {
+        const auto &first = indexedFirst.value();
+        if (!llvm::equal(
+                systemView.artifact().transportEndpointType(first.source),
+                systemView.artifact().transportEndpointType(
+                    second.destination)) ||
+            !llvm::equal(
+                systemView.artifact().transportEndpointType(second.source),
+                systemView.artifact().transportEndpointType(first.destination)))
+          continue;
+        auto firstDestination = first.destination;
+        auto secondDestination = second.destination;
+        if (loom::fabric::canonicalFabricBytes(secondDestination) <
+            loom::fabric::canonicalFabricBytes(firstDestination))
+          std::swap(firstDestination, secondDestination);
+        auto candidate = loom::dse::materializeJointSystemHardwareMutation(
+            config, system,
+            loom::dse::SwapTransportConnectionSourcesDomain{
+                firstDestination, {secondDestination}},
+            targetModules, store, blobs);
+        if (!candidate) {
+          llvm::consumeError(candidate.takeError());
+          continue;
+        }
+        transportChild = std::move(*candidate);
+        break;
+      }
+      if (transportChild)
+        break;
+    }
+    if (!transportChild)
+      fail("transport mutation fixture has no legal alternate connection");
+    executeMutation("transport", std::move(*transportChild));
+
+    std::optional<loom::fabric::SystemServiceEndpointRef> memoryEndpoint;
+    for (const auto &attachment : systemView.spatialAttachments()) {
+      if (attachment.spatialEndpoint.memory() && attachment.serviceEndpoint) {
+        memoryEndpoint = *attachment.serviceEndpoint;
+        break;
+      }
+    }
+    if (!memoryEndpoint)
+      fail("service mutation fixture has no memory endpoint");
+    const auto *endpointOwner =
+        systemView.serviceEndpointOwner(*memoryEndpoint);
+    const auto *memoryOwner =
+        endpointOwner ? std::get_if<loom::fabric::FabricMemoryServiceRef>(
+                            &endpointOwner->owner().payload)
+                      : nullptr;
+    const auto *memoryService =
+        memoryOwner ? std::get_if<loom::fabric::SystemMemoryServiceRef>(
+                          &memoryOwner->payload)
+                    : nullptr;
+    const auto *memoryContract =
+        memoryService ? systemView.memoryService(*memoryService) : nullptr;
+    if (!memoryContract || memoryContract->regions().empty() ||
+        memoryContract->regions().front().sizeBytes ==
+            std::numeric_limits<std::uint64_t>::max())
+      fail("service mutation fixture has no growable memory region");
+    executeMutation("service",
+                    materializeSystem(
+                        "service", system,
+                        loom::dse::ResizeSystemMemoryRegionDomain{
+                            *memoryService,
+                            0,
+                            {memoryContract->regions().front().sizeBytes + 1}},
+                        targetModules));
+
+    auto combinedSystem =
+        take(loom::fabric::importEntireFabricRoot(combinedFirst.system, store));
+    auto combinedSystemView =
+        take(loom::fabric::requireSystemRoot(combinedSystem.view()));
+    auto combinedModules = take(loom::dse::projectJointDesignTargetModules(
+        combinedFirst.system, store));
+    auto combinedSecond = materializeSystem(
+        "combined-tail", combinedFirst.system,
+        loom::dse::AddAccCoreDomain{
+            combinedSystemView.artifact().accCoreOccurrences().front(),
+            {combinedModules.front()}},
+        combinedModules);
+    auto combined = take(loom::dse::composeJointHardwareMutationChildren(
+        std::move(combinedFirst), std::move(combinedSecond), store));
+    if (combined.impacts.size() != 2)
+      fail("combined mutation lost ordered component impacts");
+    const auto combinedRepair =
+        executeMutation("combined", std::move(combined));
+    if (combinedRepair.rebase.disposition !=
+            loom::dse::JointMappingReuseDisposition::ColdFallback ||
+        combinedRepair.systemDisposition !=
+            loom::dse::JointSystemMappingReuseDisposition::ColdFallback)
+      fail("combined mutation did not retain its typed cold fallback");
+    if (!sawLowerLayerPreservation || !sawSystemPreservation ||
+        !sawSystemReopen || !sawColdFallback)
+      fail("mutation matrix did not exercise every repair disposition");
+    return;
+  }
+
   std::optional<::fabric::OperandBufferMode> separatedMode;
   if (*operandMode == ::fabric::OperandBufferMode::AllFuShare)
     separatedMode = ::fabric::OperandBufferMode::PerInputPort;
@@ -789,6 +1416,64 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     if (!rejectedOperandRepair.childSystems.empty() ||
         !rejectedOperandRepair.executions.empty())
       fail("incomplete operand-buffer feedback synthesized a hardware child");
+  }
+
+  if (runHardwareQualityPromotion && separatedMode) {
+    if (!incompleteRepairQuality)
+      fail("bounded operand cap fixture lost its quality policy");
+    auto cappedOperandQuality = *incompleteRepairQuality;
+    cappedOperandQuality.maximumHardwareRepairProbes = 1;
+    llvm::SmallString<128> cappedOperandJournal(temporary.path());
+    llvm::sys::path::append(cappedOperandJournal,
+                            "operand-buffer-repair-capped");
+    const auto cappedOperandRepair =
+        take(loom::dse::executeSpatialOperandBufferHardwareFeedbackReopen(
+            plan, parentExecution, policy, operandFeedback,
+            {take(loom::dse::DseProducerSemanticBuildIdentity::get(
+                 "loom.test.spatial_operand_buffer_feedback.capped.v1")),
+             cappedOperandJournal.str().str(),
+             {},
+             loom::dse::JointDesignStoppingPolicy::BoundedQuality,
+             std::move(cappedOperandQuality),
+             std::nullopt,
+             take(loom::dse::SiteCapacity::get(2, 0, 0)),
+             take(loom::dse::PlanExecutionPolicy::get(
+                 2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+            store, blobs));
+    if (cappedOperandRepair.candidateLimit != 1 ||
+        cappedOperandRepair.candidatesPlanned != 1 ||
+        cappedOperandRepair.candidatesReserved != 1 ||
+        cappedOperandRepair.candidatesConsumed +
+                cappedOperandRepair.candidatesRejected +
+                cappedOperandRepair.candidatesCancelled !=
+            cappedOperandRepair.candidatesReserved ||
+        cappedOperandRepair.childSystems.size() > 1 ||
+        cappedOperandRepair.executions.size() > 1)
+      fail("bounded operand hardware repair exceeded the shared probe cap");
+
+    auto invalidOperandQuality = *incompleteRepairQuality;
+    invalidOperandQuality.maximumHardwareRepairProbes = 0;
+    auto invalidOperandRepair =
+        loom::dse::executeSpatialOperandBufferHardwareFeedbackReopen(
+            plan, parentExecution, policy, operandFeedback,
+            {take(loom::dse::DseProducerSemanticBuildIdentity::get(
+                 "loom.test.spatial_operand_buffer_feedback.invalid.v1")),
+             cappedOperandJournal.str().str(),
+             {},
+             loom::dse::JointDesignStoppingPolicy::BoundedQuality,
+             std::move(invalidOperandQuality),
+             std::nullopt,
+             take(loom::dse::SiteCapacity::get(2, 0, 0)),
+             take(loom::dse::PlanExecutionPolicy::get(
+                 2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+            store, blobs);
+    if (invalidOperandRepair)
+      fail("bounded operand repair accepted a zero probe limit");
+    const std::string invalidOperandMessage =
+        llvm::toString(invalidOperandRepair.takeError());
+    if (!llvm::StringRef(invalidOperandMessage)
+             .contains("positive probe limit"))
+      fail("bounded operand zero-limit rejection lost its typed reason");
   }
 
   auto transportSpatial =
@@ -910,6 +1595,17 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         transportRepair.executions.front().summary.spatialPnrDispatchCount != 1)
       fail("bounded transport reroute did not use the constrained Spatial "
            "provider with a closed cold-fallback ledger");
+    const auto &transportExecution = transportRepair.executions.front();
+    if (!transportExecution.summary.selectedMapping ||
+        transportExecution.summary.selectedPlanOrdinal !=
+            std::optional<std::uint64_t>(0) ||
+        !llvm::any_of(transportExecution.mappedPairs, [&](const auto &pair) {
+          return llvm::is_contained(
+              pair.systemMappings,
+              *transportExecution.summary.selectedMapping);
+        }))
+      fail("first-verified transport repair did not publish its selected "
+           "Mapping");
   }
 
   loom::sim::CgraClosedWaitSetDiagnostic exactFifoWait;
@@ -938,6 +1634,40 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       exactFifoFeedback.minimumCandidateDepth != 2 ||
       exactFifoFeedback.occupancy != 1 || exactFifoFeedback.capacity != 1)
     fail("exact FIFO wait did not admit the minimal hardware candidate");
+  if (runHardwareQualityPromotion) {
+    if (!incompleteRepairQuality)
+      fail("quality-promotion fixture lost its incomplete repair policy");
+    llvm::SmallString<128> incompleteFifoJournal(temporary.path());
+    llvm::sys::path::append(incompleteFifoJournal,
+                            "fifo-hardware-feedback-quality-incomplete");
+    const auto incompleteQualityFifo =
+        take(loom::dse::executeSpatialFifoHardwareFeedbackReopen(
+            plan, parentExecution, policy, exactFifoFeedback,
+            {take(loom::dse::DseProducerSemanticBuildIdentity::get(
+                 "loom.test.spatial_fifo_feedback.quality_incomplete.v1")),
+             incompleteFifoJournal.str().str(),
+             {},
+             loom::dse::JointDesignStoppingPolicy::BoundedQuality,
+             *incompleteRepairQuality,
+             std::nullopt,
+             take(loom::dse::SiteCapacity::get(2, 0, 0)),
+             take(loom::dse::PlanExecutionPolicy::get(
+                 2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+            store, blobs));
+    if (incompleteQualityFifo.executions.size() != 1)
+      fail("bounded incomplete FIFO repair lost its exact child execution");
+    const auto &incompleteExecution = incompleteQualityFifo.executions.front();
+    const bool incompleteFifoHasMapping =
+        llvm::any_of(incompleteExecution.mappedPairs, [](const auto &pair) {
+          return !pair.systemMappings.empty();
+        });
+    if (!incompleteFifoHasMapping ||
+        incompleteExecution.summary.qualityDisposition !=
+            loom::dse::JointDesignQualityDisposition::Unsupported ||
+        incompleteExecution.summary.selectedMapping ||
+        incompleteExecution.summary.selectedPlanOrdinal)
+      fail("bounded incomplete FIFO repair retained a selected Mapping");
+  }
   if (runFifoHardwareRepair) {
     llvm::SmallString<128> fifoJournal(temporary.path());
     llvm::sys::path::append(fifoJournal, "fifo-hardware-feedback");
@@ -1024,7 +1754,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       identityModuleEntityCorrespondence(targetModule.view());
   const auto localRepairFrontier = take(loom::dse::rebaseJointMappingFrontier(
       plan, parentExecution, system, identityModuleCorrespondence,
-      &localSpatialImpact, store));
+      localSpatialImpact, store));
   if (localRepairFrontier.disposition !=
           loom::dse::JointMappingReuseDisposition::Preserved ||
       localRepairFrontier.seed.techMappings.empty() ||
@@ -1056,8 +1786,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   unusedImpact.moduleEntities =
       identityModuleEntityCorrespondence(targetModule.view());
   const auto unusedFrontier = take(loom::dse::rebaseJointMappingFrontier(
-      plan, parentExecution, system, identityModuleCorrespondence,
-      &unusedImpact, store));
+      plan, parentExecution, system, identityModuleCorrespondence, unusedImpact,
+      store));
   if (unusedFrontier.disposition !=
           loom::dse::JointMappingReuseDisposition::Preserved ||
       unusedFrontier.accounting.invalidatedSpatialMappings != 0 ||
@@ -1071,8 +1801,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   globalImpact.tech.kind = loom::dse::HardwareMappingImpactKind::Reopen;
   globalImpact.tech.realizationRoots.push_back(moduleRoot);
   const auto coldFallbackFrontier = take(loom::dse::rebaseJointMappingFrontier(
-      plan, parentExecution, system, identityModuleCorrespondence,
-      &globalImpact, store));
+      plan, parentExecution, system, identityModuleCorrespondence, globalImpact,
+      store));
   if (coldFallbackFrontier.disposition !=
           loom::dse::JointMappingReuseDisposition::ColdFallback ||
       !coldFallbackFrontier.seed.techMappings.empty() ||
@@ -1096,8 +1826,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         impact.spatial.kind = loom::dse::HardwareMappingImpactKind::Rebase;
         impact.spatial.placementRoots = {owner};
         const auto result = take(loom::dse::rebaseJointMappingFrontier(
-            plan, parentExecution, system, identityModuleCorrespondence,
-            &impact, store));
+            plan, parentExecution, system, identityModuleCorrespondence, impact,
+            store));
         if (result.disposition !=
                 loom::dse::JointMappingReuseDisposition::Preserved ||
             result.seed.techMappings.empty() ||
@@ -1129,7 +1859,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     switchImpact.spatial.placementRoots = switchImpact.tech.realizationRoots;
     const auto switchFallback = take(loom::dse::rebaseJointMappingFrontier(
         plan, parentExecution, system, identityModuleCorrespondence,
-        &switchImpact, store));
+        switchImpact, store));
     if (switchFallback.disposition !=
             loom::dse::JointMappingReuseDisposition::ColdFallback ||
         !switchFallback.seed.techMappings.empty() ||
@@ -1164,8 +1894,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       take(loom::dse::DseProducerSemanticBuildIdentity::get(
           "loom.test.resource_time_adjacent.v1")),
       adjacentSemanticInputs, adjacentRepair.plan.resolvedConfig, {}, store));
-  if (!adjacentRepair.execution.summary.invocationRunKey ||
-      *adjacentRepair.execution.summary.invocationRunKey !=
+  if (!adjacentRepair.execution.invocationRunKey() ||
+      *adjacentRepair.execution.invocationRunKey() !=
           adjacentClosure.runKey().bytes())
     fail("adjacent repair closure omitted its invocation semantic input");
   const auto adjacentSeed = take(loom::pnr::importSystemMappingMigrationSeed(
@@ -1220,6 +1950,44 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           plan.frontier.pairs.front().software.dataflow.artifact ||
       adjacentMapping.view().fabricIdentity() != system.artifact)
     fail("adjacent resource-time repair changed immutable owners");
+  if (runHardwareQualityPromotion) {
+    if (!incompleteRepairQuality)
+      fail("quality-promotion fixture lost its incomplete repair policy");
+    llvm::SmallString<128> incompleteAdjacentJournal(temporary.path());
+    llvm::sys::path::append(incompleteAdjacentJournal,
+                            "adjacent-resource-time-quality-incomplete");
+    loom::dse::JointHardwareReopenRequest incompleteAdjacentRequest{
+        take(loom::dse::DseProducerSemanticBuildIdentity::get(
+            "loom.test.resource_time_adjacent.quality_incomplete.v1")),
+        incompleteAdjacentJournal.str().str(),
+        {},
+        loom::dse::JointDesignStoppingPolicy::BoundedQuality,
+        *incompleteRepairQuality,
+        std::nullopt,
+        take(loom::dse::SiteCapacity::get(2, 0, 0)),
+        take(loom::dse::PlanExecutionPolicy::get(
+            2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))};
+    const auto incompleteAdjacent =
+        take(loom::dse::executeResourceTimeAdjacentMappingRepair(
+            plan, parentExecution, policy, adjacentPartitions, adjacentRoots,
+            std::move(incompleteAdjacentRequest), store, blobs));
+    const auto retainsMappedPair = [](const auto &execution) {
+      return llvm::any_of(execution.mappedPairs, [](const auto &pair) {
+        return !pair.systemMappings.empty();
+      });
+    };
+    for (const auto *execution :
+         {&incompleteAdjacent.coldExecution, &incompleteAdjacent.execution})
+      if (!retainsMappedPair(*execution) ||
+          execution->summary.qualityDisposition !=
+              loom::dse::JointDesignQualityDisposition::Unsupported ||
+          execution->summary.selectedMapping ||
+          execution->summary.selectedPlanOrdinal)
+        fail("bounded incomplete adjacent repair retained a selected "
+             "Mapping");
+    if (incompleteAdjacent.coldMapping || incompleteAdjacent.incrementalMapping)
+      fail("bounded incomplete adjacent repair published a Mapping join");
+  }
 
   const std::vector<loom::ArtifactRootReference> systems = {system,
                                                             alternateSystem};
@@ -1273,13 +2041,14 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
 
 int main(int argc, char **argv) {
   const llvm::StringRef mode = argc == 2 ? argv[1] : "";
-  if (argc > 2 ||
-      (argc == 2 && mode != "fifo-feedback" && mode != "operand-feedback" &&
-       mode != "transport-feedback" && mode != "quality-promotion"))
+  if (argc > 2 || (argc == 2 && mode != "fifo-feedback" &&
+                   mode != "operand-feedback" && mode != "transport-feedback" &&
+                   mode != "quality-promotion" && mode != "mutation-matrix"))
     fail("expected no workflow, fifo-feedback, operand-feedback, or "
-         "transport-feedback, or quality-promotion");
+         "transport-feedback, quality-promotion, or mutation-matrix");
   exerciseJointExploration(mode == "fifo-feedback", mode == "operand-feedback",
                            mode == "transport-feedback",
-                           mode == "quality-promotion");
+                           mode == "quality-promotion",
+                           mode == "mutation-matrix");
   return 0;
 }

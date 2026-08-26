@@ -203,6 +203,28 @@ finalization path, and `ConfigurationABI` alone owns physical encoding.
 Hardware DSE that synthesizes a different FU must finalize a new Fabric
 artifact before TechMapping that new `F`.
 
+For the admitted scalar i32 add/sub followed by terminal sync graph-set, the
+production reverse-synthesis workflow derives a one-AccCore System shell,
+one normalized Module timing profile, and one packed System ConfigurationABI
+from the finalized Module. It emits both one exact TechMapping per graph and
+one exact whole-domain TechMapping. Separate root-complete Spatial PnR
+invocations preserve the per-graph evidence while assigning the whole-domain
+realizations to distinct resident instruction contexts of the shared FU. Only
+that joint SpatialMapping enters the existing System PnR generator; the
+portable SpatialCore RTL generator follows through ordinary DSE Plan edges.
+Every graph must be reachable from a root thread; rootless or partially
+unreachable inputs fail with a typed reverse-synthesis rejection before System
+Mapping. A completed projection independently imports each TechMapping,
+SpatialMapping, SystemMapping, and RTL HardwareImplementation, verifies exact
+graph, Module, System, ABI, and SpatialCore ownership, reconstructs the unique
+normalized timing and default packed ABI references, checks the canonical
+portable operation-leaf specialization without publishing on the verification
+path, and derives the physical configured-hardware projection as a Deployment
+precondition. Deployment
+remains its existing owner and consumes a selected SystemMapping plus explicit
+executable and runtime-platform leaves; reverse synthesis does not invent
+those selections.
+
 ## Determinism And Diagnostics
 
 Input ordering, resource ordering, template ordering, witness ordering, and
@@ -225,7 +247,10 @@ Anchor tests should cover only:
 * one symbolic typed constant or value-domain case that proves neither mode
   enumeration nor persisted function variants are required; and
 * rejection of one incomplete binding whose edge would otherwise disappear
-  through co-location.
+  through co-location; and
+* the bounded rooted add/sub-plus-sync workflow through SpatialMapping,
+  SystemMapping, portable RTL, Deployment, and independent journal/artifact
+  replay, paired with a rootless typed rejection.
 
 Tests must not pin printer whitespace, internal container layout, exhaustive
 parameter products, universal capability counters, or implementation-specific

@@ -1,7 +1,8 @@
-"""Paired Spatial/System simulation conformance policy."""
+"""Shared conformance policy for paired Spatial and System simulations."""
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
@@ -9,12 +10,19 @@ import os
 import signal
 import statistics
 import subprocess
+import sys
 import time
-from argparse import ArgumentParser
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Mapping, Sequence
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
 
 
 SPATIAL_REFERENCE_FLOOR_SECONDS = 0.1
@@ -22,12 +30,10 @@ SYSTEM_BUDGET_MULTIPLIER = 3.0
 HARD_FAILURE_RATIO = 10.0
 REFERENCE_RATE_TARGET_CYCLES_PER_SECOND = 100_000
 REFERENCE_RATE_TARGET_HZ = float(REFERENCE_RATE_TARGET_CYCLES_PER_SECOND)
+DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS = float(timeout_seconds(Tier.FAST))
+CGRA_SPATIAL_BOOTSTRAP_BUDGET_SECONDS = float(timeout_seconds(Tier.MEDIUM))
 RESERVED_DEVELOPMENT_CPUS = 4
 MAX_OUTER_WORKERS = 120
-DEFAULT_PROCESS_TIMEOUT_SECONDS = 180.0
-PROCESS_TERMINATION_GRACE_SECONDS = 1.0
-SPATIAL_WARMUP_RUNS = 1
-SPATIAL_MEASUREMENT_RUNS = 3
 CGRA_QUALIFICATION_LIMIT_NANOSECONDS = 45_000_000_000
 CGRA_QUALIFICATION_WARMUP_RUNS = 1
 CGRA_QUALIFICATION_MEASUREMENT_RUNS = 3
@@ -35,9 +41,7 @@ CGRA_GATE_CONFIGURATION = (
     Path(__file__).resolve().parent / "data" / "cgra-simulation-gate-v1.json"
 )
 CGRA_OPERATOR_GATE_RELATIVE_PATH = "test/data/corpus-operator-gate-v1.jsonl"
-CGRA_OPERATOR_GATE = (
-    Path(__file__).resolve().parents[1] / CGRA_OPERATOR_GATE_RELATIVE_PATH
-)
+CGRA_OPERATOR_GATE = ROOT / CGRA_OPERATOR_GATE_RELATIVE_PATH
 CGRA_REPRESENTATIVE_WORKLOADS = (
     "vecadd",
     "vector_pack",
@@ -66,80 +70,30 @@ def _require_nonnegative(value: float, what: str) -> None:
 class ActiveExecutionTiming:
     active_wall_seconds: float
     reference_cycles: int
-    cgra_engine_active_wall_seconds: float = 0.0
-    cgra_engine_active_process_cpu_seconds: float = 0.0
-    gem5_active_process_cpu_seconds: float = 0.0
-    gem5_observation_process_cpu_seconds: float = 0.0
-    engine_process_cpu_seconds: float = 0.0
-    cgra_input_load_wall_seconds: float = 0.0
-    cgra_input_load_process_cpu_seconds: float = 0.0
-    bridge_callback_cpu_seconds: float = 0.0
-    bridge_wait_wall_seconds: float = 0.0
-    setup_wall_seconds: float = 0.0
-    preparation_wall_seconds: float = 0.0
-    gem5_configuration_wall_seconds: float = 0.0
-    provider_wall_seconds: float = 0.0
-    provider_cpu_seconds: float = 0.0
-    gem5_observation_wall_seconds: float = 0.0
-    observation_wall_seconds: float = 0.0
-    cgra_observation_projection_wall_seconds: float = 0.0
-    cgra_observation_projection_process_cpu_seconds: float = 0.0
-    cgra_artifact_publication_wall_seconds: float = 0.0
-    cgra_artifact_publication_process_cpu_seconds: float = 0.0
-    bridge_message_count: int = 0
-    accelerator_invocation_count: int = 0
-    cgra_event_frame_count: int = 0
+    engine_cpu_seconds: float = 0.0
+    bridge_cpu_seconds: float = 0.0
+    host_cpu_seconds: float = 0.0
+    observation_cpu_seconds: float = 0.0
+    event_count: int = 0
+    activation_count: int = 0
     peak_resident_bytes: int = 0
 
     def __post_init__(self) -> None:
         _require_finite_positive(self.active_wall_seconds, "active wall time")
         if self.reference_cycles < 0:
             raise ValueError("reference-cycle count must be nonnegative")
-        times = {
-            "CGRA engine active wall time": self.cgra_engine_active_wall_seconds,
-            "CGRA engine active process CPU time": (
-                self.cgra_engine_active_process_cpu_seconds
-            ),
-            "gem5 active process CPU time": self.gem5_active_process_cpu_seconds,
-            "gem5 observation process CPU time": (
-                self.gem5_observation_process_cpu_seconds
-            ),
-            "engine lifecycle process CPU time": self.engine_process_cpu_seconds,
-            "CGRA input-load wall time": self.cgra_input_load_wall_seconds,
-            "CGRA input-load process CPU time": (
-                self.cgra_input_load_process_cpu_seconds
-            ),
-            "Bridge callback CPU time": self.bridge_callback_cpu_seconds,
-            "Bridge engine wait time": self.bridge_wait_wall_seconds,
-            "setup wall time": self.setup_wall_seconds,
-            "preparation wall time": self.preparation_wall_seconds,
-            "gem5 configuration wall time": self.gem5_configuration_wall_seconds,
-            "provider wall time": self.provider_wall_seconds,
-            "provider CPU time": self.provider_cpu_seconds,
-            "gem5 observation wall time": self.gem5_observation_wall_seconds,
-            "observation wall time": self.observation_wall_seconds,
-            "CGRA observation-projection wall time": (
-                self.cgra_observation_projection_wall_seconds
-            ),
-            "CGRA observation-projection process CPU time": (
-                self.cgra_observation_projection_process_cpu_seconds
-            ),
-            "CGRA artifact-publication wall time": (
-                self.cgra_artifact_publication_wall_seconds
-            ),
-            "CGRA artifact-publication process CPU time": (
-                self.cgra_artifact_publication_process_cpu_seconds
-            ),
-        }
-        for what, value in times.items():
+        for value, what in (
+            (self.engine_cpu_seconds, "engine CPU time"),
+            (self.bridge_cpu_seconds, "Bridge CPU time"),
+            (self.host_cpu_seconds, "host CPU time"),
+            (self.observation_cpu_seconds, "observation CPU time"),
+        ):
             _require_nonnegative(value, what)
-        counts = {
-            "Bridge message count": self.bridge_message_count,
-            "accelerator invocation count": self.accelerator_invocation_count,
-            "CGRA event-frame count": self.cgra_event_frame_count,
-            "peak resident bytes": self.peak_resident_bytes,
-        }
-        for what, value in counts.items():
+        for value, what in (
+            (self.event_count, "event count"),
+            (self.activation_count, "activation count"),
+            (self.peak_resident_bytes, "peak resident bytes"),
+        ):
             if value < 0:
                 raise ValueError(f"{what} must be nonnegative")
 
@@ -147,7 +101,6 @@ class ActiveExecutionTiming:
 @dataclass(frozen=True)
 class PairedSystemBudget:
     spatial_reference_seconds: float
-    spatial_absolute_budget_seconds: float
     system_budget_seconds: float
     hard_failure_seconds: float
 
@@ -155,18 +108,108 @@ class PairedSystemBudget:
 @dataclass(frozen=True)
 class PairedExecutionResult:
     spatial_reference_seconds: float
-    spatial_absolute_budget_seconds: float
+    system_active_wall_seconds: float
     system_to_spatial_ratio: float
     system_budget_seconds: float
     within_system_budget: bool
     hard_ratio_failure: bool
+    reference_cycles: int
     reference_cycles_per_second: float
     meets_reference_rate_target: bool
-    system_timing: ActiveExecutionTiming
+    engine_cpu_seconds: float
+    bridge_cpu_seconds: float
+    host_cpu_seconds: float
+    observation_cpu_seconds: float
+    event_count: int
+    activation_count: int
+    peak_resident_bytes: int
 
 
-class ProcessDisposition(Enum):
+def paired_system_budget(
+    warmed_spatial_active_seconds: Sequence[float],
+    spatial_absolute_budget_seconds: float,
+    *,
+    reference_floor_seconds: float = SPATIAL_REFERENCE_FLOOR_SECONDS,
+    system_multiplier: float = SYSTEM_BUDGET_MULTIPLIER,
+) -> PairedSystemBudget:
+    if not warmed_spatial_active_seconds:
+        raise ValueError("at least one warmed Spatial timing sample is required")
+    for sample in warmed_spatial_active_seconds:
+        _require_finite_positive(sample, "warmed Spatial timing sample")
+    _require_finite_positive(spatial_absolute_budget_seconds, "Spatial absolute budget")
+    _require_finite_positive(reference_floor_seconds, "Spatial reference floor")
+    _require_finite_positive(system_multiplier, "System budget multiplier")
+
+    reference = max(
+        float(statistics.median(warmed_spatial_active_seconds)),
+        reference_floor_seconds,
+    )
+    system_budget = min(
+        system_multiplier * reference,
+        system_multiplier * spatial_absolute_budget_seconds,
+    )
+    return PairedSystemBudget(
+        spatial_reference_seconds=reference,
+        system_budget_seconds=system_budget,
+        hard_failure_seconds=HARD_FAILURE_RATIO * reference,
+    )
+
+
+def evaluate_paired_execution(
+    budget: PairedSystemBudget,
+    system_timing: ActiveExecutionTiming,
+) -> PairedExecutionResult:
+    _require_finite_positive(budget.spatial_reference_seconds, "Spatial reference time")
+    _require_finite_positive(budget.system_budget_seconds, "System budget")
+    _require_finite_positive(budget.hard_failure_seconds, "hard failure time")
+
+    ratio = system_timing.active_wall_seconds / budget.spatial_reference_seconds
+    rate = system_timing.reference_cycles / system_timing.active_wall_seconds
+    return PairedExecutionResult(
+        spatial_reference_seconds=budget.spatial_reference_seconds,
+        system_active_wall_seconds=system_timing.active_wall_seconds,
+        system_to_spatial_ratio=ratio,
+        system_budget_seconds=budget.system_budget_seconds,
+        within_system_budget=(
+            system_timing.active_wall_seconds <= budget.system_budget_seconds
+        ),
+        hard_ratio_failure=(ratio >= HARD_FAILURE_RATIO),
+        reference_cycles=system_timing.reference_cycles,
+        reference_cycles_per_second=rate,
+        meets_reference_rate_target=(rate >= REFERENCE_RATE_TARGET_HZ),
+        engine_cpu_seconds=system_timing.engine_cpu_seconds,
+        bridge_cpu_seconds=system_timing.bridge_cpu_seconds,
+        host_cpu_seconds=system_timing.host_cpu_seconds,
+        observation_cpu_seconds=system_timing.observation_cpu_seconds,
+        event_count=system_timing.event_count,
+        activation_count=system_timing.activation_count,
+        peak_resident_bytes=system_timing.peak_resident_bytes,
+    )
+
+
+def outer_worker_limit(
+    *,
+    memory_derived_limit: int,
+    cpu_count: int | None = None,
+    reserved_cpus: int = RESERVED_DEVELOPMENT_CPUS,
+    maximum_workers: int = MAX_OUTER_WORKERS,
+) -> int:
+    if memory_derived_limit < 1:
+        raise ValueError("memory-derived worker limit must be positive")
+    if reserved_cpus < 0:
+        raise ValueError("reserved CPU count must be nonnegative")
+    if maximum_workers < 1:
+        raise ValueError("maximum worker count must be positive")
+    available_cpus = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
+    if available_cpus < 1:
+        raise ValueError("CPU count must be positive")
+    available_workers = max(1, available_cpus - reserved_cpus)
+    return min(available_workers, memory_derived_limit, maximum_workers)
+
+
+class ProcessDisposition(str, Enum):
     COMPLETED = "completed"
+    LAUNCH_FAILED = "launch_failed"
     NONZERO_EXIT = "nonzero_exit"
     TIMED_OUT = "timed_out"
     CLEANUP_FAILED = "cleanup_failed"
@@ -186,35 +229,40 @@ class ProcessExecution:
 @dataclass(frozen=True)
 class ExecutionMatrixMeasurement:
     cell: str
-    paired_work_fingerprint: str
-    deterministic_work: int
-    accelerator_reference_cycles: int
+    attempt: str
+    invocation: str
+    work_fingerprint: str
+    config_fingerprint: str
     gem5_ticks: int | None
+    setup_wall_seconds: float
+    active_process_cpu_seconds: float
+    measurement_source: str
+    rss_scope: str
     timing: ActiveExecutionTiming
 
 
-class ConformanceDisposition(Enum):
-    PASSED = "passed"
+class MeasurementDisposition(str, Enum):
+    MEASURED = "measured"
     SPATIAL_EXECUTION_FAILED = "spatial_execution_failed"
     SPATIAL_TIMED_OUT = "spatial_timed_out"
-    SPATIAL_BUDGET_EXCEEDED = "spatial_budget_exceeded"
+    SPATIAL_BOOTSTRAP_BUDGET_EXCEEDED = "spatial_bootstrap_budget_exceeded"
     SYSTEM_EXECUTION_FAILED = "system_execution_failed"
     SYSTEM_TIMED_OUT = "system_timed_out"
     PROCESS_CLEANUP_FAILED = "process_cleanup_failed"
     PAIRED_WORK_MISMATCH = "paired_work_mismatch"
-    SYSTEM_BUDGET_EXCEEDED = "system_budget_exceeded"
+    SYSTEM_BOOTSTRAP_BUDGET_EXCEEDED = "system_bootstrap_budget_exceeded"
     HARD_RATIO_EXCEEDED = "hard_ratio_exceeded"
     REFERENCE_RATE_BELOW_TARGET = "reference_rate_below_target"
 
 
 @dataclass(frozen=True)
-class PairedConformanceReport:
-    disposition: ConformanceDisposition
-    gate_configuration: CgraGateConfiguration
+class PairedMeasurementReport:
+    disposition: MeasurementDisposition
     spatial_measurements: tuple[ExecutionMatrixMeasurement, ...]
     system_measurement: ExecutionMatrixMeasurement | None
     paired_result: PairedExecutionResult | None
-    process_disposition: ProcessDisposition | None = None
+    spatial_process: ProcessExecution | None
+    system_process: ProcessExecution | None
     diagnostic: str = ""
 
 
@@ -235,6 +283,7 @@ class CgraRepresentativeOperator:
     workload: str
     operator_id: str
     source: str
+    protocol_symbol: str
     compiler_flags: tuple[str, ...]
 
 
@@ -264,11 +313,22 @@ def load_cgra_representative_operators(
         sources = producer.get("sources") if isinstance(producer, dict) else None
         compiler_flags = record.get("compiler_flags")
         operator_id = record.get("operator_id")
+        protocol = record.get("protocol")
+        protocol_symbol = (
+            protocol[0].get("symbol")
+            if isinstance(protocol, list)
+            and len(protocol) == 1
+            and isinstance(protocol[0], dict)
+            else None
+        )
         if (
             workload in selected
             or not isinstance(operator_id, str)
             or not operator_id
             or not operator_id.isascii()
+            or not isinstance(protocol_symbol, str)
+            or not protocol_symbol
+            or not protocol_symbol.isascii()
             or not isinstance(sources, list)
             or len(sources) != 1
             or not isinstance(sources[0], str)
@@ -288,6 +348,7 @@ def load_cgra_representative_operators(
             workload,
             operator_id,
             sources[0],
+            protocol_symbol,
             tuple(compiler_flags),
         )
     if set(selected) != set(CGRA_REPRESENTATIVE_WORKLOADS):
@@ -343,10 +404,226 @@ def _validate_artifact_reference(value: object, what: str) -> Mapping[str, objec
     return value
 
 
+_CANDIDATE_INCOMPLETE_REASONS = frozenset(
+    {
+        "candidate_proof_not_established",
+        "candidate_semantic_limit_reached",
+        "candidate_provider_unavailable",
+        "candidate_generation_unsupported",
+        "candidate_execution_failed",
+        "candidate_cancelled_or_timeout",
+    }
+)
+_TECH_MAPPING_WORK_UNITS = (
+    "match_row_attempt",
+    "partial_cover_expansion",
+    "candidate_evaluation",
+    "publication_slot",
+)
+_SPATIAL_PNR_WORK_UNITS = (
+    "seed_attempt",
+    "assignment_attempt_per_seed",
+    "endpoint_expansion",
+    "negotiation_iteration",
+    "calibration_proposal",
+    "proposal_per_level_base",
+    "proposal_per_movable_decision",
+    "exact_repair_region_decision",
+    "exact_repair_solver_call",
+)
+
+
+def _validate_candidate_generator_result(
+    value: object,
+    expected_generator_units: Sequence[str],
+    what: str,
+    *,
+    require_completed: bool,
+) -> str:
+    if not isinstance(value, Mapping) or set(value) != {
+        "outcome",
+        "incomplete_reason",
+        "candidates",
+        "work_units",
+    }:
+        raise ValueError(f"{what} result has the wrong shape")
+    outcome = value["outcome"]
+    reason = value["incomplete_reason"]
+    if outcome not in {"completed", "incomplete", "proven_infeasible"}:
+        raise ValueError(f"{what} result has an unknown outcome")
+    if outcome == "incomplete":
+        if reason not in _CANDIDATE_INCOMPLETE_REASONS:
+            raise ValueError(f"{what} result has a noncanonical incomplete reason")
+    elif reason is not None:
+        raise ValueError(f"{what} completed result has an incomplete reason")
+    candidates = value["candidates"]
+    if not isinstance(candidates, list):
+        raise ValueError(f"{what} candidates are not a list")
+    candidate_keys: list[tuple[str, str, str]] = []
+    for candidate in candidates:
+        reference = _validate_artifact_reference(candidate, f"{what} candidate")
+        candidate_keys.append(
+            (
+                str(reference["schema"]),
+                str(reference["schema_version"]),
+                str(reference["artifact"]),
+            )
+        )
+    if candidate_keys != sorted(set(candidate_keys)):
+        raise ValueError(f"{what} candidates are not canonical and unique")
+    if outcome == "completed" and not candidates:
+        raise ValueError(f"{what} completed result has no candidate")
+    if outcome == "proven_infeasible" and candidates:
+        raise ValueError(f"{what} infeasibility retained a candidate")
+    if require_completed and outcome != "completed":
+        raise ValueError(f"CGRA gate profile contains a non-completed {what} result")
+
+    work_units = value["work_units"]
+    if not isinstance(work_units, list) or len(work_units) != len(
+        expected_generator_units
+    ):
+        raise ValueError(f"{what} generator summary has the wrong width")
+    for expected_unit, entry in zip(expected_generator_units, work_units):
+        if not isinstance(entry, Mapping) or set(entry) != {
+            "unit",
+            "planned",
+            "consumed",
+        }:
+            raise ValueError(f"{what} generator work entry has the wrong shape")
+        if entry["unit"] != expected_unit:
+            raise ValueError(f"{what} generator work order is not canonical")
+        planned = _nonnegative_integer(
+            entry["planned"], f"planned {what} work {expected_unit}"
+        )
+        consumed = _nonnegative_integer(
+            entry["consumed"], f"consumed {what} work {expected_unit}"
+        )
+        if consumed > planned:
+            raise ValueError(f"{what} consumed work exceeds its plan")
+        if outcome != "incomplete" and consumed != planned:
+            raise ValueError(f"completed {what} left planned work unconsumed")
+    return str(outcome)
+
+
+def validate_cgra_tech_mapping_result(
+    value: object, *, require_completed: bool
+) -> str:
+    return _validate_candidate_generator_result(
+        value,
+        _TECH_MAPPING_WORK_UNITS,
+        "CGRA TechMapping",
+        require_completed=require_completed,
+    )
+
+
+def validate_cgra_pnr_result(value: object, *, require_completed: bool) -> str:
+    if not isinstance(value, Mapping) or set(value) != {
+        "completion_goal",
+        "configured_seed_attempts",
+        "outcome",
+        "incomplete_reason",
+        "candidates",
+        "work_units",
+    }:
+        raise ValueError("CGRA PnR result has the wrong shape")
+    if value["completion_goal"] != "exhaust_configured_work":
+        raise ValueError("CGRA qualification used a prefix PnR completion goal")
+    configured_seed_attempts = _nonnegative_integer(
+        value["configured_seed_attempts"],
+        "CGRA configured PnR seed attempts",
+        positive=True,
+    )
+    base = {key: value[key] for key in (
+        "outcome",
+        "incomplete_reason",
+        "candidates",
+        "work_units",
+    )}
+    outcome = _validate_candidate_generator_result(
+        base,
+        _SPATIAL_PNR_WORK_UNITS,
+        "CGRA Spatial PnR",
+        require_completed=require_completed,
+    )
+    if outcome == "completed":
+        seed_work = value["work_units"][0]
+        assert isinstance(seed_work, Mapping)
+        if seed_work["planned"] < configured_seed_attempts:
+            raise ValueError("CGRA PnR did not plan the configured restart domain")
+    return outcome
+
+
+def validate_cgra_profile_outcome(value: object) -> tuple[str, str | None]:
+    expected_fields = {
+        "schema",
+        "workload",
+        "operator_id",
+        "protocol_symbol",
+        "stage",
+        "resolved_config",
+        "fabric",
+        "tech_mapping_search",
+        "spatial_pnr",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected_fields:
+        raise ValueError("CGRA profile outcome has the wrong shape")
+    if value["schema"] != "loom.cgra_budget_profile_outcome.1":
+        raise ValueError("CGRA profile outcome has the wrong schema")
+    if (
+        not isinstance(value["workload"], str)
+        or not isinstance(value["operator_id"], str)
+        or not isinstance(value["protocol_symbol"], str)
+        or not value["protocol_symbol"]
+        or not value["protocol_symbol"].isascii()
+    ):
+        raise ValueError("CGRA profile outcome has no workload identity")
+    _validate_artifact_reference(value["resolved_config"], "resolved config")
+    _validate_artifact_reference(value["fabric"], "Fabric")
+    tech_outcome = validate_cgra_tech_mapping_result(
+        value["tech_mapping_search"], require_completed=False
+    )
+    stage = value["stage"]
+    if stage == "tech_mapping":
+        tech_result = value["tech_mapping_search"]
+        assert isinstance(tech_result, Mapping)
+        if (
+            value["spatial_pnr"] is not None
+            or tech_outcome == "completed"
+            or tech_result["candidates"]
+        ):
+            raise ValueError("CGRA TechMapping outcome has an invalid boundary")
+        result = value["tech_mapping_search"]
+    elif stage == "spatial_pnr":
+        tech_result = value["tech_mapping_search"]
+        assert isinstance(tech_result, Mapping)
+        if not tech_result["candidates"] or tech_outcome not in {
+            "completed",
+            "incomplete",
+        } or (
+            tech_outcome == "incomplete"
+            and tech_result["incomplete_reason"]
+            != "candidate_semantic_limit_reached"
+        ):
+            raise ValueError("CGRA Spatial PnR ran after unusable TechMapping")
+        pnr_outcome = validate_cgra_pnr_result(
+            value["spatial_pnr"], require_completed=False
+        )
+        if pnr_outcome == "completed":
+            raise ValueError("CGRA profile outcome contains a completed PnR result")
+        result = value["spatial_pnr"]
+    else:
+        raise ValueError("CGRA profile outcome has an unknown stage")
+    assert isinstance(result, Mapping)
+    reason = result["incomplete_reason"]
+    return str(result["outcome"]), reason if isinstance(reason, str) else None
+
+
 def _validate_cgra_profiles(
     profiles: Sequence[Mapping[str, object]],
+    representative_operators: Sequence[CgraRepresentativeOperator] | None = None,
 ) -> tuple[Mapping[str, object], ...]:
-    _, representative_operators = load_cgra_representative_operators()
+    if representative_operators is None:
+        _, representative_operators = load_cgra_representative_operators()
     operator_by_workload = {
         operator.workload: operator for operator in representative_operators
     }
@@ -354,6 +631,7 @@ def _validate_cgra_profiles(
         "schema",
         "workload",
         "operator_id",
+        "protocol_symbol",
         "qualification_limit_nanoseconds",
         "warmup_runs",
         "measurement_runs",
@@ -364,12 +642,11 @@ def _validate_cgra_profiles(
         "resolved_config",
         "fabric",
         "tech_mapping",
+        "tech_mapping_search",
         "initial_spatial_mapping",
         "spatial_mapping",
-        "repaired_spatial_mapping",
-        "parent_system_mapping",
-        "transport_repair_constraint",
-        "pre_repair_evidence",
+        "spatial_pnr",
+        "transport_repair",
         "warmup_evidence",
         "measurements",
     }
@@ -403,13 +680,17 @@ def _validate_cgra_profiles(
     for profile in profiles:
         if not isinstance(profile, Mapping) or set(profile) != expected_profile_fields:
             raise ValueError("CGRA profile has the wrong shape")
-        if profile["schema"] != "loom.cgra_budget_profile.2":
+        if profile["schema"] != "loom.cgra_budget_profile.4":
             raise ValueError("CGRA profile has the wrong schema")
         workload = profile["workload"]
         if not isinstance(workload, str) or workload in by_workload:
             raise ValueError("CGRA profile workload is absent or duplicated")
         operator = operator_by_workload.get(workload)
-        if operator is None or profile["operator_id"] != operator.operator_id:
+        if (
+            operator is None
+            or profile["operator_id"] != operator.operator_id
+            or profile["protocol_symbol"] != operator.protocol_symbol
+        ):
             raise ValueError("CGRA profile is not bound to its operator-gate row")
         by_workload[workload] = profile
         qualification_limit = _nonnegative_integer(
@@ -451,18 +732,93 @@ def _validate_cgra_profiles(
         fabric = profile["fabric"]
         assert isinstance(fabric, Mapping)
         fabric_identities.add(str(fabric["artifact"]))
-        repair_fields = (
-            "repaired_spatial_mapping",
-            "parent_system_mapping",
-            "transport_repair_constraint",
-            "pre_repair_evidence",
+        tech_outcome = validate_cgra_tech_mapping_result(
+            profile["tech_mapping_search"], require_completed=False
         )
-        repair_values = tuple(profile[field] for field in repair_fields)
-        if any(value is not None for value in repair_values):
-            if any(value is None for value in repair_values):
-                raise ValueError("CGRA transport repair provenance is fragmentary")
-            for field, value in zip(repair_fields, repair_values):
-                _validate_artifact_reference(value, f"CGRA profile {field}")
+        tech_search = profile["tech_mapping_search"]
+        assert isinstance(tech_search, Mapping)
+        if tech_outcome not in {"completed", "incomplete"} or (
+            tech_outcome == "incomplete"
+            and tech_search["incomplete_reason"]
+            != "candidate_semantic_limit_reached"
+        ):
+            raise ValueError("CGRA profile has no usable TechMapping frontier")
+        if profile["tech_mapping"] not in tech_search["candidates"]:
+            raise ValueError("selected TechMapping is absent from the complete search")
+        validate_cgra_pnr_result(profile["spatial_pnr"], require_completed=True)
+        initial_pnr = profile["spatial_pnr"]
+        assert isinstance(initial_pnr, Mapping)
+        if profile["initial_spatial_mapping"] not in initial_pnr["candidates"]:
+            raise ValueError("CGRA initial Mapping is absent from its PnR result")
+        transport_repair = profile["transport_repair"]
+        if transport_repair is None:
+            if profile["spatial_mapping"] != profile["initial_spatial_mapping"]:
+                raise ValueError("CGRA final Mapping has no repair lineage")
+        else:
+            if not isinstance(transport_repair, Mapping) or set(
+                transport_repair
+            ) != {"parent_system_mapping", "pre_repair_evidence", "attempts"}:
+                raise ValueError("CGRA transport repair has the wrong shape")
+            _validate_artifact_reference(
+                transport_repair["parent_system_mapping"],
+                "CGRA repair parent SystemMapping",
+            )
+            _validate_artifact_reference(
+                transport_repair["pre_repair_evidence"],
+                "CGRA pre-repair Evidence",
+            )
+            attempts = transport_repair["attempts"]
+            if not isinstance(attempts, list) or not attempts:
+                raise ValueError("CGRA transport repair has no attempt")
+            accepted_children: list[Mapping[str, object]] = []
+            for ordinal, attempt in enumerate(attempts):
+                if not isinstance(attempt, Mapping) or set(attempt) != {
+                    "parent_spatial_mapping",
+                    "constraint_set",
+                    "spatial_pnr",
+                    "child_spatial_mapping",
+                    "accepted_for_simulation",
+                }:
+                    raise ValueError("CGRA transport repair attempt has the wrong shape")
+                if attempt["parent_spatial_mapping"] != profile[
+                    "initial_spatial_mapping"
+                ]:
+                    raise ValueError("CGRA transport repair has a foreign parent")
+                _validate_artifact_reference(
+                    attempt["constraint_set"], "CGRA repair constraint"
+                )
+                repair_outcome = validate_cgra_pnr_result(
+                    attempt["spatial_pnr"], require_completed=False
+                )
+                repair_pnr = attempt["spatial_pnr"]
+                assert isinstance(repair_pnr, Mapping)
+                if repair_pnr["configured_seed_attempts"] != initial_pnr[
+                    "configured_seed_attempts"
+                ]:
+                    raise ValueError("CGRA repair used a foreign PnR seed plan")
+                child = attempt["child_spatial_mapping"]
+                accepted = attempt["accepted_for_simulation"]
+                if not isinstance(accepted, bool):
+                    raise ValueError("CGRA repair acceptance is not boolean")
+                if child is None:
+                    if accepted:
+                        raise ValueError("CGRA repair accepted no child Mapping")
+                else:
+                    child_reference = _validate_artifact_reference(
+                        child, "CGRA repair child Mapping"
+                    )
+                    if repair_outcome != "completed" or child not in repair_pnr[
+                        "candidates"
+                    ]:
+                        raise ValueError("CGRA repair child lacks a completed PnR result")
+                    if accepted:
+                        if ordinal + 1 != len(attempts):
+                            raise ValueError("CGRA accepted repair is not terminal")
+                        accepted_children.append(child_reference)
+            if len(accepted_children) != 1 or profile[
+                "spatial_mapping"
+            ] != accepted_children[0]:
+                raise ValueError("CGRA final Mapping disagrees with repair receipt")
         dataflow = profile["canonical_dataflow"]
         assert isinstance(dataflow, Mapping)
         dataflow_identities.add(str(dataflow["artifact"]))
@@ -601,10 +957,9 @@ def _validate_cgra_profiles(
     return tuple(by_workload[name] for name in CGRA_REPRESENTATIVE_WORKLOADS)
 
 
-def derive_cgra_spatial_budget_nanoseconds(
-    profiles: Sequence[Mapping[str, object]],
+def _derive_cgra_spatial_budget_from_validated_profiles(
+    validated: Sequence[Mapping[str, object]],
 ) -> int:
-    validated = _validate_cgra_profiles(profiles)
     budget = 0
     for profile in validated:
         measurements = profile["measurements"]
@@ -619,6 +974,14 @@ def derive_cgra_spatial_budget_nanoseconds(
     if budget <= 0 or budget > CGRA_QUALIFICATION_LIMIT_NANOSECONDS:
         raise ValueError("derived CGRA budget exceeds the qualification limit")
     return budget
+
+
+def derive_cgra_spatial_budget_nanoseconds(
+    profiles: Sequence[Mapping[str, object]],
+) -> int:
+    return _derive_cgra_spatial_budget_from_validated_profiles(
+        _validate_cgra_profiles(profiles)
+    )
 
 
 def load_cgra_gate_configuration(
@@ -640,7 +1003,7 @@ def load_cgra_gate_configuration(
     }
     if not isinstance(root, dict) or set(root) != expected_fields:
         raise ValueError("CGRA gate configuration has the wrong shape")
-    if root["schema"] != "loom.cgra_simulation_gate.2":
+    if root["schema"] != "loom.cgra_simulation_gate.4":
         raise ValueError("CGRA gate configuration has the wrong schema")
     policy = root["policy"]
     expected_policy = {
@@ -654,7 +1017,9 @@ def load_cgra_gate_configuration(
     if policy != expected_policy:
         raise ValueError("CGRA gate configuration has a foreign policy")
     operator_gate = root["operator_gate"]
-    current_operator_gate_sha256, _ = load_cgra_representative_operators()
+    current_operator_gate_sha256, representative_operators = (
+        load_cgra_representative_operators()
+    )
     if operator_gate != {
         "path": CGRA_OPERATOR_GATE_RELATIVE_PATH,
         "sha256": current_operator_gate_sha256,
@@ -663,8 +1028,8 @@ def load_cgra_gate_configuration(
     profiles = root["profiles"]
     if not isinstance(profiles, list):
         raise ValueError("CGRA gate profiles are not a list")
-    validated = _validate_cgra_profiles(profiles)
-    derived = derive_cgra_spatial_budget_nanoseconds(validated)
+    validated = _validate_cgra_profiles(profiles, representative_operators)
+    derived = _derive_cgra_spatial_budget_from_validated_profiles(validated)
     published = _nonnegative_integer(
         root["spatial_absolute_budget_nanoseconds"],
         "published CGRA budget",
@@ -680,135 +1045,109 @@ def load_cgra_gate_configuration(
     )
 
 
-def paired_system_budget(
-    warmed_spatial_active_seconds: Sequence[float],
-    spatial_absolute_budget_seconds: float,
-    *,
-    reference_floor_seconds: float = SPATIAL_REFERENCE_FLOOR_SECONDS,
-    system_multiplier: float = SYSTEM_BUDGET_MULTIPLIER,
-) -> PairedSystemBudget:
-    if not warmed_spatial_active_seconds:
-        raise ValueError("at least one warmed Spatial timing sample is required")
-    for sample in warmed_spatial_active_seconds:
-        _require_finite_positive(sample, "warmed Spatial timing sample")
-    _require_finite_positive(spatial_absolute_budget_seconds, "Spatial budget")
-    _require_finite_positive(reference_floor_seconds, "Spatial reference floor")
-    _require_finite_positive(system_multiplier, "System budget multiplier")
-    reference = max(
-        float(statistics.median(warmed_spatial_active_seconds)),
-        reference_floor_seconds,
-    )
-    system_budget = min(
-        system_multiplier * reference,
-        system_multiplier * spatial_absolute_budget_seconds,
-    )
-    return PairedSystemBudget(
-        spatial_reference_seconds=reference,
-        spatial_absolute_budget_seconds=spatial_absolute_budget_seconds,
-        system_budget_seconds=system_budget,
-        hard_failure_seconds=HARD_FAILURE_RATIO * reference,
-    )
+def _live_process_group_members(process_group: int) -> tuple[int, ...]:
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        members: list[int] = []
+        for entry in proc_root.iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                stat = (entry / "stat").read_text(encoding="ascii")
+                suffix = stat[stat.rfind(")") + 2 :].split()
+                state = suffix[0]
+                member_group = int(suffix[2])
+            except (OSError, UnicodeDecodeError, ValueError, IndexError):
+                continue
+            if member_group == process_group and state != "Z":
+                members.append(int(entry.name))
+        return tuple(sorted(members))
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return ()
+    except PermissionError:
+        pass
+    return (process_group,)
 
 
-def evaluate_paired_execution(
-    budget: PairedSystemBudget,
-    system_timing: ActiveExecutionTiming,
-) -> PairedExecutionResult:
-    _require_finite_positive(budget.spatial_reference_seconds, "Spatial reference")
-    _require_finite_positive(budget.system_budget_seconds, "System budget")
-    _require_finite_positive(budget.hard_failure_seconds, "hard failure time")
-    ratio = system_timing.active_wall_seconds / budget.spatial_reference_seconds
-    rate = system_timing.reference_cycles / system_timing.active_wall_seconds
-    return PairedExecutionResult(
-        spatial_reference_seconds=budget.spatial_reference_seconds,
-        spatial_absolute_budget_seconds=budget.spatial_absolute_budget_seconds,
-        system_to_spatial_ratio=ratio,
-        system_budget_seconds=budget.system_budget_seconds,
-        within_system_budget=(
-            system_timing.active_wall_seconds <= budget.system_budget_seconds
-        ),
-        hard_ratio_failure=(
-            system_timing.active_wall_seconds >= budget.hard_failure_seconds
-        ),
-        reference_cycles_per_second=rate,
-        meets_reference_rate_target=(rate >= REFERENCE_RATE_TARGET_HZ),
-        system_timing=system_timing,
-    )
+def _wait_for_process_group_exit(process_group: int, grace_seconds: float) -> bool:
+    deadline = time.monotonic() + grace_seconds
+    while _live_process_group_members(process_group):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            return False
+        time.sleep(min(0.01, remaining))
+    return True
+
+
+def _terminate_process_group(process_group: int, grace_seconds: float) -> bool:
+    if not _live_process_group_members(process_group):
+        return True
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    if _wait_for_process_group_exit(process_group, grace_seconds):
+        return True
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    return _wait_for_process_group_exit(process_group, grace_seconds)
+
+
+def _captured_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    return value.decode(errors="replace") if isinstance(value, bytes) else value
 
 
 def execute_process(
-    command: Sequence[str],
-    timeout_seconds: float,
+    command: Sequence[str | os.PathLike[str]],
+    timeout_budget_seconds: float,
     *,
-    termination_grace_seconds: float = PROCESS_TERMINATION_GRACE_SECONDS,
+    termination_grace_seconds: float | None = None,
     environment: Mapping[str, str] | None = None,
-    working_directory: Path | None = None,
 ) -> ProcessExecution:
-    if not command or any(not argument for argument in command):
-        raise ValueError("process command must contain nonempty arguments")
-    _require_finite_positive(timeout_seconds, "process timeout")
+    _require_finite_positive(timeout_budget_seconds, "process timeout budget")
+    if termination_grace_seconds is None:
+        termination_grace_seconds = float(timeout_seconds(Tier.ULTRAFAST))
     _require_finite_positive(termination_grace_seconds, "termination grace")
-    normalized = tuple(str(argument) for argument in command)
+    normalized = tuple(os.fspath(argument) for argument in command)
+    if not normalized:
+        raise ValueError("process command must not be empty")
     started = time.monotonic()
-    process = subprocess.Popen(
-        normalized,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-        env=dict(environment) if environment is not None else None,
-        cwd=str(working_directory) if working_directory is not None else None,
-    )
-
-    def captured_text(value: str | bytes | None) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, bytes):
-            return value.decode(errors="replace")
-        return value
-
-    def process_group_exists() -> bool:
-        process.poll()
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            return False
-        return True
-
-    def wait_for_process_group_exit() -> bool:
-        deadline = time.monotonic() + termination_grace_seconds
-        while process_group_exists() and time.monotonic() < deadline:
-            time.sleep(min(0.01, termination_grace_seconds / 10.0))
-        return not process_group_exists()
-
-    def terminate_process_group() -> bool:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return True
-        if wait_for_process_group_exit():
-            return True
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return True
-        return wait_for_process_group_exit()
+    try:
+        process = subprocess.Popen(
+            normalized,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+            env=None if environment is None else dict(environment),
+        )
+    except OSError as error:
+        return ProcessExecution(
+            ProcessDisposition.LAUNCH_FAILED,
+            normalized,
+            time.monotonic() - started,
+            None,
+            "",
+            str(error),
+            False,
+        )
 
     try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        stdout, stderr = process.communicate(timeout=timeout_budget_seconds)
     except subprocess.TimeoutExpired as timeout:
-        stdout = captured_text(timeout.stdout)
-        stderr = captured_text(timeout.stderr)
-        terminated = terminate_process_group()
+        terminated = _terminate_process_group(process.pid, termination_grace_seconds)
         try:
-            final_stdout, final_stderr = process.communicate(
-                timeout=termination_grace_seconds
-            )
-            stdout = final_stdout or stdout
-            stderr = final_stderr or stderr
+            stdout, stderr = process.communicate(timeout=termination_grace_seconds)
         except subprocess.TimeoutExpired as cleanup_timeout:
-            stdout = captured_text(cleanup_timeout.stdout) or stdout
-            stderr = captured_text(cleanup_timeout.stderr) or stderr
+            stdout = _captured_text(cleanup_timeout.stdout or timeout.stdout)
+            stderr = _captured_text(cleanup_timeout.stderr or timeout.stderr)
+            terminated = False
             if process.stdout is not None:
                 process.stdout.close()
             if process.stderr is not None:
@@ -816,213 +1155,177 @@ def execute_process(
             try:
                 process.wait(timeout=termination_grace_seconds)
             except subprocess.TimeoutExpired:
-                terminated = False
+                pass
         return ProcessExecution(
-            disposition=(
+            (
                 ProcessDisposition.TIMED_OUT
                 if terminated
                 else ProcessDisposition.CLEANUP_FAILED
             ),
-            command=normalized,
-            elapsed_seconds=time.monotonic() - started,
-            return_code=process.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            process_group_terminated=terminated,
+            normalized,
+            time.monotonic() - started,
+            process.returncode,
+            _captured_text(stdout),
+            _captured_text(stderr),
+            terminated,
         )
-    if process_group_exists():
-        terminated = terminate_process_group()
+
+    if _live_process_group_members(process.pid):
+        terminated = _terminate_process_group(process.pid, termination_grace_seconds)
         return ProcessExecution(
-            disposition=ProcessDisposition.CLEANUP_FAILED,
-            command=normalized,
-            elapsed_seconds=time.monotonic() - started,
-            return_code=process.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            process_group_terminated=terminated,
+            ProcessDisposition.CLEANUP_FAILED,
+            normalized,
+            time.monotonic() - started,
+            process.returncode,
+            stdout,
+            stderr,
+            terminated,
         )
     return ProcessExecution(
-        disposition=(
+        (
             ProcessDisposition.COMPLETED
             if process.returncode == 0
             else ProcessDisposition.NONZERO_EXIT
         ),
-        command=normalized,
-        elapsed_seconds=time.monotonic() - started,
-        return_code=process.returncode,
-        stdout=stdout,
-        stderr=stderr,
-        process_group_terminated=False,
+        normalized,
+        time.monotonic() - started,
+        process.returncode,
+        stdout,
+        stderr,
+        False,
     )
 
 
-_STATISTICS_FIELDS = {
+_MEASUREMENT_FIELDS = {
+    "schema",
     "cell",
-    "paired_work_fingerprint",
-    "deterministic_work",
+    "attempt",
+    "invocation",
+    "work_fingerprint",
+    "config_fingerprint",
     "accelerator_reference_cycles",
+    "cgra_event_frames",
+    "active_wall_ns",
+    "active_cpu_ns",
     "gem5_ticks",
-    "setup_wall_us",
-    "preparation_wall_us",
-    "gem5_configuration_wall_us",
-    "provider_wall_us",
-    "active_wall_us",
-    "provider_cpu_us",
-    "gem5_active_process_cpu_us",
-    "gem5_observation_process_cpu_us",
-    "engine_process_cpu_us",
-    "cgra_input_load_wall_us",
-    "cgra_input_load_process_cpu_us",
-    "cgra_engine_active_wall_us",
-    "cgra_engine_active_process_cpu_us",
-    "cgra_observation_projection_wall_us",
-    "cgra_observation_projection_process_cpu_us",
-    "cgra_artifact_publication_wall_us",
-    "cgra_artifact_publication_process_cpu_us",
-    "bridge_callback_cpu_us",
-    "bridge_wait_wall_us",
-    "bridge_message_count",
-    "accelerator_invocation_count",
-    "cgra_event_frame_count",
-    "gem5_observation_wall_us",
-    "observation_wall_us",
-    "peak_rss_kib",
+    "setup_wall_ns",
+    "process_peak_rss_bytes",
+    "measurement_source",
+    "rss_scope",
 }
+_MEASUREMENT_SCHEMA = "loom.paired_simulation_measurement.2"
+_MEASUREMENT_PREFIX = "paired-simulation "
 
 
-def _parse_statistics_row(row: str, expected_cell: str) -> ExecutionMatrixMeasurement:
+def _parse_u64(value: str) -> int:
+    if (
+        not value
+        or any(character not in "0123456789" for character in value)
+        or (len(value) != 1 and value.startswith("0"))
+    ):
+        raise ValueError("measurement contains a noncanonical unsigned integer")
+    parsed = int(value)
+    if parsed > (1 << 64) - 1:
+        raise ValueError("measurement escapes the unsigned 64-bit domain")
+    return parsed
+
+
+def _parse_fingerprint(value: str, what: str) -> str:
+    if (
+        len(value) != 64
+        or value != value.lower()
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{what} fingerprint is not canonical")
+    return value
+
+
+def _parse_measurement_row(row: str, expected_cell: str) -> ExecutionMatrixMeasurement:
     fields: dict[str, str] = {}
-    items = row.split()
-    if not items or items[0] != "execution-matrix":
-        raise ValueError("execution matrix statistics row has no record tag")
-    for item in items[1:]:
+    for item in row.split()[1:]:
         key, separator, value = item.partition("=")
         if not separator or not key or not value or key in fields:
-            raise ValueError("execution matrix statistics row is malformed")
+            raise ValueError("paired measurement row is malformed")
         fields[key] = value
-    if set(fields) != _STATISTICS_FIELDS or fields["cell"] != expected_cell:
-        raise ValueError("execution matrix statistics row has the wrong shape")
-    if expected_cell not in {"paired-spatial-cgra", "paired-system-cgra"}:
-        raise ValueError("execution matrix cell is outside paired CGRA conformance")
-    fingerprint = fields["paired_work_fingerprint"]
-    if (
-        len(fingerprint) != 64
-        or fingerprint != fingerprint.lower()
-        or any(character not in "0123456789abcdef" for character in fingerprint)
-    ):
-        raise ValueError("paired work fingerprint is not canonical")
-    integral_fields = _STATISTICS_FIELDS - {
-        "cell",
-        "gem5_ticks",
-        "paired_work_fingerprint",
-    }
-    maximum_u64 = (1 << 64) - 1
+    if set(fields) != _MEASUREMENT_FIELDS:
+        raise ValueError("paired measurement row has the wrong shape")
+    if fields["schema"] != _MEASUREMENT_SCHEMA or fields["cell"] != expected_cell:
+        raise ValueError("paired measurement row has the wrong identity")
+    expected_invocation = {
+        "paired-spatial-cgra": ("ordinary", "paired-spatial-cgra"),
+        "paired-system-cgra": ("diagnostic", "paired-system-cgra"),
+    }.get(expected_cell)
+    if expected_invocation is None:
+        raise ValueError("measurement cell is outside the paired CGRA domain")
+    if (fields["attempt"], fields["invocation"]) != expected_invocation:
+        raise ValueError("paired measurement has the wrong attempt identity")
 
-    def parse_u64(value: str) -> int:
-        if (
-            not value
-            or any(character not in "0123456789" for character in value)
-            or (len(value) != 1 and value.startswith("0"))
-        ):
-            raise ValueError("execution matrix statistics are not canonical integers")
-        parsed = int(value)
-        if parsed > maximum_u64:
-            raise ValueError("execution matrix statistics escape the unsigned domain")
-        return parsed
+    work_fingerprint = _parse_fingerprint(fields["work_fingerprint"], "work")
+    config_fingerprint = _parse_fingerprint(fields["config_fingerprint"], "config")
+    cycles = _parse_u64(fields["accelerator_reference_cycles"])
+    frames = _parse_u64(fields["cgra_event_frames"])
+    active_wall_ns = _parse_u64(fields["active_wall_ns"])
+    active_cpu_ns = _parse_u64(fields["active_cpu_ns"])
+    setup_wall_ns = _parse_u64(fields["setup_wall_ns"])
+    peak_rss_bytes = _parse_u64(fields["process_peak_rss_bytes"])
+    if cycles == 0 or frames == 0 or active_wall_ns == 0:
+        raise ValueError("paired measurement contains no completed active work")
 
-    values = {field: parse_u64(fields[field]) for field in integral_fields}
-    gem5_ticks = (
-        None
-        if fields["gem5_ticks"] == "not_applicable"
-        else parse_u64(fields["gem5_ticks"])
-    )
-    if values["active_wall_us"] == 0 or values["provider_wall_us"] == 0:
-        raise ValueError("execution matrix active timing must be positive")
     if expected_cell == "paired-spatial-cgra":
-        if gem5_ticks is not None:
-            raise ValueError("Spatial CGRA statistics contain gem5 ticks")
-        if (
-            values["bridge_message_count"] != 0
-            or values["accelerator_invocation_count"] != 0
-            or values["gem5_active_process_cpu_us"] != 0
-            or values["gem5_observation_process_cpu_us"] != 0
-        ):
-            raise ValueError("Spatial CGRA statistics contain System activity")
-    elif (
-        gem5_ticks is None
-        or gem5_ticks == 0
-        or values["bridge_message_count"] == 0
-        or values["accelerator_invocation_count"] == 0
-        or values["cgra_event_frame_count"] == 0
-    ):
-        raise ValueError("System CGRA statistics omit required activity")
+        expected_source = "direct_spatial_attempt"
+        expected_rss_scope = "self_process_lifetime"
+        if fields["gem5_ticks"] != "not_applicable":
+            raise ValueError("Spatial measurement contains gem5 ticks")
+        gem5_ticks = None
+        engine_cpu_seconds = active_cpu_ns / 1_000_000_000.0
+        host_cpu_seconds = 0.0
+    else:
+        expected_source = "fresh_system_diagnostic"
+        expected_rss_scope = "child_process_lifetime"
+        gem5_ticks = _parse_u64(fields["gem5_ticks"])
+        if gem5_ticks == 0:
+            raise ValueError("System measurement contains no gem5 progress")
+        engine_cpu_seconds = 0.0
+        host_cpu_seconds = active_cpu_ns / 1_000_000_000.0
     if (
-        values["deterministic_work"] == 0
-        or values["accelerator_reference_cycles"] == 0
-        or values["cgra_event_frame_count"] == 0
+        fields["measurement_source"] != expected_source
+        or fields["rss_scope"] != expected_rss_scope
     ):
-        raise ValueError("paired CGRA statistics contain no retired work")
-    micros = 1_000_000.0
-    timing = ActiveExecutionTiming(
-        active_wall_seconds=values["active_wall_us"] / micros,
-        reference_cycles=values["accelerator_reference_cycles"],
-        cgra_engine_active_wall_seconds=(values["cgra_engine_active_wall_us"] / micros),
-        cgra_engine_active_process_cpu_seconds=(
-            values["cgra_engine_active_process_cpu_us"] / micros
-        ),
-        gem5_active_process_cpu_seconds=(values["gem5_active_process_cpu_us"] / micros),
-        gem5_observation_process_cpu_seconds=(
-            values["gem5_observation_process_cpu_us"] / micros
-        ),
-        engine_process_cpu_seconds=values["engine_process_cpu_us"] / micros,
-        cgra_input_load_wall_seconds=values["cgra_input_load_wall_us"] / micros,
-        cgra_input_load_process_cpu_seconds=(
-            values["cgra_input_load_process_cpu_us"] / micros
-        ),
-        bridge_callback_cpu_seconds=values["bridge_callback_cpu_us"] / micros,
-        bridge_wait_wall_seconds=values["bridge_wait_wall_us"] / micros,
-        setup_wall_seconds=values["setup_wall_us"] / micros,
-        preparation_wall_seconds=values["preparation_wall_us"] / micros,
-        gem5_configuration_wall_seconds=(values["gem5_configuration_wall_us"] / micros),
-        provider_wall_seconds=values["provider_wall_us"] / micros,
-        provider_cpu_seconds=values["provider_cpu_us"] / micros,
-        gem5_observation_wall_seconds=(values["gem5_observation_wall_us"] / micros),
-        observation_wall_seconds=values["observation_wall_us"] / micros,
-        cgra_observation_projection_wall_seconds=(
-            values["cgra_observation_projection_wall_us"] / micros
-        ),
-        cgra_observation_projection_process_cpu_seconds=(
-            values["cgra_observation_projection_process_cpu_us"] / micros
-        ),
-        cgra_artifact_publication_wall_seconds=(
-            values["cgra_artifact_publication_wall_us"] / micros
-        ),
-        cgra_artifact_publication_process_cpu_seconds=(
-            values["cgra_artifact_publication_process_cpu_us"] / micros
-        ),
-        bridge_message_count=values["bridge_message_count"],
-        accelerator_invocation_count=values["accelerator_invocation_count"],
-        cgra_event_frame_count=values["cgra_event_frame_count"],
-        peak_resident_bytes=values["peak_rss_kib"] * 1024,
-    )
+        raise ValueError("paired measurement has the wrong ownership boundary")
+
     return ExecutionMatrixMeasurement(
         cell=expected_cell,
-        paired_work_fingerprint=fingerprint,
-        deterministic_work=values["deterministic_work"],
-        accelerator_reference_cycles=values["accelerator_reference_cycles"],
+        attempt=fields["attempt"],
+        invocation=fields["invocation"],
+        work_fingerprint=work_fingerprint,
+        config_fingerprint=config_fingerprint,
         gem5_ticks=gem5_ticks,
-        timing=timing,
+        setup_wall_seconds=setup_wall_ns / 1_000_000_000.0,
+        active_process_cpu_seconds=active_cpu_ns / 1_000_000_000.0,
+        measurement_source=expected_source,
+        rss_scope=expected_rss_scope,
+        timing=ActiveExecutionTiming(
+            active_wall_seconds=active_wall_ns / 1_000_000_000.0,
+            reference_cycles=cycles,
+            engine_cpu_seconds=engine_cpu_seconds,
+            host_cpu_seconds=host_cpu_seconds,
+            event_count=frames,
+            peak_resident_bytes=peak_rss_bytes,
+        ),
     )
 
 
 def parse_execution_matrix_measurements(
-    output: str, expected_cell: str, expected_count: int | None = None
+    output: str, expected_cell: str, expected_count: int
 ) -> tuple[ExecutionMatrixMeasurement, ...]:
-    prefix = "execution-matrix cell="
-    rows = [line for line in output.splitlines() if line.startswith(prefix)]
-    if not rows or (expected_count is not None and len(rows) != expected_count):
-        raise ValueError("execution matrix output has the wrong statistics count")
-    return tuple(_parse_statistics_row(row, expected_cell) for row in rows)
+    if expected_count < 1:
+        raise ValueError("expected measurement count must be positive")
+    rows = [
+        line for line in output.splitlines() if line.startswith(_MEASUREMENT_PREFIX)
+    ]
+    if len(rows) != expected_count:
+        raise ValueError("execution matrix output has the wrong measurement count")
+    return tuple(_parse_measurement_row(row, expected_cell) for row in rows)
 
 
 def parse_execution_matrix_measurement(
@@ -1032,19 +1335,40 @@ def parse_execution_matrix_measurement(
 
 
 def _failed_report(
-    disposition: ConformanceDisposition,
-    gate_configuration: CgraGateConfiguration,
-    spatial: Sequence[ExecutionMatrixMeasurement],
-    process: ProcessExecution,
-) -> PairedConformanceReport:
-    return PairedConformanceReport(
+    disposition: MeasurementDisposition,
+    spatial_measurements: Sequence[ExecutionMatrixMeasurement],
+    *,
+    spatial_process: ProcessExecution | None,
+    system_process: ProcessExecution | None,
+    diagnostic: str,
+    system_measurement: ExecutionMatrixMeasurement | None = None,
+) -> PairedMeasurementReport:
+    return PairedMeasurementReport(
         disposition=disposition,
-        gate_configuration=gate_configuration,
-        spatial_measurements=tuple(spatial),
-        system_measurement=None,
+        spatial_measurements=tuple(spatial_measurements),
+        system_measurement=system_measurement,
         paired_result=None,
-        process_disposition=process.disposition,
-        diagnostic=process.stderr.strip() or process.stdout.strip(),
+        spatial_process=spatial_process,
+        system_process=system_process,
+        diagnostic=diagnostic,
+    )
+
+
+def _process_failure_disposition(
+    process: ProcessExecution, *, spatial: bool
+) -> MeasurementDisposition:
+    if process.disposition is ProcessDisposition.CLEANUP_FAILED:
+        return MeasurementDisposition.PROCESS_CLEANUP_FAILED
+    if process.disposition is ProcessDisposition.TIMED_OUT:
+        return (
+            MeasurementDisposition.SPATIAL_TIMED_OUT
+            if spatial
+            else MeasurementDisposition.SYSTEM_TIMED_OUT
+        )
+    return (
+        MeasurementDisposition.SPATIAL_EXECUTION_FAILED
+        if spatial
+        else MeasurementDisposition.SYSTEM_EXECUTION_FAILED
     )
 
 
@@ -1052,20 +1376,31 @@ def run_paired_execution_matrix(
     execution_matrix_runner: Path,
     gem5_readiness: Path,
     *,
-    process_timeout_seconds: float = DEFAULT_PROCESS_TIMEOUT_SECONDS,
-    spatial_warmup_runs: int = SPATIAL_WARMUP_RUNS,
-    spatial_measurement_runs: int = SPATIAL_MEASUREMENT_RUNS,
-) -> PairedConformanceReport:
+    spatial_warmup_runs: int = 1,
+    spatial_measurement_runs: int = 3,
+    spatial_process_timeout_seconds: float | None = None,
+    system_process_timeout_seconds: float | None = None,
+    termination_grace_seconds: float | None = None,
+) -> PairedMeasurementReport:
     if spatial_warmup_runs < 1 or spatial_measurement_runs < 1:
-        raise ValueError("paired conformance requires warmup and measured runs")
-    gate_configuration = load_cgra_gate_configuration()
-    spatial_absolute_budget_seconds = gate_configuration.spatial_absolute_budget_seconds
+        raise ValueError("paired measurement requires warmup and measured runs")
+    spatial_timeout = (
+        float(timeout_seconds(Tier.MEDIUM))
+        if spatial_process_timeout_seconds is None
+        else spatial_process_timeout_seconds
+    )
+    system_timeout = (
+        float(timeout_seconds(Tier.XLONG))
+        if system_process_timeout_seconds is None
+        else system_process_timeout_seconds
+    )
     runner = str(execution_matrix_runner.resolve(strict=True))
     readiness = str(gem5_readiness.resolve(strict=True))
-    scratch_root = Path(__file__).resolve().parents[1] / "temp"
+    scratch_root = ROOT / "temp"
     scratch_root.mkdir(exist_ok=True)
     process_environment = dict(os.environ)
     process_environment["TMPDIR"] = str(scratch_root)
+
     spatial_process = execute_process(
         (
             runner,
@@ -1073,17 +1408,18 @@ def run_paired_execution_matrix(
             str(spatial_warmup_runs),
             str(spatial_measurement_runs),
         ),
-        process_timeout_seconds,
+        spatial_timeout,
+        termination_grace_seconds=termination_grace_seconds,
         environment=process_environment,
     )
     if spatial_process.disposition is not ProcessDisposition.COMPLETED:
-        if spatial_process.disposition is ProcessDisposition.CLEANUP_FAILED:
-            disposition = ConformanceDisposition.PROCESS_CLEANUP_FAILED
-        elif spatial_process.disposition is ProcessDisposition.TIMED_OUT:
-            disposition = ConformanceDisposition.SPATIAL_TIMED_OUT
-        else:
-            disposition = ConformanceDisposition.SPATIAL_EXECUTION_FAILED
-        return _failed_report(disposition, gate_configuration, (), spatial_process)
+        return _failed_report(
+            _process_failure_disposition(spatial_process, spatial=True),
+            (),
+            spatial_process=spatial_process,
+            system_process=None,
+            diagnostic=spatial_process.stderr.strip() or spatial_process.stdout.strip(),
+        )
     try:
         spatial_measurements = parse_execution_matrix_measurements(
             spatial_process.stdout,
@@ -1091,251 +1427,201 @@ def run_paired_execution_matrix(
             spatial_measurement_runs,
         )
     except ValueError as error:
-        return PairedConformanceReport(
-            disposition=ConformanceDisposition.SPATIAL_EXECUTION_FAILED,
-            gate_configuration=gate_configuration,
-            spatial_measurements=(),
-            system_measurement=None,
-            paired_result=None,
-            process_disposition=spatial_process.disposition,
+        return _failed_report(
+            MeasurementDisposition.SPATIAL_EXECUTION_FAILED,
+            (),
+            spatial_process=spatial_process,
+            system_process=None,
             diagnostic=str(error),
         )
+
+    expected = spatial_measurements[0]
+    expected_work = (
+        expected.work_fingerprint,
+        expected.config_fingerprint,
+        expected.timing.reference_cycles,
+        expected.timing.event_count,
+    )
     if any(
-        measurement.timing.active_wall_seconds > spatial_absolute_budget_seconds
-        for measurement in spatial_measurements
-    ):
-        return PairedConformanceReport(
-            disposition=ConformanceDisposition.SPATIAL_BUDGET_EXCEEDED,
-            gate_configuration=gate_configuration,
-            spatial_measurements=spatial_measurements,
-            system_measurement=None,
-            paired_result=None,
-            process_disposition=spatial_process.disposition,
-            diagnostic="a warmed Spatial measurement exceeded its absolute budget",
+        (
+            sample.work_fingerprint,
+            sample.config_fingerprint,
+            sample.timing.reference_cycles,
+            sample.timing.event_count,
         )
+        != expected_work
+        for sample in spatial_measurements[1:]
+    ):
+        return _failed_report(
+            MeasurementDisposition.PAIRED_WORK_MISMATCH,
+            spatial_measurements,
+            spatial_process=spatial_process,
+            system_process=None,
+            diagnostic="Spatial measurements do not name one exact work/config pair",
+        )
+    if any(
+        sample.timing.active_wall_seconds > CGRA_SPATIAL_BOOTSTRAP_BUDGET_SECONDS
+        for sample in spatial_measurements
+    ):
+        return _failed_report(
+            MeasurementDisposition.SPATIAL_BOOTSTRAP_BUDGET_EXCEEDED,
+            spatial_measurements,
+            spatial_process=spatial_process,
+            system_process=None,
+            diagnostic="a Spatial sample exceeded the provisional bootstrap budget",
+        )
+
     system_process = execute_process(
         (runner, "paired-system-cgra", readiness),
-        process_timeout_seconds,
+        system_timeout,
+        termination_grace_seconds=termination_grace_seconds,
         environment=process_environment,
     )
     if system_process.disposition is not ProcessDisposition.COMPLETED:
-        if system_process.disposition is ProcessDisposition.CLEANUP_FAILED:
-            disposition = ConformanceDisposition.PROCESS_CLEANUP_FAILED
-        elif system_process.disposition is ProcessDisposition.TIMED_OUT:
-            disposition = ConformanceDisposition.SYSTEM_TIMED_OUT
-        else:
-            disposition = ConformanceDisposition.SYSTEM_EXECUTION_FAILED
         return _failed_report(
-            disposition, gate_configuration, spatial_measurements, system_process
+            _process_failure_disposition(system_process, spatial=False),
+            spatial_measurements,
+            spatial_process=spatial_process,
+            system_process=system_process,
+            diagnostic=system_process.stderr.strip() or system_process.stdout.strip(),
         )
     try:
         system_measurement = parse_execution_matrix_measurement(
             system_process.stdout, "paired-system-cgra"
         )
     except ValueError as error:
-        return PairedConformanceReport(
-            disposition=ConformanceDisposition.SYSTEM_EXECUTION_FAILED,
-            gate_configuration=gate_configuration,
-            spatial_measurements=spatial_measurements,
-            system_measurement=None,
-            paired_result=None,
-            process_disposition=system_process.disposition,
+        return _failed_report(
+            MeasurementDisposition.SYSTEM_EXECUTION_FAILED,
+            spatial_measurements,
+            spatial_process=spatial_process,
+            system_process=system_process,
             diagnostic=str(error),
         )
-    expected = spatial_measurements[0]
-    if (
-        any(
-            sample.paired_work_fingerprint != expected.paired_work_fingerprint
-            or sample.accelerator_reference_cycles
-            != expected.accelerator_reference_cycles
-            or sample.timing.cgra_event_frame_count
-            != expected.timing.cgra_event_frame_count
-            for sample in spatial_measurements[1:]
-        )
-        or system_measurement.paired_work_fingerprint
-        != expected.paired_work_fingerprint
-        or system_measurement.accelerator_reference_cycles
-        != expected.accelerator_reference_cycles
-        or system_measurement.timing.cgra_event_frame_count
-        != expected.timing.cgra_event_frame_count
-    ):
-        return PairedConformanceReport(
-            disposition=ConformanceDisposition.PAIRED_WORK_MISMATCH,
-            gate_configuration=gate_configuration,
-            spatial_measurements=spatial_measurements,
+
+    observed_system_work = (
+        system_measurement.work_fingerprint,
+        system_measurement.config_fingerprint,
+        system_measurement.timing.reference_cycles,
+        system_measurement.timing.event_count,
+    )
+    if observed_system_work != expected_work:
+        return _failed_report(
+            MeasurementDisposition.PAIRED_WORK_MISMATCH,
+            spatial_measurements,
+            spatial_process=spatial_process,
+            system_process=system_process,
+            diagnostic="System measurement names different work or configuration",
             system_measurement=system_measurement,
-            paired_result=None,
-            process_disposition=system_process.disposition,
-            diagnostic="Spatial and System runs differ in identity or retired work",
         )
+
     budget = paired_system_budget(
         [sample.timing.active_wall_seconds for sample in spatial_measurements],
-        spatial_absolute_budget_seconds,
+        CGRA_SPATIAL_BOOTSTRAP_BUDGET_SECONDS,
     )
     paired = evaluate_paired_execution(budget, system_measurement.timing)
-    disposition = ConformanceDisposition.PASSED
     if paired.hard_ratio_failure:
-        disposition = ConformanceDisposition.HARD_RATIO_EXCEEDED
+        disposition = MeasurementDisposition.HARD_RATIO_EXCEEDED
     elif not paired.within_system_budget:
-        disposition = ConformanceDisposition.SYSTEM_BUDGET_EXCEEDED
+        disposition = MeasurementDisposition.SYSTEM_BOOTSTRAP_BUDGET_EXCEEDED
     elif not paired.meets_reference_rate_target:
-        disposition = ConformanceDisposition.REFERENCE_RATE_BELOW_TARGET
-    return PairedConformanceReport(
+        disposition = MeasurementDisposition.REFERENCE_RATE_BELOW_TARGET
+    else:
+        disposition = MeasurementDisposition.MEASURED
+    return PairedMeasurementReport(
         disposition=disposition,
-        gate_configuration=gate_configuration,
         spatial_measurements=spatial_measurements,
         system_measurement=system_measurement,
         paired_result=paired,
-        process_disposition=system_process.disposition,
+        spatial_process=spatial_process,
+        system_process=system_process,
     )
 
 
-def outer_worker_limit(
-    *,
-    memory_derived_limit: int,
-    cpu_count: int | None = None,
-    reserved_cpus: int = RESERVED_DEVELOPMENT_CPUS,
-    maximum_workers: int = MAX_OUTER_WORKERS,
-) -> int:
-    if memory_derived_limit < 1:
-        raise ValueError("memory-derived worker limit must be positive")
-    if reserved_cpus < 0:
-        raise ValueError("reserved CPU count must be nonnegative")
-    if maximum_workers < 1:
-        raise ValueError("maximum worker count must be positive")
-    available_cpus = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
-    if available_cpus < 1:
-        raise ValueError("CPU count must be positive")
-    return min(
-        max(1, available_cpus - reserved_cpus),
-        memory_derived_limit,
-        maximum_workers,
-    )
-
-
-def _timing_json(timing: ActiveExecutionTiming) -> dict[str, object]:
+def _measurement_json(
+    measurement: ExecutionMatrixMeasurement | None,
+) -> dict[str, object] | None:
+    if measurement is None:
+        return None
     return {
-        "active_wall_seconds": timing.active_wall_seconds,
-        "reference_cycles": timing.reference_cycles,
-        "cgra_engine_active_wall_seconds": (timing.cgra_engine_active_wall_seconds),
-        "cgra_engine_active_process_cpu_seconds": (
-            timing.cgra_engine_active_process_cpu_seconds
-        ),
-        "gem5_active_process_cpu_seconds": timing.gem5_active_process_cpu_seconds,
-        "gem5_observation_process_cpu_seconds": (
-            timing.gem5_observation_process_cpu_seconds
-        ),
-        "engine_process_cpu_seconds": timing.engine_process_cpu_seconds,
-        "cgra_input_load_wall_seconds": timing.cgra_input_load_wall_seconds,
-        "cgra_input_load_process_cpu_seconds": (
-            timing.cgra_input_load_process_cpu_seconds
-        ),
-        "bridge_callback_cpu_seconds": timing.bridge_callback_cpu_seconds,
-        "bridge_wait_wall_seconds": timing.bridge_wait_wall_seconds,
-        "setup_wall_seconds": timing.setup_wall_seconds,
-        "preparation_wall_seconds": timing.preparation_wall_seconds,
-        "gem5_configuration_wall_seconds": timing.gem5_configuration_wall_seconds,
-        "provider_wall_seconds": timing.provider_wall_seconds,
-        "provider_process_cpu_seconds": timing.provider_cpu_seconds,
-        "gem5_observation_wall_seconds": timing.gem5_observation_wall_seconds,
-        "observation_wall_seconds": timing.observation_wall_seconds,
-        "cgra_observation_projection_wall_seconds": (
-            timing.cgra_observation_projection_wall_seconds
-        ),
-        "cgra_observation_projection_process_cpu_seconds": (
-            timing.cgra_observation_projection_process_cpu_seconds
-        ),
-        "cgra_artifact_publication_wall_seconds": (
-            timing.cgra_artifact_publication_wall_seconds
-        ),
-        "cgra_artifact_publication_process_cpu_seconds": (
-            timing.cgra_artifact_publication_process_cpu_seconds
-        ),
-        "bridge_message_count": timing.bridge_message_count,
-        "accelerator_invocation_count": timing.accelerator_invocation_count,
-        "cgra_event_frame_count": timing.cgra_event_frame_count,
-        "peak_resident_bytes": timing.peak_resident_bytes,
+        "cell": measurement.cell,
+        "attempt": measurement.attempt,
+        "invocation": measurement.invocation,
+        "work_fingerprint": measurement.work_fingerprint,
+        "config_fingerprint": measurement.config_fingerprint,
+        "accelerator_reference_cycles": measurement.timing.reference_cycles,
+        "cgra_event_frames": measurement.timing.event_count,
+        "active_wall_seconds": measurement.timing.active_wall_seconds,
+        "active_process_cpu_seconds": measurement.active_process_cpu_seconds,
+        "gem5_ticks": measurement.gem5_ticks,
+        "setup_wall_seconds": measurement.setup_wall_seconds,
+        "process_peak_rss_bytes": measurement.timing.peak_resident_bytes,
+        "measurement_source": measurement.measurement_source,
+        "rss_scope": measurement.rss_scope,
     }
 
 
-def _report_json(report: PairedConformanceReport) -> dict[str, object]:
-    result: dict[str, object] = {
-        "schema": "loom.paired_simulation_conformance.2",
-        "cgra_gate": {
-            "path": str(
-                CGRA_GATE_CONFIGURATION.relative_to(Path(__file__).resolve().parents[1])
-            ),
-            "sha256": report.gate_configuration.configuration_sha256,
-            "operator_gate_sha256": (report.gate_configuration.operator_gate_sha256),
-            "spatial_absolute_budget_nanoseconds": (
-                report.gate_configuration.spatial_absolute_budget_nanoseconds
-            ),
-        },
+def _process_json(process: ProcessExecution | None) -> dict[str, object] | None:
+    if process is None:
+        return None
+    return {
+        "disposition": process.disposition.value,
+        "elapsed_seconds": process.elapsed_seconds,
+        "return_code": process.return_code,
+        "process_group_terminated": process.process_group_terminated,
+    }
+
+
+def report_json(report: PairedMeasurementReport) -> dict[str, object]:
+    projected: dict[str, object] = {
+        "schema": "loom.paired_simulation_measurement_report.2",
+        "publication_status": "provisional_bootstrap_only",
         "disposition": report.disposition.value,
-        "process_disposition": (
-            report.process_disposition.value
-            if report.process_disposition is not None
-            else None
-        ),
-        "diagnostic": report.diagnostic,
+        "bootstrap_budget_source": "config.timeout_budgets:medium",
+        "spatial_timeout_source": "config.timeout_budgets:medium",
+        "system_timeout_source": "config.timeout_budgets:xlong",
+        "cleanup_timeout_source": "config.timeout_budgets:ultrafast",
+        "durable_replay_profiles": 0,
         "spatial": [
-            _timing_json(sample.timing) for sample in report.spatial_measurements
+            _measurement_json(measurement)
+            for measurement in report.spatial_measurements
         ],
-        "system": None,
+        "system": _measurement_json(report.system_measurement),
+        "spatial_process": _process_json(report.spatial_process),
+        "system_process": _process_json(report.system_process),
+        "diagnostic": report.diagnostic,
         "paired": None,
     }
-    if report.system_measurement is not None:
-        result["system"] = {
-            **_timing_json(report.system_measurement.timing),
-            "gem5_ticks": report.system_measurement.gem5_ticks,
-        }
     if report.paired_result is not None:
-        result["paired"] = {
-            "spatial_reference_seconds": (
-                report.paired_result.spatial_reference_seconds
-            ),
-            "spatial_absolute_budget_seconds": (
-                report.paired_result.spatial_absolute_budget_seconds
-            ),
-            "system_budget_seconds": report.paired_result.system_budget_seconds,
-            "system_to_spatial_ratio": (report.paired_result.system_to_spatial_ratio),
-            "reference_cycles_per_second": (
-                report.paired_result.reference_cycles_per_second
-            ),
-            "within_system_budget": report.paired_result.within_system_budget,
-            "hard_ratio_failure": report.paired_result.hard_ratio_failure,
-            "meets_reference_rate_target": (
-                report.paired_result.meets_reference_rate_target
-            ),
+        paired = report.paired_result
+        projected["paired"] = {
+            "spatial_reference_seconds": paired.spatial_reference_seconds,
+            "system_active_wall_seconds": paired.system_active_wall_seconds,
+            "system_to_spatial_ratio": paired.system_to_spatial_ratio,
+            "system_budget_seconds": paired.system_budget_seconds,
+            "within_system_budget": paired.within_system_budget,
+            "hard_ratio_failure": paired.hard_ratio_failure,
+            "reference_cycles": paired.reference_cycles,
+            "reference_cycles_per_second": paired.reference_cycles_per_second,
+            "meets_reference_rate_target": paired.meets_reference_rate_target,
         }
-    return result
+    return projected
 
 
-def main() -> int:
-    parser = ArgumentParser()
-    parser.add_argument("--execution-matrix-runner", required=True, type=Path)
-    parser.add_argument("--gem5-readiness", required=True, type=Path)
-    parser.add_argument(
-        "--process-timeout-seconds",
-        type=float,
-        default=DEFAULT_PROCESS_TIMEOUT_SECONDS,
-    )
-    parser.add_argument("--spatial-warmup-runs", type=int, default=SPATIAL_WARMUP_RUNS)
-    parser.add_argument(
-        "--spatial-measurement-runs",
-        type=int,
-        default=SPATIAL_MEASUREMENT_RUNS,
-    )
-    arguments = parser.parse_args()
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("execution_matrix_runner", type=Path)
+    parser.add_argument("gem5_readiness", type=Path)
+    parser.add_argument("--spatial-warmup-runs", type=int, default=1)
+    parser.add_argument("--spatial-measurement-runs", type=int, default=3)
+    arguments = parser.parse_args(argv)
     report = run_paired_execution_matrix(
         arguments.execution_matrix_runner,
         arguments.gem5_readiness,
-        process_timeout_seconds=arguments.process_timeout_seconds,
         spatial_warmup_runs=arguments.spatial_warmup_runs,
         spatial_measurement_runs=arguments.spatial_measurement_runs,
     )
-    print(json.dumps(_report_json(report), sort_keys=True))
-    return 0 if report.disposition is ConformanceDisposition.PASSED else 1
+    print(json.dumps(report_json(report), indent=2, sort_keys=True))
+    return 0 if report.disposition is MeasurementDisposition.MEASURED else 1
 
 
 if __name__ == "__main__":

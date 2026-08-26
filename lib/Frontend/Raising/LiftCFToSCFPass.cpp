@@ -19,8 +19,8 @@
 //     an LLVM callable cannot host. `llvm.unreachable` states the same fact
 //     without inventing a result value.
 //
-// Imported loop annotations are hints Part 1 requires to stay associated with
-// their loop. A well-formed annotation arrives on a branch that closes a cycle;
+// Imported loop annotations must stay associated with their loop. A
+// well-formed annotation arrives on a branch that closes a cycle;
 // this pass resolves it to the loop header it repeats to and hands it to the
 // structured loop that ends up owning that cycle. An annotation on a branch
 // with no backedge is orphan metadata under LLVM's loop contract. It is removed
@@ -36,17 +36,16 @@
 // reaches no recovered loop at all would be silently lost; in both cases the
 // region keeps its original control rather than an approximated association.
 //
-// Structuring is a per-region decision between exactly two mechanical
-// dispositions, and neither of them fails the module. A region is structured
-// when every Loom-owned question about it has an exact answer; otherwise it is
-// preserved with its complete original semantics. Unstructured `cf` control is
-// ordinary legal S0, so preservation costs nothing an unselected or
-// InstructionCore-owned region needs. Rejection belongs to the boundary that
-// actually narrows the surface: a candidate that selects a
-// `loom.spatial_region` must present structured control there, and cannot do so
-// from a preserved CFG.
+// A completely admissible callable is structured as one region. If an exact
+// local obstacle prevents that, maximal single-entry, single-continuation CFG
+// regions around the obstacle are considered independently. Each local region
+// is moved into a temporary scf.execute_region in a detached callable clone,
+// transformed with the same upstream utility, and immediately inlined. The
+// temporary operation is only an implementation boundary: it is never
+// published. An unprovable local region stays as `cf`, while independent local
+// regions in the same callable can still be recovered.
 //
-// A region is preserved when:
+// A local region is excluded when:
 //
 //   * a reachable branch carries weights -- `scf.if` and `scf.index_switch`
 //     state no branch probability, so lifting would drop imported profile data;
@@ -56,21 +55,23 @@
 //     restate a one-target llvm.indirectbr as an unconditional branch;
 //   * a `cf.switch` selector or case value does not fit the structured
 //     switch's index and 64-bit case carriers;
+//   * a block owns llvm.blocktag, whose parent block identity may be observed
+//     by a module-level llvm.blockaddress independently of SSA uses;
 //   * an imported callable holds a value whose type LLVM cannot spell, since
 //     the adapter would otherwise have to state an undefined value of that type
 //     as the stronger `ub.poison`; or
 //   * a loop annotation's owning loop is not exactly identifiable.
 //
-// Deciding this over all callable regions before any of them is touched also
-// avoids relying on the transformation's own unknown-terminator check, which
-// runs per region, after earlier regions may already be structured.
-//
-// The structuring traversal then works on detached clones of the callable ops:
-// it erases the clone region's own unreachable blocks, which is the one cleanup
-// upstream's documented structural preconditions require of this surface, and
-// structures the clone region without descending into nested regions. Each
-// clone is taken from the then-current original and published back into its
-// original callable op the moment it is complete. The callable walk is
+// Every structuring traversal works on a detached clone of the callable op.
+// Unreachable components with no externally visible block identity are erased
+// from that clone, which is the one cleanup upstream's documented structural
+// preconditions require. An unreachable component containing llvm.blocktag is
+// instead retained because a module-level llvm.blockaddress can observe that
+// identity without an SSA or CFG use. The whole-callable path declines such a
+// clone. A local region may still structure when the retained component does
+// not enter its extraction boundary. Each clone is taken from the then-current
+// original and published back into its original callable op only after the
+// complete attempted rewrite succeeds. The walk is
 // post-order, so a nested callable is structured and published before its
 // enclosing callable: the ancestor is therefore cloned from an original that
 // already holds the structured descendant, and its clone carries that structure
@@ -103,13 +104,14 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/CFGToSCF.h"
-#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -120,10 +122,19 @@
 
 namespace {
 
-// Loop header block of each annotated cycle mapped to the imported annotation
-// that describes it. Keys are blocks of the original IR; the structuring
-// traversal remaps them to each clone's own blocks before the adapter runs.
-using LoopAnnotations = ::llvm::DenseMap<::mlir::Block *, ::mlir::Attribute>;
+struct LoopHints final {
+  ::mlir::Attribute annotation;
+  ::mlir::Attribute candidate;
+
+  friend bool operator==(const LoopHints &lhs, const LoopHints &rhs) {
+    return lhs.annotation == rhs.annotation && lhs.candidate == rhs.candidate;
+  }
+};
+
+// Loop header block of each hinted cycle mapped to the imported hints that
+// describe it. Keys are blocks of the original IR; the structuring traversal
+// remaps them to each clone's own blocks before the adapter runs.
+using LoopHintMap = ::llvm::DenseMap<::mlir::Block *, LoopHints>;
 using OrphanLoopHintBlocks = ::llvm::SmallVector<::mlir::Block *, 2>;
 
 // Mechanical disposition of one callable region.
@@ -182,23 +193,38 @@ bool holdsOnlyLLVMSpellableValues(::mlir::Block &block) {
   return true;
 }
 
+bool acceptsBlockForStructuring(::mlir::Block &block, bool importedLLVMCallable,
+                                uint64_t indexBitwidth) {
+  if (importedLLVMCallable && !holdsOnlyLLVMSpellableValues(block))
+    return false;
+  if (!block.getOps<::mlir::LLVM::BlockTagOp>().empty())
+    return false;
+
+  ::mlir::Operation *terminator = block.getTerminator();
+  if (statesBranchWeights(terminator))
+    return false;
+  if (terminator->getNumSuccessors() != 0 &&
+      !::mlir::isa<::mlir::cf::BranchOp, ::mlir::cf::CondBranchOp,
+                   ::mlir::cf::SwitchOp>(terminator))
+    return false;
+  if (auto switchOp = ::mlir::dyn_cast<::mlir::cf::SwitchOp>(terminator))
+    if (!structuredSwitchCarrierHolds(switchOp, indexBitwidth))
+      return false;
+  return true;
+}
+
 // Decide the disposition of `region`, resolving every loop annotation to the
 // single loop header it repeats to. Modifies nothing, and hands `annotations`
 // the resolved headers only when the region will actually be structured.
-Disposition decideRegion(::mlir::Region &region, LoopAnnotations &annotations,
+Disposition decideRegion(::mlir::Region &region, bool importedLLVMCallable,
+                         uint64_t indexBitwidth, LoopHintMap &annotations,
                          OrphanLoopHintBlocks &orphanHints) {
   if (isStructured(region))
     return Disposition::Preserve;
 
-  bool importedLLVMCallable =
-      ::mlir::isa<::mlir::LLVM::LLVMFuncOp>(region.getParentOp());
   ::mlir::DominanceInfo dominance(region.getParentOp());
-  uint64_t indexBitwidth =
-      ::mlir::DataLayout::closest(region.getParentOp())
-          .getTypeSizeInBits(::mlir::IndexType::get(region.getContext()))
-          .getFixedValue();
 
-  LoopAnnotations resolved;
+  LoopHintMap resolved;
   for (::mlir::Block &block : region) {
     // An unreachable block states no executed control decision and the
     // structuring traversal erases the clone's, so it carries no hint that
@@ -206,26 +232,15 @@ Disposition decideRegion(::mlir::Region &region, LoopAnnotations &annotations,
     if (!dominance.isReachableFromEntry(&block))
       continue;
 
-    if (importedLLVMCallable && !holdsOnlyLLVMSpellableValues(block))
+    if (!acceptsBlockForStructuring(block, importedLLVMCallable, indexBitwidth))
       return Disposition::Preserve;
 
     ::mlir::Operation *terminator = block.getTerminator();
-
-    if (statesBranchWeights(terminator))
-      return Disposition::Preserve;
-
-    if (terminator->getNumSuccessors() != 0 &&
-        !::mlir::isa<::mlir::cf::BranchOp, ::mlir::cf::CondBranchOp,
-                     ::mlir::cf::SwitchOp>(terminator))
-      return Disposition::Preserve;
-
-    if (auto switchOp = ::mlir::dyn_cast<::mlir::cf::SwitchOp>(terminator))
-      if (!structuredSwitchCarrierHolds(switchOp, indexBitwidth))
-        return Disposition::Preserve;
-
     ::mlir::Attribute annotation =
         terminator->getAttr(loom::raising::loopAnnotationName);
-    if (!annotation)
+    ::mlir::Attribute candidate =
+        terminator->getAttr(loom::raising::candidateLoopHintName);
+    if (!annotation && !candidate)
       continue;
 
     // The annotated edge repeats a loop, so its successor dominates it. More
@@ -248,8 +263,9 @@ Disposition decideRegion(::mlir::Region &region, LoopAnnotations &annotations,
       continue;
     }
 
-    auto [entry, inserted] = resolved.try_emplace(header, annotation);
-    if (!inserted && entry->second != annotation)
+    LoopHints hints{annotation, candidate};
+    auto [entry, inserted] = resolved.try_emplace(header, hints);
+    if (!inserted && !(entry->second == hints))
       return Disposition::Preserve;
   }
 
@@ -257,9 +273,222 @@ Disposition decideRegion(::mlir::Region &region, LoopAnnotations &annotations,
   return Disposition::Structure;
 }
 
+struct LocalRegionPlan final {
+  ::mlir::Block *entry = nullptr;
+  ::mlir::Block *continuation = nullptr;
+  uint64_t indexBitwidth = 0;
+  ::llvm::SmallVector<::mlir::Block *, 8> blocks;
+};
+
+using DeclinedLocalRegions =
+    ::llvm::SmallVector<::std::pair<::mlir::Block *, ::mlir::Block *>, 4>;
+
+// Remove only unreachable CFG components whose block identity cannot be
+// observed outside the callable. llvm.blockaddress references a blocktag by
+// symbol and integer tag rather than an SSA use, so preserving the complete
+// weakly connected unreachable component and its recursive SSA definitions is
+// necessary to retain both that identity and the component's complete input
+// closure. MLIR permits SSA references between otherwise disconnected
+// unreachable components, so CFG adjacency alone is insufficient.
+bool eraseUnanchoredUnreachableBlocks(::mlir::Operation *callable,
+                                      ::mlir::Region &region,
+                                      ::mlir::IRRewriter &rewriter) {
+  ::mlir::DominanceInfo dominance(callable);
+  ::llvm::SmallVector<::mlir::Block *, 8> unreachable;
+  ::llvm::SmallVector<::mlir::Block *, 4> worklist;
+  ::llvm::DenseSet<::mlir::Block *> retained;
+  for (::mlir::Block &block : region) {
+    if (dominance.isReachableFromEntry(&block))
+      continue;
+    unreachable.push_back(&block);
+    bool hasBlockIdentity = false;
+    (void)block.walk([&](::mlir::LLVM::BlockTagOp) {
+      hasBlockIdentity = true;
+      return ::mlir::WalkResult::interrupt();
+    });
+    if (hasBlockIdentity && retained.insert(&block).second)
+      worklist.push_back(&block);
+  }
+
+  while (!worklist.empty()) {
+    ::mlir::Block *block = worklist.pop_back_val();
+    auto retain = [&](::mlir::Block *neighbor) {
+      if (!dominance.isReachableFromEntry(neighbor) &&
+          retained.insert(neighbor).second)
+        worklist.push_back(neighbor);
+    };
+    for (::mlir::Block *predecessor : block->getPredecessors())
+      retain(predecessor);
+    for (::mlir::Block *successor : block->getSuccessors())
+      retain(successor);
+    (void)block->walk([&](::mlir::Operation *operation) {
+      for (::mlir::Value operand : operation->getOperands()) {
+        ::mlir::Block *definition = nullptr;
+        if (auto argument = ::mlir::dyn_cast<::mlir::BlockArgument>(operand))
+          definition = argument.getOwner();
+        else if (::mlir::Operation *owner = operand.getDefiningOp())
+          definition = owner->getBlock();
+        if (!definition)
+          continue;
+        if (::mlir::Block *callableBlock =
+                region.findAncestorBlockInRegion(*definition))
+          retain(callableBlock);
+      }
+      return ::mlir::WalkResult::advance();
+    });
+  }
+
+  ::llvm::SmallVector<::mlir::Block *, 8> erased;
+  for (::mlir::Block *block : unreachable)
+    if (!retained.contains(block))
+      erased.push_back(block);
+  for (::mlir::Block *block : erased)
+    block->dropAllDefinedValueUses();
+  for (::mlir::Block *block : erased)
+    rewriter.eraseBlock(block);
+  return retained.empty();
+}
+
+bool isDeclinedLocalRegion(const DeclinedLocalRegions &declined,
+                           ::mlir::Block *entry, ::mlir::Block *continuation) {
+  return ::llvm::is_contained(declined, ::std::make_pair(entry, continuation));
+}
+
+// A local region retains exactly one externally visible entry block and one
+// continuation. Blocks are collected by forward reachability from the entry,
+// stopping at the continuation, and then validated in both directions. This
+// makes the extraction boundary a fact of the existing CFG rather than a
+// guessed structured shape.
+::std::optional<LocalRegionPlan> analyzeLocalRegion(
+    ::mlir::Region &region, ::mlir::Block *entry, ::mlir::Block *continuation,
+    bool importedLLVMCallable, ::mlir::DominanceInfo &dominance,
+    ::mlir::PostDominanceInfo &postDominance, uint64_t indexBitwidth) {
+  if (entry == continuation ||
+      !postDominance.postDominates(continuation, entry))
+    return ::std::nullopt;
+
+  ::llvm::DenseSet<::mlir::Block *> members;
+  ::llvm::SmallVector<::mlir::Block *, 8> worklist{entry};
+  bool reachesContinuation = false;
+  while (!worklist.empty()) {
+    ::mlir::Block *block = worklist.pop_back_val();
+    if (block == continuation) {
+      reachesContinuation = true;
+      continue;
+    }
+    if (!members.insert(block).second)
+      continue;
+    for (::mlir::Block *successor : block->getSuccessors())
+      worklist.push_back(successor);
+  }
+  if (!reachesContinuation)
+    return ::std::nullopt;
+
+  bool changesCFGShape = members.size() > 1;
+  for (::mlir::Block *block : members) {
+    if (!dominance.isReachableFromEntry(block) ||
+        !dominance.dominates(entry, block) ||
+        !postDominance.postDominates(continuation, block) ||
+        !acceptsBlockForStructuring(*block, importedLLVMCallable,
+                                    indexBitwidth))
+      return ::std::nullopt;
+
+    ::mlir::Operation *terminator = block->getTerminator();
+    if (terminator->getNumSuccessors() == 0)
+      return ::std::nullopt;
+    changesCFGShape |= terminator->getNumSuccessors() > 1;
+
+    for (auto predecessor = block->pred_begin();
+         predecessor != block->pred_end(); ++predecessor) {
+      if (members.contains(*predecessor))
+        continue;
+      if (!dominance.isReachableFromEntry(*predecessor))
+        continue;
+      if (block != entry || dominance.dominates(entry, *predecessor))
+        return ::std::nullopt;
+    }
+
+    for (auto [successorIndex, successor] :
+         ::llvm::enumerate(block->getSuccessors())) {
+      if (members.contains(successor))
+        continue;
+      if (successor != continuation)
+        return ::std::nullopt;
+      auto branch = ::mlir::dyn_cast<::mlir::BranchOpInterface>(terminator);
+      if (!branch || branch.getSuccessorOperands(successorIndex)
+                             .getProducedOperandCount() != 0)
+        return ::std::nullopt;
+    }
+
+    ::mlir::Attribute annotation =
+        terminator->getAttr(loom::raising::loopAnnotationName);
+    ::mlir::Attribute candidate =
+        terminator->getAttr(loom::raising::candidateLoopHintName);
+    if (!annotation && !candidate)
+      continue;
+
+    ::mlir::Block *header = nullptr;
+    for (::mlir::Block *successor : block->getSuccessors()) {
+      if (!dominance.dominates(successor, block) || successor == header)
+        continue;
+      if (header)
+        return ::std::nullopt;
+      header = successor;
+    }
+    if (header && !members.contains(header))
+      return ::std::nullopt;
+  }
+  if (!changesCFGShape)
+    return ::std::nullopt;
+
+  LocalRegionPlan plan;
+  plan.entry = entry;
+  plan.continuation = continuation;
+  plan.indexBitwidth = indexBitwidth;
+  for (::mlir::Block &block : region)
+    if (members.contains(&block))
+      plan.blocks.push_back(&block);
+  return plan;
+}
+
+::std::optional<LocalRegionPlan>
+findMaximalLocalRegion(::mlir::Region &region, bool importedLLVMCallable,
+                       const DeclinedLocalRegions &declined) {
+  if (region.hasOneBlock())
+    return ::std::nullopt;
+
+  ::mlir::Operation *callable = region.getParentOp();
+  ::mlir::DominanceInfo dominance(callable);
+  ::mlir::PostDominanceInfo postDominance(callable);
+  uint64_t indexBitwidth =
+      ::mlir::DataLayout::closest(callable)
+          .getTypeSizeInBits(::mlir::IndexType::get(region.getContext()))
+          .getFixedValue();
+
+  ::std::optional<LocalRegionPlan> maximal;
+  for (::mlir::Block &entry : region) {
+    if (!dominance.isReachableFromEntry(&entry))
+      continue;
+    auto *postDomNode = postDominance.getNode(&entry);
+    auto *continuationNode = postDomNode ? postDomNode->getIDom() : nullptr;
+    ::mlir::Block *continuation =
+        continuationNode ? continuationNode->getBlock() : nullptr;
+    if (!continuation || isDeclinedLocalRegion(declined, &entry, continuation))
+      continue;
+    auto candidate =
+        analyzeLocalRegion(region, &entry, continuation, importedLLVMCallable,
+                           dominance, postDominance, indexBitwidth);
+    if (!candidate)
+      continue;
+    if (!maximal || candidate->blocks.size() > maximal->blocks.size())
+      maximal = ::std::move(candidate);
+  }
+  return maximal;
+}
+
 class CallableStructuring : public ::mlir::ControlFlowToSCFTransformation {
 public:
-  CallableStructuring(bool importedLLVMCallable, LoopAnnotations &annotations)
+  CallableStructuring(bool importedLLVMCallable, LoopHintMap &annotations)
       : importedLLVMCallable(importedLLVMCallable), annotations(annotations) {}
 
   // Structuring can leave a value undefined on a created path. An imported
@@ -313,10 +542,10 @@ public:
       ::mlir::ValueRange loopValuesInit, ::mlir::Value condition,
       ::mlir::ValueRange loopValuesNextIter,
       ::mlir::Region &&loopBody) override {
-    ::mlir::Attribute annotation;
+    LoopHints hints;
     auto frontEntry = annotations.find(&loopBody.front());
     if (frontEntry != annotations.end()) {
-      annotation = frontEntry->second;
+      hints = frontEntry->second;
       annotations.erase(frontEntry);
     } else {
       auto candidate = annotations.end();
@@ -338,7 +567,7 @@ public:
         if (!firstUnprovenAssociation)
           firstUnprovenAssociation = replacedOp->getLoc();
       } else if (candidate != annotations.end()) {
-        annotation = candidate->second;
+        hints = candidate->second;
         annotations.erase(candidate);
       }
     }
@@ -348,7 +577,8 @@ public:
             std::move(loopBody));
     if (failed(loop))
       return ::mlir::failure();
-    loom::raising::carryLoopAnnotation(annotation, *loop);
+    loom::raising::carryLoopAnnotation(hints.annotation, *loop);
+    loom::raising::carryCandidateLoopHint(hints.candidate, *loop);
     return loop;
   }
 
@@ -360,7 +590,7 @@ public:
 
 private:
   bool importedLLVMCallable;
-  LoopAnnotations &annotations;
+  LoopHintMap &annotations;
   ::std::optional<::mlir::Location> firstUnprovenAssociation;
 };
 
@@ -424,18 +654,313 @@ void makeResidualSwitchesRoundTripSafe(::mlir::Region &region,
   }
 }
 
+LocalRegionPlan remapLocalRegionPlan(const LocalRegionPlan &plan,
+                                     ::mlir::IRMapping &mapping) {
+  LocalRegionPlan remapped;
+  remapped.entry = mapping.lookupOrNull(plan.entry);
+  remapped.continuation = mapping.lookupOrNull(plan.continuation);
+  remapped.indexBitwidth = plan.indexBitwidth;
+  assert(remapped.entry && remapped.continuation &&
+         "cloned callable contains local region boundary blocks");
+  for (::mlir::Block *block : plan.blocks) {
+    ::mlir::Block *cloneBlock = mapping.lookupOrNull(block);
+    assert(cloneBlock && "cloned callable contains every local region block");
+    remapped.blocks.push_back(cloneBlock);
+  }
+  return remapped;
+}
+
+bool useIsInsideLocalRegion(::mlir::OpOperand &use,
+                            ::mlir::Region &callableRegion,
+                            const ::llvm::DenseSet<::mlir::Block *> &members) {
+  ::mlir::Block *ownerBlock = use.getOwner()->getBlock();
+  ::mlir::Block *callableBlock =
+      callableRegion.findAncestorBlockInRegion(*ownerBlock);
+  return callableBlock && members.contains(callableBlock);
+}
+
+::std::optional<::llvm::SmallVector<::mlir::Value, 8>>
+collectLocalLiveOuts(::mlir::Region &callableRegion,
+                     const LocalRegionPlan &plan,
+                     const ::llvm::DenseSet<::mlir::Block *> &members,
+                     ::mlir::DominanceInfo &dominance) {
+  ::llvm::SmallVector<::mlir::Value, 8> liveOuts;
+  auto consider = [&](::mlir::Value value) {
+    if (::llvm::any_of(value.getUses(), [&](::mlir::OpOperand &use) {
+          return !useIsInsideLocalRegion(use, callableRegion, members);
+        }))
+      liveOuts.push_back(value);
+  };
+
+  bool recurrentEntry = ::llvm::any_of(plan.entry->getPredecessors(),
+                                       [&](::mlir::Block *predecessor) {
+                                         return members.contains(predecessor);
+                                       });
+  for (::mlir::Block *block : plan.blocks) {
+    if (block != plan.entry || recurrentEntry)
+      for (::mlir::BlockArgument argument : block->getArguments())
+        consider(argument);
+    for (::mlir::Operation &operation : *block)
+      for (::mlir::Value result : operation.getResults())
+        consider(result);
+  }
+
+  for (::mlir::Value liveOut : liveOuts)
+    for (::mlir::Block *block : plan.blocks) {
+      ::mlir::Operation *terminator = block->getTerminator();
+      if (::llvm::none_of(block->getSuccessors(),
+                          [&](::mlir::Block *successor) {
+                            return successor == plan.continuation;
+                          }))
+        continue;
+      if (!dominance.dominates(liveOut, terminator))
+        return ::std::nullopt;
+    }
+  return liveOuts;
+}
+
+bool structureLocalRegion(::mlir::Operation *clonedCallable,
+                          ::mlir::Region &callableRegion,
+                          const LocalRegionPlan &plan,
+                          bool importedLLVMCallable,
+                          ::mlir::IRRewriter &rewriter) {
+  ::llvm::DenseSet<::mlir::Block *> members(plan.blocks.begin(),
+                                            plan.blocks.end());
+  ::mlir::DominanceInfo originalDominance(clonedCallable);
+  for (::mlir::Block *block : plan.blocks)
+    for (::mlir::Block *predecessor : block->getPredecessors())
+      if (!members.contains(predecessor) &&
+          !originalDominance.isReachableFromEntry(predecessor))
+        return false;
+  auto liveOuts =
+      collectLocalLiveOuts(callableRegion, plan, members, originalDominance);
+  if (!liveOuts)
+    return false;
+
+  ::llvm::SmallVector<::mlir::Type, 8> resultTypes;
+  for (::mlir::BlockArgument argument : plan.continuation->getArguments())
+    resultTypes.push_back(argument.getType());
+  for (::mlir::Value liveOut : *liveOuts)
+    resultTypes.push_back(liveOut.getType());
+
+  ::mlir::Location location = plan.entry->getTerminator()->getLoc();
+  rewriter.setInsertionPointToStart(plan.entry);
+  auto execute = ::mlir::scf::ExecuteRegionOp::create(
+      rewriter, location, resultTypes, /*no_inline=*/true);
+  ::mlir::Region &localRegion = execute.getRegion();
+  ::mlir::Block *gateway = new ::mlir::Block;
+  ::mlir::Block *innerEntry = new ::mlir::Block;
+  localRegion.push_back(gateway);
+  localRegion.push_back(innerEntry);
+  for (::mlir::BlockArgument argument : plan.entry->getArguments())
+    innerEntry->addArgument(argument.getType(), argument.getLoc());
+
+  innerEntry->getOperations().splice(
+      innerEntry->end(), plan.entry->getOperations(),
+      ::std::next(execute->getIterator()), plan.entry->end());
+  for (::mlir::Block *block : plan.blocks) {
+    if (block == plan.entry)
+      continue;
+    localRegion.getBlocks().splice(
+        localRegion.end(), callableRegion.getBlocks(), block->getIterator());
+  }
+
+  for (auto [outerArgument, innerArgument] : ::llvm::zip_equal(
+           plan.entry->getArguments(), innerEntry->getArguments())) {
+    outerArgument.replaceUsesWithIf(innerArgument, [&](::mlir::OpOperand &use) {
+      return execute->isAncestor(use.getOwner());
+    });
+  }
+
+  ::llvm::SmallVector<::mlir::Value, 8> yieldedLiveOuts;
+  yieldedLiveOuts.reserve(liveOuts->size());
+  for (::mlir::Value liveOut : *liveOuts) {
+    auto argument = ::mlir::dyn_cast<::mlir::BlockArgument>(liveOut);
+    if (argument && argument.getOwner() == plan.entry)
+      liveOut = innerEntry->getArgument(argument.getArgNumber());
+    yieldedLiveOuts.push_back(liveOut);
+  }
+
+  for (::mlir::Block &block : localRegion) {
+    if (&block == gateway || block.empty())
+      continue;
+    ::mlir::Operation *terminator = block.getTerminator();
+    for (unsigned index = 0; index != terminator->getNumSuccessors(); ++index)
+      if (terminator->getSuccessor(index) == plan.entry)
+        terminator->setSuccessor(innerEntry, index);
+  }
+
+  ::mlir::Block *exitTrampoline = new ::mlir::Block;
+  localRegion.push_back(exitTrampoline);
+  ::llvm::SmallVector<::mlir::Location, 8> resultLocations(resultTypes.size(),
+                                                           location);
+  exitTrampoline->addArguments(resultTypes, resultLocations);
+
+  bool redirectedExit = false;
+  for (::mlir::Block &block : localRegion) {
+    if (&block == gateway || &block == exitTrampoline || block.empty())
+      continue;
+    ::mlir::Operation *terminator = block.getTerminator();
+    auto branch = ::mlir::dyn_cast<::mlir::BranchOpInterface>(terminator);
+    if (!branch)
+      return false;
+    for (unsigned index = 0; index != terminator->getNumSuccessors(); ++index) {
+      if (terminator->getSuccessor(index) != plan.continuation)
+        continue;
+      ::mlir::SuccessorOperands successorOperands =
+          branch.getSuccessorOperands(index);
+      if (successorOperands.getProducedOperandCount() != 0)
+        return false;
+      successorOperands.append(yieldedLiveOuts);
+      terminator->setSuccessor(exitTrampoline, index);
+      redirectedExit = true;
+    }
+  }
+  if (!redirectedExit)
+    return false;
+
+  rewriter.setInsertionPointToEnd(gateway);
+  ::mlir::cf::BranchOp::create(rewriter, location, innerEntry,
+                               plan.entry->getArguments());
+  rewriter.setInsertionPointToEnd(exitTrampoline);
+  ::mlir::scf::YieldOp::create(rewriter, location,
+                               exitTrampoline->getArguments());
+
+  rewriter.setInsertionPointToEnd(plan.entry);
+  ::mlir::cf::BranchOp::create(
+      rewriter, location, plan.continuation,
+      execute.getResults().take_front(plan.continuation->getNumArguments()));
+  for (auto [liveOut, replacement] : ::llvm::zip_equal(
+           *liveOuts, execute.getResults().drop_front(
+                          plan.continuation->getNumArguments()))) {
+    liveOut.replaceUsesWithIf(replacement, [&](::mlir::OpOperand &use) {
+      return !execute->isAncestor(use.getOwner());
+    });
+  }
+
+  LoopHintMap annotations;
+  OrphanLoopHintBlocks orphanHints;
+  if (decideRegion(localRegion, importedLLVMCallable, plan.indexBitwidth,
+                   annotations, orphanHints) != Disposition::Structure)
+    return false;
+  for (::mlir::Block *orphanBlock : orphanHints) {
+    orphanBlock->getTerminator()->removeAttr(loom::raising::loopAnnotationName);
+    orphanBlock->getTerminator()->removeAttr(
+        loom::raising::candidateLoopHintName);
+  }
+
+  ::mlir::DominanceInfo dominance(clonedCallable);
+  CallableStructuring structuring(importedLLVMCallable, annotations);
+  if (::mlir::failed(
+          ::mlir::transformCFGToSCF(localRegion, structuring, dominance)))
+    return false;
+  makeResidualSwitchesRoundTripSafe(localRegion, rewriter);
+  if (structuring.firstUnprovenAssociationLoc() || !annotations.empty() ||
+      !localRegion.hasOneBlock())
+    return false;
+
+  auto yield = ::mlir::dyn_cast<::mlir::scf::YieldOp>(
+      localRegion.front().getTerminator());
+  if (!yield || yield.getNumOperands() != execute.getNumResults())
+    return false;
+  ::llvm::SmallVector<::mlir::Value, 8> yielded(yield.getOperands());
+  rewriter.eraseOp(yield);
+  rewriter.inlineBlockBefore(&localRegion.front(), execute.getOperation());
+  rewriter.replaceOp(execute, yielded);
+  return true;
+}
+
+bool structureCallableLocally(::mlir::Region &region, bool importedLLVMCallable,
+                              ::mlir::IRRewriter &rewriter) {
+  ::mlir::Operation *callable = region.getParentOp();
+  DeclinedLocalRegions declined;
+  bool changed = false;
+  while (auto localPlan =
+             findMaximalLocalRegion(region, importedLLVMCallable, declined)) {
+    const size_t originalBlockCount = region.getBlocks().size();
+    const size_t originalBranchCount =
+        ::llvm::count_if(region, [](::mlir::Block &block) {
+          return block.getTerminator()->getNumSuccessors() > 1;
+        });
+    ::mlir::IRMapping mapping;
+    ::mlir::OwningOpRef<::mlir::Operation *> clone(callable->clone(mapping));
+    ::mlir::Region &cloneRegion = clone->getRegion(region.getRegionNumber());
+    (void)eraseUnanchoredUnreachableBlocks(clone.get(), cloneRegion, rewriter);
+    LocalRegionPlan clonePlan = remapLocalRegionPlan(*localPlan, mapping);
+    if (!structureLocalRegion(clone.get(), cloneRegion, clonePlan,
+                              importedLLVMCallable, rewriter)) {
+      declined.emplace_back(localPlan->entry, localPlan->continuation);
+      continue;
+    }
+
+    const size_t cloneBlockCount = cloneRegion.getBlocks().size();
+    const size_t cloneBranchCount =
+        ::llvm::count_if(cloneRegion, [](::mlir::Block &block) {
+          return block.getTerminator()->getNumSuccessors() > 1;
+        });
+    if (cloneBlockCount > originalBlockCount ||
+        (cloneBlockCount == originalBlockCount &&
+         cloneBranchCount >= originalBranchCount)) {
+      declined.emplace_back(localPlan->entry, localPlan->continuation);
+      continue;
+    }
+
+    region.takeBody(cloneRegion);
+    changed = true;
+    declined.clear();
+  }
+  return changed;
+}
+
+bool structureCallableWhole(::mlir::Region &region, bool importedLLVMCallable,
+                            const LoopHintMap &annotations,
+                            const OrphanLoopHintBlocks &orphanHints,
+                            ::mlir::IRRewriter &rewriter) {
+  ::mlir::Operation *callable = region.getParentOp();
+  ::mlir::IRMapping mapping;
+  ::mlir::OwningOpRef<::mlir::Operation *> clone(callable->clone(mapping));
+  ::mlir::Region &cloneRegion = clone->getRegion(region.getRegionNumber());
+
+  LoopHintMap cloneAnnotations;
+  for (const auto &[header, hints] : annotations) {
+    ::mlir::Block *cloneHeader = mapping.lookupOrNull(header);
+    assert(cloneHeader && "cloned region holds every original block");
+    cloneAnnotations[cloneHeader] = hints;
+  }
+  for (::mlir::Block *orphanBlock : orphanHints) {
+    ::mlir::Block *cloneBlock = mapping.lookupOrNull(orphanBlock);
+    assert(cloneBlock && "cloned region holds every original block");
+    cloneBlock->getTerminator()->removeAttr(loom::raising::loopAnnotationName);
+    cloneBlock->getTerminator()->removeAttr(
+        loom::raising::candidateLoopHintName);
+  }
+
+  if (!eraseUnanchoredUnreachableBlocks(clone.get(), cloneRegion, rewriter))
+    return false;
+  ::mlir::DominanceInfo dominance(clone.get());
+  CallableStructuring structuring(importedLLVMCallable, cloneAnnotations);
+  if (::mlir::failed(
+          ::mlir::transformCFGToSCF(cloneRegion, structuring, dominance)))
+    return false;
+  makeResidualSwitchesRoundTripSafe(cloneRegion, rewriter);
+  if (structuring.firstUnprovenAssociationLoc() || !cloneAnnotations.empty())
+    return false;
+
+  region.takeBody(cloneRegion);
+  return true;
+}
+
 struct LiftCFToSCFPass
     : public ::mlir::PassWrapper<LiftCFToSCFPass, ::mlir::OperationPass<>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LiftCFToSCFPass)
 
   ::llvm::StringRef getArgument() const final { return "loom-lift-cf-to-scf"; }
   ::llvm::StringRef getDescription() const final {
-    return "Structure the cf-shaped control flow of each callable region with "
+    return "Structure each maximal exactly provable cf-shaped region with "
            "the upstream CFG-to-SCF transformation, leaving an imported "
-           "llvm.func as the callable and ABI owner of its body and moving "
-           "each imported loop annotation to the loop that owns its cycle. A "
-           "region that cannot be structured exactly is preserved as it "
-           "stands.";
+           "llvm.func as the callable and ABI owner of its body, retaining "
+           "weighted or unsupported local control, and moving each imported "
+           "loop annotation to the loop that owns its cycle.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
@@ -445,13 +970,13 @@ struct LiftCFToSCFPass
   }
 
   void runOnOperation() final {
-    // One plan per callable region chosen for structuring, holding only that
-    // region's own resolved loop annotations. Annotation headers are blocks of
-    // the region the plan owns, so a plan is consulted only while that region's
-    // original blocks are still live and never after the region is published.
+    // One plan per callable region. A completely admissible region carries its
+    // resolved annotations for the whole-region fast path; every other region
+    // is revisited for local SESE extraction when its turn is reached.
     struct RegionPlan {
       ::mlir::Region *region;
-      LoopAnnotations annotations;
+      bool structureWhole;
+      LoopHintMap annotations;
       OrphanLoopHintBlocks orphanHints;
     };
     // The callable walk is post-order, so a nested callable is planned before
@@ -462,12 +987,22 @@ struct LiftCFToSCFPass
     ::llvm::SmallVector<RegionPlan, 4> plans;
     (void)loom::raising::forEachCallableRegion(
         getOperation(), [&](::mlir::Region &region) {
-          LoopAnnotations regionAnnotations;
+          LoopHintMap regionAnnotations;
           OrphanLoopHintBlocks orphanHints;
-          if (decideRegion(region, regionAnnotations, orphanHints) ==
-              Disposition::Structure)
-            plans.push_back({&region, std::move(regionAnnotations),
-                             std::move(orphanHints)});
+          bool importedLLVMCallable =
+              ::mlir::isa<::mlir::LLVM::LLVMFuncOp>(region.getParentOp());
+          uint64_t indexBitwidth =
+              ::mlir::DataLayout::closest(region.getParentOp())
+                  .getTypeSizeInBits(
+                      ::mlir::IndexType::get(region.getContext()))
+                  .getFixedValue();
+          bool structureWhole =
+              decideRegion(region, importedLLVMCallable, indexBitwidth,
+                           regionAnnotations,
+                           orphanHints) == Disposition::Structure;
+          plans.push_back({&region, structureWhole,
+                           std::move(regionAnnotations),
+                           std::move(orphanHints)});
           return ::mlir::success();
         });
 
@@ -476,64 +1011,23 @@ struct LiftCFToSCFPass
     for (RegionPlan &plan : plans) {
       ::mlir::Region *region = plan.region;
       ::mlir::Operation *originalCallable = region->getParentOp();
-      ::mlir::IRMapping mapping;
-      ::mlir::OwningOpRef<::mlir::Operation *> clone(
-          originalCallable->clone(mapping));
-      ::mlir::Region &cloneRegion = clone->getRegion(region->getRegionNumber());
+      bool importedLLVMCallable =
+          ::mlir::isa<::mlir::LLVM::LLVMFuncOp>(originalCallable);
 
-      // The adapter resolves this region's annotations on the clone's own
-      // blocks. Only this plan's headers are read, so a descendant already
-      // published in an earlier iteration -- whose original blocks no longer
-      // exist -- is never reached here.
-      LoopAnnotations cloneAnnotations;
-      for (auto &[header, annotation] : plan.annotations) {
-        ::mlir::Block *cloneHeader = mapping.lookupOrNull(header);
-        assert(cloneHeader && "cloned region holds every original block");
-        cloneAnnotations[cloneHeader] = annotation;
-      }
-      for (::mlir::Block *orphanBlock : plan.orphanHints) {
-        ::mlir::Block *cloneBlock = mapping.lookupOrNull(orphanBlock);
-        assert(cloneBlock && "cloned region holds every original block");
-        cloneBlock->getTerminator()->removeAttr(
-            loom::raising::loopAnnotationName);
+      if (plan.structureWhole &&
+          structureCallableWhole(*region, importedLLVMCallable,
+                                 plan.annotations, plan.orphanHints,
+                                 rewriter)) {
+        structuredAny = true;
+        continue;
       }
 
-      // Upstream rejects a region holding a block no edge reaches. Such a
-      // block runs never, so erasing it is the one cleanup this surface
-      // needs and it decides nothing. Nested regions are left alone.
-      (void)::mlir::eraseUnreachableBlocks(rewriter, cloneRegion,
-                                           /*recurse=*/false);
-
-      // The transformation moves, creates and erases blocks, so the
-      // dominance information it invalidates in place belongs to exactly
-      // the region being structured.
-      ::mlir::DominanceInfo dominance(clone.get());
-      CallableStructuring structuring(
-          ::mlir::isa<::mlir::LLVM::LLVMFuncOp>(clone.get()), cloneAnnotations);
-      if (failed(
-              ::mlir::transformCFGToSCF(cloneRegion, structuring, dominance)))
-        continue;
-
-      makeResidualSwitchesRoundTripSafe(cloneRegion, rewriter);
-
-      // Two facts only the completed clone can state: an entry multiplexer
-      // that dispatches to more than one annotated loop header leaves the
-      // owning loop of each annotation unprovable, and a leftover entry
-      // means an annotation reached no recovered loop. Either way the
-      // clone is dropped and the original region keeps its annotation
-      // exactly where it was imported.
-      if (structuring.firstUnprovenAssociationLoc() ||
-          !cloneAnnotations.empty())
-        continue;
-
-      // Publish immediately. The clone was taken from the current original, so
-      // a descendant already published in an earlier iteration is captured
-      // structured. Replacing an ancestor body may replace that descendant op
-      // with its clone, but cannot restore the stale unstructured body.
-      // takeBody preserves this region's owning callable op and leaves every
-      // imported callable in llvm.func form as its body's sole ABI envelope.
-      region->takeBody(cloneRegion);
-      structuredAny = true;
+      // A whole-region attempt can discover a loop-hint association that was
+      // unprovable only after upstream formed its entry multiplexer. Retry on
+      // independently closed local regions so that one such loop cannot hide
+      // unrelated exact structure in the same callable.
+      structuredAny |=
+          structureCallableLocally(*region, importedLLVMCallable, rewriter);
     }
 
     if (!structuredAny)

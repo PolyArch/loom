@@ -20,6 +20,7 @@
 #include "DSE/SystemCompositionCandidateGenerator.h"
 #include "DSE/TechMappingHardwareFeedback.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Evaluation/Evidence.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
@@ -199,6 +200,24 @@ mappingRoots(const dse::JointDesignExecution &execution) {
                  pair.systemMappings.end());
   canonicalizeRoots(roots);
   return roots;
+}
+
+void mergeMappedPairs(dse::JointDesignExecution &target,
+                      const dse::JointDesignExecution &source) {
+  for (const dse::JointMappedPair &candidate : source.mappedPairs) {
+    auto retained = llvm::find_if(
+        target.mappedPairs, [&](const dse::JointMappedPair &existing) {
+          return existing.pair == candidate.pair;
+        });
+    if (retained == target.mappedPairs.end()) {
+      target.mappedPairs.push_back(candidate);
+      continue;
+    }
+    retained->systemMappings.insert(retained->systemMappings.end(),
+                                    candidate.systemMappings.begin(),
+                                    candidate.systemMappings.end());
+    canonicalizeRoots(retained->systemMappings);
+  }
 }
 
 std::optional<ArtifactRootReference>
@@ -435,7 +454,48 @@ deriveSystemMappingMigrationContext(const JointDesignExplorationPlan &plan) {
                                                  systemNode->configDigest);
 }
 
-static llvm::Expected<dse::DsePlanExecutionResult> executeResolvedGeneratePlan(
+struct ResolvedGeneratePlanExecution final {
+  dse::DsePlanExecutionResult planExecution;
+  JointDesignInvocationManifestReference invocationManifest;
+};
+
+InvocationControllerOutcome
+projectGeneratePlanOutcome(const dse::DsePlanExecutionResult &execution,
+                           const DsePlanGenerateInvocationRecords &records) {
+  std::vector<ArtifactRootReference> artifacts;
+  std::vector<ArtifactRootReference> generatedEvidence;
+  const auto append = [&](llvm::ArrayRef<GenerateInvocationRecord> generated) {
+    for (const GenerateInvocationRecord &record : generated)
+      for (const CandidateGeneratorOutputBinding &binding :
+           record.outputBindings)
+        for (const ArtifactRootReference &root : binding.artifacts) {
+          if (root.schemaIdentity ==
+                  evaluation::EvaluationEvidence::artifactSchema.identity &&
+              root.schemaVersion ==
+                  evaluation::EvaluationEvidence::artifactSchema.version)
+            generatedEvidence.push_back(root);
+          else
+            artifacts.push_back(root);
+        }
+  };
+  append(records.completed());
+  append(records.incomplete());
+  canonicalizeRoots(artifacts);
+  canonicalizeRoots(generatedEvidence);
+  if (const auto *incomplete =
+          std::get_if<IncompleteDsePlanExecution>(&execution))
+    return InvocationIncomplete{incomplete->nodeOrdinal(),
+                                incomplete->reason(),
+                                {},
+                                std::move(artifacts),
+                                std::move(generatedEvidence)};
+  if (artifacts.empty())
+    return InvocationCompletedNoFeasibleCandidate{};
+  return InvocationCompletedSelection{std::move(artifacts), {}};
+}
+
+static llvm::Expected<ResolvedGeneratePlanExecution>
+executeResolvedGeneratePlan(
     const ResolvedConfig &config,
     std::vector<ArtifactRootReference> semanticInputs,
     llvm::ArrayRef<ArtifactRootReference> evidence,
@@ -467,10 +527,22 @@ static llvm::Expected<dse::DsePlanExecutionResult> executeResolvedGeneratePlan(
   auto journal = dse::openExecutionJournal(journalPath, *closure, *configView);
   if (!journal)
     return journal.takeError();
-  return dse::resumeDsePlan(*configView, *closure, *journal, scheduler,
-                            executionPolicy ? *executionPolicy
-                                            : request.executionPolicy,
-                            artifacts, blobs);
+  auto execution = dse::resumeDsePlan(
+      *configView, *closure, *journal, scheduler,
+      executionPolicy ? *executionPolicy : request.executionPolicy, artifacts,
+      blobs, InvocationManifestRetention::Retain);
+  if (!execution)
+    return execution.takeError();
+  DsePlanGenerateInvocationRecords records =
+      projectDsePlanGenerateInvocationRecords(*execution);
+  auto manifest = publishJointPlanInvocationManifest(
+      std::move(*closure), config, records,
+      projectGeneratePlanOutcome(*execution, records), *journal, artifacts,
+      blobs);
+  if (!manifest)
+    return manifest.takeError();
+  return ResolvedGeneratePlanExecution{std::move(*execution),
+                                       std::move(*manifest)};
 }
 
 llvm::Expected<TechGateExecution>
@@ -503,7 +575,7 @@ executeTechGate(const JointDesignExplorationPlan &plan,
   if (!planExecution)
     return planExecution.takeError();
   const CompletedDsePlanExecution &available =
-      availableExecution(*planExecution);
+      availableExecution(planExecution->planExecution);
   for (auto indexed : llvm::enumerate(available.generateInvocations())) {
     ++summary.techMappingInvocationCount;
     if (available.generateInvocationWasDispatched(indexed.index()))
@@ -588,9 +660,13 @@ executeTechGate(const JointDesignExplorationPlan &plan,
       llvm::all_of(requiredGraphs, [&](const auto &required) {
         return llvm::binary_search(coveredGraphs, required, graphLess);
       });
-  return TechGateExecution{
-      JointDesignExecution{std::move(*planExecution), {}, std::move(summary)},
-      std::move(retained), coversRequiredGraphs};
+  JointDesignExecution execution{
+      std::move(planExecution->planExecution), {}, std::move(summary)};
+  if (llvm::Error error = bindJointDesignInvocationManifest(
+          execution, std::move(planExecution->invocationManifest)))
+    return std::move(error);
+  return TechGateExecution{std::move(execution), std::move(retained),
+                           coversRequiredGraphs};
 }
 
 llvm::Expected<std::optional<TechHardwareFeedbackObservation>>
@@ -982,7 +1058,7 @@ llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
   if (!execution)
     return execution.takeError();
   const dse::CompletedDsePlanExecution &available =
-      availableExecution(*execution);
+      availableExecution(execution->planExecution);
   const auto outputs = available.resolve({0, 0});
   if (outputs.size() != 1 || available.generateInvocations().size() != 1)
     return invalid("uniform recipe growth did not publish one System");
@@ -992,19 +1068,21 @@ llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
   if (system->view().rootKind() != fabric::FabricRootKind::System)
     return invalid("uniform recipe growth published a non-System root");
   growth.config.dse.planNodes.clear();
-  return MaterializedHardwareCandidate{outputs.front(),
-                                       std::move(growth.config),
-                                       std::nullopt,
-                                       {},
-                                       std::nullopt,
-                                       growth.resizedInstructionStoreCount,
-                                       growth.maximumInstructionStoreCapacity,
-                                       growth.addedContexts,
-                                       growth.resultingContexts,
-                                       growth.addedGateways,
-                                       growth.resultingGateways,
-                                       growth.addedAccCores,
-                                       growth.resultingAccCores};
+  return MaterializedHardwareCandidate{
+      outputs.front(),
+      std::move(growth.config),
+      std::nullopt,
+      {},
+      std::nullopt,
+      growth.resizedInstructionStoreCount,
+      growth.maximumInstructionStoreCapacity,
+      growth.addedContexts,
+      growth.resultingContexts,
+      growth.addedGateways,
+      growth.resultingGateways,
+      growth.addedAccCores,
+      growth.resultingAccCores,
+      std::move(execution->invocationManifest)};
 }
 
 namespace {
@@ -1038,13 +1116,16 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
                                  growth.fifoResize.has_value() +
                                  growth.fifoBypassChange.has_value() +
                                  growth.operandBufferModeChange.has_value() +
-                                 growth.operandBufferResize.has_value();
+                                 growth.operandBufferResize.has_value() +
+                                 growth.moduleDecision.has_value();
   if (!growth.techModule || decisionKinds != 1 || growth.addedContexts != 0 ||
       growth.addedGateways != 0 || growth.addedAccCores != 0)
     return invalid("typed Module growth received a mixed or empty change");
 
   std::vector<SpatialMicroarchitectureDecisionDomain> domains;
-  if (!growth.instructionStoreResizes.empty())
+  if (growth.moduleDecision)
+    domains.push_back(*growth.moduleDecision);
+  else if (!growth.instructionStoreResizes.empty())
     domains.push_back(
         ResizeInstructionStoresDomain{growth.instructionStoreResizes});
   else if (growth.fifoResize)
@@ -1096,7 +1177,16 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
     return decision.takeError();
   if (decision->parent != *growth.techModule)
     return invalid("typed Module growth changed its parent owner");
-  if (!growth.instructionStoreResizes.empty()) {
+  if (growth.moduleDecision) {
+    auto expanded = expandSpatialMicroarchitectureDecisionDomains(
+        llvm::ArrayRef<SpatialMicroarchitectureDecisionDomain>(
+            *growth.moduleDecision));
+    if (!expanded)
+      return expanded.takeError();
+    if (expanded->size() != 1 ||
+        expanded->front().index() != decision->decision.index())
+      return invalid("typed Module growth changed its decision domain");
+  } else if (!growth.instructionStoreResizes.empty()) {
     const auto *resizes =
         std::get_if<ResizeInstructionStores>(&decision->decision);
     if (!resizes ||
@@ -1138,11 +1228,11 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
   }
   auto impact = projectHardwareImpact(*decision, childReference);
   if (!impact.child ||
-      (growth.instructionStoreResizes.empty() &&
+      (!growth.moduleDecision && growth.instructionStoreResizes.empty() &&
        !growth.operandBufferModeChange && !growth.operandBufferResize &&
        impact.family != HardwareMutationFamily::SpatialFifo))
     return invalid("typed Module growth has an incompatible impact family");
-  if (!growth.instructionStoreResizes.empty() &&
+  if (!growth.moduleDecision && !growth.instructionStoreResizes.empty() &&
       (impact.tech.kind != HardwareMappingImpactKind::Rebase ||
        impact.tech.realizationRoots.empty()))
     return invalid("instruction-store growth has no typed Tech impact");
@@ -1331,7 +1421,8 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
       mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
       mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
         fields["operation"] =
-            !growth.instructionStoreResizes.empty()
+            growth.moduleDecision ? "typed_module_hardware_mutation"
+            : !growth.instructionStoreResizes.empty()
                 ? "typed_resize_instruction_stores_growth"
             : growth.operandBufferModeChange || growth.operandBufferResize
                 ? "typed_temporal_operand_buffer_growth"
@@ -1357,7 +1448,8 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
                                        growth.addedGateways,
                                        growth.resultingGateways,
                                        growth.addedAccCores,
-                                       growth.resultingAccCores};
+                                       growth.resultingAccCores,
+                                       std::nullopt};
 }
 
 llvm::Expected<MaterializedHardwareCandidate>
@@ -1465,7 +1557,8 @@ materializeTypedAccCoreGrowth(HardwareRecipeGrowth growth,
                                        growth.addedGateways,
                                        growth.resultingGateways,
                                        growth.addedAccCores,
-                                       growth.resultingAccCores};
+                                       growth.resultingAccCores,
+                                       std::nullopt};
 }
 
 } // namespace loom::dse::joint_reopen_detail

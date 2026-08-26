@@ -189,7 +189,7 @@ CgraTransportRuntime::requestActions(
   for (const auto &[action, increment] : increments)
     nextActionOccurrence_[action] += increment;
   for (auto [request, owner] : llvm::zip(requests, owners)) {
-    const bool inserted =
+    [[maybe_unused]] const bool inserted =
         actionOwners_
             .try_emplace(std::make_pair(request.actionOrdinal,
                                         request.occurrenceOrdinal),

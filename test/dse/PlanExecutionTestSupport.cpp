@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/ComponentViewDigest.h"
+#include "Common/TimeoutBudgets.h"
 #include "DSE/CandidateGenerator.h"
 
 #include <algorithm>
@@ -67,6 +68,8 @@ std::atomic_uint64_t maximumActiveProviders{0};
 std::atomic_uint64_t requiredConcurrentProviders{1};
 std::atomic_bool waitForStopRequest{false};
 std::atomic_bool observedStopRequest{false};
+std::atomic_uint64_t observedCpuBudgetCores{0};
+std::atomic_uint64_t observedMemoryBudgetBytes{0};
 std::mutex concurrencyMutex;
 std::condition_variable concurrencyChanged;
 
@@ -91,14 +94,20 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     return invalid("provider received the wrong exact invocation");
 
   providerCalls.fetch_add(1, std::memory_order_relaxed);
+  observedCpuBudgetCores.store(
+      invocation.executionBudget().cpuCores.value_or(0),
+      std::memory_order_relaxed);
+  observedMemoryBudgetBytes.store(
+      invocation.executionBudget().memoryBytes.value_or(0),
+      std::memory_order_relaxed);
   const std::uint64_t active =
       activeProviders.fetch_add(1, std::memory_order_relaxed) + 1;
   observeMaximum(active);
   concurrencyChanged.notify_all();
   if (requiredConcurrentProviders.load(std::memory_order_relaxed) > 1) {
     std::unique_lock<std::mutex> lock(concurrencyMutex);
-    const bool rendezvous =
-        concurrencyChanged.wait_for(lock, std::chrono::seconds(10), [] {
+    const bool rendezvous = concurrencyChanged.wait_for(
+        lock, loom::timeout::duration(loom::timeout::Tier::UltraFast), [] {
           return activeProviders.load(std::memory_order_relaxed) >=
                  requiredConcurrentProviders.load(std::memory_order_relaxed);
         });
@@ -110,7 +119,8 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   }
   if (waitForStopRequest.load(std::memory_order_relaxed)) {
     const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        std::chrono::steady_clock::now() +
+        loom::timeout::duration(loom::timeout::Tier::UltraFast);
     while (!invocation.stopRequested() &&
            std::chrono::steady_clock::now() < deadline)
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -211,6 +221,8 @@ void resetPlanExecutionProviderObservations() {
   requiredConcurrentProviders.store(1, std::memory_order_relaxed);
   waitForStopRequest.store(false, std::memory_order_relaxed);
   observedStopRequest.store(false, std::memory_order_relaxed);
+  observedCpuBudgetCores.store(0, std::memory_order_relaxed);
+  observedMemoryBudgetBytes.store(0, std::memory_order_relaxed);
 }
 
 void requireConcurrentPlanExecutionProviders(std::uint64_t count) {
@@ -223,9 +235,9 @@ void requirePlanExecutionProviderStopObservation() {
 
 bool waitForActivePlanExecutionProvider() {
   std::unique_lock<std::mutex> lock(concurrencyMutex);
-  return concurrencyChanged.wait_for(lock, std::chrono::seconds(10), [] {
-    return activeProviders.load(std::memory_order_relaxed) != 0;
-  });
+  return concurrencyChanged.wait_for(
+      lock, loom::timeout::duration(loom::timeout::Tier::UltraFast),
+      [] { return activeProviders.load(std::memory_order_relaxed) != 0; });
 }
 
 std::uint64_t planExecutionProviderCalls() {
@@ -238,6 +250,14 @@ std::uint64_t maximumConcurrentPlanExecutionProviders() {
 
 bool planExecutionProviderObservedStop() {
   return observedStopRequest.load(std::memory_order_relaxed);
+}
+
+std::uint64_t planExecutionProviderCpuBudgetCores() {
+  return observedCpuBudgetCores.load(std::memory_order_relaxed);
+}
+
+std::uint64_t planExecutionProviderMemoryBudgetBytes() {
+  return observedMemoryBudgetBytes.load(std::memory_order_relaxed);
 }
 
 } // namespace loom::dse::test_support

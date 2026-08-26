@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace llvm {
 class raw_ostream;
@@ -67,6 +68,25 @@ struct ApplicationHostRunReport final {
   std::string diagnostic;
 };
 
+struct ApplicationHostSelectionRunRequest final {
+  ExecutionSelection selection;
+  std::string repositoryRoot;
+  std::optional<std::string> cacheRoot;
+  std::optional<std::string> compilerExecutable;
+};
+
+/// One explicitly requested execution tier and all of its exact input rows.
+/// The tier is scheduling provenance; individual host reports remain keyed by
+/// their canonical application/input selection.
+struct ApplicationHostSelectionRunReport final {
+  static constexpr llvm::StringLiteral schemaIdentity =
+      "loom.application_host_selection_run";
+  static constexpr llvm::StringLiteral schemaVersion = "1.0";
+
+  ExecutionSelection selection;
+  std::vector<ApplicationHostRunReport> reports;
+};
+
 /// Compiles and executes one exact selected input on a Linux host. When the
 /// selection carries cached inputs, the executable receives their admitted
 /// absolute paths in selection order, followed by decimal warm-up and measured
@@ -76,10 +96,19 @@ llvm::Expected<ApplicationHostRunReport>
 runApplicationInputOnHost(const ApplicationManifest &manifest,
                           const ApplicationHostRunRequest &request);
 
+llvm::Expected<ApplicationHostSelectionRunReport> runApplicationSelectionOnHost(
+    const ApplicationManifest &manifest,
+    const ApplicationHostSelectionRunRequest &request);
+
 void writeApplicationHostRunReportJson(llvm::raw_ostream &output,
                                        const ApplicationHostRunReport &report);
 
+void writeApplicationHostSelectionRunReportJson(
+    llvm::raw_ostream &output, const ApplicationHostSelectionRunReport &report);
+
 bool applicationHostRunSucceeded(const ApplicationHostRunReport &report);
+bool applicationHostSelectionRunSucceeded(
+    const ApplicationHostSelectionRunReport &report);
 
 } // namespace loom::application
 

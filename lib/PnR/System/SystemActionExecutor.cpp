@@ -202,8 +202,45 @@ llvm::Expected<SystemCandidateStateHandle> executeFixedBinding(
     const SystemCandidateStateHandle &current, llvm::ArrayRef<PnrIndex> fixed,
     std::uint64_t &assignmentAttempts, std::uint64_t &endpointExpansions,
     std::uint64_t &negotiationIterations) {
-  auto initialized = initializeSystemCandidateWithFixedChoices(
-      current->problemHandle(), fixed);
+  const FrozenSystemPnrProblem &problem = current->problem();
+  const PnrIndex threadCount = problem.threadDecisions().size();
+  if (fixed.size() !=
+      threadCount + static_cast<PnrIndex>(problem.graphDecisions().size()))
+    return invalid("binding closure has the wrong decision width");
+  SystemCandidateRouteSeed routeSeed{
+      {current->serviceRoutes().begin(), current->serviceRoutes().end()},
+      {current->serviceRouteNodes().begin(), current->serviceRouteNodes().end()},
+      {current->serviceRouteSinks().begin(), current->serviceRouteSinks().end()},
+      {}};
+  for (PnrIndex leg = 0; leg < problem.serviceLegs().size(); ++leg) {
+    const PnrIndex context = problem.serviceLegs()[leg].serviceContext;
+    if (context >= problem.serviceContexts().size())
+      return invalid("binding closure names a foreign service context");
+    const auto &service = problem.serviceContexts()[context];
+    const auto changed = [&](PnrIndex decision, PnrIndex currentChoice) {
+      return decision != getInvalidPnrIndex() &&
+             (decision >= fixed.size() || fixed[decision] == getInvalidPnrIndex() ||
+              fixed[decision] != currentChoice);
+    };
+    bool reroute = false;
+    if (service.threadDecision != getInvalidPnrIndex()) {
+      if (service.threadDecision >= threadCount)
+        return invalid("binding closure names a foreign thread decision");
+      reroute |= changed(service.threadDecision,
+                         current->threadChoice(service.threadDecision));
+    }
+    if (service.graphDecision != getInvalidPnrIndex()) {
+      const PnrIndex graph = service.graphDecision;
+      if (graph >= problem.graphDecisions().size())
+        return invalid("binding closure names a foreign graph decision");
+      reroute |= changed(threadCount + graph,
+                         current->graphChoice(graph));
+    }
+    if (reroute)
+      routeSeed.reroutedLegs.push_back(leg);
+  }
+  auto initialized = initializeSystemCandidateWithFixedChoicesAndRoutes(
+      current->problemHandle(), fixed, routeSeed);
   if (!initialized) {
     llvm::Error translated = llvm::handleErrors(
         initialized.takeError(),

@@ -130,7 +130,7 @@ class CommandConstructionTest(CorpusGateTestBase):
             self.out_dir / "simulation.json",
             3,
             corpus_gate.DfgExecutionLimits(400, 500, 600),
-            15.0,
+            corpus_gate.DEFAULT_DFG_SIMULATION_TIMEOUT_SECONDS,
             protocol,
             config,
             expected_entry_result=0,
@@ -147,7 +147,8 @@ class CommandConstructionTest(CorpusGateTestBase):
                 "--max-event-steps=400",
                 "--max-event-count=500",
                 "--max-capture-bytes=600",
-                "--max-simulation-wall-seconds=15.0",
+                "--max-simulation-wall-seconds="
+                f"{corpus_gate.DEFAULT_DFG_SIMULATION_TIMEOUT_SECONDS}",
                 "--expected-entry-result=0",
                 "--operator-protocol-symbol=arm_abs_f32",
                 str(self.out_dir / "target.ll"),

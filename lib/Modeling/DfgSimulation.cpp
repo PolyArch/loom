@@ -253,8 +253,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithLimits(
   std::uint64_t syncActorCount = 0;
   llvm::json::Object operationFireCounts;
   for (const auto &[operation, count] : retired->report.operationFireCounts) {
-    if (count > std::numeric_limits<std::uint64_t>::max() -
-                   dynamicOperationFires)
+    if (count >
+        std::numeric_limits<std::uint64_t>::max() - dynamicOperationFires)
       return llvm::createStringError(
           std::errc::value_too_large,
           "dfg_simulation_model_invalid: operation fire count overflows");
@@ -350,7 +350,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithLimits(
         fields["event_count"] = retired->report.eventCount;
         fields["dynamic_work_items"] = retired->report.dynamicWorkItems;
         fields["dynamic_operation_fires"] = dynamicOperationFires;
-        fields["operation_kind_count"] = retired->report.operationFireCounts.size();
+        fields["operation_kind_count"] =
+            retired->report.operationFireCounts.size();
         fields["compute_operation_count"] = computeOperationCount;
         fields["control_operation_count"] = controlOperationCount;
         fields["memory_operation_count"] = memoryOperationCount;
@@ -400,13 +401,11 @@ llvm::Error registerDfgSimulationModel() {
   return registerEvaluationModelProvider(kProvider);
 }
 
-llvm::Expected<PreparedDfgSimulationEvaluation> prepareDfgSimulationEvaluation(
-    const ArtifactRootReference &canonicalDataflow,
-    const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
-    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
-  if (llvm::Error error = registerDfgSimulationModel())
-    return std::move(error);
+llvm::Expected<CaseArtifactResolution>
+resolveDfgSimulationCase(const ArtifactRootReference &canonicalDataflow,
+                         const ArtifactRootReference &workload,
+                         const ArtifactRootReference &runtimeInput,
+                         const ArtifactStore &artifactStore) {
   auto inputs =
       sim::importSpatialSimulationInputs(workload, runtimeInput, artifactStore);
   if (!inputs)
@@ -416,11 +415,21 @@ llvm::Expected<PreparedDfgSimulationEvaluation> prepareDfgSimulationEvaluation(
         std::errc::invalid_argument,
         "dfg_simulation_model_invalid: workload names a foreign Dataflow "
         "owner");
-
-  auto resolution = CaseArtifactResolution::get(
+  return CaseArtifactResolution::get(
       {{canonicalDataflow, {}},
        {workload, {canonicalDataflow}},
        {runtimeInput, {canonicalDataflow, workload}}});
+}
+
+llvm::Expected<PreparedDfgSimulationEvaluation> prepareDfgSimulationEvaluation(
+    const ArtifactRootReference &canonicalDataflow,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  if (llvm::Error error = registerDfgSimulationModel())
+    return std::move(error);
+  auto resolution = resolveDfgSimulationCase(canonicalDataflow, workload,
+                                             runtimeInput, artifactStore);
   if (!resolution)
     return resolution.takeError();
   auto bindings = EvaluationSubjectBindings::get(

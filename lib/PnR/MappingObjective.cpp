@@ -246,7 +246,7 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
     switch (candidate.problem().progressBasis().kind) {
     case ::loom::mapping::MappingDataflowProgressBasisKind::Acyclic:
     case ::loom::mapping::MappingDataflowProgressBasisKind::InitializedFeedback:
-      return spatialCandidateClosedWaitCount(candidate);
+      return candidate.hardProgressViolation();
     case ::loom::mapping::MappingDataflowProgressBasisKind::Cyclic:
       return llvm::createStringError(
           std::make_error_code(std::errc::operation_not_supported),

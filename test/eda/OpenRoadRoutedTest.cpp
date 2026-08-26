@@ -27,7 +27,7 @@ using namespace loom::hardware;
 namespace {
 
 constexpr llvm::StringLiteral kSyntheticBuild =
-    "OpenROAD synthetic cbc7678e45cc";
+    "OpenROAD synthetic 21512b0ab68c";
 
 [[noreturn]] void fail(llvm::StringRef test, const std::string &message) {
   llvm::errs() << test << ": " << message << '\n';
@@ -278,7 +278,7 @@ void realOpenRoadRouteSmoke(const std::filesystem::path &root,
   version = version.trim();
   require(__func__, std::filesystem::path(executable.str()).is_absolute(),
           "real OpenROAD executable is not absolute");
-  require(__func__, version.contains("cbc7678e45"),
+  require(__func__, version.contains("21512b0"),
           "real OpenROAD version is not the pinned build");
   std::filesystem::create_directories(root / "artifacts");
   std::filesystem::create_directories(root / "blobs");

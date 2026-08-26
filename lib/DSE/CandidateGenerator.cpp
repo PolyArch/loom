@@ -29,6 +29,25 @@ std::uint32_t defaultCandidateWorkerCount() {
                                  maximumWorkerCount);
 }
 
+llvm::StringRef candidateGeneratorIncompleteReasonSpelling(
+    CandidateGeneratorIncompleteReason reason) {
+  switch (reason) {
+  case CandidateGeneratorIncompleteReason::ProofNotEstablished:
+    return "candidate_proof_not_established";
+  case CandidateGeneratorIncompleteReason::SemanticLimitReached:
+    return "candidate_semantic_limit_reached";
+  case CandidateGeneratorIncompleteReason::ProviderUnavailable:
+    return "candidate_provider_unavailable";
+  case CandidateGeneratorIncompleteReason::Unsupported:
+    return "candidate_generation_unsupported";
+  case CandidateGeneratorIncompleteReason::ExecutionFailed:
+    return "candidate_execution_failed";
+  case CandidateGeneratorIncompleteReason::CancelledOrTimeout:
+    return "candidate_cancelled_or_timeout";
+  }
+  llvm_unreachable("unknown candidate-generator incomplete reason");
+}
+
 namespace {
 
 std::vector<const CandidateGeneratorDescriptor *> &descriptors() {

@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -219,11 +220,11 @@ providerExecutionRemainingTime(const void *opaque) {
   const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
   const auto now =
       std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
-  if (now <= 0 || static_cast<std::uint64_t>(now) >=
-                      *context.notAfterUnixNanoseconds)
+  if (now <= 0 ||
+      static_cast<std::uint64_t>(now) >= *context.notAfterUnixNanoseconds)
     return std::chrono::steady_clock::duration::zero();
-  const auto remaining = *context.notAfterUnixNanoseconds -
-                         static_cast<std::uint64_t>(now);
+  const auto remaining =
+      *context.notAfterUnixNanoseconds - static_cast<std::uint64_t>(now);
   return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
       std::chrono::nanoseconds(remaining));
 }
@@ -232,6 +233,52 @@ ExecutionControlView
 providerExecutionControl(const ProviderExecutionStopContext &context) {
   return ExecutionControlView{&context, providerExecutionStopRequested,
                               providerExecutionRemainingTime};
+}
+
+llvm::Expected<std::uint64_t>
+addResourceAmount(std::uint64_t lhs, std::uint64_t rhs, llvm::StringRef field) {
+  if (rhs > std::numeric_limits<std::uint64_t>::max() - lhs)
+    return invalid(field + " resource claim overflows uint64");
+  return lhs + rhs;
+}
+
+llvm::Expected<std::vector<CountedSiteResource>>
+combineCountedResources(llvm::ArrayRef<CountedSiteResource> lhs,
+                        llvm::ArrayRef<CountedSiteResource> rhs) {
+  std::map<SiteResourceKey, std::uint64_t> combined;
+  for (const CountedSiteResource &resource : lhs)
+    combined.emplace(resource.key, resource.units);
+  for (const CountedSiteResource &resource : rhs) {
+    auto [found, inserted] = combined.emplace(resource.key, resource.units);
+    if (!inserted)
+      found->second = std::max(found->second, resource.units);
+  }
+  std::vector<CountedSiteResource> result;
+  result.reserve(combined.size());
+  for (const auto &[key, units] : combined)
+    result.push_back({key, units});
+  return result;
+}
+
+llvm::Expected<SiteResourceClaim>
+combineEvidenceLifecycleClaims(const SiteResourceClaim &inProcess,
+                               const SiteResourceClaim &external) {
+  auto memory = addResourceAmount(inProcess.memoryBytes(),
+                                  external.memoryBytes(), "memory");
+  if (!memory)
+    return memory.takeError();
+  auto tools = combineCountedResources(inProcess.externalTools(),
+                                       external.externalTools());
+  if (!tools)
+    return tools.takeError();
+  auto licenses =
+      combineCountedResources(inProcess.licenses(), external.licenses());
+  if (!licenses)
+    return licenses.takeError();
+  return SiteResourceClaim::get(
+      std::max(inProcess.cpuCores(), external.cpuCores()), *memory,
+      std::max(inProcess.scratchBytes(), external.scratchBytes()), *tools,
+      *licenses);
 }
 
 llvm::Expected<std::optional<JournalWorkUnitRecord>>
@@ -274,7 +321,7 @@ llvm::Expected<std::optional<evaluation::EvaluationEvidence>>
 tryImportPreparedEvidence(
     const evaluation::EvaluationRequest &request,
     const evaluation::CaseArtifactResolution &resolution,
-    const external_tool::PreparedExternalToolInvocation &prepared,
+    const evaluation::EvaluationModelPreparedInvocation &prepared,
     const ArtifactStore &store, const BlobStore &blobs) {
   auto imported = evaluation::importEvaluationModelInvocation(
       request, resolution, prepared, store, blobs);
@@ -290,6 +337,30 @@ tryImportPreparedEvidence(
     return std::move(remaining);
   if (!incomplete)
     return invalid("Evidence import lost its failure");
+  return std::optional<evaluation::EvaluationEvidence>{};
+}
+
+llvm::Expected<std::optional<evaluation::EvaluationEvidence>>
+tryImportPreparedEvidence(
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const evaluation::EvaluationModelPreparedInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  auto imported = evaluation::importEvaluationModelInvocation(
+      request, resolution, prepared, execution, store, blobs);
+  if (imported)
+    return std::optional<evaluation::EvaluationEvidence>(std::move(*imported));
+  bool incomplete = false;
+  llvm::Error remaining = llvm::handleErrors(
+      imported.takeError(),
+      [&](const external_tool::IncompleteExternalToolInvocationError &) {
+        incomplete = true;
+      });
+  if (remaining)
+    return std::move(remaining);
+  if (!incomplete)
+    return invalid("receipt-bound Evidence import lost its failure");
   return std::optional<evaluation::EvaluationEvidence>{};
 }
 
@@ -341,13 +412,23 @@ private:
   llvm::Expected<SiteResourceClaim>
   resourceClaim(const WorkUnitKey &key,
                 const BlobDigest *externalBinding) const;
+  const WorkUnitResourceBinding *resourceBinding(const WorkUnitKey &key) const;
+  llvm::Expected<SiteResourceClaim>
+  evidenceLifecycleClaim(const WorkUnitKey &key,
+                         const BlobDigest *externalBinding) const;
+  llvm::Expected<external_tool::ExternalToolInvocationExecutionObservation>
+  executePreparedInvocationUnderLease(
+      const WorkUnitKey &key,
+      const external_tool::PreparedExternalToolInvocation &prepared,
+      ExecutionControlView executionControl);
   llvm::Expected<
       std::optional<external_tool::ExternalToolInvocationExecutionObservation>>
   executePreparedInvocation(
       const WorkUnitKey &key,
       const external_tool::PreparedExternalToolInvocation &prepared,
       bool reserveNewDispatch);
-  llvm::Error settleStoppedExternalExecution(const WorkUnitKey &key);
+  llvm::Error settleStoppedExternalExecution(
+      const WorkUnitKey &key, std::uint64_t activeWallTimeNanoseconds = 0);
   llvm::Expected<PromotionEvidenceExecutionResult>
   executeEvidence(const PromotionEvidenceExecutionTask &task,
                   const ArtifactStore &store, const BlobStore &blobs);
@@ -452,12 +533,8 @@ llvm::Expected<WorkUnitKey> RecoverablePlanWorkExecutor::evidenceKey(
 
 llvm::Expected<SiteResourceClaim> RecoverablePlanWorkExecutor::resourceClaim(
     const WorkUnitKey &key, const BlobDigest *externalBinding) const {
-  auto selected = llvm::lower_bound(
-      policy_.resourceBindings(), key,
-      [](const WorkUnitResourceBinding &binding, const WorkUnitKey &candidate) {
-        return binding.key < candidate;
-      });
-  if (selected != policy_.resourceBindings().end() && selected->key == key) {
+  const WorkUnitResourceBinding *selected = resourceBinding(key);
+  if (selected) {
     if (externalBinding) {
       const SiteResourceKey tool =
           SiteResourceKey::externalToolBinding(*externalBinding);
@@ -495,6 +572,67 @@ llvm::Expected<SiteResourceClaim> RecoverablePlanWorkExecutor::resourceClaim(
                                 site.scratchBytes, {tool}, licenses);
 }
 
+const WorkUnitResourceBinding *
+RecoverablePlanWorkExecutor::resourceBinding(const WorkUnitKey &key) const {
+  auto selected = llvm::lower_bound(
+      policy_.resourceBindings(), key,
+      [](const WorkUnitResourceBinding &binding, const WorkUnitKey &candidate) {
+        return binding.key < candidate;
+      });
+  return selected != policy_.resourceBindings().end() && selected->key == key
+             ? &*selected
+             : nullptr;
+}
+
+llvm::Expected<SiteResourceClaim>
+RecoverablePlanWorkExecutor::evidenceLifecycleClaim(
+    const WorkUnitKey &key, const BlobDigest *externalBinding) const {
+  if (resourceBinding(key))
+    return resourceClaim(key, externalBinding);
+  if (!policy_.externalSite() ||
+      policy_.externalSite()->disposition !=
+          ExternalAttemptDisposition::ExecutePrepared)
+    return policy_.inProcessClaim();
+  const ExternalExecutionSite &site = *policy_.externalSite();
+  llvm::Expected<SiteResourceClaim> external =
+      externalBinding ? resourceClaim(key, externalBinding)
+                      : SiteResourceClaim::get(site.cpuCores, site.memoryBytes,
+                                               site.scratchBytes);
+  if (!external)
+    return external.takeError();
+  return combineEvidenceLifecycleClaims(policy_.inProcessClaim(), *external);
+}
+
+llvm::Expected<external_tool::ExternalToolInvocationExecutionObservation>
+RecoverablePlanWorkExecutor::executePreparedInvocationUnderLease(
+    const WorkUnitKey &key,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    ExecutionControlView executionControl) {
+  if (llvm::Error error = journal_.beginPreparedExecution(key))
+    return std::move(error);
+  const auto begin = std::chrono::steady_clock::now();
+  auto execution = external_tool::executeExternalToolInvocationBundleObserved(
+      prepared, executionControl);
+  auto active = activeNanoseconds(begin);
+  if (!active)
+    return active.takeError();
+  auto end = terminalUnixNanoseconds();
+  if (!end)
+    return end.takeError();
+  llvm::Error intervalError = journal_.recordPreparedExecutionInterval(
+      key, *active, *end,
+      execution
+          ? std::optional<
+                external_tool::ExternalToolInvocationExecutionObservation>(
+                *execution)
+          : std::nullopt);
+  if (!execution)
+    return llvm::joinErrors(execution.takeError(), std::move(intervalError));
+  if (intervalError)
+    return std::move(intervalError);
+  return std::move(*execution);
+}
+
 llvm::Expected<
     std::optional<external_tool::ExternalToolInvocationExecutionObservation>>
 RecoverablePlanWorkExecutor::executePreparedInvocation(
@@ -525,38 +663,22 @@ RecoverablePlanWorkExecutor::executePreparedInvocation(
     return std::optional<
         external_tool::ExternalToolInvocationExecutionObservation>{};
   SiteResourceLease lease = std::move(**acquired);
-  if (llvm::Error error = journal_.beginPreparedExecution(key))
-    return std::move(error);
-  const auto begin = std::chrono::steady_clock::now();
-  auto execution = external_tool::executeExternalToolInvocationBundleObserved(
-      prepared, executionControl);
-  auto active = activeNanoseconds(begin);
-  if (!active)
-    return active.takeError();
-  auto end = terminalUnixNanoseconds();
-  if (!end)
-    return end.takeError();
-  llvm::Error intervalError = journal_.recordPreparedExecutionInterval(
-      key, *active, *end,
-      execution
-          ? std::optional<
-                external_tool::ExternalToolInvocationExecutionObservation>(
-                *execution)
-          : std::nullopt);
+  auto execution =
+      executePreparedInvocationUnderLease(key, prepared, executionControl);
   if (!execution)
-    return llvm::joinErrors(execution.takeError(), std::move(intervalError));
-  if (intervalError)
-    return std::move(intervalError);
+    return execution.takeError();
   return std::optional<
-      external_tool::ExternalToolInvocationExecutionObservation>(*execution);
+      external_tool::ExternalToolInvocationExecutionObservation>(
+      std::move(*execution));
 }
 
 llvm::Error RecoverablePlanWorkExecutor::settleStoppedExternalExecution(
-    const WorkUnitKey &key) {
+    const WorkUnitKey &key, std::uint64_t activeWallTimeNanoseconds) {
   auto terminalTime = terminalUnixNanoseconds();
   if (!terminalTime)
     return terminalTime.takeError();
-  return journal_.markTerminal(key, JournalWorkUnitStatus::TimedOut, 0,
+  return journal_.markTerminal(key, JournalWorkUnitStatus::TimedOut,
+                               activeWallTimeNanoseconds,
                                *terminalTime, {});
 }
 
@@ -730,8 +852,15 @@ RecoverablePlanWorkExecutor::executeGenerate(
     if (llvm::Error error = journal_.markRunning(*key))
       return std::move(error);
     const auto begin = std::chrono::steady_clock::now();
-    const CandidateGeneratorInvocationView invocation(executionControl,
-                                                      outputDemands);
+    const ExecutionResourceBudget executionBudget{
+        lease.claim().cpuCores() == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>(lease.claim().cpuCores()),
+        lease.claim().memoryBytes() == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>(lease.claim().memoryBytes())};
+    const CandidateGeneratorInvocationView invocation(
+        executionControl, outputDemands, executionBudget);
     auto generated =
         invokeCandidateGenerator(inputs, binding, store, blobs, invocation);
     if (!generated) {
@@ -868,9 +997,8 @@ RecoverablePlanWorkExecutor::executeGenerateBatch(
         importSession = std::make_unique<fabric::FabricArtifactImportSession>(
             fabricImportAttachment_);
       if (derivedContextAttachment_)
-        derivedContextSession =
-            std::make_unique<pnr::PnrDerivedContextSession>(
-                derivedContextAttachment_);
+        derivedContextSession = std::make_unique<pnr::PnrDerivedContextSession>(
+            derivedContextAttachment_);
       while (true) {
         const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
         if (index >= tasks.size())
@@ -960,31 +1088,71 @@ RecoverablePlanWorkExecutor::executeEvidence(
     if (descriptor->providerForm != ProviderForm::ExternalPrepareImport ||
         !(*record)->preparedInvocation)
       return invalid("prepared Evidence record has the wrong provider form");
-    auto imported =
-        tryImportPreparedEvidence(task.request, *task.resolution,
-                                  *(*record)->preparedInvocation, store, blobs);
+    const auto lifecycleBegin = std::chrono::steady_clock::now();
+    const ProviderExecutionStopContext stopContext{
+        &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
+    const ExecutionControlView executionControl =
+        providerExecutionControl(stopContext);
+    auto lifecycleClaim = evidenceLifecycleClaim(*key, nullptr);
+    if (!lifecycleClaim)
+      return lifecycleClaim.takeError();
+    auto acquired = scheduler_.acquire(*key, *lifecycleClaim, executionControl);
+    if (!acquired)
+      return acquired.takeError();
+    if (!*acquired)
+      return PromotionEvidenceExecutionResult{
+          PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+    SiteResourceLease lifecycleLease = std::move(**acquired);
+    auto live = evaluation::bindPreparedEvaluationModelInvocation(
+        task.request, *task.resolution, *(*record)->preparedInvocation, store,
+        blobs);
+    if (!live)
+      return live.takeError();
+    auto imported = tryImportPreparedEvidence(task.request, *task.resolution,
+                                              *live, store, blobs);
     if (!imported)
       return imported.takeError();
     if (!*imported) {
-      auto executed =
-          executePreparedInvocation(*key, *(*record)->preparedInvocation, true);
-      if (!executed)
-        return executed.takeError();
-      if (!*executed)
+      if (!policy_.externalSite() ||
+          policy_.externalSite()->disposition !=
+              ExternalAttemptDisposition::ExecutePrepared ||
+          !reserveDispatch())
         return PromotionEvidenceExecutionResult{
             executionStopRequested()
                 ? PromotionAcquisitionIncompleteReason::CancelledOrTimeout
                 : PromotionAcquisitionIncompleteReason::ProviderUnavailable};
-      if ((**executed).exitCode ==
+      auto bindingDigest =
+          external_tool::deriveExternalToolExecutionBindingDigest(
+              *(*record)->preparedInvocation);
+      if (!bindingDigest)
+        return bindingDigest.takeError();
+      auto boundClaim = evidenceLifecycleClaim(*key, &*bindingDigest);
+      if (!boundClaim)
+        return boundClaim.takeError();
+      auto bound = scheduler_.bindCountedResources(lifecycleLease, *boundClaim,
+                                                   executionControl);
+      if (!bound)
+        return bound.takeError();
+      if (!*bound)
+        return PromotionEvidenceExecutionResult{
+            PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+      auto executed = executePreparedInvocationUnderLease(
+          *key, *(*record)->preparedInvocation, executionControl);
+      if (!executed)
+        return executed.takeError();
+      if (executed->exitCode ==
           external_tool::externalToolExecutionStoppedExitCode) {
-        if (llvm::Error error = settleStoppedExternalExecution(*key))
+        auto active = activeNanoseconds(lifecycleBegin);
+        if (!active)
+          return active.takeError();
+        if (llvm::Error error =
+                settleStoppedExternalExecution(*key, *active))
           return std::move(error);
         return PromotionEvidenceExecutionResult{
             PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
       }
       imported = tryImportPreparedEvidence(task.request, *task.resolution,
-                                           *(*record)->preparedInvocation,
-                                           store, blobs);
+                                           *live, *executed, store, blobs);
       if (!imported)
         return imported.takeError();
       if (!*imported)
@@ -997,9 +1165,13 @@ RecoverablePlanWorkExecutor::executeEvidence(
     auto terminalTime = terminalUnixNanoseconds();
     if (!terminalTime)
       return terminalTime.takeError();
+    auto active = activeNanoseconds(lifecycleBegin);
+    if (!active)
+      return active.takeError();
     const std::array<ArtifactRootReference, 1> outputs = {*root};
     if (llvm::Error error = journal_.markTerminal(
-            *key, evidenceJournalStatus(**imported), 0, *terminalTime, outputs))
+            *key, evidenceJournalStatus(**imported), *active, *terminalTime,
+            outputs))
       return std::move(error);
     return PromotionEvidenceExecutionResult{std::move(**imported)};
   }
@@ -1034,6 +1206,7 @@ RecoverablePlanWorkExecutor::executeEvidence(
 
   std::optional<evaluation::EvaluationEvidence> evidence;
   std::uint64_t active = 0;
+  const auto lifecycleBegin = std::chrono::steady_clock::now();
   if (descriptor->providerForm == ProviderForm::InProcess) {
     auto claim = resourceClaim(*key, nullptr);
     if (!claim)
@@ -1065,8 +1238,11 @@ RecoverablePlanWorkExecutor::executeEvidence(
   } else {
     const ProviderExecutionStopContext preparationStopContext{
         &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
+    auto preparationClaim = evidenceLifecycleClaim(*key, nullptr);
+    if (!preparationClaim)
+      return preparationClaim.takeError();
     auto acquiredPreparation =
-        scheduler_.acquire(*key, policy_.inProcessClaim(),
+        scheduler_.acquire(*key, *preparationClaim,
                            providerExecutionControl(preparationStopContext));
     if (!acquiredPreparation)
       return acquiredPreparation.takeError();
@@ -1098,8 +1274,10 @@ RecoverablePlanWorkExecutor::executeEvidence(
         return preparationActive.takeError();
       active = *preparationActive;
     } else {
-      auto prepared = std::get<external_tool::PreparedExternalToolInvocation>(
+      auto prepared = std::get<evaluation::EvaluationModelPreparedInvocation>(
           std::move(*preparation));
+      const external_tool::PreparedExternalToolInvocation &external =
+          prepared.externalInvocation();
       auto preparationActive = activeNanoseconds(preparationBegin);
       if (!preparationActive)
         return preparationActive.takeError();
@@ -1107,30 +1285,40 @@ RecoverablePlanWorkExecutor::executeEvidence(
       if (!preparationEnd)
         return preparationEnd.takeError();
       if (llvm::Error error = journal_.recordPrepared(
-              *key, prepared, *preparationActive, *preparationEnd))
+              *key, external, *preparationActive, *preparationEnd))
         return std::move(error);
-      preparationLease.release();
       if (policy_.externalSite()->disposition ==
           ExternalAttemptDisposition::PrepareOnly)
         return PromotionEvidenceExecutionResult{
             PromotionAcquisitionIncompleteReason::ProviderUnavailable};
-      auto executed = executePreparedInvocation(*key, prepared, false);
+      auto bindingDigest =
+          external_tool::deriveExternalToolExecutionBindingDigest(external);
+      if (!bindingDigest)
+        return bindingDigest.takeError();
+      auto boundClaim = evidenceLifecycleClaim(*key, &*bindingDigest);
+      if (!boundClaim)
+        return boundClaim.takeError();
+      auto bound = scheduler_.bindCountedResources(
+          preparationLease, *boundClaim,
+          providerExecutionControl(preparationStopContext));
+      if (!bound)
+        return bound.takeError();
+      if (!*bound)
+        return PromotionEvidenceExecutionResult{
+            PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
+      auto executed = executePreparedInvocationUnderLease(
+          *key, external, providerExecutionControl(preparationStopContext));
       if (!executed)
         return executed.takeError();
-      if (!*executed)
-        return PromotionEvidenceExecutionResult{
-            executionStopRequested()
-                ? PromotionAcquisitionIncompleteReason::CancelledOrTimeout
-                : PromotionAcquisitionIncompleteReason::ProviderUnavailable};
-      if ((**executed).exitCode ==
+      if (executed->exitCode ==
           external_tool::externalToolExecutionStoppedExitCode) {
         if (llvm::Error error = settleStoppedExternalExecution(*key))
           return std::move(error);
         return PromotionEvidenceExecutionResult{
             PromotionAcquisitionIncompleteReason::CancelledOrTimeout};
       }
-      auto imported = tryImportPreparedEvidence(task.request, *task.resolution,
-                                                prepared, store, blobs);
+      auto imported = tryImportPreparedEvidence(
+          task.request, *task.resolution, prepared, *executed, store, blobs);
       if (!imported)
         return imported.takeError();
       if (!*imported)
@@ -1147,10 +1335,14 @@ RecoverablePlanWorkExecutor::executeEvidence(
   auto terminalTime = terminalUnixNanoseconds();
   if (!terminalTime)
     return terminalTime.takeError();
+  auto lifecycleActive = activeNanoseconds(lifecycleBegin);
+  if (!lifecycleActive)
+    return lifecycleActive.takeError();
+  active = *lifecycleActive;
   const std::array<ArtifactRootReference, 1> outputs = {*root};
   if (llvm::Error error =
-          journal_.markTerminal(*key, evidenceJournalStatus(*evidence), active,
-                                *terminalTime, outputs))
+          journal_.markTerminal(*key, evidenceJournalStatus(*evidence),
+                                active, *terminalTime, outputs))
     return std::move(error);
   return PromotionEvidenceExecutionResult{std::move(*evidence)};
 }
@@ -1163,7 +1355,7 @@ RecoverablePlanWorkExecutor::execute(
     return std::vector<PromotionEvidenceExecutionResult>{};
   const std::size_t workerCount = static_cast<std::size_t>(
       std::min<std::uint64_t>(policy_.workerCount(), tasks.size()));
-  if (workerCount == 1) {
+  if (workerCount == 1 || policy_.maximumDispatches()) {
     std::vector<PromotionEvidenceExecutionResult> results;
     results.reserve(tasks.size());
     for (const PromotionEvidenceExecutionTask &task : tasks) {
@@ -1188,9 +1380,8 @@ RecoverablePlanWorkExecutor::execute(
         importSession = std::make_unique<fabric::FabricArtifactImportSession>(
             fabricImportAttachment_);
       if (derivedContextAttachment_)
-        derivedContextSession =
-            std::make_unique<pnr::PnrDerivedContextSession>(
-                derivedContextAttachment_);
+        derivedContextSession = std::make_unique<pnr::PnrDerivedContextSession>(
+            derivedContextAttachment_);
       while (true) {
         const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
         if (index >= tasks.size())
@@ -1223,8 +1414,6 @@ llvm::Expected<PlanExecutionPolicy> PlanExecutionPolicy::get(
     std::optional<std::uint64_t> dispatchNotAfterUnixNanoseconds) {
   if (workerCount == 0)
     return invalid("execution policy requires a positive worker count");
-  if (maximumDispatches && *maximumDispatches == 0)
-    return invalid("maximum dispatch count must be positive when present");
   if (dispatchNotAfterUnixNanoseconds && *dispatchNotAfterUnixNanoseconds == 0)
     return invalid("dispatch deadline must be positive when present");
   if (externalSite && static_cast<std::uint32_t>(externalSite->disposition) >
@@ -1268,15 +1457,28 @@ llvm::Expected<DsePlanExecutionResult>
 resumeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
               ExecutionJournal &journal, SiteScheduler &scheduler,
               const PlanExecutionPolicy &policy, const ArtifactStore &store,
-              const BlobStore &blobs) {
+              const BlobStore &blobs,
+              InvocationManifestRetention manifestRetention) {
+  if (manifestRetention != InvocationManifestRetention::Release &&
+      manifestRetention != InvocationManifestRetention::Retain)
+    return invalid("unknown invocation manifest retention policy");
   if (journal.runKey() != closure.runKey())
     return invalid("ExecutionJournal belongs to another run closure");
   if (journal.resolvedDseConfigViewDigest() != view.digest())
     return invalid("ExecutionJournal belongs to another resolved DSE plan");
   if (llvm::Error error = journal.beginResume())
     return std::move(error);
-  return executeDsePlan(view, closure, journal, scheduler, policy, store,
-                        blobs);
+  auto execution =
+      executeDsePlan(view, closure, journal, scheduler, policy, store, blobs);
+  if (!execution)
+    return llvm::joinErrors(execution.takeError(),
+                            journal.releaseInvocationOccurrence());
+  if (manifestRetention == InvocationManifestRetention::Release) {
+    llvm::Error releaseError = journal.releaseInvocationOccurrence();
+    if (releaseError)
+      return std::move(releaseError);
+  }
+  return execution;
 }
 
 } // namespace loom::dse

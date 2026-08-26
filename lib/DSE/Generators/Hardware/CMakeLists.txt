@@ -2,6 +2,7 @@ add_library(LoomDSEHardwareGenerator
   FabricTemplateCandidateGenerator.cpp
   FuReverseSynthesis.cpp
   FuReverseSynthesisCandidateGenerator.cpp
+  FuReverseSynthesisSystem.cpp
   HardwareDecision.cpp
   PortableSpatialCoreRtlCandidateGenerator.cpp
   SpatialMicroarchitectureCandidateGenerator.cpp

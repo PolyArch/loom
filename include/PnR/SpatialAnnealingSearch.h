@@ -23,13 +23,16 @@ struct SpatialAnnealingStatistics final {
   bool completionGoalReached = false;
   bool repairReadyHandoff = false;
   std::uint64_t initialTemperature = 0;
+  std::uint64_t plannedCalibrationProposalSlots = 0;
   std::uint64_t calibrationProposalSlots = 0;
   std::uint64_t calibrationProbeCount = 0;
   std::uint64_t calibrationTransitionFailureCount = 0;
   std::uint64_t temperatureLevelCount = 0;
   std::uint64_t minimumTemperatureLevelCount = 0;
   std::uint64_t annealingProposalSlots = 0;
+  std::uint64_t plannedAnnealingBaseProposalSlots = 0;
   std::uint64_t annealingBaseProposalSlots = 0;
+  std::uint64_t plannedAnnealingMovableProposalSlots = 0;
   std::uint64_t annealingMovableProposalSlots = 0;
   std::uint64_t annealingProbeCount = 0;
   std::uint64_t acceptedActionCount = 0;
@@ -51,6 +54,8 @@ struct SpatialAnnealingStatistics final {
            lhs.completionGoalReached == rhs.completionGoalReached &&
            lhs.repairReadyHandoff == rhs.repairReadyHandoff &&
            lhs.initialTemperature == rhs.initialTemperature &&
+           lhs.plannedCalibrationProposalSlots ==
+               rhs.plannedCalibrationProposalSlots &&
            lhs.calibrationProposalSlots == rhs.calibrationProposalSlots &&
            lhs.calibrationProbeCount == rhs.calibrationProbeCount &&
            lhs.calibrationTransitionFailureCount ==
@@ -59,7 +64,11 @@ struct SpatialAnnealingStatistics final {
            lhs.minimumTemperatureLevelCount ==
                rhs.minimumTemperatureLevelCount &&
            lhs.annealingProposalSlots == rhs.annealingProposalSlots &&
+           lhs.plannedAnnealingBaseProposalSlots ==
+               rhs.plannedAnnealingBaseProposalSlots &&
            lhs.annealingBaseProposalSlots == rhs.annealingBaseProposalSlots &&
+           lhs.plannedAnnealingMovableProposalSlots ==
+               rhs.plannedAnnealingMovableProposalSlots &&
            lhs.annealingMovableProposalSlots ==
                rhs.annealingMovableProposalSlots &&
            lhs.annealingProbeCount == rhs.annealingProbeCount &&

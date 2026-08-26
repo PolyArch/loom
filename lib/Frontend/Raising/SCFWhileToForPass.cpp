@@ -3,7 +3,7 @@
 // The upstream utility recognizes the pre-tested counted-loop shape -- a
 // `before` block whose only comparison is an arith.cmpi slt/sgt against a
 // loop-invariant bound, with the induction bump in the `after` block. With
-// a proven positive step that shape has the standard scf.for trip count,
+// a proven unit step that shape has the standard scf.for trip count,
 // so its termination is structurally equivalent to scf.for and needs no
 // loop-semantics analysis.
 //
@@ -15,13 +15,11 @@
 // value is unobservable and the rewrite is exact.
 //
 // It accepts a second thing we must gate: a loop-invariant induction step
-// of unproven sign. For %lb < %ub and step zero the source while does not
-// terminate while the generated scf.for violates its semantic contract, and
-// a negative or runtime-unknown step makes the two trip counts disagree.
-// The rewrite is therefore offered only for a statically proven positive
-// constant step; `hasProvenPositiveConstantStep` extracts just enough of
-// the accepted shape -- the yielded induction add and its step operand --
-// to prove it, and every other structural check stays with the utility.
+// whose progress or overflow behavior is unproven. For %lb < %ub, only a unit
+// increment is safe for every dynamic upper bound: a larger increment can wrap
+// before reaching the bound, while scf.for requires a non-wrapping induction.
+// `hasProvenUnitStep` extracts just enough of the accepted shape to prove that
+// increment, and every other structural check stays with the utility.
 //
 // CFG-to-SCF also emits a post-tested shape whose body precedes the latch
 // comparison. The shared ExactPostTestedCountedLoopProjection accepts a closed
@@ -50,6 +48,8 @@
 
 namespace {
 
+using loom::raising::candidateLoopHintName;
+using loom::raising::carryCandidateLoopHint;
 using loom::raising::carryLoopAnnotation;
 using loom::raising::loopAnnotationName;
 
@@ -131,7 +131,9 @@ struct UpliftExactPostTestedCountedWhileToFor
           ::mlir::scf::YieldOp::create(builder, location, nextState);
         });
     ::mlir::Attribute annotation = loop->getAttr(loopAnnotationName);
+    ::mlir::Attribute candidate = loop->getAttr(candidateLoopHintName);
     carryLoopAnnotation(annotation, counted);
+    carryCandidateLoopHint(candidate, counted);
 
     ::llvm::SmallVector<::mlir::Value, 4> replacements;
     unsigned stateOrdinal = 0;
@@ -152,7 +154,7 @@ struct UpliftExactPostTestedCountedWhileToFor
 // index must add a constant to that value. Uniqueness and every other
 // structural check remain the utility's; anything unprovable fails closed
 // and is never offered to it.
-bool hasProvenPositiveConstantStep(::mlir::scf::WhileOp loop) {
+bool hasProvenUnitStep(::mlir::scf::WhileOp loop) {
   ::mlir::Block *beforeBody = loop.getBeforeBody();
   ::mlir::scf::ConditionOp condition = loop.getConditionOp();
   auto cmp = condition.getCondition().getDefiningOp<::mlir::arith::CmpIOp>();
@@ -196,7 +198,7 @@ bool hasProvenPositiveConstantStep(::mlir::scf::WhileOp loop) {
   if (!constant)
     return false;
   auto intValue = ::mlir::dyn_cast<::mlir::IntegerAttr>(constant.getValue());
-  return intValue && intValue.getValue().isStrictlyPositive();
+  return intValue && intValue.getValue().isOne();
 }
 
 // Uplift a pre-tested counted while loop with the upstream utility, keeping
@@ -205,7 +207,8 @@ bool hasProvenPositiveConstantStep(::mlir::scf::WhileOp loop) {
 // failed-condition value, so the rewrite is only offered when the loop has
 // no external users -- i.e. no result whose reconstructed value could be
 // observed. It also accepts a step of unproven sign, so the rewrite is
-// further gated on a statically proven positive constant induction step.
+// further gated on a statically proven unit induction step, which cannot wrap
+// while the signed less-than condition remains true.
 struct UpliftCountedWhileToFor
     : public ::mlir::OpRewritePattern<::mlir::scf::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -215,14 +218,16 @@ struct UpliftCountedWhileToFor
                   ::mlir::PatternRewriter &rewriter) const override {
     if (!loop->use_empty())
       return ::mlir::failure();
-    if (!hasProvenPositiveConstantStep(loop))
+    if (!hasProvenUnitStep(loop))
       return ::mlir::failure();
     ::mlir::Attribute annotation = loop->getAttr(loopAnnotationName);
+    ::mlir::Attribute candidate = loop->getAttr(candidateLoopHintName);
     ::mlir::FailureOr<::mlir::scf::ForOp> uplifted =
         ::mlir::scf::upliftWhileToForLoop(rewriter, loop);
     if (failed(uplifted))
       return ::mlir::failure();
     carryLoopAnnotation(annotation, *uplifted);
+    carryCandidateLoopHint(candidate, *uplifted);
     return ::mlir::success();
   }
 };

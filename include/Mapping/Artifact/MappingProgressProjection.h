@@ -5,6 +5,8 @@
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Mapping/Artifact/SystemPresburger.h"
 
+#include "llvm/ADT/ArrayRef.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -128,6 +130,15 @@ struct MappingProgressProjection final {
   std::vector<MappingRouteProgressObligationProjection> routeObligations;
   std::vector<MappingProgressCapacityCellProjection> capacityCells;
   std::vector<MappingProgressActivationProjection> resourceActivations;
+};
+
+/// A non-owning projection consumed synchronously by the progress kernel.
+/// The owning projection remains the strict-import adapter and source of truth.
+struct MappingProgressProjectionView final {
+  const MappingDataflowProgressBasis &basis;
+  llvm::ArrayRef<MappingRouteProgressObligationProjection> routeObligations;
+  llvm::ArrayRef<MappingProgressCapacityCellProjection> capacityCells;
+  llvm::ArrayRef<MappingProgressActivationProjection> resourceActivations;
 };
 
 } // namespace loom::mapping

@@ -26,11 +26,14 @@ llvm::cl::opt<std::string> cacheRoot("cache-root",
 llvm::cl::opt<std::string>
     applicationIdentity("application",
                         llvm::cl::desc("Exact application identity"),
-                        llvm::cl::value_desc("identity"), llvm::cl::Required);
+                        llvm::cl::value_desc("identity"));
 llvm::cl::opt<std::string> inputName("input",
                                      llvm::cl::desc("Exact named input"),
-                                     llvm::cl::value_desc("name"),
-                                     llvm::cl::Required);
+                                     llvm::cl::value_desc("name"));
+llvm::cl::opt<std::string>
+    executionSelection("selection",
+                       llvm::cl::desc("Exact manifest execution tier"),
+                       llvm::cl::value_desc("smoke|validation|scale_eda"));
 llvm::cl::opt<std::string>
     compilerExecutable("compiler",
                        llvm::cl::desc("Explicit clang or clang++ executable"),
@@ -52,6 +55,44 @@ int main(int argc, char **argv) {
   auto manifest = loom::application::loadApplicationManifest(manifestPath);
   if (!manifest)
     return reportError(manifest.takeError());
+
+  const bool hasExactSelection =
+      !applicationIdentity.empty() || !inputName.empty();
+  if ((!executionSelection.empty() && hasExactSelection) ||
+      (executionSelection.empty() &&
+       (applicationIdentity.empty() || inputName.empty()))) {
+    llvm::errs()
+        << "loom-application-host-run: error: select either --selection or "
+           "the complete --application/--input pair\n";
+    return EXIT_FAILURE;
+  }
+
+  if (!executionSelection.empty()) {
+    auto selection =
+        loom::application::parseExecutionSelection(executionSelection);
+    if (!selection)
+      return reportError(selection.takeError());
+    loom::application::ApplicationHostSelectionRunRequest request{
+        *selection, repositoryRoot, std::nullopt, std::nullopt};
+    if (!cacheRoot.empty())
+      request.cacheRoot = cacheRoot;
+    if (!compilerExecutable.empty())
+      request.compilerExecutable = compilerExecutable;
+    auto report =
+        loom::application::runApplicationSelectionOnHost(*manifest, request);
+    if (!report)
+      return reportError(report.takeError());
+    loom::application::writeApplicationHostSelectionRunReportJson(llvm::outs(),
+                                                                  *report);
+    for (const loom::application::ApplicationHostRunReport &member :
+         report->reports)
+      if (!member.diagnostic.empty())
+        llvm::errs() << "loom-application-host-run: " << member.diagnostic
+                     << '\n';
+    return loom::application::applicationHostSelectionRunSucceeded(*report)
+               ? EXIT_SUCCESS
+               : EXIT_FAILURE;
+  }
 
   loom::application::ApplicationHostRunRequest request{
       applicationIdentity, inputName, repositoryRoot, std::nullopt,

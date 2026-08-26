@@ -52,6 +52,9 @@ private:
   friend llvm::Expected<MappingProgressClosure>
   deriveMappingProgressClosure(const FrozenMappingProgressModel &,
                                const MappingProgressProjection &);
+  friend llvm::Expected<MappingProgressClosure>
+  deriveMappingProgressClosure(const FrozenMappingProgressModel &,
+                               MappingProgressProjectionView);
   friend llvm::Expected<bool>
   mappingEventPrecedes(const FrozenMappingProgressModel &,
                        const ::dataflow::EventFamilyKey &,
@@ -73,6 +76,21 @@ mappingEventPrecedes(const FrozenMappingProgressModel &model,
                      const ::dataflow::EventFamilyKey &predecessor,
                      const ::dataflow::EventFamilyKey &dependent);
 
+/// Verifies that one completion frontier is a legal linear extension of the
+/// canonical Dataflow event relation over the exact Mapping root scope.
+/// Independent roots may be ordered by the resource-time schedule. Every
+/// completed, completing, or newly active root must nevertheless have all of
+/// its canonical causal root predecessors satisfied at the declared boundary;
+/// a predecessor outside the Mapping scope is not implicit completion proof.
+/// Explicit stored-program thread waits remain outside this profile because
+/// their host control-flow order has no frozen event correspondence here.
+llvm::Expected<bool> mappingCompletionFrontierIsAdmissible(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> mappedRoots,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> completedBefore,
+    ::dataflow::RootThreadLaunchRef completing,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> activeAfter);
+
 /// Derives the progress-only projection of the strict System closure. This is
 /// the adapter used by final verification; System PnR constructs the same
 /// projection directly from its frozen selection domains.
@@ -84,6 +102,10 @@ llvm::Expected<MappingProgressProjection> projectSystemMappingProgress(
 llvm::Expected<MappingProgressClosure>
 deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
                              const MappingProgressProjection &projection);
+
+llvm::Expected<MappingProgressClosure>
+deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
+                             MappingProgressProjectionView projection);
 
 llvm::StringRef
 mappingProgressClosureReasonSpelling(MappingProgressClosureReason reason);
@@ -121,8 +143,7 @@ llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
 /// arbitration, and causal-release kernel used by System verification; any
 /// missing token/occupancy witness remains typed ProofNotEstablished rather
 /// than being inferred from finite replay.
-llvm::Expected<MappingProgressClosure>
-qualifySystemMappingResourceTimeProgress(
+llvm::Expected<MappingProgressClosure> qualifySystemMappingResourceTimeProgress(
     const FinalizedSystemMapping &mapping,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric);

@@ -11,6 +11,7 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrDerivedContext.h"
 #include "PnR/PnrGeneration.h"
+#include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialPnrProblem.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -30,6 +31,15 @@ struct FabricTopologyQualityReport;
 namespace loom::pnr {
 
 struct SpatialPnrGenerationAccounting final {
+  std::uint64_t plannedSeedAttemptSlots = 0;
+  std::uint64_t plannedInitializerAssignmentAttempts = 0;
+  std::uint64_t plannedEndpointExpansionSlots = 0;
+  std::uint64_t plannedNegotiationIterationSlots = 0;
+  std::uint64_t plannedCalibrationProposalSlots = 0;
+  std::uint64_t plannedAnnealingBaseProposalSlots = 0;
+  std::uint64_t plannedAnnealingMovableProposalSlots = 0;
+  std::uint64_t plannedExactRepairRegionDecisions = 0;
+  std::uint64_t plannedExactRepairSolverCalls = 0;
   std::uint64_t seedAttemptSlots = 0;
   std::uint64_t preparedSeeds = 0;
   std::uint64_t initializerAssignmentAttempts = 0;
@@ -48,7 +58,24 @@ struct SpatialPnrGenerationAccounting final {
 
   friend bool operator==(const SpatialPnrGenerationAccounting &lhs,
                          const SpatialPnrGenerationAccounting &rhs) {
-    return lhs.seedAttemptSlots == rhs.seedAttemptSlots &&
+    return lhs.plannedSeedAttemptSlots == rhs.plannedSeedAttemptSlots &&
+           lhs.plannedInitializerAssignmentAttempts ==
+               rhs.plannedInitializerAssignmentAttempts &&
+           lhs.plannedEndpointExpansionSlots ==
+               rhs.plannedEndpointExpansionSlots &&
+           lhs.plannedNegotiationIterationSlots ==
+               rhs.plannedNegotiationIterationSlots &&
+           lhs.plannedCalibrationProposalSlots ==
+               rhs.plannedCalibrationProposalSlots &&
+           lhs.plannedAnnealingBaseProposalSlots ==
+               rhs.plannedAnnealingBaseProposalSlots &&
+           lhs.plannedAnnealingMovableProposalSlots ==
+               rhs.plannedAnnealingMovableProposalSlots &&
+           lhs.plannedExactRepairRegionDecisions ==
+               rhs.plannedExactRepairRegionDecisions &&
+           lhs.plannedExactRepairSolverCalls ==
+               rhs.plannedExactRepairSolverCalls &&
+           lhs.seedAttemptSlots == rhs.seedAttemptSlots &&
            lhs.preparedSeeds == rhs.preparedSeeds &&
            lhs.initializerAssignmentAttempts ==
                rhs.initializerAssignmentAttempts &&
@@ -229,10 +256,14 @@ struct SpatialPnrGenerationInputs final {
       nullptr;
   FrozenSpatialPnrProblemHandle preparedActiveProblem = nullptr;
   bool emitTopologyQualityDiagnostic = true;
-  /// Plan-derived maximum number of canonical candidate restarts to retain.
-  /// This transient work policy bounds provider effort and publication; it is
-  /// not part of Mapping identity or legality.
+  /// Plan-derived maximum number of canonical candidate restarts to publish.
+  /// Every restart required by ExhaustConfiguredWork still executes. This
+  /// publication projection is not part of Mapping identity or legality.
   std::optional<std::uint64_t> maximumCandidatePublications = std::nullopt;
+  ExecutionResourceBudget executionBudget = {};
+  /// Optional one-shot ordinal-zero seed prepared by a deterministic ranking
+  /// pass. The formal owner consumes the handoff and accounts its seed work.
+  SpatialPathFinderSeedHandoffHandle preparedCanonicalSeed = nullptr;
 };
 
 /// Runs the fixed canonical Spatial restart sequence for one exact D/T/F/C/K

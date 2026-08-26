@@ -70,6 +70,9 @@ struct PreMappingSearchCompleteness final {
   bool budgetComplete = false;
   bool providerComplete = false;
   bool evidenceComplete = false;
+  /// True when the admitted selection domain was fully adjudicated. A
+  /// complete exact search may set this for an empty selected set when every
+  /// candidate was rejected by the immutable exact gate.
   bool selectionComplete = false;
 
   bool exactComplete() const {

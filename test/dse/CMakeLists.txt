@@ -14,6 +14,10 @@ add_executable(loom-dse-hardware-candidate-generator-test
   HardwareCandidateGeneratorTest.cpp
 )
 
+add_executable(loom-dse-fu-reverse-synthesis-workflow-test
+  FuReverseSynthesisWorkflowTest.cpp
+)
+
 add_executable(loom-dse-portable-spatial-core-rtl-generator-test
   PortableSpatialCoreRtlGeneratorTest.cpp
 )
@@ -59,6 +63,14 @@ target_include_directories(loom-dse-fpa-ground-truth-collection-test PRIVATE
 
 add_executable(loom-dse-joint-design-exploration-test
   JointDesignExplorationTest.cpp
+)
+
+target_include_directories(loom-dse-joint-design-exploration-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/DSE
+)
+
+add_executable(loom-application-pair-outcome-test
+  ApplicationPairOutcomeTest.cpp
 )
 
 add_executable(loom-dse-resource-time-frontier-test
@@ -142,6 +154,18 @@ target_link_libraries(loom-dse-hardware-candidate-generator-test PRIVATE
   LLVMSupport
 )
 
+target_link_libraries(loom-dse-fu-reverse-synthesis-workflow-test PRIVATE
+  LoomDSEProductionOwners
+  LoomDeploymentTestSupport
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
 target_link_libraries(loom-dse-portable-spatial-core-rtl-generator-test PRIVATE
   LoomMappedRtlSimulationTestSupport
   LoomDSEHardwareGenerator
@@ -204,6 +228,15 @@ target_link_libraries(loom-dse-joint-design-exploration-test PRIVATE
   MLIRFuncDialect
   MLIRIR
   MLIRParser
+  LLVMSupport
+)
+
+target_include_directories(loom-application-pair-outcome-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Application
+)
+
+target_link_libraries(loom-application-pair-outcome-test PRIVATE
+  LoomApplicationBuild
   LLVMSupport
 )
 

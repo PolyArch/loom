@@ -4,6 +4,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/InvocationDiagnosticLog.h"
+#include "Common/MappingDebugLog.h"
 #include "DSE/PreMappingEvidence.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 
@@ -118,6 +119,18 @@ llvm::StringRef spelling(ApplicationMappingRuntimeDisposition value) {
   llvm_unreachable("unknown application runtime disposition");
 }
 
+llvm::json::Value encodeObjectiveScalar(
+    const ResolvedObjectiveScalar &value) {
+  if (const auto *integer = std::get_if<ResolvedObjectiveInteger>(&value))
+    return llvm::json::Object{{"kind", "integer"},
+                              {"negative", integer->negative},
+                              {"magnitude", integer->magnitude}};
+  const auto &decimal = std::get<ResolvedObjectiveDecimal>(value);
+  return llvm::json::Object{{"kind", "decimal"},
+                            {"coefficient", decimal.coefficient},
+                            {"base10_exponent", decimal.base10Exponent}};
+}
+
 llvm::StringRef spelling(ApplicationObjectiveDimension value) {
   switch (value) {
   case ApplicationObjectiveDimension::HostOnlyWork:
@@ -164,8 +177,8 @@ llvm::StringRef spelling(ApplicationObjectiveEvidence value) {
   llvm_unreachable("unknown application objective evidence");
 }
 
-llvm::json::Object encodeObjectiveObservation(
-    const ApplicationObjectiveObservation &observation) {
+llvm::json::Object
+encodeObjectiveObservation(const ApplicationObjectiveObservation &observation) {
   llvm::json::Object result;
   result["dimension"] = spelling(observation.dimension);
   if (observation.value)
@@ -180,10 +193,68 @@ llvm::json::Object encodeObjectiveObservation(
 
 void addOptionalUnsigned(llvm::json::Object &object, llvm::StringRef key,
                          std::optional<std::uint64_t> value);
-void addOptionalRoot(
-    llvm::json::Object &object, llvm::StringRef key,
+void addOptionalRoot(llvm::json::Object &object, llvm::StringRef key,
     const std::optional<ArtifactRootReference> &value);
 std::string encodeRoot(const ArtifactRootReference &reference);
+
+llvm::json::Object encodeQualityProvenance(
+    const dse::JointDesignQualityProvenance &provenance) {
+  llvm::json::Array rawMeasures;
+  for (const ResolvedObjectiveScalar &measure : provenance.rawMeasures)
+    rawMeasures.push_back(encodeObjectiveScalar(measure));
+  llvm::json::Array supportingEvidence;
+  for (const ArtifactRootReference &reference : provenance.supportingEvidence)
+    supportingEvidence.push_back(encodeRoot(reference));
+  llvm::json::Array verificationEvidence;
+  for (const ArtifactRootReference &reference : provenance.verificationEvidence)
+    verificationEvidence.push_back(encodeRoot(reference));
+  llvm::json::Object result{
+      {"raw_measures", std::move(rawMeasures)},
+      {"supporting_evidence", std::move(supportingEvidence)},
+      {"verification_evidence", std::move(verificationEvidence)},
+      {"resource_core_cost",
+       provenance.resourceCoreCost
+           ? llvm::json::Value(*provenance.resourceCoreCost)
+           : llvm::json::Value(nullptr)}};
+  if (provenance.spatialFifoFeedback)
+    result["spatial_fifo_feedback"] = llvm::json::Object{
+        {"disposition", dse::spatialFifoRuntimeFeedbackDispositionSpelling(
+                            provenance.spatialFifoFeedback->disposition)},
+        {"reason", dse::spatialFifoRuntimeFeedbackReasonSpelling(
+                       provenance.spatialFifoFeedback->reason)},
+        {"parent_mapping",
+         encodeRoot(provenance.spatialFifoFeedback->parentMapping)},
+        {"spatial_mapping",
+         encodeRoot(provenance.spatialFifoFeedback->spatialMapping)}};
+  else
+    result["spatial_fifo_feedback"] = nullptr;
+  if (provenance.spatialOperandQueueFeedback) {
+    llvm::json::Object feedback{
+        {"disposition",
+         dse::spatialOperandQueueRuntimeFeedbackDispositionSpelling(
+             provenance.spatialOperandQueueFeedback->disposition)},
+        {"reason", dse::spatialOperandQueueRuntimeFeedbackReasonSpelling(
+                       provenance.spatialOperandQueueFeedback->reason)}};
+    addOptionalRoot(feedback, "parent_mapping",
+                    provenance.spatialOperandQueueFeedback->parentMapping);
+    result["spatial_operand_queue_feedback"] = std::move(feedback);
+  } else {
+    result["spatial_operand_queue_feedback"] = nullptr;
+  }
+  if (provenance.spatialTransportFeedback) {
+    llvm::json::Object feedback{
+        {"disposition", dse::spatialTransportRuntimeFeedbackDispositionSpelling(
+                            provenance.spatialTransportFeedback->disposition)},
+        {"reason", dse::spatialTransportRuntimeFeedbackReasonSpelling(
+                       provenance.spatialTransportFeedback->reason)}};
+    addOptionalRoot(feedback, "parent_mapping",
+                    provenance.spatialTransportFeedback->parentMapping);
+    result["spatial_transport_feedback"] = std::move(feedback);
+  } else {
+    result["spatial_transport_feedback"] = nullptr;
+  }
+  return result;
+}
 
 llvm::json::Object
 encodePortfolioInput(const SelectedApplicationInput &selection,
@@ -203,10 +274,18 @@ encodePortfolioInput(const SelectedApplicationInput &selection,
   for (const std::string &option : selection.build.compilerOptions)
     compilerOptions.push_back(option);
   result["compiler_options"] = std::move(compilerOptions);
+  llvm::json::Array inputCompilerOptions;
+  for (const std::string &option : selection.input.compilerOptions)
+    inputCompilerOptions.push_back(option);
+  result["input_compiler_options"] = std::move(inputCompilerOptions);
   llvm::json::Array linkOptions;
   for (const std::string &option : selection.build.linkOptions)
     linkOptions.push_back(option);
   result["link_options"] = std::move(linkOptions);
+  llvm::json::Array operatorProtocolSymbols;
+  for (const std::string &symbol : selection.build.operatorProtocolSymbols)
+    operatorProtocolSymbols.push_back(symbol);
+  result["operator_protocol_symbols"] = std::move(operatorProtocolSymbols);
   result["declared_workload"] = selection.input.workload;
   result["declared_runtime_input"] = selection.input.runtimeInput;
   result["declared_oracle"] =
@@ -234,7 +313,40 @@ encodePortfolioInput(const SelectedApplicationInput &selection,
 
 llvm::json::Object encodePairDecision(
     const ApplicationPairDecisionRecord &decision) {
-  llvm::json::Object result;
+  const auto encodeQualityObservation = [](const auto &observation) {
+    llvm::json::Array codes;
+    for (std::uint64_t code : observation.objectiveCodes)
+      codes.push_back(code);
+    llvm::json::Object result{
+        {"system_mapping", encodeRoot(observation.candidate)},
+        {"objective_codes", std::move(codes)},
+        {"provenance", encodeQualityProvenance(observation.provenance)},
+        {"incomplete_reason",
+         observation.incompleteReason
+             ? llvm::json::Value(spelling(*observation.incompleteReason))
+             : llvm::json::Value(nullptr)}};
+    addOptionalRoot(result, "evidence", observation.evidence);
+    return result;
+  };
+  const auto encodeHardwarePromotion = [](const auto &observation) {
+    llvm::json::Array codes;
+    for (std::uint64_t code : observation.objectiveCodes)
+      codes.push_back(code);
+    llvm::json::Object result{
+        {"plan_ordinal", observation.planOrdinal},
+        {"system", encodeRoot(observation.system)},
+        {"objective_codes", std::move(codes)},
+        {"provenance", encodeQualityProvenance(observation.provenance)},
+        {"incomplete_reason",
+         observation.incompleteReason
+             ? llvm::json::Value(spelling(*observation.incompleteReason))
+             : llvm::json::Value(nullptr)},
+        {"promoted_to_exact_mapping", observation.promotedToExactMapping}};
+    addOptionalRoot(result, "evidence", observation.evidence);
+    return result;
+  };
+  llvm::json::Object result{{"schema", "loom.application_pair_decision"},
+                            {"version", "1.0"}};
   if (decision.portfolioInput)
     result["portfolio_input"] = encodePortfolioInput(
         *decision.portfolioInput, decision.portfolioExecutionBinding);
@@ -259,8 +371,7 @@ llvm::json::Object encodePairDecision(
     result["manifest_join_contract"] = *decision.manifestJoinContract;
   else
     result["manifest_join_contract"] = nullptr;
-  result["manifest_join_owner_verified"] =
-      decision.manifestJoinOwnerVerified;
+  result["manifest_join_owner_verified"] = decision.manifestJoinOwnerVerified;
   result["disposition"] = toString(decision.disposition);
   result["invocation_manifest_join_status"] =
       toString(decision.manifestJoinStatus);
@@ -271,6 +382,77 @@ llvm::json::Object encodePairDecision(
   result["planning_record_count"] = decision.planningRecordCount;
   result["non_candidate_planning_record_count"] =
       decision.nonCandidatePlanningRecordCount;
+  llvm::json::Array qualityLabels;
+  for (const std::string &label : decision.qualityObjectiveDimensionLabels)
+    qualityLabels.push_back(label);
+  result["quality_objective_dimension_labels"] = std::move(qualityLabels);
+  result["quality_disposition"] = spelling(decision.qualityDisposition);
+  addOptionalRoot(result, "quality_incomplete_candidate",
+                  decision.qualityIncompleteCandidate);
+  llvm::json::Array qualityObservations;
+  for (const dse::JointDesignQualityObservation &observation :
+       decision.qualityObservations)
+    qualityObservations.push_back(encodeQualityObservation(observation));
+  result["quality_observations"] = std::move(qualityObservations);
+  llvm::json::Array hardwarePromotionLabels;
+  for (const std::string &label :
+       decision.hardwarePromotionObjectiveDimensionLabels)
+    hardwarePromotionLabels.push_back(label);
+  result["hardware_promotion_objective_dimension_labels"] =
+      std::move(hardwarePromotionLabels);
+  llvm::json::Array hardwarePromotions;
+  for (const dse::JointHardwarePromotionObservation &observation :
+       decision.hardwarePromotionObservations)
+    hardwarePromotions.push_back(encodeHardwarePromotion(observation));
+  result["hardware_promotion_observations"] = std::move(hardwarePromotions);
+  llvm::json::Array qualityInvocations;
+  for (const ApplicationPairQualityInvocationRecord &invocation :
+       decision.qualityInvocations) {
+    llvm::json::Object encoded;
+    encoded["plan_ordinal_base"] = invocation.planOrdinalBase;
+    if (invocation.invocationRunKey)
+      encoded["invocation_manifest_run_key"] = llvm::toHex(
+          llvm::ArrayRef<std::uint8_t>(*invocation.invocationRunKey),
+          /*LowerCase=*/true);
+    else
+      encoded["invocation_manifest_run_key"] = nullptr;
+    encoded["quality_disposition"] =
+        spelling(invocation.qualityDisposition);
+    addOptionalRoot(encoded, "quality_incomplete_candidate",
+                    invocation.qualityIncompleteCandidate);
+    addOptionalUnsigned(encoded, "selected_plan_ordinal",
+                        invocation.selectedPlanOrdinal);
+    addOptionalRoot(encoded, "selected_system_mapping",
+                    invocation.selectedMapping);
+    llvm::json::Array invocationQualityLabels;
+    for (const std::string &label :
+         invocation.qualityObjectiveDimensionLabels)
+      invocationQualityLabels.push_back(label);
+    encoded["quality_objective_dimension_labels"] =
+        std::move(invocationQualityLabels);
+    llvm::json::Array invocationQualityObservations;
+    for (const dse::JointDesignQualityObservation &observation :
+         invocation.qualityObservations)
+      invocationQualityObservations.push_back(
+          encodeQualityObservation(observation));
+    encoded["quality_observations"] =
+        std::move(invocationQualityObservations);
+    llvm::json::Array invocationHardwareLabels;
+    for (const std::string &label :
+         invocation.hardwarePromotionObjectiveDimensionLabels)
+      invocationHardwareLabels.push_back(label);
+    encoded["hardware_promotion_objective_dimension_labels"] =
+        std::move(invocationHardwareLabels);
+    llvm::json::Array invocationHardwareObservations;
+    for (const dse::JointHardwarePromotionObservation &observation :
+         invocation.hardwarePromotionObservations)
+      invocationHardwareObservations.push_back(
+          encodeHardwarePromotion(observation));
+    encoded["hardware_promotion_observations"] =
+        std::move(invocationHardwareObservations);
+    qualityInvocations.push_back(std::move(encoded));
+  }
+  result["quality_invocations"] = std::move(qualityInvocations);
   result["host_only_baseline_complete"] = decision.hostOnlyBaselineComplete;
   result["final_application_qor_complete"] =
       decision.finalApplicationQorComplete;
@@ -288,6 +470,8 @@ llvm::json::Object encodePairDecision(
        decision.selectedObjective)
     selectedObjective.push_back(encodeObjectiveObservation(observation));
   result["selected_objective"] = std::move(selectedObjective);
+  addOptionalRoot(result, "selected_system_mapping",
+                  decision.selectedSystemMapping);
   llvm::json::Array candidates;
   for (const ApplicationPairCandidateRecord &candidate : decision.candidates) {
     llvm::json::Object encoded;
@@ -296,10 +480,8 @@ llvm::json::Object encodePairDecision(
           formatComponentViewDigestHex(*candidate.candidateIdentity);
     else
       encoded["candidate_identity"] = nullptr;
-    addOptionalRoot(encoded, "structured_program",
-                    candidate.structuredProgram);
-    addOptionalRoot(encoded, "canonical_dataflow",
-                    candidate.canonicalDataflow);
+    addOptionalRoot(encoded, "structured_program", candidate.structuredProgram);
+    addOptionalRoot(encoded, "canonical_dataflow", candidate.canonicalDataflow);
     if (candidate.planningProjectionIdentity)
       encoded["planning_projection_identity"] =
           formatComponentViewDigestHex(*candidate.planningProjectionIdentity);
@@ -313,8 +495,7 @@ llvm::json::Object encodePairDecision(
       encoded["materialized_projection_identity"] = nullptr;
     encoded["planning_disposition"] =
         candidate.planningDisposition
-            ? llvm::json::Value(
-                  dse::toString(*candidate.planningDisposition))
+            ? llvm::json::Value(dse::toString(*candidate.planningDisposition))
             : llvm::json::Value(nullptr);
     encoded["schedule_intent"] =
         candidate.scheduleIntent
@@ -322,8 +503,8 @@ llvm::json::Object encodePairDecision(
             : llvm::json::Value(nullptr);
     encoded["planning_incomplete_reason"] =
         candidate.planningIncompleteReason
-            ? llvm::json::Value(dse::toString(
-                  *candidate.planningIncompleteReason))
+            ? llvm::json::Value(
+                  dse::toString(*candidate.planningIncompleteReason))
             : llvm::json::Value(nullptr);
     encoded["verified_spectrum"] =
         candidate.verifiedSpectrum
@@ -347,16 +528,20 @@ llvm::json::Object encodePairDecision(
           formatComponentViewDigestHex(observation.scheduleHintDigest);
       mapping["system"] = encodeRoot(observation.system);
       mapping["mapping_disposition"] = spelling(observation.mappingDisposition);
-      mapping["runtime_disposition"] =
-          spelling(observation.runtimeDisposition);
+      mapping["runtime_disposition"] = spelling(observation.runtimeDisposition);
       mapping["incomplete_reason"] =
           observation.incompleteReason
               ? llvm::json::Value(dse::toString(*observation.incompleteReason))
               : llvm::json::Value(nullptr);
       mapping["verified_spectrum"] =
           observation.verifiedSpectrum
+              ? llvm::json::Value(dse::toString(*observation.verifiedSpectrum))
+              : llvm::json::Value(nullptr);
+      mapping["resource_time_verification_incomplete_reason"] =
+          observation.resourceTimeSpectrumIncompleteReason
               ? llvm::json::Value(
-                    dse::toString(*observation.verifiedSpectrum))
+                    dse::resourceTimeSpectrumIncompleteReasonSpelling(
+                        *observation.resourceTimeSpectrumIncompleteReason))
               : llvm::json::Value(nullptr);
       llvm::json::Array mappings;
       for (const ArtifactRootReference &reference : observation.systemMappings)
@@ -370,6 +555,10 @@ llvm::json::Object encodePairDecision(
       for (const ArtifactRootReference &reference : observation.oracleEvidence)
         oracleEvidence.push_back(encodeRoot(reference));
       mapping["oracle_evidence"] = std::move(oracleEvidence);
+      addOptionalUnsigned(mapping, "dfg_cycles", observation.dfgCycles);
+      addOptionalUnsigned(mapping, "cgra_cycles", observation.cgraCycles);
+      addOptionalUnsigned(mapping, "resource_core_cost",
+                          observation.resourceCoreCost);
       mappingObservations.push_back(std::move(mapping));
     }
     encoded["mapping_observations"] = std::move(mappingObservations);
@@ -408,6 +597,138 @@ llvm::json::Object workCounter(const Counter &counter) {
       {"rejected", counter.rejected},
       {"cancelled", counter.cancelled},
       {"elapsed_nanoseconds", counter.elapsedNanoseconds}};
+}
+
+llvm::json::Object mappingProviderWork(
+    const ApplicationMappingProviderWorkObservation &work) {
+  return llvm::json::Object{
+      {"tech_mapping_invocations", work.techMappingInvocations},
+      {"spatial_pnr_invocations", work.spatialPnrInvocations},
+      {"system_pnr_invocations", work.systemPnrInvocations},
+      {"tech_mapping_dispatches", work.techMappingDispatches},
+      {"spatial_pnr_dispatches", work.spatialPnrDispatches},
+      {"system_pnr_dispatches", work.systemPnrDispatches},
+      {"tech_mapping_journal_replays", work.techMappingJournalReplays},
+      {"spatial_pnr_journal_replays", work.spatialPnrJournalReplays},
+      {"system_pnr_journal_replays", work.systemPnrJournalReplays}};
+}
+
+llvm::json::Object
+resourceTimeFunnelObject(const dse::ResourceTimeMappingFunnel &funnel) {
+  const dse::ResourceTimeMappingFunnelAccounting &accounting =
+      funnel.accounting;
+  llvm::json::Object result{
+      {"generated_candidates", accounting.generatedCandidates},
+      {"screened_candidates", accounting.screenedCandidates},
+      {"detailed_frontier_candidates", accounting.detailedFrontierCandidates},
+      {"successive_halving_deferred_candidates",
+       accounting.successiveHalvingDeferredCandidates},
+      {"sound_gate_rejected_candidates",
+       accounting.soundGateRejectedCandidates},
+      {"estimated_candidates", accounting.estimatedCandidates},
+      {"incomplete_candidates", accounting.incompleteCandidates},
+      {"mapping_eligible_schedule_hints",
+       accounting.mappingEligibleScheduleHints},
+      {"screening_comparison_candidates",
+       accounting.screeningComparisonCandidates},
+      {"detailed_schedule_feasible_candidates",
+       accounting.detailedScheduleFeasibleCandidates},
+      {"screening_admissible_candidates",
+       accounting.screeningAdmissibleCandidates},
+      {"screening_detailed_feasible_intersection",
+       accounting.screeningDetailedFeasibleIntersection},
+      {"screening_detailed_best_rank_matches",
+       accounting.screeningDetailedBestRankMatches},
+      {"screening_out_of_domain_candidates",
+       accounting.screeningOutOfDomainCandidates},
+      {"screening_calibrated_physical_candidates",
+       accounting.screeningCalibratedPhysicalCandidates},
+      {"screening_physical_out_of_domain_candidates",
+       accounting.screeningPhysicalOutOfDomainCandidates},
+      {"maximum_screening_lower_bound_gap_picoseconds",
+       accounting.maximumScreeningLowerBoundGapPicoseconds},
+      {"mapping_finalists", accounting.mappingFinalists},
+      {"functional_replay_candidates", accounting.functionalReplayCandidates},
+      {"dataflow_projection_requests", accounting.dataflowProjectionRequests},
+      {"dataflow_projection_cache_hits",
+       accounting.dataflowProjectionCacheHits},
+      {"dataflow_projection_cache_misses",
+       accounting.dataflowProjectionCacheMisses},
+      {"dataflow_projection_cache_capacity_bypasses",
+       accounting.dataflowProjectionCacheCapacityBypasses},
+      {"dataflow_projection_cache_entries",
+       accounting.dataflowProjectionCacheEntries},
+      {"dataflow_projection_cache_retained_bytes",
+       accounting.dataflowProjectionCacheRetainedBytes},
+      {"dataflow_projection_elapsed_nanoseconds",
+       accounting.dataflowProjectionElapsedNanoseconds},
+      {"dataflow_materialized_candidates",
+       accounting.dataflowMaterializedCandidates},
+      {"mapping_plan_candidates", accounting.mappingPlanCandidates},
+      {"unsupported_before_mapping_candidates",
+       accounting.unsupportedBeforeMappingCandidates},
+      {"unsupported_before_mapping_schedule_hints",
+       accounting.unsupportedBeforeMappingScheduleHints},
+      {"application_promotion_accounting_complete",
+       accounting.applicationPromotionAccountingComplete},
+      {"mapping_plan_constructions_avoided_by_exact_memo",
+       accounting.mappingPlanConstructionsAvoidedByExactMemo},
+      {"mapping_calls_deferred_by_model",
+       accounting.mappingCallsDeferredByModel},
+      {"mapping_calls_withheld_by_incomplete",
+       accounting.mappingCallsWithheldByIncomplete},
+      {"exact_invocation_memo_hits", accounting.exactInvocationMemoHits},
+      {"exact_invocation_memo_misses", accounting.exactInvocationMemoMisses},
+      {"exact_invocation_memo_single_flight_waits",
+       accounting.exactInvocationMemoSingleFlightWaits},
+      {"exact_invocation_memo_coalesced_uncached_results",
+       accounting.exactInvocationMemoCoalescedUncachedResults},
+      {"exact_invocation_memo_cancelled_waits",
+       accounting.exactInvocationMemoCancelledWaits},
+      {"exact_invocation_memo_capacity_bypasses",
+       accounting.exactInvocationMemoCapacityBypasses},
+      {"exact_invocation_memo_entries", accounting.exactInvocationMemoEntries},
+      {"exact_invocation_memo_retained_bytes",
+       accounting.exactInvocationMemoRetainedBytes},
+      {"frontier_work",
+       llvm::json::Object{
+           {"source_projections",
+            workCounter(accounting.frontierAccounting.sourceProjections)},
+           {"actions", workCounter(accounting.frontierAccounting.actions)},
+           {"states", workCounter(accounting.frontierAccounting.states)},
+           {"estimates", workCounter(accounting.frontierAccounting.estimates)},
+           {"finalists", workCounter(accounting.frontierAccounting.finalists)},
+           {"state_memo_hits", accounting.frontierAccounting.stateMemoHits},
+           {"state_memo_misses", accounting.frontierAccounting.stateMemoMisses},
+           {"state_memo_pareto_insertions",
+            accounting.frontierAccounting.stateMemoParetoInsertions},
+           {"state_memo_dominated_states",
+            accounting.frontierAccounting.stateMemoDominatedStates},
+           {"state_memo_hit_capacity_rejections",
+            accounting.frontierAccounting.stateMemoHitCapacityRejections},
+           {"state_memo_miss_capacity_rejections",
+            accounting.frontierAccounting.stateMemoMissCapacityRejections},
+           {"states_pruned_by_beam",
+            accounting.frontierAccounting.statesPrunedByBeam},
+           {"terminal_hints_generated",
+            accounting.frontierAccounting.terminalHintsGenerated},
+           {"terminal_hints_retained",
+            accounting.frontierAccounting.terminalHintsRetained},
+           {"terminal_hints_pruned",
+            accounting.frontierAccounting.terminalHintsPruned},
+           {"incremental_lower_bound_updates",
+            accounting.frontierAccounting.incrementalLowerBoundUpdates},
+           {"maximum_retained_bytes",
+            accounting.frontierAccounting.maximumRetainedBytes}}},
+      {"elapsed_nanoseconds", accounting.elapsedNanoseconds},
+      {"truncated", funnel.truncated}};
+  if (funnel.incompleteReason)
+    result["incomplete_reason"] =
+        dse::resourceTimeFrontierIncompleteReasonSpelling(
+            *funnel.incompleteReason);
+  else
+    result["incomplete_reason"] = nullptr;
+  return result;
 }
 
 void addOptionalUnsigned(llvm::json::Object &object, llvm::StringRef key,
@@ -568,8 +889,7 @@ void emitApplicationBuildOperationStatistics(
         payload["duration_ns"] = statistics.durationNanoseconds;
         payload["deterministic_work"] = statistics.deterministicWork;
 #if defined(__linux__)
-        struct rusage usage {
-        };
+        struct rusage usage{};
         if (getrusage(RUSAGE_SELF, &usage) == 0 && usage.ru_maxrss >= 0)
           // Linux reports ru_maxrss in KiB. This is a process high-water
           // observation, not a per-operation allocation attribution.
@@ -663,138 +983,8 @@ void emitApplicationPlanningDiagnostics(
                             prepared.preMappingSourceHostOnlyWork);
         payload["mapping_alternative_count"] =
             prepared.mappingAlternatives.size();
-        const auto &resourceTime = prepared.resourceTimeFunnel.accounting;
-        payload["resource_time_funnel"] = llvm::json::Object{
-            {"generated_candidates", resourceTime.generatedCandidates},
-            {"screened_candidates", resourceTime.screenedCandidates},
-            {"detailed_frontier_candidates",
-             resourceTime.detailedFrontierCandidates},
-            {"successive_halving_deferred_candidates",
-             resourceTime.successiveHalvingDeferredCandidates},
-            {"sound_gate_rejected_candidates",
-             resourceTime.soundGateRejectedCandidates},
-            {"estimated_candidates", resourceTime.estimatedCandidates},
-            {"incomplete_candidates", resourceTime.incompleteCandidates},
-            {"mapping_eligible_schedule_hints",
-             resourceTime.mappingEligibleScheduleHints},
-            {"screening_comparison_candidates",
-             resourceTime.screeningComparisonCandidates},
-            {"detailed_schedule_feasible_candidates",
-             resourceTime.detailedScheduleFeasibleCandidates},
-            {"screening_admissible_candidates",
-             resourceTime.screeningAdmissibleCandidates},
-            {"screening_detailed_feasible_intersection",
-             resourceTime.screeningDetailedFeasibleIntersection},
-            {"screening_detailed_best_rank_matches",
-             resourceTime.screeningDetailedBestRankMatches},
-            {"screening_out_of_domain_candidates",
-             resourceTime.screeningOutOfDomainCandidates},
-            {"maximum_screening_lower_bound_gap_picoseconds",
-             resourceTime.maximumScreeningLowerBoundGapPicoseconds},
-            {"mapping_finalists", resourceTime.mappingFinalists},
-            {"functional_replay_candidates",
-             resourceTime.functionalReplayCandidates},
-            {"dataflow_projection_requests",
-             resourceTime.dataflowProjectionRequests},
-            {"dataflow_projection_cache_hits",
-             resourceTime.dataflowProjectionCacheHits},
-            {"dataflow_projection_cache_misses",
-             resourceTime.dataflowProjectionCacheMisses},
-            {"dataflow_projection_cache_capacity_bypasses",
-             resourceTime.dataflowProjectionCacheCapacityBypasses},
-            {"dataflow_projection_cache_entries",
-             resourceTime.dataflowProjectionCacheEntries},
-            {"dataflow_projection_cache_retained_bytes",
-             resourceTime.dataflowProjectionCacheRetainedBytes},
-            {"dataflow_projection_elapsed_nanoseconds",
-             resourceTime.dataflowProjectionElapsedNanoseconds},
-            {"dataflow_materialized_candidates",
-             resourceTime.dataflowMaterializedCandidates},
-            {"mapping_plan_candidates", resourceTime.mappingPlanCandidates},
-            {"unsupported_before_mapping_candidates",
-             resourceTime.unsupportedBeforeMappingCandidates},
-            {"unsupported_before_mapping_schedule_hints",
-             resourceTime.unsupportedBeforeMappingScheduleHints},
-            {"application_promotion_accounting_complete",
-             resourceTime.applicationPromotionAccountingComplete},
-            {"mapping_plan_constructions_avoided_by_exact_memo",
-             resourceTime.mappingPlanConstructionsAvoidedByExactMemo},
-            {"mapping_calls_deferred_by_model",
-             resourceTime.mappingCallsDeferredByModel},
-            {"mapping_calls_withheld_by_incomplete",
-             resourceTime.mappingCallsWithheldByIncomplete},
-            {"exact_invocation_memo_hits",
-             resourceTime.exactInvocationMemoHits},
-            {"exact_invocation_memo_misses",
-             resourceTime.exactInvocationMemoMisses},
-            {"exact_invocation_memo_single_flight_waits",
-             resourceTime.exactInvocationMemoSingleFlightWaits},
-            {"exact_invocation_memo_coalesced_uncached_results",
-             resourceTime.exactInvocationMemoCoalescedUncachedResults},
-            {"exact_invocation_memo_cancelled_waits",
-             resourceTime.exactInvocationMemoCancelledWaits},
-            {"exact_invocation_memo_capacity_bypasses",
-             resourceTime.exactInvocationMemoCapacityBypasses},
-            {"exact_invocation_memo_entries",
-             resourceTime.exactInvocationMemoEntries},
-            {"exact_invocation_memo_retained_bytes",
-             resourceTime.exactInvocationMemoRetainedBytes},
-            {"frontier_work", llvm::json::Object{
-                                   {"source_projections",
-                                    workCounter(resourceTime.frontierAccounting
-                                                    .sourceProjections)},
-                                   {"actions", workCounter(
-                                                   resourceTime.frontierAccounting
-                                                       .actions)},
-                                   {"states", workCounter(
-                                                   resourceTime.frontierAccounting
-                                                       .states)},
-                                   {"estimates", workCounter(
-                                                     resourceTime
-                                                         .frontierAccounting
-                                                         .estimates)},
-                                   {"finalists", workCounter(
-                                                     resourceTime
-                                                         .frontierAccounting
-                                                         .finalists)},
-                                   {"state_memo_hits",
-                                    resourceTime.frontierAccounting
-                                        .stateMemoHits},
-                                   {"state_memo_misses",
-                                    resourceTime.frontierAccounting
-                                        .stateMemoMisses},
-                                   {"state_memo_pareto_insertions",
-                                    resourceTime.frontierAccounting
-                                        .stateMemoParetoInsertions},
-                                   {"state_memo_dominated_states",
-                                    resourceTime.frontierAccounting
-                                        .stateMemoDominatedStates},
-                                   {"state_memo_hit_capacity_rejections",
-                                    resourceTime.frontierAccounting
-                                        .stateMemoHitCapacityRejections},
-                                   {"state_memo_miss_capacity_rejections",
-                                    resourceTime.frontierAccounting
-                                        .stateMemoMissCapacityRejections},
-                                   {"states_pruned_by_beam",
-                                    resourceTime.frontierAccounting
-                                        .statesPrunedByBeam},
-                                   {"terminal_hints_generated",
-                                    resourceTime.frontierAccounting
-                                        .terminalHintsGenerated},
-                                   {"terminal_hints_retained",
-                                    resourceTime.frontierAccounting
-                                        .terminalHintsRetained},
-                                   {"terminal_hints_pruned",
-                                    resourceTime.frontierAccounting
-                                        .terminalHintsPruned},
-                                   {"incremental_lower_bound_updates",
-                                    resourceTime.frontierAccounting
-                                        .incrementalLowerBoundUpdates},
-                                   {"maximum_retained_bytes",
-                                    resourceTime.frontierAccounting
-                                        .maximumRetainedBytes}}},
-            {"elapsed_nanoseconds", resourceTime.elapsedNanoseconds},
-            {"truncated", prepared.resourceTimeFunnel.truncated}};
+        payload["resource_time_funnel"] =
+            resourceTimeFunnelObject(prepared.resourceTimeFunnel);
         llvm::json::Array resourceTimeEvaluations;
         for (const dse::ResourceTimeCandidateFunnelEvaluation &evaluation :
              prepared.resourceTimeFunnel.evaluations) {
@@ -806,13 +996,25 @@ void emitApplicationPlanningDiagnostics(
                   evaluation.disposition);
           row["screening_lower_bound_picoseconds"] =
               evaluation.screeningLowerBoundPicoseconds;
-          row["screening_feature_score"] = evaluation.screeningFeatureScore;
-          row["screening_support"] =
+          row["screening_critical_path_lower_bound_picoseconds"] =
+              evaluation.screeningCriticalPathLowerBoundPicoseconds;
+          row["screening_critical_path_support"] =
               dse::resourceTimeEstimateSupportSpelling(
+                  evaluation.screeningCriticalPathSupport);
+          row["screening_resource_work_lower_bound_picoseconds"] =
+              evaluation.screeningResourceWorkLowerBoundPicoseconds;
+          row["screening_resource_work_support"] =
+              dse::resourceTimeEstimateSupportSpelling(
+                  evaluation.screeningResourceWorkSupport);
+          row["screening_feature_score"] = evaluation.screeningFeatureScore;
+          row["screening_support"] = dse::resourceTimeEstimateSupportSpelling(
                   evaluation.screeningSupport);
           row["screening_confidence"] =
               dse::resourceTimeEstimateConfidenceSpelling(
                   evaluation.screeningConfidence);
+          row["physical_model_support"] =
+              dse::resourceTimeEstimateSupportSpelling(
+                  evaluation.physicalModelSupport);
           row["detailed_frontier_evaluated"] =
               evaluation.detailedFrontierEvaluated;
           if (evaluation.concurrencyBounds) {
@@ -846,7 +1048,8 @@ void emitApplicationPlanningDiagnostics(
               evaluation.maximumUsefulResourceUnits;
           const std::uint64_t retainedScheduleCount = llvm::count_if(
               prepared.resourceTimeFunnel.finalists, [&](const auto &finalist) {
-                return finalist.candidateIdentity == evaluation.candidateIdentity;
+                return finalist.candidateIdentity ==
+                       evaluation.candidateIdentity;
               });
           row["retained_mapping_schedule_count"] = retainedScheduleCount;
           row["retained_for_mapping"] = retainedScheduleCount != 0;
@@ -1095,6 +1298,17 @@ void emitApplicationPreMappingIncompleteDiagnostics(
       });
 }
 
+void emitApplicationResourceTimeFunnelTerminalDiagnostics(
+    const dse::ResourceTimeMappingFunnel &funnel, llvm::StringRef status) {
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "resource_time_application_funnel";
+        fields["status"] = status;
+        fields["resource_time_funnel"] = resourceTimeFunnelObject(funnel);
+      });
+}
+
 void emitApplicationMappingDiagnostics(
     const ApplicationMappingExecution &execution) {
   emitInvocationDiagnostic(
@@ -1103,6 +1317,8 @@ void emitApplicationMappingDiagnostics(
         const dse::JointDesignExecutionSummary &summary =
             execution.execution.summary;
         llvm::json::Object payload;
+        payload["schema"] = "loom.application_pair_evidence";
+        payload["version"] = "1.0";
         payload["domain"] = "application_mapping_join";
         if (execution.provenance.pairDecision)
           payload["pair_decision"] =
@@ -1204,6 +1420,11 @@ void emitApplicationMappingDiagnostics(
               resourceTime.screeningDetailedBestRankMatches;
           payload["resource_time_screening_out_of_domain_candidates"] =
               resourceTime.screeningOutOfDomainCandidates;
+          payload["resource_time_screening_calibrated_physical_candidates"] =
+              resourceTime.screeningCalibratedPhysicalCandidates;
+          payload
+              ["resource_time_screening_physical_out_of_domain_candidates"] =
+                  resourceTime.screeningPhysicalOutOfDomainCandidates;
           payload
               ["resource_time_maximum_screening_lower_bound_gap_picoseconds"] =
                   resourceTime.maximumScreeningLowerBoundGapPicoseconds;
@@ -1227,7 +1448,8 @@ void emitApplicationMappingDiagnostics(
               resourceTime.dataflowMaterializedCandidates;
           payload["resource_time_mapping_plan_candidates"] =
               resourceTime.mappingPlanCandidates;
-          payload["resource_time_mapping_plan_constructions_avoided_by_exact_memo"] =
+          payload["resource_time_mapping_plan_constructions_avoided_by_exact_"
+                  "memo"] =
               resourceTime.mappingPlanConstructionsAvoidedByExactMemo;
           payload["resource_time_unsupported_before_mapping_schedule_hints"] =
               resourceTime.unsupportedBeforeMappingScheduleHints;
@@ -1243,7 +1465,8 @@ void emitApplicationMappingDiagnostics(
               resourceTime.exactInvocationMemoMisses;
           payload["resource_time_exact_invocation_memo_single_flight_waits"] =
               resourceTime.exactInvocationMemoSingleFlightWaits;
-          payload["resource_time_exact_invocation_memo_coalesced_uncached_results"] =
+          payload["resource_time_exact_invocation_memo_coalesced_uncached_"
+                  "results"] =
               resourceTime.exactInvocationMemoCoalescedUncachedResults;
           payload["resource_time_exact_invocation_memo_cancelled_waits"] =
               resourceTime.exactInvocationMemoCancelledWaits;
@@ -1301,8 +1524,7 @@ void emitApplicationMappingDiagnostics(
             summary.coldReopenWallTimeNanoseconds;
         payload["incremental_reopen_wall_time_ns"] =
             summary.incrementalReopenWallTimeNanoseconds;
-        addOptionalUnsigned(
-            payload, "time_to_first_feasible_wall_time_ns",
+        addOptionalUnsigned(payload, "time_to_first_feasible_wall_time_ns",
             summary.timeToFirstFeasibleWallTimeNanoseconds);
         addOptionalUnsigned(payload, "time_to_best_wall_time_ns",
                             summary.timeToBestWallTimeNanoseconds);
@@ -1342,11 +1564,9 @@ void emitApplicationMappingDiagnostics(
             {"parent_graph_binding_count", summary.parentGraphBindingCount},
             {"preserved_graph_binding_count",
              summary.preservedGraphBindingCount},
-            {"reopened_graph_binding_count",
-             summary.reopenedGraphBindingCount},
+            {"reopened_graph_binding_count", summary.reopenedGraphBindingCount},
             {"parent_resource_use_count", summary.parentResourceUseCount},
-            {"preserved_resource_use_count",
-             summary.preservedResourceUseCount},
+            {"preserved_resource_use_count", summary.preservedResourceUseCount},
             {"reopened_resource_use_count", summary.reopenedResourceUseCount},
             {"parent_service_realization_count",
              summary.parentServiceRealizationCount},
@@ -1355,9 +1575,12 @@ void emitApplicationMappingDiagnostics(
             {"reopened_service_realization_count",
              summary.reopenedServiceRealizationCount}};
         llvm::json::Array incrementalTransitions;
-        for (const ApplicationIncrementalMappingObservation &observation :
-             execution.provenance.incrementalMappingObservations) {
+        for (const auto indexed : llvm::enumerate(
+                 execution.provenance.incrementalMappingObservations)) {
+          const ApplicationIncrementalMappingObservation &observation =
+              indexed.value();
           llvm::json::Object transition;
+          transition["observation_ordinal"] = indexed.index();
           transition["parent_mapping"] = encodeRoot(observation.parentMapping);
           transition["child_system"] = encodeRoot(observation.childSystem);
           if (observation.childMapping)
@@ -1391,18 +1614,27 @@ void emitApplicationMappingDiagnostics(
               observation.preservedSystemBindings;
           transition["reopened_system_bindings"] =
               observation.reopenedSystemBindings;
-          transition["disposition"] =
-              spelling(observation.disposition);
+          transition["disposition"] = spelling(observation.disposition);
           if (observation.incompleteReason)
             transition["incomplete_reason"] =
                 dse::toString(*observation.incompleteReason);
           else
             transition["incomplete_reason"] = nullptr;
-          transition["cold_wall_time_ns"] =
-              observation.coldWallTimeNanoseconds;
+          transition["cold_wall_time_ns"] = observation.coldWallTimeNanoseconds;
           transition["incremental_wall_time_ns"] =
               observation.incrementalWallTimeNanoseconds;
           transition["wall_time_ns"] = observation.wallTimeNanoseconds;
+          transition["cold_verifier_retained_bytes"] =
+              observation.coldVerifierRetainedBytes;
+          transition["incremental_verifier_retained_bytes"] =
+              observation.incrementalVerifierRetainedBytes;
+          transition["cold_verifier_work"] = observation.coldVerifierWork;
+          transition["incremental_verifier_work"] =
+              observation.incrementalVerifierWork;
+          transition["cold_provider_work"] =
+              mappingProviderWork(observation.coldProviderWork);
+          transition["incremental_provider_work"] =
+              mappingProviderWork(observation.incrementalProviderWork);
           transition["cold_dfg_cycles"] =
               observation.coldDfgCycles
                   ? llvm::json::Value(*observation.coldDfgCycles)
@@ -1424,6 +1656,22 @@ void emitApplicationMappingDiagnostics(
         }
         payload["application_incremental_mapping_transitions"] =
             std::move(incrementalTransitions);
+        if (execution.provenance.resourceTimeMappingPath) {
+          const ApplicationResourceTimeMappingPath &path =
+              *execution.provenance.resourceTimeMappingPath;
+          llvm::json::Array observationOrdinals;
+          for (const std::uint64_t ordinal : path.observationOrdinals)
+            observationOrdinals.push_back(ordinal);
+          payload["application_resource_time_mapping_path"] =
+              llvm::json::Object{
+                  {"schedule_owner_plan_ordinal",
+                   path.scheduleOwnerPlanOrdinal},
+                  {"schedule_hint_digest",
+                   formatComponentViewDigestHex(path.scheduleHintDigest)},
+                  {"observation_ordinals", std::move(observationOrdinals)}};
+        } else {
+          payload["application_resource_time_mapping_path"] = nullptr;
+        }
         payload["verified_alternatives"] = summary.verifiedAlternatives;
         payload["quality_disposition"] = spelling(summary.qualityDisposition);
         payload["declared_work_exhausted"] = summary.declaredWorkExhausted;
@@ -1521,6 +1769,8 @@ void emitApplicationMappingDiagnostics(
           for (std::uint64_t code : observation.objectiveCodes)
             objective.push_back(code);
           entry["objective_codes"] = std::move(objective);
+          entry["provenance"] =
+              encodeQualityProvenance(observation.provenance);
           if (observation.incompleteReason)
             entry["incomplete_reason"] =
                 spelling(*observation.incompleteReason);
@@ -1543,6 +1793,8 @@ void emitApplicationMappingDiagnostics(
           for (std::uint64_t code : observation.objectiveCodes)
             objective.push_back(code);
           entry["objective_codes"] = std::move(objective);
+          entry["provenance"] =
+              encodeQualityProvenance(observation.provenance);
           if (observation.incompleteReason)
             entry["incomplete_reason"] =
                 spelling(*observation.incompleteReason);
@@ -1628,6 +1880,8 @@ void emitApplicationMappingDiagnostics(
                 accounting.unmatchedHints;
             payload["resource_time_transition_unsupported_hints"] =
                 accounting.transitionUnsupportedHints;
+            payload["resource_time_transition_proof_failures"] =
+                accounting.transitionProofFailures;
             payload["resource_time_verified_scenarios"] =
                 accounting.verifiedScenarios;
             payload["resource_time_independent_mapping_imports"] =
@@ -1648,11 +1902,16 @@ void emitApplicationMappingDiagnostics(
                 accounting.elapsedNanoseconds;
             if (const auto *incomplete =
                     std::get_if<dse::IncompleteResourceTimeSpectrum>(
-                        &outcome.resourceTimeSpectrum->verification))
+                        &outcome.resourceTimeSpectrum->verification)) {
               payload["resource_time_verification_incomplete_reason"] =
+                  dse::resourceTimeSpectrumIncompleteReasonSpelling(
+                      incomplete->reason);
+              payload["resource_time_verification_diagnostic"] =
                   incomplete->diagnostic;
-            else
+            } else {
               payload["resource_time_verification_incomplete_reason"] = nullptr;
+              payload["resource_time_verification_diagnostic"] = nullptr;
+            }
           }
           addOptionalUnsigned(payload, "incomplete_node_ordinal",
                               outcome.incompleteNodeOrdinal);
@@ -1740,6 +1999,8 @@ void emitApplicationPairDecisionDiagnostics(
       DiagnosticVerbosity::Summary, InvocationDiagnosticStage::DataflowLowering,
       InvocationDiagnosticEvent::Statistics, [&] {
         llvm::json::Object payload;
+        payload["schema"] = "loom.application_pair_disposition";
+        payload["version"] = "1.0";
         payload["domain"] = "application_pair_decision";
         payload["pair_decision"] = encodePairDecision(decision);
         return llvm::json::Value(std::move(payload));

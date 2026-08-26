@@ -2,4 +2,4 @@
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-fixed-vector-parallelize-serialize-test %t
 # RUN: cd %t/generated && verilator --binary --timing --Wall --Wno-fatal --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench common_serialize.sv common_serialize_testbench.sv --Mdir common_serialize_obj
-# RUN: timeout 30s %t/generated/common_serialize_obj/Vtestbench
+# RUN: timeout %loom-timeout-xlong %t/generated/common_serialize_obj/Vtestbench

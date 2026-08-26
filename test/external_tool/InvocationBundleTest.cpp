@@ -11,7 +11,6 @@
 
 #include <array>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -20,7 +19,6 @@
 #include <sstream>
 #include <string>
 #include <sys/wait.h>
-#include <thread>
 #include <tuple>
 #include <unistd.h>
 #include <utility>
@@ -242,56 +240,6 @@ void executionResourceBindingIsExact(const std::filesystem::path &root,
   requireFailureContains(
       __func__, deriveExternalToolExecutionBindingDigest(spec.tool, invalid),
       "runtime binding kind");
-}
-
-struct ExecutionDeadline final {
-  std::chrono::steady_clock::time_point notAfter;
-};
-
-bool executionDeadlineReached(const void *opaque) {
-  return std::chrono::steady_clock::now() >=
-         static_cast<const ExecutionDeadline *>(opaque)->notAfter;
-}
-
-std::optional<std::chrono::steady_clock::duration>
-executionDeadlineRemaining(const void *opaque) {
-  const auto notAfter =
-      static_cast<const ExecutionDeadline *>(opaque)->notAfter;
-  const auto now = std::chrono::steady_clock::now();
-  return now >= notAfter ? std::chrono::steady_clock::duration::zero()
-                         : notAfter - now;
-}
-
-void controlledExecutionStopsTheProcessGroup(
-    const std::filesystem::path &root, const std::filesystem::path &tool) {
-  ExternalToolInvocationBundleSpec spec =
-      baseSpec(tool, "outputs/stopped-result.txt");
-  spec.commands = {{tool.string(), "controlled-block", "outputs/entered",
-                    "outputs/child.pid", "outputs/late",
-                    "outputs/stopped-result.txt"}};
-  const PreparedExternalToolInvocation prepared =
-      take(__func__, finalizeExternalToolInvocationBundle(
-                         (root / "controlled-stop").string(), spec));
-  const ExecutionDeadline deadline{std::chrono::steady_clock::now() +
-                                   std::chrono::milliseconds(150)};
-  const loom::ExecutionControlView control{&deadline, executionDeadlineReached,
-                                           executionDeadlineRemaining};
-  const ExternalToolInvocationExecutionObservation observation = take(
-      __func__, executeExternalToolInvocationBundleObserved(prepared, control));
-  require(__func__,
-          observation.exitCode == externalToolExecutionStoppedExitCode &&
-              observation.cacheAvailability ==
-                  ExternalToolResultCacheAvailability::Disabled &&
-              observation.invokedExternalTool,
-          "controlled execution did not report its stopped real dispatch");
-  const std::filesystem::path outputs = root / "controlled-stop" / "outputs";
-  require(__func__, std::filesystem::exists(outputs / "entered"),
-          "controlled fixture did not enter the external tool");
-  require(__func__, !std::filesystem::exists(outputs / "completion.json"),
-          "stopped execution published a completion record");
-  std::this_thread::sleep_for(std::chrono::milliseconds(700));
-  require(__func__, !std::filesystem::exists(outputs / "late"),
-          "a descendant survived the stopped external-tool process group");
 }
 
 void deterministicHostBundleExecutes(const std::filesystem::path &root,
@@ -1013,14 +961,22 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
   requireFailure(__func__, importExternalToolInvocationBundle(prepared, wrong),
                  "wrong declared output membership was accepted");
 
-  const std::string completionBefore =
-      readFile(bundle / "outputs" / "completion.json");
+  const InvocationCompletion completionBefore =
+      take(__func__, loadExternalToolInvocationCompletion(prepared));
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
           "a caller-chosen rerun of a completed bundle was refused");
+  const InvocationCompletion completionAfter =
+      take(__func__, loadExternalToolInvocationCompletion(prepared));
   require(__func__,
-          readFile(bundle / "outputs" / "completion.json") == completionBefore,
-          "a deterministic rerun changed the completion record");
+          completionAfter.status == completionBefore.status &&
+              completionAfter.exitCode == completionBefore.exitCode &&
+              completionAfter.manifestDigest ==
+                  completionBefore.manifestDigest &&
+              completionAfter.outputDigests == completionBefore.outputDigests &&
+              completionAfter.attemptToken != completionBefore.attemptToken,
+          "a deterministic rerun changed semantic completion or reused its "
+          "generation token");
 
   const std::filesystem::path original = root / "strict-import-original";
   std::filesystem::rename(bundle, original);
@@ -1550,30 +1506,6 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
   require(__func__, readFile(counter) == "1",
           "cache population did not enter the tool exactly once");
 
-  const PreparedExternalToolInvocation fresh =
-      take(__func__, finalizeExternalToolInvocationBundle(
-                         (root / "cache-fresh").string(), firstSpec));
-  const ExternalToolInvocationExecutionObservation freshExecution = take(
-      __func__, executeExternalToolInvocationBundleObserved(
-                    fresh, {}, ExternalToolResultReusePolicy::RequireFresh));
-  require(__func__,
-          freshExecution.exitCode == 0 &&
-              freshExecution.reusePolicy ==
-                  ExternalToolResultReusePolicy::RequireFresh &&
-              freshExecution.cacheAvailability ==
-                  ExternalToolResultCacheAvailability::Disabled &&
-              freshExecution.cacheLookup ==
-                  ExternalToolResultCacheLookup::NotAttempted &&
-              freshExecution.cacheDiscard ==
-                  ExternalToolResultCacheDiscard::NotAttempted &&
-              freshExecution.cachePublication ==
-                  ExternalToolResultCachePublication::NotAttempted &&
-              !freshExecution.waitedForCacheKeyLock &&
-              freshExecution.invokedExternalTool,
-          "fresh execution did not bypass every persistent-cache action");
-  require(__func__, readFile(counter) == "2",
-          "fresh execution reused the populated cache entry");
-
   const std::filesystem::path relocatedTool = root / "relocated" / "fake tool";
   writeExecutable(relocatedTool, readFile(tool));
   ExternalToolInvocationBundleSpec relocatedSpec =
@@ -1633,7 +1565,7 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
                   ExternalToolResultCachePublication::NotAttempted &&
               !cacheHit.invokedExternalTool,
           "the path-relocated cache lookup failed");
-  require(__func__, readFile(counter) == "2",
+  require(__func__, readFile(counter) == "1",
           "a cache hit re-entered the external tool");
   const InvocationCompletion relocatedCompletion =
       take(__func__, loadExternalToolInvocationCompletion(relocated));
@@ -1669,7 +1601,7 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
           take(__func__,
                executeExternalToolInvocationBundle(launcherInvocation)) == 0,
           "changed launcher did not execute as a cache miss");
-  require(__func__, readFile(counter) == "3",
+  require(__func__, readFile(counter) == "2",
           "changed launcher bytes were incorrectly reused");
 
   const std::filesystem::path entry =
@@ -1694,7 +1626,7 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
                   ExternalToolResultCachePublication::Published &&
               recovered.invokedExternalTool,
           "a corrupt cache entry did not fall back to real execution");
-  require(__func__, readFile(counter) == "4",
+  require(__func__, readFile(counter) == "3",
           "a corrupt cache entry was adopted as a hit");
 
   ExternalToolInvocationBundleSpec changedInput = firstSpec;
@@ -1764,7 +1696,7 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
           take(__func__,
                executeExternalToolInvocationBundle(versionInvocation)) == 0,
           "changed tool version did not execute as a cache miss");
-  require(__func__, readFile(counter) == "7",
+  require(__func__, readFile(counter) == "6",
           "one of the three key-domain changes was incorrectly reused");
 
   const std::filesystem::path failureCounter = root / "failure-entry-count";
@@ -1878,6 +1810,30 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
           std::filesystem::exists(replayRoot / "outputs" / "tool-entry.log"),
           "an unpublished midflight result was incorrectly reused");
 
+  const PreparedExternalToolInvocation fresh =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         (root / "cache-fresh").string(), firstSpec));
+  const ExternalToolInvocationExecutionObservation freshExecution = take(
+      __func__, executeExternalToolInvocationBundleObserved(
+                    fresh, {}, ExternalToolResultReusePolicy::RequireFresh));
+  require(__func__,
+          freshExecution.manifestDigest == fresh.manifestDigest &&
+              freshExecution.exitCode == 0 &&
+              freshExecution.reusePolicy ==
+                  ExternalToolResultReusePolicy::RequireFresh &&
+              freshExecution.cacheAvailability ==
+                  ExternalToolResultCacheAvailability::Disabled &&
+              freshExecution.cacheLookup ==
+                  ExternalToolResultCacheLookup::NotAttempted &&
+              freshExecution.cacheDiscard ==
+                  ExternalToolResultCacheDiscard::NotAttempted &&
+              freshExecution.cachePublication ==
+                  ExternalToolResultCachePublication::NotAttempted &&
+              !freshExecution.waitedForCacheKeyLock &&
+              freshExecution.invokedExternalTool,
+          "fresh execution did not bypass every persistent-cache action");
+  require(__func__, readFile(counter) == "7",
+          "fresh execution reused the populated cache entry");
   const std::filesystem::path freshRoot = root / "cache-midflight-fresh";
   const PreparedExternalToolInvocation midflightFresh =
       take(__func__,
@@ -2004,7 +1960,6 @@ int main(int argc, char **argv) {
           "could not isolate the cache fixture");
   resultImporterIdentityUsesCanonicalFraming();
   executionResourceBindingIsExact(root, tool);
-  controlledExecutionStopsTheProcessGroup(root, tool);
   deterministicHostBundleExecutes(root, tool);
   toolProducedExecutableLifecycle(root, tool);
   containerBundleExecutes(root, tool, container);

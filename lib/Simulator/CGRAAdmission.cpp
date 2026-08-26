@@ -27,7 +27,7 @@ llvm::Error invalid(llvm::Twine message) {
 
 } // namespace
 
-PreparedCgraExecution::PreparedCgraExecution(std::unique_ptr<Impl> impl)
+PreparedCgraExecution::PreparedCgraExecution(std::shared_ptr<Impl> impl)
     : impl_(std::move(impl)) {}
 PreparedCgraExecution::PreparedCgraExecution(
     PreparedCgraExecution &&) noexcept = default;
@@ -134,7 +134,7 @@ prepareCgraExecution(const ArtifactRootReference &dataflowReference,
     graphs.push_back({graphRef, std::move(execution), std::move(actors)});
   }
 
-  return PreparedCgraExecution(std::make_unique<PreparedCgraExecution::Impl>(
+  return PreparedCgraExecution(std::make_shared<PreparedCgraExecution::Impl>(
       std::move(*dataflow), std::move(*dataflowView), std::move(*fabric),
       std::move(*tech), std::move(*spatial), std::move(*inspection),
       std::move(*executionPlan), std::move(graphs)));

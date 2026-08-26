@@ -133,26 +133,55 @@ system_budget = min(3 * spatial_reference,
                     3 * Spatial-only absolute budget)
 ```
 
-The DFG Spatial-only absolute budget is 15 seconds, so its paired System + DFG
-absolute ceiling is 45 seconds. A one-second Spatial-only case still receives
-a three-second System budget, not the ceiling. Tiny cases use a persistent
-warmed simulator and enough deterministic repetitions to make the 100 ms
-floor meaningful. A ratio at or above ten is always a conformance failure.
-The factor three is an initial suite-wide policy and may change only from
-aggregate profiling evidence, never as a per-case exception.
+The DFG Spatial-only absolute budget is the `fast` tier from the canonical
+[`timeout-budgets.json`](../config/timeout-budgets.json), so its paired System
++ DFG absolute ceiling is derived by the formula above. A case below that
+ceiling still receives the formula-derived budget, not the ceiling. Tiny cases
+use a persistent warmed simulator and enough deterministic repetitions to make
+the 100 ms floor meaningful. A ratio at or above ten is always a conformance
+failure. The factor three is an initial suite-wide policy and may change only
+from aggregate profiling evidence, never as a per-case exception.
 
-CGRA Spatial-only qualification uses a 45-second per-attempt ceiling for the
-exact ten representative LoomBench rows selected by the tracked operator gate.
-Each row discards one warm-up execution and records three measured executions.
-Every measurement includes runtime-input loading, engine execution, and
-observation projection in active wall time. Artifact publication is measured
-separately and excluded. Peak resident memory is the high-water mark of the
-whole workload batch, not a per-execution sample. The profile binds the current
-operator-gate digest and exact Dataflow, workload, runtime-input, Fabric,
-TechMapping, and SpatialMapping roots.
+CGRA Spatial-only bring-up uses the canonical `medium` tier as its bootstrap
+ceiling while at least the ten representative workloads in this specification
+establish warmed active-wall, reference-cycle-rate, event-count, contention,
+and peak-memory evidence. Qualification then uses a 45-second per-attempt
+ceiling for the exact ten representative LoomBench rows selected by the
+tracked operator gate. Each row discards one warm-up execution and records
+three measured executions. Every measurement includes runtime-input loading,
+engine execution, and observation projection in active wall time. Artifact
+publication is measured separately and excluded. Peak resident memory is the
+high-water mark of the whole workload batch, not a per-execution sample. The
+profile binds the current operator-gate digest and exact Dataflow, workload,
+runtime-input, Fabric, TechMapping, and SpatialMapping roots.
 
-The conformance owner derives the sole suite-wide CGRA Spatial-only absolute
-budget with integer arithmetic:
+Qualification uses the production resolved Spatial PnR policy with
+`ExhaustConfiguredWork`; it does not replace that policy with a bounded-prefix
+completion goal or a fixture-local restart count. The same ResolvedConfig owns
+the preceding TechMapping search. That producer's bounded canonical frontier
+and typed outcome remain visible: a retained `SemanticLimitReached` frontier is
+not relabeled exhaustive or used to claim TechMapping optimality. Spatial PnR
+consumes the exact retained set and independently exhausts its configured work.
+The gate therefore qualifies PnR and simulation for those verified input
+Mappings; it does not prove an exhaustive TechMapping frontier. Each
+profile records both providers' typed outcomes and the Spatial PnR canonical
+planned and consumed work ledger. A
+completed qualification requires every planned unit to be consumed and the
+restart plan to equal the resolved seed-attempt count. Proof not established,
+semantic limits, cancellation, and process timeout remain typed incomplete
+outcomes and do not publish or preserve a gate file. A completed empty result
+is retained as a typed infeasibility outcome rather than being inferred from a
+timeout or an incomplete search.
+
+Each workload profile receives the canonical `xlong` process ceiling. This is
+an execution limit, not a PnR semantic-work bound: reaching it produces an
+incomplete qualification outcome, while a published gate still requires the
+production PnR provider to consume its complete configured work ledger.
+
+Before System + CGRA conformance begins, the conformance owner must publish one
+suite-wide CGRA Spatial-only absolute budget in tracked gate configuration.
+The value is selected from the aggregate evidence and the 100 k
+reference-cycles-per-wall-second target, and is derived with integer arithmetic:
 
 ```text
 case_target_ns = ceil(reference_cycles * 1,000,000,000 / 100,000)
@@ -176,6 +205,49 @@ targets at least 100 k reference cycles per wall second. Raw gem5 ticks are
 not reference cycles. Corpus orchestration uses at most
 `min(nproc - 4, memory-derived worker limit, 120)` outer workers and does not
 hide nested oversubscription inside one case.
+
+Host performance observations belong to an explicit fresh diagnostic attempt,
+not ordinary Evaluation Evidence. The ordinary gem5 provider declares no
+performance output and enables no Bridge or engine host-clock accounting. A
+diagnostic preparation declares the profile outputs, requires a fresh external
+attempt, validates the root-local attempt generation, and finalizes the same
+functional result through the Evaluation Evidence owner before attaching an
+invocation-local performance sidecar. The sidecar is neither cached nor an
+input to candidate identity, ordering, legality, or objective selection.
+
+`loom.gem5_system_performance_profile.5` owns three disjoint gem5 host
+intervals: configuration through `m5.instantiate()`, `m5.simulate()` alone,
+and post-simulation observation publication. Each interval reports wall time;
+simulation and observation report process CPU time over the same respective
+window. Exactly one typed readiness interval is present inside the
+configuration interval. DFG and CGRA report managed-engine startup wall and
+gem5/Python self CPU time. RTL reports external-engine socket-readiness wall
+and gem5/Python self CPU time because its controller already owns the engine
+process. Managed-engine process CPU covers the managed child engine's complete
+lifetime and is absent for RTL. Bridge callback CPU, Bridge engine-wait wall
+time, message count, invocation count, Bridge count, and clock-failure count
+are separate fields. A failed clock sample makes the diagnostic profile
+unavailable. A nonintegral launch-to-retirement
+reference-cycle distance is reported as unavailable for that invocation rather
+than changing a valid functional result. Tool failure, cancellation, and
+execution limits retain their typed Evaluation outcomes and never become
+infeasibility.
+
+The execution-matrix harness reports setup through
+`loom.execution_matrix_lifecycle.4.0`. The inclusive `setup` aggregate has no
+parent. Its inclusive children name the stable operations
+`dataflow_construction_and_publication`,
+`fabric_module_construction_and_finalization`, `tech_mapping`, `spatial_pnr`,
+`system_fabric_and_interconnect_construction`,
+`configuration_abi_and_hardware_implementation_generation`,
+`system_mapping_and_pnr`, `guest_compile_and_link`,
+`runtime_binding_and_deployment_finalization`, and
+`workload_and_runtime_input_publication`; every child names `setup` as its
+parent. Every aggregate and child reports wall time, self CPU time, waited-child
+CPU time, the self-process lifetime high-water RSS snapshot, and the maximum
+waited-descendant RSS snapshot. These observations do not alter construction
+order, cache policy, identity, or evidence. Inclusive rows overlap and must not
+be summed; RSS snapshots are not interval deltas.
 
 ## Hardware-Implementation And Evidence Anchor
 

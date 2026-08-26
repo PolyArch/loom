@@ -76,6 +76,34 @@ void requireSuccess(llvm::StringRef test, llvm::Error error) {
     deployment::test::fail(test, llvm::toString(std::move(error)));
 }
 
+class MappedSpatialHardwareFixtureObservation final {
+public:
+  MappedSpatialHardwareFixtureObservation(
+      MappedSpatialHardwareFixtureObserver observer,
+      MappedSpatialHardwareFixtureOperation operation)
+      : observer_(observer), operation_(operation) {
+    if (observer_)
+      observer_(operation_, MappedSpatialHardwareFixtureBoundary::Begin);
+  }
+
+  ~MappedSpatialHardwareFixtureObservation() {
+    if (observer_)
+      observer_(operation_, MappedSpatialHardwareFixtureBoundary::End);
+  }
+
+private:
+  MappedSpatialHardwareFixtureObserver observer_;
+  MappedSpatialHardwareFixtureOperation operation_;
+};
+
+template <typename Build>
+auto observeMappedSpatialHardwareFixtureOperation(
+    MappedSpatialHardwareFixtureObserver observer,
+    MappedSpatialHardwareFixtureOperation operation, Build &&build) {
+  MappedSpatialHardwareFixtureObservation observation(observer, operation);
+  return std::forward<Build>(build)();
+}
+
 void writePackedField(std::vector<std::uint8_t> &bytes, std::uint32_t bitOffset,
                       std::uint32_t bitCount, std::uint64_t value) {
   for (std::uint32_t bit = 0; bit != bitCount; ++bit)
@@ -192,11 +220,12 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
     %published_value:2 = dataflow.sync %start, %value
         : (none, i32) -> (none, i32)
     %sum = arith.addi %stream1_lane#0, %increment : i32
+    %stream1_sum = arith.addi %sum, %increment : i32
     %scheduled = arith.addi %value, %increment : i32
     %scheduled_done:2 = dataflow.sync %published_value#0, %scheduled
         : (none, i32) -> (none, i32)
     %published_stream0 = dataflow.sync %stream0_lane#0 : (i32) -> i32
-    %published_stream1 = dataflow.sync %sum : (i32) -> i32
+    %published_stream1 = dataflow.sync %stream1_sum : (i32) -> i32
     %retired:3 = dataflow.sync %scheduled_done#0, %published_stream0,
         %published_stream1 : (none, i32, i32) -> (none, i32, i32)
     %stored = dataflow.store %memory[%address] %store_value
@@ -340,7 +369,7 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
       {1, 1, syncPorts, syncPorts},
       {1, 2, syncPorts, syncPorts},
       {1, 3, syncPorts, syncPorts},
-      {2, 2, loopInputPorts, loopOutputPorts},
+      {2, 2, syncPorts, syncPorts},
       {2, 0, demuxInputPorts, demuxOutputPorts},
       {2, 3, demuxInputPorts, demuxOutputPorts},
       {2, 1, constantPorts, constantPorts},
@@ -415,7 +444,7 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
     requireSuccess(test, fu.close(outputs));
   };
 
-  for (std::size_t peOrdinal = 0; peOrdinal != 4; ++peOrdinal) {
+  for (std::size_t peOrdinal = 0; peOrdinal != 5; ++peOrdinal) {
     auto attachment = take(test, network.attachment(5 + peOrdinal));
     auto pe =
         take(test, spatial.addPe(attachment.inputs(),
@@ -511,7 +540,6 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
       outputs.push_back(take(test, pe.output(ordinal)));
     requireSuccess(test, attachment.connectOutputs(outputs));
   };
-  addLoopPe(9);
   addLoopPe(18);
 
   auto spatialAddAttachment = take(test, network.attachment(13));
@@ -743,6 +771,36 @@ ArtifactRootReference generateTechMapping(llvm::StringRef test,
   return outputs->front().artifacts.front();
 }
 
+llvm::Expected<dse::CandidateGeneratorProviderResult>
+invokeRootCompleteSpatialPnr(
+    llvm::ArrayRef<ArtifactRootReference> techMappings,
+    const ArtifactRootReference &fabric,
+    const pnr::ResolvedPnrConfigView &spatialPnrConfig,
+    const ExecutionControlView &executionControl, ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  auto fabricRoot = fabric::importEntireFabricRoot(fabric, artifacts);
+  if (!fabricRoot)
+    return fabricRoot.takeError();
+  auto physicalTiming = fabric::projectNormalizedFabricPhysicalTimingProfile(
+      fabricRoot->view());
+  if (!physicalTiming)
+    return physicalTiming.takeError();
+  auto physicalTimingReference =
+      fabric::publishFabricPhysicalTimingProfile(*physicalTiming, artifacts);
+  if (!physicalTimingReference)
+    return physicalTimingReference.takeError();
+  auto inputs = dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
+      techMappings, fabric, *physicalTimingReference);
+  if (!inputs)
+    return inputs.takeError();
+  auto binding = dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
+      spatialPnrConfig);
+  if (!binding)
+    return binding.takeError();
+  return dse::invokeCandidateGenerator(*inputs, *binding, artifacts, blobs,
+                                       executionControl);
+}
+
 ArtifactRootReference
 generateSpatialMapping(llvm::StringRef test, mlir::MLIRContext &context,
                        const ArtifactRootReference &techMapping,
@@ -751,23 +809,9 @@ generateSpatialMapping(llvm::StringRef test, mlir::MLIRContext &context,
                        const ExecutionControlView &executionControl,
                        ArtifactStore &artifacts, const BlobStore &blobs,
                        MappedRtlRouteCoverage routeCoverage) {
-  auto fabricRoot =
-      take(test, fabric::importEntireFabricRoot(fabric, artifacts));
-  auto physicalTiming = take(
-      test,
-      fabric::projectNormalizedFabricPhysicalTimingProfile(fabricRoot.view()));
-  const auto physicalTimingReference =
-      take(test, fabric::publishFabricPhysicalTimingProfile(physicalTiming,
-                                                            artifacts));
-  auto inputs =
-      take(test, dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
-                     {techMapping}, fabric, physicalTimingReference));
-  auto binding =
-      take(test, dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
-                     spatialPnrConfig));
-  auto outcome =
-      take(test, dse::invokeCandidateGenerator(inputs, binding, artifacts,
-                                               blobs, executionControl));
+  auto outcome = take(test, invokeRootCompleteSpatialPnr(
+                                {techMapping}, fabric, spatialPnrConfig,
+                                executionControl, artifacts, blobs));
   const auto *completed =
       std::get_if<dse::CompletedCandidateGeneratorResult>(&outcome.outcome);
   if (!completed || completed->outputBindings.size() != 1 ||
@@ -795,6 +839,14 @@ generateSpatialMapping(llvm::StringRef test, mlir::MLIRContext &context,
       take(test, mapping::importSpatialMapping(initial, artifacts));
   if (routeCoverage == MappedRtlRouteCoverage::AnyLegal)
     return initial;
+  auto fabricRoot =
+      take(test, fabric::importEntireFabricRoot(fabric, artifacts));
+  auto physicalTiming = take(
+      test,
+      fabric::projectNormalizedFabricPhysicalTimingProfile(fabricRoot.view()));
+  const auto physicalTimingReference =
+      take(test, fabric::publishFabricPhysicalTimingProfile(physicalTiming,
+                                                            artifacts));
   const auto containsBypass = [](const mapping::SpatialMappingView &mapping) {
     const auto isBypass = [](const auto &traversal) {
       if (!traversal)
@@ -1185,6 +1237,56 @@ MappedSpatialMappingFixture buildMappedBuiltinSpatialMappingFixture(
                           routeCoverage);
 }
 
+llvm::Expected<MappedBuiltinSpatialPnrInvocation>
+invokeMappedBuiltinSpatialPnrFixture(
+    llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
+    const adg::BuiltinTargetScale &scale,
+    const mapping::ResolvedTechMappingConfigView &techMappingConfig,
+    const pnr::ResolvedPnrConfigView &spatialPnrConfig,
+    const ExecutionControlView &executionControl, ArtifactStore &artifacts,
+    BlobStore &blobs) {
+  const ArtifactRootReference dataflowReference =
+      take(test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
+  auto module = buildBuiltinSpatialCore(test, artifacts, scale);
+  auto techInputs = dse::bindRootCompleteTechMappingCandidateGeneratorInputs(
+      {dataflowReference}, module.reference());
+  if (!techInputs)
+    return techInputs.takeError();
+  auto techBinding =
+      dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
+          techMappingConfig);
+  if (!techBinding)
+    return techBinding.takeError();
+  auto techResult = dse::invokeCandidateGenerator(
+      *techInputs, *techBinding, artifacts, blobs, executionControl);
+  if (!techResult)
+    return techResult.takeError();
+  const std::vector<dse::CandidateGeneratorOutputBinding> *techOutputs = nullptr;
+  if (const auto *completed =
+          std::get_if<dse::CompletedCandidateGeneratorResult>(
+              &techResult->outcome))
+    techOutputs = &completed->outputBindings;
+  else
+    techOutputs =
+        &std::get<dse::IncompleteCandidateGeneratorResult>(techResult->outcome)
+             .retainedOutputBindings;
+  if (techOutputs->size() != 1)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "mapped builtin TechMapping provider changed its output shape");
+  if (techOutputs->front().artifacts.empty())
+    return MappedBuiltinSpatialPnrInvocation{
+        std::move(module), std::move(*techResult), std::nullopt};
+  auto spatialResult = invokeRootCompleteSpatialPnr(
+      techOutputs->front().artifacts, module.reference(),
+      spatialPnrConfig, executionControl, artifacts, blobs);
+  if (!spatialResult)
+    return spatialResult.takeError();
+  return MappedBuiltinSpatialPnrInvocation{std::move(module),
+                                           std::move(*techResult),
+                                           std::move(*spatialResult)};
+}
+
 llvm::Expected<MappedSpatialMappingRepairFixture>
 rerouteMappedSpatialMappingFixture(
     llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
@@ -1233,7 +1335,8 @@ rerouteMappedSpatialMappingFixture(
   if (!completed || completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 1)
     return MappedSpatialMappingRepairFixture{std::nullopt,
-                                             constraints.reference()};
+                                             constraints.reference(),
+                                             std::move(outcome)};
   auto child =
       take(test,
            mapping::importSpatialMapping(
@@ -1245,7 +1348,8 @@ rerouteMappedSpatialMappingFixture(
       test, child.reference() != parent.spatialMapping.reference(),
       "transport repair reproduced its excluded parent Mapping");
   return MappedSpatialMappingRepairFixture{std::move(child),
-                                           constraints.reference()};
+                                           constraints.reference(),
+                                           std::move(outcome)};
 }
 
 fabric::FinalizedFabricRoot
@@ -1274,28 +1378,68 @@ MappedSpatialHardwareFixture buildMappedSpatialHardwareFixture(
     deployment::test::MappedSpatialSystemSpec systemSpec,
     MappedRtlFixtureTopology topology, MappedRtlRouteCoverage routeCoverage,
     MappedSystemInterconnect interconnectKind,
+    MappedSpatialHardwareFixtureObserver observer,
     std::size_t spatialMemoryOccurrenceCount) {
-  auto mappingFixture = buildMappedSpatialMappingFixture(
-      test, dataflow, context, artifacts, blobs, topology, routeCoverage,
-      spatialMemoryOccurrenceCount);
+  const ArtifactRootReference dataflowReference =
+      observeMappedSpatialHardwareFixtureOperation(
+          observer, MappedSpatialHardwareFixtureOperation::DataflowPublication,
+          [&] {
+            return take(
+                test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
+          });
+  auto module = observeMappedSpatialHardwareFixtureOperation(
+      observer,
+      MappedSpatialHardwareFixtureOperation::
+          FabricModuleConstructionAndFinalization,
+      [&] {
+        return buildSpatialCore(test, artifacts, topology,
+                                spatialMemoryOccurrenceCount);
+      });
+  const ArtifactRootReference techMapping =
+      observeMappedSpatialHardwareFixtureOperation(
+          observer, MappedSpatialHardwareFixtureOperation::TechMapping, [&] {
+            return generateTechMapping(test, dataflowReference,
+                                       module.reference(), artifacts, blobs);
+          });
+  auto spatialMapping = observeMappedSpatialHardwareFixtureOperation(
+      observer, MappedSpatialHardwareFixtureOperation::SpatialPnr, [&] {
+        const pnr::ResolvedPnrConfigView config = spatialConfig(test);
+        const ExecutionControlView executionControl;
+        const ArtifactRootReference reference = generateSpatialMapping(
+            test, context, techMapping, module.reference(), config,
+            executionControl, artifacts, blobs, routeCoverage);
+        return take(test, mapping::importSpatialMapping(reference, artifacts));
+      });
   const std::array<mlir::Type, 3> messagePayloads{
       mlir::NoneType::get(&context), mlir::IntegerType::get(&context, 32),
       mlir::IndexType::get(&context)};
-  auto system = buildSystem(test, mappingFixture.module, messagePayloads,
-                            artifacts, systemSpec);
-  std::optional<ArtifactRootReference> interconnect;
-  if (interconnectKind == MappedSystemInterconnect::Gem5EventTransport)
-    interconnect =
-        take(test, fabric::finalizeGem5EventInterconnectImplementation(
-                       system.reference(), artifacts))
-            .reference();
-  auto implementations = buildImplementation(test, mappingFixture.module,
-                                             system, context, artifacts, blobs);
-  return {std::move(mappingFixture.module),
-          mappingFixture.techMapping,
-          std::move(mappingFixture.spatialMapping),
-          std::move(system),
-          std::move(interconnect),
+  auto systemAndInterconnect = observeMappedSpatialHardwareFixtureOperation(
+      observer,
+      MappedSpatialHardwareFixtureOperation::
+          SystemFabricAndInterconnectConstruction,
+      [&] {
+        auto system =
+            buildSystem(test, module, messagePayloads, artifacts, systemSpec);
+        std::optional<ArtifactRootReference> interconnect;
+        if (interconnectKind == MappedSystemInterconnect::Gem5EventTransport)
+          interconnect =
+              take(test, fabric::finalizeGem5EventInterconnectImplementation(
+                             system.reference(), artifacts))
+                  .reference();
+        return std::pair(std::move(system), std::move(interconnect));
+      });
+  auto system = std::move(systemAndInterconnect.first);
+  auto interconnect = std::move(systemAndInterconnect.second);
+  auto implementations = observeMappedSpatialHardwareFixtureOperation(
+      observer,
+      MappedSpatialHardwareFixtureOperation::
+          ConfigurationAbiAndHardwareImplementationGeneration,
+      [&] {
+        return buildImplementation(test, module, system, context, artifacts,
+                                   blobs);
+      });
+  return {std::move(module), techMapping, std::move(spatialMapping),
+          std::move(system), std::move(interconnect),
           std::move(implementations)};
 }
 

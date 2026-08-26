@@ -96,9 +96,9 @@ public:
 
 private:
   struct Impl;
-  explicit PreparedCgraExecution(std::unique_ptr<Impl> impl);
+  explicit PreparedCgraExecution(std::shared_ptr<Impl> impl);
 
-  std::unique_ptr<Impl> impl_;
+  std::shared_ptr<Impl> impl_;
 
   friend class CgraExecutionSession;
   friend class PreparedCgraWorkloadExecution;

@@ -1,6 +1,7 @@
 #include "Application/SourceAdmission.h"
 
 #include "Common/BlobDigest.h"
+#include "Common/TimeoutBudgets.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -100,9 +101,10 @@ runGit(llvm::StringRef executable, llvm::ArrayRef<llvm::StringRef> arguments) {
       llvm::StringRef(), captures->output.str(), captures->error.str()};
   std::string executionMessage;
   bool executionFailed = false;
-  const int status =
-      llvm::sys::ExecuteAndWait(executable, command, std::nullopt, redirects,
-                                30, 256, &executionMessage, &executionFailed);
+  const int status = llvm::sys::ExecuteAndWait(
+      executable, command, std::nullopt, redirects,
+      static_cast<unsigned>(timeout::seconds(timeout::Tier::Fast)), 256,
+      &executionMessage, &executionFailed);
   auto output = readCapture(captures->output);
   auto error = readCapture(captures->error);
   if (!output)

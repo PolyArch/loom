@@ -1,0 +1,1 @@
+// RUN: loom-structured-polyhedral-schedule-test

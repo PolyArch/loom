@@ -1301,7 +1301,7 @@ and permanent wire slop. Raw material therefore remains owner-attempt or
 scratch state; this contract does not predefine a future bundle reference.
 
 The `evaluation.request.1.0`, `evaluation.evidence.1.0`, and
-`loom.simulation_execution 1.0` dependency direction is therefore:
+`loom.simulation_execution 2.0` dependency direction is therefore:
 
 ```text
 SimulationExecution -> EvaluationRequest
@@ -1312,10 +1312,11 @@ A simulator that executes a workload retains the exact `SimulationExecution`
 as a typed Artifact. It owns terminal
 execution observations, output values and streams, visible logical-memory final
 state or diffs, completion and retirement observations, typed activity
-summaries. `loom.simulation_execution 1.0` contains no trace field; diagnostic
-traces and waveforms remain attempt or scratch state. A simulator cannot
-replace them with paths, opaque bytes, or provider-private references in the
-Artifact. `SimulationExecution` contains no
+summaries, and the mandatory narrow root-lifecycle progress sequence for
+System execution. `loom.simulation_execution 2.0` contains no general
+diagnostic-trace field; diagnostic traces and waveforms remain attempt or
+scratch state. A simulator cannot replace them with paths, opaque bytes, or
+provider-private references in the Artifact. `SimulationExecution` contains no
 normalized metrics, findings, Evaluation outcome, DSE decisions, or second
 simulator result schema.
 
@@ -1868,8 +1869,8 @@ the ordinary TechMapping owner explicitly.
 
 The built-in root-complete Spatial PnR generator composes the next boundary in
 the same typed plan. Its implementation semantic identity is
-`loom.mapping.root_complete_spatial_pnr.generator.v21`; the direct constrained
-Spatial provider uses `loom.mapping.spatial_pnr.generator.v14`. It consumes the
+`loom.mapping.root_complete_spatial_pnr.generator.v22`; the direct constrained
+Spatial provider uses `loom.mapping.spatial_pnr.generator.v15`. It consumes the
 finite TechMapping output and the same exact Fabric Artifact. Each `T` already
 binds one unique Canonical Dataflow identity, so the descriptor strictly
 recovers `D` from `T` instead of accepting a second `D` slot. It mechanically
@@ -2279,7 +2280,8 @@ The manifest records:
 
 - occurrence and semantic-closure references;
 - descriptors and verification digests for component views actually consumed;
-- optional resume provenance and one controller outcome;
+- optional resume provenance, one plan-controller outcome, and an optional
+  typed campaign-admission failure disposition;
 - canonical Generate invocation records binding exact typed inputs, one
   resolved producer binding, exact descriptor-slot output sets, and
   single-child `MechanicalDerivation` or `CandidateDecision` lineage edges;
@@ -2296,15 +2298,20 @@ obligations and retained finalized material but no formal selected output.
 
 ### Operational Observations
 
-`loom.dse.invocation_manifest 1.3` is the current compatible extension of that
+`loom.dse.invocation_manifest 1.5` is the current compatible extension of that
 persistent record family. Version 1.1 added one optional nonsemantic
 `InvocationOperationalObservations` block to 1.0. Version 1.2 admits incomplete
 Generate records before later executed plan nodes while preserving the same
 per-record completion field and canonical encoding. Version 1.3 adds the
 `CancelledOrTimeout` terminal to the promotion-acquisition incomplete-reason
 domain. It is execution history, never evidence of infeasibility, and retains
-stable tag 4 after `Unsupported` tag 3. Versions 1.0, 1.1, and 1.2 remain
-importable.
+stable tag 4 after `Unsupported` tag 3. Version 1.4 adds the canonical
+invocation and per-plan-node external-tool work ledger. Version 1.5 adds an
+optional `CampaignAdmissionFailureReason` alongside, rather than inside, the
+plan-controller outcome. A completed plan can therefore retain its selected
+Artifact set while recording that campaign admission was refused by an active
+time or throughput policy. Versions 1.0 through 1.4 remain importable and
+derive an absent campaign disposition.
 
 ```text
 PromotionAcquisitionIncompleteReason =
@@ -2387,6 +2394,19 @@ In-flight work is safely retried with its original ordinal. Resume cannot
 renumber work, consume the same logical slot twice, substitute another
 candidate, or complete from best-so-far state.
 
+`beginResume` leases the next occurrence ordinal without durably advancing it.
+Only `commitInvocationManifest` atomically records the exact manifest Blob,
+advances the ordinal, and seals the recovered work state. Releasing or losing
+an uncommitted lease therefore reuses the same ordinal and cannot create a gap.
+If snapshot rename succeeds but the run-directory durability barrier fails,
+the Journal reports typed `PublishedDirectorySyncPending`: the visible state
+already owns the publication, rollback must not be inferred, and the same
+operation is idempotent after the barrier is retried. Opening an existing
+Journal conservatively completes that directory barrier before exposing its
+receipt. A strict manifest content reference alone cannot bind a joint
+execution; that binder also requires the unforgeable occurrence-and-Blob
+receipt issued by the Journal commit owner.
+
 A terminal in-process Generate record is recovered directly from its immutable
 owner finalized-work record. Recovery strict-imports that record, revalidates
 its exact invocation closure and every referenced Artifact preimage, and
@@ -2399,12 +2419,13 @@ address into identity. Terminal recovery reports import/cache work separately
 from newly executed provider work.
 
 For an external-tool attempt, a valid atomic completion permits import of that
-exact bundle. A prepared bundle without valid completion remains incomplete;
-the controller cannot infer process liveness, acquire an execution claim, or
-automatically retry it. If the external execution owner explicitly authorizes
-another attempt, it retains the same `WorkUnitKey` and materializes an
-independent bundle. This is owner-attempt recovery, not a new semantic work item
-or generic Job state machine.
+exact bundle only when the completion's attempt token matches the currently
+published execution generation. A prepared bundle without valid completion
+remains incomplete; the controller cannot infer process liveness, acquire an
+execution claim, or automatically retry it. If the external execution owner
+explicitly authorizes another attempt, it retains the same `WorkUnitKey` and
+materializes an independent bundle. This is owner-attempt recovery, not a new
+semantic work item or generic Job state machine.
 
 Attempts and recovery records remain owner-specific. Evaluation uses its
 request-local attempt record; an ExternalToolInvocationBundle retains generated
@@ -2447,11 +2468,12 @@ The initial collection policy imposes two hard active-wall-time bounds:
 
 - for every Evidence root that would enter model data, active elapsed wall time
   from dispatch of its earliest newly required uncached ancestor work unit to
-  terminal Evidence completion is at most 600 seconds; a shared ancestor's
+  terminal Evidence completion is at most the `long` tier from the canonical
+  [`timeout-budgets.json`](../config/timeout-budgets.json); a shared ancestor's
   interval applies to every dependent sample but is executed and charged only
   once; and
 - one complete Training, Validation, and HeldOut collection invocation has a
-  campaign limit of at most 23 hours of active wall time.
+  campaign limit of at most the canonical `nightly` tier of active wall time.
 
 Shared uncached Mapping, RTL derivation, HardwareImplementation, and external
 tool prerequisites are explicit work units in the same plan and are charged
@@ -2477,6 +2499,29 @@ properties, and do not give Loom ownership of an external process tree.
 Independent work units may run concurrently; one exclusive resource claim
 serializes only its actual users. Scheduling must preserve stable WorkUnitKeys
 and deterministic semantic work accounting regardless of completion order.
+
+An `ExternalPrepareImport` Evaluation retains its process-local typed provider
+context from prepare through strict import. Its default lifecycle claim uses
+the larger of the in-process and external CPU claims, the sum of their memory
+claims, the larger of their scratch claims, and the larger count for an exact
+tool or license resource used by both sequential provider forms. The scalar reservation is
+acquired before prepare. Once prepare reveals the exact execution binding, the
+same lease transitions to the derived external-tool and optional license
+resources without releasing the scalar reservation. Counted resources used by
+prepare are released before the target binding enters the shared wait order,
+so a transition never holds one counted resource while waiting for another. A
+work-unit-specific resource binding replaces this default and therefore covers
+the complete
+prepare/execute/import lifecycle. The Journal stores only the raw prepared
+invocation; a recovered `Prepared` work unit opens one new typed context and
+reuses it across its incomplete probe, execution, and final strict import.
+An invocation executed in the current process passes its sealed execution
+observation to the provider's receipt-bound import callback. A provider that
+does not expose that callback is valid for recovery import only; it cannot
+silently import the current generation after a live execution. Active wall
+time includes preparation, context-backed import, Evidence publication, and
+terminal persistence, in addition to external command execution, so campaign
+limits cannot be bypassed by strict host-side lifecycle work.
 
 While running, a removable projection reports completed, running, queued,
 failed, timed-out, and unsupported counts; recent throughput; p50 and p90
@@ -2782,7 +2827,7 @@ kinds 0 through 11:
 | 18 | `system_runtime_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.system_runtime", 1.0, 0)` |
 | 19 | `joint_dataflow_frontier` | finalized Canonical Dataflow children produced for an explicit bounded Dataflow/System frontier |
 | 20 | `joint_mapping_frontier` | finalized System children, TechMapping, SpatialMapping, and SystemMapping roots plus the exact successfully mapped Dataflow and System roots |
-| 23 | `fu_reverse_synthesis` | one explicit bounded FU Module plus exact per-graph TechMapping roots for a strictly admitted complete Canonical Dataflow graph domain |
+| 23 | `fu_reverse_synthesis` | one explicit bounded FU Module, its deterministic one-AccCore System shell, the Module's normalized physical timing profile, the System ConfigurationABI, exact per-graph TechMapping roots, and one exact whole-domain TechMapping for a strictly admitted complete Canonical Dataflow graph domain |
 
 The hardware and frontier kinds use the following descriptor-owned typed
 configuration roots:
@@ -2833,25 +2878,57 @@ FuReverseSynthesisConfigView = exact resolved TechMappingConfigView
 
 Kind 23 treats the complete graph inventory of its exactly-one Canonical
 Dataflow input as one atomic bounded synthesis unit. The FU identity is derived
-only from the admitted actor envelopes and explicit topology. Output demand
-that cannot retain the one FU and every per-graph TechMapping terminates before
-materialization with `SemanticLimitReached`; interruption and unsupported graph
-domains remain distinct typed incomplete outcomes. Its `graph_binding` work
-unit plans one slot per graph and consumes a slot when that graph's Mapping
-attempt starts. An incomplete outcome retains the exact Fabric and every
-completed per-graph TechMapping with their owner-validated lineage.
-Completed provider results and independently replayed invocation records also
-pass the same descriptor-owned outcome closure: exactly one Fabric is present,
-and every input graph is covered by exactly one returned TechMapping.
+from the admitted actor envelopes, explicit topology, and the resident context
+capacity required by that complete graph set. The System shell is mechanically
+derived from that Module, the normalized timing profile is owned by that
+Module, and the packed ConfigurationABI is owned by the System. Kind 23
+reconstructs the exact canonical normalized profile and default packed ABI
+references when validating both lineage and outcomes; another valid profile
+or ABI with the same owner is not interchangeable. Output demand
+that cannot retain those fixed artifacts, every per-graph TechMapping, and the
+whole-domain TechMapping terminates before materialization with
+`SemanticLimitReached`; interruption and unsupported graph domains remain
+distinct typed incomplete outcomes. Its `mapping_invocation` work unit plans
+one slot per graph plus one whole-domain slot and consumes a slot when that
+Mapping attempt starts. An incomplete outcome retains the fixed artifact
+closure, every completed per-graph TechMapping, and any completed whole-domain
+TechMapping with owner-validated lineage. Completed provider results and
+independently replayed invocation records pass the same descriptor-owned
+outcome closure: each fixed artifact is unique, every input graph is covered by
+exactly one per-graph TechMapping, and one additional TechMapping covers the
+exact complete graph set.
+
+`buildFuReverseSynthesisCandidateWorkflow` is the production Plan composition
+for this bounded domain. It requires every graph to be reachable from a root
+thread, then sends the per-graph Mapping set and the whole-domain Mapping
+through separate root-complete Spatial PnR kind 7 invocations. The per-graph
+SpatialMappings remain exact coverage evidence. The whole-domain
+SpatialMapping assigns the shared FU realizations to distinct resident
+instruction contexts and alone enters root-complete System PnR kind 9;
+portable SpatialCore RTL kind 16 then specializes the resulting System through
+ordinary typed use-def edges. Rootless or partially unreachable graph domains
+are rejected before execution. Mapping proof not established and unsupported
+portable structure or operation coverage remain the typed incomplete outcomes
+of their existing owners. Completed workflow projection strictly reimports the
+entire graph, Fabric, Mapping, ConfigurationABI, and HardwareImplementation
+closure, re-derives the exact timing, packed ABI, and portable operation-leaf
+specialization without publishing during verification, and derives the
+occurrence-qualified configured-hardware projection before Deployment.
+Deployment subsequently consumes a selected returned
+SystemMapping, portable implementation plus runtime binding, and ordinary
+executable leaves through its existing `buildDeploymentFromLinkedProgram`
+owner; the workflow does not duplicate executable or runtime-platform
+selection.
 
 The current spatial-microarchitecture configuration descriptor is
-`loom.spatial_microarchitecture_rewrite.config.2.1`; the candidate-decision
-descriptor is `loom.spatial_microarchitecture_candidate_decision.3.0`, and the
-provider identity is `loom.spatial_microarchitecture_rewrite.generator.v3`.
+`loom.spatial_microarchitecture_rewrite.config.2.2`; the candidate-decision
+descriptor is `loom.spatial_microarchitecture_candidate_decision.3.1`, and the
+provider identity is `loom.spatial_microarchitecture_rewrite.generator.v4`.
 Config 2.1 appends the two Temporal operand-buffer decisions below without
 renumbering 2.0 decision tags. Decision 3.0 additionally carries the complete
 finalizer-produced parent-to-child Module occurrence correspondence, so a
-consumer never guesses a child occurrence from a parent dense ordinal.
+consumer never guesses a child occurrence from a parent dense ordinal. Config
+2.2 and decision 3.1 append the typed switch route-table capacity decision.
 
 Kind 16 has one empty canonical resolved-config view. Its exact descriptor
 fixes the portable operation-provider catalog. It consumes exactly one
@@ -2975,9 +3052,11 @@ parent or leave a DSE-only Fabric form. A completed child carries one
 `CandidateDecision` lineage contribution whose payload is owned by that exact
 generator descriptor. Identity deduplication occurs only after finalization.
 
-The kind-15 System-composition lineage payload
-`loom.system_composition_candidate_decision.2.0` also carries the exact
-parent-to-child `AccCoreOccurrenceRef` correspondence for every preserved
+The current System-composition configuration descriptor is
+`loom.system_composition_rewrite.config.1.1`; the lineage payload is
+`loom.system_composition_candidate_decision.3.1`, and the provider identity is
+`loom.system_composition_rewrite.generator.v3`. The lineage payload carries the
+exact parent-to-child `AccCoreOccurrenceRef` correspondence for every preserved
 parent AccCore. The System finalizer derives this one-to-one relation while it
 canonically relabels the child; the controller may not reconstruct it from
 Module equality or occurrence ordinal. `AddAccCore` and `RemoveAccCore`
@@ -2985,8 +3064,9 @@ validate the expected cardinality delta, while every other System rewrite
 preserves the cardinality. Every unchanged descendant retains its exact Module
 target. The sole exception is the target of a typed
 `ReplaceSpatialAttachment`, which must select that decision's exact Module.
-This lineage records structural descent only and does not claim that parent and
-child resources are interchangeable.
+The 3.1 decision payload appends the canonical transport-source swap and the
+memory-service-owned region resize. This lineage records structural descent
+only and does not claim that parent and child resources are interchangeable.
 
 The TechMapping providers may return
 `loom.mapping.tech_compute_context_hall_feedback.1.0`. It represents one exact
@@ -3664,6 +3744,24 @@ provider-contract error, not a calibration miss. Neither side is Mapping/PnR
 legality evidence. These counters describe only the sampled detailed set and
 do not generalize recall to deferred candidates.
 
+Screening retains two lower-bound components: the maximum per-region critical
+path bound and the aggregate resource-work bound divided by exact capacity.
+Each component carries the support of the curve point that actually selected
+it, combining all points tied at that value. The published bound is their
+maximum and carries the winning component's support, combining support only on
+a component tie. A weaker estimate that did not select the bound cannot
+silently downgrade or upgrade its evidence grade.
+
+Physical-model applicability is orthogonal to timing support. When an
+application invocation binds an immutable `EdaPredictionModelWeight`, the
+resource-time projection runs the existing FPA parameter contract in process
+for the exact Canonical Dataflow/Fabric/condition tuple and records either
+`Calibrated` or `OutOfDomain`. It does not relabel analytic execution time as
+calibrated timing. An invocation without a weight records `Unsupported` for
+the physical-model grade. This inference cannot dispatch EDA; its cache
+dependency is mechanically derived from the exact weight root and canonical
+Evaluation case.
+
 Application operation diagnostics may report `peak_resident_bytes` as the
 whole-process RSS high-water observed at that boundary. It is not a per-stage
 or per-candidate allocation attribution; such attribution is unsupported
@@ -3695,10 +3793,18 @@ capacity constraints may make a smaller value exact, as in a five-region
 schedule whose maximum legal active set has three members. A truncated beam,
 budget stop, or missing allocation bound can still produce a verified
 intermediate scenario but cannot prove either endpoint.
-A token-only timestamp, or a timestamp completing multiple roots, is not
-encoded as one arbitrary root-completion event: until the Dataflow event owner
-publishes canonical token-publication and composite-event families, such a
-hint remains typed `Unsupported` and cannot enter Spectrum verification.
+A statically enumerable nonempty Canonical Dataflow root has an exact minimum
+allocation of one AccCore and a maximum useful allocation bounded by its exact
+logical-domain parallelism and the frozen System capacity. A dynamic or
+otherwise unproven logical domain keeps both endpoint bounds unsupported; an
+observed one-core Mapping never manufactures either proof.
+A token-publication timestamp is not encoded as an arbitrary root-completion
+event and remains typed `Unsupported` until the Dataflow event owner publishes
+its canonical family. Equal-time root completions that retain one Mapping are
+represented as a deterministic sequence of the existing canonical completion
+families at the same timestamp; this serialization adds no time or causal
+precedence. A Mapping change across such a composite frontier remains typed
+`Unsupported` until a transition correspondence owns the ordering.
 A one-region schedule is a verified intermediate point because the all-active
 and one-active concurrency bounds coincide and cannot distinguish the two
 endpoints.
@@ -4150,19 +4256,21 @@ Only these stable semantic anchors belong at this boundary:
   implicit Cartesian product or Journal-owned current best appears.
 - A collection pilot and resumed campaign retain identical WorkUnitKeys and
   accepted Evidence; hidden prerequisite work, a sample dependency slice above
-  600 seconds of active elapsed wall time, a campaign limit above 23 hours, or
-  treating timeout as a sample is rejected by the initial collection policy.
+  the canonical `long` active wall-time tier, a campaign limit above the
+  canonical `nightly` tier, or treating timeout as a sample is rejected by the
+  initial collection policy.
 - Candidate Generator admission rejects a missing slot, wrong cardinality,
   incompatible contract, or unreadable Artifact/Blob closure before external
   `prepare` is entered.
 - Equal admitted closure and local binding produce byte-identical bundles;
   `prepare`, caller execution, and `import` remain independently callable and
   expose no Job, scheduler, or process handle.
-- InvocationManifest 1.0, 1.1, and 1.2 remain importable; 1.3 round-trips
-  absent and present operational observations plus retained incomplete
-  Generate frontiers and typed promotion timeout canonically, rejects unknown
-  plan-node references, duplicate or unsorted rows, zero context counts, and
-  arithmetic overflow, and never changes formal selection or Evidence.
+- InvocationManifest 1.0 through 1.4 remain importable; 1.5 round-trips absent
+  and present operational observations, external-tool work, campaign refusal,
+  retained incomplete Generate frontiers, and typed promotion timeout
+  canonically, rejects unknown enum values, plan-node references, duplicate or
+  unsorted rows, zero context counts, and arithmetic overflow, and never
+  changes formal selection or Evidence.
 - Candidate-generator binding identity is derived from the exact descriptor
   and canonical config view, and a caller-authored replacement is rejected.
 - An external generator publishes only complete descriptor output Artifacts;

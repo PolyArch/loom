@@ -515,6 +515,30 @@ void loom::test::exerciseHandshakeCandidateRefcounts(
   if (!observedFragment)
     fail("compute placement has no observable handshake contribution");
 
+  pnr::HandshakeProjectionScratch projectionScratch;
+  requireSuccess(projectionScratch.prepare(handshake));
+  std::vector<pnr::PnrIndex> traversalUses(
+      handshake.traversalFragmentOffsets().size() - 1, 0);
+  const bool coldProjection = take(
+      pnr::independentlyVerifyHandshakeProjectionAcyclic(
+          handshake, fragments, traversalUses));
+  const bool activeProjection = take(
+      projectionScratch.projectAcyclic(handshake, fragments, traversalUses));
+  if (activeProjection != coldProjection)
+    fail("active-only handshake projection disagrees with its cold oracle");
+  const std::size_t warmedProjectionBytes =
+      projectionScratch.retainedStorageBytes();
+  const bool repeatedProjection = take(
+      projectionScratch.projectAcyclic(handshake, fragments, traversalUses));
+  const auto projectionStatistics = projectionScratch.statistics();
+  if (repeatedProjection != coldProjection ||
+      projectionStatistics.projectionCount != 2 ||
+      projectionStatistics.peakActiveNodeCount == 0 ||
+      projectionStatistics.peakActiveArcCount == 0 ||
+      projectionScratch.retainedStorageBytes() != warmedProjectionBytes)
+    fail("warmed active-only handshake projection changed its exact result or "
+         "retained storage");
+
   const std::size_t baseContributionCount =
       candidate->activeArcContributionCount();
   {

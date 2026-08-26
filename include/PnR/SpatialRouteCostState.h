@@ -2,6 +2,7 @@
 #define LOOM_PNR_SPATIALROUTECOSTSTATE_H
 
 #include "Common/ResolvedPnrPolicy.h"
+#include "PnR/EndpointRouter.h"
 #include "PnR/RoutingNegotiation.h"
 #include "PnR/SpatialCandidateState.h"
 
@@ -23,6 +24,11 @@ struct SpatialRouteCostSwitchRowState;
 struct SpatialTagDomainUse final {
   PnrIndex domain = 0;
   std::uint64_t marginalResidentCount = 0;
+
+  friend bool operator==(SpatialTagDomainUse lhs, SpatialTagDomainUse rhs) {
+    return lhs.domain == rhs.domain &&
+           lhs.marginalResidentCount == rhs.marginalResidentCount;
+  }
 };
 
 /// Worker-local PathFinder cost projection over one exact Spatial candidate.
@@ -54,6 +60,12 @@ public:
   llvm::Error
   synchronizeTagProjection(const SpatialTagAssignmentSummary &summary,
                            llvm::ArrayRef<PnrIndex> changedLogicalNets = {});
+  llvm::Error synchronizeTagProjection(const SpatialTagAssignmentDelta &delta);
+  llvm::Error commitTagProjectionDelta();
+  llvm::Error rollbackTagProjectionDelta();
+  bool hasActiveTagProjectionDelta() const {
+    return inverseTagDelta_.has_value();
+  }
   llvm::Error synchronizeCandidateTags();
   llvm::Error
   synchronizeCandidateTraversals(llvm::ArrayRef<PnrIndex> traversals);
@@ -86,10 +98,13 @@ public:
   llvm::ArrayRef<RouteCost> lowerBoundArcCosts() const {
     return lowerBoundArcCosts_;
   }
-  std::uint64_t lowerBoundCostRevision() const {
-    return lowerBoundCostRevision_;
+  EndpointRouteInputRevision lowerBoundArcCostRevision() const {
+    return lowerBoundArcCostRevisionOwner_.revision();
   }
   llvm::ArrayRef<RouteCost> currentArcCosts() const { return currentArcCosts_; }
+  EndpointRouteInputRevision currentArcCostRevision() const {
+    return currentArcCostRevisionOwner_.revision();
+  }
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -149,7 +164,8 @@ private:
   std::size_t routeClaimWordCount_ = 0;
   std::optional<PnrIndex> selectedLogicalNet_;
   std::uint64_t presentPressure_ = 0;
-  std::uint64_t lowerBoundCostRevision_ = 0;
+  EndpointRouteInputRevisionOwner lowerBoundArcCostRevisionOwner_;
+  EndpointRouteInputRevisionOwner currentArcCostRevisionOwner_;
 
   std::vector<std::uint64_t> workingCapacityUsageRaw_;
   std::vector<std::uint64_t> historyPressure_;
@@ -163,6 +179,8 @@ private:
 
   std::vector<std::vector<SpatialTagDomainUse>> logicalNetTagUses_;
   std::vector<std::uint64_t> logicalNetTagUnassignedCounts_;
+  std::uint64_t tagUnassignedCount_ = 0;
+  std::vector<std::vector<std::optional<llvm::APInt>>> logicalNetTagValues_;
   std::vector<SpatialTagDomainUse> selectedLogicalNetTagUses_;
   std::vector<std::uint64_t> workingTagDomainUsage_;
   std::vector<std::uint64_t> tagDomainConflictCounts_;
@@ -195,6 +213,7 @@ private:
   std::vector<PnrIndex> affectedTagDomains_;
   std::vector<PnrIndex> affectedTagArcs_;
   std::unique_ptr<detail::SpatialRouteCostSwitchRowState> switchRows_;
+  std::optional<SpatialTagAssignmentDelta> inverseTagDelta_;
   std::uint64_t updateEpoch_ = 0;
 
   friend class SpatialActionExecutorScratch;

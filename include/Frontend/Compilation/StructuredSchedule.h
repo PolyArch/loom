@@ -26,6 +26,7 @@ enum class StructuredScheduleDecisionKind : std::uint32_t {
   Parallelize = 4,
   ParallelizeNest = 5,
   Vectorize = 6,
+  PolyhedralSchedule = 7,
 };
 
 enum class StructuredVectorTailPolicy : std::uint32_t {
@@ -123,12 +124,15 @@ private:
   StructuredScheduleProposal(
       StructuredScheduleDecision decision,
       std::shared_ptr<const ExactStructuredScopView> exactScop,
+      std::shared_ptr<const StructuredPolyhedralScopView> polyhedralScop,
       ArtifactRootReference fabric)
       : decision_(std::move(decision)), exactScop_(std::move(exactScop)),
-        fabric_(std::move(fabric)) {}
+        polyhedralScop_(std::move(polyhedralScop)), fabric_(std::move(fabric)) {
+  }
 
   StructuredScheduleDecision decision_;
   std::shared_ptr<const ExactStructuredScopView> exactScop_;
+  std::shared_ptr<const StructuredPolyhedralScopView> polyhedralScop_;
   ArtifactRootReference fabric_;
 
   friend llvm::Expected<StructuredScheduleDecisionDomain>
@@ -145,9 +149,14 @@ private:
 
 struct StructuredScheduleDecisionDomain final {
   std::vector<StructuredScheduleProposal> proposals;
+  /// Exact general schedules, including source-realized, materializable, and
+  /// typed-unavailable forms. These removable views are analysis results, not
+  /// candidate identities or persistent Schedule artifacts.
+  std::vector<StructuredPolyhedralScopView> polyhedralScops;
   std::vector<StructuredScopRefusal> refusals;
   std::uint64_t inspectedLoopScopes = 0;
   std::uint64_t inspectedDecisionCoordinates = 0;
+  std::uint64_t inspectedPolyhedralDependenceQueries = 0;
 };
 
 llvm::ArrayRef<std::uint8_t> structuredScheduleDecisionSchemaBytes();

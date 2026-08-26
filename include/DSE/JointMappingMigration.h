@@ -85,6 +85,11 @@ enum class JointMappingReuseDisposition : std::uint8_t {
 llvm::StringRef
 jointMappingReuseDispositionSpelling(JointMappingReuseDisposition disposition);
 
+/// Verifies that every parent object is partitioned exactly once and that the
+/// invalidation cone equals the typed reopened and repaired decision domain.
+llvm::Error validateJointMappingRebaseAccounting(
+    const JointMappingRebaseAccounting &accounting);
+
 struct JointMappingRebaseResult final {
   JointDesignMappingSeed seed;
   JointMappingRebaseAccounting accounting;
@@ -93,23 +98,35 @@ struct JointMappingRebaseResult final {
       JointMappingReuseDisposition::ColdFallback;
 };
 
-llvm::StringRef jointMappingRebaseFailureReasonSpelling(
-    JointMappingRebaseFailureReason reason);
+llvm::StringRef
+jointMappingRebaseFailureReasonSpelling(JointMappingRebaseFailureReason reason);
 
 llvm::Expected<std::vector<ArtifactRootReference>>
 resolveJointSpatialMappingFrontier(const JointDesignExplorationPlan &plan,
                                    const JointDesignExecution &execution);
 
+/// Projects typed System hardware roots through one exact parent Mapping.
+/// Execution-root changes reopen only the Dataflow roots bound to affected
+/// AccCores. Transport and service changes conservatively reopen every root
+/// because their routes may serve any binding. The projection is the shared
+/// owner used by both migration-seed construction and cone accounting.
+std::vector<::dataflow::RootThreadLaunchRef> projectJointSystemReopenRoots(
+    const mapping::SystemMappingView &parentMapping,
+    llvm::ArrayRef<struct HardwareImpactProjection> impacts);
+
 /// Rebases each parent Mapping independently. A rejected Mapping enters the
 /// child Generate domain while successfully rebased siblings remain exact
-/// plan inputs. The returned roots are child-owned preferences, never proofs.
+/// plan inputs. A selected parent scope restricts System binding accounting to
+/// the one Mapping for which a migration seed will be materialized. The
+/// returned roots are child-owned preferences, never proofs.
 llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
     const JointDesignExplorationPlan &parentPlan,
     const JointDesignExecution &parentExecution,
     const ArtifactRootReference &childSystem,
     llvm::ArrayRef<pnr::SystemModuleCorrespondence> moduleCorrespondences,
-    const struct HardwareImpactProjection *impact,
-    const ArtifactStore &artifacts);
+    llvm::ArrayRef<struct HardwareImpactProjection> impacts,
+    const ArtifactStore &artifacts,
+    std::optional<ArtifactRootReference> selectedParentMapping = std::nullopt);
 
 } // namespace loom::dse
 

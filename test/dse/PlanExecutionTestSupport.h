@@ -37,6 +37,8 @@ bool waitForActivePlanExecutionProvider();
 std::uint64_t planExecutionProviderCalls();
 std::uint64_t maximumConcurrentPlanExecutionProviders();
 bool planExecutionProviderObservedStop();
+std::uint64_t planExecutionProviderCpuBudgetCores();
+std::uint64_t planExecutionProviderMemoryBudgetBytes();
 
 } // namespace loom::dse::test_support
 

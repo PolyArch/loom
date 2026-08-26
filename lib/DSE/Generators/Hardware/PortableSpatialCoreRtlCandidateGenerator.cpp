@@ -2,22 +2,11 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
-#include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/Artifact/FabricArtifact.h"
-#include "Fabric/IR/FabricDialect.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
-#include "Hardware/RTL/CommonSkeleton.h"
-#include "Hardware/RTL/PortableProviders.h"
 #include "Hardware/RTL/SpatialCoreImplementation.h"
-#include "Hardware/RTL/Specialization.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
-
-#include "circt/Dialect/Comb/CombDialect.h"
-#include "circt/Dialect/HW/HWDialect.h"
-#include "circt/Dialect/SV/SVDialect.h"
-#include "circt/Dialect/Seq/SeqDialect.h"
-#include "mlir/IR/MLIRContext.h"
 
 #include <array>
 #include <cstdint>
@@ -72,15 +61,16 @@ llvm::ArrayRef<std::uint8_t> descriptorBytes() {
 }
 
 llvm::Expected<CandidateGeneratorProviderResult>
-unsupportedResult(std::vector<ArtifactRootReference> outputs,
-                  std::vector<CandidateGeneratorLineageEdge> lineage,
-                  std::uint64_t completed, std::uint64_t total) {
+incompleteResult(CandidateGeneratorIncompleteReason reason,
+                 std::vector<ArtifactRootReference> outputs,
+                 std::vector<CandidateGeneratorLineageEdge> lineage,
+                 std::uint64_t planned, std::uint64_t consumed) {
   return CandidateGeneratorProviderResult{
       IncompleteCandidateGeneratorResult{
-          CandidateGeneratorIncompleteReason::Unsupported,
+          reason,
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
           std::move(lineage)},
-      {{CandidateGeneratorWorkUnitRef(0), completed, total}}};
+      {{CandidateGeneratorWorkUnitRef(0), planned, consumed}}};
 }
 
 llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
@@ -95,7 +85,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     portableSpatialCoreRtlCandidateGeneratorKind,
     "portable_spatial_core_rtl",
-    "loom.portable_spatial_core_rtl.generator.v2",
+    "loom.portable_spatial_core_rtl.generator.v4",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -109,7 +99,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &artifacts, const BlobStore &blobs,
-               const CandidateGeneratorInvocationView &) {
+               const CandidateGeneratorInvocationView &invocation) {
   auto config = adoptResolvedPortableSpatialCoreRtlConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -139,27 +129,31 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     implementationPlatform = imported->reference();
   }
 
-  mlir::MLIRContext context;
-  context.loadDialect<::dataflow::DataflowDialect, ::fabric::FabricDialect,
-                      circt::comb::CombDialect, circt::hw::HWDialect,
-                      circt::seq::SeqDialect, circt::sv::SVDialect>();
-  loom::hardware::rtl::FabricOperationProviderRegistry providers;
-  if (llvm::Error error =
-          loom::hardware::rtl::registerPortableOperationProviders(providers))
-    return std::move(error);
-  loom::hardware::ExternalImplementationContractCatalog externalContracts;
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorLineageEdge> lineage;
   const auto accCores = system->view().accCoreOccurrences();
+  const std::uint64_t planned = accCores.size();
+  const std::optional<std::uint64_t> maximumOutputs =
+      invocation.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
   outputs.reserve(accCores.size());
   lineage.reserve(accCores.size());
   for (loom::fabric::AccCoreOccurrenceRef accCore : accCores) {
+    if (invocation.stopRequested()) {
+      const std::uint64_t consumed = outputs.size();
+      return incompleteResult(
+          CandidateGeneratorIncompleteReason::CancelledOrTimeout,
+          std::move(outputs), std::move(lineage), planned, consumed);
+    }
+    if (maximumOutputs && outputs.size() >= *maximumOutputs) {
+      const std::uint64_t consumed = outputs.size();
+      return incompleteResult(
+          CandidateGeneratorIncompleteReason::SemanticLimitReached,
+          std::move(outputs), std::move(lineage), planned, consumed);
+    }
     auto implementation =
         loom::hardware::rtl::finalizePortableSpatialCoreHardwareImplementation(
-            context, *configurationAbi,
-            loom::fabric::SpatialCoreOccurrenceRef{accCore},
-            implementationPlatform, providers, externalContracts, artifacts,
-            blobs);
+            *configurationAbi, loom::fabric::SpatialCoreOccurrenceRef{accCore},
+            implementationPlatform, artifacts, blobs);
     if (!implementation) {
       bool unsupported = false;
       llvm::Error remainder = llvm::handleErrors(
@@ -174,8 +168,9 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
         return std::move(remainder);
       if (unsupported) {
         const std::uint64_t completed = outputs.size();
-        return unsupportedResult(std::move(outputs), std::move(lineage),
-                                 completed, accCores.size());
+        return incompleteResult(CandidateGeneratorIncompleteReason::Unsupported,
+                                std::move(outputs), std::move(lineage), planned,
+                                completed + 1);
       }
       return invalid("portable RTL generation failed without a typed error");
     }

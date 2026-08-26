@@ -1,0 +1,2 @@
+# RUN: rm -rf %t
+# RUN: %loom-external-tool-command-schedule-test %t

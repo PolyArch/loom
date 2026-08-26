@@ -29,6 +29,29 @@ std::error_code OrderedChannelABIError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
 }
 
+llvm::Error orderedChannelSendError(OrderedChannelSendKind kind) {
+  switch (kind) {
+  case OrderedChannelSendKind::Accepted:
+    return llvm::Error::success();
+  case OrderedChannelSendKind::WouldBlock:
+    return reject(OrderedChannelABIError::Kind::WouldBlock,
+                  "ordered channel send would exceed bounded capacity");
+  case OrderedChannelSendKind::SequenceExhausted:
+    return reject(OrderedChannelABIError::Kind::SequenceExhausted,
+                  "ordered channel send sequence is exhausted");
+  case OrderedChannelSendKind::StaticRateExceeded:
+    return reject(OrderedChannelABIError::Kind::StaticRateExceeded,
+                  "ordered channel send exceeds its static rate");
+  case OrderedChannelSendKind::InvalidLifecycle:
+    return reject(OrderedChannelABIError::Kind::InvalidLifecycle,
+                  "ordered channel send is outside its active lifecycle");
+  case OrderedChannelSendKind::GenerationCancelled:
+    return reject(OrderedChannelABIError::Kind::GenerationCancelled,
+                  "ordered channel send names a cancelled generation");
+  }
+  llvm_unreachable("unknown ordered channel send kind");
+}
+
 llvm::Expected<OrderedChannelABI>
 OrderedChannelABI::create(std::uint64_t capacityMessages,
                           std::uint32_t consumerCount) {

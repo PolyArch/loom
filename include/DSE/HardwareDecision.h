@@ -4,8 +4,8 @@
 #include "Common/Artifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
-#include "Fabric/Identity/FabricRefs.h"
 #include "Fabric/IR/FabricEnums.h"
+#include "Fabric/Identity/FabricRefs.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -101,6 +101,11 @@ struct ChangeSwitchModeOrScheduleCapacity final {
   loom::fabric::FabricSwitchOccurrenceRef prototype;
 };
 
+struct ResizeSwitchRouteTable final {
+  loom::fabric::FabricSwitchOccurrenceRef target;
+  std::uint32_t entries = 0;
+};
+
 struct ResizeMemory final {
   loom::fabric::FabricMemoryOccurrenceRef target;
   std::uint64_t capacityBytes = 0;
@@ -137,8 +142,8 @@ using SpatialMicroarchitectureDecision =
                  ChangeFuCapability, ChangeSwitchModeOrScheduleCapacity,
                  ResizeMemory, ChangeMemoryOperationTable, ResizeFifo,
                  ChangeFifoBypassCapability, ResizeInstructionStores,
-                 ChangeTemporalOperandBufferMode,
-                 ResizeTemporalOperandBuffer>;
+                 ChangeTemporalOperandBufferMode, ResizeTemporalOperandBuffer,
+                 ResizeSwitchRouteTable>;
 
 struct ChangePeKindDomain final {
   loom::fabric::FabricPeOccurrenceRef target;
@@ -167,6 +172,11 @@ struct ChangeFuCapabilityDomain final {
 struct ChangeSwitchModeOrScheduleCapacityDomain final {
   loom::fabric::FabricSwitchOccurrenceRef target;
   std::vector<loom::fabric::FabricSwitchOccurrenceRef> prototypes;
+};
+
+struct ResizeSwitchRouteTableDomain final {
+  loom::fabric::FabricSwitchOccurrenceRef target;
+  std::vector<std::uint32_t> entries;
 };
 
 struct ResizeMemoryDomain final {
@@ -204,7 +214,8 @@ using SpatialMicroarchitectureDecisionDomain = std::variant<
     ChangeFuCapabilityDomain, ChangeSwitchModeOrScheduleCapacityDomain,
     ResizeMemoryDomain, ChangeMemoryOperationTableDomain, ResizeFifoDomain,
     ChangeFifoBypassCapabilityDomain, ResizeInstructionStoresDomain,
-    ChangeTemporalOperandBufferModeDomain, ResizeTemporalOperandBufferDomain>;
+    ChangeTemporalOperandBufferModeDomain, ResizeTemporalOperandBufferDomain,
+    ResizeSwitchRouteTableDomain>;
 
 struct AddAccCore final {
   loom::fabric::AccCoreOccurrenceRef prototype;
@@ -235,6 +246,11 @@ struct ChangeTransportConnection final {
   loom::fabric::FabricTransportEndpointRef source;
 };
 
+struct SwapTransportConnectionSources final {
+  loom::fabric::FabricTransportEndpointRef firstDestination;
+  loom::fabric::FabricTransportEndpointRef secondDestination;
+};
+
 struct ChangeSpatialMemoryAttachment final {
   loom::fabric::FabricMemoryEndpointRef spatialEndpoint;
   loom::fabric::SystemServiceEndpointRef serviceEndpoint;
@@ -252,10 +268,17 @@ struct ChangeServiceOrMemoryAttachment final {
   ServiceOrMemoryAttachmentDecision value;
 };
 
+struct ResizeSystemMemoryRegion final {
+  loom::fabric::SystemMemoryServiceRef service;
+  loom::fabric::FabricOrdinal regionOrdinal = 0;
+  std::uint64_t sizeBytes = 0;
+};
+
 using SystemCompositionDecision =
     std::variant<AddAccCore, RemoveAccCore, ReplaceSpatialAttachment,
                  SelectInstructionCoreRealization, ChangeTransportResource,
-                 ChangeTransportConnection, ChangeServiceOrMemoryAttachment>;
+                 ChangeTransportConnection, ChangeServiceOrMemoryAttachment,
+                 SwapTransportConnectionSources, ResizeSystemMemoryRegion>;
 
 struct AddAccCoreDomain final {
   loom::fabric::AccCoreOccurrenceRef prototype;
@@ -286,6 +309,11 @@ struct ChangeTransportConnectionDomain final {
   std::vector<loom::fabric::FabricTransportEndpointRef> sources;
 };
 
+struct SwapTransportConnectionSourcesDomain final {
+  loom::fabric::FabricTransportEndpointRef firstDestination;
+  std::vector<loom::fabric::FabricTransportEndpointRef> secondDestinations;
+};
+
 struct ChangeSpatialMemoryAttachmentDomain final {
   loom::fabric::FabricMemoryEndpointRef spatialEndpoint;
   std::vector<loom::fabric::SystemServiceEndpointRef> serviceEndpoints;
@@ -296,6 +324,12 @@ struct ChangeMemoryServiceConnectionDomain final {
   std::vector<loom::fabric::FabricMemoryEndpointRef> sources;
 };
 
+struct ResizeSystemMemoryRegionDomain final {
+  loom::fabric::SystemMemoryServiceRef service;
+  loom::fabric::FabricOrdinal regionOrdinal = 0;
+  std::vector<std::uint64_t> sizesBytes;
+};
+
 using ChangeServiceOrMemoryAttachmentDomain =
     std::variant<ChangeSpatialMemoryAttachmentDomain,
                  ChangeMemoryServiceConnectionDomain>;
@@ -303,7 +337,8 @@ using ChangeServiceOrMemoryAttachmentDomain =
 using SystemCompositionDecisionDomain = std::variant<
     AddAccCoreDomain, RemoveAccCoreDomain, ReplaceSpatialAttachmentDomain,
     SelectInstructionCoreRealizationDomain, ChangeTransportResourceDomain,
-    ChangeTransportConnectionDomain, ChangeServiceOrMemoryAttachmentDomain>;
+    ChangeTransportConnectionDomain, ChangeServiceOrMemoryAttachmentDomain,
+    SwapTransportConnectionSourcesDomain, ResizeSystemMemoryRegionDomain>;
 
 llvm::Expected<std::vector<SpatialTopologyDecision>>
 expandSpatialTopologyDecisionDomains(
@@ -396,11 +431,11 @@ struct SpatialMappingImpactProjection final {
 struct SystemMappingImpactProjection final {
   HardwareMappingImpactKind kind = HardwareMappingImpactKind::Unchanged;
   std::vector<loom::fabric::AccCoreOccurrenceRef> executionRoots;
-  std::vector<loom::fabric::InstructionCoreContextRef>
-      instructionContextRoots;
+  std::vector<loom::fabric::InstructionCoreContextRef> instructionContextRoots;
   std::vector<loom::fabric::SystemTransportResourceRef> transportRoots;
   std::vector<loom::fabric::FabricTransportEndpointRef> routeRoots;
   std::vector<loom::fabric::SystemServiceEndpointRef> serviceRoots;
+  std::vector<loom::fabric::SystemMemoryServiceRef> memoryServiceRoots;
   std::vector<loom::fabric::FabricMemoryEndpointRef> memoryRoots;
 };
 
@@ -415,6 +450,7 @@ enum class HardwareMutationFamily : std::uint8_t {
   SpatialFifo,
   TemporalOperandBuffer,
   SpatialSwitch,
+  SystemSpatialCoreAttachment,
   SystemAccCore,
   SystemInstructionContext,
   SystemTransport,

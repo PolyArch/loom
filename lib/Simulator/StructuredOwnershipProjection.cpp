@@ -71,6 +71,8 @@ llvm::Error inlineSpatialOwnershipCarriers(mlir::ModuleOp module) {
 struct DenseThreadProjection final {
   std::optional<std::string> invalidExtentCallback;
   llvm::DenseMap<mlir::Value, std::uint64_t> receiverCounts;
+  llvm::DenseMap<mlir::Value, std::uint64_t> producerMessageCounts;
+  llvm::DenseMap<mlir::Value, std::vector<std::uint64_t>> consumerMessageCounts;
 };
 
 llvm::Expected<mlir::Value>
@@ -185,7 +187,6 @@ inlineDenseThreadOwnershipCarriers(mlir::ModuleOp module) {
     if (erasedWaits.insert(wait.getOperation()).second)
       wait.erase();
 
-  llvm::DenseMap<mlir::Value, std::uint64_t> producedMessages;
   for (dataflow::ThreadLaunchOp launch : launches) {
     auto thread =
         mlir::SymbolTable::lookupNearestSymbolFrom<dataflow::ThreadOp>(
@@ -217,8 +218,13 @@ inlineDenseThreadOwnershipCarriers(mlir::ModuleOp module) {
       sourceReceives.push_back(receive);
     });
     if (llvm::Error error = proveSerializedChannelLaunch(
-            launch, thread, body, inputCount, producedMessages))
+            launch, thread, body, inputCount, result.producerMessageCounts))
       return std::move(error);
+    llvm::DenseMap<unsigned, std::uint64_t> receiveCounts;
+    for (dataflow::ChannelReceiveOp receive : sourceReceives) {
+      auto formal = llvm::cast<mlir::BlockArgument>(receive.getChannel());
+      ++receiveCounts[formal.getArgNumber()];
+    }
     for (dataflow::ChannelReceiveOp receive : sourceReceives) {
       auto formal = llvm::dyn_cast<mlir::BlockArgument>(receive.getChannel());
       if (!formal || formal.getOwner() != &body ||
@@ -233,7 +239,12 @@ inlineDenseThreadOwnershipCarriers(mlir::ModuleOp module) {
         return unsupported(
             "native selected execution requires a direct logical channel "
             "instance");
-      receiverOrdinals.try_emplace(formalOrdinal, result.receiverCounts[actual]++);
+      const std::uint64_t receiverOrdinal = result.receiverCounts[actual]++;
+      receiverOrdinals.try_emplace(formalOrdinal, receiverOrdinal);
+      std::vector<std::uint64_t> &counts = result.consumerMessageCounts[actual];
+      if (counts.size() != receiverOrdinal)
+        return invalid("logical channel receiver ordinals are not dense");
+      counts.push_back(receiveCounts.lookup(formalOrdinal));
     }
 
     mlir::IRMapping mapping;
@@ -349,9 +360,8 @@ llvm::Expected<mlir::Value> allocateMessageSlot(mlir::Operation *operation,
 }
 
 llvm::Expected<std::optional<NativeChannelCallbackNames>>
-lowerLogicalChannels(
-    mlir::ModuleOp module,
-    const llvm::DenseMap<mlir::Value, std::uint64_t> &receiverCounts) {
+lowerLogicalChannels(mlir::ModuleOp module,
+                     const DenseThreadProjection &projection) {
   llvm::SmallVector<dataflow::ChannelCreateOp> creates;
   llvm::SmallVector<dataflow::ChannelSendOp> sends;
   llvm::SmallVector<dataflow::ChannelReceiveOp> receives;
@@ -359,13 +369,17 @@ lowerLogicalChannels(
   module.walk([&](dataflow::ChannelSendOp op) { sends.push_back(op); });
   module.walk([&](dataflow::ChannelReceiveOp op) { receives.push_back(op); });
   if (creates.empty()) {
-    if (!sends.empty() || !receives.empty() || !receiverCounts.empty())
+    if (!sends.empty() || !receives.empty() ||
+        !projection.receiverCounts.empty() ||
+        !projection.producerMessageCounts.empty() ||
+        !projection.consumerMessageCounts.empty())
       return invalid("logical channel endpoints have no channel instance");
     return std::optional<NativeChannelCallbackNames>{};
   }
 
   NativeChannelCallbackNames names{
       uniqueMlirSymbolName(module, "__loom_logical_channel_create"),
+      uniqueMlirSymbolName(module, "__loom_logical_channel_rate"),
       uniqueMlirSymbolName(module, "__loom_logical_channel_send"),
       uniqueMlirSymbolName(module, "__loom_logical_channel_receive")};
   mlir::OpBuilder declarations(module.getContext());
@@ -377,6 +391,9 @@ lowerLogicalChannels(
       declarations, module.getLoc(), names.create,
       mlir::LLVM::LLVMFunctionType::get(i64, {i64}));
   mlir::LLVM::LLVMFuncOp::create(
+      declarations, module.getLoc(), names.rate,
+      mlir::LLVM::LLVMFunctionType::get(voidType, {i64, i64, i64, i64}));
+  mlir::LLVM::LLVMFuncOp::create(
       declarations, module.getLoc(), names.send,
       mlir::LLVM::LLVMFunctionType::get(voidType, {i64, pointer, i64}));
   mlir::LLVM::LLVMFuncOp::create(
@@ -386,8 +403,13 @@ lowerLogicalChannels(
 
   llvm::DenseMap<mlir::Value, mlir::Value> handles;
   for (dataflow::ChannelCreateOp create : creates) {
-    auto count = receiverCounts.find(create.getChannel());
-    if (count == receiverCounts.end() || count->second == 0)
+    auto count = projection.receiverCounts.find(create.getChannel());
+    auto producer = projection.producerMessageCounts.find(create.getChannel());
+    auto consumers = projection.consumerMessageCounts.find(create.getChannel());
+    if (count == projection.receiverCounts.end() || count->second == 0 ||
+        producer == projection.producerMessageCounts.end() ||
+        consumers == projection.consumerMessageCounts.end() ||
+        consumers->second.size() != count->second)
       return invalid("logical channel has no receiver endpoint");
     mlir::OpBuilder builder(create);
     mlir::Value countValue = mlir::LLVM::ConstantOp::create(
@@ -397,6 +419,21 @@ lowerLogicalChannels(
         builder, create.getLoc(), mlir::TypeRange{i64}, names.create,
         mlir::ValueRange{countValue});
     handles.try_emplace(create.getChannel(), call.getResult());
+    mlir::Value producerCount = mlir::LLVM::ConstantOp::create(
+        builder, create.getLoc(), i64,
+        builder.getI64IntegerAttr(producer->second));
+    for (const auto indexed : llvm::enumerate(consumers->second)) {
+      mlir::Value consumerOrdinal = mlir::LLVM::ConstantOp::create(
+          builder, create.getLoc(), i64,
+          builder.getI64IntegerAttr(indexed.index()));
+      mlir::Value consumerCount = mlir::LLVM::ConstantOp::create(
+          builder, create.getLoc(), i64,
+          builder.getI64IntegerAttr(indexed.value()));
+      mlir::LLVM::CallOp::create(
+          builder, create.getLoc(), mlir::TypeRange{}, names.rate,
+          mlir::ValueRange{call.getResult(), producerCount, consumerOrdinal,
+                           consumerCount});
+    }
   }
 
   for (dataflow::ChannelSendOp send : sends) {
@@ -463,7 +500,7 @@ projectSelectedWholeProgram(mlir::ModuleOp module) {
   auto threads = inlineDenseThreadOwnershipCarriers(module);
   if (!threads)
     return threads.takeError();
-  auto channels = lowerLogicalChannels(module, threads->receiverCounts);
+  auto channels = lowerLogicalChannels(module, *threads);
   if (!channels)
     return channels.takeError();
   bool residualCarrier = false;

@@ -4,6 +4,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Twine.h"
 
 #include <algorithm>
@@ -103,6 +104,43 @@ struct HandshakeCandidateScratchStorage final {
   std::uint64_t backwardEpoch = 0;
 };
 
+struct RebuiltHandshakeSelection final {
+  std::vector<PnrIndex> fragmentRefcounts;
+  std::vector<PnrIndex> activeFragments;
+  std::vector<PnrIndex> traversalRefcounts;
+  std::vector<PnrIndex> allGroupSelectedWitnessCounts;
+};
+
+struct HandshakeProjectionNodeScratch final {
+  std::string key;
+  PnrIndex denseOrdinal = 0;
+};
+
+struct HandshakeProjectionArcScratch final {
+  PnrIndex source = 0;
+  PnrIndex destination = 0;
+
+  friend bool operator==(const HandshakeProjectionArcScratch &lhs,
+                         const HandshakeProjectionArcScratch &rhs) {
+    return lhs.source == rhs.source && lhs.destination == rhs.destination;
+  }
+};
+
+struct HandshakeProjectionScratchStorage final {
+  RebuiltHandshakeSelection selection;
+  std::vector<HandshakeProjectionNodeScratch> nodes;
+  std::size_t activeNodeStorageCount = 0;
+  std::vector<HandshakeProjectionArcScratch> arcs;
+  std::vector<PnrIndex> sortedNodeOrdinals;
+  std::vector<PnrIndex> indegree;
+  std::vector<PnrIndex> adjacencyOffsets;
+  std::vector<PnrIndex> adjacencyDestinations;
+  std::vector<PnrIndex> ready;
+  std::vector<std::vector<PnrIndex>> ownerNodeOrdinals;
+  std::vector<std::vector<std::uint64_t>> ownerNodeMarks;
+  std::uint64_t ownerNodeEpoch = 0;
+};
+
 } // namespace loom::pnr::detail
 
 namespace {
@@ -158,25 +196,32 @@ std::uint64_t elapsedNanoseconds(std::chrono::steady_clock::time_point begin) {
   return count <= 0 ? 0 : static_cast<std::uint64_t>(count);
 }
 
-std::string signalKey(const ::loom::fabric::HandshakeSignalRef &signal) {
+void assignNodeKey(const detail::HandshakeNodeIdentity &identity,
+                   std::string &key) {
+  key.clear();
+  if (!identity.boundarySignal) {
+    key.resize(9, '\0');
+    key[0] = '\2';
+    const auto append = [&](std::size_t offset, std::uint32_t value) {
+      for (std::size_t byte = 0; byte != 4; ++byte)
+        key[offset + byte] = static_cast<char>(value >> (24 - byte * 8));
+    };
+    append(1, identity.owner);
+    append(5, identity.localNode);
+    return;
+  }
+
   std::vector<std::uint8_t> bytes =
-      ::loom::fabric::canonicalFabricBytes(signal.endpoint);
-  bytes.push_back(static_cast<std::uint8_t>(signal.signal));
-  return std::string(reinterpret_cast<const char *>(bytes.data()),
-                     bytes.size());
+      ::loom::fabric::canonicalFabricBytes(identity.boundarySignal->endpoint);
+  key.reserve(bytes.size() + 2);
+  key.push_back('\1');
+  key.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+  key.push_back(static_cast<char>(identity.boundarySignal->signal));
 }
 
 std::string nodeKey(const detail::HandshakeNodeIdentity &identity) {
-  if (identity.boundarySignal)
-    return std::string(1, '\1') + signalKey(*identity.boundarySignal);
-  std::string key(9, '\0');
-  key[0] = '\2';
-  const auto append = [&](std::size_t offset, std::uint32_t value) {
-    for (std::size_t byte = 0; byte != 4; ++byte)
-      key[offset + byte] = static_cast<char>(value >> (24 - byte * 8));
-  };
-  append(1, identity.owner);
-  append(5, identity.localNode);
+  std::string key;
+  assignNodeKey(identity, key);
   return key;
 }
 
@@ -208,17 +253,11 @@ arcIdentity(PnrIndex owner, const ::loom::fabric::HandshakeOwnerModel &model,
                                       std::move(*destination)};
 }
 
-struct RebuiltHandshakeSelection final {
-  std::vector<PnrIndex> fragmentRefcounts;
-  std::vector<PnrIndex> activeFragments;
-  std::vector<PnrIndex> traversalRefcounts;
-  std::vector<PnrIndex> allGroupSelectedWitnessCounts;
-};
-
-llvm::Expected<RebuiltHandshakeSelection>
-rebuildHandshakeSelection(const FrozenSpatialHandshakeIndex &index,
-                          llvm::ArrayRef<PnrIndex> selectedFragments,
-                          llvm::ArrayRef<PnrIndex> traversalUses) {
+llvm::Error rebuildHandshakeSelectionInto(
+    const FrozenSpatialHandshakeIndex &index,
+    llvm::ArrayRef<PnrIndex> selectedFragments,
+    llvm::ArrayRef<PnrIndex> traversalUses,
+    detail::RebuiltHandshakeSelection &result) {
   const auto traversalFragmentOffsets = index.traversalFragmentOffsets();
   const auto traversalGroupOffsets = index.traversalAllGroupOffsets();
   if (traversalFragmentOffsets.empty() || traversalGroupOffsets.empty())
@@ -229,8 +268,8 @@ rebuildHandshakeSelection(const FrozenSpatialHandshakeIndex &index,
     return candidateError(
         "projection traversal dimension does not match its index");
 
-  RebuiltHandshakeSelection result;
   result.fragmentRefcounts.assign(index.fragments().size(), 0);
+  result.activeFragments.clear();
   result.traversalRefcounts.assign(traversalUses.begin(), traversalUses.end());
   result.allGroupSelectedWitnessCounts.assign(index.allTraversalGroups().size(),
                                               0);
@@ -282,6 +321,17 @@ rebuildHandshakeSelection(const FrozenSpatialHandshakeIndex &index,
   for (auto [fragment, refcount] : llvm::enumerate(result.fragmentRefcounts))
     if (refcount != 0)
       result.activeFragments.push_back(static_cast<PnrIndex>(fragment));
+  return llvm::Error::success();
+}
+
+llvm::Expected<detail::RebuiltHandshakeSelection>
+rebuildHandshakeSelection(const FrozenSpatialHandshakeIndex &index,
+                          llvm::ArrayRef<PnrIndex> selectedFragments,
+                          llvm::ArrayRef<PnrIndex> traversalUses) {
+  detail::RebuiltHandshakeSelection result;
+  if (llvm::Error error = rebuildHandshakeSelectionInto(
+          index, selectedFragments, traversalUses, result))
+    return std::move(error);
   return result;
 }
 
@@ -1102,6 +1152,327 @@ llvm::Expected<bool> loom::pnr::independentlyVerifyHandshakeProjectionAcyclic(
   if (!graph)
     return graph.takeError();
   return graph->cycleWitness.empty();
+}
+
+HandshakeProjectionScratch::HandshakeProjectionScratch()
+    : storage_(
+          std::make_unique<detail::HandshakeProjectionScratchStorage>()) {}
+
+HandshakeProjectionScratch::~HandshakeProjectionScratch() = default;
+
+llvm::Error
+HandshakeProjectionScratch::prepare(const FrozenSpatialHandshakeIndex &index) {
+  if (index.traversalFragmentOffsets().empty() ||
+      index.traversalAllGroupOffsets().empty())
+    return candidateError("handshake projection traversal offsets are empty");
+
+  preparedIndex_ = &index;
+  projectionCount_ = 0;
+  constructionNanoseconds_ = 0;
+  deterministicWork_ = 0;
+  peakActiveNodeCount_ = 0;
+  peakActiveArcCount_ = 0;
+  coldVerificationCount_ = 0;
+  coldVerificationNanoseconds_ = 0;
+
+  detail::HandshakeProjectionScratchStorage &storage = *storage_;
+  storage.selection.fragmentRefcounts.assign(index.fragments().size(), 0);
+  storage.selection.activeFragments.clear();
+  storage.selection.traversalRefcounts.assign(
+      index.traversalFragmentOffsets().size() - 1, 0);
+  storage.selection.allGroupSelectedWitnessCounts.assign(
+      index.allTraversalGroups().size(), 0);
+  storage.activeNodeStorageCount = 0;
+  storage.arcs.clear();
+  storage.sortedNodeOrdinals.clear();
+  storage.indegree.clear();
+  storage.adjacencyOffsets.clear();
+  storage.adjacencyDestinations.clear();
+  storage.ready.clear();
+  storage.ownerNodeOrdinals.clear();
+  storage.ownerNodeOrdinals.resize(index.ownerModels().size());
+  storage.ownerNodeMarks.clear();
+  storage.ownerNodeMarks.resize(index.ownerModels().size());
+  storage.ownerNodeEpoch = 0;
+  return llvm::Error::success();
+}
+
+llvm::Expected<bool> HandshakeProjectionScratch::projectAcyclic(
+    const FrozenSpatialHandshakeIndex &index,
+    llvm::ArrayRef<PnrIndex> selectedFragments,
+    llvm::ArrayRef<PnrIndex> traversalUses) {
+  if (preparedIndex_ != &index)
+    return candidateError(
+        "handshake projection scratch belongs to another frozen index");
+
+  const auto begin = std::chrono::steady_clock::now();
+  addWork(projectionCount_);
+  std::uint64_t deterministicWork = 0;
+  const llvm::scope_exit finishAccounting([&] {
+    addWork(constructionNanoseconds_, elapsedNanoseconds(begin));
+    addWork(deterministicWork_, deterministicWork);
+  });
+
+  detail::HandshakeProjectionScratchStorage &storage = *storage_;
+  if (llvm::Error error = rebuildHandshakeSelectionInto(
+          index, selectedFragments, traversalUses, storage.selection))
+    return std::move(error);
+
+  if (++storage.ownerNodeEpoch == 0) {
+    for (auto &marks : storage.ownerNodeMarks)
+      std::fill(marks.begin(), marks.end(), 0);
+    storage.ownerNodeEpoch = 1;
+  }
+  storage.activeNodeStorageCount = 0;
+  storage.arcs.clear();
+
+  const auto appendNode = [&](const detail::HandshakeNodeIdentity &identity)
+      -> llvm::Expected<PnrIndex> {
+    auto ordinal = checkedIndex(storage.activeNodeStorageCount,
+                                "active handshake projection node");
+    if (!ordinal)
+      return ordinal.takeError();
+    if (storage.activeNodeStorageCount == storage.nodes.size())
+      storage.nodes.emplace_back();
+    detail::HandshakeProjectionNodeScratch &node =
+        storage.nodes[storage.activeNodeStorageCount++];
+    assignNodeKey(identity, node.key);
+    node.denseOrdinal = 0;
+    addWork(deterministicWork);
+    return *ordinal;
+  };
+
+  const auto resolveNode =
+      [&](PnrIndex owner, const ::loom::fabric::HandshakeOwnerModel &model,
+          std::uint32_t localNode) -> llvm::Expected<PnrIndex> {
+    if (owner >= storage.ownerNodeOrdinals.size() ||
+        localNode >= model.nodeCount())
+      return candidateError(
+          "active handshake projection node is out of range");
+    auto &ordinals = storage.ownerNodeOrdinals[owner];
+    auto &marks = storage.ownerNodeMarks[owner];
+    if (ordinals.size() != model.nodeCount()) {
+      ordinals.resize(model.nodeCount());
+      marks.assign(model.nodeCount(), 0);
+    }
+    if (marks[localNode] == storage.ownerNodeEpoch)
+      return ordinals[localNode];
+    auto identity = nodeIdentity(owner, model, localNode);
+    if (!identity)
+      return identity.takeError();
+    auto ordinal = appendNode(*identity);
+    if (!ordinal)
+      return ordinal.takeError();
+    marks[localNode] = storage.ownerNodeEpoch;
+    ordinals[localNode] = *ordinal;
+    return *ordinal;
+  };
+
+  if (!index.fabricContext())
+    return candidateError(
+        "handshake projection index has no Fabric static context");
+  for (const ::loom::fabric::HandshakeDependencyArc &arc :
+       index.fabricContext()->unconditionalDependencyArcs()) {
+    detail::HandshakeNodeIdentity source;
+    source.boundarySignal = arc.source;
+    detail::HandshakeNodeIdentity destination;
+    destination.boundarySignal = arc.destination;
+    auto sourceOrdinal = appendNode(source);
+    if (!sourceOrdinal)
+      return sourceOrdinal.takeError();
+    auto destinationOrdinal = appendNode(destination);
+    if (!destinationOrdinal)
+      return destinationOrdinal.takeError();
+    storage.arcs.push_back({*sourceOrdinal, *destinationOrdinal});
+    addWork(deterministicWork);
+  }
+
+  const auto models = index.ownerModels();
+  const auto fragments = index.fragments();
+  for (PnrIndex fragmentOrdinal : storage.selection.activeFragments) {
+    if (fragmentOrdinal >= fragments.size())
+      return candidateError(
+          "active handshake projection fragment is out of range");
+    const FrozenSpatialHandshakeFragment fragment = fragments[fragmentOrdinal];
+    if (fragment.owner >= models.size())
+      return candidateError(
+          "active handshake projection owner is out of range");
+    const ::loom::fabric::HandshakeOwnerModel &model = models[fragment.owner];
+    if (fragment.localFragment >= model.fragmentCount())
+      return candidateError(
+          "active local handshake projection fragment is out of range");
+    const ::loom::fabric::HandshakeActivationFragment local =
+        model.fragment(fragment.localFragment);
+    if (local.contributionCount != fragment.contributionCount ||
+        local.contributionOffset > model.fragmentContributionCount() ||
+        local.contributionCount >
+            model.fragmentContributionCount() - local.contributionOffset)
+      return candidateError(
+          "active handshake projection contribution is stale");
+    for (std::uint32_t contribution = 0;
+         contribution < local.contributionCount; ++contribution) {
+      const std::uint32_t localArc = model.fragmentContributionOrdinal(
+          local.contributionOffset + contribution);
+      if (localArc >= model.arcCount())
+        return candidateError(
+            "active handshake projection arc is out of range");
+      const ::loom::fabric::HandshakeOwnerArc arc = model.arc(localArc);
+      auto source = resolveNode(fragment.owner, model, arc.source);
+      if (!source)
+        return source.takeError();
+      auto destination = resolveNode(fragment.owner, model, arc.destination);
+      if (!destination)
+        return destination.takeError();
+      storage.arcs.push_back({*source, *destination});
+      addWork(deterministicWork);
+    }
+  }
+
+  storage.sortedNodeOrdinals.resize(storage.activeNodeStorageCount);
+  for (PnrIndex ordinal = 0; ordinal < storage.activeNodeStorageCount;
+       ++ordinal)
+    storage.sortedNodeOrdinals[ordinal] = ordinal;
+  llvm::sort(storage.sortedNodeOrdinals, [&](PnrIndex lhs, PnrIndex rhs) {
+    const std::string &left = storage.nodes[lhs].key;
+    const std::string &right = storage.nodes[rhs].key;
+    return left != right ? left < right : lhs < rhs;
+  });
+
+  std::size_t denseNodeCount = 0;
+  const std::string *previousKey = nullptr;
+  for (PnrIndex raw : storage.sortedNodeOrdinals) {
+    const std::string &key = storage.nodes[raw].key;
+    if (!previousKey || key != *previousKey) {
+      auto dense = checkedIndex(denseNodeCount,
+                                "active handshake projection dense node");
+      if (!dense)
+        return dense.takeError();
+      ++denseNodeCount;
+      previousKey = &key;
+    }
+    storage.nodes[raw].denseOrdinal =
+        static_cast<PnrIndex>(denseNodeCount - 1);
+    addWork(deterministicWork);
+  }
+
+  for (detail::HandshakeProjectionArcScratch &arc : storage.arcs) {
+    if (arc.source >= storage.activeNodeStorageCount ||
+        arc.destination >= storage.activeNodeStorageCount)
+      return candidateError(
+          "active handshake projection arc endpoint is out of range");
+    arc.source = storage.nodes[arc.source].denseOrdinal;
+    arc.destination = storage.nodes[arc.destination].denseOrdinal;
+  }
+  llvm::sort(storage.arcs,
+             [](const detail::HandshakeProjectionArcScratch &lhs,
+                const detail::HandshakeProjectionArcScratch &rhs) {
+               return std::tie(lhs.source, lhs.destination) <
+                      std::tie(rhs.source, rhs.destination);
+             });
+  storage.arcs.erase(std::unique(storage.arcs.begin(), storage.arcs.end()),
+                     storage.arcs.end());
+
+  peakActiveNodeCount_ =
+      std::max<std::uint64_t>(peakActiveNodeCount_, denseNodeCount);
+  peakActiveArcCount_ =
+      std::max<std::uint64_t>(peakActiveArcCount_, storage.arcs.size());
+  storage.indegree.assign(denseNodeCount, 0);
+  storage.adjacencyOffsets.assign(denseNodeCount + 1, 0);
+  for (const detail::HandshakeProjectionArcScratch &arc : storage.arcs) {
+    if (arc.source >= denseNodeCount || arc.destination >= denseNodeCount)
+      return candidateError(
+          "active handshake projection dense arc is out of range");
+    if (llvm::Error error = increment(
+            storage.indegree[arc.destination], "projection node indegree"))
+      return std::move(error);
+    if (llvm::Error error = increment(storage.adjacencyOffsets[arc.source + 1],
+                                      "projection adjacency count"))
+      return std::move(error);
+    addWork(deterministicWork);
+  }
+  for (std::size_t node = 0; node < denseNodeCount; ++node) {
+    const PnrIndex count = storage.adjacencyOffsets[node + 1];
+    if (count > std::numeric_limits<PnrIndex>::max() -
+                    storage.adjacencyOffsets[node])
+      return candidateError("projection adjacency offset overflows PnrIndex");
+    storage.adjacencyOffsets[node + 1] += storage.adjacencyOffsets[node];
+  }
+  storage.adjacencyDestinations.clear();
+  storage.adjacencyDestinations.reserve(storage.arcs.size());
+  for (const detail::HandshakeProjectionArcScratch &arc : storage.arcs)
+    storage.adjacencyDestinations.push_back(arc.destination);
+
+  storage.ready.clear();
+  storage.ready.reserve(denseNodeCount);
+  for (PnrIndex node = 0; node < denseNodeCount; ++node)
+    if (storage.indegree[node] == 0)
+      storage.ready.push_back(node);
+  std::size_t cursor = 0;
+  while (cursor < storage.ready.size()) {
+    const PnrIndex node = storage.ready[cursor++];
+    for (PnrIndex arc = storage.adjacencyOffsets[node];
+         arc < storage.adjacencyOffsets[node + 1]; ++arc) {
+      if (arc >= storage.adjacencyDestinations.size())
+        return candidateError(
+            "projection adjacency destination is out of range");
+      PnrIndex &destinationIndegree =
+          storage.indegree[storage.adjacencyDestinations[arc]];
+      if (destinationIndegree == 0)
+        return candidateError("projection node indegree underflows");
+      if (--destinationIndegree == 0)
+        storage.ready.push_back(storage.adjacencyDestinations[arc]);
+      addWork(deterministicWork);
+    }
+  }
+  const bool acyclic = storage.ready.size() == denseNodeCount;
+
+  if (mapping_debug::enabled(mapping_debug::Level::Detail)) {
+    const auto coldBegin = std::chrono::steady_clock::now();
+    addWork(coldVerificationCount_);
+    auto cold = independentlyVerifyHandshakeProjectionAcyclic(
+        index, selectedFragments, traversalUses);
+    addWork(coldVerificationNanoseconds_, elapsedNanoseconds(coldBegin));
+    if (!cold)
+      return cold.takeError();
+    if (*cold != acyclic)
+      return candidateError(
+          "active-only handshake projection disagrees with cold "
+          "materialization");
+  }
+  return acyclic;
+}
+
+std::size_t HandshakeProjectionScratch::retainedStorageBytes() const {
+  const detail::HandshakeProjectionScratchStorage &storage = *storage_;
+  std::size_t bytes =
+      retainedBytes(storage.selection.fragmentRefcounts) +
+      retainedBytes(storage.selection.activeFragments) +
+      retainedBytes(storage.selection.traversalRefcounts) +
+      retainedBytes(storage.selection.allGroupSelectedWitnessCounts) +
+      retainedBytes(storage.nodes) + retainedBytes(storage.arcs) +
+      retainedBytes(storage.sortedNodeOrdinals) +
+      retainedBytes(storage.indegree) +
+      retainedBytes(storage.adjacencyOffsets) +
+      retainedBytes(storage.adjacencyDestinations) +
+      retainedBytes(storage.ready) +
+      retainedNestedBytes(storage.ownerNodeOrdinals) +
+      retainedNestedBytes(storage.ownerNodeMarks);
+  for (const detail::HandshakeProjectionNodeScratch &node : storage.nodes)
+    bytes += node.key.capacity();
+  return bytes;
+}
+
+HandshakeProjectionStatistics HandshakeProjectionScratch::statistics() const {
+  HandshakeProjectionStatistics result;
+  result.projectionCount = projectionCount_;
+  result.constructionNanoseconds = constructionNanoseconds_;
+  result.deterministicWork = deterministicWork_;
+  result.retainedBytes = retainedStorageBytes();
+  result.peakActiveNodeCount = peakActiveNodeCount_;
+  result.peakActiveArcCount = peakActiveArcCount_;
+  result.coldVerificationCount = coldVerificationCount_;
+  result.coldVerificationNanoseconds = coldVerificationNanoseconds_;
+  return result;
 }
 
 HandshakeCandidateScratch::HandshakeCandidateScratch()

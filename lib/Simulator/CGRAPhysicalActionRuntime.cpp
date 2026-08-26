@@ -149,7 +149,8 @@ CgraPhysicalActionRuntime::requestBatch(
     }
     const auto key =
         std::make_pair(request.actionOrdinal, request.occurrenceOrdinal);
-    const bool inserted = activeActions_.try_emplace(key, slot).second;
+    [[maybe_unused]] const bool inserted =
+        activeActions_.try_emplace(key, slot).second;
     assert(inserted && "preflighted physical action must be unique");
     ++activeActionCount_;
     const CgraPhysicalUseTiming &use = uses_[request.actionOrdinal];

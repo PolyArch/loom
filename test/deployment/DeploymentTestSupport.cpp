@@ -5,6 +5,7 @@
 #include "ADG/MemoryLibrary.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Common/TimeoutBudgets.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -438,13 +439,13 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
     resetMembers.push_back(core.spatialCoreResetDomainMember());
   }
   requireSuccess(
-      test, reset.close(resetMembers,
-                        take(test, fabric::ResetDomainContractRecord::create(
-                                       fabric::ResetPolarity::ActiveHigh,
-                                       fabric::ResetTiming::Asynchronous,
-                                       fabric::ResetTiming::Asynchronous,
-                                       fabric::ResetInitialState::Asserted,
-                                       std::nullopt, 0))));
+      test,
+      reset.close(resetMembers,
+                  take(test, fabric::ResetDomainContractRecord::create(
+                                 fabric::ResetPolarity::ActiveHigh,
+                                 fabric::ResetTiming::Asynchronous,
+                                 fabric::ResetTiming::Asynchronous,
+                                 spec.resetInitialState, std::nullopt, 0))));
   requireSuccess(test, system.close());
   auto finalized = take(test, std::move(design).finalize());
   require(test, finalized.roots().size() == 1,
@@ -665,9 +666,10 @@ std::vector<std::uint8_t> linkedExecutable(llvm::StringRef test,
       objectPath};
   std::string error;
   bool executionFailed = false;
-  const int result =
-      llvm::sys::ExecuteAndWait(LOOM_TEST_LLD_PATH, arguments, std::nullopt, {},
-                                30, 1024, &error, &executionFailed);
+  const int result = llvm::sys::ExecuteAndWait(
+      LOOM_TEST_LLD_PATH, arguments, std::nullopt, {},
+      static_cast<unsigned>(timeout::seconds(timeout::Tier::UltraFast)), 1024,
+      &error, &executionFailed);
   require(test, !executionFailed && result == 0,
           "ld.lld did not produce the host executable");
   auto buffer = llvm::MemoryBuffer::getFile(executablePath, false, false);

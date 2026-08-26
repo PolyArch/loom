@@ -1,5 +1,7 @@
 #include "TechMappingCandidateDomain.h"
 
+#include "Common/TimeoutBudgets.h"
+
 #include "Config/ResolvedConfig.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -120,6 +122,31 @@ void completedProductSurvivesExpansionLimit() {
     fail("a completed component product was discarded at the expansion limit");
 }
 
+void boundedConstructiveFrontierDoesNotFallThrough() {
+  const loom::ArtifactIdentity owner = identity();
+  loom::mapping::detail::TechMatchDomain domain;
+  constexpr std::size_t actorCount = 65;
+  domain.actors.reserve(actorCount);
+  domain.rows.reserve(actorCount);
+  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
+    domain.actors.push_back(actor(owner, ordinal));
+    domain.rows.push_back(row(static_cast<std::uint8_t>(ordinal), {ordinal}));
+  }
+  for (std::size_t ordinal = 1; ordinal != actorCount; ++ordinal)
+    domain.rows.push_back(row(static_cast<std::uint8_t>(ordinal + actorCount),
+                              {ordinal - 1, ordinal}));
+  assignIndependentComputeContextSupply(domain);
+
+  loom::mapping::TechMappingGenerationAccounting accounting;
+  const auto result = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(1, 1), accounting);
+  if (result.exhausted || !result.covers.empty() ||
+      accounting.constructiveCoverSearchInvocations != 1 ||
+      accounting.partialCoverExpansions != 1 ||
+      accounting.constructiveCoverCompletedChecks != 0)
+    fail("bounded constructive frontier fell through to exhaustive search");
+}
+
 void sealedCoversFollowFormalRank() {
   const loom::ArtifactIdentity owner = identity();
   loom::mapping::detail::TechMatchDomain domain;
@@ -182,7 +209,7 @@ void independentComponentFrontierIsCompact() {
 
   if (result.covers.size() != publicationLimit || result.exhausted)
     fail("independent component product did not return its canonical prefix");
-  if (elapsed > std::chrono::seconds(10))
+  if (elapsed > loom::timeout::duration(loom::timeout::Tier::UltraFast))
     fail("independent component product exceeded its runtime gate");
   if (rssDelta > 16 * 1024)
     fail("independent component product exceeded its incremental RSS gate");
@@ -387,6 +414,7 @@ int main() {
   realizationCountLowerBoundIsAdmissible();
   exactComputeContextSupplyShapesFrontier();
   exactMemoryOccurrenceSupplyShapesFrontier();
+  boundedConstructiveFrontierDoesNotFallThrough();
   completedProductSurvivesExpansionLimit();
   sealedCoversFollowFormalRank();
   prospectiveSeedHasOneKeyedOutcome();

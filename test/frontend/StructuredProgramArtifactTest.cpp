@@ -7,6 +7,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Parser/Parser.h"
@@ -20,6 +21,7 @@
 #include <cstdlib>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -154,29 +156,119 @@ module {
 void finalizationProjectsSourceProvenanceOutsideIdentity() {
   const char *test = __func__;
   auto module = parse(test, R"mlir(
+#callee = loc("kernel.c":11:7)
+#caller = loc("wrapper.c":19:3)
+#inlined = loc(callsite(#callee at #caller))
 module {
   func.func @entry(%arg0: i32) -> i32 {
-    %sum = arith.addi %arg0, %arg0 : i32 loc("kernel.c":11:7)
+    %sum = arith.addi %arg0, %arg0 : i32 loc(#inlined)
     %product = arith.muli %sum, %arg0 : i32 loc("wrapper.c":19:3)
     return %product : i32
   }
 }
 )mlir");
+  mlir::Operation *inlinedOperation = nullptr;
+  mlir::Operation *callerOnlyOperation = nullptr;
+  module->walk([&](mlir::arith::AddIOp operation) {
+    inlinedOperation = operation.getOperation();
+  });
+  module->walk([&](mlir::arith::MulIOp operation) {
+    callerOnlyOperation = operation.getOperation();
+  });
+  require(test, inlinedOperation && callerOnlyOperation,
+          "source operation is missing");
+  mlir::Location inlinedLocation = inlinedOperation->getLoc();
+  mlir::Attribute debugFile =
+      mlir::LLVM::DIFileAttr::get(module->getContext(), "kernel.c", "/src");
+  inlinedOperation->setLoc(
+      mlir::FusedLoc::get(module->getContext(), {inlinedLocation}, debugFile));
+  callerOnlyOperation->setLoc(mlir::CallSiteLoc::get(
+      mlir::UnknownLoc::get(module->getContext()),
+      mlir::FileLineColLoc::get(module->getContext(), "caller-only.c", 23, 5)));
+
   auto finalized =
       take(test, loom::frontend::finalizeStructuredProgramWithTrackedBlocks(
                      module.get(), {}));
   bool foundKernel = false;
+  bool foundDebugKernel = false;
   bool foundWrapper = false;
+  bool foundCallerOnly = false;
+  bool foundInlineCall = false;
+  bool inventedCallerOnlyLineage = false;
   for (const auto &provenance : finalized.sourceProvenance) {
     require(test, provenance.operation.parent == finalized.artifact.identity(),
             "source provenance is not keyed by the finalized artifact");
     require(test, provenance.operation.kind == StructuredEntityKind::Operation,
             "source provenance is not keyed by operation references");
     foundKernel |= llvm::is_contained(provenance.sourceFiles, "kernel.c");
+    foundDebugKernel |=
+        llvm::is_contained(provenance.sourceFiles, "/src/kernel.c");
     foundWrapper |= llvm::is_contained(provenance.sourceFiles, "wrapper.c");
+    foundCallerOnly |=
+        llvm::is_contained(provenance.sourceFiles, "caller-only.c");
+    foundInlineCall |=
+        llvm::any_of(provenance.callLineages, [](const auto &lineage) {
+          return lineage.frames.size() == 2 &&
+                 lineage.frames[0].sourceFile == "kernel.c" &&
+                 lineage.frames[0].position ==
+                     loom::frontend::StructuredSourcePosition{11, 7} &&
+                 lineage.frames[1].sourceFile == "wrapper.c" &&
+                 lineage.frames[1].position ==
+                     loom::frontend::StructuredSourcePosition{19, 3};
+        });
+    inventedCallerOnlyLineage |=
+        llvm::any_of(provenance.callLineages, [](const auto &lineage) {
+          return !lineage.frames.empty() &&
+                 lineage.frames.front().sourceFile == "caller-only.c";
+        });
   }
-  require(test, foundKernel && foundWrapper,
+  require(test,
+          foundKernel && foundDebugKernel && foundWrapper && foundCallerOnly,
           "source provenance did not preserve canonical source paths");
+  require(test, foundInlineCall,
+          "source provenance did not preserve inline call lineage");
+  require(test, !inventedCallerOnlyLineage,
+          "unknown operation source was replaced by its caller location");
+
+  mlir::IRMapping mapping;
+  auto clone =
+      take(test, loom::frontend::cloneStructuredProgramWithSourceLocations(
+                     finalized.artifact, finalized.sourceProvenance, mapping));
+  auto refinalized =
+      take(test, loom::frontend::finalizeStructuredProgramWithTrackedBlocks(
+                     clone.get(), {}));
+  bool restoredInlineCall =
+      llvm::any_of(refinalized.sourceProvenance, [](const auto &provenance) {
+        return llvm::any_of(provenance.callLineages, [](const auto &lineage) {
+          return lineage.frames.size() == 2 &&
+                 lineage.frames[0].sourceFile == "kernel.c" &&
+                 lineage.frames[0].position ==
+                     loom::frontend::StructuredSourcePosition{11, 7} &&
+                 lineage.frames[1].sourceFile == "wrapper.c" &&
+                 lineage.frames[1].position ==
+                     loom::frontend::StructuredSourcePosition{19, 3};
+        });
+      });
+  require(test, restoredInlineCall,
+          "Structured cloning did not restore inline call lineage");
+
+  std::vector<loom::frontend::StructuredOperationSourceProvenance>
+      inventoryOnly = finalized.sourceProvenance;
+  for (auto &provenance : inventoryOnly)
+    provenance.callLineages.clear();
+  mlir::IRMapping inventoryMapping;
+  auto inventoryClone =
+      take(test, loom::frontend::cloneStructuredProgramWithSourceLocations(
+                     finalized.artifact, inventoryOnly, inventoryMapping));
+  auto inventoryRefinalized =
+      take(test, loom::frontend::finalizeStructuredProgramWithTrackedBlocks(
+                     inventoryClone.get(), {}));
+  require(test,
+          llvm::all_of(inventoryRefinalized.sourceProvenance,
+                       [](const auto &provenance) {
+                         return provenance.callLineages.empty();
+                       }),
+          "file-only provenance invented an exact source position");
 }
 
 void semanticOperationChangesIdentity() {

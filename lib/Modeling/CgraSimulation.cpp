@@ -416,15 +416,14 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
   const auto inputLoadEnd = std::chrono::steady_clock::now();
   const auto engineStart = std::chrono::steady_clock::now();
   const std::clock_t engineCpuStart = std::clock();
-  auto outcome = workloadExecution
-                     ? sim::simulateCgraWorkload(
-                           *workloadExecution, workload, runtimeInput,
-                           limits.maxEventFrames, limits.executionDeadline,
-                           &externalMemory)
-                     : sim::simulateCgraWorkload(
-                           execution, workload, runtimeInput,
-                           limits.maxEventFrames, limits.executionDeadline,
-                           &externalMemory);
+  auto outcome =
+      workloadExecution
+          ? sim::simulateCgraWorkload(*workloadExecution, workload,
+                                      runtimeInput, limits.maxEventFrames,
+                                      limits.executionDeadline, &externalMemory)
+          : sim::simulateCgraWorkload(
+                execution, workload, runtimeInput, limits.maxEventFrames,
+                limits.executionDeadline, &externalMemory);
   const std::clock_t engineCpuEnd = std::clock();
   const auto engineEnd = std::chrono::steady_clock::now();
   if (attemptProfile) {
@@ -924,11 +923,11 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
       std::move(outcome->retired->observations),
       std::move(outcome->retired->progress),
       {}};
-  auto finalized = executionContext
-                       ? sim::finalizeSimulationExecution(model,
-                                                          *executionContext)
-                       : sim::finalizeSimulationExecution(
-                             model, resolution, artifactStore, blobStore);
+  auto finalized =
+      executionContext
+          ? sim::finalizeSimulationExecution(model, *executionContext)
+          : sim::finalizeSimulationExecution(model, resolution, artifactStore,
+                                             blobStore);
   if (!finalized)
     return finalized.takeError();
   const std::clock_t projectionCpuEnd = std::clock();
@@ -996,7 +995,7 @@ evaluate(const EvaluationRequest &request,
     return classifyExecutionFailure(inputs.takeError());
   return evaluateWithPrepared(request, resolution, *execution, inputs->workload,
                               inputs->runtimeInput, {}, artifactStore,
-                              blobStore);
+                              blobStore, nullptr);
 }
 
 const EvaluationModelProvider kProvider{
@@ -1132,10 +1131,13 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
       *published, *resolution, artifactStore, blobStore);
   if (!executionContext)
     return executionContext.takeError();
-  return PreparedCgraSimulationEvaluation{
-      std::move(*request), std::move(*resolution), std::move(*execution),
-      std::move(inputs->workload), std::move(inputs->runtimeInput),
-      std::move(*workloadExecution), std::move(*executionContext)};
+  return PreparedCgraSimulationEvaluation{std::move(*request),
+                                          std::move(*resolution),
+                                          std::move(*execution),
+                                          std::move(inputs->workload),
+                                          std::move(inputs->runtimeInput),
+                                          std::move(*workloadExecution),
+                                          std::move(*executionContext)};
 }
 
 llvm::Expected<EvaluationEvidence>
@@ -1160,13 +1162,12 @@ llvm::Expected<CgraSimulationEvaluation> evaluateCgraSimulationWithDiagnostics(
   std::optional<sim::CgraClosedWaitSetDiagnostic> closedWait;
   std::optional<sim::CgraUnsupportedMemoryContract> unsupportedMemory;
   CgraSimulationAttemptProfile attemptProfile;
-  auto result = evaluateWithPrepared(prepared.request, prepared.resolution,
-                                     prepared.execution, prepared.workload,
-                                     prepared.runtimeInput, std::move(limits),
-                                     artifactStore, blobStore,
-                                     &prepared.workloadExecution,
-                                     &prepared.executionContext, &closedWait,
-                                     &unsupportedMemory, &attemptProfile);
+  auto result = evaluateWithPrepared(
+      prepared.request, prepared.resolution, prepared.execution,
+      prepared.workload, prepared.runtimeInput, std::move(limits),
+      artifactStore, blobStore, &prepared.workloadExecution,
+      &prepared.executionContext, &closedWait, &unsupportedMemory,
+      &attemptProfile);
   if (!result)
     return result.takeError();
   auto evidence = EvaluationEvidence::get(

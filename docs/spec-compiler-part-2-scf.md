@@ -60,6 +60,19 @@ pipeline operate on `FunctionOpInterface`, a callable region, or the upstream
 region utility. They must not copy a function into another dialect to obtain a
 particular pass wrapper.
 
+The whole callable is the preferred exact CFG-to-SCF projection. When a local
+obstacle makes that projection inadmissible, raising may instead recover a
+maximal dominance- and post-dominance-closed region with one external entry
+and one continuation. The boundary carries continuation arguments and every
+SSA value used outside the region; the rewrite is attempted on a detached
+callable clone and is published only after the upstream transformation
+succeeds. Any transient structured region used to establish that boundary is
+inlined before publication. Profile-bearing control, an unsupported
+terminator, or an unproved loop-hint association prevents only a region whose
+boundary contains that obstacle. A candidate with no common continuation or
+no exact live-out boundary remains in `cf` form without preventing independent
+regions in the same callable from being recovered.
+
 CFG structuring may preserve multiple PHI lanes for one recurrence. Mechanical
 raising removes a duplicate `scf.while` lane only when it has the same SSA
 initial value and the same SSA `scf.condition` value as an earlier lane, and
@@ -335,6 +348,26 @@ hint never enters canonical bytes or identity. A hint can affect identity only
 indirectly when a typed decision materializes different semantic IR in the
 resulting candidate. Two candidates with identical canonical semantic content
 deduplicate even if one derivation observed a hint and the other did not.
+For a source loop hint, the mutable raising workspace requires one exact
+carrier-manifest-to-LLVM-loop relation. The LLVM pipeline-start projection
+binds the source marker before ordinary optimization; raising then preserves
+the surviving loop target through mechanical LLVM-to-CF and CF-to-SCF
+rewrites. The projected source range names the original source loop; it is
+provenance rather than canonical operation identity. If the loop is erased,
+split, cloned, or cannot be matched uniquely, raising returns a typed
+unsupported or unproven projection instead of attaching the hint to a
+different operation.
+
+Before finalization, standard locations are projected into the existing
+`StructuredOperationSourceProvenance` sidecar. Each available call-site path
+retains exact file, line, and column frames ordered from the operation's source
+location through successively enclosing inline call sites. The source-file
+inventory also retains debug-scope files that have no precise location frame.
+Structured child materializers rebuild these locations on their private clones
+from the sidecar, so an inline lineage is not discarded merely because source
+locations do not enter canonical bytes. Candidate hints and source provenance
+remain invocation-local projections of the same Structured owner, not another
+program representation.
 
 ### Parent-Local References
 
@@ -676,6 +709,53 @@ prime, and unit trip counts have no such SCF factor decision in the current
 contract; other generator families or later invocations may still transform
 their enclosing structure.
 
+The general exact polyhedral analysis domain is a top-level unit-step
+`scf.for` or `affine.for` tree whose complete statement domains, accesses,
+aliases, and dependences are representable by MLIR Affine/Presburger without
+local division variables. It admits multi-statement nested and imperfect
+loop trees, affine symbolic bounds and parameters, multidimensional affine
+accesses, and heterogeneous scalar element widths. Each statement owns its
+exact domain; each access owns its exact logical footprint relation and an
+optional conservative constant footprint bound. RAW, WAR, and WAW relations
+are the disjoint lexicographic components returned by the MLIR dependence
+checker, while scalar SSA edges are exact same-iteration precedence over the
+common loop prefix. A fixed dependence-query budget and the pinned Polly/ISL
+operation quota bound the analysis. The production decision domain exposes
+the resulting removable typed view when the narrower vector domain cannot
+supply a finite coordinate for the same root.
+
+Loop-carried values and reductions, nested conditionals, non-unit steps,
+unresolved aliases, unknown effects, access or dependence relations with
+Presburger local variables, and provider failures remain typed local
+refusals. The exact access relation is the footprint authority; the referenced
+source memref retains its physical layout. Polly/ISL consumes only the frozen
+MLIR-owned domains and dependence relations and returns exact typed schedule
+maps. No provider object, textual ISL spelling, or alternate dependence
+relation persists beyond the analysis call. The SCoP view freezes the exact
+source-entity order of the provider's global parameter columns so every
+schedule coefficient remains interpretable without reconstructing an ISL
+space.
+
+Before releasing the provider objects, the same owner classifies the exact
+schedule relation against four canonical perfect-nest forms: source order,
+an adjacent exchange of the first two dimensions, statement-major
+distribution, and statement-major distribution followed by that exchange.
+Classification compares the frozen integer relation itself; it is not a
+heuristic inferred from band counts. Source order is already materialized by
+the parent. Each other form that passes its structural gates produces one
+factorless `PolyhedralSchedule` proposal bound to the frozen general SCoP. A
+selected statement-major schedule clones the perfect loop nest once per source
+statement and retains exactly one statement in each clone. Cross-statement
+scalar SSA prevents this fission, because Loom does not invent scalar-expansion
+storage. An adjacent exchange additionally requires homogeneous SCF or Affine
+loops and inner bounds that remain invariant at the exchanged scope. General
+multi-band relations,
+imperfect nests, nonuniform statement depth, unsupported bound motion, and
+distribution requiring scalar expansion retain
+`PolyhedralMaterializationUnavailable`. Thus a provider schedule is either
+already present, replayably materialized into ordinary MLIR, or explicitly
+typed unavailable; no schedule map is silently approximated.
+
 The exact vector SCoP domain is deliberately closed. Its root is one `scf.for`
 or `affine.for` with zero lower bound, unit stride, and a static trip count. A
 selected SCF loop is projected on a private clone through the pinned upstream
@@ -829,16 +909,16 @@ induction-variable uses while exchanging dimensions.
 Each materialized proposal resolves its parent-local `StructuredEntityRef`,
 clones the complete parent, applies one transform, verifies the result, and
 passes it through the sole Structured Program finalizer. For each exact-vector
-proposal, the SCoP analysis and dependence view is frozen once during proposal
-enumeration and reused by the selected materializer; direct untrusted decision
-materialization repeats the same analysis. Equal children deduplicate by
-Artifact identity. No schedule tree, factor table, hidden pass state, or
-persisted analysis view exists.
+or general-polyhedral proposal, the SCoP analysis and dependence view is frozen
+once during proposal enumeration and reused by the selected materializer;
+direct untrusted decision materialization repeats the same analysis. Equal
+children deduplicate by Artifact identity. No schedule tree, factor table,
+hidden pass state, or persisted analysis view exists.
 
 The canonical lineage-payload schema is
-`loom.structured_schedule.decision.4.0`. The earlier 3.0 schema admitted
-unbounded scalar factors and cannot be reinterpreted as this finite coordinate
-domain.
+`loom.structured_schedule.decision.5.0`. The earlier 4.0 schema has no
+`PolyhedralSchedule` decision, while the earlier 3.0 schema also admitted
+unbounded scalar factors; neither can be reinterpreted as this domain.
 
 The exact schedule derivation is the typed edge
 `(parent, child, fabric, decision)`.
@@ -871,15 +951,18 @@ heuristic ranking. Hardware-aware runtime measures, Pareto/TopK selection,
 diversity, and bounded Mapping finalists remain with the central PreMapping
 objective and Promote owners. Generator work accounting separately records
 inspected loop scopes, every syntactically present schedule coordinate before
-its exact legality/capability gate, generated proposals selected by the
-independent bounds, and actual materialization attempts. A typed refusal
+its exact legality/capability gate, exact polyhedral dependence-provider
+queries, generated proposals selected by the independent bounds, and actual
+materialization attempts. A dependence or schedule refusal carries the query
+count already consumed, so failed proof work enters the same ledger. A typed
+refusal
 consumes its attempt but no distinct output slot; a later proposal may fill
 that slot until the attempt grant is exhausted. A materialized identity no-op
 or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v9`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v11`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator

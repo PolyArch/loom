@@ -78,6 +78,7 @@ target_link_libraries(LoomRuntimeDeploymentLoader PUBLIC
 add_library(LoomGem5SystemExecution
   Gem5SystemExecution.cpp
   Gem5SystemExecutionFacts.cpp
+  Gem5SystemFactsSession.cpp
 )
 
 target_include_directories(LoomGem5SystemExecution PUBLIC
@@ -86,6 +87,7 @@ target_include_directories(LoomGem5SystemExecution PUBLIC
 
 target_compile_definitions(LoomGem5SystemExecution PRIVATE
   LOOM_GEM5_CONFIG_SCRIPT_PATH="${LOOM_SOURCE_DIR}/runtime/gem5/configure_loom_system.py"
+  LOOM_TIMEOUT_BUDGETS_PATH="${LOOM_SOURCE_DIR}/config/timeout-budgets.json"
   LOOM_GEM5_DFG_ENGINE_PATH="$<TARGET_FILE:loom-gem5-dfg-engine>"
   LOOM_GEM5_CGRA_ENGINE_PATH="$<TARGET_FILE:loom-gem5-cgra-engine>"
   LOOM_GEM5_RTL_ENGINE_SOURCE_PATH="${LOOM_SOURCE_DIR}/runtime/gem5/loom_gem5_rtl_engine.cpp"

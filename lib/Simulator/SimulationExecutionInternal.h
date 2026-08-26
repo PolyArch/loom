@@ -28,6 +28,9 @@ struct SpatialExecutionContext {
 struct SystemExecutionContext {
   std::shared_ptr<const evaluation::EvaluationRequest> request;
   std::shared_ptr<const ImportedSystemSimulationInputs> inputs;
+  std::shared_ptr<const dataflow::CanonicalDataflowArtifact> dataflow;
+  dataflow::CanonicalDataflowProgramView dataflowView;
+  std::vector<dataflow::RootThreadLaunchRef> mappedRoots;
   ResolvedSystemContext system;
   evaluation::ArtifactCollectionCardinality stoppedExecutionCardinality;
   const evaluation::CaseArtifactResolution *resolution = nullptr;

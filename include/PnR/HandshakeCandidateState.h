@@ -16,6 +16,7 @@ namespace loom::pnr {
 namespace detail {
 struct MaterializedHandshakeGraph;
 struct HandshakeCandidateScratchStorage;
+struct HandshakeProjectionScratchStorage;
 } // namespace detail
 
 class HandshakeCandidateState;
@@ -42,6 +43,17 @@ struct HandshakeActiveDemandStatistics final {
   std::uint64_t transactionAffectedRankSpan = 0;
 };
 
+struct HandshakeProjectionStatistics final {
+  std::uint64_t projectionCount = 0;
+  std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t deterministicWork = 0;
+  std::uint64_t retainedBytes = 0;
+  std::uint64_t peakActiveNodeCount = 0;
+  std::uint64_t peakActiveArcCount = 0;
+  std::uint64_t coldVerificationCount = 0;
+  std::uint64_t coldVerificationNanoseconds = 0;
+};
+
 /// Rebuilds the selected handshake graph from immutable projection inputs and
 /// checks its closure with one deterministic whole-graph pass. This path does
 /// not read or mutate candidate state.
@@ -49,6 +61,40 @@ llvm::Expected<bool> independentlyVerifyHandshakeProjectionAcyclic(
     const FrozenSpatialHandshakeIndex &index,
     llvm::ArrayRef<PnrIndex> selectedFragments,
     llvm::ArrayRef<PnrIndex> traversalUses);
+
+/// Reusable worker-local projection of only the currently selected handshake
+/// fragments. It retains storage capacity but never retains a potential union
+/// graph or candidate selection between calls.
+class HandshakeProjectionScratch final {
+public:
+  HandshakeProjectionScratch();
+  HandshakeProjectionScratch(const HandshakeProjectionScratch &) = delete;
+  HandshakeProjectionScratch &
+  operator=(const HandshakeProjectionScratch &) = delete;
+  HandshakeProjectionScratch(HandshakeProjectionScratch &&) = delete;
+  HandshakeProjectionScratch &
+  operator=(HandshakeProjectionScratch &&) = delete;
+  ~HandshakeProjectionScratch();
+
+  llvm::Error prepare(const FrozenSpatialHandshakeIndex &index);
+  llvm::Expected<bool> projectAcyclic(
+      const FrozenSpatialHandshakeIndex &index,
+      llvm::ArrayRef<PnrIndex> selectedFragments,
+      llvm::ArrayRef<PnrIndex> traversalUses);
+  HandshakeProjectionStatistics statistics() const;
+  std::size_t retainedStorageBytes() const;
+
+private:
+  std::unique_ptr<detail::HandshakeProjectionScratchStorage> storage_;
+  const FrozenSpatialHandshakeIndex *preparedIndex_ = nullptr;
+  std::uint64_t projectionCount_ = 0;
+  std::uint64_t constructionNanoseconds_ = 0;
+  std::uint64_t deterministicWork_ = 0;
+  std::uint64_t peakActiveNodeCount_ = 0;
+  std::uint64_t peakActiveArcCount_ = 0;
+  std::uint64_t coldVerificationCount_ = 0;
+  std::uint64_t coldVerificationNanoseconds_ = 0;
+};
 
 class HandshakeCandidateScratch final {
 public:

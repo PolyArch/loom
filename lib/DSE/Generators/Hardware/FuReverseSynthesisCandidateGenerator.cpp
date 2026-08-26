@@ -1,6 +1,7 @@
 #include "DSE/FuReverseSynthesis.h"
 
 #include "Common/BlobStore.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -16,8 +17,27 @@ namespace loom::dse {
 namespace {
 
 enum InputSlot : std::uint32_t { DataflowInput, InputSlotCount };
-enum OutputSlot : std::uint32_t { FabricOutput, MappingOutput };
-enum class LineageOutputKind : std::uint8_t { Fabric, TechMapping };
+enum OutputSlot : std::uint32_t {
+  ModuleOutput = static_cast<std::uint32_t>(FuReverseSynthesisOutput::Module),
+  MappingOutput =
+      static_cast<std::uint32_t>(FuReverseSynthesisOutput::TechMapping),
+  JointMappingOutput =
+      static_cast<std::uint32_t>(FuReverseSynthesisOutput::JointTechMapping),
+  SystemOutput = static_cast<std::uint32_t>(FuReverseSynthesisOutput::System),
+  PhysicalTimingProfileOutput = static_cast<std::uint32_t>(
+      FuReverseSynthesisOutput::PhysicalTimingProfile),
+  ConfigurationAbiOutput =
+      static_cast<std::uint32_t>(FuReverseSynthesisOutput::ConfigurationAbi),
+  OutputSlotCount,
+};
+enum class LineageOutputKind : std::uint8_t {
+  Module,
+  TechMapping,
+  System,
+  PhysicalTimingProfile,
+  ConfigurationAbi,
+  JointTechMapping,
+};
 
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
     inputSlots = {
@@ -25,23 +45,39 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
           PlanValueRole::CandidateSet, &::dataflow::canonicalDataflowSchema,
           PlanValueCardinality::ExactlyOne}}};
 
-constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 2> outputSlots = {{
-    {CandidateGeneratorOutputSlotRef(FabricOutput), "fabric",
-     PlanValueRole::CandidateSet, &::loom::fabric::fabricArtifactSchema,
-     PlanValueCardinality::FiniteSet},
-    {CandidateGeneratorOutputSlotRef(MappingOutput), "tech_mapping",
-     PlanValueRole::CandidateSet, &::loom::mapping::mappingArtifactSchema,
-     PlanValueCardinality::FiniteSet},
-}};
+constexpr std::array<CandidateGeneratorOutputSlotDescriptor, OutputSlotCount>
+    outputSlots = {{
+        {CandidateGeneratorOutputSlotRef(ModuleOutput), "fabric_module",
+         PlanValueRole::CandidateSet, &::loom::fabric::fabricArtifactSchema,
+         PlanValueCardinality::ExactlyOne},
+        {CandidateGeneratorOutputSlotRef(MappingOutput), "tech_mapping",
+         PlanValueRole::CandidateSet, &::loom::mapping::mappingArtifactSchema,
+         PlanValueCardinality::FiniteSet},
+        {CandidateGeneratorOutputSlotRef(JointMappingOutput),
+         "joint_tech_mapping", PlanValueRole::CandidateSet,
+         &::loom::mapping::mappingArtifactSchema,
+         PlanValueCardinality::ExactlyOne},
+        {CandidateGeneratorOutputSlotRef(SystemOutput), "fabric_system",
+         PlanValueRole::CandidateSet, &::loom::fabric::fabricArtifactSchema,
+         PlanValueCardinality::ExactlyOne},
+        {CandidateGeneratorOutputSlotRef(PhysicalTimingProfileOutput),
+         "physical_timing_profile", PlanValueRole::CandidateSet,
+         &::loom::fabric::fabricPhysicalTimingProfileArtifactSchema,
+         PlanValueCardinality::ExactlyOne},
+        {CandidateGeneratorOutputSlotRef(ConfigurationAbiOutput),
+         "configuration_abi", PlanValueRole::CandidateSet,
+         &::loom::hardware::configurationAbiSchema,
+         PlanValueCardinality::ExactlyOne},
+    }};
 
 constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 1> workUnits = {{
-    {CandidateGeneratorWorkUnitRef(0), "graph_binding"},
+    {CandidateGeneratorWorkUnitRef(0), "mapping_invocation"},
 }};
 
 constexpr llvm::StringLiteral lineageDescriptor =
-    "loom.hardware.fu_reverse_synthesis.lineage.1";
+    "loom.hardware.fu_reverse_synthesis.lineage.3";
 constexpr llvm::StringLiteral outcomeDescriptor =
-    "loom.hardware.fu_reverse_synthesis.outcome.1";
+    "loom.hardware.fu_reverse_synthesis.outcome.3";
 
 llvm::ArrayRef<std::uint8_t> lineageSchemaBytes() {
   return {reinterpret_cast<const std::uint8_t *>(lineageDescriptor.data()),
@@ -59,12 +95,23 @@ llvm::Error invalid(const llvm::Twine &message) {
                                      message);
 }
 
+std::vector<::dataflow::GraphRef>
+completeGraphSet(const ::dataflow::CanonicalDataflowProgramView &dataflow) {
+  std::vector<::dataflow::GraphRef> graphs;
+  graphs.reserve(dataflow.graphs().size());
+  for (const ::dataflow::CanonicalGraphView &graph : dataflow.graphs())
+    graphs.push_back(graph.ref);
+  return graphs;
+}
+
 llvm::Error validateLineagePayload(
     llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &output,
     llvm::ArrayRef<ArtifactRootReference> parents, const ArtifactStore &store) {
   if (bytes.size() != 1 ||
-      bytes.front() > static_cast<std::uint8_t>(LineageOutputKind::TechMapping))
+      bytes.front() >
+          static_cast<std::uint8_t>(LineageOutputKind::JointTechMapping))
     return invalid("lineage payload is not canonical");
+  const auto kind = static_cast<LineageOutputKind>(bytes.front());
   const ArtifactRootReference *dataflow = nullptr;
   const ArtifactRootReference *fabric = nullptr;
   for (const ArtifactRootReference &parent : parents) {
@@ -76,18 +123,17 @@ llvm::Error validateLineagePayload(
         parent.schemaVersion == ::loom::fabric::fabricArtifactSchema.version)
       fabric = &parent;
   }
-  if (!dataflow)
-    return invalid("lineage omits its canonical Dataflow parent");
-  auto importedDataflow = ::dataflow::importCanonicalDataflow(*dataflow, store);
-  if (!importedDataflow)
-    return importedDataflow.takeError();
 
-  if (bytes.front() == static_cast<std::uint8_t>(LineageOutputKind::Fabric)) {
-    if (parents.size() != 1 ||
+  if (kind == LineageOutputKind::Module) {
+    if (parents.size() != 1 || !dataflow ||
         output.schemaIdentity !=
             ::loom::fabric::fabricArtifactSchema.identity ||
         output.schemaVersion != ::loom::fabric::fabricArtifactSchema.version)
-      return invalid("Fabric lineage has the wrong closure");
+      return invalid("Module lineage has the wrong closure");
+    auto importedDataflow =
+        ::dataflow::importCanonicalDataflow(*dataflow, store);
+    if (!importedDataflow)
+      return importedDataflow.takeError();
     auto synthesizedFabric =
         ::loom::fabric::importEntireFabricRoot(output, store);
     if (!synthesizedFabric)
@@ -99,35 +145,115 @@ llvm::Error validateLineagePayload(
     auto dataflowView = importedDataflow->view();
     if (!dataflowView)
       return dataflowView.takeError();
+    const std::vector<::dataflow::GraphRef> graphs =
+        completeGraphSet(*dataflowView);
     if (llvm::Error error = verifyScalarIntegerAddSubFuFabricLineage(
-            *dataflowView, *synthesizedFabric, store))
+            *dataflowView, graphs, *synthesizedFabric, store))
       return error;
     return llvm::Error::success();
   }
 
-  if (parents.size() != 2 || !fabric ||
-      output.schemaIdentity !=
-          ::loom::mapping::mappingArtifactSchema.identity ||
-      output.schemaVersion != ::loom::mapping::mappingArtifactSchema.version)
-    return invalid("TechMapping lineage has the wrong closure");
-  auto mapping = ::loom::mapping::importTechMapping(output, store);
-  if (!mapping)
-    return mapping.takeError();
-  if (mapping->view().dataflowIdentity() != dataflow->artifact ||
-      mapping->view().fabricIdentity() != fabric->artifact ||
-      mapping->view().covers().size() != 1)
-    return invalid("TechMapping lineage does not bind its exact parents");
-  auto dataflowView = importedDataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  auto synthesizedFabric =
-      ::loom::fabric::importEntireFabricRoot(*fabric, store);
-  if (!synthesizedFabric)
-    return synthesizedFabric.takeError();
-  if (llvm::Error error = verifyScalarIntegerAddSubFuMappingLineage(
-          *dataflowView, *synthesizedFabric, *mapping, store))
-    return error;
-  return llvm::Error::success();
+  if (kind == LineageOutputKind::TechMapping) {
+    if (parents.size() != 2 || !dataflow || !fabric ||
+        output.schemaIdentity !=
+            ::loom::mapping::mappingArtifactSchema.identity ||
+        output.schemaVersion != ::loom::mapping::mappingArtifactSchema.version)
+      return invalid("TechMapping lineage has the wrong closure");
+    auto importedDataflow =
+        ::dataflow::importCanonicalDataflow(*dataflow, store);
+    if (!importedDataflow)
+      return importedDataflow.takeError();
+    auto mapping = ::loom::mapping::importTechMapping(output, store);
+    if (!mapping)
+      return mapping.takeError();
+    if (mapping->view().dataflowIdentity() != dataflow->artifact ||
+        mapping->view().fabricIdentity() != fabric->artifact ||
+        mapping->view().covers().size() != 1)
+      return invalid("TechMapping lineage does not bind its exact parents");
+    auto dataflowView = importedDataflow->view();
+    if (!dataflowView)
+      return dataflowView.takeError();
+    auto synthesizedFabric =
+        ::loom::fabric::importEntireFabricRoot(*fabric, store);
+    if (!synthesizedFabric)
+      return synthesizedFabric.takeError();
+    const std::vector<::dataflow::GraphRef> graphs =
+        completeGraphSet(*dataflowView);
+    return verifyScalarIntegerAddSubFuMappingLineage(
+        *dataflowView, graphs, *synthesizedFabric, *mapping, store);
+  }
+
+  if (kind == LineageOutputKind::System) {
+    if (parents.size() != 1 || !fabric ||
+        output.schemaIdentity !=
+            ::loom::fabric::fabricArtifactSchema.identity ||
+        output.schemaVersion != ::loom::fabric::fabricArtifactSchema.version)
+      return invalid("System lineage has the wrong closure");
+    auto importedParent =
+        ::loom::fabric::importEntireFabricRoot(*fabric, store);
+    if (!importedParent)
+      return importedParent.takeError();
+    auto system = ::loom::fabric::importEntireFabricRoot(output, store);
+    if (!system)
+      return system.takeError();
+    return verifyScalarIntegerAddSubFuSystemIdentity(*importedParent, *system,
+                                                     store);
+  }
+
+  if (kind == LineageOutputKind::JointTechMapping) {
+    if (parents.size() != 2 || !dataflow || !fabric ||
+        output.schemaIdentity !=
+            ::loom::mapping::mappingArtifactSchema.identity ||
+        output.schemaVersion != ::loom::mapping::mappingArtifactSchema.version)
+      return invalid("joint TechMapping lineage has the wrong closure");
+    auto importedDataflow =
+        ::dataflow::importCanonicalDataflow(*dataflow, store);
+    if (!importedDataflow)
+      return importedDataflow.takeError();
+    auto dataflowView = importedDataflow->view();
+    if (!dataflowView)
+      return dataflowView.takeError();
+    auto synthesizedFabric =
+        ::loom::fabric::importEntireFabricRoot(*fabric, store);
+    if (!synthesizedFabric)
+      return synthesizedFabric.takeError();
+    auto mapping = ::loom::mapping::importTechMapping(output, store);
+    if (!mapping)
+      return mapping.takeError();
+    const std::vector<::dataflow::GraphRef> graphs =
+        completeGraphSet(*dataflowView);
+    return verifyScalarIntegerAddSubFuJointMappingLineage(
+        *dataflowView, graphs, *synthesizedFabric, *mapping, store);
+  }
+
+  if (kind == LineageOutputKind::PhysicalTimingProfile) {
+    if (parents.size() != 1 || !fabric)
+      return invalid("timing lineage has the wrong closure");
+    auto importedParent =
+        ::loom::fabric::importEntireFabricRoot(*fabric, store);
+    if (!importedParent)
+      return importedParent.takeError();
+    if (output.schemaIdentity !=
+            ::loom::fabric::fabricPhysicalTimingProfileArtifactSchema
+                .identity ||
+        output.schemaVersion !=
+            ::loom::fabric::fabricPhysicalTimingProfileArtifactSchema.version)
+      return invalid("timing lineage has the wrong output schema");
+    return verifyScalarIntegerAddSubFuPhysicalTimingLineage(*importedParent,
+                                                            output, store);
+  }
+
+  if (parents.size() != 1 || !fabric)
+    return invalid("ConfigurationABI lineage has the wrong closure");
+  if (output.schemaIdentity !=
+          ::loom::hardware::configurationAbiSchema.identity ||
+      output.schemaVersion != ::loom::hardware::configurationAbiSchema.version)
+    return invalid("ConfigurationABI lineage has the wrong output schema");
+  auto system = ::loom::fabric::importEntireFabricRoot(*fabric, store);
+  if (!system)
+    return system.takeError();
+  return verifyScalarIntegerAddSubFuConfigurationAbiLineage(*system, output,
+                                                            store);
 }
 
 const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
@@ -139,11 +265,19 @@ validateOutcome(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                 llvm::ArrayRef<CandidateGeneratorLineageEdge> lineageEdges,
                 bool completed, const ArtifactStore &store) {
   if (inputs.size() != 1 || inputs.front().artifacts.size() != 1 ||
-      outputs.size() != 2 ||
-      outputs[FabricOutput].slot !=
-          CandidateGeneratorOutputSlotRef(FabricOutput) ||
+      outputs.size() != OutputSlotCount ||
+      outputs[ModuleOutput].slot !=
+          CandidateGeneratorOutputSlotRef(ModuleOutput) ||
       outputs[MappingOutput].slot !=
-          CandidateGeneratorOutputSlotRef(MappingOutput))
+          CandidateGeneratorOutputSlotRef(MappingOutput) ||
+      outputs[JointMappingOutput].slot !=
+          CandidateGeneratorOutputSlotRef(JointMappingOutput) ||
+      outputs[SystemOutput].slot !=
+          CandidateGeneratorOutputSlotRef(SystemOutput) ||
+      outputs[PhysicalTimingProfileOutput].slot !=
+          CandidateGeneratorOutputSlotRef(PhysicalTimingProfileOutput) ||
+      outputs[ConfigurationAbiOutput].slot !=
+          CandidateGeneratorOutputSlotRef(ConfigurationAbiOutput))
     return invalid("outcome does not have the canonical slot closure");
 
   auto dataflow = ::dataflow::importCanonicalDataflow(
@@ -153,16 +287,59 @@ validateOutcome(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   auto dataflowView = dataflow->view();
   if (!dataflowView)
     return dataflowView.takeError();
+  const std::vector<::dataflow::GraphRef> graphs =
+      completeGraphSet(*dataflowView);
 
-  const auto &fabricOutputs = outputs[FabricOutput].artifacts;
+  const auto &moduleOutputs = outputs[ModuleOutput].artifacts;
   const auto &mappingOutputs = outputs[MappingOutput].artifacts;
-  if (fabricOutputs.size() > 1 ||
-      (!mappingOutputs.empty() && fabricOutputs.empty()))
-    return invalid("outcome has no unique Fabric owner for its mappings");
-  if (completed && (fabricOutputs.size() != 1 ||
+  const auto &jointMappingOutputs = outputs[JointMappingOutput].artifacts;
+  const auto &systemOutputs = outputs[SystemOutput].artifacts;
+  const auto &timingOutputs = outputs[PhysicalTimingProfileOutput].artifacts;
+  const auto &abiOutputs = outputs[ConfigurationAbiOutput].artifacts;
+  if (moduleOutputs.size() > 1 || systemOutputs.size() > 1 ||
+      timingOutputs.size() > 1 || abiOutputs.size() > 1 ||
+      jointMappingOutputs.size() > 1)
+    return invalid("outcome contains a non-unique fixed synthesis artifact");
+  const bool hasFixedClosure = moduleOutputs.size() == 1;
+  if ((systemOutputs.size() == 1) != hasFixedClosure ||
+      (timingOutputs.size() == 1) != hasFixedClosure ||
+      (abiOutputs.size() == 1) != hasFixedClosure ||
+      (!jointMappingOutputs.empty() && !hasFixedClosure) ||
+      (!mappingOutputs.empty() && !hasFixedClosure))
+    return invalid("outcome has an incomplete fixed synthesis closure");
+  if (completed && (!hasFixedClosure || jointMappingOutputs.size() != 1 ||
                     mappingOutputs.size() != dataflowView->graphs().size()))
     return invalid("completed outcome does not cover the complete graph "
                    "domain");
+
+  if (hasFixedClosure) {
+    auto module =
+        ::loom::fabric::importEntireFabricRoot(moduleOutputs.front(), store);
+    if (!module)
+      return module.takeError();
+    auto system =
+        ::loom::fabric::importEntireFabricRoot(systemOutputs.front(), store);
+    if (!system)
+      return system.takeError();
+    if (llvm::Error error =
+            verifyScalarIntegerAddSubFuSystemIdentity(*module, *system, store))
+      return error;
+    if (llvm::Error error = verifyScalarIntegerAddSubFuPhysicalTimingLineage(
+            *module, timingOutputs.front(), store))
+      return error;
+    if (llvm::Error error = verifyScalarIntegerAddSubFuConfigurationAbiLineage(
+            *system, abiOutputs.front(), store))
+      return error;
+    if (!jointMappingOutputs.empty()) {
+      auto jointMapping = ::loom::mapping::importTechMapping(
+          jointMappingOutputs.front(), store);
+      if (!jointMapping)
+        return jointMapping.takeError();
+      if (llvm::Error error = verifyScalarIntegerAddSubFuJointMappingLineage(
+              *dataflowView, graphs, *module, *jointMapping, store))
+        return error;
+    }
+  }
 
   std::vector<::dataflow::GraphRef> coveredGraphs;
   coveredGraphs.reserve(mappingOutputs.size());
@@ -171,7 +348,7 @@ validateOutcome(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     if (!mapping)
       return mapping.takeError();
     if (mapping->view().dataflowIdentity() != dataflowView->identity() ||
-        mapping->view().fabricIdentity() != fabricOutputs.front().artifact ||
+        mapping->view().fabricIdentity() != moduleOutputs.front().artifact ||
         mapping->view().covers().size() != 1)
       return invalid("outcome mapping does not bind its exact synthesis "
                      "domain");
@@ -189,13 +366,23 @@ validateOutcome(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
       if (!llvm::is_contained(coveredGraphs, graph.ref))
         return invalid("completed outcome omits a graph mapping");
 
-  const std::size_t outputCount = fabricOutputs.size() + mappingOutputs.size();
+  std::size_t outputCount = 0;
+  for (const CandidateGeneratorOutputBinding &binding : outputs)
+    outputCount += binding.artifacts.size();
   if (lineageEdges.size() != outputCount)
     return invalid("outcome lineage is not exact for its returned artifacts");
-  for (const CandidateGeneratorLineageEdge &edge : lineageEdges)
-    if (!llvm::is_contained(outputs[edge.outputSlot.ordinal()].artifacts,
+  for (const CandidateGeneratorLineageEdge &edge : lineageEdges) {
+    if (edge.outputSlot.ordinal() >= outputs.size() ||
+        !llvm::is_contained(outputs[edge.outputSlot.ordinal()].artifacts,
                             edge.output))
       return invalid("outcome contains internal synthesis lineage");
+  }
+  for (const CandidateGeneratorOutputBinding &binding : outputs)
+    for (const ArtifactRootReference &artifact : binding.artifacts)
+      if (llvm::count_if(lineageEdges, [&](const auto &edge) {
+            return edge.outputSlot == binding.slot && edge.output == artifact;
+          }) != 1)
+        return invalid("outcome does not have one lineage edge per artifact");
   return llvm::Error::success();
 }
 
@@ -244,21 +431,32 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     return CandidateGeneratorProviderResult{
         IncompleteCandidateGeneratorResult{
             reason,
-            {{CandidateGeneratorOutputSlotRef(FabricOutput), {}},
-             {CandidateGeneratorOutputSlotRef(MappingOutput), {}}},
+            {{CandidateGeneratorOutputSlotRef(ModuleOutput), {}},
+             {CandidateGeneratorOutputSlotRef(MappingOutput), {}},
+             {CandidateGeneratorOutputSlotRef(JointMappingOutput), {}},
+             {CandidateGeneratorOutputSlotRef(SystemOutput), {}},
+             {CandidateGeneratorOutputSlotRef(PhysicalTimingProfileOutput), {}},
+             {CandidateGeneratorOutputSlotRef(ConfigurationAbiOutput), {}}},
             {}},
-        {{CandidateGeneratorWorkUnitRef(0), graphs.size(), 0}}};
+        {{CandidateGeneratorWorkUnitRef(0), graphs.size() + 1, 0}}};
   };
   if (graphs.empty())
     return incompleteResult(CandidateGeneratorIncompleteReason::Unsupported);
-  const std::optional<std::uint64_t> fabricLimit =
-      invocation.maximumOutputArtifacts(
-          CandidateGeneratorOutputSlotRef(FabricOutput));
   const std::optional<std::uint64_t> mappingLimit =
       invocation.maximumOutputArtifacts(
           CandidateGeneratorOutputSlotRef(MappingOutput));
-  if ((fabricLimit && *fabricLimit < 1) ||
-      (mappingLimit && *mappingLimit < graphs.size()))
+  const std::array fixedOutputs = {
+      CandidateGeneratorOutputSlotRef(ModuleOutput),
+      CandidateGeneratorOutputSlotRef(JointMappingOutput),
+      CandidateGeneratorOutputSlotRef(SystemOutput),
+      CandidateGeneratorOutputSlotRef(PhysicalTimingProfileOutput),
+      CandidateGeneratorOutputSlotRef(ConfigurationAbiOutput)};
+  const bool fixedOutputLimited = llvm::any_of(fixedOutputs, [&](auto slot) {
+    const std::optional<std::uint64_t> limit =
+        invocation.maximumOutputArtifacts(slot);
+    return limit && *limit < 1;
+  });
+  if (fixedOutputLimited || (mappingLimit && *mappingLimit < graphs.size()))
     return incompleteResult(
         CandidateGeneratorIncompleteReason::SemanticLimitReached);
   if (invocation.stopRequested())
@@ -299,18 +497,26 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       FuReverseSynthesisFailure::MappingInfeasible)
     return invalid("synthesized FU failed its required graph mapping");
 
+  auto systemArtifacts = materializeScalarIntegerAddSubFuSystemArtifacts(
+      synthesized->fabric(), store);
+  if (!systemArtifacts)
+    return systemArtifacts.takeError();
+  if (llvm::Error error = verifyScalarIntegerAddSubFuSystemLineage(
+          synthesized->fabric(), *systemArtifacts, store))
+    return std::move(error);
+
   std::vector<ArtifactRootReference> mappingOutputs;
-  mappingOutputs.reserve(synthesized->mappings().size());
+  mappingOutputs.reserve(synthesized->perGraphMappings().size());
   std::vector<CandidateGeneratorLineageEdge> lineage;
-  lineage.reserve(1 + synthesized->mappings().size());
+  lineage.reserve(5 + synthesized->perGraphMappings().size());
   lineage.push_back(CandidateGeneratorLineageEdge{
       CandidateGeneratorLineageEdgeKind::CandidateDecision,
-      CandidateGeneratorOutputSlotRef(FabricOutput),
+      CandidateGeneratorOutputSlotRef(ModuleOutput),
       synthesized->fabric().reference(),
       {dataflowReference},
-      {static_cast<std::uint8_t>(LineageOutputKind::Fabric)}});
+      {static_cast<std::uint8_t>(LineageOutputKind::Module)}});
   for (const ::loom::mapping::FinalizedTechMapping &mapping :
-       synthesized->mappings()) {
+       synthesized->perGraphMappings()) {
     mappingOutputs.push_back(mapping.reference());
     lineage.push_back(CandidateGeneratorLineageEdge{
         CandidateGeneratorLineageEdgeKind::CandidateDecision,
@@ -319,14 +525,51 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         {dataflowReference, synthesized->fabric().reference()},
         {static_cast<std::uint8_t>(LineageOutputKind::TechMapping)}});
   }
+  if (synthesized->jointMapping())
+    lineage.push_back(CandidateGeneratorLineageEdge{
+        CandidateGeneratorLineageEdgeKind::CandidateDecision,
+        CandidateGeneratorOutputSlotRef(JointMappingOutput),
+        synthesized->jointMapping()->reference(),
+        {dataflowReference, synthesized->fabric().reference()},
+        {static_cast<std::uint8_t>(LineageOutputKind::JointTechMapping)}});
+  lineage.push_back(CandidateGeneratorLineageEdge{
+      CandidateGeneratorLineageEdgeKind::CandidateDecision,
+      CandidateGeneratorOutputSlotRef(SystemOutput),
+      systemArtifacts->system().reference(),
+      {synthesized->fabric().reference()},
+      {static_cast<std::uint8_t>(LineageOutputKind::System)}});
+  lineage.push_back(CandidateGeneratorLineageEdge{
+      CandidateGeneratorLineageEdgeKind::CandidateDecision,
+      CandidateGeneratorOutputSlotRef(PhysicalTimingProfileOutput),
+      systemArtifacts->physicalTimingProfile(),
+      {synthesized->fabric().reference()},
+      {static_cast<std::uint8_t>(LineageOutputKind::PhysicalTimingProfile)}});
+  lineage.push_back(CandidateGeneratorLineageEdge{
+      CandidateGeneratorLineageEdgeKind::CandidateDecision,
+      CandidateGeneratorOutputSlotRef(ConfigurationAbiOutput),
+      systemArtifacts->configurationAbi().reference(),
+      {systemArtifacts->system().reference()},
+      {static_cast<std::uint8_t>(LineageOutputKind::ConfigurationAbi)}});
   std::vector<CandidateGeneratorOutputBinding> retained = {
-      {CandidateGeneratorOutputSlotRef(FabricOutput),
+      {CandidateGeneratorOutputSlotRef(ModuleOutput),
        {synthesized->fabric().reference()}},
       {CandidateGeneratorOutputSlotRef(MappingOutput),
-       std::move(mappingOutputs)}};
+       std::move(mappingOutputs)},
+      {CandidateGeneratorOutputSlotRef(JointMappingOutput),
+       synthesized->jointMapping()
+           ? std::vector<ArtifactRootReference>{synthesized->jointMapping()
+                                                    ->reference()}
+           : std::vector<ArtifactRootReference>{}},
+      {CandidateGeneratorOutputSlotRef(SystemOutput),
+       {systemArtifacts->system().reference()}},
+      {CandidateGeneratorOutputSlotRef(PhysicalTimingProfileOutput),
+       {systemArtifacts->physicalTimingProfile()}},
+      {CandidateGeneratorOutputSlotRef(ConfigurationAbiOutput),
+       {systemArtifacts->configurationAbi().reference()}}};
   const std::vector<CandidateGeneratorWorkUnitSummary> summary = {
-      {CandidateGeneratorWorkUnitRef(0), synthesized->plannedGraphBindings(),
-       synthesized->consumedGraphBindings()}};
+      {CandidateGeneratorWorkUnitRef(0),
+       synthesized->plannedMappingInvocations(),
+       synthesized->consumedMappingInvocations()}};
   if (synthesized->termination()) {
     CandidateGeneratorIncompleteReason reason;
     switch (*synthesized->termination()) {
@@ -354,7 +597,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
 const CandidateGeneratorDescriptor descriptor{
     fuReverseSynthesisCandidateGeneratorKind,
     "fu_reverse_synthesis",
-    "loom.hardware.fu_reverse_synthesis.generator.v1",
+    "loom.hardware.fu_reverse_synthesis.generator.v3",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{

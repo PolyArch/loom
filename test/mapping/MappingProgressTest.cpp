@@ -1,5 +1,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
+#include "Dataflow/IR/DataflowOps.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
@@ -257,6 +259,237 @@ module {
     fail("an unsupported actor cycle did not fail closed");
 }
 
+void completionFrontierRequiresReadyRoots() {
+  mlir::DialectRegistry registry;
+  registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.thread private @worker_a domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    dataflow.thread.yield
+  }
+  dataflow.thread private @worker_b domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    dataflow.thread.yield
+  }
+  dataflow.thread private @worker_c domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    dataflow.thread.yield
+  }
+  dataflow.thread private @worker_d domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    dataflow.thread.yield
+  }
+  func.func private @host() {
+    %a = dataflow.thread.launch @worker_a()
+        : () -> !dataflow.thread_token
+    %b = dataflow.thread.launch @worker_b() wait(%a)
+        : () -> !dataflow.thread_token
+    %c = dataflow.thread.launch @worker_c() wait(%b)
+        : () -> !dataflow.thread_token
+    %d = dataflow.thread.launch @worker_d()
+        : () -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse completion-frontier fixture");
+  auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
+  const auto view = take(artifact.view());
+  std::vector<dataflow::RootThreadLaunchRef> roots;
+  std::vector<dataflow::EventFamilyKey> events;
+  for (const auto &root : view.rootThreadLaunches()) {
+    roots.push_back(root.ref);
+    events.push_back(dataflow::rootThreadStartEventFamily(root.ref));
+    events.push_back(dataflow::rootThreadCompletionEventFamily(root.ref));
+  }
+  if (roots.size() != 4)
+    fail("completion-frontier fixture lost a root launch");
+  const auto model =
+      take(loom::mapping::freezeMappingProgressModel(view, events));
+  std::optional<dataflow::RootThreadLaunchRef> first;
+  std::optional<dataflow::RootThreadLaunchRef> middle;
+  std::optional<dataflow::RootThreadLaunchRef> last;
+  for (const auto lhs : roots)
+    for (const auto candidate : roots) {
+      if (lhs == candidate ||
+          !take(loom::mapping::mappingEventPrecedes(
+              model, dataflow::rootThreadCompletionEventFamily(lhs),
+              dataflow::rootThreadStartEventFamily(candidate))))
+        continue;
+      for (const auto rhs : roots) {
+        if (rhs == lhs || rhs == candidate ||
+            !take(loom::mapping::mappingEventPrecedes(
+                model, dataflow::rootThreadCompletionEventFamily(candidate),
+                dataflow::rootThreadStartEventFamily(rhs))))
+          continue;
+        first = lhs;
+        middle = candidate;
+        last = rhs;
+      }
+    }
+  if (!first || !middle || !last)
+    fail("completion-frontier fixture lost its causal chain");
+  const auto independentRoot = llvm::find_if(roots, [&](const auto root) {
+    return root != *first && root != *middle && root != *last;
+  });
+  if (independentRoot == roots.end())
+    fail("completion-frontier fixture lost its independent root");
+  const auto independent = *independentRoot;
+  const auto admissible =
+      [&](llvm::ArrayRef<dataflow::RootThreadLaunchRef> scope,
+          llvm::ArrayRef<dataflow::RootThreadLaunchRef> completed,
+          dataflow::RootThreadLaunchRef completing,
+          llvm::ArrayRef<dataflow::RootThreadLaunchRef> active) {
+        return take(loom::mapping::mappingCompletionFrontierIsAdmissible(
+            view, scope, completed, completing, active));
+      };
+  const std::array chain = {*first, *middle, *last};
+  const std::array firstSuccessor = {*middle};
+  if (!admissible(chain, {}, *first, firstSuccessor))
+    fail("foreign canonical root changed the exact Mapping frontier");
+  const std::array sparseChainScope = {*first, *last};
+  const std::array lastSuccessor = {*last};
+  if (admissible(sparseChainScope, {}, *first, lastSuccessor))
+    fail("frontier ignored a scope-external intermediate predecessor");
+  const std::array foreignDirectScope = {independent, *last};
+  if (admissible(foreignDirectScope, {}, independent, lastSuccessor))
+    fail("frontier ignored a scope-external direct predecessor");
+  const std::array concurrentReady = {*middle, independent};
+  if (!admissible(roots, {}, *first, concurrentReady))
+    fail("independent ready root was rejected at a resource boundary");
+  const std::array independentlyCompleted = {independent};
+  if (!admissible(roots, independentlyCompleted, *first, firstSuccessor))
+    fail("independently serialized completion was rejected");
+  const std::array skippedSuccessor = {*last};
+  if (admissible(chain, {}, *first, skippedSuccessor))
+    fail("frontier activated a root before its direct predecessor");
+  const std::array mixedSuccessors = {*middle, *last};
+  if (admissible(chain, {}, *first, mixedSuccessors))
+    fail("frontier mixed ready and unready active roots");
+  const std::array incompletePrefix = {*first};
+  if (admissible(chain, incompletePrefix, *last, {}))
+    fail("completing root skipped an unfinished predecessor");
+  const std::array completePrefix = {*first, *middle};
+  if (!admissible(chain, completePrefix, *last, {}))
+    fail("complete causal prefix was rejected");
+
+  auto externalDependencyModule = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.thread private @ready domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    dataflow.thread.yield
+  }
+  dataflow.thread private @externally_blocked
+      domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
+    dataflow.thread.yield
+  }
+  func.func private @host(%external: !dataflow.thread_token) {
+    %ready = dataflow.thread.launch @ready()
+        : () -> !dataflow.thread_token
+    %blocked = dataflow.thread.launch @externally_blocked() wait(%external)
+        : () -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                                  &context);
+  if (!externalDependencyModule)
+    fail("cannot parse external-dependency fixture");
+  auto externalArtifact =
+      take(dataflow::finalizeCanonicalDataflow(*externalDependencyModule));
+  const auto externalView = take(externalArtifact.view());
+  if (externalView.rootThreadLaunches().size() != 2)
+    fail("external-dependency fixture lost a root launch");
+  std::optional<dataflow::RootThreadLaunchRef> externallyBlocked;
+  std::optional<dataflow::RootThreadLaunchRef> externallyReady;
+  std::vector<dataflow::RootThreadLaunchRef> externalRoots;
+  for (const auto &root : externalView.rootThreadLaunches()) {
+    externalRoots.push_back(root.ref);
+    auto launch = mlir::cast<dataflow::ThreadLaunchOp>(root.op);
+    if (llvm::any_of(launch.getAsyncDependencies(), [](mlir::Value dependency) {
+          return !dependency.getDefiningOp<dataflow::ThreadLaunchOp>();
+        }))
+      externallyBlocked = root.ref;
+    else
+      externallyReady = root.ref;
+  }
+  if (!externallyBlocked || !externallyReady)
+    fail("external-dependency fixture lost its dependency classification");
+  const std::array blockedAfter = {*externallyBlocked};
+  if (take(loom::mapping::mappingCompletionFrontierIsAdmissible(
+          externalView, externalRoots, {}, *externallyReady, blockedAfter)))
+    fail("frontier activated a root with an unproved external dependency");
+
+  auto storedWaitModule = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.thread private @waited domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    dataflow.thread.yield
+  }
+  dataflow.thread private @independent domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    dataflow.thread.yield
+  }
+  dataflow.thread private @after_wait domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    dataflow.thread.yield
+  }
+  func.func private @host() {
+    %waited = dataflow.thread.launch @waited()
+        : () -> !dataflow.thread_token
+    %independent = dataflow.thread.launch @independent()
+        : () -> !dataflow.thread_token
+    dataflow.thread.wait %waited : !dataflow.thread_token
+    %after = dataflow.thread.launch @after_wait()
+        : () -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                          &context);
+  if (!storedWaitModule)
+    fail("cannot parse stored-wait fixture");
+  auto storedWaitArtifact =
+      take(dataflow::finalizeCanonicalDataflow(*storedWaitModule));
+  const auto storedWaitView = take(storedWaitArtifact.view());
+  std::optional<dataflow::ThreadWaitOp> storedWait;
+  storedWaitArtifact.module()->walk([&](dataflow::ThreadWaitOp wait) {
+    if (storedWait)
+      fail("stored-wait fixture has multiple waits");
+    storedWait = wait;
+  });
+  if (!storedWait || storedWait->getAsyncDependencies().size() != 1)
+    fail("stored-wait fixture lost its wait operation");
+  mlir::Operation *waitedLaunch =
+      storedWait->getAsyncDependencies().front().getDefiningOp();
+  std::vector<dataflow::RootThreadLaunchRef> storedWaitRoots;
+  std::optional<dataflow::RootThreadLaunchRef> independentBeforeWait;
+  std::optional<dataflow::RootThreadLaunchRef> afterWait;
+  for (const auto &root : storedWaitView.rootThreadLaunches()) {
+    storedWaitRoots.push_back(root.ref);
+    auto launch = mlir::cast<dataflow::ThreadLaunchOp>(root.op);
+    if (launch.getOperation() == waitedLaunch)
+      continue;
+    if (launch->getBlock() != storedWait->getOperation()->getBlock())
+      fail("stored-wait fixture split its host block");
+    if (launch->isBeforeInBlock(storedWait->getOperation()))
+      independentBeforeWait = root.ref;
+    else
+      afterWait = root.ref;
+  }
+  if (!independentBeforeWait || !afterWait)
+    fail("stored-wait fixture lost its launch identities");
+  const std::array afterStoredWait = {*afterWait};
+  if (take(loom::mapping::mappingCompletionFrontierIsAdmissible(
+          storedWaitView, storedWaitRoots, {}, *independentBeforeWait,
+          afterStoredWait)))
+    fail("frontier ignored an explicit stored-program wait");
+}
+
 void orderedRuntimeHeadsRequireCompleteExactPairing() {
   const loom::fabric::FabricPeOccurrenceRef pe(7);
   const loom::fabric::FabricFuOccurrenceRef fu(11);
@@ -339,6 +572,7 @@ void orderedRuntimeHeadsRequireCompleteExactPairing() {
 
 int main() {
   initializedFeedbackProgressBasis();
+  completionFrontierRequiresReadyRoots();
   orderedRuntimeHeadsRequireCompleteExactPairing();
   llvm::outs() << "mapping progress tests passed\n";
   return EXIT_SUCCESS;
