@@ -70,7 +70,8 @@ llvm::Expected<CanonicalSystemServiceRoutes> negotiateSystemServiceRoutes(
     std::optional<SystemServiceRouteRepairRegion> repairRegion = std::nullopt,
     SystemRoutingClosureRequirement closureRequirement =
         SystemRoutingClosureRequirement::PolicyAdmittedTemporary,
-    std::optional<SystemRoutingReopenWitness> *reopenWitness = nullptr);
+    std::optional<SystemRoutingReopenWitness> *reopenWitness = nullptr,
+    PnrWorkLedgerView workLedger = {});
 
 } // namespace loom::pnr::detail
 
