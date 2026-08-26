@@ -39,6 +39,7 @@ struct Options final {
   std::string gem5Configuration;
   std::string projection;
   std::string systemResultPath;
+  std::string gem5PerformanceProfile;
   std::uint64_t ticksPerCycle = 0;
   bool peer = false;
 };
@@ -99,6 +100,8 @@ bool parseArguments(int argc, char **argv, Options &options,
       options.projection = value;
     else if (argument == "--system-result")
       options.systemResultPath = value;
+    else if (argument == "--gem5-performance-profile")
+      options.gem5PerformanceProfile = value;
     else
       return false;
   }
@@ -111,7 +114,8 @@ bool parseArguments(int argc, char **argv, Options &options,
            options.peerExecutables.empty() && options.gem5Executable.empty() &&
            options.gem5OutputDirectory.empty() &&
            options.gem5Configuration.empty() && options.projection.empty() &&
-           options.systemResultPath.empty();
+           options.systemResultPath.empty() &&
+           options.gem5PerformanceProfile.empty();
   return !options.peerManifestPath.empty() && !options.gem5Executable.empty() &&
          !options.gem5OutputDirectory.empty() &&
          !options.gem5Configuration.empty() && !options.projection.empty() &&
@@ -181,6 +185,15 @@ pid_t launchGem5(const Options &options) {
   const pid_t child = ::fork();
   if (child != 0)
     return child;
+  if (!options.gem5PerformanceProfile.empty()) {
+    ::execl(
+        options.gem5Executable.c_str(), options.gem5Executable.c_str(), "-d",
+        options.gem5OutputDirectory.c_str(), options.gem5Configuration.c_str(),
+        "--projection", options.projection.c_str(), "--result",
+        options.systemResultPath.c_str(), "--performance-profile",
+        options.gem5PerformanceProfile.c_str(), static_cast<char *>(nullptr));
+    _exit(127);
+  }
   ::execl(options.gem5Executable.c_str(), options.gem5Executable.c_str(), "-d",
           options.gem5OutputDirectory.c_str(),
           options.gem5Configuration.c_str(), "--projection",
@@ -753,12 +766,11 @@ int main(int argc, char **argv) {
     std::cerr << "could not publish a Spatial channel output\n";
     return 12;
   }
-  if (!sendCompletion(
-          connection, launch.sequence, cycles * options.ticksPerCycle,
-          retired ? 0U : 1U,
-          loom::runtime::encodeSpatialInvocationResultWire(
-              {0, launchEnvelope.invocation, std::nullopt,
-               std::move(result)}))) {
+  if (!sendCompletion(connection, launch.sequence,
+                      cycles * options.ticksPerCycle, retired ? 0U : 1U,
+                      loom::runtime::encodeSpatialInvocationResultWire(
+                          {0, launchEnvelope.invocation, std::nullopt,
+                           std::move(result)}))) {
     ::close(connection);
     if (!options.peer)
       stopChild(gem5);
