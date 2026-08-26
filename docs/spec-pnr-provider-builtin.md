@@ -264,19 +264,21 @@ There are two actual repair profiles:
 2. **Atomic capacity** encodes compute binding and its complete hard relation
    closure. It does not encode memory binding decisions.
 
-Before Candidate state is allocated, the provider checks that these profiles
-are total for the frozen domain. Every Spatial constraint projection is
-classified exhaustively by its binding, route, tag, or memory owner.
+Before Candidate state is allocated, the provider rejects statically
+recognizable frozen-domain capability mismatches. Every Spatial constraint
+projection is classified exhaustively by its binding, route, tag, or memory
+owner.
 `CpSat_3_0` is rejected as unsupported when an atomic compute relation closure
 can reach a non-compute decision, or when a selectable memory operation plan,
 memory dispatch, or exposure provider can contribute atomic capacity overuse.
 No search begins for such a domain, and no alternate repair algorithm is
 selected implicitly.
 
-A direct scratch invocation outside an admitted profile returns the defensive
-`UnsupportedEncoding` result; generation cannot reach that result for an
-admitted domain. Region overflow returns
-`RegionTooLarge`; solver-call exhaustion or any non-proof-bearing status returns
+A candidate-local witness that has no complete typed encoding returns
+`UnsupportedEncoding`, including a route-progress dependency violation without
+a finite-buffer owner witness. This runtime result remains incomplete and
+cannot prove infeasibility. Region overflow returns `RegionTooLarge`;
+solver-call exhaustion or any non-proof-bearing status returns
 `UnknownBudgetExhausted`.
 
 The result vocabulary is:

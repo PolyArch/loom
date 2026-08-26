@@ -138,11 +138,9 @@ buildMutationRecord(const SystemCandidateState &before,
   result.capacityOveruseBefore = before.capacityOveruse();
   result.capacityOveruseAfter = after.capacityOveruse();
   result.recurrenceMinimumInitiationIntervalBefore =
-      before.recurrenceTiming()
-          .recurrenceMinimumInitiationIntervalCycles;
+      before.recurrenceTiming().recurrenceMinimumInitiationIntervalCycles;
   result.recurrenceMinimumInitiationIntervalAfter =
-      after.recurrenceTiming()
-          .recurrenceMinimumInitiationIntervalCycles;
+      after.recurrenceTiming().recurrenceMinimumInitiationIntervalCycles;
   result.resourceMinimumInitiationIntervalBefore =
       before.resourceMinimumInitiationIntervalCycles();
   result.resourceMinimumInitiationIntervalAfter =
@@ -201,7 +199,7 @@ dependencyClosureFixedChoices(const SystemCandidateState &current,
 llvm::Expected<SystemCandidateStateHandle> executeFixedBinding(
     const SystemCandidateStateHandle &current, llvm::ArrayRef<PnrIndex> fixed,
     std::uint64_t &assignmentAttempts, std::uint64_t &endpointExpansions,
-    std::uint64_t &negotiationIterations) {
+    std::uint64_t &negotiationIterations, PnrWorkLedgerView workLedger) {
   const FrozenSystemPnrProblem &problem = current->problem();
   const PnrIndex threadCount = problem.threadDecisions().size();
   if (fixed.size() !=
@@ -209,8 +207,10 @@ llvm::Expected<SystemCandidateStateHandle> executeFixedBinding(
     return invalid("binding closure has the wrong decision width");
   SystemCandidateRouteSeed routeSeed{
       {current->serviceRoutes().begin(), current->serviceRoutes().end()},
-      {current->serviceRouteNodes().begin(), current->serviceRouteNodes().end()},
-      {current->serviceRouteSinks().begin(), current->serviceRouteSinks().end()},
+      {current->serviceRouteNodes().begin(),
+       current->serviceRouteNodes().end()},
+      {current->serviceRouteSinks().begin(),
+       current->serviceRouteSinks().end()},
       {}};
   for (PnrIndex leg = 0; leg < problem.serviceLegs().size(); ++leg) {
     const PnrIndex context = problem.serviceLegs()[leg].serviceContext;
@@ -219,7 +219,8 @@ llvm::Expected<SystemCandidateStateHandle> executeFixedBinding(
     const auto &service = problem.serviceContexts()[context];
     const auto changed = [&](PnrIndex decision, PnrIndex currentChoice) {
       return decision != getInvalidPnrIndex() &&
-             (decision >= fixed.size() || fixed[decision] == getInvalidPnrIndex() ||
+             (decision >= fixed.size() ||
+              fixed[decision] == getInvalidPnrIndex() ||
               fixed[decision] != currentChoice);
     };
     bool reroute = false;
@@ -233,14 +234,13 @@ llvm::Expected<SystemCandidateStateHandle> executeFixedBinding(
       const PnrIndex graph = service.graphDecision;
       if (graph >= problem.graphDecisions().size())
         return invalid("binding closure names a foreign graph decision");
-      reroute |= changed(threadCount + graph,
-                         current->graphChoice(graph));
+      reroute |= changed(threadCount + graph, current->graphChoice(graph));
     }
     if (reroute)
       routeSeed.reroutedLegs.push_back(leg);
   }
   auto initialized = initializeSystemCandidateWithFixedChoicesAndRoutes(
-      current->problemHandle(), fixed, routeSeed);
+      current->problemHandle(), fixed, routeSeed, workLedger);
   if (!initialized) {
     llvm::Error translated = llvm::handleErrors(
         initialized.takeError(),
@@ -275,7 +275,8 @@ llvm::Expected<SystemCandidateStateHandle> executeFixedBinding(
 llvm::Expected<SystemCandidateStateHandle> executeBinding(
     const SystemCandidateStateHandle &current,
     SystemExecutionBindingAction action, std::uint64_t &assignmentAttempts,
-    std::uint64_t &endpointExpansions, std::uint64_t &negotiationIterations) {
+    std::uint64_t &endpointExpansions, std::uint64_t &negotiationIterations,
+    PnrWorkLedgerView workLedger) {
   const FrozenSystemPnrProblem &problem = current->problem();
   const std::size_t decisionCount =
       problem.threadDecisions().size() + problem.graphDecisions().size();
@@ -297,15 +298,15 @@ llvm::Expected<SystemCandidateStateHandle> executeBinding(
     return fixed.takeError();
   (*fixed)[action.decision] = action.choice;
   return executeFixedBinding(current, *fixed, assignmentAttempts,
-                             endpointExpansions, negotiationIterations);
+                             endpointExpansions, negotiationIterations,
+                             workLedger);
 }
 
-llvm::Expected<SystemCandidateStateHandle>
-executeBindingReopen(const SystemCandidateStateHandle &current,
-                     const SystemExecutionBindingReopenAction &action,
-                     std::uint64_t &assignmentAttempts,
-                     std::uint64_t &endpointExpansions,
-                     std::uint64_t &negotiationIterations) {
+llvm::Expected<SystemCandidateStateHandle> executeBindingReopen(
+    const SystemCandidateStateHandle &current,
+    const SystemExecutionBindingReopenAction &action,
+    std::uint64_t &assignmentAttempts, std::uint64_t &endpointExpansions,
+    std::uint64_t &negotiationIterations, PnrWorkLedgerView workLedger) {
   const FrozenSystemPnrProblem &problem = current->problem();
   if (action.capacityCell >= problem.routingTopology().capacityCells().size())
     return invalid("binding reopen Action names a foreign capacity cell");
@@ -327,7 +328,8 @@ executeBindingReopen(const SystemCandidateStateHandle &current,
   if (!fixed)
     return fixed.takeError();
   return executeFixedBinding(current, *fixed, assignmentAttempts,
-                             endpointExpansions, negotiationIterations);
+                             endpointExpansions, negotiationIterations,
+                             workLedger);
 }
 
 llvm::Expected<std::optional<SystemUpstreamReopenWitness>>
@@ -407,11 +409,13 @@ executeTransport(const SystemCandidateStateHandle &current,
                  std::uint64_t &endpointExpansions,
                  std::uint64_t &negotiationIterations,
                  SystemActionExecutionContext context,
-                 std::optional<SystemUpstreamReopenWitness> &reopenWitness) {
+                 std::optional<SystemUpstreamReopenWitness> &reopenWitness,
+                 PnrWorkLedgerView workLedger) {
   std::optional<detail::SystemRoutingReopenWitness> routingWitness;
   auto candidate = detail::rebuildSystemCandidateRoutes(
       *current, action, endpointExpansions, negotiationIterations,
-      context == SystemActionExecutionContext::FinalClosure, &routingWitness);
+      context == SystemActionExecutionContext::FinalClosure, &routingWitness,
+      workLedger);
   if (!candidate)
     return translateMutationFailure(candidate.takeError(), *current);
   if (routingWitness) {
@@ -447,12 +451,11 @@ executeResource(const SystemCandidateStateHandle &current,
 
 } // namespace
 
-llvm::Expected<SystemActionProbeResult>
-loom::pnr::probeSystemAction(const SystemCandidateStateHandle &current,
-                             const dse::ObjectiveVector &currentObjective,
-                             const SystemMappingAction &action,
-                             SystemActionProbeAccounting &accounting,
-                             SystemActionExecutionContext context) {
+llvm::Expected<SystemActionProbeResult> loom::pnr::probeSystemAction(
+    const SystemCandidateStateHandle &current,
+    const dse::ObjectiveVector &currentObjective,
+    const SystemMappingAction &action, SystemActionProbeAccounting &accounting,
+    SystemActionExecutionContext context, PnrWorkLedgerView workLedger) {
   if (!current)
     return invalid("current candidate owner is null");
   if (context == SystemActionExecutionContext::FinalClosure) {
@@ -469,16 +472,17 @@ loom::pnr::probeSystemAction(const SystemCandidateStateHandle &current,
         if constexpr (std::is_same_v<T, SystemExecutionBindingAction>)
           return executeBinding(current, value, accounting.assignmentAttempts,
                                 accounting.endpointExpansions,
-                                accounting.negotiationIterations);
+                                accounting.negotiationIterations, workLedger);
         else if constexpr (std::is_same_v<T,
                                           SystemExecutionBindingReopenAction>)
           return executeBindingReopen(
               current, value, accounting.assignmentAttempts,
-              accounting.endpointExpansions, accounting.negotiationIterations);
+              accounting.endpointExpansions, accounting.negotiationIterations,
+              workLedger);
         else if constexpr (std::is_same_v<T, SystemTransportRoutingAction>)
           return executeTransport(current, value, accounting.endpointExpansions,
                                   accounting.negotiationIterations, context,
-                                  reopenWitness);
+                                  reopenWitness, workLedger);
         else
           return executeResource(current, value);
       },

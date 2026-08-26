@@ -690,10 +690,18 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
         "root_complete_system_pnr_generator_invalid: " + invalid->diagnostic);
   const auto &internal =
       std::get<::loom::pnr::InternalSystemPnrGeneration>(outcome);
-  return llvm::createStringError(
-      llvm::inconvertibleErrorCode(),
-      "root_complete_system_pnr_generator_execution_failed: " +
-          internal.diagnostic);
+  ::loom::mapping_debug::emit(::loom::mapping_debug::Level::Summary,
+                              ::loom::mapping_debug::Stage::SystemPnr,
+                              ::loom::mapping_debug::Event::MappingFailure,
+                              [&](llvm::json::Object &fields) {
+                                fields["failure_scope"] =
+                                    "system_pnr_execution";
+                                fields["closure_status"] = "execution_failed";
+                                fields["diagnostic"] = internal.diagnostic;
+                              });
+  return CandidateGeneratorProviderResult{
+      incomplete(CandidateGeneratorIncompleteReason::ExecutionFailed),
+      rootCompleteSystemPnrCandidateGeneratorWorkSummary(internal.accounting)};
 }
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
@@ -896,10 +904,18 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
         "application_system_pnr_generator_invalid: " + invalid->diagnostic);
   const auto &internal =
       std::get<::loom::pnr::InternalSystemPnrGeneration>(outcome);
-  return llvm::createStringError(
-      llvm::inconvertibleErrorCode(),
-      "application_system_pnr_generator_execution_failed: " +
-          internal.diagnostic);
+  ::loom::mapping_debug::emit(::loom::mapping_debug::Level::Summary,
+                              ::loom::mapping_debug::Stage::SystemPnr,
+                              ::loom::mapping_debug::Event::MappingFailure,
+                              [&](llvm::json::Object &fields) {
+                                fields["failure_scope"] =
+                                    "system_pnr_execution";
+                                fields["closure_status"] = "execution_failed";
+                                fields["diagnostic"] = internal.diagnostic;
+                              });
+  return CandidateGeneratorProviderResult{
+      incomplete(CandidateGeneratorIncompleteReason::ExecutionFailed),
+      rootCompleteSystemPnrCandidateGeneratorWorkSummary(internal.accounting)};
 }
 
 const CandidateGeneratorProvider provider{
@@ -1025,6 +1041,15 @@ std::vector<CandidateGeneratorWorkUnitSummary>
 rootCompleteSystemPnrCandidateGeneratorWorkSummary(
     const ::loom::pnr::SystemPnrGenerationAccounting &accounting) {
   const std::array<std::uint64_t, pnrCandidateGeneratorWorkUnits.size()>
+      planned = {accounting.plannedSeedAttemptSlots,
+                 accounting.plannedInitializerAssignmentAttempts,
+                 accounting.plannedEndpointExpansionSlots,
+                 accounting.plannedNegotiationIterationSlots,
+                 accounting.plannedCalibrationProposalSlots,
+                 accounting.plannedAnnealingBaseProposalSlots,
+                 accounting.plannedAnnealingMovableProposalSlots,
+                 accounting.plannedExactRepairRegionDecisions,
+                 accounting.plannedExactRepairSolverCalls},
       consumed = {accounting.seedAttemptSlots,
                   accounting.initializerAssignmentAttempts,
                   accounting.endpointExpansionSlots,
@@ -1037,7 +1062,7 @@ rootCompleteSystemPnrCandidateGeneratorWorkSummary(
   std::vector<CandidateGeneratorWorkUnitSummary> result;
   result.reserve(consumed.size());
   for (std::size_t ordinal = 0; ordinal != consumed.size(); ++ordinal)
-    result.push_back({CandidateGeneratorWorkUnitRef(ordinal), consumed[ordinal],
+    result.push_back({CandidateGeneratorWorkUnitRef(ordinal), planned[ordinal],
                       consumed[ordinal]});
   return result;
 }

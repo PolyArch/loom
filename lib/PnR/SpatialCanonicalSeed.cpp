@@ -18,6 +18,8 @@ namespace {
 
 SpatialPnrWorkLedgerView workLedger(SpatialPathFinderSeedWorkSummary &summary) {
   std::array<SpatialPnrWorkCounterRef, spatialPnrWorkKindCount> counters{};
+  counters[static_cast<std::size_t>(SpatialPnrWorkKind::SeedAttempt)] = {
+      &summary.plannedSeedAttempts, &summary.seedAttempts};
   counters[static_cast<std::size_t>(
       SpatialPnrWorkKind::InitializerAssignment)] = {
       &summary.plannedInitializerAssignmentAttempts,
@@ -37,7 +39,7 @@ std::string errorMessage(const llvm::ErrorInfoBase &error) {
 }
 
 llvm::Error retainSeedFailure(llvm::Error error,
-                              SpatialPathFinderSeedWorkSummary &summary) {
+                              SpatialPnrWorkLedgerView ledger) {
   bool sawCompletedFailure = false;
   bool sawInternalFailure = false;
   llvm::Error retained = llvm::handleErrors(
@@ -72,7 +74,9 @@ llvm::Error retainSeedFailure(llvm::Error error,
         return llvm::make_error<llvm::StringError>(
             errorMessage(failure), failure.convertToErrorCode());
       });
-  summary.seedAttemptCompleted = sawCompletedFailure && !sawInternalFailure;
+  if (sawCompletedFailure && !sawInternalFailure)
+    if (llvm::Error consume = ledger.consume(SpatialPnrWorkKind::SeedAttempt))
+      retained = llvm::joinErrors(std::move(retained), std::move(consume));
   return retained;
 }
 
@@ -109,12 +113,14 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
     llvm::ArrayRef<RouteCost> evaluationPriorities) {
   workSummary = {};
   const SpatialPnrWorkLedgerView ledger = workLedger(workSummary);
+  if (llvm::Error error = ledger.plan(SpatialPnrWorkKind::SeedAttempt))
+    return std::move(error);
   std::uint64_t initializerAssignmentAttempts = 0;
   auto initialized = createSpatialCandidateInitializerAttempt(
       std::move(problem), attemptOrdinal, initializerAssignmentAttempts,
       ledger);
   if (!initialized)
-    return retainSeedFailure(initialized.takeError(), workSummary);
+    return retainSeedFailure(initialized.takeError(), ledger);
   if (initializerAssignmentAttempts !=
       workSummary.initializerAssignmentAttempts)
     return llvm::createStringError(
@@ -155,10 +161,10 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
         candidate->problem().config().policy().temporaryViolations.admitted,
         ResolvedPnrViolationKind::UnroutedObligation);
     if (!admitsUnrouted)
-      return retainSeedFailure(routing.takeError(), workSummary);
+      return retainSeedFailure(routing.takeError(), ledger);
     auto retained = retainRolledBackInitializer(routing.takeError());
     if (!retained)
-      return retainSeedFailure(retained.takeError(), workSummary);
+      return retainSeedFailure(retained.takeError(), ledger);
     if (!*retained)
       return llvm::createStringError(
           std::make_error_code(std::errc::invalid_argument),
@@ -166,7 +172,8 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
   }
   if (llvm::Error error = candidate->verify())
     return std::move(error);
-  workSummary.seedAttemptCompleted = true;
+  if (llvm::Error error = ledger.consume(SpatialPnrWorkKind::SeedAttempt))
+    return std::move(error);
   return SpatialPathFinderSeed{std::move(candidate), attemptOrdinal,
                                initializerPreference};
 }
