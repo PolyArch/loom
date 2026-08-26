@@ -1124,6 +1124,28 @@ loadPublishedCompletion(const PreparedExternalToolInvocation &prepared,
   return std::optional<InvocationCompletion>(std::move(*completion));
 }
 
+llvm::Error revokeCompletedExecutionAfterStoppedPostflight(
+    const PreparedExternalToolInvocation &prepared,
+    const BlobDigest &attemptToken) {
+  auto completion = loadPublishedCompletion(prepared, attemptToken);
+  if (!completion)
+    return completion.takeError();
+  if (!*completion)
+    return llvm::Error::success();
+  const std::filesystem::path path =
+      std::filesystem::path(prepared.bundleRoot) / kCompletionPath.str();
+  std::error_code removeError;
+  const bool removed = std::filesystem::remove(path, removeError);
+  if (removeError)
+    return cacheError(
+        "cannot revoke completion after stopped postflight validation: " +
+        removeError.message());
+  if (!removed)
+    return cacheError(
+        "completion disappeared during stopped postflight validation");
+  return llvm::Error::success();
+}
+
 llvm::Expected<ScriptExecution>
 runScript(const PreparedExternalToolInvocation &prepared, CacheScriptMode mode,
           ExecutionControlView executionControl,
@@ -1299,9 +1321,14 @@ executeExternalToolInvocationBundleObserved(
                                   executionControl, *attemptToken);
       if (!postflight)
         return postflight.takeError();
-      if (postflight->exitCode == externalToolExecutionStoppedExitCode)
+      if (postflight->exitCode == externalToolExecutionStoppedExitCode) {
+        if (llvm::Error error =
+                revokeCompletedExecutionAfterStoppedPostflight(prepared,
+                                                                *attemptToken))
+          return std::move(error);
         return stopped(availability, waitedForCacheKeyLock, execution->invoked,
                        std::move(execution->commandExecutions));
+      }
       if (postflight->exitCode != 0)
         return cacheError(
             "fresh invocation inputs or tool changed during execution");
@@ -1443,7 +1470,10 @@ executeExternalToolInvocationBundleObserved(
         ExternalToolResultCachePublication::Failed, waitedForCacheKeyLock, true,
         execution->commandExecutions});
   }
-  if (postflight->exitCode == externalToolExecutionStoppedExitCode)
+  if (postflight->exitCode == externalToolExecutionStoppedExitCode) {
+    if (llvm::Error error = revokeCompletedExecutionAfterStoppedPostflight(
+            prepared, *attemptToken))
+      return std::move(error);
     return seal(ExternalToolInvocationExecutionObservation{
         prepared.manifestDigest, *attemptToken,
         externalToolExecutionStoppedExitCode, reusePolicy,
@@ -1451,6 +1481,7 @@ executeExternalToolInvocationBundleObserved(
         ExternalToolResultCacheLookup::Miss, discard,
         ExternalToolResultCachePublication::NotAttempted, waitedForCacheKeyLock,
         true, execution->commandExecutions});
+  }
   if (postflight->exitCode != 0) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     "invocation inputs or tool changed during execution");
