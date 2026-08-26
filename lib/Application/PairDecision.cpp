@@ -806,8 +806,6 @@ ApplicationPairDecisionRecord makePreAdmissionFailurePairDecision(
 
 llvm::StringRef toString(ApplicationPairManifestJoinStatus value) {
   switch (value) {
-  case ApplicationPairManifestJoinStatus::Exact:
-    return "exact";
   case ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure:
     return "owner_scoped_planning_closure";
   case ApplicationPairManifestJoinStatus::OwnerVerifiedPreAdmission:
