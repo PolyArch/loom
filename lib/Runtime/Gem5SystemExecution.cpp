@@ -1266,6 +1266,10 @@ prepareGem5SystemDiagnosticInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const ExternalToolPreparationContext &context) {
+  ArtifactImportCacheScope cacheScope(artifacts, &blobs);
+  RequestVerifier verifier(resolution, artifacts, blobs);
+  if (llvm::Error error = verifier.verify(request))
+    return std::move(error);
   return prepareGem5SystemInvocationImpl(request, resolution, artifacts, blobs,
                                          context, true);
 }
@@ -1647,6 +1651,10 @@ importGem5SystemDiagnosticInvocation(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationExecutionObservation &execution,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
+  ArtifactImportCacheScope cacheScope(artifacts, &blobs);
+  RequestVerifier verifier(resolution, artifacts, blobs);
+  if (llvm::Error error = verifier.verify(request))
+    return std::move(error);
   if (llvm::Error error = validateFreshDiagnosticExecution(prepared, execution))
     return std::move(error);
   const auto finalize = [&](EvaluationModelResult result)

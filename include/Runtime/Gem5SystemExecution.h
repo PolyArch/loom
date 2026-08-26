@@ -137,9 +137,9 @@ prepareGem5SystemInvocation(
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const external_tool::ExternalToolPreparationContext &context);
 
-/// Prepares an explicitly diagnostic gem5 invocation. Performance outputs are
-/// part of this dedicated bundle contract and never part of ordinary model
-/// preparation.
+/// Validates the Request and prepares an explicitly diagnostic gem5
+/// invocation. Performance outputs are part of this dedicated bundle contract
+/// and never part of ordinary model preparation.
 llvm::Expected<evaluation::EvaluationModelProviderPreparation>
 prepareGem5SystemDiagnosticInvocation(
     const evaluation::EvaluationRequest &request,
@@ -155,8 +155,9 @@ llvm::Expected<evaluation::EvaluationModelResult> importGem5SystemInvocation(
     const external_tool::PreparedExternalToolInvocation &prepared,
     const ArtifactStore &artifacts, const BlobStore &blobs);
 
-/// Imports the dedicated diagnostic contract after proving that the caller
-/// executed the exact bundle as a fresh external attempt.
+/// Validates the Request and imports the dedicated diagnostic contract after
+/// proving that the caller executed the exact bundle as a fresh external
+/// attempt. No execution artifact is published before both checks succeed.
 llvm::Expected<Gem5SystemDiagnosticEvaluation>
 importGem5SystemDiagnosticInvocation(
     const evaluation::EvaluationRequest &request,
