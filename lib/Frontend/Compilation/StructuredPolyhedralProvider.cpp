@@ -77,6 +77,7 @@ using IslAstExpression = IslOwner<isl_ast_expr, isl_ast_expr_free>;
 using IslAstNode = IslOwner<isl_ast_node, isl_ast_node_free>;
 using IslAstNodeList = IslOwner<isl_ast_node_list, isl_ast_node_list_free>;
 using IslId = IslOwner<isl_id, isl_id_free>;
+using IslLocalSpace = IslOwner<isl_local_space, isl_local_space_free>;
 
 llvm::Error providerError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -98,6 +99,57 @@ public:
 };
 
 char AstRepresentationUnavailable::ID = 0;
+
+class ProviderWorkBudgetExhausted final
+    : public llvm::ErrorInfo<ProviderWorkBudgetExhausted> {
+public:
+  static char ID;
+
+  void log(llvm::raw_ostream &stream) const override {
+    stream << "the bounded provider materialization work was exhausted";
+  }
+
+  std::error_code convertToErrorCode() const override {
+    return llvm::inconvertibleErrorCode();
+  }
+};
+
+char ProviderWorkBudgetExhausted::ID = 0;
+
+class ProviderWorkBudget final {
+public:
+  bool consume(std::uint64_t amount = 1) {
+    if (amount > remainingWork_)
+      return false;
+    remainingWork_ -= amount;
+    return true;
+  }
+
+  bool consumeAstComponent(unsigned depth) {
+    if (depth > maximumAstDepth || remainingAstComponents_ == 0 || !consume())
+      return false;
+    --remainingAstComponents_;
+    return true;
+  }
+
+  bool admitsAstDepth(std::uint64_t depth) const {
+    return depth <= maximumAstDepth;
+  }
+
+private:
+  static constexpr std::uint64_t maximumWork = 1'000'000;
+  static constexpr std::uint64_t maximumAstComponents = 65'536;
+  static constexpr unsigned maximumAstDepth = 256;
+
+  std::uint64_t remainingWork_ = maximumWork;
+  std::uint64_t remainingAstComponents_ = maximumAstComponents;
+};
+
+llvm::Error consumeWork(ProviderWorkBudget *budget, std::uint64_t amount = 1) {
+  if (!budget || budget->consume(amount))
+    return llvm::Error::success();
+  return llvm::make_error<ProviderWorkBudgetExhausted>();
+}
 
 std::string tupleName(std::uint64_t statementOrdinal) {
   return "S" + std::to_string(statementOrdinal);
@@ -528,9 +580,16 @@ bool freezeDivisions(isl_basic_map *basic,
   const isl_size localCount = isl_basic_map_dim(basic, isl_dim_div);
   if (localCount < 0)
     return false;
+  IslLocalSpace wrapped(
+      isl_local_space_wrap(isl_basic_map_get_local_space(basic)));
+  if (!wrapped)
+    return false;
   piece.divisions.resize(static_cast<std::size_t>(localCount));
   for (isl_size local = 0; local != localCount; ++local) {
-    IslAff division(isl_basic_map_get_div(basic, local));
+    // An isl_aff can only represent divisions over a set local space. Wrapping
+    // preserves the map's source-then-range variable order while making that
+    // exact space a set.
+    IslAff division(isl_local_space_get_div(wrapped.get(), local));
     if (!division)
       return false;
     const isl_size affineDimensions = isl_aff_dim(division.get(), isl_dim_in);
@@ -616,7 +675,10 @@ bool negate(std::int64_t value, std::int64_t &result) {
 llvm::Expected<isl_constraint *>
 reconstructConstraint(isl_local_space *localSpace,
                       const StructuredPolyhedralSchedulePieceView &piece,
-                      llvm::ArrayRef<std::int64_t> row, bool equality) {
+                      llvm::ArrayRef<std::int64_t> row, bool equality,
+                      ProviderWorkBudget *budget) {
+  if (llvm::Error error = consumeWork(budget, row.size()))
+    return std::move(error);
   const std::uint64_t expectedWidth =
       piece.sourceDimensionCount + piece.scheduleDimensionCount +
       piece.parameterCount + piece.divisions.size() + 1;
@@ -662,7 +724,16 @@ reconstructConstraint(isl_local_space *localSpace,
 
 llvm::Expected<isl_map *>
 reconstructSchedulePiece(isl_map *sourceMap,
-                         const StructuredPolyhedralSchedulePieceView &piece) {
+                         const StructuredPolyhedralSchedulePieceView &piece,
+                         ProviderWorkBudget *budget = nullptr) {
+  if (llvm::Error error = consumeWork(budget, piece.sourceDimensionCount))
+    return std::move(error);
+  if (llvm::Error error = consumeWork(budget, piece.scheduleDimensionCount))
+    return std::move(error);
+  if (llvm::Error error = consumeWork(budget, piece.parameterCount))
+    return std::move(error);
+  if (llvm::Error error = consumeWork(budget, piece.divisions.size()))
+    return std::move(error);
   if (piece.sourceDimensionCount > std::numeric_limits<unsigned>::max() ||
       piece.scheduleDimensionCount > std::numeric_limits<unsigned>::max() ||
       piece.divisions.size() > std::numeric_limits<unsigned>::max())
@@ -683,7 +754,7 @@ reconstructSchedulePiece(isl_map *sourceMap,
     auto constraint =
         reconstructConstraint(isl_local_space_from_space(
                                   isl_basic_map_get_space(reconstructed.get())),
-                              piece, row, equality);
+                              piece, row, equality, budget);
     if (!constraint)
       return constraint.takeError();
     reconstructed.reset(
@@ -753,10 +824,11 @@ reconstructSchedulePiece(isl_map *sourceMap,
 
 llvm::Error verifyFrozenScheduleMap(
     isl_map *original,
-    const StructuredPolyhedralStatementScheduleView &schedule) {
+    const StructuredPolyhedralStatementScheduleView &schedule,
+    ProviderWorkBudget *budget = nullptr) {
   IslMap reconstructed;
   for (const StructuredPolyhedralSchedulePieceView &piece : schedule.pieces) {
-    auto map = reconstructSchedulePiece(original, piece);
+    auto map = reconstructSchedulePiece(original, piece, budget);
     if (!map)
       return map.takeError();
     if (!reconstructed) {
@@ -779,7 +851,10 @@ llvm::Error verifyFrozenScheduleMap(
 
 llvm::Expected<isl_map *> reconstructStatementSchedule(
     isl_ctx *context, std::uint64_t parameterCount,
-    const StructuredPolyhedralStatementScheduleView &schedule) {
+    const StructuredPolyhedralStatementScheduleView &schedule,
+    ProviderWorkBudget *budget) {
+  if (llvm::Error error = consumeWork(budget, schedule.pieces.size()))
+    return std::move(error);
   if (schedule.pieces.empty() ||
       parameterCount > std::numeric_limits<unsigned>::max() ||
       schedule.statementOrdinal > std::numeric_limits<unsigned>::max())
@@ -819,7 +894,7 @@ llvm::Expected<isl_map *> reconstructStatementSchedule(
         piece.scheduleDimensionCount != first.scheduleDimensionCount ||
         piece.parameterCount != parameterCount)
       return providerError("frozen schedule pieces disagree on their space");
-    auto map = reconstructSchedulePiece(source.get(), piece);
+    auto map = reconstructSchedulePiece(source.get(), piece, budget);
     if (!map)
       return map.takeError();
     if (!reconstructed) {
@@ -835,7 +910,11 @@ llvm::Expected<isl_map *> reconstructStatementSchedule(
 
 llvm::Expected<isl_union_map *>
 reconstructSchedule(isl_ctx *context,
-                    const StructuredPolyhedralScheduleView &schedule) {
+                    const StructuredPolyhedralScheduleView &schedule,
+                    ProviderWorkBudget *budget) {
+  if (llvm::Error error =
+          consumeWork(budget, schedule.statementSchedules.size()))
+    return std::move(error);
   if (schedule.statementSchedules.empty() ||
       schedule.parameterCount > std::numeric_limits<unsigned>::max())
     return providerError("a frozen schedule has invalid cardinality");
@@ -858,7 +937,7 @@ reconstructSchedule(isl_ctx *context,
       return providerError("frozen statement schedules have unequal ranges");
     rangeDimensions = dimensions;
     auto map = reconstructStatementSchedule(context, schedule.parameterCount,
-                                            statement);
+                                            statement, budget);
     if (!map)
       return map.takeError();
     result.reset(isl_union_map_add_map(result.release(), *map));
@@ -876,7 +955,15 @@ reconstructSchedule(isl_ctx *context,
 llvm::Expected<isl_set *> reconstructStatementDomain(
     isl_ctx *context, std::uint64_t statementOrdinal,
     const StructuredPolyhedralSetView &domain,
-    llvm::ArrayRef<StructuredEntityRef> globalParameters) {
+    llvm::ArrayRef<StructuredEntityRef> globalParameters,
+    const llvm::DenseMap<std::uint64_t, unsigned> &globalParameterOrdinals,
+    ProviderWorkBudget *budget) {
+  if (llvm::Error error = consumeWork(budget, domain.dimensions.size()))
+    return std::move(error);
+  if (llvm::Error error = consumeWork(budget, domain.parameters.size()))
+    return std::move(error);
+  if (llvm::Error error = consumeWork(budget, domain.constraints.size()))
+    return std::move(error);
   if (domain.dimensions.size() > std::numeric_limits<unsigned>::max() ||
       globalParameters.size() > std::numeric_limits<unsigned>::max())
     return providerError("a frozen statement domain exceeds ISL arity");
@@ -905,6 +992,8 @@ llvm::Expected<isl_set *> reconstructStatementDomain(
   const std::size_t expectedWidth =
       domain.dimensions.size() + domain.parameters.size() + 1;
   for (const StructuredPolyhedralConstraintView &row : domain.constraints) {
+    if (llvm::Error error = consumeWork(budget, row.coefficients.size()))
+      return std::move(error);
     if (row.coefficients.size() != expectedWidth)
       return providerError("a frozen domain row has inconsistent arity");
     IslConstraint constraint(
@@ -923,17 +1012,15 @@ llvm::Expected<isl_set *> reconstructStatementDomain(
       constraint.reset(*updated);
     }
     for (unsigned index = 0; index != domain.parameters.size(); ++index) {
-      auto global = llvm::find(globalParameters, domain.parameters[index]);
-      if (global == globalParameters.end())
+      auto global =
+          globalParameterOrdinals.find(domain.parameters[index].ordinal);
+      if (global == globalParameterOrdinals.end() ||
+          global->second >= globalParameters.size() ||
+          globalParameters[global->second] != domain.parameters[index])
         return providerError(
             "a frozen domain parameter is absent from the global schedule");
-      const std::size_t globalOrdinal = static_cast<std::size_t>(
-          std::distance(globalParameters.begin(), global));
-      if (globalOrdinal > std::numeric_limits<unsigned>::max())
-        return providerError("a frozen domain parameter exceeds ISL arity");
       auto updated =
-          setCoefficient(constraint.release(), isl_dim_param,
-                         static_cast<unsigned>(globalOrdinal),
+          setCoefficient(constraint.release(), isl_dim_param, global->second,
                          row.coefficients[domain.dimensions.size() + index]);
       if (!updated)
         return updated.takeError();
@@ -950,16 +1037,29 @@ llvm::Expected<isl_set *> reconstructStatementDomain(
 }
 
 llvm::Expected<isl_union_set *>
-reconstructDomains(isl_ctx *context, const StructuredPolyhedralScopView &scop) {
+reconstructDomains(isl_ctx *context, const StructuredPolyhedralScopView &scop,
+                   ProviderWorkBudget *budget) {
   if (scop.parameters.size() != scop.schedule.parameterCount ||
       scop.statements.size() != scop.schedule.statementSchedules.size())
     return providerError("the frozen SCoP has inconsistent cardinality");
   IslUnionSet result(isl_union_set_empty_ctx(context));
   if (!result)
     return providerError("cannot allocate frozen statement domains");
+  if (llvm::Error error = consumeWork(budget, scop.parameters.size()))
+    return std::move(error);
+  llvm::DenseMap<std::uint64_t, unsigned> globalParameterOrdinals;
+  for (auto [ordinal, parameter] : llvm::enumerate(scop.parameters)) {
+    if (parameter.kind != StructuredEntityKind::Value ||
+        ordinal > std::numeric_limits<unsigned>::max() ||
+        !globalParameterOrdinals
+             .try_emplace(parameter.ordinal, static_cast<unsigned>(ordinal))
+             .second)
+      return providerError("the frozen schedule has invalid parameters");
+  }
   for (auto [ordinal, statement] : llvm::enumerate(scop.statements)) {
     auto domain = reconstructStatementDomain(context, ordinal, statement.domain,
-                                             scop.parameters);
+                                             scop.parameters,
+                                             globalParameterOrdinals, budget);
     if (!domain)
       return domain.takeError();
     result.reset(isl_union_set_add_set(result.release(), *domain));
@@ -970,7 +1070,10 @@ reconstructDomains(isl_ctx *context, const StructuredPolyhedralScopView &scop) {
 }
 
 llvm::Expected<PolyhedralAstExpression>
-convertAstExpression(isl_ast_expr *rawExpression) {
+convertAstExpression(isl_ast_expr *rawExpression, ProviderWorkBudget &budget,
+                     unsigned depth) {
+  if (!budget.consumeAstComponent(depth))
+    return llvm::make_error<ProviderWorkBudgetExhausted>();
   IslAstExpression expression(rawExpression);
   if (!expression)
     return providerError("cannot read an ISL AST expression");
@@ -1086,7 +1189,8 @@ convertAstExpression(isl_ast_expr *rawExpression) {
   operands.reserve(static_cast<std::size_t>(operandCount));
   for (isl_size index = 0; index != operandCount; ++index) {
     auto operand = convertAstExpression(
-        isl_ast_expr_get_op_arg(expression.get(), static_cast<int>(index)));
+        isl_ast_expr_get_op_arg(expression.get(), static_cast<int>(index)),
+        budget, depth + 1);
     if (!operand)
       return operand.takeError();
     operands.push_back(std::move(*operand));
@@ -1094,24 +1198,31 @@ convertAstExpression(isl_ast_expr *rawExpression) {
   return PolyhedralAstExpression{kind, 0, {}, std::move(operands)};
 }
 
-llvm::Expected<PolyhedralAstNode> convertAstNode(isl_ast_node *rawNode) {
+llvm::Expected<PolyhedralAstNode> convertAstNode(isl_ast_node *rawNode,
+                                                 ProviderWorkBudget &budget,
+                                                 unsigned depth) {
+  if (!budget.consumeAstComponent(depth))
+    return llvm::make_error<ProviderWorkBudgetExhausted>();
   IslAstNode node(rawNode);
   if (!node)
     return providerError("cannot read an ISL AST node");
   switch (isl_ast_node_get_type(node.get())) {
   case isl_ast_node_for: {
-    auto iteratorExpression =
-        convertAstExpression(isl_ast_node_for_get_iterator(node.get()));
+    auto iteratorExpression = convertAstExpression(
+        isl_ast_node_for_get_iterator(node.get()), budget, depth + 1);
     if (!iteratorExpression)
       return iteratorExpression.takeError();
     if (iteratorExpression->kind != PolyhedralAstExpressionKind::Identifier ||
         iteratorExpression->identifier.empty())
       return providerError("an ISL AST loop has no iterator identifier");
-    auto initial = convertAstExpression(isl_ast_node_for_get_init(node.get()));
-    auto condition =
-        convertAstExpression(isl_ast_node_for_get_cond(node.get()));
-    auto increment = convertAstExpression(isl_ast_node_for_get_inc(node.get()));
-    auto body = convertAstNode(isl_ast_node_for_get_body(node.get()));
+    auto initial = convertAstExpression(isl_ast_node_for_get_init(node.get()),
+                                        budget, depth + 1);
+    auto condition = convertAstExpression(isl_ast_node_for_get_cond(node.get()),
+                                          budget, depth + 1);
+    auto increment = convertAstExpression(isl_ast_node_for_get_inc(node.get()),
+                                          budget, depth + 1);
+    auto body = convertAstNode(isl_ast_node_for_get_body(node.get()), budget,
+                               depth + 1);
     if (!initial)
       return initial.takeError();
     if (!condition)
@@ -1126,8 +1237,10 @@ llvm::Expected<PolyhedralAstNode> convertAstNode(isl_ast_node *rawNode) {
         std::make_unique<PolyhedralAstNode>(std::move(*body))}};
   }
   case isl_ast_node_if: {
-    auto condition = convertAstExpression(isl_ast_node_if_get_cond(node.get()));
-    auto thenNode = convertAstNode(isl_ast_node_if_get_then(node.get()));
+    auto condition = convertAstExpression(isl_ast_node_if_get_cond(node.get()),
+                                          budget, depth + 1);
+    auto thenNode =
+        convertAstNode(isl_ast_node_if_get_then(node.get()), budget, depth + 1);
     if (!condition)
       return condition.takeError();
     if (!thenNode)
@@ -1137,7 +1250,8 @@ llvm::Expected<PolyhedralAstNode> convertAstNode(isl_ast_node *rawNode) {
     if (hasElse < 0)
       return providerError("cannot inspect an ISL AST conditional");
     if (hasElse == isl_bool_true) {
-      auto convertedElse = convertAstNode(isl_ast_node_if_get_else(node.get()));
+      auto convertedElse = convertAstNode(isl_ast_node_if_get_else(node.get()),
+                                          budget, depth + 1);
       if (!convertedElse)
         return convertedElse.takeError();
       elseNode = std::make_unique<PolyhedralAstNode>(std::move(*convertedElse));
@@ -1157,7 +1271,8 @@ llvm::Expected<PolyhedralAstNode> convertAstNode(isl_ast_node *rawNode) {
     block.children.reserve(static_cast<std::size_t>(childCount));
     for (isl_size index = 0; index != childCount; ++index) {
       auto child = convertAstNode(isl_ast_node_list_get_ast_node(
-          children.get(), static_cast<int>(index)));
+                                      children.get(), static_cast<int>(index)),
+                                  budget, depth + 1);
       if (!child)
         return child.takeError();
       block.children.push_back(std::move(*child));
@@ -1165,9 +1280,11 @@ llvm::Expected<PolyhedralAstNode> convertAstNode(isl_ast_node *rawNode) {
     return PolyhedralAstNode{std::move(block)};
   }
   case isl_ast_node_mark:
-    return convertAstNode(isl_ast_node_mark_get_node(node.get()));
+    return convertAstNode(isl_ast_node_mark_get_node(node.get()), budget,
+                          depth + 1);
   case isl_ast_node_user: {
-    auto call = convertAstExpression(isl_ast_node_user_get_expr(node.get()));
+    auto call = convertAstExpression(isl_ast_node_user_get_expr(node.get()),
+                                     budget, depth + 1);
     if (!call)
       return call.takeError();
     if (call->kind != PolyhedralAstExpressionKind::Call)
@@ -1184,6 +1301,7 @@ struct BasicMapFreezeContext final {
   StructuredPolyhedralStatementScheduleView *statement = nullptr;
   std::uint64_t parameterCount = 0;
   bool failed = false;
+  bool scheduleNotEstablished = false;
 };
 
 isl_stat freezeBasicMap(isl_basic_map *rawBasic, void *opaque) {
@@ -1205,7 +1323,7 @@ isl_stat freezeBasicMap(isl_basic_map *rawBasic, void *opaque) {
       {},
       {}};
   if (!freezeDivisions(basic.get(), piece)) {
-    context.failed = true;
+    context.scheduleNotEstablished = true;
     return isl_stat_error;
   }
   ConstraintFreezeContext constraintContext{&piece, false};
@@ -1225,13 +1343,16 @@ struct ScheduleFreezeContext final {
   const llvm::DenseMap<std::uint64_t, unsigned> *statementDimensions = nullptr;
   std::uint64_t parameterCount = 0;
   std::vector<StructuredPolyhedralStatementScheduleView> schedules;
+  ProviderWorkBudget *budget = nullptr;
+  bool workBudgetExhausted = false;
   bool failed = false;
+  bool scheduleNotEstablished = false;
 };
 
 isl_stat freezeScheduleMap(isl_map *rawMap, void *opaque) {
-  IslMap map(rawMap);
+  IslMap original(rawMap);
   auto &context = *static_cast<ScheduleFreezeContext *>(opaque);
-  const char *tuple = isl_map_get_tuple_name(map.get(), isl_dim_in);
+  const char *tuple = isl_map_get_tuple_name(original.get(), isl_dim_in);
   if (!tuple) {
     context.failed = true;
     return isl_stat_error;
@@ -1245,28 +1366,95 @@ isl_stat freezeScheduleMap(isl_map *rawMap, void *opaque) {
     return isl_stat_error;
   }
   auto dimensions = context.statementDimensions->find(ordinal->second);
-  const isl_size sourceDimensions = isl_map_dim(map.get(), isl_dim_in);
+  const isl_size sourceDimensions = isl_map_dim(original.get(), isl_dim_in);
   if (dimensions == context.statementDimensions->end() ||
       sourceDimensions < 0 ||
       static_cast<unsigned>(sourceDimensions) != dimensions->second) {
     context.failed = true;
     return isl_stat_error;
   }
+  IslMap explicitDivisions(isl_map_compute_divs(isl_map_copy(original.get())));
+  if (!explicitDivisions) {
+    context.scheduleNotEstablished = true;
+    return isl_stat_error;
+  }
   StructuredPolyhedralStatementScheduleView schedule{ordinal->second, {}};
-  BasicMapFreezeContext basicContext{&schedule, context.parameterCount, false};
-  if (isl_map_foreach_basic_map(map.get(), freezeBasicMap, &basicContext) < 0 ||
+  BasicMapFreezeContext basicContext{&schedule, context.parameterCount, false,
+                                     false};
+  if (isl_map_foreach_basic_map(explicitDivisions.get(), freezeBasicMap,
+                                &basicContext) < 0 ||
       basicContext.failed || schedule.pieces.empty()) {
+    context.scheduleNotEstablished |= basicContext.scheduleNotEstablished;
     context.failed = true;
     return isl_stat_error;
   }
   llvm::sort(schedule.pieces, pieceLess);
-  if (llvm::Error error = verifyFrozenScheduleMap(map.get(), schedule)) {
-    llvm::consumeError(std::move(error));
+  if (llvm::Error error =
+          verifyFrozenScheduleMap(original.get(), schedule, context.budget)) {
+    llvm::Error remaining = llvm::handleErrors(
+        std::move(error), [&](const ProviderWorkBudgetExhausted &) {
+          context.workBudgetExhausted = true;
+        });
+    if (remaining)
+      llvm::consumeError(std::move(remaining));
     context.failed = true;
     return isl_stat_error;
   }
   context.schedules.push_back(std::move(schedule));
   return isl_stat_ok;
+}
+
+llvm::Expected<bool>
+verifyFrozenDivisionClosure(isl_union_map *scheduleMap,
+                            const StructuredPolyhedralScheduleView &schedule,
+                            ProviderWorkBudget &budget) {
+  if (llvm::Error error =
+          consumeWork(&budget, schedule.statementSchedules.size()))
+    return std::move(error);
+  const bool hasDivisions =
+      llvm::any_of(schedule.statementSchedules, [](const auto &statement) {
+        return llvm::any_of(statement.pieces, [](const auto &piece) {
+          return !piece.divisions.empty();
+        });
+      });
+  if (!hasDivisions)
+    return true;
+
+  std::map<std::string, std::uint64_t> statementOrdinals;
+  llvm::DenseMap<std::uint64_t, unsigned> statementDimensions;
+  for (const auto &statement : schedule.statementSchedules) {
+    if (statement.pieces.empty() ||
+        statement.pieces.front().sourceDimensionCount >
+            std::numeric_limits<unsigned>::max())
+      return providerError("a frozen division schedule has invalid arity");
+    statementOrdinals.try_emplace(tupleName(statement.statementOrdinal),
+                                  statement.statementOrdinal);
+    statementDimensions.try_emplace(
+        statement.statementOrdinal,
+        static_cast<unsigned>(statement.pieces.front().sourceDimensionCount));
+  }
+  ScheduleFreezeContext closure{&statementOrdinals,
+                                &statementDimensions,
+                                schedule.parameterCount,
+                                {},
+                                &budget,
+                                false,
+                                false,
+                                false};
+  if (isl_union_map_foreach_map(scheduleMap, freezeScheduleMap, &closure) < 0 ||
+      closure.failed) {
+    if (closure.workBudgetExhausted)
+      return llvm::make_error<ProviderWorkBudgetExhausted>();
+    if (isl_ctx_last_error(isl_union_map_get_ctx(scheduleMap)) ==
+        isl_error_quota)
+      return providerError("the frozen division schedule exceeded ISL quota");
+    if (closure.scheduleNotEstablished)
+      return false;
+    return providerError("cannot verify a frozen division schedule");
+  }
+  if (closure.schedules.size() != schedule.statementSchedules.size())
+    return providerError("a frozen division schedule lost a statement map");
+  return true;
 }
 
 bool matchesCanonicalSchedulePiece(
@@ -1579,11 +1767,18 @@ llvm::Expected<PolyhedralScheduleProviderOutcome> computePinnedIslSchedule(
                                &statementDimensions,
                                parameters.values.size(),
                                {},
+                               nullptr,
+                               false,
+                               false,
                                false};
   if (isl_union_map_foreach_map(scheduleMap.get(), freezeScheduleMap, &frozen) <
           0 ||
-      frozen.failed)
+      frozen.failed) {
+    if (isl_ctx_last_error(context.get()) != isl_error_quota &&
+        frozen.scheduleNotEstablished)
+      return PolyhedralScheduleProviderRefusalKind::ScheduleNotEstablished;
     return providerFailure("cannot freeze the exact ISL schedule maps");
+  }
   llvm::sort(frozen.schedules, [](const auto &lhs, const auto &rhs) {
     return lhs.statementOrdinal < rhs.statementOrdinal;
   });
@@ -1619,11 +1814,17 @@ buildPinnedIslAst(const StructuredPolyhedralScopView &scop) {
       return StructuredScopRefusalKind::ProviderScheduleBudgetExhausted;
     }
     bool unavailable = false;
+    bool workBudgetExhausted = false;
     llvm::Error remaining = llvm::handleErrors(
         std::move(error),
-        [&](const AstRepresentationUnavailable &) { unavailable = true; });
+        [&](const AstRepresentationUnavailable &) { unavailable = true; },
+        [&](const ProviderWorkBudgetExhausted &) {
+          workBudgetExhausted = true;
+        });
     if (remaining)
       return std::move(remaining);
+    if (workBudgetExhausted)
+      return StructuredScopRefusalKind::ProviderScheduleBudgetExhausted;
     if (unavailable)
       return StructuredScopRefusalKind::PolyhedralMaterializationUnavailable;
     return providerError("ISL AST conversion failed without an error");
@@ -1642,11 +1843,23 @@ buildPinnedIslAst(const StructuredPolyhedralScopView &scop) {
       isl_options_set_ast_build_allow_or(context.get(), 0) < 0 ||
       isl_options_set_ast_build_scale_strides(context.get(), 1) < 0)
     return astFailure("cannot configure deterministic ISL AST generation");
-  auto reconstructed = reconstructSchedule(context.get(), schedule);
+  ProviderWorkBudget workBudget;
+  if (!workBudget.admitsAstDepth(scop.maximumLoopDepth) ||
+      !workBudget.admitsAstDepth(schedule.scheduleDimensionCount))
+    return StructuredScopRefusalKind::ProviderScheduleBudgetExhausted;
+  auto reconstructed =
+      reconstructSchedule(context.get(), schedule, &workBudget);
   if (!reconstructed)
     return propagateAstFailure(reconstructed.takeError());
   IslUnionMap scheduleMap(*reconstructed);
-  auto reconstructedDomains = reconstructDomains(context.get(), scop);
+  auto divisionClosure =
+      verifyFrozenDivisionClosure(scheduleMap.get(), schedule, workBudget);
+  if (!divisionClosure)
+    return propagateAstFailure(divisionClosure.takeError());
+  if (!*divisionClosure)
+    return StructuredScopRefusalKind::ProviderScheduleNotEstablished;
+  auto reconstructedDomains =
+      reconstructDomains(context.get(), scop, &workBudget);
   if (!reconstructedDomains)
     return propagateAstFailure(reconstructedDomains.takeError());
   IslUnionSet domains(*reconstructedDomains);
@@ -1697,7 +1910,7 @@ buildPinnedIslAst(const StructuredPolyhedralScopView &scop) {
       return StructuredScopRefusalKind::ProviderScheduleBudgetExhausted;
     return providerError("cannot derive an AST from the frozen schedule");
   }
-  auto converted = convertAstNode(ast.release());
+  auto converted = convertAstNode(ast.release(), workBudget, 0);
   if (!converted)
     return propagateAstFailure(converted.takeError());
   return PolyhedralAstBuildOutcome(std::move(*converted));

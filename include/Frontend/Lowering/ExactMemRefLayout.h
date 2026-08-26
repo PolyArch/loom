@@ -24,6 +24,10 @@ struct ExactMemRefLayout final {
 llvm::Expected<ExactMemRefLayout>
 resolveExactMemRefLayout(mlir::MemRefType type, unsigned indexBits);
 
+/// Returns true only when the ranked layout is proven not to map two distinct
+/// in-bounds logical coordinates to the same physical element.
+bool isProvablyInjectiveMemRefLayout(mlir::MemRefType type);
+
 /// Returns dimension ordinals in major-to-minor storage order when the exact
 /// type is a positive, statically shaped dense permutation.
 llvm::Expected<llvm::SmallVector<unsigned, 4>>

@@ -4,6 +4,7 @@
 
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/OperationSchema.h"
+#include "Frontend/Lowering/ExactMemRefLayout.h"
 
 #include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Analysis/Presburger/IntegerRelation.h"
@@ -1127,6 +1128,17 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
           detail::maximumPinnedIslStatementCount)
     return refusePolyhedral(
         loopReference, StructuredScopRefusalKind::ProviderDomainNotAdmitted);
+  for (const PolyhedralStatementRecord &statement :
+       sourceStructure.statements) {
+    if (!isAccessOperation(statement.operation))
+      continue;
+    auto memoryType = llvm::dyn_cast<mlir::MemRefType>(
+        accessMemory(statement.operation).getType());
+    if (!memoryType || !lowering::isProvablyInjectiveMemRefLayout(memoryType))
+      return refusePolyhedral(
+          loopReference,
+          StructuredScopRefusalKind::PhysicalLayoutProofNotEstablished);
+  }
 
   llvm::DenseMap<mlir::Operation *, StructuredEntityRef> operationReferences;
   llvm::DenseMap<mlir::Value, StructuredEntityRef> sourceValueReferences;
@@ -1239,6 +1251,8 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
           loopReference,
           StructuredScopRefusalKind::AccessRelationProofNotEstablished);
     mlir::affine::MemRefAccess access(statement.projected);
+    const mlir::MemRefType memoryType =
+        llvm::cast<mlir::MemRefType>(access.memref.getType());
     mlir::presburger::IntegerRelation relation(
         mlir::presburger::PresburgerSpace::getRelationSpace());
     if (mlir::failed(access.getAccessRelation(relation)))
@@ -1261,9 +1275,7 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
         valueReference(accessMemory(statement.source), sourceValueReferences);
     if (!memoryReference)
       return memoryReference.takeError();
-    auto bytes = elementBytes(
-        llvm::cast<mlir::MemRefType>(access.memref.getType()).getElementType(),
-        statement.projected);
+    auto bytes = elementBytes(memoryType.getElementType(), statement.projected);
     if (!bytes)
       return bytes.takeError();
     mlir::affine::MemRefRegion footprint(statement.projected->getLoc());

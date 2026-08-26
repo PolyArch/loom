@@ -1652,16 +1652,6 @@ materializeStructuredScheduleImpl(
       return invalid("polyhedral decision has no exact SCoP schedule");
     if (decision.factor != 0 || decision.vector)
       return invalid("polyhedral decision carries a scalar coordinate");
-    auto materializationRefusal = classifyPolyhedralScheduleMaterialization(
-        selectedLoop, *exactPolyhedralSource);
-    if (!materializationRefusal)
-      return materializationRefusal.takeError();
-    if (*materializationRefusal) {
-      if (fabric)
-        return llvm::make_error<StructuredScheduleProposalRefusal>(
-            decision.loop, **materializationRefusal);
-      return invalid("polyhedral schedule is outside the materialized domain");
-    }
     if (canMaterializeCanonicalPolyhedralSchedule(selectedLoop,
                                                   *exactPolyhedralSource)) {
       if (llvm::Error error =

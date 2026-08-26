@@ -727,14 +727,23 @@ supply a finite coordinate for the same root.
 Loop-carried values and reductions, nested conditionals, non-unit steps,
 unresolved aliases, unknown effects, access or dependence relations with
 Presburger local variables, and provider failures remain typed local
-refusals. The exact access relation is the footprint authority; the referenced
-source memref retains its physical layout. Polly/ISL consumes only the frozen
-MLIR-owned domains and dependence relations and returns exact typed schedule
-maps. No provider object, textual ISL spelling, or alternate dependence
-relation persists beyond the analysis call. The SCoP view freezes the exact
-source-entity order of the provider's global parameter columns so every
-schedule coefficient remains interpretable without reconstructing an ISL
-space.
+refusals. The exact logical access relation is the footprint authority only
+after the referenced memref layout is proved injective over its complete
+in-bounds logical domain. Identity layouts are injective. A layout with
+statically known positive strides is admitted only when those strides, ordered
+from minor to major, each exceed the complete span of all preceding
+dimensions; only the major-most active extent may remain dynamic. This
+sufficient proof admits padding, dense permutations, and nonzero offsets.
+Otherwise unproved nonidentity layouts, dynamic strides, zero strides, and
+overlapping strides receive `PhysicalLayoutProofNotEstablished`. The source
+memref remains the sole physical-layout owner; no second physical dependence
+relation is constructed.
+Polly/ISL consumes only the frozen MLIR-owned domains and dependence relations
+and returns exact typed schedule maps. No provider object, textual ISL
+spelling, or alternate dependence relation persists beyond the analysis call.
+The SCoP view freezes the exact source-entity order of the provider's global
+parameter columns so every schedule coefficient remains interpretable without
+reconstructing an ISL space.
 
 Before releasing the provider objects, the same owner classifies the exact
 schedule relation against four canonical perfect-nest forms: source order,
@@ -761,6 +770,13 @@ statement depth, piecewise bounds, skewed coordinates, fusion, and fission
 without translating the relation into a guessed sequence of local transforms.
 The AST and its loop names are removable derived state and never candidate
 identity or another schedule authority.
+
+The same typed schedule budget covers host-side relation reconstruction,
+parameter projection, AST node count, expression count, and recursive depth in
+addition to the ISL operation quota. Global parameter ordinals are indexed once
+per invocation. Enumeration and later selected materialization are separate
+invocations, but each constructs at most one materialization plan and one AST;
+no removable AST enters a proposal or persisted cache.
 
 Scalar SSA validity remains strict. The provider may use scalar edges as a
 proximity preference, but only the exact validity relation proves legality.
@@ -800,7 +816,11 @@ integer equalities and inequalities, explicit local floor divisions, and
 source/schedule/parameter dimensions. These rows are analysis views, not a
 second dependence owner or a persistent Schedule Artifact. The provider is
 bounded by a fixed operation quota and rejects a changed statement domain or
-missing finite schedule band. Domain admission, unavailable schedule, and
+missing finite schedule band. Unknown existential divisions are first made
+explicit on the complete map, then read from a wrapped set local space that
+preserves source, schedule, parameter, and division column order. The frozen
+relation is reconstructed and compared with the original map before provider
+state is released. Domain admission, unavailable schedule, and
 operation-quota exhaustion are distinct local refusals; provider corruption
 remains an error. Same-iteration RAW, WAR, and WAW relations come directly
 from the MLIR dependence polyhedra and join the scalar SSA precedence graph
@@ -990,7 +1010,7 @@ or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v11`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v12`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator
