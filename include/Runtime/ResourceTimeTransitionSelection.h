@@ -120,6 +120,12 @@ public:
   currentEndpoint() const {
     return current_;
   }
+  const ::loom::pnr::ResourceTimeTransitionGraph &graph() const {
+    return graph_;
+  }
+  llvm::ArrayRef<::dataflow::RootThreadLaunchRef> mappedRoots() const {
+    return mappedRoots_;
+  }
   std::vector<::dataflow::RootThreadLaunchRef> activeRoots() const;
   std::vector<::dataflow::RootThreadLaunchRef> completedRoots() const;
   bool mappedRootsJoined() const { return state_ == State::Joined; }
@@ -128,6 +134,13 @@ public:
   /// Records one root start. After a transition, every root in the edge's
   /// child active set must be started before another completion is accepted.
   llvm::Error startRoot(::dataflow::RootThreadLaunchRef root);
+
+  /// Returns every exact edge legal at one prospective root completion
+  /// without changing the completion frontier. Callers may apply policy only
+  /// to this finite set; edge order is not a priority rule.
+  llvm::Expected<std::vector<::loom::pnr::ResourceTimeTransition>>
+  legalTransitionsForCompletion(
+      ::dataflow::RootThreadLaunchRef completedRoot) const;
 
   /// Records one collective root completion in caller commit order. A child
   /// is selected only through an exact verified edge; graph order is never a

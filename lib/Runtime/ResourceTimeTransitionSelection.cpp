@@ -177,10 +177,9 @@ llvm::Error ResourceTimeTransitionSelectionSession::startRoot(
   return llvm::Error::success();
 }
 
-llvm::Expected<std::optional<pnr::ResourceTimeTransition>>
-ResourceTimeTransitionSelectionSession::completeRoot(
-    dataflow::RootThreadLaunchRef completedRoot,
-    std::optional<pnr::ResourceTimeTransitionEndpointReference> child) {
+llvm::Expected<std::vector<pnr::ResourceTimeTransition>>
+ResourceTimeTransitionSelectionSession::legalTransitionsForCompletion(
+    dataflow::RootThreadLaunchRef completedRoot) const {
   if (state_ != State::Running)
     return reject(ResourceTimeSelectionErrorReason::InvalidLifecycle,
                   "resource-time selector is not running");
@@ -201,9 +200,43 @@ ResourceTimeTransitionSelectionSession::completeRoot(
     return reject(ResourceTimeSelectionErrorReason::ActiveSetMismatch,
                   "selected child active roots have not all started");
 
-  const pnr::ResourceTimeTransitionEndpointReference parent = current_;
+  const dataflow::EventFamilyKey trigger =
+      dataflow::rootThreadCompletionEventFamily(completedRoot);
   const std::vector<dataflow::RootThreadLaunchRef> completed = completedRoots();
   const std::vector<dataflow::RootThreadLaunchRef> active = activeRoots();
+  std::vector<pnr::ResourceTimeTransition> legal;
+  for (const pnr::ResourceTimeTransition &transition : graph_.transitions) {
+    if (transition.parent != current_ || transition.trigger != trigger ||
+        !transition.safePoint ||
+        transition.safePoint->kind !=
+            pnr::ResourceTimeSafePointKind::Completion ||
+        transition.safePoint->artifact != dataflow_ ||
+        !sameRootSet(transition.completedBefore, completed))
+      continue;
+    std::vector<dataflow::RootThreadLaunchRef> expectedActive;
+    expectedActive.reserve(transition.beforeActive.size());
+    for (const pnr::ResourceTimeRegionAllocation &allocation :
+         transition.beforeActive)
+      expectedActive.push_back(allocation.region);
+    if (sameRootSet(expectedActive, active))
+      legal.push_back(transition);
+  }
+  return legal;
+}
+
+llvm::Expected<std::optional<pnr::ResourceTimeTransition>>
+ResourceTimeTransitionSelectionSession::completeRoot(
+    dataflow::RootThreadLaunchRef completedRoot,
+    std::optional<pnr::ResourceTimeTransitionEndpointReference> child) {
+  auto legal = legalTransitionsForCompletion(completedRoot);
+  if (!legal)
+    return legal.takeError();
+  const auto root = llvm::find(mappedRoots_, completedRoot);
+  const std::size_t rootIndex =
+      static_cast<std::size_t>(std::distance(mappedRoots_.begin(), root));
+
+  const pnr::ResourceTimeTransitionEndpointReference parent = current_;
+  const std::vector<dataflow::RootThreadLaunchRef> completed = completedRoots();
   std::optional<pnr::ResourceTimeTransition> selected;
   if (child) {
     const dataflow::EventFamilyKey trigger =
@@ -218,12 +251,9 @@ ResourceTimeTransitionSelectionSession::completeRoot(
           !sameRootSet(transition.completedBefore, completed))
         continue;
       matchedCompletionFrontier = true;
-      std::vector<dataflow::RootThreadLaunchRef> expectedActive;
-      expectedActive.reserve(transition.beforeActive.size());
-      for (const pnr::ResourceTimeRegionAllocation &allocation :
-           transition.beforeActive)
-        expectedActive.push_back(allocation.region);
-      if (!sameRootSet(expectedActive, active))
+    }
+    for (const pnr::ResourceTimeTransition &transition : *legal) {
+      if (transition.child != *child)
         continue;
       if (selected)
         return reject(ResourceTimeSelectionErrorReason::TransitionUnavailable,

@@ -1,5 +1,6 @@
 #include "DeploymentTestSupport.h"
 
+#include "Application/ResourceTimeExecution.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Common/ComponentViewDigest.h"
@@ -484,6 +485,70 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
           replayed.currentEndpoint() == transition.child &&
           replayed.completedRoots() == selector.completedRoots(),
       "selector replay diverged from the accepted transition sequence");
+
+  auto eventProvider = take(test, runtime::createInProcessRuntimeProvider(
+                                      {{implementations, std::nullopt, {}}}));
+  auto eventLoaded =
+      take(test, runtime::loadDeployment(parent, {eventProvider, 0}, artifacts,
+                                         blobs));
+  auto eventSession =
+      take(test,
+           application::ApplicationResourceTimeExecutionSession::createPrepared(
+               transitionGraph, eventLoaded, artifacts, blobs));
+  const auto precedingStart =
+      take(test,
+           eventSession.apply(
+               {dataflow::rootThreadStartEventFamily(precedingRoot), 1, {1, 0}},
+               eventLoaded));
+  const auto noEdge = take(
+      test,
+      eventSession.apply(
+          {dataflow::rootThreadCompletionEventFamily(precedingRoot), 1, {2, 0}},
+          eventLoaded));
+  const auto selectedStart =
+      take(test, eventSession.apply(
+                     {dataflow::rootThreadStartEventFamily(root), 2, {3, 0}},
+                     eventLoaded));
+  const auto selectedEvent = take(
+      test, eventSession.apply(
+                {dataflow::rootThreadCompletionEventFamily(root), 2, {4, 0}},
+                eventLoaded));
+  deployment::test::require(
+      test,
+      precedingStart.outcome ==
+              application::ApplicationResourceTimeEventOutcome::RootStarted &&
+          noEdge.outcome == application::ApplicationResourceTimeEventOutcome::
+                                NoLegalTransition &&
+          !noEdge.transition && noEdge.parent == transition.parent &&
+          noEdge.current == transition.parent && noEdge.activeRoots.empty() &&
+          noEdge.completedRoots == std::vector{precedingRoot} &&
+          selectedStart.outcome ==
+              application::ApplicationResourceTimeEventOutcome::RootStarted &&
+          selectedEvent.outcome ==
+              application::ApplicationResourceTimeEventOutcome::SelectedChild &&
+          selectedEvent.transition &&
+          selectedEvent.transition->parent == transition.parent &&
+          selectedEvent.transition->child == transition.child &&
+          selectedEvent.transition->beforeActive.size() == 1 &&
+          selectedEvent.transition->beforeActive.front().region == root &&
+          selectedEvent.transition->beforeActive.front().resources ==
+              resources &&
+          selectedEvent.transition->afterActive.empty() &&
+          selectedEvent.transition->beforeLiveWork.empty() &&
+          selectedEvent.transition->afterLiveWork.empty() &&
+          selectedEvent.transition->reprogrammingTimePicoseconds == 0 &&
+          selectedEvent.transition->migrationTimePicoseconds == 0 &&
+          selectedEvent.current == transition.child &&
+          selectedEvent.activeRoots.empty() &&
+          selectedEvent.completedRoots.size() == 2 &&
+          llvm::is_contained(selectedEvent.completedRoots, precedingRoot) &&
+          llvm::is_contained(selectedEvent.completedRoots, root) &&
+          eventSession.joined() && eventSession.events().size() == 4 &&
+          eventLoaded.deployment().reference() == child.reference() &&
+          eventProvider->activeDeployment(0) == child.reference() &&
+          eventProvider->statistics().activationPreparationCount == 1 &&
+          eventProvider->statistics().activationReplacementCount == 1,
+      "Application event session lost its typed stay or selected child");
 
   auto firstCycleDraft = draft;
   firstCycleDraft.trigger =

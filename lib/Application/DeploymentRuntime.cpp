@@ -142,17 +142,52 @@ materializeApplicationEndpointActivationInputs(
   return materialized;
 }
 
+llvm::Expected<ApplicationResourceTimeExecutionEvent>
+LoadedApplicationDeployment::applyResourceTimeEvent(
+    const sim::SystemRootLifecycleObservation &observation) {
+  if (!resourceTime_)
+    return llvm::make_error<ApplicationResourceTimeExecutionError>(
+        ApplicationResourceTimeExecutionErrorReason::TransitionGraphUnavailable,
+        "Application Deployment has no resource-time transition graph");
+  return resourceTime_->apply(observation, loaded_);
+}
+
+llvm::Expected<FinalizedApplicationResourceTimeExecutionTrace>
+LoadedApplicationDeployment::publishResourceTimeExecutionTrace(
+    const ArtifactStore &artifacts, const BlobStore &blobs) const {
+  if (!resourceTime_)
+    return llvm::make_error<ApplicationResourceTimeExecutionError>(
+        ApplicationResourceTimeExecutionErrorReason::TransitionGraphUnavailable,
+        "Application Deployment has no resource-time transition graph");
+  auto manifest =
+      importApplicationRuntimeManifest(runtimeManifest_, artifacts, blobs);
+  if (!manifest)
+    return manifest.takeError();
+  return application::publishApplicationResourceTimeExecutionTrace(
+      *manifest, *resourceTime_, artifacts, blobs);
+}
+
 llvm::Expected<LoadedApplicationDeployment>
 loadApplicationDeployment(const ApplicationDeploymentArtifacts &application,
                           runtime::RuntimeProviderSelection selection,
                           const ArtifactStore &artifacts,
                           const BlobStore &blobs) {
-  auto importedManifest = importApplicationRuntimeManifest(
-      application.runtimeManifest.reference(), artifacts, blobs);
+  return loadApplicationDeployment(application.runtimeManifest,
+                                   application.deployment, std::move(selection),
+                                   artifacts, blobs);
+}
+
+llvm::Expected<LoadedApplicationDeployment>
+loadApplicationDeployment(const FinalizedApplicationRuntimeManifest &manifest,
+                          const deployment::FinalizedDeployment &deployment,
+                          runtime::RuntimeProviderSelection selection,
+                          const ArtifactStore &artifacts,
+                          const BlobStore &blobs) {
+  auto importedManifest =
+      importApplicationRuntimeManifest(manifest.reference(), artifacts, blobs);
   if (!importedManifest)
     return importedManifest.takeError();
-  if (importedManifest->manifest().deployment() !=
-      application.deployment.reference())
+  if (importedManifest->manifest().deployment() != deployment.reference())
     return llvm::make_error<ApplicationRuntimeManifestError>(
         ApplicationRuntimeManifestErrorReason::DeploymentMismatch,
         "Application runtime manifest names a foreign entry Deployment");
@@ -162,24 +197,24 @@ loadApplicationDeployment(const ApplicationDeploymentArtifacts &application,
   if (!endpointInputs)
     return endpointInputs.takeError();
 
-  auto loaded = runtime::loadDeployment(application.deployment,
-                                        std::move(selection), artifacts, blobs);
+  auto loaded = runtime::loadDeployment(deployment, std::move(selection),
+                                        artifacts, blobs);
   if (!loaded)
     return loaded.takeError();
 
-  std::optional<runtime::ResourceTimeTransitionSelectionSession> resourceTime;
+  std::optional<ApplicationResourceTimeExecutionSession> resourceTime;
   if (importedManifest->manifest().transitionGraph()) {
-    auto prepared =
-        runtime::ResourceTimeTransitionSelectionSession::createPrepared(
-            *importedManifest->manifest().transitionGraph(), *loaded, artifacts,
-            blobs);
+    auto prepared = ApplicationResourceTimeExecutionSession::createPrepared(
+        *importedManifest->manifest().transitionGraph(), *loaded, artifacts,
+        blobs);
     if (!prepared)
       return prepared.takeError();
     resourceTime.emplace(std::move(*prepared));
   }
 
-  return LoadedApplicationDeployment(
-      std::move(*loaded), std::move(resourceTime), std::move(*endpointInputs));
+  return LoadedApplicationDeployment(std::move(*loaded), manifest.reference(),
+                                     std::move(resourceTime),
+                                     std::move(*endpointInputs));
 }
 
 } // namespace loom::application
