@@ -490,6 +490,9 @@ private:
       SpatialTagAssignmentSummary *tagSummary = nullptr) const;
   llvm::Expected<SpatialTagAssignmentSummary>
   summarizeCurrentTagAssignments() const;
+  llvm::Expected<SpatialTagAssignmentDelta> summarizeCurrentTagAssignmentDelta(
+      llvm::ArrayRef<PnrIndex> logicalNets,
+      llvm::ArrayRef<PnrIndex> changedDomains) const;
 
   FrozenSpatialPnrProblemHandle problem_;
   std::vector<SpatialComputeBindingSelection> computeBindings_;
@@ -577,6 +580,8 @@ public:
   llvm::ArrayRef<PnrIndex> touchedRouteLogicalNets() const;
   llvm::Expected<SpatialTagAssignmentSummary>
   summarizeCurrentTagAssignments() const;
+  llvm::Expected<SpatialTagAssignmentDelta>
+  summarizeCurrentTagAssignmentDelta() const;
   bool hasRouteTreeChange() const;
   bool hasSemanticChange() const;
   llvm::Error commit();
