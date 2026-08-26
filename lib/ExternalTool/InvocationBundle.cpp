@@ -1775,12 +1775,10 @@ importExternalToolInvocationAttemptImpl(
     if (!receiptState->matches(prepared, *execution))
       return bundleError(
           "execution observation differs from its sealed executor state");
-    if (receiptState->completion &&
-        (receiptState->completion->manifestDigest != prepared.manifestDigest ||
-         receiptState->completion->attemptToken != execution->attemptToken ||
-         receiptState->completion->exitCode != execution->exitCode))
-      return bundleError(
-          "executor receipt contains an inconsistent completion");
+    if (llvm::Error error = validateInvocationCompletionExecutionBoundary(
+            prepared, execution->attemptToken, execution->exitCode,
+            receiptState->completion))
+      return std::move(error);
   }
 
   auto bundle = openPreparedBundle(prepared);

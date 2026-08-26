@@ -141,4 +141,22 @@ parseInvocationCompletion(llvm::StringRef contents) {
       std::move(*attemptToken), std::move(outputDigests)};
 }
 
+llvm::Error validateInvocationCompletionExecutionBoundary(
+    const PreparedExternalToolInvocation &prepared,
+    const BlobDigest &attemptToken, int exitCode,
+    const std::optional<InvocationCompletion> &completion) {
+  if (!completion)
+    return llvm::Error::success();
+  if (completion->manifestDigest != prepared.manifestDigest)
+    return invocationBundleError(
+        "completion does not bind the observed invocation manifest");
+  if (completion->attemptToken != attemptToken)
+    return invocationBundleError(
+        "completion does not bind the observed attempt generation");
+  if (completion->exitCode != exitCode)
+    return invocationBundleError(
+        "completion does not match the observed execution exit code");
+  return llvm::Error::success();
+}
+
 } // namespace loom::external_tool

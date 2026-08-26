@@ -37,6 +37,13 @@ void requireSuccess(const char *test, llvm::Error error) {
     fail(test, llvm::toString(std::move(error)));
 }
 
+void requireFailure(const char *test, llvm::Error error,
+                    const std::string &message) {
+  if (!error)
+    fail(test, message);
+  llvm::consumeError(std::move(error));
+}
+
 template <typename T> T take(const char *test, llvm::Expected<T> value) {
   if (!value)
     fail(test, llvm::toString(value.takeError()));
@@ -212,6 +219,10 @@ void completionReplacementInvalidatesReceipt(
           parsed.status == InvocationCompletionStatus::ToolExit &&
               parsed.exitCode == kFixtureToolExitCode,
           "the replacement completion was not a valid failed record");
+  requireFailure(
+      __func__,
+      validateExternalToolInvocationExecutionReceipt(prepared, execution),
+      "receipt validation accepted a completion with another exit code");
   requireFailure(__func__,
                  importExternalToolInvocationAttempt(
                      prepared, importExpectation(spec), execution),

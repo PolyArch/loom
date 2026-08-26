@@ -1264,6 +1264,9 @@ executeExternalToolInvocationBundleObserved(
     if (llvm::Error error = validateExternalToolInvocationExecutionObservation(
             prepared, observation))
       return std::move(error);
+    if (llvm::Error error = validateInvocationCompletionExecutionBoundary(
+            prepared, *attemptToken, observation.exitCode, *completion))
+      return std::move(error);
     observation.receipt = ExternalToolInvocationExecutionReceiptAccess::create(
         prepared, observation, std::move(*completion));
     return observation;
@@ -1503,10 +1506,18 @@ llvm::Error validateExternalToolInvocationExecutionReceipt(
   if (!state->matches(prepared, observation))
     return receiptError(
         "the public observation differs from its sealed executor state");
+  if (llvm::Error error = validateInvocationCompletionExecutionBoundary(
+          prepared, observation.attemptToken, observation.exitCode,
+          state->completion))
+    return error;
 
   auto completion = loadPublishedCompletion(prepared, observation.attemptToken);
   if (!completion)
     return completion.takeError();
+  if (llvm::Error error = validateInvocationCompletionExecutionBoundary(
+          prepared, observation.attemptToken, observation.exitCode,
+          *completion))
+    return error;
   if (state->completion.has_value() != completion->has_value())
     return receiptError(
         "the published completion presence changed after execution");

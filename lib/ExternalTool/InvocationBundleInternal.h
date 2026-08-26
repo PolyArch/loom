@@ -179,6 +179,13 @@ serializeInvocationCompletion(InvocationCompletionStatus status, int exitCode,
 llvm::Expected<InvocationCompletion>
 parseInvocationCompletion(llvm::StringRef contents);
 
+/// A present completion belongs to exactly one observed execution boundary.
+/// Absence remains the canonical incomplete-attempt projection.
+llvm::Error validateInvocationCompletionExecutionBoundary(
+    const PreparedExternalToolInvocation &prepared,
+    const BlobDigest &attemptToken, int exitCode,
+    const std::optional<InvocationCompletion> &completion);
+
 /// The one JSON codec for the exact version probe carried by a manifest and
 /// by the persistent tool-version cache domain.
 void writeToolVersionProbeJson(llvm::json::OStream &json,
