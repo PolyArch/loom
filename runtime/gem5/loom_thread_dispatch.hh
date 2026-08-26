@@ -1,11 +1,14 @@
 #ifndef LOOM_RUNTIME_GEM5_LOOM_THREAD_DISPATCH_HH
 #define LOOM_RUNTIME_GEM5_LOOM_THREAD_DISPATCH_HH
 
+#include "Runtime/Gem5DispatchABI.h"
+
 #include "dev/io_device.hh"
 #include "params/LoomThreadDispatch.hh"
 #include "sim/eventq.hh"
 
 #include <cstdint>
+#include <fstream>
 #include <vector>
 
 namespace gem5 {
@@ -44,14 +47,22 @@ private:
   std::uint64_t selectedTarget = 0;
   std::uint64_t invocationAddress = 0;
   std::uint64_t invocationSize = 0;
+  std::uint64_t rootEventEntity = 0;
+  std::uint64_t rootEventOccurrence = 0;
   std::uint64_t nextOccurrence = 1;
+  std::uint64_t nextRootEventOccurrence = 1;
   std::uint32_t commandError = 0;
   std::vector<DispatchRecord> records;
+  std::ofstream rootEventTrace;
+  Tick lastRootEventTick = 0;
+  std::uint64_t lastRootEventDelta = 0;
+  bool hasRootEvent = false;
   EventFunctionWrapper serviceEvent;
 
   void service();
   void scheduleService();
   void failSelected(std::uint32_t code);
+  bool recordRootEvent(loom::runtime::Gem5RootLifecycleAction action);
   DispatchRecord *selectedRecord();
   const DispatchRecord *selectedRecord() const;
   std::uint32_t status(const DispatchRecord &record) const;

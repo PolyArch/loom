@@ -69,6 +69,7 @@ add_mlir_library(LoomSimulator
   LoomDeployment
   LoomEvaluation
   LoomFabricArtifact
+  LoomMappingArtifact
   LoomMappingInspection
   MLIRLoom
   MLIRArithDialect

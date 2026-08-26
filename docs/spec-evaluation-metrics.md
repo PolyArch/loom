@@ -640,7 +640,7 @@ unknown and cannot be interpreted as zero or filled by a hidden default.
 
 Evaluation registry 3.0 contains the typed `ExecutionActivity` source form.
 Consuming it requires an activity-summary adopter for
-`loom.simulation_execution 1.0`, an ordinal resolver, same-Request validation,
+`loom.simulation_execution 2.0`, an ordinal resolver, same-Request validation,
 and exact source-to-target lineage validation. The SimulationExecution root,
 publisher, and importer do not by themselves provide that Evaluation adapter.
 When the adapter is unavailable, authoring, Request finalization, and import

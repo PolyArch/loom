@@ -87,7 +87,7 @@ validateRelativeClockSchedule(const RelativeClockScheduleCondition &schedule) {
 
 llvm::Error validateActivityBinding(const ActivityBindingCondition &activity) {
   if (std::holds_alternative<ExecutionActivitySource>(activity.source))
-    return evaluationOwnerUnavailable("loom.simulation_execution", {1, 0});
+    return evaluationOwnerUnavailable("loom.simulation_execution", {2, 0});
   const auto *assumption =
       std::get_if<ExplicitAssumptionSource>(&activity.source);
   if (!isProbability(assumption->staticProbability))

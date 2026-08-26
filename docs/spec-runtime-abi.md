@@ -571,7 +571,7 @@ entry by the session-local ordinal described below, rather than by the
 provider's process-wide entry index.
 
 The current strict gem5 System projection schema is
-`loom.gem5_system_projection.10`. For every Bridge session it records aligned
+`loom.gem5_system_projection.11`. For every Bridge session it records aligned
 arrays of dispatch-target ordinals, execution-context keys, and Spatial
 workload identities. These arrays are derived together from the immutable
 Deployment and System execution projection. Provider command arguments only
@@ -579,6 +579,43 @@ start the shared or per-Bridge engine; they are not a semantic source from
 which an importer may infer target ownership. Sharing one engine across
 several Bridges therefore does not move workloads into the command-owning
 Bridge.
+
+Projection 11 also requires `dispatch.root_event_trace_path`. The path names a
+declared ordinary invocation output, not an optional diagnostic sidecar. The
+Thread Dispatch device writes one transient big-endian root-lifecycle stream:
+
+```text
+RootLifecycleStream {
+  magic: u32 = LRE1
+  records: array<RootLifecycleRecord>
+}
+
+RootLifecycleRecord {
+  root_thread_launch_entity: u64
+  occurrence: u64
+  action: u32 = Start(0) | Completion(1)
+  gem5_tick: u64
+  delta: u64
+}
+```
+
+The device assigns a globally increasing nonzero `occurrence` when it accepts
+a `Start` command and returns that value through the root-occurrence MMIO
+registers. A `Completion` command must supply that same occurrence. Record
+coordinates are globally ordered by gem5 tick and a device-assigned delta
+within one tick. A partial record, unknown action, zero occurrence, or failed
+declared output is an invocation failure.
+
+Generated Host glue emits `Start` only after every point-specific Thread
+Dispatch submission for the root invocation has been accepted. It emits
+`Completion` only after the collective wait has observed the matching dynamic
+occurrence complete for every point and reset those target records. Repeated
+invocation of one static root receives a new occurrence. The ordinary System
+result importer consumes this stream, derives the canonical Dataflow
+`RootThreadStart` or `RootThreadCompletion` `EventFamilyKey`, and supplies the
+typed sequence to `SimulationExecution` finalization. The raw stream has no
+Artifact identity and cannot bypass the exact Request, Mapping, coordinate,
+lifecycle, or `Retired` closure checks.
 
 The current incompatible invocation-result envelope has magic `LGX3`. In
 addition to the exact invocation bytes, effective runtime-input snapshot, and
@@ -1185,10 +1222,13 @@ later Linux/full-system provider from registering a distinct exact binding.
 ## Diagnostics And Evidence
 
 Runtime waits, actual arbitration, completion events, terminal observables,
-and typed activity summaries belong to `SimulationExecution` 1.0. Diagnostic
-traces and tool payloads remain attempt or scratch material and have no
-persistent runtime schema. Attempt timestamps, host/tool bindings, retries, and
-execution-limit outcomes belong to the runtime owner's attempt record.
+the narrow System root-lifecycle sequence, and typed activity summaries belong
+to `SimulationExecution` 2.0. General diagnostic traces and tool payloads
+remain attempt or scratch material and have no persistent runtime schema. The
+raw `LRE1` stream is only the provider-to-importer carrier for the mandatory
+typed root-lifecycle observations; it is not a persistent diagnostic trace.
+Attempt timestamps, host/tool bindings, retries, and execution-limit outcomes
+belong to the runtime owner's attempt record.
 Normalized outcome, metrics, and findings belong only to
 `EvaluationEvidence`; human-readable runtime reports are projections of those
 records. Their exact Request recovers Deployment, Mapping, Fabric,
