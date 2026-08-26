@@ -9,6 +9,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 
+#include <array>
 #include <limits>
 #include <map>
 #include <set>
@@ -882,35 +883,31 @@ finalizeSystemCandidateProjection(
     const SystemCandidateProjectionCache &cache) {
   if (!cache.nonRoute || !cache.serviceRoutes)
     return invalid("System candidate demand projection is incomplete");
-  std::vector<FrozenResourceCapacityRouteSelection> routes =
-      cache.serviceRoutes->routes;
-  routes.insert(routes.end(), cache.nonRoute->importedRoutes.begin(),
-                cache.nonRoute->importedRoutes.end());
-  auto demand =
-      deriveResourcePhysicalDemand(resources, cache.nonRoute->uses, routes);
+  const std::array<llvm::ArrayRef<FrozenResourceCapacityRouteSelection>, 2>
+      routeSegments{cache.serviceRoutes->routes,
+                    cache.nonRoute->importedRoutes};
+  auto demand = deriveResourcePhysicalDemand(resources, cache.nonRoute->uses,
+                                             routeSegments);
   if (!demand)
     return demand.takeError();
-  auto baseline = deriveResourceCapacityBaselineOccupancy(resources, routes);
-  if (!baseline)
-    return baseline.takeError();
-  if (baseline->size() != resources.cells().size())
+  if (demand->baselineOccupancy.size() != resources.cells().size())
     return invalid("System progress capacity baseline has the wrong width");
 
-  ::loom::mapping::MappingProgressProjection progressProjection;
-  progressProjection.basis = cache.nonRoute->basis;
-  progressProjection.routeObligations =
-      cache.serviceRoutes->progressObligations;
-  progressProjection.routeObligations.insert(
-      progressProjection.routeObligations.end(),
-      cache.nonRoute->progressObligations.begin(),
-      cache.nonRoute->progressObligations.end());
-  progressProjection.resourceActivations = cache.nonRoute->progressActivations;
-  progressProjection.capacityCells.reserve(resources.cells().size());
+  std::vector<::loom::mapping::MappingRouteProgressObligationProjection>
+      routeObligations = cache.serviceRoutes->progressObligations;
+  routeObligations.insert(routeObligations.end(),
+                          cache.nonRoute->progressObligations.begin(),
+                          cache.nonRoute->progressObligations.end());
+  std::vector<::loom::mapping::MappingProgressCapacityCellProjection>
+      capacityCells;
+  capacityCells.reserve(resources.cells().size());
   for (const auto &[ordinal, cell] : llvm::enumerate(resources.cells()))
-    progressProjection.capacityCells.push_back(
-        {cell.capacity, (*baseline)[ordinal]});
+    capacityCells.push_back(
+        {cell.capacity, demand->baselineOccupancy[ordinal]});
   auto progress = ::loom::mapping::deriveMappingProgressClosure(
-      progressModel, progressProjection);
+      progressModel, ::loom::mapping::MappingProgressProjectionView{
+                         cache.nonRoute->basis, routeObligations, capacityCells,
+                         cache.nonRoute->progressActivations});
   if (!progress)
     return progress.takeError();
   return SystemCandidatePhysicalDemandProjection{std::move(demand->capacity),

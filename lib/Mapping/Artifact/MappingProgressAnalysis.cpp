@@ -350,7 +350,7 @@ atomicActivationKey(const ArtifactIdentity &dataflowIdentity,
 struct ProgressActivationGroup final {
   std::vector<std::uint64_t> activationOrdinals;
   std::optional<::dataflow::RootThreadLaunchRef> relationRoot;
-  std::vector<SystemPresburgerCell> relationDomain;
+  llvm::ArrayRef<SystemPresburgerCell> relationDomain;
   std::vector<std::uint32_t> triggers;
   std::vector<std::vector<std::uint32_t>> releases;
   std::map<std::uint64_t, std::uint64_t> claims;
@@ -1023,8 +1023,9 @@ llvm::Expected<bool> mappingCompletionFrontierIsAdmissible(
     if (!llvm::is_contained(mappedRoots, root) || root == completing)
       return false;
 
-  mlir::ModuleOp module =
-      dataflow.rootThreadLaunches().front().op->getParentOfType<mlir::ModuleOp>();
+  mlir::ModuleOp module = dataflow.rootThreadLaunches()
+                              .front()
+                              .op->getParentOfType<mlir::ModuleOp>();
   if (!module)
     return invalid("root thread launch has no canonical module owner");
   bool hasStoredProgramWait = false;
@@ -1209,6 +1210,15 @@ llvm::Expected<MappingProgressProjection> projectSystemMappingProgress(
 llvm::Expected<MappingProgressClosure>
 deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
                              const MappingProgressProjection &projection) {
+  return deriveMappingProgressClosure(
+      model, MappingProgressProjectionView{
+                 projection.basis, projection.routeObligations,
+                 projection.capacityCells, projection.resourceActivations});
+}
+
+llvm::Expected<MappingProgressClosure>
+deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
+                             MappingProgressProjectionView projection) {
   if (projection.basis.kind == MappingDataflowProgressBasisKind::Cyclic)
     return MappingProgressClosure{
         MappingProgressClosureKind::ProofNotEstablished,
@@ -1518,8 +1528,7 @@ llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
   return deriveMappingProgressClosure(*model, *projection);
 }
 
-llvm::Expected<MappingProgressClosure>
-qualifySystemMappingResourceTimeProgress(
+llvm::Expected<MappingProgressClosure> qualifySystemMappingResourceTimeProgress(
     const FinalizedSystemMapping &mapping,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric) {
