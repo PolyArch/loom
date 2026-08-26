@@ -12,6 +12,12 @@ namespace loom::runtime {
 
 inline constexpr std::uint64_t gem5MaximumSpatialWork = 1'000'000;
 
+/// Returns the exact integral distance between launch acceptance and graph
+/// retirement. Fractional endpoint coordinates are accepted when their
+/// difference is an unsigned integer.
+std::optional<std::uint64_t> integralSpatialReferenceCycleDistance(
+    const sim::SpatialProgressObservations &progress);
+
 struct Gem5CgraEngineAttemptProfile final {
   std::uint64_t invocationCount = 0;
   std::uint64_t activeWallNanoseconds = 0;

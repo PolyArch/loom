@@ -1432,18 +1432,11 @@ std::uint64_t processCpuNanoseconds(llvm::StringRef test) {
 std::uint64_t
 spatialReferenceCycles(llvm::StringRef test,
                        const sim::SpatialProgressObservations &progress) {
-  require(test, progress.graphRetirementVisible.has_value(),
-          "Spatial measurement has no graph retirement");
-  const sim::SpatialEventCoordinate &launch = progress.launchAccepted;
-  const sim::SpatialEventCoordinate &retirement =
-      *progress.graphRetirementVisible;
-  require(test,
-          launch.referenceCycle.denominator() == 1 &&
-              retirement.referenceCycle.denominator() == 1 &&
-              sim::compareSpatialEventCoordinates(retirement, launch) >= 0,
+  const std::optional<std::uint64_t> cycles =
+      runtime::integralSpatialReferenceCycleDistance(progress);
+  require(test, cycles.has_value(),
           "Spatial measurement has a nonintegral or reversed cycle interval");
-  return retirement.referenceCycle.numerator() -
-         launch.referenceCycle.numerator();
+  return *cycles;
 }
 
 std::uint64_t peakResidentBytes(llvm::StringRef test, const rusage &usage) {

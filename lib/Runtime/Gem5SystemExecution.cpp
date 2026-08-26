@@ -725,21 +725,6 @@ llvm::Error validateFreshDiagnosticExecution(
   return llvm::Error::success();
 }
 
-std::optional<std::uint64_t> integralRetirementCycleDistance(
-    const sim::SpatialProgressObservations &progress) {
-  if (!progress.graphRetirementVisible)
-    return std::nullopt;
-  const sim::SpatialEventCoordinate &launch = progress.launchAccepted;
-  const sim::SpatialEventCoordinate &retirement =
-      *progress.graphRetirementVisible;
-  if (launch.referenceCycle.denominator() != 1 ||
-      retirement.referenceCycle.denominator() != 1 ||
-      sim::compareSpatialEventCoordinates(retirement, launch) < 0)
-    return std::nullopt;
-  return retirement.referenceCycle.numerator() -
-         launch.referenceCycle.numerator();
-}
-
 struct Gem5SystemDiagnosticSidecar final {
   std::vector<Gem5SpatialInvocationProjection> spatialInvocations;
   Gem5SystemAttemptProfile attemptProfile;
@@ -885,6 +870,35 @@ projectSystemObservations(const Gem5SystemFacts &facts,
 }
 
 } // namespace
+
+std::optional<std::uint64_t> integralSpatialReferenceCycleDistance(
+    const sim::SpatialProgressObservations &progress) {
+  if (!progress.graphRetirementVisible)
+    return std::nullopt;
+  const sim::SpatialEventCoordinate &launch = progress.launchAccepted;
+  const sim::SpatialEventCoordinate &retirement =
+      *progress.graphRetirementVisible;
+  if (sim::compareSpatialEventCoordinates(retirement, launch) < 0)
+    return std::nullopt;
+
+  using u128 = unsigned __int128;
+  const u128 retirementScaled =
+      static_cast<u128>(retirement.referenceCycle.numerator()) *
+      launch.referenceCycle.denominator();
+  const u128 launchScaled =
+      static_cast<u128>(launch.referenceCycle.numerator()) *
+      retirement.referenceCycle.denominator();
+  const u128 commonDenominator =
+      static_cast<u128>(launch.referenceCycle.denominator()) *
+      retirement.referenceCycle.denominator();
+  const u128 difference = retirementScaled - launchScaled;
+  if (difference % commonDenominator != 0)
+    return std::nullopt;
+  const u128 quotient = difference / commonDenominator;
+  if (quotient > std::numeric_limits<std::uint64_t>::max())
+    return std::nullopt;
+  return static_cast<std::uint64_t>(quotient);
+}
 
 static llvm::Expected<EvaluationModelProviderPreparation>
 prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
@@ -1478,7 +1492,7 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
           return invalid("retired bridge invocation has no graph-retirement "
                          "coordinate");
         const std::optional<std::uint64_t> acceleratorReferenceCycles =
-            integralRetirementCycleDistance(
+            integralSpatialReferenceCycleDistance(
                 spatialResult->progressObservations);
         spatialInvocations.push_back(
             {indexed.index(), bridgeResult.sequence, sessionEntryOrdinal,
