@@ -680,12 +680,62 @@ llvm::Error verifyMaterializedJointCoverage(
 
 char FuReverseSynthesisError::ID = 0;
 
+llvm::StringRef
+fuReverseSynthesisFailureSpelling(FuReverseSynthesisFailure failure) {
+  switch (failure) {
+  case FuReverseSynthesisFailure::EmptyGraphSet:
+    return "empty_graph_set";
+  case FuReverseSynthesisFailure::InvalidGraphReference:
+    return "invalid_graph_reference";
+  case FuReverseSynthesisFailure::DuplicateGraph:
+    return "duplicate_graph";
+  case FuReverseSynthesisFailure::UnsupportedGraphInterface:
+    return "unsupported_graph_interface";
+  case FuReverseSynthesisFailure::UnsupportedActorInventory:
+    return "unsupported_actor_inventory";
+  case FuReverseSynthesisFailure::UnsupportedActorSchema:
+    return "unsupported_actor_schema";
+  case FuReverseSynthesisFailure::UnsupportedActorProjection:
+    return "unsupported_actor_projection";
+  case FuReverseSynthesisFailure::UnsupportedGraphTopology:
+    return "unsupported_graph_topology";
+  case FuReverseSynthesisFailure::UnsupportedGraphReachability:
+    return "unsupported_graph_reachability";
+  case FuReverseSynthesisFailure::CapabilityDerivationRejected:
+    return "capability_derivation_rejected";
+  case FuReverseSynthesisFailure::FabricFinalizationFailed:
+    return "fabric_finalization_failed";
+  case FuReverseSynthesisFailure::MappingInfeasible:
+    return "mapping_infeasible";
+  case FuReverseSynthesisFailure::MappingIncomplete:
+    return "mapping_incomplete";
+  case FuReverseSynthesisFailure::CancelledOrTimeout:
+    return "cancelled_or_timeout";
+  case FuReverseSynthesisFailure::MappingInvalid:
+    return "mapping_invalid";
+  case FuReverseSynthesisFailure::MappingInternal:
+    return "mapping_internal";
+  case FuReverseSynthesisFailure::CoverageNotEstablished:
+    return "coverage_not_established";
+  }
+  llvm_unreachable("closed reverse synthesis failure");
+}
+
 void FuReverseSynthesisError::log(llvm::raw_ostream &stream) const {
   stream << message_;
 }
 
 std::error_code FuReverseSynthesisError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
+}
+
+llvm::Error verifyScalarIntegerAddSubFuSynthesisDomain(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::GraphRef> graphs) {
+  auto prepared = prepareSynthesisDomain(dataflow, graphs);
+  if (!prepared)
+    return prepared.takeError();
+  return llvm::Error::success();
 }
 
 llvm::Expected<const FuSynthesisCoverageWitness *>

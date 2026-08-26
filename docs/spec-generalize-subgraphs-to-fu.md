@@ -225,6 +225,20 @@ remains its existing owner and consumes a selected SystemMapping plus explicit
 executable and runtime-platform leaves; reverse synthesis does not invent
 those selections.
 
+`loom-dse --fu-reverse-synthesis-dataflow` is the public file-to-artifact
+caller for this workflow. It publishes the finalized canonical Dataflow,
+authors the ordinary resolved five-node plan, and emits the derived
+`loom.fu_reverse_synthesis.workflow_evidence` JSON projection. Reusing the
+same immutable stores, configuration, producer identity, input, and journal
+root must retain every projected Fabric, Mapping, ConfigurationABI, and
+portable RTL identity while reporting zero newly dispatched Generate owners.
+The imported InvocationManifest outcome solely selects
+`completed_selection`, `completed_no_feasible_candidate`, or `incomplete`;
+only the first disposition carries a complete candidate root projection.
+Unsupported operations and incomplete implementation constraints are rejected
+by `verifyScalarIntegerAddSubFuSynthesisDomain` before plan publication with a
+closed `FuReverseSynthesisFailure` value.
+
 ## Determinism And Diagnostics
 
 Input ordering, resource ordering, template ordering, witness ordering, and

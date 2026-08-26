@@ -64,12 +64,12 @@ same semantic configuration encodes to the same
 The complete Artifact families have these fixed schema descriptors:
 
 ```text
-loom.configuration_abi             3.0
+loom.configuration_abi             4.0
 loom.hardware_configuration_image  3.0
 loom.deployment                    5.1
 ```
 
-ConfigurationABI and HardwareConfigurationImage 3.0 reject any image that
+ConfigurationABI 4.0 and HardwareConfigurationImage 3.0 reject any image that
 omits a configurable Fabric owner and bind the exact
 `loom.hardware_implementation 4.1` occurrence closure. Deployment 5.1 derives
 the exact required SpatialCore occurrence set from its SystemMapping execution
@@ -116,8 +116,8 @@ ConfigurationABI {
 }
 ```
 
-In `loom.configuration_abi 3.0`, `fabric_ref` is an exact
-`loom.fabric 6.0` System root. A complete implementation cannot bind an
+In `loom.configuration_abi 4.0`, `fabric_ref` is an exact
+`loom.fabric 7.0` System root. A complete implementation cannot bind an
 uninstantiated Module root. The physical references used by the two nested
 fields above are closed unions:
 
@@ -187,7 +187,7 @@ ProgrammingUnitRef =
 
 Its canonical bytes are the Common exact ArtifactReference encoding followed
 by the `u64be` ABI-local `unit_id`. Decoding requires the referenced Artifact
-to be `loom.configuration_abi 3.0` and the unit ID to exist in its canonical
+to be `loom.configuration_abi 4.0` and the unit ID to exist in its canonical
 programming-unit catalog.
 
 There is no global programming-unit registry or compatibility label. Each unit
@@ -198,7 +198,7 @@ that realizes the ABI; the ABI does not contain a command-script language.
 
 ### Complete-Image Programming Model
 
-`loom.configuration_abi 3.0` has one closed programming model:
+`loom.configuration_abi 4.0` has one closed programming model:
 
 ```text
 CompleteImageAtomic {
@@ -332,6 +332,8 @@ inventory exactly once:
 * a Temporal PE owns one joint instruction-table field;
 * each FU occurrence owns one joint configured-graph field;
 * each switch, FIFO, boundary, and memory occurrence owns one joint field;
+* each System transport resource authored with configuration-selected transfer
+  patterns owns one direct selected-pattern field;
 * each configurable `fabric.op` occurrence node owns its existing operation
   field, projected into the residency derived above; and
 * fixed point connections and owners whose specification declares no
@@ -519,6 +521,12 @@ the complete Mapping and exact ABI programming units. Selected
 HardwareImplementations must implement that ABI; they cannot change image
 membership or content.
 
+A programming unit whose occurrence closure contains only direct System
+resources contributes one Deployment-global image. It is not owned by any
+SpatialCore HardwareImplementation. A mixed direct-System-and-SpatialCore unit
+is invalid at this boundary because its configuration could not be assigned to
+one physical provider without changing the ABI.
+
 Equal payload bytes for several occurrence-qualified images may share blob
 storage and may be installed by one provider multicast transaction. Every
 image reference and programming binding remains present and independently
@@ -646,8 +654,10 @@ SpatialMapping instantiated on different AccCore occurrences. Each case
 contains only material mechanically derived for that already selected pair.
 `required_configuration_image_refs[]` is the exact sorted subset joined from
 the Deployment configuration-image closure; it is an access index, not a
-second configuration selection. The whole child is absent exactly when the
-imported SpatialMapping set is empty.
+second configuration selection. Every target case contains all
+Deployment-global direct System images and the local images for its exact
+SpatialCore occurrence, but no local image for another occurrence. The whole
+child is absent exactly when the imported SpatialMapping set is empty.
 
 `AdmissionImage.payload` is:
 

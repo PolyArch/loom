@@ -7,6 +7,8 @@
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/DataflowRewriteCandidateGenerator.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
+#include "DSE/FuReverseSynthesis.h"
+#include "DSE/FuReverseSynthesisWorkflow.h"
 #include "DSE/GroundTruthPlan.h"
 #include "DSE/InvocationManifest.h"
 #include "DSE/JointDesignExploration.h"
@@ -29,17 +31,31 @@
 #include "DSE/StructuredScheduleCandidateGenerator.h"
 #include "DSE/StructuredSpecialMathAccuracyCandidateGenerator.h"
 #include "DSE/SystemCompositionCandidateGenerator.h"
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "ExternalTool/LocalConfig.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/InitAllDialects.h"
+#include "mlir/InitAllExtensions.h"
+#include "mlir/Parser/Parser.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -90,6 +106,15 @@ llvm::cl::list<std::string> semanticInputFiles(
     "semantic-input",
     llvm::cl::desc("JSON file containing one exact semantic input root"),
     llvm::cl::value_desc("path"), llvm::cl::ZeroOrMore);
+llvm::cl::opt<std::string> fuReverseSynthesisDataflow(
+    "fu-reverse-synthesis-dataflow",
+    llvm::cl::desc("canonical Dataflow MLIR graph set for the bounded "
+                   "reverse-FU workflow"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fuReverseSynthesisEvidence(
+    "fu-reverse-synthesis-evidence",
+    llvm::cl::desc("derived reverse-FU artifact and replay evidence JSON"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
 llvm::cl::list<std::string> evidenceInputFiles(
     "preexisting-evidence",
     llvm::cl::desc("JSON file containing one exact preexisting Evidence root"),
@@ -256,6 +281,163 @@ loadRootReferences(llvm::ArrayRef<std::string> paths) {
   if (std::adjacent_find(roots.begin(), roots.end()) != roots.end())
     return invalid("root bindings contain a duplicate reference");
   return roots;
+}
+
+llvm::Expected<ArtifactRootReference>
+publishFuReverseSynthesisDataflow(llvm::StringRef path,
+                                  const ArtifactStore &store) {
+  auto buffer = llvm::MemoryBuffer::getFileOrSTDIN(path);
+  if (!buffer)
+    return llvm::createStringError(buffer.getError(), "cannot read %s",
+                                   path.str().c_str());
+  llvm::SourceMgr sourceManager;
+  sourceManager.AddNewSourceBuffer(std::move(*buffer), llvm::SMLoc());
+  mlir::DialectRegistry registry;
+  mlir::registerAllDialects(registry);
+  mlir::registerAllExtensions(registry);
+  registry.insert<::dataflow::DataflowDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  auto module = mlir::parseSourceFile<mlir::ModuleOp>(sourceManager, &context);
+  if (!module)
+    return invalid("cannot parse reverse-FU canonical Dataflow MLIR");
+  auto dataflow = ::dataflow::finalizeCanonicalDataflow(*module);
+  if (!dataflow)
+    return dataflow.takeError();
+  return ::dataflow::publishCanonicalDataflow(*dataflow, store);
+}
+
+llvm::json::Object rootReferenceJson(const ArtifactRootReference &reference) {
+  return llvm::json::Object{
+      {"schema", reference.schemaIdentity},
+      {"schema_version", formatSchemaVersion(reference.schemaVersion)},
+      {"artifact", formatArtifactIdentityHex(reference.artifact)}};
+}
+
+llvm::json::Array
+rootReferenceArray(llvm::ArrayRef<ArtifactRootReference> references) {
+  llvm::json::Array result;
+  for (const ArtifactRootReference &reference : references)
+    result.push_back(rootReferenceJson(reference));
+  return result;
+}
+
+llvm::Error writeJsonObject(llvm::StringRef path, llvm::json::Object report) {
+  llvm::SmallString<256> parent(path);
+  llvm::sys::path::remove_filename(parent);
+  if (!parent.empty())
+    if (std::error_code error = llvm::sys::fs::create_directories(parent))
+      return llvm::errorCodeToError(error);
+  std::error_code error;
+  llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
+  if (error)
+    return llvm::errorCodeToError(error);
+  output << llvm::formatv("{0:2}", llvm::json::Value(std::move(report)))
+         << '\n';
+  return llvm::Error::success();
+}
+
+llvm::Error writeFuReverseSynthesisEvidence(
+    llvm::StringRef path, const FuReverseSynthesisCandidateWorkflow &workflow,
+    const DsePlanExecutionOutcome &outcome,
+    const InvocationManifestReference &invocation,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  llvm::json::Object report;
+  report["schema"] = "loom.fu_reverse_synthesis.workflow_evidence";
+  report["schema_version"] = "1.0";
+  report["dataflow"] = rootReferenceJson(workflow.dataflow());
+  report["resolved_config"] = rootReferenceJson(invocation.resolvedConfig());
+  report["run_key"] = llvm::toHex(invocation.occurrence().runKey.bytes(), true);
+  report["occurrence"] = invocation.occurrence().occurrenceOrdinal;
+  report["invocation_manifest_blob"] = formatBlobDigestHex(invocation.blob());
+
+  auto manifest = importInvocationManifest(invocation, artifacts, blobs);
+  if (!manifest)
+    return manifest.takeError();
+  auto dataflow =
+      ::dataflow::importCanonicalDataflow(workflow.dataflow(), artifacts);
+  if (!dataflow)
+    return dataflow.takeError();
+  auto dataflowView = dataflow->view();
+  if (!dataflowView)
+    return dataflowView.takeError();
+  report["graph_count"] = dataflowView->graphs().size();
+
+  if (const auto *incomplete =
+          std::get_if<InvocationIncomplete>(&manifest->outcome())) {
+    report["status"] = "incomplete";
+    report["search_complete"] = false;
+    report["node"] = incomplete->planNodeOrdinal;
+    report["reason"] = toString(incomplete->reason).str();
+  } else {
+    const auto *completed = std::get_if<CompletedDsePlanExecution>(&outcome);
+    if (!completed)
+      return invalid("completed invocation manifest has an incomplete plan "
+                     "execution");
+    std::uint64_t dispatchCount = 0;
+    for (std::size_t ordinal = 0;
+         ordinal != completed->generateInvocations().size(); ++ordinal)
+      dispatchCount += completed->generateInvocationWasDispatched(ordinal);
+    report["generate_invocation_count"] =
+        completed->generateInvocations().size();
+    report["dispatch_count"] = dispatchCount;
+
+    auto disposition = classifyFuReverseSynthesisWorkflow(workflow, *completed);
+    if (!disposition)
+      return disposition.takeError();
+    if (*disposition ==
+        FuReverseSynthesisWorkflowDisposition::NoFeasibleCandidate) {
+      llvm::ArrayRef<ArtifactRootReference> satisfiedEvidence;
+      if (const auto *selection =
+              std::get_if<InvocationCompletedSelection>(&manifest->outcome())) {
+        report["manifest_outcome"] = "completed_selection";
+        report["retained_terminal_roots"] =
+            rootReferenceArray(selection->selected);
+        satisfiedEvidence = selection->satisfiedEvidence;
+      } else if (const auto *noCandidate =
+                     std::get_if<InvocationCompletedNoFeasibleCandidate>(
+                         &manifest->outcome())) {
+        report["manifest_outcome"] = "completed_no_feasible_candidate";
+        satisfiedEvidence = noCandidate->satisfiedEvidence;
+      } else {
+        return invalid("completed workflow disposition has an incomplete "
+                       "invocation manifest");
+      }
+      report["status"] = "completed_no_feasible_candidate";
+      report["search_complete"] = true;
+      report["covered_graph_count"] =
+          completed->resolve(workflow.techMappings()).size();
+      report["satisfied_evidence"] = rootReferenceArray(satisfiedEvidence);
+      return writeJsonObject(path, std::move(report));
+    }
+
+    auto projected = projectFuReverseSynthesisWorkflowArtifacts(
+        workflow, *completed, artifacts, blobs);
+    if (!projected)
+      return projected.takeError();
+
+    llvm::json::Object roots;
+    roots["module"] = rootReferenceJson(projected->module);
+    roots["tech_mappings"] = rootReferenceArray(projected->techMappings);
+    roots["joint_tech_mapping"] =
+        rootReferenceJson(projected->jointTechMapping);
+    roots["system"] = rootReferenceJson(projected->system);
+    roots["physical_timing_profiles"] =
+        rootReferenceArray(projected->physicalTimingProfiles);
+    roots["configuration_abi"] = rootReferenceJson(projected->configurationAbi);
+    roots["spatial_mappings"] = rootReferenceArray(projected->spatialMappings);
+    roots["joint_spatial_mappings"] =
+        rootReferenceArray(projected->jointSpatialMappings);
+    roots["system_mappings"] = rootReferenceArray(projected->systemMappings);
+    roots["portable_rtl_implementations"] =
+        rootReferenceArray(projected->portableRtlImplementations);
+
+    report["status"] = "completed_selection";
+    report["search_complete"] = true;
+    report["covered_graph_count"] = projected->techMappings.size();
+    report["roots"] = std::move(roots);
+  }
+
+  return writeJsonObject(path, std::move(report));
 }
 
 llvm::Expected<std::vector<ArtifactRootReference>>
@@ -433,6 +615,20 @@ llvm::Expected<int> run() {
     return invalid("prepare-only requires a local tool configuration");
   const bool authorJointPlan =
       !jointApplicationScopeFiles.empty() || !jointSystemRootFiles.empty();
+  const bool authorFuReverseSynthesis = !fuReverseSynthesisDataflow.empty() ||
+                                        !fuReverseSynthesisEvidence.empty();
+  if (fuReverseSynthesisDataflow.empty() != fuReverseSynthesisEvidence.empty())
+    return invalid("reverse-FU authoring requires both its Dataflow input and "
+                   "evidence output");
+  if (authorFuReverseSynthesis && authorJointPlan)
+    return invalid("reverse-FU and joint plan authoring are mutually "
+                   "exclusive");
+  if (authorFuReverseSynthesis && !semanticInputFiles.empty())
+    return invalid("reverse-FU authoring owns its exact semantic input");
+  if (authorFuReverseSynthesis &&
+      groundTruthCampaign.getValue() != GroundTruthCampaignKind::None)
+    return invalid("reverse-FU authoring does not admit a ground-truth "
+                   "campaign wrapper");
   if (jointApplicationScopeFiles.empty() != jointSystemRootFiles.empty())
     return invalid("joint plan authoring requires both application scopes "
                    "and System root frontiers");
@@ -462,6 +658,20 @@ llvm::Expected<int> run() {
 
   ArtifactStore artifacts(artifactStorePath);
   BlobStore blobs(blobStorePath);
+  std::optional<FuReverseSynthesisCandidateWorkflow> fuWorkflow;
+  if (authorFuReverseSynthesis) {
+    auto dataflow = publishFuReverseSynthesisDataflow(
+        fuReverseSynthesisDataflow, artifacts);
+    if (!dataflow)
+      return dataflow.takeError();
+    auto workflow =
+        buildFuReverseSynthesisCandidateWorkflow(*dataflow, *config, artifacts);
+    if (!workflow)
+      return workflow.takeError();
+    semanticInputs->push_back(*dataflow);
+    *config = workflow->resolvedConfig();
+    fuWorkflow.emplace(std::move(*workflow));
+  }
   std::vector<JointDesignPlanPair> jointPairOutputs;
   if (authorJointPlan) {
     std::vector<std::vector<ArtifactRootReference>> applicationScopes;
@@ -729,6 +939,11 @@ llvm::Expected<int> run() {
                << '\n';
   if (!monitorError.empty())
     return invalid(monitorError);
+  if (fuWorkflow)
+    if (llvm::Error error = writeFuReverseSynthesisEvidence(
+            fuReverseSynthesisEvidence, *fuWorkflow, *invocationOutcome,
+            *invocation, artifacts, blobs))
+      return std::move(error);
 
   auto finalProjection =
       projectDseOperationalState(*journal, *scheduler, workerCount);
@@ -769,7 +984,18 @@ int main(int argc, char **argv) {
                                     "execute one resolved Loom DSE plan\n");
   auto result = run();
   if (!result) {
-    llvm::errs() << "error: " << llvm::toString(result.takeError()) << '\n';
+    bool typed = false;
+    llvm::Error remaining = llvm::handleErrors(
+        result.takeError(), [&](const FuReverseSynthesisError &error) {
+          typed = true;
+          llvm::errs() << "error: fu_reverse_synthesis_failure="
+                       << fuReverseSynthesisFailureSpelling(error.failure())
+                       << " diagnostic=" << error.diagnostic() << '\n';
+        });
+    if (remaining)
+      llvm::errs() << "error: " << llvm::toString(std::move(remaining)) << '\n';
+    else if (!typed)
+      llvm_unreachable("successful error handling requires a typed error");
     return EXIT_FAILURE;
   }
   return *result;

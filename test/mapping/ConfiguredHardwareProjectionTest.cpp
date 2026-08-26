@@ -426,7 +426,10 @@ buildSystem(const loom::fabric::FinalizedFabricRoot &module,
       coreSink.domainMember()};
   for (std::size_t ordinal = 0; ordinal != sources.size(); ++ordinal) {
     routers.push_back(take(system.addTransportResource(
-        {{carrier, carrier}, {carrier, carrier}, transportContract})));
+        {{carrier, carrier},
+         {carrier, carrier},
+         transportContract,
+         SystemTransferPatternSelection::Configuration})));
     clockMembers.push_back(routers.back().domainMember());
     for (std::size_t input = 0; input != 2; ++input)
       for (const auto &outputs : patterns) {
@@ -645,11 +648,31 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
       system, directOverrides));
   const auto abi = take(
       loom::hardware::finalizeConfigurationABI(std::move(abiDraft), store));
-  if (abi.abi().programmingUnits().size() != 1)
-    fail("configuration image fixture did not derive one programming unit");
+  const auto spatialUnit =
+      llvm::find_if(abi.abi().programmingUnits(), [](const auto &unit) {
+        return llvm::all_of(
+            unit.exactFabricResourceClosure, [](const auto &owner) {
+              return owner.kind() ==
+                     loom::fabric::FabricPhysicalOccurrenceOwnerKind::
+                         SpatialCoreInternal;
+            });
+      });
+  const auto directUnit =
+      llvm::find_if(abi.abi().programmingUnits(), [](const auto &unit) {
+        return llvm::all_of(
+            unit.exactFabricResourceClosure, [](const auto &owner) {
+              return owner.kind() ==
+                     loom::fabric::FabricPhysicalOccurrenceOwnerKind::
+                         DirectSystemOwner;
+            });
+      });
+  if (spatialUnit == abi.abi().programmingUnits().end() ||
+      directUnit == abi.abi().programmingUnits().end())
+    fail("configuration image fixture did not derive both programming unit "
+         "owner classes");
   const auto image = take(loom::deployment::finalizeHardwareConfigurationImage(
       {abi.reference(),
-       abi.abi().programmingUnits().front().id,
+       spatialUnit->id,
        {loom::deployment::ConfigurationImageSourceKind::SpatialMapping,
         spatial.reference()}},
       store));
@@ -657,8 +680,7 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
       take(loom::deployment::importHardwareConfigurationImage(image.reference(),
                                                               store));
   if (reimported.reference() != image.reference() ||
-      reimported.image().payloadBitCount() !=
-          abi.abi().programmingUnits().front().payloadBitCount ||
+      reimported.image().payloadBitCount() != spatialUnit->payloadBitCount ||
       !reimported.image().payload().equals(image.image().payload()))
     fail("hardware configuration image did not round-trip exactly");
 
@@ -763,7 +785,7 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
   const auto systemImage =
       take(loom::deployment::finalizeHardwareConfigurationImage(
           {abi.reference(),
-           abi.abi().programmingUnits().front().id,
+           spatialUnit->id,
            {loom::deployment::ConfigurationImageSourceKind::SystemMapping,
             systemMapping.reference()}},
           store));
@@ -771,10 +793,41 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
       !systemImage.image().payload().equals(image.image().payload()))
     fail("SystemMapping source did not preserve the exact physical payload");
 
+  const auto directSystemImage =
+      take(loom::deployment::finalizeHardwareConfigurationImage(
+          {abi.reference(),
+           directUnit->id,
+           {loom::deployment::ConfigurationImageSourceKind::SystemMapping,
+            systemMapping.reference()}},
+          store));
+  const auto directDecoded =
+      take(abi.abi().decode(directSystemImage.image().programmingUnitId(),
+                            directSystemImage.image().payload()));
+  const auto systemProjection = take(
+      loom::mapping::deriveConfiguredHardwareProjection(systemMapping, store));
+  bool sawDirectSystemField = false;
+  bool sawActiveDirectSystemField = false;
+  for (const auto &selected : systemProjection.fields()) {
+    if (!abi.abi().findField(directUnit->id, selected.slot))
+      continue;
+    const auto found = llvm::find_if(directDecoded, [&](const auto &value) {
+      return value.slot == selected.slot;
+    });
+    if (found == directDecoded.end() ||
+        !llvm::ArrayRef<std::uint8_t>(found->value)
+             .equals(selected.value.bytes()))
+      fail("SystemMapping changed a direct System configuration value");
+    sawDirectSystemField = true;
+    sawActiveDirectSystemField |= llvm::any_of(
+        selected.value.bytes(), [](std::uint8_t byte) { return byte != 0; });
+  }
+  if (!sawDirectSystemField || !sawActiveDirectSystemField)
+    fail("SystemMapping projected no active direct System configuration");
+
   expectError(
       loom::deployment::finalizeHardwareConfigurationImage(
           {abi.reference(),
-           abi.abi().programmingUnits().front().id,
+           directUnit->id,
            {loom::deployment::ConfigurationImageSourceKind::SystemMapping,
             spatial.reference()}},
           store),

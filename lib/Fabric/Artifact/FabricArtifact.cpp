@@ -1302,6 +1302,9 @@ llvm::Expected<FabricArtifactView> buildSystemView(
       if (!contract)
         return contract.takeError();
       entity.owner.resourceContract = std::move(*contract);
+      if (resource.getConfigurationSelectedPatternsAttr())
+        entity.owner.inventoryCounts[static_cast<std::size_t>(
+            FabricInventoryKind::SemanticConfigField)] = 1;
       if (DenseI8ArrayAttr crossing = resource.getClockCrossingAttr()) {
         auto decoded =
             decodeClockCrossingContractRecord(unsignedBytes(crossing));
@@ -1430,6 +1433,14 @@ llvm::Expected<FabricArtifactView> buildSystemView(
   auto systemView = requireSystemRoot(*view);
   if (!systemView)
     return systemView.takeError();
+  for (SystemTransportResourceRef resource : systemView->transportResources()) {
+    const FabricInventoryOwnerRef owner = FabricInventoryOwnerRef::of(resource);
+    if (systemView->artifact().inventorySize(
+            owner, FabricInventoryKind::SemanticConfigField) != 0 &&
+        systemView->transferPatterns(resource).size() < 2)
+      return invalid("configuration-selected transport resource has fewer "
+                     "than two transfer patterns");
+  }
   if (llvm::Error error =
           validateSystemRelations(root, *systemView, importedModules))
     return std::move(error);

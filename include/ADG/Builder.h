@@ -1420,10 +1420,17 @@ private:
   friend struct detail::SystemHandleAccess;
 };
 
+enum class SystemTransferPatternSelection : std::uint8_t {
+  Dynamic,
+  Configuration,
+};
+
 struct SystemTransportResourceSpec final {
   std::vector<PortType> inputTypes;
   std::vector<PortType> outputTypes;
   ::fabric::ResourceContract resourceContract;
+  SystemTransferPatternSelection transferPatternSelection =
+      SystemTransferPatternSelection::Dynamic;
 };
 
 class SystemTransportResource final {

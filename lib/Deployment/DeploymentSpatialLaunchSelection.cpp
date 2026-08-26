@@ -77,6 +77,8 @@ resolveDeploymentSpatialLaunchSelection(
       implementation->implementation().configurationAbi(), artifacts);
   if (!abi)
     return abi.takeError();
+  // This selection feeds one SpatialCore implementation. Direct System images
+  // remain Deployment-global and require an independent System provider.
   std::vector<ArtifactRootReference> configurationImages;
   for (const ArtifactRootReference &reference :
        deployment.configurationImages()) {

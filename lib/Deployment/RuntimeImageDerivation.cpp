@@ -1085,7 +1085,7 @@ void writeMemoryBoundaryBindings(llvm::json::OStream &json,
 
 struct ConfigurationImageCatalogEntry final {
   ArtifactRootReference reference;
-  std::vector<fabric::AccCoreOccurrenceRef> accCores;
+  std::optional<fabric::AccCoreOccurrenceRef> accCore;
 };
 
 llvm::Expected<std::vector<ConfigurationImageCatalogEntry>>
@@ -1122,12 +1122,17 @@ buildConfigurationImageCatalog(
 
     const hardware::ProgrammingUnitOccurrenceScope scope =
         hardware::deriveProgrammingUnitOccurrenceScope(*unit);
-    if (scope.includesDirectSystemResources || scope.spatialCores.size() != 1)
+    if (scope.includesDirectSystemResources && !scope.spatialCores.empty())
+      return invalid("direct System configuration image also names a "
+                     "SpatialCore occurrence");
+    if (!scope.includesDirectSystemResources && scope.spatialCores.size() != 1)
       return invalid("configuration image programming unit is not local to "
                      "one SpatialCore occurrence");
-    ConfigurationImageCatalogEntry entry{reference,
-                                         {scope.spatialCores.front().core}};
-    catalog.push_back(std::move(entry));
+    catalog.push_back(
+        {reference, scope.includesDirectSystemResources
+                        ? std::optional<fabric::AccCoreOccurrenceRef>{}
+                        : std::optional<fabric::AccCoreOccurrenceRef>{
+                              scope.spatialCores.front().core}});
   }
   return catalog;
 }
@@ -1137,7 +1142,7 @@ configurationImagesFor(fabric::AccCoreOccurrenceRef core,
                        llvm::ArrayRef<ConfigurationImageCatalogEntry> catalog) {
   std::vector<ArtifactRootReference> result;
   for (const ConfigurationImageCatalogEntry &entry : catalog)
-    if (llvm::is_contained(entry.accCores, core))
+    if (!entry.accCore || *entry.accCore == core)
       result.push_back(entry.reference);
   return result;
 }

@@ -87,6 +87,11 @@ struct FuReverseSynthesisWorkflowArtifacts final {
   std::vector<ArtifactRootReference> portableRtlImplementations;
 };
 
+enum class FuReverseSynthesisWorkflowDisposition : std::uint8_t {
+  CompleteCandidate,
+  NoFeasibleCandidate,
+};
+
 /// Requires every admitted graph to be reachable from at least one root
 /// thread, then composes the existing reverse synthesis, Spatial PnR, System
 /// PnR, and portable RTL candidate generators into one resolved DSE Plan.
@@ -94,6 +99,15 @@ llvm::Expected<FuReverseSynthesisCandidateWorkflow>
 buildFuReverseSynthesisCandidateWorkflow(const ArtifactRootReference &dataflow,
                                          const ResolvedConfig &baseConfig,
                                          const ArtifactStore &store);
+
+/// Classifies completion against this workflow's required product. A generic
+/// DSE Plan can complete with independent terminal outputs even when one
+/// required Mapping branch is empty, so terminal-root presence alone does not
+/// establish a complete reverse-synthesis candidate.
+llvm::Expected<FuReverseSynthesisWorkflowDisposition>
+classifyFuReverseSynthesisWorkflow(
+    const FuReverseSynthesisCandidateWorkflow &workflow,
+    const CompletedDsePlanExecution &execution);
 
 /// Resolves a completed plan into its exact artifact closure and independently
 /// checks graph coverage, System attachment, Mapping ownership, packed ABI,

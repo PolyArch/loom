@@ -256,6 +256,109 @@ llvm::Expected<ConfigurationABIDraft> derivePackedConfigurationABIDraft(
   };
 
   std::vector<ProgrammingUnitDraft> units;
+  const auto resolveRelation =
+      [&](const fabric::FabricArtifactView &view,
+          const fabric::FabricSemanticConfigFieldRef &localField,
+          const fabric::FabricPhysicalConfigurationFieldRef &physicalField)
+      -> llvm::Expected<ConfigurationEncodingRelationId> {
+    const OverrideKey key = overrideKey(physicalField);
+    const auto override = overrideByField.find(key);
+    if (override != overrideByField.end()) {
+      consumedOverrides.insert(key);
+      return internRelation(ConfigurationEncodingRelationDraft{
+          override->second->semanticEncoding, override->second->inactiveValue});
+    }
+
+    auto sourceKey = relationSourceKey(view, localField);
+    if (!sourceKey)
+      return sourceKey.takeError();
+    const auto known = relationBySource.find(*sourceKey);
+    if (known != relationBySource.end()) {
+      ++sourceCacheHits;
+      return known->second;
+    }
+    ++sourceCacheMisses;
+    auto relation = defaultFieldEncoding(view, localField, context);
+    if (!relation)
+      return relation.takeError();
+    const ConfigurationEncodingRelationId relationId =
+        internRelation(std::move(*relation));
+    relationBySource.emplace(std::move(*sourceKey), relationId);
+    return relationId;
+  };
+
+  const auto appendFields =
+      [&](const fabric::FabricArtifactView &view,
+          const fabric::FabricInventoryOwnerRef &owner, const auto &qualify,
+          std::vector<ConfigurationFieldEncoding> &fields) -> llvm::Error {
+    const std::uint64_t fieldCount = view.inventorySize(
+        owner, fabric::FabricInventoryKind::SemanticConfigField);
+    for (fabric::FabricOrdinal ordinal = 0; ordinal < fieldCount; ++ordinal) {
+      const fabric::FabricSemanticConfigFieldRef localField{
+          fabric::FabricConfigurationOwnerRef(owner), ordinal};
+      auto physicalField = qualify(localField);
+      if (!physicalField)
+        return physicalField.takeError();
+      auto relationId = resolveRelation(view, localField, *physicalField);
+      if (!relationId)
+        return relationId.takeError();
+      auto residencies = view.configurationResidencies(localField);
+      if (!residencies)
+        return residencies.takeError();
+      for (const fabric::FabricConfigurationResidency &residency :
+           *residencies) {
+        ++configurationFieldCount;
+        ++deterministicWork;
+        auto slot =
+            fabric::qualifyFabricConfigurationSlot(*physicalField, residency);
+        if (!slot)
+          return slot.takeError();
+        fields.push_back(
+            ConfigurationFieldEncoding{std::move(*slot), *relationId, {}});
+      }
+    }
+    return llvm::Error::success();
+  };
+
+  const auto appendUnit =
+      [&](std::vector<fabric::FabricPhysicalOccurrenceOwnerRef> closure,
+          std::vector<ConfigurationFieldEncoding> fields) {
+        if (fields.empty())
+          return;
+        std::uint64_t payloadBitCount = 1;
+        for (ConfigurationFieldEncoding &field : fields) {
+          const std::uint64_t width =
+              encodingRelations[field.encodingRelation].encodedBitCount();
+          field.destinationSlices.push_back({0, payloadBitCount, width});
+          payloadBitCount += width;
+        }
+        units.push_back(ProgrammingUnitDraft{
+            std::move(closure), payloadBitCount, std::move(fields)});
+      };
+
+  for (fabric::SystemTransportResourceRef resource :
+       system->transportResources()) {
+    ++deterministicWork;
+    const fabric::FabricInventoryOwnerRef owner =
+        fabric::FabricInventoryOwnerRef::of(resource);
+    if (system->artifact().inventorySize(
+            owner, fabric::FabricInventoryKind::SemanticConfigField) == 0)
+      continue;
+    auto physicalOwner =
+        fabric::FabricPhysicalOccurrenceOwnerRef::create(owner);
+    if (!physicalOwner)
+      return physicalOwner.takeError();
+    std::vector<ConfigurationFieldEncoding> fields;
+    if (llvm::Error error = appendFields(
+            system->artifact(), owner,
+            [](const fabric::FabricSemanticConfigFieldRef &field) {
+              return fabric::FabricPhysicalConfigurationFieldRef::create(field);
+            },
+            fields))
+      return std::move(error);
+    appendUnit({std::move(*physicalOwner)}, std::move(fields));
+  }
+
   for (fabric::AccCoreOccurrenceRef core :
        system->artifact().accCoreOccurrences()) {
     const fabric::SpatialCoreOccurrenceRef spatialCore{core};
@@ -281,66 +384,15 @@ llvm::Expected<ConfigurationABIDraft> derivePackedConfigurationABIDraft(
       if (!physicalOwner)
         return physicalOwner.takeError();
       closure.push_back(std::move(*physicalOwner));
-      for (fabric::FabricOrdinal ordinal = 0; ordinal < fieldCount; ++ordinal) {
-        const fabric::FabricSemanticConfigFieldRef localField{
-            fabric::FabricConfigurationOwnerRef(owner), ordinal};
-        auto physicalField = qualifyField(spatialCore, localField);
-        if (!physicalField)
-          return physicalField.takeError();
-        const OverrideKey key = overrideKey(*physicalField);
-        const auto override = overrideByField.find(key);
-        ConfigurationEncodingRelationId relationId = 0;
-        if (override != overrideByField.end()) {
-          relationId = internRelation(ConfigurationEncodingRelationDraft{
-              override->second->semanticEncoding,
-              override->second->inactiveValue});
-        } else {
-          auto sourceKey = relationSourceKey(*module, localField);
-          if (!sourceKey)
-            return sourceKey.takeError();
-          const auto known = relationBySource.find(*sourceKey);
-          if (known != relationBySource.end()) {
-            ++sourceCacheHits;
-            relationId = known->second;
-          } else {
-            ++sourceCacheMisses;
-            auto relation = defaultFieldEncoding(*module, localField, context);
-            if (!relation)
-              return relation.takeError();
-            relationId = internRelation(std::move(*relation));
-            relationBySource.emplace(std::move(*sourceKey), relationId);
-          }
-        }
-        auto residencies = module->configurationResidencies(localField);
-        if (!residencies)
-          return residencies.takeError();
-        for (const fabric::FabricConfigurationResidency &residency :
-             *residencies) {
-          ++configurationFieldCount;
-          ++deterministicWork;
-          auto slot =
-              fabric::qualifyFabricConfigurationSlot(*physicalField, residency);
-          if (!slot)
-            return slot.takeError();
-          fields.push_back(
-              ConfigurationFieldEncoding{std::move(*slot), relationId, {}});
-        }
-        if (override != overrideByField.end())
-          consumedOverrides.insert(key);
-      }
+      if (llvm::Error error = appendFields(
+              *module, owner,
+              [&](const fabric::FabricSemanticConfigFieldRef &field) {
+                return qualifyField(spatialCore, field);
+              },
+              fields))
+        return std::move(error);
     }
-    if (fields.empty())
-      continue;
-
-    std::uint64_t payloadBitCount = 1;
-    for (ConfigurationFieldEncoding &field : fields) {
-      const std::uint64_t width =
-          encodingRelations[field.encodingRelation].encodedBitCount();
-      field.destinationSlices.push_back({0, payloadBitCount, width});
-      payloadBitCount += width;
-    }
-    units.push_back(ProgrammingUnitDraft{std::move(closure), payloadBitCount,
-                                         std::move(fields)});
+    appendUnit(std::move(closure), std::move(fields));
   }
 
   if (consumedOverrides.size() != overrideByField.size())

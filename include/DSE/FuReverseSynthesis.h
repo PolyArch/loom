@@ -58,6 +58,9 @@ enum class FuReverseSynthesisFailure : std::uint8_t {
   CoverageNotEstablished,
 };
 
+llvm::StringRef
+fuReverseSynthesisFailureSpelling(FuReverseSynthesisFailure failure);
+
 class FuReverseSynthesisError final
     : public llvm::ErrorInfo<FuReverseSynthesisError> {
 public:
@@ -235,6 +238,14 @@ private:
 llvm::Expected<const FuSynthesisCoverageWitness *>
 resolveFuSynthesisCoverage(const ScalarIntegerAddSubFuSynthesisResult &result,
                            const FuSynthesisCoverageWitness &witness);
+
+/// Checks the complete bounded graph domain without materializing Fabric or
+/// Mapping artifacts. Workflow authoring uses this same semantic owner to
+/// reject unsupported operations and incomplete implementation constraints
+/// before publishing a DSE plan.
+llvm::Error verifyScalarIntegerAddSubFuSynthesisDomain(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::GraphRef> graphs);
 
 llvm::Expected<ScalarIntegerAddSubFuSynthesisAttempt>
 attemptScalarIntegerAddSubFuSynthesis(

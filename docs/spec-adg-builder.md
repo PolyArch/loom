@@ -192,19 +192,31 @@ text for reparsing. A successful exact construction call immediately creates
 the corresponding typed Fabric operation, type, attribute, value, or
 reference in the Builder-owned draft IR.
 
-The public surface has one design owner and three scoped construction views:
+The public surface has one draft design owner with two scoped construction
+views, plus one finalized-System sibling author:
 
 ```text
 DesignBuilder
   SpatialCoreBuilder
   SystemBuilder
-  InterconnectImplementationBuilder
+
+fabric::InterconnectImplementationBuilder(FinalizedFabricRoot System,
+                                          ArtifactStore)
 ```
 
 `DesignBuilder` owns the draft IR, construction diagnostics, and root closure.
-The scoped views create `fabric.module`, `fabric.system`, and optional
-Interconnect Implementation roots. They are authoring views over that one
-draft, not independent schemas or persistent objects.
+Its scoped views create `fabric.module` and `fabric.system` roots. The
+Interconnect builder begins only after strict System finalization and delegates
+to the selected typed protocol provider; it owns no shadow graph or second
+architecture model. `inspectInterconnectImplementation` is a derived count
+projection over the strictly imported canonical body. Strict import requires
+the endpoint, resource-state, transfer-pattern, configuration-field, and
+refinement catalogs to match the exact refined System completely.
+`SystemTransportResourceSpec::transferPatternSelection` explicitly selects
+dynamic protocol routing or ConfigurationABI-owned static selection. Only the
+latter creates one semantic configuration field, and it requires at least two
+canonical patterns. The Interconnect builder cannot add or omit that
+architecture field.
 
 Handles reflect essential Fabric distinctions. Spatial graph values and
 ports, AccCores, memory services, transport resources, endpoints, hardware

@@ -1054,7 +1054,11 @@ SystemBuilder::addTransportResource(const SystemTransportResourceSpec &spec) {
       builder, (*root)->operation.getLoc(), entityId((*state)->context, id),
       mlir::TypeAttr::get(
           mlir::FunctionType::get(&(*state)->context, inputs, outputs)),
-      denseBytes((*state)->context, *contractBytes), mlir::DenseI8ArrayAttr());
+      denseBytes((*state)->context, *contractBytes), mlir::DenseI8ArrayAttr(),
+      spec.transferPatternSelection ==
+              SystemTransferPatternSelection::Configuration
+          ? mlir::UnitAttr::get(&(*state)->context)
+          : mlir::UnitAttr());
   if (llvm::Error error = verifyCreated(operation, "transport resource"))
     return error;
   detail::SystemEntityState entity{

@@ -26,12 +26,19 @@ struct RuntimeProviderDescriptor;
 
 namespace loom::deployment::test {
 
+enum class MappedSystemTransportMode : std::uint8_t {
+  FixedLocal,
+  MappingSelected,
+};
+
 struct MappedSpatialSystemSpec final {
   std::uint32_t accCoreCount = 2;
   bool alternateInstructionMicroarchitectures = false;
   bool attachSystemMemory = false;
   fabric::ResetInitialState resetInitialState =
       fabric::ResetInitialState::Asserted;
+  MappedSystemTransportMode transportMode =
+      MappedSystemTransportMode::MappingSelected;
 };
 
 struct MappedSystemExecutablePrograms final {
@@ -63,6 +70,10 @@ FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
                                            ArtifactStore &artifacts,
                                            BlobStore &blobs,
                                            const TemporaryTree &tree);
+
+FinalizedDeployment buildDirectSystemConfigurationDeployment(
+    llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
+    const TemporaryTree &tree);
 
 FinalizedDeployment buildRetargetedMinimalDeployment(llvm::StringRef test,
                                                      ArtifactStore &artifacts,

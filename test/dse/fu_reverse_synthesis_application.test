@@ -1,0 +1,47 @@
+# RUN: rm -rf %t && mkdir -p %t/artifacts %t/blobs %t/run
+# RUN: loom-config-test --resolved-json --loom-accel-profile=quick_explore \
+# RUN:   > %t/config.json
+# RUN: loom-dse --config %t/config.json --artifact-store %t/artifacts \
+# RUN:   --blob-store %t/blobs --run-root %t/run \
+# RUN:   --producer-build loom.test.fu_reverse_synthesis_application.v1 \
+# RUN:   --workers 1 --site-cpu 1 --progress-jsonl %t/progress.jsonl \
+# RUN:   --fu-reverse-synthesis-dataflow \
+# RUN:     %S/../../examples/fu-reverse-synthesis/integer-add-sub.mlir \
+# RUN:   --fu-reverse-synthesis-evidence %t/initial.json 2> %t/initial.log
+# RUN: loom-dse --config %t/config.json --artifact-store %t/artifacts \
+# RUN:   --blob-store %t/blobs --run-root %t/run \
+# RUN:   --producer-build loom.test.fu_reverse_synthesis_application.v1 \
+# RUN:   --workers 1 --site-cpu 1 --progress-jsonl %t/progress.jsonl \
+# RUN:   --fu-reverse-synthesis-dataflow \
+# RUN:     %S/../../examples/fu-reverse-synthesis/integer-add-sub.mlir \
+# RUN:   --fu-reverse-synthesis-evidence %t/replay.json 2> %t/replay.log
+# RUN: %python %S/verify_fu_reverse_synthesis_evidence.py \
+# RUN:   %t/initial.json %t/replay.json
+# RUN: rm -rf %t/negative && mkdir -p %t/negative/artifacts %t/negative/blobs
+# RUN: not loom-dse --config %t/config.json \
+# RUN:   --artifact-store %t/negative/artifacts --blob-store %t/negative/blobs \
+# RUN:   --run-root %t/negative/run --producer-build loom.test.negative.v1 \
+# RUN:   --fu-reverse-synthesis-dataflow \
+# RUN:     %S/Inputs/fu_reverse_synthesis_multiply.mlir \
+# RUN:   --fu-reverse-synthesis-evidence %t/negative/multiply.json 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=MULTIPLY
+# RUN: not loom-dse --config %t/config.json \
+# RUN:   --artifact-store %t/negative/artifacts --blob-store %t/negative/blobs \
+# RUN:   --run-root %t/negative/run-math \
+# RUN:   --producer-build loom.test.negative.v1 \
+# RUN:   --fu-reverse-synthesis-dataflow \
+# RUN:     %S/Inputs/fu_reverse_synthesis_math.mlir \
+# RUN:   --fu-reverse-synthesis-evidence %t/negative/math.json 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=MATH
+# RUN: not loom-dse --config %t/config.json \
+# RUN:   --artifact-store %t/negative/artifacts --blob-store %t/negative/blobs \
+# RUN:   --run-root %t/negative/run-overflow \
+# RUN:   --producer-build loom.test.negative.v1 \
+# RUN:   --fu-reverse-synthesis-dataflow \
+# RUN:     %S/Inputs/fu_reverse_synthesis_overflow.mlir \
+# RUN:   --fu-reverse-synthesis-evidence %t/negative/overflow.json 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=OVERFLOW
+
+# MULTIPLY: fu_reverse_synthesis_failure=unsupported_actor_schema
+# MATH: fu_reverse_synthesis_failure=unsupported_actor_schema
+# OVERFLOW: fu_reverse_synthesis_failure=unsupported_actor_projection

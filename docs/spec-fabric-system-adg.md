@@ -161,7 +161,7 @@ AccCore = InstructionCore + SpatialCore
 ```
 
 Both HostCore and AccCore InstructionCore use one closed Architectural
-Contract. `loom.fabric 6.0` has one ISA variant, `RiscV`; adding another ISA is
+Contract. `loom.fabric 7.0` has one ISA variant, `RiscV`; adding another ISA is
 a schema change rather than an open string or opaque payload:
 
 ```text
@@ -586,6 +586,14 @@ TransportResourceConfiguration =
 `ConfigurationABI` alone owns its physical inactive encoding. Fixed,
 non-programmable connectivity has no artificial configuration record.
 
+A transport resource explicitly authored with `Configuration` pattern
+selection owns exactly one direct semantic configuration field. Its bit
+positions are the resource's canonical transfer-pattern ordinals; zero is
+`Disabled`, and each set bit selects that exact pattern control. The field
+shape is derived from the pattern inventory and is not another authored
+schema. Configuration selection requires at least two patterns. A `Dynamic`
+resource owns no such field regardless of its pattern count.
+
 ### Atomic Transfer Patterns
 
 Each transfer pattern has exactly one ingress and a non-empty egress set. One
@@ -973,6 +981,13 @@ fabric.system.hardware_domain
 fabric.system.external_boundary
 ```
 
+`Dynamic` means the resource's admitted transfer patterns are selected by its
+runtime service protocol and do not form static configuration state.
+`Configuration` means SystemMapping selects the active pattern set through one
+direct semantic field owned by that resource. A configuration-selected
+resource requires at least two canonical patterns. Pattern count alone never
+changes selection ownership.
+
 No generic `node`, `edge`, `kind`, or property operation is accepted. A child
 that represents an independently meaningful physical resource receives one
 Artifact-global `EntityId`. Structural relationships do not receive IDs.
@@ -1020,6 +1035,7 @@ fabric.system.transport_resource
   EntityId
   typed ports
   ResourceState, capacity, timing, progress, and grant contracts
+  Dynamic | Configuration transfer-pattern selection
   optional ClockCrossingContract
 
 fabric.system.transfer_pattern
@@ -1337,7 +1353,7 @@ complete typed facts used by RTL and constraint derivation.
 
 Every stateful imported Module owner obtains exactly one effective Clock and
 the Reset coverage required by its exact resource contract through the slot
-relation. `loom.fabric 6.0` admits no implicit resetless stateful owner. A
+relation. `loom.fabric 7.0` admits no implicit resetless stateful owner. A
 backend cannot supply a default Reset contract or infer one from Clock
 membership.
 
@@ -1423,7 +1439,7 @@ module-payload finalization. This provider-availability failure does not alter
 the stable root-kind ordinal or permit the reserved-unavailable
 `ImplementationInput` dependency role.
 
-In `loom.fabric 6.x`, the protocol-schema identity is a closed root-local schema
+In `loom.fabric 7.x`, the protocol-schema identity is a closed root-local schema
 tag interpreted by the typed interconnect implementation body. It is not an
 external Artifact reference and does not authorize a generic implementation
 dependency. The root has exactly one direct `RefinedSystem` dependency and no

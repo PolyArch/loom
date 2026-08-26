@@ -2,6 +2,8 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Deployment/HardwareConfigurationImage.h"
+#include "Hardware/Configuration/ConfigurationABI.h"
 #include "Mapping/IR/MappingSchema.h"
 #include "Runtime/DeploymentLoader.h"
 #include "Runtime/InProcessPlatform.h"
@@ -529,6 +531,66 @@ void rejectsNonPortableRuntimeAbiBeforeEnumeration() {
       "non-portable runtime ABI reached provider enumeration");
 }
 
+void rejectsDirectSystemConfigurationWithoutSystemProvider() {
+  const llvm::StringRef test = __func__;
+  deployment::test::TemporaryTree tree(test);
+  ArtifactStore artifacts(tree.path("artifacts"));
+  BlobStore blobs(tree.path("blobs"));
+  const deployment::FinalizedDeployment finalized =
+      deployment::test::buildDirectSystemConfigurationDeployment(
+          test, artifacts, blobs, tree);
+  const auto imported =
+      take(test, deployment::importDeployment(finalized.reference(), artifacts,
+                                              blobs));
+  deployment::test::require(
+      test, imported.reference() == finalized.reference(),
+      "direct System Deployment changed during strict import");
+
+  std::uint64_t directImageCount = 0;
+  std::uint64_t localImageCount = 0;
+  for (const ArtifactRootReference &reference :
+       imported.deployment().configurationImages()) {
+    const auto image = take(test, deployment::importHardwareConfigurationImage(
+                                      reference, artifacts));
+    const auto abi =
+        take(test, hardware::importConfigurationABI(
+                       image.image().configurationAbi(), artifacts));
+    const hardware::ProgrammingUnit *unit =
+        abi.abi().findProgrammingUnit(image.image().programmingUnitId());
+    deployment::test::require(test, unit != nullptr,
+                              "configuration image lost its ABI unit");
+    const hardware::ProgrammingUnitOccurrenceScope scope =
+        hardware::deriveProgrammingUnitOccurrenceScope(*unit);
+    if (scope.includesDirectSystemResources && scope.spatialCores.empty())
+      ++directImageCount;
+    else if (!scope.includesDirectSystemResources &&
+             scope.spatialCores.size() == 1)
+      ++localImageCount;
+    else
+      deployment::test::fail(test,
+                             "configuration image has a mixed owner scope");
+  }
+  deployment::test::require(
+      test,
+      directImageCount != 0 &&
+          localImageCount == finalized.deployment().hardwareBindings().size(),
+      "Deployment did not retain global and subject-local images");
+
+  const auto implementations =
+      implementationIdentities(test, finalized, artifacts, blobs);
+  auto provider = take(test, createInProcessRuntimeProvider(
+                                 {{implementations, std::nullopt, {}}}));
+  const ObservedLoadError error = expectLoadError(
+      test, loadDeployment(finalized, {provider, 0}, artifacts, blobs));
+  deployment::test::require(
+      test,
+      error.kind == RuntimeLoadFailureKind::ProviderMismatch &&
+          llvm::StringRef(error.diagnostic)
+              .contains("direct System configuration binding") &&
+          provider->statistics().enumerationCount == 0,
+      "missing System provider did not fail before device enumeration");
+}
+
 void loadsThroughCanonicalUnicastProvider() {
   const llvm::StringRef test = __func__;
   deployment::test::TemporaryTree tree(test);
@@ -674,6 +736,8 @@ int main(int argc, char **argv) {
     rejectsUnregisteredDescriptorAliasBeforeEnumeration();
   else if (scenario == "non-portable")
     rejectsNonPortableRuntimeAbiBeforeEnumeration();
+  else if (scenario == "direct-system")
+    rejectsDirectSystemConfigurationWithoutSystemProvider();
   else if (scenario == "unicast")
     loadsThroughCanonicalUnicastProvider();
   else if (scenario == "unused-high-bits")
