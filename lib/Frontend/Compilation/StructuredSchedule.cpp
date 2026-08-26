@@ -1,5 +1,6 @@
 #include "Frontend/Compilation/StructuredSchedule.h"
 
+#include "StructuredPolyhedralMaterializer.h"
 #include "StructuredScheduleInternal.h"
 
 #include "Common/IndexWidth.h"
@@ -353,7 +354,8 @@ llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolveLoop(
     const StructuredEntityRef &reference,
     std::optional<StructuredEntityRef> trackedSpatialRegion,
     llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance,
-    mlir::Operation *&clonedLoop, mlir::Operation *&clonedSpatialRegion) {
+    mlir::IRMapping &mapping, mlir::Operation *&clonedLoop,
+    mlir::Operation *&clonedSpatialRegion) {
   if (reference.kind != StructuredEntityKind::Operation)
     return invalid("schedule decision does not reference an operation");
   auto view = parent.view();
@@ -367,7 +369,6 @@ llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolveLoop(
           sourceLoop))
     return invalid("schedule decision does not reference a supported loop");
 
-  mlir::IRMapping mapping;
   auto privateClone = cloneStructuredProgramWithSourceLocations(
       parent, sourceProvenance, mapping);
   if (!privateClone)
@@ -526,7 +527,7 @@ bool scheduleFormInterchangesDimensions(StructuredPolyhedralScheduleForm form) {
                      StatementMajorAdjacentInterchange;
 }
 
-bool canMaterializePolyhedralSchedule(
+bool canMaterializeCanonicalPolyhedralSchedule(
     mlir::Operation *root, const StructuredPolyhedralScopView &scop) {
   if (scop.imperfectNest || scop.loopCount == 0 ||
       scop.loopCount != scop.maximumLoopDepth ||
@@ -548,6 +549,16 @@ bool canMaterializePolyhedralSchedule(
     return false;
   return !scheduleFormInterchangesDimensions(scop.schedule.form) ||
          hasMaterializableAdjacentInterchange(root);
+}
+
+llvm::Expected<std::optional<StructuredScopRefusalKind>>
+classifyPolyhedralScheduleMaterialization(
+    mlir::Operation *root, const StructuredPolyhedralScopView &scop) {
+  if (scop.schedule.form == StructuredPolyhedralScheduleForm::SourceOrder)
+    return std::nullopt;
+  if (canMaterializeCanonicalPolyhedralSchedule(root, scop))
+    return std::nullopt;
+  return detail::classifyPinnedIslScheduleMaterialization(root, scop);
 }
 
 llvm::Error applyProvenAdjacentInterchange(mlir::Operation *root) {
@@ -604,7 +615,7 @@ distributePolyhedralStatements(mlir::Operation *root,
 
 llvm::Error applyPolyhedralSchedule(mlir::Operation *root,
                                     const StructuredPolyhedralScopView &scop) {
-  if (!canMaterializePolyhedralSchedule(root, scop) ||
+  if (!canMaterializeCanonicalPolyhedralSchedule(root, scop) ||
       scop.schedule.form == StructuredPolyhedralScheduleForm::SourceOrder)
     return invalid("polyhedral schedule form is not a transform coordinate");
   if (!scheduleFormDistributesStatements(scop.schedule.form))
@@ -949,6 +960,31 @@ admittingVectorMemoryResources(mlir::vector::TransferWriteOp write,
   return fabric.admittingMemoryResourceCount(projected);
 }
 
+llvm::Expected<std::uint64_t>
+admittingStructuredActorResources(mlir::Operation *operation,
+                                  const FabricCapabilityIndex &fabric) {
+  const std::optional<dataflow::OperationSchemaId> schema =
+      dataflow::operationSchemaOf(operation);
+  if (!schema)
+    return invalid("structured actor has no operation schema");
+  if (dataflow::actorKind(*schema) ==
+      dataflow::CanonicalDataflowActorKind::Memory)
+    return fabric.admittingMemoryResourceCount(operation);
+  auto projection = dataflow::projectRegisteredActorSchemaProjection(operation);
+  if (!projection)
+    return projection.takeError();
+  if (*schema == dataflow::OperationSchemaId::ArithConstant) {
+    projection->schema = dataflow::OperationSchemaId::DataflowConstant;
+    projection->type = mlir::FunctionType::get(
+        operation->getContext(), {mlir::NoneType::get(operation->getContext())},
+        operation->getResultTypes());
+  }
+  auto indexBits = getIndexBitWidth(operation);
+  if (!indexBits)
+    return indexBits.takeError();
+  return fabric.admittingOperationResourceCount(*projection, *indexBits);
+}
+
 llvm::Expected<bool>
 fabricAdmitsVectorizedClosure(mlir::Operation *root,
                               const FabricCapabilityIndex &fabric) {
@@ -985,26 +1021,7 @@ fabricAdmitsVectorizedClosure(mlir::Operation *root,
     if (dataflow::actorKind(*schema) !=
         dataflow::CanonicalDataflowActorKind::Compute)
       continue;
-    auto projection =
-        dataflow::projectRegisteredActorSchemaProjection(operation);
-    if (!projection) {
-      queryError = projection.takeError();
-      break;
-    }
-    if (*schema == dataflow::OperationSchemaId::ArithConstant) {
-      projection->schema = dataflow::OperationSchemaId::DataflowConstant;
-      projection->type = mlir::FunctionType::get(
-          operation->getContext(),
-          {mlir::NoneType::get(operation->getContext())},
-          operation->getResultTypes());
-    }
-    auto indexBits = getIndexBitWidth(operation);
-    if (!indexBits) {
-      queryError = indexBits.takeError();
-      break;
-    }
-    auto resources =
-        fabric.admittingOperationResourceCount(*projection, *indexBits);
+    auto resources = admittingStructuredActorResources(operation, fabric);
     if (!resources) {
       queryError = resources.takeError();
       break;
@@ -1243,15 +1260,15 @@ enumerateStructuredScheduleDecisions(
         auto frozen = std::make_shared<const StructuredPolyhedralScopView>(
             std::move(*general));
         polyhedralScops.push_back(*frozen);
-        bool materializable =
-            canMaterializePolyhedralSchedule(entity.operation, *frozen);
+        auto materializationRefusal = classifyPolyhedralScheduleMaterialization(
+            entity.operation, *frozen);
+        if (!materializationRefusal)
+          return materializationRefusal.takeError();
         if (frozen->schedule.form !=
-                StructuredPolyhedralScheduleForm::General &&
-            frozen->schedule.form !=
-                StructuredPolyhedralScheduleForm::SourceOrder) {
+            StructuredPolyhedralScheduleForm::SourceOrder) {
           if (llvm::Error error = recordCoordinates(1))
             return std::move(error);
-          if (materializable) {
+          if (!*materializationRefusal) {
             StructuredScheduleDecision decision{
                 entity.reference,
                 StructuredScheduleDecisionKind::PolyhedralSchedule, 0,
@@ -1260,10 +1277,8 @@ enumerateStructuredScheduleDecisions(
                 decision, nullptr, frozen, fabric.reference()));
           }
         }
-        if (!materializable)
-          refusals.push_back({entity.reference,
-                              StructuredScopRefusalKind::
-                                  PolyhedralMaterializationUnavailable});
+        if (*materializationRefusal)
+          refusals.push_back({entity.reference, **materializationRefusal});
         return true;
       }
       StructuredScopRefusal &polyhedralRefusal =
@@ -1497,17 +1512,16 @@ materializeStructuredScheduleImpl(
     if (exactPolyhedralSource->root != decision.loop)
       return invalid("frozen polyhedral SCoP belongs to another source loop");
     if (exactPolyhedralSource->schedule.form ==
-            StructuredPolyhedralScheduleForm::General ||
-        exactPolyhedralSource->schedule.form ==
-            StructuredPolyhedralScheduleForm::SourceOrder)
+        StructuredPolyhedralScheduleForm::SourceOrder)
       return invalid("polyhedral decision has no transform schedule form");
   }
 
   mlir::Operation *selectedLoop = nullptr;
   mlir::Operation *clonedSpatialRegion = nullptr;
-  auto clone =
-      cloneAndResolveLoop(parent, decision.loop, trackedSpatialRegion,
-                          sourceProvenance, selectedLoop, clonedSpatialRegion);
+  mlir::IRMapping cloneMapping;
+  auto clone = cloneAndResolveLoop(parent, decision.loop, trackedSpatialRegion,
+                                   sourceProvenance, cloneMapping, selectedLoop,
+                                   clonedSpatialRegion);
   if (!clone)
     return clone.takeError();
   auto scfLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(selectedLoop);
@@ -1638,17 +1652,52 @@ materializeStructuredScheduleImpl(
       return invalid("polyhedral decision has no exact SCoP schedule");
     if (decision.factor != 0 || decision.vector)
       return invalid("polyhedral decision carries a scalar coordinate");
-    if (!canMaterializePolyhedralSchedule(selectedLoop,
-                                          *exactPolyhedralSource)) {
+    auto materializationRefusal = classifyPolyhedralScheduleMaterialization(
+        selectedLoop, *exactPolyhedralSource);
+    if (!materializationRefusal)
+      return materializationRefusal.takeError();
+    if (*materializationRefusal) {
       if (fabric)
         return llvm::make_error<StructuredScheduleProposalRefusal>(
-            decision.loop,
-            StructuredScopRefusalKind::PolyhedralMaterializationUnavailable);
+            decision.loop, **materializationRefusal);
       return invalid("polyhedral schedule is outside the materialized domain");
     }
-    if (llvm::Error error =
-            applyPolyhedralSchedule(selectedLoop, *exactPolyhedralSource))
-      return std::move(error);
+    if (canMaterializeCanonicalPolyhedralSchedule(selectedLoop,
+                                                  *exactPolyhedralSource)) {
+      if (llvm::Error error =
+              applyPolyhedralSchedule(selectedLoop, *exactPolyhedralSource))
+        return std::move(error);
+    } else {
+      auto parentView = parent.view();
+      if (!parentView)
+        return parentView.takeError();
+      llvm::SmallVector<mlir::Operation *> materializedOperations;
+      auto materialized = detail::materializePinnedIslSchedule(
+          selectedLoop, *exactPolyhedralSource, *parentView, cloneMapping,
+          materializedOperations);
+      if (!materialized)
+        return materialized.takeError();
+      if (*materialized) {
+        if (fabric)
+          return llvm::make_error<StructuredScheduleProposalRefusal>(
+              decision.loop, **materialized);
+        return invalid("polyhedral schedule materialization was refused");
+      }
+      if (fabric) {
+        for (mlir::Operation *operation : materializedOperations) {
+          if (!dataflow::operationSchemaOf(operation))
+            continue;
+          auto resourceCount =
+              admittingStructuredActorResources(operation, *fabric);
+          if (!resourceCount)
+            return resourceCount.takeError();
+          if (*resourceCount == 0)
+            return llvm::make_error<StructuredScheduleProposalRefusal>(
+                decision.loop,
+                StructuredScopRefusalKind::FabricCapabilityUnavailable);
+        }
+      }
+    }
     break;
   }
   std::optional<std::string> parallelRejection;

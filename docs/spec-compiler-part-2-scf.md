@@ -743,18 +743,46 @@ distribution, and statement-major distribution followed by that exchange.
 Classification compares the frozen integer relation itself; it is not a
 heuristic inferred from band counts. Source order is already materialized by
 the parent. Each other form that passes its structural gates produces one
-factorless `PolyhedralSchedule` proposal bound to the frozen general SCoP. A
-selected statement-major schedule clones the perfect loop nest once per source
-statement and retains exactly one statement in each clone. Cross-statement
-scalar SSA prevents this fission, because Loom does not invent scalar-expansion
-storage. An adjacent exchange additionally requires homogeneous SCF or Affine
-loops and inner bounds that remain invariant at the exchanged scope. General
-multi-band relations,
-imperfect nests, nonuniform statement depth, unsupported bound motion, and
-distribution requiring scalar expansion retain
-`PolyhedralMaterializationUnavailable`. Thus a provider schedule is either
-already present, replayably materialized into ordinary MLIR, or explicitly
-typed unavailable; no schedule map is silently approximated.
+factorless `PolyhedralSchedule` proposal bound to the frozen general SCoP. The
+closed-form materializers remain fast paths: a selected statement-major
+schedule clones the perfect loop nest once per source statement and retains
+exactly one statement in each clone, while an adjacent exchange additionally
+requires homogeneous SCF or Affine loops and inner bounds that remain
+invariant at the exchanged scope.
+
+A schedule outside those closed forms is reconstructed from its frozen
+Presburger pieces and intersected with the exact frozen statement domains.
+The pinned provider must prove complete domain coverage and a single-valued
+schedule before deriving one bounded invocation-local AST. AST statement calls
+carry the inverse source coordinates; the materializer substitutes those
+coordinates for the source induction values and emits sequential SCF, Arith,
+and MemRef IR. This realizes multi-band schedules, imperfect nests, nonuniform
+statement depth, piecewise bounds, skewed coordinates, fusion, and fission
+without translating the relation into a guessed sequence of local transforms.
+The AST and its loop names are removable derived state and never candidate
+identity or another schedule authority.
+
+Scalar SSA validity remains strict. The provider may use scalar edges as a
+proximity preference, but only the exact validity relation proves legality.
+Before a General proposal enters the decision domain, an abstract
+materialization pass proves that every scalar producer is lexically available
+at the consumer and that their common source-dimension prefix has identical
+AST coordinates. A schedule that instead requires scalar-expansion storage
+retains `PolyhedralMaterializationUnavailable`; no implicit memory space,
+lifetime, or allocation policy is invented. The same pass derives the smallest
+exact 32- or 64-bit schedule arithmetic width from the root index-width owner
+and the complete AST expression closure. An unproved width is locally
+unavailable, and every emitted registered actor is checked against the exact
+proposal Fabric before publication. Floor division is expanded into the
+registered signed division, remainder, comparison, and selection closure.
+
+General materialization is sequential. The aggregate frozen band summary is
+not sufficient to reconstruct per-band coincidence, so it is never used to
+claim a parallel loop; independent parallel decisions retain their own exact
+dependence proof. Thus a provider schedule is either already present,
+replayably materialized into ordinary MLIR, or explicitly typed unavailable;
+no schedule map is silently approximated and no incomplete result is renamed
+infeasible.
 
 The exact vector SCoP domain is deliberately closed. Its root is one `scf.for`
 or `affine.for` with zero lower bound, unit stride, and a static trip count. A

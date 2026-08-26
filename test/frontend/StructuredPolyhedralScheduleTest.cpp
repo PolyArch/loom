@@ -12,6 +12,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -54,7 +55,8 @@ mlir::MLIRContext &context() {
     mlir::DialectRegistry registry;
     registry.insert<dataflow::DataflowDialect, loom::LoomDialect,
                     mlir::affine::AffineDialect, mlir::arith::ArithDialect,
-                    mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
+                    mlir::DLTIDialect, mlir::func::FuncDialect,
+                    mlir::memref::MemRefDialect>();
     registry.insert<mlir::scf::SCFDialect>();
     auto *created =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
@@ -172,6 +174,109 @@ module {
   }
   if (distributedRoots != 2)
     fail("SCF statement-major schedule did not materialize exact fission");
+}
+
+void imperfectGeneralScheduleMaterializes(
+    const loom::fabric::FinalizedFabricRoot &fabric) {
+  auto parent = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+module attributes {dlti.dl_spec = #layout} {
+  func.func @imperfect(%a: memref<?xi32>, %b: memref<?xi32>,
+                       %c: memref<?x?xi32>, %d: memref<?xi32>,
+                       %m: index, %n: index) {
+    %a0, %b0, %c0, %d0 = memref.distinct_objects %a, %b, %c, %d
+        : memref<?xi32>, memref<?xi32>, memref<?x?xi32>, memref<?xi32>
+    affine.for %i = 0 to %m {
+      %outer = affine.load %a0[%i] : memref<?xi32>
+      affine.for %j = 0 to %n {
+        %lhs = affine.load %a0[%i] : memref<?xi32>
+        %rhs = affine.load %b0[%j] : memref<?xi32>
+        %sum = arith.addi %lhs, %rhs : i32
+        affine.store %sum, %c0[%i, %j] : memref<?x?xi32>
+      }
+      %after = affine.load %d0[%i] : memref<?xi32>
+    }
+    return
+  }
+}
+)mlir");
+  const loom::frontend::StructuredEntityRef root = loopReferences(parent).first;
+  auto analysis =
+      take(loom::frontend::analyzeStructuredPolyhedralScop(parent, root));
+  const auto *scop =
+      std::get_if<loom::frontend::StructuredPolyhedralScopView>(&analysis);
+  if (!scop || !scop->imperfectNest || scop->loopCount != 2 ||
+      scop->maximumLoopDepth != 2 || scop->statements.size() != 6 ||
+      scop->schedule.scheduleBandCount < 2 ||
+      scop->schedule.form !=
+          loom::frontend::StructuredPolyhedralScheduleForm::General ||
+      llvm::none_of(
+          scop->statements,
+          [](const auto &statement) {
+            return statement.domain.dimensions.size() == 1;
+          }) ||
+      llvm::none_of(
+          scop->statements,
+          [](const auto &statement) {
+            return statement.domain.dimensions.size() == 2;
+          }) ||
+      llvm::none_of(
+          scop->dependences,
+          [](const auto &dependence) {
+            return dependence.kind ==
+                   loom::frontend::StructuredPolyhedralDependenceKind::
+                       ScalarSsa;
+          }))
+    fail("imperfect fixture left its admitted general schedule");
+
+  auto domain = take(
+      loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 2));
+  auto proposal = llvm::find_if(domain.proposals, [&](const auto &candidate) {
+    return candidate.decision().loop == root &&
+           candidate.decision().kind ==
+               loom::frontend::StructuredScheduleDecisionKind::
+                   PolyhedralSchedule;
+  });
+  if (proposal == domain.proposals.end() ||
+      llvm::any_of(domain.refusals, [&](const auto &refusal) {
+        return refusal.loop == root &&
+               refusal.kind == loom::frontend::StructuredScopRefusalKind::
+                                   PolyhedralMaterializationUnavailable;
+      }))
+    fail("imperfect general schedule did not produce an exact proposal");
+
+  auto child = take(loom::frontend::materializeStructuredScheduleProposal(
+      parent, *proposal, fabric));
+  auto direct = take(loom::frontend::materializeStructuredScheduleDecision(
+      parent, proposal->decision()));
+  if (child.structuredProgram.identity() != direct.structuredProgram.identity())
+    fail("imperfect general schedule replay changed candidate identity");
+  if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
+          parent, fabric, proposal->decision(), child.structuredProgram))
+    fail("imperfect general derivation verification failed: " +
+         llvm::toString(std::move(error)));
+
+  mlir::func::FuncOp function =
+      child.structuredProgram.module().lookupSymbol<mlir::func::FuncOp>(
+          "imperfect");
+  if (!function)
+    fail("imperfect general child lost its function");
+  std::size_t affineLoops = 0;
+  std::size_t scheduledLoops = 0;
+  std::size_t loads = 0;
+  std::size_t stores = 0;
+  std::size_t additions = 0;
+  function.walk([&](mlir::Operation *operation) {
+    affineLoops += llvm::isa<mlir::affine::AffineForOp>(operation);
+    scheduledLoops += llvm::isa<mlir::scf::ForOp>(operation);
+    loads += llvm::isa<mlir::memref::LoadOp>(operation);
+    stores += llvm::isa<mlir::memref::StoreOp>(operation);
+    additions += llvm::isa<mlir::arith::AddIOp>(operation) &&
+                 operation->getResult(0).getType().isInteger(32);
+  });
+  if (affineLoops != 0 || scheduledLoops < 2 || loads != 4 || stores != 1 ||
+      additions != 1)
+    fail("imperfect general child changed its exact statement realization");
 }
 
 void statementMajorScheduleMaterializesAndReplays() {
@@ -384,12 +489,15 @@ module {
           &scalarAnalysis);
   if (!scalarScop ||
       scalarScop->schedule.form !=
-          loom::frontend::StructuredPolyhedralScheduleForm::StatementMajor ||
+          loom::frontend::StructuredPolyhedralScheduleForm::SourceOrder ||
       llvm::none_of(scalarScop->dependences, [](const auto &dependence) {
         return dependence.kind ==
                loom::frontend::StructuredPolyhedralDependenceKind::ScalarSsa;
       }))
-    fail("scalar-expansion fixture left its exact provider form");
+    fail("scalar precedence fixture left its source-order provider form: " +
+         std::to_string(
+             scalarScop ? static_cast<std::uint32_t>(scalarScop->schedule.form)
+                        : 99));
   auto scalarDomain = take(loom::frontend::enumerateStructuredScheduleDecisions(
       scalarExpansion, fabric, 2));
   if (llvm::any_of(scalarDomain.proposals,
@@ -399,13 +507,14 @@ module {
                                 loom::frontend::StructuredScheduleDecisionKind::
                                     PolyhedralSchedule;
                    }) ||
-      llvm::none_of(scalarDomain.refusals, [&](const auto &refusal) {
+      llvm::any_of(scalarDomain.refusals, [&](const auto &refusal) {
         return refusal.loop == scalarRoot &&
                refusal.kind == loom::frontend::StructuredScopRefusalKind::
                                    PolyhedralMaterializationUnavailable;
       }))
-    fail("cross-statement SSA escaped its typed materialization refusal");
+    fail("source-order scalar precedence acquired a false transform refusal");
   scfStatementMajorScheduleMaterializes(fabric);
+  imperfectGeneralScheduleMaterializes(fabric);
   llvm::sys::fs::remove_directories(directory);
 }
 

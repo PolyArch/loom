@@ -1035,6 +1035,14 @@ refusePolyhedral(const StructuredEntityRef &loop,
   return StructuredScopRefusal{loop, kind, dependenceQueryCount};
 }
 
+bool valueDefinedInside(mlir::Value value, mlir::Operation *root) {
+  mlir::Region *region = value.getParentRegion();
+  if (!region || root->getNumRegions() == 0)
+    return false;
+  mlir::Region &rootRegion = root->getRegion(0);
+  return region == &rootRegion || rootRegion.isAncestor(region);
+}
+
 } // namespace
 
 llvm::Expected<StructuredScopAnalysisOutcome>
@@ -1422,6 +1430,11 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
     return invalid("Polly/ISL schedule changed parameter cardinality");
   result.parameters.reserve(providerSchedule.parameters.size());
   for (mlir::Value parameter : providerSchedule.parameters) {
+    if (valueDefinedInside(parameter, projectedLoop->getOperation()))
+      return refusePolyhedral(
+          loopReference,
+          StructuredScopRefusalKind::PolyhedralMaterializationUnavailable,
+          result.dependenceQueryCount);
     auto reference = valueReference(parameter, projectedValueReferences);
     if (!reference)
       return reference.takeError();

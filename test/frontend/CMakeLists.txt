@@ -212,6 +212,7 @@ target_link_libraries(loom-structured-polyhedral-schedule-test PRIVATE
   MLIRAffineDialect
   MLIRArithDialect
   MLIRDataflow
+  MLIRDLTIDialect
   MLIRFuncDialect
   MLIRIR
   MLIRLoom
