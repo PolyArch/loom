@@ -106,27 +106,6 @@ template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
   return values.capacity() * sizeof(T);
 }
 
-void emitHandshakeProjectionStatistics(
-    const HandshakeProjectionStatistics &statistics,
-    std::uint64_t seedAttemptOrdinal) {
-  mapping_debug::emit(
-      mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
-      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
-        fields["context_kind"] = "spatial_provisional_handshake";
-        fields["seed_attempt"] = seedAttemptOrdinal;
-        fields["projection_count"] = statistics.projectionCount;
-        fields["construction_time_ns"] = statistics.constructionNanoseconds;
-        fields["deterministic_work"] = statistics.deterministicWork;
-        fields["retained_bytes"] = statistics.retainedBytes;
-        fields["peak_active_node_count"] = statistics.peakActiveNodeCount;
-        fields["peak_active_arc_count"] = statistics.peakActiveArcCount;
-        fields["cold_verification_count"] =
-            statistics.coldVerificationCount;
-        fields["cold_verification_time_ns"] =
-            statistics.coldVerificationNanoseconds;
-      });
-}
-
 void encodeSpatialAction(llvm::json::Object &fields,
                          const SpatialMappingAction &action) {
   std::visit(
@@ -385,7 +364,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                               });
     if (llvm::Error error = candidate.verify())
       return std::move(error);
-    emitHandshakeProjectionStatistics(
+    emitProvisionalHandshakeProjectionStatistics(
         actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   }
@@ -510,7 +489,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     }
     if (llvm::Error error = candidateHandle->verify())
       return std::move(error);
-    emitHandshakeProjectionStatistics(
+    emitProvisionalHandshakeProjectionStatistics(
         actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   };
@@ -534,7 +513,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["seed_attempt"] = seedAttemptOrdinal;
                                 fields["reason"] = "completion_goal_reached";
                               });
-    emitHandshakeProjectionStatistics(
+    emitProvisionalHandshakeProjectionStatistics(
         actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   };
@@ -556,7 +535,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["temperature_levels"] =
                                     statistics.temperatureLevelCount;
                               });
-    emitHandshakeProjectionStatistics(
+    emitProvisionalHandshakeProjectionStatistics(
         actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   };
@@ -1025,7 +1004,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                     statistics.incumbentSnapshotCount;
                               });
   }
-  emitHandshakeProjectionStatistics(
+  emitProvisionalHandshakeProjectionStatistics(
       actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
   return statistics;
 }

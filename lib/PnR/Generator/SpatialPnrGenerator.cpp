@@ -944,6 +944,9 @@ SpatialRestartResult runSpatialRestartImpl(
           InternalSpatialPnrGenerationReason::AccountingOverflow,
           std::move(accounting), std::move(error));
     llvm::Error closureError = finalClosure.run(*seed->candidate);
+    emitFinalClosureHandshakeProjectionStatistics(
+        finalClosure.handshakeProjectionStatistics(), attempt,
+        accounting.finalClosureAttempts);
     if (llvm::Error error = checkedAdd(
             finalClosure.endpointExpansionCount(),
             accounting.plannedEndpointExpansionSlots,

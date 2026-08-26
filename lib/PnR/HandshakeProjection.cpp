@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -39,6 +40,31 @@ struct HandshakeProjectionScratchStorage final {
 } // namespace loom::pnr::detail
 
 namespace {
+
+void emitHandshakeProjectionStatistics(
+    const HandshakeProjectionStatistics &statistics,
+    llvm::StringRef contextKind, std::uint64_t seedAttemptOrdinal,
+    std::optional<std::uint64_t> finalClosureAttemptOrdinal) {
+  loom::mapping_debug::emit(
+      loom::mapping_debug::Level::Summary,
+      loom::mapping_debug::Stage::SpatialPnr,
+      loom::mapping_debug::Event::DerivedContext,
+      [&](llvm::json::Object &fields) {
+        fields["context_kind"] = contextKind;
+        fields["seed_attempt"] = seedAttemptOrdinal;
+        if (finalClosureAttemptOrdinal)
+          fields["final_closure_attempt"] = *finalClosureAttemptOrdinal;
+        fields["projection_count"] = statistics.projectionCount;
+        fields["construction_time_ns"] = statistics.constructionNanoseconds;
+        fields["deterministic_work"] = statistics.deterministicWork;
+        fields["retained_bytes"] = statistics.retainedBytes;
+        fields["peak_active_node_count"] = statistics.peakActiveNodeCount;
+        fields["peak_active_arc_count"] = statistics.peakActiveArcCount;
+        fields["cold_verification_count"] = statistics.coldVerificationCount;
+        fields["cold_verification_time_ns"] =
+            statistics.coldVerificationNanoseconds;
+      });
+}
 
 llvm::Error projectionError(const llvm::Twine &message) {
   return llvm::make_error<llvm::StringError>(
@@ -98,6 +124,22 @@ void assignNodeKey(const detail::HandshakeNodeIdentity &identity,
 }
 
 } // namespace
+
+void loom::pnr::emitProvisionalHandshakeProjectionStatistics(
+    const HandshakeProjectionStatistics &statistics,
+    std::uint64_t seedAttemptOrdinal) {
+  emitHandshakeProjectionStatistics(statistics, "spatial_provisional_handshake",
+                                    seedAttemptOrdinal, std::nullopt);
+}
+
+void loom::pnr::emitFinalClosureHandshakeProjectionStatistics(
+    const HandshakeProjectionStatistics &statistics,
+    std::uint64_t seedAttemptOrdinal,
+    std::uint64_t finalClosureAttemptOrdinal) {
+  emitHandshakeProjectionStatistics(
+      statistics, "spatial_final_closure_handshake", seedAttemptOrdinal,
+      finalClosureAttemptOrdinal);
+}
 
 std::string loom::pnr::detail::nodeKey(const HandshakeNodeIdentity &identity) {
   std::string key;

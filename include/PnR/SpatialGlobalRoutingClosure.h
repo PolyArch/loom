@@ -53,6 +53,9 @@ public:
   std::uint64_t negotiationIterationCount() const {
     return actionExecutor_.negotiationIterationCount();
   }
+  HandshakeProjectionStatistics handshakeProjectionStatistics() const {
+    return actionExecutor_.handshakeProjectionStatistics();
+  }
 
   std::size_t retainedStorageBytes() const;
 

@@ -57,6 +57,13 @@ struct HandshakeProjectionStatistics final {
   std::uint64_t coldVerificationNanoseconds = 0;
 };
 
+void emitProvisionalHandshakeProjectionStatistics(
+    const HandshakeProjectionStatistics &statistics,
+    std::uint64_t seedAttemptOrdinal);
+void emitFinalClosureHandshakeProjectionStatistics(
+    const HandshakeProjectionStatistics &statistics,
+    std::uint64_t seedAttemptOrdinal, std::uint64_t finalClosureAttemptOrdinal);
+
 /// Rebuilds the selected handshake graph from immutable projection inputs and
 /// checks its closure with one deterministic whole-graph pass. This path does
 /// not read or mutate candidate state.
