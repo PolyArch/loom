@@ -649,7 +649,6 @@ SpatialRestartResult runSpatialRestartImpl(
   if (!preparedSeedHandoff && executionControl.stopRequested())
     return restartInterrupted(SpatialPnrInterruptionStage::SeedConstruction,
                               std::move(accounting));
-  accounting.plannedSeedAttemptSlots = 1;
   const SpatialPnrWorkLedgerView workLedger = canonicalWorkLedger(accounting);
   const auto &search = problem->config().policy().search;
   SpatialAnnealingSearchScratch &annealing = scratch.annealing;
@@ -691,6 +690,18 @@ SpatialRestartResult runSpatialRestartImpl(
     seedFailure.emplace(classifyAttemptFailure(seed.takeError()));
   const bool seedAttemptCompleted =
       !seedFailure || seedFailure->kind != AttemptFailureKind::Internal;
+  if (llvm::Error error = checkedAdd(seedWork.plannedSeedAttempts,
+                                     accounting.plannedSeedAttemptSlots,
+                                     "planned seed attempt slots"))
+    return restartInternal(
+        InternalSpatialPnrGenerationReason::AccountingOverflow,
+        std::move(accounting), std::move(error));
+  if (llvm::Error error =
+          checkedAdd(seedWork.seedAttempts, accounting.seedAttemptSlots,
+                     "seed attempt slots"))
+    return restartInternal(
+        InternalSpatialPnrGenerationReason::AccountingOverflow,
+        std::move(accounting), std::move(error));
   if (llvm::Error error =
           checkedAdd(seedWork.plannedInitializerAssignmentAttempts,
                      accounting.plannedInitializerAssignmentAttempts,
@@ -729,16 +740,12 @@ SpatialRestartResult runSpatialRestartImpl(
     return restartInternal(
         InternalSpatialPnrGenerationReason::AccountingOverflow,
         std::move(accounting), std::move(error));
-  if (seedWork.seedAttemptCompleted != seedAttemptCompleted)
+  if (seedWork.plannedSeedAttempts != 1 || seedWork.seedAttempts > 1 ||
+      (seedWork.seedAttempts != 0) != seedAttemptCompleted)
     return restartInternal(
         InternalSpatialPnrGenerationReason::SeedConstruction,
         std::move(accounting),
         "canonical seed owner completion disagrees with its typed outcome");
-  if (seedAttemptCompleted)
-    if (llvm::Error error = workLedger.consume(SpatialPnrWorkKind::SeedAttempt))
-      return restartInternal(
-          InternalSpatialPnrGenerationReason::AccountingOverflow,
-          std::move(accounting), std::move(error));
   if (executionControl.stopRequested())
     return restartInterrupted(SpatialPnrInterruptionStage::SeedConstruction,
                               std::move(accounting));

@@ -35,8 +35,9 @@ struct SpatialExactRepairResult final {
 
 /// Returns the exact reason that the selected repair provider cannot encode
 /// the frozen search domain. This check is run before mutable Candidate state
-/// exists; an empty result means every reachable repair witness is covered by
-/// one of the provider's complete encodings.
+/// exists; an empty result only excludes statically recognizable domain-level
+/// capability mismatches. Candidate-local witnesses still undergo typed
+/// runtime capability checks.
 std::optional<std::string>
 unsupportedSpatialExactRepairDomain(const FrozenSpatialPnrProblem &problem);
 
