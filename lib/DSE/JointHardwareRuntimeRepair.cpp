@@ -756,6 +756,7 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
       return std::move(error);
   }
 
+  const bool coldComparisonBaseline = request.coldComparisonBaseline;
   JointHardwareReopenRequest coldRequest = request;
   llvm::SmallString<256> coldJournal(coldRequest.journalRoot);
   llvm::sys::path::append(coldJournal, "cold");
@@ -764,13 +765,21 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
   llvm::SmallString<256> incrementalJournal(incrementalRequest.journalRoot);
   llvm::sys::path::append(incrementalJournal, "incremental");
   incrementalRequest.journalRoot = incrementalJournal.str().str();
-  auto coldExecution =
-      executeIndependentMutationPlan(*coldPlan, policy, coldRequest, artifacts,
-                                     blobs);
-  if (!coldExecution)
-    return coldExecution.takeError();
-  coldExecution->summary.coldReopenWallTimeNanoseconds =
-      coldExecution->summary.executionWallTimeNanoseconds;
+  // The cold plan is an independent comparison oracle, never the repaired
+  // Mapping. Executing it unconditionally doubled every hardware repair, and
+  // when the rebase preserved nothing the preserve-first plan is itself
+  // unseeded, so the identical plan ran twice.
+  std::optional<JointDesignExecution> coldExecution;
+  if (coldComparisonBaseline) {
+    auto executed = executeIndependentMutationPlan(*coldPlan, policy,
+                                                   coldRequest, artifacts,
+                                                   blobs);
+    if (!executed)
+      return executed.takeError();
+    coldExecution = std::move(*executed);
+    coldExecution->summary.coldReopenWallTimeNanoseconds =
+        coldExecution->summary.executionWallTimeNanoseconds;
+  }
   auto incrementalExecution = executeIndependentMutationPlan(
       *incrementalPlan, policy, incrementalRequest, artifacts, blobs);
   if (!incrementalExecution)
@@ -779,10 +788,12 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
                                rebased->accounting, rebased->disposition);
 
   std::vector<ArtifactRootReference> coldMappings =
-      mappingRoots(*coldExecution);
+      coldExecution ? mappingRoots(*coldExecution)
+                    : std::vector<ArtifactRootReference>();
   std::vector<ArtifactRootReference> incrementalMappings =
       mappingRoots(*incrementalExecution);
-  coldExecution->summary.verifiedAlternatives = coldMappings.size();
+  if (coldExecution)
+    coldExecution->summary.verifiedAlternatives = coldMappings.size();
   incrementalExecution->summary.verifiedAlternatives =
       incrementalMappings.size();
   auto coldVerification = independentlyVerifyChildMappings(
@@ -811,10 +822,12 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
         fields["system_mapping_reuse_disposition"] =
             jointSystemMappingReuseDispositionSpelling(systemDisposition);
         fields["rebase_failure_count"] = rebased->failures.size();
+        fields["cold_comparison_baseline"] = coldComparisonBaseline;
         fields["cold_mapping_count"] = coldMappings.size();
         fields["incremental_mapping_count"] = incrementalMappings.size();
-        fields["cold_wall_time_ns"] =
-            coldExecution->summary.executionWallTimeNanoseconds;
+        if (coldExecution)
+          fields["cold_wall_time_ns"] =
+              coldExecution->summary.executionWallTimeNanoseconds;
         fields["incremental_wall_time_ns"] =
             incrementalExecution->summary.executionWallTimeNanoseconds;
         fields["cold_verifier_retained_bytes"] =
@@ -833,7 +846,7 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
                                      std::move(*incrementalPlan),
                                      std::move(coldMappings),
                                      std::move(incrementalMappings),
-                                     std::move(*coldExecution),
+                                     std::move(coldExecution),
                                      std::move(*incrementalExecution),
                                      std::move(*coldVerification),
                                      std::move(*incrementalVerification)};

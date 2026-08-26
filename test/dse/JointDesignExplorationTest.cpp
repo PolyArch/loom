@@ -1100,18 +1100,23 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                                            "-" + label.str());
       const std::string producer =
           "loom.test.hardware_mutation_matrix." + label.str() + ".v1";
+      loom::dse::JointHardwareReopenRequest repairRequest{
+          take(loom::dse::DseProducerSemanticBuildIdentity::get(producer)),
+          journal.str().str(),
+          {},
+          loom::dse::JointDesignStoppingPolicy::FirstVerified,
+          std::nullopt,
+          std::nullopt,
+          take(loom::dse::SiteCapacity::get(2, 0, 0)),
+          take(loom::dse::PlanExecutionPolicy::get(
+              2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))};
+      // The matrix is the evidence owner for cold versus preserve-first
+      // repair, so it asks for the independent cold oracle that ordinary
+      // production repair does not run.
+      repairRequest.coldComparisonBaseline = true;
       auto repair = take(loom::dse::executeJointHardwareMutationRepair(
           plan, parentExecution, policy, mappings.front(), std::move(child),
-          {take(loom::dse::DseProducerSemanticBuildIdentity::get(producer)),
-           journal.str().str(),
-           {},
-           loom::dse::JointDesignStoppingPolicy::FirstVerified,
-           std::nullopt,
-           std::nullopt,
-           take(loom::dse::SiteCapacity::get(2, 0, 0)),
-           take(loom::dse::PlanExecutionPolicy::get(
-               2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
-          store, blobs));
+          std::move(repairRequest), store, blobs));
       const auto verified = [](const auto &statistics, std::size_t count) {
         return statistics.importRequests == count &&
                statistics.cacheMisses == count &&
@@ -1120,11 +1125,11 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                statistics.retainedBytes != 0;
       };
       if (repair.coldMappings.empty() || repair.incrementalMappings.empty() ||
-          repair.coldExecution.summary.techMappingDispatchCount == 0 ||
-          repair.coldExecution.summary.spatialPnrDispatchCount == 0 ||
-          repair.coldExecution.summary.systemPnrDispatchCount == 0 ||
+          repair.coldExecution->summary.techMappingDispatchCount == 0 ||
+          repair.coldExecution->summary.spatialPnrDispatchCount == 0 ||
+          repair.coldExecution->summary.systemPnrDispatchCount == 0 ||
           repair.incrementalExecution.summary.systemPnrDispatchCount == 0 ||
-          repair.coldExecution.summary.coldReopenWallTimeNanoseconds == 0 ||
+          repair.coldExecution->summary.coldReopenWallTimeNanoseconds == 0 ||
           (repair.rebase.disposition ==
                    loom::dse::JointMappingReuseDisposition::ColdFallback
                ? repair.incrementalExecution.summary
@@ -1176,8 +1181,11 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                           repair.rebase.disposition)
                    << " system="
                    << loom::dse::jointSystemMappingReuseDispositionSpelling(
-                          repair.systemDisposition)
-                   << "\n";
+                          repair.systemDisposition);
+      for (const auto &failure : repair.rebase.failures)
+        llvm::outs() << " failure=" << static_cast<int>(failure.reason) << ":"
+                     << failure.diagnostic;
+      llvm::outs() << "\n";
       return repair;
     };
 

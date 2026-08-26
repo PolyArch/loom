@@ -121,6 +121,13 @@ struct JointHardwareReopenRequest final {
   /// but not owned by the Mapping plan. They join every parent and repair
   /// closure and remain ordinary semantic inputs rather than Evidence.
   std::vector<ArtifactRootReference> invocationSemanticInputs;
+  /// Executes an additional unseeded Mapping plan beside the preserve-first
+  /// plan so a caller can compare cold and incremental repair as independent
+  /// oracles. The cold result is never the repaired Mapping: when the rebase
+  /// preserves nothing the preserve-first plan is already unseeded, so the two
+  /// plans are identical and the work is paid twice. Callers that only need the
+  /// repaired Mapping must leave this disabled.
+  bool coldComparisonBaseline = false;
 };
 
 struct JointRepairQualitySelection final {
@@ -230,9 +237,12 @@ struct JointHardwareMutationRepair final {
       JointSystemMappingReuseDisposition::ColdFallback;
   JointDesignExplorationPlan coldPlan;
   JointDesignExplorationPlan incrementalPlan;
+  /// Empty unless `JointHardwareReopenRequest::coldComparisonBaseline` asked
+  /// for the independent cold oracle. The repaired Mapping is always the
+  /// preserve-first result.
   std::vector<ArtifactRootReference> coldMappings;
   std::vector<ArtifactRootReference> incrementalMappings;
-  JointDesignExecution coldExecution;
+  std::optional<JointDesignExecution> coldExecution;
   JointDesignExecution incrementalExecution;
   mapping::SystemMappingImportSessionStatistics coldVerification;
   mapping::SystemMappingImportSessionStatistics incrementalVerification;
