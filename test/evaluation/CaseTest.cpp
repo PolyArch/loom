@@ -120,7 +120,7 @@ void expectSimulationExecutionOwnerUnavailable(const char *test,
       std::move(error),
       [&](const EvaluationOwnerUnavailableError &failure) -> llvm::Error {
         matched = failure.ownerIdentity() == "loom.simulation_execution" &&
-                  failure.ownerVersion() == SchemaVersion{1, 0};
+                  failure.ownerVersion() == SchemaVersion{2, 0};
         return llvm::Error::success();
       });
   if (remaining)

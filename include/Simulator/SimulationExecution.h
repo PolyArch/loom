@@ -27,7 +27,7 @@ class BlobStore;
 namespace loom::sim {
 
 inline constexpr ArtifactSchemaDescriptor simulationExecutionSchema{
-    "loom.simulation_execution", SchemaVersion{1, 0}};
+    "loom.simulation_execution", SchemaVersion{2, 0}};
 
 struct RetiredExecution {};
 
@@ -82,10 +82,20 @@ struct SystemEventCoordinate {
 int compareSystemEventCoordinates(const SystemEventCoordinate &lhs,
                                   const SystemEventCoordinate &rhs);
 
+/// One canonical root-thread lifecycle event observed by the System runtime.
+/// The EventFamilyKey is the sole event identity; its root and lifecycle kind
+/// are always derived from the exact Request's Canonical Dataflow owner.
+struct SystemRootLifecycleObservation {
+  dataflow::EventFamilyKey event;
+  std::uint64_t occurrence = 0;
+  SystemEventCoordinate coordinate;
+};
+
 struct SystemProgressObservations {
   SystemEventCoordinate programEntryAccepted;
   std::optional<SystemEventCoordinate> programExitVisible;
   SystemEventCoordinate terminalObserved;
+  std::vector<SystemRootLifecycleObservation> rootLifecycle;
 };
 
 enum class ActivityWindow : std::uint32_t {
@@ -139,7 +149,7 @@ struct SystemSimulationExecution {
   ExecutionTerminal terminal;
   SystemFunctionalObservations functionalObservations;
   SystemProgressObservations progressObservations;
-  // Schema 1.0 activity payloads use Spatial reference-cycle windows, so this
+  // Schema 2.0 activity payloads use Spatial reference-cycle windows, so this
   // collection is required to be empty for System executions.
   std::vector<ActorTransitionsActivitySummary> activitySummaries;
 };

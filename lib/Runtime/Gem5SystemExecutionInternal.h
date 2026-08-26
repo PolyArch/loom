@@ -35,6 +35,8 @@ inline constexpr llvm::StringLiteral kSystemResultPath =
     "outputs/system-result.json";
 inline constexpr llvm::StringLiteral kMemoryResultPath =
     "outputs/system-memory.result";
+inline constexpr llvm::StringLiteral kRootLifecycleResultPath =
+    "outputs/system-root-lifecycle.result";
 inline constexpr llvm::StringLiteral kGem5PerformanceProfilePath =
     "outputs/gem5-attempt-performance.json";
 inline constexpr llvm::StringLiteral kCgraEnginePerformanceProfilePath =

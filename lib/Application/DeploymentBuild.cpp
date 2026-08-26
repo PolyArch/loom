@@ -1,5 +1,6 @@
 #include "Application/ActivationDecision.h"
 #include "Application/BuildDiagnostics.h"
+#include "Application/DeploymentRuntime.h"
 #include "ApplicationRuntimeValidationInternal.h"
 #include "BuildInternal.h"
 #include "ExecutionGlue.h"
@@ -51,80 +52,6 @@ namespace {
 
 constexpr std::uint64_t kPortableRiscVHostImageBase = 0x80000000;
 constexpr std::uint64_t kExecutablePageBytes = 4096;
-constexpr std::uint64_t kApplicationHostProgramEntryOrdinal = 0;
-
-struct FinalizedApplicationActivationInputs final {
-  ArtifactRootReference workload;
-  ArtifactRootReference runtimeInput;
-};
-
-llvm::Expected<FinalizedApplicationActivationInputs>
-finalizeApplicationActivationInputs(
-    const PreparedApplicationBuild &prepared,
-    const deployment::FinalizedDeployment &deployment,
-    const ArtifactStore &artifacts) {
-  auto source = sim::importStructuredProgramSimulationInputs(
-      prepared.preMappingWorkload, prepared.preMappingRuntimeInput, artifacts);
-  if (!source)
-    return source.takeError();
-  if (source->structuredProgram.identity() !=
-      prepared.preMappingSourceProgram.artifact)
-    return invalid(
-        "application source inputs name a foreign StructuredProgram");
-  const sim::StructuredProgramSimulationWorkload *sourceWorkload =
-      source->workload.structuredProgram();
-  const sim::StructuredProgramSimulationRuntimeInput *sourceRuntime =
-      source->runtimeInput.structuredProgram();
-  if (!sourceWorkload || !sourceRuntime)
-    return invalid(
-        "application source inputs are not StructuredProgram inputs");
-  if (!sourceWorkload->observableContract.memories.empty() ||
-      !sourceRuntime->memoryObjects.empty() ||
-      !sourceRuntime->pointerBindings.empty())
-    return invalid("Deployment activation memory ingress is unsupported");
-
-  sim::SystemSimulationWorkload activation{
-      {deployment.reference().artifact, kApplicationHostProgramEntryOrdinal}};
-  activation.valueInputPlan.reserve(sourceWorkload->argumentPlan.size());
-  for (const sim::StructuredProgramArgumentSource &argument :
-       sourceWorkload->argumentPlan) {
-    if (const auto *fixed =
-            std::get_if<sim::CanonicalValueSequence>(&argument)) {
-      activation.valueInputPlan.push_back(*fixed);
-      continue;
-    }
-    if (std::holds_alternative<sim::StructuredRuntimeValueInput>(argument)) {
-      activation.valueInputPlan.push_back(sim::RuntimeValueInput{});
-      continue;
-    }
-    return invalid("Deployment activation pointer ingress is unsupported");
-  }
-  if (sourceWorkload->observableContract.returnValue)
-    activation.observableContract.valueResults.push_back(0);
-  auto workload =
-      sim::finalizeSimulationWorkload(activation, deployment, artifacts);
-  if (!workload)
-    return workload.takeError();
-
-  sim::SystemSimulationRuntimeInputDraft runtime{workload->identity()};
-  runtime.runtimeEntryValues.reserve(sourceRuntime->runtimeValues.size());
-  for (const sim::StructuredRuntimeValueEntry &value :
-       sourceRuntime->runtimeValues)
-    runtime.runtimeEntryValues.push_back({value.argumentOrdinal, value.value});
-  auto runtimeInput = sim::finalizeSimulationRuntimeInput(
-      runtime, *workload, deployment, artifacts);
-  if (!runtimeInput)
-    return runtimeInput.takeError();
-  auto workloadReference = sim::publishSimulationWorkload(*workload, artifacts);
-  if (!workloadReference)
-    return workloadReference.takeError();
-  auto runtimeReference =
-      sim::publishSimulationRuntimeInput(*runtimeInput, artifacts);
-  if (!runtimeReference)
-    return runtimeReference.takeError();
-  return FinalizedApplicationActivationInputs{std::move(*workloadReference),
-                                              std::move(*runtimeReference)};
-}
 
 llvm::Expected<std::uint64_t> nextExecutableImageBase(std::uint64_t end) {
   if (end >
@@ -148,7 +75,7 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
     const ApplicationMappingExecution &mappingExecution,
     std::uint64_t selectedPlan, const ArtifactRootReference &selectedMapping,
     const deployment::FinalizedDeployment &deployment,
-    const FinalizedApplicationActivationInputs &activationInputs,
+    const ApplicationActivationInputs &activationInputs,
     const std::optional<pnr::ResourceTimeTransitionGraph> &transitionGraph,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (!mappingExecution.execution.summary.selectedPlanOrdinal ||
@@ -728,8 +655,9 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       finalLinkedModule, artifacts, blobs);
   if (!deployment)
     return deployment.takeError();
-  auto activationInputs =
-      finalizeApplicationActivationInputs(prepared, *deployment, artifacts);
+  auto activationInputs = materializeApplicationActivationInputs(
+      prepared.preMappingSourceProgram, prepared.preMappingWorkload,
+      prepared.preMappingRuntimeInput, *deployment, artifacts);
   if (!activationInputs)
     return activationInputs.takeError();
 

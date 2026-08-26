@@ -40,7 +40,8 @@ Each persistent fact has one owner:
   FPGA ordering code and typed technology-corner keys;
 * Deployment owns the complete selected executable closure, and
   RuntimePlatformBinding owns provider-facing installation compatibility;
-* `SimulationExecution` 1.0 owns workload terminal observables and activity;
+* `SimulationExecution` 2.0 owns workload terminal observables, activity, and
+  the narrow System root-lifecycle progress sequence;
 * owner-attempt or scratch storage retains large external payloads and raw
   tool products that have no semantic Artifact owner; and
 * report/visualization exports are removable projections.

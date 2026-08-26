@@ -6,10 +6,14 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Evaluation/ArtifactImportCache.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <utility>
 
 namespace loom::sim {
@@ -26,15 +30,14 @@ int compareSystemEventCoordinates(const SystemEventCoordinate &lhs,
 namespace {
 
 llvm::Expected<std::shared_ptr<const evaluation::EvaluationRequest>>
-importCachedRequest(
-    const ArtifactRootReference &reference,
-    const evaluation::CaseArtifactResolution &resolution,
-    const ArtifactStore &store, const BlobStore &blobs) {
+importCachedRequest(const ArtifactRootReference &reference,
+                    const evaluation::CaseArtifactResolution &resolution,
+                    const ArtifactStore &store, const BlobStore &blobs) {
   const std::array<ArtifactRootReference, 1> references{reference};
   return evaluation::importCachedArtifact<evaluation::EvaluationRequest>(
       store, &blobs, references, [&]() {
-        return evaluation::importEvaluationRequest(reference, resolution,
-                                                   store, blobs);
+        return evaluation::importEvaluationRequest(reference, resolution, store,
+                                                   blobs);
       });
 }
 
@@ -42,8 +45,7 @@ llvm::Expected<std::shared_ptr<const ImportedSystemSimulationInputs>>
 importCachedSystemInputs(const ArtifactRootReference &workload,
                          const ArtifactRootReference &runtimeInput,
                          const ArtifactStore &store, const BlobStore &blobs) {
-  const std::array<ArtifactRootReference, 2> references{workload,
-                                                       runtimeInput};
+  const std::array<ArtifactRootReference, 2> references{workload, runtimeInput};
   return evaluation::importCachedArtifact<ImportedSystemSimulationInputs>(
       store, &blobs, references, [&]() {
         return importSystemSimulationInputs(workload, runtimeInput, store,
@@ -289,7 +291,8 @@ validateFunctionalObservations(const SystemFunctionalObservations &observations,
 }
 
 llvm::Error validateProgress(const SystemProgressObservations &progress,
-                             const ExecutionTerminal &terminal) {
+                             const ExecutionTerminal &terminal,
+                             const detail::SystemExecutionContext &context) {
   if (compareSystemEventCoordinates(progress.programEntryAccepted,
                                     progress.terminalObserved) > 0)
     return detail::invalid("simulation execution: program-entry coordinate "
@@ -304,6 +307,82 @@ llvm::Error validateProgress(const SystemProgressObservations &progress,
   if (isRetired(terminal) && !progress.programExitVisible)
     return detail::invalid(
         "simulation execution: Retired execution requires program exit");
+
+  struct RootOccurrence {
+    std::uint64_t identity = 0;
+    dataflow::RootThreadLaunchRef root;
+    bool completed = false;
+  };
+  std::vector<RootOccurrence> occurrences;
+  occurrences.reserve(progress.rootLifecycle.size() / 2);
+  std::optional<SystemEventCoordinate> previous;
+  const SystemEventCoordinate eventLimit =
+      progress.programExitVisible.value_or(progress.terminalObserved);
+  for (const SystemRootLifecycleObservation &observation :
+       progress.rootLifecycle) {
+    if (previous &&
+        compareSystemEventCoordinates(*previous, observation.coordinate) >= 0)
+      return detail::invalid(
+          "simulation execution: root lifecycle coordinates are not "
+          "strictly increasing");
+    if (compareSystemEventCoordinates(progress.programEntryAccepted,
+                                      observation.coordinate) > 0 ||
+        compareSystemEventCoordinates(observation.coordinate, eventLimit) > 0)
+      return detail::invalid(
+          "simulation execution: root lifecycle coordinate is outside the "
+          "program execution interval");
+    previous = observation.coordinate;
+
+    auto root = context.dataflowView.eventRootThreadLaunch(observation.event);
+    if (!root) {
+      llvm::consumeError(root.takeError());
+      return detail::invalid(
+          "simulation execution: root lifecycle event is not owned by a "
+          "root thread launch");
+    }
+    const auto mapped = llvm::find(context.mappedRoots, *root);
+    if (mapped == context.mappedRoots.end())
+      return detail::invalid(
+          "simulation execution: root lifecycle event names an unmapped "
+          "root thread launch");
+    if (observation.occurrence == 0)
+      return detail::invalid(
+          "simulation execution: root lifecycle occurrence is zero");
+    const auto occurrence =
+        llvm::find_if(occurrences, [&](const RootOccurrence &candidate) {
+          return candidate.identity == observation.occurrence;
+        });
+    if (observation.event == dataflow::rootThreadStartEventFamily(*root)) {
+      if (occurrence != occurrences.end())
+        return detail::invalid(
+            "simulation execution: root lifecycle occurrence is reused");
+      occurrences.push_back({observation.occurrence, *root, false});
+      continue;
+    }
+    if (observation.event == dataflow::rootThreadCompletionEventFamily(*root)) {
+      if (occurrence == occurrences.end())
+        return detail::invalid(
+            "simulation execution: root completion precedes its start");
+      if (occurrence->root != *root)
+        return detail::invalid(
+            "simulation execution: root lifecycle occurrence changes root");
+      if (occurrence->completed)
+        return detail::invalid(
+            "simulation execution: root lifecycle repeats a completion "
+            "event");
+      occurrence->completed = true;
+      continue;
+    }
+    return detail::invalid(
+        "simulation execution: event is not a root lifecycle boundary");
+  }
+  if (isRetired(terminal) &&
+      llvm::any_of(occurrences, [](const RootOccurrence &occurrence) {
+        return !occurrence.completed;
+      }))
+    return detail::invalid(
+        "simulation execution: Retired execution has an active root "
+        "lifecycle occurrence");
   return llvm::Error::success();
 }
 
@@ -324,8 +403,8 @@ llvm::Error validateExecution(const SystemSimulationExecution &execution,
   if (llvm::Error error = detail::validateExecutionTerminal(execution.terminal,
                                                             terminalContext))
     return error;
-  if (llvm::Error error =
-          validateProgress(execution.progressObservations, execution.terminal))
+  if (llvm::Error error = validateProgress(execution.progressObservations,
+                                           execution.terminal, context))
     return error;
   return validateFunctionalObservations(execution.functionalObservations,
                                         execution.terminal, context);
@@ -525,8 +604,9 @@ decodeCoordinate(detail::WireReader &reader) {
   return SystemEventCoordinate{*tick, *delta};
 }
 
-void encodeProgress(detail::WireWriter &writer,
-                    const SystemProgressObservations &progress) {
+llvm::Error encodeProgress(detail::WireWriter &writer,
+                           const SystemProgressObservations &progress,
+                           const detail::SystemExecutionContext &context) {
   encodeCoordinate(writer, progress.programEntryAccepted);
   if (progress.programExitVisible) {
     writer.u32(1);
@@ -535,10 +615,24 @@ void encodeProgress(detail::WireWriter &writer,
     writer.u32(0);
   }
   encodeCoordinate(writer, progress.terminalObserved);
+  writer.u64(progress.rootLifecycle.size());
+  for (const SystemRootLifecycleObservation &observation :
+       progress.rootLifecycle) {
+    auto event = dataflow::encodeDataflowReference(
+        context.dataflowView.identity(), observation.event);
+    if (!event)
+      return event.takeError();
+    writer.u64(event->size());
+    writer.bytes(*event);
+    writer.u64(observation.occurrence);
+    encodeCoordinate(writer, observation.coordinate);
+  }
+  return llvm::Error::success();
 }
 
 llvm::Expected<SystemProgressObservations>
-decodeProgress(detail::WireReader &reader) {
+decodeProgress(detail::WireReader &reader,
+               const detail::SystemExecutionContext &context) {
   auto entry = decodeCoordinate(reader);
   if (!entry)
     return entry.takeError();
@@ -558,8 +652,38 @@ decodeProgress(detail::WireReader &reader) {
   auto terminal = decodeCoordinate(reader);
   if (!terminal)
     return terminal.takeError();
+  auto lifecycleCount = reader.u64();
+  if (!lifecycleCount)
+    return lifecycleCount.takeError();
+  if (llvm::Error error = reader.guardCount(*lifecycleCount, 32))
+    return std::move(error);
+  std::vector<SystemRootLifecycleObservation> lifecycle;
+  lifecycle.reserve(*lifecycleCount);
+  for (std::uint64_t index = 0; index != *lifecycleCount; ++index) {
+    auto eventSize = reader.u64();
+    if (!eventSize)
+      return eventSize.takeError();
+    if (*eventSize > std::numeric_limits<std::size_t>::max())
+      return detail::invalid(
+          "simulation execution: root lifecycle event is too large");
+    auto eventBytes = reader.bytes(static_cast<std::size_t>(*eventSize));
+    if (!eventBytes)
+      return eventBytes.takeError();
+    auto event = dataflow::decodeDataflowReference<dataflow::EventFamilyKey>(
+        *eventBytes, context.dataflowView.identity());
+    if (!event)
+      return event.takeError();
+    auto occurrence = reader.u64();
+    if (!occurrence)
+      return occurrence.takeError();
+    auto coordinate = decodeCoordinate(reader);
+    if (!coordinate)
+      return coordinate.takeError();
+    lifecycle.push_back(
+        {std::move(*event), *occurrence, std::move(*coordinate)});
+  }
   return SystemProgressObservations{std::move(*entry), std::move(exit),
-                                    std::move(*terminal)};
+                                    std::move(*terminal), std::move(lifecycle)};
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -575,7 +699,9 @@ encodeExecution(const SystemSimulationExecution &execution,
           writer, execution.terminal, terminalContext))
     return std::move(error);
   encodeFunctional(writer, execution.functionalObservations, context);
-  encodeProgress(writer, execution.progressObservations);
+  if (llvm::Error error =
+          encodeProgress(writer, execution.progressObservations, context))
+    return std::move(error);
   writer.u64(0);
   std::vector<std::uint8_t> tail = writer.take();
   bytes.insert(bytes.end(), tail.begin(), tail.end());
@@ -603,7 +729,7 @@ decodeExecution(llvm::ArrayRef<std::uint8_t> bytes,
   auto functional = decodeFunctional(reader, *context);
   if (!functional)
     return functional.takeError();
-  auto progress = decodeProgress(reader);
+  auto progress = decodeProgress(reader, *context);
   if (!progress)
     return progress.takeError();
   auto activityCount = reader.u64();
@@ -634,8 +760,8 @@ llvm::Expected<SimulationWorkloadKind>
 executionWorkloadKind(const ArtifactRootReference &requestReference,
                       const evaluation::CaseArtifactResolution &resolution,
                       const ArtifactStore &store, const BlobStore &blobs) {
-  auto request = importCachedRequest(requestReference, resolution, store,
-                                     blobs);
+  auto request =
+      importCachedRequest(requestReference, resolution, store, blobs);
   if (!request)
     return request.takeError();
   if (!(*request)->workload())
@@ -663,8 +789,8 @@ llvm::Expected<SystemExecutionContext> resolveSystemExecutionContext(
     const ArtifactRootReference &requestReference,
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &store, const BlobStore &blobs) {
-  auto request = importCachedRequest(requestReference, resolution, store,
-                                     blobs);
+  auto request =
+      importCachedRequest(requestReference, resolution, store, blobs);
   if (!request)
     return request.takeError();
   auto stoppedCardinality = resolveSimulationOutputCardinality(**request);
@@ -673,9 +799,8 @@ llvm::Expected<SystemExecutionContext> resolveSystemExecutionContext(
   if (!(*request)->workload() || !(*request)->runtimeInput())
     return invalid("simulation execution: Request workload inputs are not "
                    "total");
-  auto inputs = importCachedSystemInputs(*(*request)->workload(),
-                                         *(*request)->runtimeInput(), store,
-                                         blobs);
+  auto inputs = importCachedSystemInputs(
+      *(*request)->workload(), *(*request)->runtimeInput(), store, blobs);
   if (!inputs)
     return inputs.takeError();
   auto system = resolveSystemContext(
@@ -683,8 +808,33 @@ llvm::Expected<SystemExecutionContext> resolveSystemExecutionContext(
       store);
   if (!system)
     return system.takeError();
+  auto mapping = mapping::importSystemMapping(
+      (*inputs)->deployment.deployment().systemMapping(), store);
+  if (!mapping)
+    return mapping.takeError();
+  const ArtifactRootReference dataflowReference{
+      dataflow::canonicalDataflowSchema.identity.str(),
+      dataflow::canonicalDataflowSchema.version,
+      mapping->view().dataflowIdentity()};
+  const std::array<ArtifactRootReference, 1> dataflowReferences{
+      dataflowReference};
+  auto dataflowArtifact =
+      evaluation::importCachedArtifact<dataflow::CanonicalDataflowArtifact>(
+          store, &blobs, dataflowReferences, [&]() {
+            return dataflow::importCanonicalDataflow(dataflowReference, store);
+          });
+  if (!dataflowArtifact)
+    return dataflowArtifact.takeError();
+  auto dataflowView = (*dataflowArtifact)->view();
+  if (!dataflowView)
+    return dataflowView.takeError();
+  const auto mappedRoots =
+      mapping->view().executionBindings().rootThreadLaunches();
   return SystemExecutionContext{std::move(*request),
                                 std::move(*inputs),
+                                std::move(*dataflowArtifact),
+                                std::move(*dataflowView),
+                                {mappedRoots.begin(), mappedRoots.end()},
                                 std::move(*system),
                                 *stoppedCardinality,
                                 &resolution,

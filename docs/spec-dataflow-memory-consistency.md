@@ -347,12 +347,14 @@ the selected implementation or simulator executes its dynamic state.
 
 ## Diagnostic Simulation Projection
 
-`loom.simulation_execution 1.0` has no trace field. The current invocation-
-local `SpatialDiagnosticTrace` owned by Simulation Artifacts includes the
-typed `MemoryLinearizedTraceEvent`, but that diagnostic value has no Artifact
-identity or persistent wire. This document owns the semantic validity of its
-memory-relation fields. The event retains only primitive dynamic choices that
-cannot be recovered from the exact actor contract and program order:
+`loom.simulation_execution 2.0` has no general Spatial diagnostic-trace field.
+Its narrow System root-lifecycle sequence cannot carry memory-relation events.
+The current invocation-local `SpatialDiagnosticTrace` owned by Simulation
+Artifacts includes the typed `MemoryLinearizedTraceEvent`, but that diagnostic
+value has no Artifact identity or persistent wire. This document owns the
+semantic validity of its memory-relation fields. The event retains only
+primitive dynamic choices that cannot be recovered from the exact actor
+contract and program order:
 
 ```text
 reads_from

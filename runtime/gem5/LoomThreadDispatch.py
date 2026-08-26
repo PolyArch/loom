@@ -10,3 +10,6 @@ class LoomThreadDispatch(BasicPioDevice):
     workload = Param.LoomRiscvDeploymentWorkload(
         "Deployment workload that owns exact executable entries"
     )
+    root_event_trace_path = Param.String(
+        "Canonical root lifecycle attempt output"
+    )

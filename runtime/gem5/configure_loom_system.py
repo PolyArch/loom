@@ -32,7 +32,7 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.10"
+CONFIG_SCHEMA = "loom.gem5_system_projection.11"
 PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.3"
 STATISTICS_BEGIN = "---------- Begin Simulation Statistics ----------"
 STATISTICS_END = "---------- End Simulation Statistics   ----------"
@@ -425,6 +425,7 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
             "pio_latency",
             "stack_base",
             "stack_stride",
+            "root_event_trace_path",
             "targets",
         },
         "dispatch",
@@ -540,6 +541,7 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
         pio_addr=dispatch["pio_address"],
         pio_latency=dispatch["pio_latency"],
         workload=system.workload,
+        root_event_trace_path=dispatch["root_event_trace_path"],
     )
     system.loom_thread_dispatch.pio = system.membus.mem_side_ports
 
