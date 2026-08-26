@@ -498,12 +498,18 @@ prepareProductTarget(const ProductBuildOptions &options) {
   // A product build needs one verified Mapping, not the best Mapping in the
   // configured restart budget. Exhausting every restart multiplies Spatial and
   // System PnR by the restart count for a result the product path discards, so
-  // the deterministic exhaustive profile stays available to DSE quality search
-  // and the product path stops at its first verified candidate.
-  config->dse.spatialPnr.search.completionGoal =
-      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
-  config->dse.systemPnr.search.completionGoal =
-      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  // a builtin preset stops at its first verified candidate. An explicit
+  // ResolvedConfig remains the single policy owner: when the profile names a
+  // configuration file, its completion goals are published and executed
+  // exactly as written.
+  const bool builtinProfile =
+      isBuiltinConfigProfile(options.accelerationProfile);
+  if (builtinProfile) {
+    config->dse.spatialPnr.search.completionGoal =
+        ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+    config->dse.systemPnr.search.completionGoal =
+        ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  }
   auto publishedConfig = (*workspace)
                              ->artifacts()
                              .put(ResolvedConfig::artifactSchema,

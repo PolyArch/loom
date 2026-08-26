@@ -84,6 +84,10 @@ struct ResolvedConfig {
 ResolvedConfig defaultResolvedConfig();
 llvm::Expected<ResolvedConfig>
 resolveConfigProfile(llvm::StringRef builtinPresetOrConfigPath);
+/// True when the spelling names a builtin profile preset (or is empty, which
+/// selects the default preset) rather than an explicit configuration file. An
+/// explicit file remains the single policy owner for everything it states.
+bool isBuiltinConfigProfile(llvm::StringRef builtinPresetOrConfigPath);
 
 llvm::Expected<ResolvedConfig> loadResolvedConfig(llvm::StringRef path);
 llvm::Expected<ResolvedConfig> parseResolvedConfig(llvm::StringRef body,
