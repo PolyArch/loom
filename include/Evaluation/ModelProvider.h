@@ -117,11 +117,19 @@ struct EvaluationModelExternalPrepareImportProvider final {
                               const CaseArtifactResolution &resolution,
                               const ArtifactStore &artifactStore,
                               const BlobStore &blobStore) = nullptr;
+  llvm::Expected<EvaluationModelResult> (*importWithExecution)(
+      const EvaluationRequest &request,
+      const CaseArtifactResolution &resolution,
+      const external_tool::PreparedExternalToolInvocation &prepared,
+      const external_tool::ExternalToolInvocationExecutionObservation
+          &execution,
+      const ArtifactStore &artifactStore, const BlobStore &blobStore) = nullptr;
 
   friend bool
   operator==(const EvaluationModelExternalPrepareImportProvider &lhs,
              const EvaluationModelExternalPrepareImportProvider &rhs) {
     return lhs.prepare == rhs.prepare && lhs.import == rhs.import &&
+           lhs.importWithExecution == rhs.importWithExecution &&
            lhs.openInvocationContext == rhs.openInvocationContext;
   }
 };
@@ -186,6 +194,15 @@ bindPreparedEvaluationModelInvocation(
 llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const EvaluationModelPreparedInvocation &prepared,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
+
+/// Receipt-bound import for a just-executed invocation. Providers that expose
+/// this form must pass the observation to the strict ExternalTool importer;
+/// providers without it are only valid for recovery imports.
+llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const EvaluationModelPreparedInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
 /// Explicit cold/recovery import for a raw journalable ExternalTool handle.

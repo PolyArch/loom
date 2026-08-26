@@ -43,6 +43,7 @@ enum class ExecutionMatrixLifecycleOperation : std::uint8_t {
   RuntimeBindingAndDeploymentFinalization,
   WorkloadAndRuntimeInputPublication,
   HostLifecycle,
+  Gem5Readiness,
   Gem5Binding,
   RequestConstruction,
   OrdinaryPrepare,
@@ -72,6 +73,9 @@ public:
   operator=(const ExecutionMatrixLifecycleRecorder &) = delete;
 
   void emit(const ExecutionMatrixInvocation &invocation) const;
+  void emitAttemptPair(ExecutionMatrixCell cell) const;
+  std::uint64_t
+  operationCount(ExecutionMatrixLifecycleOperation operation) const;
 
 private:
   std::unique_ptr<Impl> impl_;
@@ -89,6 +93,8 @@ public:
       eda::test::MappedSpatialHardwareFixtureOperation operation);
   ~ExecutionMatrixLifecycleTimer();
 
+  std::uint64_t finish();
+
   ExecutionMatrixLifecycleTimer(const ExecutionMatrixLifecycleTimer &) = delete;
   ExecutionMatrixLifecycleTimer &
   operator=(const ExecutionMatrixLifecycleTimer &) = delete;
@@ -101,10 +107,16 @@ struct ExecutionMatrixImportSummary final {
   std::uint64_t gem5FactsRequests = 0;
   std::uint64_t gem5FactsHits = 0;
   std::uint64_t gem5FactsMisses = 0;
+  std::uint64_t gem5FactsConstructionAttempts = 0;
   std::uint64_t gem5FactsUniqueConstructions = 0;
+  std::uint64_t gem5FactsUncachedConstructions = 0;
+  std::uint64_t gem5FactsUnsupportedConstructions = 0;
+  std::uint64_t gem5FactsFailedConstructions = 0;
+  std::uint64_t gem5FactsRevalidationCount = 0;
   std::uint64_t gem5FactsRevalidatedArtifactBytes = 0;
   std::uint64_t gem5FactsRevalidatedBlobBytes = 0;
   std::uint64_t gem5FactsConstructionNanosecondsSaved = 0;
+  std::uint64_t gem5FactsEntryCount = 0;
   std::uint64_t artifactImportHits = 0;
   std::uint64_t fabricImportHits = 0;
   std::uint64_t configurationAbiImportHits = 0;
@@ -134,7 +146,8 @@ public:
 
   ExecutionMatrixImportSummary summary() const;
   bool reusedOneExactGem5FactsClosure() const;
-  void emitStatistics(const ExecutionMatrixInvocation &invocation) const;
+  bool reusedOneExactGem5FactsClosureAcrossAttemptPair() const;
+  void emitStatistics(const ExecutionMatrixInvocation &invocation);
 
 private:
   std::unique_ptr<Impl> impl_;

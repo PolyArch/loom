@@ -1,2 +1,0 @@
-# REQUIRES: gem5-25.1.0.1
-# RUN: loom-system-execution-matrix-test diagnostic-system-cgra %loom-gem5-readiness | FileCheck -DCELL=system-cgra -DATTEMPT=diagnostic -DINVOCATION=diagnostic-system-cgra %S/execution_matrix_setup_timing.check

@@ -451,6 +451,9 @@ struct InvocationContextProbeState final {
   std::uint64_t nextContextIdentity = 0;
   std::uint64_t prepareContextIdentity = 0;
   std::uint64_t importContextIdentity = 0;
+  std::uint64_t receiptBoundImportCount = 0;
+  std::optional<external_tool::ExternalToolInvocationExecutionObservation>
+      lastReceiptBoundExecution;
 };
 
 InvocationContextProbeState invocationContextProbe;
@@ -532,6 +535,21 @@ llvm::Expected<EvaluationModelResult> importContextAwareModel(
   return importTestModelValid(request, resolution, prepared, artifacts, blobs);
 }
 
+llvm::Expected<EvaluationModelResult> importContextAwareModelWithExecution(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  if (activeInvocationContextIdentity == 0)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "import has no invocation context");
+  invocationContextProbe.importContextIdentity =
+      activeInvocationContextIdentity;
+  ++invocationContextProbe.receiptBoundImportCount;
+  invocationContextProbe.lastReceiptBoundExecution = execution;
+  return importTestModelValid(request, resolution, prepared, artifacts, blobs);
+}
+
 const EvaluationModelProvider modelProvider{
     modelDescriptor.reference(),
     EvaluationModelInProcessProvider{&evaluateTestModel}};
@@ -553,9 +571,9 @@ const EvaluationModelProvider unsupportedExternalProvider{
 
 const EvaluationModelProvider contextAwareExternalProvider{
     contextAwareExternalModelDescriptor.reference(),
-    EvaluationModelExternalPrepareImportProvider{&prepareContextAwareModel,
-                                                 &importContextAwareModel,
-                                                 &openInvocationContextProbe}};
+    EvaluationModelExternalPrepareImportProvider{
+        &prepareContextAwareModel, &importContextAwareModel,
+        &openInvocationContextProbe, &importContextAwareModelWithExecution}};
 
 EvaluationSubjectBindings subjectBindings(const char *test) {
   return takeExpected(test, EvaluationSubjectBindings::get(
@@ -1234,6 +1252,90 @@ void externalInvocationContextSpansPrepareAndImport() {
           "bound recovery imports did not reuse their context");
 }
 
+void receiptBoundImportUsesExactExecutionObservation() {
+  TemporaryDirectory directory(__func__);
+  llvm::SmallString<128> blobRoot(directory.path());
+  llvm::sys::path::append(blobRoot, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobRoot))
+    fail(__func__, "could not create blob directory: " + error.message());
+  const ArtifactStore store(directory.path());
+  const BlobStore blobs(blobRoot);
+  const EvaluationRequest request = requestForDescriptor(
+      __func__, store, contextAwareExternalModelDescriptor.reference());
+  takeExpected(__func__, publishEvaluationRequest(request, store));
+  const CaseArtifactResolution resolution = caseResolution(__func__);
+  external_tool::ExternalToolPreparationContext preparationContext{
+      external_tool::defaultLocalToolConfig(), directory.path().str()};
+
+  invocationContextProbe = {};
+  EvaluationModelPreparation preparation = takeExpected(
+      __func__, prepareEvaluationModelInvocation(request, resolution, store,
+                                                 blobs, preparationContext));
+  auto *live = std::get_if<EvaluationModelPreparedInvocation>(&preparation);
+  require(__func__, live != nullptr,
+          "receipt-bound provider did not return a live invocation");
+
+  const external_tool::ExternalToolInvocationExecutionObservation expected{
+      computeBlobDigest(std::vector<std::uint8_t>{0x61}),
+      computeBlobDigest(std::vector<std::uint8_t>{0x62}),
+      0,
+      external_tool::ExternalToolResultReusePolicy::RequireFresh,
+      external_tool::ExternalToolResultCacheAvailability::Available,
+      external_tool::ExternalToolResultCacheLookup::Miss,
+      external_tool::ExternalToolResultCacheDiscard::NotAttempted,
+      external_tool::ExternalToolResultCachePublication::Published,
+      false,
+      true,
+      {{3, 1234, 0}},
+      {}};
+  const EvaluationEvidence evidence = takeExpected(
+      __func__, importEvaluationModelInvocation(request, resolution, *live,
+                                                expected, store, blobs));
+  require(__func__,
+          std::holds_alternative<CompletedEvidence>(evidence.outcome()),
+          "receipt-bound import did not produce completed Evidence");
+  require(__func__, invocationContextProbe.receiptBoundImportCount == 1,
+          "receipt-bound provider callback was not called exactly once");
+  require(__func__,
+          invocationContextProbe.lastReceiptBoundExecution.has_value(),
+          "receipt-bound provider did not retain the execution observation");
+  const auto &observed = *invocationContextProbe.lastReceiptBoundExecution;
+  require(__func__, observed.manifestDigest == expected.manifestDigest,
+          "receipt-bound import changed the manifest digest");
+  require(__func__, observed.attemptToken == expected.attemptToken,
+          "receipt-bound import changed the attempt token");
+  require(__func__, observed.exitCode == expected.exitCode,
+          "receipt-bound import changed the exit code");
+  require(__func__,
+          observed.reusePolicy == expected.reusePolicy &&
+              observed.cacheAvailability == expected.cacheAvailability &&
+              observed.cacheLookup == expected.cacheLookup &&
+              observed.cacheDiscard == expected.cacheDiscard &&
+              observed.cachePublication == expected.cachePublication,
+          "receipt-bound import changed cache disposition");
+  require(__func__,
+          observed.waitedForCacheKeyLock == expected.waitedForCacheKeyLock &&
+              observed.invokedExternalTool == expected.invokedExternalTool,
+          "receipt-bound import changed execution flags");
+  require(__func__, observed.commandExecutions == expected.commandExecutions,
+          "receipt-bound import changed command observations");
+
+  const EvaluationRequest rawOnlyRequest = requestForDescriptor(
+      __func__, store, importingExternalModelDescriptor.reference());
+  takeExpected(__func__, publishEvaluationRequest(rawOnlyRequest, store));
+  const EvaluationModelPreparedInvocation rawOnlyPrepared =
+      takeExpected(__func__, bindPreparedEvaluationModelInvocation(
+                                 rawOnlyRequest, resolution,
+                                 external_tool::PreparedExternalToolInvocation{
+                                     "raw-only", computeBlobDigest({})},
+                                 store, blobs));
+  expectErrorContains(
+      __func__,
+      importEvaluationModelInvocation(rawOnlyRequest, resolution,
+                                      rawOnlyPrepared, expected, store, blobs),
+      "receipt-bound import");
+}
+
 void providerDispatchUsesEvidenceOwner() {
   TemporaryDirectory directory(__func__);
   llvm::SmallString<128> blobRoot(directory.path());
@@ -1301,6 +1403,7 @@ int main() {
   externalModelProviderFormAdmission();
   externalPreparationFinalizesTypedUnsupported();
   externalInvocationContextSpansPrepareAndImport();
+  receiptBoundImportUsesExactExecutionObservation();
   providerAbsenceProducesTypedUnsupported();
   if (llvm::Error error = registerEvaluationModelProvider(modelProvider))
     fail("registration", llvm::toString(std::move(error)));

@@ -1356,7 +1356,7 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const ExternalToolInvocationExecutionObservation *executionObservation,
     Gem5SystemDiagnosticSidecar *diagnostics) {
-  if ((executionObservation != nullptr) != (diagnostics != nullptr))
+  if (diagnostics != nullptr && executionObservation == nullptr)
     return invalid("gem5 diagnostic import context is incomplete");
   std::vector<Gem5SpatialInvocationProjection> spatialInvocations;
   auto factsOrUnsupported = deriveFacts(request, resolution, artifacts, blobs);
@@ -1734,6 +1734,15 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   return importGem5SystemInvocationImpl(request, resolution, prepared,
                                         artifacts, blobs, nullptr, nullptr);
+}
+
+llvm::Expected<EvaluationModelResult> importGem5SystemInvocationWithExecution(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importGem5SystemInvocationImpl(request, resolution, prepared,
+                                        artifacts, blobs, &execution, nullptr);
 }
 
 llvm::Expected<Gem5SystemDiagnosticEvaluation>

@@ -1,2 +1,4 @@
 # REQUIRES: gem5-25.1.0.1, verilator
-# RUN: loom-system-execution-matrix-test system-rtl %loom-gem5-readiness | FileCheck -DCELL=system-rtl -DATTEMPT=ordinary -DINVOCATION=system-rtl %S/../execution_matrix_setup_timing.check
+# RUN: timeout %loom-timeout-medium loom-system-execution-matrix-test system-rtl-attempt-pair %loom-gem5-readiness > %t
+# RUN: FileCheck -DCELL=system-rtl %S/../execution_matrix_attempt_pair_setup.check < %t
+# RUN: FileCheck --check-prefixes=CHECK,RTL -DCELL=system-rtl -DORDINARY=system-rtl -DDIAGNOSTIC=diagnostic-system-rtl %S/../execution_matrix_attempt_pair.check < %t

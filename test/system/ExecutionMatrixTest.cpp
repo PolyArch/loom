@@ -51,6 +51,16 @@ int main(int argc, char **argv) {
     loom::system_test::verifyDeterministicSystemReplay(argv[2]);
     return EXIT_SUCCESS;
   }
+  if (argc == 3 &&
+      (llvm::StringRef(argv[1]) == "system-cgra-attempt-pair" ||
+       llvm::StringRef(argv[1]) == "system-rtl-attempt-pair")) {
+    loom::system_test::runSystemExecutionAttemptPair(
+        llvm::StringRef(argv[1]) == "system-cgra-attempt-pair"
+            ? loom::system_test::ExecutionMatrixCell::SystemCgra
+            : loom::system_test::ExecutionMatrixCell::SystemRtl,
+        argv[2]);
+    return EXIT_SUCCESS;
+  }
   if (argc != 2 && argc != 3) {
     llvm::errs() << "usage: " << argv[0]
                  << " <spatial-dfg|spatial-cgra|spatial-rtl|system-dfg|"
@@ -60,6 +70,9 @@ int main(int argc, char **argv) {
                     "[gem5-readiness]\n"
                  << "       " << argv[0]
                  << " deterministic-system-replay <gem5-readiness>\n";
+    llvm::errs() << "       " << argv[0]
+                 << " <system-cgra-attempt-pair|system-rtl-attempt-pair> "
+                    "<gem5-readiness>\n";
     llvm::errs() << "       " << argv[0]
                  << " paired-spatial-cgra-batch <warmup-runs> "
                     "<measurement-runs>\n";

@@ -12,6 +12,9 @@ namespace loom::system_test {
 void runExecutionMatrixCell(ExecutionMatrixInvocation invocation,
                             llvm::StringRef gem5ReadinessPath);
 
+void runSystemExecutionAttemptPair(ExecutionMatrixCell cell,
+                                   llvm::StringRef gem5ReadinessPath);
+
 void runPairedSpatialCgraBatch(std::uint64_t warmupRuns,
                                std::uint64_t measurementRuns);
 
