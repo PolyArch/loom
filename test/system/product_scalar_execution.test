@@ -1,5 +1,5 @@
 # REQUIRES: gem5-25.1.0.1
-# RUN: rm -rf %t.deployment %t.execution
+# RUN: rm -rf %t.deployment %t.execution %t.cgra-profile.json
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc %loom-product-acceleration-profile -std=c11 -O1 -ffp-contract=off \
 # RUN:   -fno-math-errno %S/Inputs/product_scalar.c -o %t.elf \
 # RUN:   --loom-deploy-output=%t.deployment \
@@ -9,6 +9,20 @@
 # RUN: env LOOM_VERBOSE_LEVEL=1 loom-system-run \
 # RUN:   --deployment-package=%t.deployment --output=%t.execution \
 # RUN:   --gem5-readiness=%loom-gem5-readiness --expected-i32=0 \
+# RUN:   --spatial-cgra-profile-output=%t.cgra-profile.json \
+# RUN:   --spatial-cgra-warmup-runs=1 --spatial-cgra-measurement-runs=3 \
 # RUN:   > %t.run.stdout 2> %t.run.stderr
+# RUN: %python %S/verify_spatial_cgra_qualification.py \
+# RUN:   --profile=%t.cgra-profile.json --manifest=%t.execution/manifest.json \
+# RUN:   --deployment-package=%t.deployment
+# RUN: rm -rf %t.profile-alias-execution
+# RUN: not loom-system-run --deployment-package=%t.deployment \
+# RUN:   --output=%t.profile-alias-execution \
+# RUN:   --gem5-readiness=%loom-gem5-readiness --expected-i32=0 \
+# RUN:   --spatial-cgra-profile-output=%t.profile-alias-execution/manifest.json \
+# RUN:   --spatial-cgra-warmup-runs=1 --spatial-cgra-measurement-runs=1
+# RUN: grep '"schema": "loom.execution_matrix_workspace.1.2"' \
+# RUN:   %t.profile-alias-execution/manifest.json
+# RUN: find %t.profile-alias-execution -name 'manifest.json.tmp-*' -print | count 0
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json

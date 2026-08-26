@@ -38,18 +38,23 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include <sys/resource.h>
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -80,6 +85,17 @@ llvm::cl::opt<std::string>
 llvm::cl::opt<std::int64_t>
     expectedI32("expected-i32",
                 llvm::cl::desc("Independent expected i32 result"));
+llvm::cl::opt<std::string> spatialCgraProfileOutput(
+    "spatial-cgra-profile-output",
+    llvm::cl::desc("Write invocation-local Spatial CGRA qualification data"),
+    llvm::cl::value_desc("path"));
+llvm::cl::opt<std::uint64_t> spatialCgraWarmupRuns(
+    "spatial-cgra-warmup-runs",
+    llvm::cl::desc("Prepared Spatial CGRA warmup attempts"), llvm::cl::init(0));
+llvm::cl::opt<std::uint64_t> spatialCgraMeasurementRuns(
+    "spatial-cgra-measurement-runs",
+    llvm::cl::desc("Prepared Spatial CGRA measured attempts"),
+    llvm::cl::init(0));
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -652,6 +668,26 @@ struct CompletedSpatialRun final {
   loom::sim::CanonicalSimulationExecution importedExecution;
 };
 
+struct SpatialCgraProfileSample final {
+  std::uint64_t attemptOrdinal = 0;
+  loom::ArtifactRootReference request;
+  loom::ArtifactRootReference evidence;
+  loom::ArtifactRootReference execution;
+  std::uint64_t referenceCycles = 0;
+  loom::evaluation::models::CgraSimulationAttemptProfile attempt;
+};
+
+struct SpatialCgraProfileRecord final {
+  std::size_t invocationOrdinal = 0;
+  std::vector<SpatialCgraProfileSample> warmups;
+  std::vector<SpatialCgraProfileSample> measurements;
+};
+
+struct ProfiledSpatialRun final {
+  CompletedSpatialRun completed;
+  SpatialCgraProfileSample sample;
+};
+
 bool sameValueSequence(const loom::sim::CanonicalValueSequence &lhs,
                        const loom::sim::CanonicalValueSequence &rhs) {
   return lhs.tokenCount == rhs.tokenCount && lhs.lanes == rhs.lanes;
@@ -1050,6 +1086,16 @@ completeSpatialRun(Engine engine, std::size_t invocationOrdinal,
                              std::move(*imported)};
 }
 
+llvm::Expected<loom::evaluation::models::PreparedCgraSimulationEvaluation>
+prepareSpatialCgra(const SpatialInvocationCase &invocation,
+                   const loom::ArtifactStore &artifacts,
+                   const loom::BlobStore &blobs) {
+  return loom::evaluation::models::prepareCgraSimulationEvaluation(
+      invocation.dataflow, invocation.fabric, invocation.spatialMapping,
+      invocation.workload, invocation.runtimeInput,
+      loom::defaultResolvedConfig(), artifacts, blobs);
+}
+
 llvm::Expected<CompletedSpatialRun>
 executeSpatial(Engine engine, const SpatialInvocationCase &invocation,
                const loom::ArtifactStore &artifacts,
@@ -1068,10 +1114,7 @@ executeSpatial(Engine engine, const SpatialInvocationCase &invocation,
                               prepared->resolution, std::move(*evidence),
                               artifacts, blobs);
   }
-  auto prepared = loom::evaluation::models::prepareCgraSimulationEvaluation(
-      invocation.dataflow, invocation.fabric, invocation.spatialMapping,
-      invocation.workload, invocation.runtimeInput,
-      loom::defaultResolvedConfig(), artifacts, blobs);
+  auto prepared = prepareSpatialCgra(invocation, artifacts, blobs);
   if (!prepared)
     return prepared.takeError();
   auto evidence = loom::evaluation::models::evaluateCgraSimulation(
@@ -1081,6 +1124,196 @@ executeSpatial(Engine engine, const SpatialInvocationCase &invocation,
   return completeSpatialRun(engine, invocation.ordinal, prepared->request,
                             prepared->resolution, std::move(*evidence),
                             artifacts, blobs);
+}
+
+llvm::Expected<ProfiledSpatialRun> executeProfiledSpatialCgra(
+    const loom::evaluation::models::PreparedCgraSimulationEvaluation &prepared,
+    const SpatialInvocationCase &invocation, std::uint64_t attemptOrdinal,
+    const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
+  auto evaluated =
+      loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
+          prepared, {1000000, std::nullopt}, artifacts, blobs);
+  if (!evaluated)
+    return evaluated.takeError();
+  auto completed = completeSpatialRun(
+      Engine::Cgra, invocation.ordinal, prepared.request, prepared.resolution,
+      std::move(evaluated->evidence), artifacts, blobs);
+  if (!completed)
+    return completed.takeError();
+  const auto *spatial = completed->importedExecution.spatial();
+  if (!spatial || !spatial->progressObservations.graphRetirementVisible ||
+      spatial->progressObservations.graphRetirementVisible->referenceCycle
+              .denominator() != 1)
+    return invalid("profiled Spatial CGRA execution has no integral "
+                   "retirement cycle");
+  const std::uint64_t referenceCycles =
+      spatial->progressObservations.graphRetirementVisible->referenceCycle
+          .numerator();
+  if (!evaluated->attemptProfile || referenceCycles == 0 ||
+      evaluated->attemptProfile->engineActiveWallNanoseconds == 0 ||
+      evaluated->attemptProfile->counters.eventFrameCount == 0)
+    return invalid("profiled Spatial CGRA execution contains no active work");
+  SpatialCgraProfileSample sample{
+      attemptOrdinal,      completed->request,
+      completed->evidence, completed->execution,
+      referenceCycles,     std::move(*evaluated->attemptProfile)};
+  return ProfiledSpatialRun{std::move(*completed), std::move(sample)};
+}
+
+void writeOptionalUnsigned(llvm::json::OStream &json, llvm::StringRef key,
+                           std::optional<std::uint64_t> value) {
+  if (value)
+    json.attribute(key, *value);
+  else
+    json.attribute(key, nullptr);
+}
+
+void writeProfileSample(llvm::json::OStream &json,
+                        const SpatialCgraProfileSample &sample) {
+  const auto &profile = sample.attempt;
+  const auto &counters = profile.counters;
+  json.object([&] {
+    json.attribute("attempt_ordinal", sample.attemptOrdinal);
+    json.attribute("reference_cycles", sample.referenceCycles);
+    json.attribute("attempt_setup_wall_nanoseconds",
+                   profile.attemptSetupWallNanoseconds);
+    writeOptionalUnsigned(json, "attempt_setup_process_cpu_nanoseconds",
+                          profile.attemptSetupProcessCpuNanoseconds);
+    json.attribute("engine_active_wall_nanoseconds",
+                   profile.engineActiveWallNanoseconds);
+    writeOptionalUnsigned(json, "engine_active_process_cpu_nanoseconds",
+                          profile.engineActiveProcessCpuNanoseconds);
+    json.attribute("observation_projection_wall_nanoseconds",
+                   profile.observationProjectionWallNanoseconds);
+    writeOptionalUnsigned(json,
+                          "observation_projection_process_cpu_nanoseconds",
+                          profile.observationProjectionProcessCpuNanoseconds);
+    json.attribute("artifact_publication_wall_nanoseconds",
+                   profile.artifactPublicationWallNanoseconds);
+    writeOptionalUnsigned(json, "artifact_publication_process_cpu_nanoseconds",
+                          profile.artifactPublicationProcessCpuNanoseconds);
+    json.attribute("event_frame_count", counters.eventFrameCount);
+    json.attribute("physical_request_count", counters.physicalRequestCount);
+    json.attribute("physical_grant_count", counters.physicalGrantCount);
+    json.attribute("physical_retirement_count",
+                   counters.physicalRetirementCount);
+    json.attribute("physical_grant_wait_cycle_sum",
+                   counters.physicalGrantWaitCycleSum);
+    json.attribute("physical_grant_wait_cycle_max",
+                   counters.physicalGrantWaitCycleMax);
+    json.attribute("physical_grant_delayed_count",
+                   counters.physicalGrantDelayedCount);
+    const auto writeRoot = [&](llvm::StringRef key,
+                               const loom::ArtifactRootReference &root) {
+      json.attributeObject(
+          key, [&] { loom::writeArtifactRootReferenceJsonFields(json, root); });
+    };
+    writeRoot("request", sample.request);
+    writeRoot("evidence", sample.evidence);
+    writeRoot("execution", sample.execution);
+  });
+}
+
+llvm::Expected<std::uint64_t> processPeakResidentBytes() {
+  rusage usage{};
+  if (::getrusage(RUSAGE_SELF, &usage) != 0 || usage.ru_maxrss <= 0)
+    return ioError("cannot read process peak resident memory");
+  constexpr std::uint64_t bytesPerKibibyte = 1024;
+  const std::uint64_t kibibytes = static_cast<std::uint64_t>(usage.ru_maxrss);
+  if (kibibytes > std::numeric_limits<std::uint64_t>::max() / bytesPerKibibyte)
+    return invalid("process peak resident memory exceeds the report domain");
+  return kibibytes * bytesPerKibibyte;
+}
+
+llvm::Error writeSpatialCgraProfile(
+    llvm::StringRef path,
+    const loom::application::FinalizedApplicationRuntimeManifest &manifest,
+    const loom::deployment::FinalizedDeployment &deployment,
+    llvm::ArrayRef<SpatialInvocationCase> invocations,
+    llvm::ArrayRef<SpatialCgraProfileRecord> profiles,
+    std::uint64_t peakResidentBytes) {
+  if (profiles.size() != invocations.size())
+    return invalid("Spatial CGRA profile lost an invocation");
+  std::string body;
+  llvm::raw_string_ostream stream(body);
+  llvm::json::OStream json(stream, 2);
+  json.object([&] {
+    json.attribute("schema", "loom.spatial_cgra_qualification.1");
+    json.attribute("warmup_runs", spatialCgraWarmupRuns.getValue());
+    json.attribute("measurement_runs", spatialCgraMeasurementRuns.getValue());
+    json.attribute("process_peak_resident_bytes", peakResidentBytes);
+    json.attributeObject("runtime_manifest", [&] {
+      loom::writeArtifactRootReferenceJsonFields(json, manifest.reference());
+    });
+    json.attributeObject("deployment", [&] {
+      loom::writeArtifactRootReferenceJsonFields(json, deployment.reference());
+    });
+    json.attributeArray("invocations", [&] {
+      for (const auto indexed : llvm::enumerate(profiles)) {
+        const SpatialInvocationCase &invocation = invocations[indexed.index()];
+        const SpatialCgraProfileRecord &profile = indexed.value();
+        json.object([&] {
+          json.attribute("invocation_ordinal", profile.invocationOrdinal);
+          json.attributeArray("dense_coordinates", [&] {
+            for (std::uint64_t coordinate : invocation.denseCoordinates)
+              json.value(coordinate);
+          });
+          const auto writeRoot = [&](llvm::StringRef key,
+                                     const loom::ArtifactRootReference &root) {
+            json.attributeObject(key, [&] {
+              loom::writeArtifactRootReferenceJsonFields(json, root);
+            });
+          };
+          writeRoot("dataflow", invocation.dataflow);
+          writeRoot("spatial_mapping", invocation.spatialMapping);
+          writeRoot("workload", invocation.workload);
+          writeRoot("runtime_input", invocation.runtimeInput);
+          json.attributeArray("warmups", [&] {
+            for (const SpatialCgraProfileSample &sample : profile.warmups)
+              writeProfileSample(json, sample);
+          });
+          json.attributeArray("measurements", [&] {
+            for (const SpatialCgraProfileSample &sample : profile.measurements)
+              writeProfileSample(json, sample);
+          });
+        });
+      }
+    });
+  });
+  llvm::SmallString<256> temporaryModel(path);
+  temporaryModel.append(".tmp-%%%%%%");
+  auto temporary = llvm::sys::fs::TempFile::create(
+      temporaryModel, llvm::sys::fs::owner_read | llvm::sys::fs::owner_write);
+  if (!temporary)
+    return ioError("cannot create temporary Spatial CGRA profile: " +
+                   llvm::toString(temporary.takeError()));
+  llvm::scope_exit discardTemporary(
+      [&] { llvm::consumeError(temporary->discard()); });
+  {
+    llvm::raw_fd_ostream output(temporary->FD, false);
+    output << body << '\n';
+    output.flush();
+    if (std::error_code error = output.error()) {
+      output.clear_error();
+      return ioError("cannot write temporary Spatial CGRA profile: " +
+                     error.message());
+    }
+  }
+  const int temporaryFile = temporary->FD;
+  temporary->FD = -1;
+  if (std::error_code error =
+          llvm::sys::Process::SafelyCloseFileDescriptor(temporaryFile))
+    return ioError("cannot close temporary Spatial CGRA profile: " +
+                   error.message());
+  if (std::error_code error =
+          llvm::sys::fs::create_hard_link(temporary->TmpName, path)) {
+    if (error == std::errc::file_exists)
+      return invalid("Spatial CGRA profile output already exists");
+    return ioError("cannot publish Spatial CGRA profile: " + error.message());
+  }
+  discardTemporary.release();
+  llvm::consumeError(temporary->discard());
+  return llvm::Error::success();
 }
 
 bool haveEquivalentRootLifecycle(
@@ -1307,6 +1540,19 @@ writeManifest(llvm::StringRef workspace,
 }
 
 llvm::Error run() {
+  const bool profileRequested = !spatialCgraProfileOutput.empty() ||
+                                spatialCgraWarmupRuns != 0 ||
+                                spatialCgraMeasurementRuns != 0;
+  if (profileRequested &&
+      (spatialCgraProfileOutput.empty() || spatialCgraWarmupRuns == 0 ||
+       spatialCgraMeasurementRuns == 0))
+    return invalid("Spatial CGRA profiling requires an output, warmups, and "
+                   "measurements");
+  constexpr std::uint64_t maximumProfileRuns = 16;
+  if (spatialCgraWarmupRuns > maximumProfileRuns ||
+      spatialCgraMeasurementRuns > maximumProfileRuns)
+    return invalid("Spatial CGRA profiling run count exceeds its bounded "
+                   "interface");
   if (llvm::Error error = loom::dse::registerProductionDseOwners())
     return error;
   if (llvm::Error error = loom::runtime::registerRuntimeProvider(
@@ -1381,23 +1627,74 @@ llvm::Error run() {
     }
     std::vector<CompletedSpatialRun> spatialRuns;
     spatialRuns.reserve(spatialInvocations.size() * 2);
+    std::vector<SpatialCgraProfileRecord> spatialProfiles;
+    if (profileRequested)
+      spatialProfiles.reserve(spatialInvocations.size());
     for (const SpatialInvocationCase &invocation : spatialInvocations) {
       auto spatialDfg =
           executeSpatial(Engine::Dfg, invocation, artifacts, blobs);
       if (!spatialDfg)
         return spatialDfg.takeError();
-      auto spatialCgra =
-          executeSpatial(Engine::Cgra, invocation, artifacts, blobs);
-      if (!spatialCgra)
-        return spatialCgra.takeError();
+      std::optional<CompletedSpatialRun> spatialCgra;
+      if (profileRequested) {
+        auto prepared = prepareSpatialCgra(invocation, artifacts, blobs);
+        if (!prepared)
+          return prepared.takeError();
+        SpatialCgraProfileRecord profile;
+        profile.invocationOrdinal = invocation.ordinal;
+        profile.warmups.reserve(spatialCgraWarmupRuns);
+        for (std::uint64_t run = 0; run != spatialCgraWarmupRuns; ++run) {
+          auto profiled = executeProfiledSpatialCgra(*prepared, invocation, run,
+                                                     artifacts, blobs);
+          if (!profiled)
+            return profiled.takeError();
+          if (llvm::Error error = validateSpatialResults(
+                  invocation, *spatialDfg, profiled->completed))
+            return error;
+          profile.warmups.push_back(std::move(profiled->sample));
+        }
+        profile.measurements.reserve(spatialCgraMeasurementRuns);
+        for (std::uint64_t run = 0; run != spatialCgraMeasurementRuns; ++run) {
+          auto profiled = executeProfiledSpatialCgra(
+              *prepared, invocation, spatialCgraWarmupRuns + run, artifacts,
+              blobs);
+          if (!profiled)
+            return profiled.takeError();
+          if (llvm::Error error = validateSpatialResults(
+                  invocation, *spatialDfg, profiled->completed))
+            return error;
+          profile.measurements.push_back(std::move(profiled->sample));
+          spatialCgra.emplace(std::move(profiled->completed));
+        }
+        spatialProfiles.push_back(std::move(profile));
+      } else {
+        auto executed =
+            executeSpatial(Engine::Cgra, invocation, artifacts, blobs);
+        if (!executed)
+          return executed.takeError();
+        spatialCgra.emplace(std::move(*executed));
+      }
       if (llvm::Error error =
               validateSpatialResults(invocation, *spatialDfg, *spatialCgra))
         return error;
       spatialRuns.push_back(std::move(*spatialDfg));
       spatialRuns.push_back(std::move(*spatialCgra));
     }
-    return writeManifest(workspacePath, deployment, *binding, *inputs, *dfg,
-                         *cgra, spatialInvocations, spatialRuns);
+    if (llvm::Error error =
+            writeManifest(workspacePath, deployment, *binding, *inputs, *dfg,
+                          *cgra, spatialInvocations, spatialRuns))
+      return error;
+    if (profileRequested) {
+      auto peakResidentBytes = processPeakResidentBytes();
+      if (!peakResidentBytes)
+        return peakResidentBytes.takeError();
+      if (llvm::Error error = writeSpatialCgraProfile(
+              spatialCgraProfileOutput, workspace->package.manifest(),
+              deployment, spatialInvocations, spatialProfiles,
+              *peakResidentBytes))
+        return error;
+    }
+    return llvm::Error::success();
   }();
 
   loom::evaluation::emitArtifactImportCacheStatistics(
