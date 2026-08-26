@@ -102,10 +102,14 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             simulation_conformance.ActiveExecutionTiming(1.0, -1)
 
     def test_cgra_gate_budget_is_derived_from_the_complete_profile_suite(self) -> None:
-        def reference(identity: int) -> dict[str, object]:
+        def reference(
+            identity: int,
+            schema: str = "loom.mapping",
+            version: str = "6.0",
+        ) -> dict[str, object]:
             return {
-                "schema": "test.artifact",
-                "schema_version": "1.0",
+                "schema": schema,
+                "schema_version": version,
                 "artifact": f"{identity:064x}",
             }
 
@@ -158,7 +162,9 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                 "physical_grant_wait_cycle_sum": 4,
                 "physical_grant_wait_cycle_max": 2,
                 "physical_grant_delayed_count": 2,
-                "evaluation_evidence": reference(600 + ordinal),
+                "evaluation_evidence": reference(
+                    600 + ordinal, "evaluation.evidence", "1.0"
+                ),
             }
             profiles.append(
                 {
@@ -170,15 +176,21 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                     "warmup_runs": 1,
                     "measurement_runs": 3,
                     "batch_peak_resident_bytes": 4096,
-                    "canonical_dataflow": reference(ordinal),
-                    "simulation_workload": reference(100 + ordinal),
-                    "simulation_runtime_input": reference(200 + ordinal),
+                    "canonical_dataflow": reference(
+                        ordinal, "loom.canonical_dataflow", "3.0"
+                    ),
+                    "simulation_workload": reference(
+                        100 + ordinal, "loom.simulation_workload", "1.1"
+                    ),
+                    "simulation_runtime_input": reference(
+                        200 + ordinal, "loom.simulation_runtime_input", "2.0"
+                    ),
                     "resolved_config": {
                         "schema": "loom.config.resolved",
                         "schema_version": "11.0",
                         "artifact": f"{300:064x}",
                     },
-                    "fabric": reference(301),
+                    "fabric": reference(301, "loom.fabric", "6.0"),
                     "tech_mapping": reference(400 + ordinal),
                     "tech_mapping_search": {
                         "outcome": "incomplete",
@@ -201,7 +213,9 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                         "candidates": [reference(500 + ordinal)],
                     },
                     "transport_repair": None,
-                    "warmup_evidence": reference(700 + ordinal),
+                    "warmup_evidence": reference(
+                        700 + ordinal, "evaluation.evidence", "1.0"
+                    ),
                     "measurements": [dict(measurement) for _ in range(3)],
                 }
             )
@@ -273,6 +287,52 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             loaded = simulation_conformance.load_cgra_gate_configuration(path)
             self.assertEqual(loaded.spatial_absolute_budget_nanoseconds, 500_000_000)
             self.assertEqual(loaded.spatial_absolute_budget_seconds, 0.5)
+            repaired_profile = profiles[0]
+            repair_child = reference(900)
+            repair_pnr = json.loads(json.dumps(repaired_profile["spatial_pnr"]))
+            repair_pnr["candidates"] = [repair_child]
+            repaired_profile["spatial_mapping"] = repair_child
+            repaired_profile["transport_repair"] = {
+                "parent_system_mapping": reference(901),
+                "pre_repair_evidence": reference(
+                    902, "evaluation.evidence", "1.0"
+                ),
+                "attempts": [
+                    {
+                        "parent_spatial_mapping": repaired_profile[
+                            "initial_spatial_mapping"
+                        ],
+                        "constraint_set": reference(
+                            903, "loom.mapping_constraints", "1.0"
+                        ),
+                        "spatial_pnr": repair_pnr,
+                        "child_spatial_mapping": repair_child,
+                        "accepted_for_simulation": True,
+                    }
+                ],
+            }
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            simulation_conformance.load_cgra_gate_configuration(path)
+            repaired_profile["spatial_mapping"] = reference(904)
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                simulation_conformance.load_cgra_gate_configuration(path)
+            repaired_profile["spatial_mapping"] = repair_child
+            repair_attempt = repaired_profile["transport_repair"]["attempts"][0]
+            repair_attempt["constraint_set"] = reference(903)
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                simulation_conformance.load_cgra_gate_configuration(path)
+            repaired_profile["transport_repair"] = None
+            repaired_profile["spatial_mapping"] = repaired_profile[
+                "initial_spatial_mapping"
+            ]
+            canonical_dataflow = repaired_profile["canonical_dataflow"]
+            repaired_profile["canonical_dataflow"] = reference(905)
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                simulation_conformance.load_cgra_gate_configuration(path)
+            repaired_profile["canonical_dataflow"] = canonical_dataflow
             profile_pnr = profiles[0]["spatial_pnr"]
             assert isinstance(profile_pnr, dict)
             profile_pnr["completion_goal"] = "first_verified_candidate"

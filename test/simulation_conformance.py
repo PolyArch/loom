@@ -375,7 +375,21 @@ def _nonnegative_integer(value: object, what: str, *, positive: bool = False) ->
     return value
 
 
-def _validate_artifact_reference(value: object, what: str) -> Mapping[str, object]:
+_CANONICAL_DATAFLOW_SCHEMA = ("loom.canonical_dataflow", "3.0")
+_SIMULATION_WORKLOAD_SCHEMA = ("loom.simulation_workload", "1.1")
+_SIMULATION_RUNTIME_INPUT_SCHEMA = ("loom.simulation_runtime_input", "2.0")
+_RESOLVED_CONFIG_SCHEMA = ("loom.config.resolved", "11.0")
+_FABRIC_SCHEMA = ("loom.fabric", "6.0")
+_MAPPING_SCHEMA = ("loom.mapping", "6.0")
+_MAPPING_CONSTRAINT_SET_SCHEMA = ("loom.mapping_constraints", "1.0")
+_EVALUATION_EVIDENCE_SCHEMA = ("evaluation.evidence", "1.0")
+
+
+def _validate_artifact_reference(
+    value: object,
+    what: str,
+    expected_schema: tuple[str, str] | None = None,
+) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or set(value) != {
         "schema",
         "schema_version",
@@ -401,6 +415,8 @@ def _validate_artifact_reference(value: object, what: str) -> Mapping[str, objec
         or any(character not in "0123456789abcdef" for character in artifact)
     ):
         raise ValueError(f"{what} has a noncanonical artifact identity")
+    if expected_schema is not None and (schema, version) != expected_schema:
+        raise ValueError(f"{what} has a foreign artifact schema")
     return value
 
 
@@ -439,6 +455,7 @@ def _validate_candidate_generator_result(
     what: str,
     *,
     require_completed: bool,
+    candidate_schema: tuple[str, str],
 ) -> str:
     if not isinstance(value, Mapping) or set(value) != {
         "outcome",
@@ -461,7 +478,9 @@ def _validate_candidate_generator_result(
         raise ValueError(f"{what} candidates are not a list")
     candidate_keys: list[tuple[str, str, str]] = []
     for candidate in candidates:
-        reference = _validate_artifact_reference(candidate, f"{what} candidate")
+        reference = _validate_artifact_reference(
+            candidate, f"{what} candidate", candidate_schema
+        )
         candidate_keys.append(
             (
                 str(reference["schema"]),
@@ -513,6 +532,7 @@ def validate_cgra_tech_mapping_result(
         _TECH_MAPPING_WORK_UNITS,
         "CGRA TechMapping",
         require_completed=require_completed,
+        candidate_schema=_MAPPING_SCHEMA,
     )
 
 
@@ -544,6 +564,7 @@ def validate_cgra_pnr_result(value: object, *, require_completed: bool) -> str:
         _SPATIAL_PNR_WORK_UNITS,
         "CGRA Spatial PnR",
         require_completed=require_completed,
+        candidate_schema=_MAPPING_SCHEMA,
     )
     if outcome == "completed":
         seed_work = value["work_units"][0]
@@ -577,8 +598,10 @@ def validate_cgra_profile_outcome(value: object) -> tuple[str, str | None]:
         or not value["protocol_symbol"].isascii()
     ):
         raise ValueError("CGRA profile outcome has no workload identity")
-    _validate_artifact_reference(value["resolved_config"], "resolved config")
-    _validate_artifact_reference(value["fabric"], "Fabric")
+    _validate_artifact_reference(
+        value["resolved_config"], "resolved config", _RESOLVED_CONFIG_SCHEMA
+    )
+    _validate_artifact_reference(value["fabric"], "Fabric", _FABRIC_SCHEMA)
     tech_outcome = validate_cgra_tech_mapping_result(
         value["tech_mapping_search"], require_completed=False
     )
@@ -709,18 +732,21 @@ def _validate_cgra_profiles(
             != CGRA_QUALIFICATION_MEASUREMENT_RUNS
         ):
             raise ValueError("CGRA profile used a foreign sampling protocol")
-        for field in (
-            "canonical_dataflow",
-            "simulation_workload",
-            "simulation_runtime_input",
-            "resolved_config",
-            "fabric",
-            "tech_mapping",
-            "initial_spatial_mapping",
-            "spatial_mapping",
-            "warmup_evidence",
-        ):
-            _validate_artifact_reference(profile[field], f"CGRA profile {field}")
+        reference_schemas = {
+            "canonical_dataflow": _CANONICAL_DATAFLOW_SCHEMA,
+            "simulation_workload": _SIMULATION_WORKLOAD_SCHEMA,
+            "simulation_runtime_input": _SIMULATION_RUNTIME_INPUT_SCHEMA,
+            "resolved_config": _RESOLVED_CONFIG_SCHEMA,
+            "fabric": _FABRIC_SCHEMA,
+            "tech_mapping": _MAPPING_SCHEMA,
+            "initial_spatial_mapping": _MAPPING_SCHEMA,
+            "spatial_mapping": _MAPPING_SCHEMA,
+            "warmup_evidence": _EVALUATION_EVIDENCE_SCHEMA,
+        }
+        for field, schema in reference_schemas.items():
+            _validate_artifact_reference(
+                profile[field], f"CGRA profile {field}", schema
+            )
         resolved_config = profile["resolved_config"]
         assert isinstance(resolved_config, Mapping)
         if (
@@ -762,10 +788,12 @@ def _validate_cgra_profiles(
             _validate_artifact_reference(
                 transport_repair["parent_system_mapping"],
                 "CGRA repair parent SystemMapping",
+                _MAPPING_SCHEMA,
             )
             _validate_artifact_reference(
                 transport_repair["pre_repair_evidence"],
                 "CGRA pre-repair Evidence",
+                _EVALUATION_EVIDENCE_SCHEMA,
             )
             attempts = transport_repair["attempts"]
             if not isinstance(attempts, list) or not attempts:
@@ -785,7 +813,9 @@ def _validate_cgra_profiles(
                 ]:
                     raise ValueError("CGRA transport repair has a foreign parent")
                 _validate_artifact_reference(
-                    attempt["constraint_set"], "CGRA repair constraint"
+                    attempt["constraint_set"],
+                    "CGRA repair constraint",
+                    _MAPPING_CONSTRAINT_SET_SCHEMA,
                 )
                 repair_outcome = validate_cgra_pnr_result(
                     attempt["spatial_pnr"], require_completed=False
@@ -805,7 +835,7 @@ def _validate_cgra_profiles(
                         raise ValueError("CGRA repair accepted no child Mapping")
                 else:
                     child_reference = _validate_artifact_reference(
-                        child, "CGRA repair child Mapping"
+                        child, "CGRA repair child Mapping", _MAPPING_SCHEMA
                     )
                     if repair_outcome != "completed" or child not in repair_pnr[
                         "candidates"
@@ -841,6 +871,7 @@ def _validate_cgra_profiles(
             _validate_artifact_reference(
                 measurement["evaluation_evidence"],
                 "CGRA measurement evaluation evidence",
+                _EVALUATION_EVIDENCE_SCHEMA,
             )
             active = _nonnegative_integer(
                 measurement["active_wall_nanoseconds"],
