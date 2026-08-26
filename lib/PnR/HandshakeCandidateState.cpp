@@ -1724,17 +1724,32 @@ llvm::Error HandshakeCandidateState::verifyCachedState() const {
       graph_->nodeSignals.size() != graph_->reverseArcs.size() ||
       graph_->nodeSignals.size() != graph_->order.size() ||
       graph_->nodeSignals.size() != graph_->ranks.size() ||
+      graph_->nodeSignals.size() != graph_->nodeOrdinals.size() ||
       graph_->arcs.size() != graph_->arcIdentities.size() ||
       graph_->arcs.size() != graph_->fixedArcs.size() ||
-      graph_->arcs.size() != graph_->arcContributors.size())
+      graph_->arcs.size() != graph_->arcContributors.size() ||
+      graph_->arcs.size() != graph_->arcOrdinals.size() ||
+      !graph_->cycleWitness.empty())
     return candidateError("materialized handshake graph shape is stale");
+  for (const auto &entry : graph_->nodeOrdinals)
+    if (entry.second >= graph_->nodeIdentities.size())
+      return candidateError("materialized handshake node ordinal is stale");
+  for (PnrIndex node = 0; node < graph_->nodeIdentities.size(); ++node)
+    if (graph_->nodeSignals[node] !=
+        graph_->nodeIdentities[node].boundarySignal)
+      return candidateError("materialized handshake node signal is stale");
   for (auto [rank, node] : llvm::enumerate(graph_->order)) {
     if (node >= graph_->ranks.size() || graph_->ranks[node] != rank)
       return candidateError("materialized handshake topology is not a rank");
   }
   for (auto [arc, record] : llvm::enumerate(graph_->arcs)) {
     if (record.source >= graph_->nodeIdentities.size() ||
-        record.destination >= graph_->nodeIdentities.size())
+        record.destination >= graph_->nodeIdentities.size() ||
+        !(graph_->arcIdentities[arc].source ==
+          graph_->nodeIdentities[record.source]) ||
+        !(graph_->arcIdentities[arc].destination ==
+          graph_->nodeIdentities[record.destination]) ||
+        graph_->fixedArcs[arc] > 1)
       return candidateError("materialized handshake arc is out of range");
     const auto &contributors = graph_->arcContributors[arc];
     if (!llvm::is_sorted(contributors) ||
@@ -1746,6 +1761,43 @@ llvm::Error HandshakeCandidateState::verifyCachedState() const {
         graph_->ranks[record.source] >= graph_->ranks[record.destination])
       return candidateError("materialized handshake topology is cyclic");
   }
+  for (const auto &[endpoints, arc] : graph_->arcOrdinals)
+    if (arc >= graph_->arcs.size() ||
+        graph_->arcs[arc].source != endpoints.first ||
+        graph_->arcs[arc].destination != endpoints.second)
+      return candidateError("materialized handshake arc ordinal is stale");
+  std::size_t outgoingArcCount = 0;
+  std::size_t reverseArcCount = 0;
+  for (PnrIndex node = 0; node < graph_->nodeIdentities.size(); ++node) {
+    const auto verifyAdjacency = [&](llvm::ArrayRef<PnrIndex> adjacency,
+                                     bool outgoing) -> llvm::Error {
+      PnrIndex previous = getInvalidPnrIndex();
+      for (PnrIndex arc : adjacency) {
+        if (arc >= graph_->arcs.size() ||
+            (previous != getInvalidPnrIndex() && arc <= previous) ||
+            (outgoing ? graph_->arcs[arc].source
+                      : graph_->arcs[arc].destination) != node)
+          return candidateError(
+              "materialized handshake adjacency is stale");
+        previous = arc;
+      }
+      return llvm::Error::success();
+    };
+    if (llvm::Error error = verifyAdjacency(graph_->outgoingArcs[node], true))
+      return error;
+    if (llvm::Error error = verifyAdjacency(graph_->reverseArcs[node], false))
+      return error;
+    if (graph_->outgoingArcs[node].size() >
+            std::numeric_limits<std::size_t>::max() - outgoingArcCount ||
+        graph_->reverseArcs[node].size() >
+            std::numeric_limits<std::size_t>::max() - reverseArcCount)
+      return candidateError("materialized handshake adjacency overflows");
+    outgoingArcCount += graph_->outgoingArcs[node].size();
+    reverseArcCount += graph_->reverseArcs[node].size();
+  }
+  if (outgoingArcCount != graph_->arcs.size() ||
+      reverseArcCount != graph_->arcs.size())
+    return candidateError("materialized handshake adjacency is incomplete");
   for (auto [groupOrdinal, group] :
        llvm::enumerate(index_->allTraversalGroups())) {
     PnrIndex selectedWitnesses = 0;
@@ -1771,11 +1823,9 @@ llvm::Error HandshakeCandidateState::verify() const {
 
   const auto begin = std::chrono::steady_clock::now();
   addWork(coldVerificationConstructionCount_);
-  llvm::scope_exit recordConstructionTime([&] {
-    addWork(coldVerificationConstructionNanoseconds_,
-            elapsedNanoseconds(begin));
-  });
   auto rebuilt = materializeHandshakeGraph(*index_, activeFragments_);
+  addWork(coldVerificationConstructionNanoseconds_,
+          elapsedNanoseconds(begin));
   if (!rebuilt)
     return rebuilt.takeError();
   if (!rebuilt->cycleWitness.empty())

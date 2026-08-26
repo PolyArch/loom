@@ -1511,7 +1511,7 @@ llvm::Error SpatialRouteCostState::recomputeAllArcCosts(bool resetTagHistory) {
 }
 
 llvm::Error SpatialRouteCostState::resetFromCandidate() {
-  if (llvm::Error error = candidate_->verify())
+  if (llvm::Error error = candidate_->verifyCachedState())
     return error;
 
   return resetFromVerifiedCandidate();

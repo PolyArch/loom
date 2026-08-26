@@ -1101,6 +1101,8 @@ void loom::test::exerciseCanonicalCandidateInitialization(
   const auto handshakeBeforeSearch =
       first->handshake().materializationStatistics();
   const auto progressBeforeSearch = first->progress().statistics();
+  auto routeCosts = take(pnr::SpatialRouteCostState::create(*first));
+  requireSuccess(routeCosts.resetFromCandidate());
   pnr::SpatialActionExecutorScratch searchScratch;
   requireSuccess(searchScratch.prepare(*first));
   const auto handshakeAfterSearch =
