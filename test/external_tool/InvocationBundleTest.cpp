@@ -51,6 +51,20 @@ void require(const char *test, bool condition, const std::string &message) {
     fail(test, message);
 }
 
+void requireSuccess(const char *test, llvm::Error error) {
+  if (error)
+    fail(test, llvm::toString(std::move(error)));
+}
+
+void requireErrorContains(const char *test, llvm::Error error,
+                          const std::string &reason) {
+  if (!error)
+    fail(test, "expected a failure containing: " + reason);
+  const std::string message = llvm::toString(std::move(error));
+  require(test, message.find(reason) != std::string::npos,
+          "failure reason mismatch: " + message);
+}
+
 template <typename T> T take(const char *test, llvm::Expected<T> value) {
   if (!value)
     fail(test, llvm::toString(value.takeError()));
@@ -1878,6 +1892,23 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
           "fresh execution did not bypass every persistent-cache action");
   require(__func__, readFile(counter) == "7",
           "fresh execution reused the populated cache entry");
+  requireSuccess(__func__, validateExternalToolInvocationExecutionReceipt(
+                               fresh, freshExecution));
+  auto fabricatedFresh = freshExecution;
+  fabricatedFresh.receipt = {};
+  requireErrorContains(
+      __func__,
+      validateExternalToolInvocationExecutionReceipt(fresh, fabricatedFresh),
+      "no executor receipt");
+  auto reboundFresh = freshExecution;
+  reboundFresh.attemptToken =
+      take(__func__, beginExternalToolInvocationAttempt(fresh));
+  requireSuccess(__func__, validateExternalToolInvocationExecutionObservation(
+                               fresh, reboundFresh));
+  requireErrorContains(
+      __func__,
+      validateExternalToolInvocationExecutionReceipt(fresh, reboundFresh),
+      "differs from its sealed executor state");
 
   const std::filesystem::path freshRoot = root / "cache-midflight-fresh";
   const PreparedExternalToolInvocation midflightFresh =

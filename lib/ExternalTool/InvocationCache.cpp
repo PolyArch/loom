@@ -29,6 +29,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <set>
 #include <signal.h>
@@ -42,6 +43,78 @@
 #include <vector>
 
 namespace loom::external_tool {
+
+struct ExternalToolInvocationExecutionReceipt::State final {
+  std::string bundleRoot;
+  BlobDigest manifestDigest;
+  BlobDigest attemptToken;
+  int exitCode = 0;
+  ExternalToolResultReusePolicy reusePolicy =
+      ExternalToolResultReusePolicy::AllowExactReuse;
+  ExternalToolResultCacheAvailability cacheAvailability =
+      ExternalToolResultCacheAvailability::Disabled;
+  ExternalToolResultCacheLookup cacheLookup =
+      ExternalToolResultCacheLookup::NotAttempted;
+  ExternalToolResultCacheDiscard cacheDiscard =
+      ExternalToolResultCacheDiscard::NotAttempted;
+  ExternalToolResultCachePublication cachePublication =
+      ExternalToolResultCachePublication::NotAttempted;
+  bool waitedForCacheKeyLock = false;
+  bool invokedExternalTool = false;
+  std::vector<ExternalToolCommandExecutionObservation> commandExecutions;
+  std::optional<InvocationCompletion> completion;
+
+  State(const PreparedExternalToolInvocation &prepared,
+        const ExternalToolInvocationExecutionObservation &observation,
+        std::optional<InvocationCompletion> completion)
+      : bundleRoot(prepared.bundleRoot),
+        manifestDigest(observation.manifestDigest),
+        attemptToken(observation.attemptToken), exitCode(observation.exitCode),
+        reusePolicy(observation.reusePolicy),
+        cacheAvailability(observation.cacheAvailability),
+        cacheLookup(observation.cacheLookup),
+        cacheDiscard(observation.cacheDiscard),
+        cachePublication(observation.cachePublication),
+        waitedForCacheKeyLock(observation.waitedForCacheKeyLock),
+        invokedExternalTool(observation.invokedExternalTool),
+        commandExecutions(observation.commandExecutions),
+        completion(std::move(completion)) {}
+
+  bool
+  matches(const PreparedExternalToolInvocation &prepared,
+          const ExternalToolInvocationExecutionObservation &observation) const {
+    return bundleRoot == prepared.bundleRoot &&
+           manifestDigest == prepared.manifestDigest &&
+           manifestDigest == observation.manifestDigest &&
+           attemptToken == observation.attemptToken &&
+           exitCode == observation.exitCode &&
+           reusePolicy == observation.reusePolicy &&
+           cacheAvailability == observation.cacheAvailability &&
+           cacheLookup == observation.cacheLookup &&
+           cacheDiscard == observation.cacheDiscard &&
+           cachePublication == observation.cachePublication &&
+           waitedForCacheKeyLock == observation.waitedForCacheKeyLock &&
+           invokedExternalTool == observation.invokedExternalTool &&
+           commandExecutions == observation.commandExecutions;
+  }
+};
+
+struct ExternalToolInvocationExecutionReceiptAccess final {
+  static ExternalToolInvocationExecutionReceipt
+  create(const PreparedExternalToolInvocation &prepared,
+         const ExternalToolInvocationExecutionObservation &observation,
+         std::optional<InvocationCompletion> completion) {
+    return ExternalToolInvocationExecutionReceipt(
+        std::make_shared<const ExternalToolInvocationExecutionReceipt::State>(
+            prepared, observation, std::move(completion)));
+  }
+
+  static std::shared_ptr<const ExternalToolInvocationExecutionReceipt::State>
+  state(const ExternalToolInvocationExecutionReceipt &receipt) {
+    return receipt.state_;
+  }
+};
+
 namespace {
 
 constexpr llvm::StringLiteral kCacheRootEnvironment =
@@ -60,6 +133,12 @@ constexpr llvm::StringLiteral kCacheEntryVersion = "1.2";
 llvm::Error cacheError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "external_tool_cache_invalid: " + message);
+}
+
+llvm::Error receiptError(const llvm::Twine &message) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "external_tool_execution_receipt_invalid: " +
+                                     message);
 }
 
 llvm::Error cacheSystemError(const llvm::Twine &message) {
@@ -1240,23 +1319,29 @@ executeExternalToolInvocationBundleObserved(
   auto attemptToken = beginExternalToolInvocationAttempt(prepared);
   if (!attemptToken)
     return attemptToken.takeError();
-  const auto stopped = [&prepared, &attemptToken, reusePolicy](
+  const auto seal =
+      [&prepared](ExternalToolInvocationExecutionObservation observation)
+      -> llvm::Expected<ExternalToolInvocationExecutionObservation> {
+    auto completion = loadPublishedCompletion(prepared);
+    if (!completion)
+      return completion.takeError();
+    observation.receipt = ExternalToolInvocationExecutionReceiptAccess::create(
+        prepared, observation, std::move(*completion));
+    return observation;
+  };
+  const auto stopped = [&prepared, &attemptToken, &seal, reusePolicy](
                            ExternalToolResultCacheAvailability availability,
                            bool waited, bool invoked,
                            std::vector<ExternalToolCommandExecutionObservation>
-                               commandExecutions = {}) {
-    return ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest,
-        *attemptToken,
-        externalToolExecutionStoppedExitCode,
-        reusePolicy,
-        availability,
+                               commandExecutions = {})
+      -> llvm::Expected<ExternalToolInvocationExecutionObservation> {
+    return seal(ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest, *attemptToken,
+        externalToolExecutionStoppedExitCode, reusePolicy, availability,
         ExternalToolResultCacheLookup::NotAttempted,
         ExternalToolResultCacheDiscard::NotAttempted,
-        ExternalToolResultCachePublication::NotAttempted,
-        waited,
-        invoked,
-        std::move(commandExecutions)};
+        ExternalToolResultCachePublication::NotAttempted, waited, invoked,
+        std::move(commandExecutions)});
   };
   auto executeWithoutCache =
       [&](ExternalToolResultCacheAvailability availability,
@@ -1279,18 +1364,12 @@ executeExternalToolInvocationBundleObserved(
         return cacheError(
             "fresh invocation inputs or tool changed during execution");
     }
-    return ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest,
-        *attemptToken,
-        execution->exitCode,
-        reusePolicy,
-        availability,
-        ExternalToolResultCacheLookup::NotAttempted,
+    return seal(ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest, *attemptToken, execution->exitCode,
+        reusePolicy, availability, ExternalToolResultCacheLookup::NotAttempted,
         ExternalToolResultCacheDiscard::NotAttempted,
-        ExternalToolResultCachePublication::NotAttempted,
-        waitedForCacheKeyLock,
-        execution->invoked,
-        std::move(execution->commandExecutions)};
+        ExternalToolResultCachePublication::NotAttempted, waitedForCacheKeyLock,
+        execution->invoked, std::move(execution->commandExecutions)});
   };
   if (executionControl.stopRequested())
     return stopped(reusePolicy == ExternalToolResultReusePolicy::RequireFresh
@@ -1359,31 +1438,21 @@ executeExternalToolInvocationBundleObserved(
       return stopped(ExternalToolResultCacheAvailability::Available,
                      waitedForCacheKeyLock, preflight->invoked);
     if (preflight->exitCode != 0)
-      return ExternalToolInvocationExecutionObservation{
-          prepared.manifestDigest,
-          *attemptToken,
-          preflight->exitCode,
-          reusePolicy,
-          ExternalToolResultCacheAvailability::Available,
-          ExternalToolResultCacheLookup::Miss,
-          discard,
+      return seal(ExternalToolInvocationExecutionObservation{
+          prepared.manifestDigest, *attemptToken, preflight->exitCode,
+          reusePolicy, ExternalToolResultCacheAvailability::Available,
+          ExternalToolResultCacheLookup::Miss, discard,
           ExternalToolResultCachePublication::NotAttempted,
-          waitedForCacheKeyLock,
-          false};
+          waitedForCacheKeyLock, false});
     auto restored = restoreEntry(entry, prepared, loaded->second, *key);
     if (restored && *restored) {
       cacheDiagnostic(DiagnosticVerbosity::Summary, "hit", keySpelling);
-      return ExternalToolInvocationExecutionObservation{
-          prepared.manifestDigest,
-          *attemptToken,
-          0,
-          reusePolicy,
+      return seal(ExternalToolInvocationExecutionObservation{
+          prepared.manifestDigest, *attemptToken, 0, reusePolicy,
           ExternalToolResultCacheAvailability::Available,
-          ExternalToolResultCacheLookup::Hit,
-          discard,
+          ExternalToolResultCacheLookup::Hit, discard,
           ExternalToolResultCachePublication::NotAttempted,
-          waitedForCacheKeyLock,
-          false};
+          waitedForCacheKeyLock, false});
     }
     if (!restored)
       cacheDiagnostic(DiagnosticVerbosity::Summary, "discard",
@@ -1399,90 +1468,55 @@ executeExternalToolInvocationBundleObserved(
   if (!execution)
     return execution.takeError();
   if (execution->exitCode == externalToolExecutionStoppedExitCode)
-    return ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest,
-        *attemptToken,
-        execution->exitCode,
-        reusePolicy,
-        ExternalToolResultCacheAvailability::Available,
-        ExternalToolResultCacheLookup::Miss,
-        discard,
-        ExternalToolResultCachePublication::NotAttempted,
-        waitedForCacheKeyLock,
-        execution->invoked,
-        execution->commandExecutions};
+    return seal(ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest, *attemptToken, execution->exitCode,
+        reusePolicy, ExternalToolResultCacheAvailability::Available,
+        ExternalToolResultCacheLookup::Miss, discard,
+        ExternalToolResultCachePublication::NotAttempted, waitedForCacheKeyLock,
+        execution->invoked, execution->commandExecutions});
   if (execution->exitCode != 0)
-    return ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest,
-        *attemptToken,
-        execution->exitCode,
-        reusePolicy,
-        ExternalToolResultCacheAvailability::Available,
-        ExternalToolResultCacheLookup::Miss,
-        discard,
-        ExternalToolResultCachePublication::NotAttempted,
-        waitedForCacheKeyLock,
-        true,
-        std::move(execution->commandExecutions)};
+    return seal(ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest, *attemptToken, execution->exitCode,
+        reusePolicy, ExternalToolResultCacheAvailability::Available,
+        ExternalToolResultCacheLookup::Miss, discard,
+        ExternalToolResultCachePublication::NotAttempted, waitedForCacheKeyLock,
+        true, std::move(execution->commandExecutions)});
   if (discard == ExternalToolResultCacheDiscard::Failed)
-    return ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest,
-        *attemptToken,
-        0,
-        reusePolicy,
+    return seal(ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest, *attemptToken, 0, reusePolicy,
         ExternalToolResultCacheAvailability::Available,
-        ExternalToolResultCacheLookup::Miss,
-        discard,
-        ExternalToolResultCachePublication::Failed,
-        waitedForCacheKeyLock,
-        true,
-        execution->commandExecutions};
+        ExternalToolResultCacheLookup::Miss, discard,
+        ExternalToolResultCachePublication::Failed, waitedForCacheKeyLock, true,
+        execution->commandExecutions});
   auto postflight = runScript(prepared, CacheScriptMode::Postflight,
                               executionControl, *attemptToken);
   if (!postflight) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     llvm::toString(postflight.takeError()));
-    return ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest,
-        *attemptToken,
-        0,
-        reusePolicy,
+    return seal(ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest, *attemptToken, 0, reusePolicy,
         ExternalToolResultCacheAvailability::Available,
-        ExternalToolResultCacheLookup::Miss,
-        discard,
-        ExternalToolResultCachePublication::Failed,
-        waitedForCacheKeyLock,
-        true,
-        execution->commandExecutions};
+        ExternalToolResultCacheLookup::Miss, discard,
+        ExternalToolResultCachePublication::Failed, waitedForCacheKeyLock, true,
+        execution->commandExecutions});
   }
   if (postflight->exitCode == externalToolExecutionStoppedExitCode)
-    return ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest,
-        *attemptToken,
-        externalToolExecutionStoppedExitCode,
-        reusePolicy,
+    return seal(ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest, *attemptToken,
+        externalToolExecutionStoppedExitCode, reusePolicy,
         ExternalToolResultCacheAvailability::Available,
-        ExternalToolResultCacheLookup::Miss,
-        discard,
-        ExternalToolResultCachePublication::NotAttempted,
-        waitedForCacheKeyLock,
-        true,
-        execution->commandExecutions};
+        ExternalToolResultCacheLookup::Miss, discard,
+        ExternalToolResultCachePublication::NotAttempted, waitedForCacheKeyLock,
+        true, execution->commandExecutions});
   if (postflight->exitCode != 0) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     "invocation inputs or tool changed during execution");
-    return ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest,
-        *attemptToken,
-        0,
-        reusePolicy,
+    return seal(ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest, *attemptToken, 0, reusePolicy,
         ExternalToolResultCacheAvailability::Available,
-        ExternalToolResultCacheLookup::Miss,
-        discard,
-        ExternalToolResultCachePublication::Failed,
-        waitedForCacheKeyLock,
-        true,
-        execution->commandExecutions};
+        ExternalToolResultCacheLookup::Miss, discard,
+        ExternalToolResultCachePublication::Failed, waitedForCacheKeyLock, true,
+        execution->commandExecutions});
   }
   auto postflightKey = deriveExternalToolResultCacheKey(prepared);
   if (!postflightKey || *postflightKey != *key) {
@@ -1492,18 +1526,12 @@ executeExternalToolInvocationBundleObserved(
     else
       cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                       "cache-key material changed during execution");
-    return ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest,
-        *attemptToken,
-        0,
-        reusePolicy,
+    return seal(ExternalToolInvocationExecutionObservation{
+        prepared.manifestDigest, *attemptToken, 0, reusePolicy,
         ExternalToolResultCacheAvailability::Available,
-        ExternalToolResultCacheLookup::Miss,
-        discard,
-        ExternalToolResultCachePublication::Failed,
-        waitedForCacheKeyLock,
-        true,
-        execution->commandExecutions};
+        ExternalToolResultCacheLookup::Miss, discard,
+        ExternalToolResultCachePublication::Failed, waitedForCacheKeyLock, true,
+        execution->commandExecutions});
   }
   ExternalToolResultCachePublication publication =
       ExternalToolResultCachePublication::Published;
@@ -1514,18 +1542,44 @@ executeExternalToolInvocationBundleObserved(
   } else {
     cacheDiagnostic(DiagnosticVerbosity::Decision, "published", entry.string());
   }
-  return ExternalToolInvocationExecutionObservation{
-      prepared.manifestDigest,
-      *attemptToken,
-      0,
-      reusePolicy,
+  return seal(ExternalToolInvocationExecutionObservation{
+      prepared.manifestDigest, *attemptToken, 0, reusePolicy,
       ExternalToolResultCacheAvailability::Available,
-      ExternalToolResultCacheLookup::Miss,
-      discard,
-      publication,
-      waitedForCacheKeyLock,
-      true,
-      std::move(execution->commandExecutions)};
+      ExternalToolResultCacheLookup::Miss, discard, publication,
+      waitedForCacheKeyLock, true, std::move(execution->commandExecutions)});
+}
+
+llvm::Error validateExternalToolInvocationExecutionReceipt(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &observation) {
+  if (llvm::Error error = validateExternalToolInvocationExecutionObservation(
+          prepared, observation))
+    return error;
+  const auto state =
+      ExternalToolInvocationExecutionReceiptAccess::state(observation.receipt);
+  if (!state)
+    return receiptError("the observation has no executor receipt");
+  if (!state->matches(prepared, observation))
+    return receiptError(
+        "the public observation differs from its sealed executor state");
+
+  auto completion = loadPublishedCompletion(prepared);
+  if (!completion)
+    return completion.takeError();
+  if (state->completion.has_value() != completion->has_value())
+    return receiptError(
+        "the published completion presence changed after execution");
+  if (!state->completion)
+    return llvm::Error::success();
+  const InvocationCompletion &sealed = *state->completion;
+  const InvocationCompletion &published = **completion;
+  if (sealed.status != published.status ||
+      sealed.exitCode != published.exitCode ||
+      sealed.manifestDigest != published.manifestDigest ||
+      sealed.outputDigests != published.outputDigests)
+    return receiptError(
+        "the published completion or output snapshot changed after execution");
+  return llvm::Error::success();
 }
 
 llvm::Expected<int> executeExternalToolInvocationBundle(

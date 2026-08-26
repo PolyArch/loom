@@ -792,8 +792,8 @@ parseCgraEngineAttemptProfile(llvm::StringRef text) {
 llvm::Error validateFreshDiagnosticExecution(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationExecutionObservation &execution) {
-  if (llvm::Error error = validateExternalToolInvocationExecutionObservation(
-          prepared, execution))
+  if (llvm::Error error =
+          validateExternalToolInvocationExecutionReceipt(prepared, execution))
     return error;
   if (execution.reusePolicy != ExternalToolResultReusePolicy::RequireFresh ||
       execution.cacheAvailability !=

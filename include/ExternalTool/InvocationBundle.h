@@ -16,6 +16,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -23,6 +24,22 @@
 #include <vector>
 
 namespace loom::external_tool {
+
+class ExternalToolInvocationExecutionReceipt final {
+public:
+  ExternalToolInvocationExecutionReceipt() = default;
+
+private:
+  struct State;
+
+  explicit ExternalToolInvocationExecutionReceipt(
+      std::shared_ptr<const State> state)
+      : state_(std::move(state)) {}
+
+  std::shared_ptr<const State> state_;
+
+  friend struct ExternalToolInvocationExecutionReceiptAccess;
+};
 
 inline constexpr llvm::StringLiteral externalToolInvocationManifestSchema =
     "loom.external_tool_invocation";
@@ -190,6 +207,7 @@ struct ExternalToolInvocationExecutionObservation final {
   bool waitedForCacheKeyLock;
   bool invokedExternalTool;
   std::vector<ExternalToolCommandExecutionObservation> commandExecutions = {};
+  ExternalToolInvocationExecutionReceipt receipt = {};
 };
 
 /// Reserved operational result when execution control stops a prepared
@@ -388,9 +406,16 @@ executeExternalToolInvocationBundleObserved(
 llvm::Expected<BlobDigest> beginExternalToolInvocationAttempt(
     const PreparedExternalToolInvocation &prepared);
 
-/// Proves that an observation belongs to the currently published execution
-/// generation of the exact prepared root.
+/// Checks the public generation fields used by operational work accounting.
+/// This does not prove that the ExternalTool executor produced the fields.
 llvm::Error validateExternalToolInvocationExecutionObservation(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &observation);
+
+/// Proves that the ExternalTool executor produced the complete observation for
+/// the currently published generation and that the completion/output snapshot
+/// has not changed since execution returned.
+llvm::Error validateExternalToolInvocationExecutionReceipt(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationExecutionObservation &observation);
 
