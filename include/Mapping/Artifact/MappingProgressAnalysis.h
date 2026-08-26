@@ -52,6 +52,9 @@ private:
   friend llvm::Expected<MappingProgressClosure>
   deriveMappingProgressClosure(const FrozenMappingProgressModel &,
                                const MappingProgressProjection &);
+  friend llvm::Expected<MappingProgressClosure>
+  deriveMappingProgressClosure(const FrozenMappingProgressModel &,
+                               MappingProgressProjectionView);
   friend llvm::Expected<bool>
   mappingEventPrecedes(const FrozenMappingProgressModel &,
                        const ::dataflow::EventFamilyKey &,
@@ -100,6 +103,10 @@ llvm::Expected<MappingProgressClosure>
 deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
                              const MappingProgressProjection &projection);
 
+llvm::Expected<MappingProgressClosure>
+deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
+                             MappingProgressProjectionView projection);
+
 llvm::StringRef
 mappingProgressClosureReasonSpelling(MappingProgressClosureReason reason);
 
@@ -136,8 +143,7 @@ llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
 /// arbitration, and causal-release kernel used by System verification; any
 /// missing token/occupancy witness remains typed ProofNotEstablished rather
 /// than being inferred from finite replay.
-llvm::Expected<MappingProgressClosure>
-qualifySystemMappingResourceTimeProgress(
+llvm::Expected<MappingProgressClosure> qualifySystemMappingResourceTimeProgress(
     const FinalizedSystemMapping &mapping,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric);

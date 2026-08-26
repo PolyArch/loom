@@ -160,6 +160,7 @@ struct ResourcePhysicalTimingProjection final {
 /// same selected UsePattern and traversal ordinals.
 struct ResourcePhysicalDemandProjection final {
   ResourceCapacityOveruseProjection capacity;
+  std::vector<std::uint64_t> baselineOccupancy;
   std::vector<MappingResourceProgressUse> progressUses;
   ResourcePhysicalTimingProjection timing;
 };
@@ -168,6 +169,14 @@ llvm::Expected<ResourcePhysicalDemandProjection> deriveResourcePhysicalDemand(
     const FrozenResourceCapacityIndex &index,
     llvm::ArrayRef<FrozenResourceCapacityUseSelection> resourceUses,
     llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals);
+
+/// Derives one demand projection from canonically ordered route segments
+/// without materializing a concatenated route-selection vector.
+llvm::Expected<ResourcePhysicalDemandProjection> deriveResourcePhysicalDemand(
+    const FrozenResourceCapacityIndex &index,
+    llvm::ArrayRef<FrozenResourceCapacityUseSelection> resourceUses,
+    llvm::ArrayRef<llvm::ArrayRef<FrozenResourceCapacityRouteSelection>>
+        routeSegments);
 
 llvm::Expected<ResourcePhysicalDemandProjection> deriveResourcePhysicalDemand(
     llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
