@@ -739,21 +739,45 @@ void traceSpatialFixture(llvm::StringRef test, const SharedFixture &fixture,
                    << '\n';
   }
 }
-
-SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
-                                 ArtifactStore &artifacts, BlobStore &blobs,
-                                 const deployment::test::TemporaryTree &tree) {
+SharedFixture
+buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
+                   ArtifactStore &artifacts, BlobStore &blobs,
+                   const deployment::test::TemporaryTree &tree,
+                   ExecutionMatrixLifecycleRecorder *lifecycle = nullptr) {
+  std::optional<ExecutionMatrixLifecycleTimer> setupChildTimer;
+  if (lifecycle)
+    setupChildTimer.emplace(
+        *lifecycle,
+        ExecutionMatrixLifecycleOperation::DataflowConstructionAndPublication);
   auto context = makeContext();
   const bool paired = isPairedCell(cell);
   auto dataflow = buildCanonicalApplication(test, *context, paired);
   const ArtifactRootReference dataflowReference =
       take(test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
+  const auto observeHardwareConstruction = [&](const auto operation,
+                                               const auto boundary) {
+    using Boundary = eda::test::MappedSpatialHardwareFixtureBoundary;
+    using HardwareOperation = eda::test::MappedSpatialHardwareFixtureOperation;
+    if (!lifecycle)
+      return;
+    if (operation == HardwareOperation::DataflowPublication) {
+      require(test, setupChildTimer.has_value(),
+              "Dataflow publication escaped its setup interval");
+      if (boundary == Boundary::End)
+        setupChildTimer.reset();
+      return;
+    }
+    setupChildTimer.reset();
+    if (boundary == Boundary::Begin)
+      setupChildTimer.emplace(*lifecycle, operation);
+  };
   auto hardware = eda::test::buildMappedSpatialHardwareFixture(
       test, dataflow, *context, artifacts, blobs,
       deployment::test::MappedSpatialSystemSpec{paired ? 1U : 4U, true, true},
       eda::test::MappedRtlFixtureTopology::HeterogeneousPortable,
       eda::test::MappedRtlRouteCoverage::AnyLegal,
-      eda::test::MappedSystemInterconnect::Gem5EventTransport);
+      eda::test::MappedSystemInterconnect::Gem5EventTransport,
+      observeHardwareConstruction);
   require(test, hardware.interconnect.has_value(),
           "System fixture omitted its typed interconnect implementation");
   const ArtifactRootReference interconnect = *hardware.interconnect;
@@ -765,11 +789,17 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
   const auto dataflowView = take(test, dataflow.view());
   require(test, cores.size() == dataflowView.rootThreadLaunches().size(),
           "anchor core count does not match its root launch count");
+  if (lifecycle)
+    setupChildTimer.emplace(
+        *lifecycle, ExecutionMatrixLifecycleOperation::SystemMappingAndPnr);
   auto systemMapping = deployment::test::buildMappedSystemMapping(
       test, dataflow, hardware.system, {hardware.spatialMapping.reference()},
       artifacts, cores);
-
+  setupChildTimer.reset();
   deployment::test::MappedSystemExecutablePrograms programs;
+  if (lifecycle)
+    setupChildTimer.emplace(
+        *lifecycle, ExecutionMatrixLifecycleOperation::GuestCompileAndLink);
   const bool orderedSequence = cell == ExecutionMatrixCell::SystemDfg ||
                                cell == ExecutionMatrixCell::SystemCgra;
   const llvm::StringRef hostSource =
@@ -782,6 +812,11 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
   programs.instructionProgramBytes = compileGuest(
       test, tree, "spatial-dispatch", spatialInstructionProgramSource(),
       kInstructionLoadAddress, "__loom_thread_entry_0", false);
+  setupChildTimer.reset();
+  if (lifecycle)
+    setupChildTimer.emplace(*lifecycle,
+                            ExecutionMatrixLifecycleOperation::
+                                RuntimeBindingAndDeploymentFinalization);
   programs.hostEntries = {{0, "loom_host_entry", {}, {}, {0}}};
   programs.hostInterfaces = {{0, deployment::HostExternalInterfaceKind::Memory,
                               deployment::HostExternalInterfaceDirection::InOut,
@@ -789,6 +824,11 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
   auto deployment = deployment::test::buildMappedSystemDeployment(
       test, dataflow, hardware.system, systemMapping, hardware.implementations,
       std::move(programs), artifacts, blobs, tree);
+  setupChildTimer.reset();
+  if (lifecycle)
+    setupChildTimer.emplace(
+        *lifecycle,
+        ExecutionMatrixLifecycleOperation::WorkloadAndRuntimeInputPublication);
   const auto [spatialWorkload, spatialRuntimeInput] =
       publishSpatialInputs(test, dataflow, artifacts, paired);
   auto spatialInputs =
@@ -810,6 +850,7 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
           "Deployment selected an implementation outside the fixture");
   auto implementation = *selectedImplementation;
   auto systemInputs = publishSystemInputs(test, deployment, artifacts);
+  setupChildTimer.reset();
   return {std::move(context),
           std::move(dataflow),
           dataflowReference,
@@ -822,7 +863,6 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
           spatialRuntimeInput,
           std::move(systemInputs)};
 }
-
 evaluation::CaseArtifactResolution
 buildResolution(llvm::StringRef test, const SharedFixture &fixture,
                 const std::optional<ArtifactRootReference> &gem5Binding,
@@ -1554,7 +1594,7 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixInvocation invocation,
     std::optional<ExecutionMatrixLifecycleTimer> setupTimer;
     setupTimer.emplace(lifecycle, ExecutionMatrixLifecycleOperation::Setup);
     SharedFixture fixture =
-        buildSharedFixture(test, cell, artifacts, blobs, tree);
+        buildSharedFixture(test, cell, artifacts, blobs, tree, &lifecycle);
     const std::optional<PairedFingerprints> pairedFingerprintsValue =
         isPairedCell(cell) ? std::optional<PairedFingerprints>(
                                  pairedFingerprints(test, fixture))

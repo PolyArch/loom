@@ -10,6 +10,8 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Runtime/Gem5SystemExecution.h"
 
+#include "MappedRtlSimulationTestSupport.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -107,6 +109,30 @@ llvm::StringRef spelling(ExecutionMatrixLifecycleOperation operation) {
   switch (operation) {
   case ExecutionMatrixLifecycleOperation::Setup:
     return "setup";
+  case ExecutionMatrixLifecycleOperation::DataflowConstructionAndPublication:
+    return "dataflow_construction_and_publication";
+  case ExecutionMatrixLifecycleOperation::
+      FabricModuleConstructionAndFinalization:
+    return "fabric_module_construction_and_finalization";
+  case ExecutionMatrixLifecycleOperation::TechMapping:
+    return "tech_mapping";
+  case ExecutionMatrixLifecycleOperation::SpatialPnr:
+    return "spatial_pnr";
+  case ExecutionMatrixLifecycleOperation::
+      SystemFabricAndInterconnectConstruction:
+    return "system_fabric_and_interconnect_construction";
+  case ExecutionMatrixLifecycleOperation::
+      ConfigurationAbiAndHardwareImplementationGeneration:
+    return "configuration_abi_and_hardware_implementation_generation";
+  case ExecutionMatrixLifecycleOperation::SystemMappingAndPnr:
+    return "system_mapping_and_pnr";
+  case ExecutionMatrixLifecycleOperation::GuestCompileAndLink:
+    return "guest_compile_and_link";
+  case ExecutionMatrixLifecycleOperation::
+      RuntimeBindingAndDeploymentFinalization:
+    return "runtime_binding_and_deployment_finalization";
+  case ExecutionMatrixLifecycleOperation::WorkloadAndRuntimeInputPublication:
+    return "workload_and_runtime_input_publication";
   case ExecutionMatrixLifecycleOperation::HostLifecycle:
     return "host_lifecycle";
   case ExecutionMatrixLifecycleOperation::Gem5Binding:
@@ -158,6 +184,21 @@ void emitInvocationKey(llvm::raw_ostream &output,
 
 llvm::StringRef lifecycleParent(ExecutionMatrixLifecycleOperation operation) {
   switch (operation) {
+  case ExecutionMatrixLifecycleOperation::DataflowConstructionAndPublication:
+  case ExecutionMatrixLifecycleOperation::
+      FabricModuleConstructionAndFinalization:
+  case ExecutionMatrixLifecycleOperation::TechMapping:
+  case ExecutionMatrixLifecycleOperation::SpatialPnr:
+  case ExecutionMatrixLifecycleOperation::
+      SystemFabricAndInterconnectConstruction:
+  case ExecutionMatrixLifecycleOperation::
+      ConfigurationAbiAndHardwareImplementationGeneration:
+  case ExecutionMatrixLifecycleOperation::SystemMappingAndPnr:
+  case ExecutionMatrixLifecycleOperation::GuestCompileAndLink:
+  case ExecutionMatrixLifecycleOperation::
+      RuntimeBindingAndDeploymentFinalization:
+  case ExecutionMatrixLifecycleOperation::WorkloadAndRuntimeInputPublication:
+    return "setup";
   case ExecutionMatrixLifecycleOperation::Gem5Binding:
   case ExecutionMatrixLifecycleOperation::RequestConstruction:
   case ExecutionMatrixLifecycleOperation::OrdinaryPrepare:
@@ -311,6 +352,30 @@ llvm::StringRef systemRtlCommandRole(std::size_t commandOrdinal) {
                                                      : "rtl_controller";
 }
 
+ExecutionMatrixLifecycleOperation setupLifecycleOperation(
+    eda::test::MappedSpatialHardwareFixtureOperation operation) {
+  using HardwareOperation = eda::test::MappedSpatialHardwareFixtureOperation;
+  switch (operation) {
+  case HardwareOperation::DataflowPublication:
+    return ExecutionMatrixLifecycleOperation::
+        DataflowConstructionAndPublication;
+  case HardwareOperation::FabricModuleConstructionAndFinalization:
+    return ExecutionMatrixLifecycleOperation::
+        FabricModuleConstructionAndFinalization;
+  case HardwareOperation::TechMapping:
+    return ExecutionMatrixLifecycleOperation::TechMapping;
+  case HardwareOperation::SpatialPnr:
+    return ExecutionMatrixLifecycleOperation::SpatialPnr;
+  case HardwareOperation::SystemFabricAndInterconnectConstruction:
+    return ExecutionMatrixLifecycleOperation::
+        SystemFabricAndInterconnectConstruction;
+  case HardwareOperation::ConfigurationAbiAndHardwareImplementationGeneration:
+    return ExecutionMatrixLifecycleOperation::
+        ConfigurationAbiAndHardwareImplementationGeneration;
+  }
+  llvm_unreachable("unknown mapped hardware fixture operation");
+}
+
 } // namespace
 
 llvm::Error emitExecutionMatrixRunSummary(
@@ -430,7 +495,7 @@ public:
     });
     for (const Record &record : ordered) {
       llvm::outs() << "execution-matrix-lifecycle"
-                   << " schema=loom.execution_matrix_lifecycle.3";
+                   << " schema=loom.execution_matrix_lifecycle.4.0";
       emitInvocationKey(llvm::outs(), invocation);
       llvm::outs() << " interval_kind=inclusive parent="
                    << lifecycleParent(record.operation)
@@ -508,6 +573,12 @@ ExecutionMatrixLifecycleTimer::ExecutionMatrixLifecycleTimer(
     ExecutionMatrixLifecycleOperation operation)
     : impl_(std::make_unique<Impl>(recorder, operation,
                                    recorder.impl_->reserveSequence())) {}
+
+ExecutionMatrixLifecycleTimer::ExecutionMatrixLifecycleTimer(
+    ExecutionMatrixLifecycleRecorder &recorder,
+    eda::test::MappedSpatialHardwareFixtureOperation operation)
+    : ExecutionMatrixLifecycleTimer(recorder,
+                                    setupLifecycleOperation(operation)) {}
 
 ExecutionMatrixLifecycleTimer::~ExecutionMatrixLifecycleTimer() {
   const ResourceSnapshot end = captureResources();
