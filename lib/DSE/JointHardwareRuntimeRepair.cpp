@@ -77,6 +77,16 @@ executeResourceTimeAdjacentMappingRepair(
     const BlobStore &blobs) {
   if (llvm::Error error = registerProductionDseOwners())
     return std::move(error);
+  // The cold and preserve-first plans import the same System and Module roots,
+  // so one session across both keeps the repeated strict imports as cache hits.
+  ::loom::fabric::FabricArtifactImportSession fabricImportSession;
+  llvm::scope_exit emitFabricImportStatistics([&] {
+    ::loom::fabric::emitFabricArtifactImportSessionStatistics(
+        ::loom::fabric::FabricArtifactImportVerificationDomain::
+            SourceInvocation,
+        ::loom::InvocationDiagnosticStage::SystemPnr,
+        fabricImportSession.statistics());
+  });
   if (request.journalRoot.empty())
     return invalid("resource-time repair requires a journal root");
   if (reopenedRoots.empty())
