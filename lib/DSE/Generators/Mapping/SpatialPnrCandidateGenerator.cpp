@@ -65,7 +65,7 @@ llvm::Error validateSpatialConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialPnrCandidateGeneratorKind,
     "mapping.spatial_pnr",
-    "loom.mapping.spatial_pnr.generator.v14",
+    "loom.mapping.spatial_pnr.generator.v16",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -76,6 +76,18 @@ const CandidateGeneratorDescriptor descriptor{
     nullptr,
     ProviderForm::InProcess,
 };
+
+CandidateGeneratorIncompleteReason adaptUnverifiedInfeasibility(
+    ::loom::pnr::SpatialPnrInfeasibilityProofKind kind) {
+  switch (kind) {
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::FrozenDerivedContext:
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::FrozenActiveProblem:
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::InitializerRelation:
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::GraphBoundaryEndpointHall:
+    return CandidateGeneratorIncompleteReason::ProofNotEstablished;
+  }
+  llvm_unreachable("unknown Spatial PnR infeasibility kind");
+}
 
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
@@ -116,8 +128,10 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   if (const auto *infeasible =
           std::get_if<::loom::pnr::ProvenInfeasibleSpatialMapping>(&outcome))
     return CandidateGeneratorProviderResult{
-        CompletedCandidateGeneratorResult{
-            {{CandidateGeneratorOutputSlotRef(0), {}}}, {}},
+        IncompleteCandidateGeneratorResult{
+            adaptUnverifiedInfeasibility(infeasible->proofKind),
+            {{CandidateGeneratorOutputSlotRef(0), {}}},
+            {}},
         spatialPnrCandidateGeneratorWorkSummary(infeasible->accounting)};
   if (const auto *incomplete =
           std::get_if<::loom::pnr::IncompleteSpatialPnrGeneration>(&outcome)) {
@@ -166,9 +180,12 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                                        invalid->diagnostic);
   const auto &internal =
       std::get<::loom::pnr::InternalSpatialPnrGeneration>(outcome);
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "spatial_pnr_generator_execution_failed: " +
-                                     internal.diagnostic);
+  return CandidateGeneratorProviderResult{
+      IncompleteCandidateGeneratorResult{
+          CandidateGeneratorIncompleteReason::ExecutionFailed,
+          {{CandidateGeneratorOutputSlotRef(0), {}}},
+          {}},
+      spatialPnrCandidateGeneratorWorkSummary(internal.accounting)};
 }
 
 const CandidateGeneratorProvider provider{
@@ -198,6 +215,18 @@ std::vector<CandidateGeneratorWorkUnitSummary>
 spatialPnrCandidateGeneratorWorkSummary(
     const ::loom::pnr::SpatialPnrGenerationAccounting &accounting) {
   const std::array<std::uint64_t, pnrCandidateGeneratorWorkUnits.size()>
+      planned = {
+          accounting.plannedSeedAttemptSlots,
+          accounting.plannedInitializerAssignmentAttempts,
+          accounting.plannedEndpointExpansionSlots,
+          accounting.plannedNegotiationIterationSlots,
+          accounting.plannedCalibrationProposalSlots,
+          accounting.plannedAnnealingBaseProposalSlots,
+          accounting.plannedAnnealingMovableProposalSlots,
+          accounting.plannedExactRepairRegionDecisions,
+          accounting.plannedExactRepairSolverCalls,
+      };
+  const std::array<std::uint64_t, pnrCandidateGeneratorWorkUnits.size()>
       consumed = {
           accounting.seedAttemptSlots,
           accounting.initializerAssignmentAttempts,
@@ -212,8 +241,8 @@ spatialPnrCandidateGeneratorWorkSummary(
   std::vector<CandidateGeneratorWorkUnitSummary> summary;
   summary.reserve(consumed.size());
   for (std::size_t ordinal = 0; ordinal != consumed.size(); ++ordinal)
-    summary.push_back({CandidateGeneratorWorkUnitRef(ordinal),
-                       consumed[ordinal], consumed[ordinal]});
+    summary.push_back({CandidateGeneratorWorkUnitRef(ordinal), planned[ordinal],
+                       consumed[ordinal]});
   return summary;
 }
 

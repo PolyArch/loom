@@ -9,6 +9,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -52,10 +53,10 @@ struct CgraActorPhysicalCompletion final {
 
 struct CgraComputeLifecycleFrame final {
   SpatialEventCoordinate coordinate;
-  std::vector<CgraPhysicalLifecycleEvent> physicalEvents;
-  std::vector<CgraActorLifecycleEvent> actorEvents;
-  std::vector<CgraActorEmission> actorEmissions;
-  std::vector<CgraActorPhysicalCompletion> physicalCompletions;
+  llvm::SmallVector<CgraPhysicalLifecycleEvent, 8> physicalEvents;
+  llvm::SmallVector<CgraActorLifecycleEvent, 4> actorEvents;
+  llvm::SmallVector<CgraActorEmission, 4> actorEmissions;
+  llvm::SmallVector<CgraActorPhysicalCompletion, 4> physicalCompletions;
 };
 
 /// Projects one active temporal-PE context-evaluation candidate onto its next

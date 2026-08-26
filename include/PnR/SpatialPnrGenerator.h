@@ -31,6 +31,16 @@ struct FabricTopologyQualityReport;
 namespace loom::pnr {
 
 struct SpatialPnrGenerationAccounting final {
+  std::uint64_t plannedSeedAttemptSlots = 0;
+  std::uint64_t plannedInitializerAssignmentAttempts = 0;
+  std::uint64_t plannedEndpointExpansionSlots = 0;
+  std::uint64_t plannedNegotiationIterationSlots = 0;
+  std::uint64_t plannedCalibrationProposalSlots = 0;
+  std::uint64_t plannedAnnealingBaseProposalSlots = 0;
+  std::uint64_t plannedAnnealingMovableProposalSlots = 0;
+  std::uint64_t plannedExactRepairRegionDecisions = 0;
+  std::uint64_t plannedExactRepairSolverCalls = 0;
+  std::uint64_t plannedFinalClosureAttempts = 0;
   std::uint64_t seedAttemptSlots = 0;
   std::uint64_t preparedSeeds = 0;
   std::uint64_t initializerAssignmentAttempts = 0;
@@ -49,7 +59,25 @@ struct SpatialPnrGenerationAccounting final {
 
   friend bool operator==(const SpatialPnrGenerationAccounting &lhs,
                          const SpatialPnrGenerationAccounting &rhs) {
-    return lhs.seedAttemptSlots == rhs.seedAttemptSlots &&
+    return lhs.plannedSeedAttemptSlots == rhs.plannedSeedAttemptSlots &&
+           lhs.plannedInitializerAssignmentAttempts ==
+               rhs.plannedInitializerAssignmentAttempts &&
+           lhs.plannedEndpointExpansionSlots ==
+               rhs.plannedEndpointExpansionSlots &&
+           lhs.plannedNegotiationIterationSlots ==
+               rhs.plannedNegotiationIterationSlots &&
+           lhs.plannedCalibrationProposalSlots ==
+               rhs.plannedCalibrationProposalSlots &&
+           lhs.plannedAnnealingBaseProposalSlots ==
+               rhs.plannedAnnealingBaseProposalSlots &&
+           lhs.plannedAnnealingMovableProposalSlots ==
+               rhs.plannedAnnealingMovableProposalSlots &&
+           lhs.plannedExactRepairRegionDecisions ==
+               rhs.plannedExactRepairRegionDecisions &&
+           lhs.plannedExactRepairSolverCalls ==
+               rhs.plannedExactRepairSolverCalls &&
+           lhs.plannedFinalClosureAttempts == rhs.plannedFinalClosureAttempts &&
+           lhs.seedAttemptSlots == rhs.seedAttemptSlots &&
            lhs.preparedSeeds == rhs.preparedSeeds &&
            lhs.initializerAssignmentAttempts ==
                rhs.initializerAssignmentAttempts &&
@@ -68,6 +96,12 @@ struct SpatialPnrGenerationAccounting final {
            lhs.publicationSlots == rhs.publicationSlots;
   }
 };
+
+/// Verifies that every ledger counter is monotonic and, when requested,
+/// that no admitted logical slot remains live.
+llvm::Error
+verifySpatialPnrWorkAccounting(const SpatialPnrGenerationAccounting &accounting,
+                               bool requireClosedWork);
 
 struct GeneratedSpatialMappings final {
   std::vector<ArtifactRootReference> candidates;
@@ -97,11 +131,19 @@ struct SpatialGraphBoundaryEndpointHallDeficit final {
   }
 };
 
+enum class SpatialPnrInfeasibilityProofKind : std::uint8_t {
+  FrozenDerivedContext = 0,
+  FrozenActiveProblem = 1,
+  InitializerRelation = 2,
+  GraphBoundaryEndpointHall = 3,
+};
+
 struct ProvenInfeasibleSpatialMapping final {
   SpatialPnrGenerationAccounting accounting;
   std::string diagnostic;
   std::optional<SpatialGraphBoundaryEndpointHallDeficit>
       graphBoundaryEndpointHall = std::nullopt;
+  SpatialPnrInfeasibilityProofKind proofKind;
 };
 
 enum class IncompleteSpatialPnrGenerationReason : std::uint8_t {

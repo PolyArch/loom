@@ -436,7 +436,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
 
   auto parametersOrErr = ClosedMapping::parse(
       fieldsOrErr->at("parameters"), "hardware_target.parameters",
-      {"acc_core_count", "mesh_dimension", "spatial_pe_count",
+      {"acc_core_count", "mesh_dimension", "spatial_mesh_lanes_per_direction",
+       "temporal_mesh_lanes_per_direction", "spatial_pe_count",
        "temporal_pe_count", "spatial_fu_occurrences", "temporal_fu_occurrences",
        "spatial_memory_count", "temporal_memory_count",
        "temporal_resident_contexts", "local_memory_port_variant",
@@ -455,6 +456,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
   };
   auto accCores = positiveU32("acc_core_count");
   auto meshDimension = positiveU32("mesh_dimension");
+  auto spatialMeshLanes = positiveU32("spatial_mesh_lanes_per_direction");
+  auto temporalMeshLanes = positiveU32("temporal_mesh_lanes_per_direction");
   auto spatialPes = positiveU32("spatial_pe_count");
   auto temporalPes = positiveU32("temporal_pe_count");
   auto spatialFuOccurrences = parseBuiltinFuOccurrences(
@@ -487,6 +490,10 @@ parseHardwareTarget(const ConfigSyntax *node) {
     return accCores.takeError();
   if (!meshDimension)
     return meshDimension.takeError();
+  if (!spatialMeshLanes)
+    return spatialMeshLanes.takeError();
+  if (!temporalMeshLanes)
+    return temporalMeshLanes.takeError();
   if (!spatialPes)
     return spatialPes.takeError();
   if (!temporalPes)
@@ -511,10 +518,11 @@ parseHardwareTarget(const ConfigSyntax *node) {
   return loom::ResolvedHardwareTargetConfig{
       *templateOrErr,
       {*majorOrErr, *minorOrErr},
-      {*accCores, *meshDimension, *spatialPes, *temporalPes,
-       *spatialFuOccurrences, *temporalFuOccurrences, *spatialMemories,
-       *temporalMemories, *residentContexts, *memoryPortVariant,
-       *crossScheduleBoundaryLanes, *gateways, *memoryCapacity}};
+      {*accCores, *meshDimension, *spatialMeshLanes, *temporalMeshLanes,
+       *spatialPes, *temporalPes, *spatialFuOccurrences, *temporalFuOccurrences,
+       *spatialMemories, *temporalMemories, *residentContexts,
+       *memoryPortVariant, *crossScheduleBoundaryLanes, *gateways,
+       *memoryCapacity}};
 }
 
 enum class ParsedObjectiveSourceKind {
@@ -1668,9 +1676,10 @@ llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
   const loom::adg::BuiltinTargetScale &scale = config.hardwareTarget.parameters;
   if (!loom::adg::isValidBuiltinTargetScale(scale))
     return diagnostic("config_range_violation", "hardware_target.parameters",
-                      "base scale values must be positive, mesh_dimension "
-                      "must exceed one, and each FU occurrence count must not "
-                      "exceed its schedule-local PE count");
+                      "base scale values must be positive, mesh lane counts "
+                      "must be within the public MeshSwitch domain, "
+                      "mesh_dimension must exceed one, and each FU occurrence "
+                      "count must not exceed its schedule-local PE count");
   if (config.dse.structuredOwnership.scopeExpansionLimit == 0 ||
       config.dse.schedule.scopeExpansionLimit == 0 ||
       config.dse.memoryCommunication.scopeExpansionLimit == 0 ||

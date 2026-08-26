@@ -1,5 +1,3 @@
-#include "ADG/Builder.h"
-#include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
@@ -17,7 +15,6 @@
 #include "DSE/StructuredOwnershipInvocation.h"
 #include "DSE/StructuredOwnershipInvocationInternal.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
-#include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/Transforms/DataflowRewrite.h"
 #include "Evaluation/Models/CanonicalDataflowFunctional.h"
 #include "Evaluation/Models/CgraSimulation.h"
@@ -39,10 +36,6 @@
 #include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/DLTI/DLTI.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/APInt.h"
@@ -57,7 +50,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
-#include <limits>
 #include <optional>
 #include <system_error>
 #include <utility>
@@ -65,6 +57,17 @@
 #include <vector>
 
 namespace {
+
+using loom::test::buildAlternateDataflow;
+using loom::test::buildAlternativeTechSpatialCore;
+using loom::test::buildDataflow;
+using loom::test::buildFeedbackSpatialConfig;
+using loom::test::buildSingleCandidateSpatialConfig;
+using loom::test::buildSingleCandidateSpatialResolvedConfig;
+using loom::test::buildSpatialConfig;
+using loom::test::buildSpatialResolvedConfig;
+using loom::test::buildVectorDataflow;
+using loom::test::makeContext;
 
 [[noreturn]] void fail(const llvm::Twine &message) {
   llvm::errs() << "root-complete Spatial PnR generator anchor failed: "
@@ -125,245 +128,6 @@ public:
 private:
   llvm::SmallString<128> path_;
 };
-
-mlir::MLIRContext makeContext() {
-  mlir::DialectRegistry registry;
-  registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
-                  mlir::DLTIDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, loom::LoomDialect>();
-  return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
-}
-
-dataflow::CanonicalDataflowArtifact buildDataflow(mlir::MLIRContext &context) {
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
-  dataflow.graph private @sync(%start: none, %value: i32) -> i32
-      attributes {input_segments = array<i32: 1, 0, 0>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %result:2 = dataflow.sync %start, %value
-        : (none, i32) -> (none, i32)
-    dataflow.graph.return values(%result#1 : i32) streams() memories()
-        complete(%result#0 : none)
-  }
-  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
-      %value: i32) ctrl (%ctrl: none) {
-    %result, %done = dataflow.graph.launch @sync deps(%ctrl)
-        values(%value) stream_inputs() memories() stream_outputs()
-        : (none, i32) -> (i32, none)
-    dataflow.thread.yield %done : none
-  }
-  func.func private @host() {
-    %value = arith.constant 7 : i32
-    %thread = dataflow.thread.launch @worker(%value)
-        : (i32) -> !dataflow.thread_token
-    return
-  }
-}
-)mlir",
-                                                        &context);
-  if (!module)
-    fail("cannot parse Dataflow fixture");
-  return take(dataflow::finalizeCanonicalDataflow(*module));
-}
-
-dataflow::CanonicalDataflowArtifact
-buildAlternateDataflow(mlir::MLIRContext &context) {
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
-  dataflow.graph private @sync(%start: none, %value: i32) -> i32
-      attributes {input_segments = array<i32: 1, 0, 0>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %result:2 = dataflow.sync %start, %value
-        : (none, i32) -> (none, i32)
-    dataflow.graph.return values(%result#1 : i32) streams() memories()
-        complete(%result#0 : none)
-  }
-  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
-      %value: i32) ctrl (%ctrl: none) {
-    %result, %done = dataflow.graph.launch @sync deps(%ctrl)
-        values(%value) stream_inputs() memories() stream_outputs()
-        : (none, i32) -> (i32, none)
-    dataflow.thread.yield %done : none
-  }
-  func.func private @host() {
-    %value = arith.constant 8 : i32
-    %thread = dataflow.thread.launch @worker(%value)
-        : (i32) -> !dataflow.thread_token
-    return
-  }
-}
-)mlir",
-                                                        &context);
-  if (!module)
-    fail("cannot parse alternate Dataflow fixture");
-  return take(dataflow::finalizeCanonicalDataflow(*module));
-}
-
-dataflow::CanonicalDataflowArtifact
-buildVectorDataflow(mlir::MLIRContext &context) {
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
-  dataflow.graph private @add(%start: none, %value: vector<4xi32>)
-      -> vector<4xi32>
-      attributes {input_segments = array<i32: 1, 0, 0>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %sum = arith.addi %value, %value : vector<4xi32>
-    %retired:2 = dataflow.sync %start, %sum
-        : (none, vector<4xi32>) -> (none, vector<4xi32>)
-    dataflow.graph.return values(%retired#1 : vector<4xi32>) streams()
-        memories() complete(%retired#0 : none)
-  }
-  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
-      %value: vector<4xi32>)
-      ctrl (%ctrl: none) {
-    %result, %done = dataflow.graph.launch @add deps(%ctrl)
-        values(%value) stream_inputs() memories() stream_outputs()
-        : (none, vector<4xi32>) -> (vector<4xi32>, none)
-    dataflow.thread.yield %done : none
-  }
-  func.func private @host() {
-    %value = arith.constant dense<[1, 2, 3, 4]> : vector<4xi32>
-    %thread = dataflow.thread.launch @worker(%value)
-        : (vector<4xi32>) -> !dataflow.thread_token
-    return
-  }
-}
-)mlir",
-                                                        &context);
-  if (!module)
-    fail("cannot parse vector Dataflow fixture");
-  return take(dataflow::finalizeCanonicalDataflow(*module));
-}
-
-loom::fabric::FinalizedFabricRoot
-buildAlternativeTechSpatialCore(loom::ArtifactStore &store) {
-  constexpr std::uint32_t payloadWidth = 128;
-  const loom::adg::PortType payloadType =
-      take(loom::adg::PortType::bits(payloadWidth));
-  const std::vector<loom::adg::PortType> types(8, payloadType);
-  loom::adg::DesignBuilder builder(store);
-  auto spatial =
-      take(builder.createSpatialCore("alternative-sync", types, types));
-  std::vector<loom::adg::SpatialValue> spatialInputs;
-  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
-    spatialInputs.push_back(take(spatial.input(ordinal)));
-  auto pe = take(
-      spatial.addPe(spatialInputs, loom::adg::PeSpec::spatial(types, types)));
-  std::vector<loom::adg::PeValue> peInputs;
-  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
-    peInputs.push_back(take(pe.input(ordinal)));
-  for (std::uint32_t ordinal = 0; ordinal != 2; ++ordinal) {
-    const std::size_t laneCount = ordinal == 0 ? 4 : 8;
-    const std::vector<loom::adg::PortType> fuTypes(laneCount, payloadType);
-    auto fu = take(pe.addFu(
-        llvm::ArrayRef<loom::adg::PeValue>(peInputs).take_front(laneCount),
-        loom::adg::FuSpec{fuTypes, fuTypes}));
-    std::vector<loom::adg::FuValue> fuInputs;
-    for (std::size_t input = 0; input != fuTypes.size(); ++input)
-      fuInputs.push_back(take(fu.input(input)));
-    auto operation = take(fu.addOperation(
-        fuInputs, loom::adg::OperationCapabilitySpec{
-                      ::fabric::ImplementationFamilyId::TokenSync,
-                      ::fabric::RoutedTokenParams{
-                          payloadWidth, static_cast<std::uint32_t>(laneCount)},
-                      {::dataflow::OperationSchemaId::DataflowSync},
-                      fuTypes,
-                      ::fabric::oneCycleElasticOperationResourceContract()}));
-    requireSuccess(fu.addCapabilityTemplate(
-        loom::adg::FuCapabilityTemplateSpec{{operation}, {}}));
-    std::vector<loom::adg::FuValue> outputs;
-    for (std::size_t output = 0; output != fuTypes.size(); ++output)
-      outputs.push_back(take(operation.output(output)));
-    requireSuccess(fu.close(outputs));
-  }
-  requireSuccess(pe.close());
-  std::vector<loom::adg::SpatialValue> outputs;
-  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
-    outputs.push_back(take(pe.output(ordinal)));
-  requireSuccess(spatial.close(outputs));
-  auto design = take(std::move(builder).finalize());
-  if (design.roots().size() != 1)
-    fail("alternative Tech fixture did not publish one Fabric root");
-  return design.roots().front();
-}
-
-loom::ResolvedObjectiveCatalogs availableSpatialObjectiveCatalogs() {
-  loom::ResolvedObjectiveCatalogs catalogs;
-  constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
-  catalogs.dimensions = {
-      {loom::ResolvedMappingViolationObjectiveSource{
-           loom::ResolvedPnrViolationKind::UnroutedObligation},
-       loom::ResolvedObjectiveDirection::Minimize,
-       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
-       maximum},
-      {loom::ResolvedMappingViolationObjectiveSource{
-           loom::ResolvedPnrViolationKind::CapacityOveruse},
-       loom::ResolvedObjectiveDirection::Minimize,
-       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
-       maximum},
-      {loom::ResolvedMappingMeasureObjectiveSource{static_cast<std::uint32_t>(
-           loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim)},
-       loom::ResolvedObjectiveDirection::Minimize,
-       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
-       maximum},
-  };
-  catalogs.weightedLevels = {
-      {{{0, 1}, {1, 1}, {2, 1}}},
-  };
-  catalogs.totalOrderings = {{{0}}};
-  return catalogs;
-}
-
-loom::ResolvedConfig buildSpatialResolvedConfig() {
-  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
-  resolved.dse.objectiveCatalogs = availableSpatialObjectiveCatalogs();
-  resolved.dse.spatialPnr.temporaryViolations.admitted = {
-      loom::ResolvedPnrViolationKind::UnroutedObligation,
-      loom::ResolvedPnrViolationKind::CapacityOveruse,
-  };
-  resolved.dse.spatialPnr.objectiveSelection = {0, 0};
-  auto &search = resolved.dse.spatialPnr.search;
-  search.initializer.seedAttemptCount = 2;
-  search.actionProposal = {0, 1, 0};
-  search.annealing.calibrationProposalCount = 1;
-  search.annealing.fallbackTemperature = 1;
-  search.annealing.minimumTemperature = 1;
-  search.annealing.coolingRatio = {1, 2};
-  search.annealing.proposalsPerLevelBase = 1;
-  search.annealing.proposalsPerMovableDecision = 0;
-  search.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
-  return resolved;
-}
-
-loom::pnr::ResolvedPnrConfigView buildSpatialConfig() {
-  return take(loom::pnr::projectResolvedSpatialPnrConfigView(
-      buildSpatialResolvedConfig()));
-}
-
-loom::ResolvedConfig buildSingleCandidateSpatialResolvedConfig() {
-  loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
-  resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 1;
-  return resolved;
-}
-
-loom::pnr::ResolvedPnrConfigView buildSingleCandidateSpatialConfig() {
-  return take(loom::pnr::projectResolvedSpatialPnrConfigView(
-      buildSingleCandidateSpatialResolvedConfig()));
-}
-
-loom::pnr::ResolvedPnrConfigView buildFeedbackSpatialConfig() {
-  loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
-  resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 8;
-  resolved.dse.spatialPnr.search.routing.negotiationIterationLimit = 8;
-  resolved.dse.spatialPnr.search.routing.negotiation =
-      loom::ResolvedPathFinderPolicy{
-          loom::ResolvedPathFinderPriceKernel::Additive, 1, {3, 2}, 1};
-  resolved.dse.spatialPnr.search.actionProposal = {3, 3, 2};
-  resolved.dse.spatialPnr.search.annealing.calibrationProposalCount = 16;
-  resolved.dse.spatialPnr.search.annealing.proposalsPerLevelBase = 64;
-  resolved.dse.spatialPnr.search.annealing.proposalsPerMovableDecision = 4;
-  return take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
-}
 
 void requireSpatialWorkSummary(
     llvm::ArrayRef<loom::dse::CandidateGeneratorWorkUnitSummary> summary,
@@ -486,7 +250,7 @@ struct Fixture final {
 
 Fixture buildFixture(mlir::MLIRContext &context, loom::ArtifactStore &store,
                      const loom::BlobStore &blobs) {
-  auto dataflow = buildDataflow(context);
+  auto dataflow = loom::test::buildRootCompleteSpatialDataflow(context);
   auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
   auto fabric = loom::test::buildSpatialCore(store);
@@ -820,7 +584,8 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       store));
   auto manifest = take(loom::dse::InvocationManifest::get(
       std::move(closure), 0, std::nullopt, resolved, manifestRecords,
-      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store));
+      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store,
+      blobs));
   auto reorderedClosure = take(loom::dse::DseRunClosure::get(
       take(loom::dse::DseProducerSemanticBuildIdentity::get(
           "loom.test.root_complete_spatial_pnr.v1")),
@@ -828,11 +593,12 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       store));
   auto reorderedManifest = take(loom::dse::InvocationManifest::get(
       std::move(reorderedClosure), 0, std::nullopt, resolved, manifestRecords,
-      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store));
+      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store,
+      blobs));
   if (reorderedManifest.canonicalBytes() != manifest.canonicalBytes())
     fail("semantic-input authoring order changed production Manifest bytes");
   auto adopted = take(loom::dse::adoptInvocationManifest(
-      manifest.canonicalBytes(), resolved, store));
+      manifest.canonicalBytes(), resolved, store, blobs));
   if (adopted.generateRecords().size() != expectedWork.size())
     fail("Manifest dropped a production Generate work summary");
   for (std::size_t invocation = 0; invocation != expectedWork.size();
@@ -937,7 +703,8 @@ void finiteSetTraversesEveryCanonicalTechMapping() {
   const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   Fixture fixture = buildFixture(context, store, blobs);
-  auto alternateDataflow = buildAlternateDataflow(context);
+  auto alternateDataflow =
+      loom::test::buildAlternateRootCompleteSpatialDataflow(context);
   auto alternateDataflowReference =
       take(dataflow::publishCanonicalDataflow(alternateDataflow, store));
   auto alternateTechMapping = generateTechMapping(
@@ -1005,10 +772,10 @@ void firstVerifiedAvoidsSpeculativeRouteRanking() {
     fail("cannot create BlobStore directory: " + error.message());
   const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  auto dataflow = buildDataflow(context);
+  auto dataflow = loom::test::buildRootCompleteSpatialDataflow(context);
   const auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
-  auto fabric = buildAlternativeTechSpatialCore(store);
+  auto fabric = loom::test::buildAlternativeTechSpatialCore(store);
   const auto physicalTiming =
       normalizedTimingProfile(fabric.reference(), store);
   const auto techMappings = generateTechMappingSet(
@@ -1039,6 +806,7 @@ void firstVerifiedAvoidsSpeculativeRouteRanking() {
       incomplete->retainedOutputBindings.front().artifacts.size() != 1 ||
       outcome.workSummary.size() !=
           loom::dse::pnrCandidateGeneratorWorkUnits.size() ||
+      outcome.workSummary.front().planned != 1 ||
       outcome.workSummary.front().consumed != 1)
     fail("first-verified root adapter performed speculative route ranking");
   (void)take(loom::mapping::importSpatialMapping(
@@ -1201,8 +969,21 @@ void canonicalSeedHandoffPreservesFormalResult() {
       std::make_error_code(std::errc::invalid_argument),
       "synthetic transferred seed failure");
   const auto failedOutcome = run({3, 0}, std::move(failedHandoff));
-  if (!std::get_if<loom::pnr::InternalSpatialPnrGeneration>(&failedOutcome))
+  const auto *failedInternal =
+      std::get_if<loom::pnr::InternalSpatialPnrGeneration>(&failedOutcome);
+  if (!failedInternal)
     fail("transferred seed failure changed its typed internal classification");
+  requireSuccess(loom::pnr::verifySpatialPnrWorkAccounting(
+      failedInternal->accounting, /*requireClosedWork=*/false));
+  if (failedInternal->accounting.plannedSeedAttemptSlots !=
+          failedInternal->accounting.seedAttemptSlots + 1 ||
+      failedInternal->accounting.plannedInitializerAssignmentAttempts !=
+          failedInternal->accounting.initializerAssignmentAttempts ||
+      failedInternal->accounting.plannedEndpointExpansionSlots !=
+          failedInternal->accounting.endpointExpansionSlots ||
+      failedInternal->accounting.plannedNegotiationIterationSlots !=
+          failedInternal->accounting.negotiationIterationSlots)
+    fail("transferred seed failure lost its live work summary");
   const auto cold = run({3, 0}, nullptr);
   const auto warm = run({3, 0}, makeHandoff());
   const auto coldMemory = run({4, 1}, nullptr);
@@ -1271,14 +1052,25 @@ void firstVerifiedCandidateRetainsTypedPrefix() {
   if (!exhaustiveGenerated || !boundedGenerated ||
       exhaustiveGenerated->termination !=
           loom::pnr::PnrGenerationTermination::FixedAttemptsCompleted ||
+      exhaustiveGenerated->accounting.plannedSeedAttemptSlots != 2 ||
+      exhaustiveGenerated->accounting.seedAttemptSlots != 2 ||
       boundedGenerated->termination !=
           loom::pnr::PnrGenerationTermination::SemanticLimitReached ||
       boundedGenerated->candidates.size() != 1 ||
+      boundedGenerated->accounting.plannedSeedAttemptSlots != 1 ||
       boundedGenerated->accounting.seedAttemptSlots != 1 ||
       boundedGenerated->accounting.calibrationProposalSlots != 0 ||
       boundedGenerated->accounting.annealingBaseProposalSlots != 0 ||
       boundedGenerated->accounting.annealingMovableProposalSlots != 0 ||
       boundedGenerated->accounting.finalClosureAttempts == 0 ||
+      boundedGenerated->accounting.plannedFinalClosureAttempts !=
+          boundedGenerated->accounting.finalClosureAttempts ||
+      boundedGenerated->accounting.plannedInitializerAssignmentAttempts !=
+          boundedGenerated->accounting.initializerAssignmentAttempts ||
+      boundedGenerated->accounting.plannedEndpointExpansionSlots !=
+          boundedGenerated->accounting.endpointExpansionSlots ||
+      boundedGenerated->accounting.plannedNegotiationIterationSlots !=
+          boundedGenerated->accounting.negotiationIterationSlots ||
       boundedGenerated->accounting.finalizedRestarts != 1 ||
       boundedGenerated->accounting.publicationSlots != 1 ||
       exhaustiveGenerated->accounting.calibrationProposalSlots == 0)
@@ -1315,6 +1107,10 @@ void interruptionReturnsTypedSpatialSnapshot() {
   if (!interrupted ||
       interrupted->snapshot.stage !=
           loom::pnr::SpatialPnrInterruptionStage::InputAdmission ||
+      interrupted->accounting.plannedSeedAttemptSlots != 0 ||
+      interrupted->accounting.seedAttemptSlots != 0 ||
+      interrupted->accounting.plannedInitializerAssignmentAttempts != 0 ||
+      interrupted->accounting.initializerAssignmentAttempts != 0 ||
       interrupted->snapshot.frontier.seedAttemptSlots != 0 ||
       interrupted->snapshot.bestSelectedRank ||
       interrupted->snapshot.closureResidual.violationValues ||
@@ -1335,7 +1131,10 @@ void interruptionReturnsTypedSpatialSnapshot() {
           &provider.outcome);
   if (!incomplete ||
       incomplete->reason !=
-          loom::dse::CandidateGeneratorIncompleteReason::CancelledOrTimeout)
+          loom::dse::CandidateGeneratorIncompleteReason::CancelledOrTimeout ||
+      llvm::any_of(provider.workSummary, [](const auto &unit) {
+        return unit.planned != 0 || unit.consumed != 0;
+      }))
     fail("Spatial interruption did not map to a cancelled provider outcome");
 }
 
@@ -1386,7 +1185,16 @@ void initializerSemanticLimitIsTypedIncomplete() {
           loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
       incomplete->retainedOutputBindings.size() != 1 ||
       !incomplete->retainedOutputBindings.front().artifacts.empty() ||
-      !incomplete->lineageEdges.empty())
+      !incomplete->lineageEdges.empty() ||
+      outcome.workSummary.size() !=
+          loom::dse::pnrCandidateGeneratorWorkUnits.size() ||
+      outcome.workSummary[0].planned != 1 ||
+      outcome.workSummary[0].consumed != 1 ||
+      outcome.workSummary[1].planned != 1 ||
+      outcome.workSummary[1].consumed != 1 ||
+      llvm::any_of(outcome.workSummary, [](const auto &unit) {
+        return unit.consumed > unit.planned;
+      }))
     fail("initializer semantic limit did not remain typed Incomplete");
 }
 
@@ -1451,7 +1259,8 @@ void spatialMappingPromotionExecutesExactCgraCase() {
   auto acquisitionBinding = take(
       loom::dse::resolveSpatialMappingEvaluationPromotionAcquisitionBinding(
           acquisitionConfig));
-  auto alternate = buildAlternateDataflow(context);
+  auto alternate =
+      loom::test::buildAlternateRootCompleteSpatialDataflow(context);
   const loom::ArtifactRootReference alternateReference =
       take(dataflow::publishCanonicalDataflow(alternate, store));
   std::array<loom::ArtifactRootReference, 2> dataflows = {
@@ -1555,7 +1364,7 @@ void spatialMappingPromotionKeepsEveryCandidateLineage() {
     fail("cannot create BlobStore directory: " + error.message());
   const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  auto dataflow = buildDataflow(context);
+  auto dataflow = loom::test::buildRootCompleteSpatialDataflow(context);
   const loom::ArtifactRootReference dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
   auto fabric = loom::test::buildSpatialCore(store);
@@ -1615,7 +1424,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
     fail("cannot create BlobStore directory: " + error.message());
   const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
-  auto dataflow = buildVectorDataflow(context);
+  auto dataflow = loom::test::buildVectorRootCompleteSpatialDataflow(context);
   const loom::ArtifactRootReference dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
   auto fabric = loom::test::buildLineageSpatialCore(store);
@@ -1900,7 +1709,8 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
            .contains("unmatched record"))
     fail("unmatched Evidence lost its exact rejection");
 
-  auto alternate = buildAlternateDataflow(context);
+  auto alternate =
+      loom::test::buildAlternateRootCompleteSpatialDataflow(context);
   const loom::ArtifactRootReference alternateReference =
       take(dataflow::publishCanonicalDataflow(alternate, store));
   auto ambiguous =
@@ -2114,9 +1924,9 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
       std::move(closure), 0, std::nullopt, feedbackPlanConfig, manifestRecords,
       loom::dse::InvocationCompletedSelection{promoted->selected,
                                               promoted->satisfiedEvidence},
-      store));
+      store, blobs));
   auto adoptedManifest = take(loom::dse::adoptInvocationManifest(
-      manifest.canonicalBytes(), feedbackPlanConfig, store));
+      manifest.canonicalBytes(), feedbackPlanConfig, store, blobs));
   if (adoptedManifest.generateRecords().size() != 1 ||
       adoptedManifest.generateRecords().front().workSummary.units.size() != 1 ||
       adoptedManifest.generateRecords()

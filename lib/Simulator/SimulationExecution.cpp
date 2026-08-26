@@ -40,6 +40,27 @@ int compareSpatialEventCoordinates(const SpatialEventCoordinate &lhs,
   return lhs.delta < rhs.delta ? -1 : 1;
 }
 
+std::optional<std::uint64_t>
+integralSpatialReferenceCycleDistance(const SpatialEventCoordinate &from,
+                                      const SpatialEventCoordinate &to) {
+  if (compareSpatialEventCoordinates(to, from) < 0)
+    return std::nullopt;
+  using u128 = unsigned __int128;
+  const u128 fromValue = static_cast<u128>(from.referenceCycle.numerator()) *
+                         to.referenceCycle.denominator();
+  const u128 toValue = static_cast<u128>(to.referenceCycle.numerator()) *
+                       from.referenceCycle.denominator();
+  const u128 commonDenominator =
+      static_cast<u128>(from.referenceCycle.denominator()) *
+      to.referenceCycle.denominator();
+  const u128 difference = toValue - fromValue;
+  if (commonDenominator == 0 || difference % commonDenominator != 0 ||
+      difference / commonDenominator >
+          std::numeric_limits<std::uint64_t>::max())
+    return std::nullopt;
+  return static_cast<std::uint64_t>(difference / commonDenominator);
+}
+
 namespace {
 
 using detail::WireReader;
@@ -568,6 +589,38 @@ llvm::Expected<SpatialSimulationExecution> decodeSpatialSimulationExecution(
 
 } // namespace detail
 
+struct PreparedSpatialExecutionContext::Impl final {
+  evaluation::CaseArtifactResolution resolution;
+  std::optional<detail::SpatialExecutionContext> context;
+
+  explicit Impl(evaluation::CaseArtifactResolution resolution)
+      : resolution(std::move(resolution)) {}
+};
+
+PreparedSpatialExecutionContext::PreparedSpatialExecutionContext(
+    std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+PreparedSpatialExecutionContext::PreparedSpatialExecutionContext(
+    PreparedSpatialExecutionContext &&) noexcept = default;
+PreparedSpatialExecutionContext &PreparedSpatialExecutionContext::operator=(
+    PreparedSpatialExecutionContext &&) noexcept = default;
+PreparedSpatialExecutionContext::~PreparedSpatialExecutionContext() = default;
+
+llvm::Expected<PreparedSpatialExecutionContext>
+prepareSpatialExecutionContext(
+    const ArtifactRootReference &request,
+    evaluation::CaseArtifactResolution resolution, const ArtifactStore &store,
+    const BlobStore &blobs) {
+  auto impl = std::make_unique<PreparedSpatialExecutionContext::Impl>(
+      std::move(resolution));
+  auto context = detail::resolveSpatialExecutionContext(
+      request, impl->resolution, store, blobs);
+  if (!context)
+    return context.takeError();
+  impl->context.emplace(std::move(*context));
+  return PreparedSpatialExecutionContext(std::move(impl));
+}
+
 const evaluation::FindingOccurrenceCodec &terminalWitnessRefOccurrenceCodec() {
   static const evaluation::FindingOccurrenceCodec codec{
       {"loom.terminal_witness_ref", {1, 0}},
@@ -637,13 +690,27 @@ llvm::Expected<CanonicalSimulationExecution> finalizeSimulationExecution(
     const SpatialSimulationExecution &execution,
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &store, const BlobStore &blobs) {
-  auto context = detail::resolveSpatialExecutionContext(
-      execution.request, resolution, store, blobs);
+  auto context = prepareSpatialExecutionContext(execution.request, resolution,
+                                                store, blobs);
   if (!context)
     return context.takeError();
-  if (llvm::Error error = validateExecution(execution, *context))
+  return finalizeSimulationExecution(execution, *context);
+}
+
+llvm::Expected<CanonicalSimulationExecution> finalizeSimulationExecution(
+    const SpatialSimulationExecution &execution,
+    const PreparedSpatialExecutionContext &prepared) {
+  if (!prepared.impl_ || !prepared.impl_->context)
+    return detail::invalid("prepared Spatial execution context is empty");
+  const detail::SpatialExecutionContext &context = *prepared.impl_->context;
+  if (!context.request ||
+      execution.request != evaluation::evaluationRequestReference(
+                               *context.request))
+    return detail::invalid(
+        "prepared Spatial execution context has a foreign Request");
+  if (llvm::Error error = validateExecution(execution, context))
     return std::move(error);
-  auto bytes = encodeExecution(execution, *context);
+  auto bytes = encodeExecution(execution, context);
   if (!bytes)
     return bytes.takeError();
   CanonicalSemanticBytes canonical(std::move(*bytes));

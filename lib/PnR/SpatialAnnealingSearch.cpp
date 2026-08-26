@@ -330,14 +330,16 @@ SpatialAnnealingSearchScratch::consumeTransitionFailure(llvm::Error failure) {
 
 llvm::Expected<SpatialAnnealingStatistics>
 SpatialAnnealingSearchScratch::run(SpatialPathFinderSeed &seed,
-                                   ExecutionControlView executionControl) {
-  return run(seed.candidate, seed.attemptOrdinal, executionControl);
+                                   ExecutionControlView executionControl,
+                                   SpatialPnrWorkLedgerView workLedger) {
+  return run(seed.candidate, seed.attemptOrdinal, executionControl, workLedger);
 }
 
 llvm::Expected<SpatialAnnealingStatistics>
 SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                    std::uint64_t seedAttemptOrdinal,
-                                   ExecutionControlView executionControl) {
+                                   ExecutionControlView executionControl,
+                                   SpatialPnrWorkLedgerView workLedger) {
   if (!candidateHandle)
     return searchError("candidate owner is null");
   SpatialCandidateState &candidate = *candidateHandle;
@@ -364,11 +366,13 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                               });
     if (llvm::Error error = candidate.verify())
       return std::move(error);
+    emitProvisionalHandshakeProjectionStatistics(
+        actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   }
   if (llvm::Error error = actionDomain_.prepare(problem))
     return std::move(error);
-  if (llvm::Error error = actionExecutor_.prepare(candidate))
+  if (llvm::Error error = actionExecutor_.prepare(candidate, workLedger))
     return std::move(error);
 
   const ResolvedPnrAnnealingPolicy &annealing = policy.search.annealing;
@@ -487,6 +491,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     }
     if (llvm::Error error = candidateHandle->verify())
       return std::move(error);
+    emitProvisionalHandshakeProjectionStatistics(
+        actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   };
   const auto finishAtCompletionGoal =
@@ -509,6 +515,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["seed_attempt"] = seedAttemptOrdinal;
                                 fields["reason"] = "completion_goal_reached";
                               });
+    emitProvisionalHandshakeProjectionStatistics(
+        actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   };
   const auto finishAtRepairReadyHandoff =
@@ -529,6 +537,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["temperature_levels"] =
                                     statistics.temperatureLevelCount;
                               });
+    emitProvisionalHandshakeProjectionStatistics(
+        actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
   };
   DeterministicPnrRandomStream calibrationStream =
@@ -543,13 +553,22 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
        ++slot) {
     if (executionControl.stopRequested())
       return finishInterrupted();
-    if (llvm::Error error = addCount(statistics.calibrationProposalSlots, 1,
-                                     "calibration proposal slot"))
+    if (llvm::Error error = addCount(statistics.plannedCalibrationProposalSlots,
+                                     1, "planned calibration proposal slot"))
+      return std::move(error);
+    if (llvm::Error error =
+            workLedger.plan(SpatialPnrWorkKind::CalibrationProposal))
       return std::move(error);
     auto action =
         actionDomain_.propose(policy.search.actionProposal, calibrationStream);
     if (!action)
       return action.takeError();
+    if (llvm::Error error = addCount(statistics.calibrationProposalSlots, 1,
+                                     "calibration proposal slot"))
+      return std::move(error);
+    if (llvm::Error error =
+            workLedger.consume(SpatialPnrWorkKind::CalibrationProposal))
+      return std::move(error);
     if (!*action)
       continue;
     const SpatialActionKey actionKey = spatialActionKey(**action);
@@ -701,24 +720,37 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     for (std::uint64_t slot = 0; slot < *proposalCount; ++slot) {
       if (executionControl.stopRequested())
         return finishInterrupted();
-      if (llvm::Error error = addCount(statistics.annealingProposalSlots, 1,
-                                       "annealing proposal slot"))
-        return std::move(error);
-      std::uint64_t &slotDomain =
-          slot < annealing.proposalsPerLevelBase
-              ? statistics.annealingBaseProposalSlots
-              : statistics.annealingMovableProposalSlots;
-      if (llvm::Error error = addCount(slotDomain, 1, "annealing domain slot"))
-        return std::move(error);
       if (!domainCurrent) {
         if (llvm::Error error = actionDomain_.rebuild(candidate))
           return std::move(error);
         domainCurrent = true;
       }
+      const bool baseSlot = slot < annealing.proposalsPerLevelBase;
+      std::uint64_t &plannedDomain =
+          baseSlot ? statistics.plannedAnnealingBaseProposalSlots
+                   : statistics.plannedAnnealingMovableProposalSlots;
+      const SpatialPnrWorkKind workKind =
+          baseSlot ? SpatialPnrWorkKind::AnnealingBaseProposal
+                   : SpatialPnrWorkKind::AnnealingMovableProposal;
+      if (llvm::Error error =
+              addCount(plannedDomain, 1, "planned annealing domain slot"))
+        return std::move(error);
+      if (llvm::Error error = workLedger.plan(workKind))
+        return std::move(error);
       auto action =
           actionDomain_.propose(policy.search.actionProposal, proposalStream);
       if (!action)
         return action.takeError();
+      if (llvm::Error error = addCount(statistics.annealingProposalSlots, 1,
+                                       "annealing proposal slot"))
+        return std::move(error);
+      std::uint64_t &slotDomain =
+          baseSlot ? statistics.annealingBaseProposalSlots
+                   : statistics.annealingMovableProposalSlots;
+      if (llvm::Error error = addCount(slotDomain, 1, "annealing domain slot"))
+        return std::move(error);
+      if (llvm::Error error = workLedger.consume(workKind))
+        return std::move(error);
       if (!*action)
         continue;
       const SpatialActionKey actionKey = spatialActionKey(**action);
@@ -984,6 +1016,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                     statistics.incumbentSnapshotCount;
                               });
   }
+  emitProvisionalHandshakeProjectionStatistics(
+      actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
   return statistics;
 }
 

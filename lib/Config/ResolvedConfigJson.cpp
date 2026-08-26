@@ -346,6 +346,10 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
             llvm::json::Object{
                 {"acc_core_count", scale.accCoreCount},
                 {"mesh_dimension", scale.meshDimension},
+                {"spatial_mesh_lanes_per_direction",
+                 scale.spatialMeshLanesPerDirection},
+                {"temporal_mesh_lanes_per_direction",
+                 scale.temporalMeshLanesPerDirection},
                 {"spatial_pe_count", scale.spatialPeCount},
                 {"temporal_pe_count", scale.temporalPeCount},
                 {"spatial_fu_occurrences",

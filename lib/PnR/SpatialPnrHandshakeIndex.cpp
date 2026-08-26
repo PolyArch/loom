@@ -5,6 +5,7 @@
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "HandshakeProjectionInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
@@ -14,7 +15,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -44,6 +47,12 @@ constexpr PnrCapacityContext planCountContext{
 constexpr PnrCapacityContext memoryDomainOffsetContext{
     frozenArtifact, "memory_handshake_domains", "memory_handshake_domains",
     PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext projectionNodeIndexContext{
+    frozenArtifact, "handshake_projection", "node", PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext projectionArcIndexContext{
+    frozenArtifact, "handshake_projection", "arc", PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext projectionArcOffsetContext{
+    frozenArtifact, "handshake_projection", "arc", PnrCapacityMeasure::Offset};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::make_error<SpatialPnrFreezeFailure>(
@@ -173,6 +182,8 @@ public:
     if (llvm::Error error = state.buildFragments())
       return std::move(error);
     if (llvm::Error error = state.materializeExactSelections())
+      return std::move(error);
+    if (llvm::Error error = state.buildDenseProjectionIndex())
       return std::move(error);
     if (llvm::Error error = detail::verifyFrozenSpatialHandshakeIndex(
             result, realizations, resources, routing))
@@ -799,6 +810,149 @@ private:
       return llvm::Error::success();
     }
 
+    llvm::Error buildDenseProjectionIndex() {
+      using ProjectionArcKey = std::pair<std::string, std::string>;
+
+      std::set<std::string> nodeKeys;
+      std::set<ProjectionArcKey> arcKeys;
+      std::vector<ProjectionArcKey> fixedArcKeys;
+      std::vector<std::vector<ProjectionArcKey>> fragmentArcKeys(
+          result_.fragments_.size());
+
+      const auto retainArc = [&](detail::HandshakeArcIdentity identity,
+                                 std::vector<ProjectionArcKey> &destination) {
+        ProjectionArcKey key{detail::nodeKey(identity.source),
+                             detail::nodeKey(identity.destination)};
+        nodeKeys.insert(key.first);
+        nodeKeys.insert(key.second);
+        arcKeys.insert(key);
+        destination.push_back(std::move(key));
+      };
+
+      if (!result_.fabricContext_)
+        return invalid("handshake projection has no Fabric static context");
+      for (const HandshakeDependencyArc &arc :
+           result_.fabricContext_->unconditionalDependencyArcs()) {
+        detail::HandshakeNodeIdentity source;
+        source.boundarySignal = arc.source;
+        detail::HandshakeNodeIdentity destination;
+        destination.boundarySignal = arc.destination;
+        retainArc({std::move(source), std::move(destination)}, fixedArcKeys);
+      }
+
+      for (auto [fragmentOrdinal, fragment] :
+           llvm::enumerate(result_.fragments_)) {
+        if (fragment.owner >= result_.ownerModels_.size())
+          return invalid("handshake projection fragment owner is out of range");
+        const HandshakeOwnerModel &model = result_.ownerModels_[fragment.owner];
+        if (fragment.localFragment >= model.fragmentCount())
+          return invalid("handshake projection local fragment is out of range");
+        const HandshakeActivationFragment local =
+            model.fragment(fragment.localFragment);
+        if (local.contributionCount != fragment.contributionCount ||
+            local.contributionOffset > model.fragmentContributionCount() ||
+            local.contributionCount >
+                model.fragmentContributionCount() - local.contributionOffset)
+          return invalid("handshake projection fragment is stale");
+        auto &retained = fragmentArcKeys[fragmentOrdinal];
+        retained.reserve(local.contributionCount);
+        for (std::uint32_t contribution = 0;
+             contribution < local.contributionCount; ++contribution) {
+          const std::uint32_t localArc = model.fragmentContributionOrdinal(
+              local.contributionOffset + contribution);
+          if (localArc >= model.arcCount())
+            return invalid("handshake projection arc is out of range");
+          auto identity =
+              detail::arcIdentity(fragment.owner, model, model.arc(localArc));
+          if (!identity) {
+            llvm::consumeError(identity.takeError());
+            return invalid("handshake projection arc endpoint is invalid");
+          }
+          retainArc(std::move(*identity), retained);
+        }
+        llvm::sort(retained);
+        retained.erase(std::unique(retained.begin(), retained.end()),
+                       retained.end());
+      }
+
+      llvm::sort(fixedArcKeys);
+      fixedArcKeys.erase(std::unique(fixedArcKeys.begin(), fixedArcKeys.end()),
+                         fixedArcKeys.end());
+
+      std::map<std::string, PnrIndex> nodeOrdinals;
+      for (const std::string &key : nodeKeys) {
+        auto ordinal = checked(projectionNodeIndexContext, nodeOrdinals.size());
+        if (!ordinal)
+          return ordinal.takeError();
+        nodeOrdinals.emplace(key, *ordinal);
+      }
+      auto nodeCount = checked(projectionNodeIndexContext, nodeOrdinals.size());
+      if (!nodeCount)
+        return nodeCount.takeError();
+      result_.projectionNodeCount_ = *nodeCount;
+
+      std::map<ProjectionArcKey, PnrIndex> arcOrdinals;
+      result_.projectionArcs_.reserve(arcKeys.size());
+      for (const ProjectionArcKey &key : arcKeys) {
+        const auto source = nodeOrdinals.find(key.first);
+        const auto destination = nodeOrdinals.find(key.second);
+        if (source == nodeOrdinals.end() || destination == nodeOrdinals.end())
+          return invalid("handshake projection arc has no canonical node");
+        auto ordinal =
+            checked(projectionArcIndexContext, result_.projectionArcs_.size());
+        if (!ordinal)
+          return ordinal.takeError();
+        result_.projectionArcs_.push_back(
+            {source->second, destination->second});
+        arcOrdinals.emplace(key, *ordinal);
+      }
+
+      result_.projectionFixedArcs_.reserve(fixedArcKeys.size());
+      for (const ProjectionArcKey &key : fixedArcKeys) {
+        const auto arc = arcOrdinals.find(key);
+        if (arc == arcOrdinals.end())
+          return invalid("fixed handshake projection arc is absent");
+        result_.projectionFixedArcs_.push_back(arc->second);
+      }
+
+      std::vector<std::vector<PnrIndex>> fragmentArcs(fragmentArcKeys.size());
+      for (auto [fragmentOrdinal, keys] : llvm::enumerate(fragmentArcKeys)) {
+        auto &retained = fragmentArcs[fragmentOrdinal];
+        retained.reserve(keys.size());
+        for (const ProjectionArcKey &key : keys) {
+          const auto arc = arcOrdinals.find(key);
+          if (arc == arcOrdinals.end())
+            return invalid("fragment handshake projection arc is absent");
+          retained.push_back(arc->second);
+        }
+      }
+      if (llvm::Error error =
+              flattenSlices(fragmentArcs, result_.projectionFragmentArcOffsets_,
+                            result_.projectionFragmentArcs_))
+        return error;
+
+      result_.projectionOutgoingArcOffsets_.clear();
+      result_.projectionOutgoingArcOffsets_.reserve(
+          static_cast<std::size_t>(result_.projectionNodeCount_) + 1);
+      std::size_t arcCursor = 0;
+      for (PnrIndex node = 0; node < result_.projectionNodeCount_; ++node) {
+        auto offset = checked(projectionArcOffsetContext, arcCursor);
+        if (!offset)
+          return offset.takeError();
+        result_.projectionOutgoingArcOffsets_.push_back(*offset);
+        while (arcCursor < result_.projectionArcs_.size() &&
+               result_.projectionArcs_[arcCursor].source == node)
+          ++arcCursor;
+      }
+      auto end = checked(projectionArcOffsetContext, arcCursor);
+      if (!end)
+        return end.takeError();
+      result_.projectionOutgoingArcOffsets_.push_back(*end);
+      if (arcCursor != result_.projectionArcs_.size())
+        return invalid("handshake projection arcs are not source-major");
+      return llvm::Error::success();
+    }
+
   private:
     llvm::Expected<bool>
     traversalIsActive(const FabricPhysicalTraversalRef &reference) const {
@@ -913,6 +1067,75 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialHandshakeIndex(
   for (PnrIndex fragment : handshake.fixedFragments())
     if (fragment >= handshake.fragments().size())
       return invalid("fixed handshake fragment is out of range");
+
+  const auto projectionArcs = handshake.projectionArcs();
+  const auto outgoingOffsets = handshake.projectionOutgoingArcOffsets();
+  if (outgoingOffsets.size() !=
+          static_cast<std::size_t>(handshake.projectionNodeCount()) + 1 ||
+      outgoingOffsets.empty() || outgoingOffsets.front() != 0 ||
+      outgoingOffsets.back() != projectionArcs.size())
+    return invalid("handshake projection outgoing CSR is incomplete");
+  for (auto [ordinal, arc] : llvm::enumerate(projectionArcs)) {
+    if (arc.source >= handshake.projectionNodeCount() ||
+        arc.destination >= handshake.projectionNodeCount())
+      return invalid("handshake projection arc endpoint is out of range");
+    if (ordinal != 0) {
+      const FrozenSpatialHandshakeArc previous = projectionArcs[ordinal - 1];
+      if (std::tie(previous.source, previous.destination) >=
+          std::tie(arc.source, arc.destination))
+        return invalid("handshake projection arcs are noncanonical");
+    }
+  }
+  for (PnrIndex node = 0; node < handshake.projectionNodeCount(); ++node) {
+    const PnrIndex begin = outgoingOffsets[node];
+    const PnrIndex end = outgoingOffsets[node + 1];
+    if (begin > end || end > projectionArcs.size())
+      return invalid("handshake projection outgoing range is invalid");
+    for (PnrIndex arc = begin; arc < end; ++arc)
+      if (projectionArcs[arc].source != node)
+        return invalid("handshake projection outgoing range is stale");
+  }
+
+  std::vector<std::uint8_t> referencedProjectionArcs(projectionArcs.size(), 0);
+  const auto verifyArcOrdinals = [&](llvm::ArrayRef<PnrIndex> ordinals,
+                                     llvm::StringRef subject) -> llvm::Error {
+    PnrIndex previous = 0;
+    bool hasPrevious = false;
+    for (PnrIndex arc : ordinals) {
+      if (arc >= projectionArcs.size())
+        return invalid(subject + " arc is out of range");
+      if (hasPrevious && arc <= previous)
+        return invalid(subject + " arcs are noncanonical");
+      previous = arc;
+      hasPrevious = true;
+      referencedProjectionArcs[arc] = 1;
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error error = verifyArcOrdinals(handshake.projectionFixedArcs(),
+                                            "fixed handshake projection"))
+    return error;
+
+  const auto fragmentArcOffsets = handshake.projectionFragmentArcOffsets();
+  const auto fragmentArcs = handshake.projectionFragmentArcs();
+  if (fragmentArcOffsets.size() != handshake.fragments().size() + 1 ||
+      fragmentArcOffsets.empty() || fragmentArcOffsets.front() != 0 ||
+      fragmentArcOffsets.back() != fragmentArcs.size())
+    return invalid("handshake projection fragment CSR is incomplete");
+  for (PnrIndex fragment = 0; fragment < handshake.fragments().size();
+       ++fragment) {
+    const PnrIndex begin = fragmentArcOffsets[fragment];
+    const PnrIndex end = fragmentArcOffsets[fragment + 1];
+    if (begin > end || end > fragmentArcs.size())
+      return invalid("handshake projection fragment range is invalid");
+    if (llvm::Error error =
+            verifyArcOrdinals(fragmentArcs.slice(begin, end - begin),
+                              "fragment handshake projection"))
+      return error;
+  }
+  if (llvm::find(referencedProjectionArcs, 0) != referencedProjectionArcs.end())
+    return invalid("handshake projection contains an unowned arc");
+
   if (handshake.traversalFragmentOffsets().size() !=
           routing.traversals().size() + 1 ||
       handshake.traversalAllGroupOffsets().size() !=

@@ -77,6 +77,11 @@ public:
 
   bool isZero() const { return numerator_ == 0; }
 
+  /// Adds a nonnegative integer without renormalization. For canonical n/d,
+  /// gcd(n + value*d, d) equals gcd(n, d), so the reduced denominator is
+  /// invariant; only the checked numerator can overflow.
+  llvm::Expected<ExactRatio> addInteger(std::uint64_t value) const;
+
   // Normalize this ratio modulo a positive modulus into the half-open range
   // [0, modulus). Fails when the modulus is zero or when the exact reduced
   // result does not fit uint64.

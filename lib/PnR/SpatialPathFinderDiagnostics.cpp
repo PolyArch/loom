@@ -3,9 +3,46 @@
 #include "Fabric/Identity/FabricRefText.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <type_traits>
 #include <utility>
+
+using namespace loom::pnr;
+
+char SpatialPathFinderClosureFailure::ID;
+
+SpatialPathFinderClosureFailure::SpatialPathFinderClosureFailure(
+    Kind kind, std::string message,
+    SpatialFixedTerminalCutCertificate certificate,
+    std::uint64_t mandatoryUsage, std::uint64_t physicalCapacity,
+    std::uint64_t regionalLogicalNetCount,
+    std::uint64_t regionalLogicalNetLimit)
+    : kind_(kind), message_(std::move(message)),
+      certificate_(std::move(certificate)), mandatoryUsage_(mandatoryUsage),
+      physicalCapacity_(physicalCapacity),
+      regionalLogicalNetCount_(regionalLogicalNetCount),
+      regionalLogicalNetLimit_(regionalLogicalNetLimit) {}
+
+void SpatialPathFinderClosureFailure::log(llvm::raw_ostream &stream) const {
+  stream << message_;
+}
+
+std::error_code SpatialPathFinderClosureFailure::convertToErrorCode() const {
+  switch (kind_) {
+  case Kind::NonClosure:
+  case Kind::NoProgress:
+    return std::make_error_code(std::errc::resource_unavailable_try_again);
+  case Kind::RegionalLimit:
+    return std::make_error_code(std::errc::value_too_large);
+  case Kind::FixedTerminalCapacityCut:
+    return std::make_error_code(std::errc::address_not_available);
+  case Kind::SelectedCombinationalHandshakeCycle:
+    return std::make_error_code(std::errc::state_not_recoverable);
+  }
+  llvm_unreachable("invalid Spatial PathFinder closure failure kind");
+}
 
 namespace loom::pnr::detail {
 namespace {
@@ -46,6 +83,39 @@ llvm::json::Object encodeProducerReference(
 }
 
 } // namespace
+
+llvm::Error pathFinderError(const llvm::Twine &message) {
+  return llvm::make_error<llvm::StringError>(
+      ("invalid Spatial PathFinder route: " + message).str(),
+      std::make_error_code(std::errc::invalid_argument));
+}
+
+std::string errorMessage(const llvm::ErrorInfoBase &error) {
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  error.log(stream);
+  return message;
+}
+
+llvm::Error classifyIterationFailure(llvm::Error failure, bool &completed) {
+  completed = false;
+  return llvm::handleErrors(
+      std::move(failure),
+      [&](std::unique_ptr<EndpointRouteSearchFailure> typed) -> llvm::Error {
+        completed = typed->kind() != EndpointRouteSearchFailureKind::Invalid;
+        return llvm::Error(std::move(typed));
+      },
+      [&](std::unique_ptr<RoutingNegotiationError> typed) -> llvm::Error {
+        completed =
+            typed->kind() == RoutingNegotiationError::Kind::ArithmeticOverflow;
+        return llvm::Error(std::move(typed));
+      },
+      [&](std::unique_ptr<SpatialPathFinderClosureFailure> typed)
+          -> llvm::Error {
+        completed = true;
+        return llvm::Error(std::move(typed));
+      });
+}
 
 std::optional<PnrIndex>
 resourceStateForCapacity(const FrozenSpatialResourceIndex &resources,

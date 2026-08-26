@@ -131,7 +131,9 @@ MeshCellAttachment::connectOutputs(ArrayRef<SpatialValue>)
 ```
 
 `width` and `height` are positive authoring dimensions whose product is at
-least two, and `lanes_per_direction` is one or two. `attachments` is an ordered
+least two, and `lanes_per_direction` is between one and four. The upper bound
+keeps the interior transit crossbar within the Fabric switch contract's 256
+crosspoint limit. `attachments` is an ordered
 list of typed local ingress and egress banks, each assigned to one `(x, y)`
 authoring cell. A bank has at least one port in total and at most eight inputs
 and eight outputs; one cell has at most seven banks. Several banks may name one
@@ -153,8 +155,8 @@ For every present cardinal direction, a cell owns
 `lanes_per_direction` incoming and outgoing directed links. An interior cell
 with two lanes therefore has one `8 x 8` transit crossbar. Boundary transit
 crossbars omit absent directions. Local ejection, injection, fanout, and merge
-are composed from additional switches whose two dimensions are each at most
-eight; no helper-created switch triggers the large-crossbar warning. Explicit
+are composed from additional switches that remain within the same 256
+crosspoint limit. Explicit
 FIFOs terminate every inter-cell directed link. The helper accepts no implicit
 wraparound; a torus or another topology is authored with the exact lower-level
 Builder surface.
@@ -604,7 +606,7 @@ BuiltinTargetPreset = Small | Coverage | Large
 ```
 
 Every preset resolves to the single template identity
-`loom.adg.builtin.general_purpose` at schema version `7.0`. Their prior recipes
+`loom.adg.builtin.general_purpose` at schema version `8.0`. Their prior recipes
 are not retained as compatibility expansions.
 Version 3 replaced runtime tag-token gateway inputs with Mapping-configured tag
 writers, derived the minimum positive tag width from resident route capacity,
@@ -647,6 +649,11 @@ Version 7 makes the local-memory Operation Port variant a required typed scale
 parameter. The selected element, vector, separate, or shared relation changes
 the exact memory template, resource owners, and Mapping domain; an older
 template version cannot infer it.
+Version 8 makes the Spatial and Temporal mesh lane multiplicities independent,
+required positive scale parameters. Each multiplicity owns the uniform number
+of directed physical lanes generated for one network. An older template key
+cannot identify a resized topology because version 7 hid both values inside
+the expansion recipe.
 
 The public builtin boundary is:
 
@@ -743,7 +750,10 @@ This is an authoring recipe, not a second topology schema: expansion produces
 ordinary explicit Fabric resources and connections.
 
 Each resolved scale constructs distinct overlaid untagged Spatial and tagged
-Temporal two-lane-per-direction mesh networks through `addMeshSwitchNetwork`. The
+Temporal mesh networks through `addMeshSwitchNetwork`. The required
+`spatialMeshLanesPerDirection` and `temporalMeshLanesPerDirection` scale fields
+independently select their lane multiplicities within the public one-through-
+four domain; all three builtin presets default both values to two. The
 Temporal tag width is `max(1, ceil(log2(temporalResidentContexts)))`; resident
 context count separately owns PE, switch-table, memory, and buffer capacity.
 Cross-schedule ingress uses a Mapping-configured tag writer and both directions
@@ -752,8 +762,9 @@ ready/valid cycle. The required `meshDimension` scale field exceeds one and is
 the common width and height of both meshes. Its preset defaults are `4`, `6`,
 and `8` for `Small`, `Coverage`, and `Large`, respectively. The dimension
 generates graph topology only; it does not become a semantic coordinate.
-Interior transit switches are `8 x 8`, edge and corner transit switches are
-smaller, and every local attachment switch is at most `8 x 8`.
+Interior transit switches range through `16 x 16`, edge and corner transit
+switches are smaller, and every generated switch remains within the 256
+crosspoint Fabric limit.
 
 PEs, memory operation ports, cross-schedule boundaries, and Module transport
 boundaries attach through distributed local banks. Each resource class is
@@ -1729,14 +1740,15 @@ The stable Builder anchors are deliberately small:
     imported `LoopCarry` preserves that one-cycle recurrence path through
     elastic-transparent forwarding.
 12. The regular mesh helper emits only ordinary explicit Fabric topology,
-    keeps every generated switch at or below `8 x 8`, rejects an invalid
+    keeps every generated switch within 256 crosspoints, rejects an invalid
     dimension, lane count, attachment bank, or unresolved local output, and
     preserves identical identity for an equivalent exact hand-authored graph.
-13. Every builtin expands its versioned `4 x 4`, `6 x 6`, or `8 x 8` two-lane
-    network without semantic coordinates, a schedule-wide crossbar, or a
-    switch larger than `8 x 8`; each memory's transport roles reach more than
-    one mesh cell and the conformance Mapping witness encounters finite shared
-    capacity.
+13. Every builtin expands its versioned `4 x 4`, `6 x 6`, or `8 x 8` network
+    with independently resolved one-through-four Spatial and Temporal lane
+    counts, without semantic coordinates, a schedule-wide crossbar, or a
+    switch beyond 256 crosspoints; each memory's transport roles reach more
+    than one mesh cell and the conformance Mapping witness encounters finite
+    shared capacity.
 14. A fused carry-or-invariant plus gate template exposes the raw
     parent-domain value, projected child-domain value, and child phase without
     admitting incoherent selector products.

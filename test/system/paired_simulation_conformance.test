@@ -1,0 +1,7 @@
+# REQUIRES: loom-gem5
+# RUN: %python %S/../simulation_conformance.py \
+# RUN:   --execution-matrix-runner=%loom-system-execution-matrix-test \
+# RUN:   --gem5-readiness=%loom-gem5-readiness | FileCheck %s
+
+# CHECK: "disposition": "passed"
+# CHECK: "schema": "loom.paired_simulation_conformance.2"

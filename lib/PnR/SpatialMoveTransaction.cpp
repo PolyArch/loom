@@ -1276,7 +1276,8 @@ SpatialMoveTransaction::projectCurrentRoutesImpl(
     }
     routes.push_back(route);
   }
-  return state_->projectVerifiedRoutes(routes, tagSummary);
+  return state_->projectVerifiedRoutes(
+      routes, tagSummary, scratch_->handshakeProjectionScratch_);
 }
 
 llvm::Error SpatialMoveTransaction::validateAffectedState() const {

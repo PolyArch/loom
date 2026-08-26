@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
@@ -100,6 +101,318 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             simulation_conformance.ActiveExecutionTiming(1.0, -1)
 
+    def test_cgra_gate_budget_is_derived_from_the_complete_profile_suite(self) -> None:
+        def reference(
+            identity: int,
+            schema: str = "loom.mapping",
+            version: str = "6.0",
+        ) -> dict[str, object]:
+            return {
+                "schema": schema,
+                "schema_version": version,
+                "artifact": f"{identity:064x}",
+            }
+
+        operator_gate_sha256, operators = (
+            simulation_conformance.load_cgra_representative_operators()
+        )
+        generator_units = (
+            "seed_attempt",
+            "assignment_attempt_per_seed",
+            "endpoint_expansion",
+            "negotiation_iteration",
+            "calibration_proposal",
+            "proposal_per_level_base",
+            "proposal_per_movable_decision",
+            "exact_repair_region_decision",
+            "exact_repair_solver_call",
+        )
+        work_ledger = {
+            "completion_goal": "exhaust_configured_work",
+            "configured_seed_attempts": 4,
+            "outcome": "completed",
+            "incomplete_reason": None,
+            "infeasibility_proof": None,
+            "work_units": [
+                {
+                    "unit": unit,
+                    "planned": 4 if unit == "seed_attempt" else 8,
+                    "consumed": 4 if unit == "seed_attempt" else 8,
+                }
+                for unit in generator_units
+            ],
+        }
+        profiles: list[dict[str, object]] = []
+        for ordinal, operator in enumerate(operators, start=1):
+            measurement = {
+                "active_wall_nanoseconds": 200_000_000,
+                "active_process_cpu_nanoseconds": 190_000_000,
+                "input_load_wall_nanoseconds": 1_000_000,
+                "input_load_process_cpu_nanoseconds": 1_000_000,
+                "engine_active_wall_nanoseconds": 198_000_000,
+                "engine_active_process_cpu_nanoseconds": 188_000_000,
+                "observation_projection_wall_nanoseconds": 1_000_000,
+                "observation_projection_process_cpu_nanoseconds": 1_000_000,
+                "artifact_publication_wall_nanoseconds": 100_000,
+                "artifact_publication_process_cpu_nanoseconds": 100_000,
+                "reference_cycles": 50_000,
+                "event_frame_count": 100,
+                "physical_request_count": 10,
+                "physical_grant_count": 10,
+                "physical_retirement_count": 10,
+                "physical_grant_wait_cycle_sum": 4,
+                "physical_grant_wait_cycle_max": 2,
+                "physical_grant_delayed_count": 2,
+                "evaluation_evidence": reference(
+                    600 + ordinal, "evaluation.evidence", "1.0"
+                ),
+            }
+            profiles.append(
+                {
+                    "schema": "loom.cgra_budget_profile.5",
+                    "workload": operator.workload,
+                    "operator_id": operator.operator_id,
+                    "protocol_symbol": operator.protocol_symbol,
+                    "qualification_limit_nanoseconds": 45_000_000_000,
+                    "warmup_runs": 1,
+                    "measurement_runs": 3,
+                    "batch_peak_resident_bytes": 4096,
+                    "canonical_dataflow": reference(
+                        ordinal, "loom.canonical_dataflow", "3.0"
+                    ),
+                    "simulation_workload": reference(
+                        100 + ordinal, "loom.simulation_workload", "1.1"
+                    ),
+                    "simulation_runtime_input": reference(
+                        200 + ordinal, "loom.simulation_runtime_input", "2.0"
+                    ),
+                    "resolved_config": {
+                        "schema": "loom.config.resolved",
+                        "schema_version": "11.0",
+                        "artifact": f"{300:064x}",
+                    },
+                    "fabric": reference(301, "loom.fabric", "6.0"),
+                    "tech_mapping": reference(400 + ordinal),
+                    "tech_mapping_search": {
+                        "outcome": "incomplete",
+                        "incomplete_reason": "candidate_semantic_limit_reached",
+                        "infeasibility_proof": None,
+                        "candidates": [reference(400 + ordinal)],
+                        "work_units": [
+                            {"unit": unit, "planned": 1, "consumed": 1}
+                            for unit in (
+                                "match_row_attempt",
+                                "partial_cover_expansion",
+                                "candidate_evaluation",
+                                "publication_slot",
+                            )
+                        ],
+                    },
+                    "initial_spatial_mapping": reference(500 + ordinal),
+                    "spatial_mapping": reference(500 + ordinal),
+                    "spatial_pnr": {
+                        **work_ledger,
+                        "candidates": [reference(500 + ordinal)],
+                    },
+                    "transport_repair": None,
+                    "warmup_evidence": reference(
+                        700 + ordinal, "evaluation.evidence", "1.0"
+                    ),
+                    "measurements": [dict(measurement) for _ in range(3)],
+                }
+            )
+        first_profile = profiles[0]
+        incomplete_pnr = dict(first_profile["spatial_pnr"])
+        incomplete_pnr["outcome"] = "incomplete"
+        incomplete_pnr["incomplete_reason"] = "candidate_proof_not_established"
+        incomplete_pnr["candidates"] = []
+        incomplete_work = [
+            dict(entry) for entry in incomplete_pnr["work_units"]
+        ]
+        incomplete_work[0]["consumed"] = 3
+        incomplete_pnr["work_units"] = incomplete_work
+        typed_outcome = {
+            "schema": "loom.cgra_budget_profile_outcome.2",
+            "workload": first_profile["workload"],
+            "operator_id": first_profile["operator_id"],
+            "protocol_symbol": first_profile["protocol_symbol"],
+            "stage": "spatial_pnr",
+            "resolved_config": first_profile["resolved_config"],
+            "fabric": first_profile["fabric"],
+            "tech_mapping_search": first_profile["tech_mapping_search"],
+            "spatial_pnr": incomplete_pnr,
+        }
+        self.assertEqual(
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            ("incomplete", "candidate_proof_not_established"),
+        )
+        incomplete_pnr["incomplete_reason"] = "infeasible"
+        with self.assertRaises(ValueError):
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome)
+        incomplete_pnr["incomplete_reason"] = "candidate_proof_not_established"
+
+        infeasible_tech = dict(first_profile["tech_mapping_search"])
+        infeasible_tech["outcome"] = "proven_infeasible"
+        infeasible_tech["incomplete_reason"] = None
+        infeasible_tech["infeasibility_proof"] = {
+            "kind": 0,
+            "witness": "01",
+        }
+        infeasible_tech["candidates"] = []
+        typed_outcome["stage"] = "tech_mapping"
+        typed_outcome["tech_mapping_search"] = infeasible_tech
+        typed_outcome["spatial_pnr"] = None
+        self.assertEqual(
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            ("proven_infeasible", None),
+        )
+        infeasible_tech["infeasibility_proof"] = {
+            "kind": 1 << 32,
+            "witness": "01",
+        }
+        with self.assertRaises(ValueError):
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome)
+        infeasible_tech["infeasibility_proof"] = {
+            "kind": 0,
+            "witness": "01",
+        }
+        infeasible_work = infeasible_tech["work_units"]
+        assert isinstance(infeasible_work, list)
+        first_infeasible_work = infeasible_work[0]
+        assert isinstance(first_infeasible_work, dict)
+        first_infeasible_work["consumed"] = 0
+        with self.assertRaises(ValueError):
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome)
+        first_infeasible_work["consumed"] = 1
+        infeasible_tech["infeasibility_proof"] = {"kind": 0, "witness": ""}
+        self.assertEqual(
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            ("proven_infeasible", None),
+        )
+        infeasible_tech["infeasibility_proof"] = None
+        with self.assertRaises(ValueError):
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome)
+        infeasible_tech["outcome"] = "completed"
+        self.assertEqual(
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            ("completed", None),
+        )
+
+        completed_empty_pnr = dict(incomplete_pnr)
+        completed_empty_pnr["outcome"] = "completed"
+        completed_empty_pnr["incomplete_reason"] = None
+        completed_empty_pnr["candidates"] = []
+        completed_empty_pnr["work_units"] = [
+            dict(entry) for entry in first_profile["spatial_pnr"]["work_units"]
+        ]
+        typed_outcome["stage"] = "spatial_pnr"
+        typed_outcome["tech_mapping_search"] = first_profile["tech_mapping_search"]
+        typed_outcome["spatial_pnr"] = completed_empty_pnr
+        self.assertEqual(
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            ("completed", None),
+        )
+        self.assertEqual(
+            simulation_conformance.derive_cgra_spatial_budget_nanoseconds(profiles),
+            500_000_000,
+        )
+        configuration = {
+            "schema": "loom.cgra_simulation_gate.5",
+            "policy": {
+                "qualification_limit_nanoseconds": 45_000_000_000,
+                "warmup_runs": 1,
+                "measurement_runs": 3,
+                "reference_rate_target_cycles_per_second": 100_000,
+            },
+            "operator_gate": {
+                "path": simulation_conformance.CGRA_OPERATOR_GATE_RELATIVE_PATH,
+                "sha256": operator_gate_sha256,
+            },
+            "spatial_absolute_budget_nanoseconds": 500_000_000,
+            "profiles": profiles,
+        }
+        scratch_root = ROOT / "temp"
+        scratch_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch_root) as directory:
+            path = Path(directory) / "gate.json"
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            loaded = simulation_conformance.load_cgra_gate_configuration(path)
+            self.assertEqual(loaded.spatial_absolute_budget_nanoseconds, 500_000_000)
+            self.assertEqual(loaded.spatial_absolute_budget_seconds, 0.5)
+            repaired_profile = profiles[0]
+            repair_child = reference(900)
+            repair_pnr = json.loads(json.dumps(repaired_profile["spatial_pnr"]))
+            repair_pnr["candidates"] = [repair_child]
+            repaired_profile["spatial_mapping"] = repair_child
+            repaired_profile["transport_repair"] = {
+                "parent_system_mapping": reference(901),
+                "pre_repair_evidence": reference(
+                    902, "evaluation.evidence", "1.0"
+                ),
+                "attempts": [
+                    {
+                        "parent_spatial_mapping": repaired_profile[
+                            "initial_spatial_mapping"
+                        ],
+                        "constraint_set": reference(
+                            903, "loom.mapping_constraints", "1.0"
+                        ),
+                        "spatial_pnr": repair_pnr,
+                        "child_spatial_mapping": repair_child,
+                        "accepted_for_simulation": True,
+                    }
+                ],
+            }
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            simulation_conformance.load_cgra_gate_configuration(path)
+            repaired_profile["spatial_mapping"] = reference(904)
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                simulation_conformance.load_cgra_gate_configuration(path)
+            repaired_profile["spatial_mapping"] = repair_child
+            repair_attempt = repaired_profile["transport_repair"]["attempts"][0]
+            repair_attempt["constraint_set"] = reference(903)
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                simulation_conformance.load_cgra_gate_configuration(path)
+            repaired_profile["transport_repair"] = None
+            repaired_profile["spatial_mapping"] = repaired_profile[
+                "initial_spatial_mapping"
+            ]
+            canonical_dataflow = repaired_profile["canonical_dataflow"]
+            repaired_profile["canonical_dataflow"] = reference(905)
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                simulation_conformance.load_cgra_gate_configuration(path)
+            repaired_profile["canonical_dataflow"] = canonical_dataflow
+            profile_pnr = profiles[0]["spatial_pnr"]
+            assert isinstance(profile_pnr, dict)
+            profile_pnr["completion_goal"] = "first_verified_candidate"
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                simulation_conformance.load_cgra_gate_configuration(path)
+            profile_pnr["completion_goal"] = "exhaust_configured_work"
+            work_units = profile_pnr["work_units"]
+            assert isinstance(work_units, list)
+            seed_work = work_units[0]
+            assert isinstance(seed_work, dict)
+            seed_work["consumed"] = 3
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                simulation_conformance.load_cgra_gate_configuration(path)
+            seed_work["consumed"] = 4
+            configuration["spatial_absolute_budget_nanoseconds"] = 500_000_001
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                simulation_conformance.load_cgra_gate_configuration(path)
+            configuration["spatial_absolute_budget_nanoseconds"] = 500_000_000
+            operator_gate = configuration["operator_gate"]
+            assert isinstance(operator_gate, dict)
+            operator_gate["sha256"] = "0" * 64
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                simulation_conformance.load_cgra_gate_configuration(path)
+
     def test_outer_worker_limit_reserves_cpus_and_obeys_memory_limit(self) -> None:
         self.assertEqual(
             simulation_conformance.outer_worker_limit(
@@ -173,6 +486,9 @@ class PairedMeasurementParsingTest(unittest.TestCase):
         self.assertEqual(system.gem5_ticks, 123)
         self.assertEqual(system.timing.event_count, 49_999)
         self.assertEqual(system.config_fingerprint, "1" * 64)
+        self.assertEqual(spatial.attempt, "ordinary")
+        self.assertEqual(system.attempt, "diagnostic")
+        self.assertEqual(system.invocation, "paired-system-cgra")
         self.assertEqual(spatial.timing.engine_cpu_seconds, 0.09)
         self.assertEqual(spatial.timing.host_cpu_seconds, 0.0)
         self.assertEqual(system.timing.engine_cpu_seconds, 0.0)
@@ -182,6 +498,7 @@ class PairedMeasurementParsingTest(unittest.TestCase):
         row = _measurement_row("paired-system-cgra")
         invalid_rows = (
             row.replace("config_fingerprint=" + "1" * 64, "config_fingerprint=ABC"),
+            row.replace("attempt=diagnostic", "attempt=ordinary"),
             row.replace("active_wall_ns=200000000", "active_wall_ns=0"),
             row.replace("gem5_ticks=123", "gem5_ticks=not_applicable"),
             row.replace("attempt=diagnostic", "attempt=ordinary"),

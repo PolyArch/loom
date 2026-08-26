@@ -276,8 +276,8 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
 }
 
 void resolvedConfigUsesTheIndependentViolationCatalog() {
-  require(loom::ResolvedConfig::artifactSchema.version.major == 10 &&
-              loom::ResolvedConfig::artifactSchema.version.minor == 1,
+  require(loom::ResolvedConfig::artifactSchema.version.major == 11 &&
+              loom::ResolvedConfig::artifactSchema.version.minor == 0,
           "ResolvedConfig has the wrong schema version");
   const std::string canonical =
       loom::canonicalResolvedConfigJson(loom::defaultResolvedConfig());

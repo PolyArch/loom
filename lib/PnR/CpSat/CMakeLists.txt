@@ -1,6 +1,8 @@
 add_mlir_library(LoomPnRCpSat
   CpSatExactProtocol.cpp
   SpatialExactRepair.cpp
+  SpatialExactRepairCapability.cpp
+  SpatialExactRepairModel.cpp
   SpatialFixedTerminalCutConstraint.cpp
   SpatialLocalDispositionModel.cpp
 

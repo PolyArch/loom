@@ -677,12 +677,17 @@ launch; a descriptor-owned provider form keeps that distinction explicit.
 The provider result also carries the invocation's work summary as one dense
 transient field outside the outcome variant. The descriptor owns the stable
 work-unit ordinals; the provider alone observes the planned and consumed
-counts at runtime. A mutable accounting side channel would let callback state
-drift from the validated report and would invite controller inference from
-output cardinality, which collapses whenever one attempt yields several
-candidates or none. Returning the counts inside the one validated transient
-report keeps them reviewable against the descriptor's dense coverage rule,
-while the persistent owner of record remains the central invocation manifest.
+counts at runtime. Planning means admission of one immediate logical slot, not
+copying a configured policy limit, and consumption follows the slot's atomic
+owner boundary. This ordering preserves a truthful live gap when execution
+fails or is cancelled before that boundary completes; a completed typed
+negative outcome still consumes its slot. A mutable accounting side channel
+would let callback state drift from the validated report and would invite
+controller inference from output cardinality, which collapses whenever one
+attempt yields several candidates or none. Returning the counts inside the one
+validated transient report keeps them reviewable against the descriptor's
+dense coverage rule, while the persistent owner of record remains the central
+invocation manifest.
 
 ## Why External Tools Are Script Driven
 

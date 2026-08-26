@@ -42,6 +42,7 @@ struct SpatialFiniteBufferConflictWitness final {
 struct SpatialProgressStatistics final {
   std::uint64_t incrementalUpdateCount = 0;
   std::uint64_t incrementalUpdateWallTimeNanoseconds = 0;
+  std::uint64_t cachedVerificationCount = 0;
   std::uint64_t coldVerificationCount = 0;
   std::uint64_t coldVerificationWallTimeNanoseconds = 0;
   std::uint64_t coldProgressScanCount = 0;
@@ -90,6 +91,11 @@ public:
   llvm::Error rebuildFiniteBufferConflictWitness(
       const SpatialCandidateState &candidate, PnrIndex owner,
       SpatialFiniteBufferConflictWitness &witness) const;
+  /// Checks the dense incremental representation without reading RouteTrees.
+  llvm::Error
+  verifyCachedState(const SpatialCandidateState &candidate) const;
+  /// Reconstructs progress facts from RouteTrees and runs the independent
+  /// closed-wait verifier after checking the cached representation.
   llvm::Error verify(const SpatialCandidateState &candidate) const;
 
 private:

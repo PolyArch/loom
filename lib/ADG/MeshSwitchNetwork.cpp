@@ -50,8 +50,10 @@ validateMeshSpec(::fabric::Schedule schedule, std::uint32_t width,
     return detail::invalid("mesh must contain at least two cells");
   if (cellCount > std::numeric_limits<std::size_t>::max())
     return detail::invalid("mesh cell count exceeds the host address space");
-  if (lanesPerDirection != 1 && lanesPerDirection != 2)
-    return detail::invalid("mesh lanes per direction must be one or two");
+  if (lanesPerDirection == 0 ||
+      lanesPerDirection > maximumMeshLanesPerDirection)
+    return detail::invalid("mesh lanes per direction must be between one and " +
+                           llvm::Twine(maximumMeshLanesPerDirection));
 
   if (schedule == ::fabric::Schedule::Spatial) {
     if (linkType.kind() != PortType::Kind::Bits)

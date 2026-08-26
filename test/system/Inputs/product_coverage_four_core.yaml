@@ -1,10 +1,12 @@
 hardware_target:
   template_identity: loom.adg.builtin.general_purpose
-  schema_major: 7
+  schema_major: 8
   schema_minor: 0
   parameters:
     acc_core_count: 4
     mesh_dimension: 6
+    spatial_mesh_lanes_per_direction: 2
+    temporal_mesh_lanes_per_direction: 2
     spatial_pe_count: 27
     temporal_pe_count: 9
     spatial_fu_occurrences:

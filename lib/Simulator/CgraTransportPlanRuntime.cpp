@@ -212,6 +212,17 @@ CgraTransportRuntime::CgraTransportRuntime(
       actorInputQueueBindings_(std::move(actorInputQueueBindings)),
       blocked_(bindings_.size()),
       nextActionOccurrence_(plan.physicalUseTimings.size(), 0) {
+  actorSourceBindingOrdinals_.resize(state.execution->actorPlans.size());
+  for (const auto &[key, binding] : actorSourceBindings_) {
+    assert(key.first < actorSourceBindingOrdinals_.size() &&
+           "CGRA actor source binding must name a prepared actor");
+    actorSourceBindingOrdinals_[key.first].push_back(binding);
+  }
+  for (auto &bindings : actorSourceBindingOrdinals_) {
+    llvm::sort(bindings);
+    bindings.erase(std::unique(bindings.begin(), bindings.end()),
+                   bindings.end());
+  }
   traversalRemainingPredecessors_.resize(traversalNodes_.size());
   traversalNodeStates_.resize(traversalNodes_.size(), TraversalNodeState::Idle);
   traversalNodeTransferSlots_.resize(traversalNodes_.size(),

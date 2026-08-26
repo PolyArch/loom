@@ -117,6 +117,26 @@ Wall-clock timeout, memory reservation, external cancellation, and worker count
 are execution controls rather than semantic work units. An interruption returns
 an incomplete result and cannot substitute a larger semantic budget.
 
+For Spatial PnR, `planned` counts only logical slots that the semantic owner has
+actually admitted for immediate execution. It is never copied from a policy
+limit or reconstructed from an after-the-fact consumed count. The owner
+increments `consumed` after that atomic slot has executed. Initializer choice
+attempts, A* endpoint expansions, negotiation iterations, proposal-domain
+slots, and CP-SAT calls are charged at their respective execution sites. An
+exact-repair region decision is charged once when it first enters the canonical
+closed repair model; certificate-driven region growth charges only newly added
+decisions. Final closure attempts retain the same internal planned/consumed
+boundary but do not create a second public DSE work-unit catalog.
+
+An error or cancellation before an admitted slot's owner boundary completes
+preserves the live `planned > consumed` suffix in the typed outcome. A typed
+negative outcome produced after that boundary completes consumes the slot. A
+normal `ExhaustConfiguredWork` return consumes every configured restart and
+every admitted nested slot, so every public work-summary row has
+`planned == consumed`. `FirstVerifiedCandidate` remains an explicitly
+incomplete bounded prefix; restart slots beyond that executed prefix remain
+configuration capacity rather than being fabricated as planned work.
+
 The invocation-local `ExecutionControlView` combines the DSE journal's
 graceful-stop state with its absolute dispatch deadline. Tech, Spatial, and
 System providers query it only between atomic owner work units. Their typed

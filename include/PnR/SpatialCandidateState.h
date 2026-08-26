@@ -94,6 +94,9 @@ public:
 
   llvm::Error prepare(const FrozenSpatialPnrProblem &problem);
   std::size_t retainedStorageBytes() const;
+  HandshakeProjectionStatistics handshakeProjectionStatistics() const {
+    return handshakeProjectionScratch_.statistics();
+  }
 
 private:
   enum class DecisionKind : std::uint8_t {
@@ -137,6 +140,7 @@ private:
   std::vector<std::optional<RouteTreeTransaction>> routeTransactions_;
   SpatialTagAssignmentScratch tagScratch_;
   HandshakeCandidateScratch handshakeScratch_;
+  HandshakeProjectionScratch handshakeProjectionScratch_;
   std::optional<HandshakeCandidateTransaction> handshakeTransaction_;
 
   std::vector<std::uint64_t> computeJournalMarks_;
@@ -287,6 +291,11 @@ public:
   std::uint64_t hardProgressViolation() const {
     return progressState_.hardProgressViolation();
   }
+  bool hasTransportClosureViolation() const {
+    return hardProgressViolation() != 0 || unroutedObligationCount() != 0 ||
+           routeCapacityOveruse() != 0 || tagResidentCapacityOveruse() != 0 ||
+           tagUnassignedCount() != 0 || tagConflictCount() != 0;
+  }
   const SpatialProgressState &progress() const { return progressState_; }
   llvm::Expected<std::vector<SpatialFiniteBufferConflictWitness>>
   finiteBufferConflictWitnesses() const {
@@ -385,6 +394,11 @@ public:
                                const llvm::APInt &value) const {
     return tagAssignments_.domainValueConflicts(domain, value);
   }
+  /// Checks committed search-owned structures without reconstructing derived
+  /// facts from RouteTrees. This is only for trusted internal search state.
+  llvm::Error verifyCachedState() const;
+  /// Independently reconstructs derived facts. Publication and
+  /// materialization boundaries must use this verifier.
   llvm::Error verify() const;
   llvm::Expected<SpatialMoveTransaction>
   beginMove(SpatialCandidateScratch &scratch LLVM_LIFETIME_BOUND) &;
@@ -487,7 +501,8 @@ private:
   terminalPayloadWidth(FrozenSpatialTerminalBinding binding) const;
   llvm::Expected<SpatialCandidateRouteProjection> projectVerifiedRoutes(
       llvm::ArrayRef<const RouteTreeState *> routeTrees,
-      SpatialTagAssignmentSummary *tagSummary = nullptr) const;
+      SpatialTagAssignmentSummary *tagSummary,
+      HandshakeProjectionScratch &handshakeProjectionScratch) const;
   llvm::Expected<SpatialTagAssignmentSummary>
   summarizeCurrentTagAssignments() const;
   llvm::Expected<SpatialTagAssignmentDelta> summarizeCurrentTagAssignmentDelta(

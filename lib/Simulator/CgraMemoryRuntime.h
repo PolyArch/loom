@@ -8,6 +8,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -20,11 +21,11 @@ namespace loom::sim::detail {
 
 struct CgraMemoryLifecycleFrame final {
   SpatialEventCoordinate coordinate;
-  std::vector<CgraPhysicalLifecycleEvent> physicalEvents;
-  std::vector<CgraActorLifecycleEvent> actorEvents;
-  std::vector<CgraActorEmission> actorEmissions;
-  std::vector<CgraActorPhysicalCompletion> physicalCompletions;
-  std::vector<MemoryLinearizedTraceEvent> memoryLinearizations;
+  llvm::SmallVector<CgraPhysicalLifecycleEvent, 8> physicalEvents;
+  llvm::SmallVector<CgraActorLifecycleEvent, 4> actorEvents;
+  llvm::SmallVector<CgraActorEmission, 4> actorEmissions;
+  llvm::SmallVector<CgraActorPhysicalCompletion, 4> physicalCompletions;
+  llvm::SmallVector<MemoryLinearizedTraceEvent, 2> memoryLinearizations;
 };
 
 /// Dynamic execution of mapped Dataflow load/store actors. Canonical Dataflow

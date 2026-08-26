@@ -69,6 +69,29 @@ tagValueViews(const SpatialTagAssignmentState &assignments,
   return result;
 }
 
+llvm::Expected<std::vector<llvm::ArrayRef<std::optional<llvm::APInt>>>>
+tagValueViews(const SpatialTagAssignmentSummary &assignments,
+              std::size_t logicalNetCount) {
+  if (assignments.netTagValueOffsets.size() != logicalNetCount + 1 ||
+      assignments.netTagValueOffsets.empty() ||
+      assignments.netTagValueOffsets.front() != 0 ||
+      assignments.netTagValueOffsets.back() != assignments.netTagValues.size())
+    return candidateError(
+        "projected tag assignment has incomplete logical-net offsets");
+  std::vector<llvm::ArrayRef<std::optional<llvm::APInt>>> result;
+  result.reserve(logicalNetCount);
+  for (std::size_t logicalNet = 0; logicalNet < logicalNetCount; ++logicalNet) {
+    const std::size_t begin = assignments.netTagValueOffsets[logicalNet];
+    const std::size_t end = assignments.netTagValueOffsets[logicalNet + 1];
+    if (begin > end || end > assignments.netTagValues.size())
+      return candidateError(
+          "projected tag assignment logical-net range is invalid");
+    result.push_back(llvm::ArrayRef(assignments.netTagValues)
+                         .slice(begin, end - begin));
+  }
+  return result;
+}
+
 llvm::Expected<HandshakeCandidateStateHandle> createInitialHandshakeState(
     const FrozenSpatialPnrProblemHandle &problem,
     llvm::ArrayRef<SpatialComputeBindingSelection> computeBindings,
@@ -120,7 +143,8 @@ llvm::Expected<bool> projectHandshakeSelections(
     llvm::ArrayRef<PnrIndex> memoryOperationPlans,
     llvm::ArrayRef<PnrIndex> registerFifoTransfers,
     llvm::ArrayRef<const RouteTreeState *> routes,
-    llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>> tagValues) {
+    llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>> tagValues,
+    HandshakeProjectionScratch &projectionScratch) {
   std::vector<PnrIndex> selectedFragments;
   for (const SpatialComputeBindingSelection &binding : computeBindings)
     llvm::append_range(
@@ -176,8 +200,8 @@ llvm::Expected<bool> projectHandshakeSelections(
   if (!switchFragments)
     return switchFragments.takeError();
   llvm::append_range(selectedFragments, *switchFragments);
-  return independentlyVerifyHandshakeProjectionAcyclic(
-      problem.handshake(), selectedFragments, traversalUses);
+  return projectionScratch.projectAcyclic(problem.handshake(),
+                                          selectedFragments, traversalUses);
 }
 
 } // namespace
@@ -207,6 +231,9 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   if (llvm::Error error = tagScratch_.prepare(problem))
     return error;
   if (llvm::Error error = handshakeScratch_.prepare(problem.handshake()))
+    return error;
+  if (llvm::Error error =
+          handshakeProjectionScratch_.prepare(problem.handshake()))
     return error;
   if (!routeConstraintScratch_)
     routeConstraintScratch_ =
@@ -314,6 +341,7 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(routeScratch_) + retainedBytes(routeTransactions_) +
       tagScratch_.retainedStorageBytes() +
       handshakeScratch_.retainedStorageBytes() +
+      handshakeProjectionScratch_.retainedStorageBytes() +
       (routeConstraintScratch_ ? routeConstraintScratch_->retainedStorageBytes()
                                : 0) +
       (memoryConstraintScratch_
@@ -1027,7 +1055,8 @@ SpatialCandidateState::routeTree(PnrIndex logicalNet) const {
 llvm::Expected<SpatialCandidateRouteProjection>
 SpatialCandidateState::projectVerifiedRoutes(
     llvm::ArrayRef<const RouteTreeState *> routes,
-    SpatialTagAssignmentSummary *tagSummary) const {
+    SpatialTagAssignmentSummary *tagSummary,
+    HandshakeProjectionScratch &handshakeProjectionScratch) const {
   if (routes.size() != routeTrees_.size())
     return candidateError("projected route count does not match the candidate");
   std::uint64_t unrouted = 0;
@@ -1078,22 +1107,24 @@ SpatialCandidateState::projectVerifiedRoutes(
       return projectedRecurrence.takeError();
     recurrenceTiming = std::move(*projectedRecurrence);
   }
-  auto tags =
-      tagAssignments_.projectVerifiedRoutes(routes, tagSummary != nullptr);
+  auto tags = tagAssignments_.projectVerifiedRoutes(
+      routes, /*includeDomainDetails=*/true);
   if (!tags)
     return tags.takeError();
   const std::uint64_t tagResidentCapacityOveruse =
       tags->residentCapacityOveruse;
   const std::uint64_t tagUnassignedCount = tags->unassignedCount;
   const std::uint64_t tagConflictCount = tags->conflictCount;
-  if (tagSummary)
-    *tagSummary = std::move(*tags);
-  const auto tagValues = tagValueViews(tagAssignments_, routes.size());
+  auto tagValues = tagValueViews(*tags, routes.size());
+  if (!tagValues)
+    return tagValues.takeError();
   auto handshakeAcyclic = projectHandshakeSelections(
       *problem_, computeBindings_, portAttachments_, memoryOperationPlans_,
-      registerFifoTransfers_, routes, tagValues);
+      registerFifoTransfers_, routes, *tagValues, handshakeProjectionScratch);
   if (!handshakeAcyclic)
     return handshakeAcyclic.takeError();
+  if (tagSummary)
+    *tagSummary = std::move(*tags);
   std::uint64_t hardProgressViolation = 0;
   switch (problem_->progressBasis().kind) {
   case ::loom::mapping::MappingDataflowProgressBasisKind::Acyclic:
@@ -1362,9 +1393,9 @@ SpatialCandidateState::recomputeAtomicCapacityOveruse() const {
   return total;
 }
 
-llvm::Error SpatialCandidateState::verify() const {
+llvm::Error SpatialCandidateState::verifyCachedState() const {
   if (activeTransaction_)
-    return candidateError("cannot verify during a move");
+    return candidateError("cannot verify cached state during a move");
   if (!problem_ || !handshake_ ||
       computeBindings_.size() !=
           problem_->realizations().computeRealizations().size() ||
@@ -1386,6 +1417,22 @@ llvm::Error SpatialCandidateState::verify() const {
           problem_->transfers().logicalNets().size() ||
       routeTrees_.size() != problem_->transfers().logicalNets().size())
     return candidateError("candidate shape does not match its frozen problem");
+  for (const RouteTreeStateHandle &route : routeTrees_) {
+    if (!route || &route->routingGraph() != &problem_->routing())
+      return candidateError("RouteTree is bound to a foreign routing graph");
+    if (llvm::Error error = route->verify())
+      return error;
+  }
+  if (llvm::Error error = handshake_->verifyCachedState())
+    return error;
+  if (&handshake_->index() != &problem_->handshake())
+    return candidateError("handshake state is bound to a foreign problem");
+  return progressState_.verifyCachedState(*this);
+}
+
+llvm::Error SpatialCandidateState::verify() const {
+  if (llvm::Error error = verifyCachedState())
+    return error;
   for (PnrIndex index = 0; index < computeBindings_.size(); ++index)
     if (llvm::Error error = validateComputeBinding(index))
       return error;

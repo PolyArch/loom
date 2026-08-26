@@ -14,6 +14,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -25,6 +26,8 @@ class BlobStore;
 } // namespace loom
 
 namespace loom::sim {
+
+class PreparedSpatialExecutionContext;
 
 inline constexpr ArtifactSchemaDescriptor simulationExecutionSchema{
     "loom.simulation_execution", SchemaVersion{2, 0}};
@@ -60,6 +63,13 @@ struct SpatialEventCoordinate {
 /// use unsigned 128-bit arithmetic, which exactly contains u64*u64.
 int compareSpatialEventCoordinates(const SpatialEventCoordinate &lhs,
                                    const SpatialEventCoordinate &rhs);
+
+/// Returns the exact integral reference-cycle distance when `to` does not
+/// precede `from`; nonintegral, reversed, or overflowing intervals have no
+/// integral projection.
+std::optional<std::uint64_t>
+integralSpatialReferenceCycleDistance(const SpatialEventCoordinate &from,
+                                      const SpatialEventCoordinate &to);
 
 struct SpatialProgressObservations {
   SpatialEventCoordinate launchAccepted;
@@ -221,6 +231,9 @@ private:
                               const evaluation::CaseArtifactResolution &,
                               const ArtifactStore &, const BlobStore &);
   friend llvm::Expected<CanonicalSimulationExecution>
+  finalizeSimulationExecution(const SpatialSimulationExecution &,
+                              const PreparedSpatialExecutionContext &);
+  friend llvm::Expected<CanonicalSimulationExecution>
   finalizeSimulationExecution(const SystemSimulationExecution &,
                               const evaluation::CaseArtifactResolution &,
                               const ArtifactStore &, const BlobStore &);
@@ -230,10 +243,50 @@ private:
                             const ArtifactStore &, const BlobStore &);
 };
 
+/// Removable invocation-local projection for repeated Spatial execution
+/// finalization against one exact Request and artifact closure. Semantic
+/// validation and canonical encoding still run for every execution.
+class PreparedSpatialExecutionContext final {
+public:
+  PreparedSpatialExecutionContext(PreparedSpatialExecutionContext &&) noexcept;
+  PreparedSpatialExecutionContext &
+  operator=(PreparedSpatialExecutionContext &&) noexcept;
+  ~PreparedSpatialExecutionContext();
+
+  PreparedSpatialExecutionContext(const PreparedSpatialExecutionContext &) =
+      delete;
+  PreparedSpatialExecutionContext &
+  operator=(const PreparedSpatialExecutionContext &) = delete;
+
+private:
+  struct Impl;
+  explicit PreparedSpatialExecutionContext(std::unique_ptr<Impl> impl);
+
+  std::unique_ptr<Impl> impl_;
+
+  friend llvm::Expected<PreparedSpatialExecutionContext>
+  prepareSpatialExecutionContext(
+      const ArtifactRootReference &, evaluation::CaseArtifactResolution,
+      const ArtifactStore &, const BlobStore &);
+  friend llvm::Expected<CanonicalSimulationExecution>
+  finalizeSimulationExecution(const SpatialSimulationExecution &,
+                              const PreparedSpatialExecutionContext &);
+};
+
+llvm::Expected<PreparedSpatialExecutionContext>
+prepareSpatialExecutionContext(
+    const ArtifactRootReference &request,
+    evaluation::CaseArtifactResolution resolution, const ArtifactStore &store,
+    const BlobStore &blobs);
+
 llvm::Expected<CanonicalSimulationExecution> finalizeSimulationExecution(
     const SpatialSimulationExecution &execution,
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &store, const BlobStore &blobs);
+
+llvm::Expected<CanonicalSimulationExecution> finalizeSimulationExecution(
+    const SpatialSimulationExecution &execution,
+    const PreparedSpatialExecutionContext &context);
 
 llvm::Expected<CanonicalSimulationExecution> finalizeSimulationExecution(
     const SystemSimulationExecution &execution,

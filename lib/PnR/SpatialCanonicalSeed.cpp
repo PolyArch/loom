@@ -1,17 +1,80 @@
 #include "PnR/SpatialCanonicalSeed.h"
 
+#include "InitializerRelationSolver.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialRouteCostState.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <memory>
+#include <string>
 #include <utility>
 
 using namespace loom::pnr;
 
 namespace {
+
+SpatialPnrWorkLedgerView workLedger(SpatialPathFinderSeedWorkSummary &summary) {
+  std::array<SpatialPnrWorkCounterRef, spatialPnrWorkKindCount> counters{};
+  counters[static_cast<std::size_t>(
+      SpatialPnrWorkKind::InitializerAssignment)] = {
+      &summary.plannedInitializerAssignmentAttempts,
+      &summary.initializerAssignmentAttempts};
+  counters[static_cast<std::size_t>(SpatialPnrWorkKind::EndpointExpansion)] = {
+      &summary.plannedEndpointExpansions, &summary.endpointExpansions};
+  counters[static_cast<std::size_t>(SpatialPnrWorkKind::NegotiationIteration)] =
+      {&summary.plannedNegotiationIterations, &summary.negotiationIterations};
+  return SpatialPnrWorkLedgerView(counters);
+}
+
+std::string errorMessage(const llvm::ErrorInfoBase &error) {
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  error.log(stream);
+  return message;
+}
+
+llvm::Error retainSeedFailure(llvm::Error error,
+                              SpatialPathFinderSeedWorkSummary &summary) {
+  bool sawCompletedFailure = false;
+  bool sawInternalFailure = false;
+  llvm::Error retained = llvm::handleErrors(
+      std::move(error),
+      [&](std::unique_ptr<detail::InitializerRelationSolveFailure> failure)
+          -> llvm::Error {
+        sawCompletedFailure = true;
+        return llvm::Error(std::move(failure));
+      },
+      [&](std::unique_ptr<EndpointRouteSearchFailure> failure) -> llvm::Error {
+        if (failure->kind() == EndpointRouteSearchFailureKind::Invalid)
+          sawInternalFailure = true;
+        else
+          sawCompletedFailure = true;
+        return llvm::Error(std::move(failure));
+      },
+      [&](std::unique_ptr<RoutingNegotiationError> failure) -> llvm::Error {
+        if (failure->kind() ==
+            RoutingNegotiationError::Kind::ArithmeticOverflow)
+          sawCompletedFailure = true;
+        else
+          sawInternalFailure = true;
+        return llvm::Error(std::move(failure));
+      },
+      [&](std::unique_ptr<SpatialPathFinderClosureFailure> failure)
+          -> llvm::Error {
+        sawCompletedFailure = true;
+        return llvm::Error(std::move(failure));
+      },
+      [&](const llvm::ErrorInfoBase &failure) -> llvm::Error {
+        sawInternalFailure = true;
+        return llvm::make_error<llvm::StringError>(
+            errorMessage(failure), failure.convertToErrorCode());
+      });
+  summary.seedAttemptCompleted = sawCompletedFailure && !sawInternalFailure;
+  return retained;
+}
 
 llvm::Expected<bool> retainRolledBackInitializer(llvm::Error error) {
   bool recoverable = false;
@@ -45,11 +108,18 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
     SpatialPathFinderSeedWorkSummary &workSummary,
     llvm::ArrayRef<RouteCost> evaluationPriorities) {
   workSummary = {};
+  const SpatialPnrWorkLedgerView ledger = workLedger(workSummary);
+  std::uint64_t initializerAssignmentAttempts = 0;
   auto initialized = createSpatialCandidateInitializerAttempt(
-      std::move(problem), attemptOrdinal,
-      workSummary.initializerAssignmentAttempts);
+      std::move(problem), attemptOrdinal, initializerAssignmentAttempts,
+      ledger);
   if (!initialized)
-    return initialized.takeError();
+    return retainSeedFailure(initialized.takeError(), workSummary);
+  if (initializerAssignmentAttempts !=
+      workSummary.initializerAssignmentAttempts)
+    return llvm::createStringError(
+        std::make_error_code(std::errc::invalid_argument),
+        "Spatial initializer counters disagree with the work ledger");
   const SpatialCandidateInitializerPreference initializerPreference =
       initialized->preference;
   SpatialCandidateStateHandle candidate = std::move(initialized->candidate);
@@ -63,7 +133,7 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
     return costs.takeError();
 
   SpatialPathFinderRouterScratch router;
-  if (llvm::Error error = router.prepare(candidate->problem()))
+  if (llvm::Error error = router.prepare(candidate->problem(), ledger))
     return std::move(error);
 
   const ResolvedPnrRoutingPolicy &policy =
@@ -74,17 +144,21 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
        policy.noProgressIterationLimit, policy.noProgressTrendWindow},
       evaluationPriorities,
       SpatialRoutingClosureRequirement::PolicyAdmittedTemporary);
-  workSummary.endpointExpansions = router.endpointExpansionCount();
-  workSummary.negotiationIterations = router.negotiationIterationCount();
+  if (routing &&
+      (workSummary.endpointExpansions != router.endpointExpansionCount() ||
+       workSummary.negotiationIterations != router.negotiationIterationCount()))
+    return llvm::createStringError(
+        std::make_error_code(std::errc::invalid_argument),
+        "Spatial seed routing counters disagree with the work ledger");
   if (!routing) {
     const bool admitsUnrouted = llvm::is_contained(
         candidate->problem().config().policy().temporaryViolations.admitted,
         ResolvedPnrViolationKind::UnroutedObligation);
     if (!admitsUnrouted)
-      return routing.takeError();
+      return retainSeedFailure(routing.takeError(), workSummary);
     auto retained = retainRolledBackInitializer(routing.takeError());
     if (!retained)
-      return retained.takeError();
+      return retainSeedFailure(retained.takeError(), workSummary);
     if (!*retained)
       return llvm::createStringError(
           std::make_error_code(std::errc::invalid_argument),
@@ -92,6 +166,7 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
   }
   if (llvm::Error error = candidate->verify())
     return std::move(error);
+  workSummary.seedAttemptCompleted = true;
   return SpatialPathFinderSeed{std::move(candidate), attemptOrdinal,
                                initializerPreference};
 }
