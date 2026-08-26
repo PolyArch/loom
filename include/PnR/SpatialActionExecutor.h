@@ -115,7 +115,8 @@ public:
   SpatialActionExecutorScratch();
   ~SpatialActionExecutorScratch();
 
-  llvm::Error prepare(SpatialCandidateState &candidate);
+  llvm::Error prepare(SpatialCandidateState &candidate,
+                      SpatialPnrWorkLedgerView workLedger = {});
   llvm::Expected<SpatialActionProbe>
   probe(SpatialCandidateState &candidate, const SpatialMappingAction &action,
         SpatialActionExecutionContext context =
@@ -156,6 +157,9 @@ public:
   }
   std::uint64_t negotiationIterationCount() const {
     return router_.negotiationIterationCount();
+  }
+  HandshakeProjectionStatistics handshakeProjectionStatistics() const {
+    return candidateScratch_.handshakeProjectionStatistics();
   }
   std::uint64_t regionalLogicalNetCount() const {
     return router_.regionalLogicalNetCount();

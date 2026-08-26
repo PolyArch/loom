@@ -328,6 +328,34 @@ Loaded Deployment teardown explicitly discards every retained handle before
 the ordinary quiesce/reset and lease release. Reset invalidates all prepared
 handles even when an earlier discard failed.
 
+`ApplicationResourceTimeExecutionSession` is the synchronous Application
+adapter over this selector. It accepts the exact root lifecycle observation
+at the provider commit boundary, including the occurrence and event
+coordinate. A root completion selects a child only when the current frontier
+has exactly one legal edge. No legal edge is an accepted, typed
+`NoLegalTransition` stay decision. More than one legal edge requires an
+explicit runtime policy and leaves the selector and loaded Deployment
+unchanged. A selected edge is committed only through
+`completeRootAndActivate`; the adapter never derives a Mapping, runs PnR, or
+uses graph order as policy.
+
+The joined event sequence may be published as
+`loom.application.resource_time_execution_trace` version 1.0. The trace names
+its exact Application runtime manifest, retains the root event occurrence and
+coordinate, parent and resulting Mapping/Deployment endpoints, actual active
+and completed root sets, typed outcome, and the manifest-owned QoR evidence
+references. For a selected child, the event, parent, and resulting endpoint
+identify one exact edge in the manifest graph. Strict import replays the
+selector and mechanically restores that edge's allocation and live-state
+sets, resource/configuration/route deltas, and migration/reprogramming costs.
+The trace does not copy those fields into a competing transition owner.
+
+Publishing such a trace requires a joined synchronous session. A lifecycle
+file imported after execution is not a synchronous session and cannot be
+published as activation evidence. Providers that cannot acknowledge the
+completion callback before later root dispatch remain incapable of this
+contract.
+
 `loadApplicationDeployment` is the invocation-local Application-owned join
 from a retained `ApplicationDeploymentArtifacts` result into this runtime
 lifecycle. It first loads the exact `FinalizedDeployment` through the ordinary

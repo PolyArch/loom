@@ -15,8 +15,12 @@
 namespace loom::pnr {
 
 struct SpatialPathFinderSeedWorkSummary final {
+  bool seedAttemptCompleted = false;
+  std::uint64_t plannedInitializerAssignmentAttempts = 0;
   std::uint64_t initializerAssignmentAttempts = 0;
+  std::uint64_t plannedEndpointExpansions = 0;
   std::uint64_t endpointExpansions = 0;
+  std::uint64_t plannedNegotiationIterations = 0;
   std::uint64_t negotiationIterations = 0;
 };
 

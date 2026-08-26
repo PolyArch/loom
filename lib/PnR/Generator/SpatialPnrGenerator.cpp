@@ -11,6 +11,7 @@
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialGlobalRoutingClosure.h"
 #include "PnR/SpatialMappingMaterializer.h"
+#include "PnR/SpatialPnrWorkLedger.h"
 #include "SpatialBindingRelationModel.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -75,6 +76,12 @@ void emitActiveHandshakeStatistics(
             statistics.transactionAffectedNodeCount;
         fields["transaction_affected_rank_span"] =
             statistics.transactionAffectedRankSpan;
+        fields["cached_verification_count"] =
+            statistics.cachedVerificationCount;
+        fields["cold_verification_construction_count"] =
+            statistics.coldVerificationConstructionCount;
+        fields["cold_verification_construction_time_ns"] =
+            statistics.coldVerificationConstructionNanoseconds;
       });
 }
 
@@ -88,19 +95,33 @@ void emitInvocationAccounting(const SpatialPnrGenerationAccounting &accounting,
         fields["closure_status"] =
             mapping_debug::closureStatusSpelling(closureStatus);
         fields["candidate_publications"] = candidatePublications;
+        fields["planned_seed_attempt_slots"] =
+            accounting.plannedSeedAttemptSlots;
         fields["seed_attempt_slots"] = accounting.seedAttemptSlots;
         fields["prepared_seeds"] = accounting.preparedSeeds;
         fields["initializer_assignment_attempts"] =
             accounting.initializerAssignmentAttempts;
+        fields["planned_initializer_assignment_attempts"] =
+            accounting.plannedInitializerAssignmentAttempts;
+        fields["planned_endpoint_expansion_slots"] =
+            accounting.plannedEndpointExpansionSlots;
         fields["a_star_expansions"] = accounting.endpointExpansionSlots;
         fields["endpoint_expansion_slots"] = accounting.endpointExpansionSlots;
         fields["negotiation_iterations"] = accounting.negotiationIterationSlots;
+        fields["planned_negotiation_iteration_slots"] =
+            accounting.plannedNegotiationIterationSlots;
         fields["negotiation_iteration_slots"] =
             accounting.negotiationIterationSlots;
         fields["calibration_proposal_slots"] =
             accounting.calibrationProposalSlots;
+        fields["planned_calibration_proposal_slots"] =
+            accounting.plannedCalibrationProposalSlots;
+        fields["planned_annealing_base_proposal_slots"] =
+            accounting.plannedAnnealingBaseProposalSlots;
         fields["annealing_base_proposal_slots"] =
             accounting.annealingBaseProposalSlots;
+        fields["planned_annealing_movable_proposal_slots"] =
+            accounting.plannedAnnealingMovableProposalSlots;
         fields["annealing_movable_proposal_slots"] =
             accounting.annealingMovableProposalSlots;
         fields["annealing_accepted_actions"] =
@@ -108,7 +129,13 @@ void emitInvocationAccounting(const SpatialPnrGenerationAccounting &accounting,
         fields["exact_repair_invocations"] = accounting.exactRepairInvocations;
         fields["exact_repair_region_decisions"] =
             accounting.exactRepairRegionDecisions;
+        fields["planned_exact_repair_region_decisions"] =
+            accounting.plannedExactRepairRegionDecisions;
+        fields["planned_exact_repair_solver_calls"] =
+            accounting.plannedExactRepairSolverCalls;
         fields["exact_repair_solver_calls"] = accounting.exactRepairSolverCalls;
+        fields["planned_final_closure_attempts"] =
+            accounting.plannedFinalClosureAttempts;
         fields["final_closure_attempts"] = accounting.finalClosureAttempts;
         fields["finalized_restarts"] = accounting.finalizedRestarts;
         fields["publication_slots"] = accounting.publicationSlots;
@@ -195,8 +222,7 @@ void emitInvocationExecutionStatistics(
     const SpatialPnrWorkerAllocation &allocation,
     const SpatialActiveProblemStatistics &problemStatistics,
     ExecutionResourceBudget executionBudget,
-    const ExecutionResourceTracker &resources,
-    bool preparedSeedHandoff) {
+    const ExecutionResourceTracker &resources, bool preparedSeedHandoff) {
   if (!mapping_debug::enabled(mapping_debug::Level::Summary))
     return;
   const ExecutionResourceStatistics observation = resources.observe();
@@ -376,6 +402,44 @@ llvm::Error checkedAdd(std::uint64_t amount, std::uint64_t &target,
   return llvm::Error::success();
 }
 
+SpatialPnrWorkLedgerView
+canonicalWorkLedger(SpatialPnrGenerationAccounting &accounting) {
+  std::array<SpatialPnrWorkCounterRef, spatialPnrWorkKindCount> counters{};
+  const auto bind = [&](SpatialPnrWorkKind kind, std::uint64_t &planned,
+                        std::uint64_t &consumed) {
+    counters[static_cast<std::size_t>(kind)] = {&planned, &consumed};
+  };
+  bind(SpatialPnrWorkKind::SeedAttempt, accounting.plannedSeedAttemptSlots,
+       accounting.seedAttemptSlots);
+  bind(SpatialPnrWorkKind::InitializerAssignment,
+       accounting.plannedInitializerAssignmentAttempts,
+       accounting.initializerAssignmentAttempts);
+  bind(SpatialPnrWorkKind::EndpointExpansion,
+       accounting.plannedEndpointExpansionSlots,
+       accounting.endpointExpansionSlots);
+  bind(SpatialPnrWorkKind::NegotiationIteration,
+       accounting.plannedNegotiationIterationSlots,
+       accounting.negotiationIterationSlots);
+  bind(SpatialPnrWorkKind::CalibrationProposal,
+       accounting.plannedCalibrationProposalSlots,
+       accounting.calibrationProposalSlots);
+  bind(SpatialPnrWorkKind::AnnealingBaseProposal,
+       accounting.plannedAnnealingBaseProposalSlots,
+       accounting.annealingBaseProposalSlots);
+  bind(SpatialPnrWorkKind::AnnealingMovableProposal,
+       accounting.plannedAnnealingMovableProposalSlots,
+       accounting.annealingMovableProposalSlots);
+  bind(SpatialPnrWorkKind::ExactRepairRegionDecision,
+       accounting.plannedExactRepairRegionDecisions,
+       accounting.exactRepairRegionDecisions);
+  bind(SpatialPnrWorkKind::ExactRepairSolverCall,
+       accounting.plannedExactRepairSolverCalls,
+       accounting.exactRepairSolverCalls);
+  bind(SpatialPnrWorkKind::FinalClosureAttempt,
+       accounting.plannedFinalClosureAttempts, accounting.finalClosureAttempts);
+  return SpatialPnrWorkLedgerView(counters);
+}
+
 InternalSpatialPnrGeneration
 internal(InternalSpatialPnrGenerationReason reason,
          const SpatialPnrGenerationAccounting &accounting,
@@ -391,27 +455,6 @@ internal(InternalSpatialPnrGenerationReason reason,
 
 llvm::Error accumulateAnnealing(const SpatialAnnealingStatistics &source,
                                 SpatialPnrGenerationAccounting &target) {
-  if (llvm::Error error = checkedAdd(source.calibrationProposalSlots,
-                                     target.calibrationProposalSlots,
-                                     "calibration proposal slots"))
-    return error;
-  if (llvm::Error error = checkedAdd(source.annealingBaseProposalSlots,
-                                     target.annealingBaseProposalSlots,
-                                     "base annealing proposal slots"))
-    return error;
-  if (llvm::Error error =
-          checkedAdd(source.annealingMovableProposalSlots,
-                     target.annealingMovableProposalSlots,
-                     "movable-decision annealing proposal slots"))
-    return error;
-  if (llvm::Error error =
-          checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
-                     "annealing endpoint expansions"))
-    return error;
-  if (llvm::Error error = checkedAdd(source.negotiationIterations,
-                                     target.negotiationIterationSlots,
-                                     "annealing negotiation iterations"))
-    return error;
   return checkedAdd(source.acceptedActionCount, target.annealingAcceptedActions,
                     "annealing accepted Actions");
 }
@@ -606,7 +649,8 @@ SpatialRestartResult runSpatialRestartImpl(
   if (!preparedSeedHandoff && executionControl.stopRequested())
     return restartInterrupted(SpatialPnrInterruptionStage::SeedConstruction,
                               std::move(accounting));
-  accounting.seedAttemptSlots = 1;
+  accounting.plannedSeedAttemptSlots = 1;
+  const SpatialPnrWorkLedgerView workLedger = canonicalWorkLedger(accounting);
   const auto &search = problem->config().policy().search;
   SpatialAnnealingSearchScratch &annealing = scratch.annealing;
   SpatialExactRepairScratch &repair = scratch.repair;
@@ -642,9 +686,27 @@ SpatialRestartResult runSpatialRestartImpl(
         std::make_error_code(std::errc::invalid_argument),
         "Spatial seed handoff contains neither a seed nor a failure"));
   }();
+  std::optional<AttemptFailure> seedFailure;
+  if (!seed)
+    seedFailure.emplace(classifyAttemptFailure(seed.takeError()));
+  const bool seedAttemptCompleted =
+      !seedFailure || seedFailure->kind != AttemptFailureKind::Internal;
+  if (llvm::Error error =
+          checkedAdd(seedWork.plannedInitializerAssignmentAttempts,
+                     accounting.plannedInitializerAssignmentAttempts,
+                     "planned initializer assignment attempts"))
+    return restartInternal(
+        InternalSpatialPnrGenerationReason::AccountingOverflow,
+        std::move(accounting), std::move(error));
   if (llvm::Error error = checkedAdd(seedWork.initializerAssignmentAttempts,
                                      accounting.initializerAssignmentAttempts,
                                      "initializer assignment attempts"))
+    return restartInternal(
+        InternalSpatialPnrGenerationReason::AccountingOverflow,
+        std::move(accounting), std::move(error));
+  if (llvm::Error error = checkedAdd(seedWork.plannedEndpointExpansions,
+                                     accounting.plannedEndpointExpansionSlots,
+                                     "planned seed endpoint expansions"))
     return restartInternal(
         InternalSpatialPnrGenerationReason::AccountingOverflow,
         std::move(accounting), std::move(error));
@@ -654,17 +716,34 @@ SpatialRestartResult runSpatialRestartImpl(
     return restartInternal(
         InternalSpatialPnrGenerationReason::AccountingOverflow,
         std::move(accounting), std::move(error));
+  if (llvm::Error error =
+          checkedAdd(seedWork.plannedNegotiationIterations,
+                     accounting.plannedNegotiationIterationSlots,
+                     "planned seed negotiation iterations"))
+    return restartInternal(
+        InternalSpatialPnrGenerationReason::AccountingOverflow,
+        std::move(accounting), std::move(error));
   if (llvm::Error error = checkedAdd(seedWork.negotiationIterations,
                                      accounting.negotiationIterationSlots,
                                      "seed negotiation iterations"))
     return restartInternal(
         InternalSpatialPnrGenerationReason::AccountingOverflow,
         std::move(accounting), std::move(error));
+  if (seedWork.seedAttemptCompleted != seedAttemptCompleted)
+    return restartInternal(
+        InternalSpatialPnrGenerationReason::SeedConstruction,
+        std::move(accounting),
+        "canonical seed owner completion disagrees with its typed outcome");
+  if (seedAttemptCompleted)
+    if (llvm::Error error = workLedger.consume(SpatialPnrWorkKind::SeedAttempt))
+      return restartInternal(
+          InternalSpatialPnrGenerationReason::AccountingOverflow,
+          std::move(accounting), std::move(error));
   if (executionControl.stopRequested())
     return restartInterrupted(SpatialPnrInterruptionStage::SeedConstruction,
                               std::move(accounting));
-  if (!seed) {
-    AttemptFailure failure = classifyAttemptFailure(seed.takeError());
+  if (seedFailure) {
+    AttemptFailure failure = std::move(*seedFailure);
     if (failure.kind == AttemptFailureKind::ProvenInfeasible) {
       std::optional<SpatialGraphBoundaryEndpointHallDeficit> feedback;
       if (failure.hallWitness) {
@@ -703,7 +782,7 @@ SpatialRestartResult runSpatialRestartImpl(
   }
 
   accounting.preparedSeeds = 1;
-  auto annealed = annealing.run(*seed, executionControl);
+  auto annealed = annealing.run(*seed, executionControl, workLedger);
   if (!annealed)
     return restartInternal(InternalSpatialPnrGenerationReason::Annealing,
                            std::move(accounting), annealed.takeError());
@@ -716,14 +795,6 @@ SpatialRestartResult runSpatialRestartImpl(
                               std::move(accounting),
                               std::move(seed->candidate));
 
-  const auto hasTransportClosureViolation = [&]() {
-    return seed->candidate->hardProgressViolation() != 0 ||
-           seed->candidate->unroutedObligationCount() != 0 ||
-           seed->candidate->routeCapacityOveruse() != 0 ||
-           seed->candidate->tagResidentCapacityOveruse() != 0 ||
-           seed->candidate->tagUnassignedCount() != 0 ||
-           seed->candidate->tagConflictCount() != 0;
-  };
   const bool exactRepairEnabled =
       search.exactRepair.kind != ResolvedPnrExactRepairKind::Disabled;
   DeterministicPnrRandomStream exactRepairStream =
@@ -736,7 +807,8 @@ SpatialRestartResult runSpatialRestartImpl(
   while (true) {
     const bool hasAtomicCapacityOveruse =
         seed->candidate->atomicCapacityOveruse() != 0;
-    const bool hasTransportViolation = hasTransportClosureViolation();
+    const bool hasTransportViolation =
+        seed->candidate->hasTransportClosureViolation();
     if (executionControl.stopRequested())
       return restartInterrupted(
           hasAtomicCapacityOveruse || transportRepairRequested
@@ -772,44 +844,21 @@ SpatialRestartResult runSpatialRestartImpl(
             std::move(accounting), std::move(error));
       const std::uint64_t remainingSolverCalls =
           search.exactRepair.maxSolverCalls - accounting.exactRepairSolverCalls;
-      auto repaired = repair.repair(*seed->candidate, attempt,
-                                    remainingSolverCalls, exactRepairStream);
+      auto repaired =
+          repair.repair(*seed->candidate, attempt, remainingSolverCalls,
+                        exactRepairStream, workLedger);
       if (!repaired)
         return restartInternal(InternalSpatialPnrGenerationReason::ExactRepair,
                                std::move(accounting), repaired.takeError());
-      if (executionControl.stopRequested())
-        return restartInterrupted(SpatialPnrInterruptionStage::ExactRepair,
-                                  std::move(accounting),
-                                  std::move(seed->candidate));
       if (repaired->solverCalls > remainingSolverCalls)
         return restartInternal(
             InternalSpatialPnrGenerationReason::ExactRepair,
             std::move(accounting),
             "exact repair exceeded the restart solver-call budget");
-      if (llvm::Error error = checkedAdd(repaired->regionDecisions,
-                                         accounting.exactRepairRegionDecisions,
-                                         "exact-repair region decisions"))
-        return restartInternal(
-            InternalSpatialPnrGenerationReason::AccountingOverflow,
-            std::move(accounting), std::move(error));
-      if (llvm::Error error = checkedAdd(repaired->solverCalls,
-                                         accounting.exactRepairSolverCalls,
-                                         "exact-repair solver calls"))
-        return restartInternal(
-            InternalSpatialPnrGenerationReason::AccountingOverflow,
-            std::move(accounting), std::move(error));
-      if (llvm::Error error = checkedAdd(repaired->endpointExpansions,
-                                         accounting.endpointExpansionSlots,
-                                         "exact-repair endpoint expansions"))
-        return restartInternal(
-            InternalSpatialPnrGenerationReason::AccountingOverflow,
-            std::move(accounting), std::move(error));
-      if (llvm::Error error = checkedAdd(repaired->negotiationIterations,
-                                         accounting.negotiationIterationSlots,
-                                         "exact-repair negotiation iterations"))
-        return restartInternal(
-            InternalSpatialPnrGenerationReason::AccountingOverflow,
-            std::move(accounting), std::move(error));
+      if (executionControl.stopRequested())
+        return restartInterrupted(SpatialPnrInterruptionStage::ExactRepair,
+                                  std::move(accounting),
+                                  std::move(seed->candidate));
       switch (repaired->kind) {
       case SpatialExactRepairResultKind::Repaired:
         if (repaired->solverCalls == 0)
@@ -841,40 +890,53 @@ SpatialRestartResult runSpatialRestartImpl(
       }
     }
 
-    if (llvm::Error error = checkedAdd(1, accounting.finalClosureAttempts,
-                                       "final-closure attempts"))
+    if (llvm::Error error =
+            workLedger.plan(SpatialPnrWorkKind::FinalClosureAttempt))
       return restartInternal(
           InternalSpatialPnrGenerationReason::AccountingOverflow,
           std::move(accounting), std::move(error));
-    llvm::Error closureError = finalClosure.run(*seed->candidate);
-    if (llvm::Error error = checkedAdd(finalClosure.endpointExpansionCount(),
-                                       accounting.endpointExpansionSlots,
-                                       "final-closure endpoint expansions"))
-      return restartInternal(
-          InternalSpatialPnrGenerationReason::AccountingOverflow,
-          std::move(accounting), std::move(error));
-    if (llvm::Error error = checkedAdd(finalClosure.negotiationIterationCount(),
-                                       accounting.negotiationIterationSlots,
-                                       "final-closure negotiation iterations"))
-      return restartInternal(
-          InternalSpatialPnrGenerationReason::AccountingOverflow,
-          std::move(accounting), std::move(error));
+    llvm::Error closureError = finalClosure.run(*seed->candidate, workLedger);
+    emitFinalClosureHandshakeProjectionStatistics(
+        finalClosure.handshakeProjectionStatistics(), attempt,
+        accounting.finalClosureAttempts);
+    std::optional<AttemptFailure> closureFailure;
+    if (closureError)
+      closureFailure.emplace(classifyAttemptFailure(std::move(closureError)));
+    const bool closureAttemptCompleted =
+        !closureFailure || closureFailure->kind != AttemptFailureKind::Internal;
+    if (closureAttemptCompleted)
+      if (llvm::Error error =
+              workLedger.consume(SpatialPnrWorkKind::FinalClosureAttempt))
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::AccountingOverflow,
+            std::move(accounting), std::move(error));
+    if (closureFailure && closureFailure->kind == AttemptFailureKind::Internal)
+      return restartInternal(InternalSpatialPnrGenerationReason::FinalClosure,
+                             std::move(accounting),
+                             std::move(closureFailure->diagnostic));
     if (executionControl.stopRequested()) {
-      llvm::consumeError(std::move(closureError));
       return restartInterrupted(SpatialPnrInterruptionStage::FinalClosure,
                                 std::move(accounting),
                                 std::move(seed->candidate));
     }
-    if (!closureError) {
+    if (!closureFailure) {
       finalClosureRequired = false;
+      if (seed->candidate->hasTransportClosureViolation()) {
+        if (!exactRepairEnabled)
+          return {SpatialRestartDisposition::Incomplete,
+                  std::move(accounting),
+                  nullptr,
+                  false,
+                  InternalSpatialPnrGenerationReason::FinalClosure,
+                  "final routing closure retained a transport violation while "
+                  "exact repair is disabled"};
+        transportRepairRequested = true;
+      }
       continue;
     }
 
-    AttemptFailure failure = classifyAttemptFailure(std::move(closureError));
-    if (failure.kind == AttemptFailureKind::Internal)
-      return restartInternal(InternalSpatialPnrGenerationReason::FinalClosure,
-                             std::move(accounting), failure.diagnostic);
-    if (!exactRepairEnabled || !hasTransportClosureViolation())
+    AttemptFailure failure = std::move(*closureFailure);
+    if (!exactRepairEnabled || !seed->candidate->hasTransportClosureViolation())
       return {SpatialRestartDisposition::Incomplete,
               std::move(accounting),
               nullptr,
@@ -918,15 +980,14 @@ SpatialRestartResult runSpatialRestartImpl(
           {}};
 }
 
-SpatialRestartResult
-runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
-                  std::uint32_t attempt,
-                  ExecutionControlView executionControl,
-                  SpatialPathFinderSeedHandoffHandle preparedSeedHandoff =
-                      nullptr) {
+SpatialRestartResult runSpatialRestart(
+    const FrozenSpatialPnrProblemHandle &problem, std::uint32_t attempt,
+    ExecutionControlView executionControl,
+    SpatialPathFinderSeedHandoffHandle preparedSeedHandoff = nullptr) {
   SpatialRestartScratch scratch;
-  SpatialRestartResult result = runSpatialRestartImpl(
-      problem, attempt, executionControl, scratch, std::move(preparedSeedHandoff));
+  SpatialRestartResult result =
+      runSpatialRestartImpl(problem, attempt, executionControl, scratch,
+                            std::move(preparedSeedHandoff));
   result.workerScratchRetainedBytes = scratch.retainedStorageBytes();
   return result;
 }
@@ -937,6 +998,26 @@ accumulateRestartAccounting(const SpatialPnrGenerationAccounting &source,
 #define LOOM_ACCUMULATE_SPATIAL_FIELD(Field, Label)                            \
   if (llvm::Error error = checkedAdd(source.Field, target.Field, Label))       \
   return error
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedInitializerAssignmentAttempts,
+                                "planned initializer assignment attempts");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedEndpointExpansionSlots,
+                                "planned endpoint expansion slots");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedNegotiationIterationSlots,
+                                "planned negotiation iteration slots");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedCalibrationProposalSlots,
+                                "planned calibration proposal slots");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedAnnealingBaseProposalSlots,
+                                "planned base annealing proposal slots");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedAnnealingMovableProposalSlots,
+                                "planned movable annealing proposal slots");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedExactRepairRegionDecisions,
+                                "planned exact repair region decisions");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedExactRepairSolverCalls,
+                                "planned exact repair solver calls");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedFinalClosureAttempts,
+                                "planned final closure attempts");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedSeedAttemptSlots,
+                                "planned seed attempt slots");
   LOOM_ACCUMULATE_SPATIAL_FIELD(seedAttemptSlots, "seed attempt slots");
   LOOM_ACCUMULATE_SPATIAL_FIELD(preparedSeeds, "prepared seeds");
   LOOM_ACCUMULATE_SPATIAL_FIELD(initializerAssignmentAttempts,
@@ -1161,6 +1242,42 @@ spatialPnrInterruptionStageSpelling(SpatialPnrInterruptionStage stage) {
   llvm_unreachable("unknown Spatial PnR interruption stage");
 }
 
+llvm::Error
+verifySpatialPnrWorkAccounting(const SpatialPnrGenerationAccounting &accounting,
+                               bool requireClosedWork) {
+  const std::array<std::pair<std::uint64_t, std::uint64_t>, 10> counters = {{
+      {accounting.plannedSeedAttemptSlots, accounting.seedAttemptSlots},
+      {accounting.plannedInitializerAssignmentAttempts,
+       accounting.initializerAssignmentAttempts},
+      {accounting.plannedEndpointExpansionSlots,
+       accounting.endpointExpansionSlots},
+      {accounting.plannedNegotiationIterationSlots,
+       accounting.negotiationIterationSlots},
+      {accounting.plannedCalibrationProposalSlots,
+       accounting.calibrationProposalSlots},
+      {accounting.plannedAnnealingBaseProposalSlots,
+       accounting.annealingBaseProposalSlots},
+      {accounting.plannedAnnealingMovableProposalSlots,
+       accounting.annealingMovableProposalSlots},
+      {accounting.plannedExactRepairRegionDecisions,
+       accounting.exactRepairRegionDecisions},
+      {accounting.plannedExactRepairSolverCalls,
+       accounting.exactRepairSolverCalls},
+      {accounting.plannedFinalClosureAttempts, accounting.finalClosureAttempts},
+  }};
+  for (const auto [planned, consumed] : counters) {
+    if (consumed > planned)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "Spatial PnR consumed work exceeds planned work");
+    if (requireClosedWork && planned != consumed)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "Spatial PnR completed with admitted work still live");
+  }
+  return llvm::Error::success();
+}
+
 SpatialPnrGenerationOutcome
 generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   const ExecutionResourceTracker resources;
@@ -1194,8 +1311,9 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
             InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
             std::move(failure.diagnostic)};
       case FreezeFailureKind::ProvenInfeasible:
-        return ProvenInfeasibleSpatialMapping{accounting,
-                                              std::move(failure.diagnostic)};
+        return ProvenInfeasibleSpatialMapping{
+            accounting, std::move(failure.diagnostic), std::nullopt,
+            SpatialPnrInfeasibilityProofKind::FrozenDerivedContext};
       case FreezeFailureKind::Internal:
         return internal(
             InternalSpatialPnrGenerationReason::FrozenModelConstruction,
@@ -1236,8 +1354,9 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
           InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
           std::move(failure.diagnostic)};
     case FreezeFailureKind::ProvenInfeasible:
-      return ProvenInfeasibleSpatialMapping{accounting,
-                                            std::move(failure.diagnostic)};
+      return ProvenInfeasibleSpatialMapping{
+          accounting, std::move(failure.diagnostic), std::nullopt,
+          SpatialPnrInfeasibilityProofKind::FrozenActiveProblem};
     case FreezeFailureKind::Internal:
       return internal(
           InternalSpatialPnrGenerationReason::FrozenModelConstruction,
@@ -1298,8 +1417,7 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
       ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
   const bool serialPrefix = firstVerifiedCandidate;
   if (inputs.preparedCanonicalSeed) {
-    const SpatialPathFinderSeedHandoff &handoff =
-        *inputs.preparedCanonicalSeed;
+    const SpatialPathFinderSeedHandoff &handoff = *inputs.preparedCanonicalSeed;
     if (firstVerifiedCandidate || handoff.attemptOrdinal != 0 ||
         !handoff.problemCacheKey ||
         *handoff.problemCacheKey != (*problem)->cacheKey() ||
@@ -1415,6 +1533,13 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
             accumulateRestartAccounting(restart.accounting, accounting))
       return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
                       accounting, std::move(error));
+    const bool requireClosedWork =
+        restart.disposition != SpatialRestartDisposition::Interrupted &&
+        restart.disposition != SpatialRestartDisposition::Internal;
+    if (llvm::Error error = verifySpatialPnrWorkAccounting(restart.accounting,
+                                                           requireClosedWork))
+      return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
+                      accounting, std::move(error));
     emitRestartFailure(static_cast<std::uint32_t>(indexedRestart.index()),
                        restart);
     if (restart.disposition == SpatialRestartDisposition::Interrupted &&
@@ -1435,7 +1560,7 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     case SpatialRestartDisposition::Candidate:
       semanticLimitReached |= restart.semanticLimitReached;
       break;
-    case SpatialRestartDisposition::ProvenInfeasible:
+    case SpatialRestartDisposition::ProvenInfeasible: {
       if (hasCandidateRestart)
         return internal(
             InternalSpatialPnrGenerationReason::CandidateVerification,
@@ -1444,9 +1569,15 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
             "a verified candidate");
       emitInvocationAccounting(
           accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
+      const bool hasGraphBoundaryHall =
+          restart.graphBoundaryEndpointHall.has_value();
       return ProvenInfeasibleSpatialMapping{
           accounting, std::move(restart.diagnostic),
-          std::move(restart.graphBoundaryEndpointHall)};
+          std::move(restart.graphBoundaryEndpointHall),
+          hasGraphBoundaryHall
+              ? SpatialPnrInfeasibilityProofKind::GraphBoundaryEndpointHall
+              : SpatialPnrInfeasibilityProofKind::InitializerRelation};
+    }
     case SpatialRestartDisposition::Incomplete:
       semanticLimitReached |= restart.semanticLimitReached;
       proofNotEstablished |= !restart.semanticLimitReached;

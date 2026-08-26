@@ -10,6 +10,7 @@
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialPnrProblem.h"
 
+#include "HandshakeProjectionTestSupport.h"
 #include "TechMappingCandidateTestSupport.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -310,6 +311,43 @@ void computeBoundaryClosure() {
       handshake.computePlacementFragments().empty())
     fail("compute freeze omitted exact placement handshake fragments");
   loom::test::exerciseHandshakeCandidateRefcounts(frozen);
+
+  const auto freezeAlternative =
+      [&](const loom::fabric::FinalizedFabricRoot &root,
+          llvm::StringRef fixture) -> loom::pnr::FrozenSpatialPnrProblemHandle {
+    auto mappingModule = parseTechMapping(
+        context, computeBoundaryMappingText(dataflowView, root.view(), true));
+    if (!mappingModule)
+      fail((fixture + " TechMapping fixture did not parse").str());
+    auto techRoots = mappingModule->getOps<::mapping::TechOp>();
+    auto tech = take(loom::mapping::finalizeTechMapping(
+        *techRoots.begin(), dataflowView, root.view(), store));
+    auto constraintModule = parseTechMapping(
+        context, spatialConstraintMappingText(dataflowView, tech.view(),
+                                              root.view(), ""));
+    if (!constraintModule)
+      fail((fixture + " Spatial constraints did not parse").str());
+    auto constraintRoots =
+        constraintModule->getOps<::mapping::ConstraintsSpatialOp>();
+    auto alternativeConstraints =
+        take(loom::mapping::finalizeSpatialMappingConstraintSet(
+            *constraintRoots.begin(), dataflowView, tech.view(), root.view(),
+            store));
+    return take(loom::pnr::freezeSpatialPnrProblem(
+        dataflowView, tech.view(), root.view(), spatialConfig,
+        alternativeConstraints.view()));
+  };
+
+  auto switchDesign = loom::test::buildTemporalSwitchPackingFabric(store);
+  auto switchProblem =
+      freezeAlternative(switchDesign.roots().front(), "switch-packing");
+  loom::test::exerciseDenseHandshakeFixedArcProjection(switchProblem);
+
+  auto cycleDesign = loom::test::buildTemporalHandshakeCycleFabric(store);
+  auto cycleProblem =
+      freezeAlternative(cycleDesign.roots().front(), "handshake-cycle");
+  loom::test::exerciseDenseHandshakeCycleProjection(cycleProblem);
+
   loom::test::exerciseCapacityOveruseCandidate(dataflowView, finalized.view(),
                                                fabricRoot.view(), frozen);
   loom::test::exerciseTemporalComputeUseProjection(

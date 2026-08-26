@@ -10,6 +10,7 @@
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelDescriptor.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -181,6 +182,8 @@ const evaluation::EvaluationModelDescriptor evidenceModelDescriptor{
     ProviderForm::InProcess};
 
 bool generationStopsEarly = false;
+CandidateGeneratorIncompleteReason generationIncompleteReason =
+    CandidateGeneratorIncompleteReason::SemanticLimitReached;
 
 ArtifactRootReference publish(const ArtifactStore &store,
                               const ArtifactSchemaDescriptor &schema,
@@ -198,7 +201,7 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   if (generationStopsEarly)
     return CandidateGeneratorProviderResult{
         IncompleteCandidateGeneratorResult{
-            CandidateGeneratorIncompleteReason::SemanticLimitReached,
+            generationIncompleteReason,
             {{CandidateGeneratorOutputSlotRef(0), {candidate}}},
             {{CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
               CandidateGeneratorOutputSlotRef(0),
@@ -287,8 +290,11 @@ struct Fixture final {
         records(std::move(records)), selected(std::move(selected)) {}
 };
 
-Fixture makeFixture(const ArtifactStore &store, const BlobStore &blobs,
-                    bool stopEarly = false, std::size_t planNodeCount = 1) {
+Fixture
+makeFixture(const ArtifactStore &store, const BlobStore &blobs,
+            bool stopEarly = false, std::size_t planNodeCount = 1,
+            CandidateGeneratorIncompleteReason stopReason =
+                CandidateGeneratorIncompleteReason::SemanticLimitReached) {
   const ComponentViewDigest digest =
       take(computeComponentViewDigest(configSchema, {0x01}));
   ResolvedConfig config = defaultResolvedConfig();
@@ -307,8 +313,11 @@ Fixture makeFixture(const ArtifactStore &store, const BlobStore &blobs,
 
   ResolvedDseConfigView view = take(projectResolvedDseConfigView(config));
   generationStopsEarly = stopEarly;
+  generationIncompleteReason = stopReason;
   DsePlanExecutionOutcome execution = take(executeDsePlan(view, store, blobs));
   generationStopsEarly = false;
+  generationIncompleteReason =
+      CandidateGeneratorIncompleteReason::SemanticLimitReached;
   ArtifactRootReference selected = source;
   if (auto *completed = std::get_if<CompletedDsePlanExecution>(&execution)) {
     if (stopEarly)
@@ -357,17 +366,17 @@ void testRunKeyAndRoundTrip(const ArtifactStore &store,
       std::move(first), 7, std::nullopt, fixture.config, fixture.records,
       InvocationCompletedSelection{
           {fixture.selected}, {secondEvidence, fixture.preexistingEvidence}},
-      store));
+      store, blobs));
   InvocationManifest reordered = take(InvocationManifest::get(
       makeClosure(fixture, store, reversedInputs), 7, std::nullopt,
       fixture.config, fixture.records,
       InvocationCompletedSelection{
           {fixture.selected}, {fixture.preexistingEvidence, secondEvidence}},
-      store));
+      store, blobs));
   if (manifest.canonicalBytes() != reordered.canonicalBytes())
     fail("set-valued authoring order changed canonical Manifest bytes");
   InvocationManifest adopted = take(adoptInvocationManifest(
-      manifest.canonicalBytes(), fixture.config, store));
+      manifest.canonicalBytes(), fixture.config, store, blobs));
   if (adopted.canonicalBytes() != manifest.canonicalBytes() ||
       adopted.occurrence() != manifest.occurrence() ||
       adopted.generateRecords().size() != 1 ||
@@ -425,13 +434,15 @@ void testIncompleteWorkPreservation(const ArtifactStore &store,
           {},
           {fixture.selected},
           {}},
-      store));
+      store, blobs));
   InvocationManifest adopted = take(adoptInvocationManifest(
-      manifest.canonicalBytes(), fixture.config, store));
+      manifest.canonicalBytes(), fixture.config, store, blobs));
   if (adopted.generateRecords().size() != 1 ||
       adopted.generateRecords().front().completed ||
+      adopted.generateRecords().front().invocation.incompleteReason !=
+          CandidateGeneratorIncompleteReason::SemanticLimitReached ||
       adopted.generateRecords().front().workSummary.units.size() != 1) {
-    fail("incomplete Manifest lost its partial Generate record");
+    fail("incomplete Manifest lost its typed partial Generate record");
   }
   const CandidateGeneratorWorkUnitSummary &unit =
       adopted.generateRecords().front().workSummary.units.front();
@@ -441,16 +452,17 @@ void testIncompleteWorkPreservation(const ArtifactStore &store,
 
 void testIncompleteReasonRoundTripCoverage(const ArtifactStore &store,
                                            const BlobStore &blobs) {
-  Fixture fixture = makeFixture(store, blobs, true);
   for (std::uint32_t ordinal = 0; ordinal <= 5; ++ordinal) {
     const auto reason =
         static_cast<CandidateGeneratorIncompleteReason>(ordinal);
+    Fixture fixture = makeFixture(store, blobs, true, 1, reason);
     InvocationManifest manifest = take(InvocationManifest::get(
         makeClosure(fixture, store, {fixture.source}), 3, std::nullopt,
         fixture.config, fixture.records,
-        InvocationIncomplete{0, reason, {}, {fixture.selected}, {}}, store));
+        InvocationIncomplete{0, reason, {}, {fixture.selected}, {}}, store,
+        blobs));
     InvocationManifest adopted = take(adoptInvocationManifest(
-        manifest.canonicalBytes(), fixture.config, store));
+        manifest.canonicalBytes(), fixture.config, store, blobs));
     if (adopted.canonicalBytes() != manifest.canonicalBytes())
       fail("an incomplete reason changed across manifest reimport");
     const auto *adoptedIncomplete =
@@ -460,7 +472,9 @@ void testIncompleteReasonRoundTripCoverage(const ArtifactStore &store,
     const auto *candidateReason =
         std::get_if<CandidateGeneratorIncompleteReason>(
             &adoptedIncomplete->reason);
-    if (!candidateReason || *candidateReason != reason)
+    if (!candidateReason || *candidateReason != reason ||
+        adopted.generateRecords().size() != 1 ||
+        adopted.generateRecords().front().invocation.incompleteReason != reason)
       fail("an incomplete reason did not round-trip exactly");
   }
 }
@@ -496,6 +510,12 @@ constexpr std::size_t encodedEmptyExternalToolWorkWidth =
 constexpr std::size_t encodedAbsentCampaignAdmissionWidth =
     sizeof(std::uint32_t);
 
+std::size_t encodedCompletedGenerateOutcomeWidth(
+    const DsePlanGenerateInvocationRecords &records) {
+  return (records.completed().size() + records.incomplete().size()) *
+         sizeof(std::uint32_t);
+}
+
 InvocationExternalToolWorkLedger externalToolWork() {
   return take(InvocationExternalToolWorkLedger::get(
       {{0, ExternalToolWorkLedger{2, 2, 1, 1, 0, 2, 0, 1, 1, 1, 1, 0, 1, 0}}}));
@@ -508,20 +528,20 @@ void testOperationalObservationCompatibility(const ArtifactStore &store,
       {fixture.selected}, {fixture.preexistingEvidence}};
   InvocationManifest absent = take(InvocationManifest::get(
       makeClosure(fixture, store, {fixture.source}), 8, std::nullopt,
-      fixture.config, fixture.records, outcome, store));
-  InvocationManifest present = take(
-      InvocationManifest::get(makeClosure(fixture, store, {fixture.source}), 8,
-                              std::nullopt, fixture.config, fixture.records,
-                              outcome, store, operationalObservations()));
+      fixture.config, fixture.records, outcome, store, blobs));
+  InvocationManifest present = take(InvocationManifest::get(
+      makeClosure(fixture, store, {fixture.source}), 8, std::nullopt,
+      fixture.config, fixture.records, outcome, store, blobs,
+      operationalObservations()));
 
   if (absent.operationalObservations() || !present.operationalObservations() ||
       present.operationalObservations()->planNodes.size() != 1 ||
       present.operationalObservations()->planNodes.front().planNodeOrdinal != 0)
     fail("operational observation presence or node reference changed");
-  InvocationManifest adoptedPresent = take(
-      adoptInvocationManifest(present.canonicalBytes(), fixture.config, store));
-  InvocationManifest adoptedAbsent = take(
-      adoptInvocationManifest(absent.canonicalBytes(), fixture.config, store));
+  InvocationManifest adoptedPresent = take(adoptInvocationManifest(
+      present.canonicalBytes(), fixture.config, store, blobs));
+  InvocationManifest adoptedAbsent = take(adoptInvocationManifest(
+      absent.canonicalBytes(), fixture.config, store, blobs));
   if (adoptedPresent.canonicalBytes() != present.canonicalBytes() ||
       adoptedPresent.operationalObservations() !=
           present.operationalObservations() ||
@@ -543,15 +563,33 @@ void testOperationalObservationCompatibility(const ArtifactStore &store,
 
   const std::size_t minorOffset =
       8 + InvocationManifest::schemaIdentity.size() + 4;
-  std::vector<std::uint8_t> preCampaignAdmission(
+  std::vector<std::uint8_t> preInfeasibilityProof(
       absent.canonicalBytes().begin(), absent.canonicalBytes().end());
+  const std::size_t outcomeWidth =
+      encodedCompletedGenerateOutcomeWidth(fixture.records);
+  if (preInfeasibilityProof.size() < outcomeWidth)
+    fail("current absent manifest lacks its Generate outcome table");
+  preInfeasibilityProof.resize(preInfeasibilityProof.size() - outcomeWidth);
+  writeU32(preInfeasibilityProof, minorOffset, 5);
+  InvocationManifest adoptedPreInfeasibilityProof =
+      take(adoptInvocationManifest(preInfeasibilityProof, fixture.config, store,
+                                   blobs));
+  if (adoptedPreInfeasibilityProof.canonicalBytes() !=
+          absent.canonicalBytes() ||
+      llvm::any_of(adoptedPreInfeasibilityProof.generateRecords(),
+                   [](const InvocationGenerateRecord &record) {
+                     return record.invocation.infeasibilityProof.has_value();
+                   }))
+    fail("schema 1.5 import did not derive absent infeasibility proofs");
+  std::vector<std::uint8_t> preCampaignAdmission(preInfeasibilityProof.begin(),
+                                                 preInfeasibilityProof.end());
   if (preCampaignAdmission.size() < encodedAbsentCampaignAdmissionWidth)
     fail("current absent manifest lacks its campaign disposition field");
   preCampaignAdmission.resize(preCampaignAdmission.size() -
                               encodedAbsentCampaignAdmissionWidth);
   writeU32(preCampaignAdmission, minorOffset, 4);
-  InvocationManifest adoptedPreCampaignAdmission = take(
-      adoptInvocationManifest(preCampaignAdmission, fixture.config, store));
+  InvocationManifest adoptedPreCampaignAdmission = take(adoptInvocationManifest(
+      preCampaignAdmission, fixture.config, store, blobs));
   if (adoptedPreCampaignAdmission.canonicalBytes() != absent.canonicalBytes() ||
       adoptedPreCampaignAdmission.campaignAdmissionFailure())
     fail("schema 1.4 import did not derive an absent campaign disposition");
@@ -562,8 +600,8 @@ void testOperationalObservationCompatibility(const ArtifactStore &store,
   preExternalToolWork.resize(preExternalToolWork.size() -
                              encodedEmptyExternalToolWorkWidth);
   writeU32(preExternalToolWork, minorOffset, 3);
-  InvocationManifest adoptedPreExternalToolWork =
-      take(adoptInvocationManifest(preExternalToolWork, fixture.config, store));
+  InvocationManifest adoptedPreExternalToolWork = take(adoptInvocationManifest(
+      preExternalToolWork, fixture.config, store, blobs));
   if (adoptedPreExternalToolWork.canonicalBytes() != absent.canonicalBytes() ||
       !adoptedPreExternalToolWork.externalToolWork().planNodes().empty())
     fail("schema 1.3 import did not derive an empty external-tool ledger");
@@ -574,7 +612,7 @@ void testOperationalObservationCompatibility(const ArtifactStore &store,
   legacy.resize(legacy.size() - 4);
   writeU32(legacy, minorOffset, 0);
   InvocationManifest adoptedLegacy =
-      take(adoptInvocationManifest(legacy, fixture.config, store));
+      take(adoptInvocationManifest(legacy, fixture.config, store, blobs));
   if (adoptedLegacy.canonicalBytes() != absent.canonicalBytes() ||
       adoptedLegacy.operationalObservations())
     fail("schema 1.0 import did not produce the current canonical output");
@@ -582,11 +620,11 @@ void testOperationalObservationCompatibility(const ArtifactStore &store,
   InvocationManifest resumedAbsent = take(InvocationManifest::get(
       makeClosure(fixture, store, {fixture.source}), 9,
       InvocationOccurrenceRef{absent.occurrence().runKey, 8}, fixture.config,
-      fixture.records, outcome, store));
+      fixture.records, outcome, store, blobs));
   InvocationManifest resumedPresent = take(InvocationManifest::get(
       makeClosure(fixture, store, {fixture.source}), 9,
       InvocationOccurrenceRef{absent.occurrence().runKey, 8}, fixture.config,
-      fixture.records, outcome, store, operationalObservations()));
+      fixture.records, outcome, store, blobs, operationalObservations()));
   if (resumedAbsent.occurrence() != resumedPresent.occurrence() ||
       resumedAbsent.resumedFrom() != resumedPresent.resumedFrom())
     fail("operational observations changed resume provenance");
@@ -598,11 +636,12 @@ void testExternalToolWorkRoundTrip(const ArtifactStore &store,
   const InvocationControllerOutcome outcome = InvocationCompletedSelection{
       {fixture.selected}, {fixture.preexistingEvidence}};
   const InvocationExternalToolWorkLedger work = externalToolWork();
-  InvocationManifest manifest = take(InvocationManifest::get(
-      makeClosure(fixture, store, {fixture.source}), 11, std::nullopt,
-      fixture.config, fixture.records, outcome, store, std::nullopt, work));
+  InvocationManifest manifest = take(
+      InvocationManifest::get(makeClosure(fixture, store, {fixture.source}), 11,
+                              std::nullopt, fixture.config, fixture.records,
+                              outcome, store, blobs, std::nullopt, work));
   InvocationManifest adopted = take(adoptInvocationManifest(
-      manifest.canonicalBytes(), fixture.config, store));
+      manifest.canonicalBytes(), fixture.config, store, blobs));
   if (manifest.externalToolWork() != work ||
       adopted.externalToolWork() != work ||
       adopted.canonicalBytes() != manifest.canonicalBytes())
@@ -610,16 +649,19 @@ void testExternalToolWorkRoundTrip(const ArtifactStore &store,
 
   constexpr std::size_t encodedLedgerWidth =
       2 * encodedExternalToolWorkWidth + 2 * sizeof(std::uint64_t);
+  const std::size_t proofWidth =
+      encodedCompletedGenerateOutcomeWidth(fixture.records);
   if (manifest.canonicalBytes().size() <
-      encodedLedgerWidth + encodedAbsentCampaignAdmissionWidth)
+      encodedLedgerWidth + encodedAbsentCampaignAdmissionWidth + proofWidth)
     fail("external-tool work ledger suffix is unexpectedly short");
   std::vector<std::uint8_t> inconsistent(manifest.canonicalBytes().begin(),
                                          manifest.canonicalBytes().end());
-  const std::size_t suffix = inconsistent.size() -
+  const std::size_t suffix = inconsistent.size() - proofWidth -
                              encodedAbsentCampaignAdmissionWidth -
                              encodedLedgerWidth;
   writeU64(inconsistent, suffix, 3);
-  auto rejected = adoptInvocationManifest(inconsistent, fixture.config, store);
+  auto rejected =
+      adoptInvocationManifest(inconsistent, fixture.config, store, blobs);
   if (rejected)
     fail("manifest importer accepted an external-tool total unlike its rows");
   requireErrorContains(rejected.takeError(), "differs from plan-node rows");
@@ -641,7 +683,7 @@ void testExternalToolWorkRoundTrip(const ArtifactStore &store,
   auto unknown =
       InvocationManifest::get(makeClosure(fixture, store, {fixture.source}), 12,
                               std::nullopt, fixture.config, fixture.records,
-                              outcome, store, std::nullopt, unknownWork);
+                              outcome, store, blobs, std::nullopt, unknownWork);
   if (unknown)
     fail("manifest accepted external-tool work for an unknown plan node");
   requireErrorContains(unknown.takeError(), "unknown plan node");
@@ -655,10 +697,10 @@ void testCampaignAdmissionFailureRoundTrip(const ArtifactStore &store,
       fixture.config, fixture.records,
       InvocationCompletedSelection{{fixture.selected},
                                    {fixture.preexistingEvidence}},
-      store, std::nullopt, std::nullopt,
+      store, blobs, std::nullopt, std::nullopt,
       CampaignAdmissionFailureReason::CampaignActiveWallTimeLimit));
   InvocationManifest adopted = take(adoptInvocationManifest(
-      manifest.canonicalBytes(), fixture.config, store));
+      manifest.canonicalBytes(), fixture.config, store, blobs));
   if (adopted.campaignAdmissionFailure() !=
           CampaignAdmissionFailureReason::CampaignActiveWallTimeLimit ||
       adopted.canonicalBytes() != manifest.canonicalBytes())
@@ -666,9 +708,12 @@ void testCampaignAdmissionFailureRoundTrip(const ArtifactStore &store,
 
   std::vector<std::uint8_t> unknown(manifest.canonicalBytes().begin(),
                                     manifest.canonicalBytes().end());
-  writeU32(unknown, unknown.size() - sizeof(std::uint32_t),
+  const std::size_t proofWidth =
+      encodedCompletedGenerateOutcomeWidth(fixture.records);
+  writeU32(unknown, unknown.size() - proofWidth - sizeof(std::uint32_t),
            std::numeric_limits<std::uint32_t>::max());
-  auto rejected = adoptInvocationManifest(unknown, fixture.config, store);
+  auto rejected =
+      adoptInvocationManifest(unknown, fixture.config, store, blobs);
   if (rejected)
     fail("manifest importer accepted an unknown campaign admission failure");
   requireErrorContains(rejected.takeError(),
@@ -682,21 +727,23 @@ void testOperationalObservationRejections(const ArtifactStore &store,
       {fixture.selected}, {fixture.preexistingEvidence}};
   InvocationManifest valid = take(InvocationManifest::get(
       makeClosure(fixture, store, {fixture.source}), 1, std::nullopt,
-      fixture.config, fixture.records, outcome, store,
+      fixture.config, fixture.records, outcome, store, blobs,
       operationalObservations({{0, 7, 11}, {1, 13, 17}})));
   constexpr std::size_t observationSuffixWidth = 4 + 5 * 8 + 8 + 2 * 24;
+  const std::size_t proofWidth =
+      encodedCompletedGenerateOutcomeWidth(fixture.records);
   if (valid.canonicalBytes().size() <
       observationSuffixWidth + encodedEmptyExternalToolWorkWidth +
-          encodedAbsentCampaignAdmissionWidth)
+          encodedAbsentCampaignAdmissionWidth + proofWidth)
     fail("schema 1.1 observation suffix is unexpectedly short");
-  const std::size_t suffix = valid.canonicalBytes().size() -
+  const std::size_t suffix = valid.canonicalBytes().size() - proofWidth -
                              encodedAbsentCampaignAdmissionWidth -
                              encodedEmptyExternalToolWorkWidth -
                              observationSuffixWidth;
 
   auto expectRejected = [&](std::vector<std::uint8_t> bytes,
                             llvm::StringRef needle) {
-    auto result = adoptInvocationManifest(bytes, fixture.config, store);
+    auto result = adoptInvocationManifest(bytes, fixture.config, store, blobs);
     if (result)
       fail("manifest importer accepted invalid operational observations");
     requireErrorContains(result.takeError(), needle);
@@ -735,7 +782,8 @@ void testOperationalObservationRejections(const ArtifactStore &store,
 
   std::vector<std::uint8_t> partial(valid.canonicalBytes().begin(),
                                     valid.canonicalBytes().end());
-  partial.resize(partial.size() - encodedAbsentCampaignAdmissionWidth -
+  partial.resize(partial.size() - proofWidth -
+                 encodedAbsentCampaignAdmissionWidth -
                  encodedEmptyExternalToolWorkWidth);
   const std::size_t minorOffset =
       8 + InvocationManifest::schemaIdentity.size() + 4;
@@ -751,13 +799,13 @@ void testStrictFailures(const ArtifactStore &store, const BlobStore &blobs) {
       std::move(closure), 1, std::nullopt, fixture.config, fixture.records,
       InvocationCompletedSelection{{fixture.selected},
                                    {fixture.preexistingEvidence}},
-      store));
+      store, blobs));
 
   std::vector<std::uint8_t> trailing(manifest.canonicalBytes().begin(),
                                      manifest.canonicalBytes().end());
   trailing.push_back(0);
   auto trailingResult =
-      adoptInvocationManifest(trailing, fixture.config, store);
+      adoptInvocationManifest(trailing, fixture.config, store, blobs);
   if (trailingResult)
     fail("manifest importer accepted trailing bytes");
   requireErrorContains(trailingResult.takeError(), "canonical");
@@ -765,7 +813,8 @@ void testStrictFailures(const ArtifactStore &store, const BlobStore &blobs) {
   auto emptySelection = InvocationManifest::get(
       makeClosure(fixture, store, {fixture.source}), 2, std::nullopt,
       fixture.config, fixture.records,
-      InvocationCompletedSelection{{}, {fixture.preexistingEvidence}}, store);
+      InvocationCompletedSelection{{}, {fixture.preexistingEvidence}}, store,
+      blobs);
   if (emptySelection)
     fail("CompletedSelection accepted an empty selected set");
   requireErrorContains(emptySelection.takeError(), "nonempty");

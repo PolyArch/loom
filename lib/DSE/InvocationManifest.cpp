@@ -36,6 +36,7 @@ constexpr SchemaVersion operationalInvocationManifestSchemaVersion{1, 1};
 constexpr SchemaVersion typedRunClosureManifestSchemaVersion{1, 2};
 constexpr SchemaVersion preExternalToolWorkManifestSchemaVersion{1, 3};
 constexpr SchemaVersion preCampaignAdmissionManifestSchemaVersion{1, 4};
+constexpr SchemaVersion preInfeasibilityProofManifestSchemaVersion{1, 5};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -362,7 +363,9 @@ llvm::Error validateCampaignAdmissionFailure(
 
 llvm::Error validateGenerateRecord(const InvocationGenerateRecord &record,
                                    const ResolvedGeneratePlanNode &planNode,
-                                   const ArtifactStore &store) {
+                                   const ArtifactStore &store,
+                                   const BlobStore &blobs,
+                                   bool requireTypedOutcome) {
   if (record.invocation.planNodeOrdinal != record.workSummary.planNodeOrdinal)
     return invalid("Generate record and work summary name different plan "
                    "nodes");
@@ -376,17 +379,30 @@ llvm::Error validateGenerateRecord(const InvocationGenerateRecord &record,
   if (llvm::Error error = validateCandidateGeneratorWorkSummary(
           binding.descriptorRef(), record.workSummary.units))
     return error;
+  if (record.invocation.incompleteReason &&
+      record.invocation.infeasibilityProof)
+    return invalid("Generate record has both incomplete and ProvenInfeasible "
+                   "outcomes");
+  if (record.completed && record.invocation.incompleteReason)
+    return invalid("completed Generate record carries an incomplete reason");
+  if (!record.completed && record.invocation.infeasibilityProof)
+    return invalid("incomplete Generate record carries an infeasibility "
+                   "proof");
+  if (requireTypedOutcome && !record.completed &&
+      !record.invocation.incompleteReason)
+    return invalid("incomplete Generate record lacks its typed reason");
   return validateCanonicalCandidateGeneratorInvocation(
       record.invocation.inputBindings, binding,
       record.invocation.outputBindings, record.invocation.lineageEdges,
-      record.completed, store);
+      record.completed, record.invocation.infeasibilityProof, store, blobs);
 }
 
 llvm::Error
 validateGenerateSequence(llvm::ArrayRef<InvocationGenerateRecord> records,
                          const ResolvedDseConfigView &view,
                          const InvocationControllerOutcome &outcome,
-                         const ArtifactStore &store) {
+                         const ArtifactStore &store, const BlobStore &blobs,
+                         bool requireTypedOutcome) {
   const auto *incomplete = std::get_if<InvocationIncomplete>(&outcome);
   if (incomplete && incomplete->planNodeOrdinal >= view.plan().nodes().size())
     return invalid("Incomplete outcome references an unknown plan node");
@@ -423,7 +439,8 @@ validateGenerateSequence(llvm::ArrayRef<InvocationGenerateRecord> records,
     const InvocationGenerateRecord &record = records[recordOrdinal++];
     if (record.invocation.planNodeOrdinal != nodeOrdinal)
       return invalid("Generate records do not follow exact PlanNodeRef order");
-    if (llvm::Error error = validateGenerateRecord(record, *generate, store))
+    if (llvm::Error error = validateGenerateRecord(record, *generate, store,
+                                                   blobs, requireTypedOutcome))
       return error;
   }
   if (recordOrdinal != records.size())
@@ -439,6 +456,13 @@ validateGenerateSequence(llvm::ArrayRef<InvocationGenerateRecord> records,
         (failedRecord == records.end() || failedRecord->completed))
       return invalid("Incomplete Generate node lacks its partial invocation "
                      "record");
+    const auto *generatorReason =
+        std::get_if<CandidateGeneratorIncompleteReason>(&incomplete->reason);
+    if (failedAtGenerate && generatorReason &&
+        failedRecord->invocation.incompleteReason &&
+        *failedRecord->invocation.incompleteReason != *generatorReason)
+      return invalid("Incomplete controller outcome disagrees with its "
+                     "Generate record reason");
   } else if (llvm::any_of(records, [](const InvocationGenerateRecord &record) {
                return !record.completed;
              })) {
@@ -780,8 +804,78 @@ decodeGenerateRecord(Decoder &decoder) {
       *completed == 1,
       GenerateInvocationRecord{*planNode, std::move(*inputs),
                                std::move(*binding), std::move(*outputs),
-                               std::move(*edges), std::nullopt},
+                               std::move(*edges), std::nullopt, std::nullopt},
       std::move(*work)};
+}
+
+enum class GenerateOutcomeTag : std::uint32_t {
+  Completed = 0,
+  Incomplete = 1,
+  ProvenInfeasible = 2,
+};
+
+void encodeGenerateOutcomes(Encoder &encoder,
+                            llvm::ArrayRef<InvocationGenerateRecord> records) {
+  for (const InvocationGenerateRecord &record : records) {
+    if (record.invocation.incompleteReason) {
+      encoder.u32(static_cast<std::uint32_t>(GenerateOutcomeTag::Incomplete));
+      encoder.u32(
+          static_cast<std::uint32_t>(*record.invocation.incompleteReason));
+      continue;
+    }
+    if (!record.invocation.infeasibilityProof) {
+      encoder.u32(static_cast<std::uint32_t>(GenerateOutcomeTag::Completed));
+      continue;
+    }
+    encoder.u32(
+        static_cast<std::uint32_t>(GenerateOutcomeTag::ProvenInfeasible));
+    encoder.u32(record.invocation.infeasibilityProof->kind.ordinal());
+    encoder.bytes(record.invocation.infeasibilityProof->witness);
+  }
+}
+
+llvm::Error decodeGenerateOutcomes(
+    Decoder &decoder, llvm::MutableArrayRef<InvocationGenerateRecord> records) {
+  for (InvocationGenerateRecord &record : records) {
+    auto tag = decoder.u32("Generate outcome tag");
+    if (!tag)
+      return tag.takeError();
+    if (*tag > static_cast<std::uint32_t>(GenerateOutcomeTag::ProvenInfeasible))
+      return invalid("Generate outcome tag is unknown");
+    if (*tag == static_cast<std::uint32_t>(GenerateOutcomeTag::Completed)) {
+      if (!record.completed)
+        return invalid("Generate outcome tag disagrees with its incomplete "
+                       "record");
+      continue;
+    }
+    if (*tag == static_cast<std::uint32_t>(GenerateOutcomeTag::Incomplete)) {
+      if (record.completed)
+        return invalid("Generate outcome tag disagrees with its completed "
+                       "record");
+      auto reason = decoder.u32("Generate incomplete reason");
+      if (!reason)
+        return reason.takeError();
+      if (*reason > static_cast<std::uint32_t>(
+                        CandidateGeneratorIncompleteReason::CancelledOrTimeout))
+        return invalid("Generate incomplete reason is unknown");
+      record.invocation.incompleteReason =
+          static_cast<CandidateGeneratorIncompleteReason>(*reason);
+      continue;
+    }
+    if (!record.completed)
+      return invalid("Generate ProvenInfeasible outcome is marked incomplete");
+    auto kind = decoder.u32("Generate infeasibility proof kind");
+    if (!kind)
+      return kind.takeError();
+    auto witness = decoder.bytes("Generate infeasibility proof witness");
+    if (!witness)
+      return witness.takeError();
+    record.invocation.infeasibilityProof.emplace(
+        CandidateGeneratorInfeasibilityProof{
+            CandidateGeneratorInfeasibilityProofKindRef(*kind),
+            std::move(*witness)});
+  }
+  return llvm::Error::success();
 }
 
 void encodeOutcome(Encoder &encoder,
@@ -916,6 +1010,7 @@ encodeManifest(const InvocationOccurrenceRef &occurrence,
     }
   }
   if (schemaVersion == preCampaignAdmissionManifestSchemaVersion ||
+      schemaVersion == preInfeasibilityProofManifestSchemaVersion ||
       schemaVersion == InvocationManifest::schemaVersion) {
     auto encodeWork = [&](const ExternalToolWorkLedger &work) {
       for (std::uint64_t value : externalToolWorkLedgerCounters(work))
@@ -929,11 +1024,14 @@ encodeManifest(const InvocationOccurrenceRef &occurrence,
       encodeWork(node.work);
     }
   }
-  if (schemaVersion == InvocationManifest::schemaVersion) {
+  if (schemaVersion == preInfeasibilityProofManifestSchemaVersion ||
+      schemaVersion == InvocationManifest::schemaVersion) {
     encoder.u32(campaignAdmissionFailure ? 1 : 0);
     if (campaignAdmissionFailure)
       encoder.u32(static_cast<std::uint32_t>(*campaignAdmissionFailure));
   }
+  if (schemaVersion == InvocationManifest::schemaVersion)
+    encodeGenerateOutcomes(encoder, generateRecords);
   return encoder.take();
 }
 
@@ -1077,19 +1175,21 @@ llvm::Error validateOperationalObservations(
   return llvm::Error::success();
 }
 
-llvm::Error validateManifest(
-    const InvocationOccurrenceRef &occurrence, const DseRunClosure &closure,
-    const std::optional<InvocationOccurrenceRef> &resumedFrom,
-    llvm::ArrayRef<std::uint8_t> dseViewDescriptor,
-    const ComponentViewDigest &dseViewDigest,
-    llvm::ArrayRef<InvocationGenerateRecord> generateRecords,
-    const InvocationControllerOutcome &outcome,
-    const std::optional<InvocationOperationalObservations>
-        &operationalObservations,
-    const InvocationExternalToolWorkLedger &externalToolWork,
-    const std::optional<CampaignAdmissionFailureReason>
-        &campaignAdmissionFailure,
-    const ResolvedDseConfigView &view, const ArtifactStore &store) {
+llvm::Error
+validateManifest(const InvocationOccurrenceRef &occurrence,
+                 const DseRunClosure &closure,
+                 const std::optional<InvocationOccurrenceRef> &resumedFrom,
+                 llvm::ArrayRef<std::uint8_t> dseViewDescriptor,
+                 const ComponentViewDigest &dseViewDigest,
+                 llvm::ArrayRef<InvocationGenerateRecord> generateRecords,
+                 const InvocationControllerOutcome &outcome,
+                 const std::optional<InvocationOperationalObservations>
+                     &operationalObservations,
+                 const InvocationExternalToolWorkLedger &externalToolWork,
+                 const std::optional<CampaignAdmissionFailureReason>
+                     &campaignAdmissionFailure,
+                 const ResolvedDseConfigView &view, const ArtifactStore &store,
+                 const BlobStore &blobs, bool requireTypedGenerateOutcomes) {
   if (occurrence.runKey != closure.runKey())
     return invalid("occurrence run key disagrees with its semantic closure");
   if (resumedFrom &&
@@ -1102,7 +1202,8 @@ llvm::Error validateManifest(
     return invalid("resolved DSE component view verification record does not "
                    "match the exact ResolvedConfig");
   if (llvm::Error error =
-          validateGenerateSequence(generateRecords, view, outcome, store))
+          validateGenerateSequence(generateRecords, view, outcome, store, blobs,
+                                   requireTypedGenerateOutcomes))
     return error;
   if (llvm::Error error =
           validateOutcome(outcome, generateRecords, closure, view, store))
@@ -1274,6 +1375,7 @@ llvm::Expected<InvocationManifest> InvocationManifest::get(
     const ResolvedConfig &resolvedConfig,
     const DsePlanGenerateInvocationRecords &generateRecords,
     InvocationControllerOutcome outcome, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore,
     std::optional<InvocationOperationalObservations> operationalObservations,
     std::optional<InvocationExternalToolWorkLedger> externalToolWork,
     std::optional<CampaignAdmissionFailureReason> campaignAdmissionFailure) {
@@ -1300,7 +1402,8 @@ llvm::Expected<InvocationManifest> InvocationManifest::get(
   if (llvm::Error error = validateManifest(
           occurrence, closure, resumedFrom, view->schemaDescriptorBytes(),
           view->digest(), *flattened, outcome, operationalObservations,
-          *externalToolWork, campaignAdmissionFailure, *view, artifactStore))
+          *externalToolWork, campaignAdmissionFailure, *view, artifactStore,
+          blobStore, true))
     return std::move(error);
   std::vector<std::uint8_t> canonical = encodeManifest(
       occurrence, closure, resumedFrom, view->schemaDescriptorBytes(),
@@ -1317,7 +1420,8 @@ llvm::Expected<InvocationManifest> InvocationManifest::get(
 llvm::Expected<InvocationManifest>
 adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
                         const ResolvedConfig &resolvedConfig,
-                        const ArtifactStore &artifactStore) {
+                        const ArtifactStore &artifactStore,
+                        const BlobStore &blobStore) {
   Decoder decoder(canonicalBytes);
   auto schema = decoder.text("InvocationManifest schema identity");
   if (!schema)
@@ -1335,6 +1439,7 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
        sourceSchemaVersion != typedRunClosureManifestSchemaVersion &&
        sourceSchemaVersion != preExternalToolWorkManifestSchemaVersion &&
        sourceSchemaVersion != preCampaignAdmissionManifestSchemaVersion &&
+       sourceSchemaVersion != preInfeasibilityProofManifestSchemaVersion &&
        sourceSchemaVersion != InvocationManifest::schemaVersion))
     return invalid("unsupported InvocationManifest schema");
 
@@ -1408,6 +1513,7 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
   InvocationExternalToolWorkLedger externalToolWork =
       std::move(*emptyExternalToolWork);
   if (sourceSchemaVersion == preCampaignAdmissionManifestSchemaVersion ||
+      sourceSchemaVersion == preInfeasibilityProofManifestSchemaVersion ||
       sourceSchemaVersion == InvocationManifest::schemaVersion) {
     auto decodedExternalToolWork =
         decodeInvocationExternalToolWorkLedger(decoder);
@@ -1416,13 +1522,17 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
     externalToolWork = std::move(*decodedExternalToolWork);
   }
   std::optional<CampaignAdmissionFailureReason> campaignAdmissionFailure;
-  if (sourceSchemaVersion == InvocationManifest::schemaVersion) {
+  if (sourceSchemaVersion == preInfeasibilityProofManifestSchemaVersion ||
+      sourceSchemaVersion == InvocationManifest::schemaVersion) {
     auto decodedCampaignAdmissionFailure =
         decodeCampaignAdmissionFailure(decoder);
     if (!decodedCampaignAdmissionFailure)
       return decodedCampaignAdmissionFailure.takeError();
     campaignAdmissionFailure = std::move(*decodedCampaignAdmissionFailure);
   }
+  if (sourceSchemaVersion == InvocationManifest::schemaVersion)
+    if (llvm::Error error = decodeGenerateOutcomes(decoder, records))
+      return std::move(error);
   if (!decoder.atEnd())
     return invalid("canonical InvocationManifest has trailing bytes");
 
@@ -1445,7 +1555,8 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
   if (llvm::Error error = validateManifest(
           occurrence, *closure, resumedFrom, *dseViewDescriptor, *dseViewDigest,
           records, *outcome, operationalObservations, externalToolWork,
-          campaignAdmissionFailure, *view, artifactStore))
+          campaignAdmissionFailure, *view, artifactStore, blobStore,
+          sourceSchemaVersion == InvocationManifest::schemaVersion))
     return std::move(error);
   std::vector<std::uint8_t> sourceCanonical = encodeManifest(
       occurrence, *closure, resumedFrom, *dseViewDescriptor, *dseViewDigest,
@@ -1453,8 +1564,14 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
       campaignAdmissionFailure, sourceSchemaVersion);
   if (llvm::ArrayRef<std::uint8_t>(sourceCanonical) != canonicalBytes)
     return invalid("InvocationManifest bytes are not canonical");
+  const bool hasLegacyUntypedIncomplete =
+      sourceSchemaVersion != InvocationManifest::schemaVersion &&
+      llvm::any_of(records, [](const InvocationGenerateRecord &record) {
+        return !record.completed && !record.invocation.incompleteReason;
+      });
   std::vector<std::uint8_t> currentCanonical =
-      sourceSchemaVersion == InvocationManifest::schemaVersion
+      sourceSchemaVersion == InvocationManifest::schemaVersion ||
+              hasLegacyUntypedIncomplete
           ? std::move(sourceCanonical)
           : encodeManifest(occurrence, *closure, resumedFrom,
                            *dseViewDescriptor, *dseViewDigest, records,
@@ -1503,7 +1620,7 @@ llvm::Expected<InvocationManifestReference> publishInvocationManifest(
       *configIdentity != manifest.closure().resolvedConfigIdentity())
     return invalid("manifest names a different ResolvedConfig");
   auto adopted = adoptInvocationManifest(manifest.canonicalBytes(),
-                                         resolvedConfig, artifacts);
+                                         resolvedConfig, artifacts, blobs);
   if (!adopted)
     return adopted.takeError();
   auto blob = blobs.put(manifest.canonicalBytes());
@@ -1527,7 +1644,8 @@ importInvocationManifest(const InvocationManifestReference &reference,
   auto canonical = blobs.get(reference.blob());
   if (!canonical)
     return canonical.takeError();
-  auto manifest = adoptInvocationManifest(*canonical, *config, artifacts);
+  auto manifest =
+      adoptInvocationManifest(*canonical, *config, artifacts, blobs);
   if (!manifest)
     return manifest.takeError();
   if (manifest->occurrence() != reference.occurrence())
@@ -1594,7 +1712,7 @@ llvm::Expected<InvocationManifestReference> finalizeDsePlanInvocation(
   auto manifest = InvocationManifest::get(
       std::move(closure), occurrence->first.occurrenceOrdinal,
       std::move(occurrence->second), resolvedConfig, generateRecords,
-      std::move(*outcome), artifacts, std::nullopt,
+      std::move(*outcome), artifacts, blobs, std::nullopt,
       std::move(*externalToolWork), campaignAdmissionFailure);
   if (!manifest)
     return releaseWith(manifest.takeError());

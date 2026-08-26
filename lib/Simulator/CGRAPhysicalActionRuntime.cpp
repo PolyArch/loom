@@ -20,15 +20,7 @@ llvm::Error invalid(llvm::Twine message) {
 
 llvm::Expected<SpatialEventCoordinate>
 addCycles(const SpatialEventCoordinate &coordinate, std::uint32_t cycles) {
-  const auto ratio = coordinate.referenceCycle;
-  const __uint128_t numerator =
-      static_cast<__uint128_t>(ratio.numerator()) +
-      static_cast<__uint128_t>(cycles) * ratio.denominator();
-  if (numerator > std::numeric_limits<std::uint64_t>::max())
-    return llvm::createStringError(std::errc::value_too_large,
-                                   "CGRA event coordinate overflows u64");
-  auto advanced = ::loom::evaluation::ExactRatio::get(
-      static_cast<std::uint64_t>(numerator), ratio.denominator());
+  auto advanced = coordinate.referenceCycle.addInteger(cycles);
   if (!advanced)
     return advanced.takeError();
   return SpatialEventCoordinate{*advanced, coordinate.delta};
@@ -96,7 +88,7 @@ CgraPhysicalActionRuntime::request(std::uint64_t actionOrdinal,
   return std::move(requested->front());
 }
 
-llvm::Expected<std::vector<CgraPhysicalLifecycleEvent>>
+llvm::Expected<llvm::SmallVector<CgraPhysicalLifecycleEvent, 8>>
 CgraPhysicalActionRuntime::requestBatch(
     llvm::ArrayRef<CgraPhysicalActionRequest> requests,
     SpatialEventCoordinate coordinate) {
@@ -104,7 +96,7 @@ CgraPhysicalActionRuntime::requestBatch(
       compareSpatialEventCoordinates(coordinate, *lastCoordinate_) < 0)
     return invalid("CGRA physical request precedes the execution calendar");
   if (requests.empty())
-    return std::vector<CgraPhysicalLifecycleEvent>{};
+    return llvm::SmallVector<CgraPhysicalLifecycleEvent, 8>{};
   if (requests.size() >
       std::numeric_limits<std::uint64_t>::max() - activeActionCount_)
     return invalid("CGRA active physical action count exceeds u64");
@@ -117,16 +109,16 @@ CgraPhysicalActionRuntime::requestBatch(
            (std::numeric_limits<std::uint64_t>::max() >> 2) - actions_.size()))
     return invalid("CGRA physical action slot exceeds event payload domain");
 
-  llvm::DenseSet<std::pair<std::uint64_t, std::uint64_t>> unique;
-  unique.reserve(requests.size());
-  std::vector<SpatialEventCoordinate> acquisitions;
+  llvm::SmallDenseSet<std::pair<std::uint64_t, std::uint64_t>, 8> unique;
+  llvm::SmallVector<SpatialEventCoordinate, 8> acquisitions;
   acquisitions.reserve(requests.size());
   for (const CgraPhysicalActionRequest &request : requests) {
     if (request.actionOrdinal >= uses_.size())
       return invalid("CGRA physical request names an unknown action");
     const auto key =
         std::make_pair(request.actionOrdinal, request.occurrenceOrdinal);
-    if (activeActions_.contains(key) || !unique.insert(key).second)
+    if (activeActions_.contains(key) ||
+        (requests.size() != 1 && !unique.insert(key).second))
       return invalid("CGRA physical action occurrence is already active");
     auto acquire =
         addCycles(coordinate, uses_[request.actionOrdinal].acquireRank);
@@ -135,7 +127,7 @@ CgraPhysicalActionRuntime::requestBatch(
     acquisitions.push_back(std::move(*acquire));
   }
 
-  std::vector<CgraPhysicalLifecycleEvent> result;
+  llvm::SmallVector<CgraPhysicalLifecycleEvent, 8> result;
   result.reserve(requests.size());
   for (auto [request, acquire] : llvm::zip(requests, acquisitions)) {
     std::uint64_t slot = 0;
@@ -170,13 +162,14 @@ CgraPhysicalActionRuntime::requestBatch(
                       request.actionOrdinal, request.occurrenceOrdinal,
                       use.acquireEventOrdinal, coordinate});
   }
-  llvm::sort(result, [](const CgraPhysicalLifecycleEvent &lhs,
-                        const CgraPhysicalLifecycleEvent &rhs) {
-    return std::tie(lhs.actionOrdinal, lhs.occurrenceOrdinal,
-                    lhs.ownerEventOrdinal) < std::tie(rhs.actionOrdinal,
-                                                      rhs.occurrenceOrdinal,
-                                                      rhs.ownerEventOrdinal);
-  });
+  if (result.size() > 1)
+    llvm::sort(result, [](const CgraPhysicalLifecycleEvent &lhs,
+                          const CgraPhysicalLifecycleEvent &rhs) {
+      return std::tie(lhs.actionOrdinal, lhs.occurrenceOrdinal,
+                      lhs.ownerEventOrdinal) <
+             std::tie(rhs.actionOrdinal, rhs.occurrenceOrdinal,
+                      rhs.ownerEventOrdinal);
+    });
   return result;
 }
 
@@ -228,7 +221,7 @@ CgraPhysicalActionRuntime::advance() {
     InternalKind kind = InternalKind::Acquire;
     std::uint32_t ownerEventOrdinal = 0;
   };
-  std::vector<Due> due;
+  llvm::SmallVector<Due, 8> due;
   due.reserve(internal.events.size());
   for (const CgraScheduledEvent &event : internal.events) {
     auto [slot, kind] = decodePayload(event.payload);
@@ -242,8 +235,8 @@ CgraPhysicalActionRuntime::advance() {
            std::make_tuple(rhs.kind, rhs.slot, rhs.ownerEventOrdinal);
   });
 
-  std::vector<CgraResourceRequest> requests;
-  std::vector<std::uint64_t> requestSlots;
+  llvm::SmallVector<CgraResourceRequest, 8> requests;
+  llvm::SmallVector<std::uint64_t, 8> requestSlots;
   bool releasedCapacity = false;
   for (const Due &event : due) {
     Action &action = actions_[event.slot];
@@ -321,9 +314,9 @@ CgraPhysicalActionRuntime::advance() {
     llvm::SmallVector<CgraResourceGrant, 8> grants;
     if (llvm::Error error = resources_.grant(requests, grants))
       return std::move(error);
-    llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, CgraClaimEnvelope>
+    llvm::SmallDenseMap<std::pair<std::uint64_t, std::uint64_t>,
+                        CgraClaimEnvelope, 8>
         granted;
-    granted.reserve(grants.size());
     for (const CgraResourceGrant &grant : grants)
       granted.try_emplace(
           std::make_pair(grant.selectedUseOrdinal, grant.occurrenceOrdinal),

@@ -99,6 +99,16 @@ bool equalUnsignedValues(llvm::ArrayRef<llvm::APInt> lhs,
                      });
 }
 
+bool equalOptionalUnsignedValues(
+    llvm::ArrayRef<std::optional<llvm::APInt>> lhs,
+    llvm::ArrayRef<std::optional<llvm::APInt>> rhs) {
+  return lhs.size() == rhs.size() &&
+         llvm::equal(lhs, rhs, [](const auto &left, const auto &right) {
+           return left.has_value() == right.has_value() &&
+                  (!left || compareUnsigned(*left, *right) == 0);
+         });
+}
+
 bool containsValue(llvm::ArrayRef<llvm::APInt> values,
                    const llvm::APInt &value) {
   const auto found = llvm::lower_bound(values, value, unsignedLess);
@@ -1551,7 +1561,8 @@ llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
       const bool routed =
           std::binary_search(transaction.routedNets.begin(),
                              transaction.routedNets.end(), logicalNet);
-      if (!routed && !llvm::equal(storage_->nets[logicalNet].values, values))
+      if (!routed && !equalOptionalUnsignedValues(
+                         storage_->nets[logicalNet].values, values))
         journalValueOnly(logicalNet);
       if (routed ||
           std::binary_search(transaction.valueOnlyNets.begin(),

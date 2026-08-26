@@ -82,6 +82,8 @@ void emitProgressStatistics(const SpatialProgressStatistics &statistics) {
         fields["incremental_update_count"] = statistics.incrementalUpdateCount;
         fields["incremental_update_wall_time_nanoseconds"] =
             statistics.incrementalUpdateWallTimeNanoseconds;
+        fields["cached_verification_count"] =
+            statistics.cachedVerificationCount;
         fields["cold_verification_count"] = statistics.coldVerificationCount;
         fields["cold_verification_wall_time_nanoseconds"] =
             statistics.coldVerificationWallTimeNanoseconds;
@@ -546,13 +548,120 @@ llvm::Error SpatialProgressState::rebuildFiniteBufferConflictWitness(
 }
 
 llvm::Error
-SpatialProgressState::verify(const SpatialCandidateState &candidate) const {
-  ProgressTimer verificationTimer(
-      statisticsEnabled_ ? &statistics_.coldVerificationCount : nullptr,
-      statisticsEnabled_ ? &statistics_.coldVerificationWallTimeNanoseconds
-                         : nullptr);
+SpatialProgressState::verifyCachedState(
+    const SpatialCandidateState &candidate) const {
+  saturatingAdd(statistics_.cachedVerificationCount, 1);
   if (!problem_ || &candidate.problem() != problem_)
     return invalid("progress state is bound to a foreign candidate");
+  const std::size_t expectedLogicalNetCount =
+      problem_->transfers().logicalNets().size();
+  const std::size_t expectedOwnerCount =
+      problem_->progressIndex().finiteBufferOwners().size();
+  const std::size_t expectedLogicalNetWordCount =
+      expectedLogicalNetCount / 64 + (expectedLogicalNetCount % 64 != 0);
+  if (expectedOwnerCount != 0 &&
+      expectedLogicalNetWordCount >
+          std::numeric_limits<std::size_t>::max() / expectedOwnerCount)
+    return invalid("finite-buffer selected-net bitset exceeds native size_t");
+  const std::size_t expectedOwnerBitCount =
+      expectedOwnerCount * expectedLogicalNetWordCount;
+  const std::size_t expectedConflictWordCount =
+      expectedOwnerCount / 64 + (expectedOwnerCount % 64 != 0);
+  if (logicalNetCount_ != expectedLogicalNetCount ||
+      ownerCount_ != expectedOwnerCount ||
+      logicalNetWordCount_ != expectedLogicalNetWordCount ||
+      netOwnerRefcounts_.size() != logicalNetCount_ ||
+      ownerLogicalNetCounts_.size() != ownerCount_ ||
+      ownerLogicalNetBits_.size() != expectedOwnerBitCount ||
+      conflictingOwnerBits_.size() != expectedConflictWordCount ||
+      netRouteDependencyViolationCounts_.size() != logicalNetCount_)
+    return invalid("progress state dimensions disagree with the freeze");
+
+  std::uint64_t refcountPairCount = 0;
+  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
+    for (const auto &[owner, refcount] : netOwnerRefcounts_[logicalNet]) {
+      if (owner >= ownerCount_ || refcount == 0)
+        return invalid("finite-buffer owner refcount is invalid");
+      const std::uint64_t bits =
+          ownerLogicalNetBits_[static_cast<std::size_t>(owner) *
+                                   logicalNetWordCount_ +
+                               logicalNet / 64];
+      if ((bits & (std::uint64_t{1} << (logicalNet % 64))) == 0)
+        return invalid("finite-buffer owner refcount has no selected-net bit");
+      if (refcountPairCount == std::numeric_limits<std::uint64_t>::max())
+        return invalid("finite-buffer owner pair count exceeds u64");
+      ++refcountPairCount;
+    }
+  }
+
+  std::uint64_t bitPairCount = 0;
+  std::uint64_t conflictCount = 0;
+  for (PnrIndex owner = 0; owner < ownerCount_; ++owner) {
+    std::uint64_t ownerNetCount = 0;
+    for (std::size_t word = 0; word < logicalNetWordCount_; ++word) {
+      const std::uint64_t bits =
+          ownerLogicalNetBits_[static_cast<std::size_t>(owner) *
+                                   logicalNetWordCount_ +
+                               word];
+      if (word + 1 == logicalNetWordCount_ && logicalNetCount_ % 64 != 0) {
+        const std::uint64_t validMask =
+            (std::uint64_t{1} << (logicalNetCount_ % 64)) - 1;
+        if ((bits & ~validMask) != 0)
+          return invalid("finite-buffer selected-net bitset has excess bits");
+      }
+      const std::uint64_t selected = llvm::popcount(bits);
+      if (selected > std::numeric_limits<std::uint64_t>::max() - ownerNetCount)
+        return invalid("finite-buffer owner net count exceeds u64");
+      ownerNetCount += selected;
+    }
+    if (ownerNetCount != ownerLogicalNetCounts_[owner])
+      return invalid("finite-buffer owner bitset disagrees with its net count");
+    if (ownerNetCount >
+        std::numeric_limits<std::uint64_t>::max() - bitPairCount)
+      return invalid("finite-buffer owner pair count exceeds u64");
+    bitPairCount += ownerNetCount;
+
+    const bool conflictBit =
+        (conflictingOwnerBits_[owner / 64] &
+         (std::uint64_t{1} << (owner % 64))) != 0;
+    const bool expectedConflict = ownerNetCount > 1;
+    if (conflictBit != expectedConflict)
+      return invalid("finite-buffer conflict bit is stale");
+    conflictCount += expectedConflict;
+  }
+  if (ownerCount_ % 64 != 0 && !conflictingOwnerBits_.empty()) {
+    const std::uint64_t validMask =
+        (std::uint64_t{1} << (ownerCount_ % 64)) - 1;
+    if ((conflictingOwnerBits_.back() & ~validMask) != 0)
+      return invalid("finite-buffer conflict bitset has excess bits");
+  }
+  if (refcountPairCount != bitPairCount)
+    return invalid("finite-buffer selected-net bits have no refcount owner");
+  if (conflictCount != sharedFiniteBufferConflictCount_)
+    return invalid("finite-buffer conflict total is stale");
+
+  std::uint64_t dependencyCount = 0;
+  for (std::uint64_t count : netRouteDependencyViolationCounts_) {
+    if (count > std::numeric_limits<std::uint64_t>::max() - dependencyCount)
+      return invalid("route dependency violation total exceeds u64");
+    dependencyCount += count;
+  }
+  if (dependencyCount != routeDependencyViolationCount_)
+    return invalid("route dependency violation total is stale");
+  if (routeDependencyViolationCount_ >
+      std::numeric_limits<std::uint64_t>::max() -
+          sharedFiniteBufferConflictCount_)
+    return invalid("hard-progress total exceeds u64");
+  return llvm::Error::success();
+}
+
+llvm::Error
+SpatialProgressState::verify(const SpatialCandidateState &candidate) const {
+  if (llvm::Error error = verifyCachedState(candidate))
+    return error;
+  ProgressTimer verificationTimer(
+      &statistics_.coldVerificationCount,
+      &statistics_.coldVerificationWallTimeNanoseconds);
   auto expected = create(candidate);
   if (!expected)
     return expected.takeError();
@@ -573,10 +682,8 @@ SpatialProgressState::verify(const SpatialCandidateState &candidate) const {
     return invalid("incremental projection diverges from cold reconstruction");
 
   llvm::Expected<std::uint64_t> cold = [&] {
-    ProgressTimer scanTimer(
-        statisticsEnabled_ ? &statistics_.coldProgressScanCount : nullptr,
-        statisticsEnabled_ ? &statistics_.coldProgressScanWallTimeNanoseconds
-                           : nullptr);
+    ProgressTimer scanTimer(&statistics_.coldProgressScanCount,
+                            &statistics_.coldProgressScanWallTimeNanoseconds);
     return spatialCandidateClosedWaitCount(candidate);
   }();
   if (!cold)

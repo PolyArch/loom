@@ -365,7 +365,8 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests,
         plan_->selectedUses[request.selectedUseOrdinal];
     pending.push_back({request, use.domainOrdinal, use.requesterPosition});
   }
-  llvm::sort(pending, pendingLess);
+  if (pending.size() > 1)
+    llvm::sort(pending, pendingLess);
   for (std::size_t ordinal = 1; ordinal != pending.size(); ++ordinal)
     if (pending[ordinal - 1].request.selectedUseOrdinal ==
             pending[ordinal].request.selectedUseOrdinal &&
@@ -428,6 +429,13 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests,
   };
 
   grants.reserve(requests.size());
+  if (pending.size() == 1) {
+    const PendingRequest &request = pending.front();
+    if (request.domain == noCgraResourceDomain ||
+        feasible(request.request.selectedUseOrdinal))
+      grants.push_back(acquire(request));
+    return llvm::Error::success();
+  }
   std::size_t first = 0;
   while (first != pending.size()) {
     const std::uint64_t domainOrdinal = pending[first].domain;

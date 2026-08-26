@@ -113,7 +113,8 @@ public:
   operator=(SpatialPathFinderRouterScratch &&) = delete;
   ~SpatialPathFinderRouterScratch() = default;
 
-  llvm::Error prepare(const FrozenSpatialPnrProblem &problem);
+  llvm::Error prepare(const FrozenSpatialPnrProblem &problem,
+                      SpatialPnrWorkLedgerView workLedger = {});
 
   llvm::Expected<SpatialPathFinderClosureResult>
   routeToClosure(SpatialCandidateState &candidate,
@@ -292,6 +293,7 @@ private:
   std::vector<std::pair<PnrIndex, std::uint64_t>> timingRouteNodeWorklist_;
   std::uint64_t projectionEpoch_ = 0;
   std::uint64_t negotiationIterationCount_ = 0;
+  SpatialPnrWorkLedgerView workLedger_;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
 };
 

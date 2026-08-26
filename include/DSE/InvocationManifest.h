@@ -226,7 +226,7 @@ class InvocationManifest final {
 public:
   static constexpr llvm::StringLiteral schemaIdentity =
       "loom.dse.invocation_manifest";
-  static constexpr SchemaVersion schemaVersion{1, 5};
+  static constexpr SchemaVersion schemaVersion{1, 6};
 
   static llvm::Expected<InvocationManifest>
   get(DseRunClosure closure, std::uint64_t occurrenceOrdinal,
@@ -234,6 +234,7 @@ public:
       const ResolvedConfig &resolvedConfig,
       const DsePlanGenerateInvocationRecords &generateRecords,
       InvocationControllerOutcome outcome, const ArtifactStore &artifactStore,
+      const BlobStore &blobStore,
       std::optional<InvocationOperationalObservations> operationalObservations =
           std::nullopt,
       std::optional<InvocationExternalToolWorkLedger> externalToolWork =
@@ -309,13 +310,14 @@ private:
 
   friend llvm::Expected<InvocationManifest>
   adoptInvocationManifest(llvm::ArrayRef<std::uint8_t>, const ResolvedConfig &,
-                          const ArtifactStore &);
+                          const ArtifactStore &, const BlobStore &);
 };
 
 llvm::Expected<InvocationManifest>
 adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
                         const ResolvedConfig &resolvedConfig,
-                        const ArtifactStore &artifactStore);
+                        const ArtifactStore &artifactStore,
+                        const BlobStore &blobStore);
 
 /// Strict content reference to one canonical InvocationManifest. Occurrence
 /// allocation and receipt commit remain owned by ExecutionJournal.

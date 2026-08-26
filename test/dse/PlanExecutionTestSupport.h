@@ -25,14 +25,22 @@ struct PlanExecutionFixture final {
   ArtifactRootReference source;
 };
 
+enum class PlanExecutionProviderOutcomeKind : std::uint8_t {
+  Candidate,
+  ProvenInfeasible,
+  CompletedEmpty,
+};
+
 llvm::Error registerPlanExecutionTestGenerator();
 llvm::Expected<PlanExecutionFixture>
 makePlanExecutionFixture(const ArtifactStore &store, std::size_t nodeCount,
-                         llvm::StringRef producerIdentity);
+                         llvm::StringRef producerIdentity,
+                         bool provenInfeasibleSource = false);
 
 void resetPlanExecutionProviderObservations();
 void requireConcurrentPlanExecutionProviders(std::uint64_t count);
 void requirePlanExecutionProviderStopObservation();
+void setPlanExecutionProviderOutcome(PlanExecutionProviderOutcomeKind outcome);
 bool waitForActivePlanExecutionProvider();
 std::uint64_t planExecutionProviderCalls();
 std::uint64_t maximumConcurrentPlanExecutionProviders();

@@ -204,16 +204,24 @@ add_executable(loom-structured-polyhedral-schedule-test
   StructuredPolyhedralScheduleTest.cpp
 )
 
+target_include_directories(loom-structured-polyhedral-schedule-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Frontend/Compilation
+)
+
 target_link_libraries(loom-structured-polyhedral-schedule-test PRIVATE
   LoomADGBuilder
   LoomCommon
   LoomDSECompilerGenerator
   LoomFrontendCompilation
+  LoomNativeSimulationOracle
+  LoomSimulator
   MLIRAffineDialect
   MLIRArithDialect
   MLIRDataflow
+  MLIRDLTIDialect
   MLIRFuncDialect
   MLIRIR
+  MLIRLLVMDialect
   MLIRLoom
   MLIRMemRefDialect
   MLIRParser

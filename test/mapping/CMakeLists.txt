@@ -16,8 +16,10 @@ add_executable(loom-system-service-route-wire-test
 
 add_library(loom-tech-mapping-artifact-test-support STATIC
   ../TestAllocationProbe.cpp
+  HandshakeProjectionTestSupport.cpp
   SpatialMemoryActionTestSupport.cpp
   SpatialProgressWitnessTestSupport.cpp
+  TemporalComputeFabricTestSupport.cpp
   TechMappingArtifactTest.cpp
   TechMappingCandidateTestSupport.cpp
   SpatialRouteConstraintTestSupport.cpp
@@ -82,10 +84,12 @@ add_executable(loom-spatial-mapping-wire-test
 add_executable(loom-spatial-mapping-artifact-test
   ../TestAllocationProbe.cpp
   CgraAdmissionTestSupport.cpp
+  HandshakeProjectionTestSupport.cpp
   SpatialCandidateSelectionTestSupport.cpp
   SpatialMemoryActionTestSupport.cpp
   SpatialMappingArtifactTest.cpp
   TemporalMappingFabricTestSupport.cpp
+  TemporalComputeFabricTestSupport.cpp
   TemporalPeTagDomainTestSupport.cpp
   TechMappingCandidateTestSupport.cpp
 )

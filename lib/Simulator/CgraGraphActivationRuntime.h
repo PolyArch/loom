@@ -5,6 +5,7 @@
 #include "CgraTransportRuntime.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -16,11 +17,11 @@ namespace loom::sim::detail {
 
 struct CgraGraphActivationFrame final {
   SpatialEventCoordinate coordinate;
-  std::vector<CgraPhysicalLifecycleEvent> physicalEvents;
-  std::vector<CgraActorLifecycleEvent> actorEvents;
-  std::vector<CgraTokenPublication> publications;
-  std::vector<MemoryLinearizedTraceEvent> memoryLinearizations;
-  std::vector<SpatialTraceEvent> physicalTraceEvents;
+  llvm::SmallVector<CgraPhysicalLifecycleEvent, 8> physicalEvents;
+  llvm::SmallVector<CgraActorLifecycleEvent, 4> actorEvents;
+  llvm::SmallVector<CgraTokenPublication, 4> publications;
+  llvm::SmallVector<MemoryLinearizedTraceEvent, 2> memoryLinearizations;
+  llvm::SmallVector<SpatialTraceEvent, 8> physicalTraceEvents;
   std::uint8_t sourceMask = 0;
 };
 
@@ -98,11 +99,11 @@ private:
         transport_(std::move(transport)),
         captureMicroarchitecture_(captureMicroarchitecture) {}
 
-  llvm::Error consumeComputeFrame(CgraComputeLifecycleFrame frame,
+  llvm::Error consumeComputeFrame(CgraComputeLifecycleFrame &&frame,
                                   CgraGraphActivationFrame &result);
-  llvm::Error consumeMemoryFrame(CgraMemoryLifecycleFrame frame,
+  llvm::Error consumeMemoryFrame(CgraMemoryLifecycleFrame &&frame,
                                  CgraGraphActivationFrame &result);
-  llvm::Error consumeTransportFrame(CgraTransportFrame frame,
+  llvm::Error consumeTransportFrame(CgraTransportFrame &&frame,
                                     CgraGraphActivationFrame &result);
   llvm::Error consumeTransportCompletions(
       llvm::ArrayRef<CgraTransportCompletion> completions,

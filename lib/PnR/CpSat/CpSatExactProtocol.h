@@ -4,6 +4,8 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include "PnR/SpatialPnrWorkLedger.h"
+
 #include "ortools/sat/cp_model.pb.h"
 
 #include <cstdint>
@@ -53,7 +55,8 @@ llvm::Expected<CpSatCanonicalResult>
 solveCanonicalCpSat(const operations_research::sat::CpModelProto &model,
                     llvm::ArrayRef<CpSatCanonicalVariable> variables,
                     std::optional<int> objectiveVariable,
-                    std::uint64_t maxSolverCalls, std::int32_t randomSeed);
+                    std::uint64_t maxSolverCalls, std::int32_t randomSeed,
+                    SpatialPnrWorkLedgerView workLedger = {});
 
 /// Proves one complete supplied assignment with a single solver call. The
 /// assignment uses the same typed variable/value order as canonical
@@ -63,8 +66,8 @@ solveFixedCpSatAssignment(const operations_research::sat::CpModelProto &model,
                           llvm::ArrayRef<CpSatCanonicalVariable> variables,
                           llvm::ArrayRef<std::int64_t> assignment,
                           std::optional<int> objectiveVariable,
-                          std::uint64_t maxSolverCalls,
-                          std::int32_t randomSeed);
+                          std::uint64_t maxSolverCalls, std::int32_t randomSeed,
+                          SpatialPnrWorkLedgerView workLedger = {});
 
 } // namespace loom::pnr::detail
 

@@ -22,6 +22,7 @@
 #include "PnR/SpatialNetRouter.h"
 #include "PnR/SpatialPathFinderRouter.h"
 #include "PnR/SpatialPnrProblem.h"
+#include "PnR/SpatialPnrWorkLedger.h"
 #include "PnR/SpatialRouteCostState.h"
 #include "PnR/SpatialTagContinuity.h"
 
@@ -1411,8 +1412,22 @@ void artifactRoundTripAndReferenceValidation() {
     fail("failed whole-net routing did not restore candidate and costs");
   requireSuccess(routedCandidate->verify());
 
+  std::uint64_t plannedEndpointExpansions = 0;
+  std::uint64_t consumedEndpointExpansions = 0;
+  std::uint64_t plannedNegotiationIterations = 0;
+  std::uint64_t consumedNegotiationIterations = 0;
+  std::array<loom::pnr::SpatialPnrWorkCounterRef,
+             loom::pnr::spatialPnrWorkKindCount>
+      workCounters{};
+  workCounters[static_cast<std::size_t>(
+      loom::pnr::SpatialPnrWorkKind::EndpointExpansion)] = {
+      &plannedEndpointExpansions, &consumedEndpointExpansions};
+  workCounters[static_cast<std::size_t>(
+      loom::pnr::SpatialPnrWorkKind::NegotiationIteration)] = {
+      &plannedNegotiationIterations, &consumedNegotiationIterations};
+  const loom::pnr::SpatialPnrWorkLedgerView workLedger(workCounters);
   loom::pnr::SpatialPathFinderRouterScratch negotiatedRouter;
-  requireSuccess(negotiatedRouter.prepare(*frozen));
+  requireSuccess(negotiatedRouter.prepare(*frozen, workLedger));
   if (routedCandidate->unroutedObligationCount() == 0)
     fail("regional PathFinder fixture has no fixed outside violation");
   auto regionalMove = take(routedCandidate->beginMove(routedCandidateScratch));
@@ -1432,6 +1447,10 @@ void artifactRoundTripAndReferenceValidation() {
   if (routedCandidate->totalSelectedTraversalClaim() != routedObjective ||
       !llvm::equal(routedCostState.currentArcCosts(), routedBaselineCosts))
     fail("failed PathFinder iteration did not roll back its complete overlay");
+  if (plannedNegotiationIterations == 0 ||
+      plannedNegotiationIterations != consumedNegotiationIterations ||
+      plannedEndpointExpansions != consumedEndpointExpansions)
+    fail("recoverable PathFinder failure left planned work unconsumed");
   requireSuccess(routedCandidate->verify());
 
   loom::test::exercisePathFinderFixedTerminalCutRejection(

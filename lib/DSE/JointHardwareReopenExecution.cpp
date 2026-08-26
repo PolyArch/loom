@@ -98,71 +98,6 @@ llvm::Error invalid(const llvm::Twine &message) {
       "joint_hardware_reopen_execution_invalid: " + message);
 }
 
-std::vector<ArtifactRootReference>
-mappingRoots(const JointDesignExecution &execution) {
-  std::vector<ArtifactRootReference> roots;
-  for (const JointMappedPair &pair : execution.mappedPairs)
-    roots.insert(roots.end(), pair.systemMappings.begin(),
-                 pair.systemMappings.end());
-  std::sort(roots.begin(), roots.end(), artifactRootReferenceLess);
-  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
-  return roots;
-}
-
-struct RetainedInvocationRoots final {
-  std::vector<ArtifactRootReference> artifacts;
-  std::vector<ArtifactRootReference> evidence;
-};
-
-RetainedInvocationRoots
-retainedInvocationRoots(const DsePlanGenerateInvocationRecords &records,
-                        llvm::ArrayRef<ArtifactRootReference> mappings) {
-  RetainedInvocationRoots retained;
-  retained.artifacts.assign(mappings.begin(), mappings.end());
-  const auto append = [&](llvm::ArrayRef<GenerateInvocationRecord> generated) {
-    for (const GenerateInvocationRecord &record : generated)
-      for (const CandidateGeneratorOutputBinding &binding :
-           record.outputBindings)
-        for (const ArtifactRootReference &root : binding.artifacts) {
-          if (root.schemaIdentity ==
-                  evaluation::EvaluationEvidence::artifactSchema.identity &&
-              root.schemaVersion ==
-                  evaluation::EvaluationEvidence::artifactSchema.version)
-            retained.evidence.push_back(root);
-          else
-            retained.artifacts.push_back(root);
-        }
-  };
-  append(records.completed());
-  append(records.incomplete());
-  const auto canonicalize = [](std::vector<ArtifactRootReference> &roots) {
-    std::sort(roots.begin(), roots.end(), artifactRootReferenceLess);
-    roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
-  };
-  canonicalize(retained.artifacts);
-  canonicalize(retained.evidence);
-  return retained;
-}
-
-InvocationControllerOutcome
-projectInvocationOutcome(const JointDesignExecution &execution,
-                         const DsePlanGenerateInvocationRecords &records) {
-  std::vector<ArtifactRootReference> mappings = mappingRoots(execution);
-  if (const auto *incomplete =
-          std::get_if<IncompleteDsePlanExecution>(&execution.planExecution)) {
-    RetainedInvocationRoots retained =
-        retainedInvocationRoots(records, mappings);
-    return InvocationIncomplete{incomplete->nodeOrdinal(),
-                                incomplete->reason(),
-                                {},
-                                std::move(retained.artifacts),
-                                std::move(retained.evidence)};
-  }
-  if (mappings.empty())
-    return InvocationCompletedNoFeasibleCandidate{};
-  return InvocationCompletedSelection{std::move(mappings), {}};
-}
-
 llvm::Expected<std::optional<ArtifactRootReference>>
 finalizeJointRepairSelection(JointDesignExecution &execution,
                              JointDesignStoppingPolicy stoppingPolicy);
@@ -188,7 +123,7 @@ publishJointPlanInvocationManifest(
   auto manifest = InvocationManifest::get(
       std::move(closure), occurrence->first.occurrenceOrdinal,
       std::move(occurrence->second), config, generateRecords,
-      std::move(outcome), artifacts, std::nullopt,
+      std::move(outcome), artifacts, blobs, std::nullopt,
       std::move(*externalToolWork));
   if (!manifest)
     return releaseWith(manifest.takeError());
@@ -320,10 +255,13 @@ executeJointPlan(const JointDesignExplorationPlan &plan,
     return execution.takeError();
   DsePlanGenerateInvocationRecords records =
       projectDsePlanGenerateInvocationRecords(execution->planExecution);
+  auto outcome =
+      projectDsePlanInvocationOutcome(*configView, execution->planExecution);
+  if (!outcome)
+    return outcome.takeError();
   auto manifest = publishJointPlanInvocationManifest(
-      std::move(*closure), config, records,
-      projectInvocationOutcome(*execution, records), *journal, artifacts,
-      blobs);
+      std::move(*closure), config, records, std::move(*outcome), *journal,
+      artifacts, blobs);
   if (!manifest)
     return manifest.takeError();
   if (llvm::Error error =

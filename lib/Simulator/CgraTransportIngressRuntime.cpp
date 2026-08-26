@@ -76,7 +76,7 @@ std::uint64_t CgraTransportRuntime::allocate(
   return slot;
 }
 
-llvm::Expected<std::vector<CgraPhysicalLifecycleEvent>>
+llvm::Expected<llvm::SmallVector<CgraPhysicalLifecycleEvent, 8>>
 CgraTransportRuntime::requestActions(
     llvm::ArrayRef<PendingActionTransfer> transfers, ActionStage stage,
     const SpatialEventCoordinate &coordinate) {
@@ -181,7 +181,7 @@ CgraTransportRuntime::requestActions(
   }
 
   if (requests.empty())
-    return std::vector<CgraPhysicalLifecycleEvent>{};
+    return llvm::SmallVector<CgraPhysicalLifecycleEvent, 8>{};
   auto requested = physical_->requestBatch(requests, coordinate);
   if (!requested)
     return requested.takeError();
@@ -362,10 +362,12 @@ CgraTransportRuntime::canAcceptGraphIngress(unsigned argumentOrdinal) const {
 
 bool CgraTransportRuntime::actorSourcesAvailable(
     std::uint64_t semanticActorOrdinal) const {
-  for (const auto &[key, binding] : actorSourceBindings_)
-    if (key.first == semanticActorOrdinal &&
-        (binding >= bindings_.size() || bindings_[binding].sourceReserved ||
-         bindings_[binding].active))
+  if (semanticActorOrdinal >= actorSourceBindingOrdinals_.size())
+    return false;
+  for (std::uint64_t binding :
+       actorSourceBindingOrdinals_[semanticActorOrdinal])
+    if (binding >= bindings_.size() || bindings_[binding].sourceReserved ||
+        bindings_[binding].active)
       return false;
   return true;
 }

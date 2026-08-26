@@ -263,7 +263,9 @@ llvm::Error
 validateOutcome(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                 llvm::ArrayRef<CandidateGeneratorOutputBinding> outputs,
                 llvm::ArrayRef<CandidateGeneratorLineageEdge> lineageEdges,
-                bool completed, const ArtifactStore &store) {
+                CandidateGeneratorOutcomeKind outcomeKind,
+                const ArtifactStore &store) {
+  const bool completed = outcomeKind == CandidateGeneratorOutcomeKind::Completed;
   if (inputs.size() != 1 || inputs.front().artifacts.size() != 1 ||
       outputs.size() != OutputSlotCount ||
       outputs[ModuleOutput].slot !=

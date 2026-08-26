@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -27,11 +28,33 @@ from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E40
 SPATIAL_REFERENCE_FLOOR_SECONDS = 0.1
 SYSTEM_BUDGET_MULTIPLIER = 3.0
 HARD_FAILURE_RATIO = 10.0
-REFERENCE_RATE_TARGET_HZ = 100_000.0
+REFERENCE_RATE_TARGET_CYCLES_PER_SECOND = 100_000
+REFERENCE_RATE_TARGET_HZ = float(REFERENCE_RATE_TARGET_CYCLES_PER_SECOND)
 DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS = float(timeout_seconds(Tier.FAST))
 CGRA_SPATIAL_BOOTSTRAP_BUDGET_SECONDS = float(timeout_seconds(Tier.MEDIUM))
 RESERVED_DEVELOPMENT_CPUS = 4
 MAX_OUTER_WORKERS = 120
+CGRA_QUALIFICATION_LIMIT_NANOSECONDS = 45_000_000_000
+CGRA_QUALIFICATION_WARMUP_RUNS = 1
+CGRA_QUALIFICATION_MEASUREMENT_RUNS = 3
+MAX_CANDIDATE_PROOF_KIND = (1 << 32) - 1
+CGRA_GATE_CONFIGURATION = (
+    Path(__file__).resolve().parent / "data" / "cgra-simulation-gate-v1.json"
+)
+CGRA_OPERATOR_GATE_RELATIVE_PATH = "test/data/corpus-operator-gate-v1.jsonl"
+CGRA_OPERATOR_GATE = ROOT / CGRA_OPERATOR_GATE_RELATIVE_PATH
+CGRA_REPRESENTATIVE_WORKLOADS = (
+    "vecadd",
+    "vector_pack",
+    "matmul",
+    "spmm",
+    "gather",
+    "edge_update",
+    "fir_filter",
+    "conv2d",
+    "stencil3d",
+    "attention",
+)
 
 
 def _require_finite_positive(value: float, what: str) -> None:
@@ -207,6 +230,8 @@ class ProcessExecution:
 @dataclass(frozen=True)
 class ExecutionMatrixMeasurement:
     cell: str
+    attempt: str
+    invocation: str
     work_fingerprint: str
     config_fingerprint: str
     gem5_ticks: int | None
@@ -240,6 +265,840 @@ class PairedMeasurementReport:
     spatial_process: ProcessExecution | None
     system_process: ProcessExecution | None
     diagnostic: str = ""
+
+
+@dataclass(frozen=True)
+class CgraGateConfiguration:
+    spatial_absolute_budget_nanoseconds: int
+    configuration_sha256: str
+    operator_gate_sha256: str
+    profiles: tuple[Mapping[str, object], ...]
+
+    @property
+    def spatial_absolute_budget_seconds(self) -> float:
+        return self.spatial_absolute_budget_nanoseconds / 1_000_000_000.0
+
+
+@dataclass(frozen=True)
+class CgraRepresentativeOperator:
+    workload: str
+    operator_id: str
+    source: str
+    protocol_symbol: str
+    compiler_flags: tuple[str, ...]
+
+
+def load_cgra_representative_operators(
+    path: Path = CGRA_OPERATOR_GATE,
+) -> tuple[str, tuple[CgraRepresentativeOperator, ...]]:
+    encoded = path.read_bytes()
+    try:
+        records = [json.loads(line) for line in encoded.decode("ascii").splitlines()]
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("CGRA operator gate is not canonical ASCII JSONL") from error
+    if not records or not isinstance(records[0], dict):
+        raise ValueError("CGRA operator gate has no header")
+    header = records[0]
+    if header.get("schema_version") != 1 or not isinstance(header.get("counts"), dict):
+        raise ValueError("CGRA operator gate has a foreign header")
+    selected: dict[str, CgraRepresentativeOperator] = {}
+    for record in records[1:]:
+        if not isinstance(record, dict) or record.get("suite") != "loombench":
+            continue
+        vector = record.get("vector")
+        selector = vector.get("selector") if isinstance(vector, dict) else None
+        workload = selector.get("case") if isinstance(selector, dict) else None
+        if workload not in CGRA_REPRESENTATIVE_WORKLOADS:
+            continue
+        producer = record.get("producer")
+        sources = producer.get("sources") if isinstance(producer, dict) else None
+        compiler_flags = record.get("compiler_flags")
+        operator_id = record.get("operator_id")
+        protocol = record.get("protocol")
+        protocol_symbol = (
+            protocol[0].get("symbol")
+            if isinstance(protocol, list)
+            and len(protocol) == 1
+            and isinstance(protocol[0], dict)
+            else None
+        )
+        if (
+            workload in selected
+            or not isinstance(operator_id, str)
+            or not operator_id
+            or not operator_id.isascii()
+            or not isinstance(protocol_symbol, str)
+            or not protocol_symbol
+            or not protocol_symbol.isascii()
+            or not isinstance(sources, list)
+            or len(sources) != 1
+            or not isinstance(sources[0], str)
+            or not sources[0].isascii()
+            or Path(sources[0]).is_absolute()
+            or ".." in Path(sources[0]).parts
+            or not isinstance(compiler_flags, list)
+            or any(
+                not isinstance(flag, str) or not flag.isascii()
+                for flag in compiler_flags
+            )
+            or record.get("entry_symbol") != "main"
+            or record.get("profile") != "riscv64-portable-scalar"
+        ):
+            raise ValueError("CGRA representative operator row is invalid")
+        selected[workload] = CgraRepresentativeOperator(
+            workload,
+            operator_id,
+            sources[0],
+            protocol_symbol,
+            tuple(compiler_flags),
+        )
+    if set(selected) != set(CGRA_REPRESENTATIVE_WORKLOADS):
+        raise ValueError("CGRA operator gate omits a representative workload")
+    digest = hashlib.sha256(encoded).hexdigest()
+    return digest, tuple(selected[name] for name in CGRA_REPRESENTATIVE_WORKLOADS)
+
+
+def _finite_number(value: object, what: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{what} must be numeric")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{what} must be finite")
+    return result
+
+
+def _nonnegative_integer(value: object, what: str, *, positive: bool = False) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{what} must be an integer")
+    if value < (1 if positive else 0):
+        qualifier = "positive" if positive else "nonnegative"
+        raise ValueError(f"{what} must be {qualifier}")
+    return value
+
+
+_CANONICAL_DATAFLOW_SCHEMA = ("loom.canonical_dataflow", "3.0")
+_SIMULATION_WORKLOAD_SCHEMA = ("loom.simulation_workload", "1.1")
+_SIMULATION_RUNTIME_INPUT_SCHEMA = ("loom.simulation_runtime_input", "2.0")
+_RESOLVED_CONFIG_SCHEMA = ("loom.config.resolved", "11.0")
+_FABRIC_SCHEMA = ("loom.fabric", "6.0")
+_MAPPING_SCHEMA = ("loom.mapping", "6.0")
+_MAPPING_CONSTRAINT_SET_SCHEMA = ("loom.mapping_constraints", "1.0")
+_EVALUATION_EVIDENCE_SCHEMA = ("evaluation.evidence", "1.0")
+
+
+def _validate_artifact_reference(
+    value: object,
+    what: str,
+    expected_schema: tuple[str, str] | None = None,
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema",
+        "schema_version",
+        "artifact",
+    }:
+        raise ValueError(f"{what} is not an exact artifact reference")
+    schema = value["schema"]
+    version = value["schema_version"]
+    artifact = value["artifact"]
+    if not isinstance(schema, str) or not schema or not schema.isascii():
+        raise ValueError(f"{what} has an invalid schema identity")
+    if not isinstance(version, str):
+        raise ValueError(f"{what} has an invalid schema version")
+    version_parts = version.split(".")
+    if len(version_parts) != 2 or any(
+        not part or not part.isdecimal() for part in version_parts
+    ):
+        raise ValueError(f"{what} has an invalid schema version")
+    if (
+        not isinstance(artifact, str)
+        or len(artifact) != 64
+        or artifact != artifact.lower()
+        or any(character not in "0123456789abcdef" for character in artifact)
+    ):
+        raise ValueError(f"{what} has a noncanonical artifact identity")
+    if expected_schema is not None and (schema, version) != expected_schema:
+        raise ValueError(f"{what} has a foreign artifact schema")
+    return value
+
+
+_CANDIDATE_INCOMPLETE_REASONS = frozenset(
+    {
+        "candidate_proof_not_established",
+        "candidate_semantic_limit_reached",
+        "candidate_provider_unavailable",
+        "candidate_generation_unsupported",
+        "candidate_execution_failed",
+        "candidate_cancelled_or_timeout",
+    }
+)
+_TECH_MAPPING_WORK_UNITS = (
+    "match_row_attempt",
+    "partial_cover_expansion",
+    "candidate_evaluation",
+    "publication_slot",
+)
+_SPATIAL_PNR_WORK_UNITS = (
+    "seed_attempt",
+    "assignment_attempt_per_seed",
+    "endpoint_expansion",
+    "negotiation_iteration",
+    "calibration_proposal",
+    "proposal_per_level_base",
+    "proposal_per_movable_decision",
+    "exact_repair_region_decision",
+    "exact_repair_solver_call",
+)
+
+
+def _validate_candidate_generator_result(
+    value: object,
+    expected_generator_units: Sequence[str],
+    what: str,
+    *,
+    require_completed: bool,
+    candidate_schema: tuple[str, str],
+) -> str:
+    if not isinstance(value, Mapping) or set(value) != {
+        "outcome",
+        "incomplete_reason",
+        "infeasibility_proof",
+        "candidates",
+        "work_units",
+    }:
+        raise ValueError(f"{what} result has the wrong shape")
+    outcome = value["outcome"]
+    reason = value["incomplete_reason"]
+    proof = value["infeasibility_proof"]
+    if outcome not in {"completed", "incomplete", "proven_infeasible"}:
+        raise ValueError(f"{what} result has an unknown outcome")
+    if outcome == "incomplete":
+        if reason not in _CANDIDATE_INCOMPLETE_REASONS:
+            raise ValueError(f"{what} result has a noncanonical incomplete reason")
+    elif reason is not None:
+        raise ValueError(f"{what} completed result has an incomplete reason")
+    if outcome == "proven_infeasible":
+        if not isinstance(proof, Mapping) or set(proof) != {"kind", "witness"}:
+            raise ValueError(f"{what} infeasibility has no typed proof")
+        proof_kind = _nonnegative_integer(proof["kind"], f"{what} proof kind")
+        if proof_kind > MAX_CANDIDATE_PROOF_KIND:
+            raise ValueError(f"{what} proof kind exceeds its wire domain")
+        witness = proof["witness"]
+        if (
+            not isinstance(witness, str)
+            or len(witness) % 2 != 0
+            or witness != witness.lower()
+            or any(character not in "0123456789abcdef" for character in witness)
+        ):
+            raise ValueError(f"{what} proof witness is not canonical hex")
+    elif proof is not None:
+        raise ValueError(f"{what} non-infeasible result carries a proof")
+    candidates = value["candidates"]
+    if not isinstance(candidates, list):
+        raise ValueError(f"{what} candidates are not a list")
+    candidate_keys: list[tuple[str, str, str]] = []
+    for candidate in candidates:
+        reference = _validate_artifact_reference(
+            candidate, f"{what} candidate", candidate_schema
+        )
+        candidate_keys.append(
+            (
+                str(reference["schema"]),
+                str(reference["schema_version"]),
+                str(reference["artifact"]),
+            )
+        )
+    if candidate_keys != sorted(set(candidate_keys)):
+        raise ValueError(f"{what} candidates are not canonical and unique")
+    if outcome == "proven_infeasible" and candidates:
+        raise ValueError(f"{what} infeasibility retained a candidate")
+    if require_completed and outcome != "completed":
+        raise ValueError(f"CGRA gate profile contains a non-completed {what} result")
+
+    work_units = value["work_units"]
+    if not isinstance(work_units, list) or len(work_units) != len(
+        expected_generator_units
+    ):
+        raise ValueError(f"{what} generator summary has the wrong width")
+    for expected_unit, entry in zip(expected_generator_units, work_units):
+        if not isinstance(entry, Mapping) or set(entry) != {
+            "unit",
+            "planned",
+            "consumed",
+        }:
+            raise ValueError(f"{what} generator work entry has the wrong shape")
+        if entry["unit"] != expected_unit:
+            raise ValueError(f"{what} generator work order is not canonical")
+        planned = _nonnegative_integer(
+            entry["planned"], f"planned {what} work {expected_unit}"
+        )
+        consumed = _nonnegative_integer(
+            entry["consumed"], f"consumed {what} work {expected_unit}"
+        )
+        if consumed > planned:
+            raise ValueError(f"{what} consumed work exceeds its plan")
+        if (
+            outcome in {"completed", "proven_infeasible"}
+            and consumed != planned
+        ):
+            raise ValueError(f"terminal {what} left planned work unconsumed")
+    return str(outcome)
+
+
+def validate_cgra_tech_mapping_result(
+    value: object, *, require_completed: bool
+) -> str:
+    return _validate_candidate_generator_result(
+        value,
+        _TECH_MAPPING_WORK_UNITS,
+        "CGRA TechMapping",
+        require_completed=require_completed,
+        candidate_schema=_MAPPING_SCHEMA,
+    )
+
+
+def validate_cgra_pnr_result(value: object, *, require_completed: bool) -> str:
+    if not isinstance(value, Mapping) or set(value) != {
+        "completion_goal",
+        "configured_seed_attempts",
+        "outcome",
+        "incomplete_reason",
+        "infeasibility_proof",
+        "candidates",
+        "work_units",
+    }:
+        raise ValueError("CGRA PnR result has the wrong shape")
+    if value["completion_goal"] != "exhaust_configured_work":
+        raise ValueError("CGRA qualification used a prefix PnR completion goal")
+    configured_seed_attempts = _nonnegative_integer(
+        value["configured_seed_attempts"],
+        "CGRA configured PnR seed attempts",
+        positive=True,
+    )
+    base = {key: value[key] for key in (
+        "outcome",
+        "incomplete_reason",
+        "infeasibility_proof",
+        "candidates",
+        "work_units",
+    )}
+    outcome = _validate_candidate_generator_result(
+        base,
+        _SPATIAL_PNR_WORK_UNITS,
+        "CGRA Spatial PnR",
+        require_completed=require_completed,
+        candidate_schema=_MAPPING_SCHEMA,
+    )
+    if outcome == "completed":
+        seed_work = value["work_units"][0]
+        assert isinstance(seed_work, Mapping)
+        if seed_work["planned"] < configured_seed_attempts:
+            raise ValueError("CGRA PnR did not plan the configured restart domain")
+    return outcome
+
+
+def validate_cgra_profile_outcome(value: object) -> tuple[str, str | None]:
+    expected_fields = {
+        "schema",
+        "workload",
+        "operator_id",
+        "protocol_symbol",
+        "stage",
+        "resolved_config",
+        "fabric",
+        "tech_mapping_search",
+        "spatial_pnr",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected_fields:
+        raise ValueError("CGRA profile outcome has the wrong shape")
+    if value["schema"] != "loom.cgra_budget_profile_outcome.2":
+        raise ValueError("CGRA profile outcome has the wrong schema")
+    if (
+        not isinstance(value["workload"], str)
+        or not isinstance(value["operator_id"], str)
+        or not isinstance(value["protocol_symbol"], str)
+        or not value["protocol_symbol"]
+        or not value["protocol_symbol"].isascii()
+    ):
+        raise ValueError("CGRA profile outcome has no workload identity")
+    _validate_artifact_reference(
+        value["resolved_config"], "resolved config", _RESOLVED_CONFIG_SCHEMA
+    )
+    _validate_artifact_reference(value["fabric"], "Fabric", _FABRIC_SCHEMA)
+    tech_outcome = validate_cgra_tech_mapping_result(
+        value["tech_mapping_search"], require_completed=False
+    )
+    stage = value["stage"]
+    if stage == "tech_mapping":
+        tech_result = value["tech_mapping_search"]
+        assert isinstance(tech_result, Mapping)
+        if (
+            value["spatial_pnr"] is not None
+            or tech_result["candidates"]
+        ):
+            raise ValueError("CGRA TechMapping outcome has an invalid boundary")
+        result = value["tech_mapping_search"]
+    elif stage == "spatial_pnr":
+        tech_result = value["tech_mapping_search"]
+        assert isinstance(tech_result, Mapping)
+        if not tech_result["candidates"] or tech_outcome not in {
+            "completed",
+            "incomplete",
+        } or (
+            tech_outcome == "incomplete"
+            and tech_result["incomplete_reason"]
+            != "candidate_semantic_limit_reached"
+        ):
+            raise ValueError("CGRA Spatial PnR ran after unusable TechMapping")
+        pnr_outcome = validate_cgra_pnr_result(
+            value["spatial_pnr"], require_completed=False
+        )
+        pnr_result = value["spatial_pnr"]
+        assert isinstance(pnr_result, Mapping)
+        if pnr_outcome == "completed" and pnr_result["candidates"]:
+            raise ValueError(
+                "CGRA profile outcome contains a usable completed PnR result"
+            )
+        result = value["spatial_pnr"]
+    else:
+        raise ValueError("CGRA profile outcome has an unknown stage")
+    assert isinstance(result, Mapping)
+    reason = result["incomplete_reason"]
+    return str(result["outcome"]), reason if isinstance(reason, str) else None
+
+
+def _validate_cgra_profiles(
+    profiles: Sequence[Mapping[str, object]],
+    representative_operators: Sequence[CgraRepresentativeOperator] | None = None,
+) -> tuple[Mapping[str, object], ...]:
+    if representative_operators is None:
+        _, representative_operators = load_cgra_representative_operators()
+    operator_by_workload = {
+        operator.workload: operator for operator in representative_operators
+    }
+    expected_profile_fields = {
+        "schema",
+        "workload",
+        "operator_id",
+        "protocol_symbol",
+        "qualification_limit_nanoseconds",
+        "warmup_runs",
+        "measurement_runs",
+        "batch_peak_resident_bytes",
+        "canonical_dataflow",
+        "simulation_workload",
+        "simulation_runtime_input",
+        "resolved_config",
+        "fabric",
+        "tech_mapping",
+        "tech_mapping_search",
+        "initial_spatial_mapping",
+        "spatial_mapping",
+        "spatial_pnr",
+        "transport_repair",
+        "warmup_evidence",
+        "measurements",
+    }
+    expected_measurement_fields = {
+        "active_wall_nanoseconds",
+        "active_process_cpu_nanoseconds",
+        "input_load_wall_nanoseconds",
+        "input_load_process_cpu_nanoseconds",
+        "engine_active_wall_nanoseconds",
+        "engine_active_process_cpu_nanoseconds",
+        "observation_projection_wall_nanoseconds",
+        "observation_projection_process_cpu_nanoseconds",
+        "artifact_publication_wall_nanoseconds",
+        "artifact_publication_process_cpu_nanoseconds",
+        "reference_cycles",
+        "event_frame_count",
+        "physical_request_count",
+        "physical_grant_count",
+        "physical_retirement_count",
+        "physical_grant_wait_cycle_sum",
+        "physical_grant_wait_cycle_max",
+        "physical_grant_delayed_count",
+        "evaluation_evidence",
+    }
+    if len(profiles) != len(CGRA_REPRESENTATIVE_WORKLOADS):
+        raise ValueError("CGRA gate requires the complete representative suite")
+    by_workload: dict[str, Mapping[str, object]] = {}
+    dataflow_identities: set[str] = set()
+    resolved_config_identities: set[str] = set()
+    fabric_identities: set[str] = set()
+    for profile in profiles:
+        if not isinstance(profile, Mapping) or set(profile) != expected_profile_fields:
+            raise ValueError("CGRA profile has the wrong shape")
+        if profile["schema"] != "loom.cgra_budget_profile.5":
+            raise ValueError("CGRA profile has the wrong schema")
+        workload = profile["workload"]
+        if not isinstance(workload, str) or workload in by_workload:
+            raise ValueError("CGRA profile workload is absent or duplicated")
+        operator = operator_by_workload.get(workload)
+        if (
+            operator is None
+            or profile["operator_id"] != operator.operator_id
+            or profile["protocol_symbol"] != operator.protocol_symbol
+        ):
+            raise ValueError("CGRA profile is not bound to its operator-gate row")
+        by_workload[workload] = profile
+        qualification_limit = _nonnegative_integer(
+            profile["qualification_limit_nanoseconds"],
+            "CGRA qualification limit",
+            positive=True,
+        )
+        if qualification_limit != CGRA_QUALIFICATION_LIMIT_NANOSECONDS:
+            raise ValueError("CGRA profile used a foreign qualification limit")
+        if (
+            _nonnegative_integer(profile["warmup_runs"], "CGRA warmup count")
+            != CGRA_QUALIFICATION_WARMUP_RUNS
+            or _nonnegative_integer(
+                profile["measurement_runs"], "CGRA measurement count"
+            )
+            != CGRA_QUALIFICATION_MEASUREMENT_RUNS
+        ):
+            raise ValueError("CGRA profile used a foreign sampling protocol")
+        reference_schemas = {
+            "canonical_dataflow": _CANONICAL_DATAFLOW_SCHEMA,
+            "simulation_workload": _SIMULATION_WORKLOAD_SCHEMA,
+            "simulation_runtime_input": _SIMULATION_RUNTIME_INPUT_SCHEMA,
+            "resolved_config": _RESOLVED_CONFIG_SCHEMA,
+            "fabric": _FABRIC_SCHEMA,
+            "tech_mapping": _MAPPING_SCHEMA,
+            "initial_spatial_mapping": _MAPPING_SCHEMA,
+            "spatial_mapping": _MAPPING_SCHEMA,
+            "warmup_evidence": _EVALUATION_EVIDENCE_SCHEMA,
+        }
+        for field, schema in reference_schemas.items():
+            _validate_artifact_reference(
+                profile[field], f"CGRA profile {field}", schema
+            )
+        resolved_config = profile["resolved_config"]
+        assert isinstance(resolved_config, Mapping)
+        if (
+            resolved_config["schema"] != "loom.config.resolved"
+            or resolved_config["schema_version"] != "11.0"
+        ):
+            raise ValueError("CGRA profile uses a foreign ResolvedConfig schema")
+        resolved_config_identities.add(str(resolved_config["artifact"]))
+        fabric = profile["fabric"]
+        assert isinstance(fabric, Mapping)
+        fabric_identities.add(str(fabric["artifact"]))
+        tech_outcome = validate_cgra_tech_mapping_result(
+            profile["tech_mapping_search"], require_completed=False
+        )
+        tech_search = profile["tech_mapping_search"]
+        assert isinstance(tech_search, Mapping)
+        if tech_outcome not in {"completed", "incomplete"} or (
+            tech_outcome == "incomplete"
+            and tech_search["incomplete_reason"]
+            != "candidate_semantic_limit_reached"
+        ):
+            raise ValueError("CGRA profile has no usable TechMapping frontier")
+        if profile["tech_mapping"] not in tech_search["candidates"]:
+            raise ValueError("selected TechMapping is absent from the complete search")
+        validate_cgra_pnr_result(profile["spatial_pnr"], require_completed=True)
+        initial_pnr = profile["spatial_pnr"]
+        assert isinstance(initial_pnr, Mapping)
+        if profile["initial_spatial_mapping"] not in initial_pnr["candidates"]:
+            raise ValueError("CGRA initial Mapping is absent from its PnR result")
+        transport_repair = profile["transport_repair"]
+        if transport_repair is None:
+            if profile["spatial_mapping"] != profile["initial_spatial_mapping"]:
+                raise ValueError("CGRA final Mapping has no repair lineage")
+        else:
+            if not isinstance(transport_repair, Mapping) or set(
+                transport_repair
+            ) != {"parent_system_mapping", "pre_repair_evidence", "attempts"}:
+                raise ValueError("CGRA transport repair has the wrong shape")
+            _validate_artifact_reference(
+                transport_repair["parent_system_mapping"],
+                "CGRA repair parent SystemMapping",
+                _MAPPING_SCHEMA,
+            )
+            _validate_artifact_reference(
+                transport_repair["pre_repair_evidence"],
+                "CGRA pre-repair Evidence",
+                _EVALUATION_EVIDENCE_SCHEMA,
+            )
+            attempts = transport_repair["attempts"]
+            if not isinstance(attempts, list) or not attempts:
+                raise ValueError("CGRA transport repair has no attempt")
+            accepted_children: list[Mapping[str, object]] = []
+            for ordinal, attempt in enumerate(attempts):
+                if not isinstance(attempt, Mapping) or set(attempt) != {
+                    "parent_spatial_mapping",
+                    "constraint_set",
+                    "spatial_pnr",
+                    "child_spatial_mapping",
+                    "accepted_for_simulation",
+                }:
+                    raise ValueError("CGRA transport repair attempt has the wrong shape")
+                if attempt["parent_spatial_mapping"] != profile[
+                    "initial_spatial_mapping"
+                ]:
+                    raise ValueError("CGRA transport repair has a foreign parent")
+                _validate_artifact_reference(
+                    attempt["constraint_set"],
+                    "CGRA repair constraint",
+                    _MAPPING_CONSTRAINT_SET_SCHEMA,
+                )
+                repair_outcome = validate_cgra_pnr_result(
+                    attempt["spatial_pnr"], require_completed=False
+                )
+                repair_pnr = attempt["spatial_pnr"]
+                assert isinstance(repair_pnr, Mapping)
+                if repair_pnr["configured_seed_attempts"] != initial_pnr[
+                    "configured_seed_attempts"
+                ]:
+                    raise ValueError("CGRA repair used a foreign PnR seed plan")
+                child = attempt["child_spatial_mapping"]
+                accepted = attempt["accepted_for_simulation"]
+                if not isinstance(accepted, bool):
+                    raise ValueError("CGRA repair acceptance is not boolean")
+                if child is None:
+                    if accepted:
+                        raise ValueError("CGRA repair accepted no child Mapping")
+                else:
+                    child_reference = _validate_artifact_reference(
+                        child, "CGRA repair child Mapping", _MAPPING_SCHEMA
+                    )
+                    if repair_outcome != "completed" or child not in repair_pnr[
+                        "candidates"
+                    ]:
+                        raise ValueError("CGRA repair child lacks a completed PnR result")
+                    if accepted:
+                        if ordinal + 1 != len(attempts):
+                            raise ValueError("CGRA accepted repair is not terminal")
+                        accepted_children.append(child_reference)
+            if len(accepted_children) != 1 or profile[
+                "spatial_mapping"
+            ] != accepted_children[0]:
+                raise ValueError("CGRA final Mapping disagrees with repair receipt")
+        dataflow = profile["canonical_dataflow"]
+        assert isinstance(dataflow, Mapping)
+        dataflow_identities.add(str(dataflow["artifact"]))
+        _nonnegative_integer(
+            profile["batch_peak_resident_bytes"],
+            "CGRA workload-batch peak resident memory",
+            positive=True,
+        )
+        measurements = profile["measurements"]
+        if not isinstance(measurements, list) or len(measurements) != (
+            CGRA_QUALIFICATION_MEASUREMENT_RUNS
+        ):
+            raise ValueError("CGRA profile has the wrong measurement count")
+        deterministic_counts: tuple[int, ...] | None = None
+        for measurement in measurements:
+            if not isinstance(measurement, Mapping) or set(measurement) != (
+                expected_measurement_fields
+            ):
+                raise ValueError("CGRA measurement has the wrong shape")
+            _validate_artifact_reference(
+                measurement["evaluation_evidence"],
+                "CGRA measurement evaluation evidence",
+                _EVALUATION_EVIDENCE_SCHEMA,
+            )
+            active = _nonnegative_integer(
+                measurement["active_wall_nanoseconds"],
+                "CGRA active wall time",
+                positive=True,
+            )
+            if active > CGRA_QUALIFICATION_LIMIT_NANOSECONDS:
+                raise ValueError("CGRA active wall time exceeds qualification")
+            input_load = _nonnegative_integer(
+                measurement["input_load_wall_nanoseconds"],
+                "CGRA input-load wall time",
+            )
+            engine_active = _nonnegative_integer(
+                measurement["engine_active_wall_nanoseconds"],
+                "CGRA engine-active wall time",
+                positive=True,
+            )
+            observation_projection = _nonnegative_integer(
+                measurement["observation_projection_wall_nanoseconds"],
+                "CGRA observation-projection wall time",
+            )
+            _nonnegative_integer(
+                measurement["artifact_publication_wall_nanoseconds"],
+                "CGRA artifact-publication wall time",
+            )
+            active_cpu = measurement["active_process_cpu_nanoseconds"]
+            component_cpu = (
+                measurement["input_load_process_cpu_nanoseconds"],
+                measurement["engine_active_process_cpu_nanoseconds"],
+                measurement["observation_projection_process_cpu_nanoseconds"],
+            )
+            publication_cpu = measurement[
+                "artifact_publication_process_cpu_nanoseconds"
+            ]
+            cpu_values = (active_cpu, *component_cpu, publication_cpu)
+            if any(value is None for value in cpu_values):
+                if any(value is not None for value in cpu_values):
+                    raise ValueError("CGRA process CPU timing is fragmentary")
+            else:
+                typed_cpu = tuple(
+                    _nonnegative_integer(value, "CGRA process CPU time")
+                    for value in cpu_values
+                )
+                if typed_cpu[0] != sum(typed_cpu[1:4]):
+                    raise ValueError(
+                        "CGRA active process CPU time is not its component sum"
+                    )
+            if active != input_load + engine_active + observation_projection:
+                raise ValueError("CGRA active wall time is not its component sum")
+            cycles = _nonnegative_integer(
+                measurement["reference_cycles"], "CGRA reference cycles", positive=True
+            )
+            target_nanoseconds = (
+                cycles * 1_000_000_000 + REFERENCE_RATE_TARGET_CYCLES_PER_SECOND - 1
+            ) // REFERENCE_RATE_TARGET_CYCLES_PER_SECOND
+            if active > target_nanoseconds:
+                raise ValueError(
+                    "CGRA measurement is below the reference-cycle rate target"
+                )
+            event_frames = _nonnegative_integer(
+                measurement["event_frame_count"],
+                "CGRA event-frame count",
+                positive=True,
+            )
+            requests = _nonnegative_integer(
+                measurement["physical_request_count"],
+                "CGRA physical-request count",
+                positive=True,
+            )
+            grants = _nonnegative_integer(
+                measurement["physical_grant_count"],
+                "CGRA physical-grant count",
+            )
+            retirements = _nonnegative_integer(
+                measurement["physical_retirement_count"],
+                "CGRA physical-retirement count",
+            )
+            wait_sum = _nonnegative_integer(
+                measurement["physical_grant_wait_cycle_sum"],
+                "CGRA physical-grant wait sum",
+            )
+            wait_max = _nonnegative_integer(
+                measurement["physical_grant_wait_cycle_max"],
+                "CGRA physical-grant wait maximum",
+            )
+            delayed = _nonnegative_integer(
+                measurement["physical_grant_delayed_count"],
+                "CGRA delayed-grant count",
+            )
+            if requests != grants or grants != retirements:
+                raise ValueError("CGRA physical lifecycle did not close")
+            if delayed > grants or wait_max > wait_sum:
+                raise ValueError("CGRA contention counters are inconsistent")
+            counts = (
+                cycles,
+                event_frames,
+                requests,
+                grants,
+                retirements,
+                wait_sum,
+                wait_max,
+                delayed,
+            )
+            if deterministic_counts is None:
+                deterministic_counts = counts
+            elif counts != deterministic_counts:
+                raise ValueError("CGRA deterministic counts changed across warm runs")
+    if set(by_workload) != set(CGRA_REPRESENTATIVE_WORKLOADS):
+        raise ValueError("CGRA gate names a foreign representative suite")
+    if len(dataflow_identities) != len(CGRA_REPRESENTATIVE_WORKLOADS):
+        raise ValueError("CGRA gate profiles do not name distinct Dataflow roots")
+    if len(resolved_config_identities) != 1 or len(fabric_identities) != 1:
+        raise ValueError("CGRA gate profiles do not share one exact target")
+    return tuple(by_workload[name] for name in CGRA_REPRESENTATIVE_WORKLOADS)
+
+
+def _derive_cgra_spatial_budget_from_validated_profiles(
+    validated: Sequence[Mapping[str, object]],
+) -> int:
+    budget = 0
+    for profile in validated:
+        measurements = profile["measurements"]
+        assert isinstance(measurements, list)
+        for measurement in measurements:
+            assert isinstance(measurement, Mapping)
+            cycles = int(measurement["reference_cycles"])
+            target_nanoseconds = (
+                cycles * 1_000_000_000 + REFERENCE_RATE_TARGET_CYCLES_PER_SECOND - 1
+            ) // REFERENCE_RATE_TARGET_CYCLES_PER_SECOND
+            budget = max(budget, target_nanoseconds)
+    if budget <= 0 or budget > CGRA_QUALIFICATION_LIMIT_NANOSECONDS:
+        raise ValueError("derived CGRA budget exceeds the qualification limit")
+    return budget
+
+
+def derive_cgra_spatial_budget_nanoseconds(
+    profiles: Sequence[Mapping[str, object]],
+) -> int:
+    return _derive_cgra_spatial_budget_from_validated_profiles(
+        _validate_cgra_profiles(profiles)
+    )
+
+
+def load_cgra_gate_configuration(
+    path: Path = CGRA_GATE_CONFIGURATION,
+) -> CgraGateConfiguration:
+    encoded = path.read_bytes()
+    try:
+        root = json.loads(encoded.decode("ascii"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            "CGRA gate configuration is not canonical ASCII JSON"
+        ) from error
+    expected_fields = {
+        "schema",
+        "policy",
+        "operator_gate",
+        "spatial_absolute_budget_nanoseconds",
+        "profiles",
+    }
+    if not isinstance(root, dict) or set(root) != expected_fields:
+        raise ValueError("CGRA gate configuration has the wrong shape")
+    if root["schema"] != "loom.cgra_simulation_gate.5":
+        raise ValueError("CGRA gate configuration has the wrong schema")
+    policy = root["policy"]
+    expected_policy = {
+        "qualification_limit_nanoseconds": CGRA_QUALIFICATION_LIMIT_NANOSECONDS,
+        "warmup_runs": CGRA_QUALIFICATION_WARMUP_RUNS,
+        "measurement_runs": CGRA_QUALIFICATION_MEASUREMENT_RUNS,
+        "reference_rate_target_cycles_per_second": (
+            REFERENCE_RATE_TARGET_CYCLES_PER_SECOND
+        ),
+    }
+    if policy != expected_policy:
+        raise ValueError("CGRA gate configuration has a foreign policy")
+    operator_gate = root["operator_gate"]
+    current_operator_gate_sha256, representative_operators = (
+        load_cgra_representative_operators()
+    )
+    if operator_gate != {
+        "path": CGRA_OPERATOR_GATE_RELATIVE_PATH,
+        "sha256": current_operator_gate_sha256,
+    }:
+        raise ValueError("CGRA gate configuration names a foreign operator gate")
+    profiles = root["profiles"]
+    if not isinstance(profiles, list):
+        raise ValueError("CGRA gate profiles are not a list")
+    validated = _validate_cgra_profiles(profiles, representative_operators)
+    derived = _derive_cgra_spatial_budget_from_validated_profiles(validated)
+    published = _nonnegative_integer(
+        root["spatial_absolute_budget_nanoseconds"],
+        "published CGRA budget",
+        positive=True,
+    )
+    if published != derived:
+        raise ValueError("published CGRA budget does not match aggregate evidence")
+    return CgraGateConfiguration(
+        published,
+        hashlib.sha256(encoded).hexdigest(),
+        current_operator_gate_sha256,
+        validated,
+    )
 
 
 def _live_process_group_members(process_group: int) -> tuple[int, ...]:
@@ -396,6 +1255,8 @@ def execute_process(
 _MEASUREMENT_FIELDS = {
     "schema",
     "cell",
+    "attempt",
+    "invocation",
     "work_fingerprint",
     "config_fingerprint",
     "accelerator_reference_cycles",
@@ -408,7 +1269,7 @@ _MEASUREMENT_FIELDS = {
     "measurement_source",
     "rss_scope",
 }
-_MEASUREMENT_SCHEMA = "loom.paired_simulation_measurement.1"
+_MEASUREMENT_SCHEMA = "loom.paired_simulation_measurement.2"
 _MEASUREMENT_PREFIX = "paired-simulation "
 
 
@@ -446,8 +1307,14 @@ def _parse_measurement_row(row: str, expected_cell: str) -> ExecutionMatrixMeasu
         raise ValueError("paired measurement row has the wrong shape")
     if fields["schema"] != _MEASUREMENT_SCHEMA or fields["cell"] != expected_cell:
         raise ValueError("paired measurement row has the wrong identity")
-    if expected_cell not in {"paired-spatial-cgra", "paired-system-cgra"}:
+    expected_invocation = {
+        "paired-spatial-cgra": ("ordinary", "paired-spatial-cgra"),
+        "paired-system-cgra": ("diagnostic", "paired-system-cgra"),
+    }.get(expected_cell)
+    if expected_invocation is None:
         raise ValueError("measurement cell is outside the paired CGRA domain")
+    if (fields["attempt"], fields["invocation"]) != expected_invocation:
+        raise ValueError("paired measurement has the wrong attempt identity")
 
     work_fingerprint = _parse_fingerprint(fields["work_fingerprint"], "work")
     config_fingerprint = _parse_fingerprint(fields["config_fingerprint"], "config")
@@ -484,6 +1351,8 @@ def _parse_measurement_row(row: str, expected_cell: str) -> ExecutionMatrixMeasu
 
     return ExecutionMatrixMeasurement(
         cell=expected_cell,
+        attempt=fields["attempt"],
+        invocation=fields["invocation"],
         work_fingerprint=work_fingerprint,
         config_fingerprint=config_fingerprint,
         gem5_ticks=gem5_ticks,
@@ -731,6 +1600,8 @@ def _measurement_json(
         return None
     return {
         "cell": measurement.cell,
+        "attempt": measurement.attempt,
+        "invocation": measurement.invocation,
         "work_fingerprint": measurement.work_fingerprint,
         "config_fingerprint": measurement.config_fingerprint,
         "accelerator_reference_cycles": measurement.timing.reference_cycles,
@@ -758,7 +1629,7 @@ def _process_json(process: ProcessExecution | None) -> dict[str, object] | None:
 
 def report_json(report: PairedMeasurementReport) -> dict[str, object]:
     projected: dict[str, object] = {
-        "schema": "loom.paired_simulation_measurement_report.1",
+        "schema": "loom.paired_simulation_measurement_report.2",
         "publication_status": "provisional_bootstrap_only",
         "disposition": report.disposition.value,
         "bootstrap_budget_source": "config.timeout_budgets:medium",

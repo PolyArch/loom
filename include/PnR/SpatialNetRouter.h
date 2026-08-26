@@ -45,7 +45,8 @@ public:
   SpatialNetRouterScratch &operator=(SpatialNetRouterScratch &&) = delete;
   ~SpatialNetRouterScratch();
 
-  llvm::Error prepare(const FrozenSpatialPnrProblem &problem);
+  llvm::Error prepare(const FrozenSpatialPnrProblem &problem,
+                      SpatialPnrWorkLedgerView workLedger = {});
   llvm::Error beginConstraintSweep(llvm::ArrayRef<PnrIndex> logicalNets);
   llvm::Error finishConstraintNet(PnrIndex logicalNet);
 

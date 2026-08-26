@@ -94,8 +94,9 @@ void checkSpatialNetwork() {
       "regular-network", {bits32, bits32, bits32}, {bits32, bits32, bits32}));
   std::vector<MeshCellAttachmentSpec> attachments{
       {1, 1, {bits32, bits32}, {bits32, bits32}}, {0, 0, {bits32}, {bits32}}};
-  auto network = take(core.addMeshSwitchNetwork(
-      take(MeshSwitchNetworkSpec::spatial(3, 3, 2, bits32, attachments))));
+  auto network =
+      take(core.addMeshSwitchNetwork(take(MeshSwitchNetworkSpec::spatial(
+          3, 3, maximumMeshLanesPerDirection, bits32, attachments))));
 
   auto center = take(network.attachment(0));
   auto corner = take(network.attachment(1));
@@ -118,18 +119,18 @@ void checkSpatialNetwork() {
   require(finalized.roots().size() == 1,
           "spatial mesh did not finalize one Module");
   const auto &view = finalized.roots().front().view();
-  require(view.fifoOccurrences().size() == 48,
-          "3x3 two-lane mesh did not emit one FIFO per directed link");
+  require(view.fifoOccurrences().size() == 96,
+          "3x3 four-lane mesh did not emit one FIFO per directed link");
 
   bool foundInteriorTransit = false;
   for (const auto occurrence : view.switchOccurrences()) {
     const auto [inputs, outputs] = switchShape(view, occurrence);
-    require(inputs <= 8 && outputs <= 8,
-            "mesh helper emitted a switch dimension larger than eight");
-    foundInteriorTransit |= inputs == 8 && outputs == 8;
+    require(inputs <= 16 && outputs <= 16 && inputs * outputs <= 256,
+            "mesh helper emitted a switch beyond its crosspoint limit");
+    foundInteriorTransit |= inputs == 16 && outputs == 16;
   }
   require(foundInteriorTransit,
-          "3x3 two-lane mesh lost its interior 8x8 transit switch");
+          "3x3 four-lane mesh lost its interior 16x16 transit switch");
 
   std::string text;
   llvm::raw_string_ostream stream(text);
@@ -273,8 +274,9 @@ void checkInvalidSpecifications() {
               "positive");
   expectError(MeshSwitchNetworkSpec::spatial(1, 1, 1, bits32, {bank}),
               "at least two");
-  expectError(MeshSwitchNetworkSpec::spatial(2, 2, 3, bits32, {bank}),
-              "one or two");
+  expectError(MeshSwitchNetworkSpec::spatial(
+                  2, 2, maximumMeshLanesPerDirection + 1, bits32, {bank}),
+              "between one and 4");
   expectError(MeshSwitchNetworkSpec::spatial(2, 2, 1, tagged32, {bank}),
               "untagged bits");
   expectError(

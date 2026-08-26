@@ -169,6 +169,8 @@ struct GenerateInvocationRecord final {
   std::vector<CandidateGeneratorOutputBinding> outputBindings;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
   std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
+  std::optional<CandidateGeneratorInfeasibilityProof> infeasibilityProof =
+      std::nullopt;
 };
 
 /// Nonsemantic execution accounting paired to one GenerateInvocationRecord by
@@ -368,6 +370,7 @@ projectDsePlanGenerateInvocationRecords(const DsePlanExecutionOutcome &outcome);
 struct DsePlanGenerateInvocationSummary final {
   std::uint64_t planExecutions = 0;
   std::uint64_t completedInvocations = 0;
+  std::uint64_t provenInfeasibleInvocations = 0;
   std::uint64_t incompleteInvocations = 0;
   std::uint64_t inputBindings = 0;
   std::uint64_t inputArtifacts = 0;
@@ -382,7 +385,7 @@ struct DsePlanGenerateInvocationSummary final {
 llvm::Expected<DsePlanGenerateInvocationSummary>
 validateAndSummarizeDsePlanGenerateInvocations(
     llvm::ArrayRef<DsePlanGenerateInvocationRecords> records,
-    const ArtifactStore &store);
+    const ArtifactStore &store, const BlobStore &blobs);
 
 llvm::Expected<DsePlanExecutionOutcome>
 executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,

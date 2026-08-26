@@ -1190,6 +1190,24 @@ public:
   llvm::ArrayRef<PnrIndex> memoryPlanFragments() const {
     return memoryPlanFragments_;
   }
+  PnrIndex projectionNodeCount() const { return projectionNodeCount_; }
+  llvm::ArrayRef<FrozenSpatialHandshakeArc> projectionArcs() const {
+    return projectionArcs_;
+  }
+  llvm::ArrayRef<PnrIndex> projectionFixedArcs() const {
+    return projectionFixedArcs_;
+  }
+  llvm::ArrayRef<PnrIndex> projectionFragmentArcOffsets() const {
+    return projectionFragmentArcOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> projectionFragmentArcs() const {
+    return projectionFragmentArcs_;
+  }
+  /// projectionArcs() is source-major, so each offset pair is the outgoing
+  /// arc-ordinal range for one canonical dense node.
+  llvm::ArrayRef<PnrIndex> projectionOutgoingArcOffsets() const {
+    return projectionOutgoingArcOffsets_;
+  }
 
 private:
   std::optional<::loom::fabric::FabricHandshakeContext> fabricContext_;
@@ -1214,6 +1232,12 @@ private:
   std::vector<PnrIndex> memoryPlacementDomainOffsets_;
   std::vector<FrozenSpatialMemoryOperationHandshakePlan> memoryOperationPlans_;
   std::vector<PnrIndex> memoryPlanFragments_;
+  PnrIndex projectionNodeCount_ = 0;
+  std::vector<FrozenSpatialHandshakeArc> projectionArcs_;
+  std::vector<PnrIndex> projectionFixedArcs_;
+  std::vector<PnrIndex> projectionFragmentArcOffsets_;
+  std::vector<PnrIndex> projectionFragmentArcs_;
+  std::vector<PnrIndex> projectionOutgoingArcOffsets_;
 
   friend class FrozenSpatialHandshakeIndexBuilder;
 };

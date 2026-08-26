@@ -340,7 +340,7 @@ llvm::Error CgraGraphActivationRuntime::consumeTransportCompletions(
 }
 
 llvm::Error CgraGraphActivationRuntime::consumeComputeFrame(
-    CgraComputeLifecycleFrame frame, CgraGraphActivationFrame &result) {
+    CgraComputeLifecycleFrame &&frame, CgraGraphActivationFrame &result) {
   if (llvm::Error error =
           registerPhysicalRequests(frame.physicalEvents, result))
     return error;
@@ -392,7 +392,7 @@ llvm::Error CgraGraphActivationRuntime::consumeComputeFrame(
 }
 
 llvm::Error CgraGraphActivationRuntime::consumeMemoryFrame(
-    CgraMemoryLifecycleFrame frame, CgraGraphActivationFrame &result) {
+    CgraMemoryLifecycleFrame &&frame, CgraGraphActivationFrame &result) {
   if (llvm::Error error =
           registerPhysicalRequests(frame.physicalEvents, result))
     return error;
@@ -434,7 +434,7 @@ llvm::Error CgraGraphActivationRuntime::consumeMemoryFrame(
 }
 
 llvm::Error CgraGraphActivationRuntime::consumeTransportFrame(
-    CgraTransportFrame frame, CgraGraphActivationFrame &result) {
+    CgraTransportFrame &&frame, CgraGraphActivationFrame &result) {
   if (llvm::Error error =
           registerPhysicalRequests(frame.physicalEvents, result))
     return error;
@@ -565,8 +565,12 @@ CgraGraphActivationRuntime::advance() {
   CgraGraphActivationFrame result{*coordinate, {}, {}, {}, {}, {}, 0};
 
   while (true) {
+    const auto computeCoordinate = compute_->nextCoordinate();
+    const auto memoryCoordinate = memory_->nextCoordinate();
+    auto transportCoordinate = transport_->nextCoordinate();
+    auto physicalCoordinate = physical_->nextCoordinate();
     bool progressed = false;
-    if (isAt(compute_->nextCoordinate(), *coordinate)) {
+    if (isAt(computeCoordinate, *coordinate)) {
       auto frame = compute_->advance();
       if (!frame)
         return frame.takeError();
@@ -576,8 +580,10 @@ CgraGraphActivationRuntime::advance() {
         return std::move(error);
       result.sourceMask |= 1;
       progressed = true;
+      transportCoordinate = transport_->nextCoordinate();
+      physicalCoordinate = physical_->nextCoordinate();
     }
-    if (isAt(memory_->nextCoordinate(), *coordinate)) {
+    if (isAt(memoryCoordinate, *coordinate)) {
       auto frame = memory_->advance();
       if (!frame)
         return frame.takeError();
@@ -587,8 +593,10 @@ CgraGraphActivationRuntime::advance() {
         return std::move(error);
       result.sourceMask |= 2;
       progressed = true;
+      transportCoordinate = transport_->nextCoordinate();
+      physicalCoordinate = physical_->nextCoordinate();
     }
-    if (isAt(transport_->nextCoordinate(), *coordinate)) {
+    if (isAt(transportCoordinate, *coordinate)) {
       auto frame = transport_->advance();
       if (!frame)
         return frame.takeError();
@@ -598,8 +606,9 @@ CgraGraphActivationRuntime::advance() {
         return std::move(error);
       result.sourceMask |= 4;
       progressed = true;
+      physicalCoordinate = physical_->nextCoordinate();
     }
-    if (isAt(physical_->nextCoordinate(), *coordinate)) {
+    if (isAt(physicalCoordinate, *coordinate)) {
       auto physicalFrame = physical_->advance();
       if (!physicalFrame)
         return physicalFrame.takeError();
@@ -633,10 +642,7 @@ CgraGraphActivationRuntime::advance() {
       result.sourceMask |= 8;
       progressed = true;
     }
-    if (!progressed || (!isAt(compute_->nextCoordinate(), *coordinate) &&
-                        !isAt(memory_->nextCoordinate(), *coordinate) &&
-                        !isAt(transport_->nextCoordinate(), *coordinate) &&
-                        !isAt(physical_->nextCoordinate(), *coordinate)))
+    if (!progressed)
       break;
   }
 

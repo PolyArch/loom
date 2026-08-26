@@ -53,6 +53,52 @@ std::string formatUnsigned(const llvm::APInt &value) {
 
 } // namespace
 
+bool isProvablyInjectiveMemRefLayout(mlir::MemRefType type) {
+  if (type.getLayout().isIdentity())
+    return true;
+
+  llvm::SmallVector<std::int64_t, 4> strides;
+  std::int64_t offset = 0;
+  if (mlir::failed(type.getStridesAndOffset(strides, offset)) ||
+      strides.size() != static_cast<std::size_t>(type.getRank()))
+    return false;
+
+  struct ActiveDimension final {
+    std::uint64_t stride = 0;
+    std::int64_t extent = 0;
+  };
+  llvm::SmallVector<ActiveDimension, 4> active;
+  for (auto [extent, stride] : llvm::zip(type.getShape(), strides)) {
+    if (extent == 0 || extent == 1)
+      continue;
+    if (stride == mlir::ShapedType::kDynamic || stride <= 0)
+      return false;
+    active.push_back({static_cast<std::uint64_t>(stride), extent});
+  }
+  llvm::sort(active,
+             [](const ActiveDimension &lhs, const ActiveDimension &rhs) {
+               return lhs.stride < rhs.stride;
+             });
+
+  llvm::APInt coveredSpan(1, 0);
+  for (auto [ordinal, dimension] : llvm::enumerate(active)) {
+    llvm::APInt stride(64, dimension.stride);
+    const unsigned comparisonWidth =
+        std::max(stride.getBitWidth(), coveredSpan.getBitWidth());
+    if (stride.zextOrTrunc(comparisonWidth)
+            .ule(coveredSpan.zextOrTrunc(comparisonWidth)))
+      return false;
+    if (dimension.extent == mlir::ShapedType::kDynamic)
+      return ordinal + 1 == active.size();
+    if (dimension.extent < 0)
+      return false;
+    coveredSpan = add(std::move(coveredSpan),
+                      multiply(static_cast<std::uint64_t>(dimension.extent - 1),
+                               dimension.stride));
+  }
+  return true;
+}
+
 llvm::Expected<ExactMemRefLayout>
 resolveExactMemRefLayout(mlir::MemRefType type, unsigned indexBits) {
   if (indexBits == 0)

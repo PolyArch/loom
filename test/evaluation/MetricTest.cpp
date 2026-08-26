@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -52,6 +53,14 @@ void exactRatioNormalizesAndChecksArithmetic() {
           "zero must have the sole encoding 0/1");
   expectErrorContains(__func__, ExactRatio::get(5, 0),
                       "denominator must be positive");
+  require(__func__,
+          takeExpected(__func__, reduced.addInteger(4)) == ratio(__func__, 11, 2),
+          "integer addition changed the reduced denominator");
+  expectErrorContains(
+      __func__,
+      ratio(__func__, std::numeric_limits<std::uint64_t>::max(), 1)
+          .addInteger(1),
+      "overflow");
 
   require(__func__,
           takeExpected(

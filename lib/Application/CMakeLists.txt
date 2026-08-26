@@ -118,6 +118,7 @@ add_library(LoomApplicationBuild
 
 add_library(LoomApplicationDeploymentRuntime
   DeploymentRuntime.cpp
+  ResourceTimeExecution.cpp
 )
 
 target_include_directories(LoomApplicationDeploymentRuntime PUBLIC

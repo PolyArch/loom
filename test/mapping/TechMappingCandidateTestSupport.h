@@ -25,6 +25,9 @@ adg::FinalizedFabricDesign
 buildTemporalSwitchPackingFabric(const ArtifactStore &store,
                                  std::uint64_t residentRows = 2);
 
+adg::FinalizedFabricDesign
+buildTemporalHandshakeCycleFabric(const ArtifactStore &store);
+
 ResolvedConfig buildSpatialPnrTestResolvedConfig();
 
 mapping::FinalizedSpatialMappingConstraintSet buildSpatialMappingConstraints(

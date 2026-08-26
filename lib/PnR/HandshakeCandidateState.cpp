@@ -1,9 +1,10 @@
 #include "PnR/HandshakeCandidateState.h"
 
 #include "Common/MappingDebugLog.h"
-#include "Fabric/Identity/FabricRefBytes.h"
+#include "HandshakeProjectionInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Twine.h"
 
 #include <algorithm>
@@ -23,30 +24,12 @@
 #include <vector>
 
 using namespace loom::pnr;
+using loom::pnr::detail::arcIdentity;
+using loom::pnr::detail::nodeIdentity;
+using loom::pnr::detail::nodeKey;
+using loom::pnr::detail::rebuildHandshakeSelection;
 
 namespace loom::pnr::detail {
-
-struct HandshakeNodeIdentity final {
-  std::optional<::loom::fabric::HandshakeSignalRef> boundarySignal;
-  PnrIndex owner = 0;
-  std::uint32_t localNode = 0;
-
-  friend bool operator==(const HandshakeNodeIdentity &lhs,
-                         const HandshakeNodeIdentity &rhs) {
-    return lhs.boundarySignal == rhs.boundarySignal && lhs.owner == rhs.owner &&
-           lhs.localNode == rhs.localNode;
-  }
-};
-
-struct HandshakeArcIdentity final {
-  HandshakeNodeIdentity source;
-  HandshakeNodeIdentity destination;
-
-  friend bool operator==(const HandshakeArcIdentity &lhs,
-                         const HandshakeArcIdentity &rhs) {
-    return lhs.source == rhs.source && lhs.destination == rhs.destination;
-  }
-};
 
 struct MaterializedHandshakeGraph final {
   std::vector<std::optional<::loom::fabric::HandshakeSignalRef>> nodeSignals;
@@ -156,133 +139,6 @@ std::uint64_t elapsedNanoseconds(std::chrono::steady_clock::time_point begin) {
                          std::chrono::steady_clock::now() - begin)
                          .count();
   return count <= 0 ? 0 : static_cast<std::uint64_t>(count);
-}
-
-std::string signalKey(const ::loom::fabric::HandshakeSignalRef &signal) {
-  std::vector<std::uint8_t> bytes =
-      ::loom::fabric::canonicalFabricBytes(signal.endpoint);
-  bytes.push_back(static_cast<std::uint8_t>(signal.signal));
-  return std::string(reinterpret_cast<const char *>(bytes.data()),
-                     bytes.size());
-}
-
-std::string nodeKey(const detail::HandshakeNodeIdentity &identity) {
-  if (identity.boundarySignal)
-    return std::string(1, '\1') + signalKey(*identity.boundarySignal);
-  std::string key(9, '\0');
-  key[0] = '\2';
-  const auto append = [&](std::size_t offset, std::uint32_t value) {
-    for (std::size_t byte = 0; byte != 4; ++byte)
-      key[offset + byte] = static_cast<char>(value >> (24 - byte * 8));
-  };
-  append(1, identity.owner);
-  append(5, identity.localNode);
-  return key;
-}
-
-llvm::Expected<detail::HandshakeNodeIdentity>
-nodeIdentity(PnrIndex owner, const ::loom::fabric::HandshakeOwnerModel &model,
-             std::uint32_t localNode) {
-  if (localNode >= model.nodeCount())
-    return candidateError("active handshake node is out of range");
-  const ::loom::fabric::HandshakeOwnerNode node = model.node(localNode);
-  detail::HandshakeNodeIdentity identity;
-  identity.boundarySignal = node.boundarySignal;
-  if (!node.boundarySignal) {
-    identity.owner = owner;
-    identity.localNode = localNode;
-  }
-  return identity;
-}
-
-llvm::Expected<detail::HandshakeArcIdentity>
-arcIdentity(PnrIndex owner, const ::loom::fabric::HandshakeOwnerModel &model,
-            const ::loom::fabric::HandshakeOwnerArc &arc) {
-  auto source = nodeIdentity(owner, model, arc.source);
-  if (!source)
-    return source.takeError();
-  auto destination = nodeIdentity(owner, model, arc.destination);
-  if (!destination)
-    return destination.takeError();
-  return detail::HandshakeArcIdentity{std::move(*source),
-                                      std::move(*destination)};
-}
-
-struct RebuiltHandshakeSelection final {
-  std::vector<PnrIndex> fragmentRefcounts;
-  std::vector<PnrIndex> activeFragments;
-  std::vector<PnrIndex> traversalRefcounts;
-  std::vector<PnrIndex> allGroupSelectedWitnessCounts;
-};
-
-llvm::Expected<RebuiltHandshakeSelection>
-rebuildHandshakeSelection(const FrozenSpatialHandshakeIndex &index,
-                          llvm::ArrayRef<PnrIndex> selectedFragments,
-                          llvm::ArrayRef<PnrIndex> traversalUses) {
-  const auto traversalFragmentOffsets = index.traversalFragmentOffsets();
-  const auto traversalGroupOffsets = index.traversalAllGroupOffsets();
-  if (traversalFragmentOffsets.empty() || traversalGroupOffsets.empty())
-    return candidateError("projection traversal offsets are empty");
-  const std::size_t traversalCount = traversalFragmentOffsets.size() - 1;
-  if (traversalUses.size() != traversalCount ||
-      traversalGroupOffsets.size() != traversalCount + 1)
-    return candidateError(
-        "projection traversal dimension does not match its index");
-
-  RebuiltHandshakeSelection result;
-  result.fragmentRefcounts.assign(index.fragments().size(), 0);
-  result.traversalRefcounts.assign(traversalUses.begin(), traversalUses.end());
-  result.allGroupSelectedWitnessCounts.assign(index.allTraversalGroups().size(),
-                                              0);
-  const auto activateFragment = [&](PnrIndex fragment) -> llvm::Error {
-    if (fragment >= result.fragmentRefcounts.size())
-      return candidateError("projection fragment is out of range");
-    return increment(result.fragmentRefcounts[fragment], "fragment");
-  };
-  for (PnrIndex fragment : index.fixedFragments())
-    if (llvm::Error error = activateFragment(fragment))
-      return std::move(error);
-  for (PnrIndex fragment : selectedFragments)
-    if (llvm::Error error = activateFragment(fragment))
-      return std::move(error);
-
-  for (PnrIndex traversal = 0; traversal < traversalCount; ++traversal) {
-    if (traversalUses[traversal] == 0)
-      continue;
-    for (PnrIndex fragment : index.traversalFragments().slice(
-             traversalFragmentOffsets[traversal],
-             traversalFragmentOffsets[traversal + 1] -
-                 traversalFragmentOffsets[traversal]))
-      if (llvm::Error error = activateFragment(fragment))
-        return std::move(error);
-    for (PnrIndex group : index.traversalAllGroups().slice(
-             traversalGroupOffsets[traversal],
-             traversalGroupOffsets[traversal + 1] -
-                 traversalGroupOffsets[traversal])) {
-      if (group >= result.allGroupSelectedWitnessCounts.size())
-        return candidateError("projection traversal group is out of range");
-      if (llvm::Error error =
-              increment(result.allGroupSelectedWitnessCounts[group],
-                        "all-traversal witness"))
-        return std::move(error);
-    }
-  }
-  for (auto [groupOrdinal, group] :
-       llvm::enumerate(index.allTraversalGroups())) {
-    const PnrIndex selected =
-        result.allGroupSelectedWitnessCounts[groupOrdinal];
-    if (selected > group.witnessCount)
-      return candidateError(
-          "projection selects excess all-traversal witnesses");
-    if (selected == group.witnessCount)
-      if (llvm::Error error = activateFragment(group.fragment))
-        return std::move(error);
-  }
-  result.activeFragments.reserve(result.fragmentRefcounts.size());
-  for (auto [fragment, refcount] : llvm::enumerate(result.fragmentRefcounts))
-    if (refcount != 0)
-      result.activeFragments.push_back(static_cast<PnrIndex>(fragment));
-  return result;
 }
 
 void buildCycleWitness(detail::MaterializedHandshakeGraph &graph) {
@@ -1285,6 +1141,11 @@ HandshakeCandidateState::materializationStatistics() const {
   result.transactionRemovedArcCount = transactionRemovedArcCount_;
   result.transactionAffectedNodeCount = transactionAffectedNodeCount_;
   result.transactionAffectedRankSpan = transactionAffectedRankSpan_;
+  result.cachedVerificationCount = cachedVerificationCount_;
+  result.coldVerificationConstructionCount =
+      coldVerificationConstructionCount_;
+  result.coldVerificationConstructionNanoseconds =
+      coldVerificationConstructionNanoseconds_;
   const auto addBytes = [&](std::size_t bytes) {
     addWork(result.retainedBytes, static_cast<std::uint64_t>(bytes));
   };
@@ -1320,7 +1181,10 @@ llvm::ArrayRef<PnrIndex> HandshakeCandidateState::topologicalRanks() const {
   return graph_->ranks;
 }
 
-llvm::Error HandshakeCandidateState::verify() const {
+llvm::Error HandshakeCandidateState::verifyCachedState() const {
+  addWork(cachedVerificationCount_);
+  if (activeTransaction_)
+    return candidateError("cannot verify during a handshake transaction");
   if (!index_ || !graph_ ||
       fragmentRefcounts_.size() != index_->fragments().size() ||
       traversalRefcounts_.size() + 1 !=
@@ -1328,12 +1192,16 @@ llvm::Error HandshakeCandidateState::verify() const {
       allGroupSelectedWitnessCounts_.size() !=
           index_->allTraversalGroups().size())
     return candidateError("candidate shape does not match its frozen index");
-  std::vector<PnrIndex> expectedActive;
-  expectedActive.reserve(activeFragments_.size());
-  for (auto [fragment, refcount] : llvm::enumerate(fragmentRefcounts_))
-    if (refcount != 0)
-      expectedActive.push_back(static_cast<PnrIndex>(fragment));
-  if (expectedActive != activeFragments_)
+  std::size_t activeOrdinal = 0;
+  for (auto [fragment, refcount] : llvm::enumerate(fragmentRefcounts_)) {
+    if (refcount == 0)
+      continue;
+    if (activeOrdinal >= activeFragments_.size() ||
+        activeFragments_[activeOrdinal] != static_cast<PnrIndex>(fragment))
+      return candidateError("active fragment index is stale");
+    ++activeOrdinal;
+  }
+  if (activeOrdinal != activeFragments_.size())
     return candidateError("active fragment index is stale");
 
   if (graph_->nodeSignals.size() != graph_->nodeIdentities.size() ||
@@ -1341,20 +1209,32 @@ llvm::Error HandshakeCandidateState::verify() const {
       graph_->nodeSignals.size() != graph_->reverseArcs.size() ||
       graph_->nodeSignals.size() != graph_->order.size() ||
       graph_->nodeSignals.size() != graph_->ranks.size() ||
+      graph_->nodeSignals.size() != graph_->nodeOrdinals.size() ||
       graph_->arcs.size() != graph_->arcIdentities.size() ||
       graph_->arcs.size() != graph_->fixedArcs.size() ||
-      graph_->arcs.size() != graph_->arcContributors.size())
+      graph_->arcs.size() != graph_->arcContributors.size() ||
+      graph_->arcs.size() != graph_->arcOrdinals.size() ||
+      !graph_->cycleWitness.empty())
     return candidateError("materialized handshake graph shape is stale");
-  std::vector<std::uint8_t> observedNodes(graph_->order.size(), 0);
+  for (const auto &entry : graph_->nodeOrdinals)
+    if (entry.second >= graph_->nodeIdentities.size())
+      return candidateError("materialized handshake node ordinal is stale");
+  for (PnrIndex node = 0; node < graph_->nodeIdentities.size(); ++node)
+    if (graph_->nodeSignals[node] !=
+        graph_->nodeIdentities[node].boundarySignal)
+      return candidateError("materialized handshake node signal is stale");
   for (auto [rank, node] : llvm::enumerate(graph_->order)) {
-    if (node >= graph_->ranks.size() || observedNodes[node] != 0 ||
-        graph_->ranks[node] != rank)
+    if (node >= graph_->ranks.size() || graph_->ranks[node] != rank)
       return candidateError("materialized handshake topology is not a rank");
-    observedNodes[node] = 1;
   }
   for (auto [arc, record] : llvm::enumerate(graph_->arcs)) {
     if (record.source >= graph_->nodeIdentities.size() ||
-        record.destination >= graph_->nodeIdentities.size())
+        record.destination >= graph_->nodeIdentities.size() ||
+        !(graph_->arcIdentities[arc].source ==
+          graph_->nodeIdentities[record.source]) ||
+        !(graph_->arcIdentities[arc].destination ==
+          graph_->nodeIdentities[record.destination]) ||
+        graph_->fixedArcs[arc] > 1)
       return candidateError("materialized handshake arc is out of range");
     const auto &contributors = graph_->arcContributors[arc];
     if (!llvm::is_sorted(contributors) ||
@@ -1366,8 +1246,71 @@ llvm::Error HandshakeCandidateState::verify() const {
         graph_->ranks[record.source] >= graph_->ranks[record.destination])
       return candidateError("materialized handshake topology is cyclic");
   }
+  for (const auto &[endpoints, arc] : graph_->arcOrdinals)
+    if (arc >= graph_->arcs.size() ||
+        graph_->arcs[arc].source != endpoints.first ||
+        graph_->arcs[arc].destination != endpoints.second)
+      return candidateError("materialized handshake arc ordinal is stale");
+  std::size_t outgoingArcCount = 0;
+  std::size_t reverseArcCount = 0;
+  for (PnrIndex node = 0; node < graph_->nodeIdentities.size(); ++node) {
+    const auto verifyAdjacency = [&](llvm::ArrayRef<PnrIndex> adjacency,
+                                     bool outgoing) -> llvm::Error {
+      PnrIndex previous = getInvalidPnrIndex();
+      for (PnrIndex arc : adjacency) {
+        if (arc >= graph_->arcs.size() ||
+            (previous != getInvalidPnrIndex() && arc <= previous) ||
+            (outgoing ? graph_->arcs[arc].source
+                      : graph_->arcs[arc].destination) != node)
+          return candidateError(
+              "materialized handshake adjacency is stale");
+        previous = arc;
+      }
+      return llvm::Error::success();
+    };
+    if (llvm::Error error = verifyAdjacency(graph_->outgoingArcs[node], true))
+      return error;
+    if (llvm::Error error = verifyAdjacency(graph_->reverseArcs[node], false))
+      return error;
+    if (graph_->outgoingArcs[node].size() >
+            std::numeric_limits<std::size_t>::max() - outgoingArcCount ||
+        graph_->reverseArcs[node].size() >
+            std::numeric_limits<std::size_t>::max() - reverseArcCount)
+      return candidateError("materialized handshake adjacency overflows");
+    outgoingArcCount += graph_->outgoingArcs[node].size();
+    reverseArcCount += graph_->reverseArcs[node].size();
+  }
+  if (outgoingArcCount != graph_->arcs.size() ||
+      reverseArcCount != graph_->arcs.size())
+    return candidateError("materialized handshake adjacency is incomplete");
+  for (auto [groupOrdinal, group] :
+       llvm::enumerate(index_->allTraversalGroups())) {
+    PnrIndex selectedWitnesses = 0;
+    for (PnrIndex traversal : index_->allTraversalGroupWitnesses().slice(
+             group.witnessOffset, group.witnessCount))
+      if (isTraversalSelected(traversal))
+        ++selectedWitnesses;
+    if (selectedWitnesses != allGroupSelectedWitnessCounts_[groupOrdinal])
+      return candidateError("all-traversal witness count is stale");
+    if (selectedWitnesses == group.witnessCount &&
+        fragmentRefcounts_[group.fragment] == 0)
+      return candidateError("satisfied all-traversal group is inactive");
+  }
+  for (PnrIndex fragment : index_->fixedFragments())
+    if (fragmentRefcounts_[fragment] == 0)
+      return candidateError("fixed handshake fragment is inactive");
+  return llvm::Error::success();
+}
 
+llvm::Error HandshakeCandidateState::verify() const {
+  if (llvm::Error error = verifyCachedState())
+    return error;
+
+  const auto begin = std::chrono::steady_clock::now();
+  addWork(coldVerificationConstructionCount_);
   auto rebuilt = materializeHandshakeGraph(*index_, activeFragments_);
+  addWork(coldVerificationConstructionNanoseconds_,
+          elapsedNanoseconds(begin));
   if (!rebuilt)
     return rebuilt.takeError();
   if (!rebuilt->cycleWitness.empty())
@@ -1385,23 +1328,6 @@ llvm::Error HandshakeCandidateState::verify() const {
   };
   if (activeArcSnapshot(*rebuilt) != activeArcSnapshot(*graph_))
     return candidateError("materialized handshake graph is stale");
-
-  for (auto [groupOrdinal, group] :
-       llvm::enumerate(index_->allTraversalGroups())) {
-    PnrIndex selectedWitnesses = 0;
-    for (PnrIndex traversal : index_->allTraversalGroupWitnesses().slice(
-             group.witnessOffset, group.witnessCount))
-      if (isTraversalSelected(traversal))
-        ++selectedWitnesses;
-    if (selectedWitnesses != allGroupSelectedWitnessCounts_[groupOrdinal])
-      return candidateError("all-traversal witness count is stale");
-    if (selectedWitnesses == group.witnessCount &&
-        fragmentRefcounts_[group.fragment] == 0)
-      return candidateError("satisfied all-traversal group is inactive");
-  }
-  for (PnrIndex fragment : index_->fixedFragments())
-    if (fragmentRefcounts_[fragment] == 0)
-      return candidateError("fixed handshake fragment is inactive");
   return llvm::Error::success();
 }
 

@@ -3,11 +3,18 @@
 
 #include "PnR/SpatialPathFinderRouter.h"
 
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/JSON.h"
 
 #include <optional>
 
 namespace loom::pnr::detail {
+
+llvm::Error pathFinderError(const llvm::Twine &message);
+
+std::string errorMessage(const llvm::ErrorInfoBase &error);
+
+llvm::Error classifyIterationFailure(llvm::Error failure, bool &completed);
 
 std::optional<PnrIndex>
 resourceStateForCapacity(const FrozenSpatialResourceIndex &resources,

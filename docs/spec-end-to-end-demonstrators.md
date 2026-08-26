@@ -145,10 +145,54 @@ from aggregate profiling evidence, never as a per-case exception.
 CGRA Spatial-only bring-up uses the canonical `medium` tier as its bootstrap
 ceiling while at least the ten representative workloads in this specification
 establish warmed active-wall, reference-cycle-rate, event-count, contention,
-and peak-memory evidence. Before System + CGRA conformance begins, the
-conformance owner must publish one suite-wide CGRA Spatial-only absolute budget
-in tracked gate configuration. Its value is selected from that aggregate
-evidence and the 100 k reference-cycles-per-wall-second target. It is not an
+and peak-memory evidence. Qualification then uses a 45-second per-attempt
+ceiling for the exact ten representative LoomBench rows selected by the
+tracked operator gate. Each row discards one warm-up execution and records
+three measured executions. Every measurement includes runtime-input loading,
+engine execution, and observation projection in active wall time. Artifact
+publication is measured separately and excluded. Peak resident memory is the
+high-water mark of the whole workload batch, not a per-execution sample. The
+profile binds the current operator-gate digest and exact Dataflow, workload,
+runtime-input, Fabric, TechMapping, and SpatialMapping roots.
+
+Qualification uses the production resolved Spatial PnR policy with
+`ExhaustConfiguredWork`; it does not replace that policy with a bounded-prefix
+completion goal or a fixture-local restart count. The same ResolvedConfig owns
+the preceding TechMapping search. That producer's bounded canonical frontier
+and typed outcome remain visible: a retained `SemanticLimitReached` frontier is
+not relabeled exhaustive or used to claim TechMapping optimality. Spatial PnR
+consumes the exact retained set and independently exhausts its configured work.
+The gate therefore qualifies PnR and simulation for those verified input
+Mappings; it does not prove an exhaustive TechMapping frontier. Each
+profile records both providers' typed outcomes and the Spatial PnR canonical
+planned and consumed work ledger. A
+completed qualification requires every planned unit to be consumed and the
+restart plan to equal the resolved seed-attempt count. Proof not established,
+semantic limits, cancellation, and process timeout remain typed incomplete
+outcomes and do not publish or preserve a gate file. A completed empty result
+is retained as a typed infeasibility outcome rather than being inferred from a
+timeout or an incomplete search.
+
+Each workload profile receives the canonical `xlong` process ceiling. This is
+an execution limit, not a PnR semantic-work bound: reaching it produces an
+incomplete qualification outcome, while a published gate still requires the
+production PnR provider to consume its complete configured work ledger.
+
+Before System + CGRA conformance begins, the conformance owner must publish one
+suite-wide CGRA Spatial-only absolute budget in tracked gate configuration.
+The value is selected from the aggregate evidence and the 100 k
+reference-cycles-per-wall-second target, and is derived with integer arithmetic:
+
+```text
+case_target_ns = ceil(reference_cycles * 1,000,000,000 / 100,000)
+spatial_absolute_budget_ns = max(case_target_ns across the ten rows)
+```
+
+Every measured active wall time must be no greater than its `case_target_ns`
+and the 45-second qualification ceiling. Qualification rejects a profile that
+misses either bound; it does not add headroom, round to a coarser quantum, or
+publish an inflated budget. The tracked gate records the complete profiles,
+the operator-gate digest, and the derived integer value. That value is not an
 Artifact field, semantic limit, model parameter, or per-case override. A later
 change requires new aggregate evidence and one tracked gate update. The paired
 System + CGRA budget consumes that exact published Spatial-only budget through

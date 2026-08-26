@@ -14,7 +14,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.fabric_template_generator.config.6.0";
+    "loom.fabric_template_generator.config.7.0";
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
     {CandidateGeneratorOutputSlotRef(0), "fabric", PlanValueRole::CandidateSet,
@@ -58,6 +58,8 @@ encodeConfig(const loom::adg::BuiltinTargetScale &scale) {
   appendU32(bytes, descriptor.schemaMinor);
   appendU32(bytes, scale.accCoreCount);
   appendU32(bytes, scale.meshDimension);
+  appendU32(bytes, scale.spatialMeshLanesPerDirection);
+  appendU32(bytes, scale.temporalMeshLanesPerDirection);
   appendU32(bytes, scale.spatialPeCount);
   appendU32(bytes, scale.temporalPeCount);
   const auto appendOccurrences = [&](const auto &occurrences) {
@@ -97,7 +99,7 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid("truncated template descriptor identity");
   llvm::StringRef identity(reinterpret_cast<const char *>(bytes.data()), size);
   bytes = bytes.drop_front(size);
-  if (bytes.size() != 120)
+  if (bytes.size() != 128)
     return invalid("template descriptor and scale are not canonical");
   std::uint32_t major = 0;
   std::uint32_t minor = 0;
@@ -121,6 +123,8 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   loom::adg::BuiltinTargetScale scale{};
   scale.accCoreCount = readU32();
   scale.meshDimension = readU32();
+  scale.spatialMeshLanesPerDirection = readU32();
+  scale.temporalMeshLanesPerDirection = readU32();
   scale.spatialPeCount = readU32();
   scale.temporalPeCount = readU32();
   scale.spatialFuOccurrences = readOccurrences();
@@ -157,7 +161,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     fabricTemplateCandidateGeneratorKind,
     "fabric_template",
-    "loom.fabric_template.generator.v6",
+    "loom.fabric_template.generator.v7",
     {},
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},

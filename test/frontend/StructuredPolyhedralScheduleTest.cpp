@@ -8,27 +8,40 @@
 #include "Frontend/Compilation/StructuredScop.h"
 #include "Frontend/IR/LoomDialect.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Simulator/NativeSimulationOracle.h"
+#include "Simulator/SimulationArtifacts.h"
+#include "StructuredPolyhedralMaterializer.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -54,7 +67,8 @@ mlir::MLIRContext &context() {
     mlir::DialectRegistry registry;
     registry.insert<dataflow::DataflowDialect, loom::LoomDialect,
                     mlir::affine::AffineDialect, mlir::arith::ArithDialect,
-                    mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
+                    mlir::DLTIDialect, mlir::func::FuncDialect,
+                    mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect>();
     registry.insert<mlir::scf::SCFDialect>();
     auto *created =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
@@ -64,10 +78,36 @@ mlir::MLIRContext &context() {
   return *result;
 }
 
+llvm::StringRef nativeDataLayout() {
+  static std::string layout = [] {
+    if (llvm::InitializeNativeTarget() ||
+        llvm::InitializeNativeTargetAsmPrinter())
+      fail("cannot initialize the native target");
+    auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
+    return take(target.getDefaultDataLayoutForTarget())
+        .getStringRepresentation();
+  }();
+  return layout;
+}
+
+llvm::StringRef nativeTargetTriple() {
+  static std::string triple = [] {
+    auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
+    return target.getTargetTriple().str();
+  }();
+  return triple;
+}
+
 loom::frontend::StructuredProgramCandidate parseProgram(llvm::StringRef text) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context());
   if (!module)
     fail("cannot parse Structured Program fixture");
+  module->getOperation()->setAttr(
+      "llvm.data_layout",
+      mlir::StringAttr::get(&context(), nativeDataLayout()));
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&context(), nativeTargetTriple()));
   return take(loom::frontend::finalizeStructuredProgram(module.get()));
 }
 
@@ -112,6 +152,279 @@ scfLoopReferences(const loom::frontend::StructuredProgramCandidate &candidate) {
   if (!outer || !inner)
     fail("fixture lost its exact SCF loop references");
   return {*outer, *inner};
+}
+
+void physicalLayoutInjectivityIsRequired() {
+  const auto requireRefusal = [](llvm::StringRef text) {
+    auto candidate = parseProgram(text);
+    auto analysis = take(loom::frontend::analyzeStructuredPolyhedralScop(
+        candidate, loopReferences(candidate).first));
+    const auto *refusal =
+        std::get_if<loom::frontend::StructuredScopRefusal>(&analysis);
+    if (!refusal || refusal->kind != loom::frontend::StructuredScopRefusalKind::
+                                         PhysicalLayoutProofNotEstablished)
+      fail("a physically aliasing memref entered the general schedule domain");
+  };
+  requireRefusal(R"mlir(
+module {
+  func.func @stride_zero(%state: memref<2xi32, strided<[0]>>) {
+    %value = arith.constant 7 : i32
+    affine.for %i = 0 to 2 {
+      affine.for %j = 0 to 2 {
+        affine.store %value, %state[%i] : memref<2xi32, strided<[0]>>
+      }
+    }
+    return
+  }
+}
+)mlir");
+  requireRefusal(R"mlir(
+module {
+  func.func @overlap(%state: memref<2x2xi32, strided<[1, 1]>>) {
+    %value = arith.constant 11 : i32
+    affine.for %i = 0 to 2 {
+      affine.for %j = 0 to 2 {
+        affine.store %value, %state[%i, %j]
+            : memref<2x2xi32, strided<[1, 1]>>
+      }
+    }
+    return
+  }
+}
+)mlir");
+
+  auto padded = parseProgram(R"mlir(
+module {
+  func.func @padded(
+      %state: memref<2x3xi32, strided<[4, 1], offset: 5>>) {
+    %value = arith.constant 13 : i32
+    affine.for %i = 0 to 2 {
+      affine.for %j = 0 to 3 {
+        affine.store %value, %state[%i, %j]
+            : memref<2x3xi32, strided<[4, 1], offset: 5>>
+      }
+    }
+    return
+  }
+}
+)mlir");
+  auto paddedAnalysis = take(loom::frontend::analyzeStructuredPolyhedralScop(
+      padded, loopReferences(padded).first));
+  if (!std::holds_alternative<loom::frontend::StructuredPolyhedralScopView>(
+          paddedAnalysis))
+    fail("a proven injective padded layout left the general schedule domain");
+}
+
+loom::frontend::StructuredPolyhedralSchedulePieceView
+divisionSchedulePiece(std::uint64_t statementOrdinal, std::int64_t parity,
+                      bool fission) {
+  using Constraint = loom::frontend::StructuredPolyhedralConstraintView;
+  using ConstraintKind = loom::frontend::StructuredPolyhedralConstraintKind;
+  constexpr std::size_t rowWidth = 8;
+  loom::frontend::StructuredPolyhedralSchedulePieceView piece;
+  piece.sourceDimensionCount = 2;
+  piece.scheduleDimensionCount = 4;
+  piece.parameterCount = 0;
+  piece.divisions.push_back({2, {0, 1, 0, 0, 0, 0, 0, 0}});
+  const auto equality = [&](std::initializer_list<std::int64_t> values) {
+    std::vector<std::int64_t> row(values);
+    if (row.size() != rowWidth)
+      fail("a local-div schedule row has the wrong width");
+    piece.constraints.push_back(
+        Constraint{ConstraintKind::Equality, std::move(row)});
+  };
+  const std::int64_t statement = static_cast<std::int64_t>(statementOrdinal);
+  if (fission) {
+    equality({0, 0, 1, 0, 0, 0, 0, -statement});
+    equality({-1, 0, 0, 1, 0, 0, 0, 0});
+    equality({-1, 0, 0, 0, 1, 0, -1, 0});
+    equality({0, -1, 0, 0, 0, 1, 2, 0});
+    equality({0, 0, 0, 0, 0, 1, 0, -parity});
+  } else {
+    equality({-1, 0, 1, 0, 0, 0, 0, 0});
+    equality({-1, 0, 0, 1, 0, 0, -1, 0});
+    equality({0, -1, 0, 0, 1, 0, 2, 0});
+    equality({0, 0, 0, 0, 0, 1, 0, -statement});
+    equality({0, 0, 0, 0, 1, 0, 0, -parity});
+  }
+  return piece;
+}
+
+loom::frontend::StructuredPolyhedralScopView
+withDivisionSchedule(loom::frontend::StructuredPolyhedralScopView scop,
+                     bool fission) {
+  if (scop.statements.size() != 2 || !scop.parameters.empty())
+    fail("the local-div fixture has an unexpected frozen SCoP");
+  loom::frontend::StructuredPolyhedralScheduleView schedule;
+  schedule.provider =
+      loom::frontend::StructuredPolyhedralProviderKind::PinnedPollyIsl;
+  schedule.form = loom::frontend::StructuredPolyhedralScheduleForm::General;
+  schedule.parameterCount = 0;
+  schedule.dependenceCount = 0;
+  schedule.scheduleBandCount = 2;
+  schedule.scheduleDimensionCount = 4;
+  schedule.coincidentDimensionCount = 0;
+  for (std::uint64_t statement = 0; statement != scop.statements.size();
+       ++statement) {
+    loom::frontend::StructuredPolyhedralStatementScheduleView statementView;
+    statementView.statementOrdinal = statement;
+    statementView.pieces.push_back(
+        divisionSchedulePiece(statement, 0, fission));
+    statementView.pieces.push_back(
+        divisionSchedulePiece(statement, 1, fission));
+    schedule.statementSchedules.push_back(std::move(statementView));
+  }
+  scop.schedule = std::move(schedule);
+  return scop;
+}
+
+loom::frontend::StructuredProgramCandidate materializeFrozenScop(
+    const loom::frontend::StructuredProgramCandidate &parent,
+    const loom::frontend::StructuredEntityRef &root,
+    const loom::frontend::StructuredPolyhedralScopView &scop) {
+  auto parentView = take(parent.view());
+  auto source = take(parentView.resolve(root));
+  mlir::IRMapping mapping;
+  auto clone = take(loom::frontend::cloneStructuredProgramWithSourceLocations(
+      parent, {}, mapping));
+  mlir::Operation *clonedRoot = mapping.lookupOrNull(source.operation);
+  if (!clonedRoot)
+    fail("the local-div root was not mapped into its private clone");
+  llvm::SmallVector<mlir::Operation *> materializedOperations;
+  auto materialized = take(loom::frontend::detail::materializePinnedIslSchedule(
+      clonedRoot, scop, parentView, mapping, materializedOperations));
+  if (materialized)
+    fail("the local-div schedule was refused with kind " +
+         std::to_string(static_cast<std::uint32_t>(*materialized)));
+  if (materializedOperations.empty() || mlir::failed(mlir::verify(*clone)))
+    fail("the local-div materializer did not produce a valid exact clone");
+  return take(loom::frontend::finalizeStructuredProgram(clone.get()));
+}
+
+std::pair<loom::frontend::StructuredEntityRef,
+          loom::frontend::StructuredEntityRef>
+nativeOracleReferences(
+    const loom::frontend::StructuredProgramCandidate &candidate) {
+  auto view = take(candidate.view());
+  std::optional<loom::frontend::StructuredEntityRef> entry;
+  std::optional<loom::frontend::StructuredEntityRef> observation;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    if (auto function =
+            llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
+        function && function.getSymName() == "entry")
+      entry = entity.reference;
+    if (auto global =
+            llvm::dyn_cast_or_null<mlir::LLVM::GlobalOp>(entity.operation);
+        global && global.getSymName() == "observation")
+      observation = entity.reference;
+  }
+  if (!entry || !observation)
+    fail("the local-div oracle lost its entry or observation global");
+  return {*entry, *observation};
+}
+
+loom::frontend::StructuredProgramCandidate withoutDistinctObjectAssumptions(
+    const loom::frontend::StructuredProgramCandidate &candidate) {
+  mlir::OwningOpRef<mlir::ModuleOp> clone(
+      llvm::cast<mlir::ModuleOp>(candidate.module()->clone()));
+  llvm::SmallVector<mlir::memref::DistinctObjectsOp> assumptions;
+  clone->walk([&](mlir::memref::DistinctObjectsOp operation) {
+    assumptions.push_back(operation);
+  });
+  for (mlir::memref::DistinctObjectsOp operation : assumptions) {
+    for (auto [result, operand] :
+         llvm::zip(operation.getResults(), operation.getOperands()))
+      result.replaceAllUsesWith(operand);
+    operation.erase();
+  }
+  mlir::PassManager manager(clone->getContext());
+  manager.addPass(mlir::createLowerAffinePass());
+  if (mlir::failed(manager.run(*clone)))
+    fail("the independent oracle could not lower affine control");
+  return take(loom::frontend::finalizeStructuredProgram(clone.get()));
+}
+
+void requireEquivalentNativeObservations(
+    const loom::frontend::StructuredProgramCandidate &parent,
+    const loom::frontend::StructuredProgramCandidate &child) {
+  auto executableParent = withoutDistinctObjectAssumptions(parent);
+  auto executableChild = withoutDistinctObjectAssumptions(child);
+  auto references = nativeOracleReferences(executableParent);
+  auto view = take(executableParent.view());
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{
+      references.first};
+  workloadDraft.observableContract.returnValue = true;
+  workloadDraft.observableContract.memories.push_back(
+      {loom::sim::GlobalObjectTarget{references.second},
+       loom::sim::MemoryObservationForm::FullState});
+  auto workload =
+      take(loom::sim::finalizeSimulationWorkload(workloadDraft, view));
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft inputDraft{
+      workload.identity()};
+  auto input = take(
+      loom::sim::finalizeSimulationRuntimeInput(inputDraft, workload, view));
+  auto expected = take(loom::sim::executeNativeStructuredProgram(
+      executableParent, workload, input));
+  auto actual = take(loom::sim::executeSelectedStructuredProgram(
+      executableChild, executableParent, workload, input));
+  if (expected.memories.size() != 1 || actual.memories.size() != 1 ||
+      !expected.returnValue || expected.returnValue->lanes.size() != 1 ||
+      expected.returnValue->lanes.front().bits != llvm::APInt(32, 18) ||
+      !loom::sim::haveEquivalentFunctionalObservations(expected, actual))
+    fail("the local-div parent and child changed native memory observations");
+}
+
+void localDivisionSchedulesHaveIndependentSemantics() {
+  auto parent = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+module attributes {dlti.dl_spec = #layout} {
+  memref.global @left : memref<2x4xi32> = dense<0>
+  memref.global @right : memref<2x4xi32> = dense<0>
+  llvm.mlir.global internal @observation(0 : i32) : i32
+
+  llvm.func @entry() -> i32 {
+    %left = memref.get_global @left : memref<2x4xi32>
+    %right = memref.get_global @right : memref<2x4xi32>
+    %left0, %right0 = memref.distinct_objects %left, %right
+        : memref<2x4xi32>, memref<2x4xi32>
+    %seven = arith.constant 7 : i32
+    %eleven = arith.constant 11 : i32
+    affine.for %i = 0 to 2 {
+      affine.for %j = 0 to 4 {
+        affine.store %seven, %left0[%i, %j] : memref<2x4xi32>
+        affine.store %eleven, %right0[%i, %j] : memref<2x4xi32>
+      }
+    }
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    %lhs = memref.load %left0[%c1, %c3] : memref<2x4xi32>
+    %rhs = memref.load %right0[%c1, %c3] : memref<2x4xi32>
+    %sum = arith.addi %lhs, %rhs : i32
+    %address = llvm.mlir.addressof @observation : !llvm.ptr
+    llvm.store %sum, %address : i32, !llvm.ptr
+    llvm.return %sum : i32
+  }
+}
+)mlir");
+  const auto root = loopReferences(parent).first;
+  auto analysis =
+      take(loom::frontend::analyzeStructuredPolyhedralScop(parent, root));
+  const auto *original =
+      std::get_if<loom::frontend::StructuredPolyhedralScopView>(&analysis);
+  if (!original)
+    fail("the local-div oracle was refused with kind " +
+         std::to_string(static_cast<std::uint32_t>(
+             std::get<loom::frontend::StructuredScopRefusal>(analysis).kind)));
+  if (original->statements.size() != 2 || !original->dependences.empty())
+    fail("the local-div oracle did not form two independent statements");
+
+  auto fusedScop = withDivisionSchedule(*original, false);
+  auto fused = materializeFrozenScop(parent, root, fusedScop);
+  requireEquivalentNativeObservations(parent, fused);
+  auto fissionScop = withDivisionSchedule(*original, true);
+  auto fission = materializeFrozenScop(parent, root, fissionScop);
+  requireEquivalentNativeObservations(parent, fission);
 }
 
 void scfStatementMajorScheduleMaterializes(
@@ -172,6 +485,109 @@ module {
   }
   if (distributedRoots != 2)
     fail("SCF statement-major schedule did not materialize exact fission");
+}
+
+void imperfectGeneralScheduleMaterializes(
+    const loom::fabric::FinalizedFabricRoot &fabric) {
+  auto parent = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+module attributes {dlti.dl_spec = #layout} {
+  func.func @imperfect(%a: memref<?xi32>, %b: memref<?xi32>,
+                       %c: memref<?x?xi32>, %d: memref<?xi32>,
+                       %m: index, %n: index) {
+    %a0, %b0, %c0, %d0 = memref.distinct_objects %a, %b, %c, %d
+        : memref<?xi32>, memref<?xi32>, memref<?x?xi32>, memref<?xi32>
+    affine.for %i = 0 to %m {
+      %outer = affine.load %a0[%i] : memref<?xi32>
+      affine.for %j = 0 to %n {
+        %lhs = affine.load %a0[%i] : memref<?xi32>
+        %rhs = affine.load %b0[%j] : memref<?xi32>
+        %sum = arith.addi %lhs, %rhs : i32
+        affine.store %sum, %c0[%i, %j] : memref<?x?xi32>
+      }
+      %after = affine.load %d0[%i] : memref<?xi32>
+    }
+    return
+  }
+}
+)mlir");
+  const loom::frontend::StructuredEntityRef root = loopReferences(parent).first;
+  auto analysis =
+      take(loom::frontend::analyzeStructuredPolyhedralScop(parent, root));
+  const auto *scop =
+      std::get_if<loom::frontend::StructuredPolyhedralScopView>(&analysis);
+  if (!scop || !scop->imperfectNest || scop->loopCount != 2 ||
+      scop->maximumLoopDepth != 2 || scop->statements.size() != 6 ||
+      scop->schedule.scheduleBandCount < 2 ||
+      scop->schedule.form !=
+          loom::frontend::StructuredPolyhedralScheduleForm::General ||
+      llvm::none_of(
+          scop->statements,
+          [](const auto &statement) {
+            return statement.domain.dimensions.size() == 1;
+          }) ||
+      llvm::none_of(
+          scop->statements,
+          [](const auto &statement) {
+            return statement.domain.dimensions.size() == 2;
+          }) ||
+      llvm::none_of(
+          scop->dependences,
+          [](const auto &dependence) {
+            return dependence.kind ==
+                   loom::frontend::StructuredPolyhedralDependenceKind::
+                       ScalarSsa;
+          }))
+    fail("imperfect fixture left its admitted general schedule");
+
+  auto domain = take(
+      loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 2));
+  auto proposal = llvm::find_if(domain.proposals, [&](const auto &candidate) {
+    return candidate.decision().loop == root &&
+           candidate.decision().kind ==
+               loom::frontend::StructuredScheduleDecisionKind::
+                   PolyhedralSchedule;
+  });
+  if (proposal == domain.proposals.end() ||
+      llvm::any_of(domain.refusals, [&](const auto &refusal) {
+        return refusal.loop == root &&
+               refusal.kind == loom::frontend::StructuredScopRefusalKind::
+                                   PolyhedralMaterializationUnavailable;
+      }))
+    fail("imperfect general schedule did not produce an exact proposal");
+
+  auto child = take(loom::frontend::materializeStructuredScheduleProposal(
+      parent, *proposal, fabric));
+  auto direct = take(loom::frontend::materializeStructuredScheduleDecision(
+      parent, proposal->decision()));
+  if (child.structuredProgram.identity() != direct.structuredProgram.identity())
+    fail("imperfect general schedule replay changed candidate identity");
+  if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
+          parent, fabric, proposal->decision(), child.structuredProgram))
+    fail("imperfect general derivation verification failed: " +
+         llvm::toString(std::move(error)));
+
+  mlir::func::FuncOp function =
+      child.structuredProgram.module().lookupSymbol<mlir::func::FuncOp>(
+          "imperfect");
+  if (!function)
+    fail("imperfect general child lost its function");
+  std::size_t affineLoops = 0;
+  std::size_t scheduledLoops = 0;
+  std::size_t loads = 0;
+  std::size_t stores = 0;
+  std::size_t additions = 0;
+  function.walk([&](mlir::Operation *operation) {
+    affineLoops += llvm::isa<mlir::affine::AffineForOp>(operation);
+    scheduledLoops += llvm::isa<mlir::scf::ForOp>(operation);
+    loads += llvm::isa<mlir::memref::LoadOp>(operation);
+    stores += llvm::isa<mlir::memref::StoreOp>(operation);
+    additions += llvm::isa<mlir::arith::AddIOp>(operation) &&
+                 operation->getResult(0).getType().isInteger(32);
+  });
+  if (affineLoops != 0 || scheduledLoops < 2 || loads != 4 || stores != 1 ||
+      additions != 1)
+    fail("imperfect general child changed its exact statement realization");
 }
 
 void statementMajorScheduleMaterializesAndReplays() {
@@ -384,12 +800,15 @@ module {
           &scalarAnalysis);
   if (!scalarScop ||
       scalarScop->schedule.form !=
-          loom::frontend::StructuredPolyhedralScheduleForm::StatementMajor ||
+          loom::frontend::StructuredPolyhedralScheduleForm::SourceOrder ||
       llvm::none_of(scalarScop->dependences, [](const auto &dependence) {
         return dependence.kind ==
                loom::frontend::StructuredPolyhedralDependenceKind::ScalarSsa;
       }))
-    fail("scalar-expansion fixture left its exact provider form");
+    fail("scalar precedence fixture left its source-order provider form: " +
+         std::to_string(
+             scalarScop ? static_cast<std::uint32_t>(scalarScop->schedule.form)
+                        : 99));
   auto scalarDomain = take(loom::frontend::enumerateStructuredScheduleDecisions(
       scalarExpansion, fabric, 2));
   if (llvm::any_of(scalarDomain.proposals,
@@ -399,19 +818,22 @@ module {
                                 loom::frontend::StructuredScheduleDecisionKind::
                                     PolyhedralSchedule;
                    }) ||
-      llvm::none_of(scalarDomain.refusals, [&](const auto &refusal) {
+      llvm::any_of(scalarDomain.refusals, [&](const auto &refusal) {
         return refusal.loop == scalarRoot &&
                refusal.kind == loom::frontend::StructuredScopRefusalKind::
                                    PolyhedralMaterializationUnavailable;
       }))
-    fail("cross-statement SSA escaped its typed materialization refusal");
+    fail("source-order scalar precedence acquired a false transform refusal");
   scfStatementMajorScheduleMaterializes(fabric);
+  imperfectGeneralScheduleMaterializes(fabric);
   llvm::sys::fs::remove_directories(directory);
 }
 
 } // namespace
 
 int main() {
+  physicalLayoutInjectivityIsRequired();
+  localDivisionSchedulesHaveIndependentSemantics();
   statementMajorScheduleMaterializesAndReplays();
   return EXIT_SUCCESS;
 }

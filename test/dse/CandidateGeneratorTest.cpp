@@ -99,6 +99,18 @@ llvm::Error validateDecision(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
     decisionSchema, validateDecision};
 
+llvm::Error validateProof(const CandidateGeneratorInfeasibilityProof &,
+                          llvm::ArrayRef<CandidateGeneratorInputBinding>,
+                          const ResolvedCandidateGeneratorBinding &,
+                          const loom::ArtifactStore &,
+                          const loom::BlobStore &) {
+  return llvm::Error::success();
+}
+
+constexpr std::array<std::uint8_t, 4> proofSchema = {0x50, 0x52, 0x4f, 0x4f};
+const CandidateGeneratorOwnerInfeasibilityProofContract proofContract{
+    proofSchema, validateProof};
+
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> inputSlots = {{{
     CandidateGeneratorInputSlotRef(0),
     "subject",
@@ -127,6 +139,30 @@ const CandidateGeneratorDescriptor descriptor{
     &lineageContract,
     loom::ProviderForm::InProcess,
 };
+
+void proofContractRequiresEmptyAdmittingOutputs() {
+  constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1>
+      nonemptyOutputs = {{{CandidateGeneratorOutputSlotRef(0), "candidate",
+                           PlanValueRole::CandidateSet, &outputSchema,
+                           PlanValueCardinality::ExactlyOne}}};
+  const CandidateGeneratorDescriptor invalidDescriptor{
+      CandidateGeneratorKind(0x7fff0002),
+      "test.generator.nonempty_proof",
+      "loom.test.generator.nonempty_proof.v1",
+      inputSlots,
+      nonemptyOutputs,
+      ResolvedDseConfigViewContract{configSchema, validateConfig},
+      CandidateGeneratorDeterminism::Deterministic,
+      workUnits,
+      nullptr,
+      loom::ProviderForm::InProcess,
+      nullptr,
+      nullptr,
+      &proofContract,
+  };
+  requireErrorContains(registerCandidateGeneratorDescriptor(invalidDescriptor),
+                       "empty-admitting output slots");
+}
 
 enum class ProviderMode {
   Valid,
@@ -864,6 +900,7 @@ void bindingIdentityDerivationUsesExactFraming() {
 }
 
 int main() {
+  proofContractRequiresEmptyAdmittingOutputs();
   exerciseRegistryAndBinding();
   bindingIdentityDerivationUsesExactFraming();
   externalProviderFormAdmission();

@@ -208,6 +208,8 @@ void parameterizedTemplateScale(
   scale = loom::adg::builtinSmallTarget.scale;
   scale.accCoreCount = 2;
   scale.meshDimension = 5;
+  scale.spatialMeshLanesPerDirection = 3;
+  scale.temporalMeshLanesPerDirection = 4;
   scale.spatialPeCount = 13;
   scale.temporalPeCount = 5;
   scale.temporalResidentContexts = 3;
@@ -229,7 +231,9 @@ void parameterizedTemplateScale(
           "resolved AccCore count did not reach the System artifact");
   auto module = importBuiltinModule(system, fixture);
   const std::uint64_t expectedMeshLinkFifos =
-      16 * scale.meshDimension * (scale.meshDimension - 1);
+      4 * scale.meshDimension * (scale.meshDimension - 1) *
+      (scale.spatialMeshLanesPerDirection +
+       scale.temporalMeshLanesPerDirection);
   const std::uint64_t expectedAdapterFifos =
       3 * (scale.spatialMemoryCount + scale.temporalMemoryCount) +
       2 * scale.temporalPeCount * scale.crossScheduleBoundaryLanesPerTemporalPe;

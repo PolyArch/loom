@@ -1187,13 +1187,14 @@ public:
       const FrozenSpatialPnrProblem &problem,
       DeterministicPnrRandomStream *diversificationStream,
       std::uint64_t assignmentLimit, std::uint64_t assignmentAttempts,
+      SpatialPnrWorkLedgerView workLedger,
       std::vector<SpatialComputeBindingSelection> computeBindings,
       std::vector<SpatialMemoryBindingSelection> memoryBindings,
       std::vector<PnrIndex> portAttachments,
       std::vector<PnrIndex> graphBoundaryAttachments)
       : problem_(problem), diversificationStream_(diversificationStream),
         assignmentLimit_(assignmentLimit),
-        assignmentAttempts_(assignmentAttempts),
+        assignmentAttempts_(assignmentAttempts), workLedger_(workLedger),
         computeBindings_(std::move(computeBindings)),
         memoryBindings_(std::move(memoryBindings)),
         portAttachments_(std::move(portAttachments)),
@@ -1205,7 +1206,10 @@ public:
     auto completed = search();
     if (!completed)
       return completed.takeError();
-    if (!*completed)
+    if (*completed == DependentSearchResult::WorkLimit)
+      return initializerFailure(InitializerRelationSolveFailureKind::WorkLimit,
+                                "exhausted its assignment work limit");
+    if (*completed == DependentSearchResult::Contradiction)
       return initializerFailure(
           InitializerRelationSolveFailureKind::FixedRootInfeasible,
           "has no complete dependent-decision assignment");
@@ -1227,6 +1231,12 @@ public:
   std::uint64_t assignmentAttempts() const { return assignmentAttempts_; }
 
 private:
+  enum class DependentSearchResult : std::uint8_t {
+    Complete,
+    Contradiction,
+    WorkLimit,
+  };
+
   enum class DecisionKind : std::uint8_t {
     MemoryOperationPlan,
     LogicalMemoryBinding,
@@ -1338,12 +1348,18 @@ private:
     return llvm::Error::success();
   }
 
-  llvm::Error consumeAssignmentAttempt() {
+  llvm::Expected<bool> beginAssignmentAttempt() {
     if (assignmentAttempts_ == assignmentLimit_)
-      return initializerFailure(InitializerRelationSolveFailureKind::WorkLimit,
-                                "exhausted its assignment work limit");
+      return false;
+    if (llvm::Error error =
+            workLedger_.plan(SpatialPnrWorkKind::InitializerAssignment))
+      return std::move(error);
     ++assignmentAttempts_;
-    return llvm::Error::success();
+    return true;
+  }
+
+  llvm::Error finishAssignmentAttempt() {
+    return workLedger_.consume(SpatialPnrWorkKind::InitializerAssignment);
   }
 
   bool
@@ -1616,7 +1632,7 @@ private:
     return true;
   }
 
-  llvm::Expected<bool> search() {
+  llvm::Expected<DependentSearchResult> search() {
     while (true) {
       bool allAssigned = true;
       bool propagated = false;
@@ -1631,7 +1647,7 @@ private:
         if (!count)
           return count.takeError();
         if (*count == 0)
-          return false;
+          return DependentSearchResult::Contradiction;
         if (*count == 1) {
           assignDecision(ordinal, canonicalChoices_[decision.choiceOffset]);
           propagated = true;
@@ -1639,7 +1655,8 @@ private:
         }
       }
       if (allAssigned) {
-        return completeAssignmentValid();
+        return completeAssignmentValid() ? DependentSearchResult::Complete
+                                         : DependentSearchResult::Contradiction;
       }
       if (!propagated)
         break;
@@ -1655,7 +1672,7 @@ private:
       if (!count)
         return count.takeError();
       if (*count == 0)
-        return false;
+        return DependentSearchResult::Contradiction;
       if (*count < selectedCount) {
         selected = ordinal;
         selectedCount = *count;
@@ -1679,24 +1696,30 @@ private:
       return std::move(error);
 
     for (PnrIndex choice : order) {
-      if (llvm::Error error = consumeAssignmentAttempt())
-        return std::move(error);
+      auto admitted = beginAssignmentAttempt();
+      if (!admitted)
+        return admitted.takeError();
+      if (!*admitted)
+        return DependentSearchResult::WorkLimit;
       const std::size_t journalMark = assignmentJournal_.size();
       assignDecision(selected, choice);
       auto completed = search();
       if (!completed)
         return completed.takeError();
-      if (*completed)
-        return true;
+      if (llvm::Error error = finishAssignmentAttempt())
+        return std::move(error);
+      if (*completed != DependentSearchResult::Contradiction)
+        return *completed;
       rollback(journalMark);
     }
-    return false;
+    return DependentSearchResult::Contradiction;
   }
 
   const FrozenSpatialPnrProblem &problem_;
   DeterministicPnrRandomStream *diversificationStream_ = nullptr;
   std::uint64_t assignmentLimit_ = 0;
   std::uint64_t assignmentAttempts_ = 0;
+  SpatialPnrWorkLedgerView workLedger_;
   std::vector<SpatialComputeBindingSelection> computeBindings_;
   std::vector<SpatialMemoryBindingSelection> memoryBindings_;
   std::vector<PnrIndex> portAttachments_;
@@ -1721,7 +1744,7 @@ private:
 llvm::Expected<SpatialCandidateInitializerAttempt>
 loom::pnr::createSpatialCandidateInitializerAttempt(
     FrozenSpatialPnrProblemHandle problem, std::uint32_t attemptOrdinal,
-    std::uint64_t &assignmentAttempts) {
+    std::uint64_t &assignmentAttempts, SpatialPnrWorkLedgerView workLedger) {
   assignmentAttempts = 0;
   if (!problem)
     return initializerError("FrozenSpatialPnrProblem owner is null");
@@ -1731,8 +1754,8 @@ loom::pnr::createSpatialCandidateInitializerAttempt(
 
   const detail::SpatialBindingRelationModel &bindingRelations =
       problem->bindingRelations();
-  detail::InitializerRelationSolver relationSolver(
-      bindingRelations.relations());
+  detail::InitializerRelationSolver relationSolver(bindingRelations.relations(),
+                                                   {}, workLedger);
   std::optional<DeterministicPnrRandomStream> diversificationStream;
   if (attemptOrdinal != 0)
     diversificationStream.emplace(DeterministicPnrRandomStream::create(
@@ -1903,7 +1926,7 @@ loom::pnr::createSpatialCandidateInitializerAttempt(
   SpatialInitializerAttemptBuilder builder(
       *problem, diversificationStream ? &*diversificationStream : nullptr,
       policy.search.initializer.assignmentAttemptLimitPerSeed,
-      preferred->assignmentAttempts, std::move(computeBindings),
+      preferred->assignmentAttempts, workLedger, std::move(computeBindings),
       std::move(memoryBindings), std::move(portAttachments),
       std::move(graphBoundaryAttachments));
   llvm::Error buildError = builder.build();

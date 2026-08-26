@@ -271,7 +271,7 @@ compileTarget(std::unique_ptr<llvm::Module> module,
   auto generateSummary = std::visit(
       [&](const auto &result) {
         return loom::dse::validateAndSummarizeDsePlanGenerateInvocations(
-            result.planGenerateInvocations, store);
+            result.planGenerateInvocations, store, blobs);
       },
       *outcome);
   if (!generateSummary)

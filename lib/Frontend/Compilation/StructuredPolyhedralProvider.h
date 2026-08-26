@@ -8,6 +8,8 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <variant>
 #include <vector>
 
@@ -52,11 +54,86 @@ using PolyhedralScheduleProviderOutcome =
     std::variant<PolyhedralScheduleProviderView,
                  PolyhedralScheduleProviderRefusalKind>;
 
+enum class PolyhedralAstExpressionKind : std::uint32_t {
+  Integer = 0,
+  Identifier = 1,
+  And = 2,
+  AndThen = 3,
+  Or = 4,
+  OrElse = 5,
+  Maximum = 6,
+  Minimum = 7,
+  Negate = 8,
+  Add = 9,
+  Subtract = 10,
+  Multiply = 11,
+  Divide = 12,
+  FloorDivide = 13,
+  PositiveDivide = 14,
+  PositiveRemainder = 15,
+  ZeroRemainder = 16,
+  Conditional = 17,
+  Select = 18,
+  Equal = 19,
+  LessEqual = 20,
+  Less = 21,
+  GreaterEqual = 22,
+  Greater = 23,
+  Call = 24,
+};
+
+/// One invocation-local expression mechanically derived from the frozen
+/// schedule map. It is never serialized or used as candidate identity.
+struct PolyhedralAstExpression final {
+  PolyhedralAstExpressionKind kind = PolyhedralAstExpressionKind::Integer;
+  std::int64_t integer = 0;
+  std::string identifier;
+  std::vector<PolyhedralAstExpression> operands;
+};
+
+struct PolyhedralAstNode;
+
+struct PolyhedralAstFor final {
+  std::string iterator;
+  PolyhedralAstExpression initial;
+  PolyhedralAstExpression condition;
+  PolyhedralAstExpression increment;
+  std::unique_ptr<PolyhedralAstNode> body;
+};
+
+struct PolyhedralAstIf final {
+  PolyhedralAstExpression condition;
+  std::unique_ptr<PolyhedralAstNode> thenNode;
+  std::unique_ptr<PolyhedralAstNode> elseNode;
+};
+
+struct PolyhedralAstBlock final {
+  std::vector<PolyhedralAstNode> children;
+};
+
+struct PolyhedralAstUser final {
+  PolyhedralAstExpression call;
+};
+
+struct PolyhedralAstNode final {
+  std::variant<PolyhedralAstFor, PolyhedralAstIf, PolyhedralAstBlock,
+               PolyhedralAstUser>
+      value;
+};
+
+using PolyhedralAstBuildOutcome =
+    std::variant<PolyhedralAstNode, StructuredScopRefusalKind>;
+
 /// Computes one bounded ephemeral ISL schedule from MLIR-owned exact domains
 /// and dependence relations. No ISL object or spelling escapes this call.
 llvm::Expected<PolyhedralScheduleProviderOutcome> computePinnedIslSchedule(
     llvm::ArrayRef<PolyhedralStatementDomain> statements,
     llvm::ArrayRef<PolyhedralDependenceRelation> dependences);
+
+/// Reconstructs and independently checks the frozen schedule relation before
+/// deriving the bounded ISL AST consumed by ordinary-MLIR materialization.
+llvm::Expected<PolyhedralAstBuildOutcome>
+buildPinnedIslAst(const StructuredPolyhedralScopView &scop);
 
 } // namespace loom::frontend::detail
 
