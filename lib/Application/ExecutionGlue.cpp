@@ -185,13 +185,13 @@ llvm::Value *loadMmio32(llvm::IRBuilder<> &builder, llvm::Value *base,
   return load;
 }
 
-void storeAddressDescriptor(llvm::IRBuilder<> &builder, llvm::Value *base,
-                            std::uint64_t lowOffset, std::uint64_t highOffset,
-                            llvm::Value *address) {
+void storeMmio64Descriptor(llvm::IRBuilder<> &builder, llvm::Value *base,
+                           std::uint64_t lowOffset, std::uint64_t highOffset,
+                           llvm::Value *value) {
   llvm::Type *i32 = llvm::Type::getInt32Ty(builder.getContext());
-  storeMmio32(builder, base, lowOffset, builder.CreateTrunc(address, i32));
+  storeMmio32(builder, base, lowOffset, builder.CreateTrunc(value, i32));
   storeMmio32(builder, base, highOffset,
-              builder.CreateTrunc(builder.CreateLShr(address, 32), i32));
+              builder.CreateTrunc(builder.CreateLShr(value, 32), i32));
 }
 
 llvm::Value *loadMmio64Descriptor(llvm::IRBuilder<> &builder, llvm::Value *base,
@@ -207,6 +207,23 @@ llvm::Value *loadMmio64Descriptor(llvm::IRBuilder<> &builder, llvm::Value *base,
 
 void emitFence(llvm::IRBuilder<> &builder) {
   builder.CreateFence(llvm::AtomicOrdering::SequentiallyConsistent);
+}
+
+void emitRootLifecycleEvent(llvm::IRBuilder<> &builder, llvm::Value *dispatch,
+                            dataflow::RootThreadLaunchRef root,
+                            llvm::Value *occurrence,
+                            runtime::Gem5RootLifecycleAction action) {
+  const std::uint64_t entity = root.entity.value();
+  storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchRootEntityLow,
+              static_cast<std::uint32_t>(entity));
+  storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchRootEntityHigh,
+              static_cast<std::uint32_t>(entity >> 32));
+  storeMmio64Descriptor(
+      builder, dispatch, runtime::gem5ThreadDispatchRootOccurrenceLow,
+      runtime::gem5ThreadDispatchRootOccurrenceHigh, occurrence);
+  emitFence(builder);
+  storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchRootEvent,
+              static_cast<std::uint32_t>(action));
 }
 
 llvm::Value *bytePointer(llvm::IRBuilder<> &builder, llvm::Value *storage,
@@ -336,9 +353,11 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
   const std::string waitName = helperName + "_wait";
   const std::string handlesName = helperName + ".occurrences";
   const std::string activeName = helperName + ".active_generation";
+  const std::string rootOccurrenceName = helperName + ".root_occurrence";
   const std::string nextName = helperName + ".next_generation";
   if (module.getNamedValue(helperName) || module.getNamedValue(waitName) ||
       module.getNamedValue(handlesName) || module.getNamedValue(activeName) ||
+      module.getNamedValue(rootOccurrenceName) ||
       module.getNamedValue(nextName))
     return invalid("final-linked module defines a reserved dispatch helper");
   llvm::ArrayType *handlesType =
@@ -351,6 +370,10 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
       module, i64, false, llvm::GlobalValue::PrivateLinkage,
       llvm::ConstantInt::get(i64, 0), activeName);
   activeGeneration->setAlignment(llvm::Align(8));
+  auto *activeRootOccurrence = new llvm::GlobalVariable(
+      module, i64, false, llvm::GlobalValue::PrivateLinkage,
+      llvm::ConstantInt::get(i64, 0), rootOccurrenceName);
+  activeRootOccurrence->setAlignment(llvm::Align(8));
   auto *nextGeneration = new llvm::GlobalVariable(
       module, i64, false, llvm::GlobalValue::PrivateLinkage,
       llvm::ConstantInt::get(i64, 1), nextName);
@@ -562,7 +585,7 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
                 runtime::gem5ThreadDispatchReset);
     llvm::Value *wireAddress = builder.CreatePtrToInt(
         wire, llvm::Type::getInt64Ty(module.getContext()));
-    storeAddressDescriptor(
+    storeMmio64Descriptor(
         builder, dispatch, runtime::gem5ThreadDispatchInvocationLow,
         runtime::gem5ThreadDispatchInvocationHigh, wireAddress);
     storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchInvocationSize,
@@ -593,6 +616,21 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
     builder.CreateCondBr(accepted, next, failed);
     builder.SetInsertPoint(next);
   }
+  llvm::Value *startDispatch = builder.CreateLoad(
+      llvm::Type::getInt64Ty(module.getContext()), &dispatchBase);
+  emitRootLifecycleEvent(builder, startDispatch, launch.root,
+                         llvm::ConstantInt::get(i64, 0),
+                         runtime::Gem5RootLifecycleAction::Start);
+  llvm::Value *startedRootOccurrence = loadMmio64Descriptor(
+      builder, startDispatch, runtime::gem5ThreadDispatchRootOccurrenceLow,
+      runtime::gem5ThreadDispatchRootOccurrenceHigh);
+  builder.CreateStore(startedRootOccurrence, activeRootOccurrence);
+  llvm::BasicBlock *started =
+      llvm::BasicBlock::Create(module.getContext(), "started", helper);
+  builder.CreateCondBr(builder.CreateICmpNE(startedRootOccurrence,
+                                            llvm::ConstantInt::get(i64, 0)),
+                       started, failed);
+  builder.SetInsertPoint(started);
   builder.CreateRet(generation);
   builder.SetInsertPoint(failed);
   builder.CreateBr(failed);
@@ -673,7 +711,14 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
     storeMmio32(waitBuilder, dispatch, runtime::gem5ThreadDispatchControl,
                 runtime::gem5ThreadDispatchReset);
   }
+  llvm::Value *completedRootOccurrence =
+      waitBuilder.CreateLoad(i64, activeRootOccurrence);
+  llvm::Value *completionDispatch = waitBuilder.CreateLoad(i64, &dispatchBase);
+  emitRootLifecycleEvent(waitBuilder, completionDispatch, launch.root,
+                         completedRootOccurrence,
+                         runtime::Gem5RootLifecycleAction::Completion);
   waitBuilder.CreateStore(llvm::ConstantInt::get(i64, 0), activeGeneration);
+  waitBuilder.CreateStore(llvm::ConstantInt::get(i64, 0), activeRootOccurrence);
   waitBuilder.CreateRetVoid();
   waitBuilder.SetInsertPoint(waitFailed);
   waitBuilder.CreateBr(waitFailed);
@@ -1176,12 +1221,12 @@ void emitInstructionEntry(llvm::Module &module, std::uint64_t ordinal) {
   llvm::IRBuilder<> builder(begin);
   storeMmio32(builder, bridge, runtime::gem5SpatialBridgeControl,
               runtime::gem5SpatialBridgeReset);
-  storeAddressDescriptor(
+  storeMmio64Descriptor(
       builder, bridge, runtime::gem5SpatialBridgeStaticLaunchLow,
       runtime::gem5SpatialBridgeStaticLaunchHigh, staticAddress);
   storeMmio32(builder, bridge, runtime::gem5SpatialBridgeStaticLaunchSize,
               builder.CreateTrunc(staticSize, llvm::Type::getInt32Ty(context)));
-  storeAddressDescriptor(
+  storeMmio64Descriptor(
       builder, bridge, runtime::gem5SpatialBridgeInvocationLow,
       runtime::gem5SpatialBridgeInvocationHigh, invocationAddress);
   storeMmio32(

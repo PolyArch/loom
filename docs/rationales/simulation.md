@@ -317,10 +317,13 @@ validation or become evidence merely because a viewer can read them.
 
 The current boundary is therefore exact: `SpatialDiagnosticTrace` is a shared
 typed invocation-local value retained only by an attempt context or scratch
-storage, and `loom.simulation_execution 1.0` has no trace field. A persistent
-design, if ever required, must be approved with its owner, identity, lineage,
-framing, validation, and loading semantics at that time; the current contract
-does not pre-encode that future schema.
+storage, and `loom.simulation_execution 2.0` has no general diagnostic-trace
+field. Its persistent System root-lifecycle sequence is deliberately narrow:
+it records only canonical root start and completion families, dynamic
+occurrences, and global coordinates needed for execution progress. A broader
+persistent diagnostic design, if ever required, must be approved with its
+owner, identity, lineage, framing, validation, and loading semantics at that
+time; the current contract does not pre-encode that future schema.
 
 ## Why Simulation Comparison Is Gated
 

@@ -4,9 +4,11 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Evaluation/Finding.h"
 #include "Evaluation/ModelDescriptor.h"
 #include "Evaluation/Request.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
 
@@ -334,6 +336,19 @@ SystemFunctionalObservations observations(const Fixture &fixture) {
            FullMemoryObservation{runtime.memoryObjects[1].initialBytes}}};
 }
 
+dataflow::RootThreadLaunchRef mappedRoot(llvm::StringRef test,
+                                         const Fixture &fixture,
+                                         const ArtifactStore &artifacts) {
+  loom::mapping::FinalizedSystemMapping systemMapping = take(
+      test, loom::mapping::importSystemMapping(
+                fixture.deployment.deployment().systemMapping(), artifacts));
+  const auto roots =
+      systemMapping.view().executionBindings().rootThreadLaunches();
+  deployment::test::require(test, !roots.empty(),
+                            "System Mapping has no root thread launch");
+  return roots.front();
+}
+
 void systemArtifactsRoundTripWithAliasAndPointerProvenance() {
   const llvm::StringRef test = __func__;
   deployment::test::TemporaryTree tree(test);
@@ -406,12 +421,24 @@ void systemExecutionRetainsTerminalAndTickSemantics() {
   ArtifactStore artifacts(tree.path("artifacts"));
   BlobStore blobs(tree.path("blobs"));
   Fixture fixture = buildFixture(test, artifacts, blobs, tree);
+  const dataflow::RootThreadLaunchRef root =
+      mappedRoot(test, fixture, artifacts);
+  const dataflow::EventFamilyKey start =
+      dataflow::rootThreadStartEventFamily(root);
+  const dataflow::EventFamilyKey completion =
+      dataflow::rootThreadCompletionEventFamily(root);
+  const std::vector<SystemRootLifecycleObservation> validLifecycle{
+      {start, 7, {5, 0}},
+      {start, 8, {6, 0}},
+      {completion, 8, {7, 0}},
+      {completion, 7, {8, 0}},
+  };
 
   SystemSimulationExecution execution{
       fixture.requestRef,
       RetiredExecution{},
       observations(fixture),
-      {{3, 0}, SystemEventCoordinate{40, 1}, {40, 2}},
+      {{3, 0}, SystemEventCoordinate{40, 1}, {40, 2}, validLifecycle},
       {}};
   CanonicalSimulationExecution retired =
       take(test, finalizeSimulationExecution(execution, fixture.resolution,
@@ -421,10 +448,20 @@ void systemExecutionRetainsTerminalAndTickSemantics() {
   CanonicalSimulationExecution imported =
       take(test, importSimulationExecution(retiredRef, fixture.resolution,
                                            artifacts, blobs));
+  const SystemSimulationExecution *importedSystem = imported.system();
+  deployment::test::require(test, importedSystem != nullptr,
+                            "System execution imported as another form");
+  const auto &importedLifecycle =
+      importedSystem->progressObservations.rootLifecycle;
   deployment::test::require(
       test,
-      imported.system() != nullptr && imported.spatial() == nullptr &&
-          std::holds_alternative<RetiredExecution>(imported.terminal()),
+      imported.spatial() == nullptr &&
+          std::holds_alternative<RetiredExecution>(imported.terminal()) &&
+          importedLifecycle.size() == validLifecycle.size() &&
+          importedLifecycle.front().event == start &&
+          importedLifecycle.front().occurrence == 7 &&
+          importedLifecycle.back().event == completion &&
+          importedLifecycle.back().occurrence == 7,
       "System execution imported through the wrong workload-selected form");
   const auto requestPrefix = encodeArtifactRootReference(fixture.requestRef);
   deployment::test::require(
@@ -432,6 +469,61 @@ void systemExecutionRetainsTerminalAndTickSemantics() {
       retired.canonicalBytes().bytes().take_front(requestPrefix.size()) ==
           llvm::ArrayRef<std::uint8_t>(requestPrefix),
       "System execution serialized a duplicate engine or workload tag");
+
+  SystemSimulationExecution malformed = execution;
+  malformed.progressObservations.rootLifecycle.front().occurrence = 0;
+  expectErrorContains(test,
+                      finalizeSimulationExecution(malformed, fixture.resolution,
+                                                  artifacts, blobs),
+                      "occurrence is zero");
+  malformed = execution;
+  malformed.progressObservations.rootLifecycle[1].occurrence = 7;
+  expectErrorContains(test,
+                      finalizeSimulationExecution(malformed, fixture.resolution,
+                                                  artifacts, blobs),
+                      "occurrence is reused");
+  malformed = execution;
+  malformed.progressObservations.rootLifecycle = {{completion, 7, {5, 0}}};
+  expectErrorContains(test,
+                      finalizeSimulationExecution(malformed, fixture.resolution,
+                                                  artifacts, blobs),
+                      "completion precedes");
+  malformed = execution;
+  malformed.progressObservations.rootLifecycle = {
+      {start, 7, {5, 0}},
+      {completion, 7, {6, 0}},
+      {completion, 7, {7, 0}},
+  };
+  expectErrorContains(test,
+                      finalizeSimulationExecution(malformed, fixture.resolution,
+                                                  artifacts, blobs),
+                      "repeats a completion");
+  malformed = execution;
+  malformed.progressObservations.rootLifecycle = {{start, 7, {5, 0}}};
+  expectErrorContains(test,
+                      finalizeSimulationExecution(malformed, fixture.resolution,
+                                                  artifacts, blobs),
+                      "active root lifecycle occurrence");
+  malformed = execution;
+  malformed.progressObservations.rootLifecycle[1].coordinate = {5, 0};
+  expectErrorContains(test,
+                      finalizeSimulationExecution(malformed, fixture.resolution,
+                                                  artifacts, blobs),
+                      "not strictly increasing");
+  malformed = execution;
+  const dataflow::RootThreadLaunchRef foreignRoot{
+      fixture.deployment.reference().artifact, root.entity};
+  malformed.progressObservations.rootLifecycle = {
+      {dataflow::rootThreadStartEventFamily(foreignRoot), 7, {5, 0}}};
+  expectErrorContains(test,
+                      finalizeSimulationExecution(malformed, fixture.resolution,
+                                                  artifacts, blobs),
+                      "not owned by a root thread launch");
+
+  execution.progressObservations.rootLifecycle.clear();
+  take(test, finalizeSimulationExecution(execution, fixture.resolution,
+                                         artifacts, blobs));
+  execution.progressObservations.rootLifecycle = validLifecycle;
 
   execution.terminal = StoppedByLimitExecution{};
   execution.progressObservations.programExitVisible.reset();

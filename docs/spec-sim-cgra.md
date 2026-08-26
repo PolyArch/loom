@@ -413,8 +413,8 @@ Stable anchor tests cover:
 * mechanically derived progress reference domain and ordered progress anchors;
 * complete and partial actor/Fabric activity inventory semantics and Fabric
   capacity bounds;
-* rejection of every persistent trace field in
-  `loom.simulation_execution 1.0` and diagnostic capture noninterference;
+* rejection of every persistent Spatial diagnostic-trace field in
+  `loom.simulation_execution 2.0` and diagnostic capture noninterference;
 * ordered-token preservation under temporal interleaving;
 * deadlock versus invalid-Mapping classification; and
 * deterministic or oracle-governed agreement with DFG-sim.

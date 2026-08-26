@@ -1301,7 +1301,7 @@ and permanent wire slop. Raw material therefore remains owner-attempt or
 scratch state; this contract does not predefine a future bundle reference.
 
 The `evaluation.request.1.0`, `evaluation.evidence.1.0`, and
-`loom.simulation_execution 1.0` dependency direction is therefore:
+`loom.simulation_execution 2.0` dependency direction is therefore:
 
 ```text
 SimulationExecution -> EvaluationRequest
@@ -1312,10 +1312,11 @@ A simulator that executes a workload retains the exact `SimulationExecution`
 as a typed Artifact. It owns terminal
 execution observations, output values and streams, visible logical-memory final
 state or diffs, completion and retirement observations, typed activity
-summaries. `loom.simulation_execution 1.0` contains no trace field; diagnostic
-traces and waveforms remain attempt or scratch state. A simulator cannot
-replace them with paths, opaque bytes, or provider-private references in the
-Artifact. `SimulationExecution` contains no
+summaries, and the mandatory narrow root-lifecycle progress sequence for
+System execution. `loom.simulation_execution 2.0` contains no general
+diagnostic-trace field; diagnostic traces and waveforms remain attempt or
+scratch state. A simulator cannot replace them with paths, opaque bytes, or
+provider-private references in the Artifact. `SimulationExecution` contains no
 normalized metrics, findings, Evaluation outcome, DSE decisions, or second
 simulator result schema.
 

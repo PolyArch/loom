@@ -5,11 +5,24 @@
 #include "base/logging.hh"
 #include "mem/packet.hh"
 #include "runtime/gem5/loom_riscv_deployment_workload.hh"
+#include "sim/core.hh"
+
+#include <limits>
 
 namespace gem5 {
 namespace {
 
 using namespace loom::runtime;
+
+void writeU32(std::ostream &output, std::uint32_t value) {
+  for (int shift = 24; shift >= 0; shift -= 8)
+    output.put(static_cast<char>(value >> shift));
+}
+
+void writeU64(std::ostream &output, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    output.put(static_cast<char>(value >> shift));
+}
 
 } // namespace
 
@@ -17,11 +30,23 @@ LoomThreadDispatch::LoomThreadDispatch(const Params &params)
     : BasicPioDevice(params, gem5ThreadDispatchApertureBytes),
       workload(params.workload),
       records(workload ? workload->targetCount() : 0),
+      rootEventTrace(params.root_event_trace_path,
+                     std::ios::binary | std::ios::trunc),
       serviceEvent([this] { service(); }, name() + ".service") {
   panic_if(!workload, "LoomThreadDispatch workload is absent");
   panic_if(records.empty(), "LoomThreadDispatch has no target records");
   panic_if(records.size() > gem5MaximumDynamicSpatialInvocations,
            "LoomThreadDispatch target count exceeds the Runtime ABI bound");
+  fatal_if(params.root_event_trace_path.empty(),
+           "LoomThreadDispatch root event trace path is empty");
+  fatal_if(!rootEventTrace,
+           "LoomThreadDispatch cannot create root event trace %s",
+           params.root_event_trace_path);
+  writeU32(rootEventTrace, gem5RootLifecycleTraceMagic);
+  rootEventTrace.flush();
+  fatal_if(!rootEventTrace,
+           "LoomThreadDispatch cannot initialize root event trace %s",
+           params.root_event_trace_path);
 }
 
 LoomThreadDispatch::DispatchRecord *LoomThreadDispatch::selectedRecord() {
@@ -78,6 +103,10 @@ Tick LoomThreadDispatch::read(PacketPtr packet) {
     value = static_cast<std::uint32_t>(invocationSize);
   else if (offset == gem5ThreadDispatchOccurrenceHigh)
     value = record ? static_cast<std::uint32_t>(record->occurrence >> 32) : 0;
+  else if (offset == gem5ThreadDispatchRootOccurrenceLow)
+    value = static_cast<std::uint32_t>(rootEventOccurrence);
+  else if (offset == gem5ThreadDispatchRootOccurrenceHigh)
+    value = static_cast<std::uint32_t>(rootEventOccurrence >> 32);
   else
     commandError = 1;
   packet->setUintX(value, ByteOrder::little);
@@ -132,6 +161,24 @@ Tick LoomThreadDispatch::write(PacketPtr packet) {
                         (static_cast<std::uint64_t>(value) << 32);
   } else if (offset == gem5ThreadDispatchInvocationSize) {
     invocationSize = value;
+  } else if (offset == gem5ThreadDispatchRootEntityLow) {
+    rootEventEntity = (rootEventEntity & 0xffffffff00000000ULL) | value;
+  } else if (offset == gem5ThreadDispatchRootEntityHigh) {
+    rootEventEntity = (rootEventEntity & 0x00000000ffffffffULL) |
+                      (static_cast<std::uint64_t>(value) << 32);
+  } else if (offset == gem5ThreadDispatchRootOccurrenceLow) {
+    rootEventOccurrence = (rootEventOccurrence & 0xffffffff00000000ULL) | value;
+  } else if (offset == gem5ThreadDispatchRootOccurrenceHigh) {
+    rootEventOccurrence = (rootEventOccurrence & 0x00000000ffffffffULL) |
+                          (static_cast<std::uint64_t>(value) << 32);
+  } else if (offset == gem5ThreadDispatchRootEvent) {
+    if (value >
+        static_cast<std::uint32_t>(Gem5RootLifecycleAction::Completion)) {
+      commandError = 12;
+    } else {
+      commandError =
+          recordRootEvent(static_cast<Gem5RootLifecycleAction>(value)) ? 0 : 13;
+    }
   } else if (offset == gem5ThreadDispatchControl &&
              (value & gem5ThreadDispatchReset)) {
     DispatchRecord *record = selectedRecord();
@@ -168,6 +215,38 @@ Tick LoomThreadDispatch::write(PacketPtr packet) {
   }
   packet->makeAtomicResponse();
   return pioDelay;
+}
+
+bool LoomThreadDispatch::recordRootEvent(Gem5RootLifecycleAction action) {
+  if (action == Gem5RootLifecycleAction::Start) {
+    if (rootEventOccurrence != 0 || nextRootEventOccurrence == 0)
+      return false;
+    rootEventOccurrence = nextRootEventOccurrence++;
+  } else if (rootEventOccurrence == 0) {
+    return false;
+  }
+  const Tick tick = curTick();
+  panic_if(hasRootEvent && tick < lastRootEventTick,
+           "LoomThreadDispatch root event time moved backwards");
+  std::uint64_t delta = 0;
+  if (hasRootEvent && tick == lastRootEventTick) {
+    panic_if(lastRootEventDelta == std::numeric_limits<std::uint64_t>::max(),
+             "LoomThreadDispatch root event delta overflow");
+    delta = lastRootEventDelta + 1;
+  }
+  writeU64(rootEventTrace, rootEventEntity);
+  writeU64(rootEventTrace, rootEventOccurrence);
+  writeU32(rootEventTrace, static_cast<std::uint32_t>(action));
+  writeU64(rootEventTrace, tick);
+  writeU64(rootEventTrace, delta);
+  if (action == Gem5RootLifecycleAction::Completion)
+    rootEventTrace.flush();
+  fatal_if(!rootEventTrace,
+           "LoomThreadDispatch cannot append its root event trace");
+  lastRootEventTick = tick;
+  lastRootEventDelta = delta;
+  hasRootEvent = true;
+  return true;
 }
 
 void LoomThreadDispatch::scheduleService() {
