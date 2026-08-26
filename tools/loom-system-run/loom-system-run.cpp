@@ -1,3 +1,4 @@
+#include "Application/DeploymentRuntime.h"
 #include "Application/Package.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
@@ -249,15 +250,24 @@ llvm::Expected<PublishedInputs>
 loadInputs(const loom::application::ApplicationRuntimeManifest &manifest,
            const loom::deployment::FinalizedDeployment &deployment,
            const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
+  auto endpointInputs =
+      loom::application::materializeApplicationEndpointActivationInputs(
+          manifest, artifacts, blobs);
+  if (!endpointInputs)
+    return endpointInputs.takeError();
+  const auto entry = llvm::find_if(*endpointInputs, [&](const auto &candidate) {
+    return candidate.endpoint.mapping == manifest.selectedMapping() &&
+           candidate.endpoint.deployment == deployment.reference();
+  });
+  if (entry == endpointInputs->end())
+    return invalid("Application activation inputs omit the entry Deployment");
   auto imported = loom::sim::importSystemSimulationInputs(
-      manifest.activationWorkload(), manifest.activationRuntimeInput(),
-      artifacts, blobs);
+      entry->inputs.workload, entry->inputs.runtimeInput, artifacts, blobs);
   if (!imported)
     return imported.takeError();
   if (imported->deployment.reference() != deployment.reference())
     return invalid("Application activation inputs name a foreign Deployment");
-  return PublishedInputs{manifest.activationWorkload(),
-                         manifest.activationRuntimeInput()};
+  return PublishedInputs{entry->inputs.workload, entry->inputs.runtimeInput};
 }
 
 llvm::Error consumeTransitionGraph(
