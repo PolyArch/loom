@@ -1372,6 +1372,14 @@ SpatialTagAssignmentState::summarizeCurrentDelta(
       *storage_, transaction.synchronizedNets, transaction.changedDomains);
 }
 
+llvm::Expected<SpatialTagAssignmentDelta>
+SpatialTagAssignmentState::summarizeCurrentDelta(
+    llvm::ArrayRef<PnrIndex> logicalNets,
+    llvm::ArrayRef<PnrIndex> changedDomains) const {
+  return detail::summarizeTagAssignmentDelta(*storage_, logicalNets,
+                                             changedDomains);
+}
+
 llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
     llvm::ArrayRef<RouteTreeStateHandle> routes,
     llvm::ArrayRef<std::optional<RouteTreeTransaction>> routeTransactions,

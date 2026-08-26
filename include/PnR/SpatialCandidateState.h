@@ -490,6 +490,9 @@ private:
       SpatialTagAssignmentSummary *tagSummary = nullptr) const;
   llvm::Expected<SpatialTagAssignmentSummary>
   summarizeCurrentTagAssignments() const;
+  llvm::Expected<SpatialTagAssignmentDelta> summarizeCurrentTagAssignmentDelta(
+      llvm::ArrayRef<PnrIndex> logicalNets,
+      llvm::ArrayRef<PnrIndex> changedDomains) const;
 
   FrozenSpatialPnrProblemHandle problem_;
   std::vector<SpatialComputeBindingSelection> computeBindings_;

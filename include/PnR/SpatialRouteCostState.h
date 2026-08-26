@@ -23,6 +23,11 @@ struct SpatialRouteCostSwitchRowState;
 struct SpatialTagDomainUse final {
   PnrIndex domain = 0;
   std::uint64_t marginalResidentCount = 0;
+
+  friend bool operator==(SpatialTagDomainUse lhs, SpatialTagDomainUse rhs) {
+    return lhs.domain == rhs.domain &&
+           lhs.marginalResidentCount == rhs.marginalResidentCount;
+  }
 };
 
 /// Worker-local PathFinder cost projection over one exact Spatial candidate.

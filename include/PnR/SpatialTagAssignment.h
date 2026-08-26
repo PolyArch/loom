@@ -169,6 +169,9 @@ private:
   summarizeCurrentState(bool includeDomainDetails) const;
   llvm::Expected<SpatialTagAssignmentDelta>
   summarizeCurrentDelta(const SpatialTagAssignmentScratch &scratch) const;
+  llvm::Expected<SpatialTagAssignmentDelta>
+  summarizeCurrentDelta(llvm::ArrayRef<PnrIndex> logicalNets,
+                        llvm::ArrayRef<PnrIndex> changedDomains) const;
   llvm::Error verify(llvm::ArrayRef<RouteTreeStateHandle> routes) const;
   llvm::Error stageRouteUpdates(
       llvm::ArrayRef<RouteTreeStateHandle> routes,
