@@ -195,14 +195,17 @@ void loom::test::exerciseSpatialActionSequence(
         fail("Spatial Action failure lost its transition classification");
       ++rejected;
       requireSuccess(candidate.verify());
+      requireSuccess(executor.verifyCandidateProjection());
     } else if ((resolutions.nextU64() & 3U) == 0) {
       requireSuccess(probe->discard());
       ++discarded;
       requireSuccess(candidate.verify());
+      requireSuccess(executor.verifyCandidateProjection());
     } else {
       requireSuccess(probe->commit());
       ++committed;
       requireSuccess(candidate.verify());
+      requireSuccess(executor.verifyCandidateProjection());
     }
   }
   if (committed == 0 || discarded == 0 || committed + discarded + rejected == 0)

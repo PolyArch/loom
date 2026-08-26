@@ -1480,6 +1480,13 @@ SpatialMoveTransaction::summarizeCurrentTagAssignments() const {
   return state_->tagAssignments_.summarizeCurrentState(true);
 }
 
+llvm::Expected<SpatialTagAssignmentDelta>
+SpatialMoveTransaction::summarizeCurrentTagAssignmentDelta() const {
+  if (!scratch_ || !closed_)
+    return candidateError("Physical Tag delta requires a closed active move");
+  return state_->tagAssignments_.summarizeCurrentDelta(scratch_->tagScratch_);
+}
+
 bool SpatialMoveTransaction::hasRouteTreeChange() const {
   return scratch_ && !scratch_->touchedRoutes_.empty();
 }

@@ -1595,6 +1595,19 @@ exploreStructuredCompilationToPreMapping(
       roots.push_back((*sourceProtocolRoots)[ordinal]);
     return roots;
   };
+  const auto ownedRootsForCandidate =
+      [&](const frontend::StructuredProgramCandidate &candidate,
+          llvm::ArrayRef<std::size_t> ordinals)
+      -> llvm::Expected<std::vector<frontend::StructuredEntityRef>> {
+    std::vector<std::string> symbols;
+    symbols.reserve(ordinals.size());
+    for (std::size_t ordinal : ordinals) {
+      if (ordinal >= callableSymbols->size())
+        return invalid("pre-Mapping protocol root ordinal is out of range");
+      symbols.push_back((*callableSymbols)[ordinal]);
+    }
+    return resolveProtocolCallableRoots(candidate, symbols);
+  };
   const auto addBudgetRecord =
       [&](const PreMappingCoordinate &coordinate,
         PreMappingCandidatePlanningDisposition disposition) {
@@ -2476,6 +2489,11 @@ exploreStructuredCompilationToPreMapping(
         if (!candidate)
           return candidate.takeError();
         ++frontierAccounting.programMaterializations.consumed;
+        auto ownedRoots = ownedRootsForCandidate(
+            candidate->candidate.structuredProgram,
+            alternative.ownedProtocolOrdinals);
+        if (!ownedRoots)
+          return ownedRoots.takeError();
         auto dataflowReference = dataflow::publishCanonicalDataflow(
             candidate->candidate.canonicalDataflow, artifactStore);
         if (!dataflowReference)
@@ -2485,6 +2503,8 @@ exploreStructuredCompilationToPreMapping(
             alternative.scheduleIntent);
         if (!planningRecord)
           return planningRecord.takeError();
+        candidateInventory[*planningRecord].ownedProtocolRoots =
+            std::move(*ownedRoots);
         selected.push_back(assemble(std::move(*candidate), alternative,
                                     *planningRecord));
         selectedPlanningRecords.push_back(*planningRecord);
@@ -2573,6 +2593,13 @@ exploreStructuredCompilationToPreMapping(
         if (!candidate)
           return candidate.takeError();
         ++frontierAccounting.programMaterializations.consumed;
+        auto ownedRoots = ownedRootsForCandidate(
+            candidate->candidate.structuredProgram,
+            alternative.ownedProtocolOrdinals);
+        if (!ownedRoots)
+          return ownedRoots.takeError();
+        candidateInventory[*planningRecord].ownedProtocolRoots =
+            std::move(*ownedRoots);
         selected.push_back(assemble(std::move(*candidate), alternative,
                                     *planningRecord));
         selectedPlanningRecords.push_back(*planningRecord);

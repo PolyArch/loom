@@ -206,23 +206,118 @@ bool SpatialTagInterferenceProjection::interferes(PnrIndex lhs,
 
 bool SpatialTagInterferenceProjection::interferes(PnrIndex domain, PnrIndex lhs,
                                                   PnrIndex rhs) const {
-  if (lhs == rhs || domain >= temporalSwitchDomains_.size())
+  if (lhs == rhs || domain >= domainConflicts_.size() ||
+      lhs >= vertexRefs_.size() || rhs >= vertexRefs_.size())
     return false;
-  if (!temporalSwitchDomains_[domain])
-    return true;
-  if (lhs > rhs)
-    std::swap(lhs, rhs);
-  return compatibleSwitchPairs_.find({domain, lhs, rhs}) ==
-         compatibleSwitchPairs_.end();
+  return interferes(domain, vertexRefs_[lhs], vertexRefs_[rhs]);
+}
+
+bool SpatialTagInterferenceProjection::interferes(
+    SpatialTagVertexRef lhs, SpatialTagVertexRef rhs) const {
+  if (lhs == rhs)
+    return false;
+  SpatialTagConflictPair pair{lhs, rhs};
+  if (pair.rhs < pair.lhs)
+    std::swap(pair.lhs, pair.rhs);
+  return std::binary_search(globalConflicts_.begin(), globalConflicts_.end(),
+                            pair);
+}
+
+bool SpatialTagInterferenceProjection::interferes(
+    PnrIndex domain, SpatialTagVertexRef lhs, SpatialTagVertexRef rhs) const {
+  if (lhs == rhs || domain >= domainConflicts_.size())
+    return false;
+  SpatialTagConflictPair pair{lhs, rhs};
+  if (pair.rhs < pair.lhs)
+    std::swap(pair.lhs, pair.rhs);
+  return std::binary_search(domainConflicts_[domain].begin(),
+                            domainConflicts_[domain].end(), pair);
+}
+
+SpatialTagVertexRef
+SpatialTagInterferenceProjection::vertexRef(PnrIndex vertex) const {
+  assert(vertex < vertexRefs_.size());
+  return vertexRefs_[vertex];
+}
+
+PnrIndex SpatialTagInterferenceProjection::vertexOrdinal(
+    SpatialTagVertexRef vertex) const {
+  const auto found = llvm::lower_bound(vertexRefs_, vertex);
+  if (found == vertexRefs_.end() || !(*found == vertex))
+    return getInvalidPnrIndex();
+  return static_cast<PnrIndex>(found - vertexRefs_.begin());
+}
+
+bool SpatialTagInterferenceProjection::equivalentDerivedState(
+    const SpatialTagInterferenceProjection &other) const {
+  return domainVertices_ == other.domainVertices_ &&
+         domainConflicts_ == other.domainConflicts_ &&
+         netDomains_ == other.netDomains_ &&
+         netSwitchDemands_ == other.netSwitchDemands_;
 }
 
 std::size_t SpatialTagInterferenceProjection::retainedStorageBytes() const {
-  return netSegmentOffsets_.capacity() * sizeof(PnrIndex) +
-         conflictOffsets_.capacity() * sizeof(PnrIndex) +
-         conflicts_.capacity() * sizeof(PnrIndex) +
-         temporalSwitchDomains_.capacity() * sizeof(std::uint8_t) +
-         compatibleSwitchPairs_.size() *
-             sizeof(std::tuple<PnrIndex, PnrIndex, PnrIndex>);
+  std::size_t bytes =
+      netSegmentOffsets_.capacity() * sizeof(PnrIndex) +
+      vertexRefs_.capacity() * sizeof(SpatialTagVertexRef) +
+      conflictOffsets_.capacity() * sizeof(PnrIndex) +
+      conflicts_.capacity() * sizeof(PnrIndex) +
+      globalConflicts_.capacity() * sizeof(SpatialTagConflictPair) +
+      domainVertices_.capacity() * sizeof(std::vector<SpatialTagVertexRef>) +
+      domainConflicts_.capacity() *
+          sizeof(std::vector<SpatialTagConflictPair>) +
+      netDomains_.capacity() * sizeof(std::vector<PnrIndex>) +
+      netSwitchDemands_.capacity() *
+          sizeof(std::vector<SpatialTemporalSwitchSegmentDemand>);
+  for (const auto &vertices : domainVertices_)
+    bytes += vertices.capacity() * sizeof(SpatialTagVertexRef);
+  for (const auto &conflicts : domainConflicts_)
+    bytes += conflicts.capacity() * sizeof(SpatialTagConflictPair);
+  for (const auto &domains : netDomains_)
+    bytes += domains.capacity() * sizeof(PnrIndex);
+  for (const auto &demands : netSwitchDemands_) {
+    bytes += demands.capacity() * sizeof(SpatialTemporalSwitchSegmentDemand);
+    for (const SpatialTemporalSwitchSegmentDemand &demand : demands) {
+      bytes += demand.signatures.capacity() *
+               sizeof(SpatialTemporalSwitchInputSignature);
+      for (const SpatialTemporalSwitchInputSignature &signature :
+           demand.signatures)
+        bytes += signature.outputs.capacity() *
+                     sizeof(::loom::fabric::FabricOrdinal) +
+                 signature.traversals.capacity() * sizeof(PnrIndex);
+    }
+  }
+  return bytes;
+}
+
+std::size_t SpatialTagInterferenceUpdateScratch::retainedStorageBytes() const {
+  std::size_t bytes =
+      previousNetSegmentOffsets_.capacity() * sizeof(PnrIndex) +
+      previousVertexRefs_.capacity() * sizeof(SpatialTagVertexRef) +
+      previousConflictOffsets_.capacity() * sizeof(PnrIndex) +
+      previousConflicts_.capacity() * sizeof(PnrIndex) +
+      previousGlobalConflicts_.capacity() * sizeof(SpatialTagConflictPair) +
+      affectedDomains_.capacity() * sizeof(PnrIndex) +
+      domainDeltas_.capacity() * sizeof(DomainDelta) +
+      netDemandDeltas_.capacity() * sizeof(NetDemandDelta);
+  for (const DomainDelta &delta : domainDeltas_)
+    bytes += delta.vertices.capacity() * sizeof(SpatialTagVertexRef) +
+             delta.conflicts.capacity() * sizeof(SpatialTagConflictPair);
+  for (const NetDemandDelta &delta : netDemandDeltas_) {
+    bytes +=
+        delta.domains.capacity() * sizeof(PnrIndex) +
+        delta.demands.capacity() * sizeof(SpatialTemporalSwitchSegmentDemand);
+    for (const SpatialTemporalSwitchSegmentDemand &demand : delta.demands) {
+      bytes += demand.signatures.capacity() *
+               sizeof(SpatialTemporalSwitchInputSignature);
+      for (const SpatialTemporalSwitchInputSignature &signature :
+           demand.signatures)
+        bytes += signature.outputs.capacity() *
+                     sizeof(::loom::fabric::FabricOrdinal) +
+                 signature.traversals.capacity() * sizeof(PnrIndex);
+    }
+  }
+  return bytes;
 }
 
 bool loom::pnr::detail::compatibleSpatialTemporalSwitchDemands(
@@ -288,6 +383,154 @@ loom::pnr::detail::deriveSpatialTemporalSwitchSegmentDemands(
   return materializeDemands(std::move(selected));
 }
 
+struct loom::pnr::detail::SpatialTagInterferenceBuilder final {
+  static llvm::Expected<PnrIndex> segmentOrdinal(
+      SpatialTagVertexRef vertex,
+      llvm::ArrayRef<const SpatialTagContinuityProjection *> continuity) {
+    if (vertex.logicalNet >= continuity.size() ||
+        !continuity[vertex.logicalNet])
+      return invalid("tag vertex names an absent logical net");
+    const auto segments = continuity[vertex.logicalNet]->segments();
+    const auto found = llvm::lower_bound(
+        segments, vertex,
+        [](const SpatialTagContinuitySegment &segment,
+           SpatialTagVertexRef target) {
+          return std::tie(segment.originKind, segment.origin) <
+                 std::tie(target.originKind, target.origin);
+        });
+    if (found == segments.end() || found->originKind != vertex.originKind ||
+        found->origin != vertex.origin)
+      return invalid("tag vertex names an absent continuity segment");
+    return static_cast<PnrIndex>(found - segments.begin());
+  }
+
+  static llvm::Error rebuildCanonicalInventory(
+      llvm::ArrayRef<const SpatialTagContinuityProjection *> continuity,
+      SpatialTagInterferenceProjection &result) {
+    result.netSegmentOffsets_.clear();
+    result.vertexRefs_.clear();
+    result.netSegmentOffsets_.reserve(continuity.size() + 1);
+    result.netSegmentOffsets_.push_back(0);
+    for (PnrIndex logicalNet = 0; logicalNet < continuity.size();
+         ++logicalNet) {
+      const SpatialTagContinuityProjection *net = continuity[logicalNet];
+      if (!net)
+        return invalid("interference has a null continuity projection");
+      const std::size_t end =
+          result.vertexRefs_.size() + net->segments().size();
+      auto offset = checkedIndex(end, "tag segment inventory");
+      if (!offset)
+        return offset.takeError();
+      for (const SpatialTagContinuitySegment &segment : net->segments())
+        result.vertexRefs_.push_back(
+            {logicalNet, segment.originKind, segment.origin});
+      result.netSegmentOffsets_.push_back(*offset);
+    }
+    if (!llvm::is_sorted(result.vertexRefs_))
+      return invalid("tag vertex inventory is not canonical");
+    return llvm::Error::success();
+  }
+
+  static const SpatialTemporalSwitchSegmentDemand *findDemand(
+      const SpatialTagInterferenceProjection &projection,
+      SpatialTagVertexRef vertex, PnrIndex domain,
+      llvm::ArrayRef<const SpatialTagContinuityProjection *> continuity) {
+    auto segment = segmentOrdinal(vertex, continuity);
+    if (!segment || vertex.logicalNet >= projection.netSwitchDemands_.size()) {
+      if (!segment)
+        llvm::consumeError(segment.takeError());
+      return nullptr;
+    }
+    const auto &demands = projection.netSwitchDemands_[vertex.logicalNet];
+    const auto key = std::make_pair(domain, *segment);
+    const auto found = llvm::lower_bound(
+        demands, key, [](const auto &demand, const auto target) {
+          return std::make_pair(demand.domain, demand.segment) < target;
+        });
+    return found == demands.end() || found->domain != domain ||
+                   found->segment != *segment
+               ? nullptr
+               : &*found;
+  }
+
+  static llvm::Error rebuildDomain(
+      const FrozenSpatialPnrProblem &problem, PnrIndex domain,
+      llvm::ArrayRef<const SpatialTagContinuityProjection *> continuity,
+      SpatialTagInterferenceProjection &result) {
+    const auto domains = problem.routing().tagContinuity().matchDomains();
+    if (domain >= domains.size() || domain >= result.domainVertices_.size() ||
+        domain >= result.domainConflicts_.size())
+      return invalid("rebuilt tag match domain is out of range");
+    auto &members = result.domainVertices_[domain];
+    llvm::sort(members);
+    members.erase(std::unique(members.begin(), members.end()), members.end());
+    auto &conflicts = result.domainConflicts_[domain];
+    conflicts.clear();
+    std::vector<const SpatialTemporalSwitchSegmentDemand *> switchDemands;
+    if (domains[domain].kind ==
+        ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable) {
+      switchDemands.reserve(members.size());
+      for (SpatialTagVertexRef member : members) {
+        const auto *demand = findDemand(result, member, domain, continuity);
+        if (!demand)
+          return invalid("switch match-domain member has no row demand");
+        switchDemands.push_back(demand);
+      }
+    }
+    for (std::size_t left = 0; left != members.size(); ++left)
+      for (std::size_t right = left + 1; right != members.size(); ++right) {
+        bool conflict = true;
+        if (!switchDemands.empty())
+          conflict = !compatibleSpatialTemporalSwitchDemands(
+              *switchDemands[left], *switchDemands[right]);
+        if (conflict)
+          conflicts.push_back({members[left], members[right]});
+      }
+    return llvm::Error::success();
+  }
+
+  static llvm::Error rebuildGlobal(SpatialTagInterferenceProjection &result) {
+    result.globalConflicts_.clear();
+    for (const auto &domain : result.domainConflicts_)
+      result.globalConflicts_.insert(result.globalConflicts_.end(),
+                                     domain.begin(), domain.end());
+    llvm::sort(result.globalConflicts_);
+    result.globalConflicts_.erase(std::unique(result.globalConflicts_.begin(),
+                                              result.globalConflicts_.end()),
+                                  result.globalConflicts_.end());
+    std::vector<std::vector<PnrIndex>> adjacency(result.vertexRefs_.size());
+    for (const SpatialTagConflictPair &pair : result.globalConflicts_) {
+      const PnrIndex lhs = result.vertexOrdinal(pair.lhs);
+      const PnrIndex rhs = result.vertexOrdinal(pair.rhs);
+      if (lhs == getInvalidPnrIndex() || rhs == getInvalidPnrIndex() ||
+          lhs == rhs)
+        return invalid("tag conflict names an absent canonical vertex");
+      adjacency[lhs].push_back(rhs);
+      adjacency[rhs].push_back(lhs);
+    }
+    result.conflictOffsets_.clear();
+    result.conflicts_.clear();
+    result.conflictOffsets_.reserve(result.vertexRefs_.size() + 1);
+    result.conflictOffsets_.push_back(0);
+    for (auto &neighbors : adjacency) {
+      llvm::sort(neighbors);
+      neighbors.erase(std::unique(neighbors.begin(), neighbors.end()),
+                      neighbors.end());
+      if (neighbors.size() >
+          std::numeric_limits<std::size_t>::max() - result.conflicts_.size())
+        return invalid("tag interference incidence size overflows");
+      result.conflicts_.insert(result.conflicts_.end(), neighbors.begin(),
+                               neighbors.end());
+      auto offset = checkedIndex(result.conflicts_.size(),
+                                 "tag interference incidence inventory");
+      if (!offset)
+        return offset.takeError();
+      result.conflictOffsets_.push_back(*offset);
+    }
+    return llvm::Error::success();
+  }
+};
+
 llvm::Expected<SpatialTagInterferenceProjection>
 loom::pnr::detail::deriveSpatialTagInterference(
     const FrozenSpatialPnrProblem &problem,
@@ -296,115 +539,198 @@ loom::pnr::detail::deriveSpatialTagInterference(
   if (routes.size() != continuity.size())
     return invalid("interference route and continuity inventories disagree");
   SpatialTagInterferenceProjection result;
-  result.netSegmentOffsets_.reserve(continuity.size() + 1);
-  result.netSegmentOffsets_.push_back(0);
-  for (const SpatialTagContinuityProjection *net : continuity) {
-    if (!net)
-      return invalid("interference has a null continuity projection");
-    const std::size_t end =
-        static_cast<std::size_t>(result.netSegmentOffsets_.back()) +
-        net->segments().size();
-    auto offset = checkedIndex(end, "tag segment inventory");
-    if (!offset)
-      return offset.takeError();
-    result.netSegmentOffsets_.push_back(*offset);
-  }
-  const PnrIndex vertexCount = result.netSegmentOffsets_.back();
+  if (llvm::Error error =
+          SpatialTagInterferenceBuilder::rebuildCanonicalInventory(continuity,
+                                                                   result))
+    return std::move(error);
   const auto domains = problem.routing().tagContinuity().matchDomains();
-  result.temporalSwitchDomains_.reserve(domains.size());
-  bool hasTemporalSwitchDomain = false;
-  for (const auto &domain : domains)
-    if (domain.kind ==
-        ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable) {
-      result.temporalSwitchDomains_.push_back(1);
-      hasTemporalSwitchDomain = true;
-    } else {
-      result.temporalSwitchDomains_.push_back(0);
-    }
-  std::vector<std::vector<PnrIndex>> domainVertices(domains.size());
+  result.domainVertices_.resize(domains.size());
+  result.domainConflicts_.resize(domains.size());
+  result.netDomains_.resize(continuity.size());
+  result.netSwitchDemands_.resize(continuity.size());
   for (PnrIndex logicalNet = 0; logicalNet < continuity.size(); ++logicalNet) {
+    if (!routes[logicalNet])
+      return invalid("interference has a null route");
+    auto demands = deriveSpatialTemporalSwitchSegmentDemands(
+        problem, logicalNet, *routes[logicalNet], *continuity[logicalNet]);
+    if (!demands)
+      return demands.takeError();
+    result.netSwitchDemands_[logicalNet] = std::move(*demands);
     const auto offsets = continuity[logicalNet]->segmentDomainOffsets();
     const auto localDomains = continuity[logicalNet]->segmentDomains();
+    result.netDomains_[logicalNet].assign(localDomains.begin(),
+                                          localDomains.end());
+    llvm::sort(result.netDomains_[logicalNet]);
+    result.netDomains_[logicalNet].erase(
+        std::unique(result.netDomains_[logicalNet].begin(),
+                    result.netDomains_[logicalNet].end()),
+        result.netDomains_[logicalNet].end());
     for (PnrIndex segment = 0;
          segment < continuity[logicalNet]->segments().size(); ++segment) {
-      const PnrIndex vertex = result.netSegmentOffsets_[logicalNet] + segment;
+      const SpatialTagVertexRef vertex =
+          result.vertexRefs_[result.netSegmentOffsets_[logicalNet] + segment];
       for (PnrIndex incidence = offsets[segment];
            incidence < offsets[segment + 1]; ++incidence) {
         const PnrIndex domain = localDomains[incidence];
-        if (domain >= domainVertices.size())
+        if (domain >= result.domainVertices_.size())
           return invalid("tag segment names an absent match domain");
-        domainVertices[domain].push_back(vertex);
+        result.domainVertices_[domain].push_back(vertex);
       }
     }
   }
-
-  std::vector<SpatialTemporalSwitchSegmentDemand> switchDemandStorage;
-  if (hasTemporalSwitchDomain) {
-    auto switchDemands =
-        deriveSpatialTemporalSwitchSegmentDemands(problem, routes, continuity);
-    if (!switchDemands)
-      return switchDemands.takeError();
-    switchDemandStorage = std::move(*switchDemands);
-  }
-  std::map<std::pair<PnrIndex, PnrIndex>,
-           const SpatialTemporalSwitchSegmentDemand *>
-      demandByDomainVertex;
-  for (const SpatialTemporalSwitchSegmentDemand &demand : switchDemandStorage) {
-    if (demand.logicalNet + 1 >= result.netSegmentOffsets_.size() ||
-        demand.segment >= continuity[demand.logicalNet]->segments().size())
-      return invalid("switch demand names an absent tag segment");
-    const PnrIndex vertex =
-        result.netSegmentOffsets_[demand.logicalNet] + demand.segment;
-    if (!demandByDomainVertex
-             .emplace(std::make_pair(demand.domain, vertex), &demand)
-             .second)
-      return invalid("switch demand repeats one domain segment");
-  }
-
-  std::vector<std::vector<PnrIndex>> adjacency(vertexCount);
-  for (PnrIndex domain = 0; domain < domainVertices.size(); ++domain) {
-    auto &members = domainVertices[domain];
-    llvm::sort(members);
-    members.erase(std::unique(members.begin(), members.end()), members.end());
-    for (std::size_t left = 0; left != members.size(); ++left)
-      for (std::size_t right = left + 1; right != members.size(); ++right) {
-        bool conflict = true;
-        if (domains[domain].kind ==
-            ::loom::fabric::FabricPhysicalTagMatchDomainKind::
-                TemporalSwitchTable) {
-          const auto lhs = demandByDomainVertex.find({domain, members[left]});
-          const auto rhs = demandByDomainVertex.find({domain, members[right]});
-          if (lhs == demandByDomainVertex.end() ||
-              rhs == demandByDomainVertex.end())
-            return invalid("switch match-domain member has no row demand");
-          conflict = !compatibleSpatialTemporalSwitchDemands(*lhs->second,
-                                                             *rhs->second);
-          if (!conflict)
-            result.compatibleSwitchPairs_.emplace(domain, members[left],
-                                                  members[right]);
-        }
-        if (!conflict)
-          continue;
-        adjacency[members[left]].push_back(members[right]);
-        adjacency[members[right]].push_back(members[left]);
-      }
-  }
-  result.conflictOffsets_.reserve(static_cast<std::size_t>(vertexCount) + 1);
-  result.conflictOffsets_.push_back(0);
-  for (auto &neighbors : adjacency) {
-    llvm::sort(neighbors);
-    neighbors.erase(std::unique(neighbors.begin(), neighbors.end()),
-                    neighbors.end());
-    if (neighbors.size() >
-        std::numeric_limits<std::size_t>::max() - result.conflicts_.size())
-      return invalid("tag interference incidence size overflows");
-    result.conflicts_.insert(result.conflicts_.end(), neighbors.begin(),
-                             neighbors.end());
-    auto offset = checkedIndex(result.conflicts_.size(),
-                               "tag interference incidence inventory");
-    if (!offset)
-      return offset.takeError();
-    result.conflictOffsets_.push_back(*offset);
-  }
+  for (PnrIndex domain = 0; domain < domains.size(); ++domain)
+    if (llvm::Error error = SpatialTagInterferenceBuilder::rebuildDomain(
+            problem, domain, continuity, result))
+      return std::move(error);
+  if (llvm::Error error = SpatialTagInterferenceBuilder::rebuildGlobal(result))
+    return std::move(error);
   return result;
+}
+
+llvm::Error loom::pnr::detail::stageSpatialTagInterferenceUpdate(
+    const FrozenSpatialPnrProblem &problem,
+    llvm::ArrayRef<const RouteTreeState *> routes,
+    llvm::ArrayRef<const SpatialTagContinuityProjection *> continuity,
+    llvm::ArrayRef<PnrIndex> touchedLogicalNets,
+    SpatialTagInterferenceProjection &projection,
+    SpatialTagInterferenceUpdateScratch &scratch) {
+  if (scratch.active_)
+    return invalid("tag interference update is already active");
+  if (routes.size() != continuity.size() ||
+      projection.netDomains_.size() != continuity.size() ||
+      projection.netSwitchDemands_.size() != continuity.size())
+    return invalid("tag interference update inventories disagree");
+  std::vector<PnrIndex> touched(touchedLogicalNets.begin(),
+                                touchedLogicalNets.end());
+  llvm::sort(touched);
+  touched.erase(std::unique(touched.begin(), touched.end()), touched.end());
+  for (PnrIndex logicalNet : touched)
+    if (logicalNet >= routes.size() || !routes[logicalNet] ||
+        !continuity[logicalNet])
+      return invalid("tag interference update names an absent logical net");
+
+  scratch.affectedDomains_.clear();
+  for (PnrIndex logicalNet : touched) {
+    scratch.affectedDomains_.insert(scratch.affectedDomains_.end(),
+                                    projection.netDomains_[logicalNet].begin(),
+                                    projection.netDomains_[logicalNet].end());
+    for (PnrIndex domain : continuity[logicalNet]->segmentDomains())
+      scratch.affectedDomains_.push_back(domain);
+  }
+  llvm::sort(scratch.affectedDomains_);
+  scratch.affectedDomains_.erase(std::unique(scratch.affectedDomains_.begin(),
+                                             scratch.affectedDomains_.end()),
+                                 scratch.affectedDomains_.end());
+
+  scratch.active_ = true;
+  std::swap(scratch.previousNetSegmentOffsets_, projection.netSegmentOffsets_);
+  std::swap(scratch.previousVertexRefs_, projection.vertexRefs_);
+  std::swap(scratch.previousConflictOffsets_, projection.conflictOffsets_);
+  std::swap(scratch.previousConflicts_, projection.conflicts_);
+  std::swap(scratch.previousGlobalConflicts_, projection.globalConflicts_);
+  const auto fail = [&](llvm::Error error) {
+    rollbackSpatialTagInterferenceUpdate(projection, scratch);
+    return error;
+  };
+
+  scratch.netDemandDeltas_.clear();
+  scratch.netDemandDeltas_.reserve(touched.size());
+  for (PnrIndex logicalNet : touched) {
+    scratch.netDemandDeltas_.push_back({logicalNet, {}, {}});
+    auto &delta = scratch.netDemandDeltas_.back();
+    std::swap(delta.domains, projection.netDomains_[logicalNet]);
+    projection.netDomains_[logicalNet].assign(
+        continuity[logicalNet]->segmentDomains().begin(),
+        continuity[logicalNet]->segmentDomains().end());
+    llvm::sort(projection.netDomains_[logicalNet]);
+    projection.netDomains_[logicalNet].erase(
+        std::unique(projection.netDomains_[logicalNet].begin(),
+                    projection.netDomains_[logicalNet].end()),
+        projection.netDomains_[logicalNet].end());
+    std::swap(delta.demands, projection.netSwitchDemands_[logicalNet]);
+    auto demands = deriveSpatialTemporalSwitchSegmentDemands(
+        problem, logicalNet, *routes[logicalNet], *continuity[logicalNet]);
+    if (!demands)
+      return fail(demands.takeError());
+    projection.netSwitchDemands_[logicalNet] = std::move(*demands);
+  }
+
+  scratch.domainDeltas_.clear();
+  scratch.domainDeltas_.reserve(scratch.affectedDomains_.size());
+  for (PnrIndex domain : scratch.affectedDomains_) {
+    if (domain >= projection.domainVertices_.size() ||
+        domain >= projection.domainConflicts_.size())
+      return fail(invalid("tag interference update domain is out of range"));
+    scratch.domainDeltas_.push_back({domain, {}, {}});
+    auto &delta = scratch.domainDeltas_.back();
+    std::swap(delta.vertices, projection.domainVertices_[domain]);
+    std::swap(delta.conflicts, projection.domainConflicts_[domain]);
+    auto &members = projection.domainVertices_[domain];
+    for (SpatialTagVertexRef vertex : delta.vertices)
+      if (!std::binary_search(touched.begin(), touched.end(),
+                              vertex.logicalNet))
+        members.push_back(vertex);
+    for (PnrIndex logicalNet : touched) {
+      const auto offsets = continuity[logicalNet]->segmentDomainOffsets();
+      const auto localDomains = continuity[logicalNet]->segmentDomains();
+      const auto segments = continuity[logicalNet]->segments();
+      for (PnrIndex segment = 0; segment < segments.size(); ++segment)
+        if (std::binary_search(localDomains.begin() + offsets[segment],
+                               localDomains.begin() + offsets[segment + 1],
+                               domain))
+          members.push_back({logicalNet, segments[segment].originKind,
+                             segments[segment].origin});
+    }
+  }
+  if (llvm::Error error =
+          SpatialTagInterferenceBuilder::rebuildCanonicalInventory(continuity,
+                                                                   projection))
+    return fail(std::move(error));
+  for (PnrIndex domain : scratch.affectedDomains_)
+    if (llvm::Error error = SpatialTagInterferenceBuilder::rebuildDomain(
+            problem, domain, continuity, projection))
+      return fail(std::move(error));
+  if (llvm::Error error =
+          SpatialTagInterferenceBuilder::rebuildGlobal(projection))
+    return fail(std::move(error));
+  return llvm::Error::success();
+}
+
+void loom::pnr::detail::commitSpatialTagInterferenceUpdate(
+    SpatialTagInterferenceUpdateScratch &scratch) noexcept {
+  if (!scratch.active_)
+    return;
+  scratch.active_ = false;
+  scratch.previousNetSegmentOffsets_.clear();
+  scratch.previousVertexRefs_.clear();
+  scratch.previousConflictOffsets_.clear();
+  scratch.previousConflicts_.clear();
+  scratch.previousGlobalConflicts_.clear();
+  scratch.affectedDomains_.clear();
+  scratch.domainDeltas_.clear();
+  scratch.netDemandDeltas_.clear();
+}
+
+void loom::pnr::detail::rollbackSpatialTagInterferenceUpdate(
+    SpatialTagInterferenceProjection &projection,
+    SpatialTagInterferenceUpdateScratch &scratch) noexcept {
+  if (!scratch.active_)
+    return;
+  for (auto &delta : scratch.netDemandDeltas_)
+    std::swap(delta.domains, projection.netDomains_[delta.logicalNet]);
+  for (auto &delta : scratch.netDemandDeltas_)
+    std::swap(delta.demands, projection.netSwitchDemands_[delta.logicalNet]);
+  for (auto &delta : scratch.domainDeltas_) {
+    std::swap(delta.vertices, projection.domainVertices_[delta.domain]);
+    std::swap(delta.conflicts, projection.domainConflicts_[delta.domain]);
+  }
+  std::swap(scratch.previousNetSegmentOffsets_, projection.netSegmentOffsets_);
+  std::swap(scratch.previousVertexRefs_, projection.vertexRefs_);
+  std::swap(scratch.previousConflictOffsets_, projection.conflictOffsets_);
+  std::swap(scratch.previousConflicts_, projection.conflicts_);
+  std::swap(scratch.previousGlobalConflicts_, projection.globalConflicts_);
+  scratch.active_ = false;
+  scratch.affectedDomains_.clear();
+  scratch.domainDeltas_.clear();
+  scratch.netDemandDeltas_.clear();
 }

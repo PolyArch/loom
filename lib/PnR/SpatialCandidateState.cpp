@@ -1129,6 +1129,13 @@ SpatialCandidateState::summarizeCurrentTagAssignments() const {
   return tagAssignments_.summarizeCurrentState(true);
 }
 
+llvm::Expected<SpatialTagAssignmentDelta>
+SpatialCandidateState::summarizeCurrentTagAssignmentDelta(
+    llvm::ArrayRef<PnrIndex> logicalNets,
+    llvm::ArrayRef<PnrIndex> changedDomains) const {
+  return tagAssignments_.summarizeCurrentDelta(logicalNets, changedDomains);
+}
+
 llvm::Error
 SpatialCandidateState::validateLogicalNet(PnrIndex logicalNet) const {
   if (logicalNet >= problem_->transfers().logicalNets().size())
