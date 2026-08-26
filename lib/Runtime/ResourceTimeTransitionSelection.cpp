@@ -162,9 +162,12 @@ llvm::Error ResourceTimeTransitionSelectionSession::startRoot(
                   "SystemMapping");
   const std::size_t rootIndex =
       static_cast<std::size_t>(std::distance(mappedRoots_.begin(), root));
-  if (rootStates_[rootIndex] != RootState::NotStarted)
+  // A mapped root is a launch site, not a single invocation: an ordinary
+  // program calls its accelerated function more than once, so a root that has
+  // completed starts again. Only a root that is currently active cannot start.
+  if (rootStates_[rootIndex] == RootState::Active)
     return reject(ResourceTimeSelectionErrorReason::DuplicateStart,
-                  "mapped root was already started");
+                  "mapped root is already active");
   if (!requiredStarts_.empty() &&
       !llvm::is_contained(requiredStarts_, startedRoot))
     return reject(ResourceTimeSelectionErrorReason::ActiveSetMismatch,
