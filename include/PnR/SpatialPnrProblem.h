@@ -1191,6 +1191,13 @@ public:
     return memoryPlanFragments_;
   }
   PnrIndex projectionNodeCount() const { return projectionNodeCount_; }
+  /// Boundary signal of each canonical dense node; owner-local nodes have no
+  /// boundary signal. Candidate state resolves node identity through these
+  /// frozen ordinals instead of re-deriving byte keys per materialization.
+  llvm::ArrayRef<std::optional<::loom::fabric::HandshakeSignalRef>>
+  projectionNodeSignals() const {
+    return projectionNodeSignals_;
+  }
   llvm::ArrayRef<FrozenSpatialHandshakeArc> projectionArcs() const {
     return projectionArcs_;
   }
@@ -1233,6 +1240,8 @@ private:
   std::vector<FrozenSpatialMemoryOperationHandshakePlan> memoryOperationPlans_;
   std::vector<PnrIndex> memoryPlanFragments_;
   PnrIndex projectionNodeCount_ = 0;
+  std::vector<std::optional<::loom::fabric::HandshakeSignalRef>>
+      projectionNodeSignals_;
   std::vector<FrozenSpatialHandshakeArc> projectionArcs_;
   std::vector<PnrIndex> projectionFixedArcs_;
   std::vector<PnrIndex> projectionFragmentArcOffsets_;

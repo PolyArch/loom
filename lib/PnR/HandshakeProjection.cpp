@@ -96,8 +96,11 @@ template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
   return values.capacity() * sizeof(T);
 }
 
-void assignNodeKey(const detail::HandshakeNodeIdentity &identity,
-                   std::string &key) {
+
+} // namespace
+
+void loom::pnr::detail::assignNodeKey(const HandshakeNodeIdentity &identity,
+                                      std::string &key) {
   key.clear();
   if (!identity.boundarySignal) {
     key.resize(13, '\0');
@@ -122,8 +125,6 @@ void assignNodeKey(const detail::HandshakeNodeIdentity &identity,
   key.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
   key.push_back(static_cast<char>(identity.boundarySignal->signal));
 }
-
-} // namespace
 
 void loom::pnr::emitProvisionalHandshakeProjectionStatistics(
     const HandshakeProjectionStatistics &statistics,

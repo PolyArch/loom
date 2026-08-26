@@ -101,6 +101,10 @@ add_executable(loom-root-complete-tech-mapping-generator-test
   RootCompleteTechMappingGeneratorTest.cpp
 )
 
+add_executable(loom-pnr-work-accounting-test
+  PnrWorkAccountingTest.cpp
+)
+
 add_library(LoomRootCompleteSpatialPnrTestSupport
   RootCompleteSpatialPnrTestSupport.cpp
 )
@@ -301,5 +305,11 @@ target_link_libraries(loom-root-complete-spatial-pnr-generator-test PRIVATE
   MLIRFuncDialect
   MLIRIR
   MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-pnr-work-accounting-test PRIVATE
+  LoomDSEMappingGenerator
+  LoomPnRGenerator
   LLVMSupport
 )

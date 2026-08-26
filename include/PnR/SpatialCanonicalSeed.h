@@ -15,7 +15,8 @@
 namespace loom::pnr {
 
 struct SpatialPathFinderSeedWorkSummary final {
-  bool seedAttemptCompleted = false;
+  std::uint64_t plannedSeedAttempts = 0;
+  std::uint64_t seedAttempts = 0;
   std::uint64_t plannedInitializerAssignmentAttempts = 0;
   std::uint64_t initializerAssignmentAttempts = 0;
   std::uint64_t plannedEndpointExpansions = 0;
@@ -54,8 +55,8 @@ struct SpatialPathFinderSeedHandoff final {
   operator=(const SpatialPathFinderSeedHandoff &) = delete;
   SpatialPathFinderSeedHandoff() = default;
   SpatialPathFinderSeedHandoff(SpatialPathFinderSeedHandoff &&) = delete;
-  SpatialPathFinderSeedHandoff &operator=(SpatialPathFinderSeedHandoff &&) =
-      delete;
+  SpatialPathFinderSeedHandoff &
+  operator=(SpatialPathFinderSeedHandoff &&) = delete;
 };
 
 using SpatialPathFinderSeedHandoffHandle =

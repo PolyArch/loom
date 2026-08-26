@@ -120,6 +120,16 @@ struct SpatialActionKey final {
 
 SpatialActionKey spatialActionKey(const SpatialMappingAction &action);
 
+class SpatialCandidateState;
+
+/// True when the action re-selects exactly the candidate's current decision.
+/// Such an action is a proven semantic no-op: every decision application
+/// returns before marking a net when the selection is unchanged, so nothing it
+/// touches can differ from the current candidate. Routing actions are never an
+/// identity because their result comes from the router, not the action.
+bool isIdentitySpatialAction(const SpatialCandidateState &candidate,
+                             const SpatialMappingAction &action);
+
 /// Validates one ephemeral ActionBatch in canonical typed-anchor order. A
 /// batch is nonempty and may change each selected-decision anchor at most once.
 llvm::Error validateCanonicalSpatialActionBatch(

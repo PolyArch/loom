@@ -9,6 +9,7 @@
 #include "Mapping/Artifact/SystemMappingHardwareDemand.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "PnR/FabricTopologyQualityDiagnostic.h"
+#include "PnR/PnrWorkLedger.h"
 #include "PnR/System/SystemActionExecutor.h"
 #include "PnR/System/SystemAnnealingSearch.h"
 #include "PnR/System/SystemCandidateState.h"
@@ -18,12 +19,15 @@
 #include "mlir/IR/MLIRContext.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <string>
+#include <type_traits>
 #include <system_error>
 #include <utility>
 #include <variant>
@@ -128,63 +132,8 @@ llvm::Error checkedAdd(std::uint64_t amount, std::uint64_t &target,
   return llvm::Error::success();
 }
 
-llvm::Error accumulateInitialization(const InitializationFailure &source,
-                                     SystemPnrGenerationAccounting &target) {
-  if (llvm::Error error = checkedAdd(source.assignmentAttempts,
-                                     target.initializerAssignmentAttempts,
-                                     "initializer assignment attempts"))
-    return error;
-  if (llvm::Error error =
-          checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
-                     "initializer endpoint expansions"))
-    return error;
-  return checkedAdd(source.negotiationIterations,
-                    target.negotiationIterationSlots,
-                    "initializer negotiation iterations");
-}
-
-llvm::Error accumulateInitialization(const InitializedSystemCandidate &source,
-                                     SystemPnrGenerationAccounting &target) {
-  if (llvm::Error error = checkedAdd(source.assignmentAttempts,
-                                     target.initializerAssignmentAttempts,
-                                     "initializer assignment attempts"))
-    return error;
-  if (llvm::Error error =
-          checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
-                     "initializer endpoint expansions"))
-    return error;
-  return checkedAdd(source.negotiationIterations,
-                    target.negotiationIterationSlots,
-                    "initializer negotiation iterations");
-}
-
 llvm::Error accumulateAnnealing(const SystemAnnealingStatistics &source,
                                 SystemPnrGenerationAccounting &target) {
-  if (llvm::Error error = checkedAdd(source.calibrationProposalSlots,
-                                     target.calibrationProposalSlots,
-                                     "calibration proposal slots"))
-    return error;
-  if (llvm::Error error = checkedAdd(source.annealingBaseProposalSlots,
-                                     target.annealingBaseProposalSlots,
-                                     "base annealing proposal slots"))
-    return error;
-  if (llvm::Error error =
-          checkedAdd(source.annealingMovableProposalSlots,
-                     target.annealingMovableProposalSlots,
-                     "movable-decision annealing proposal slots"))
-    return error;
-  if (llvm::Error error = checkedAdd(source.assignmentAttempts,
-                                     target.initializerAssignmentAttempts,
-                                     "annealing assignment attempts"))
-    return error;
-  if (llvm::Error error =
-          checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
-                     "annealing endpoint expansions"))
-    return error;
-  if (llvm::Error error = checkedAdd(source.negotiationIterations,
-                                     target.negotiationIterationSlots,
-                                     "annealing negotiation iterations"))
-    return error;
   if (llvm::Error error = checkedAdd(source.mutationOracleVerificationCount,
                                      target.mutationOracleVerificationAttempts,
                                      "mutation oracle verification attempts"))
@@ -193,19 +142,41 @@ llvm::Error accumulateAnnealing(const SystemAnnealingStatistics &source,
                     "annealing accepted Actions");
 }
 
-llvm::Error accumulateActionProbe(const SystemActionProbeAccounting &source,
-                                  SystemPnrGenerationAccounting &target) {
-  if (llvm::Error error = checkedAdd(source.assignmentAttempts,
-                                     target.initializerAssignmentAttempts,
-                                     "Action assignment attempts"))
-    return error;
-  if (llvm::Error error =
-          checkedAdd(source.endpointExpansions, target.endpointExpansionSlots,
-                     "Action endpoint expansions"))
-    return error;
-  return checkedAdd(source.negotiationIterations,
-                    target.negotiationIterationSlots,
-                    "Action negotiation iterations");
+PnrWorkLedgerView
+canonicalWorkLedger(SystemPnrGenerationAccounting &accounting) {
+  std::array<PnrWorkCounterRef, pnrWorkKindCount> counters{};
+  const auto bind = [&](PnrWorkKind kind, std::uint64_t &planned,
+                        std::uint64_t &consumed) {
+    counters[static_cast<std::size_t>(kind)] = {&planned, &consumed};
+  };
+  bind(PnrWorkKind::SeedAttempt, accounting.plannedSeedAttemptSlots,
+       accounting.seedAttemptSlots);
+  bind(PnrWorkKind::InitializerAssignment,
+       accounting.plannedInitializerAssignmentAttempts,
+       accounting.initializerAssignmentAttempts);
+  bind(PnrWorkKind::EndpointExpansion, accounting.plannedEndpointExpansionSlots,
+       accounting.endpointExpansionSlots);
+  bind(PnrWorkKind::NegotiationIteration,
+       accounting.plannedNegotiationIterationSlots,
+       accounting.negotiationIterationSlots);
+  bind(PnrWorkKind::CalibrationProposal,
+       accounting.plannedCalibrationProposalSlots,
+       accounting.calibrationProposalSlots);
+  bind(PnrWorkKind::AnnealingBaseProposal,
+       accounting.plannedAnnealingBaseProposalSlots,
+       accounting.annealingBaseProposalSlots);
+  bind(PnrWorkKind::AnnealingMovableProposal,
+       accounting.plannedAnnealingMovableProposalSlots,
+       accounting.annealingMovableProposalSlots);
+  bind(PnrWorkKind::ExactRepairRegionDecision,
+       accounting.plannedExactRepairRegionDecisions,
+       accounting.exactRepairRegionDecisions);
+  bind(PnrWorkKind::ExactRepairSolverCall,
+       accounting.plannedExactRepairSolverCalls,
+       accounting.exactRepairSolverCalls);
+  bind(PnrWorkKind::FinalClosureAttempt, accounting.plannedFinalClosureAttempts,
+       accounting.finalClosureAttempts);
+  return PnrWorkLedgerView(counters);
 }
 
 void emitInvocationAccounting(const SystemPnrGenerationAccounting &accounting,
@@ -242,17 +213,31 @@ void emitInvocationAccounting(const SystemPnrGenerationAccounting &accounting,
             accounting.migrationNewServiceLegs;
         fields["migration_new_resource_uses"] =
             accounting.migrationNewResourceUses;
+        fields["planned_seed_attempt_slots"] =
+            accounting.plannedSeedAttemptSlots;
         fields["seed_attempt_slots"] = accounting.seedAttemptSlots;
         fields["prepared_seeds"] = accounting.preparedSeeds;
+        fields["planned_initializer_assignment_attempts"] =
+            accounting.plannedInitializerAssignmentAttempts;
         fields["initializer_assignment_attempts"] =
             accounting.initializerAssignmentAttempts;
+        fields["planned_endpoint_expansion_slots"] =
+            accounting.plannedEndpointExpansionSlots;
         fields["endpoint_expansion_slots"] = accounting.endpointExpansionSlots;
+        fields["planned_negotiation_iteration_slots"] =
+            accounting.plannedNegotiationIterationSlots;
         fields["negotiation_iteration_slots"] =
             accounting.negotiationIterationSlots;
+        fields["planned_calibration_proposal_slots"] =
+            accounting.plannedCalibrationProposalSlots;
         fields["calibration_proposal_slots"] =
             accounting.calibrationProposalSlots;
+        fields["planned_annealing_base_proposal_slots"] =
+            accounting.plannedAnnealingBaseProposalSlots;
         fields["annealing_base_proposal_slots"] =
             accounting.annealingBaseProposalSlots;
+        fields["planned_annealing_movable_proposal_slots"] =
+            accounting.plannedAnnealingMovableProposalSlots;
         fields["annealing_movable_proposal_slots"] =
             accounting.annealingMovableProposalSlots;
         fields["annealing_accepted_actions"] =
@@ -260,9 +245,15 @@ void emitInvocationAccounting(const SystemPnrGenerationAccounting &accounting,
         fields["mutation_oracle_verification_attempts"] =
             accounting.mutationOracleVerificationAttempts;
         fields["exact_repair_invocations"] = accounting.exactRepairInvocations;
+        fields["planned_exact_repair_region_decisions"] =
+            accounting.plannedExactRepairRegionDecisions;
         fields["exact_repair_region_decisions"] =
             accounting.exactRepairRegionDecisions;
+        fields["planned_exact_repair_solver_calls"] =
+            accounting.plannedExactRepairSolverCalls;
         fields["exact_repair_solver_calls"] = accounting.exactRepairSolverCalls;
+        fields["planned_final_closure_attempts"] =
+            accounting.plannedFinalClosureAttempts;
         fields["final_closure_attempts"] = accounting.finalClosureAttempts;
         fields["final_verification_attempts"] =
             accounting.finalVerificationAttempts;
@@ -593,10 +584,123 @@ systemPnrInterruptionStageSpelling(SystemPnrInterruptionStage stage) {
   llvm_unreachable("unknown System PnR interruption stage");
 }
 
+llvm::Error
+verifySystemPnrWorkAccounting(const SystemPnrGenerationAccounting &accounting,
+                              bool requireClosedWork) {
+  const std::array<std::pair<std::uint64_t, std::uint64_t>, 10> counters = {{
+      {accounting.plannedSeedAttemptSlots, accounting.seedAttemptSlots},
+      {accounting.plannedInitializerAssignmentAttempts,
+       accounting.initializerAssignmentAttempts},
+      {accounting.plannedEndpointExpansionSlots,
+       accounting.endpointExpansionSlots},
+      {accounting.plannedNegotiationIterationSlots,
+       accounting.negotiationIterationSlots},
+      {accounting.plannedCalibrationProposalSlots,
+       accounting.calibrationProposalSlots},
+      {accounting.plannedAnnealingBaseProposalSlots,
+       accounting.annealingBaseProposalSlots},
+      {accounting.plannedAnnealingMovableProposalSlots,
+       accounting.annealingMovableProposalSlots},
+      {accounting.plannedExactRepairRegionDecisions,
+       accounting.exactRepairRegionDecisions},
+      {accounting.plannedExactRepairSolverCalls,
+       accounting.exactRepairSolverCalls},
+      {accounting.plannedFinalClosureAttempts, accounting.finalClosureAttempts},
+  }};
+  for (const auto [planned, consumed] : counters) {
+    if (consumed > planned)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "System PnR consumed work exceeds planned work");
+    if (requireClosedWork && planned != consumed)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "System PnR completed with admitted work still live");
+  }
+  return llvm::Error::success();
+}
+
+static /// One isolated fresh System restart slot. The slot performs initialization,
+/// annealing, the strict final closure and candidate invariant verification;
+/// draft materialization, finalization and publication stay in the ordinal
+/// reduction so scheduling cannot reorder store effects.
+struct SystemRestartResult final {
+  enum class Kind : std::uint8_t {
+    Candidate,
+    Incomplete,
+    ProvenInfeasible,
+    Interrupted,
+    Internal,
+    /// The slot finished without a candidate or an incompleteness claim, such
+    /// as a migration initializer fallback or a bounded-prefix early stop.
+    Skipped,
+  };
+  Kind kind = Kind::Internal;
+  bool completionGoalReached = false;
+  SystemPnrGenerationAccounting accounting;
+  SystemCandidateStateHandle candidate;
+  SystemInterruptionBestProjection best;
+  bool semanticLimit = false;
+  std::string diagnostic;
+  SystemPnrInterruptionStage stage =
+      SystemPnrInterruptionStage::CandidateInitialization;
+  InternalSystemPnrGenerationReason internalReason =
+      InternalSystemPnrGenerationReason::CandidateInitialization;
+  SystemPnrInfeasibilityProofKind proofKind =
+      SystemPnrInfeasibilityProofKind::InitializerRelation;
+};
+
+llvm::Error mergeInterruptionBest(const MappingObjectiveProgram &program,
+                                  const SystemInterruptionBestProjection &local,
+                                  SystemInterruptionBestProjection &best) {
+  if (!local.objective)
+    return llvm::Error::success();
+  bool selected = !best.violationValues;
+  if (!best.objective) {
+    selected = true;
+  } else {
+    auto comparison =
+        program.compareSelectedRank(*local.objective, {}, *best.objective, {});
+    if (!comparison)
+      return comparison.takeError();
+    selected = *comparison < 0;
+  }
+  if (!selected)
+    return llvm::Error::success();
+  best = local;
+  return llvm::Error::success();
+}
+
+/// Adds one slot's counters into the invocation totals. The accounting struct
+/// is a flat sequence of saturating u64 counters; the layout assertions keep
+/// this mechanical accumulation in sync with the field list.
+void accumulateRestartAccounting(const SystemPnrGenerationAccounting &slot,
+                                 SystemPnrGenerationAccounting &total) {
+  static_assert(std::is_standard_layout_v<SystemPnrGenerationAccounting> &&
+                    std::is_trivially_copyable_v<SystemPnrGenerationAccounting>,
+                "accounting must remain a flat counter block");
+  static_assert(sizeof(SystemPnrGenerationAccounting) %
+                        sizeof(std::uint64_t) ==
+                    0,
+                "accounting must remain u64 counters only");
+  constexpr std::size_t counterCount =
+      sizeof(SystemPnrGenerationAccounting) / sizeof(std::uint64_t);
+  const auto *source = reinterpret_cast<const std::uint64_t *>(&slot);
+  auto *destination = reinterpret_cast<std::uint64_t *>(&total);
+  for (std::size_t counter = 0; counter != counterCount; ++counter)
+    destination[counter] =
+        source[counter] >
+                std::numeric_limits<std::uint64_t>::max() -
+                    destination[counter]
+            ? std::numeric_limits<std::uint64_t>::max()
+            : destination[counter] + source[counter];
+}
+
 SystemPnrGenerationOutcome
-generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
+generateSystemMappingsImpl(const SystemPnrGenerationInputs &inputs) {
   const ExecutionResourceTracker resources;
   SystemPnrGenerationAccounting accounting;
+  const PnrWorkLedgerView workLedger = canonicalWorkLedger(accounting);
   SystemInterruptionBestProjection interruptionBest;
   if (inputs.executionControl.stopRequested())
     return interruptedOutcome(SystemPnrInterruptionStage::InputAdmission,
@@ -746,7 +850,13 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
           (*problem)->serviceLegs().size();
       accounting.migrationPreservedResourceUses =
           parent.view().resourceUses().size();
-      ++accounting.finalClosureAttempts;
+      if (llvm::Error error = workLedger.plan(PnrWorkKind::FinalClosureAttempt))
+        return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
+                        accounting, std::move(error));
+      if (llvm::Error error =
+              workLedger.consume(PnrWorkKind::FinalClosureAttempt))
+        return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
+                        accounting, std::move(error));
       ++accounting.finalVerificationAttempts;
       ++accounting.publicationSlots;
       mapping_debug::emit(
@@ -852,7 +962,7 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
   bool requireImportedCapacityClosure = false;
   if (search.completionGoal ==
       ResolvedPnrCompletionGoal::FirstVerifiedCandidate) {
-    auto capacityFit = searchSystemImportedCapacity(*problem);
+    auto capacityFit = searchSystemImportedCapacity(*problem, workLedger);
     if (!capacityFit)
       return internal(
           InternalSystemPnrGenerationReason::CandidateInitialization,
@@ -860,11 +970,6 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
     const std::uint64_t assignmentAttempts =
         std::visit([](const auto &value) { return value.assignmentAttempts; },
                    *capacityFit);
-    if (llvm::Error error = checkedAdd(assignmentAttempts,
-                                       accounting.initializerAssignmentAttempts,
-                                       "imported-capacity assignment attempts"))
-      return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
-                      accounting, std::move(error));
     if (const auto *pressure =
             std::get_if<SystemImportedCapacityPressure>(&*capacityFit)) {
       auto checkpoint = publishExecutionBindingCheckpoint(
@@ -920,7 +1025,6 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
     }
     requireImportedCapacityClosure = true;
   }
-  SystemAnnealingSearchScratch annealing;
   std::vector<ArtifactRootReference> candidates;
   if (rebasedMapping)
     candidates.push_back(*rebasedMapping);
@@ -947,245 +1051,247 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
       firstIncompleteDiagnostic = diagnostic.str();
   };
 
-  const std::uint64_t attemptCount =
-      static_cast<std::uint64_t>(search.initializer.seedAttemptCount) +
-      (migrationProjection ? 1 : 0);
-  if (attemptCount > std::numeric_limits<std::uint32_t>::max())
-    return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
-                    accounting, "migration plus fresh seed count exceeds u32");
-  for (std::uint32_t attempt = 0; attempt != attemptCount; ++attempt) {
-    const bool migrationAttempt = migrationProjection && attempt == 0;
-    const std::uint32_t freshAttempt =
-        migrationAttempt
-            ? 0
-            : attempt -
-                  static_cast<std::uint32_t>(migrationProjection.has_value());
-    if (inputs.executionControl.stopRequested())
-      return interruptedOutcome(
-          SystemPnrInterruptionStage::CandidateInitialization, attempt,
-          accounting, std::move(candidates), interruptionBest, resources);
-    ++accounting.seedAttemptSlots;
-    if (migrationAttempt)
-      ++accounting.migrationSeedAttemptSlots;
-    auto initialized =
-        migrationAttempt
-            ? (migrationProjection->releasedChoices.empty()
-                   ? (migrationProjection->routeSeed
-                          ? initializeSystemCandidateWithFixedChoicesAndRoutes(
-                                *problem, migrationProjection->fixedChoices,
-                                *migrationProjection->routeSeed)
-                          : initializeSystemCandidateWithFixedChoices(
-                                *problem, migrationProjection->fixedChoices))
-                   : initializeSystemCandidateWithReleasedChoicesAndImportedCapacityClosure(
-                         *problem, migrationProjection->fixedChoices,
-                         migrationProjection->releasedChoices))
-        : requireImportedCapacityClosure
-            ? initializeSystemCandidateAttemptWithImportedCapacityClosure(
-                  *problem, freshAttempt)
-            : initializeSystemCandidateAttempt(*problem, freshAttempt);
-    if (!initialized) {
-      InitializationFailure failure =
-          classifyInitializationFailure(initialized.takeError());
-      if (llvm::Error error = accumulateInitialization(failure, accounting))
-        return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
-                        accounting, std::move(error));
-      if (inputs.executionControl.stopRequested())
-        return interruptedOutcome(
-            SystemPnrInterruptionStage::CandidateInitialization, attempt,
-            accounting, std::move(candidates), interruptionBest, resources);
-      if (migrationAttempt) {
-        ++accounting.migrationSeedFallbacks;
-        mapping_debug::emit(
-            mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
-            mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
-              fields["operation"] = "system_mapping_migration_fallback";
-              fields["reason"] = systemMappingMigrationFallbackReasonSpelling(
-                  SystemMappingMigrationFallbackReason::
-                      ChildInitializerRejected);
-              fields["diagnostic"] = failure.diagnostic;
-            });
-        continue;
-      }
-      switch (failure.kind) {
-      case SystemCandidateInitializationFailureKind::ProvenInfeasible:
-        if (candidates.empty()) {
-          emitInvocationAccounting(
-              accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
-          return ProvenInfeasibleSystemMapping{
-              accounting, std::move(failure.diagnostic),
-              SystemPnrInfeasibilityProofKind::InitializerRelation};
-        }
-        return internal(
-            InternalSystemPnrGenerationReason::CandidateInitialization,
-            accounting,
-            "an initializer proved infeasibility after a verified candidate "
-            "was published");
-      case SystemCandidateInitializationFailureKind::SemanticLimitReached:
-        rememberIncomplete(failure.diagnostic, true);
-        continue;
-      case SystemCandidateInitializationFailureKind::Internal:
-        return internal(
-            InternalSystemPnrGenerationReason::CandidateInitialization,
-            accounting, failure.diagnostic);
-      }
-    }
-    if (llvm::Error error = accumulateInitialization(*initialized, accounting))
-      return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
-                      accounting, std::move(error));
+  const std::uint32_t freshCount = search.initializer.seedAttemptCount;
+  const std::uint32_t globalAttemptOffset = migrationProjection ? 1 : 0;
+  const bool firstVerifiedGoal =
+      inputs.config.policy().search.completionGoal ==
+      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
 
-    ++accounting.preparedSeeds;
-    if (migrationAttempt)
-      ++accounting.migrationSeedPrepared;
-    SystemCandidateStateHandle candidate = std::move(initialized->state);
-    if (llvm::Error error =
-            considerInterruptionCandidate(*candidate, interruptionBest))
-      return internal(
-          InternalSystemPnrGenerationReason::CandidateInitialization,
-          accounting, std::move(error));
-    if (migrationAttempt) {
-      llvm::Error directVerification = candidate->verify();
-      if (!directVerification) {
-        ++accounting.finalVerificationAttempts;
-        auto directDraft = materializeSystemCandidateDraft(*candidate, context);
-        if (directDraft) {
-          ++accounting.publicationSlots;
-          auto directFinalized = ::loom::mapping::finalizeSystemMapping(
-              mlir::cast<::mapping::SystemOp>(directDraft->get()),
-              inputs.dataflow, inputs.fabric, inputs.constraints.view(),
-              inputs.store, &candidate->problem().spatialMappingImports(),
-              inputs.executionControl);
-          if (directFinalized) {
-            ++accounting.finalizedRestarts;
-            candidates.push_back(directFinalized->reference());
-            mapping_debug::emit(
-                mapping_debug::Level::Summary,
-                mapping_debug::Stage::SystemPnr,
-                mapping_debug::Event::Candidate,
-                [&](llvm::json::Object &fields) {
-                  fields["operation"] =
-                      "system_mapping_migration_direct_publication";
-                  fields["mapping"] = formatArtifactIdentityHex(
-                      directFinalized->reference().artifact);
-                  fields["released_choice_count"] =
-                      migrationProjection->releasedChoices.size();
-                });
-            if (inputs.config.policy().search.completionGoal ==
-                ResolvedPnrCompletionGoal::FirstVerifiedCandidate) {
-              semanticLimitReached = true;
-              break;
-            }
-          } else {
-            llvm::consumeError(directFinalized.takeError());
-          }
-        } else {
-          llvm::consumeError(directDraft.takeError());
-        }
-      } else {
-        llvm::consumeError(std::move(directVerification));
-      }
-    }
+  const auto internalRestart =
+      [](SystemRestartResult &result, InternalSystemPnrGenerationReason reason,
+         const llvm::Twine &diagnostic) -> SystemRestartResult && {
+    result.kind = SystemRestartResult::Kind::Internal;
+    result.internalReason = reason;
+    result.diagnostic = diagnostic.str();
+    return std::move(result);
+  };
+  const auto interruptedRestart =
+      [](SystemRestartResult &result,
+         SystemPnrInterruptionStage stage) -> SystemRestartResult && {
+    result.kind = SystemRestartResult::Kind::Interrupted;
+    result.stage = stage;
+    return std::move(result);
+  };
+
+  // Annealing, the strict final closure and candidate invariant verification
+  // for one initialized slot. Store publication stays outside so slots can run
+  // in parallel without reordering store effects.
+  const auto computeRestartTail = [&](SystemCandidateStateHandle candidate,
+                                      std::uint64_t annealingSeedOrdinal,
+                                      const PnrWorkLedgerView &slotLedger,
+                                      SystemRestartResult &result)
+      -> SystemRestartResult && {
     if (inputs.executionControl.stopRequested())
-      return interruptedOutcome(SystemPnrInterruptionStage::Annealing, attempt,
-                                accounting, std::move(candidates),
-                                interruptionBest, resources);
-    const std::uint64_t annealingSeedOrdinal =
-        migrationAttempt ? 0 : freshAttempt;
-    auto annealed =
-        annealing.run(candidate, annealingSeedOrdinal, inputs.executionControl);
+      return interruptedRestart(result, SystemPnrInterruptionStage::Annealing);
+    SystemAnnealingSearchScratch annealing;
+    auto annealed = annealing.run(candidate, annealingSeedOrdinal,
+                                  inputs.executionControl, slotLedger);
     if (!annealed)
-      return internal(InternalSystemPnrGenerationReason::Annealing, accounting,
-                      annealed.takeError());
-    if (llvm::Error error = accumulateAnnealing(*annealed, accounting))
-      return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
-                      accounting, std::move(error));
-    semanticLimitReached |= annealed->completionGoalReached;
+      return internalRestart(result,
+                             InternalSystemPnrGenerationReason::Annealing,
+                             llvm::toString(annealed.takeError()));
+    if (llvm::Error error = accumulateAnnealing(*annealed, result.accounting))
+      return internalRestart(
+          result, InternalSystemPnrGenerationReason::AccountingOverflow,
+          llvm::toString(std::move(error)));
+    result.completionGoalReached |= annealed->completionGoalReached;
     if (llvm::Error error =
-            considerInterruptionCandidate(*candidate, interruptionBest))
-      return internal(InternalSystemPnrGenerationReason::Annealing, accounting,
-                      std::move(error));
+            considerInterruptionCandidate(*candidate, result.best))
+      return internalRestart(result,
+                             InternalSystemPnrGenerationReason::Annealing,
+                             llvm::toString(std::move(error)));
     if (annealed->interrupted)
-      return interruptedOutcome(SystemPnrInterruptionStage::Annealing, attempt,
-                                accounting, std::move(candidates),
-                                interruptionBest, resources);
+      return interruptedRestart(result, SystemPnrInterruptionStage::Annealing);
 
     if (inputs.executionControl.stopRequested())
-      return interruptedOutcome(SystemPnrInterruptionStage::FinalClosure,
-                                attempt, accounting, std::move(candidates),
-                                interruptionBest, resources);
-    ++accounting.finalClosureAttempts;
+      return interruptedRestart(result,
+                                SystemPnrInterruptionStage::FinalClosure);
+    if (llvm::Error error = slotLedger.plan(PnrWorkKind::FinalClosureAttempt))
+      return internalRestart(
+          result, InternalSystemPnrGenerationReason::AccountingOverflow,
+          llvm::toString(std::move(error)));
     auto currentObjective =
         candidate->problem().objectiveProgram().evaluate(*candidate);
     if (!currentObjective)
-      return internal(InternalSystemPnrGenerationReason::FinalClosure,
-                      accounting, currentObjective.takeError());
+      return internalRestart(result,
+                             InternalSystemPnrGenerationReason::FinalClosure,
+                             llvm::toString(currentObjective.takeError()));
     SystemActionProbeAccounting closureWork;
     auto closed = probeSystemAction(
         candidate, *currentObjective,
         SystemMappingAction{
             SystemTransportRoutingAction{SystemGlobalRoutingAction{}}},
-        closureWork, SystemActionExecutionContext::FinalClosure);
-    if (llvm::Error error = accumulateActionProbe(closureWork, accounting))
-      return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
-                      accounting, std::move(error));
-    if (inputs.executionControl.stopRequested()) {
-      if (!closed)
-        llvm::consumeError(closed.takeError());
-      return interruptedOutcome(SystemPnrInterruptionStage::FinalClosure,
-                                attempt, accounting, std::move(candidates),
-                                interruptionBest, resources);
-    }
-    if (!closed) {
-      bool workLimit = false;
-      bool upstreamReopen = false;
-      std::string diagnostic;
+        closureWork, SystemActionExecutionContext::FinalClosure, slotLedger);
+    bool transitionFailure = false;
+    bool workLimit = false;
+    bool upstreamReopen = false;
+    std::string closureDiagnostic;
+    const bool closureSucceeded = static_cast<bool>(closed);
+    if (!closureSucceeded)
       llvm::handleAllErrors(
           closed.takeError(),
           [&](const SystemActionTransitionFailure &failure) {
+            transitionFailure = true;
             workLimit =
                 failure.kind() == SystemActionTransitionFailureKind::WorkLimit;
             upstreamReopen = failure.reopenWitness().has_value();
-            diagnostic = errorMessage(failure);
+            closureDiagnostic = errorMessage(failure);
           },
           [&](const llvm::ErrorInfoBase &failure) {
-            diagnostic = errorMessage(failure);
+            closureDiagnostic = errorMessage(failure);
           });
-      if (workLimit) {
-        rememberIncomplete(diagnostic, true);
-        continue;
+    if (closureSucceeded || transitionFailure)
+      if (llvm::Error error =
+              slotLedger.consume(PnrWorkKind::FinalClosureAttempt))
+        return internalRestart(
+            result, InternalSystemPnrGenerationReason::AccountingOverflow,
+            llvm::toString(std::move(error)));
+    if (inputs.executionControl.stopRequested())
+      return interruptedRestart(result,
+                                SystemPnrInterruptionStage::FinalClosure);
+    if (!closureSucceeded) {
+      if (workLimit || upstreamReopen) {
+        result.kind = SystemRestartResult::Kind::Incomplete;
+        result.semanticLimit = workLimit;
+        result.diagnostic = std::move(closureDiagnostic);
+        return std::move(result);
       }
-      if (upstreamReopen) {
-        rememberIncomplete(diagnostic, false);
-        continue;
-      }
-      return internal(
-          InternalSystemPnrGenerationReason::FinalClosure, accounting,
-          diagnostic.empty() ? "final global Action lost its failure cause"
-                             : diagnostic);
+      return internalRestart(result,
+                             InternalSystemPnrGenerationReason::FinalClosure,
+                             closureDiagnostic.empty()
+                                 ? "final global Action lost its failure cause"
+                                 : closureDiagnostic);
     }
     if (llvm::Error error = considerInterruptionCandidate(
-            *closed->candidate, interruptionBest, &closed->objective))
-      return internal(InternalSystemPnrGenerationReason::FinalClosure,
-                      accounting, std::move(error));
+            *closed->candidate, result.best, &closed->objective))
+      return internalRestart(result,
+                             InternalSystemPnrGenerationReason::FinalClosure,
+                             llvm::toString(std::move(error)));
     candidate = std::move(closed->candidate);
     if (candidate->capacityOveruse() != 0) {
-      rememberIncomplete(
-          "strict final global Action retained full CapacityOveruse", false);
-      continue;
+      result.kind = SystemRestartResult::Kind::Incomplete;
+      result.semanticLimit = false;
+      result.diagnostic =
+          "strict final global Action retained full CapacityOveruse";
+      return std::move(result);
     }
 
     if (inputs.executionControl.stopRequested())
-      return interruptedOutcome(
-          SystemPnrInterruptionStage::CandidateVerification, attempt,
-          accounting, std::move(candidates), interruptionBest, resources);
+      return interruptedRestart(
+          result, SystemPnrInterruptionStage::CandidateVerification);
     if (llvm::Error error = candidate->verify())
+      return internalRestart(
+          result, InternalSystemPnrGenerationReason::CandidateVerification,
+          llvm::toString(std::move(error)));
+    ++result.accounting.finalVerificationAttempts;
+    result.kind = SystemRestartResult::Kind::Candidate;
+    result.candidate = std::move(candidate);
+    return std::move(result);
+  };
+
+  const auto runFreshRestart =
+      [&](std::uint32_t freshAttempt) -> SystemRestartResult {
+    SystemRestartResult result;
+    const PnrWorkLedgerView slotLedger = canonicalWorkLedger(result.accounting);
+    if (inputs.executionControl.stopRequested())
+      return interruptedRestart(
+          result, SystemPnrInterruptionStage::CandidateInitialization);
+    if (llvm::Error error = slotLedger.plan(PnrWorkKind::SeedAttempt))
+      return internalRestart(
+          result, InternalSystemPnrGenerationReason::AccountingOverflow,
+          llvm::toString(std::move(error)));
+    auto initialized =
+        requireImportedCapacityClosure
+            ? initializeSystemCandidateAttemptWithImportedCapacityClosure(
+                  *problem, freshAttempt, slotLedger)
+            : initializeSystemCandidateAttempt(*problem, freshAttempt,
+                                               slotLedger);
+    if (!initialized) {
+      InitializationFailure failure =
+          classifyInitializationFailure(initialized.takeError());
+      if (failure.kind != SystemCandidateInitializationFailureKind::Internal)
+        if (llvm::Error error = slotLedger.consume(PnrWorkKind::SeedAttempt))
+          return internalRestart(
+              result, InternalSystemPnrGenerationReason::AccountingOverflow,
+              llvm::toString(std::move(error)));
+      if (inputs.executionControl.stopRequested())
+        return interruptedRestart(
+            result, SystemPnrInterruptionStage::CandidateInitialization);
+      switch (failure.kind) {
+      case SystemCandidateInitializationFailureKind::ProvenInfeasible:
+        result.kind = SystemRestartResult::Kind::ProvenInfeasible;
+        result.diagnostic = std::move(failure.diagnostic);
+        result.proofKind = SystemPnrInfeasibilityProofKind::InitializerRelation;
+        return result;
+      case SystemCandidateInitializationFailureKind::SemanticLimitReached:
+        result.kind = SystemRestartResult::Kind::Incomplete;
+        result.semanticLimit = true;
+        result.diagnostic = std::move(failure.diagnostic);
+        return result;
+      case SystemCandidateInitializationFailureKind::Internal:
+        return internalRestart(
+            result, InternalSystemPnrGenerationReason::CandidateInitialization,
+            failure.diagnostic);
+      }
+    }
+    if (llvm::Error error = slotLedger.consume(PnrWorkKind::SeedAttempt))
+      return internalRestart(
+          result, InternalSystemPnrGenerationReason::AccountingOverflow,
+          llvm::toString(std::move(error)));
+    ++result.accounting.preparedSeeds;
+    SystemCandidateStateHandle candidate = std::move(initialized->state);
+    if (llvm::Error error =
+            considerInterruptionCandidate(*candidate, result.best))
+      return internalRestart(
+          result, InternalSystemPnrGenerationReason::CandidateInitialization,
+          llvm::toString(std::move(error)));
+    return computeRestartTail(std::move(candidate), freshAttempt, slotLedger,
+                              result);
+  };
+
+  // Serial ordinal reduction: totals, best-projection merge, incompleteness
+  // classification and publication all follow canonical attempt order.
+  const auto reduceRestart = [&](SystemRestartResult restart,
+                                 std::uint32_t globalAttempt)
+      -> std::optional<SystemPnrGenerationOutcome> {
+    accumulateRestartAccounting(restart.accounting, accounting);
+    if (llvm::Error error = mergeInterruptionBest(
+            (*problem)->objectiveProgram(), restart.best, interruptionBest))
       return internal(InternalSystemPnrGenerationReason::CandidateVerification,
                       accounting, std::move(error));
-    ++accounting.finalVerificationAttempts;
+    semanticLimitReached |= restart.completionGoalReached;
+    switch (restart.kind) {
+    case SystemRestartResult::Kind::Internal:
+      return internal(restart.internalReason, accounting, restart.diagnostic);
+    case SystemRestartResult::Kind::Interrupted:
+      return interruptedOutcome(restart.stage, globalAttempt, accounting,
+                                std::move(candidates), interruptionBest,
+                                resources);
+    case SystemRestartResult::Kind::ProvenInfeasible:
+      if (candidates.empty()) {
+        emitInvocationAccounting(
+            accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
+        return SystemPnrGenerationOutcome{ProvenInfeasibleSystemMapping{
+            accounting, std::move(restart.diagnostic), restart.proofKind}};
+      }
+      return internal(
+          InternalSystemPnrGenerationReason::CandidateInitialization,
+          accounting,
+          "an initializer proved infeasibility after a verified candidate "
+          "was published");
+    case SystemRestartResult::Kind::Incomplete:
+      rememberIncomplete(restart.diagnostic, restart.semanticLimit);
+      return std::nullopt;
+    case SystemRestartResult::Kind::Skipped:
+      return std::nullopt;
+    case SystemRestartResult::Kind::Candidate:
+      break;
+    }
     if (inputs.executionControl.stopRequested())
       return interruptedOutcome(
-          SystemPnrInterruptionStage::CandidateFinalization, attempt,
+          SystemPnrInterruptionStage::CandidateFinalization, globalAttempt,
           accounting, std::move(candidates), interruptionBest, resources);
-    auto draft = materializeSystemCandidateDraft(*candidate, context);
+    auto draft = materializeSystemCandidateDraft(*restart.candidate, context);
     if (!draft)
       return internal(InternalSystemPnrGenerationReason::CandidateFinalization,
                       accounting, draft.takeError());
@@ -1193,7 +1299,7 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
     ++accounting.publicationSlots;
     auto finalized = ::loom::mapping::finalizeSystemMapping(
         root, inputs.dataflow, inputs.fabric, inputs.constraints.view(),
-        inputs.store, &candidate->problem().spatialMappingImports(),
+        inputs.store, &restart.candidate->problem().spatialMappingImports(),
         inputs.executionControl);
     if (!finalized) {
       std::optional<std::string> incompleteDiagnostic;
@@ -1217,7 +1323,7 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
               InternalSystemPnrGenerationReason::CandidateFinalization,
               accounting, std::move(remaining));
         return interruptedOutcome(
-            SystemPnrInterruptionStage::CandidateFinalization, attempt,
+            SystemPnrInterruptionStage::CandidateFinalization, globalAttempt,
             accounting, std::move(candidates), interruptionBest, resources);
       }
       if (incompleteDiagnostic) {
@@ -1226,7 +1332,7 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
               InternalSystemPnrGenerationReason::CandidateFinalization,
               accounting, std::move(remaining));
         rememberIncomplete(*incompleteDiagnostic, false);
-        continue;
+        return std::nullopt;
       }
       return internal(InternalSystemPnrGenerationReason::CandidateFinalization,
                       accounting, std::move(remaining));
@@ -1235,12 +1341,172 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
     candidates.push_back(finalized->reference());
     if (inputs.executionControl.stopRequested())
       return interruptedOutcome(
-          SystemPnrInterruptionStage::CandidateFinalization, attempt,
+          SystemPnrInterruptionStage::CandidateFinalization, globalAttempt,
           accounting, std::move(candidates), interruptionBest, resources);
-    if (inputs.config.policy().search.completionGoal ==
-        ResolvedPnrCompletionGoal::FirstVerifiedCandidate) {
+    if (firstVerifiedGoal)
       semanticLimitReached = true;
-      break;
+    return std::nullopt;
+  };
+
+  bool stopFresh = false;
+  if (migrationProjection) {
+    // The migration slot runs serially before the fresh slots: its
+    // direct-publication trial and its annealed candidate share one state, and
+    // publication must stay in canonical order.
+    SystemRestartResult slot;
+    const PnrWorkLedgerView slotLedger = canonicalWorkLedger(slot.accounting);
+    bool tailPending = false;
+    SystemCandidateStateHandle migrationCandidate;
+    if (inputs.executionControl.stopRequested()) {
+      interruptedRestart(slot,
+                         SystemPnrInterruptionStage::CandidateInitialization);
+    } else if (llvm::Error error = slotLedger.plan(PnrWorkKind::SeedAttempt)) {
+      internalRestart(slot,
+                      InternalSystemPnrGenerationReason::AccountingOverflow,
+                      llvm::toString(std::move(error)));
+    } else {
+      ++slot.accounting.migrationSeedAttemptSlots;
+      auto initialized =
+          migrationProjection->releasedChoices.empty()
+              ? (migrationProjection->routeSeed
+                     ? initializeSystemCandidateWithFixedChoicesAndRoutes(
+                           *problem, migrationProjection->fixedChoices,
+                           *migrationProjection->routeSeed, slotLedger)
+                     : initializeSystemCandidateWithFixedChoices(
+                           *problem, migrationProjection->fixedChoices,
+                           slotLedger))
+              : initializeSystemCandidateWithReleasedChoicesAndImportedCapacityClosure(
+                    *problem, migrationProjection->fixedChoices,
+                    migrationProjection->releasedChoices, slotLedger);
+      if (!initialized) {
+        InitializationFailure failure =
+            classifyInitializationFailure(initialized.takeError());
+        if (llvm::Error error = slotLedger.consume(PnrWorkKind::SeedAttempt)) {
+          internalRestart(slot,
+                          InternalSystemPnrGenerationReason::AccountingOverflow,
+                          llvm::toString(std::move(error)));
+        } else if (inputs.executionControl.stopRequested()) {
+          interruptedRestart(
+              slot, SystemPnrInterruptionStage::CandidateInitialization);
+        } else {
+          ++slot.accounting.migrationSeedFallbacks;
+          mapping_debug::emit(
+              mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+              mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+                fields["operation"] = "system_mapping_migration_fallback";
+                fields["reason"] = systemMappingMigrationFallbackReasonSpelling(
+                    SystemMappingMigrationFallbackReason::
+                        ChildInitializerRejected);
+                fields["diagnostic"] = failure.diagnostic;
+              });
+          slot.kind = SystemRestartResult::Kind::Skipped;
+        }
+      } else if (llvm::Error error =
+                     slotLedger.consume(PnrWorkKind::SeedAttempt)) {
+        internalRestart(slot,
+                        InternalSystemPnrGenerationReason::AccountingOverflow,
+                        llvm::toString(std::move(error)));
+      } else {
+        ++slot.accounting.preparedSeeds;
+        ++slot.accounting.migrationSeedPrepared;
+        migrationCandidate = std::move(initialized->state);
+        if (llvm::Error error = considerInterruptionCandidate(
+                *migrationCandidate, slot.best)) {
+          internalRestart(
+              slot, InternalSystemPnrGenerationReason::CandidateInitialization,
+              llvm::toString(std::move(error)));
+        } else {
+          llvm::Error directVerification = migrationCandidate->verify();
+          if (!directVerification) {
+            ++slot.accounting.finalVerificationAttempts;
+            auto directDraft =
+                materializeSystemCandidateDraft(*migrationCandidate, context);
+            if (directDraft) {
+              ++slot.accounting.publicationSlots;
+              auto directFinalized = ::loom::mapping::finalizeSystemMapping(
+                  mlir::cast<::mapping::SystemOp>(directDraft->get()),
+                  inputs.dataflow, inputs.fabric, inputs.constraints.view(),
+                  inputs.store,
+                  &migrationCandidate->problem().spatialMappingImports(),
+                  inputs.executionControl);
+              if (directFinalized) {
+                ++slot.accounting.finalizedRestarts;
+                candidates.push_back(directFinalized->reference());
+                mapping_debug::emit(
+                    mapping_debug::Level::Summary,
+                    mapping_debug::Stage::SystemPnr,
+                    mapping_debug::Event::Candidate,
+                    [&](llvm::json::Object &fields) {
+                      fields["operation"] =
+                          "system_mapping_migration_direct_publication";
+                      fields["mapping"] = formatArtifactIdentityHex(
+                          directFinalized->reference().artifact);
+                      fields["released_choice_count"] =
+                          migrationProjection->releasedChoices.size();
+                    });
+                if (firstVerifiedGoal) {
+                  slot.kind = SystemRestartResult::Kind::Skipped;
+                  slot.completionGoalReached = true;
+                  stopFresh = true;
+                }
+              } else {
+                llvm::consumeError(directFinalized.takeError());
+              }
+            } else {
+              llvm::consumeError(directDraft.takeError());
+            }
+          } else {
+            llvm::consumeError(std::move(directVerification));
+          }
+          if (!stopFresh)
+            tailPending = true;
+        }
+      }
+    }
+    if (tailPending)
+      computeRestartTail(std::move(migrationCandidate), 0, slotLedger, slot);
+    if (auto outcome = reduceRestart(std::move(slot), 0))
+      return std::move(*outcome);
+  }
+
+  if (!stopFresh) {
+    if (firstVerifiedGoal) {
+      for (std::uint32_t fresh = 0; fresh != freshCount; ++fresh) {
+        const std::size_t publishedBefore = candidates.size();
+        if (auto outcome = reduceRestart(runFreshRestart(fresh),
+                                         globalAttemptOffset + fresh))
+          return std::move(*outcome);
+        if (candidates.size() != publishedBefore)
+          break;
+      }
+    } else {
+      std::vector<SystemRestartResult> results(freshCount);
+      const std::uint32_t workerCount = std::max<std::uint32_t>(
+          1, std::min<std::uint32_t>(inputs.candidateWorkerCount,
+                                     freshCount == 0 ? 1 : freshCount));
+      if (workerCount <= 1) {
+        for (std::uint32_t fresh = 0; fresh != freshCount; ++fresh)
+          results[fresh] = runFreshRestart(fresh);
+      } else {
+        llvm::DefaultThreadPool pool(llvm::heavyweight_hardware_concurrency(
+            static_cast<unsigned>(workerCount)));
+        std::atomic_uint32_t nextRestart{0};
+        for (std::uint32_t worker = 0; worker != workerCount; ++worker)
+          pool.async([&] {
+            while (true) {
+              const std::uint32_t fresh =
+                  nextRestart.fetch_add(1, std::memory_order_relaxed);
+              if (fresh >= freshCount)
+                break;
+              results[fresh] = runFreshRestart(fresh);
+            }
+          });
+        pool.wait();
+      }
+      for (std::uint32_t fresh = 0; fresh != freshCount; ++fresh)
+        if (auto outcome = reduceRestart(std::move(results[fresh]),
+                                         globalAttemptOffset + fresh))
+          return std::move(*outcome);
     }
   }
 
@@ -1281,6 +1547,24 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
           ? "no fixed System restart reached independent final verification"
           : std::move(firstIncompleteDiagnostic),
       std::nullopt, std::nullopt};
+}
+
+SystemPnrGenerationOutcome
+generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
+  SystemPnrGenerationOutcome outcome = generateSystemMappingsImpl(inputs);
+  const SystemPnrGenerationAccounting &accounting = std::visit(
+      [](const auto &value) -> const SystemPnrGenerationAccounting & {
+        return value.accounting;
+      },
+      outcome);
+  const bool requireClosedWork =
+      !std::holds_alternative<InterruptedSystemPnrGeneration>(outcome) &&
+      !std::holds_alternative<InternalSystemPnrGeneration>(outcome);
+  if (llvm::Error error =
+          verifySystemPnrWorkAccounting(accounting, requireClosedWork))
+    return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
+                    accounting, std::move(error));
+  return outcome;
 }
 
 } // namespace loom::pnr

@@ -264,19 +264,21 @@ There are two actual repair profiles:
 2. **Atomic capacity** encodes compute binding and its complete hard relation
    closure. It does not encode memory binding decisions.
 
-Before Candidate state is allocated, the provider checks that these profiles
-are total for the frozen domain. Every Spatial constraint projection is
-classified exhaustively by its binding, route, tag, or memory owner.
+Before Candidate state is allocated, the provider rejects statically
+recognizable frozen-domain capability mismatches. Every Spatial constraint
+projection is classified exhaustively by its binding, route, tag, or memory
+owner.
 `CpSat_3_0` is rejected as unsupported when an atomic compute relation closure
 can reach a non-compute decision, or when a selectable memory operation plan,
 memory dispatch, or exposure provider can contribute atomic capacity overuse.
 No search begins for such a domain, and no alternate repair algorithm is
 selected implicitly.
 
-A direct scratch invocation outside an admitted profile returns the defensive
-`UnsupportedEncoding` result; generation cannot reach that result for an
-admitted domain. Region overflow returns
-`RegionTooLarge`; solver-call exhaustion or any non-proof-bearing status returns
+A candidate-local witness that has no complete typed encoding returns
+`UnsupportedEncoding`, including a route-progress dependency violation without
+a finite-buffer owner witness. This runtime result remains incomplete and
+cannot prove infeasibility. Region overflow returns `RegionTooLarge`;
+solver-call exhaustion or any non-proof-bearing status returns
 `UnknownBudgetExhausted`.
 
 The result vocabulary is:
@@ -326,7 +328,22 @@ Artifact reference enters the canonical candidate set.
 
 ## System Restart Sequence
 
-System restarts run in canonical attempt order. Each executes:
+The System provider allocates one isolated restart slot per configured fresh
+seed attempt, plus one migration slot when a migration projection is present.
+As in the Spatial sequence, slots may execute in parallel under
+`ExhaustConfiguredWork`, but their results are reduced by original restart
+ordinal: accounting accumulation, incomplete classification, candidate
+publication, and interruption reporting all follow canonical attempt order, so
+scheduling cannot change candidate identity, formal work accounting, or the
+first-incomplete diagnostic. Draft materialization, SystemMapping
+finalization, and publication run only in the ordinal reduction. The migration
+slot executes before the fresh slots because its direct-publication trial and
+its annealed candidate share one state. `FirstVerifiedCandidate` remains a
+serial bounded-prefix execution. Worker allocation is bounded by the
+configured candidate-worker request and the fresh restart count and is
+diagnostic only.
+
+Each restart slot executes:
 
 ```text
 hierarchical binding and service initialization

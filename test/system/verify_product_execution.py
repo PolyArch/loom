@@ -428,7 +428,7 @@ def validate_mapping_work(
         isinstance(initial_system_invocations, int)
         and initial_system_invocations > 0
         and isinstance(verified_alternatives, int)
-        and verified_alternatives > 0
+        and 0 < verified_alternatives <= initial_system_invocations
         and isinstance(join.get("system_pnr_dispatch_count"), int)
         and join["system_pnr_dispatch_count"] >= initial_system_invocations
         and isinstance(transitions, list),
@@ -442,10 +442,8 @@ def validate_mapping_work(
             "incremental transition lacks cold and repaired Mapping witnesses",
         )
     require(
-        len(system) == initial_system_invocations + 2 * len(transitions)
-        and sum(row.get("candidate_publications", -1) for row in system)
-        >= verified_alternatives,
-        "System invocations and publications do not reconcile with Mapping work",
+        len(system) == verified_alternatives + 2 * len(transitions),
+        "verified System rows do not reconcile with cold and incremental work",
     )
     incremental_system_rows = [
         row for row in system if row.get("migration_seed_attempt_slots") == 1
@@ -457,27 +455,23 @@ def validate_mapping_work(
         ),
         "incremental System searches do not reconcile with transition work",
     )
+    # A product build stops at its first verified candidate, so each search
+    # prepares exactly one restart and publishes exactly one candidate. The
+    # deterministic exhaustive profile remains available to DSE quality search
+    # and is proven by its own anchors.
     for name, rows in (("Spatial", spatial), ("System", system)):
         for row in rows:
             require(
-                row.get("closure_status") == "closed",
-                f"{name} search did not exhaust its configured work",
-            )
-            seed_attempts = row.get("seed_attempt_slots")
-            finalized_restarts = row.get("finalized_restarts")
-            publication_slots = row.get("publication_slots")
-            require(
-                isinstance(seed_attempts, int)
-                and seed_attempts > 0
-                and row.get("prepared_seeds") == seed_attempts
-                and finalized_restarts == seed_attempts
-                and publication_slots == seed_attempts,
-                f"{name} search did not reconcile configured restarts",
+                row.get("closure_status") == "semantic_limit_reached",
+                f"{name} search did not stop at its verified product result",
             )
             require(
-                isinstance(row.get("candidate_publications"), int)
-                and 0 < row["candidate_publications"] <= publication_slots,
-                f"{name} search published outside its canonical slots",
+                row.get("candidate_publications") == 1,
+                f"{name} search published more than one candidate",
+            )
+            require(
+                row.get("seed_attempt_slots") == 1 and row.get("prepared_seeds") == 1,
+                f"{name} search prepared unexpected restart work",
             )
             if name == "System" and row.get("migration_seed_attempt_slots") == 1:
                 require(
@@ -486,15 +480,16 @@ def validate_mapping_work(
                 )
             else:
                 require(
-                    row.get("final_closure_attempts") == seed_attempts,
+                    row.get("final_closure_attempts") == 1,
                     f"{name} search skipped or repeated final closure",
                 )
+            require(
+                row.get("finalized_restarts") == 1
+                and row.get("publication_slots") == 1,
+                f"{name} search did not finalize exactly one result",
+            )
     require(
-        all(
-            row.get("final_verification_attempts")
-            == row.get("finalized_restarts")
-            for row in system
-        ),
+        all(row.get("final_verification_attempts") == 1 for row in system),
         "System search skipped independent candidate verification",
     )
     require(

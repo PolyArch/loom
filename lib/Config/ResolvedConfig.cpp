@@ -1757,6 +1757,11 @@ loom::ResolvedConfig loom::defaultResolvedConfig() {
   return builtinResolvedConfig(ResolvedProfilePreset::BalancedExplore);
 }
 
+bool loom::isBuiltinConfigProfile(llvm::StringRef builtinPresetOrConfigPath) {
+  return builtinPresetOrConfigPath.empty() ||
+         profilePresetForName(builtinPresetOrConfigPath).has_value();
+}
+
 llvm::Expected<loom::ResolvedConfig>
 loom::resolveConfigProfile(llvm::StringRef builtinPresetOrConfigPath) {
   if (builtinPresetOrConfigPath.empty())
