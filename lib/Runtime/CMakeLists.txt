@@ -78,6 +78,7 @@ target_link_libraries(LoomRuntimeDeploymentLoader PUBLIC
 add_library(LoomGem5SystemExecution
   Gem5SystemExecution.cpp
   Gem5SystemExecutionFacts.cpp
+  Gem5SystemFactsSession.cpp
 )
 
 target_include_directories(LoomGem5SystemExecution PUBLIC

@@ -4,7 +4,9 @@
 #include "Evaluation/ModelProvider.h"
 #include "Simulator/SimulationExecution.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -17,6 +19,52 @@ inline constexpr std::uint64_t gem5MaximumSpatialWork = 1'000'000;
 /// difference is an unsigned integer.
 std::optional<std::uint64_t> integralSpatialReferenceCycleDistance(
     const sim::SpatialProgressObservations &progress);
+
+enum class Gem5SystemFactsSessionMode : std::uint8_t {
+  ReuseEnclosing,
+  Isolated,
+};
+
+struct Gem5SystemFactsSessionStatistics final {
+  std::uint64_t requests = 0;
+  std::uint64_t cacheHits = 0;
+  std::uint64_t cacheMisses = 0;
+  std::uint64_t constructionAttempts = 0;
+  std::uint64_t uniqueConstructions = 0;
+  std::uint64_t uncachedConstructions = 0;
+  std::uint64_t unsupportedConstructions = 0;
+  std::uint64_t failedConstructions = 0;
+  std::uint64_t revalidationCount = 0;
+  std::uint64_t revalidatedArtifactBytes = 0;
+  std::uint64_t revalidatedBlobBytes = 0;
+  std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t constructionNanosecondsSaved = 0;
+  std::uint64_t minimumRetainedBytes = 0;
+  std::uint64_t entryCount = 0;
+};
+
+/// Bounded immutable facts cache for one exact ArtifactStore/BlobStore
+/// verification domain. Hits revalidate the complete cold-construction
+/// closure and never bypass Request verification or typed importers.
+class Gem5SystemFactsSession final {
+public:
+  class Impl;
+
+  Gem5SystemFactsSession(const ArtifactStore &artifacts, const BlobStore &blobs,
+                         Gem5SystemFactsSessionMode mode =
+                             Gem5SystemFactsSessionMode::ReuseEnclosing,
+                         std::size_t entryLimit = 8);
+  ~Gem5SystemFactsSession();
+
+  Gem5SystemFactsSession(const Gem5SystemFactsSession &) = delete;
+  Gem5SystemFactsSession &operator=(const Gem5SystemFactsSession &) = delete;
+
+  Gem5SystemFactsSessionStatistics statistics() const;
+
+private:
+  std::shared_ptr<Impl> active_;
+  std::shared_ptr<Impl> previous_;
+};
 
 struct Gem5CgraEngineAttemptProfile final {
   std::uint64_t invocationCount = 0;

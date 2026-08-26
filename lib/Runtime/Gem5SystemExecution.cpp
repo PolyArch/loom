@@ -911,10 +911,10 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
   if (!factsOrUnsupported)
     return factsOrUnsupported.takeError();
   if (const auto *unsupported =
-          std::get_if<UnsupportedEvidence>(&*factsOrUnsupported))
+          std::get_if<UnsupportedEvidence>(factsOrUnsupported->get()))
     return EvaluationModelProviderPreparation{*unsupported};
-  Gem5SystemFacts facts =
-      std::get<Gem5SystemFacts>(std::move(*factsOrUnsupported));
+  const Gem5SystemFacts &facts =
+      std::get<Gem5SystemFacts>(**factsOrUnsupported);
   if (facts.engine == Gem5SystemEngine::Rtl &&
       llvm::any_of(facts.spatialBridgeSessions, [](const auto &session) {
         return session.launchOrdinals.size() != 1;
@@ -922,12 +922,6 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
     return EvaluationModelProviderPreparation{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
-  auto subjects = systemSubjects(request);
-  if (!subjects)
-    return subjects.takeError();
-  auto binding = importGem5SimulationBinding(subjects->second, artifacts);
-  if (!binding)
-    return binding.takeError();
   const ExternalToolProviderDescriptor &gem5ToolProvider = gem5Provider();
   const std::filesystem::path destination(context.bundleDestination);
   const std::filesystem::path probeRoot = destination.parent_path();
@@ -938,7 +932,7 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       captureToolEnvironment(gem5ToolProvider.binding), gem5Probe);
   if (!gem5Tool)
     return gem5Tool.takeError();
-  auto readiness = verifyReadiness(facts, *binding, context.localConfig,
+  auto readiness = verifyReadiness(facts, facts.binding, context.localConfig,
                                    gem5ToolProvider, *gem5Tool);
   if (!readiness)
     return readiness.takeError();
@@ -959,7 +953,7 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
   auto timeoutBudgets = readFile(LOOM_TIMEOUT_BUDGETS_PATH);
   if (!timeoutBudgets)
     return timeoutBudgets.takeError();
-  std::vector<MaterializedBundleFile> files = std::move(facts.semanticInputs);
+  std::vector<MaterializedBundleFile> files = facts.semanticInputs;
   files.push_back({kConfigurationScriptPath.str(), std::move(*configuration),
                    std::nullopt, false});
   files.push_back({kTimeoutBudgetsPath.str(), std::move(*timeoutBudgets),
@@ -1225,20 +1219,14 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
   auto factsOrUnsupported = deriveFacts(request, resolution, artifacts, blobs);
   if (!factsOrUnsupported)
     return factsOrUnsupported.takeError();
-  if (std::holds_alternative<UnsupportedEvidence>(*factsOrUnsupported))
+  if (std::holds_alternative<UnsupportedEvidence>(**factsOrUnsupported))
     return invalid("prepared gem5 invocation is outside provider capability");
-  Gem5SystemFacts facts =
-      std::get<Gem5SystemFacts>(std::move(*factsOrUnsupported));
+  const Gem5SystemFacts &facts =
+      std::get<Gem5SystemFacts>(**factsOrUnsupported);
   auto contract = deriveExternalToolSemanticContract(request);
   if (!contract)
     return contract.takeError();
-  auto subjects = systemSubjects(request);
-  if (!subjects)
-    return subjects.takeError();
-  auto binding = importGem5SimulationBinding(subjects->second, artifacts);
-  if (!binding)
-    return binding.takeError();
-  auto fingerprint = gem5BinaryFingerprint(*binding);
+  auto fingerprint = gem5BinaryFingerprint(facts.binding);
   if (!fingerprint)
     return fingerprint.takeError();
   std::vector<ExternalToolInvocationSemanticInput> mappedRtlInputs;

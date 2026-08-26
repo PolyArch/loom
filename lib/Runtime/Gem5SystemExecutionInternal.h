@@ -12,6 +12,7 @@
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Runtime/Gem5BuiltinModels.h"
 #include "Runtime/Gem5DispatchABI.h"
+#include "Runtime/Gem5SimulationBinding.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -149,7 +150,7 @@ struct Gem5SpatialBridgeSession final {
 struct Gem5SystemFacts final {
   Gem5SystemEngine engine;
   ArtifactRootReference deployment;
-  ArtifactRootReference binding;
+  FinalizedGem5SimulationBinding binding;
   ArtifactRootReference dataflow;
   std::vector<Gem5SpatialLaunchProjection> spatialLaunches;
   std::vector<Gem5SpatialBridgeSession> spatialBridgeSessions;
@@ -168,6 +169,8 @@ struct Gem5SystemFacts final {
   std::uint64_t stackBase = 0;
   std::uint64_t stackStride = 0;
   Gem5SimpleMemoryParameters memory;
+  std::vector<ArtifactRootReference> artifactDependencies;
+  std::vector<BlobDigest> blobDependencies;
 };
 
 using Gem5SystemFactsOrUnsupported =
@@ -194,10 +197,15 @@ importCachedSystemInputs(const ArtifactRootReference &workload,
                          const ArtifactStore &artifacts,
                          const BlobStore &blobs);
 
-llvm::Expected<Gem5SystemFactsOrUnsupported>
+llvm::Expected<std::shared_ptr<const Gem5SystemFactsOrUnsupported>>
 deriveFacts(const evaluation::EvaluationRequest &request,
             const evaluation::CaseArtifactResolution &resolution,
             const ArtifactStore &artifacts, const BlobStore &blobs);
+
+llvm::Expected<Gem5SystemFactsOrUnsupported>
+deriveFactsUncached(const evaluation::EvaluationRequest &request,
+                    const evaluation::CaseArtifactResolution &resolution,
+                    const ArtifactStore &artifacts, const BlobStore &blobs);
 
 } // namespace loom::runtime::gem5_system
 
