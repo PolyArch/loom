@@ -349,8 +349,6 @@ llvm::Error emitExecutionMatrixRunSummary(
     }
     llvm::outs() << " gem5_configuration_wall_us="
                  << profile->configurationWallNanoseconds / 1000
-                 << " engine_startup_wall_us="
-                 << profile->engineStartupWallNanoseconds / 1000
                  << " gem5_simulation_wall_us="
                  << profile->simulationWallNanoseconds / 1000
                  << " gem5_simulation_cpu_us="
@@ -369,6 +367,19 @@ llvm::Error emitExecutionMatrixRunSummary(
                  << " accelerator_cycles=" << acceleratorReferenceCycles
                  << " accelerator_cycle_unavailable_count="
                  << unavailableAcceleratorCycleCount;
+    if (profile->managedEngineStartup)
+      llvm::outs() << " managed_engine_startup_wall_us="
+                   << profile->managedEngineStartup->wallNanoseconds / 1000
+                   << " managed_engine_startup_self_cpu_us="
+                   << profile->managedEngineStartup->selfProcessCpuNanoseconds /
+                          1000;
+    if (profile->externalEngineSocketReadiness)
+      llvm::outs()
+          << " external_engine_socket_readiness_wall_us="
+          << profile->externalEngineSocketReadiness->wallNanoseconds / 1000
+          << " external_engine_socket_readiness_self_cpu_us="
+          << profile->externalEngineSocketReadiness->selfProcessCpuNanoseconds /
+                 1000;
     if (profile->engineProcessCpuNanoseconds)
       llvm::outs() << " engine_process_cpu_us="
                    << *profile->engineProcessCpuNanoseconds / 1000;

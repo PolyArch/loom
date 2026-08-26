@@ -689,16 +689,38 @@ llvm::Error assignProfileInteger(const llvm::json::Object &object,
   return llvm::Error::success();
 }
 
+llvm::Expected<std::optional<Gem5HostIntervalProfile>>
+optionalHostIntervalProfile(const llvm::json::Object &object,
+                            llvm::StringRef field) {
+  const llvm::json::Value *value = object.get(field);
+  if (!value)
+    return invalid("gem5 performance profile field '" + field + "' is missing");
+  if (value->getAsNull())
+    return std::optional<Gem5HostIntervalProfile>{};
+  const llvm::json::Object *interval = value->getAsObject();
+  if (!interval || interval->size() != 2)
+    return invalid("gem5 performance profile field '" + field +
+                   "' is not an exact host interval");
+  Gem5HostIntervalProfile profile;
+  if (llvm::Error error = assignProfileInteger(*interval, "wall_nanoseconds",
+                                               profile.wallNanoseconds))
+    return std::move(error);
+  if (llvm::Error error = assignProfileInteger(
+          *interval, "self_cpu_nanoseconds", profile.selfProcessCpuNanoseconds))
+    return std::move(error);
+  return std::optional<Gem5HostIntervalProfile>{profile};
+}
+
 llvm::Expected<Gem5SystemAttemptProfile>
 parseGem5SystemAttemptProfile(llvm::StringRef text) {
   auto value = llvm::json::parse(text);
   if (!value)
     return invalid("gem5 performance profile is not valid JSON");
   const llvm::json::Object *object = value->getAsObject();
-  if (!object || object->size() != 14)
+  if (!object || object->size() != 15)
     return invalid("gem5 performance profile has the wrong shape");
   const auto schema = object->getString("schema");
-  if (!schema || *schema != "loom.gem5_system_performance_profile.4")
+  if (!schema || *schema != "loom.gem5_system_performance_profile.5")
     return invalid("gem5 performance profile has the wrong schema");
   Gem5SystemAttemptProfile profile;
   const auto assign = [&](llvm::StringRef field,
@@ -708,9 +730,17 @@ parseGem5SystemAttemptProfile(llvm::StringRef text) {
   if (llvm::Error error = assign("configuration_wall_nanoseconds",
                                  profile.configurationWallNanoseconds))
     return std::move(error);
-  if (llvm::Error error = assign("engine_startup_wall_nanoseconds",
-                                 profile.engineStartupWallNanoseconds))
-    return std::move(error);
+  auto managedEngineStartup =
+      optionalHostIntervalProfile(*object, "managed_engine_startup");
+  if (!managedEngineStartup)
+    return managedEngineStartup.takeError();
+  profile.managedEngineStartup = std::move(*managedEngineStartup);
+  auto externalEngineSocketReadiness =
+      optionalHostIntervalProfile(*object, "external_engine_socket_readiness");
+  if (!externalEngineSocketReadiness)
+    return externalEngineSocketReadiness.takeError();
+  profile.externalEngineSocketReadiness =
+      std::move(*externalEngineSocketReadiness);
   if (llvm::Error error = assign("simulation_wall_nanoseconds",
                                  profile.simulationWallNanoseconds))
     return std::move(error);
@@ -752,9 +782,15 @@ parseGem5SystemAttemptProfile(llvm::StringRef text) {
     return std::move(error);
   if (llvm::Error error = assign("bridge_count", profile.bridgeCount))
     return std::move(error);
-  if (profile.engineStartupWallNanoseconds >
-      profile.configurationWallNanoseconds)
-    return invalid("gem5 engine startup interval exceeds its configuration "
+  if (profile.managedEngineStartup.has_value() ==
+      profile.externalEngineSocketReadiness.has_value())
+    return invalid("gem5 performance profile must contain exactly one engine "
+                   "readiness interval");
+  const Gem5HostIntervalProfile &readiness =
+      profile.managedEngineStartup ? *profile.managedEngineStartup
+                                   : *profile.externalEngineSocketReadiness;
+  if (readiness.wallNanoseconds > profile.configurationWallNanoseconds)
+    return invalid("gem5 engine readiness interval exceeds its configuration "
                    "interval");
   return profile;
 }
@@ -1402,9 +1438,12 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
   if (attemptProfile) {
     const bool ownsEngineProcess = facts.engine != Gem5SystemEngine::Rtl;
     if (attemptProfile->engineProcessCpuNanoseconds.has_value() !=
-        ownsEngineProcess)
-      return invalid("gem5 performance profile has inconsistent engine CPU "
-                     "ownership");
+            ownsEngineProcess ||
+        attemptProfile->managedEngineStartup.has_value() != ownsEngineProcess ||
+        attemptProfile->externalEngineSocketReadiness.has_value() ==
+            ownsEngineProcess)
+      return invalid("gem5 performance profile has inconsistent engine "
+                     "readiness or CPU ownership");
     if (attemptProfile->bridgeCount != facts.spatialBridgeSessions.size())
       return invalid("gem5 performance profile bridge count differs from "
                      "the exact System projection");
