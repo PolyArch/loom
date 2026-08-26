@@ -1,2 +1,4 @@
 # REQUIRES: gem5-25.1.0.1
-# RUN: loom-system-execution-matrix-test system-cgra %loom-gem5-readiness | FileCheck -DCELL=system-cgra -DATTEMPT=ordinary -DINVOCATION=system-cgra %S/execution_matrix_setup_timing.check
+# RUN: timeout %loom-timeout-medium loom-system-execution-matrix-test system-cgra-attempt-pair %loom-gem5-readiness > %t
+# RUN: FileCheck -DCELL=system-cgra %S/execution_matrix_attempt_pair_setup.check < %t
+# RUN: FileCheck -DCELL=system-cgra -DORDINARY=system-cgra -DDIAGNOSTIC=diagnostic-system-cgra %S/execution_matrix_attempt_pair.check < %t

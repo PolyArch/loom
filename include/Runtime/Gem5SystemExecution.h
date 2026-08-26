@@ -186,6 +186,14 @@ llvm::Expected<evaluation::EvaluationModelResult> importGem5SystemInvocation(
     const external_tool::PreparedExternalToolInvocation &prepared,
     const ArtifactStore &artifacts, const BlobStore &blobs);
 
+llvm::Expected<evaluation::EvaluationModelResult>
+importGem5SystemInvocationWithExecution(
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
 /// Validates the Request and imports the dedicated diagnostic contract after
 /// proving that the caller executed the exact bundle as a fresh external
 /// attempt. No execution artifact is published before both checks succeed.

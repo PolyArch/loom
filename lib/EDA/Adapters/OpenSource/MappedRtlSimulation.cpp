@@ -202,11 +202,12 @@ prepareProvider(const EvaluationRequest &request,
   return EvaluationModelProviderPreparation{std::move(*prepared)};
 }
 
-llvm::Expected<EvaluationModelResult>
-importProvider(const EvaluationRequest &request,
-               const CaseArtifactResolution &resolution,
-               const PreparedExternalToolInvocation &prepared,
-               const ArtifactStore &artifacts, const BlobStore &blobs) {
+llvm::Expected<EvaluationModelResult> importProviderImpl(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const PreparedExternalToolInvocation &prepared,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolInvocationExecutionObservation *executionObservation =
+        nullptr) {
   auto closure = deriveExecutionClosure(request);
   if (!closure)
     return closure.takeError();
@@ -214,7 +215,11 @@ importProvider(const EvaluationRequest &request,
       deriveMappedRtlExecutionImportExpectation(*closure, artifacts, blobs);
   if (!expectation)
     return expectation.takeError();
-  auto attempt = importExternalToolInvocationAttempt(prepared, *expectation);
+  auto attempt =
+      executionObservation
+          ? importExternalToolInvocationAttempt(prepared, *expectation,
+                                                *executionObservation)
+          : importExternalToolInvocationAttempt(prepared, *expectation);
   if (!attempt)
     return attempt.takeError();
   if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))
@@ -280,6 +285,23 @@ importProvider(const EvaluationRequest &request,
                                CompletedEvidence{std::move(metrics), {}}};
 }
 
+llvm::Expected<EvaluationModelResult>
+importProvider(const EvaluationRequest &request,
+               const CaseArtifactResolution &resolution,
+               const PreparedExternalToolInvocation &prepared,
+               const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importProviderImpl(request, resolution, prepared, artifacts, blobs);
+}
+
+llvm::Expected<EvaluationModelResult> importProviderWithExecution(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return importProviderImpl(request, resolution, prepared, artifacts, blobs,
+                            &execution);
+}
+
 } // namespace
 
 llvm::Error registerMappedRtlSimulationProvider() {
@@ -288,8 +310,9 @@ llvm::Error registerMappedRtlSimulationProvider() {
     return error;
   static const EvaluationModelProvider provider{
       evaluation::models::mappedRtlSimulatorModelDescriptorRef(),
-      EvaluationModelExternalPrepareImportProvider{&prepareProvider,
-                                                   &importProvider}};
+      EvaluationModelExternalPrepareImportProvider{
+          &prepareProvider, &importProvider, nullptr,
+          &importProviderWithExecution}};
   return registerEvaluationModelProvider(provider);
 }
 

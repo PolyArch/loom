@@ -168,6 +168,26 @@ bool containsKey(llvm::ArrayRef<ScheduledWorkUnit> records,
   });
 }
 
+bool sameClaim(const SiteResourceClaim &lhs, const SiteResourceClaim &rhs) {
+  return lhs.cpuCores() == rhs.cpuCores() &&
+         lhs.memoryBytes() == rhs.memoryBytes() &&
+         lhs.scratchBytes() == rhs.scratchBytes() &&
+         lhs.externalTools() == rhs.externalTools() &&
+         lhs.licenses() == rhs.licenses();
+}
+
+struct QueuedSiteResourceClaim final {
+  ScheduledWorkUnit unit;
+  std::uint64_t sequence = 0;
+};
+
+struct PendingCountedResourceBinding final {
+  WorkUnitKey key;
+  SiteResourceClaim target;
+  SiteResourceClaim requested;
+  std::uint64_t sequence = 0;
+};
+
 } // namespace
 
 class SiteSchedulerState final {
@@ -178,10 +198,124 @@ public:
   SiteCapacity capacity;
   MutableUsage allocated;
   std::vector<ScheduledWorkUnit> running;
-  std::vector<ScheduledWorkUnit> queued;
+  std::vector<QueuedSiteResourceClaim> queued;
+  std::vector<PendingCountedResourceBinding> pendingBindings;
+  std::uint64_t nextWaitSequence = 0;
   std::mutex mutex;
   std::condition_variable changed;
 };
+
+namespace {
+
+bool containsQueuedKey(llvm::ArrayRef<QueuedSiteResourceClaim> records,
+                       const WorkUnitKey &key) {
+  return llvm::any_of(records, [&](const QueuedSiteResourceClaim &record) {
+    return record.unit.key == key;
+  });
+}
+
+bool resourcesConflict(llvm::ArrayRef<CountedSiteResource> lhs,
+                       llvm::ArrayRef<CountedSiteResource> rhs) {
+  std::size_t lhsIndex = 0;
+  std::size_t rhsIndex = 0;
+  while (lhsIndex != lhs.size() && rhsIndex != rhs.size()) {
+    if (lhs[lhsIndex].key < rhs[rhsIndex].key) {
+      ++lhsIndex;
+      continue;
+    }
+    if (rhs[rhsIndex].key < lhs[lhsIndex].key) {
+      ++rhsIndex;
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+bool countedClaimsConflict(const SiteResourceClaim &lhs,
+                           const SiteResourceClaim &rhs) {
+  return resourcesConflict(lhs.externalTools(), rhs.externalTools()) ||
+         resourcesConflict(lhs.licenses(), rhs.licenses());
+}
+
+enum class ReadyWaiterKind : std::uint8_t {
+  Acquisition,
+  CountedResourceBinding,
+};
+
+struct ReadyWaiter final {
+  ReadyWaiterKind kind;
+  WorkUnitKey key;
+  std::uint64_t sequence = 0;
+};
+
+bool isReady(const SiteSchedulerState &state, ReadyWaiterKind kind,
+             const WorkUnitKey &key, const SiteResourceClaim &claim) {
+  if (kind == ReadyWaiterKind::Acquisition) {
+    auto candidate = llvm::find_if(
+        state.queued, [&](const QueuedSiteResourceClaim &queued) {
+          return queued.unit.key == key;
+        });
+    if (candidate == state.queued.end() ||
+        !fits(candidate->unit.claim, state.capacity, state.allocated))
+      return false;
+    for (const QueuedSiteResourceClaim &queued : state.queued)
+      if (queued.sequence < candidate->sequence &&
+          fits(queued.unit.claim, state.capacity, state.allocated))
+        return false;
+    for (const PendingCountedResourceBinding &binding : state.pendingBindings)
+      if (binding.sequence < candidate->sequence &&
+          countedClaimsConflict(claim, binding.requested) &&
+          fits(binding.requested, state.capacity, state.allocated))
+        return false;
+    return true;
+  }
+
+  auto candidate = llvm::find_if(
+      state.pendingBindings, [&](const PendingCountedResourceBinding &binding) {
+        return binding.key == key;
+      });
+  if (candidate == state.pendingBindings.end() ||
+      !fits(candidate->requested, state.capacity, state.allocated))
+    return false;
+  for (const PendingCountedResourceBinding &binding : state.pendingBindings)
+    if (binding.sequence < candidate->sequence &&
+        countedClaimsConflict(candidate->requested, binding.requested) &&
+        fits(binding.requested, state.capacity, state.allocated))
+      return false;
+  for (const QueuedSiteResourceClaim &queued : state.queued)
+    if (queued.sequence < candidate->sequence &&
+        countedClaimsConflict(candidate->requested, queued.unit.claim) &&
+        fits(queued.unit.claim, state.capacity, state.allocated))
+      return false;
+  return true;
+}
+
+std::chrono::nanoseconds
+boundedWaitDelay(std::optional<std::chrono::steady_clock::duration> remaining) {
+  auto delay = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::milliseconds(10));
+  if (remaining)
+    delay = std::min(
+        delay,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(*remaining));
+  return delay;
+}
+
+struct ExecutionControlSample final {
+  bool stopped = false;
+  std::optional<std::chrono::steady_clock::duration> remaining;
+};
+
+ExecutionControlSample sampleExecutionControl(ExecutionControlView control) {
+  const auto remaining = control.remainingTime();
+  return {control.stopRequested() ||
+              (remaining &&
+               *remaining <= std::chrono::steady_clock::duration::zero()),
+          remaining};
+}
+
+} // namespace
 
 SiteResourceKey
 SiteResourceKey::externalToolBinding(const BlobDigest &binding) {
@@ -271,6 +405,12 @@ void SiteResourceLease::release() {
         });
     if (found == state->running.end())
       llvm_unreachable("site scheduler lost an active lease");
+    if (containsQueuedKey(state->queued, key_) ||
+        llvm::any_of(state->pendingBindings,
+                     [&](const PendingCountedResourceBinding &binding) {
+                       return binding.key == key_;
+                     }))
+      llvm_unreachable("site scheduler released a transitioning lease");
     subtract(state->allocated, found->claim);
     state->running.erase(found);
   }
@@ -288,10 +428,23 @@ SiteScheduler::tryAcquire(const WorkUnitKey &key,
   std::lock_guard<std::mutex> lock(state_->mutex);
   if (!admitted(claim, state_->capacity))
     return invalid("claim exceeds declared site capacity");
-  if (containsKey(state_->running, key) || containsKey(state_->queued, key))
+  if (containsKey(state_->running, key) ||
+      containsQueuedKey(state_->queued, key))
     return invalid("work unit already owns or awaits a resource claim");
+  // A nonblocking claimant never jumps ahead of an already queued normal
+  // acquisition.  Pending counted transitions are handled below by their
+  // actual exclusive resource dependencies.
   if (!state_->queued.empty())
     return std::optional<SiteResourceLease>{};
+  for (const PendingCountedResourceBinding &binding : state_->pendingBindings) {
+    if (!fits(binding.requested, state_->capacity, state_->allocated) ||
+        !countedClaimsConflict(claim, binding.requested))
+      continue;
+    MutableUsage projected = state_->allocated;
+    add(projected, claim);
+    if (!fits(binding.requested, state_->capacity, projected))
+      return std::optional<SiteResourceLease>{};
+  }
   if (!fits(claim, state_->capacity, state_->allocated))
     return std::optional<SiteResourceLease>{};
   add(state_->allocated, claim);
@@ -305,26 +458,24 @@ SiteScheduler::acquire(const WorkUnitKey &key, const SiteResourceClaim &claim) {
   std::unique_lock<std::mutex> lock(state_->mutex);
   if (!admitted(claim, state_->capacity))
     return invalid("claim exceeds declared site capacity");
-  if (containsKey(state_->running, key) || containsKey(state_->queued, key))
+  if (containsKey(state_->running, key) ||
+      containsQueuedKey(state_->queued, key))
     return invalid("work unit already owns or awaits a resource claim");
-  state_->queued.push_back({key, claim});
+  state_->queued.push_back({{key, claim}, state_->nextWaitSequence++});
   state_->changed.wait(lock, [&] {
-    for (const ScheduledWorkUnit &queued : state_->queued) {
-      if (!fits(queued.claim, state_->capacity, state_->allocated))
-        continue;
-      return queued.key == key;
-    }
-    return false;
+    return isReady(*state_, ReadyWaiterKind::Acquisition, key, claim);
   });
   auto found =
-      llvm::find_if(state_->queued, [&](const ScheduledWorkUnit &unit) {
-        return unit.key == key;
+      llvm::find_if(state_->queued, [&](const QueuedSiteResourceClaim &queued) {
+        return queued.unit.key == key;
       });
   if (found == state_->queued.end())
     llvm_unreachable("site scheduler lost a queued claim");
-  add(state_->allocated, found->claim);
-  state_->running.push_back(std::move(*found));
+  add(state_->allocated, found->unit.claim);
+  state_->running.push_back(std::move(found->unit));
   state_->queued.erase(found);
+  lock.unlock();
+  state_->changed.notify_all();
   return SiteResourceLease(state_, key, claim);
 }
 
@@ -334,52 +485,157 @@ SiteScheduler::acquire(const WorkUnitKey &key, const SiteResourceClaim &claim,
   std::unique_lock<std::mutex> lock(state_->mutex);
   if (!admitted(claim, state_->capacity))
     return invalid("claim exceeds declared site capacity");
-  if (containsKey(state_->running, key) || containsKey(state_->queued, key))
+  if (containsKey(state_->running, key) ||
+      containsQueuedKey(state_->queued, key))
     return invalid("work unit already owns or awaits a resource claim");
-  state_->queued.push_back({key, claim});
+  state_->queued.push_back({{key, claim}, state_->nextWaitSequence++});
   const auto removeQueued = [&] {
-    auto found =
-        llvm::find_if(state_->queued, [&](const ScheduledWorkUnit &unit) {
-          return unit.key == key;
-        });
+    auto found = llvm::find_if(state_->queued,
+                               [&](const QueuedSiteResourceClaim &queued) {
+                                 return queued.unit.key == key;
+                               });
     if (found == state_->queued.end())
       llvm_unreachable("site scheduler lost a controlled queued claim");
     state_->queued.erase(found);
   };
   while (true) {
-    auto remaining = executionControl.remainingTime();
-    if (executionControl.stopRequested() ||
-        (remaining &&
-         *remaining <= std::chrono::steady_clock::duration::zero())) {
+    lock.unlock();
+    const ExecutionControlSample control =
+        sampleExecutionControl(executionControl);
+    lock.lock();
+    if (control.stopped) {
       removeQueued();
       lock.unlock();
       state_->changed.notify_all();
       return std::optional<SiteResourceLease>{};
     }
-    for (const ScheduledWorkUnit &queued : state_->queued) {
-      if (!fits(queued.claim, state_->capacity, state_->allocated))
-        continue;
-      if (!(queued.key == key))
-        break;
-      auto found =
-          llvm::find_if(state_->queued, [&](const ScheduledWorkUnit &unit) {
-            return unit.key == key;
-          });
+    if (isReady(*state_, ReadyWaiterKind::Acquisition, key, claim)) {
+      auto found = llvm::find_if(state_->queued,
+                                 [&](const QueuedSiteResourceClaim &queued) {
+                                   return queued.unit.key == key;
+                                 });
       if (found == state_->queued.end())
         llvm_unreachable("site scheduler lost a controlled queued claim");
-      add(state_->allocated, found->claim);
-      state_->running.push_back(std::move(*found));
+      add(state_->allocated, found->unit.claim);
+      state_->running.push_back(std::move(found->unit));
       state_->queued.erase(found);
+      lock.unlock();
+      state_->changed.notify_all();
       return std::optional<SiteResourceLease>(
           SiteResourceLease(state_, key, claim));
     }
-    auto delay = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::milliseconds(10));
-    if (remaining)
-      delay = std::min(
-          delay,
-          std::chrono::duration_cast<std::chrono::nanoseconds>(*remaining));
-    state_->changed.wait_for(lock, delay);
+    state_->changed.wait_for(lock, boundedWaitDelay(control.remaining));
+  }
+}
+
+llvm::Expected<bool>
+SiteScheduler::bindCountedResources(SiteResourceLease &lease,
+                                    const SiteResourceClaim &target,
+                                    ExecutionControlView executionControl) {
+  std::unique_lock<std::mutex> lock(state_->mutex);
+  if (lease.state_.get() != state_.get())
+    return invalid("resource binding lease belongs to another scheduler");
+  auto running =
+      llvm::find_if(state_->running, [&](const ScheduledWorkUnit &unit) {
+        return unit.key == lease.key_;
+      });
+  if (running == state_->running.end() ||
+      !sameClaim(running->claim, lease.claim_))
+    return invalid("resource binding lease is not the active owner");
+  if (containsQueuedKey(state_->queued, lease.key_) ||
+      llvm::any_of(state_->pendingBindings,
+                   [&](const PendingCountedResourceBinding &binding) {
+                     return binding.key == lease.key_;
+                   }))
+    return invalid("work unit already awaits a resource binding");
+  if (target.cpuCores() != lease.claim_.cpuCores() ||
+      target.memoryBytes() != lease.claim_.memoryBytes() ||
+      target.scratchBytes() != lease.claim_.scratchBytes())
+    return invalid("counted-resource binding changed a scalar reservation");
+  if (!admitted(target, state_->capacity))
+    return invalid("bound claim exceeds declared site capacity");
+  auto scalar = SiteResourceClaim::get(lease.claim_.cpuCores(),
+                                       lease.claim_.memoryBytes(),
+                                       lease.claim_.scratchBytes());
+  if (!scalar)
+    return scalar.takeError();
+  auto requested = SiteResourceClaim::get(0, 0, 0, target.externalTools(),
+                                          target.licenses());
+  if (!requested)
+    return requested.takeError();
+
+  lock.unlock();
+  ExecutionControlSample control = sampleExecutionControl(executionControl);
+  lock.lock();
+  running = llvm::find_if(state_->running, [&](const ScheduledWorkUnit &unit) {
+    return unit.key == lease.key_;
+  });
+  if (running == state_->running.end() ||
+      !sameClaim(running->claim, lease.claim_))
+    return invalid("resource binding lease changed during control sampling");
+  if (control.stopped)
+    return false;
+  if (sameClaim(lease.claim_, target))
+    return true;
+
+  subtract(state_->allocated, running->claim);
+  add(state_->allocated, *scalar);
+  running->claim = *scalar;
+  lease.claim_ = *scalar;
+  if (target.externalTools().empty() && target.licenses().empty()) {
+    lock.unlock();
+    state_->changed.notify_all();
+    return true;
+  }
+
+  state_->pendingBindings.push_back(
+      {lease.key_, target, std::move(*requested), state_->nextWaitSequence++});
+  const auto removePending = [&] {
+    auto found =
+        llvm::find_if(state_->pendingBindings,
+                      [&](const PendingCountedResourceBinding &binding) {
+                        return binding.key == lease.key_;
+                      });
+    if (found == state_->pendingBindings.end())
+      llvm_unreachable("site scheduler lost a pending resource binding");
+    state_->pendingBindings.erase(found);
+  };
+  state_->changed.notify_all();
+  while (true) {
+    lock.unlock();
+    control = sampleExecutionControl(executionControl);
+    lock.lock();
+    if (control.stopped) {
+      removePending();
+      lock.unlock();
+      state_->changed.notify_all();
+      return false;
+    }
+    if (isReady(*state_, ReadyWaiterKind::CountedResourceBinding, lease.key_,
+                target)) {
+      auto pending =
+          llvm::find_if(state_->pendingBindings,
+                        [&](const PendingCountedResourceBinding &candidate) {
+                          return candidate.key == lease.key_;
+                        });
+      if (pending == state_->pendingBindings.end())
+        llvm_unreachable("site scheduler lost a ready resource binding");
+      running =
+          llvm::find_if(state_->running, [&](const ScheduledWorkUnit &unit) {
+            return unit.key == lease.key_;
+          });
+      if (running == state_->running.end() ||
+          !sameClaim(running->claim, lease.claim_))
+        llvm_unreachable("site scheduler lost a binding lease owner");
+      add(state_->allocated, pending->requested);
+      running->claim = pending->target;
+      lease.claim_ = pending->target;
+      state_->pendingBindings.erase(pending);
+      lock.unlock();
+      state_->changed.notify_all();
+      return true;
+    }
+    state_->changed.wait_for(lock, boundedWaitDelay(control.remaining));
   }
 }
 
@@ -392,8 +648,20 @@ llvm::Expected<SiteSchedulerSnapshot> SiteScheduler::snapshot() const {
       copyResources(state_->allocated.licenses));
   if (!allocated)
     return allocated.takeError();
+  std::vector<QueuedSiteResourceClaim> waiters = state_->queued;
+  waiters.reserve(waiters.size() + state_->pendingBindings.size());
+  for (const PendingCountedResourceBinding &binding : state_->pendingBindings)
+    waiters.push_back({{binding.key, binding.requested}, binding.sequence});
+  llvm::sort(waiters, [](const QueuedSiteResourceClaim &lhs,
+                         const QueuedSiteResourceClaim &rhs) {
+    return lhs.sequence < rhs.sequence;
+  });
+  std::vector<ScheduledWorkUnit> queued;
+  queued.reserve(waiters.size());
+  for (QueuedSiteResourceClaim &waiter : waiters)
+    queued.push_back(std::move(waiter.unit));
   return SiteSchedulerSnapshot{state_->capacity, std::move(*allocated),
-                               state_->running, state_->queued};
+                               state_->running, std::move(queued)};
 }
 
 } // namespace loom::dse

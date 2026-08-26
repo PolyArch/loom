@@ -337,6 +337,42 @@ void stoppedExecutionCarriesAnImportableReceipt(
       "a descendant survived the stopped external-tool process group");
 }
 
+struct StopAfterCompletion final {
+  std::filesystem::path completion;
+};
+
+bool stopAfterCompletion(const void *opaque) {
+  return std::filesystem::exists(
+      static_cast<const StopAfterCompletion *>(opaque)->completion);
+}
+
+void stoppedPostflightRemainsIncomplete(const std::filesystem::path &root,
+                                        const std::filesystem::path &tool) {
+  const std::string output = "outputs/postflight-stop.txt";
+  const ExternalToolInvocationBundleSpec spec = baseSpec(tool, output);
+  const PreparedExternalToolInvocation prepared =
+      prepare(__func__, root, "postflight-stop", spec);
+  const StopAfterCompletion stop{
+      root / "postflight-stop" / "outputs" / "completion.json"};
+  const loom::ExecutionControlView control{&stop, stopAfterCompletion};
+  const ExternalToolInvocationExecutionObservation execution = take(
+      __func__, executeExternalToolInvocationBundleObserved(
+                    prepared, control,
+                    ExternalToolResultReusePolicy::RequireFresh));
+  require(__func__,
+          execution.exitCode == externalToolExecutionStoppedExitCode &&
+              execution.invokedExternalTool &&
+              !std::filesystem::exists(stop.completion),
+          "stopped postflight retained a successful completion");
+  const ExternalToolInvocationAttemptOutcome imported =
+      take(__func__, importExternalToolInvocationAttempt(
+                         prepared, importExpectation(spec), execution));
+  require(
+      __func__,
+      std::holds_alternative<IncompleteExternalToolInvocationAttempt>(imported),
+      "stopped postflight did not retain its incomplete disposition");
+}
+
 void publicObservationCannotSubstituteForAReceipt(
     const std::filesystem::path &root, const std::filesystem::path &tool) {
   const std::string output = "outputs/unsealed.txt";
@@ -392,6 +428,7 @@ int main(int argc, char **argv) {
   cacheHitCarriesAnImportableReceipt(root, tool);
   failedExecutionCarriesAnImportableReceipt(root, tool);
   stoppedExecutionCarriesAnImportableReceipt(root, tool);
+  stoppedPostflightRemainsIncomplete(root, tool);
   publicObservationCannotSubstituteForAReceipt(root, tool);
   return 0;
 }

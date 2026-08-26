@@ -135,6 +135,8 @@ llvm::StringRef spelling(ExecutionMatrixLifecycleOperation operation) {
     return "workload_and_runtime_input_publication";
   case ExecutionMatrixLifecycleOperation::HostLifecycle:
     return "host_lifecycle";
+  case ExecutionMatrixLifecycleOperation::Gem5Readiness:
+    return "gem5_readiness";
   case ExecutionMatrixLifecycleOperation::Gem5Binding:
     return "gem5_binding";
   case ExecutionMatrixLifecycleOperation::RequestConstruction:
@@ -199,6 +201,7 @@ llvm::StringRef lifecycleParent(ExecutionMatrixLifecycleOperation operation) {
       RuntimeBindingAndDeploymentFinalization:
   case ExecutionMatrixLifecycleOperation::WorkloadAndRuntimeInputPublication:
     return "setup";
+  case ExecutionMatrixLifecycleOperation::Gem5Readiness:
   case ExecutionMatrixLifecycleOperation::Gem5Binding:
   case ExecutionMatrixLifecycleOperation::RequestConstruction:
   case ExecutionMatrixLifecycleOperation::OrdinaryPrepare:
@@ -219,6 +222,14 @@ llvm::StringRef lifecycleParent(ExecutionMatrixLifecycleOperation operation) {
     return "none";
   }
   llvm_unreachable("unknown execution-matrix lifecycle operation");
+}
+
+llvm::StringRef
+attemptPairLifecycleParent(ExecutionMatrixLifecycleOperation operation) {
+  if (operation == ExecutionMatrixLifecycleOperation::Gem5Readiness ||
+      operation == ExecutionMatrixLifecycleOperation::Gem5Binding)
+    return "none";
+  return lifecycleParent(operation);
 }
 
 struct CacheRow final {
@@ -390,11 +401,12 @@ llvm::Error emitExecutionMatrixRunSummary(
         llvm::inconvertibleErrorCode(),
         "ordinary execution has diagnostic invocation projections");
   llvm::outs() << "execution-matrix"
-               << " schema=loom.execution_matrix_summary.3";
+               << " schema=loom.execution_matrix_summary.4";
   emitInvocationKey(llvm::outs(), invocation);
   llvm::outs() << " deterministic_work=" << deterministicWork
                << " maximum_waited_descendant_process_rss_kib="
-               << maximumWaitedDescendantProcessRssKib;
+               << maximumWaitedDescendantProcessRssKib
+               << " rss_scope=process_lifetime";
   if (profile) {
     std::uint64_t acceleratorReferenceCycles = 0;
     std::uint64_t unavailableAcceleratorCycleCount = 0;
@@ -474,18 +486,21 @@ public:
 
   std::uint64_t reserveSequence() { return nextSequence_++; }
 
-  void record(std::uint64_t sequence,
-              ExecutionMatrixLifecycleOperation operation,
-              const ResourceSnapshot &begin, const ResourceSnapshot &end) {
+  std::uint64_t record(std::uint64_t sequence,
+                       ExecutionMatrixLifecycleOperation operation,
+                       const ResourceSnapshot &begin,
+                       const ResourceSnapshot &end) {
     const auto wall = std::chrono::duration_cast<std::chrono::nanoseconds>(
         end.wall - begin.wall);
+    const std::uint64_t wallNanoseconds =
+        static_cast<std::uint64_t>(std::max<std::int64_t>(0, wall.count()));
     records_.push_back(
-        {sequence, operation,
-         static_cast<std::uint64_t>(std::max<std::int64_t>(0, wall.count())),
+        {sequence, operation, wallNanoseconds,
          difference(end.selfCpuNanoseconds, begin.selfCpuNanoseconds),
          difference(end.childCpuNanoseconds, begin.childCpuNanoseconds),
          end.selfProcessLifetimeHighWaterRssKib,
          end.maximumWaitedDescendantProcessRssKib});
+    return wallNanoseconds;
   }
 
   void emit(const ExecutionMatrixInvocation &invocation) const {
@@ -510,6 +525,39 @@ public:
       printOptional(llvm::outs(), record.maximumWaitedDescendantProcessRssKib);
       llvm::outs() << '\n';
     }
+  }
+
+  void emitAttemptPair(ExecutionMatrixCell cell) const {
+    std::vector<Record> ordered = records_;
+    llvm::sort(ordered, [](const Record &lhs, const Record &rhs) {
+      return lhs.sequence < rhs.sequence;
+    });
+    for (const Record &record : ordered) {
+      llvm::outs() << "execution-matrix-attempt-pair-lifecycle"
+                   << " schema=loom.execution_matrix_attempt_pair_lifecycle.1"
+                   << " cell=" << executionMatrixCellName(cell)
+                   << " scope=attempt_pair"
+                   << " interval_kind=inclusive parent="
+                   << attemptPairLifecycleParent(record.operation)
+                   << " operation=" << spelling(record.operation)
+                   << " wall_ns=" << record.wallNanoseconds << " self_cpu_ns=";
+      printOptional(llvm::outs(), record.selfCpuNanoseconds);
+      llvm::outs() << " child_cpu_ns=";
+      printOptional(llvm::outs(), record.childCpuNanoseconds);
+      llvm::outs() << " self_process_lifetime_high_water_rss_kib_snapshot=";
+      printOptional(llvm::outs(), record.selfProcessLifetimeHighWaterRssKib);
+      llvm::outs() << " maximum_waited_descendant_process_rss_kib_snapshot=";
+      printOptional(llvm::outs(), record.maximumWaitedDescendantProcessRssKib);
+      llvm::outs() << '\n';
+    }
+  }
+
+  std::uint64_t
+  operationCount(ExecutionMatrixLifecycleOperation operation) const {
+    return static_cast<std::uint64_t>(
+        llvm::count_if(records_, [&](const Record &record) {
+          return record.operation == operation;
+        }));
   }
 
 private:
@@ -537,6 +585,16 @@ ExecutionMatrixLifecycleRecorder::~ExecutionMatrixLifecycleRecorder() = default;
 void ExecutionMatrixLifecycleRecorder::emit(
     const ExecutionMatrixInvocation &invocation) const {
   impl_->emit(invocation);
+}
+
+void ExecutionMatrixLifecycleRecorder::emitAttemptPair(
+    ExecutionMatrixCell cell) const {
+  impl_->emitAttemptPair(cell);
+}
+
+std::uint64_t ExecutionMatrixLifecycleRecorder::operationCount(
+    ExecutionMatrixLifecycleOperation operation) const {
+  return impl_->operationCount(operation);
 }
 
 void emitExecutionMatrixExternalCommands(
@@ -581,10 +639,213 @@ ExecutionMatrixLifecycleTimer::ExecutionMatrixLifecycleTimer(
                                     setupLifecycleOperation(operation)) {}
 
 ExecutionMatrixLifecycleTimer::~ExecutionMatrixLifecycleTimer() {
-  const ResourceSnapshot end = captureResources();
-  impl_->recorder->impl_->record(impl_->sequence, impl_->operation,
-                                 impl_->begin, end);
+  if (impl_)
+    (void)finish();
 }
+
+std::uint64_t ExecutionMatrixLifecycleTimer::finish() {
+  if (!impl_)
+    llvm_unreachable("execution-matrix lifecycle timer finished twice");
+  const ResourceSnapshot end = captureResources();
+  const std::uint64_t wallNanoseconds = impl_->recorder->impl_->record(
+      impl_->sequence, impl_->operation, impl_->begin, end);
+  impl_.reset();
+  return wallNanoseconds;
+}
+
+namespace {
+
+struct ImportStatisticsSnapshot final {
+  std::vector<deployment::DeploymentConstructionOperationStatistics> deployment;
+  evaluation::ArtifactImportCacheStatistics artifact;
+  fabric::FabricArtifactImportSessionStatistics fabric;
+  hardware::ConfigurationABIImportSessionStatistics configurationAbi;
+  mapping::SystemMappingImportSessionStatistics systemMapping;
+  deployment::ConfigurationImageProjectionSessionStatistics
+      configurationProjection;
+  runtime::Gem5SystemFactsSessionStatistics gem5Facts;
+};
+
+std::uint64_t counterDelta(std::uint64_t current, std::uint64_t baseline) {
+  if (current < baseline)
+    llvm_unreachable("execution-matrix import statistic regressed");
+  return current - baseline;
+}
+
+CacheRow cacheRow(const evaluation::ArtifactImportCacheStatistics &current,
+                  const evaluation::ArtifactImportCacheStatistics *baseline) {
+  const evaluation::ArtifactImportCacheStatistics zero;
+  const auto &prior = baseline ? *baseline : zero;
+  return {
+      "artifact_import",
+      "artifact_revalidation",
+      counterDelta(current.importRequests, prior.importRequests),
+      counterDelta(current.cacheHits, prior.cacheHits),
+      counterDelta(current.cacheMisses, prior.cacheMisses),
+      counterDelta(current.cacheMisses, prior.cacheMisses),
+      counterDelta(current.uniqueConstructions, prior.uniqueConstructions),
+      counterDelta(current.uncachedConstructions, prior.uncachedConstructions),
+      0,
+      0,
+      counterDelta(current.revalidationCount, prior.revalidationCount),
+      counterDelta(current.revalidatedBytes, prior.revalidatedBytes),
+      0,
+      counterDelta(current.constructionNanoseconds,
+                   prior.constructionNanoseconds),
+      current.minimumRetainedBytes,
+      current.entryCount};
+}
+
+CacheRow
+cacheRow(const fabric::FabricArtifactImportSessionStatistics &current,
+         const fabric::FabricArtifactImportSessionStatistics *baseline) {
+  const fabric::FabricArtifactImportSessionStatistics zero;
+  const auto &prior = baseline ? *baseline : zero;
+  return {
+      "fabric_import",
+      "artifact_revalidation",
+      counterDelta(current.importRequests, prior.importRequests),
+      counterDelta(current.cacheHits, prior.cacheHits),
+      counterDelta(current.cacheMisses, prior.cacheMisses),
+      counterDelta(current.cacheMisses, prior.cacheMisses),
+      counterDelta(current.uniqueConstructions, prior.uniqueConstructions),
+      counterDelta(current.uncachedConstructions, prior.uncachedConstructions),
+      0,
+      0,
+      counterDelta(current.revalidationCount, prior.revalidationCount),
+      counterDelta(current.revalidatedBytes, prior.revalidatedBytes),
+      0,
+      counterDelta(current.constructionNanoseconds,
+                   prior.constructionNanoseconds),
+      current.retainedPayloadBytes,
+      current.entryCount};
+}
+
+CacheRow
+cacheRow(const hardware::ConfigurationABIImportSessionStatistics &current,
+         const hardware::ConfigurationABIImportSessionStatistics *baseline) {
+  const hardware::ConfigurationABIImportSessionStatistics zero;
+  const auto &prior = baseline ? *baseline : zero;
+  return {"configuration_abi_import",
+          "immutable_session_domain",
+          counterDelta(current.importRequests, prior.importRequests),
+          counterDelta(current.cacheHits, prior.cacheHits),
+          counterDelta(current.cacheMisses, prior.cacheMisses),
+          counterDelta(current.cacheMisses, prior.cacheMisses),
+          counterDelta(current.uniqueConstructions, prior.uniqueConstructions),
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          counterDelta(current.constructionNanoseconds,
+                       prior.constructionNanoseconds),
+          current.retainedBytes,
+          current.entryCount};
+}
+
+CacheRow
+cacheRow(const mapping::SystemMappingImportSessionStatistics &current,
+         const mapping::SystemMappingImportSessionStatistics *baseline) {
+  const mapping::SystemMappingImportSessionStatistics zero;
+  const auto &prior = baseline ? *baseline : zero;
+  return {
+      "system_mapping_import",
+      "immutable_session_domain",
+      counterDelta(current.importRequests, prior.importRequests),
+      counterDelta(current.cacheHits, prior.cacheHits),
+      counterDelta(current.cacheMisses, prior.cacheMisses),
+      counterDelta(current.cacheMisses, prior.cacheMisses),
+      counterDelta(current.uniqueConstructions, prior.uniqueConstructions),
+      counterDelta(current.uncachedConstructions, prior.uncachedConstructions),
+      0,
+      0,
+      0,
+      0,
+      0,
+      counterDelta(current.constructionNanoseconds,
+                   prior.constructionNanoseconds),
+      current.retainedBytes,
+      current.entryCount};
+}
+
+CacheRow cacheRow(
+    const deployment::ConfigurationImageProjectionSessionStatistics &current,
+    const deployment::ConfigurationImageProjectionSessionStatistics *baseline) {
+  const deployment::ConfigurationImageProjectionSessionStatistics zero;
+  const auto &prior = baseline ? *baseline : zero;
+  return {
+      "configuration_image_projection",
+      "immutable_session_domain",
+      counterDelta(current.requests, prior.requests),
+      counterDelta(current.cacheHits, prior.cacheHits),
+      counterDelta(current.cacheMisses, prior.cacheMisses),
+      counterDelta(current.cacheMisses, prior.cacheMisses),
+      counterDelta(current.uniqueConstructions, prior.uniqueConstructions),
+      counterDelta(current.uncachedConstructions, prior.uncachedConstructions),
+      0,
+      0,
+      0,
+      0,
+      0,
+      counterDelta(current.constructionNanoseconds,
+                   prior.constructionNanoseconds),
+      current.retainedBytes,
+      current.entryCount};
+}
+
+CacheRow cacheRow(const runtime::Gem5SystemFactsSessionStatistics &current,
+                  const runtime::Gem5SystemFactsSessionStatistics *baseline) {
+  const runtime::Gem5SystemFactsSessionStatistics zero;
+  const auto &prior = baseline ? *baseline : zero;
+  return {
+      "gem5_system_facts",
+      "complete_closure_revalidation",
+      counterDelta(current.requests, prior.requests),
+      counterDelta(current.cacheHits, prior.cacheHits),
+      counterDelta(current.cacheMisses, prior.cacheMisses),
+      counterDelta(current.constructionAttempts, prior.constructionAttempts),
+      counterDelta(current.uniqueConstructions, prior.uniqueConstructions),
+      counterDelta(current.uncachedConstructions, prior.uncachedConstructions),
+      counterDelta(current.unsupportedConstructions,
+                   prior.unsupportedConstructions),
+      counterDelta(current.failedConstructions, prior.failedConstructions),
+      counterDelta(current.revalidationCount, prior.revalidationCount),
+      counterDelta(current.revalidatedArtifactBytes,
+                   prior.revalidatedArtifactBytes),
+      counterDelta(current.revalidatedBlobBytes, prior.revalidatedBlobBytes),
+      counterDelta(current.constructionNanoseconds,
+                   prior.constructionNanoseconds),
+      current.minimumRetainedBytes,
+      current.entryCount};
+}
+
+runtime::Gem5SystemFactsOperationStatistics
+operationDelta(const runtime::Gem5SystemFactsOperationStatistics &current,
+               const runtime::Gem5SystemFactsOperationStatistics *baseline) {
+  const runtime::Gem5SystemFactsOperationStatistics zero;
+  const auto &prior = baseline ? *baseline : zero;
+  return {counterDelta(current.invocations, prior.invocations),
+          counterDelta(current.wallNanoseconds, prior.wallNanoseconds),
+          counterDelta(current.selfCpuNanoseconds, prior.selfCpuNanoseconds),
+          counterDelta(current.selfCpuObservationCount,
+                       prior.selfCpuObservationCount),
+          counterDelta(current.childCpuNanoseconds, prior.childCpuNanoseconds),
+          counterDelta(current.childCpuObservationCount,
+                       prior.childCpuObservationCount)};
+}
+
+bool exactBoundedCache(std::uint64_t requests, std::uint64_t hits,
+                       std::uint64_t misses, std::uint64_t uniqueConstructions,
+                       std::uint64_t uncachedConstructions,
+                       std::uint64_t entryCount) {
+  return requests == hits + misses && misses == uniqueConstructions &&
+         uncachedConstructions == 0 && entryCount == uniqueConstructions &&
+         hits != 0;
+}
+
+} // namespace
 
 class ExecutionMatrixImportSessions::Impl final {
 public:
@@ -601,6 +862,16 @@ public:
                   runtime::Gem5SystemFactsSessionMode::Isolated,
                   gem5FactsEntryLimit) {}
 
+  ImportStatisticsSnapshot statistics() const {
+    return {deploymentConstruction.statistics(),
+            artifactImports.statistics(),
+            fabricImports.statistics(),
+            configurationAbiImports.statistics(),
+            systemMappingImports.statistics(),
+            configurationProjections.statistics(),
+            gem5Facts.statistics()};
+  }
+
   deployment::DeploymentConstructionStatisticsSession deploymentConstruction;
   evaluation::ArtifactImportCacheScope artifactImports;
   fabric::FabricArtifactImportSession fabricImports;
@@ -608,6 +879,7 @@ public:
   mapping::SystemMappingImportSession systemMappingImports;
   deployment::ConfigurationImageProjectionSession configurationProjections;
   runtime::Gem5SystemFactsSession gem5Facts;
+  std::optional<ImportStatisticsSnapshot> emittedStatistics;
 };
 
 ExecutionMatrixImportSessions::ExecutionMatrixImportSessions(
@@ -616,25 +888,26 @@ ExecutionMatrixImportSessions::ExecutionMatrixImportSessions(
 ExecutionMatrixImportSessions::~ExecutionMatrixImportSessions() = default;
 
 ExecutionMatrixImportSummary ExecutionMatrixImportSessions::summary() const {
-  const evaluation::ArtifactImportCacheStatistics artifact =
-      impl_->artifactImports.statistics();
-  const fabric::FabricArtifactImportSessionStatistics fabric =
-      impl_->fabricImports.statistics();
-  const hardware::ConfigurationABIImportSessionStatistics abi =
-      impl_->configurationAbiImports.statistics();
-  const mapping::SystemMappingImportSessionStatistics mapping =
-      impl_->systemMappingImports.statistics();
-  const deployment::ConfigurationImageProjectionSessionStatistics projection =
-      impl_->configurationProjections.statistics();
-  const runtime::Gem5SystemFactsSessionStatistics facts =
-      impl_->gem5Facts.statistics();
+  const ImportStatisticsSnapshot statistics = impl_->statistics();
+  const auto &artifact = statistics.artifact;
+  const auto &fabric = statistics.fabric;
+  const auto &abi = statistics.configurationAbi;
+  const auto &mapping = statistics.systemMapping;
+  const auto &projection = statistics.configurationProjection;
+  const auto &facts = statistics.gem5Facts;
   return {facts.requests,
           facts.cacheHits,
           facts.cacheMisses,
+          facts.constructionAttempts,
           facts.uniqueConstructions,
+          facts.uncachedConstructions,
+          facts.unsupportedConstructions,
+          facts.failedConstructions,
+          facts.revalidationCount,
           facts.revalidatedArtifactBytes,
           facts.revalidatedBlobBytes,
           facts.constructionNanosecondsSaved,
+          facts.entryCount,
           artifact.cacheHits,
           fabric.cacheHits,
           abi.cacheHits,
@@ -643,99 +916,156 @@ ExecutionMatrixImportSummary ExecutionMatrixImportSessions::summary() const {
 }
 
 bool ExecutionMatrixImportSessions::reusedOneExactGem5FactsClosure() const {
-  const ExecutionMatrixImportSummary imports = summary();
-  return imports.gem5FactsRequests == 2 && imports.gem5FactsMisses == 1 &&
-         imports.gem5FactsUniqueConstructions == 1 &&
-         imports.gem5FactsHits == 1 &&
-         imports.gem5FactsHits + imports.gem5FactsMisses ==
-             imports.gem5FactsRequests &&
-         imports.gem5FactsRevalidatedArtifactBytes != 0 &&
-         imports.gem5FactsRevalidatedBlobBytes != 0 &&
-         imports.gem5FactsConstructionNanosecondsSaved != 0 &&
-         imports.artifactImportHits != 0 && imports.fabricImportHits != 0 &&
-         imports.configurationAbiImportHits != 0 &&
-         imports.systemMappingImportHits != 0 &&
-         imports.configurationProjectionHits != 0;
+  const ImportStatisticsSnapshot statistics = impl_->statistics();
+  const auto &facts = statistics.gem5Facts;
+  return facts.requests == 2 && facts.cacheHits == 1 &&
+         facts.cacheMisses == 1 && facts.constructionAttempts == 1 &&
+         facts.uniqueConstructions == 1 && facts.uncachedConstructions == 0 &&
+         facts.unsupportedConstructions == 0 &&
+         facts.failedConstructions == 0 && facts.revalidationCount == 1 &&
+         facts.revalidatedArtifactBytes != 0 &&
+         facts.revalidatedBlobBytes != 0 &&
+         facts.constructionNanosecondsSaved != 0 && facts.entryCount == 1 &&
+         exactBoundedCache(statistics.artifact.importRequests,
+                           statistics.artifact.cacheHits,
+                           statistics.artifact.cacheMisses,
+                           statistics.artifact.uniqueConstructions,
+                           statistics.artifact.uncachedConstructions,
+                           statistics.artifact.entryCount) &&
+         exactBoundedCache(statistics.fabric.importRequests,
+                           statistics.fabric.cacheHits,
+                           statistics.fabric.cacheMisses,
+                           statistics.fabric.uniqueConstructions,
+                           statistics.fabric.uncachedConstructions,
+                           statistics.fabric.entryCount) &&
+         exactBoundedCache(statistics.configurationAbi.importRequests,
+                           statistics.configurationAbi.cacheHits,
+                           statistics.configurationAbi.cacheMisses,
+                           statistics.configurationAbi.uniqueConstructions, 0,
+                           statistics.configurationAbi.entryCount) &&
+         exactBoundedCache(statistics.systemMapping.importRequests,
+                           statistics.systemMapping.cacheHits,
+                           statistics.systemMapping.cacheMisses,
+                           statistics.systemMapping.uniqueConstructions,
+                           statistics.systemMapping.uncachedConstructions,
+                           statistics.systemMapping.entryCount) &&
+         exactBoundedCache(
+             statistics.configurationProjection.requests,
+             statistics.configurationProjection.cacheHits,
+             statistics.configurationProjection.cacheMisses,
+             statistics.configurationProjection.uniqueConstructions,
+             statistics.configurationProjection.uncachedConstructions,
+             statistics.configurationProjection.entryCount);
+}
+
+bool ExecutionMatrixImportSessions::
+    reusedOneExactGem5FactsClosureAcrossAttemptPair() const {
+  const ImportStatisticsSnapshot statistics = impl_->statistics();
+  const auto &facts = statistics.gem5Facts;
+  return facts.requests == 4 && facts.cacheHits == 3 &&
+         facts.cacheMisses == 1 && facts.constructionAttempts == 1 &&
+         facts.uniqueConstructions == 1 && facts.uncachedConstructions == 0 &&
+         facts.unsupportedConstructions == 0 &&
+         facts.failedConstructions == 0 && facts.revalidationCount == 3 &&
+         facts.revalidatedArtifactBytes != 0 &&
+         facts.revalidatedBlobBytes != 0 &&
+         facts.constructionNanosecondsSaved != 0 && facts.entryCount == 1 &&
+         exactBoundedCache(statistics.artifact.importRequests,
+                           statistics.artifact.cacheHits,
+                           statistics.artifact.cacheMisses,
+                           statistics.artifact.uniqueConstructions,
+                           statistics.artifact.uncachedConstructions,
+                           statistics.artifact.entryCount) &&
+         exactBoundedCache(statistics.fabric.importRequests,
+                           statistics.fabric.cacheHits,
+                           statistics.fabric.cacheMisses,
+                           statistics.fabric.uniqueConstructions,
+                           statistics.fabric.uncachedConstructions,
+                           statistics.fabric.entryCount) &&
+         exactBoundedCache(statistics.configurationAbi.importRequests,
+                           statistics.configurationAbi.cacheHits,
+                           statistics.configurationAbi.cacheMisses,
+                           statistics.configurationAbi.uniqueConstructions, 0,
+                           statistics.configurationAbi.entryCount) &&
+         exactBoundedCache(statistics.systemMapping.importRequests,
+                           statistics.systemMapping.cacheHits,
+                           statistics.systemMapping.cacheMisses,
+                           statistics.systemMapping.uniqueConstructions,
+                           statistics.systemMapping.uncachedConstructions,
+                           statistics.systemMapping.entryCount) &&
+         exactBoundedCache(
+             statistics.configurationProjection.requests,
+             statistics.configurationProjection.cacheHits,
+             statistics.configurationProjection.cacheMisses,
+             statistics.configurationProjection.uniqueConstructions,
+             statistics.configurationProjection.uncachedConstructions,
+             statistics.configurationProjection.entryCount);
 }
 
 void ExecutionMatrixImportSessions::emitStatistics(
-    const ExecutionMatrixInvocation &invocation) const {
-  emitDeploymentOperationRows(invocation,
-                              impl_->deploymentConstruction.statistics());
-  const evaluation::ArtifactImportCacheStatistics artifact =
-      impl_->artifactImports.statistics();
+    const ExecutionMatrixInvocation &invocation) {
+  ImportStatisticsSnapshot current = impl_->statistics();
+  const ImportStatisticsSnapshot *baseline =
+      impl_->emittedStatistics ? &*impl_->emittedStatistics : nullptr;
+  const std::size_t deploymentOffset =
+      baseline ? baseline->deployment.size() : 0;
+  if (deploymentOffset > current.deployment.size())
+    llvm_unreachable("execution-matrix deployment statistics regressed");
+  emitDeploymentOperationRows(
+      invocation,
+      llvm::ArrayRef(current.deployment).drop_front(deploymentOffset));
+  emitCacheRow(invocation, cacheRow(current.artifact,
+                                    baseline ? &baseline->artifact : nullptr));
+  emitCacheRow(invocation, cacheRow(current.fabric,
+                                    baseline ? &baseline->fabric : nullptr));
   emitCacheRow(invocation,
-               {"artifact_import", "artifact_revalidation",
-                artifact.importRequests, artifact.cacheHits,
-                artifact.cacheMisses, artifact.cacheMisses,
-                artifact.uniqueConstructions, artifact.uncachedConstructions, 0,
-                0, artifact.revalidationCount, artifact.revalidatedBytes, 0,
-                artifact.constructionNanoseconds, artifact.minimumRetainedBytes,
-                artifact.entryCount});
-
-  const fabric::FabricArtifactImportSessionStatistics fabric =
-      impl_->fabricImports.statistics();
+               cacheRow(current.configurationAbi,
+                        baseline ? &baseline->configurationAbi : nullptr));
   emitCacheRow(invocation,
-               {"fabric_import", "artifact_revalidation", fabric.importRequests,
-                fabric.cacheHits, fabric.cacheMisses, fabric.cacheMisses,
-                fabric.uniqueConstructions, fabric.uncachedConstructions, 0, 0,
-                fabric.revalidationCount, fabric.revalidatedBytes, 0,
-                fabric.constructionNanoseconds, fabric.retainedPayloadBytes,
-                fabric.entryCount});
-
-  const hardware::ConfigurationABIImportSessionStatistics abi =
-      impl_->configurationAbiImports.statistics();
-  emitCacheRow(invocation,
-               {"configuration_abi_import", "immutable_session_domain",
-                abi.importRequests, abi.cacheHits, abi.cacheMisses,
-                abi.cacheMisses, abi.uniqueConstructions, 0, 0, 0, 0, 0, 0,
-                abi.constructionNanoseconds, abi.retainedBytes,
-                abi.entryCount});
-
-  const mapping::SystemMappingImportSessionStatistics mapping =
-      impl_->systemMappingImports.statistics();
-  emitCacheRow(invocation,
-               {"system_mapping_import", "immutable_session_domain",
-                mapping.importRequests, mapping.cacheHits, mapping.cacheMisses,
-                mapping.cacheMisses, mapping.uniqueConstructions,
-                mapping.uncachedConstructions, 0, 0, 0, 0, 0,
-                mapping.constructionNanoseconds, mapping.retainedBytes,
-                mapping.entryCount});
-
-  const deployment::ConfigurationImageProjectionSessionStatistics projection =
-      impl_->configurationProjections.statistics();
-  emitCacheRow(invocation,
-               {"configuration_image_projection", "immutable_session_domain",
-                projection.requests, projection.cacheHits,
-                projection.cacheMisses, projection.cacheMisses,
-                projection.uniqueConstructions,
-                projection.uncachedConstructions, 0, 0, 0, 0, 0,
-                projection.constructionNanoseconds, projection.retainedBytes,
-                projection.entryCount});
-
-  const runtime::Gem5SystemFactsSessionStatistics facts =
-      impl_->gem5Facts.statistics();
-  emitCacheRow(invocation,
-               {"gem5_system_facts", "complete_closure_revalidation",
-                facts.requests, facts.cacheHits, facts.cacheMisses,
-                facts.constructionAttempts, facts.uniqueConstructions,
-                facts.uncachedConstructions, facts.unsupportedConstructions,
-                facts.failedConstructions, facts.revalidationCount,
-                facts.revalidatedArtifactBytes, facts.revalidatedBlobBytes,
-                facts.constructionNanoseconds, facts.minimumRetainedBytes,
-                facts.entryCount});
-  emitFactsOperationRow(invocation, "derive_facts",
-                        facts.construction.deriveFacts);
-  emitFactsOperationRow(invocation, "system_inputs_and_deployment_import",
-                        facts.construction.systemInputsAndDeploymentImport);
-  emitFactsOperationRow(invocation, "gem5_binding_import",
-                        facts.construction.bindingImport);
-  emitFactsOperationRow(invocation, "entire_fabric_root_import",
-                        facts.construction.fabricImport);
-  emitFactsOperationRow(invocation, "system_mapping_import",
-                        facts.construction.systemMappingImport);
-  emitFactsOperationRow(invocation, "gem5_guest_runtime_image_projection",
-                        facts.construction.guestRuntimeImageProjection);
+               cacheRow(current.systemMapping,
+                        baseline ? &baseline->systemMapping : nullptr));
+  emitCacheRow(
+      invocation,
+      cacheRow(current.configurationProjection,
+               baseline ? &baseline->configurationProjection : nullptr));
+  emitCacheRow(invocation, cacheRow(current.gem5Facts,
+                                    baseline ? &baseline->gem5Facts : nullptr));
+  const runtime::Gem5SystemFactsConstructionStatistics *priorConstruction =
+      baseline ? &baseline->gem5Facts.construction : nullptr;
+  emitFactsOperationRow(
+      invocation, "derive_facts",
+      operationDelta(current.gem5Facts.construction.deriveFacts,
+                     priorConstruction ? &priorConstruction->deriveFacts
+                                       : nullptr));
+  emitFactsOperationRow(
+      invocation, "system_inputs_and_deployment_import",
+      operationDelta(
+          current.gem5Facts.construction.systemInputsAndDeploymentImport,
+          priorConstruction
+              ? &priorConstruction->systemInputsAndDeploymentImport
+              : nullptr));
+  emitFactsOperationRow(
+      invocation, "gem5_binding_import",
+      operationDelta(current.gem5Facts.construction.bindingImport,
+                     priorConstruction ? &priorConstruction->bindingImport
+                                       : nullptr));
+  emitFactsOperationRow(
+      invocation, "entire_fabric_root_import",
+      operationDelta(current.gem5Facts.construction.fabricImport,
+                     priorConstruction ? &priorConstruction->fabricImport
+                                       : nullptr));
+  emitFactsOperationRow(
+      invocation, "system_mapping_import",
+      operationDelta(current.gem5Facts.construction.systemMappingImport,
+                     priorConstruction ? &priorConstruction->systemMappingImport
+                                       : nullptr));
+  emitFactsOperationRow(
+      invocation, "gem5_guest_runtime_image_projection",
+      operationDelta(current.gem5Facts.construction.guestRuntimeImageProjection,
+                     priorConstruction
+                         ? &priorConstruction->guestRuntimeImageProjection
+                         : nullptr));
+  impl_->emittedStatistics = std::move(current);
 }
 
 } // namespace loom::system_test

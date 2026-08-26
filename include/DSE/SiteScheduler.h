@@ -39,8 +39,7 @@ public:
                          const SiteResourceKey &rhs) {
     return lhs.kind_ == rhs.kind_ && lhs.digest_ == rhs.digest_;
   }
-  friend bool operator<(const SiteResourceKey &lhs,
-                        const SiteResourceKey &rhs);
+  friend bool operator<(const SiteResourceKey &lhs, const SiteResourceKey &rhs);
 
 private:
   SiteResourceKey(SiteResourceKind kind, BlobDigest digest)
@@ -84,8 +83,7 @@ private:
                     std::vector<CountedSiteResource> externalTools,
                     std::vector<CountedSiteResource> licenses)
       : cpuCores_(cpuCores), memoryBytes_(memoryBytes),
-        scratchBytes_(scratchBytes),
-        externalTools_(std::move(externalTools)),
+        scratchBytes_(scratchBytes), externalTools_(std::move(externalTools)),
         licenses_(std::move(licenses)) {}
 
   std::uint64_t cpuCores_ = 0;
@@ -117,8 +115,7 @@ private:
                std::vector<CountedSiteResource> externalTools,
                std::vector<CountedSiteResource> licenses)
       : cpuCores_(cpuCores), memoryBytes_(memoryBytes),
-        scratchBytes_(scratchBytes),
-        externalTools_(std::move(externalTools)),
+        scratchBytes_(scratchBytes), externalTools_(std::move(externalTools)),
         licenses_(std::move(licenses)) {}
 
   std::uint64_t cpuCores_ = 0;
@@ -178,13 +175,22 @@ public:
 
   llvm::Expected<std::optional<SiteResourceLease>>
   tryAcquire(const WorkUnitKey &key, const SiteResourceClaim &claim);
-  llvm::Expected<SiteResourceLease>
-  acquire(const WorkUnitKey &key, const SiteResourceClaim &claim);
+  llvm::Expected<SiteResourceLease> acquire(const WorkUnitKey &key,
+                                            const SiteResourceClaim &claim);
   /// Preserves queue fairness while observing invocation-local execution
   /// control. An empty lease means control stopped before admission.
   llvm::Expected<std::optional<SiteResourceLease>>
   acquire(const WorkUnitKey &key, const SiteResourceClaim &claim,
           ExecutionControlView executionControl);
+  /// Transitions one lease to prepare-discovered tool and license resources
+  /// while retaining its CPU, memory, and scratch reservation. Prior counted
+  /// resources are released before the target is queued, preventing
+  /// hold-and-wait cycles. The borrowed lease must not be used concurrently;
+  /// execution-control callbacks may re-enter the scheduler.
+  llvm::Expected<bool>
+  bindCountedResources(SiteResourceLease &lease,
+                       const SiteResourceClaim &target,
+                       ExecutionControlView executionControl = {});
   llvm::Expected<SiteSchedulerSnapshot> snapshot() const;
 
 private:

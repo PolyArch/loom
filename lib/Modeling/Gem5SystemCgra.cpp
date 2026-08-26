@@ -17,7 +17,8 @@ llvm::Error registerGem5SystemCgraProvider() {
       EvaluationModelExternalPrepareImportProvider{
           &runtime::prepareGem5SystemInvocation,
           &runtime::importGem5SystemInvocation,
-          &runtime::openGem5SystemInvocationContext}};
+          &runtime::openGem5SystemInvocationContext,
+          &runtime::importGem5SystemInvocationWithExecution}};
   return registerEvaluationModelProvider(provider);
 }
 

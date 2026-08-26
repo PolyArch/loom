@@ -1,2 +1,0 @@
-# REQUIRES: gem5-25.1.0.1, verilator
-# RUN: loom-system-execution-matrix-test diagnostic-system-rtl %loom-gem5-readiness | FileCheck -DCELL=system-rtl -DATTEMPT=diagnostic -DINVOCATION=diagnostic-system-rtl %S/../execution_matrix_setup_timing.check

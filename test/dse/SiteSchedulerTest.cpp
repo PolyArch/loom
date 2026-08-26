@@ -2,8 +2,10 @@
 
 #include "Common/BlobDigest.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -59,6 +61,19 @@ schedulerDeadlineRemaining(const void *opaque) {
   const auto now = std::chrono::steady_clock::now();
   return now >= notAfter ? std::chrono::steady_clock::duration::zero()
                          : notAfter - now;
+}
+
+struct ReentrantStopContext final {
+  SiteScheduler *scheduler = nullptr;
+  bool observedSnapshot = false;
+};
+
+bool reentrantStopRequested(const void *opaque) {
+  auto &context =
+      *static_cast<ReentrantStopContext *>(const_cast<void *>(opaque));
+  (void)take(context.scheduler->snapshot());
+  context.observedSnapshot = true;
+  return true;
 }
 
 void testExactClaimsAndRelease() {
@@ -184,6 +199,178 @@ void testControlledAcquireLeavesTheQueue() {
   running->release();
 }
 
+void testPrepareDiscoveredCountedResources() {
+  const BlobDigest binding = computeBlobDigest({0x81, 0x82});
+  const SiteResourceKey tool = SiteResourceKey::externalToolBinding(binding);
+  const SiteResourceKey license = SiteResourceKey::licenseBinding(binding);
+  SiteScheduler scheduler = take(SiteScheduler::create(
+      take(SiteCapacity::get(2, 1024, 2048, {{tool, 1}}, {{license, 1}}))));
+  SiteResourceClaim scalar = take(SiteResourceClaim::get(2, 512, 1024));
+  SiteResourceClaim bound =
+      take(SiteResourceClaim::get(2, 512, 1024, {{tool, 1}}, {{license, 1}}));
+  std::optional<SiteResourceLease> lease =
+      take(scheduler.tryAcquire(makeKey(30), scalar));
+  if (!lease)
+    fail("scheduler rejected a prepare-time scalar reservation");
+  if (!take(scheduler.bindCountedResources(*lease, bound)))
+    fail("scheduler stopped an available counted-resource binding");
+  SiteSchedulerSnapshot snapshot = take(scheduler.snapshot());
+  if (snapshot.running.size() != 1 || !snapshot.queued.empty() ||
+      snapshot.allocated.cpuCores() != 2 ||
+      snapshot.allocated.memoryBytes() != 512 ||
+      snapshot.allocated.scratchBytes() != 1024 ||
+      snapshot.allocated.externalTools().size() != 1 ||
+      snapshot.allocated.licenses().size() != 1)
+    fail("counted-resource binding changed or lost its scalar reservation");
+  lease->release();
+  snapshot = take(scheduler.snapshot());
+  if (!snapshot.running.empty() || !snapshot.queued.empty() ||
+      snapshot.allocated.cpuCores() != 0 ||
+      !snapshot.allocated.externalTools().empty() ||
+      !snapshot.allocated.licenses().empty())
+    fail("bound lease did not release its complete resource claim");
+}
+
+void testCountedResourceBindingWaitsWithoutReleasingScalars() {
+  const BlobDigest binding = computeBlobDigest({0x91, 0x92});
+  const SiteResourceKey tool = SiteResourceKey::externalToolBinding(binding);
+  SiteScheduler scheduler = take(
+      SiteScheduler::create(take(SiteCapacity::get(3, 0, 0, {{tool, 1}}))));
+  const SiteResourceClaim scalar = take(SiteResourceClaim::get(1, 0, 0));
+  const SiteResourceClaim exact =
+      take(SiteResourceClaim::get(1, 0, 0, {{tool, 1}}));
+  std::optional<SiteResourceLease> holder =
+      take(scheduler.tryAcquire(makeKey(40), exact));
+  std::optional<SiteResourceLease> bindingLease =
+      take(scheduler.tryAcquire(makeKey(41), scalar));
+  if (!holder || !bindingLease)
+    fail("scheduler could not establish the counted-resource wait fixture");
+
+  const SchedulerDeadline deadline{std::chrono::steady_clock::now() +
+                                   std::chrono::seconds(5)};
+  const ExecutionControlView executionControl{
+      &deadline, schedulerDeadlineReached, schedulerDeadlineRemaining};
+  bool bound = false;
+  std::thread waiter([&] {
+    bound = take(
+        scheduler.bindCountedResources(*bindingLease, exact, executionControl));
+  });
+  while (take(scheduler.snapshot()).queued.empty()) {
+    if (schedulerDeadlineReached(&deadline))
+      fail("counted-resource binding did not enter the scheduler queue");
+    std::this_thread::yield();
+  }
+  SiteSchedulerSnapshot waiting = take(scheduler.snapshot());
+  if (waiting.running.size() != 2 || waiting.queued.size() != 1 ||
+      waiting.allocated.cpuCores() != 2 ||
+      waiting.allocated.externalTools().size() != 1 ||
+      waiting.queued.front().claim.cpuCores() != 0 ||
+      waiting.queued.front().claim.externalTools().size() != 1)
+    fail("pending resource binding lost scalar ownership or delta accounting");
+  std::optional<SiteResourceLease> disjoint =
+      take(scheduler.tryAcquire(makeKey(42), scalar));
+  if (!disjoint)
+    fail("pending counted resource blocked disjoint scalar work");
+  disjoint->release();
+
+  holder->release();
+  waiter.join();
+  if (!bound || bindingLease->claim().externalTools().size() != 1)
+    fail("counted-resource binding did not acquire the released resource");
+  SiteSchedulerSnapshot acquired = take(scheduler.snapshot());
+  if (acquired.running.size() != 1 || !acquired.queued.empty() ||
+      acquired.allocated.cpuCores() != 1 ||
+      acquired.allocated.externalTools().size() != 1)
+    fail("completed resource binding did not preserve exact ownership");
+  bindingLease->release();
+}
+
+void testCountedResourceTransitionCannotHoldAndWait() {
+  const SiteResourceKey firstTool =
+      SiteResourceKey::externalToolBinding(computeBlobDigest({0xa1}));
+  const SiteResourceKey secondTool =
+      SiteResourceKey::externalToolBinding(computeBlobDigest({0xa2}));
+  std::vector<CountedSiteResource> tools{{firstTool, 1}, {secondTool, 1}};
+  llvm::sort(tools, [](const auto &lhs, const auto &rhs) {
+    return lhs.key < rhs.key;
+  });
+  SiteScheduler scheduler =
+      take(SiteScheduler::create(take(SiteCapacity::get(2, 0, 0, tools))));
+  const SiteResourceClaim first =
+      take(SiteResourceClaim::get(1, 0, 0, {{firstTool, 1}}));
+  const SiteResourceClaim second =
+      take(SiteResourceClaim::get(1, 0, 0, {{secondTool, 1}}));
+  std::optional<SiteResourceLease> firstLease =
+      take(scheduler.tryAcquire(makeKey(50), first));
+  std::optional<SiteResourceLease> secondLease =
+      take(scheduler.tryAcquire(makeKey(51), second));
+  if (!firstLease || !secondLease)
+    fail("scheduler could not establish the counted transition fixture");
+
+  const SchedulerDeadline deadline{std::chrono::steady_clock::now() +
+                                   std::chrono::seconds(5)};
+  const ExecutionControlView executionControl{
+      &deadline, schedulerDeadlineReached, schedulerDeadlineRemaining};
+  std::atomic<bool> firstFinished = false;
+  std::atomic<bool> secondFinished = false;
+  bool firstBound = false;
+  bool secondBound = false;
+  std::thread firstWaiter([&] {
+    firstBound = take(
+        scheduler.bindCountedResources(*firstLease, second, executionControl));
+    firstFinished.store(true, std::memory_order_release);
+  });
+  while (take(scheduler.snapshot()).queued.empty())
+    std::this_thread::yield();
+  std::thread secondWaiter([&] {
+    secondBound = take(
+        scheduler.bindCountedResources(*secondLease, first, executionControl));
+    secondFinished.store(true, std::memory_order_release);
+  });
+  while (!firstFinished.load(std::memory_order_acquire) &&
+         !secondFinished.load(std::memory_order_acquire)) {
+    if (schedulerDeadlineReached(&deadline))
+      fail("counted resource transitions retained a wait cycle");
+    std::this_thread::yield();
+  }
+  if (firstFinished.load(std::memory_order_acquire)) {
+    firstWaiter.join();
+    if (!firstBound)
+      fail("first counted resource transition stopped unexpectedly");
+    firstLease->release();
+    secondWaiter.join();
+  } else {
+    secondWaiter.join();
+    if (!secondBound)
+      fail("second counted resource transition stopped unexpectedly");
+    secondLease->release();
+    firstWaiter.join();
+  }
+  if (!firstBound || !secondBound)
+    fail("counted resource transitions did not both make progress");
+  if (*firstLease)
+    firstLease->release();
+  if (*secondLease)
+    secondLease->release();
+}
+
+void testNoopBindingObservesReentrantCancellation() {
+  SiteScheduler scheduler =
+      take(SiteScheduler::create(take(SiteCapacity::get(1, 0, 0))));
+  const SiteResourceClaim scalar = take(SiteResourceClaim::get(1, 0, 0));
+  std::optional<SiteResourceLease> lease =
+      take(scheduler.tryAcquire(makeKey(60), scalar));
+  if (!lease)
+    fail("scheduler could not establish the no-op binding fixture");
+  ReentrantStopContext stop{&scheduler, false};
+  const ExecutionControlView executionControl{&stop, reentrantStopRequested,
+                                              nullptr};
+  if (take(scheduler.bindCountedResources(*lease, scalar, executionControl)) ||
+      !stop.observedSnapshot)
+    fail("no-op binding ignored reentrant cancellation");
+  lease->release();
+}
+
 } // namespace
 
 int main() {
@@ -191,5 +378,9 @@ int main() {
   testStrictCapacityAdmission();
   testQueuedClaimsAreNotBypassed();
   testControlledAcquireLeavesTheQueue();
+  testPrepareDiscoveredCountedResources();
+  testCountedResourceBindingWaitsWithoutReleasingScalars();
+  testCountedResourceTransitionCannotHoldAndWait();
+  testNoopBindingObservesReentrantCancellation();
   return 0;
 }

@@ -2500,6 +2500,29 @@ Independent work units may run concurrently; one exclusive resource claim
 serializes only its actual users. Scheduling must preserve stable WorkUnitKeys
 and deterministic semantic work accounting regardless of completion order.
 
+An `ExternalPrepareImport` Evaluation retains its process-local typed provider
+context from prepare through strict import. Its default lifecycle claim uses
+the larger of the in-process and external CPU claims, the sum of their memory
+claims, the larger of their scratch claims, and the larger count for an exact
+tool or license resource used by both sequential provider forms. The scalar reservation is
+acquired before prepare. Once prepare reveals the exact execution binding, the
+same lease transitions to the derived external-tool and optional license
+resources without releasing the scalar reservation. Counted resources used by
+prepare are released before the target binding enters the shared wait order,
+so a transition never holds one counted resource while waiting for another. A
+work-unit-specific resource binding replaces this default and therefore covers
+the complete
+prepare/execute/import lifecycle. The Journal stores only the raw prepared
+invocation; a recovered `Prepared` work unit opens one new typed context and
+reuses it across its incomplete probe, execution, and final strict import.
+An invocation executed in the current process passes its sealed execution
+observation to the provider's receipt-bound import callback. A provider that
+does not expose that callback is valid for recovery import only; it cannot
+silently import the current generation after a live execution. Active wall
+time includes preparation, context-backed import, Evidence publication, and
+terminal persistence, in addition to external command execution, so campaign
+limits cannot be bypassed by strict host-side lifecycle work.
+
 While running, a removable projection reports completed, running, queued,
 failed, timed-out, and unsupported counts; recent throughput; p50 and p90
 per-kind durations; estimated completion time; and the currently limiting

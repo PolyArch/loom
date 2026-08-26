@@ -235,13 +235,19 @@ llvm::Expected<EvaluationEvidence> importVerifiedInvocation(
     const external_tool::PreparedExternalToolInvocation &prepared,
     const EvaluationModelExternalPrepareImportProvider &provider,
     const std::shared_ptr<const EvaluationModelInvocationContext> &context,
-    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore,
+    const external_tool::ExternalToolInvocationExecutionObservation *execution =
+        nullptr) {
   auto activation =
       activateInvocationContext(context, artifactStore, blobStore);
   if (!activation)
     return activation.takeError();
-  auto result =
-      provider.import(request, resolution, prepared, artifactStore, blobStore);
+  llvm::Expected<EvaluationModelResult> result =
+      execution && provider.importWithExecution
+          ? provider.importWithExecution(request, resolution, prepared,
+                                         *execution, artifactStore, blobStore)
+          : provider.import(request, resolution, prepared, artifactStore,
+                            blobStore);
   if (!result)
     return result.takeError();
   return detail::EvaluationEvidenceBuilder::getForVerifiedRequest(
@@ -353,6 +359,39 @@ llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
       request, resolution, prepared.externalInvocation(), *provider,
       detail::EvaluationModelPreparedInvocationBuilder::context(prepared),
       artifactStore, blobStore);
+}
+
+llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const EvaluationModelPreparedInvocation &prepared,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  ArtifactImportCacheScope cacheScope(artifactStore, &blobStore);
+  RequestVerifier verifier(resolution, artifactStore, blobStore);
+  if (llvm::Error error = verifier.verify(request))
+    return std::move(error);
+  const EvaluationModelDescriptor *descriptor =
+      request.modelBinding().descriptorRef().descriptor();
+  if (!descriptor)
+    return invalid("request references an unregistered model descriptor");
+  if (descriptor->providerForm != ProviderForm::ExternalPrepareImport)
+    return invalid("in-process model cannot import an external invocation");
+  if (detail::EvaluationModelPreparedInvocationBuilder::request(prepared) !=
+      evaluationRequestReference(request))
+    return invalid("live prepared invocation belongs to another Request");
+  if (detail::EvaluationModelPreparedInvocationBuilder::resolution(prepared) !=
+      resolution)
+    return invalid(
+        "live prepared invocation belongs to another artifact resolution");
+  auto provider = externalProvider(request);
+  if (!provider)
+    return provider.takeError();
+  if (!provider->importWithExecution)
+    return invalid("external provider has no receipt-bound import");
+  return importVerifiedInvocation(
+      request, resolution, prepared.externalInvocation(), *provider,
+      detail::EvaluationModelPreparedInvocationBuilder::context(prepared),
+      artifactStore, blobStore, &execution);
 }
 
 llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
