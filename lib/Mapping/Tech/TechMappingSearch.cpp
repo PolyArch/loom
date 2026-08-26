@@ -1008,8 +1008,12 @@ TechCoverSearchResult searchTechMatchCovers(
     rectangularSearchWork = std::max(
         rectangularSearchWork,
         saturatingMultiply(component.rows.size(), component.actors.size()));
-  constexpr std::uint64_t minimumConstructiveSearchSurface = 4096;
-  if (rectangularSearchWork > minimumConstructiveSearchSurface) {
+  // Keep the constructive switch stable across resolved budgets. The resolved
+  // expansion limit still bounds the constructive frontier itself; changing
+  // this algorithm-selection threshold would change the canonical search
+  // family and requires a policy descriptor/replay update.
+  constexpr std::uint64_t constructiveSearchSurfaceThreshold = 4096;
+  if (rectangularSearchWork > constructiveSearchSurfaceThreshold) {
     ++accounting.constructiveCoverSearchInvocations;
     ConstructiveCoverSearch constructive(domain, rowsByActor, config,
                                          accounting, result.feedback,
@@ -1031,6 +1035,8 @@ TechCoverSearchResult searchTechMatchCovers(
       result.exhausted = domain.exhausted;
       return result;
     }
+    result.exhausted = false;
+    return result;
   }
 
   std::vector<LazyComponentCovers> components;
