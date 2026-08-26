@@ -1,8 +1,7 @@
 #ifndef LOOM_APPLICATION_DEPLOYMENTRUNTIME_H
 #define LOOM_APPLICATION_DEPLOYMENTRUNTIME_H
 
-#include "Runtime/DeploymentLoader.h"
-#include "Runtime/ResourceTimeTransitionSelection.h"
+#include "Application/ResourceTimeExecution.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -20,6 +19,7 @@ namespace loom::application {
 
 struct ApplicationDeploymentArtifacts;
 class ApplicationRuntimeManifest;
+class FinalizedApplicationRuntimeManifest;
 
 /// One exact Deployment-owned System invocation pair derived from the
 /// Application's canonical source invocation. The source invocation remains
@@ -52,11 +52,10 @@ public:
   runtime::LoadedDeployment &loadedDeployment() { return loaded_; }
   const runtime::LoadedDeployment &loadedDeployment() const { return loaded_; }
 
-  runtime::ResourceTimeTransitionSelectionSession *resourceTimeSelection() {
+  ApplicationResourceTimeExecutionSession *resourceTimeExecution() {
     return resourceTime_ ? &*resourceTime_ : nullptr;
   }
-  const runtime::ResourceTimeTransitionSelectionSession *
-  resourceTimeSelection() const {
+  const ApplicationResourceTimeExecutionSession *resourceTimeExecution() const {
     return resourceTime_ ? &*resourceTime_ : nullptr;
   }
   llvm::ArrayRef<ApplicationEndpointActivationInputs>
@@ -64,21 +63,35 @@ public:
     return endpointInputs_;
   }
 
+  llvm::Expected<ApplicationResourceTimeExecutionEvent> applyResourceTimeEvent(
+      const sim::SystemRootLifecycleObservation &observation);
+
+  llvm::Expected<FinalizedApplicationResourceTimeExecutionTrace>
+  publishResourceTimeExecutionTrace(const ArtifactStore &artifacts,
+                                    const BlobStore &blobs) const;
+
 private:
   LoadedApplicationDeployment(
-      runtime::LoadedDeployment loaded,
-      std::optional<runtime::ResourceTimeTransitionSelectionSession>
-          resourceTime,
+      runtime::LoadedDeployment loaded, ArtifactRootReference runtimeManifest,
+      std::optional<ApplicationResourceTimeExecutionSession> resourceTime,
       std::vector<ApplicationEndpointActivationInputs> endpointInputs)
-      : loaded_(std::move(loaded)), resourceTime_(std::move(resourceTime)),
+      : loaded_(std::move(loaded)),
+        runtimeManifest_(std::move(runtimeManifest)),
+        resourceTime_(std::move(resourceTime)),
         endpointInputs_(std::move(endpointInputs)) {}
 
   runtime::LoadedDeployment loaded_;
-  std::optional<runtime::ResourceTimeTransitionSelectionSession> resourceTime_;
+  ArtifactRootReference runtimeManifest_;
+  std::optional<ApplicationResourceTimeExecutionSession> resourceTime_;
   std::vector<ApplicationEndpointActivationInputs> endpointInputs_;
 
   friend llvm::Expected<LoadedApplicationDeployment>
   loadApplicationDeployment(const ApplicationDeploymentArtifacts &,
+                            runtime::RuntimeProviderSelection,
+                            const ArtifactStore &, const BlobStore &);
+  friend llvm::Expected<LoadedApplicationDeployment>
+  loadApplicationDeployment(const FinalizedApplicationRuntimeManifest &,
+                            const deployment::FinalizedDeployment &,
                             runtime::RuntimeProviderSelection,
                             const ArtifactStore &, const BlobStore &);
 };
@@ -89,6 +102,15 @@ private:
 /// persistence here.
 llvm::Expected<LoadedApplicationDeployment>
 loadApplicationDeployment(const ApplicationDeploymentArtifacts &application,
+                          runtime::RuntimeProviderSelection selection,
+                          const ArtifactStore &artifacts,
+                          const BlobStore &blobs);
+
+/// Package-facing overload. It consumes the same persisted manifest and entry
+/// Deployment as the build-result overload and creates no replacement graph.
+llvm::Expected<LoadedApplicationDeployment>
+loadApplicationDeployment(const FinalizedApplicationRuntimeManifest &manifest,
+                          const deployment::FinalizedDeployment &deployment,
                           runtime::RuntimeProviderSelection selection,
                           const ArtifactStore &artifacts,
                           const BlobStore &blobs);
