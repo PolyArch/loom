@@ -1050,6 +1050,9 @@ llvm::Error CompletedDsePlanExecution::appendGenerate(
     std::optional<std::vector<std::uint8_t>> feedback, bool dispatched) {
   if (invocation.planNodeOrdinal != nodeOutputs_.size())
     return invalid("Generate invocation ordinal does not follow plan order");
+  if (invocation.incompleteReason && invocation.infeasibilityProof)
+    return invalid("Generate invocation has both incomplete and "
+                   "ProvenInfeasible outcomes");
   if (workSummary.planNodeOrdinal != invocation.planNodeOrdinal)
     return invalid("Generate work summary names a different plan node");
   if (llvm::Error error = validateCandidateGeneratorWorkSummary(
@@ -1128,7 +1131,7 @@ DsePlanGenerateInvocationRecords projectDsePlanGenerateInvocationRecords(
 llvm::Expected<DsePlanGenerateInvocationSummary>
 validateAndSummarizeDsePlanGenerateInvocations(
     llvm::ArrayRef<DsePlanGenerateInvocationRecords> records,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   DsePlanGenerateInvocationSummary summary;
   auto add = [](std::uint64_t &total, std::size_t amount,
                 llvm::StringRef field) -> llvm::Error {
@@ -1150,6 +1153,9 @@ validateAndSummarizeDsePlanGenerateInvocations(
     if (completed == invocation.incompleteReason.has_value())
       return invalid("Generate invocation completeness classification "
                      "disagrees with its typed outcome");
+    if (invocation.incompleteReason && invocation.infeasibilityProof)
+      return invalid("Generate invocation has both incomplete and "
+                     "ProvenInfeasible outcomes");
     if (workSummary.planNodeOrdinal != invocation.planNodeOrdinal)
       return invalid("Generate work summary names a different plan node");
     if (llvm::Error error = validateCandidateGeneratorWorkSummary(
@@ -1158,7 +1164,8 @@ validateAndSummarizeDsePlanGenerateInvocations(
     if (llvm::Error error = validateCanonicalCandidateGeneratorInvocation(
             invocation.inputBindings, invocation.generatorBinding,
             invocation.outputBindings, invocation.lineageEdges, completed,
-            store))
+            invocation.infeasibilityProof,
+            store, blobs))
       return error;
     if (llvm::Error error =
             add(summary.inputBindings, invocation.inputBindings.size(),
@@ -1234,11 +1241,16 @@ validateAndSummarizeDsePlanGenerateInvocations(
       if (llvm::Error error =
               consume(invocation, *entry.workSummary, entry.completed))
         return std::move(error);
+      if (invocation.infeasibilityProof) {
+        if (llvm::Error error = add(summary.provenInfeasibleInvocations, 1,
+                                    "ProvenInfeasible invocation"))
+          return std::move(error);
+      }
       std::uint64_t &count = entry.completed ? summary.completedInvocations
                                              : summary.incompleteInvocations;
-      if (llvm::Error error = add(count, 1,
-                                  entry.completed ? "completed invocation"
-                                                  : "incomplete invocation"))
+      if (llvm::Error error =
+              add(count, 1, entry.completed ? "completed invocation"
+                                            : "incomplete invocation"))
         return std::move(error);
       previousNode = invocation.planNodeOrdinal;
     }
@@ -1384,6 +1396,26 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
           }
           continue;
         }
+        if (auto *proven =
+                std::get_if<ProvenInfeasibleCandidateGeneratorResult>(
+                    &result.outcome)) {
+          GenerateInvocationRecord invocationRecord{
+              task.planNodeOrdinal,
+              std::move(task.inputs),
+              std::move(task.binding),
+              std::move(proven->outputBindings),
+              {},
+              std::nullopt,
+              std::move(proven->proof)};
+          GenerateInvocationWorkSummary workSummary{
+              task.planNodeOrdinal, std::move(result.workSummary)};
+          if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
+                  completed, std::move(invocationRecord),
+                  std::move(workSummary), std::move(result.ownerFeedback),
+                  result.dispatched))
+            return std::move(error);
+          continue;
+        }
         auto &generated =
             std::get<CompletedCandidateGeneratorResult>(result.outcome);
         GenerateInvocationRecord invocationRecord{
@@ -1469,6 +1501,27 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
             DsePlanExecutionBuilder::incompleteGenerate(
                 static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
                 std::move(completed), true)};
+      }
+      if (auto *proven =
+              std::get_if<ProvenInfeasibleCandidateGeneratorResult>(
+                  &result->outcome)) {
+        GenerateInvocationRecord invocationRecord{
+            static_cast<std::uint64_t>(nodeIndex),
+            std::move(inputs),
+            std::move(*binding),
+            std::move(proven->outputBindings),
+            {},
+            std::nullopt,
+            std::move(proven->proof)};
+        GenerateInvocationWorkSummary workSummary{
+            static_cast<std::uint64_t>(nodeIndex),
+            std::move(result->workSummary)};
+        if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
+                completed, std::move(invocationRecord),
+                std::move(workSummary), std::move(result->ownerFeedback),
+                result->dispatched))
+          return std::move(error);
+        continue;
       }
       auto &generated =
           std::get<CompletedCandidateGeneratorResult>(result->outcome);

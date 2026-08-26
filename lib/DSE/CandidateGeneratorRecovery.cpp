@@ -10,6 +10,7 @@
 #include "llvm/ADT/Twine.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -326,11 +327,13 @@ std::vector<std::uint8_t>
 encodeRecord(const DseRunKey &runKey, const WorkUnitKey &workUnit,
              llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
              const ResolvedCandidateGeneratorBinding &binding,
-             const CandidateGeneratorProviderResult &result) {
+             const CandidateGeneratorProviderResult &result,
+             SchemaVersion schemaVersion =
+                 candidateGeneratorFinalizedWorkRecordSchemaVersion) {
   Encoder encoder;
   encoder.text(candidateGeneratorFinalizedWorkRecordSchemaIdentity);
-  encoder.u32(candidateGeneratorFinalizedWorkRecordSchemaVersion.major);
-  encoder.u32(candidateGeneratorFinalizedWorkRecordSchemaVersion.minor);
+  encoder.u32(schemaVersion.major);
+  encoder.u32(schemaVersion.minor);
   encoder.fixed(runKey.bytes());
   encodeWorkUnit(encoder, workUnit);
   encoder.bytes(detail::encodeCanonicalCandidateGeneratorInputBindings(inputs));
@@ -343,6 +346,15 @@ encodeRecord(const DseRunKey &runKey, const WorkUnitKey &workUnit,
           encoder.u32(0);
           encodeOutputs(encoder, outcome.outputBindings);
           encodeLineage(encoder, outcome.lineageEdges);
+        } else if constexpr (std::is_same_v<
+                                 T, ProvenInfeasibleCandidateGeneratorResult>) {
+          assert(schemaVersion ==
+                 candidateGeneratorFinalizedWorkRecordSchemaVersion);
+          encoder.u32(2);
+          encoder.u32(outcome.proof.kind.ordinal());
+          encoder.bytes(outcome.proof.witness);
+          encodeOutputs(encoder, outcome.outputBindings);
+          encodeLineage(encoder, {});
         } else {
           encoder.u32(1);
           encoder.u32(static_cast<std::uint32_t>(outcome.reason));
@@ -372,9 +384,11 @@ decodeRecord(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
   auto minor = decoder.u32("recovery record minor version");
   if (!minor)
     return minor.takeError();
+  const SchemaVersion sourceVersion{*major, *minor};
   if (*schema != candidateGeneratorFinalizedWorkRecordSchemaIdentity ||
-      SchemaVersion{*major, *minor} !=
-          candidateGeneratorFinalizedWorkRecordSchemaVersion)
+      (sourceVersion !=
+           candidateGeneratorLegacyFinalizedWorkRecordSchemaVersion &&
+       sourceVersion != candidateGeneratorFinalizedWorkRecordSchemaVersion))
     return invalid("recovery record schema is unsupported");
   auto storedRunKey = decoder.fixed(DseRunKey::byteSize, "run key");
   if (!storedRunKey)
@@ -401,9 +415,13 @@ decodeRecord(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
   auto outcomeKind = decoder.u32("provider outcome kind");
   if (!outcomeKind)
     return outcomeKind.takeError();
-  if (*outcomeKind > 1)
+  if (*outcomeKind >
+      (sourceVersion == candidateGeneratorLegacyFinalizedWorkRecordSchemaVersion
+           ? 1U
+           : 2U))
     return invalid("provider outcome kind is unknown");
   std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
+  std::optional<CandidateGeneratorInfeasibilityProof> infeasibilityProof;
   if (*outcomeKind == 1) {
     auto reason = decoder.u32("incomplete outcome reason");
     if (!reason)
@@ -412,6 +430,16 @@ decodeRecord(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
                       CandidateGeneratorIncompleteReason::CancelledOrTimeout))
       return invalid("incomplete outcome reason is unknown");
     incompleteReason = static_cast<CandidateGeneratorIncompleteReason>(*reason);
+  } else if (*outcomeKind == 2) {
+    auto kind = decoder.u32("infeasibility proof kind");
+    if (!kind)
+      return kind.takeError();
+    auto witness = decoder.bytes("infeasibility proof witness");
+    if (!witness)
+      return witness.takeError();
+    infeasibilityProof.emplace(CandidateGeneratorInfeasibilityProof{
+        CandidateGeneratorInfeasibilityProofKindRef(*kind),
+        std::move(*witness)});
   }
   auto outputs = decodeOutputs(decoder);
   if (!outputs)
@@ -428,6 +456,11 @@ decodeRecord(llvm::ArrayRef<std::uint8_t> bytes, const DseRunKey &runKey,
     return CandidateGeneratorProviderResult{
         IncompleteCandidateGeneratorResult{
             *incompleteReason, std::move(*outputs), std::move(*lineage)},
+        std::move(*workSummary)};
+  if (infeasibilityProof)
+    return CandidateGeneratorProviderResult{
+        ProvenInfeasibleCandidateGeneratorResult{
+            std::move(*outputs), std::move(*infeasibilityProof)},
         std::move(*workSummary)};
   return CandidateGeneratorProviderResult{
       CompletedCandidateGeneratorResult{std::move(*outputs),
@@ -456,7 +489,8 @@ llvm::Expected<BlobDigest> publishCandidateGeneratorFinalizedWorkRecord(
 
 llvm::Expected<CandidateGeneratorProviderResult>
 importCandidateGeneratorFinalizedWorkRecord(
-    const BlobDigest &recordDigest, const DseRunKey &runKey,
+    SchemaVersion recordVersion, const BlobDigest &recordDigest,
+    const DseRunKey &runKey,
     const WorkUnitKey &workUnit,
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     const ResolvedCandidateGeneratorBinding &binding,
@@ -470,7 +504,18 @@ importCandidateGeneratorFinalizedWorkRecord(
   if (llvm::Error error = validateCandidateGeneratorProviderResult(
           inputs, binding, *result, artifactStore, blobStore))
     return std::move(error);
-  if (encodeRecord(runKey, workUnit, inputs, binding, *result) != *bytes)
+  if (recordVersion !=
+          candidateGeneratorLegacyFinalizedWorkRecordSchemaVersion &&
+      recordVersion != candidateGeneratorFinalizedWorkRecordSchemaVersion)
+    return invalid("recovery record reference has an unsupported version");
+  if (recordVersion ==
+          candidateGeneratorLegacyFinalizedWorkRecordSchemaVersion &&
+      std::holds_alternative<ProvenInfeasibleCandidateGeneratorResult>(
+          result->outcome))
+    return invalid(
+        "legacy recovery record reference cannot carry an infeasibility proof");
+  if (encodeRecord(runKey, workUnit, inputs, binding, *result, recordVersion) !=
+      *bytes)
     return invalid("recovery record bytes are not canonical");
   return result;
 }

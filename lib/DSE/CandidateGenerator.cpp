@@ -406,6 +406,10 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
       (descriptor.ownerOutcome->schemaDescriptorBytes.empty() ||
        !descriptor.ownerOutcome->validateCanonical))
     return invalid("descriptor has an incomplete owner outcome contract");
+  if (descriptor.ownerInfeasibilityProof &&
+      (descriptor.ownerInfeasibilityProof->schemaDescriptorBytes.empty() ||
+       !descriptor.ownerInfeasibilityProof->validateCanonical))
+    return invalid("descriptor has an incomplete infeasibility proof contract");
   if (static_cast<std::uint32_t>(descriptor.determinism) >
       static_cast<std::uint32_t>(
           CandidateGeneratorDeterminism::IndependentReplicates))
@@ -458,6 +462,10 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
         static_cast<std::uint32_t>(slot.cardinality) >
             static_cast<std::uint32_t>(PlanValueCardinality::FiniteSet))
       return invalid("output slot has an invalid plan value contract");
+    if (descriptor.ownerInfeasibilityProof &&
+        !planCardinalityContains(slot.cardinality, 0))
+      return invalid("infeasibility proof requires empty-admitting output "
+                     "slots");
     const bool isParameterBundle =
         *slot.schema == evaluation::modelParameterBundleSchema;
     if (isParameterBundle != (slot.modelParameterContract != nullptr))
@@ -519,10 +527,11 @@ llvm::Error validateProviderResult(
   }
   llvm::ArrayRef<CandidateGeneratorOutputBinding> canonicalOutputs;
   llvm::ArrayRef<CandidateGeneratorLineageEdge> canonicalEdges;
-  bool isCompleted = false;
+  CandidateGeneratorOutcomeKind outcomeKind =
+      CandidateGeneratorOutcomeKind::Incomplete;
   if (auto *completed =
           std::get_if<CompletedCandidateGeneratorResult>(&result.outcome)) {
-    isCompleted = true;
+    outcomeKind = CandidateGeneratorOutcomeKind::Completed;
     if (llvm::Error error = canonicalizeOutputBindings(
             descriptor, completed->outputBindings, true, store))
       return error;
@@ -535,6 +544,25 @@ llvm::Error validateProviderResult(
       return error;
     canonicalOutputs = completed->outputBindings;
     canonicalEdges = completed->lineageEdges;
+  } else if (auto *proven =
+                 std::get_if<ProvenInfeasibleCandidateGeneratorResult>(
+                     &result.outcome)) {
+    if (!descriptor.ownerInfeasibilityProof)
+      return invalid("provider returned ProvenInfeasible without an owner "
+                     "proof contract");
+    outcomeKind = CandidateGeneratorOutcomeKind::ProvenInfeasible;
+    if (llvm::Error error = canonicalizeOutputBindings(
+            descriptor, proven->outputBindings, false, store))
+      return error;
+    if (llvm::any_of(proven->outputBindings, [](const auto &binding) {
+          return !binding.artifacts.empty();
+        }))
+      return invalid("ProvenInfeasible outcome returned an output Artifact");
+    if (llvm::Error error =
+            descriptor.ownerInfeasibilityProof->validateCanonical(
+                proven->proof, inputBindings, binding, store, blobs))
+      return error;
+    canonicalOutputs = proven->outputBindings;
   } else {
     auto &incomplete =
         std::get<IncompleteCandidateGeneratorResult>(result.outcome);
@@ -557,7 +585,7 @@ llvm::Error validateProviderResult(
   }
   if (descriptor.ownerOutcome)
     return descriptor.ownerOutcome->validateCanonical(
-        inputBindings, canonicalOutputs, canonicalEdges, isCompleted, store);
+        inputBindings, canonicalOutputs, canonicalEdges, outcomeKind, store);
   return llvm::Error::success();
 }
 
@@ -989,6 +1017,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
           using T = std::decay_t<decltype(outcome)>;
           if constexpr (std::is_same_v<T, CompletedCandidateGeneratorResult>)
             return outcome.outputBindings;
+          else if constexpr (std::is_same_v<
+                                 T, ProvenInfeasibleCandidateGeneratorResult>)
+            return outcome.outputBindings;
           else
             return outcome.retainedOutputBindings;
         },
@@ -1066,12 +1097,16 @@ importCandidateGeneratorInvocation(
   return result;
 }
 
-llvm::Error validateCanonicalCandidateGeneratorInvocation(
+static llvm::Error validateCanonicalCandidateGeneratorInvocationImpl(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     const ResolvedCandidateGeneratorBinding &binding,
     llvm::ArrayRef<CandidateGeneratorOutputBinding> outputs,
     llvm::ArrayRef<CandidateGeneratorLineageEdge> lineageEdges, bool completed,
-    const ArtifactStore &store) {
+    const std::optional<CandidateGeneratorInfeasibilityProof>
+        &infeasibilityProof,
+    const ArtifactStore &store, const BlobStore *blobs) {
+  if (infeasibilityProof && !completed)
+    return invalid("ProvenInfeasible invocation is not terminal");
   const CandidateGeneratorDescriptor *descriptor =
       binding.descriptorRef().descriptor();
   if (!descriptor)
@@ -1091,8 +1126,14 @@ llvm::Error validateCanonicalCandidateGeneratorInvocation(
 
   std::vector<CandidateGeneratorOutputBinding> canonicalOutputs(outputs.begin(),
                                                                 outputs.end());
+  const CandidateGeneratorOutcomeKind outcomeKind =
+      infeasibilityProof ? CandidateGeneratorOutcomeKind::ProvenInfeasible
+                         : completed
+                               ? CandidateGeneratorOutcomeKind::Completed
+                               : CandidateGeneratorOutcomeKind::Incomplete;
   if (llvm::Error error = canonicalizeOutputBindings(
-          *descriptor, canonicalOutputs, completed, store))
+          *descriptor, canonicalOutputs,
+          outcomeKind == CandidateGeneratorOutcomeKind::Completed, store))
     return error;
   if (canonicalOutputs.size() != outputs.size())
     return invalid("invocation output binding cardinality changed");
@@ -1108,10 +1149,51 @@ llvm::Error validateCanonicalCandidateGeneratorInvocation(
     return error;
   if (llvm::ArrayRef(canonicalEdges) != lineageEdges)
     return invalid("invocation lineage edges are not canonical");
+  if (infeasibilityProof) {
+    if (!blobs)
+      return invalid("ProvenInfeasible validation requires the exact BlobStore");
+    if (!descriptor->ownerInfeasibilityProof)
+      return invalid("invocation records ProvenInfeasible without an owner "
+                     "proof contract");
+    if (!lineageEdges.empty() ||
+        llvm::any_of(outputs, [](const auto &binding) {
+          return !binding.artifacts.empty();
+        }))
+      return invalid("ProvenInfeasible invocation retained candidate output");
+    if (llvm::Error error =
+            descriptor->ownerInfeasibilityProof->validateCanonical(
+                *infeasibilityProof, inputs, binding, store, *blobs))
+      return error;
+  }
   if (descriptor->ownerOutcome)
     return descriptor->ownerOutcome->validateCanonical(
-        inputs, canonicalOutputs, canonicalEdges, completed, store);
+        inputs, canonicalOutputs, canonicalEdges,
+        outcomeKind, store);
   return llvm::Error::success();
+}
+
+llvm::Error validateCanonicalCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    llvm::ArrayRef<CandidateGeneratorOutputBinding> outputs,
+    llvm::ArrayRef<CandidateGeneratorLineageEdge> lineageEdges, bool completed,
+    const std::optional<CandidateGeneratorInfeasibilityProof>
+        &infeasibilityProof,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  return validateCanonicalCandidateGeneratorInvocationImpl(
+      inputs, binding, outputs, lineageEdges, completed, infeasibilityProof,
+      store, &blobs);
+}
+
+llvm::Error validateCanonicalCandidateGeneratorInvocation(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    llvm::ArrayRef<CandidateGeneratorOutputBinding> outputs,
+    llvm::ArrayRef<CandidateGeneratorLineageEdge> lineageEdges, bool completed,
+    const ArtifactStore &store) {
+  return validateCanonicalCandidateGeneratorInvocationImpl(
+      inputs, binding, outputs, lineageEdges, completed, std::nullopt, store,
+      nullptr);
 }
 
 } // namespace loom::dse

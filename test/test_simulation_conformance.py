@@ -128,6 +128,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             "configured_seed_attempts": 4,
             "outcome": "completed",
             "incomplete_reason": None,
+            "infeasibility_proof": None,
             "work_units": [
                 {
                     "unit": unit,
@@ -162,7 +163,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             }
             profiles.append(
                 {
-                    "schema": "loom.cgra_budget_profile.4",
+                    "schema": "loom.cgra_budget_profile.5",
                     "workload": operator.workload,
                     "operator_id": operator.operator_id,
                     "protocol_symbol": operator.protocol_symbol,
@@ -183,6 +184,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                     "tech_mapping_search": {
                         "outcome": "incomplete",
                         "incomplete_reason": "candidate_semantic_limit_reached",
+                        "infeasibility_proof": None,
                         "candidates": [reference(400 + ordinal)],
                         "work_units": [
                             {"unit": unit, "planned": 1, "consumed": 1}
@@ -216,7 +218,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         incomplete_work[0]["consumed"] = 3
         incomplete_pnr["work_units"] = incomplete_work
         typed_outcome = {
-            "schema": "loom.cgra_budget_profile_outcome.1",
+            "schema": "loom.cgra_budget_profile_outcome.2",
             "workload": first_profile["workload"],
             "operator_id": first_profile["operator_id"],
             "protocol_symbol": first_profile["protocol_symbol"],
@@ -238,6 +240,10 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         infeasible_tech = dict(first_profile["tech_mapping_search"])
         infeasible_tech["outcome"] = "proven_infeasible"
         infeasible_tech["incomplete_reason"] = None
+        infeasible_tech["infeasibility_proof"] = {
+            "kind": 0,
+            "witness": "01",
+        }
         infeasible_tech["candidates"] = []
         typed_outcome["stage"] = "tech_mapping"
         typed_outcome["tech_mapping_search"] = infeasible_tech
@@ -246,12 +252,58 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
             ("proven_infeasible", None),
         )
+        infeasible_tech["infeasibility_proof"] = {
+            "kind": 1 << 32,
+            "witness": "01",
+        }
+        with self.assertRaises(ValueError):
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome)
+        infeasible_tech["infeasibility_proof"] = {
+            "kind": 0,
+            "witness": "01",
+        }
+        infeasible_work = infeasible_tech["work_units"]
+        assert isinstance(infeasible_work, list)
+        first_infeasible_work = infeasible_work[0]
+        assert isinstance(first_infeasible_work, dict)
+        first_infeasible_work["consumed"] = 0
+        with self.assertRaises(ValueError):
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome)
+        first_infeasible_work["consumed"] = 1
+        infeasible_tech["infeasibility_proof"] = {"kind": 0, "witness": ""}
+        self.assertEqual(
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            ("proven_infeasible", None),
+        )
+        infeasible_tech["infeasibility_proof"] = None
+        with self.assertRaises(ValueError):
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome)
+        infeasible_tech["outcome"] = "completed"
+        self.assertEqual(
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            ("completed", None),
+        )
+
+        completed_empty_pnr = dict(incomplete_pnr)
+        completed_empty_pnr["outcome"] = "completed"
+        completed_empty_pnr["incomplete_reason"] = None
+        completed_empty_pnr["candidates"] = []
+        completed_empty_pnr["work_units"] = [
+            dict(entry) for entry in first_profile["spatial_pnr"]["work_units"]
+        ]
+        typed_outcome["stage"] = "spatial_pnr"
+        typed_outcome["tech_mapping_search"] = first_profile["tech_mapping_search"]
+        typed_outcome["spatial_pnr"] = completed_empty_pnr
+        self.assertEqual(
+            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            ("completed", None),
+        )
         self.assertEqual(
             simulation_conformance.derive_cgra_spatial_budget_nanoseconds(profiles),
             500_000_000,
         )
         configuration = {
-            "schema": "loom.cgra_simulation_gate.4",
+            "schema": "loom.cgra_simulation_gate.5",
             "policy": {
                 "qualification_limit_nanoseconds": 45_000_000_000,
                 "warmup_runs": 1,

@@ -443,7 +443,7 @@ void verifyRootCompleteSystemAdapter(
           descriptor.inputSlots.size() == 6 &&
           descriptor.outputSlots.size() == 1 &&
           descriptor.implementationSemanticIdentity ==
-              "loom.mapping.root_complete_system_pnr.generator.v11" &&
+              "loom.mapping.root_complete_system_pnr.generator.v12" &&
           descriptor.workUnits.size() ==
               loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
           descriptor.inputSlots[0].semanticRole == "dataflow" &&

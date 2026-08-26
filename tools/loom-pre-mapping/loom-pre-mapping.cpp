@@ -496,7 +496,7 @@ int main(int argc, char **argv) {
     auto generateSummary = std::visit(
         [&](const auto &result) {
           return loom::dse::validateAndSummarizeDsePlanGenerateInvocations(
-              result.planGenerateInvocations, store);
+              result.planGenerateInvocations, store, blobs);
         },
         *outcome);
     if (!generateSummary)

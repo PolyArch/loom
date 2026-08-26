@@ -37,6 +37,7 @@ MAX_OUTER_WORKERS = 120
 CGRA_QUALIFICATION_LIMIT_NANOSECONDS = 45_000_000_000
 CGRA_QUALIFICATION_WARMUP_RUNS = 1
 CGRA_QUALIFICATION_MEASUREMENT_RUNS = 3
+MAX_CANDIDATE_PROOF_KIND = (1 << 32) - 1
 CGRA_GATE_CONFIGURATION = (
     Path(__file__).resolve().parent / "data" / "cgra-simulation-gate-v1.json"
 )
@@ -443,12 +444,14 @@ def _validate_candidate_generator_result(
     if not isinstance(value, Mapping) or set(value) != {
         "outcome",
         "incomplete_reason",
+        "infeasibility_proof",
         "candidates",
         "work_units",
     }:
         raise ValueError(f"{what} result has the wrong shape")
     outcome = value["outcome"]
     reason = value["incomplete_reason"]
+    proof = value["infeasibility_proof"]
     if outcome not in {"completed", "incomplete", "proven_infeasible"}:
         raise ValueError(f"{what} result has an unknown outcome")
     if outcome == "incomplete":
@@ -456,6 +459,22 @@ def _validate_candidate_generator_result(
             raise ValueError(f"{what} result has a noncanonical incomplete reason")
     elif reason is not None:
         raise ValueError(f"{what} completed result has an incomplete reason")
+    if outcome == "proven_infeasible":
+        if not isinstance(proof, Mapping) or set(proof) != {"kind", "witness"}:
+            raise ValueError(f"{what} infeasibility has no typed proof")
+        proof_kind = _nonnegative_integer(proof["kind"], f"{what} proof kind")
+        if proof_kind > MAX_CANDIDATE_PROOF_KIND:
+            raise ValueError(f"{what} proof kind exceeds its wire domain")
+        witness = proof["witness"]
+        if (
+            not isinstance(witness, str)
+            or len(witness) % 2 != 0
+            or witness != witness.lower()
+            or any(character not in "0123456789abcdef" for character in witness)
+        ):
+            raise ValueError(f"{what} proof witness is not canonical hex")
+    elif proof is not None:
+        raise ValueError(f"{what} non-infeasible result carries a proof")
     candidates = value["candidates"]
     if not isinstance(candidates, list):
         raise ValueError(f"{what} candidates are not a list")
@@ -471,8 +490,6 @@ def _validate_candidate_generator_result(
         )
     if candidate_keys != sorted(set(candidate_keys)):
         raise ValueError(f"{what} candidates are not canonical and unique")
-    if outcome == "completed" and not candidates:
-        raise ValueError(f"{what} completed result has no candidate")
     if outcome == "proven_infeasible" and candidates:
         raise ValueError(f"{what} infeasibility retained a candidate")
     if require_completed and outcome != "completed":
@@ -500,8 +517,11 @@ def _validate_candidate_generator_result(
         )
         if consumed > planned:
             raise ValueError(f"{what} consumed work exceeds its plan")
-        if outcome != "incomplete" and consumed != planned:
-            raise ValueError(f"completed {what} left planned work unconsumed")
+        if (
+            outcome in {"completed", "proven_infeasible"}
+            and consumed != planned
+        ):
+            raise ValueError(f"terminal {what} left planned work unconsumed")
     return str(outcome)
 
 
@@ -522,6 +542,7 @@ def validate_cgra_pnr_result(value: object, *, require_completed: bool) -> str:
         "configured_seed_attempts",
         "outcome",
         "incomplete_reason",
+        "infeasibility_proof",
         "candidates",
         "work_units",
     }:
@@ -536,6 +557,7 @@ def validate_cgra_pnr_result(value: object, *, require_completed: bool) -> str:
     base = {key: value[key] for key in (
         "outcome",
         "incomplete_reason",
+        "infeasibility_proof",
         "candidates",
         "work_units",
     )}
@@ -567,7 +589,7 @@ def validate_cgra_profile_outcome(value: object) -> tuple[str, str | None]:
     }
     if not isinstance(value, Mapping) or set(value) != expected_fields:
         raise ValueError("CGRA profile outcome has the wrong shape")
-    if value["schema"] != "loom.cgra_budget_profile_outcome.1":
+    if value["schema"] != "loom.cgra_budget_profile_outcome.2":
         raise ValueError("CGRA profile outcome has the wrong schema")
     if (
         not isinstance(value["workload"], str)
@@ -588,7 +610,6 @@ def validate_cgra_profile_outcome(value: object) -> tuple[str, str | None]:
         assert isinstance(tech_result, Mapping)
         if (
             value["spatial_pnr"] is not None
-            or tech_outcome == "completed"
             or tech_result["candidates"]
         ):
             raise ValueError("CGRA TechMapping outcome has an invalid boundary")
@@ -608,8 +629,12 @@ def validate_cgra_profile_outcome(value: object) -> tuple[str, str | None]:
         pnr_outcome = validate_cgra_pnr_result(
             value["spatial_pnr"], require_completed=False
         )
-        if pnr_outcome == "completed":
-            raise ValueError("CGRA profile outcome contains a completed PnR result")
+        pnr_result = value["spatial_pnr"]
+        assert isinstance(pnr_result, Mapping)
+        if pnr_outcome == "completed" and pnr_result["candidates"]:
+            raise ValueError(
+                "CGRA profile outcome contains a usable completed PnR result"
+            )
         result = value["spatial_pnr"]
     else:
         raise ValueError("CGRA profile outcome has an unknown stage")
@@ -680,7 +705,7 @@ def _validate_cgra_profiles(
     for profile in profiles:
         if not isinstance(profile, Mapping) or set(profile) != expected_profile_fields:
             raise ValueError("CGRA profile has the wrong shape")
-        if profile["schema"] != "loom.cgra_budget_profile.4":
+        if profile["schema"] != "loom.cgra_budget_profile.5":
             raise ValueError("CGRA profile has the wrong schema")
         workload = profile["workload"]
         if not isinstance(workload, str) or workload in by_workload:
@@ -1003,7 +1028,7 @@ def load_cgra_gate_configuration(
     }
     if not isinstance(root, dict) or set(root) != expected_fields:
         raise ValueError("CGRA gate configuration has the wrong shape")
-    if root["schema"] != "loom.cgra_simulation_gate.4":
+    if root["schema"] != "loom.cgra_simulation_gate.5":
         raise ValueError("CGRA gate configuration has the wrong schema")
     policy = root["policy"]
     expected_policy = {

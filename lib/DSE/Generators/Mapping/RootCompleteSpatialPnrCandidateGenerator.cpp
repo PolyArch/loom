@@ -20,6 +20,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
@@ -108,7 +109,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSpatialPnrCandidateGeneratorKind,
     "mapping.root_complete_spatial_pnr",
-    "loom.mapping.root_complete_spatial_pnr.generator.v22",
+    "loom.mapping.root_complete_spatial_pnr.generator.v23",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -120,6 +121,18 @@ const CandidateGeneratorDescriptor descriptor{
     ProviderForm::InProcess,
     &feedbackContract,
 };
+
+CandidateGeneratorIncompleteReason adaptUnverifiedInfeasibility(
+    ::loom::pnr::SpatialPnrInfeasibilityProofKind kind) {
+  switch (kind) {
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::FrozenDerivedContext:
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::FrozenActiveProblem:
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::InitializerRelation:
+  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::GraphBoundaryEndpointHall:
+    return CandidateGeneratorIncompleteReason::ProofNotEstablished;
+  }
+  llvm_unreachable("unknown Spatial PnR infeasibility kind");
+}
 
 struct CachedDataflow final {
   ::dataflow::CanonicalDataflowArtifact artifact;
@@ -333,6 +346,22 @@ std::string errorMessage(const llvm::ErrorInfoBase &error) {
   return message;
 }
 
+llvm::Error classifyDerivedContextFailure(llvm::Error error,
+                                          bool &proofNotEstablished) {
+  proofNotEstablished = false;
+  return llvm::handleErrors(
+      std::move(error),
+      [&](const ::loom::pnr::SpatialPnrFreezeFailure &failure) -> llvm::Error {
+        if (failure.kind() ==
+            ::loom::pnr::SpatialPnrFreezeFailureKind::ProvenInfeasible) {
+          proofNotEstablished = true;
+          return llvm::Error::success();
+        }
+        return llvm::createStringError(failure.convertToErrorCode(),
+                                       errorMessage(failure));
+      });
+}
+
 void canonicalizeReferences(std::vector<ArtifactRootReference> &references) {
   llvm::sort(references, artifactRootReferenceLess);
   references.erase(std::unique(references.begin(), references.end()),
@@ -519,12 +548,27 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       fabric->view(), store);
   if (!physicalTiming)
     return physicalTiming.takeError();
+  if (inputBindings[TechMappingCandidatesInput].artifacts.empty())
+    return CandidateGeneratorProviderResult{
+        completed({}), spatialPnrCandidateGeneratorWorkSummary({})};
   ::loom::pnr::DerivedContextCacheAccess staticAccess;
   ::loom::pnr::DerivedContextCacheAccess timingAccess;
   auto derivedContexts = ::loom::pnr::buildFabricDerivedContextBundle(
       fabric->view(), *physicalTiming, &staticAccess, &timingAccess);
-  if (!derivedContexts)
-    return derivedContexts.takeError();
+  if (!derivedContexts) {
+    bool proofNotEstablished = false;
+    if (llvm::Error error = classifyDerivedContextFailure(
+            derivedContexts.takeError(), proofNotEstablished))
+      return std::move(error);
+    if (!proofNotEstablished)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "root_complete_spatial_pnr_generator_execution_failed: derived "
+          "context construction lost its failure cause");
+    return CandidateGeneratorProviderResult{
+        incomplete(CandidateGeneratorIncompleteReason::ProofNotEstablished, {}),
+        spatialPnrCandidateGeneratorWorkSummary({})};
+  }
   ::loom::pnr::emitFabricDerivedContextStatistics(
       *derivedContexts, ::loom::mapping_debug::Stage::SpatialPnr,
       staticAccess.hits, staticAccess.misses, timingAccess.hits,
@@ -628,6 +672,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                 formatArtifactIdentityHex(candidate.reference.artifact);
             fields["diagnostic"] = diagnostic;
           });
+      rememberIncomplete(
+          CandidateGeneratorIncompleteReason::ProofNotEstablished);
       return false;
     }
     saturatingAdd(activeProblemCacheStatistics.retainedBytes,
@@ -1000,6 +1046,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                 formatArtifactIdentityHex(techReference.artifact);
             fields["diagnostic"] = infeasible->diagnostic;
           });
+      rememberIncomplete(adaptUnverifiedInfeasibility(infeasible->proofKind));
       continue;
     }
     if (const auto *partial =

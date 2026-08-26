@@ -2,6 +2,7 @@
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Common/ExecutionControl.h"
+#include "Common/TimeoutBudgets.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
@@ -19,6 +20,7 @@
 #include "MappedRtlSimulationTestSupport.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
@@ -43,6 +45,38 @@ constexpr std::uint64_t kWarmupRuns = 1;
 constexpr std::uint64_t kMeasurementRuns = 3;
 constexpr std::uint64_t kQualificationLimitNanoseconds = 45'000'000'000ULL;
 constexpr auto kQualificationLimit = std::chrono::seconds(45);
+constexpr auto kSpatialPnrQualificationLimit =
+    loom::timeout::duration(loom::timeout::Tier::Fast);
+
+class MonotonicExecutionDeadline final {
+public:
+  explicit MonotonicExecutionDeadline(
+      std::chrono::steady_clock::duration duration)
+      : notAfter_(std::chrono::steady_clock::now() + duration) {}
+
+  loom::ExecutionControlView control() const {
+    return {this, stopRequested, remainingTime};
+  }
+
+private:
+  static bool stopRequested(const void *context) {
+    const auto &deadline =
+        *static_cast<const MonotonicExecutionDeadline *>(context);
+    return std::chrono::steady_clock::now() >= deadline.notAfter_;
+  }
+
+  static std::optional<std::chrono::steady_clock::duration>
+  remainingTime(const void *context) {
+    const auto &deadline =
+        *static_cast<const MonotonicExecutionDeadline *>(context);
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline.notAfter_)
+      return std::chrono::steady_clock::duration::zero();
+    return deadline.notAfter_ - now;
+  }
+
+  std::chrono::steady_clock::time_point notAfter_;
+};
 
 [[noreturn]] void fail(const llvm::Twine &message) {
   llvm::errs() << "CGRA budget profile: " << message << '\n';
@@ -67,6 +101,18 @@ llvm::json::Object referenceJson(const loom::ArtifactRootReference &reference) {
       {"artifact", loom::formatArtifactIdentityHex(reference.artifact)}};
 }
 
+llvm::json::Value infeasibilityProofJson(
+    const loom::dse::CandidateGeneratorProviderResult &result) {
+  const auto *proven =
+      std::get_if<loom::dse::ProvenInfeasibleCandidateGeneratorResult>(
+          &result.outcome);
+  if (!proven)
+    return nullptr;
+  return llvm::json::Object{
+      {"kind", proven->proof.kind.ordinal()},
+      {"witness", llvm::toHex(proven->proof.witness, true)}};
+}
+
 const std::vector<loom::ArtifactRootReference> &candidateArtifacts(
     const loom::dse::CandidateGeneratorProviderResult &result) {
   const std::vector<loom::dse::CandidateGeneratorOutputBinding> *bindings =
@@ -75,6 +121,11 @@ const std::vector<loom::ArtifactRootReference> &candidateArtifacts(
           std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
               &result.outcome))
     bindings = &completed->outputBindings;
+  else if (const auto *proven =
+               std::get_if<
+                   loom::dse::ProvenInfeasibleCandidateGeneratorResult>(
+                   &result.outcome))
+    bindings = &proven->outputBindings;
   else
     bindings =
         &std::get<loom::dse::IncompleteCandidateGeneratorResult>(result.outcome)
@@ -98,7 +149,13 @@ llvm::json::Object candidateGeneratorResultJson(
     incompleteReason =
         loom::dse::candidateGeneratorIncompleteReasonSpelling(
             incomplete->reason);
-  } else if (candidateArtifacts(result).empty()) {
+  } else if (std::holds_alternative<
+                 loom::dse::ProvenInfeasibleCandidateGeneratorResult>(
+                 result.outcome)) {
+    require(descriptor.ownerInfeasibilityProof,
+            "qualification infeasibility has no descriptor proof contract");
+    require(candidateArtifacts(result).empty(),
+            "qualification infeasibility retained a candidate");
     outcome = "proven_infeasible";
   }
 
@@ -109,9 +166,9 @@ llvm::json::Object candidateGeneratorResultJson(
   for (const auto [ordinal, entry] : llvm::enumerate(result.workSummary)) {
     require(entry.unit.ordinal() == ordinal && entry.consumed <= entry.planned,
             "qualification generator work summary is not canonical");
-    if (outcome == "completed")
+    if (outcome != "incomplete")
       require(entry.planned == entry.consumed,
-              "completed qualification generator left planned work unconsumed");
+              "terminal qualification generator left planned work unconsumed");
     workUnits.push_back(llvm::json::Object{
         {"unit", descriptor.workUnits[ordinal].spelling.str()},
         {"planned", entry.planned},
@@ -122,6 +179,7 @@ llvm::json::Object candidateGeneratorResultJson(
       {"incomplete_reason",
        incompleteReason ? llvm::json::Value(incompleteReason->str())
                         : llvm::json::Value(nullptr)},
+      {"infeasibility_proof", infeasibilityProofJson(result)},
       {"candidates", std::move(candidates)},
       {"work_units", std::move(workUnits)}};
 }
@@ -146,13 +204,19 @@ llvm::json::Object spatialPnrResultJson(
     incompleteReason =
         loom::dse::candidateGeneratorIncompleteReasonSpelling(
             incomplete->reason);
+  } else if (const auto *proven =
+                 std::get_if<
+                     loom::dse::ProvenInfeasibleCandidateGeneratorResult>(
+                     &result.outcome)) {
+    require(proven->outputBindings.size() == 1 &&
+                proven->outputBindings.front().artifacts.empty(),
+            "proven-infeasible qualification PnR retained a candidate");
+    outcome = "proven_infeasible";
   } else {
     const auto &completed =
         std::get<loom::dse::CompletedCandidateGeneratorResult>(result.outcome);
     require(completed.outputBindings.size() == 1,
             "qualification PnR changed its output shape");
-    if (completed.outputBindings.front().artifacts.empty())
-      outcome = "proven_infeasible";
   }
   if (outcome == "completed") {
     const std::uint64_t configuredSeedAttempts =
@@ -166,9 +230,9 @@ llvm::json::Object spatialPnrResultJson(
   for (const auto [ordinal, entry] : llvm::enumerate(result.workSummary)) {
     require(entry.unit.ordinal() == ordinal && entry.consumed <= entry.planned,
             "qualification PnR work summary is not canonical");
-    if (outcome == "completed")
+    if (outcome != "incomplete")
       require(entry.planned == entry.consumed,
-              "completed qualification PnR left planned work unconsumed");
+              "terminal qualification PnR left planned work unconsumed");
     generatorSummary.push_back(llvm::json::Object{
         {"unit",
          loom::dse::pnrCandidateGeneratorWorkUnits[ordinal].spelling.str()},
@@ -189,6 +253,7 @@ llvm::json::Object spatialPnrResultJson(
       {"incomplete_reason",
        incompleteReason ? llvm::json::Value(incompleteReason->str())
                         : llvm::json::Value(nullptr)},
+      {"infeasibility_proof", infeasibilityProofJson(result)},
       {"candidates", std::move(candidates)},
       {"work_units", std::move(generatorSummary)}};
 }
@@ -420,7 +485,10 @@ int main(int argc, char **argv) {
       loom::ResolvedConfig::artifactSchema.version, resolvedConfigIdentity};
   auto dataflow =
       take(dataflow::importCanonicalDataflow(source.dataflow, artifacts));
-  const loom::ExecutionControlView spatialPnrExecution;
+  const MonotonicExecutionDeadline spatialPnrDeadline(
+      kSpatialPnrQualificationLimit);
+  const loom::ExecutionControlView spatialPnrExecution =
+      spatialPnrDeadline.control();
   auto pnrInvocation =
       take(loom::eda::test::invokeMappedBuiltinSpatialPnrFixture(
           "cgra-budget-profile", dataflow, targetScale, techMappingConfig,
@@ -430,7 +498,7 @@ int main(int argc, char **argv) {
       pnrInvocation.techMappingResult);
   if (!pnrInvocation.spatialPnrResult) {
     llvm::json::Object report{
-        {"schema", "loom.cgra_budget_profile_outcome.1"},
+        {"schema", "loom.cgra_budget_profile_outcome.2"},
         {"workload", argv[3]},
         {"operator_id", argv[4]},
         {"protocol_symbol", argv[5]},
@@ -450,7 +518,7 @@ int main(int argc, char **argv) {
           &pnrInvocation.spatialPnrResult->outcome);
   if (!completedPnr || completedPnr->outputBindings.front().artifacts.empty()) {
     llvm::json::Object report{
-        {"schema", "loom.cgra_budget_profile_outcome.1"},
+        {"schema", "loom.cgra_budget_profile_outcome.2"},
         {"workload", argv[3]},
         {"operator_id", argv[4]},
         {"protocol_symbol", argv[5]},
@@ -589,7 +657,7 @@ int main(int argc, char **argv) {
   }
 
   llvm::json::Object report{
-      {"schema", "loom.cgra_budget_profile.4"},
+      {"schema", "loom.cgra_budget_profile.5"},
       {"workload", argv[3]},
       {"operator_id", argv[4]},
       {"protocol_symbol", argv[5]},
