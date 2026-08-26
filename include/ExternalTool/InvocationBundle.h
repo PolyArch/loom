@@ -250,13 +250,13 @@ enum class InvocationCompletionStatus {
 /// their native nonzero exit codes; only launcher-authored failures use this
 /// closed domain.
 enum class InvocationLauncherExitCode : int {
+  LauncherFailure = 119,
   ToolProducedExecutableUnavailable = 120,
   BundleContentMismatch = 121,
   MissingOutput = 122,
   VersionMismatch = 123,
   ModuleActivationFailed = 124,
   MissingEnvironment = 125,
-  LauncherFailure = 126,
 };
 
 struct InvocationCompletion {

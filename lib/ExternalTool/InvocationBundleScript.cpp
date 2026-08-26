@@ -8,6 +8,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <iterator>
@@ -20,6 +21,10 @@ namespace loom::external_tool {
 namespace {
 
 using detail::shellQuote;
+
+constexpr std::uint64_t maximumCommandStatusBytes = 4;
+constexpr std::uint64_t maximumCommandTimingBytes = 64 * 1024;
+constexpr std::uint64_t maximumCommandStreamBytes = 1024 * 1024 * 1024;
 
 constexpr int exitCode(InvocationLauncherExitCode code) {
   return static_cast<int>(code);
@@ -246,6 +251,52 @@ std::string commandExecutionStem(std::uint64_t ordinal) {
   return kCommandExecutionDirectory.str() + "/" + std::to_string(ordinal);
 }
 
+std::string commandDescriptorVariable(std::uint64_t ordinal,
+                                      llvm::StringRef role) {
+  return "loom_command_" + std::to_string(ordinal) + "_" + role.str() + "_fd";
+}
+
+void appendCommandScratchPreparation(std::string &script,
+                                     std::uint64_t ordinal) {
+  const std::string stem = commandExecutionStem(ordinal);
+  script += "  if ! exec {" +
+            commandDescriptorVariable(ordinal, "stdout_write") + "}>" +
+            shellQuote(stem + ".stdout") + " || ! exec {" +
+            commandDescriptorVariable(ordinal, "stdout_read") + "}<" +
+            shellQuote(stem + ".stdout") + " || ! exec {" +
+            commandDescriptorVariable(ordinal, "stderr_write") + "}>" +
+            shellQuote(stem + ".stderr") + " || ! exec {" +
+            commandDescriptorVariable(ordinal, "stderr_read") + "}<" +
+            shellQuote(stem + ".stderr") + " || ! exec {" +
+            commandDescriptorVariable(ordinal, "wall_write") + "}>" +
+            shellQuote(stem + ".wall") + " || ! exec {" +
+            commandDescriptorVariable(ordinal, "wall_read") + "}<" +
+            shellQuote(stem + ".wall") + " || ! exec {" +
+            commandDescriptorVariable(ordinal, "status_write") + "}>" +
+            shellQuote(stem + ".status") + " || ! exec {" +
+            commandDescriptorVariable(ordinal, "status_read") + "}<" +
+            shellQuote(stem + ".status") + "; then\n";
+  script += "    loom_status=" +
+            exitCodeText(InvocationLauncherExitCode::LauncherFailure) + "\n";
+  script += "    loom_schedule_infrastructure_failure=1\n";
+  script += "  fi\n";
+}
+
+void appendCommandDescriptorsClosedForTool(std::string &script,
+                                           std::uint64_t begin,
+                                           std::uint64_t end) {
+  script += "        exec {loom_stdout_fd}>&-\n";
+  script += "        exec {loom_stderr_fd}>&-\n";
+  script += "        exec {loom_command_observations_fd}>&-\n";
+  static constexpr std::array<llvm::StringLiteral, 8> roles{
+      "stdout_write", "stdout_read", "stderr_write", "stderr_read",
+      "wall_write",   "wall_read",   "status_write", "status_read"};
+  for (std::uint64_t ordinal = begin; ordinal != end; ++ordinal)
+    for (const llvm::StringRef role : roles)
+      script += "        exec {" + commandDescriptorVariable(ordinal, role) +
+                "}>&-\n";
+}
+
 void appendProducedExecutableChecks(std::string &script,
                                     const std::vector<std::string> &command,
                                     const InvocationManifestData &manifest) {
@@ -281,8 +332,8 @@ void appendProducedExecutableChecks(std::string &script,
 
 void appendCommandLaunch(std::string &script,
                          const InvocationManifestData &manifest,
-                         std::uint64_t ordinal) {
-  const std::string stem = commandExecutionStem(ordinal);
+                         std::uint64_t ordinal, std::uint64_t chunkBegin,
+                         std::uint64_t chunkEnd) {
   script += "  (\n";
   script += "    loom_command_exit=0\n";
   script += "    loom_command_lc_all_set=${LC_ALL+x}\n";
@@ -299,73 +350,96 @@ void appendCommandLaunch(std::string &script,
   script += "        if [[ \"$loom_command_lc_numeric_set\" == x ]]; then "
             "LC_NUMERIC=$loom_command_lc_numeric; export LC_NUMERIC; else "
             "unset LC_NUMERIC; fi\n";
+  appendCommandDescriptorsClosedForTool(script, chunkBegin, chunkEnd);
   script += "        exec " +
             renderCommand(manifest.commands[ordinal], manifest) + "\n";
-  script += "      ) >" + shellQuote(stem + ".stdout") + " 2>" +
-            shellQuote(stem + ".stderr") + "\n";
-  script += "    }; } 2>" +
-            shellQuote(stem + ".wall") + " || loom_command_exit=$?\n";
-  script += "    if ! printf '%s\\n' \"$loom_command_exit\" >" +
-            shellQuote(stem + ".status") + "; then exit " +
-            exitCodeText(InvocationLauncherExitCode::LauncherFailure) +
-            "; fi\n";
+  script += "      ) >&\"${" +
+            commandDescriptorVariable(ordinal, "stdout_write") + "}\" 2>&\"${" +
+            commandDescriptorVariable(ordinal, "stderr_write") + "}\"\n";
+  script += "    }; } 2>&\"${" +
+            commandDescriptorVariable(ordinal, "wall_write") +
+            "}\" || loom_command_exit=$?\n";
+  script +=
+      "    if ! printf '%s\\n' \"$loom_command_exit\" >&\"${" +
+      commandDescriptorVariable(ordinal, "status_write") + "}\"; then exit " +
+      exitCodeText(InvocationLauncherExitCode::LauncherFailure) + "; fi\n";
   script += "  ) &\n";
   script += "  loom_command_pids+=(\"$!\")\n";
 }
 
+void appendCommandWriterClosure(std::string &script, std::uint64_t ordinal) {
+  script +=
+      "  if ! exec {" + commandDescriptorVariable(ordinal, "stdout_write") +
+      "}>&- || ! exec {" + commandDescriptorVariable(ordinal, "stderr_write") +
+      "}>&- || ! exec {" + commandDescriptorVariable(ordinal, "wall_write") +
+      "}>&- || ! exec {" + commandDescriptorVariable(ordinal, "status_write") +
+      "}>&-; then\n";
+  script += "    loom_status=" +
+            exitCodeText(InvocationLauncherExitCode::LauncherFailure) + "\n";
+  script += "    loom_schedule_infrastructure_failure=1\n";
+  script += "  fi\n";
+}
+
 void appendCommandCollection(std::string &script, std::uint64_t ordinal) {
-  const std::string stem = commandExecutionStem(ordinal);
-  const std::string stdoutPath = stem + ".stdout";
-  const std::string stderrPath = stem + ".stderr";
-  const std::string wallPath = stem + ".wall";
-  const std::string statusPath = stem + ".status";
   script += "  loom_command_exit=''\n";
   script += "  loom_command_wall=''\n";
+  script += "  loom_command_wall_text=''\n";
   script += "  loom_command_collection_failed=0\n";
-  script += "  if [[ ! -f " + shellQuote(stdoutPath) + " || -L " +
-            shellQuote(stdoutPath) + " || ! -f " + shellQuote(stderrPath) +
-            " || -L " + shellQuote(stderrPath) + " || ! -f " +
-            shellQuote(wallPath) + " || -L " + shellQuote(wallPath) +
-            " || ! -f " + shellQuote(statusPath) + " || -L " +
-            shellQuote(statusPath) + " ]]; then\n";
-  script += "    loom_status=" +
-            exitCodeText(InvocationLauncherExitCode::LauncherFailure) + "\n";
-  script += "  elif ! IFS= read -r loom_command_exit <" +
-            shellQuote(statusPath) +
-            " || [[ ! \"$loom_command_exit\" =~ ^[0-9]+$ ]] || "
+  script += "  if ! loom_command_exit=$(loom_read_command_text \"${" +
+            commandDescriptorVariable(ordinal, "status_read") + "}\" " +
+            std::to_string(maximumCommandStatusBytes) +
+            "); then loom_command_collection_failed=1; fi\n";
+  script += "  if ! loom_command_wall_text=$(loom_read_command_text \"${" +
+            commandDescriptorVariable(ordinal, "wall_read") + "}\" " +
+            std::to_string(maximumCommandTimingBytes) +
+            "); then loom_command_collection_failed=1; fi\n";
+  script += "  if ! loom_copy_command_stream \"${" +
+            commandDescriptorVariable(ordinal, "stdout_read") +
+            "}\" \"$loom_stdout_fd\" " +
+            std::to_string(maximumCommandStreamBytes) +
+            "; then loom_command_collection_failed=1; fi\n";
+  script += "  if ! loom_copy_command_stream \"${" +
+            commandDescriptorVariable(ordinal, "stderr_read") +
+            "}\" \"$loom_stderr_fd\" " +
+            std::to_string(maximumCommandStreamBytes) +
+            "; then loom_command_collection_failed=1; fi\n";
+  script += "  if [[ ! \"$loom_command_exit\" =~ ^[0-9]+$ ]] || "
             "(( loom_command_exit > 255 )); then\n";
-  script += "    loom_status=" +
-            exitCodeText(InvocationLauncherExitCode::LauncherFailure) + "\n";
+  script += "    loom_command_collection_failed=1\n";
   script += "  else\n";
   script += "    loom_command_time_seen=0\n";
   script += "    while IFS= read -r loom_command_time_line; do\n";
   script += "      if (( loom_command_time_seen != 0 )) && ! printf '%s\\n' "
-            "\"$loom_command_wall\" >>" +
-            shellQuote(stderrPath) + "; then\n";
+            "\"$loom_command_wall\" >&\"$loom_stderr_fd\"; then\n";
   script += "        loom_command_collection_failed=1\n";
   script += "      fi\n";
   script += "      loom_command_wall=$loom_command_time_line\n";
   script += "      loom_command_time_seen=1\n";
-  script += "    done <" + shellQuote(wallPath) + "\n";
+  script += "    done <<<\"$loom_command_wall_text\"\n";
   script += "    if (( loom_command_time_seen == 0 )) || "
             "[[ ! \"$loom_command_wall\" =~ ^[0-9]+\\.[0-9]+$ ]]; then\n";
   script += "      loom_command_collection_failed=1\n";
   script += "    fi\n";
-  script += "    if (( loom_command_collection_failed != 0 )); then\n";
-  script += "      loom_status=" +
+  script += "  fi\n";
+  script +=
+      "  if ! exec {" + commandDescriptorVariable(ordinal, "stdout_read") +
+      "}<&- || ! exec {" + commandDescriptorVariable(ordinal, "stderr_read") +
+      "}<&- || ! exec {" + commandDescriptorVariable(ordinal, "wall_read") +
+      "}<&- || ! exec {" + commandDescriptorVariable(ordinal, "status_read") +
+      "}<&-; then loom_command_collection_failed=1; fi\n";
+  script += "  if (( loom_command_collection_failed != 0 )); then\n";
+  script += "    loom_status=" +
             exitCodeText(InvocationLauncherExitCode::LauncherFailure) + "\n";
-  script += "    elif ! cat -- " + shellQuote(stdoutPath) + " >>" +
-            shellQuote(kStdoutPath) + " || ! cat -- " + shellQuote(stderrPath) +
-            " >>" + shellQuote(kStderrPath) +
-            " || ! printf 'command %s %s %s\\n' " +
+  script += "    loom_schedule_infrastructure_failure=1\n";
+  script += "  elif ! printf 'command %s %s %s\\n' " +
             shellQuote(std::to_string(ordinal)) +
-            " \"$loom_command_wall\" \"$loom_command_exit\" >>"
-            "\"$loom_command_observations_partial\"; then\n";
-  script += "      loom_status=" +
+            " \"$loom_command_wall\" \"$loom_command_exit\" "
+            ">&\"$loom_command_observations_fd\"; then\n";
+  script += "    loom_status=" +
             exitCodeText(InvocationLauncherExitCode::LauncherFailure) + "\n";
-  script += "    elif (( loom_status == 0 && loom_command_exit != 0 )); then\n";
-  script += "      loom_status=$loom_command_exit\n";
-  script += "    fi\n";
+  script += "    loom_schedule_infrastructure_failure=1\n";
+  script += "  elif (( loom_status == 0 && loom_command_exit != 0 )); then\n";
+  script += "    loom_status=$loom_command_exit\n";
   script += "  fi\n";
 }
 
@@ -378,15 +452,21 @@ void appendCommandChunk(std::string &script,
                                    manifest);
   script += "if (( loom_status == 0 )); then\n";
   for (std::uint64_t ordinal = begin; ordinal != end; ++ordinal)
-    appendCommandLaunch(script, manifest, ordinal);
+    appendCommandScratchPreparation(script, ordinal);
+  script += "if (( loom_status == 0 )); then\n";
+  for (std::uint64_t ordinal = begin; ordinal != end; ++ordinal)
+    appendCommandLaunch(script, manifest, ordinal, begin, end);
   script += "  for loom_command_pid in \"${loom_command_pids[@]}\"; do\n";
   script += "    if ! wait \"$loom_command_pid\"; then loom_status=" +
             exitCodeText(InvocationLauncherExitCode::LauncherFailure) +
-            "; fi\n";
+            "; loom_schedule_infrastructure_failure=1; fi\n";
   script += "  done\n";
   script += "  loom_command_pids=()\n";
   for (std::uint64_t ordinal = begin; ordinal != end; ++ordinal)
+    appendCommandWriterClosure(script, ordinal);
+  for (std::uint64_t ordinal = begin; ordinal != end; ++ordinal)
     appendCommandCollection(script, ordinal);
+  script += "fi\n";
   script += "fi\n";
   script += "fi\n";
 }
@@ -450,6 +530,9 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
       "loom_command_observations_partial=''\n"
       "loom_command_execution_directory=''\n"
       "loom_command_pids=()\n"
+      "loom_stdout_fd=''\n"
+      "loom_stderr_fd=''\n"
+      "loom_command_observations_fd=''\n"
       "loom_manifest_digest=" +
       shellQuote(manifestDigest) +
       "\n"
@@ -480,6 +563,40 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
   script += "  mv -f -- \"$loom_completion_partial\" \"$loom_completion\" "
             "|| exit " +
             launcherFailure + "\n}\n";
+  script +=
+      "loom_read_command_text() {\n"
+      "  local loom_read_fd=$1\n"
+      "  local loom_read_limit=$2\n"
+      "  local loom_size_before=''\n"
+      "  local loom_size_after=''\n"
+      "  [[ -f /proc/$$/fd/$loom_read_fd ]] || return 1\n"
+      "  loom_size_before=$(stat -Lc '%s' -- "
+      "\"/proc/$$/fd/$loom_read_fd\") || return 1\n"
+      "  [[ \"$loom_size_before\" =~ ^[0-9]+$ ]] || return 1\n"
+      "  (( loom_size_before <= loom_read_limit )) || return 1\n"
+      "  dd iflag=fullblock,count_bytes,nonblock count=\"$loom_size_before\" "
+      "status=none <&\"$loom_read_fd\" || return 1\n"
+      "  loom_size_after=$(stat -Lc '%s' -- "
+      "\"/proc/$$/fd/$loom_read_fd\") || return 1\n"
+      "  [[ \"$loom_size_after\" == \"$loom_size_before\" ]]\n"
+      "}\n"
+      "loom_copy_command_stream() {\n"
+      "  local loom_read_fd=$1\n"
+      "  local loom_write_fd=$2\n"
+      "  local loom_read_limit=$3\n"
+      "  local loom_size_before=''\n"
+      "  local loom_size_after=''\n"
+      "  [[ -f /proc/$$/fd/$loom_read_fd ]] || return 1\n"
+      "  loom_size_before=$(stat -Lc '%s' -- "
+      "\"/proc/$$/fd/$loom_read_fd\") || return 1\n"
+      "  [[ \"$loom_size_before\" =~ ^[0-9]+$ ]] || return 1\n"
+      "  (( loom_size_before <= loom_read_limit )) || return 1\n"
+      "  dd iflag=fullblock,count_bytes,nonblock count=\"$loom_size_before\" "
+      "status=none <&\"$loom_read_fd\" >&\"$loom_write_fd\" || return 1\n"
+      "  loom_size_after=$(stat -Lc '%s' -- "
+      "\"/proc/$$/fd/$loom_read_fd\") || return 1\n"
+      "  [[ \"$loom_size_after\" == \"$loom_size_before\" ]]\n"
+      "}\n";
   script += "if (( loom_cache_preflight == 0 && "
             "loom_cache_postflight == 0 )); then\n";
   script +=
@@ -516,7 +633,9 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
   script += "if ! command -v cat >/dev/null 2>&1 || "
             "! command -v sha256sum >/dev/null 2>&1 || "
             "! command -v find >/dev/null 2>&1 || "
-            "! command -v wc >/dev/null 2>&1; then\n";
+            "! command -v wc >/dev/null 2>&1 || "
+            "! command -v dd >/dev/null 2>&1 || "
+            "! command -v stat >/dev/null 2>&1; then\n";
   appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
                 InvocationLauncherExitCode::BundleContentMismatch);
   script += "fi\n";
@@ -619,32 +738,45 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
             shellQuote(kCommandExecutionDirectory) + "\n";
   script += "if ! rm -rf -- \"$loom_command_execution_directory\" || "
             "! mkdir -p -- \"$loom_command_execution_directory\" || "
-            "! : >" +
-            shellQuote(kStdoutPath) + " || ! : >" + shellQuote(kStderrPath) +
-            "; then\n";
+            "! exec {loom_stdout_fd}>" +
+            shellQuote(kStdoutPath) + " || ! exec {loom_stderr_fd}>" +
+            shellQuote(kStderrPath) + "; then\n";
   appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
                 InvocationLauncherExitCode::BundleContentMismatch);
   script += "fi\n";
-  script += "if ! printf 'loom.external_tool_command_observations 1.0\\n"
+  script += "if ! exec {loom_command_observations_fd}>"
+            "\"$loom_command_observations_partial\" || ! printf "
+            "'loom.external_tool_command_observations 1.0\\n"
             "manifest %s\\nattempt %s\\n' \"$loom_manifest_digest\" "
-            "\"$loom_attempt_token\" >\"$loom_command_observations_partial\"; "
-            "then\n";
+            "\"$loom_attempt_token\" "
+            ">&\"$loom_command_observations_fd\"; then\n";
   appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
                 InvocationLauncherExitCode::BundleContentMismatch);
   script += "fi\n";
   script += "loom_status=0\n";
+  script += "loom_schedule_infrastructure_failure=0\n";
   appendCommandSchedule(script, manifest);
-  script += "if ! printf 'end\\n' >>\"$loom_command_observations_partial\" "
+  script += "if ! exec {loom_stdout_fd}>&- || "
+            "! exec {loom_stderr_fd}>&- || "
+            "! printf 'end\\n' >&\"$loom_command_observations_fd\" || "
+            "! exec {loom_command_observations_fd}>&- "
             "|| ! mv -f -- \"$loom_command_observations_partial\" "
             "\"$loom_command_observations\"; then\n";
   appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
                 InvocationLauncherExitCode::BundleContentMismatch);
   script += "fi\n";
   script += "if (( loom_status != 0 )); then\n";
-  script += "  loom_publish_completion " +
+  script += "  if (( loom_schedule_infrastructure_failure != 0 )); then\n";
+  script += "    loom_publish_completion " +
+            shellQuote(completionStatusSpelling(
+                InvocationCompletionStatus::BundleContentMismatch)) +
+            " \"$loom_status\"\n";
+  script += "  else\n";
+  script += "    loom_publish_completion " +
             shellQuote(completionStatusSpelling(
                 InvocationCompletionStatus::ToolExit)) +
             " \"$loom_status\"\n";
+  script += "  fi\n";
   script += "  exit \"$loom_status\"\n";
   script += "fi\n";
   script += "loom_success_output_digests='['\n";

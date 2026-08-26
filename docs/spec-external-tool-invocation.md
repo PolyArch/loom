@@ -583,6 +583,13 @@ ordinal order. If several commands fail, the lowest failing command ordinal
 selects the tool exit code. A launcher infrastructure failure retains its
 typed launcher exit code and cannot be hidden by a tool failure.
 
+The launcher opens every chunk's ordinary command streams before starting any
+tool process and collects only through those retained descriptors. A tool
+cannot replace a scratch path with a link, pipe, device, or growing file to
+redirect or block collection. Status is bounded to four bytes, timing output
+to 64 KiB, and each command stdout or stderr stream to 1 GiB; exceeding a
+bound is a launcher infrastructure failure rather than a tool exit.
+
 Each started command produces an attempt-bound operational observation with
 its command ordinal, wall duration, and exit code. The observation file is
 published atomically and bound to both the manifest digest and fresh attempt

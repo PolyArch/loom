@@ -1775,6 +1775,13 @@ llvm::Expected<BlobDigest> beginExternalToolInvocationAttempt(
   if (!bundleRoot)
     return bundleRoot.takeError();
 
+  for (const llvm::StringRef operationalPath :
+       {kCompletionPath, kCommandObservationsPath}) {
+    if (::unlinkat(bundleRoot->get(), operationalPath.str().c_str(), 0) != 0 &&
+        errno != ENOENT)
+      return bundleSystemError("could not clear prior invocation state");
+  }
+
   llvm::SmallString<256> model(prepared.bundleRoot);
   llvm::sys::path::append(model, ".loom-attempt-%%%%%%%%%%%%%%%%");
   llvm::SmallString<256> unique;
@@ -1813,6 +1820,13 @@ llvm::Error validateExternalToolInvocationExecutionObservation(
   if (observation.manifestDigest != prepared.manifestDigest)
     return bundleError(
         "execution observation manifest differs from prepared invocation");
+  if (!llvm::all_of(
+          llvm::enumerate(observation.commandExecutions), [&](const auto row) {
+            return row.index() == row.value().commandOrdinal &&
+                   (observation.exitCode != 0 || row.value().exitCode == 0);
+          }))
+    return bundleError(
+        "execution observation command results are inconsistent");
   auto bundle = openPreparedBundle(prepared);
   if (!bundle)
     return bundle.takeError();
