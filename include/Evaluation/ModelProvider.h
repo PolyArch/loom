@@ -67,14 +67,15 @@ public:
 
 private:
   EvaluationModelPreparedInvocation(
-      ArtifactRootReference request,
+      ArtifactRootReference request, CaseArtifactResolution resolution,
       external_tool::PreparedExternalToolInvocation externalInvocation,
       std::shared_ptr<const EvaluationModelInvocationContext> context)
-      : request_(std::move(request)),
+      : request_(std::move(request)), resolution_(std::move(resolution)),
         externalInvocation_(std::move(externalInvocation)),
         context_(std::move(context)) {}
 
   ArtifactRootReference request_;
+  CaseArtifactResolution resolution_;
   external_tool::PreparedExternalToolInvocation externalInvocation_;
   std::shared_ptr<const EvaluationModelInvocationContext> context_;
 

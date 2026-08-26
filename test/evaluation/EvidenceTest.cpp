@@ -1188,6 +1188,21 @@ void externalInvocationContextSpansPrepareAndImport() {
               invocationContextProbe.importContextIdentity == preparedIdentity,
           "live import did not reuse the prepare context");
 
+  const CanonicalSemanticBytes unrelatedBytes(std::vector<std::uint8_t>{0x52});
+  const ArtifactIdentity unrelatedIdentity =
+      takeExpected(__func__, store.put(subjectSchema, unrelatedBytes));
+  const ArtifactRootReference unrelated{
+      subjectSchema.identity.str(), subjectSchema.version, unrelatedIdentity};
+  const CaseArtifactResolution otherResolution = takeExpected(
+      __func__,
+      CaseArtifactResolution::get({{subjectArtifact(), {}}, {unrelated, {}}}));
+  expectErrorContains(__func__,
+                      importEvaluationModelInvocation(request, otherResolution,
+                                                      *live, store, blobs),
+                      "another artifact resolution");
+  require(__func__, invocationContextProbe.activationCount == 2,
+          "foreign resolution activated the retained context");
+
   (void)takeExpected(__func__, importEvaluationModelInvocation(
                                    request, resolution,
                                    live->externalInvocation(), store, blobs));

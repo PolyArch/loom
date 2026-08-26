@@ -41,16 +41,22 @@ namespace detail {
 
 struct EvaluationModelPreparedInvocationBuilder final {
   static EvaluationModelPreparedInvocation
-  create(ArtifactRootReference request,
+  create(ArtifactRootReference request, CaseArtifactResolution resolution,
          external_tool::PreparedExternalToolInvocation externalInvocation,
          std::shared_ptr<const EvaluationModelInvocationContext> context) {
     return EvaluationModelPreparedInvocation(
-        std::move(request), std::move(externalInvocation), std::move(context));
+        std::move(request), std::move(resolution),
+        std::move(externalInvocation), std::move(context));
   }
 
   static const ArtifactRootReference &
   request(const EvaluationModelPreparedInvocation &prepared) {
     return prepared.request_;
+  }
+
+  static const CaseArtifactResolution &
+  resolution(const EvaluationModelPreparedInvocation &prepared) {
+    return prepared.resolution_;
   }
 
   static const std::shared_ptr<const EvaluationModelInvocationContext> &
@@ -280,8 +286,8 @@ llvm::Expected<EvaluationModelPreparation> prepareEvaluationModelInvocation(
               &*preparation))
     return EvaluationModelPreparation{
         detail::EvaluationModelPreparedInvocationBuilder::create(
-            evaluationRequestReference(request), std::move(*prepared),
-            std::move(*invocationContext))};
+            evaluationRequestReference(request), resolution,
+            std::move(*prepared), std::move(*invocationContext))};
 
   auto evidence = detail::EvaluationEvidenceBuilder::getForVerifiedRequest(
       request, emptyOutputBindings(*descriptor),
@@ -315,7 +321,8 @@ bindPreparedEvaluationModelInvocation(
   if (!context)
     return context.takeError();
   return detail::EvaluationModelPreparedInvocationBuilder::create(
-      evaluationRequestReference(request), prepared, std::move(*context));
+      evaluationRequestReference(request), resolution, prepared,
+      std::move(*context));
 }
 
 llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
@@ -335,6 +342,10 @@ llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
   if (detail::EvaluationModelPreparedInvocationBuilder::request(prepared) !=
       evaluationRequestReference(request))
     return invalid("live prepared invocation belongs to another Request");
+  if (detail::EvaluationModelPreparedInvocationBuilder::resolution(prepared) !=
+      resolution)
+    return invalid(
+        "live prepared invocation belongs to another artifact resolution");
   auto provider = externalProvider(request);
   if (!provider)
     return provider.takeError();
