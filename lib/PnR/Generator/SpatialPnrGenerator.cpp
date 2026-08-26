@@ -222,8 +222,7 @@ void emitInvocationExecutionStatistics(
     const SpatialPnrWorkerAllocation &allocation,
     const SpatialActiveProblemStatistics &problemStatistics,
     ExecutionResourceBudget executionBudget,
-    const ExecutionResourceTracker &resources,
-    bool preparedSeedHandoff) {
+    const ExecutionResourceTracker &resources, bool preparedSeedHandoff) {
   if (!mapping_debug::enabled(mapping_debug::Level::Summary))
     return;
   const ExecutionResourceStatistics observation = resources.observe();
@@ -922,6 +921,17 @@ SpatialRestartResult runSpatialRestartImpl(
     }
     if (!closureFailure) {
       finalClosureRequired = false;
+      if (seed->candidate->hasTransportClosureViolation()) {
+        if (!exactRepairEnabled)
+          return {SpatialRestartDisposition::Incomplete,
+                  std::move(accounting),
+                  nullptr,
+                  false,
+                  InternalSpatialPnrGenerationReason::FinalClosure,
+                  "final routing closure retained a transport violation while "
+                  "exact repair is disabled"};
+        transportRepairRequested = true;
+      }
       continue;
     }
 
@@ -970,15 +980,14 @@ SpatialRestartResult runSpatialRestartImpl(
           {}};
 }
 
-SpatialRestartResult
-runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
-                  std::uint32_t attempt,
-                  ExecutionControlView executionControl,
-                  SpatialPathFinderSeedHandoffHandle preparedSeedHandoff =
-                      nullptr) {
+SpatialRestartResult runSpatialRestart(
+    const FrozenSpatialPnrProblemHandle &problem, std::uint32_t attempt,
+    ExecutionControlView executionControl,
+    SpatialPathFinderSeedHandoffHandle preparedSeedHandoff = nullptr) {
   SpatialRestartScratch scratch;
-  SpatialRestartResult result = runSpatialRestartImpl(
-      problem, attempt, executionControl, scratch, std::move(preparedSeedHandoff));
+  SpatialRestartResult result =
+      runSpatialRestartImpl(problem, attempt, executionControl, scratch,
+                            std::move(preparedSeedHandoff));
   result.workerScratchRetainedBytes = scratch.retainedStorageBytes();
   return result;
 }
@@ -1406,8 +1415,7 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
       ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
   const bool serialPrefix = firstVerifiedCandidate;
   if (inputs.preparedCanonicalSeed) {
-    const SpatialPathFinderSeedHandoff &handoff =
-        *inputs.preparedCanonicalSeed;
+    const SpatialPathFinderSeedHandoff &handoff = *inputs.preparedCanonicalSeed;
     if (firstVerifiedCandidate || handoff.attemptOrdinal != 0 ||
         !handoff.problemCacheKey ||
         *handoff.problemCacheKey != (*problem)->cacheKey() ||
