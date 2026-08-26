@@ -207,6 +207,8 @@ class ProcessExecution:
 @dataclass(frozen=True)
 class ExecutionMatrixMeasurement:
     cell: str
+    attempt: str
+    invocation: str
     work_fingerprint: str
     config_fingerprint: str
     gem5_ticks: int | None
@@ -396,6 +398,8 @@ def execute_process(
 _MEASUREMENT_FIELDS = {
     "schema",
     "cell",
+    "attempt",
+    "invocation",
     "work_fingerprint",
     "config_fingerprint",
     "accelerator_reference_cycles",
@@ -408,7 +412,7 @@ _MEASUREMENT_FIELDS = {
     "measurement_source",
     "rss_scope",
 }
-_MEASUREMENT_SCHEMA = "loom.paired_simulation_measurement.1"
+_MEASUREMENT_SCHEMA = "loom.paired_simulation_measurement.2"
 _MEASUREMENT_PREFIX = "paired-simulation "
 
 
@@ -449,6 +453,15 @@ def _parse_measurement_row(row: str, expected_cell: str) -> ExecutionMatrixMeasu
     if expected_cell not in {"paired-spatial-cgra", "paired-system-cgra"}:
         raise ValueError("measurement cell is outside the paired CGRA domain")
 
+    expected_attempt = (
+        "diagnostic" if expected_cell == "paired-system-cgra" else "ordinary"
+    )
+    if (
+        fields["attempt"] != expected_attempt
+        or fields["invocation"] != expected_cell
+    ):
+        raise ValueError("paired measurement has the wrong attempt provenance")
+
     work_fingerprint = _parse_fingerprint(fields["work_fingerprint"], "work")
     config_fingerprint = _parse_fingerprint(fields["config_fingerprint"], "config")
     cycles = _parse_u64(fields["accelerator_reference_cycles"])
@@ -484,6 +497,8 @@ def _parse_measurement_row(row: str, expected_cell: str) -> ExecutionMatrixMeasu
 
     return ExecutionMatrixMeasurement(
         cell=expected_cell,
+        attempt=expected_attempt,
+        invocation=expected_cell,
         work_fingerprint=work_fingerprint,
         config_fingerprint=config_fingerprint,
         gem5_ticks=gem5_ticks,
@@ -731,6 +746,8 @@ def _measurement_json(
         return None
     return {
         "cell": measurement.cell,
+        "attempt": measurement.attempt,
+        "invocation": measurement.invocation,
         "work_fingerprint": measurement.work_fingerprint,
         "config_fingerprint": measurement.config_fingerprint,
         "accelerator_reference_cycles": measurement.timing.reference_cycles,
