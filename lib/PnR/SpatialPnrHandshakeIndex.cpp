@@ -814,6 +814,7 @@ private:
       using ProjectionArcKey = std::pair<std::string, std::string>;
 
       std::set<std::string> nodeKeys;
+      std::map<std::string, std::optional<HandshakeSignalRef>> nodeSignals;
       std::set<ProjectionArcKey> arcKeys;
       std::vector<ProjectionArcKey> fixedArcKeys;
       std::vector<std::vector<ProjectionArcKey>> fragmentArcKeys(
@@ -825,6 +826,9 @@ private:
                              detail::nodeKey(identity.destination)};
         nodeKeys.insert(key.first);
         nodeKeys.insert(key.second);
+        nodeSignals.try_emplace(key.first, identity.source.boundarySignal);
+        nodeSignals.try_emplace(key.second,
+                                identity.destination.boundarySignal);
         arcKeys.insert(key);
         destination.push_back(std::move(key));
       };
@@ -880,11 +884,16 @@ private:
                          fixedArcKeys.end());
 
       std::map<std::string, PnrIndex> nodeOrdinals;
+      result_.projectionNodeSignals_.reserve(nodeKeys.size());
       for (const std::string &key : nodeKeys) {
         auto ordinal = checked(projectionNodeIndexContext, nodeOrdinals.size());
         if (!ordinal)
           return ordinal.takeError();
         nodeOrdinals.emplace(key, *ordinal);
+        const auto signal = nodeSignals.find(key);
+        if (signal == nodeSignals.end())
+          return invalid("handshake projection node has no retained signal");
+        result_.projectionNodeSignals_.push_back(signal->second);
       }
       auto nodeCount = checked(projectionNodeIndexContext, nodeOrdinals.size());
       if (!nodeCount)
