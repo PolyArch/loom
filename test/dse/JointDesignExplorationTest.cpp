@@ -18,6 +18,7 @@
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/ProductionRegistry.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -314,6 +315,10 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                               bool runTransportRepair,
                               bool runHardwareQualityPromotion,
                               llvm::StringRef mutationFamily) {
+  // One import session for the whole anchor, matching what the loom-dse and
+  // loom-system-run entry points install; nested production sessions defer to
+  // it through ReuseEnclosing.
+  loom::fabric::FabricArtifactImportSession fabricImportSession;
   TemporaryDirectory temporary;
   llvm::SmallString<128> blobPath(temporary.path());
   llvm::sys::path::append(blobPath, "blobs");
