@@ -25,6 +25,16 @@
 # RUN:     %S/../../examples/fu-reverse-synthesis/integer-add-sub.mlir \
 # RUN:   --fu-reverse-synthesis-evidence %t/independent.json \
 # RUN:   2> %t/independent.log
+# RUN: mkdir -p %t/incomplete-run
+# RUN: not loom-dse --config %t/config.json --artifact-store %t/artifacts \
+# RUN:   --blob-store %t/blobs --run-root %t/incomplete-run \
+# RUN:   --producer-build loom.test.fu_reverse_synthesis_application.v1 \
+# RUN:   --workers 1 --site-cpu 1 --maximum-dispatches 1 \
+# RUN:   --progress-jsonl %t/incomplete-progress.jsonl \
+# RUN:   --fu-reverse-synthesis-dataflow \
+# RUN:     %S/../../examples/fu-reverse-synthesis/integer-add-sub.mlir \
+# RUN:   --fu-reverse-synthesis-evidence %t/incomplete.json 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=INCOMPLETE
 # RUN: rm -rf %t/negative && mkdir -p %t/negative/artifacts %t/negative/blobs
 # RUN: not loom-dse --config %t/config.json \
 # RUN:   --artifact-store %t/negative/artifacts --blob-store %t/negative/blobs \
@@ -49,11 +59,26 @@
 # RUN:     %S/Inputs/fu_reverse_synthesis_overflow.mlir \
 # RUN:   --fu-reverse-synthesis-evidence %t/negative/overflow.json 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=OVERFLOW
+# RUN: not loom-dse --config %t/config.json \
+# RUN:   --artifact-store %t/negative/artifacts --blob-store %t/negative/blobs \
+# RUN:   --run-root %t/negative/run-select \
+# RUN:   --producer-build loom.test.negative.v1 \
+# RUN:   --fu-reverse-synthesis-dataflow \
+# RUN:     %S/Inputs/fu_reverse_synthesis_select.mlir \
+# RUN:   --fu-reverse-synthesis-evidence %t/negative/select.json 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=SELECT
 # RUN: %python %S/verify_fu_reverse_synthesis_evidence.py \
-# RUN:   %t/initial.json %t/replay.json %t/independent.json \
+# RUN:   %t/initial.json %t/replay.json %t/independent.json %t/incomplete.json \
 # RUN:   %t/negative/multiply.json %t/negative/math.json \
-# RUN:   %t/negative/overflow.json
+# RUN:   %t/negative/overflow.json %t/negative/select.json
+# RUN: %python %S/../../scripts/generate-loom-evidence-manifest.py \
+# RUN:   --repo-root %S/../.. --input reverse=%t/initial.json \
+# RUN:   --input rejection=%t/negative/select.json --output %t/manifest.json
+# RUN: %python %S/verify_fu_reverse_synthesis_evidence.py \
+# RUN:   --manifest %t/manifest.json %t/initial.json %t/negative/select.json
 
+# INCOMPLETE: campaign_result=incomplete
 # MULTIPLY: fu_reverse_synthesis_failure=unsupported_actor_schema
 # MATH: fu_reverse_synthesis_failure=unsupported_actor_schema
 # OVERFLOW: fu_reverse_synthesis_failure=unsupported_actor_projection
+# SELECT: fu_reverse_synthesis_failure=unsupported_actor_schema

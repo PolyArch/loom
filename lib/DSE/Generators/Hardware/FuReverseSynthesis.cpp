@@ -442,9 +442,8 @@ materializeMapping(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   if (const auto *generated =
           std::get_if<::loom::mapping::GeneratedTechMappings>(&outcome)) {
     if (generated->candidates.empty())
-      return MappingMaterializationAttempt{
-          std::nullopt, FuReverseSynthesisFailure::MappingInfeasible,
-          "TechMapping produced no coverage candidate"};
+      return failure(FuReverseSynthesisFailure::MappingInternal,
+                     "TechMapping returned an empty Generated outcome");
     auto imported = ::loom::mapping::importTechMapping(
         generated->candidates.front(), store);
     if (!imported)
@@ -455,9 +454,9 @@ materializeMapping(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   }
   if (std::holds_alternative<::loom::mapping::ProvenInfeasibleTechMapping>(
           outcome))
-    return MappingMaterializationAttempt{
-        std::nullopt, FuReverseSynthesisFailure::MappingInfeasible,
-        "TechMapping proved the synthesized FU infeasible"};
+    return failure(FuReverseSynthesisFailure::MappingInternal,
+                   "TechMapping infeasibility contradicts the synthesized "
+                   "FU coverage witness");
   if (const auto *interrupted =
           std::get_if<::loom::mapping::InterruptedTechMappingGeneration>(
               &outcome)) {

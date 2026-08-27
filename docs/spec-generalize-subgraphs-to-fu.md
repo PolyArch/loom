@@ -227,17 +227,31 @@ those selections.
 
 `loom-dse --fu-reverse-synthesis-dataflow` is the public file-to-artifact
 caller for this workflow. It publishes the finalized canonical Dataflow,
-authors the ordinary resolved five-node plan, and emits the derived
-`loom.fu_reverse_synthesis.workflow_evidence` JSON projection. Reusing the
-same immutable stores, configuration, producer identity, input, and journal
-root must retain every projected Fabric, Mapping, ConfigurationABI, and
-portable RTL identity while reporting zero newly dispatched Generate owners.
-The imported InvocationManifest outcome solely selects
-`completed_selection`, `completed_no_feasible_candidate`, or `incomplete`;
-only the first disposition carries a complete candidate root projection.
-Unsupported operations and incomplete implementation constraints are rejected
-by `verifyScalarIntegerAddSubFuSynthesisDomain` before plan publication with a
-closed `FuReverseSynthesisFailure` value.
+authors the ordinary resolved five-node plan, and emits a removable JSON
+projection marked by `projection_kind = fu_reverse_synthesis_workflow`. The
+projection is not an Artifact schema or a second workflow owner. A successful
+or incomplete execution projects its imported InvocationManifest receipt and
+typed outcome; a preflight rejection instead projects the exact Dataflow and
+ResolvedConfig roots plus a closed `FuReverseSynthesisFailure`, without
+inventing an InvocationManifest.
+
+Reusing the same immutable stores, configuration, producer identity, input,
+and journal root must retain every projected Fabric, Mapping,
+ConfigurationABI, and portable RTL identity while reporting zero newly
+dispatched Generate owners. Recomputing under a distinct journal root must
+dispatch all five Generate owners and reproduce the same required output
+roots. The imported InvocationManifest outcome solely selects
+`completed_selection`, `completed_no_feasible_candidate`, or `incomplete`.
+The workflow projection separately names each required output and any empty
+slot; it does not reinterpret an empty slot as proof of infeasibility.
+Incomplete outcomes retain their exact reason, unsatisfied obligations, usable
+Artifact roots, and Evidence roots from the InvocationManifest owner.
+
+The current scalar add/sub profile does not admit software selector actors.
+Selector-bearing graphs and unsupported operations are rejected before plan
+publication with a closed `FuReverseSynthesisFailure` and durable preflight
+projection. This bounded profile therefore does not claim the general
+selector-preservation closure described above.
 
 ## Determinism And Diagnostics
 

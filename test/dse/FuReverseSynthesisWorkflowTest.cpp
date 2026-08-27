@@ -341,11 +341,11 @@ int main(int argc, char **argv) {
   require(noSystem && noSystem->resolve(workflow.systemMappings()).empty() &&
               !noSystem->resolve(workflow.portableRtlImplementations()).empty(),
           "terminal-output fixture did not isolate empty System PnR");
-  require(
-      take(
-          loom::dse::classifyFuReverseSynthesisWorkflow(workflow, *noSystem)) ==
-          loom::dse::FuReverseSynthesisWorkflowDisposition::NoFeasibleCandidate,
-      "empty System PnR was classified as a complete candidate");
+  require(take(loom::dse::classifyFuReverseSynthesisWorkflow(workflow,
+                                                             *noSystem)) ==
+              loom::dse::FuReverseSynthesisWorkflowDisposition::
+                  RequiredOutputMissing,
+          "empty System PnR was classified as a complete candidate");
   auto genericOutcome = take(
       loom::dse::projectDsePlanInvocationOutcome(configView, noSystemOutcome));
   require(std::holds_alternative<loom::dse::InvocationCompletedSelection>(

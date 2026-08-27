@@ -89,7 +89,7 @@ struct FuReverseSynthesisWorkflowArtifacts final {
 
 enum class FuReverseSynthesisWorkflowDisposition : std::uint8_t {
   CompleteCandidate,
-  NoFeasibleCandidate,
+  RequiredOutputMissing,
 };
 
 /// Requires every admitted graph to be reachable from at least one root

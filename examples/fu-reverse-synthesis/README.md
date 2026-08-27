@@ -20,6 +20,14 @@ loom-dse \
 ```
 
 Repeating the command with the same immutable inputs and run root performs
-journal replay. The evidence projection records exact Dataflow, Fabric,
-TechMapping, SpatialMapping, SystemMapping, ConfigurationABI, and portable RTL
-roots together with the current dispatch count.
+journal replay with no new Generate dispatch. Running the same command with a
+new run root recomputes all five Generate owners. Both executions must retain
+the exact Dataflow, Fabric, TechMapping, SpatialMapping, SystemMapping,
+ConfigurationABI, and portable RTL roots.
+
+The evidence file is a removable projection, not an Artifact schema. It
+projects the InvocationManifest only after a real invocation exists. A typed
+preflight rejection still writes the exact Dataflow and ResolvedConfig roots
+but does not fabricate a manifest receipt. This bounded example admits direct
+scalar i32 add/sub graphs only; selector-bearing graphs remain an explicit
+typed unsupported domain.

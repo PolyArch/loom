@@ -305,7 +305,7 @@ classifyFuReverseSynthesisWorkflow(
         return !execution.hasOutput(output) ||
                execution.resolve(output).empty();
       }))
-    return FuReverseSynthesisWorkflowDisposition::NoFeasibleCandidate;
+    return FuReverseSynthesisWorkflowDisposition::RequiredOutputMissing;
   return FuReverseSynthesisWorkflowDisposition::CompleteCandidate;
 }
 
