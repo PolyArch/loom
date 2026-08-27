@@ -1,1 +1,4 @@
-# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-dse-joint-design-exploration-test mutation-matrix=acc-core-add
+# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-dse-joint-design-exploration-test mutation-matrix=acc-core-add 2> %t.log
+# RUN: %python %S/../../scripts/generate-loom-evidence-manifest.py \
+# RUN:   --repo-root %S/../.. --input mutation=%t.log --output %t.manifest.json
+# RUN: %python %S/verify_mutation_family_manifest.py %t.manifest.json system_acc_core

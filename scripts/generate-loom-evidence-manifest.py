@@ -861,6 +861,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
             "spatial_operand_queue_runtime_feedback",
             "spatial_fifo_runtime_feedback",
             "spatial_fifo_hardware_repair",
+            "joint_hardware_mutation_repair",
         }:
             migration_observations.append(
                 {
@@ -891,6 +892,19 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                         "invalidated_tech_mappings",
                         "invalidated_spatial_mappings",
                         "mapping_rebase_work",
+                        "families",
+                        "child_system",
+                        "system_mapping_reuse_disposition",
+                        "rebase_failure_count",
+                        "cold_comparison_baseline",
+                        "cold_mapping_count",
+                        "incremental_mapping_count",
+                        "cold_wall_time_ns",
+                        "incremental_wall_time_ns",
+                        "cold_verifier_retained_bytes",
+                        "incremental_verifier_retained_bytes",
+                        "cold_verifier_work",
+                        "incremental_verifier_work",
                         "acc_core_count",
                         "system_mapping_count",
                         "candidate_ordinal",
