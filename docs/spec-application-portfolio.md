@@ -483,3 +483,23 @@ manifest row, reports every tier independently, and retains null unsupported
 QoR dimensions as typed residuals. Additional runtime profile shapes require
 production Evidence from their existing runtime, Mapping, and Evaluation
 owners before they can be selected.
+
+## Implementation Responsibility Review
+
+`lib/Application/BuildDiagnostics.cpp` is the sole presentation owner of the
+three versioned pair envelopes: the pair decision, the pair evidence join,
+and the pre-admission pair disposition. The semantic derivation of the pair
+decision record and its disposition vocabulary live in `PairDecision.cpp`,
+which contains no serialization; the build transaction in `Build.cpp`
+decides when a decision is terminal and this owner decides how it is
+rendered; the visualization bundle embeds the same pair-decision projection
+verbatim rather than re-encoding it, and two independent verification
+harnesses pin that byte identity. The envelopes share one leaf encoder set
+and one quality-provenance encoding, so an envelope-line split would either
+duplicate the schema authority or add a pass-through encoding layer; the
+file therefore stays the single envelope owner. The recorded consolidation
+obligation runs in the other direction: the local candidate, materialized,
+work-counter, and planning-record serializers duplicate the DSE-owned
+serializers in `PreMappingEvidence` and have drifted on the temporal-witness
+shape; the duplicate copies must be retired in favor of the DSE owner after
+a deliberate decision on the canonical witness field shape.

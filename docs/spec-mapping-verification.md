@@ -670,3 +670,24 @@ or a capacity/reservation mismatch is never `Exact`. A full queue is not a
 closed wait by itself: `ProvenClosedWaitSet` additionally requires the exact
 blocked publication-to-queue edge to belong to the reconstructed transfer or
 actor wait cycle.
+
+## Implementation Responsibility Review
+
+`lib/Mapping/Artifact/MappingProgressAnalysis.cpp` owns the single wait-for
+closure algorithm that search-time System progress and strict SystemMapping
+verification must both call, together with the frozen event-causality index
+it consumes and the one spelling of every closure reason. The closure
+projection input is owned by `SystemMappingClosureProjection.cpp`, physical
+durable-boundary and Temporal PE facts by
+`SpatialPhysicalDemandProjection.cpp`, Presburger cell intersection by
+`SystemPresburger.cpp`, and capacity inventories by the capacity
+verification owners. The review decision is two extractions with existing
+independent consumers: the Dataflow progress basis (the actor dependency
+graph, initialized-feedback removal, and residual cycle witness), which the
+Spatial and System PnR problem owners already consume directly, and the
+Spatial route progress family, which composes route topology with the
+physical boundary facts and has its own legality rules. The projection
+adapter, the closure kernel, and the reason taxonomy stay together because
+one projection and one algorithm is itself the contract; a second proof
+authority is forbidden. The Spatial-named error prefix currently attached to
+System-path failures is a known mislabel to correct at the owner.

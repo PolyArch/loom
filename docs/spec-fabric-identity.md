@@ -988,6 +988,27 @@ Anchor-level tests cover:
 Tests do not enumerate every owner/ordinal pair, freeze data structure, printer
 whitespace, or native PnR index width.
 
+## Implementation Responsibility Review
+
+`lib/Fabric/Identity/FabricRefImport.cpp` owns the strict-import construction
+gate `buildFabricArtifactView` together with the artifact-view accessors that
+depend on the canonical relation ordering it establishes. The reference
+catalog, spelling, byte encoding, and per-family validation live in the
+`FabricRefs`/`FabricRefText`/`FabricRefBytes`/`FabricRefValidation` owners;
+boundary transport canonicalization, traversal projection, and Physical Tag
+projection are already extracted helpers; and several accessor families
+already live in sibling translation units such as `FabricModuleView.cpp` and
+`FabricSystemServiceView.cpp`. The construction gate stays whole: it is the
+sole writer of the view storage, it reads through a view over storage it is
+still populating, and any phase-shaped extraction would need a mutable
+storage handle or a partial-view type that the artifact specification's
+sealed-view rule forbids. The accepted extractions are pure translation-unit
+partitions into existing owners: the System effective-hardware-domain
+resolution moves beside the other System view accessors, and the boundary
+tag-continuity classification moves into the Physical Tag projection owner
+together with the transport data-path decoder it shares. Further extraction
+is warranted only when a new independently testable semantic owner appears.
+
 ## Related Specifications
 
 * `docs/spec-fabric-artifact.md` owns root variants, direct dependencies,

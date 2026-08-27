@@ -3514,7 +3514,44 @@ their semantics. Builtin search ranges and heuristics are resolved generator
 configuration, not new persistent schema families. Candidate outputs are
 deduplicated by their normal Fabric or HardwareImplementation identity.
 
-## Integration Boundaries
+### Implementation Responsibility Review
+
+`lib/DSE/JointHardwareReopen.cpp` remains the joint stopping-and-publication
+owner after review. Feedback selection, growth derivation and
+materialization, the Tech gate, and seed binding live in
+`JointHardwareReopenCandidate.cpp`; manifest publication and single-plan
+execution live in `JointHardwareReopenExecution.cpp`; runtime-witness repair
+lives in `JointHardwareRuntimeRepair.cpp`; Mapping reuse lives in
+`JointMappingMigration.cpp`; and post-publication quality selection lives in
+`JointRepairQuality.cpp`. What remains is one transaction: one consumed
+site-capacity scheduler, one scope-installed PnR derived-context session, one
+reserve/consume probe ledger whose cancellation-versus-rejection law the
+terminal composer closes, one hardware-parent budget and one promotion memo
+shared by the failed-candidate and verified-parent rungs, and one publication
+point that is the sole writer of the execution summary. Every candidate
+extraction would separate the ledger writer from the ledger closer or add a
+controller-state pass-through, so the file stays whole; the accepted
+follow-ups are relocating the verified-parent spectrum walk beside the other
+candidate helpers and collapsing the repeated execution-summary counter fold
+into one shared accumulator.
+
+`lib/DSE/Generators/Compiler/PreMappingExploration.cpp` is the bounded
+pre-Mapping frontier controller. Coordinate spectrum generation, frontier
+ranking, and work-accounting validation live in `PreMappingFrontier.cpp`;
+evidence serialization lives in `PreMappingEvidence.cpp`; each candidate
+generator owns its own descriptor and configuration projection. The retained
+core shares one mutable work ledger, one candidate inventory whose ordinals
+are the cross-layer join key, one parent arena aliased by raw pointers, and
+the invariant that every exit boundary settles the ledger and snapshots the
+inventory before publishing. The review decision is one split: the compiler
+DSE plan composition and Evidence-obligation contract (obligation
+canonicalization, objective catalog, quality gates, baseline acquisition, and
+the ownership and Dataflow candidate explorations) transfers no mutable
+controller state and is an independently testable owner under the resolved
+DSE policy sections above, so it moves to a sibling translation unit; the
+ledger settlement arithmetic joins the existing accounting owner in
+`PreMappingFrontier.cpp`. The beam driver, planning inventory, checkpoints,
+and completeness derivation stay together.
 
 ### Mapping
 
