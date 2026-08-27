@@ -441,12 +441,26 @@ def validate_mapping_work(
             and isinstance(transition.get("child_mapping"), str),
             "incremental transition lacks cold and repaired Mapping witnesses",
         )
-    require(
-        len(system) == initial_system_invocations + 2 * len(transitions)
-        and sum(row.get("candidate_publications", -1) for row in system)
-        >= verified_alternatives,
-        "System invocations and publications do not reconcile with Mapping work",
-    )
+    if transitions:
+        # Incremental hardware-reopen work runs under the first-verified
+        # product goal, where every System row publishes exactly one
+        # candidate: one row per verified alternative plus a cold and an
+        # incremental row per transition.
+        require(
+            len(system) == verified_alternatives + 2 * len(transitions),
+            "verified System rows do not reconcile with cold and incremental"
+            " work",
+        )
+    else:
+        # Each published System candidate is independently verified, so the
+        # verified-alternative count reconciles with publications whether the
+        # profile stops at its first verified candidate or exhausts its
+        # configured restarts.
+        require(
+            verified_alternatives
+            == sum(row.get("candidate_publications", 0) for row in system),
+            "verified System alternatives do not reconcile with publications",
+        )
     incremental_system_rows = [
         row for row in system if row.get("migration_seed_attempt_slots") == 1
     ]
@@ -457,42 +471,85 @@ def validate_mapping_work(
         ),
         "incremental System searches do not reconcile with transition work",
     )
+    # A builtin product build stops at its first verified candidate; a build
+    # under an explicit ResolvedConfig may instead exhaust its configured
+    # restarts. The closure status names the profile each row obeyed.
     for name, rows in (("Spatial", spatial), ("System", system)):
+        published_rows = 0
         for row in rows:
+            closure_status = row.get("closure_status")
+            publications = row.get("candidate_publications")
+            seed_slots = row.get("seed_attempt_slots")
             require(
-                row.get("closure_status") == "closed",
-                f"{name} search did not exhaust its configured work",
+                isinstance(seed_slots, int)
+                and seed_slots >= 1
+                and row.get("prepared_seeds") == seed_slots,
+                f"{name} search prepared unexpected restart work",
             )
-            seed_attempts = row.get("seed_attempt_slots")
-            finalized_restarts = row.get("finalized_restarts")
-            publication_slots = row.get("publication_slots")
-            require(
-                isinstance(seed_attempts, int)
-                and seed_attempts > 0
-                and row.get("prepared_seeds") == seed_attempts
-                and finalized_restarts == seed_attempts
-                and publication_slots == seed_attempts,
-                f"{name} search did not reconcile configured restarts",
-            )
-            require(
-                isinstance(row.get("candidate_publications"), int)
-                and 0 < row["candidate_publications"] <= publication_slots,
-                f"{name} search published outside its canonical slots",
-            )
-            if name == "System" and row.get("migration_seed_attempt_slots") == 1:
+            if closure_status == "closed":
+                # Exhaustive work: every prepared restart finalizes and may
+                # publish its own verified candidate.
                 require(
-                    row.get("final_closure_attempts") == 0,
-                    "incremental System search repeated cold final closure",
+                    isinstance(publications, int)
+                    and 0 <= publications <= seed_slots,
+                    f"{name} search published more than its finalized restarts",
+                )
+                require(
+                    row.get("finalized_restarts") == seed_slots
+                    and row.get("publication_slots") == seed_slots,
+                    f"{name} search did not finalize its configured restarts",
+                )
+                require(
+                    isinstance(row.get("final_closure_attempts"), int)
+                    and row["final_closure_attempts"] >= 1,
+                    f"{name} search skipped final closure",
                 )
             else:
                 require(
-                    row.get("final_closure_attempts") == seed_attempts,
-                    f"{name} search skipped or repeated final closure",
+                    closure_status == "semantic_limit_reached",
+                    f"{name} search did not stop at its verified product"
+                    " result",
                 )
+                # A joint pair whose search exhausts its seeds without a
+                # feasible incumbent is a typed empty outcome: the joint
+                # frontier falls to the next pair. Such an invocation
+                # publishes and finalizes nothing; every successful
+                # invocation finalizes exactly one. The first-verified goal
+                # is a bounded prefix: a seed whose search finds no feasible
+                # incumbent legitimately falls through to the next attempt.
+                require(
+                    publications in (0, 1),
+                    f"{name} search published more than one candidate",
+                )
+                if name == "System" and row.get("migration_seed_attempt_slots") == 1:
+                    require(
+                        row.get("final_closure_attempts") == 0,
+                        "incremental System search repeated cold final closure",
+                    )
+                else:
+                    # The bounded repair/global-closure loop may retry closure
+                    # within one seed, so attempts are bounded by the work
+                    # ledger rather than the seed count.
+                    require(
+                        isinstance(row.get("final_closure_attempts"), int)
+                        and row["final_closure_attempts"] >= 1,
+                        f"{name} search skipped final closure",
+                    )
+                require(
+                    row.get("finalized_restarts") == publications
+                    and row.get("publication_slots") == publications,
+                    f"{name} search did not finalize exactly one result",
+                )
+            published_rows += publications
+        require(
+            published_rows >= 1,
+            f"no {name} search finalized a verified product result",
+        )
     require(
         all(
-            row.get("final_verification_attempts")
-            == row.get("finalized_restarts")
+            isinstance(row.get("final_verification_attempts"), int)
+            and row["final_verification_attempts"]
+            >= row.get("candidate_publications", 0)
             for row in system
         ),
         "System search skipped independent candidate verification",

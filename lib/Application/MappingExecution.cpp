@@ -7,6 +7,7 @@
 #include "Common/BlobStore.h"
 #include "Common/MappingDebugLog.h"
 #include "DSE/JointHardwareReopen.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "PnR/PnrDerivedContext.h"
 
@@ -133,6 +134,16 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       ApplicationBuildOperation::MappingExecution);
   if (prepared.mappingAlternatives.empty())
     return invalid("Mapping execution has no software alternative");
+  // Mapping execution strict-imports the same Fabric roots once per
+  // alternative, per repair and per verification pass. One session scoped to
+  // the execution turns those repeats into cache hits; ReuseEnclosing keeps an
+  // outer session, such as an Application package, as the single owner.
+  fabric::FabricArtifactImportSession fabricImportSession;
+  llvm::scope_exit emitFabricImportStatistics([&] {
+    fabric::emitFabricArtifactImportSessionStatistics(
+        fabric::FabricArtifactImportVerificationDomain::SourceInvocation,
+        InvocationDiagnosticStage::SystemPnr, fabricImportSession.statistics());
+  });
   pnr::PnrDerivedContextSession pnrDerivedContextSession;
   llvm::scope_exit emitPnrDerivedContextSession([&] {
     const pnr::PnrDerivedContextSessionStatistics statistics =

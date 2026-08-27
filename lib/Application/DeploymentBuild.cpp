@@ -657,7 +657,10 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     return deployment.takeError();
   auto activationInputs = materializeApplicationActivationInputs(
       prepared.preMappingSourceProgram, prepared.preMappingWorkload,
-      prepared.preMappingRuntimeInput, *deployment, artifacts);
+      prepared.preMappingRuntimeInput, *deployment, artifacts,
+      prepared.portfolioInput
+          ? prepared.portfolioInput->input.profile.maximumSimulatedTicks
+          : std::nullopt);
   if (!activationInputs)
     return activationInputs.takeError();
 

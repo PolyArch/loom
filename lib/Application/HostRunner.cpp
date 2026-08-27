@@ -472,18 +472,21 @@ projectApplicationHostRunReportJson(const ApplicationHostRunReport &report) {
       {"path", report.unavailableSource
                    ? llvm::json::Value(report.unavailableSource->path)
                    : llvm::json::Value(nullptr)}};
+  llvm::json::Object profile{
+      {"warmup_samples", report.selection.input.profile.warmupSamples},
+      {"measured_samples", report.selection.input.profile.measuredSamples},
+      {"oracle_coverage",
+       toString(report.selection.input.profile.oracleCoverage)},
+      {"deadline_milliseconds",
+       report.selection.input.profile.deadlineMilliseconds}};
+  if (report.selection.input.profile.maximumSimulatedTicks)
+    profile["maximum_simulated_ticks"] =
+        *report.selection.input.profile.maximumSimulatedTicks;
   return llvm::json::Object{
       {"schema", ApplicationHostRunReport::schemaIdentity},
       {"version", ApplicationHostRunReport::schemaVersion},
       {"selection", projectSelectedApplicationInputJson(report.selection)},
-      {"profile",
-       llvm::json::Object{
-           {"warmup_samples", report.selection.input.profile.warmupSamples},
-           {"measured_samples", report.selection.input.profile.measuredSamples},
-           {"oracle_coverage",
-            toString(report.selection.input.profile.oracleCoverage)},
-           {"deadline_milliseconds",
-            report.selection.input.profile.deadlineMilliseconds}}},
+      {"profile", std::move(profile)},
       {"source_admission", std::move(sourceAdmission)},
       {"compile",
        llvm::json::Object{

@@ -2,6 +2,7 @@
 #define LOOM_LIB_FABRIC_ARTIFACT_FABRICARTIFACTIMPORTSESSIONINTERNAL_H
 
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Identity/FabricHandshake.h"
 
 #include "llvm/Support/Error.h"
 
@@ -49,6 +50,11 @@ public:
            std::uint64_t constructionNanoseconds);
   void abandon(const ArtifactRootReference &reference,
                std::uint64_t constructionNanoseconds);
+  std::shared_ptr<const FabricHandshakeContext>
+  lookupHandshakeContext(const ArtifactIdentity &fabric);
+  void retainHandshakeContext(
+      const ArtifactIdentity &fabric,
+      std::shared_ptr<const FabricHandshakeContext> context);
   FabricArtifactImportSessionStatistics statistics() const;
 
 private:
@@ -67,6 +73,15 @@ private:
       entries_;
   std::map<FabricArtifactImportSessionKey, std::thread::id, KeyLess>
       constructing_;
+  struct IdentityLess final {
+    bool operator()(const ArtifactIdentity &lhs,
+                    const ArtifactIdentity &rhs) const {
+      return lhs.bytes() < rhs.bytes();
+    }
+  };
+  std::map<ArtifactIdentity, std::shared_ptr<const FabricHandshakeContext>,
+           IdentityLess>
+      handshakeContexts_;
   FabricArtifactImportSessionStatistics statistics_;
 };
 

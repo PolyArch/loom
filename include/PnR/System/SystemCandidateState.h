@@ -1,6 +1,7 @@
 #ifndef LOOM_PNR_SYSTEM_SYSTEMCANDIDATESTATE_H
 #define LOOM_PNR_SYSTEM_SYSTEMCANDIDATESTATE_H
 
+#include "PnR/PnrWorkLedger.h"
 #include "PnR/System/SystemPnrProblem.h"
 #include "PnR/System/SystemRouteMigration.h"
 
@@ -340,49 +341,56 @@ private:
 };
 
 llvm::Expected<InitializedSystemCandidate>
-initializeCanonicalSystemCandidate(FrozenSystemPnrProblemHandle problem);
+initializeCanonicalSystemCandidate(FrozenSystemPnrProblemHandle problem,
+                                   PnrWorkLedgerView workLedger = {});
 
 llvm::Expected<InitializedSystemCandidate>
 initializeSystemCandidateAttempt(FrozenSystemPnrProblemHandle problem,
-                                 std::uint32_t attemptOrdinal);
+                                 std::uint32_t attemptOrdinal,
+                                 PnrWorkLedgerView workLedger = {});
 
 llvm::Expected<InitializedSystemCandidate>
 initializeSystemCandidateAttemptWithImportedCapacityClosure(
-    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal);
+    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal,
+    PnrWorkLedgerView workLedger = {});
 
 /// Searches the exact execution-binding relation for an assignment whose
 /// imported SpatialMapping demand fits its selected AccCore occurrences.
 /// System service routing is deliberately absent from this projection.
 llvm::Expected<SystemImportedCapacitySearchResult>
-searchSystemImportedCapacity(FrozenSystemPnrProblemHandle problem);
+searchSystemImportedCapacity(FrozenSystemPnrProblemHandle problem,
+                             PnrWorkLedgerView workLedger = {});
 
 llvm::Expected<InitializedSystemCandidate>
-initializeSystemCandidateWithFixedChoices(
-    FrozenSystemPnrProblemHandle problem,
-    llvm::ArrayRef<PnrIndex> fixedChoices);
+initializeSystemCandidateWithFixedChoices(FrozenSystemPnrProblemHandle problem,
+                                          llvm::ArrayRef<PnrIndex> fixedChoices,
+                                          PnrWorkLedgerView workLedger = {});
 
 llvm::Expected<InitializedSystemCandidate>
 initializeSystemCandidateWithFixedChoicesAndRoutes(
-    FrozenSystemPnrProblemHandle problem,
-    llvm::ArrayRef<PnrIndex> fixedChoices,
-    const SystemCandidateRouteSeed &routeSeed);
+    FrozenSystemPnrProblemHandle problem, llvm::ArrayRef<PnrIndex> fixedChoices,
+    const SystemCandidateRouteSeed &routeSeed,
+    PnrWorkLedgerView workLedger = {});
 
 llvm::Expected<InitializedSystemCandidate>
 initializeSystemCandidateWithReleasedChoices(
     FrozenSystemPnrProblemHandle problem, llvm::ArrayRef<PnrIndex> fixedChoices,
-    llvm::ArrayRef<PnrIndex> releasedChoices);
+    llvm::ArrayRef<PnrIndex> releasedChoices,
+    PnrWorkLedgerView workLedger = {});
 
 llvm::Expected<InitializedSystemCandidate>
 initializeSystemCandidateWithReleasedChoicesAndImportedCapacityClosure(
     FrozenSystemPnrProblemHandle problem, llvm::ArrayRef<PnrIndex> fixedChoices,
-    llvm::ArrayRef<PnrIndex> releasedChoices);
+    llvm::ArrayRef<PnrIndex> releasedChoices,
+    PnrWorkLedgerView workLedger = {});
 
 llvm::Expected<SystemCandidateStateHandle>
 initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
                           llvm::ArrayRef<PnrIndex> threadChoices,
                           llvm::ArrayRef<PnrIndex> graphChoices,
                           std::uint64_t *endpointExpansions = nullptr,
-                          std::uint64_t *negotiationIterations = nullptr);
+                          std::uint64_t *negotiationIterations = nullptr,
+                          PnrWorkLedgerView workLedger = {});
 
 } // namespace loom::pnr
 

@@ -38,6 +38,7 @@
 
 namespace loom::external_tool {
 
+char ExternalToolExecutionAdmissionStoppedError::ID = 0;
 char IncompleteExternalToolInvocationError::ID = 0;
 
 namespace {
@@ -1361,13 +1362,32 @@ BlobDigest contentDigest(llvm::StringRef contents) {
 
 llvm::Expected<std::pair<std::string, InvocationManifestData>>
 loadPreparedInvocationManifest(const PreparedExternalToolInvocation &prepared) {
-  auto bundle = openPreparedBundle(prepared);
-  if (!bundle)
-    return bundle.takeError();
-  auto manifest = parseManifest(bundle->manifestBytes);
+  auto root = openBundleRoot(prepared.bundleRoot);
+  if (!root)
+    return root.takeError();
+  return loadPreparedInvocationManifestFromRoot(prepared, root->get());
+}
+
+llvm::Expected<std::pair<std::string, InvocationManifestData>>
+loadPreparedInvocationManifestFromRoot(
+    const PreparedExternalToolInvocation &prepared, int bundleRoot) {
+  if (llvm::Error error = validateBundleRootSpelling(prepared.bundleRoot))
+    return std::move(error);
+  auto manifestBytes = readOrdinaryBundleFile(bundleRoot, kManifestName);
+  if (!manifestBytes)
+    return manifestBytes.takeError();
+  if (contentDigest(*manifestBytes) != prepared.manifestDigest)
+    return bundleError(
+        "invocation manifest does not match the prepared handle");
+  auto manifest = parseManifest(*manifestBytes);
   if (!manifest)
     return manifest.takeError();
-  return std::make_pair(std::move(bundle->manifestBytes), std::move(*manifest));
+  return std::make_pair(std::move(*manifestBytes), std::move(*manifest));
+}
+
+llvm::Expected<std::optional<InvocationCompletion>>
+loadOptionalInvocationCompletionFromRoot(int bundleRoot) {
+  return readOptionalCompletionFromRoot(bundleRoot);
 }
 
 llvm::Expected<BlobDigest> deriveExternalToolExecutionBindingDigest(
@@ -1680,54 +1700,20 @@ finalizeExternalToolInvocationBundle(
                                         contentDigest(manifestBytes)};
 }
 
-llvm::Expected<BlobDigest> beginExternalToolInvocationAttempt(
-    const PreparedExternalToolInvocation &prepared) {
-  auto bundleRoot = openBundleRoot(prepared.bundleRoot);
-  if (!bundleRoot)
-    return bundleRoot.takeError();
-
-  for (const llvm::StringRef operationalPath :
-       {kCompletionPath, kCommandObservationsPath}) {
-    if (::unlinkat(bundleRoot->get(), operationalPath.str().c_str(), 0) != 0 &&
-        errno != ENOENT)
-      return bundleSystemError("could not clear prior invocation state");
-  }
-
-  llvm::SmallString<256> model(prepared.bundleRoot);
-  llvm::sys::path::append(model, ".loom-attempt-%%%%%%%%%%%%%%%%");
-  llvm::SmallString<256> unique;
-  llvm::sys::fs::createUniquePath(model, unique, true);
-  std::vector<std::uint8_t> preimage;
-  preimage.insert(preimage.end(), prepared.manifestDigest.bytes().begin(),
-                  prepared.manifestDigest.bytes().end());
-  const llvm::StringRef root = prepared.bundleRoot;
-  preimage.insert(preimage.end(), root.bytes_begin(), root.bytes_end());
-  const llvm::StringRef uniqueSpelling = unique;
-  preimage.insert(preimage.end(), uniqueSpelling.bytes_begin(),
-                  uniqueSpelling.bytes_end());
-  const BlobDigest token = computeBlobDigest(preimage);
-
-  const std::filesystem::path destination =
-      std::filesystem::path(prepared.bundleRoot) / kAttemptTokenPath.str();
-  const std::filesystem::path temporary =
-      destination.string() + ".partial." + formatBlobDigestHex(token);
-  if (llvm::Error error =
-          writeFile(temporary, formatBlobDigestHex(token), false))
-    return std::move(error);
-  std::error_code publishError;
-  std::filesystem::rename(temporary, destination, publishError);
-  if (publishError) {
-    std::error_code ignored;
-    std::filesystem::remove(temporary, ignored);
-    return bundleError("could not publish execution attempt token: " +
-                       publishError.message());
-  }
-  return token;
-}
-
 llvm::Error validateExternalToolInvocationExecutionObservation(
     const PreparedExternalToolInvocation &prepared,
     const ExternalToolInvocationExecutionObservation &observation) {
+  auto bundle = openPreparedBundle(prepared);
+  if (!bundle)
+    return bundle.takeError();
+  return validateExternalToolInvocationExecutionObservationFromRoot(
+      prepared, observation, bundle->root.get());
+}
+
+llvm::Error validateExternalToolInvocationExecutionObservationFromRoot(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &observation,
+    int bundleRoot) {
   if (observation.manifestDigest != prepared.manifestDigest)
     return bundleError(
         "execution observation manifest differs from prepared invocation");
@@ -1738,10 +1724,13 @@ llvm::Error validateExternalToolInvocationExecutionObservation(
           }))
     return bundleError(
         "execution observation command results are inconsistent");
-  auto bundle = openPreparedBundle(prepared);
-  if (!bundle)
-    return bundle.takeError();
-  auto token = readAttemptTokenFromRoot(bundle->root.get());
+  auto manifest = readOrdinaryBundleFile(bundleRoot, kManifestName);
+  if (!manifest)
+    return manifest.takeError();
+  if (contentDigest(*manifest) != prepared.manifestDigest)
+    return bundleError(
+        "invocation manifest does not match the prepared handle");
+  auto token = readAttemptTokenFromRoot(bundleRoot);
   if (!token)
     return token.takeError();
   if (*token != observation.attemptToken)

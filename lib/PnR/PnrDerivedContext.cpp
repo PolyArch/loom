@@ -208,7 +208,7 @@ loom::pnr::FabricDerivedContextBundle::statistics() const {
 
 const FabricHandshakeContext &
 loom::pnr::FabricDerivedContextBundle::handshakeContext() const {
-  return storage_->staticContext->handshake;
+  return *storage_->staticContext->handshake;
 }
 
 const FabricTopologyQualityReport *

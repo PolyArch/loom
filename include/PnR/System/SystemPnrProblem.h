@@ -10,6 +10,7 @@
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrIndex.h"
+#include "PnR/PnrWorkLedger.h"
 #include "PnR/SpatialRecurrenceTiming.h"
 #include "PnR/System/SystemPnrDerivedContext.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
@@ -381,24 +382,29 @@ private:
 
   friend class SystemCandidateState;
   friend llvm::Expected<InitializedSystemCandidate>
-      initializeCanonicalSystemCandidate(FrozenSystemPnrProblemHandle);
+      initializeCanonicalSystemCandidate(FrozenSystemPnrProblemHandle,
+                                         PnrWorkLedgerView);
   friend llvm::Expected<InitializedSystemCandidate>
-  initializeSystemCandidateAttempt(FrozenSystemPnrProblemHandle, std::uint32_t);
+  initializeSystemCandidateAttempt(FrozenSystemPnrProblemHandle, std::uint32_t,
+                                   PnrWorkLedgerView);
   friend llvm::Expected<InitializedSystemCandidate>
       initializeSystemCandidateWithFixedChoices(FrozenSystemPnrProblemHandle,
-                                                llvm::ArrayRef<PnrIndex>);
+                                                llvm::ArrayRef<PnrIndex>,
+                                                PnrWorkLedgerView);
   friend llvm::Expected<InitializedSystemCandidate>
       initializeSystemCandidateWithReleasedChoices(FrozenSystemPnrProblemHandle,
                                                    llvm::ArrayRef<PnrIndex>,
-                                                   llvm::ArrayRef<PnrIndex>);
+                                                   llvm::ArrayRef<PnrIndex>,
+                                                   PnrWorkLedgerView);
   friend llvm::Expected<InitializedSystemCandidate>
-  initializeSystemCandidateWithReleasedChoicesAndImportedCapacityClosure(
-      FrozenSystemPnrProblemHandle, llvm::ArrayRef<PnrIndex>,
-      llvm::ArrayRef<PnrIndex>);
+      initializeSystemCandidateWithReleasedChoicesAndImportedCapacityClosure(
+          FrozenSystemPnrProblemHandle, llvm::ArrayRef<PnrIndex>,
+          llvm::ArrayRef<PnrIndex>, PnrWorkLedgerView);
   friend llvm::Expected<SystemCandidateStateHandle>
   initializeSystemCandidate(FrozenSystemPnrProblemHandle,
                             llvm::ArrayRef<PnrIndex>, llvm::ArrayRef<PnrIndex>,
-                            std::uint64_t *, std::uint64_t *);
+                            std::uint64_t *, std::uint64_t *,
+                            PnrWorkLedgerView);
   friend llvm::Expected<std::shared_ptr<const FrozenSystemPnrProblem>>
   freezeSystemPnrProblem(
       const ::dataflow::CanonicalDataflowProgramView &,

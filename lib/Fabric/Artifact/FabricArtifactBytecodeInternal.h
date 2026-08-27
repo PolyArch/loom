@@ -29,6 +29,15 @@ parseFabricBytecodeModule(llvm::ArrayRef<std::uint8_t> bytes);
 llvm::Expected<std::vector<std::uint8_t>>
 writeCanonicalFabricBytecode(mlir::Operation *operation);
 
+/// Proves that one parsed canonical module re-serializes to exactly the stored
+/// canonical bytes. Publication already established the writer fixpoint
+/// (write(parse(bytes)) == bytes), and an imported module is parse(bytes), so
+/// a single re-serialization is the same predicate without the publication
+/// path's text normalization round trip.
+llvm::Error
+verifyCanonicalFabricBytecodeStability(mlir::Operation *operation,
+                                       llvm::ArrayRef<std::uint8_t> canonical);
+
 } // namespace loom::fabric::detail
 
 #endif // LOOM_LIB_FABRIC_ARTIFACT_FABRICARTIFACTBYTECODEINTERNAL_H

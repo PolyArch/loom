@@ -976,14 +976,14 @@ void canonicalSeedHandoffPreservesFormalResult() {
   requireSuccess(loom::pnr::verifySpatialPnrWorkAccounting(
       failedInternal->accounting, /*requireClosedWork=*/false));
   if (failedInternal->accounting.plannedSeedAttemptSlots !=
-          failedInternal->accounting.seedAttemptSlots + 1 ||
+          failedInternal->accounting.seedAttemptSlots ||
       failedInternal->accounting.plannedInitializerAssignmentAttempts !=
           failedInternal->accounting.initializerAssignmentAttempts ||
       failedInternal->accounting.plannedEndpointExpansionSlots !=
           failedInternal->accounting.endpointExpansionSlots ||
       failedInternal->accounting.plannedNegotiationIterationSlots !=
           failedInternal->accounting.negotiationIterationSlots)
-    fail("transferred seed failure lost its live work summary");
+    fail("transferred seed failure changed its owner-completed work summary");
   const auto cold = run({3, 0}, nullptr);
   const auto warm = run({3, 0}, makeHandoff());
   const auto coldMemory = run({4, 1}, nullptr);

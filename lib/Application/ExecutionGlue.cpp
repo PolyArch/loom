@@ -236,10 +236,44 @@ llvm::Value *bytePointer(llvm::IRBuilder<> &builder, llvm::Value *storage,
 
 void emitFixedMemoryCopy(llvm::IRBuilder<> &builder, llvm::Value *destination,
                          llvm::Value *source, std::uint64_t byteCount) {
-  builder.CreateMemCpyInline(
-      destination, llvm::MaybeAlign(1), source, llvm::MaybeAlign(1),
-      llvm::ConstantInt::get(llvm::Type::getInt64Ty(builder.getContext()),
-                             byteCount));
+  llvm::LLVMContext &context = builder.getContext();
+  llvm::Type *i64 = llvm::Type::getInt64Ty(context);
+  // The freestanding host image has no memcpy symbol, so the copy must be
+  // materialized in place. Forced inline expansion turns every byte into a
+  // straight-line unaligned access and a multi-kilobyte capture into one
+  // giant basic block whose instruction selection cost is superlinear; a
+  // compact byte loop keeps both code generation and the emitted image small.
+  constexpr std::uint64_t inlineCopyLimitBytes = 64;
+  if (byteCount <= inlineCopyLimitBytes) {
+    builder.CreateMemCpyInline(destination, llvm::MaybeAlign(1), source,
+                               llvm::MaybeAlign(1),
+                               llvm::ConstantInt::get(i64, byteCount));
+    return;
+  }
+  llvm::Type *i8 = llvm::Type::getInt8Ty(context);
+  llvm::Function *function = builder.GetInsertBlock()->getParent();
+  llvm::BasicBlock *preheader = builder.GetInsertBlock();
+  llvm::BasicBlock *loop =
+      llvm::BasicBlock::Create(context, "fixed.copy.loop", function);
+  llvm::BasicBlock *done =
+      llvm::BasicBlock::Create(context, "fixed.copy.done", function);
+  builder.CreateBr(loop);
+  builder.SetInsertPoint(loop);
+  llvm::PHINode *index = builder.CreatePHI(i64, 2, "fixed.copy.index");
+  index->addIncoming(llvm::ConstantInt::get(i64, 0), preheader);
+  llvm::LoadInst *byte =
+      builder.CreateLoad(i8, builder.CreateGEP(i8, source, index));
+  byte->setAlignment(llvm::Align(1));
+  llvm::StoreInst *store =
+      builder.CreateStore(byte, builder.CreateGEP(i8, destination, index));
+  store->setAlignment(llvm::Align(1));
+  llvm::Value *next =
+      builder.CreateAdd(index, llvm::ConstantInt::get(i64, 1));
+  index->addIncoming(next, loop);
+  builder.CreateCondBr(
+      builder.CreateICmpULT(next, llvm::ConstantInt::get(i64, byteCount)),
+      loop, done);
+  builder.SetInsertPoint(done);
 }
 
 llvm::CallInst *findDirectCall(llvm::Function &caller,

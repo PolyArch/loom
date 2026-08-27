@@ -73,6 +73,10 @@ llvm::Error cacheSystemError(const llvm::Twine &message) {
   return cacheError(message + ": " + std::strerror(errno));
 }
 
+llvm::Error executionSystemError(const llvm::Twine &message) {
+  return invocationBundleError(message + ": " + std::strerror(errno));
+}
+
 void cacheDiagnostic(DiagnosticVerbosity level, llvm::StringRef event,
                      llvm::StringRef detail = {}) {
   if (!diagnosticVerbosityEnabled(level))
@@ -104,10 +108,21 @@ public:
   }
 
   int get() const { return value_; }
+  int release() { return std::exchange(value_, -1); }
 
 private:
   int value_;
 };
+
+struct BundleExecutionAttempt final {
+  FileDescriptor bundleRoot;
+  FileDescriptor executionFence;
+  BlobDigest attemptToken;
+};
+
+std::filesystem::path bundleRootDescriptorPath(int bundleRoot) {
+  return std::filesystem::path("/proc/self/fd") / std::to_string(bundleRoot);
+}
 
 class CacheLock final {
 public:
@@ -147,26 +162,41 @@ struct ScriptExecution final {
   std::vector<ExternalToolCommandExecutionObservation> commandExecutions;
 };
 
+struct ExecutionControlSample final {
+  bool stopped = false;
+  std::optional<std::chrono::steady_clock::duration> remaining;
+};
+
+ExecutionControlSample sampleExecutionControl(ExecutionControlView control) {
+  const auto remaining = control.remainingTime();
+  return {control.stopRequested() ||
+              (remaining &&
+               *remaining <= std::chrono::steady_clock::duration::zero()),
+          remaining};
+}
+
 bool waitForExecutionControl(ExecutionControlView executionControl) {
-  if (executionControl.stopRequested())
+  const ExecutionControlSample initial =
+      sampleExecutionControl(executionControl);
+  if (initial.stopped)
     return false;
   auto delay = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::milliseconds(10));
-  if (auto remaining = executionControl.remainingTime()) {
-    if (*remaining <= std::chrono::steady_clock::duration::zero())
-      return false;
-    delay = std::min(
-        delay,
-        std::chrono::duration_cast<std::chrono::nanoseconds>(*remaining));
+  if (initial.remaining) {
+    delay =
+        std::min(delay, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            *initial.remaining));
   }
   if (delay > std::chrono::steady_clock::duration::zero())
     std::this_thread::sleep_for(delay);
-  return !executionControl.stopRequested();
+  return !sampleExecutionControl(executionControl).stopped;
 }
 
 llvm::Expected<bool> acquireExclusiveLock(int descriptor,
                                           ExecutionControlView executionControl,
                                           bool &waited) {
+  if (sampleExecutionControl(executionControl).stopped)
+    return false;
   while (::flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
     if (errno == EINTR)
       continue;
@@ -176,7 +206,144 @@ llvm::Expected<bool> acquireExclusiveLock(int descriptor,
     if (!waitForExecutionControl(executionControl))
       return false;
   }
+  if (sampleExecutionControl(executionControl).stopped)
+    return false;
   return true;
+}
+
+llvm::Expected<std::optional<FileDescriptor>>
+openBundleExecutionFence(const PreparedExternalToolInvocation &prepared,
+                         ExecutionControlView executionControl) {
+  if (sampleExecutionControl(executionControl).stopped)
+    return std::optional<FileDescriptor>{};
+  const std::string fencePath =
+      prepared.bundleRoot + kExecutionFenceSuffix.str();
+  FileDescriptor descriptor(::open(
+      fencePath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0666));
+  if (descriptor.get() < 0)
+    return executionSystemError("could not open bundle execution fence");
+  struct stat status{};
+  if (::fstat(descriptor.get(), &status) != 0)
+    return executionSystemError("could not inspect bundle execution fence");
+  if (!S_ISREG(status.st_mode) || status.st_nlink != 1)
+    return invocationBundleError(
+        "bundle execution fence is not one ordinary file");
+  while (::flock(descriptor.get(), LOCK_EX | LOCK_NB) != 0) {
+    if (errno == EINTR)
+      continue;
+    if (errno != EWOULDBLOCK && errno != EAGAIN)
+      return executionSystemError("could not acquire bundle execution fence");
+    if (!waitForExecutionControl(executionControl))
+      return std::optional<FileDescriptor>{};
+  }
+  if (sampleExecutionControl(executionControl).stopped)
+    return std::optional<FileDescriptor>{};
+  return std::optional<FileDescriptor>(std::move(descriptor));
+}
+
+llvm::Expected<FileDescriptor>
+openBundleExecutionRoot(const PreparedExternalToolInvocation &prepared) {
+  FileDescriptor descriptor(
+      ::open(prepared.bundleRoot.c_str(),
+             O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
+  if (descriptor.get() < 0)
+    return executionSystemError("could not open bundle root for execution");
+  auto loaded =
+      loadPreparedInvocationManifestFromRoot(prepared, descriptor.get());
+  if (!loaded)
+    return loaded.takeError();
+  return descriptor;
+}
+
+llvm::Expected<BlobDigest>
+publishAttemptToken(const PreparedExternalToolInvocation &prepared,
+                    int bundleRoot) {
+  for (const llvm::StringRef operationalPath :
+       {kCompletionPath, kCommandObservationsPath}) {
+    if (::unlinkat(bundleRoot, operationalPath.str().c_str(), 0) != 0 &&
+        errno != ENOENT)
+      return executionSystemError("could not clear prior invocation state");
+  }
+
+  llvm::SmallString<256> model(prepared.bundleRoot);
+  llvm::sys::path::append(model, ".loom-attempt-%%%%%%%%%%%%%%%%");
+  llvm::SmallString<256> unique;
+  llvm::sys::fs::createUniquePath(model, unique, true);
+  std::vector<std::uint8_t> preimage;
+  preimage.insert(preimage.end(), prepared.manifestDigest.bytes().begin(),
+                  prepared.manifestDigest.bytes().end());
+  const llvm::StringRef root = prepared.bundleRoot;
+  preimage.insert(preimage.end(), root.bytes_begin(), root.bytes_end());
+  const llvm::StringRef uniqueSpelling = unique;
+  preimage.insert(preimage.end(), uniqueSpelling.bytes_begin(),
+                  uniqueSpelling.bytes_end());
+  const BlobDigest token = computeBlobDigest(preimage);
+  const std::string tokenText = formatBlobDigestHex(token);
+  const std::string temporary =
+      kAttemptTokenPath.str() + ".partial." + tokenText;
+
+  {
+    FileDescriptor output(
+        ::openat(bundleRoot, temporary.c_str(),
+                 O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0666));
+    if (output.get() < 0)
+      return executionSystemError(
+          "could not open temporary execution attempt token");
+    std::size_t written = 0;
+    while (written != tokenText.size()) {
+      const ssize_t count = ::write(output.get(), tokenText.data() + written,
+                                    tokenText.size() - written);
+      if (count < 0) {
+        if (errno == EINTR)
+          continue;
+        const int writeError = errno;
+        (void)::unlinkat(bundleRoot, temporary.c_str(), 0);
+        errno = writeError;
+        return executionSystemError("could not write execution attempt token");
+      }
+      if (count == 0) {
+        (void)::unlinkat(bundleRoot, temporary.c_str(), 0);
+        return invocationBundleError(
+            "could not make progress writing execution attempt token");
+      }
+      written += static_cast<std::size_t>(count);
+    }
+    const int outputDescriptor = output.release();
+    if (::close(outputDescriptor) != 0) {
+      const int closeError = errno;
+      (void)::unlinkat(bundleRoot, temporary.c_str(), 0);
+      errno = closeError;
+      return executionSystemError("could not close execution attempt token");
+    }
+  }
+  if (::renameat(bundleRoot, temporary.c_str(), bundleRoot,
+                 kAttemptTokenPath.str().c_str()) != 0) {
+    const int renameError = errno;
+    (void)::unlinkat(bundleRoot, temporary.c_str(), 0);
+    errno = renameError;
+    return executionSystemError("could not publish execution attempt token");
+  }
+  return token;
+}
+
+llvm::Expected<std::optional<BundleExecutionAttempt>>
+beginBundleExecutionAttempt(const PreparedExternalToolInvocation &prepared,
+                            ExecutionControlView executionControl) {
+  auto executionFence = openBundleExecutionFence(prepared, executionControl);
+  if (!executionFence)
+    return executionFence.takeError();
+  if (!*executionFence)
+    return std::optional<BundleExecutionAttempt>{};
+  auto bundleRoot = openBundleExecutionRoot(prepared);
+  if (!bundleRoot)
+    return bundleRoot.takeError();
+  if (sampleExecutionControl(executionControl).stopped)
+    return std::optional<BundleExecutionAttempt>{};
+  auto attemptToken = publishAttemptToken(prepared, bundleRoot->get());
+  if (!attemptToken)
+    return attemptToken.takeError();
+  return std::optional<BundleExecutionAttempt>(BundleExecutionAttempt{
+      std::move(*bundleRoot), std::move(**executionFence), *attemptToken});
 }
 
 void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
@@ -422,7 +589,8 @@ canonicalInputMaterial(const InvocationManifestData &manifest) {
 
 llvm::Expected<std::string>
 canonicalExecutionConfiguration(const PreparedExternalToolInvocation &prepared,
-                                const InvocationManifestData &manifest) {
+                                const InvocationManifestData &manifest,
+                                const std::filesystem::path &bundleAccessRoot) {
   const std::vector<PathToken> tokens = pathTokens(prepared, manifest);
   llvm::SmallString<8192> storage;
   llvm::raw_svector_ostream output(storage);
@@ -458,8 +626,7 @@ canonicalExecutionConfiguration(const PreparedExternalToolInvocation &prepared,
       for (const ManifestMaterializedFile &file : manifest.materializedFiles) {
         if (file.sourceArtifact)
           continue;
-        auto contents = readOrdinaryFile(
-            std::filesystem::path(prepared.bundleRoot) / file.relativePath);
+        auto contents = readOrdinaryFile(bundleAccessRoot / file.relativePath);
         if (!contents) {
           generatedFileError = llvm::joinErrors(std::move(generatedFileError),
                                                 contents.takeError());
@@ -817,10 +984,10 @@ cachedFilePaths(const InvocationManifestData &manifest) {
 }
 
 llvm::Error
-validateCacheableOutputClosure(const PreparedExternalToolInvocation &prepared,
+validateCacheableOutputClosure(int bundleRoot,
                                const InvocationManifestData &manifest) {
   const std::filesystem::path outputs =
-      std::filesystem::path(prepared.bundleRoot) / "outputs";
+      bundleRootDescriptorPath(bundleRoot) / "outputs";
   std::error_code error;
   const std::filesystem::file_status rootStatus =
       std::filesystem::symlink_status(outputs, error);
@@ -900,7 +1067,7 @@ llvm::Error writeAttemptFile(const std::filesystem::path &path,
 }
 
 llvm::Expected<bool>
-restoreEntry(const std::filesystem::path &entryRoot,
+restoreEntry(const std::filesystem::path &entryRoot, int bundleRoot,
              const PreparedExternalToolInvocation &prepared,
              const InvocationManifestData &manifest,
              const ExternalToolResultCacheKey &key,
@@ -920,14 +1087,15 @@ restoreEntry(const std::filesystem::path &entryRoot,
     if (entry->files[index].relativePath != expectedPaths[index])
       return cacheError("cache entry file membership does not match");
 
-  const std::filesystem::path bundleRoot(prepared.bundleRoot);
+  const std::filesystem::path bundleAccessRoot =
+      bundleRootDescriptorPath(bundleRoot);
   for (const CacheFile &file : entry->files) {
     if (llvm::Error error =
-            ensureSafeBundleParent(bundleRoot, file.relativePath))
+            ensureSafeBundleParent(bundleAccessRoot, file.relativePath))
       return std::move(error);
     if (llvm::Error error =
             copyAtomically(entryRoot / "payload" / file.relativePath,
-                           bundleRoot / file.relativePath, file.digest))
+                           bundleAccessRoot / file.relativePath, file.digest))
       return std::move(error);
   }
   std::vector<BlobDigest> outputs;
@@ -935,16 +1103,17 @@ restoreEntry(const std::filesystem::path &entryRoot,
   for (std::size_t index = 0; index != manifest.declaredOutputs.size(); ++index)
     outputs.push_back(entry->files[index].digest);
   if (llvm::Error error =
-          writeAttemptFile(bundleRoot / kStdoutPath.str(),
+          writeAttemptFile(bundleAccessRoot / kStdoutPath.str(),
                            "loom external-tool result cache hit\n"))
     return std::move(error);
-  if (llvm::Error error = writeAttemptFile(bundleRoot / kStderrPath.str(), {}))
+  if (llvm::Error error =
+          writeAttemptFile(bundleAccessRoot / kStderrPath.str(), {}))
     return std::move(error);
   const std::string completion = serializeInvocationCompletion(
       InvocationCompletionStatus::Success, 0, prepared.manifestDigest,
       attemptToken, outputs);
-  if (llvm::Error error =
-          writeAttemptFile(bundleRoot / kCompletionPath.str(), completion))
+  if (llvm::Error error = writeAttemptFile(
+          bundleAccessRoot / kCompletionPath.str(), completion))
     return std::move(error);
   return true;
 }
@@ -967,20 +1136,21 @@ makeEntryStaging(const std::filesystem::path &entry) {
   return cacheError("cannot allocate cache staging");
 }
 
-llvm::Error publishEntry(const std::filesystem::path &entryRoot,
+llvm::Error publishEntry(const std::filesystem::path &entryRoot, int bundleRoot,
                          const PreparedExternalToolInvocation &prepared,
                          const InvocationManifestData &manifest,
                          const ExternalToolResultCacheKey &key,
                          const BlobDigest &attemptToken) {
-  auto completion = loadExternalToolInvocationCompletion(prepared);
+  auto completion = loadOptionalInvocationCompletionFromRoot(bundleRoot);
   if (!completion)
     return completion.takeError();
-  if (completion->status != InvocationCompletionStatus::Success ||
-      completion->manifestDigest != prepared.manifestDigest ||
-      completion->attemptToken != attemptToken ||
-      completion->outputDigests.size() != manifest.declaredOutputs.size())
+  if (!*completion ||
+      (*completion)->status != InvocationCompletionStatus::Success ||
+      (*completion)->manifestDigest != prepared.manifestDigest ||
+      (*completion)->attemptToken != attemptToken ||
+      (*completion)->outputDigests.size() != manifest.declaredOutputs.size())
     return cacheError("only an exact successful completion is cacheable");
-  if (llvm::Error error = validateCacheableOutputClosure(prepared, manifest))
+  if (llvm::Error error = validateCacheableOutputClosure(bundleRoot, manifest))
     return error;
 
   auto staging = makeEntryStaging(entryRoot);
@@ -999,16 +1169,17 @@ llvm::Error publishEntry(const std::filesystem::path &entryRoot,
 
   CacheEntry entry{key, {}};
   const std::vector<std::string> files = cachedFilePaths(manifest);
-  const std::filesystem::path bundleRoot(prepared.bundleRoot);
+  const std::filesystem::path bundleAccessRoot =
+      bundleRootDescriptorPath(bundleRoot);
   for (const std::string &relative : files) {
-    if (llvm::Error error = ensureSafeBundleParent(bundleRoot, relative))
+    if (llvm::Error error = ensureSafeBundleParent(bundleAccessRoot, relative))
       return error;
-    auto digest = digestFile(bundleRoot / relative);
+    auto digest = digestFile(bundleAccessRoot / relative);
     if (!digest)
       return digest.takeError();
     const std::size_t outputIndex = entry.files.size();
-    if (outputIndex < completion->outputDigests.size() &&
-        *digest != completion->outputDigests[outputIndex])
+    if (outputIndex < (*completion)->outputDigests.size() &&
+        *digest != (*completion)->outputDigests[outputIndex])
       return cacheError("declared output changed before cache publication");
     const std::filesystem::path destination = *staging / "payload" / relative;
     std::error_code error;
@@ -1016,7 +1187,7 @@ llvm::Error publishEntry(const std::filesystem::path &entryRoot,
     if (error)
       return cacheError("cannot create cache payload parent: " +
                         error.message());
-    std::filesystem::copy_file(bundleRoot / relative, destination,
+    std::filesystem::copy_file(bundleAccessRoot / relative, destination,
                                std::filesystem::copy_options::none, error);
     if (error)
       return cacheError("cannot snapshot cache payload: " + error.message());
@@ -1055,6 +1226,112 @@ llvm::Error publishEntry(const std::filesystem::path &entryRoot,
 
 enum class CacheScriptMode { Execute, Preflight, Postflight };
 
+[[noreturn]] void reportChildLaunchError(int descriptor, int error) {
+  const char *bytes = reinterpret_cast<const char *>(&error);
+  std::size_t written = 0;
+  while (written != sizeof(error)) {
+    const ssize_t count =
+        ::write(descriptor, bytes + written, sizeof(error) - written);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      break;
+    written += static_cast<std::size_t>(count);
+  }
+  ::_exit(126);
+}
+
+llvm::Expected<llvm::sys::ProcessInfo>
+spawnGeneratedRunScript(llvm::StringRef executable,
+                        llvm::ArrayRef<std::string> arguments, int bundleRoot,
+                        int executionFence) {
+  // Keep the parent descriptors close-on-exec, then expose only the intended
+  // launcher copies after fork so unrelated concurrent spawns cannot inherit.
+  FileDescriptor inheritedFence(::fcntl(executionFence, F_DUPFD_CLOEXEC, 200));
+  if (inheritedFence.get() < 0)
+    return cacheSystemError(
+        "cannot duplicate the generated run-script execution fence");
+  FileDescriptor inheritedRoot(::fcntl(bundleRoot, F_DUPFD_CLOEXEC, 200));
+  if (inheritedRoot.get() < 0)
+    return cacheSystemError(
+        "cannot duplicate the generated run-script bundle root");
+  int pipeDescriptors[2] = {-1, -1};
+  if (::pipe2(pipeDescriptors, O_CLOEXEC) != 0)
+    return cacheSystemError(
+        "cannot create the generated run-script error pipe");
+  FileDescriptor launchErrorRead(pipeDescriptors[0]);
+  FileDescriptor initialLaunchErrorWrite(pipeDescriptors[1]);
+  FileDescriptor launchErrorWrite(
+      ::fcntl(initialLaunchErrorWrite.get(), F_DUPFD_CLOEXEC, 202));
+  if (launchErrorWrite.get() < 0)
+    return cacheSystemError(
+        "cannot duplicate the generated run-script error pipe");
+  initialLaunchErrorWrite = FileDescriptor();
+
+  std::string executableStorage = executable.str();
+  llvm::SmallVector<char *, 8> argumentPointers;
+  argumentPointers.reserve(arguments.size() + 1);
+  for (const std::string &argument : arguments)
+    argumentPointers.push_back(const_cast<char *>(argument.c_str()));
+  argumentPointers.push_back(nullptr);
+
+  const pid_t processId = ::fork();
+  if (processId < 0)
+    return cacheSystemError("cannot fork the generated run script");
+  if (processId == 0) {
+    (void)::close(launchErrorRead.get());
+    if (::setsid() < 0)
+      reportChildLaunchError(launchErrorWrite.get(), errno);
+    if (::dup2(inheritedFence.get(), kInheritedExecutionFenceDescriptor) < 0)
+      reportChildLaunchError(launchErrorWrite.get(), errno);
+    if (::dup2(inheritedRoot.get(), kInheritedBundleRootDescriptor) < 0)
+      reportChildLaunchError(launchErrorWrite.get(), errno);
+    if (::fcntl(kInheritedExecutionFenceDescriptor, F_SETFD, 0) != 0)
+      reportChildLaunchError(launchErrorWrite.get(), errno);
+    if (::fcntl(kInheritedBundleRootDescriptor, F_SETFD, 0) != 0)
+      reportChildLaunchError(launchErrorWrite.get(), errno);
+    ::execv(executableStorage.c_str(), argumentPointers.data());
+    reportChildLaunchError(launchErrorWrite.get(), errno);
+  }
+
+  llvm::sys::ProcessInfo process;
+  process.Pid = processId;
+  process.Process = processId;
+  launchErrorWrite = FileDescriptor();
+  int launchError = 0;
+  std::size_t readBytes = 0;
+  while (readBytes != sizeof(launchError)) {
+    const ssize_t count =
+        ::read(launchErrorRead.get(),
+               reinterpret_cast<char *>(&launchError) + readBytes,
+               sizeof(launchError) - readBytes);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count < 0) {
+      const int readError = errno;
+      (void)::kill(processId, SIGKILL);
+      std::string ignored;
+      (void)llvm::sys::Wait(process, std::nullopt, &ignored);
+      errno = readError;
+      return cacheSystemError(
+          "cannot read the generated run-script error pipe");
+    }
+    if (count == 0)
+      break;
+    readBytes += static_cast<std::size_t>(count);
+  }
+  if (readBytes != 0) {
+    std::string ignored;
+    (void)llvm::sys::Wait(process, std::nullopt, &ignored);
+    if (readBytes != sizeof(launchError))
+      return cacheError(
+          "generated run-script setup returned a truncated error");
+    return cacheError("could not execute generated run script: " +
+                      std::string(std::strerror(launchError)));
+  }
+  return process;
+}
+
 llvm::Error
 terminateSurvivingProcessGroup(const llvm::sys::ProcessInfo &process) {
   const pid_t processId = static_cast<pid_t>(process.Pid);
@@ -1081,10 +1358,9 @@ stopProcessGroup(const llvm::sys::ProcessInfo &process) {
   return waited;
 }
 
-llvm::Error
-cleanupStoppedScriptAttempt(const PreparedExternalToolInvocation &prepared,
-                            const llvm::sys::ProcessInfo &process) {
-  const std::filesystem::path root(prepared.bundleRoot);
+llvm::Error cleanupStoppedScriptAttempt(int bundleRoot,
+                                        const llvm::sys::ProcessInfo &process) {
+  const std::filesystem::path root = bundleRootDescriptorPath(bundleRoot);
   const std::string processId = std::to_string(process.Pid);
   const std::array<std::filesystem::path, 4> paths{
       root / kCommandExecutionDirectory.str(),
@@ -1124,54 +1400,64 @@ loadPublishedCompletion(const PreparedExternalToolInvocation &prepared,
   return std::optional<InvocationCompletion>(std::move(*completion));
 }
 
+llvm::Expected<std::optional<InvocationCompletion>>
+loadPublishedCompletion(const PreparedExternalToolInvocation &prepared,
+                        const BlobDigest &attemptToken, int bundleRoot) {
+  auto completion = loadOptionalInvocationCompletionFromRoot(bundleRoot);
+  if (!completion)
+    return completion.takeError();
+  if (!*completion)
+    return std::optional<InvocationCompletion>{};
+  if ((*completion)->manifestDigest != prepared.manifestDigest)
+    return cacheError(
+        "generated run-script completion does not bind the invocation");
+  if ((*completion)->attemptToken != attemptToken)
+    return cacheError(
+        "generated run-script completion belongs to another attempt");
+  return completion;
+}
+
 llvm::Error revokeCompletedExecutionAfterStoppedPostflight(
     const PreparedExternalToolInvocation &prepared,
-    const BlobDigest &attemptToken) {
-  auto completion = loadPublishedCompletion(prepared, attemptToken);
+    const BlobDigest &attemptToken, int bundleRoot) {
+  auto completion = loadPublishedCompletion(prepared, attemptToken, bundleRoot);
   if (!completion)
     return completion.takeError();
   if (!*completion)
     return llvm::Error::success();
-  const std::filesystem::path path =
-      std::filesystem::path(prepared.bundleRoot) / kCompletionPath.str();
-  std::error_code removeError;
-  const bool removed = std::filesystem::remove(path, removeError);
-  if (removeError)
-    return cacheError(
-        "cannot revoke completion after stopped postflight validation: " +
-        removeError.message());
-  if (!removed)
-    return cacheError(
-        "completion disappeared during stopped postflight validation");
+  if (::unlinkat(bundleRoot, kCompletionPath.str().c_str(), 0) != 0)
+    return cacheSystemError(
+        "cannot revoke completion after stopped postflight validation");
   return llvm::Error::success();
 }
 
 llvm::Expected<ScriptExecution>
 runScript(const PreparedExternalToolInvocation &prepared, CacheScriptMode mode,
-          ExecutionControlView executionControl,
-          const BlobDigest &attemptToken) {
-  auto manifest = loadPreparedInvocationManifest(prepared);
+          ExecutionControlView executionControl, const BlobDigest &attemptToken,
+          int bundleRoot, int executionFence) {
+  auto manifest = loadPreparedInvocationManifestFromRoot(prepared, bundleRoot);
   if (!manifest)
     return manifest.takeError();
-  llvm::SmallString<256> script(prepared.bundleRoot);
-  llvm::sys::path::append(script, kRunScriptName);
   llvm::ErrorOr<std::string> bash = llvm::sys::findProgramByName("bash");
   if (!bash)
     return cacheError("could not find bash: " + bash.getError().message());
-  llvm::SmallVector<llvm::StringRef, 3> arguments{*bash, script};
+  const std::string script = "/proc/self/fd/" +
+                             std::to_string(kInheritedBundleRootDescriptor) +
+                             "/" + kRunScriptName.str();
+  llvm::SmallVector<std::string, 4> arguments{
+      *bash, script, kInheritedExecutionFenceArgument.str()};
   if (mode == CacheScriptMode::Preflight)
     arguments.push_back("--loom-cache-preflight");
   else if (mode == CacheScriptMode::Postflight)
     arguments.push_back("--loom-cache-postflight");
-  if (executionControl.stopRequested())
+  if (sampleExecutionControl(executionControl).stopped)
     return ScriptExecution{externalToolExecutionStoppedExitCode, false, {}};
   std::string message;
-  bool executionFailed = false;
-  const llvm::sys::ProcessInfo process =
-      llvm::sys::ExecuteNoWait(*bash, arguments, std::nullopt, {}, 0, &message,
-                               &executionFailed, nullptr, true);
-  if (executionFailed || process.Pid == 0)
-    return cacheError("could not execute generated run script: " + message);
+  auto spawned =
+      spawnGeneratedRunScript(*bash, arguments, bundleRoot, executionFence);
+  if (!spawned)
+    return spawned.takeError();
+  const llvm::sys::ProcessInfo process = *spawned;
   const auto finishExit =
       [&](int returnCode) -> llvm::Expected<ScriptExecution> {
     if (llvm::Error error = terminateSurvivingProcessGroup(process))
@@ -1180,7 +1466,7 @@ runScript(const PreparedExternalToolInvocation &prepared, CacheScriptMode mode,
     if (mode == CacheScriptMode::Execute &&
         manifest->second.version == kParallelCommandGroupManifestVersion) {
       auto loaded = loadCommandExecutionObservations(
-          prepared, attemptToken, manifest->second.commands.size());
+          prepared, attemptToken, manifest->second.commands.size(), bundleRoot);
       if (!loaded) {
         if (returnCode == 0)
           return loaded.takeError();
@@ -1204,7 +1490,7 @@ runScript(const PreparedExternalToolInvocation &prepared, CacheScriptMode mode,
     if (waited.ReturnCode < 0) {
       if (llvm::Error error = terminateSurvivingProcessGroup(process))
         return std::move(error);
-      if (llvm::Error error = cleanupStoppedScriptAttempt(prepared, process))
+      if (llvm::Error error = cleanupStoppedScriptAttempt(bundleRoot, process))
         return std::move(error);
       return cacheError("generated run script terminated abnormally: " +
                         message);
@@ -1218,14 +1504,15 @@ runScript(const PreparedExternalToolInvocation &prepared, CacheScriptMode mode,
       return finishScript(waited);
     if (waited.Pid != 0)
       return cacheError("could not wait for generated run script: " + message);
-    if (executionControl.stopRequested()) {
+    if (sampleExecutionControl(executionControl).stopped) {
       auto stopped = stopProcessGroup(process);
       if (!stopped)
         return stopped.takeError();
       if (stopped->ReturnCode >= 0)
         return finishScript(*stopped);
       if (mode == CacheScriptMode::Execute) {
-        auto completion = loadPublishedCompletion(prepared, attemptToken);
+        auto completion =
+            loadPublishedCompletion(prepared, attemptToken, bundleRoot);
         if (!completion)
           return completion.takeError();
         if (*completion) {
@@ -1233,17 +1520,38 @@ runScript(const PreparedExternalToolInvocation &prepared, CacheScriptMode mode,
           if (!finished)
             return finished.takeError();
           if (llvm::Error error =
-                  cleanupStoppedScriptAttempt(prepared, process))
+                  cleanupStoppedScriptAttempt(bundleRoot, process))
             return std::move(error);
           return finished;
         }
       }
-      if (llvm::Error error = cleanupStoppedScriptAttempt(prepared, process))
+      if (llvm::Error error = cleanupStoppedScriptAttempt(bundleRoot, process))
         return std::move(error);
       return ScriptExecution{externalToolExecutionStoppedExitCode, true, {}};
     }
     (void)waitForExecutionControl(executionControl);
   }
+}
+
+llvm::Expected<ExternalToolResultCacheKey>
+deriveExternalToolResultCacheKeyFromManifest(
+    const PreparedExternalToolInvocation &prepared,
+    const InvocationManifestData &manifest,
+    const std::filesystem::path &bundleAccessRoot) {
+  auto input = canonicalInputMaterial(manifest);
+  if (!input)
+    return input.takeError();
+  auto configuration =
+      canonicalExecutionConfiguration(prepared, manifest, bundleAccessRoot);
+  if (!configuration)
+    return configuration.takeError();
+  auto toolVersion = canonicalToolVersion(manifest);
+  if (!toolVersion)
+    return toolVersion.takeError();
+  return ExternalToolResultCacheKey{
+      domainDigest("loom.external_tool_cache.input.v1", *input),
+      domainDigest("loom.external_tool_cache.configuration.v1", *configuration),
+      domainDigest("loom.external_tool_cache.tool.v1", *toolVersion)};
 }
 
 } // namespace
@@ -1253,20 +1561,8 @@ llvm::Expected<ExternalToolResultCacheKey> deriveExternalToolResultCacheKey(
   auto loaded = loadPreparedInvocationManifest(prepared);
   if (!loaded)
     return loaded.takeError();
-  auto input = canonicalInputMaterial(loaded->second);
-  if (!input)
-    return input.takeError();
-  auto configuration =
-      canonicalExecutionConfiguration(prepared, loaded->second);
-  if (!configuration)
-    return configuration.takeError();
-  auto toolVersion = canonicalToolVersion(loaded->second);
-  if (!toolVersion)
-    return toolVersion.takeError();
-  return ExternalToolResultCacheKey{
-      domainDigest("loom.external_tool_cache.input.v1", *input),
-      domainDigest("loom.external_tool_cache.configuration.v1", *configuration),
-      domainDigest("loom.external_tool_cache.tool.v1", *toolVersion)};
+  return deriveExternalToolResultCacheKeyFromManifest(prepared, loaded->second,
+                                                      prepared.bundleRoot);
 }
 
 llvm::Expected<ExternalToolInvocationExecutionObservation>
@@ -1274,20 +1570,28 @@ executeExternalToolInvocationBundleObserved(
     const PreparedExternalToolInvocation &prepared,
     ExecutionControlView executionControl,
     ExternalToolResultReusePolicy reusePolicy) {
-  auto attemptToken = beginExternalToolInvocationAttempt(prepared);
-  if (!attemptToken)
-    return attemptToken.takeError();
-  const auto seal = [&prepared, &attemptToken](
+  auto attempt = beginBundleExecutionAttempt(prepared, executionControl);
+  if (!attempt)
+    return attempt.takeError();
+  if (!*attempt)
+    return llvm::make_error<ExternalToolExecutionAdmissionStoppedError>();
+  BundleExecutionAttempt &activeAttempt = **attempt;
+  const BlobDigest &attemptToken = activeAttempt.attemptToken;
+  const int bundleRoot = activeAttempt.bundleRoot.get();
+  const int executionFence = activeAttempt.executionFence.get();
+  const auto seal = [&prepared, &attemptToken, bundleRoot](
                         ExternalToolInvocationExecutionObservation observation)
       -> llvm::Expected<ExternalToolInvocationExecutionObservation> {
-    auto completion = loadPublishedCompletion(prepared, *attemptToken);
+    auto completion =
+        loadPublishedCompletion(prepared, attemptToken, bundleRoot);
     if (!completion)
       return completion.takeError();
-    if (llvm::Error error = validateExternalToolInvocationExecutionObservation(
-            prepared, observation))
+    if (llvm::Error error =
+            validateExternalToolInvocationExecutionObservationFromRoot(
+                prepared, observation, bundleRoot))
       return std::move(error);
     if (llvm::Error error = validateInvocationCompletionExecutionBoundary(
-            prepared, *attemptToken, observation.exitCode, *completion))
+            prepared, attemptToken, observation.exitCode, *completion))
       return std::move(error);
     observation.receipt = ExternalToolInvocationExecutionReceiptAccess::create(
         prepared, observation, std::move(*completion));
@@ -1300,7 +1604,7 @@ executeExternalToolInvocationBundleObserved(
                                commandExecutions = {})
       -> llvm::Expected<ExternalToolInvocationExecutionObservation> {
     return seal(ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest, *attemptToken,
+        prepared.manifestDigest, attemptToken,
         externalToolExecutionStoppedExitCode, reusePolicy, availability,
         ExternalToolResultCacheLookup::NotAttempted,
         ExternalToolResultCacheDiscard::NotAttempted,
@@ -1311,20 +1615,21 @@ executeExternalToolInvocationBundleObserved(
       [&](ExternalToolResultCacheAvailability availability,
           bool waitedForCacheKeyLock = false)
       -> llvm::Expected<ExternalToolInvocationExecutionObservation> {
-    auto execution = runScript(prepared, CacheScriptMode::Execute,
-                               executionControl, *attemptToken);
+    auto execution =
+        runScript(prepared, CacheScriptMode::Execute, executionControl,
+                  attemptToken, bundleRoot, executionFence);
     if (!execution)
       return execution.takeError();
     if (execution->exitCode == 0 &&
         reusePolicy == ExternalToolResultReusePolicy::RequireFresh) {
-      auto postflight = runScript(prepared, CacheScriptMode::Postflight,
-                                  executionControl, *attemptToken);
+      auto postflight =
+          runScript(prepared, CacheScriptMode::Postflight, executionControl,
+                    attemptToken, bundleRoot, executionFence);
       if (!postflight)
         return postflight.takeError();
       if (postflight->exitCode == externalToolExecutionStoppedExitCode) {
-        if (llvm::Error error =
-                revokeCompletedExecutionAfterStoppedPostflight(prepared,
-                                                                *attemptToken))
+        if (llvm::Error error = revokeCompletedExecutionAfterStoppedPostflight(
+                prepared, attemptToken, bundleRoot))
           return std::move(error);
         return stopped(availability, waitedForCacheKeyLock, execution->invoked,
                        std::move(execution->commandExecutions));
@@ -1334,13 +1639,13 @@ executeExternalToolInvocationBundleObserved(
             "fresh invocation inputs or tool changed during execution");
     }
     return seal(ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest, *attemptToken, execution->exitCode,
-        reusePolicy, availability, ExternalToolResultCacheLookup::NotAttempted,
+        prepared.manifestDigest, attemptToken, execution->exitCode, reusePolicy,
+        availability, ExternalToolResultCacheLookup::NotAttempted,
         ExternalToolResultCacheDiscard::NotAttempted,
         ExternalToolResultCachePublication::NotAttempted, waitedForCacheKeyLock,
         execution->invoked, std::move(execution->commandExecutions)});
   };
-  if (executionControl.stopRequested())
+  if (sampleExecutionControl(executionControl).stopped)
     return stopped(reusePolicy == ExternalToolResultReusePolicy::RequireFresh
                        ? ExternalToolResultCacheAvailability::Disabled
                        : ExternalToolResultCacheAvailability::Unavailable,
@@ -1361,7 +1666,15 @@ executeExternalToolInvocationBundleObserved(
   if (!root->root)
     return executeWithoutCache(ExternalToolResultCacheAvailability::Disabled);
 
-  auto key = deriveExternalToolResultCacheKey(prepared);
+  auto loaded = loadPreparedInvocationManifestFromRoot(prepared, bundleRoot);
+  if (!loaded) {
+    cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
+                    llvm::toString(loaded.takeError()));
+    return executeWithoutCache(
+        ExternalToolResultCacheAvailability::Unavailable);
+  }
+  auto key = deriveExternalToolResultCacheKeyFromManifest(
+      prepared, loaded->second, bundleRootDescriptorPath(bundleRoot));
   if (!key) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
                     llvm::toString(key.takeError()));
@@ -1380,13 +1693,6 @@ executeExternalToolInvocationBundleObserved(
     return stopped(ExternalToolResultCacheAvailability::Available, true, false);
   const bool waitedForCacheKeyLock = (**lock).waited;
 
-  auto loaded = loadPreparedInvocationManifest(prepared);
-  if (!loaded) {
-    cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
-                    llvm::toString(loaded.takeError()));
-    return executeWithoutCache(ExternalToolResultCacheAvailability::Unavailable,
-                               waitedForCacheKeyLock);
-  }
   const std::filesystem::path entry = entryPath(*root->root, *key);
   std::error_code statusError;
   const bool entryExists = std::filesystem::exists(entry, statusError);
@@ -1399,8 +1705,9 @@ executeExternalToolInvocationBundleObserved(
   ExternalToolResultCacheDiscard discard =
       ExternalToolResultCacheDiscard::NotAttempted;
   if (entryExists) {
-    auto preflight = runScript(prepared, CacheScriptMode::Preflight,
-                               executionControl, *attemptToken);
+    auto preflight =
+        runScript(prepared, CacheScriptMode::Preflight, executionControl,
+                  attemptToken, bundleRoot, executionFence);
     if (!preflight)
       return preflight.takeError();
     if (preflight->exitCode == externalToolExecutionStoppedExitCode)
@@ -1408,17 +1715,17 @@ executeExternalToolInvocationBundleObserved(
                      waitedForCacheKeyLock, preflight->invoked);
     if (preflight->exitCode != 0)
       return seal(ExternalToolInvocationExecutionObservation{
-          prepared.manifestDigest, *attemptToken, preflight->exitCode,
+          prepared.manifestDigest, attemptToken, preflight->exitCode,
           reusePolicy, ExternalToolResultCacheAvailability::Available,
           ExternalToolResultCacheLookup::Miss, discard,
           ExternalToolResultCachePublication::NotAttempted,
           waitedForCacheKeyLock, false});
-    auto restored =
-        restoreEntry(entry, prepared, loaded->second, *key, *attemptToken);
+    auto restored = restoreEntry(entry, bundleRoot, prepared, loaded->second,
+                                 *key, attemptToken);
     if (restored && *restored) {
       cacheDiagnostic(DiagnosticVerbosity::Summary, "hit", keySpelling);
       return seal(ExternalToolInvocationExecutionObservation{
-          prepared.manifestDigest, *attemptToken, 0, reusePolicy,
+          prepared.manifestDigest, attemptToken, 0, reusePolicy,
           ExternalToolResultCacheAvailability::Available,
           ExternalToolResultCacheLookup::Hit, discard,
           ExternalToolResultCachePublication::NotAttempted,
@@ -1433,38 +1740,40 @@ executeExternalToolInvocationBundleObserved(
                           : ExternalToolResultCacheDiscard::Discarded;
   }
   cacheDiagnostic(DiagnosticVerbosity::Summary, "miss", keySpelling);
-  auto execution = runScript(prepared, CacheScriptMode::Execute,
-                             executionControl, *attemptToken);
+  auto execution =
+      runScript(prepared, CacheScriptMode::Execute, executionControl,
+                attemptToken, bundleRoot, executionFence);
   if (!execution)
     return execution.takeError();
   if (execution->exitCode == externalToolExecutionStoppedExitCode)
     return seal(ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest, *attemptToken, execution->exitCode,
-        reusePolicy, ExternalToolResultCacheAvailability::Available,
+        prepared.manifestDigest, attemptToken, execution->exitCode, reusePolicy,
+        ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss, discard,
         ExternalToolResultCachePublication::NotAttempted, waitedForCacheKeyLock,
         execution->invoked, execution->commandExecutions});
   if (execution->exitCode != 0)
     return seal(ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest, *attemptToken, execution->exitCode,
-        reusePolicy, ExternalToolResultCacheAvailability::Available,
+        prepared.manifestDigest, attemptToken, execution->exitCode, reusePolicy,
+        ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss, discard,
         ExternalToolResultCachePublication::NotAttempted, waitedForCacheKeyLock,
         true, std::move(execution->commandExecutions)});
   if (discard == ExternalToolResultCacheDiscard::Failed)
     return seal(ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest, *attemptToken, 0, reusePolicy,
+        prepared.manifestDigest, attemptToken, 0, reusePolicy,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss, discard,
         ExternalToolResultCachePublication::Failed, waitedForCacheKeyLock, true,
         execution->commandExecutions});
-  auto postflight = runScript(prepared, CacheScriptMode::Postflight,
-                              executionControl, *attemptToken);
+  auto postflight =
+      runScript(prepared, CacheScriptMode::Postflight, executionControl,
+                attemptToken, bundleRoot, executionFence);
   if (!postflight) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     llvm::toString(postflight.takeError()));
     return seal(ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest, *attemptToken, 0, reusePolicy,
+        prepared.manifestDigest, attemptToken, 0, reusePolicy,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss, discard,
         ExternalToolResultCachePublication::Failed, waitedForCacheKeyLock, true,
@@ -1472,10 +1781,10 @@ executeExternalToolInvocationBundleObserved(
   }
   if (postflight->exitCode == externalToolExecutionStoppedExitCode) {
     if (llvm::Error error = revokeCompletedExecutionAfterStoppedPostflight(
-            prepared, *attemptToken))
+            prepared, attemptToken, bundleRoot))
       return std::move(error);
     return seal(ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest, *attemptToken,
+        prepared.manifestDigest, attemptToken,
         externalToolExecutionStoppedExitCode, reusePolicy,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss, discard,
@@ -1486,13 +1795,20 @@ executeExternalToolInvocationBundleObserved(
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     "invocation inputs or tool changed during execution");
     return seal(ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest, *attemptToken, 0, reusePolicy,
+        prepared.manifestDigest, attemptToken, 0, reusePolicy,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss, discard,
         ExternalToolResultCachePublication::Failed, waitedForCacheKeyLock, true,
         execution->commandExecutions});
   }
-  auto postflightKey = deriveExternalToolResultCacheKey(prepared);
+  auto postflightLoaded =
+      loadPreparedInvocationManifestFromRoot(prepared, bundleRoot);
+  auto postflightKey = postflightLoaded
+                           ? deriveExternalToolResultCacheKeyFromManifest(
+                                 prepared, postflightLoaded->second,
+                                 bundleRootDescriptorPath(bundleRoot))
+                           : llvm::Expected<ExternalToolResultCacheKey>(
+                                 postflightLoaded.takeError());
   if (!postflightKey || *postflightKey != *key) {
     if (!postflightKey)
       cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
@@ -1501,7 +1817,7 @@ executeExternalToolInvocationBundleObserved(
       cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                       "cache-key material changed during execution");
     return seal(ExternalToolInvocationExecutionObservation{
-        prepared.manifestDigest, *attemptToken, 0, reusePolicy,
+        prepared.manifestDigest, attemptToken, 0, reusePolicy,
         ExternalToolResultCacheAvailability::Available,
         ExternalToolResultCacheLookup::Miss, discard,
         ExternalToolResultCachePublication::Failed, waitedForCacheKeyLock, true,
@@ -1509,8 +1825,8 @@ executeExternalToolInvocationBundleObserved(
   }
   ExternalToolResultCachePublication publication =
       ExternalToolResultCachePublication::Published;
-  if (llvm::Error error =
-          publishEntry(entry, prepared, loaded->second, *key, *attemptToken)) {
+  if (llvm::Error error = publishEntry(entry, bundleRoot, prepared,
+                                       loaded->second, *key, attemptToken)) {
     cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     llvm::toString(std::move(error)));
     publication = ExternalToolResultCachePublication::Failed;
@@ -1518,7 +1834,7 @@ executeExternalToolInvocationBundleObserved(
     cacheDiagnostic(DiagnosticVerbosity::Decision, "published", entry.string());
   }
   return seal(ExternalToolInvocationExecutionObservation{
-      prepared.manifestDigest, *attemptToken, 0, reusePolicy,
+      prepared.manifestDigest, attemptToken, 0, reusePolicy,
       ExternalToolResultCacheAvailability::Available,
       ExternalToolResultCacheLookup::Miss, discard, publication,
       waitedForCacheKeyLock, true, std::move(execution->commandExecutions)});

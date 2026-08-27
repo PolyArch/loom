@@ -13,7 +13,9 @@
 #include "PnR/SpatialMappingMaterializer.h"
 #include "PnR/SpatialPnrWorkLedger.h"
 #include "SpatialBindingRelationModel.h"
+#include "SpatialProgressIndex.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/Error.h"
@@ -22,6 +24,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <limits>
 #include <optional>
 #include <string>
@@ -641,6 +644,152 @@ restartInterrupted(SpatialPnrInterruptionStage stage,
   return result;
 }
 
+/// Emits one place-and-route report per restart on scope exit: per-phase
+/// elapsed time plus the final resource occupancy and congestion state of the
+/// observed candidate. Restart failure diagnostics carry the typed outcome
+/// separately; both join on the restart ordinal.
+class SpatialRestartReporter final {
+public:
+  explicit SpatialRestartReporter(std::uint32_t attempt) : attempt_(attempt) {}
+  SpatialRestartReporter(const SpatialRestartReporter &) = delete;
+  SpatialRestartReporter &operator=(const SpatialRestartReporter &) = delete;
+
+  ~SpatialRestartReporter() {
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
+        mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
+          fields["statistics_kind"] = "spatial_restart_report";
+          fields["restart"] = attempt_;
+          fields["seed_ns"] = seedNanoseconds;
+          fields["annealing_ns"] = annealingNanoseconds;
+          fields["exact_repair_ns"] = exactRepairNanoseconds;
+          fields["final_closure_ns"] = finalClosureNanoseconds;
+          fields["verification_ns"] = verificationNanoseconds;
+          const SpatialCandidateState *candidate_ =
+              observedCandidate_ ? observedCandidate_->get() : nullptr;
+          if (!candidate_ || !problem_)
+            return;
+          fields["unrouted_obligations"] =
+              candidate_->unroutedObligationCount();
+          fields["hard_progress_violation"] =
+              candidate_->hardProgressViolation();
+          fields["shared_finite_buffer_conflicts"] =
+              candidate_->progress().sharedFiniteBufferConflictCount();
+          fields["route_dependency_violations"] =
+              candidate_->progress().routeDependencyViolationCount();
+          fields["transport_closure_violation"] =
+              candidate_->hasTransportClosureViolation();
+          fields["atomic_capacity_overuse"] =
+              candidate_->atomicCapacityOveruse();
+          fields["static_schedule_pressure"] =
+              candidate_->staticSchedulePressure();
+          fields["route_capacity_overuse"] =
+              candidate_->routeCapacityOveruse();
+          fields["tag_unassigned"] = candidate_->tagUnassignedCount();
+          fields["tag_conflicts"] = candidate_->tagConflictCount();
+          fields["tag_resident_overuse"] =
+              candidate_->tagResidentCapacityOveruse();
+          fields["worst_route_arrival_delay_quanta"] =
+              candidate_->worstRouteArrivalDelayQuanta();
+          fields["total_route_negative_slack_quanta"] =
+              candidate_->totalRouteNegativeSlackQuanta();
+          const auto dimensions = problem_->resources().capacityDimensions();
+          std::uint64_t usedUnits = 0;
+          std::uint64_t totalUnits = 0;
+          std::uint64_t overusedDimensions = 0;
+          std::uint64_t maximumOveruse = 0;
+          for (PnrIndex dimension = 0; dimension < dimensions.size();
+               ++dimension) {
+            usedUnits += candidate_->routeCapacityUsageRaw(dimension);
+            totalUnits += dimensions[dimension].capacity;
+            const std::uint64_t overuse =
+                candidate_->routeCapacityOveruseRaw(dimension);
+            overusedDimensions += overuse != 0;
+            maximumOveruse = std::max(maximumOveruse, overuse);
+          }
+          fields["route_capacity_dimensions"] =
+              static_cast<std::uint64_t>(dimensions.size());
+          fields["route_capacity_used_units"] = usedUnits;
+          fields["route_capacity_total_units"] = totalUnits;
+          fields["route_capacity_overused_dimensions"] = overusedDimensions;
+          fields["route_capacity_maximum_overuse"] = maximumOveruse;
+          const auto contexts =
+              problem_->capacity().computeInstructionContextOveruse();
+          llvm::DenseSet<PnrIndex> usedContexts;
+          const std::size_t realizationCount =
+              problem_->realizations().computeRealizations().size();
+          for (PnrIndex realization = 0; realization < realizationCount;
+               ++realization)
+            usedContexts.insert(
+                candidate_->computeBinding(realization).instructionContext);
+          fields["compute_realizations"] =
+              static_cast<std::uint64_t>(realizationCount);
+          fields["compute_contexts_used"] =
+              static_cast<std::uint64_t>(usedContexts.size());
+          fields["compute_contexts_total"] =
+              static_cast<std::uint64_t>(contexts.size());
+          fields["finite_buffer_owners"] = static_cast<std::uint64_t>(
+              problem_->progressIndex().finiteBufferOwners().size());
+          if (auto witnesses =
+                  candidate_->progress().finiteBufferConflictWitnesses(
+                      *candidate_)) {
+            std::uint64_t routeArcAnchors = 0;
+            std::uint64_t attachmentAnchors = 0;
+            for (const SpatialFiniteBufferConflictWitness &witness :
+                 *witnesses)
+              for (const SpatialProgressRouteAnchor &anchor :
+                   witness.routeAnchors) {
+                if (anchor.kind ==
+                    SpatialProgressRouteAnchorKind::RouteTreeArc)
+                  ++routeArcAnchors;
+                else
+                  ++attachmentAnchors;
+              }
+            fields["conflict_witnesses"] =
+                static_cast<std::uint64_t>(witnesses->size());
+            fields["conflict_route_arc_anchors"] = routeArcAnchors;
+            fields["conflict_attachment_anchors"] = attachmentAnchors;
+          } else {
+            llvm::consumeError(witnesses.takeError());
+          }
+          fields["logical_nets"] = static_cast<std::uint64_t>(
+              problem_->transfers().logicalNets().size());
+        });
+  }
+
+  /// The annealing search may replace the seed's candidate handle with an
+  /// incumbent clone, so the reporter reads through the handle at emit time
+  /// instead of retaining a state pointer.
+  void observe(const SpatialCandidateStateHandle *candidate,
+               const FrozenSpatialPnrProblem *problem) {
+    observedCandidate_ = candidate;
+    problem_ = problem;
+  }
+
+  std::uint64_t &phase(std::uint64_t &slot) {
+    const auto now = std::chrono::steady_clock::now();
+    slot += std::chrono::duration_cast<std::chrono::nanoseconds>(now - mark_)
+                .count();
+    mark_ = now;
+    return slot;
+  }
+
+  void restartClock() { mark_ = std::chrono::steady_clock::now(); }
+
+  std::uint64_t seedNanoseconds = 0;
+  std::uint64_t annealingNanoseconds = 0;
+  std::uint64_t exactRepairNanoseconds = 0;
+  std::uint64_t finalClosureNanoseconds = 0;
+  std::uint64_t verificationNanoseconds = 0;
+
+private:
+  std::uint32_t attempt_;
+  const SpatialCandidateStateHandle *observedCandidate_ = nullptr;
+  const FrozenSpatialPnrProblem *problem_ = nullptr;
+  std::chrono::steady_clock::time_point mark_ =
+      std::chrono::steady_clock::now();
+};
+
 SpatialRestartResult runSpatialRestartImpl(
     const FrozenSpatialPnrProblemHandle &problem, std::uint32_t attempt,
     ExecutionControlView executionControl, SpatialRestartScratch &scratch,
@@ -649,7 +798,6 @@ SpatialRestartResult runSpatialRestartImpl(
   if (!preparedSeedHandoff && executionControl.stopRequested())
     return restartInterrupted(SpatialPnrInterruptionStage::SeedConstruction,
                               std::move(accounting));
-  accounting.plannedSeedAttemptSlots = 1;
   const SpatialPnrWorkLedgerView workLedger = canonicalWorkLedger(accounting);
   const auto &search = problem->config().policy().search;
   SpatialAnnealingSearchScratch &annealing = scratch.annealing;
@@ -657,6 +805,7 @@ SpatialRestartResult runSpatialRestartImpl(
   SpatialGlobalRoutingClosureScratch &finalClosure = scratch.finalClosure;
 
   SpatialPathFinderSeedWorkSummary seedWork;
+  const auto seedBegin = std::chrono::steady_clock::now();
   llvm::Expected<SpatialPathFinderSeed> seed = [&]() {
     if (!preparedSeedHandoff)
       return createPathFinderSpatialSeed(problem, attempt, seedWork);
@@ -686,11 +835,28 @@ SpatialRestartResult runSpatialRestartImpl(
         std::make_error_code(std::errc::invalid_argument),
         "Spatial seed handoff contains neither a seed nor a failure"));
   }();
+  SpatialRestartReporter reporter(attempt);
+  reporter.seedNanoseconds =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - seedBegin)
+          .count();
   std::optional<AttemptFailure> seedFailure;
   if (!seed)
     seedFailure.emplace(classifyAttemptFailure(seed.takeError()));
   const bool seedAttemptCompleted =
       !seedFailure || seedFailure->kind != AttemptFailureKind::Internal;
+  if (llvm::Error error = checkedAdd(seedWork.plannedSeedAttempts,
+                                     accounting.plannedSeedAttemptSlots,
+                                     "planned seed attempt slots"))
+    return restartInternal(
+        InternalSpatialPnrGenerationReason::AccountingOverflow,
+        std::move(accounting), std::move(error));
+  if (llvm::Error error =
+          checkedAdd(seedWork.seedAttempts, accounting.seedAttemptSlots,
+                     "seed attempt slots"))
+    return restartInternal(
+        InternalSpatialPnrGenerationReason::AccountingOverflow,
+        std::move(accounting), std::move(error));
   if (llvm::Error error =
           checkedAdd(seedWork.plannedInitializerAssignmentAttempts,
                      accounting.plannedInitializerAssignmentAttempts,
@@ -729,16 +895,12 @@ SpatialRestartResult runSpatialRestartImpl(
     return restartInternal(
         InternalSpatialPnrGenerationReason::AccountingOverflow,
         std::move(accounting), std::move(error));
-  if (seedWork.seedAttemptCompleted != seedAttemptCompleted)
+  if (seedWork.plannedSeedAttempts != 1 || seedWork.seedAttempts > 1 ||
+      (seedWork.seedAttempts != 0) != seedAttemptCompleted)
     return restartInternal(
         InternalSpatialPnrGenerationReason::SeedConstruction,
         std::move(accounting),
         "canonical seed owner completion disagrees with its typed outcome");
-  if (seedAttemptCompleted)
-    if (llvm::Error error = workLedger.consume(SpatialPnrWorkKind::SeedAttempt))
-      return restartInternal(
-          InternalSpatialPnrGenerationReason::AccountingOverflow,
-          std::move(accounting), std::move(error));
   if (executionControl.stopRequested())
     return restartInterrupted(SpatialPnrInterruptionStage::SeedConstruction,
                               std::move(accounting));
@@ -782,7 +944,10 @@ SpatialRestartResult runSpatialRestartImpl(
   }
 
   accounting.preparedSeeds = 1;
+  reporter.observe(&seed->candidate, problem.get());
+  reporter.restartClock();
   auto annealed = annealing.run(*seed, executionControl, workLedger);
+  reporter.phase(reporter.annealingNanoseconds);
   if (!annealed)
     return restartInternal(InternalSpatialPnrGenerationReason::Annealing,
                            std::move(accounting), annealed.takeError());
@@ -844,9 +1009,11 @@ SpatialRestartResult runSpatialRestartImpl(
             std::move(accounting), std::move(error));
       const std::uint64_t remainingSolverCalls =
           search.exactRepair.maxSolverCalls - accounting.exactRepairSolverCalls;
+      reporter.restartClock();
       auto repaired =
           repair.repair(*seed->candidate, attempt, remainingSolverCalls,
                         exactRepairStream, workLedger);
+      reporter.phase(reporter.exactRepairNanoseconds);
       if (!repaired)
         return restartInternal(InternalSpatialPnrGenerationReason::ExactRepair,
                                std::move(accounting), repaired.takeError());
@@ -895,7 +1062,9 @@ SpatialRestartResult runSpatialRestartImpl(
       return restartInternal(
           InternalSpatialPnrGenerationReason::AccountingOverflow,
           std::move(accounting), std::move(error));
+    reporter.restartClock();
     llvm::Error closureError = finalClosure.run(*seed->candidate, workLedger);
+    reporter.phase(reporter.finalClosureNanoseconds);
     emitFinalClosureHandshakeProjectionStatistics(
         finalClosure.handshakeProjectionStatistics(), attempt,
         accounting.finalClosureAttempts);
@@ -950,10 +1119,12 @@ SpatialRestartResult runSpatialRestartImpl(
     return restartInterrupted(
         SpatialPnrInterruptionStage::CandidateVerification,
         std::move(accounting), std::move(seed->candidate));
+  reporter.restartClock();
   if (llvm::Error error = seed->candidate->verify())
     return restartInternal(
         InternalSpatialPnrGenerationReason::CandidateVerification,
         std::move(accounting), std::move(error));
+  reporter.phase(reporter.verificationNanoseconds);
   emitActiveHandshakeStatistics(
       seed->candidate->handshake().materializationStatistics(), attempt);
   auto violation = firstFinalViolation(*seed->candidate);

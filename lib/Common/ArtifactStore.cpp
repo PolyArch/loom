@@ -378,6 +378,21 @@ llvm::Expected<CanonicalSemanticBytes>
 ArtifactStore::getExact(llvm::StringRef schemaIdentity,
                         SchemaVersion schemaVersion,
                         const ArtifactIdentity &identity) const {
+  {
+    std::lock_guard<std::mutex> lock(verifiedReads_->mutex);
+    const auto found = verifiedReads_->entries.find(identity);
+    if (found != verifiedReads_->entries.end()) {
+      if (found->second.schemaIdentity != schemaIdentity)
+        return storeError("artifact_schema_mismatch",
+                          "stored object schema identity does not match "
+                          "expected schema identity");
+      if (found->second.schemaVersion != schemaVersion)
+        return storeError("artifact_schema_mismatch",
+                          "stored object schema version does not match "
+                          "expected schema version");
+      return found->second.bytes;
+    }
+  }
   auto directoryOrError = openStoreDirectory(root_);
   if (!directoryOrError)
     return directoryOrError.takeError();
@@ -429,7 +444,29 @@ ArtifactStore::getExact(llvm::StringRef schemaIdentity,
   if (llvm::Error error = closeFile(directory, "store directory"))
     return std::move(error);
   closeDirectory.release();
-  return CanonicalSemanticBytes(std::move(canonicalBytes));
+  CanonicalSemanticBytes verified(std::move(canonicalBytes));
+  {
+    VerifiedReadCache &cache = *verifiedReads_;
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    if (!cache.entries.count(identity)) {
+      const std::size_t size = verified.bytes().size();
+      if (size <= verifiedReadByteBudget) {
+        while (cache.retainedBytes + size > verifiedReadByteBudget &&
+               !cache.order.empty()) {
+          const auto evicted = cache.entries.find(cache.order.front());
+          cache.retainedBytes -= evicted->second.bytes.bytes().size();
+          cache.entries.erase(evicted);
+          cache.order.pop_front();
+        }
+        cache.entries.emplace(
+            identity,
+            VerifiedRead{schemaIdentity.str(), schemaVersion, verified});
+        cache.order.push_back(identity);
+        cache.retainedBytes += size;
+      }
+    }
+  }
+  return verified;
 }
 
 } // namespace loom

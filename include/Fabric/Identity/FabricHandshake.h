@@ -517,6 +517,14 @@ compileHandshakeOwnerModels(const FabricArtifactView &view);
 llvm::Expected<FabricHandshakeContext>
 buildFabricHandshakeContext(const FabricArtifactView &view);
 
+/// Session-shared handshake context for one exact Fabric. When the ambient
+/// FabricArtifactImportSession exists, the context is built once per Fabric
+/// identity and every later acquisition revalidates the retained context
+/// against the caller's view; without a session the context is built fresh.
+/// The returned context is immutable and shared.
+llvm::Expected<std::shared_ptr<const FabricHandshakeContext>>
+acquireFabricHandshakeContext(const FabricArtifactView &view);
+
 llvm::Error
 revalidateFabricHandshakeContext(const FabricHandshakeContext &context,
                                  const FabricArtifactView &view);

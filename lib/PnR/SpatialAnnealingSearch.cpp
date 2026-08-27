@@ -81,11 +81,6 @@ spatialMappingIsExactRepairReady(const SpatialCandidateState &candidate) {
     const auto kind = static_cast<ResolvedPnrViolationKind>(ordinal);
     if (kind == ResolvedPnrViolationKind::CapacityOveruse)
       continue;
-    if (kind == ResolvedPnrViolationKind::HardProgressViolation) {
-      if (candidate.progress().routeDependencyViolationCount() != 0)
-        return false;
-      continue;
-    }
     auto value = spatialMappingViolationValue(candidate, kind);
     if (!value)
       return value.takeError();
@@ -586,6 +581,22 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                              SpatialActionOutcome::CachedInactive);
       continue;
     }
+    if (isIdentitySpatialAction(candidate, **action)) {
+      // A proven identity re-selection is the semantic no-op the probe would
+      // have discovered after the full transaction and closure. It draws no
+      // acceptance randomness either way, so pruning it here keeps the search
+      // trajectory identical while skipping the transaction.
+      rememberInactiveAction(actionKey);
+      if (llvm::Error error = addCount(statistics.semanticNoopActionCount, 1,
+                                       "semantic no-op Action"))
+        return std::move(error);
+      emitSpatialActionEvent(loom::mapping_debug::Event::ActionOutcome,
+                             **action, SpatialSearchScope::Calibration,
+                             seedAttemptOrdinal, slot, std::nullopt,
+                             std::nullopt, nullptr,
+                             SpatialActionOutcome::SemanticNoop);
+      continue;
+    }
 
     auto probe = actionExecutor_.probe(candidate, **action);
     if (!probe) {
@@ -769,6 +780,18 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                seedAttemptOrdinal, slot, temperatureLevel,
                                schedule->temperature(), nullptr,
                                SpatialActionOutcome::CachedInactive);
+        continue;
+      }
+      if (isIdentitySpatialAction(candidate, **action)) {
+        rememberInactiveAction(actionKey);
+        if (llvm::Error error = addCount(statistics.semanticNoopActionCount, 1,
+                                         "semantic no-op Action"))
+          return std::move(error);
+        emitSpatialActionEvent(loom::mapping_debug::Event::ActionOutcome,
+                               **action, SpatialSearchScope::Annealing,
+                               seedAttemptOrdinal, slot, temperatureLevel,
+                               schedule->temperature(), nullptr,
+                               SpatialActionOutcome::SemanticNoop);
         continue;
       }
 

@@ -43,7 +43,8 @@ llvm::Expected<SystemCandidateStateHandle> rebuildSystemCandidateRoutes(
     const SystemTransportRoutingAction &action,
     std::uint64_t &endpointExpansions, std::uint64_t &negotiationIterations,
     bool requireCapacityClosure,
-    std::optional<SystemRoutingReopenWitness> *reopenWitness = nullptr);
+    std::optional<SystemRoutingReopenWitness> *reopenWitness = nullptr,
+    PnrWorkLedgerView workLedger = {});
 
 } // namespace loom::pnr::detail
 

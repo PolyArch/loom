@@ -304,6 +304,11 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     return invalid("base ResolvedConfig already owns a DSE invocation plan");
   if (llvm::Error error = registerMappingGenerators())
     return std::move(error);
+  // Plan construction strict-imports every named System and Module root while
+  // building the bounded frontier and timing views. One session scoped to the
+  // build keeps the repeats as cache hits; ReuseEnclosing defers to any outer
+  // session so an enclosing execution stays the single cache owner.
+  fabric::FabricArtifactImportSession fabricImportSession;
   auto frontier =
       buildBoundedJointFrontier(std::move(inputs), policy, artifactStore);
   if (!frontier)
@@ -610,6 +615,10 @@ llvm::Expected<JointDesignExecution> executeJointDesignExploration(
   auto view = projectResolvedDseConfigView(plan.resolvedConfig);
   if (!view)
     return view.takeError();
+  // Every plan node strict-imports the same Fabric roots during generation,
+  // freeze and verification; one session over the whole execution keeps those
+  // as cache hits while ReuseEnclosing defers to an enclosing owner.
+  fabric::FabricArtifactImportSession fabricImportSession;
   const auto executionStart = std::chrono::steady_clock::now();
   auto execution = resumeDsePlan(*view, closure, journal, scheduler,
                                  executionPolicy, artifactStore, blobStore,

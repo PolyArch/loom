@@ -461,7 +461,8 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
     const ResolvedCandidateGeneratorBinding &binding,
     const PreparedExternalToolInvocation &prepared,
     const ExternalImplementationContractCatalog &contracts,
-    const ArtifactStore &artifacts, const BlobStore &blobs);
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolInvocationExecutionObservation *execution = nullptr);
 
 llvm::Expected<PreparedExternalToolInvocation>
 prepareProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
@@ -489,6 +490,20 @@ importProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                                      *contracts, artifacts, blobs);
 }
 
+llvm::Expected<CandidateGeneratorProviderResult> importProviderWithExecution(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &execution,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto contracts =
+      hardware::makeFpgaNativeExternalImplementationContractCatalog();
+  if (!contracts)
+    return contracts.takeError();
+  return importProviderWithContracts(inputBindings, binding, prepared,
+                                     *contracts, artifacts, blobs, &execution);
+}
+
 const CandidateGeneratorDescriptor kDescriptor{
     quartusPrimeStaticFullDeviceCandidateGeneratorKind,
     "eda.intel_altera.quartus_prime_static_full_device",
@@ -503,8 +518,9 @@ const CandidateGeneratorDescriptor kDescriptor{
 };
 
 const CandidateGeneratorProvider kProvider{
-    kDescriptor.reference(), CandidateGeneratorExternalPrepareImportProvider{
-                                 prepareProvider, importProvider}};
+    kDescriptor.reference(),
+    CandidateGeneratorExternalPrepareImportProvider{
+        prepareProvider, importProvider, importProviderWithExecution}};
 
 llvm::Expected<InvocationInputs> collectInvocationInputs(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
@@ -765,7 +781,8 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
     const ResolvedCandidateGeneratorBinding &binding,
     const PreparedExternalToolInvocation &prepared,
     const ExternalImplementationContractCatalog &contracts,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolInvocationExecutionObservation *execution) {
   auto inputs = collectInvocationInputs(inputBindings, binding, contracts,
                                         artifacts, blobs);
   if (!inputs)
@@ -781,7 +798,10 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
   }
   for (llvm::StringRef output : kDeclaredOutputPaths)
     expectation.declaredOutputs.push_back(output.str());
-  auto attempt = importExternalToolInvocationAttempt(prepared, expectation);
+  auto attempt =
+      execution ? importExternalToolInvocationAttempt(prepared, expectation,
+                                                      *execution)
+                : importExternalToolInvocationAttempt(prepared, expectation);
   if (!attempt)
     return attempt.takeError();
   if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))

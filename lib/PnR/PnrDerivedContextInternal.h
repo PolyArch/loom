@@ -26,7 +26,7 @@ struct FabricStaticContext final {
   std::shared_ptr<const FrozenSpatialResourceIndex> resources;
   std::shared_ptr<const FrozenEndpointRoutingTopology> routingTopology;
   std::shared_ptr<const FrozenSpatialTagContinuityIndex> tagContinuity;
-  ::loom::fabric::FabricHandshakeContext handshake;
+  std::shared_ptr<const ::loom::fabric::FabricHandshakeContext> handshake;
   std::optional<::loom::fabric::FabricTopologyQualityReport> topologyQuality;
 };
 

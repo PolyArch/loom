@@ -158,6 +158,13 @@ importCadenceInvocation(
     const external_tool::PreparedExternalToolInvocation &prepared,
     const CadenceBundleInputs &inputs);
 
+llvm::Expected<external_tool::ImportedExternalToolInvocationBundle>
+importCadenceInvocation(
+    const CadenceInvocationDescriptor &descriptor,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    const CadenceBundleInputs &inputs,
+    const external_tool::ExternalToolInvocationExecutionObservation &execution);
+
 llvm::Expected<std::string> readCadenceDeclaredOutput(
     const CadenceInvocationDescriptor &descriptor,
     const external_tool::ImportedExternalToolInvocationBundle &bundle,

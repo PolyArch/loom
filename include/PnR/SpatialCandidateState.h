@@ -536,6 +536,12 @@ private:
   SpatialRouteResourceState routeResources_;
   SpatialProgressState progressState_;
   SpatialTagAssignmentState tagAssignments_;
+  /// Switch handshake fragments of the committed route and Physical Tag state.
+  /// Rolled-back moves leave the committed state untouched, so the cache stays
+  /// valid across rejected proposals; each commit installs the fragments the
+  /// closing move already derived.
+  std::vector<PnrIndex> switchHandshakeFragmentBaseline_;
+  bool switchHandshakeFragmentBaselineValid_ = false;
   std::uint64_t unroutedObligationCount_ = 0;
   std::uint64_t atomicCapacityOveruse_ = 0;
   std::uint64_t staticSchedulePressure_ = 0;

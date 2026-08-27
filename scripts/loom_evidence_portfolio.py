@@ -659,7 +659,7 @@ def validate_portfolio_pair(
         closure_reasons.append("host_baseline_incomplete")
     if decision.get("final_application_qor_complete") is not True:
         closure_reasons.append("application_qor_incomplete")
-    if join_status != "exact":
+    if join_status not in {"exact", "owner_scoped_planning_closure"}:
         closure_reasons.append("invocation_manifest_join_incomplete")
 
     baseline_reasons, _ = _validate_objective_vector(

@@ -79,7 +79,8 @@ probeSystemAction(const SystemCandidateStateHandle &current,
                   const SystemMappingAction &action,
                   SystemActionProbeAccounting &accounting,
                   SystemActionExecutionContext context =
-                      SystemActionExecutionContext::NonFinal);
+                      SystemActionExecutionContext::NonFinal,
+                  PnrWorkLedgerView workLedger = {});
 
 } // namespace loom::pnr
 

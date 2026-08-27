@@ -667,11 +667,9 @@ strictImportModule(const ArtifactIdentity &identity,
     }
   }
 
-  auto rewritten = detail::writeCanonicalFabricBytecode(module);
-  if (!rewritten)
-    return rewritten.takeError();
-  if (*rewritten != decoded.canonicalMlirBytecode)
-    return invalid("canonical MLIR bytecode is not byte stable");
+  if (llvm::Error error = detail::verifyCanonicalFabricBytecodeStability(
+          module, decoded.canonicalMlirBytecode))
+    return std::move(error);
   detail::FabricEntityViewData boundaryProjection;
   boundaryProjection.owner.inventoryCounts = detail::emptyFabricInventories();
   if (llvm::Error error =
@@ -1613,11 +1611,9 @@ strictImportSystem(const ArtifactIdentity &identity,
   if (expectedOperation != labeling->canonicalOperationOrder.end())
     return invalid("canonical System child operation order is not canonical");
 
-  auto rewritten = detail::writeCanonicalFabricBytecode(module);
-  if (!rewritten)
-    return rewritten.takeError();
-  if (*rewritten != decoded.canonicalMlirBytecode)
-    return invalid("canonical System MLIR bytecode is not byte stable");
+  if (llvm::Error error = detail::verifyCanonicalFabricBytecodeStability(
+          module, decoded.canonicalMlirBytecode))
+    return std::move(error);
   auto view = buildSystemView(root, *labeling, identity, importedModules,
                               parsed->context);
   if (!view)

@@ -1,12 +1,13 @@
 // RUN: loom-dfg-sim %s --graph fence_retires_stream --arg 0=0 --arg 1=3 --arg 2=1 --output %t.json
 // RUN: FileCheck %s < %t.json
 
-// The retirement frontier reaches the stream's close through the new actor's
-// control event, so the graph is finalized and only the unmodeled contract
-// stops it. A close/reset rule that still enumerated load and store would
-// reject this graph before admission instead.
-// CHECK-DAG: "status": "unsupported"
-// CHECK-DAG: unsupported op: dataflow.fence
+// The retirement frontier reaches the stream's close through the fence's
+// control event, so the graph is finalized and completes. A close/reset rule
+// that still enumerated load and store would reject this graph before
+// admission instead.
+// CHECK-DAG: "status": "pass"
+// CHECK-DAG: "dataflow.fence": 1
+// CHECK-DAG: "dataflow.stream": 4
 
 module {
   dataflow.graph private @fence_retires_stream(

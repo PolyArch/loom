@@ -820,10 +820,10 @@ loom::pnr::detail::buildSystemServiceRoutes(
     if (request.repairRegion && request.repairRegion->leg == legOrdinal) {
       if (!builtLegs[legOrdinal])
         return invalid(
-            (llvm::Twine("repair region has no prior route selection for leg ") +
+            (llvm::Twine(
+                 "repair region has no prior route selection for leg ") +
              llvm::Twine(legOrdinal) + "; prior_routes=" +
-             (request.priorRoutes ? "present" : "absent") +
-             "; rerouted=" +
+             (request.priorRoutes ? "present" : "absent") + "; rerouted=" +
              (llvm::is_contained(request.reroutedLegs, legOrdinal) ? "yes"
                                                                    : "no"))
                 .str());
@@ -1080,7 +1080,7 @@ loom::pnr::detail::buildSystemServiceRoutes(
 }
 
 llvm::Error loom::pnr::detail::SystemServiceRouterScratch::prepare(
-    const FrozenSystemPnrProblem &problem) {
+    const FrozenSystemPnrProblem &problem, PnrWorkLedgerView workLedger) {
   preparedProblem_ = nullptr;
   auto atomicPatterns = buildAtomicPatternCatalog(problem.routingTopology());
   if (!atomicPatterns)
@@ -1090,7 +1090,7 @@ llvm::Error loom::pnr::detail::SystemServiceRouterScratch::prepare(
   if (!lowerBoundArcCosts)
     return lowerBoundArcCosts.takeError();
   if (llvm::Error error = endpointSearch_.prepare(
-          endpointRoutingGraphView(problem.routingTopology())))
+          endpointRoutingGraphView(problem.routingTopology()), workLedger))
     return error;
   if (llvm::Error error = lowerBoundArcCostRevisionOwner_.advance())
     return error;

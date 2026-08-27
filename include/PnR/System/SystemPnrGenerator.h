@@ -26,6 +26,16 @@
 namespace loom::pnr {
 
 struct SystemPnrGenerationAccounting final {
+  std::uint64_t plannedSeedAttemptSlots = 0;
+  std::uint64_t plannedInitializerAssignmentAttempts = 0;
+  std::uint64_t plannedEndpointExpansionSlots = 0;
+  std::uint64_t plannedNegotiationIterationSlots = 0;
+  std::uint64_t plannedCalibrationProposalSlots = 0;
+  std::uint64_t plannedAnnealingBaseProposalSlots = 0;
+  std::uint64_t plannedAnnealingMovableProposalSlots = 0;
+  std::uint64_t plannedExactRepairRegionDecisions = 0;
+  std::uint64_t plannedExactRepairSolverCalls = 0;
+  std::uint64_t plannedFinalClosureAttempts = 0;
   std::uint64_t migrationSeedAttemptSlots = 0;
   std::uint64_t migrationSeedPrepared = 0;
   std::uint64_t migrationSeedFallbacks = 0;
@@ -59,7 +69,25 @@ struct SystemPnrGenerationAccounting final {
 
   friend bool operator==(const SystemPnrGenerationAccounting &lhs,
                          const SystemPnrGenerationAccounting &rhs) {
-    return lhs.migrationSeedAttemptSlots == rhs.migrationSeedAttemptSlots &&
+    return lhs.plannedSeedAttemptSlots == rhs.plannedSeedAttemptSlots &&
+           lhs.plannedInitializerAssignmentAttempts ==
+               rhs.plannedInitializerAssignmentAttempts &&
+           lhs.plannedEndpointExpansionSlots ==
+               rhs.plannedEndpointExpansionSlots &&
+           lhs.plannedNegotiationIterationSlots ==
+               rhs.plannedNegotiationIterationSlots &&
+           lhs.plannedCalibrationProposalSlots ==
+               rhs.plannedCalibrationProposalSlots &&
+           lhs.plannedAnnealingBaseProposalSlots ==
+               rhs.plannedAnnealingBaseProposalSlots &&
+           lhs.plannedAnnealingMovableProposalSlots ==
+               rhs.plannedAnnealingMovableProposalSlots &&
+           lhs.plannedExactRepairRegionDecisions ==
+               rhs.plannedExactRepairRegionDecisions &&
+           lhs.plannedExactRepairSolverCalls ==
+               rhs.plannedExactRepairSolverCalls &&
+           lhs.plannedFinalClosureAttempts == rhs.plannedFinalClosureAttempts &&
+           lhs.migrationSeedAttemptSlots == rhs.migrationSeedAttemptSlots &&
            lhs.migrationSeedPrepared == rhs.migrationSeedPrepared &&
            lhs.migrationSeedFallbacks == rhs.migrationSeedFallbacks &&
            lhs.migrationPreservedThreadBindings ==
@@ -102,6 +130,12 @@ struct SystemPnrGenerationAccounting final {
            lhs.publicationSlots == rhs.publicationSlots;
   }
 };
+
+/// Verifies that every ledger counter is monotonic and, when requested, that
+/// no admitted logical slot remains live.
+llvm::Error
+verifySystemPnrWorkAccounting(const SystemPnrGenerationAccounting &accounting,
+                              bool requireClosedWork);
 
 struct GeneratedSystemMappings final {
   std::vector<ArtifactRootReference> candidates;
@@ -245,6 +279,11 @@ struct SystemPnrGenerationInputs final {
   const FinalizedSystemMappingMigrationSeed *migrationSeed = nullptr;
   const FinalizedSystemMappingCheckpointMigrationSeed *checkpointMigrationSeed =
       nullptr;
+  /// Upper bound on parallel fresh restart slots under the exhaustive
+  /// completion goal. Results are always reduced by original restart ordinal,
+  /// so this bound is scheduling only and cannot change candidate identity or
+  /// formal work accounting.
+  std::uint32_t candidateWorkerCount = 1;
 };
 
 /// Runs the canonical System PnR invocation for one exact D/F/R/H/C/K

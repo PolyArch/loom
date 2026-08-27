@@ -414,6 +414,9 @@ struct SystemSimulationRuntimeInput {
   std::vector<SystemExternalStreamInput> externalStreamInputs = {};
   std::vector<RuntimeMemoryObject> memoryObjects = {};
   std::vector<SystemMemoryInterfaceBindingEntry> memoryInterfaceBindings = {};
+  /// Optional input-owned guest simulation horizon. A missing value selects
+  /// the provider's conservative default budget.
+  std::optional<std::uint64_t> maximumSimulatedTicks = std::nullopt;
 };
 
 struct SystemMemoryInterfaceBindingDraft {
@@ -429,6 +432,7 @@ struct SystemSimulationRuntimeInputDraft {
   std::vector<SystemExternalStreamInput> externalStreamInputs = {};
   std::vector<RuntimeMemoryObject> memoryObjects = {};
   std::vector<SystemMemoryInterfaceBindingDraft> memoryInterfaceBindings = {};
+  std::optional<std::uint64_t> maximumSimulatedTicks = std::nullopt;
 };
 
 //===----------------------------------------------------------------------===//

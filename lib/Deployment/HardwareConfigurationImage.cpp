@@ -100,6 +100,29 @@ public:
     return projection;
   }
 
+  const FinalizedHardwareConfigurationImage *
+  findImage(const ArtifactRootReference &reference) {
+    ++statistics_.imageRequests;
+    const auto found =
+        llvm::find_if(imageEntries_, [&](const auto &entry) {
+          return entry.first == reference;
+        });
+    if (found == imageEntries_.end()) {
+      ++statistics_.imageCacheMisses;
+      return nullptr;
+    }
+    ++statistics_.imageCacheHits;
+    return &found->second;
+  }
+
+  void insertImage(const ArtifactRootReference &reference,
+                   const FinalizedHardwareConfigurationImage &image) {
+    if (imageEntries_.size() >= entryLimit_)
+      return;
+    imageEntries_.emplace_back(reference, image);
+    statistics_.imageEntryCount = imageEntries_.size();
+  }
+
   ConfigurationImageProjectionSessionStatistics statistics() const {
     return statistics_;
   }
@@ -108,6 +131,9 @@ private:
   const ArtifactStore *store_ = nullptr;
   std::size_t entryLimit_ = 0;
   std::vector<ConfigurationImageProjectionSessionEntry> entries_;
+  std::vector<std::pair<ArtifactRootReference,
+                        FinalizedHardwareConfigurationImage>>
+      imageEntries_;
   ConfigurationImageProjectionSessionStatistics statistics_;
 };
 
@@ -607,6 +633,10 @@ void emitConfigurationImageProjectionSessionStatistics(
         payload["deterministic_work"] = statistics.deterministicWork;
         payload["retained_bytes"] = statistics.retainedBytes;
         payload["entry_count"] = statistics.entryCount;
+        payload["image_requests"] = statistics.imageRequests;
+        payload["image_cache_hits"] = statistics.imageCacheHits;
+        payload["image_cache_misses"] = statistics.imageCacheMisses;
+        payload["image_entry_count"] = statistics.imageEntryCount;
         return llvm::json::Value(std::move(payload));
       });
 }
@@ -644,6 +674,14 @@ importHardwareConfigurationImage(const ArtifactRootReference &reference,
   if (reference.schemaIdentity != hardwareConfigurationImageSchema.identity ||
       reference.schemaVersion != hardwareConfigurationImageSchema.version)
     return invalid("root reference has the wrong schema descriptor");
+  detail::ConfigurationImageProjectionSessionState *session =
+      currentProjectionSession && currentProjectionSession->owns(store)
+          ? currentProjectionSession
+          : nullptr;
+  if (session)
+    if (const FinalizedHardwareConfigurationImage *cached =
+            session->findImage(reference))
+      return *cached;
   auto bytes = store.get(hardwareConfigurationImageSchema, reference.artifact);
   if (!bytes)
     return bytes.takeError();
@@ -672,13 +710,16 @@ importHardwareConfigurationImage(const ArtifactRootReference &reference,
       frameImage(parsed->draft, parsed->payloadBitCount, parsed->payload);
   if (!canonical.bytes().equals(bytes->bytes()))
     return invalid("stored image payload is not canonical");
-  return FinalizedHardwareConfigurationImage(
+  FinalizedHardwareConfigurationImage finalized(
       reference, std::move(*bytes),
       HardwareConfigurationImage(std::move(parsed->draft.configurationAbi),
                                  parsed->draft.programmingUnitId,
                                  std::move(parsed->draft.sourceMapping),
                                  parsed->payloadBitCount,
                                  std::move(parsed->payload)));
+  if (session)
+    session->insertImage(reference, finalized);
+  return finalized;
 }
 
 } // namespace loom::deployment
