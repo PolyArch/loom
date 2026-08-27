@@ -17,7 +17,9 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <ctime>
+#include <time.h>
+
+#include <chrono>
 #include <limits>
 #include <optional>
 #include <string>
@@ -36,27 +38,57 @@ constexpr CaseSubjectRoleRef kSpatialMappingRole(2);
 constexpr ModelOutputSlotRef kExecutionOutputSlot(0);
 constexpr ScopeFormRef kWholeExactCaseScope(0);
 
-std::optional<std::uint64_t> clockNanoseconds(std::clock_t before,
-                                              std::clock_t after) {
-  if (before == static_cast<std::clock_t>(-1) ||
-      after == static_cast<std::clock_t>(-1) || after < before)
-    return std::nullopt;
-  const long double nanoseconds = static_cast<long double>(after - before) *
-                                  1'000'000'000.0L /
-                                  static_cast<long double>(CLOCKS_PER_SEC);
-  if (nanoseconds < 0.0L ||
-      nanoseconds >
-          static_cast<long double>(std::numeric_limits<std::uint64_t>::max()))
-    return std::nullopt;
-  return static_cast<std::uint64_t>(nanoseconds);
+using MonotonicClock = std::chrono::steady_clock;
+
+std::uint64_t elapsedNanoseconds(MonotonicClock::time_point begin) {
+  const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      MonotonicClock::now() - begin);
+  return elapsed.count() <= 0 ? 0 : static_cast<std::uint64_t>(elapsed.count());
 }
 
-std::uint64_t wallNanoseconds(std::chrono::steady_clock::time_point before,
-                              std::chrono::steady_clock::time_point after) {
-  const auto elapsed =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(after - before)
-          .count();
-  return elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0;
+std::optional<std::uint64_t> processCpuNanoseconds() {
+  timespec current{};
+  if (::clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &current) != 0 ||
+      current.tv_sec < 0 || current.tv_nsec < 0 ||
+      current.tv_nsec >= 1'000'000'000)
+    return std::nullopt;
+  constexpr std::uint64_t nanosecondsPerSecond = 1'000'000'000;
+  const std::uint64_t seconds = current.tv_sec;
+  if (seconds > (std::numeric_limits<std::uint64_t>::max() -
+                 static_cast<std::uint64_t>(current.tv_nsec)) /
+                    nanosecondsPerSecond)
+    return std::nullopt;
+  return seconds * nanosecondsPerSecond + current.tv_nsec;
+}
+
+std::optional<std::uint64_t>
+elapsedProcessCpuNanoseconds(std::optional<std::uint64_t> begin) {
+  const std::optional<std::uint64_t> end = processCpuNanoseconds();
+  if (!begin || !end || *end < *begin)
+    return std::nullopt;
+  return *end - *begin;
+}
+
+struct AttemptIntervalStart final {
+  MonotonicClock::time_point wall;
+  std::optional<std::uint64_t> processCpuNanoseconds;
+};
+
+std::optional<AttemptIntervalStart> beginAttemptInterval(bool enabled) {
+  if (!enabled)
+    return std::nullopt;
+  return AttemptIntervalStart{MonotonicClock::now(), processCpuNanoseconds()};
+}
+
+void finishAttemptInterval(
+    const std::optional<AttemptIntervalStart> &begin,
+    std::uint64_t &wallNanoseconds,
+    std::optional<std::uint64_t> &processCpuNanoseconds) {
+  if (!begin)
+    return;
+  wallNanoseconds = elapsedNanoseconds(begin->wall);
+  processCpuNanoseconds =
+      elapsedProcessCpuNanoseconds(begin->processCpuNanoseconds);
 }
 
 std::optional<std::uint64_t>
@@ -409,13 +441,12 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
     return llvm::createStringError(
         std::errc::invalid_argument,
         "cgra_simulation_model_invalid: runtime input is not Spatial");
-  const auto inputLoadStart = std::chrono::steady_clock::now();
-  const std::clock_t inputLoadCpuStart = std::clock();
+  const auto setupBegin = beginAttemptInterval(attemptProfile != nullptr);
   RuntimeInputCgraMemoryProvider externalMemory(*spatialInput);
-  const std::clock_t inputLoadCpuEnd = std::clock();
-  const auto inputLoadEnd = std::chrono::steady_clock::now();
-  const auto engineStart = std::chrono::steady_clock::now();
-  const std::clock_t engineCpuStart = std::clock();
+  if (attemptProfile)
+    finishAttemptInterval(setupBegin, attemptProfile->inputLoadWallNanoseconds,
+                          attemptProfile->inputLoadCpuNanoseconds);
+  const auto engineBegin = beginAttemptInterval(attemptProfile != nullptr);
   auto outcome =
       workloadExecution
           ? sim::simulateCgraWorkload(*workloadExecution, workload,
@@ -424,17 +455,10 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
           : sim::simulateCgraWorkload(
                 execution, workload, runtimeInput, limits.maxEventFrames,
                 limits.executionDeadline, &externalMemory);
-  const std::clock_t engineCpuEnd = std::clock();
-  const auto engineEnd = std::chrono::steady_clock::now();
   if (attemptProfile) {
-    attemptProfile->inputLoadWallNanoseconds =
-        wallNanoseconds(inputLoadStart, inputLoadEnd);
-    attemptProfile->inputLoadCpuNanoseconds =
-        clockNanoseconds(inputLoadCpuStart, inputLoadCpuEnd);
-    attemptProfile->engineActiveWallNanoseconds =
-        wallNanoseconds(engineStart, engineEnd);
-    attemptProfile->engineActiveCpuNanoseconds =
-        clockNanoseconds(engineCpuStart, engineCpuEnd);
+    finishAttemptInterval(engineBegin,
+                          attemptProfile->engineActiveWallNanoseconds,
+                          attemptProfile->engineActiveCpuNanoseconds);
     attemptProfile->activeWallNanoseconds =
         attemptProfile->inputLoadWallNanoseconds +
         attemptProfile->engineActiveWallNanoseconds;
@@ -444,6 +468,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
     if (outcome)
       attemptProfile->counters = outcome->counters;
   }
+  const auto projectionBegin = beginAttemptInterval(attemptProfile != nullptr);
   if (!outcome)
     return classifyExecutionFailure(outcome.takeError(), unsupportedMemory);
   if (outcome->state == sim::SpatialExecutionSessionState::StoppedByLimit)
@@ -915,8 +940,6 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
         return llvm::json::Value(std::move(fields));
       });
 
-  const auto projectionStart = std::chrono::steady_clock::now();
-  const std::clock_t projectionCpuStart = std::clock();
   sim::SpatialSimulationExecution model{
       evaluationRequestReference(request),
       sim::RetiredExecution{},
@@ -930,32 +953,25 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                                              blobStore);
   if (!finalized)
     return finalized.takeError();
-  const std::clock_t projectionCpuEnd = std::clock();
-  const auto projectionEnd = std::chrono::steady_clock::now();
   if (attemptProfile) {
-    attemptProfile->observationProjectionWallNanoseconds =
-        wallNanoseconds(projectionStart, projectionEnd);
-    attemptProfile->observationProjectionCpuNanoseconds =
-        clockNanoseconds(projectionCpuStart, projectionCpuEnd);
+    finishAttemptInterval(projectionBegin,
+                          attemptProfile->observationProjectionWallNanoseconds,
+                          attemptProfile->observationProjectionCpuNanoseconds);
     attemptProfile->activeWallNanoseconds +=
         attemptProfile->observationProjectionWallNanoseconds;
     attemptProfile->processCpuNanoseconds =
         sumCpuNanoseconds(attemptProfile->processCpuNanoseconds,
                           attemptProfile->observationProjectionCpuNanoseconds);
   }
-  const auto publicationStart = std::chrono::steady_clock::now();
-  const std::clock_t publicationCpuStart = std::clock();
+  const auto publicationBegin = beginAttemptInterval(attemptProfile != nullptr);
   auto reference = sim::publishSimulationExecution(*finalized, artifactStore);
-  const std::clock_t publicationCpuEnd = std::clock();
-  const auto publicationEnd = std::chrono::steady_clock::now();
-  if (attemptProfile) {
-    attemptProfile->artifactPublicationWallNanoseconds =
-        wallNanoseconds(publicationStart, publicationEnd);
-    attemptProfile->artifactPublicationCpuNanoseconds =
-        clockNanoseconds(publicationCpuStart, publicationCpuEnd);
-  }
   if (!reference)
     return reference.takeError();
+  if (attemptProfile) {
+    finishAttemptInterval(publicationBegin,
+                          attemptProfile->artifactPublicationWallNanoseconds,
+                          attemptProfile->artifactPublicationCpuNanoseconds);
+  }
   std::vector<MetricResult> metrics;
   metrics.reserve(request.metricRequests().size());
   for (const MetricRequest &metric : request.metricRequests()) {
@@ -1152,22 +1168,27 @@ evaluateCgraSimulation(const PreparedCgraSimulationEvaluation &prepared,
   return std::move(evaluated->evidence);
 }
 
-llvm::Expected<CgraSimulationEvaluation> evaluateCgraSimulationWithDiagnostics(
+namespace {
+
+llvm::Expected<CgraSimulationEvaluation>
+evaluateCgraSimulationWithDiagnosticsImpl(
     const PreparedCgraSimulationEvaluation &prepared,
     CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
-    const BlobStore &blobStore) {
+    const BlobStore &blobStore, bool collectAttemptProfile) {
   RequestVerifier verifier(prepared.resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
   std::optional<sim::CgraClosedWaitSetDiagnostic> closedWait;
   std::optional<sim::CgraUnsupportedMemoryContract> unsupportedMemory;
-  CgraSimulationAttemptProfile attemptProfile;
+  std::optional<CgraSimulationAttemptProfile> attemptProfile;
+  if (collectAttemptProfile)
+    attemptProfile.emplace();
   auto result = evaluateWithPrepared(
       prepared.request, prepared.resolution, prepared.execution,
       prepared.workload, prepared.runtimeInput, std::move(limits),
       artifactStore, blobStore, &prepared.workloadExecution,
       &prepared.executionContext, &closedWait, &unsupportedMemory,
-      &attemptProfile);
+      attemptProfile ? &*attemptProfile : nullptr);
   if (!result)
     return result.takeError();
   auto evidence = EvaluationEvidence::get(
@@ -1179,6 +1200,25 @@ llvm::Expected<CgraSimulationEvaluation> evaluateCgraSimulationWithDiagnostics(
   return CgraSimulationEvaluation{std::move(*evidence), std::move(closedWait),
                                   std::move(unsupportedMemory),
                                   std::move(attemptProfile)};
+}
+
+} // namespace
+
+llvm::Expected<CgraSimulationEvaluation> evaluateCgraSimulationWithDiagnostics(
+    const PreparedCgraSimulationEvaluation &prepared,
+    CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore) {
+  return evaluateCgraSimulationWithDiagnosticsImpl(
+      prepared, std::move(limits), artifactStore, blobStore, false);
+}
+
+llvm::Expected<CgraSimulationEvaluation>
+evaluateCgraSimulationWithAttemptProfile(
+    const PreparedCgraSimulationEvaluation &prepared,
+    CgraSimulationAttemptLimits limits, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore) {
+  return evaluateCgraSimulationWithDiagnosticsImpl(
+      prepared, std::move(limits), artifactStore, blobStore, true);
 }
 
 } // namespace loom::evaluation::models

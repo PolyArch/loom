@@ -10,11 +10,11 @@ identity, finalization, and publication.
 The current persistent family is:
 
 ```text
-loom.fabric 6.0
+loom.fabric 7.0
 
 ArtifactSchemaDescriptor {
   identity = "loom.fabric"
-  version = 6.0
+  version = 7.0
 }
 
 FabricRoot =
@@ -80,8 +80,19 @@ longer collapse to the same template-local owner. The hardware-domain record,
 canonical System relation, typed member codec, and derived effective-domain
 queries all use that one `FabricHardwareDomainMemberRef` contract.
 Reinterpreting a Version 5.0 member would lose occurrence identity, so the
-current owner accepts and emits only the exact `loom.fabric 6.0` descriptor.
-There is no 5.x compatibility owner, fallback importer, or in-place upgrade.
+Version 6.0 owner accepted and emitted only its exact descriptor. There was no
+5.x compatibility owner, fallback importer, or in-place upgrade.
+
+Version 7.0 is one atomic breaking boundary for programmable System transport
+configuration. A resource explicitly authored with `Configuration` pattern
+selection owns one direct semantic field whose bit positions are its exact
+canonical pattern ordinals. `Dynamic` selection owns no field regardless of
+pattern count. The complete Interconnect refinement, packed ConfigurationABI,
+and SystemMapping configured projection all consume that field.
+Reinterpreting a Version 6.0 System would change its field inventory while
+retaining the same root identity, so the current owner accepts and emits only
+the exact `loom.fabric 7.0` descriptor. There is no 6.x compatibility owner,
+fallback importer, or in-place upgrade.
 
 The 4.0 `fabric.system.connection` relation retains both its Transport and
 MemoryService variants from 3.0. These remain required operation-service
@@ -116,7 +127,7 @@ a known root variant, that variant fails closed as
 `Unsupported(FabricRootProviderUnavailable)`. It cannot fall back to another
 root operation. This is distinct from
 `fabric_artifact_owner_contract_unavailable`, which means the schema itself has
-no enabled owner contract, as for `ImplementationInput` in schema 6.x.
+no enabled owner contract, as for `ImplementationInput` in schema 7.x.
 
 There is no persistent finalized-design wrapper, separate family per variant,
 or generic hardware manifest.
@@ -130,37 +141,37 @@ dependency, it stores the dependency-table ordinal plus that owner's canonical
 local target bytes. This compact form mechanically recovers the complete
 `ArtifactReference<T>` and does not create another reference authority.
 
-The dependency-role catalog remains unchanged in `loom.fabric 6.0`:
+The dependency-role catalog remains unchanged in `loom.fabric 7.0`:
 
 ```text
 ImportedModule       = 0
 RefinedSystem        = 1
-ImplementationInput  = 2  // reserved-unavailable in schema 6.x
+ImplementationInput  = 2  // reserved-unavailable in schema 7.x
 ```
 
 A `Module` root admits no direct dependency: every authoring template use is
 fully elaborated into the canonical Module and no `fabric.instantiate`
 survives. A `System` root admits only `ImportedModule`. An
 `InterconnectImplementation` root admits exactly one `RefinedSystem` and no
-other direct dependency in schema 6.x. `ImplementationInput = 2` retains its
-wire ordinal so schema 6.x never renumbers a published discriminant, but it has
+other direct dependency in schema 7.x. `ImplementationInput = 2` retains its
+wire ordinal so schema 7.x never renumbers a published discriminant, but it has
 no accepted artifact family, schema version, root kind, owner-local target
-kind, or dependency-use contract in schema 6.x. It is therefore not an enabled
+kind, or dependency-use contract in schema 7.x. It is therefore not an enabled
 dependency role and cannot appear in a canonical Fabric root.
 
-The enabled schema-6.0 dependency contracts are exact:
+The enabled schema-7.0 dependency contracts are exact:
 
 ```text
 ImportedModule:
-  owner schema = loom.fabric 6.0
+  owner schema = loom.fabric 7.0
   required root = Module
 
 RefinedSystem:
-  owner schema = loom.fabric 6.0
+  owner schema = loom.fabric 7.0
   required root = System
 ```
 
-A pre-6.0 Module has no 6.0 dependency contract and is rejected rather than
+A pre-7.0 Module has no 7.0 dependency contract and is rejected rather than
 republished under a new identity without exact finalization.
 Likewise, a `RefinedSystem` dependency cannot cross a Fabric schema version or
 name a Module or InterconnectImplementation root. A later compatible Fabric
@@ -180,7 +191,7 @@ ordinal alone never owns those facts.
 
 Dependency use is determined by the static field that contains the compact
 reference. There is no generic dependency-use tag, path, or property bag. The
-closed schema 6.x field catalog is:
+closed schema 7.x field catalog is:
 
 ```text
 System AccCore spatial_core
@@ -299,7 +310,7 @@ The exact Fabric canonical semantic bytes passed to the Common Artifact
 SHA-256 v1 finalizer are:
 
 ```text
-bytes("loom.fabric.semantic.v6\0")
+bytes("loom.fabric.semantic.v7\0")
 || u32be(root_variant)
 || u64be(direct_dependency_count)
 || repeated direct_dependency_count times {
@@ -317,7 +328,7 @@ bytes("loom.fabric.semantic.v6\0")
 Root variant ordinals are `Module = 0`, `System = 1`, and
 `InterconnectImplementation = 2`. The dependency-role ordinals above and the
 root ordinals are preserved from schema 4.x and immutable throughout schema
-6.x. Counts and lengths are unsigned big-endian values, there is no padding or
+7.x. Counts and lengths are unsigned big-endian values, there is no padding or
 native layout, and the decoder rejects truncation, trailing bytes, noncanonical
 dependency order, duplicates, unused rows, and payload references outside the
 dependency table.
@@ -328,7 +339,7 @@ The MLIR payload encodes each external root use as a `u64be` dependency-table
 ordinal followed by the referenced owner's canonical local target bytes when
 a target is required. It does not repeat an ArtifactIdentity. The Fabric
 semantic envelope does not repeat its own schema descriptor because the Common
-identity preimage already owns that framing. The `v6` semantic-domain marker
+identity preimage already owns that framing. The `v7` semantic-domain marker
 therefore identifies the major-version envelope grammar; it is not a wildcard
 minor-version admission rule. `fabricArtifactSchema` remains the sole owner of
 the complete current version, and strict import compares the root reference
@@ -684,6 +695,26 @@ redefine them.
 These owners may reference a Fabric artifact. They may not copy its topology,
 capability, identity catalog, or canonicalization rules.
 
+### Implementation Responsibility Review
+
+`lib/Fabric/Artifact/FabricArtifact.cpp` is the transaction composition owner
+for Module/System finalization and strict import. It assembles the canonical
+root view, runs the complete owner validation sequence, and publishes only the
+root that the same strict importer reconstructs. Bytecode framing, dependency
+closure, canonical labeling and materialization, Module view helpers, System
+validation, interconnect realization, configuration-field relations, and
+import-session caching already have independent modules and remain outside
+this composition owner.
+
+The remaining Module and System paths intentionally stay together because
+they share one strict-import result, one dependency-resolution transaction,
+and one publication invariant. Splitting either path further would require a
+new intermediate view or pass-through protocol with no independent semantic
+owner. That would duplicate or disperse the strict-import authority rather
+than improve cohesion. The file therefore remains above the ordinary review
+threshold after this responsibility review; future extraction is warranted
+only when a new independently testable semantic owner appears.
+
 ## Anchor Verification
 
 Anchor tests cover:
@@ -695,7 +726,7 @@ Anchor tests cover:
 * wrong-kind, foreign, duplicate, cyclic, and missing direct references;
 * fixed byte vectors for every root variant, zero and multiple dependencies,
   dependency-table target uses, and malformed count or length framing;
-* the `loom.fabric.semantic.v6` envelope, Module slot/assignment relation,
+* the `loom.fabric.semantic.v7` envelope, Module slot/assignment relation,
   System occurrence-slot membership, and memory-plane spatial service binding
   changing identity exactly when their semantic content changes;
 * strict field-owned dependency-use decoding, target re-encoding, and

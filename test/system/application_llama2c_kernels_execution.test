@@ -5,6 +5,7 @@
 # RUN:   --loom-portfolio-repository-root=%S/../.. \
 # RUN:   --loom-portfolio-application=llama2c-kernels \
 # RUN:   --loom-portfolio-input=smoke \
+# RUN:   --loom-mapping-wall-time-limit-ms=%loom-timeout-medium-ms \
 # RUN:   --loom-deploy-output=%t.deployment \
 # RUN:   > %t.build.stdout 2> %t.build.stderr
 # RUN: env LOOM_VERBOSE_LEVEL=1 loom-system-run \

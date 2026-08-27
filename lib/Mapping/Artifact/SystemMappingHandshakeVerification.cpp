@@ -443,7 +443,8 @@ llvm::Error verifySystemMappingHandshakeClosure(
   if (!contexts)
     return contexts.takeError();
   std::map<std::string, SpatialMappingView> mappings;
-  std::map<ArtifactIdentity::Storage, ::loom::fabric::FabricHandshakeContext>
+  std::map<ArtifactIdentity::Storage,
+           std::shared_ptr<const ::loom::fabric::FabricHandshakeContext>>
       handshakeContexts;
   std::map<std::string, std::vector<BoundaryHandshakeArc>>
       boundaryArcsByMapping;
@@ -473,16 +474,17 @@ llvm::Error verifySystemMappingHandshakeClosure(
       auto handshakeContext =
           handshakeContexts.find(module->identity().bytes());
       if (handshakeContext == handshakeContexts.end()) {
-        auto built = ::loom::fabric::buildFabricHandshakeContext(*module);
-        if (!built)
-          return built.takeError();
+        auto acquired = ::loom::fabric::acquireFabricHandshakeContext(*module);
+        if (!acquired)
+          return acquired.takeError();
         handshakeContext =
             handshakeContexts
-                .emplace(module->identity().bytes(), std::move(*built))
+                .emplace(module->identity().bytes(), std::move(*acquired))
                 .first;
       }
-      auto derived = deriveModuleBoundaryArcs(
-          *module, found->second, handshakeContext->second, executionControl);
+      auto derived =
+          deriveModuleBoundaryArcs(*module, found->second,
+                                   *handshakeContext->second, executionControl);
       if (!derived)
         return derived.takeError();
       boundaryArcs =

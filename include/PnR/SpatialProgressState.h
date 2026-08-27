@@ -63,9 +63,13 @@ public:
   std::uint64_t routeDependencyViolationCount() const {
     return routeDependencyViolationCount_;
   }
+  /// Shared finite-buffer residency is a typed unproven-recurrence fact, not
+  /// a Spatial violation: the ordinary Mapping remains importable while the
+  /// unestablished recurrence withholds Dataflow spectrum qualification, and
+  /// the router prices foreign residency as negotiable congestion. Only route
+  /// dependency violations remain hard progress violations.
   std::uint64_t hardProgressViolation() const {
-    return sharedFiniteBufferConflictCount_ +
-           routeDependencyViolationCount_;
+    return routeDependencyViolationCount_;
   }
   PnrIndex finiteBufferOwnerLogicalNetCount(PnrIndex owner) const;
   bool finiteBufferOwnerConflicts(PnrIndex owner) const;

@@ -1,1 +1,2 @@
-# RUN: %loom-dse-fu-reverse-synthesis-workflow-test
+# RUN: %loom-dse-fu-reverse-synthesis-workflow-test \
+# RUN:   %S/../../examples/fu-reverse-synthesis/integer-add-sub.mlir

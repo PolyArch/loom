@@ -442,9 +442,8 @@ materializeMapping(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   if (const auto *generated =
           std::get_if<::loom::mapping::GeneratedTechMappings>(&outcome)) {
     if (generated->candidates.empty())
-      return MappingMaterializationAttempt{
-          std::nullopt, FuReverseSynthesisFailure::MappingInfeasible,
-          "TechMapping produced no coverage candidate"};
+      return failure(FuReverseSynthesisFailure::MappingInternal,
+                     "TechMapping returned an empty Generated outcome");
     auto imported = ::loom::mapping::importTechMapping(
         generated->candidates.front(), store);
     if (!imported)
@@ -455,9 +454,9 @@ materializeMapping(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   }
   if (std::holds_alternative<::loom::mapping::ProvenInfeasibleTechMapping>(
           outcome))
-    return MappingMaterializationAttempt{
-        std::nullopt, FuReverseSynthesisFailure::MappingInfeasible,
-        "TechMapping proved the synthesized FU infeasible"};
+    return failure(FuReverseSynthesisFailure::MappingInternal,
+                   "TechMapping infeasibility contradicts the synthesized "
+                   "FU coverage witness");
   if (const auto *interrupted =
           std::get_if<::loom::mapping::InterruptedTechMappingGeneration>(
               &outcome)) {
@@ -680,12 +679,62 @@ llvm::Error verifyMaterializedJointCoverage(
 
 char FuReverseSynthesisError::ID = 0;
 
+llvm::StringRef
+fuReverseSynthesisFailureSpelling(FuReverseSynthesisFailure failure) {
+  switch (failure) {
+  case FuReverseSynthesisFailure::EmptyGraphSet:
+    return "empty_graph_set";
+  case FuReverseSynthesisFailure::InvalidGraphReference:
+    return "invalid_graph_reference";
+  case FuReverseSynthesisFailure::DuplicateGraph:
+    return "duplicate_graph";
+  case FuReverseSynthesisFailure::UnsupportedGraphInterface:
+    return "unsupported_graph_interface";
+  case FuReverseSynthesisFailure::UnsupportedActorInventory:
+    return "unsupported_actor_inventory";
+  case FuReverseSynthesisFailure::UnsupportedActorSchema:
+    return "unsupported_actor_schema";
+  case FuReverseSynthesisFailure::UnsupportedActorProjection:
+    return "unsupported_actor_projection";
+  case FuReverseSynthesisFailure::UnsupportedGraphTopology:
+    return "unsupported_graph_topology";
+  case FuReverseSynthesisFailure::UnsupportedGraphReachability:
+    return "unsupported_graph_reachability";
+  case FuReverseSynthesisFailure::CapabilityDerivationRejected:
+    return "capability_derivation_rejected";
+  case FuReverseSynthesisFailure::FabricFinalizationFailed:
+    return "fabric_finalization_failed";
+  case FuReverseSynthesisFailure::MappingInfeasible:
+    return "mapping_infeasible";
+  case FuReverseSynthesisFailure::MappingIncomplete:
+    return "mapping_incomplete";
+  case FuReverseSynthesisFailure::CancelledOrTimeout:
+    return "cancelled_or_timeout";
+  case FuReverseSynthesisFailure::MappingInvalid:
+    return "mapping_invalid";
+  case FuReverseSynthesisFailure::MappingInternal:
+    return "mapping_internal";
+  case FuReverseSynthesisFailure::CoverageNotEstablished:
+    return "coverage_not_established";
+  }
+  llvm_unreachable("closed reverse synthesis failure");
+}
+
 void FuReverseSynthesisError::log(llvm::raw_ostream &stream) const {
   stream << message_;
 }
 
 std::error_code FuReverseSynthesisError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
+}
+
+llvm::Error verifyScalarIntegerAddSubFuSynthesisDomain(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::GraphRef> graphs) {
+  auto prepared = prepareSynthesisDomain(dataflow, graphs);
+  if (!prepared)
+    return prepared.takeError();
+  return llvm::Error::success();
 }
 
 llvm::Expected<const FuSynthesisCoverageWitness *>

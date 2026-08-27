@@ -4,12 +4,14 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricSemanticFieldRelation.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <map>
 #include <string>
 #include <utility>
@@ -53,6 +55,65 @@ qualifyFields(const ConfiguredHardwareProjectionView &projection,
     if (!slot)
       return slot.takeError();
     result.push_back({std::move(*slot), field.value});
+  }
+  return result;
+}
+
+llvm::Expected<std::vector<PhysicalConfiguredHardwareFieldValueView>>
+deriveDirectSystemFields(const SystemMappingView &mapping,
+                         const ::loom::fabric::FabricSystemRootView &system) {
+  std::map<::loom::fabric::FabricEntityId,
+           std::vector<::loom::fabric::FabricTransferPatternRef>>
+      selectedByResource;
+  for (const SystemServiceRealizationView &service :
+       mapping.serviceRealizations())
+    for (const SystemServicePlanView &plan : service.plans)
+      for (const SystemTransferLegView &leg : plan.transferLegs)
+        for (const SystemTransferRouteNodeView &node : leg.nodes) {
+          const auto *payload =
+              std::get_if<::loom::fabric::FabricTransferPatternLegPayload>(
+                  &node.incomingTraversal.payload);
+          if (payload)
+            selectedByResource[payload->owner.resource.id()].push_back(
+                payload->owner);
+        }
+
+  std::vector<PhysicalConfiguredHardwareFieldValueView> result;
+  for (const auto resource : system.transportResources()) {
+    const ::loom::fabric::FabricInventoryOwnerRef owner =
+        ::loom::fabric::FabricInventoryOwnerRef::of(resource);
+    const std::uint64_t fieldCount = system.artifact().inventorySize(
+        owner, ::loom::fabric::FabricInventoryKind::SemanticConfigField);
+    if (fieldCount == 0)
+      continue;
+    if (fieldCount != 1)
+      return invalid("System transport resource has an unsupported "
+                     "configuration field inventory");
+
+    auto &selected = selectedByResource[resource.id()];
+    std::sort(selected.begin(), selected.end(),
+              [](const auto &left, const auto &right) {
+                return left.ordinal < right.ordinal;
+              });
+    selected.erase(std::unique(selected.begin(), selected.end()),
+                   selected.end());
+    const ::loom::fabric::FabricSemanticConfigFieldRef field{
+        ::loom::fabric::FabricConfigurationOwnerRef(owner), 0};
+    auto value = ::loom::fabric::encodeSystemTransportResourceConfiguration(
+        system.artifact(), field, selected);
+    if (!value)
+      return value.takeError();
+    auto residencies = system.artifact().configurationResidencies(field);
+    if (!residencies)
+      return residencies.takeError();
+    for (const ::loom::fabric::FabricConfigurationResidency &residency :
+         *residencies) {
+      auto slot = ::loom::fabric::FabricPhysicalConfigurationSlotRef::create(
+          ::loom::fabric::FabricConfigurationSlotRef{field, residency});
+      if (!slot)
+        return slot.takeError();
+      result.push_back({std::move(*slot), *value});
+    }
   }
   return result;
 }
@@ -107,6 +168,18 @@ qualifyConfiguredHardwareProjection(
 llvm::Expected<PhysicalConfiguredHardwareProjectionView>
 deriveConfiguredHardwareProjection(const FinalizedSystemMapping &mapping,
                                    const ArtifactStore &store) {
+  const ArtifactRootReference systemReference{
+      ::loom::fabric::fabricArtifactSchema.identity.str(),
+      ::loom::fabric::fabricArtifactSchema.version,
+      mapping.view().fabricIdentity()};
+  auto systemRoot =
+      ::loom::fabric::importEntireFabricRoot(systemReference, store);
+  if (!systemRoot)
+    return systemRoot.takeError();
+  auto system = ::loom::fabric::requireSystemRoot(systemRoot->view());
+  if (!system)
+    return system.takeError();
+
   const ArtifactRootReference dataflowReference{
       ::dataflow::canonicalDataflowSchema.identity.str(),
       ::dataflow::canonicalDataflowSchema.version,
@@ -124,9 +197,12 @@ deriveConfiguredHardwareProjection(const FinalizedSystemMapping &mapping,
     return contexts.takeError();
 
   std::map<std::string, FinalizedSpatialMapping> imported;
-  std::vector<PhysicalConfiguredHardwareFieldValueView> values;
-  for (const SystemSpatialContextDomain &domain :
-       contexts->spatialDomains) {
+  auto direct = deriveDirectSystemFields(mapping.view(), *system);
+  if (!direct)
+    return direct.takeError();
+  std::vector<PhysicalConfiguredHardwareFieldValueView> values =
+      std::move(*direct);
+  for (const SystemSpatialContextDomain &domain : contexts->spatialDomains) {
     const std::string mappingKey =
         byteKey(encodeArtifactRootReference(domain.spatialMapping));
     auto found = imported.find(mappingKey);

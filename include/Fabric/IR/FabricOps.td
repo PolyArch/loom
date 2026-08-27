@@ -695,7 +695,8 @@ def Fabric_SystemTransportResourceOp
   let arguments = (ins OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
       TypeAttrOf<FunctionType>:$function_type,
       DenseI8ArrayAttr:$resource_contract,
-      OptionalAttr<DenseI8ArrayAttr>:$clock_crossing);
+      OptionalAttr<DenseI8ArrayAttr>:$clock_crossing,
+      OptionalAttr<UnitAttr>:$configuration_selected_patterns);
 
   let assemblyFormat = [{
     `ports` `=` $function_type

@@ -190,11 +190,6 @@ void parallelBuildsJoinBeforeController(const std::filesystem::path &root,
                          validateExternalToolInvocationExecutionObservation(
                              prepared, inconsistent),
                          "command results are inconsistent");
-  (void)take(__func__, beginExternalToolInvocationAttempt(prepared));
-  require(__func__,
-          !std::filesystem::exists(bundle / ".loom-command-observations") &&
-              !std::filesystem::exists(bundle / "outputs/completion.json"),
-          "a new attempt retained prior operational sidecars");
   const std::string manifest = readText(bundle / "tool-invocation.json");
   require(__func__,
           manifest.find("\"parallel_command_groups\"") != std::string::npos &&

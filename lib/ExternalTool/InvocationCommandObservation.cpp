@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
-#include <filesystem>
 #include <limits>
 #include <optional>
 #include <string>
@@ -33,11 +32,11 @@ llvm::Error observationError(const llvm::Twine &detail) {
       "external_tool_command_observation_invalid: " + detail);
 }
 
-llvm::Expected<std::string>
-readObservationFile(const std::filesystem::path &path,
-                    std::uint64_t maximumBytes) {
+llvm::Expected<std::string> readObservationFile(int bundleRoot,
+                                                std::uint64_t maximumBytes) {
   const int descriptor =
-      ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+      ::openat(bundleRoot, kCommandObservationsPath.str().c_str(),
+               O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0)
     return observationError(llvm::Twine("cannot open command observations: ") +
                             std::strerror(errno));
@@ -120,14 +119,11 @@ llvm::Expected<std::uint64_t> parseWallNanoseconds(llvm::StringRef spelling) {
 llvm::Expected<std::vector<ExternalToolCommandExecutionObservation>>
 loadCommandExecutionObservations(const PreparedExternalToolInvocation &prepared,
                                  const BlobDigest &attemptToken,
-                                 std::uint64_t commandCount) {
+                                 std::uint64_t commandCount, int bundleRoot) {
   auto maximumBytes = observationByteLimit(commandCount);
   if (!maximumBytes)
     return maximumBytes.takeError();
-  auto contents =
-      readObservationFile(std::filesystem::path(prepared.bundleRoot) /
-                              kCommandObservationsPath.str(),
-                          *maximumBytes);
+  auto contents = readObservationFile(bundleRoot, *maximumBytes);
   if (!contents)
     return contents.takeError();
   llvm::SmallVector<llvm::StringRef, 16> lines;

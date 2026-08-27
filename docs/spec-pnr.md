@@ -872,6 +872,14 @@ a bypass path, co-location, or an unselected local alternative does not.
 Search and strict verification derive this inventory from the same Dataflow,
 TechMapping, Fabric, and selected edge dispositions.
 
+Two logical nets selecting one buffered FIFO occurrence leave that owner's
+recurrence unproven. That is a typed Mapping fact, not a Spatial violation:
+ordinary Mapping identity and base admission are unchanged, the closure
+records `ProofNotEstablished(finite_buffer_recurrence_not_established)`, and
+Dataflow spectrum qualification is withheld until an owner proves the shared
+occupancy, rate, and dequeue progress. `HardProgressViolation` counts only
+route dependency violations.
+
 ## Spatial Legality
 
 A Spatial candidate is base-legal only when all of the following hold:

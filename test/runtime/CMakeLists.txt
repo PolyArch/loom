@@ -43,8 +43,12 @@ add_executable(loom-runtime-gem5-simulation-binding-test
   Gem5SimulationBindingTest.cpp
 )
 
+target_include_directories(loom-runtime-gem5-simulation-binding-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/Artifact
+)
+
 target_link_libraries(loom-runtime-gem5-simulation-binding-test PRIVATE
-  LoomHardwareConfigurationTestSupport
+  LoomADGBuilder
   LoomRuntimePlatformBinding
   MLIRDataflow
   MLIRFabric

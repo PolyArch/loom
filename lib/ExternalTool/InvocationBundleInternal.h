@@ -110,6 +110,11 @@ constexpr llvm::StringLiteral kStdoutPath = "outputs/stdout.log";
 constexpr llvm::StringLiteral kStderrPath = "outputs/stderr.log";
 constexpr llvm::StringLiteral kToolVersionPath = "outputs/.loom-tool-version";
 constexpr llvm::StringLiteral kAttemptTokenPath = ".loom-attempt-token";
+constexpr llvm::StringLiteral kExecutionFenceSuffix = ".loom-execution.lock";
+constexpr llvm::StringLiteral kInheritedExecutionFenceArgument =
+    "--loom-inherited-execution-fence";
+constexpr int kInheritedExecutionFenceDescriptor = 198;
+constexpr int kInheritedBundleRootDescriptor = 199;
 constexpr llvm::StringLiteral kCommandObservationsPath =
     ".loom-command-observations";
 constexpr llvm::StringLiteral kCommandExecutionDirectory =
@@ -161,12 +166,30 @@ void writeParallelCommandGroups(
 llvm::Expected<std::vector<ExternalToolCommandExecutionObservation>>
 loadCommandExecutionObservations(const PreparedExternalToolInvocation &prepared,
                                  const BlobDigest &attemptToken,
-                                 std::uint64_t commandCount);
+                                 std::uint64_t commandCount, int bundleRoot);
 
 /// Opens the prepared root through the bundle integrity path and returns the
 /// exact canonical manifest bytes and parsed typed manifest.
 llvm::Expected<std::pair<std::string, InvocationManifestData>>
 loadPreparedInvocationManifest(const PreparedExternalToolInvocation &prepared);
+
+/// Validates and loads the prepared manifest through an already opened bundle
+/// root descriptor, preserving a caller-owned inode boundary.
+llvm::Expected<std::pair<std::string, InvocationManifestData>>
+loadPreparedInvocationManifestFromRoot(
+    const PreparedExternalToolInvocation &prepared, int bundleRoot);
+
+/// Loads the optional completion through a caller-owned bundle-root
+/// descriptor without reopening the logical bundle path.
+llvm::Expected<std::optional<InvocationCompletion>>
+loadOptionalInvocationCompletionFromRoot(int bundleRoot);
+
+/// Validates an observation against the exact bundle-root inode admitted for
+/// its live execution.
+llvm::Error validateExternalToolInvocationExecutionObservationFromRoot(
+    const PreparedExternalToolInvocation &prepared,
+    const ExternalToolInvocationExecutionObservation &observation,
+    int bundleRoot);
 
 /// The sole canonical completion serializer shared by the generated launcher
 /// and cache restoration.

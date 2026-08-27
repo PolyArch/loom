@@ -1645,6 +1645,7 @@ deriveFactsUncached(const EvaluationRequest &request,
                       stackBase,
                       kGem5StackBytes,
                       *memory,
+                      systemRuntime.maximumSimulatedTicks,
                       std::move(artifactDependencies),
                       std::move(blobDependencies)}};
 }

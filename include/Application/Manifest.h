@@ -8,6 +8,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -70,6 +71,9 @@ struct WorkloadExecutionProfile final {
   std::uint64_t measuredSamples;
   OracleCoverage oracleCoverage;
   std::uint64_t deadlineMilliseconds;
+  /// Optional upper bound for the guest simulation tick horizon. This is an
+  /// input contract, distinct from the host wall-time deadline.
+  std::optional<std::uint64_t> maximumSimulatedTicks;
 
   std::uint64_t totalSamples() const { return warmupSamples + measuredSamples; }
 };

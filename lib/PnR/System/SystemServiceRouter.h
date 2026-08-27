@@ -82,7 +82,8 @@ public:
   SystemServiceRouterScratch &operator=(SystemServiceRouterScratch &&) = delete;
   ~SystemServiceRouterScratch() = default;
 
-  llvm::Error prepare(const FrozenSystemPnrProblem &problem);
+  llvm::Error prepare(const FrozenSystemPnrProblem &problem,
+                      PnrWorkLedgerView workLedger = {});
 
   std::uint64_t heuristicCacheHitCount() const {
     return endpointSearch_.heuristicCacheHitCount();

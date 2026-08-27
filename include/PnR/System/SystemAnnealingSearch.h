@@ -88,7 +88,8 @@ class SystemAnnealingSearchScratch final {
 public:
   llvm::Expected<SystemAnnealingStatistics>
   run(SystemCandidateStateHandle &candidate, std::uint64_t seedAttemptOrdinal,
-      ExecutionControlView executionControl = {});
+      ExecutionControlView executionControl = {},
+      PnrWorkLedgerView workLedger = {});
 
 private:
   SystemActionDomainScratch actionDomain_;

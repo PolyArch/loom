@@ -19,6 +19,10 @@ from typing import Any
 from loom_evidence_portfolio import collect_portfolio_inventory, evaluate_portfolio
 
 
+FU_REVERSE_SYNTHESIS_PROJECTION_KIND = "fu_reverse_synthesis_workflow"
+FU_REVERSE_SYNTHESIS_PROJECTION_FORMAT = 1
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -240,6 +244,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
     resource_time_evaluations: list[dict[str, Any]] = []
     execution_matrix_observations: list[dict[str, Any]] = []
     migration_observations: list[dict[str, Any]] = []
+    fu_reverse_synthesis_workflow_projections: list[dict[str, Any]] = []
     record_kinds: dict[str, int] = {}
     for record in records:
         record_kind = record.get("__loom_record_kind", "root")
@@ -249,6 +254,19 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
         payload = record.get("payload")
         if not isinstance(payload, dict):
             payload = record
+        if (
+            record_kind in {"root", "standalone"}
+            and payload.get("projection_kind") == FU_REVERSE_SYNTHESIS_PROJECTION_KIND
+            and integer(payload.get("projection_format"))
+            == FU_REVERSE_SYNTHESIS_PROJECTION_FORMAT
+        ):
+            fu_reverse_synthesis_workflow_projections.append(
+                {
+                    key: value
+                    for key, value in payload.items()
+                    if key != "__loom_record_kind"
+                }
+            )
         if payload.get("schema") == "loom.execution_matrix_workspace.1.2":
             runs = payload.get("runs")
             if isinstance(runs, list):
@@ -1054,6 +1072,9 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
         "resource_time_evaluations": resource_time_evaluations,
         "execution_matrix_observations": execution_matrix_observations,
         "migration_observations": migration_observations,
+        "fu_reverse_synthesis_workflow_projections": (
+            fu_reverse_synthesis_workflow_projections
+        ),
     }
 
 

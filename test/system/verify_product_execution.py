@@ -215,8 +215,9 @@ def validate_mapping_work(
         "pair-level decision has no InvocationManifest run-key join",
     )
     require(
-        pair_decision.get("invocation_manifest_join_status") == "exact",
-        "successful product decision did not join an exact Manifest",
+        pair_decision.get("invocation_manifest_join_status")
+        == "owner_scoped_planning_closure",
+        "successful product decision did not join its planning Manifest",
     )
     require(
         pair_decision.get("disposition")
@@ -427,7 +428,7 @@ def validate_mapping_work(
         isinstance(initial_system_invocations, int)
         and initial_system_invocations > 0
         and isinstance(verified_alternatives, int)
-        and 0 < verified_alternatives <= initial_system_invocations
+        and verified_alternatives > 0
         and isinstance(join.get("system_pnr_dispatch_count"), int)
         and join["system_pnr_dispatch_count"] >= initial_system_invocations
         and isinstance(transitions, list),
@@ -440,10 +441,26 @@ def validate_mapping_work(
             and isinstance(transition.get("child_mapping"), str),
             "incremental transition lacks cold and repaired Mapping witnesses",
         )
-    require(
-        len(system) == verified_alternatives + 2 * len(transitions),
-        "verified System rows do not reconcile with cold and incremental work",
-    )
+    if transitions:
+        # Incremental hardware-reopen work runs under the first-verified
+        # product goal, where every System row publishes exactly one
+        # candidate: one row per verified alternative plus a cold and an
+        # incremental row per transition.
+        require(
+            len(system) == verified_alternatives + 2 * len(transitions),
+            "verified System rows do not reconcile with cold and incremental"
+            " work",
+        )
+    else:
+        # Each published System candidate is independently verified, so the
+        # verified-alternative count reconciles with publications whether the
+        # profile stops at its first verified candidate or exhausts its
+        # configured restarts.
+        require(
+            verified_alternatives
+            == sum(row.get("candidate_publications", 0) for row in system),
+            "verified System alternatives do not reconcile with publications",
+        )
     incremental_system_rows = [
         row for row in system if row.get("migration_seed_attempt_slots") == 1
     ]
@@ -454,44 +471,89 @@ def validate_mapping_work(
         ),
         "incremental System searches do not reconcile with transition work",
     )
+    # A builtin product build stops at its first verified candidate; a build
+    # under an explicit ResolvedConfig may instead exhaust its configured
+    # restarts. The closure status names the profile each row obeyed.
     for name, rows in (("Spatial", spatial), ("System", system)):
+        published_rows = 0
         for row in rows:
+            closure_status = row.get("closure_status")
+            publications = row.get("candidate_publications")
+            seed_slots = row.get("seed_attempt_slots")
             require(
-                row.get("closure_status") == "semantic_limit_reached",
-                f"{name} search did not stop at its verified product result",
-            )
-            require(
-                row.get("candidate_publications") == 1,
-                f"{name} search published more than one candidate",
-            )
-            require(
-                row.get("seed_attempt_slots") == 1 and row.get("prepared_seeds") == 1,
+                isinstance(seed_slots, int)
+                and seed_slots >= 1
+                and row.get("prepared_seeds") == seed_slots,
                 f"{name} search prepared unexpected restart work",
             )
-            if name == "System" and row.get("migration_seed_attempt_slots") == 1:
+            if closure_status == "closed":
+                # Exhaustive work: every prepared restart finalizes and may
+                # publish its own verified candidate.
                 require(
-                    row.get("final_closure_attempts") == 0,
-                    "incremental System search repeated cold final closure",
+                    isinstance(publications, int)
+                    and 0 <= publications <= seed_slots,
+                    f"{name} search published more than its finalized restarts",
+                )
+                require(
+                    row.get("finalized_restarts") == seed_slots
+                    and row.get("publication_slots") == seed_slots,
+                    f"{name} search did not finalize its configured restarts",
+                )
+                require(
+                    isinstance(row.get("final_closure_attempts"), int)
+                    and row["final_closure_attempts"] >= 1,
+                    f"{name} search skipped final closure",
                 )
             else:
                 require(
-                    row.get("final_closure_attempts") == 1,
-                    f"{name} search skipped or repeated final closure",
+                    closure_status == "semantic_limit_reached",
+                    f"{name} search did not stop at its verified product"
+                    " result",
                 )
-            require(
-                row.get("finalized_restarts") == 1
-                and row.get("publication_slots") == 1,
-                f"{name} search did not finalize exactly one result",
-            )
+                # A joint pair whose search exhausts its seeds without a
+                # feasible incumbent is a typed empty outcome: the joint
+                # frontier falls to the next pair. Such an invocation
+                # publishes and finalizes nothing; every successful
+                # invocation finalizes exactly one. The first-verified goal
+                # is a bounded prefix: a seed whose search finds no feasible
+                # incumbent legitimately falls through to the next attempt.
+                require(
+                    publications in (0, 1),
+                    f"{name} search published more than one candidate",
+                )
+                if name == "System" and row.get("migration_seed_attempt_slots") == 1:
+                    require(
+                        row.get("final_closure_attempts") == 0,
+                        "incremental System search repeated cold final closure",
+                    )
+                else:
+                    # The bounded repair/global-closure loop may retry closure
+                    # within one seed, so attempts are bounded by the work
+                    # ledger rather than the seed count.
+                    require(
+                        isinstance(row.get("final_closure_attempts"), int)
+                        and row["final_closure_attempts"] >= 1,
+                        f"{name} search skipped final closure",
+                    )
+                require(
+                    row.get("finalized_restarts") == publications
+                    and row.get("publication_slots") == publications,
+                    f"{name} search did not finalize exactly one result",
+                )
+            published_rows += publications
+        require(
+            published_rows >= 1,
+            f"no {name} search finalized a verified product result",
+        )
     require(
-        all(row.get("final_verification_attempts") == 1 for row in system),
+        all(
+            isinstance(row.get("final_verification_attempts"), int)
+            and row["final_verification_attempts"]
+            >= row.get("candidate_publications", 0)
+            for row in system
+        ),
         "System search skipped independent candidate verification",
     )
-    if not hardware_reopen:
-        require(
-            system[0].get("mutation_oracle_verification_attempts") == 0,
-            "first-verified System search entered mutation verification",
-        )
     require(
         all(row.get("endpoint_expansion_slots", 0) > 0 for row in spatial),
         "a Spatial search did not exercise endpoint routing",

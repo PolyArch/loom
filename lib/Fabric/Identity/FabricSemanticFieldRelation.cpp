@@ -1,5 +1,6 @@
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
 
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricMemoryConfiguration.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -295,6 +296,26 @@ FabricArtifactView::semanticFieldRelation(
                                        std::move(domain), 0);
   }
 
+  if (owner.kind() == FabricInventoryOwnerKind::SystemTransportResource) {
+    if (field.ordinal != 0)
+      return rejected("System transport configuration field ordinal is not "
+                      "zero");
+    auto system = requireSystemRoot(*this);
+    if (!system)
+      return system.takeError();
+    const auto resource = std::get<SystemTransportResourceRef>(owner.payload);
+    const std::uint64_t width = system->transferPatterns(resource).size();
+    if (inventorySize(owner, FabricInventoryKind::SemanticConfigField) == 0)
+      return rejected("fixed System transport resource has no configuration "
+                      "field");
+    return FabricSemanticFieldRelation(
+        FabricSemanticFieldRelationKind::Direct, {}, width,
+        [width](llvm::ArrayRef<std::uint8_t> value) {
+          return validateBitCarrier(value, width);
+        },
+        CanonicalSemanticBytes(zeroBits(width)));
+  }
+
   if (owner.kind() == FabricInventoryOwnerKind::BoundaryOccurrence) {
     if (field.ordinal != 0)
       return rejected("boundary configuration field ordinal is not zero");
@@ -488,6 +509,45 @@ llvm::Expected<CanonicalSemanticBytes> encodeFabricFifoConfiguration(
   if (llvm::Error error = relation->validateSemanticValue(encoded.bytes()))
     return std::move(error);
   return encoded;
+}
+
+llvm::Expected<CanonicalSemanticBytes>
+encodeSystemTransportResourceConfiguration(
+    const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
+    llvm::ArrayRef<FabricTransferPatternRef> selectedPatterns) {
+  const FabricInventoryOwnerRef &owner = field.owner.catalog();
+  if (owner.kind() != FabricInventoryOwnerKind::SystemTransportResource ||
+      field.ordinal != 0)
+    return rejected("System transport codec received a non-resource field");
+  auto system = requireSystemRoot(fabric);
+  if (!system)
+    return system.takeError();
+  const auto resource = std::get<SystemTransportResourceRef>(owner.payload);
+  const auto patterns = system->transferPatterns(resource);
+  if (fabric.inventorySize(owner, FabricInventoryKind::SemanticConfigField) ==
+      0)
+    return rejected("fixed System transport resource has no configuration "
+                    "field");
+
+  std::vector<std::uint8_t> encoded = zeroBits(patterns.size());
+  std::set<FabricOrdinal> selectedOrdinals;
+  for (const FabricTransferPatternRef &selected : selectedPatterns) {
+    if (selected.resource != resource || selected.ordinal >= patterns.size() ||
+        patterns[static_cast<std::size_t>(selected.ordinal)] != selected)
+      return rejected("System transport codec received a foreign pattern");
+    if (!selectedOrdinals.insert(selected.ordinal).second)
+      return rejected("System transport codec received a repeated pattern");
+    setBit(encoded, selected.ordinal);
+  }
+
+  CanonicalSemanticBytes value(std::move(encoded));
+  mlir::MLIRContext context;
+  auto relation = fabric.semanticFieldRelation(field, context);
+  if (!relation)
+    return relation.takeError();
+  if (llvm::Error error = relation->validateSemanticValue(value.bytes()))
+    return std::move(error);
+  return value;
 }
 
 llvm::Expected<CanonicalSemanticBytes> encodeSpatialSwitchConfiguration(

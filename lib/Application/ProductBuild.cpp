@@ -492,16 +492,34 @@ prepareProductTarget(const ProductBuildOptions &options) {
   auto fpa = prepareProductFpaInputs(options, **workspace);
   if (!fpa)
     return fpa.takeError();
-  auto config = resolveConfigProfile(options.accelerationProfile);
-  if (!config)
-    return config.takeError();
+  auto profile = resolveConfigProfileWithProvenance(options.accelerationProfile);
+  if (!profile)
+    return profile.takeError();
+  auto config = std::move(profile->config);
+  // A product build needs one verified Mapping, not the best Mapping in the
+  // configured restart budget. Exhausting every restart multiplies Spatial and
+  // System PnR by the restart count for a result the product path discards, so
+  // a builtin preset stops at its first verified candidate. An explicit
+  // ResolvedConfig remains the single policy owner: when the profile names a
+  // configuration file, its completion goals are published and executed
+  // exactly as written.
+  if (isBuiltinConfigProfile(options.accelerationProfile) ||
+      !profile->spatialPnrAuthored) {
+    config.dse.spatialPnr.search.completionGoal =
+        ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  }
+  if (isBuiltinConfigProfile(options.accelerationProfile) ||
+      !profile->systemPnrAuthored) {
+    config.dse.systemPnr.search.completionGoal =
+        ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  }
   auto publishedConfig = (*workspace)
                              ->artifacts()
                              .put(ResolvedConfig::artifactSchema,
-                                  canonicalResolvedConfigBytes(*config));
+                                  canonicalResolvedConfigBytes(config));
   if (!publishedConfig)
     return publishedConfig.takeError();
-  if (*publishedConfig != resolvedConfigIdentity(*config))
+  if (*publishedConfig != resolvedConfigIdentity(config))
     return productError("loom_product_target_invalid",
                         "resolved configuration publication changed its "
                         "identity");
@@ -510,17 +528,17 @@ prepareProductTarget(const ProductBuildOptions &options) {
       options.externalHardwarePath.empty()
       ? [&]() -> llvm::Expected<fabric::FinalizedFabricRoot> {
     if (!adg::findBuiltinTargetDescriptor(
-            config->hardwareTarget.templateIdentity,
-            config->hardwareTarget.schemaVersion.major,
-            config->hardwareTarget.schemaVersion.minor) ||
-        !adg::isValidBuiltinTargetScale(config->hardwareTarget.parameters))
+            config.hardwareTarget.templateIdentity,
+            config.hardwareTarget.schemaVersion.major,
+            config.hardwareTarget.schemaVersion.minor) ||
+        !adg::isValidBuiltinTargetScale(config.hardwareTarget.parameters))
       return productError("loom_product_target_invalid",
                           "resolved builtin target descriptor is invalid");
     auto design = adg::buildBuiltinTarget(
-        (*workspace)->artifacts(), config->hardwareTarget.templateIdentity,
-        config->hardwareTarget.schemaVersion.major,
-        config->hardwareTarget.schemaVersion.minor,
-        config->hardwareTarget.parameters);
+        (*workspace)->artifacts(), config.hardwareTarget.templateIdentity,
+        config.hardwareTarget.schemaVersion.major,
+        config.hardwareTarget.schemaVersion.minor,
+        config.hardwareTarget.parameters);
     if (!design)
       return design.takeError();
     if (design->roots().size() != 1)
@@ -572,7 +590,7 @@ prepareProductTarget(const ProductBuildOptions &options) {
           "target cohort");
   }
   return PreparedProductTarget{
-      std::move(*workspace),      std::move(*config),
+      std::move(*workspace),      std::move(config),
       std::move(*system),         std::move(timingReferences),
       std::move(compilerPolicy),  std::move(*commandLine),
       std::move(*portfolioInput), std::move(fpa->weight),
@@ -932,9 +950,9 @@ llvm::Error publishProductDeployment(
     return mapping.takeError();
   auto deployment = [&]() -> llvm::Expected<ApplicationDeploymentArtifacts> {
     mapping::SystemMappingImportSession systemMappingImportSession(
-        target.workspace->artifacts(), 1);
+        target.workspace->artifacts(), 64);
     deployment::ConfigurationImageProjectionSession projectionSession(
-        target.workspace->artifacts(), 1);
+        target.workspace->artifacts(), 64);
     auto built = buildApplicationDeployment(
         *prepared, *mapping, *finalLink.linkedModule,
         {target.compilerPolicy,

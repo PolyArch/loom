@@ -302,6 +302,18 @@ configurationTargets(const deployment::FinalizedDeployment &deployment,
     const hardware::ProgrammingUnitRef unitRef{
         closure.configurationAbi.reference(),
         image->image().programmingUnitId()};
+    const hardware::ProgrammingUnit *programmingUnit =
+        closure.configurationAbi.abi().findProgrammingUnit(unitRef.unitId);
+    if (!programmingUnit)
+      return loadError(RuntimeLoadFailureKind::InvalidDeployment,
+                       "configuration image names a missing programming "
+                       "unit");
+    const hardware::ProgrammingUnitOccurrenceScope scope =
+        hardware::deriveProgrammingUnitOccurrenceScope(*programmingUnit);
+    if (scope.includesDirectSystemResources)
+      return loadError(RuntimeLoadFailureKind::ProviderMismatch,
+                       "runtime provider has no direct System configuration "
+                       "binding");
     const RuntimeProgrammingBinding *binding = nullptr;
     const hardware::FinalizedHardwareImplementation *implementation = nullptr;
     for (const auto indexed : llvm::enumerate(closure.runtimeBindings)) {

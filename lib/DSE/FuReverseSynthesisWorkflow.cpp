@@ -20,6 +20,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -148,6 +149,13 @@ buildFuReverseSynthesisCandidateWorkflow(const ArtifactRootReference &dataflow,
     return dataflowView.takeError();
   if (llvm::Error error = verifyFullyRootReachableGraphDomain(*dataflowView))
     return std::move(error);
+  std::vector<::dataflow::GraphRef> graphDomain;
+  graphDomain.reserve(dataflowView->graphs().size());
+  for (const ::dataflow::CanonicalGraphView &graph : dataflowView->graphs())
+    graphDomain.push_back(graph.ref);
+  if (llvm::Error error = verifyScalarIntegerAddSubFuSynthesisDomain(
+          *dataflowView, graphDomain))
+    return std::move(error);
 
   auto techConfig =
       ::loom::mapping::projectResolvedTechMappingConfigView(baseConfig);
@@ -233,11 +241,11 @@ projectFuReverseSynthesisWorkflowArtifacts(
     const FuReverseSynthesisCandidateWorkflow &workflow,
     const CompletedDsePlanExecution &execution, const ArtifactStore &artifacts,
     const BlobStore &blobs) {
-  auto view = projectResolvedDseConfigView(workflow.resolvedConfig());
-  if (!view)
-    return view.takeError();
-  if (execution.resolvedDseConfigViewDigest() != view->digest())
-    return invalid("completed execution belongs to another resolved plan");
+  auto disposition = classifyFuReverseSynthesisWorkflow(workflow, execution);
+  if (!disposition)
+    return disposition.takeError();
+  if (*disposition != FuReverseSynthesisWorkflowDisposition::CompleteCandidate)
+    return invalid("completed execution has no complete workflow candidate");
 
   auto module = requireOne(execution, workflow.module(), "Module");
   if (!module)
@@ -253,13 +261,6 @@ projectFuReverseSynthesisWorkflowArtifacts(
       requireOne(execution, workflow.jointTechMapping(), "joint TechMapping");
   if (!jointTechMapping)
     return jointTechMapping.takeError();
-  if (!execution.hasOutput(workflow.techMappings()) ||
-      !execution.hasOutput(workflow.physicalTimingProfiles()) ||
-      !execution.hasOutput(workflow.spatialMappings()) ||
-      !execution.hasOutput(workflow.jointSpatialMappings()) ||
-      !execution.hasOutput(workflow.systemMappings()) ||
-      !execution.hasOutput(workflow.portableRtlImplementations()))
-    return invalid("completed execution omits a workflow output");
 
   FuReverseSynthesisWorkflowArtifacts projected{
       workflow.dataflow(),
@@ -277,6 +278,35 @@ projectFuReverseSynthesisWorkflowArtifacts(
           projected, artifacts, blobs))
     return std::move(error);
   return projected;
+}
+
+llvm::Expected<FuReverseSynthesisWorkflowDisposition>
+classifyFuReverseSynthesisWorkflow(
+    const FuReverseSynthesisCandidateWorkflow &workflow,
+    const CompletedDsePlanExecution &execution) {
+  auto view = projectResolvedDseConfigView(workflow.resolvedConfig());
+  if (!view)
+    return view.takeError();
+  if (execution.resolvedDseConfigViewDigest() != view->digest())
+    return invalid("completed execution belongs to another resolved plan");
+
+  const std::array<PlanOutputRef, 10> required = {
+      workflow.module(),
+      workflow.techMappings(),
+      workflow.jointTechMapping(),
+      workflow.system(),
+      workflow.physicalTimingProfiles(),
+      workflow.configurationAbi(),
+      workflow.spatialMappings(),
+      workflow.jointSpatialMappings(),
+      workflow.systemMappings(),
+      workflow.portableRtlImplementations()};
+  if (llvm::any_of(required, [&](PlanOutputRef output) {
+        return !execution.hasOutput(output) ||
+               execution.resolve(output).empty();
+      }))
+    return FuReverseSynthesisWorkflowDisposition::RequiredOutputMissing;
+  return FuReverseSynthesisWorkflowDisposition::CompleteCandidate;
 }
 
 llvm::Error verifyFuReverseSynthesisWorkflowArtifacts(

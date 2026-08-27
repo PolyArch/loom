@@ -1,5 +1,6 @@
 #include "DSE/FuReverseSynthesisWorkflow.h"
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/ExecutionJournal.h"
@@ -11,6 +12,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Deployment/Deployment.h"
+#include "Deployment/HardwareConfigurationImage.h"
 #include "DeploymentTestSupport.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
@@ -28,6 +30,8 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -81,47 +85,12 @@ dataflow::CanonicalDataflowArtifact parseDataflow(mlir::MLIRContext &context,
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-dataflow::CanonicalDataflowArtifact
-rootedAddSubProgram(mlir::MLIRContext &context) {
-  return parseDataflow(context, R"mlir(
-module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
-  dataflow.graph private @add(%start: none, %lhs: i32, %rhs: i32) -> i32
-      attributes {input_segments = array<i32: 2, 0, 0>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %value = arith.addi %lhs, %rhs : i32
-    %result:2 = dataflow.sync %start, %value
-        : (none, i32) -> (none, i32)
-    dataflow.graph.return values(%result#1 : i32) streams() memories()
-        complete(%result#0 : none)
-  }
-  dataflow.graph private @sub(%start: none, %lhs: i32, %rhs: i32) -> i32
-      attributes {input_segments = array<i32: 2, 0, 0>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %value = arith.subi %lhs, %rhs : i32
-    %result:2 = dataflow.sync %start, %value
-        : (none, i32) -> (none, i32)
-    dataflow.graph.return values(%result#1 : i32) streams() memories()
-        complete(%result#0 : none)
-  }
-  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
-      %lhs: i32, %rhs: i32) ctrl (%ctrl: none) {
-    %sum, %add_done = dataflow.graph.launch @add deps(%ctrl)
-        values(%lhs, %rhs) stream_inputs() memories() stream_outputs()
-        : (none, i32, i32) -> (i32, none)
-    %difference, %sub_done = dataflow.graph.launch @sub deps(%add_done)
-        values(%sum, %rhs) stream_inputs() memories() stream_outputs()
-        : (none, i32, i32) -> (i32, none)
-    dataflow.thread.yield %sub_done : none
-  }
-  func.func private @host() {
-    %lhs = arith.constant 19 : i32
-    %rhs = arith.constant 7 : i32
-    %thread = dataflow.thread.launch @worker(%lhs, %rhs)
-        : (i32, i32) -> !dataflow.thread_token
-    return
-  }
-}
-)mlir");
+dataflow::CanonicalDataflowArtifact loadDataflow(mlir::MLIRContext &context,
+                                                 llvm::StringRef path) {
+  auto source = llvm::MemoryBuffer::getFile(path);
+  if (!source)
+    fail("cannot read Dataflow graph set: " + source.getError().message());
+  return parseDataflow(context, (*source)->getBuffer());
 }
 
 dataflow::CanonicalDataflowArtifact
@@ -218,9 +187,90 @@ void requireTypedReachabilityRejection(
   requireTypedReachabilityRejection(workflow.takeError());
 }
 
+class EmptySystemMappingExecutor final
+    : public loom::dse::detail::DsePlanWorkExecutor {
+public:
+  explicit EmptySystemMappingExecutor(
+      const loom::dse::CompletedDsePlanExecution &execution)
+      : invocations_(execution.generateInvocations().begin(),
+                     execution.generateInvocations().end()),
+        work_(execution.generateWorkSummaries().begin(),
+              execution.generateWorkSummaries().end()) {}
+
+  bool shouldStopBeforeDispatch() const override { return false; }
+
+  llvm::Expected<std::vector<loom::dse::PromotionEvidenceExecutionResult>>
+  execute(llvm::ArrayRef<loom::dse::PromotionEvidenceExecutionTask>,
+          const loom::ArtifactStore &, const loom::BlobStore &) override {
+    return std::vector<loom::dse::PromotionEvidenceExecutionResult>{};
+  }
+
+  llvm::Expected<loom::dse::CandidateGeneratorProviderResult>
+  executeGenerate(std::uint64_t planNodeOrdinal,
+                  llvm::ArrayRef<loom::dse::CandidateGeneratorInputBinding>,
+                  llvm::ArrayRef<loom::dse::CandidateGeneratorOutputDemand>,
+                  const loom::dse::ResolvedCandidateGeneratorBinding &,
+                  const loom::ArtifactStore &,
+                  const loom::BlobStore &) override {
+    return resultFor(planNodeOrdinal);
+  }
+
+  llvm::Expected<std::vector<loom::dse::CandidateGeneratorProviderResult>>
+  executeGenerateBatch(
+      llvm::ArrayRef<loom::dse::detail::DseGenerateExecutionTask> tasks,
+      const loom::ArtifactStore &, const loom::BlobStore &) override {
+    std::vector<loom::dse::CandidateGeneratorProviderResult> results;
+    results.reserve(tasks.size());
+    for (const auto &task : tasks) {
+      auto result = resultFor(task.planNodeOrdinal);
+      if (!result)
+        return result.takeError();
+      results.push_back(std::move(*result));
+    }
+    return results;
+  }
+
+  llvm::Error beginPromotion(
+      std::uint64_t, llvm::ArrayRef<loom::ArtifactRootReference>,
+      llvm::ArrayRef<loom::dse::EvidenceObligationTemplateRef>) override {
+    return llvm::Error::success();
+  }
+
+private:
+  llvm::Expected<loom::dse::CandidateGeneratorProviderResult>
+  resultFor(std::uint64_t planNodeOrdinal) const {
+    const auto invocation =
+        llvm::find_if(invocations_, [&](const auto &candidate) {
+          return candidate.planNodeOrdinal == planNodeOrdinal;
+        });
+    const auto work = llvm::find_if(work_, [&](const auto &candidate) {
+      return candidate.planNodeOrdinal == planNodeOrdinal;
+    });
+    if (invocation == invocations_.end() || work == work_.end())
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "missing production invocation record");
+    auto outputs = invocation->outputBindings;
+    auto lineage = invocation->lineageEdges;
+    if (planNodeOrdinal == 3) {
+      for (auto &output : outputs)
+        output.artifacts.clear();
+      lineage.clear();
+    }
+    return loom::dse::CandidateGeneratorProviderResult{
+        loom::dse::CompletedCandidateGeneratorResult{std::move(outputs),
+                                                     std::move(lineage)},
+        work->units, std::nullopt, false};
+  }
+
+  std::vector<loom::dse::GenerateInvocationRecord> invocations_;
+  std::vector<loom::dse::GenerateInvocationWorkSummary> work_;
+};
+
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc != 2)
+    fail("expected one canonical Dataflow graph-set path");
   loom::deployment::test::TemporaryTree tree(testName);
   loom::ArtifactStore store(tree.path("artifacts"));
   loom::BlobStore blobs(tree.path("blobs"));
@@ -239,7 +289,7 @@ int main() {
       loom::dse::buildFuReverseSynthesisCandidateWorkflow(
           partiallyRootedReference, workflowConfig(), store));
 
-  auto program = rootedAddSubProgram(context);
+  auto program = loadDataflow(context, argv[1]);
   const auto programReference =
       take(dataflow::publishCanonicalDataflow(program, store));
   auto workflow = take(loom::dse::buildFuReverseSynthesisCandidateWorkflow(
@@ -278,6 +328,29 @@ int main() {
   }
   require(completed->generateInvocations().size() == 5,
           "bounded workflow did not execute every production owner");
+  require(
+      take(loom::dse::classifyFuReverseSynthesisWorkflow(workflow,
+                                                         *completed)) ==
+          loom::dse::FuReverseSynthesisWorkflowDisposition::CompleteCandidate,
+      "complete workflow was classified as no-feasible");
+  EmptySystemMappingExecutor emptySystemMapping(*completed);
+  auto noSystemOutcome = take(loom::dse::detail::executeDsePlanWithWorkExecutor(
+      configView, store, blobs, &emptySystemMapping));
+  const auto *noSystem =
+      std::get_if<loom::dse::CompletedDsePlanExecution>(&noSystemOutcome);
+  require(noSystem && noSystem->resolve(workflow.systemMappings()).empty() &&
+              !noSystem->resolve(workflow.portableRtlImplementations()).empty(),
+          "terminal-output fixture did not isolate empty System PnR");
+  require(take(loom::dse::classifyFuReverseSynthesisWorkflow(workflow,
+                                                             *noSystem)) ==
+              loom::dse::FuReverseSynthesisWorkflowDisposition::
+                  RequiredOutputMissing,
+          "empty System PnR was classified as a complete candidate");
+  auto genericOutcome = take(
+      loom::dse::projectDsePlanInvocationOutcome(configView, noSystemOutcome));
+  require(std::holds_alternative<loom::dse::InvocationCompletedSelection>(
+              genericOutcome),
+          "generic plan no longer exposes independent terminal outputs");
   auto artifacts = take(loom::dse::projectFuReverseSynthesisWorkflowArtifacts(
       workflow, *completed, store, blobs));
   require(artifacts.techMappings.size() == 2 &&
@@ -375,5 +448,72 @@ int main() {
     require(llvm::is_contained(artifacts.portableRtlImplementations,
                                binding.hardwareImplementation),
             "Deployment selected an implementation outside portable RTL");
+
+  auto configurationAbi = take(loom::hardware::importConfigurationABI(
+      artifacts.configurationAbi, replayStore));
+  std::uint64_t directImageCount = 0;
+  std::uint64_t localImageCount = 0;
+  for (const loom::ArtifactRootReference &reference :
+       importedDeployment.deployment().configurationImages()) {
+    const auto image = take(loom::deployment::importHardwareConfigurationImage(
+        reference, replayStore));
+    const loom::hardware::ProgrammingUnit *unit =
+        configurationAbi.abi().findProgrammingUnit(
+            image.image().programmingUnitId());
+    require(unit != nullptr, "Deployment image lost its programming unit");
+    const loom::hardware::ProgrammingUnitOccurrenceScope scope =
+        loom::hardware::deriveProgrammingUnitOccurrenceScope(*unit);
+    if (scope.includesDirectSystemResources && scope.spatialCores.empty())
+      ++directImageCount;
+    else if (!scope.includesDirectSystemResources &&
+             scope.spatialCores.size() == 1)
+      ++localImageCount;
+    else
+      fail("Deployment image has a mixed programming-unit scope");
+  }
+  require(directImageCount != 0 && localImageCount != 0,
+          "Deployment omitted direct or local configuration images");
+
+  const auto &spatialLaunch =
+      importedDeployment.deployment().spatialLaunchImage();
+  require(spatialLaunch.has_value(),
+          "mapped reverse-FU Deployment has no SpatialLaunchImage");
+  const auto &spatialBytes = spatialLaunch->canonicalBytes().bytes();
+  auto spatialJson = take(llvm::json::parse(
+      llvm::StringRef(reinterpret_cast<const char *>(spatialBytes.data()),
+                      spatialBytes.size())));
+  auto *spatialRoot = spatialJson.getAsObject();
+  auto *payload = spatialRoot ? spatialRoot->getObject("payload") : nullptr;
+  auto *rows = payload ? payload->getArray("rows") : nullptr;
+  require(rows && !rows->empty(),
+          "SpatialLaunchImage has no mapped graph rows");
+  std::uint64_t targetCaseCount = 0;
+  for (llvm::json::Value &rowValue : *rows) {
+    auto *row = rowValue.getAsObject();
+    auto *targetCases = row ? row->getArray("target_cases") : nullptr;
+    require(targetCases && !targetCases->empty(),
+            "SpatialLaunchImage row has no target case");
+    for (llvm::json::Value &caseValue : *targetCases) {
+      auto *targetCase = caseValue.getAsObject();
+      auto *references =
+          targetCase ? targetCase->getArray("required_configuration_image_refs")
+                     : nullptr;
+      require(references != nullptr,
+              "SpatialLaunchImage target has no configuration closure");
+      std::vector<loom::ArtifactRootReference> required;
+      for (llvm::json::Value &referenceValue : *references) {
+        auto *object = referenceValue.getAsObject();
+        require(object != nullptr,
+                "SpatialLaunchImage contains a malformed image reference");
+        required.push_back(take(loom::parseArtifactRootReferenceJson(*object)));
+      }
+      require(llvm::ArrayRef<loom::ArtifactRootReference>(required) ==
+                  importedDeployment.deployment().configurationImages(),
+              "single-core target omitted a global or local image");
+      ++targetCaseCount;
+    }
+  }
+  require(targetCaseCount != 0,
+          "SpatialLaunchImage did not expose a target case");
   return EXIT_SUCCESS;
 }

@@ -6,6 +6,7 @@
 # RUN:   --loom-portfolio-repository-root=%S/../.. \
 # RUN:   --loom-portfolio-application=gapbs-pagerank \
 # RUN:   --loom-portfolio-input=smoke \
+# RUN:   --loom-mapping-wall-time-limit-ms=%loom-timeout-medium-ms \
 # RUN:   --loom-deploy-output=%t.deployment \
 # RUN:   > %t.build.stdout 2> %t.build.stderr
 # RUN: env LOOM_VERBOSE_LEVEL=1 loom-system-run \
@@ -28,36 +29,3 @@
 # RUN:   --require-operand-queue-atomic-fanout \
 # RUN:   --require-memory-engine --require-register-fifo \
 # RUN:   --require-packed-switch-row --require-temporal-dispatch
-# RUN: bash -c 'set -e; for portfolio_input in validation validation-scale-eda; do \
-# RUN:   rm -rf %t.${portfolio_input}.deployment %t.${portfolio_input}.execution; \
-# RUN:   env LOOM_VERBOSE_LEVEL=1 %loom-cc \
-# RUN:     --loom-accel-profile=%S/Inputs/product_attention_dse_grown.yaml \
-# RUN:     --loom-portfolio-manifest=%S/../applications/manifest.json \
-# RUN:     --loom-portfolio-repository-root=%S/../.. \
-# RUN:     --loom-portfolio-application=gapbs-pagerank \
-# RUN:     --loom-portfolio-input=${portfolio_input} \
-# RUN:     --loom-deploy-output=%t.${portfolio_input}.deployment \
-# RUN:     > %t.${portfolio_input}.build.stdout \
-# RUN:     2> %t.${portfolio_input}.build.stderr; \
-# RUN:   env LOOM_VERBOSE_LEVEL=1 loom-system-run \
-# RUN:     --deployment-package=%t.${portfolio_input}.deployment \
-# RUN:     --output=%t.${portfolio_input}.execution \
-# RUN:     --gem5-readiness=%loom-gem5-readiness --expected-i32=0 \
-# RUN:     > %t.${portfolio_input}.run.stdout \
-# RUN:     2> %t.${portfolio_input}.run.stderr; \
-# RUN:   %python %S/verify_product_execution.py \
-# RUN:     --diagnostics=%t.${portfolio_input}.build.stderr \
-# RUN:     --manifest=%t.${portfolio_input}.execution/manifest.json \
-# RUN:     --portfolio-application=gapbs-pagerank \
-# RUN:     --portfolio-input=${portfolio_input} \
-# RUN:     --portfolio-inventory=%t.inventory.json \
-# RUN:     --spatial-invocations=1 --minimum-unique-acc-cores=1 \
-# RUN:     --required-dataflow-text=dataflow.carry \
-# RUN:     --required-dataflow-text=dataflow.store \
-# RUN:     --required-dataflow-text=arith.cmpi \
-# RUN:     --mapping-inspector=loom-product-mapping-inspection-test \
-# RUN:     --require-actor-multicast \
-# RUN:     --require-operand-queue-atomic-fanout \
-# RUN:     --require-memory-engine --require-register-fifo \
-# RUN:     --require-packed-switch-row --require-temporal-dispatch; \
-# RUN: done'

@@ -75,9 +75,9 @@ constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 1> workUnits = {{
 }};
 
 constexpr llvm::StringLiteral lineageDescriptor =
-    "loom.hardware.fu_reverse_synthesis.lineage.3";
+    "loom.hardware.fu_reverse_synthesis.lineage.4";
 constexpr llvm::StringLiteral outcomeDescriptor =
-    "loom.hardware.fu_reverse_synthesis.outcome.3";
+    "loom.hardware.fu_reverse_synthesis.outcome.4";
 
 llvm::ArrayRef<std::uint8_t> lineageSchemaBytes() {
   return {reinterpret_cast<const std::uint8_t *>(lineageDescriptor.data()),
@@ -429,17 +429,18 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   graphs.reserve(view->graphs().size());
   for (const ::dataflow::CanonicalGraphView &graph : view->graphs())
     graphs.push_back(graph.ref);
+  const auto emptyOutputBindings = [] {
+    return std::vector<CandidateGeneratorOutputBinding>{
+        {CandidateGeneratorOutputSlotRef(ModuleOutput), {}},
+        {CandidateGeneratorOutputSlotRef(MappingOutput), {}},
+        {CandidateGeneratorOutputSlotRef(JointMappingOutput), {}},
+        {CandidateGeneratorOutputSlotRef(SystemOutput), {}},
+        {CandidateGeneratorOutputSlotRef(PhysicalTimingProfileOutput), {}},
+        {CandidateGeneratorOutputSlotRef(ConfigurationAbiOutput), {}}};
+  };
   const auto incompleteResult = [&](CandidateGeneratorIncompleteReason reason) {
     return CandidateGeneratorProviderResult{
-        IncompleteCandidateGeneratorResult{
-            reason,
-            {{CandidateGeneratorOutputSlotRef(ModuleOutput), {}},
-             {CandidateGeneratorOutputSlotRef(MappingOutput), {}},
-             {CandidateGeneratorOutputSlotRef(JointMappingOutput), {}},
-             {CandidateGeneratorOutputSlotRef(SystemOutput), {}},
-             {CandidateGeneratorOutputSlotRef(PhysicalTimingProfileOutput), {}},
-             {CandidateGeneratorOutputSlotRef(ConfigurationAbiOutput), {}}},
-            {}},
+        IncompleteCandidateGeneratorResult{reason, emptyOutputBindings(), {}},
         {{CandidateGeneratorWorkUnitRef(0), graphs.size() + 1, 0}}};
   };
   if (graphs.empty())
@@ -494,10 +495,6 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       return invalid("bounded synthesis failed: " + diagnostic);
     }
   }
-
-  if (synthesized->termination() ==
-      FuReverseSynthesisFailure::MappingInfeasible)
-    return invalid("synthesized FU failed its required graph mapping");
 
   auto systemArtifacts = materializeScalarIntegerAddSubFuSystemArtifacts(
       synthesized->fabric(), store);
@@ -599,7 +596,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
 const CandidateGeneratorDescriptor descriptor{
     fuReverseSynthesisCandidateGeneratorKind,
     "fu_reverse_synthesis",
-    "loom.hardware.fu_reverse_synthesis.generator.v3",
+    "loom.hardware.fu_reverse_synthesis.generator.v4",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{

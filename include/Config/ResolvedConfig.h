@@ -81,9 +81,25 @@ struct ResolvedConfig {
   ResolvedEvaluationConfig evaluation;
 };
 
+/// The resolved value together with the source-level ownership of the PnR
+/// policies.  A configuration file may be a partial hardware overlay; in
+/// that case omitted PnR policies remain owned by the product profile rather
+/// than becoming an accidental exhaustive-search request through defaults.
+struct ResolvedConfigProfile final {
+  ResolvedConfig config;
+  bool spatialPnrAuthored = false;
+  bool systemPnrAuthored = false;
+};
+
 ResolvedConfig defaultResolvedConfig();
 llvm::Expected<ResolvedConfig>
 resolveConfigProfile(llvm::StringRef builtinPresetOrConfigPath);
+llvm::Expected<ResolvedConfigProfile>
+resolveConfigProfileWithProvenance(llvm::StringRef builtinPresetOrConfigPath);
+/// True when the spelling names a builtin profile preset (or is empty, which
+/// selects the default preset) rather than an explicit configuration file. An
+/// explicit file remains the single policy owner for everything it states.
+bool isBuiltinConfigProfile(llvm::StringRef builtinPresetOrConfigPath);
 
 llvm::Expected<ResolvedConfig> loadResolvedConfig(llvm::StringRef path);
 llvm::Expected<ResolvedConfig> parseResolvedConfig(llvm::StringRef body,

@@ -1,5 +1,7 @@
 #include "PnR/SpatialAction.h"
 
+#include "PnR/SpatialCandidateState.h"
+
 #include "SpatialActionProposalInternal.h"
 
 #include <array>
@@ -404,4 +406,46 @@ loom::pnr::detail::proposeCanonicalSpatialAction(
     SpatialActionProposalDomain domain,
     DeterministicPnrRandomStream &proposalStream) {
   return selectSpatialAction(policy, domain, proposalStream);
+}
+
+bool loom::pnr::isIdentitySpatialAction(const SpatialCandidateState &candidate,
+                                        const SpatialMappingAction &action) {
+  if (const auto *realization =
+          std::get_if<SpatialRealizationBindingAction>(&action)) {
+    if (const auto *compute =
+            std::get_if<SpatialComputeBindingAction>(realization)) {
+      const auto current = candidate.computeBinding(compute->realization);
+      return current.placement == compute->placement &&
+             current.instructionContext == compute->instructionContext;
+    }
+    const auto &memory = std::get<SpatialMemoryBindingAction>(*realization);
+    return candidate.memoryBinding(memory.realization).placement ==
+           memory.placement;
+  }
+  if (const auto *resource =
+          std::get_if<SpatialResourceAllocationAction>(&action)) {
+    if (const auto *port = std::get_if<SpatialPortAttachmentAction>(resource))
+      return candidate.portAttachment(port->demand) == port->attachmentOption;
+    if (const auto *boundary =
+            std::get_if<SpatialGraphBoundaryAttachmentAction>(resource))
+      return candidate.graphBoundaryAttachment(boundary->boundary) ==
+             boundary->attachmentOption;
+    if (const auto *plan =
+            std::get_if<SpatialMemoryOperationPlanAction>(resource))
+      return candidate.memoryOperationPlan(plan->actor) == plan->plan;
+    if (const auto *binding =
+            std::get_if<SpatialLogicalMemoryBindingAction>(resource)) {
+      const auto &current = candidate.logicalMemoryBinding(binding->binding);
+      return current.target == binding->target &&
+             current.physicalOffsetBytes == binding->physicalOffsetBytes;
+    }
+    if (const auto *dispatch =
+            std::get_if<SpatialMemoryUseDispatchAction>(resource))
+      return candidate.memoryUseDispatch(dispatch->use) ==
+             dispatch->dispatchOption;
+    const auto &exposure = std::get<SpatialMemoryExposureAction>(*resource);
+    return candidate.memoryExposureSelection(exposure.exposure) ==
+           exposure.exposureOption;
+  }
+  return false;
 }

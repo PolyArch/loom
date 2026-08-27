@@ -668,6 +668,8 @@ private:
                   resource.getFunctionTypeAttr().getValue()))))
         return std::move(error);
       appendBytes(intrinsic, unsignedBytes(resource.getResourceContractAttr()));
+      appendU32(intrinsic,
+                resource.getConfigurationSelectedPatternsAttr() ? 1 : 0);
       if (DenseI8ArrayAttr crossing = resource.getClockCrossingAttr()) {
         appendU32(intrinsic, 1);
         auto record =

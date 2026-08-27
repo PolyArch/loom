@@ -410,6 +410,18 @@ bool containsSubject(llvm::ArrayRef<fabric::SpatialCoreOccurrenceRef> subjects,
   return llvm::is_contained(subjects, subject);
 }
 
+bool hasDirectSystemConfiguration(const fabric::FabricSystemRootView &system) {
+  for (fabric::SystemTransportResourceRef resource :
+       system.transportResources()) {
+    const fabric::FabricInventoryOwnerRef owner =
+        fabric::FabricInventoryOwnerRef::of(resource);
+    if (system.artifact().inventorySize(
+            owner, fabric::FabricInventoryKind::SemanticConfigField) != 0)
+      return true;
+  }
+  return false;
+}
+
 llvm::Expected<std::vector<hardware::ProgrammingUnitId>>
 requiredProgrammingUnits(
     const hardware::ConfigurationABI &abi,
@@ -418,13 +430,20 @@ requiredProgrammingUnits(
   for (const hardware::ProgrammingUnit &unit : abi.programmingUnits()) {
     const hardware::ProgrammingUnitOccurrenceScope scope =
         hardware::deriveProgrammingUnitOccurrenceScope(unit);
+    if (scope.includesDirectSystemResources) {
+      if (!scope.spatialCores.empty())
+        return invalid("a direct System programming unit also names a "
+                       "SpatialCore occurrence");
+      result.push_back(unit.id);
+      continue;
+    }
     const bool touchesRequired = llvm::any_of(
         scope.spatialCores, [&](fabric::SpatialCoreOccurrenceRef subject) {
           return containsSubject(requiredSubjects, subject);
         });
     if (!touchesRequired)
       continue;
-    if (scope.includesDirectSystemResources || scope.spatialCores.size() != 1)
+    if (scope.spatialCores.size() != 1)
       return invalid("a programming unit required by SystemMapping crosses "
                      "its SpatialCore occurrence");
     result.push_back(unit.id);
@@ -523,6 +542,9 @@ validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
     if (!deployment.configurationImages.empty())
       return invalid("configuration_image_refs is nonempty without a selected "
                      "SpatialCore implementation");
+    if (hasDirectSystemConfiguration(*system))
+      return invalid("direct System configuration requires a selected "
+                     "ConfigurationABI provider");
     return llvm::Error::success();
   }
   auto requiredUnits = requiredProgrammingUnits((*abi)->abi(), *subjects);
@@ -771,6 +793,9 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
   auto dataflow = owners->first.view();
   if (!dataflow)
     return dataflow.takeError();
+  auto system = fabric::requireSystemRoot(owners->second.view());
+  if (!system)
+    return system.takeError();
   auto subjects = mapping::projectSystemExecutionSpatialCoreSubjects(
       *dataflow, systemMapping->view().executionBindings());
   if (!subjects)
@@ -790,6 +815,9 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
               operationBegin, inputs.hardwareBindings.size());
   if (!abi)
     return abi.takeError();
+  if (!*abi && hasDirectSystemConfiguration(*system))
+    return invalid("direct System configuration requires a selected "
+                   "ConfigurationABI provider");
 
   std::vector<ArtifactRootReference> images;
   operationBegin = captureOperationResources();

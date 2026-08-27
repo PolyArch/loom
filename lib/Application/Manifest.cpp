@@ -340,7 +340,8 @@ parseWorkloadExecutionProfile(const llvm::json::Object &object,
   if (llvm::Error error =
           rejectUnknownFields(object, context,
                               {"warmup_samples", "measured_samples",
-                               "oracle_coverage", "deadline_milliseconds"}))
+                               "oracle_coverage", "deadline_milliseconds",
+                               "maximum_simulated_ticks"}))
     return std::move(error);
   auto warmupSamples = requireUnsigned(object, "warmup_samples", context);
   if (!warmupSamples)
@@ -354,6 +355,17 @@ parseWorkloadExecutionProfile(const llvm::json::Object &object,
   auto deadline = requireUnsigned(object, "deadline_milliseconds", context);
   if (!deadline)
     return deadline.takeError();
+  std::optional<std::uint64_t> maximumSimulatedTicks;
+  if (object.get("maximum_simulated_ticks")) {
+    auto value =
+        requireUnsigned(object, "maximum_simulated_ticks", context);
+    if (!value)
+      return value.takeError();
+    if (*value == 0)
+      return invalid(context +
+                     " maximum_simulated_ticks must be greater than zero");
+    maximumSimulatedTicks = *value;
+  }
   auto coverage = parseOracleCoverage(*coverageText);
   if (!coverage)
     return coverage.takeError();
@@ -366,7 +378,7 @@ parseWorkloadExecutionProfile(const llvm::json::Object &object,
       std::numeric_limits<std::uint64_t>::max() - *measuredSamples)
     return invalid(context + " total sample count overflows uint64");
   return WorkloadExecutionProfile{*warmupSamples, *measuredSamples, *coverage,
-                                  *deadline};
+                                  *deadline, maximumSimulatedTicks};
 }
 
 llvm::Expected<WorkloadInputSelection>
@@ -766,11 +778,15 @@ void writeApplicationManifestInventoryJson(
                   manifest, application.identity, input.name));
           llvm::json::Object row =
               projectSelectedApplicationInputJson(selection);
-          row["profile"] = llvm::json::Object{
+          llvm::json::Object profile{
               {"warmup_samples", input.profile.warmupSamples},
               {"measured_samples", input.profile.measuredSamples},
               {"oracle_coverage", toString(input.profile.oracleCoverage)},
               {"deadline_milliseconds", input.profile.deadlineMilliseconds}};
+          if (input.profile.maximumSimulatedTicks)
+            profile["maximum_simulated_ticks"] =
+                *input.profile.maximumSimulatedTicks;
+          row["profile"] = std::move(profile);
           llvm::json::Array executionSelections;
           for (const ExecutionSelectionInputs &binding :
                application.selectionInputs)

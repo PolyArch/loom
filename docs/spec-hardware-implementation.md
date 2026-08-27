@@ -29,7 +29,7 @@ HardwareImplementation {
 }
 ```
 
-`fabric_ref` is an exact `loom.fabric 6.0` System root,
+`fabric_ref` is an exact `loom.fabric 7.0` System root,
 `spatial_core_occurrence_ref` is one exact SpatialCore occurrence in that
 System, and `configuration_abi_ref` is an exact
 `loom.configuration_abi 4.0` root bound to the same System. Every interface,
@@ -829,7 +829,7 @@ as a complete implementation.
 
 These bindings are downstream `HardwareImplementation` facts. They are not
 Fabric `ImplementationInput` dependencies and cannot be used to make that
-reserved-unavailable `loom.fabric 6.x` role legal. An Interconnect
+reserved-unavailable `loom.fabric 7.x` role legal. An Interconnect
 Implementation remains a separate System-level product; provider-owned
 external state for the selected SpatialCore occurrence is selected and
 validated here.
