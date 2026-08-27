@@ -366,6 +366,7 @@ void testResumedPilotConsumesCompletedPrefix(const ArtifactStore &store,
       planExecutionProviderCalls() != 1)
     fail("resumed pilot fixture did not consume one canonical dispatch");
   resetPlanExecutionProviderObservations();
+  requireConcurrentPlanExecutionProvidersAfterSerialPrefix(1, 2);
 
   CampaignExecutionResult result = take(runGroundTruthCampaign(
       fixture.view, fixture.closure, take(CampaignExecutionPolicy::get(2, 1)),
