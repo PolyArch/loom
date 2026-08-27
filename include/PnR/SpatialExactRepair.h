@@ -82,7 +82,6 @@ private:
   std::vector<PnrIndex> decisions_;
   std::vector<PnrIndex> relations_;
   std::vector<PnrIndex> affectedNets_;
-  SpatialFiniteBufferConflictWitness hardProgressWitness_;
   SpatialFixedTerminalCutCertificate routeCutCertificate_;
   std::vector<SpatialFixedTerminalCutCertificate> learnedCutCertificates_;
   std::vector<std::uint8_t> routeCutBlockedTraversals_;

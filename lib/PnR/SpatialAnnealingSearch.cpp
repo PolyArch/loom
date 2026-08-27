@@ -81,11 +81,6 @@ spatialMappingIsExactRepairReady(const SpatialCandidateState &candidate) {
     const auto kind = static_cast<ResolvedPnrViolationKind>(ordinal);
     if (kind == ResolvedPnrViolationKind::CapacityOveruse)
       continue;
-    if (kind == ResolvedPnrViolationKind::HardProgressViolation) {
-      if (candidate.progress().routeDependencyViolationCount() != 0)
-        return false;
-      continue;
-    }
     auto value = spatialMappingViolationValue(candidate, kind);
     if (!value)
       return value.takeError();

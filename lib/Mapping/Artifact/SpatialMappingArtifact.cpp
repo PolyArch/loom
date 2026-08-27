@@ -1337,6 +1337,12 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
   case MappingProgressClosureKind::ProvenClosedWaitSet:
     return invalid("HardProgressViolation");
   case MappingProgressClosureKind::ProofNotEstablished:
+    // An unestablished finite-buffer recurrence does not reject the ordinary
+    // Mapping; it only withholds Dataflow spectrum qualification, which reads
+    // the closure reason independently.
+    if (progress->reason ==
+        MappingProgressClosureReason::FiniteBufferRecurrenceNotEstablished)
+      break;
     return incomplete(llvm::Twine("proof_not_established: ") +
                       mappingProgressClosureReasonSpelling(progress->reason));
   }

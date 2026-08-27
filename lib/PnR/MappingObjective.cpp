@@ -343,6 +343,10 @@ loom::pnr::systemMappingViolationValue(const SystemCandidateState &candidate,
     case ::loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet:
       return 1;
     case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:
+      if (candidate.progressClosure().reason ==
+          ::loom::mapping::MappingProgressClosureReason::
+              FiniteBufferRecurrenceNotEstablished)
+        return 0;
       return unavailableSystemProgress(candidate.progressClosure());
     }
     llvm_unreachable("unknown System progress closure kind");
@@ -569,6 +573,12 @@ MappingObjectiveProgram::evaluateSystemProjection(
         violations[ordinal] = 1;
         break;
       case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:
+        if (progressClosure.reason ==
+            ::loom::mapping::MappingProgressClosureReason::
+                FiniteBufferRecurrenceNotEstablished) {
+          violations[ordinal] = 0;
+          break;
+        }
         return unavailableSystemProgress(progressClosure);
       }
       break;
