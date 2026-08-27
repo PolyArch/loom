@@ -5,9 +5,12 @@
 #include "PnR/PnrIndex.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace loom::pnr {
@@ -85,6 +88,16 @@ public:
     return capacityClaims_;
   }
 
+  /// Returns the frozen dense ordinal for a canonical Fabric endpoint.
+  /// Endpoint references are owned by the Fabric artifact; this lookup is a
+  /// derived convenience and does not participate in artifact identity.
+  std::optional<PnrIndex> endpointOrdinal(
+      const ::loom::fabric::FabricTransportEndpointRef &reference) const;
+
+  /// Returns the frozen dense ordinal for a canonical Fabric traversal.
+  std::optional<PnrIndex> traversalOrdinal(
+      const ::loom::fabric::FabricPhysicalTraversalRef &reference) const;
+
 private:
   std::vector<EndpointRoutingEndpoint> endpoints_;
   std::vector<EndpointRoutingTraversal> traversals_;
@@ -97,6 +110,8 @@ private:
   std::vector<PnrIndex> reverseArcOrdinals_;
   std::vector<EndpointRoutingCapacityCell> capacityCells_;
   std::vector<EndpointRoutingCapacityClaim> capacityClaims_;
+  llvm::StringMap<PnrIndex> endpointOrdinals_;
+  llvm::StringMap<PnrIndex> traversalOrdinals_;
 
   friend llvm::Expected<FrozenEndpointRoutingTopology>
   freezeEndpointRoutingTopology(

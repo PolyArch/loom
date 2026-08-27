@@ -209,11 +209,6 @@ private:
       selectedOwners.try_emplace(
           ownerKey(FabricHandshakeOwner::memory(placement.memory)), true);
 
-    llvm::StringMap<PnrIndex> traversalOrdinals;
-    for (auto [ordinal, traversal] : llvm::enumerate(routing.traversals()))
-      traversalOrdinals.try_emplace(refKey(traversal.reference),
-                                    static_cast<PnrIndex>(ordinal));
-
     std::vector<const HandshakeOwnerModel *> active;
     active.reserve(models.size());
     for (const HandshakeOwnerModel &model : models) {
@@ -224,9 +219,8 @@ private:
              ++witnessOrdinal) {
           const FabricPhysicalTraversalRef witness =
               model.traversalWitness(witnessOrdinal);
-          const auto found = traversalOrdinals.find(refKey(witness));
-          if (found != traversalOrdinals.end() &&
-              activeRouting.traversalIsActive(found->second)) {
+          const auto found = routing.topology().traversalOrdinal(witness);
+          if (found && activeRouting.traversalIsActive(*found)) {
             selected = true;
             break;
           }
@@ -276,10 +270,6 @@ private:
           return invalid("active handshake owner is repeated");
         result_.ownerModels_.push_back(*model);
       }
-      for (auto [ordinal, traversal] : llvm::enumerate(routing_.traversals()))
-        traversalOrdinals_.try_emplace(refKey(traversal.reference),
-                                       static_cast<PnrIndex>(ordinal));
-
       activeLocalFragments_.resize(models_.size());
       if (llvm::Error error = prepareComputeSelections())
         return error;
@@ -973,10 +963,10 @@ private:
 
     llvm::Expected<PnrIndex>
     traversalIndex(const FabricPhysicalTraversalRef &reference) const {
-      auto found = traversalOrdinals_.find(refKey(reference));
-      if (found == traversalOrdinals_.end())
+      const auto found = routing_.topology().traversalOrdinal(reference);
+      if (!found)
         return invalid("handshake traversal witness is absent from routing");
-      return found->second;
+      return *found;
     }
 
     llvm::Expected<PnrIndex> modelIndex(FabricHandshakeOwner owner) const {
@@ -1013,7 +1003,6 @@ private:
     const FrozenSpatialResourceIndex &resources_;
     const FrozenSpatialRoutingGraph &routing_;
     const FrozenSpatialActiveRoutingDomain &activeRouting_;
-    llvm::StringMap<PnrIndex> traversalOrdinals_;
     llvm::StringMap<PnrIndex> modelOrdinals_;
     std::vector<std::vector<std::uint32_t>> activeLocalFragments_;
     std::vector<std::vector<std::uint32_t>> computePlacementLocalFragments_;

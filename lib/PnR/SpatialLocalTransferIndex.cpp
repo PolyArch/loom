@@ -1,20 +1,17 @@
 #include "SpatialLocalTransferIndex.h"
 
-#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "PnR/PnrIndex.h"
 #include "PnR/SpatialCandidateState.h"
 #include "SpatialRouteConstraintModel.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <set>
-#include <string>
 #include <system_error>
 #include <vector>
 
@@ -45,12 +42,6 @@ llvm::Expected<PnrIndex> checked(PnrCapacityContext context,
   return checkedPnrIndex(context, static_cast<std::uint64_t>(value));
 }
 
-std::string key(const ::loom::fabric::FabricPhysicalTraversalRef &reference) {
-  const auto bytes = ::loom::fabric::canonicalFabricBytes(reference);
-  return std::string(reinterpret_cast<const char *>(bytes.data()),
-                     bytes.size());
-}
-
 const TechComputeRealizationView *
 findRealization(const TechMappingView &techMapping,
                 const ::dataflow::ActorRef &actor) {
@@ -78,15 +69,6 @@ findFrozenRealization(const FrozenSpatialRealizationIndex &realizations,
   return std::nullopt;
 }
 
-llvm::Expected<PnrIndex>
-traversalOrdinal(const llvm::StringMap<PnrIndex> &ordinals,
-                 const ::loom::fabric::FabricPhysicalTraversalRef &reference) {
-  auto found = ordinals.find(key(reference));
-  if (found == ordinals.end())
-    return invalid("register-FIFO path is absent from the routing graph");
-  return found->second;
-}
-
 } // namespace
 
 class loom::pnr::FrozenSpatialLocalTransferIndexBuilder final {
@@ -105,16 +87,6 @@ public:
       return std::move(error);
     if (logicalNets.size() != techMapping.residualLogicalNets().size())
       return invalid("local-transfer net domain disagrees with TechMapping");
-
-    llvm::StringMap<PnrIndex> traversalOrdinals;
-    for (auto [ordinal, traversal] : llvm::enumerate(routing.traversals())) {
-      auto index = checked(optionCountContext, ordinal);
-      if (!index)
-        return index.takeError();
-      if (!traversalOrdinals.try_emplace(key(traversal.reference), *index)
-               .second)
-        return invalid("routing graph repeats a physical traversal");
-    }
 
     result.domains_.reserve(logicalNets.size());
     for (auto [netOrdinalValue, logicalNet] : llvm::enumerate(logicalNets)) {
@@ -148,7 +120,7 @@ public:
             return invalid("local-transfer realization was not frozen");
           if (llvm::Error error = appendPlacementPairs(
                   dataflow, *producerRealization, *consumerRealization, fabric,
-                  realizations, routing, traversalOrdinals, sourceNet,
+                  realizations, routing, sourceNet,
                   netOrdinal, *producerOrdinal, *consumerOrdinal, result))
             return std::move(error);
         }
@@ -171,7 +143,6 @@ private:
                        const ::loom::fabric::FabricArtifactView &fabric,
                        const FrozenSpatialRealizationIndex &realizations,
                        const FrozenSpatialRoutingGraph &routing,
-                       const llvm::StringMap<PnrIndex> &traversalOrdinals,
                        const TechResidualLogicalNetView &logicalNet,
                        PnrIndex logicalNetOrdinal, PnrIndex producerRealization,
                        PnrIndex consumerRealization,
@@ -229,13 +200,14 @@ private:
         if (!options)
           return options.takeError();
         for (const SpatialPeLocalTransferOptionView &option : *options) {
-          auto write =
-              traversalOrdinal(traversalOrdinals, option.writeTraversal);
+          const auto write =
+              routing.topology().traversalOrdinal(option.writeTraversal);
           if (!write)
-            return write.takeError();
-          auto read = traversalOrdinal(traversalOrdinals, option.readTraversal);
+            return invalid("register-FIFO path is absent from the routing graph");
+          const auto read =
+              routing.topology().traversalOrdinal(option.readTraversal);
           if (!read)
-            return read.takeError();
+            return invalid("register-FIFO path is absent from the routing graph");
           if (*write >= routing.traversals().size() ||
               *read >= routing.traversals().size())
             return invalid("local-transfer traversal ordinal is out of range");

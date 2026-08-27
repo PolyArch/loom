@@ -193,7 +193,7 @@ transferTerminalKey(const ArtifactIdentity &dataflowIdentity,
 llvm::Expected<std::vector<PnrIndex>> restrictedAttachmentEndpoints(
     const FrozenConstraintShard &shard,
     const SpatialConstraintTransferTerminal &subject,
-    const std::map<ProjectionKey, PnrIndex> &endpointOrdinals) {
+    const FrozenSpatialRoutingGraph &routing) {
   const auto restricted = shard.restrictedDomain(subject);
   if (!restricted)
     return std::vector<PnrIndex>{};
@@ -204,11 +204,11 @@ llvm::Expected<std::vector<PnrIndex>> restrictedAttachmentEndpoints(
     if (!endpoint)
       return invalid(Projection::SpatialTransferAttachment,
                      "attachment restriction contains a non-endpoint value");
-    const auto found = endpointOrdinals.find(canonicalFabricBytes(*endpoint));
-    if (found == endpointOrdinals.end())
+    const auto found = routing.topology().endpointOrdinal(*endpoint);
+    if (!found)
       return invalid(Projection::SpatialTransferAttachment,
                      "attachment restriction names a foreign endpoint");
-    endpoints.push_back(found->second);
+    endpoints.push_back(*found);
   }
   llvm::sort(endpoints);
   endpoints.erase(std::unique(endpoints.begin(), endpoints.end()),
@@ -369,18 +369,6 @@ SpatialBindingRelationModel::create(
   const PnrIndex graphBoundaryDecisionOffset =
       portDecisionOffset + static_cast<PnrIndex>(ports.portDemands().size());
 
-  std::map<ProjectionKey, PnrIndex> endpointOrdinals;
-  for (auto [ordinal, endpoint] : llvm::enumerate(routing.routingEndpoints())) {
-    const bool inserted =
-        endpointOrdinals
-            .try_emplace(canonicalFabricBytes(endpoint.reference),
-                         static_cast<PnrIndex>(ordinal))
-            .second;
-    if (!inserted)
-      return invalid(Projection::SpatialTransferAttachment,
-                     "routing endpoint reference is not unique");
-  }
-
   std::map<ProjectionKey, PnrIndex> attachmentDecisions;
   std::vector<std::optional<SpatialConstraintTransferTerminal>>
       attachmentSubjects(ports.portDemands().size() +
@@ -460,7 +448,7 @@ SpatialBindingRelationModel::create(
   portAttachmentChoiceOffsets.push_back(0);
   for (PnrIndex demand = 0; demand < ports.portDemands().size(); ++demand) {
     auto restricted = restrictedAttachmentEndpoints(
-        attachmentShard, *attachmentSubjects[demand], endpointOrdinals);
+        attachmentShard, *attachmentSubjects[demand], routing);
     if (!restricted)
       return restricted.takeError();
     const bool hasRestriction =
@@ -518,7 +506,7 @@ SpatialBindingRelationModel::create(
     const PnrIndex subjectOrdinal =
         static_cast<PnrIndex>(ports.portDemands().size()) + boundary;
     auto restricted = restrictedAttachmentEndpoints(
-        attachmentShard, *attachmentSubjects[subjectOrdinal], endpointOrdinals);
+        attachmentShard, *attachmentSubjects[subjectOrdinal], routing);
     if (!restricted)
       return restricted.takeError();
     const bool hasRestriction =

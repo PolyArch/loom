@@ -1,7 +1,6 @@
 #include "PnR/MappingObjective.h"
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
-#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "PnR/SpatialCandidateState.h"
@@ -693,16 +692,6 @@ loom::pnr::projectSpatialMappingTraversalClaims(
   }
 
   const FrozenSpatialRoutingGraph &routing = problem.routing();
-  std::map<std::vector<std::uint8_t>, PnrIndex> traversalOrdinals;
-  for (auto indexed : llvm::enumerate(routing.traversals())) {
-    auto key = ::loom::fabric::canonicalFabricBytes(indexed.value().reference);
-    if (!traversalOrdinals
-             .try_emplace(std::move(key),
-                          static_cast<PnrIndex>(indexed.index()))
-             .second)
-      return objectiveError("FrozenModel repeats a physical traversal");
-  }
-
   SpatialMappingTraversalClaimProjection projection;
   projection.logicalNets.reserve(mapping.routeTrees().size());
   std::vector<bool> seenNets(frozenNets.size(), false);
@@ -725,13 +714,12 @@ loom::pnr::projectSpatialMappingTraversalClaims(
     for (const ::loom::mapping::SpatialRouteNodeView &node : route.nodes) {
       if (!node.incomingTraversal)
         continue;
-      auto traversalKey =
-          ::loom::fabric::canonicalFabricBytes(*node.incomingTraversal);
-      const auto traversal = traversalOrdinals.find(traversalKey);
-      if (traversal == traversalOrdinals.end())
+      const auto traversal = routing.topology().traversalOrdinal(
+          *node.incomingTraversal);
+      if (!traversal)
         return objectiveError("Spatial Mapping selects a foreign traversal");
       const FrozenSpatialTraversal &record =
-          routing.traversals()[traversal->second];
+          routing.traversals()[*traversal];
       for (PnrIndex claim : routing.traversalClaimKeys().slice(
                record.routeClaimOffset, record.routeClaimCount)) {
         if (claim >= routing.routeClaims().size())

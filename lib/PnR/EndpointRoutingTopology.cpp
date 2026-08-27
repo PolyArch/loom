@@ -126,7 +126,6 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
           preflightPnrIndexCapacity(traversalContext, traversalViews.size()))
     return std::move(error);
 
-  llvm::StringMap<PnrIndex> endpointOrdinals;
   result.endpoints_.reserve(endpointRefs.size());
   for (auto [ordinal, reference] : llvm::enumerate(endpointRefs)) {
     const auto direction = fabric.transportEndpointDirection(reference);
@@ -136,9 +135,20 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
     auto index = checked(endpointContext, ordinal);
     if (!index)
       return index.takeError();
-    if (!endpointOrdinals.try_emplace(refKey(reference), *index).second)
+    if (!result.endpointOrdinals_.try_emplace(refKey(reference), *index)
+             .second)
       return invalid("the canonical endpoint inventory has a duplicate");
     result.endpoints_.push_back({reference, *direction, *dataPath});
+  }
+
+  for (auto [ordinal, traversal] : llvm::enumerate(traversalViews)) {
+    auto index = checked(traversalContext, ordinal);
+    if (!index)
+      return index.takeError();
+    if (!result.traversalOrdinals_
+             .try_emplace(refKey(traversal.reference), *index)
+             .second)
+      return invalid("the canonical traversal inventory has a duplicate");
   }
 
   struct ArcDraft final {
@@ -186,12 +196,12 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
     std::vector<PnrIndex> sources;
     sources.reserve(traversal.sources.size());
     for (const FabricTransportEndpointRef &source : traversal.sources) {
-      auto found = endpointOrdinals.find(refKey(source));
-      if (found == endpointOrdinals.end())
+      const auto found = result.endpointOrdinal(source);
+      if (!found)
         return invalid(
             "a traversal source is absent from the endpoint inventory");
-      sources.push_back(found->second);
-      result.traversalEndpoints_.push_back(found->second);
+      sources.push_back(*found);
+      result.traversalEndpoints_.push_back(*found);
     }
     auto sourceCount = checked(traversalEndpointContext, sources.size());
     if (!sourceCount)
@@ -204,12 +214,12 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
     destinations.reserve(traversal.destinations.size());
     for (const FabricTransportEndpointRef &destination :
          traversal.destinations) {
-      auto found = endpointOrdinals.find(refKey(destination));
-      if (found == endpointOrdinals.end())
+      const auto found = result.endpointOrdinal(destination);
+      if (!found)
         return invalid(
             "a traversal destination is absent from the endpoint inventory");
-      destinations.push_back(found->second);
-      result.traversalEndpoints_.push_back(found->second);
+      destinations.push_back(*found);
+      result.traversalEndpoints_.push_back(*found);
     }
     auto destinationCount =
         checked(traversalEndpointContext, destinations.size());
@@ -387,4 +397,20 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
     result.reverseArcOrdinals_[reverseCursors[arc.target]++] = *arcIndex;
   }
   return result;
+}
+
+std::optional<PnrIndex> FrozenEndpointRoutingTopology::endpointOrdinal(
+    const ::loom::fabric::FabricTransportEndpointRef &reference) const {
+  const auto found = endpointOrdinals_.find(refKey(reference));
+  if (found == endpointOrdinals_.end())
+    return std::nullopt;
+  return found->second;
+}
+
+std::optional<PnrIndex> FrozenEndpointRoutingTopology::traversalOrdinal(
+    const ::loom::fabric::FabricPhysicalTraversalRef &reference) const {
+  const auto found = traversalOrdinals_.find(refKey(reference));
+  if (found == traversalOrdinals_.end())
+    return std::nullopt;
+  return found->second;
 }
