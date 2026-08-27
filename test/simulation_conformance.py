@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import signal
 import statistics
 import subprocess
@@ -376,14 +377,52 @@ def _nonnegative_integer(value: object, what: str, *, positive: bool = False) ->
     return value
 
 
-_CANONICAL_DATAFLOW_SCHEMA = ("loom.canonical_dataflow", "3.0")
-_SIMULATION_WORKLOAD_SCHEMA = ("loom.simulation_workload", "1.1")
-_SIMULATION_RUNTIME_INPUT_SCHEMA = ("loom.simulation_runtime_input", "2.0")
-_RESOLVED_CONFIG_SCHEMA = ("loom.config.resolved", "11.0")
-_FABRIC_SCHEMA = ("loom.fabric", "7.0")
-_MAPPING_SCHEMA = ("loom.mapping", "6.0")
-_MAPPING_CONSTRAINT_SET_SCHEMA = ("loom.mapping_constraints", "1.0")
-_EVALUATION_EVIDENCE_SCHEMA = ("evaluation.evidence", "1.0")
+def _owned_schema(relative_path: str, name: str) -> tuple[str, str]:
+    """Derive an artifact schema version from its C++ semantic owner.
+
+    The named descriptor constant is the only version authority; this
+    parser is a mechanical derivation and fails loudly when the owner
+    moves or the descriptor shape changes, instead of drifting on a
+    hand-copied constant.
+    """
+    source = (ROOT / relative_path).read_text(encoding="utf-8")
+    anchor = source.find(f'"{name}"')
+    if anchor < 0:
+        raise RuntimeError(
+            f"schema owner {relative_path} does not define {name}"
+        )
+    version = re.search(r"\{\s*(\d+)\s*,\s*(\d+)\s*\}", source[anchor:])
+    if version is None:
+        raise RuntimeError(
+            f"schema owner {relative_path} has no version for {name}"
+        )
+    return (name, f"{version.group(1)}.{version.group(2)}")
+
+
+_CANONICAL_DATAFLOW_SCHEMA = _owned_schema(
+    "include/Dataflow/IR/DataflowCanonicalEntity.h", "loom.canonical_dataflow"
+)
+_SIMULATION_WORKLOAD_SCHEMA = _owned_schema(
+    "include/Simulator/SimulationArtifacts.h", "loom.simulation_workload"
+)
+_SIMULATION_RUNTIME_INPUT_SCHEMA = _owned_schema(
+    "include/Simulator/SimulationArtifacts.h", "loom.simulation_runtime_input"
+)
+_RESOLVED_CONFIG_SCHEMA = _owned_schema(
+    "include/Config/ResolvedConfig.h", "loom.config.resolved"
+)
+_FABRIC_SCHEMA = _owned_schema(
+    "include/Fabric/Artifact/FabricArtifactCodec.h", "loom.fabric"
+)
+_MAPPING_SCHEMA = _owned_schema(
+    "include/Mapping/IR/MappingSchema.h", "loom.mapping"
+)
+_MAPPING_CONSTRAINT_SET_SCHEMA = _owned_schema(
+    "include/Mapping/Artifact/MappingConstraintSet.h", "loom.mapping_constraints"
+)
+_EVALUATION_EVIDENCE_SCHEMA = _owned_schema(
+    "lib/Evaluation/Evidence.cpp", "evaluation.evidence"
+)
 
 
 def _validate_artifact_reference(

@@ -34,6 +34,8 @@ llvm::Expected<std::vector<std::uint8_t>>
 writeBytecodeOnce(Operation *operation) {
   llvm::SmallVector<char> storage;
   llvm::raw_svector_ostream stream(storage);
+  // Frozen encoder token: it is embedded in the canonical identity bytes and
+  // carries no version semantics; fabricArtifactSchema owns the version.
   BytecodeWriterConfig config("loom.fabric.3.0");
   config.setElideLocations();
   if (failed(writeBytecodeToFile(operation, stream, config)))

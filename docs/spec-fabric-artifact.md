@@ -337,7 +337,12 @@ schema validation rejects it as reserved-unavailable before dependency lookup.
 
 The MLIR payload encodes each external root use as a `u64be` dependency-table
 ordinal followed by the referenced owner's canonical local target bytes when
-a target is required. It does not repeat an ArtifactIdentity. The Fabric
+a target is required. It does not repeat an ArtifactIdentity. The MLIR
+bytecode writer's embedded producer tag inside `canonical_mlir_bytecode` is a
+frozen encoder token (`loom.fabric.3.0`) retained solely for canonical byte
+stability across schema revisions; it carries no version semantics, is never
+consulted by validation, and changing it would change every canonical
+identity. The Fabric
 semantic envelope does not repeat its own schema descriptor because the Common
 identity preimage already owns that framing. The `v7` semantic-domain marker
 therefore identifies the major-version envelope grammar; it is not a wildcard
