@@ -25,4 +25,5 @@
 # RUN: cmp %t/viz-a/fabric.mlir %t/viz-b/fabric.mlir
 # RUN: cmp %t/viz-a/fabric.html %t/viz-b/fabric.html
 # RUN: %python %S/verify_product_visualization.py \
-# RUN:   --fabric-root=%t/system.json --bundle=%t/viz-a/viz.bundle.json
+# RUN:   --fabric-root=%t/system.json --bundle=%t/viz-a/viz.bundle.json \
+# RUN:   --expected-spectrum-class intermediate --minimum-region-count 1
