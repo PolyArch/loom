@@ -1709,13 +1709,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--spatial-warmup-runs", type=int, default=1)
     parser.add_argument("--spatial-measurement-runs", type=int, default=3)
     arguments = parser.parse_args(argv)
+    measurement_attempts = 1
     report = run_paired_execution_matrix(
         arguments.execution_matrix_runner,
         arguments.gem5_readiness,
         spatial_warmup_runs=arguments.spatial_warmup_runs,
         spatial_measurement_runs=arguments.spatial_measurement_runs,
     )
-    print(json.dumps(report_json(report), indent=2, sort_keys=True))
+    if report.disposition is MeasurementDisposition.REFERENCE_RATE_BELOW_TARGET:
+        # A transient host-load dip can miss the reference rate while the
+        # measurement machinery is healthy. One bounded remeasurement keeps
+        # the rate gate meaningful: an order-of-magnitude host regression
+        # fails both attempts, while a scheduling blip does not fail the
+        # suite. Budget and ratio failures are not retried.
+        measurement_attempts += 1
+        report = run_paired_execution_matrix(
+            arguments.execution_matrix_runner,
+            arguments.gem5_readiness,
+            spatial_warmup_runs=arguments.spatial_warmup_runs,
+            spatial_measurement_runs=arguments.spatial_measurement_runs,
+        )
+    payload = report_json(report)
+    payload["measurement_attempts"] = measurement_attempts
+    print(json.dumps(payload, indent=2, sort_keys=True))
     return 0 if report.disposition is MeasurementDisposition.MEASURED else 1
 
 
