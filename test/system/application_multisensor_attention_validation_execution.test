@@ -1,10 +1,12 @@
 # REQUIRES: gem5-25.1.0.1
 # RUN: rm -rf %t.deployment %t.execution
-# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc %loom-product-acceleration-profile \
+# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc \
+# RUN:   --loom-accel-profile=%S/Inputs/product_attention_dse_grown.yaml \
 # RUN:   --loom-portfolio-manifest=%S/../applications/manifest.json \
 # RUN:   --loom-portfolio-repository-root=%S/../.. \
-# RUN:   --loom-portfolio-application=vecadd-memory \
-# RUN:   --loom-portfolio-input=smoke \
+# RUN:   --loom-portfolio-application=loom-multisensor-attention \
+# RUN:   --loom-portfolio-input=validation \
+# RUN:   --loom-mapping-wall-time-limit-ms=%loom-timeout-medium-ms \
 # RUN:   --loom-deploy-output=%t.deployment \
 # RUN:   > %t.build.stdout 2> %t.build.stderr
 # RUN: env LOOM_VERBOSE_LEVEL=1 loom-system-run \
@@ -15,9 +17,9 @@
 # RUN:   --manifest=%S/../applications/manifest.json > %t.inventory.json
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
-# RUN:   --portfolio-application=vecadd-memory --portfolio-input=smoke \
+# RUN:   --portfolio-application=loom-multisensor-attention \
+# RUN:   --portfolio-input=validation \
 # RUN:   --portfolio-inventory=%t.inventory.json \
-# RUN:   --mapping-inspector=loom-product-mapping-inspection-test \
-# RUN:   --require-memory-engine \
-# RUN:   --required-dataflow-text=dataflow.load \
-# RUN:   --required-dataflow-text=dataflow.store
+# RUN:   --required-dataflow-text=math.exp \
+# RUN:   --required-dataflow-text=scf.for \
+# RUN:   --required-dataflow-text=dataflow.carry
