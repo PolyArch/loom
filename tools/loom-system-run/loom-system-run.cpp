@@ -341,6 +341,8 @@ executeResourceTimeLifecycle(
     if (!event)
       return event.takeError();
   }
+  if (llvm::Error error = loaded->resourceTimeExecution()->joinMappedRoots())
+    return std::move(error);
   auto trace = loaded->publishResourceTimeExecutionTrace(artifacts, blobs);
   if (!trace)
     return trace.takeError();

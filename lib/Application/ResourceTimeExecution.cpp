@@ -769,10 +769,11 @@ ApplicationResourceTimeExecutionSession::apply(
                                               selection_.completedRoots(),
                                               std::move(transition)};
   events_.push_back(event);
-  if (selection_.completedRoots().size() == selection_.mappedRoots().size())
-    if (llvm::Error error = selection_.joinMappedRoots())
-      return std::move(error);
   return event;
+}
+
+llvm::Error ApplicationResourceTimeExecutionSession::joinMappedRoots() {
+  return selection_.joinMappedRoots();
 }
 
 llvm::Expected<FinalizedApplicationResourceTimeExecutionTrace>

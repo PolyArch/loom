@@ -543,12 +543,16 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
           selectedEvent.completedRoots.size() == 2 &&
           llvm::is_contained(selectedEvent.completedRoots, precedingRoot) &&
           llvm::is_contained(selectedEvent.completedRoots, root) &&
-          eventSession.joined() && eventSession.events().size() == 4 &&
+          !eventSession.joined() && eventSession.events().size() == 4 &&
           eventLoaded.deployment().reference() == child.reference() &&
           eventProvider->activeDeployment(0) == child.reference() &&
           eventProvider->statistics().activationPreparationCount == 1 &&
           eventProvider->statistics().activationReplacementCount == 1,
       "Application event session lost its typed stay or selected child");
+  if (llvm::Error error = eventSession.joinMappedRoots())
+    deployment::test::fail(test, llvm::toString(std::move(error)));
+  deployment::test::require(test, eventSession.joined(),
+                            "Application event session did not join roots");
 
   auto firstCycleDraft = draft;
   firstCycleDraft.trigger =

@@ -48,6 +48,15 @@ std::vector<std::uint8_t> encodeU64(std::uint64_t value) {
   return bytes;
 }
 
+std::vector<std::uint8_t> encodeScopedU64(const ArtifactIdentity &identity,
+                                          std::uint64_t value) {
+  std::vector<std::uint8_t> bytes{1};
+  bytes.insert(bytes.end(), identity.bytes().begin(), identity.bytes().end());
+  const auto ordinal = encodeU64(value);
+  bytes.insert(bytes.end(), ordinal.begin(), ordinal.end());
+  return bytes;
+}
+
 RuntimeProviderEndpointRef
 fabricModelEndpoint(llvm::StringRef test, RuntimeEndpointClass endpointClass,
                     std::vector<std::uint8_t> payload) {
@@ -1204,7 +1213,8 @@ void exercisesFabricModelOperationalProvider() {
       "FabricModel provider changed its leased implementation identity");
 
   const RuntimeProviderEndpointRef programmingEndpoint = fabricModelEndpoint(
-      test, RuntimeEndpointClass::Programming, encodeU64(0));
+      test, RuntimeEndpointClass::Programming,
+      encodeScopedU64(implementation, 0));
   deployment::test::require(
       test,
       !provider->writeConfigurationWord(

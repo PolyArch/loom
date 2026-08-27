@@ -441,6 +441,32 @@ def validate_mapping_work(
             and isinstance(transition.get("child_mapping"), str),
             "incremental transition lacks cold and repaired Mapping witnesses",
         )
+    verified_plan_ordinals = {
+        observation.get("plan_ordinal")
+        for candidate in pair_decision["candidates"]
+        for observation in candidate.get("mapping_observations", [])
+        if isinstance(observation, dict)
+        and observation.get("mapping_disposition") == "verified"
+        and observation.get("system_mappings")
+        and isinstance(observation.get("plan_ordinal"), int)
+    }
+    verified_mapping_ids = {
+        mapping
+        for candidate in pair_decision["candidates"]
+        for observation in candidate.get("mapping_observations", [])
+        if isinstance(observation, dict)
+        and observation.get("mapping_disposition") == "verified"
+        for mapping in observation.get("system_mappings", [])
+        if isinstance(mapping, str)
+    }
+    published_slots = sum(row.get("candidate_publications", 0) for row in system)
+    require(
+        verified_plan_ordinals
+        and verified_mapping_ids
+        and verified_alternatives <= len(verified_mapping_ids)
+        and len(verified_plan_ordinals) <= published_slots,
+        "verified Mapping inventory does not reconcile with published roots",
+    )
     if transitions:
         # Incremental hardware-reopen work runs under the first-verified
         # product goal, where every System row publishes exactly one
@@ -452,14 +478,14 @@ def validate_mapping_work(
             " work",
         )
     else:
-        # Each published System candidate is independently verified, so the
-        # verified-alternative count reconciles with publications whether the
-        # profile stops at its first verified candidate or exhausts its
-        # configured restarts.
+        # A provider publication is a concrete SystemMapping slot. One
+        # verified planning alternative may publish more than one root, and a
+        # runtime-qualified tail may contribute roots from several invocations;
+        # compare the aggregate only as a bound while the candidate inventory
+        # above checks the exact plan and root witnesses.
         require(
-            verified_alternatives
-            == sum(row.get("candidate_publications", 0) for row in system),
-            "verified System alternatives do not reconcile with publications",
+            verified_alternatives <= published_slots,
+            "verified System alternatives exceed published roots",
         )
     incremental_system_rows = [
         row for row in system if row.get("migration_seed_attempt_slots") == 1

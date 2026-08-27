@@ -34,8 +34,16 @@ llvm::Error validateIdentityPayload(llvm::ArrayRef<std::uint8_t> payload) {
 }
 
 llvm::Error validateInterfacePayload(llvm::ArrayRef<std::uint8_t> payload) {
-  if (payload.size() != sizeof(std::uint64_t))
-    return invalid("interface endpoint payload is not one u64be ordinal");
+  // The eight-byte form is retained for single-implementation providers.
+  // FabricModel bindings emitted here use the scoped form so that an
+  // interface ordinal cannot collide across HardwareImplementations sharing
+  // one transient device.
+  constexpr std::size_t scopedBytes = 1 + ArtifactIdentity::byteSize +
+                                       sizeof(std::uint64_t);
+  const bool legacy = payload.size() == sizeof(std::uint64_t);
+  const bool scoped = payload.size() == scopedBytes && payload.front() == 1;
+  if (!legacy && !scoped)
+    return invalid("interface endpoint payload is not a canonical ordinal");
   return llvm::Error::success();
 }
 
@@ -50,9 +58,24 @@ std::vector<std::uint8_t> encodeOrdinal(std::uint64_t ordinal) {
   return bytes;
 }
 
+std::vector<std::uint8_t>
+encodeScopedOrdinal(const ArtifactIdentity &implementation,
+                   std::uint64_t ordinal) {
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(1 + ArtifactIdentity::byteSize + sizeof(ordinal));
+  bytes.push_back(1);
+  bytes.insert(bytes.end(), implementation.bytes().begin(),
+               implementation.bytes().end());
+  const std::vector<std::uint8_t> ordinalBytes = encodeOrdinal(ordinal);
+  bytes.insert(bytes.end(), ordinalBytes.begin(), ordinalBytes.end());
+  return bytes;
+}
+
 RuntimeProviderEndpointRef endpoint(FabricModelEndpointKind kind,
+                                    const ArtifactIdentity &implementation,
                                     std::uint64_t ordinal) {
-  return {static_cast<std::uint32_t>(kind), encodeOrdinal(ordinal)};
+  return {static_cast<std::uint32_t>(kind),
+          encodeScopedOrdinal(implementation, ordinal)};
 }
 
 const RuntimeProviderEndpointKindDescriptor endpointKinds[] = {
@@ -113,13 +136,15 @@ finalizeFabricModelRuntimePlatformBinding(
                 &semantic)) {
       programming.push_back(
           {configuration->programmingUnit, reference,
-           endpoint(FabricModelEndpointKind::Programming, ordinal)});
+           endpoint(FabricModelEndpointKind::Programming,
+                    implementation.reference().artifact, ordinal)});
       continue;
     }
     if (std::holds_alternative<hardware::ImplementationMemoryInterfaceRef>(
             semantic)) {
       memory.push_back(
-          {reference, endpoint(FabricModelEndpointKind::Memory, ordinal)});
+          {reference, endpoint(FabricModelEndpointKind::Memory,
+                               implementation.reference().artifact, ordinal)});
       continue;
     }
     if (std::holds_alternative<hardware::ImplementationDataInterfaceRef>(
@@ -127,7 +152,8 @@ finalizeFabricModelRuntimePlatformBinding(
         std::holds_alternative<
             hardware::ImplementationExternalProtocolInterfaceRef>(semantic))
       completion.push_back(
-          {reference, endpoint(FabricModelEndpointKind::Completion, ordinal)});
+          {reference, endpoint(FabricModelEndpointKind::Completion,
+                               implementation.reference().artifact, ordinal)});
   }
 
   RuntimeProviderEndpointRef identity{

@@ -20,17 +20,20 @@ config.name = "LOOM"
 config.test_format = lit.formats.ShTest()
 config.suffixes = [".mlir", ".test"]
 
-# Resource-intensive tests are still bounded by the same host-aware worker
-# budget as the outer lit pool. The dispatcher exports this value so nested
-# runners and lit share one parallelism decision; direct lit runs use the same
-# nproc-minus-four policy.
+# Resource-intensive tests launch nested compilers, PnR, simulators, and
+# external tools. Their processes also allocate large working sets, so the
+# outer lit pool must not multiply that load by the full test worker count.
+# Keep the cap here as the single scheduling owner; LOOM_TEST_JOBS still
+# controls the ordinary outer pool and nested tool budgets.
 try:
     _test_jobs = int(os.environ.get("LOOM_TEST_JOBS", ""))
 except ValueError:
     _test_jobs = 0
 if _test_jobs < 1:
     _test_jobs = max(1, min((os.cpu_count() or 1) - 4, 120))
-lit_config.parallelism_groups["resource-intensive"] = _test_jobs
+lit_config.parallelism_groups["resource-intensive"] = max(
+    1, min(_test_jobs, 6)
+)
 # Each full-budget RTL invocation partitions the complete configured host job
 # budget among its independent compiler commands. More than one such test in
 # the same lit run would multiply that budget across processes.

@@ -1,6 +1,7 @@
 # REQUIRES: gem5-25.1.0.1
 # RUN: rm -rf %t.deployment %t.execution
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc \
+# RUN:   --loom-accel-profile=%S/Inputs/product_attention_dse_grown.yaml \
 # RUN:   --loom-portfolio-manifest=%S/../applications/manifest.json \
 # RUN:   --loom-portfolio-repository-root=%S/../.. \
 # RUN:   --loom-portfolio-application=llama2c-kernels \
@@ -30,6 +31,7 @@
 # RUN:   --require-temporal-dispatch
 # RUN: rm -rf %t.validation.deployment %t.validation.execution
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc \
+# RUN:   --loom-accel-profile=%S/Inputs/product_attention_dse_grown.yaml \
 # RUN:   --loom-portfolio-manifest=%S/../applications/manifest.json \
 # RUN:   --loom-portfolio-repository-root=%S/../.. \
 # RUN:   --loom-portfolio-application=llama2c-kernels \

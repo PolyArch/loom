@@ -113,6 +113,11 @@ public:
   apply(const sim::SystemRootLifecycleObservation &observation,
         runtime::LoadedDeployment &loaded);
 
+  /// Closes the event stream after the caller has supplied every root event.
+  /// A complete active set is not sufficient to infer closure because a root
+  /// may be started again by a later invocation.
+  llvm::Error joinMappedRoots();
+
   const runtime::ResourceTimeTransitionSelectionSession &selection() const {
     return selection_;
   }
