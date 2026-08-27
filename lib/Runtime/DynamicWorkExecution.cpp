@@ -5,11 +5,13 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Mapping/Artifact/SystemMappingClosureProjection.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SpatialObservationComparison.h"
 
 #include "llvm/ADT/STLExtras.h"
 
 #include <map>
 #include <numeric>
+#include <tuple>
 
 namespace loom::runtime {
 
@@ -86,6 +88,115 @@ llvm::Error unsupported(DynamicWorkExecutionUnsupportedReason reason,
 std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
   return std::string(reinterpret_cast<const char *>(bytes.data()),
                      bytes.size());
+}
+
+std::vector<std::uint64_t> workItemPath(sim::WorkItemId item) {
+  std::vector<std::uint64_t> path;
+  while (true) {
+    path.push_back(item.ordinal());
+    auto parent = item.parent();
+    if (!parent)
+      break;
+    item = std::move(*parent);
+  }
+  std::reverse(path.begin(), path.end());
+  return path;
+}
+
+bool equivalentReplay(llvm::ArrayRef<sim::DynamicWorkScheduleAction> lhs,
+                      llvm::ArrayRef<sim::DynamicWorkScheduleAction> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (std::size_t index = 0; index != lhs.size(); ++index)
+    if (lhs[index].kind != rhs[index].kind ||
+        lhs[index].sourceWorker != rhs[index].sourceWorker ||
+        lhs[index].targetWorker != rhs[index].targetWorker ||
+        workItemPath(lhs[index].item) != workItemPath(rhs[index].item))
+      return false;
+  return true;
+}
+
+bool equivalentDispatch(const DynamicWorkExecutionResult &lhs,
+                        const DynamicWorkExecutionResult &rhs) {
+  return lhs.dispatchOccurrence != rhs.dispatchOccurrence &&
+         lhs.joinEffect == rhs.joinEffect && lhs.cancelled == rhs.cancelled &&
+         lhs.processedItemCount == rhs.processedItemCount &&
+         lhs.publishedChildCount == rhs.publishedChildCount &&
+         lhs.completedItemCount == rhs.completedItemCount &&
+         lhs.cancelledItemCount == rhs.cancelledItemCount &&
+         equivalentReplay(lhs.replay, rhs.replay);
+}
+
+bool equivalentServicePlans(
+    llvm::ArrayRef<DynamicWorkSelectedServicePlan> lhs,
+    llvm::ArrayRef<DynamicWorkSelectedServicePlan> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (std::size_t index = 0; index != lhs.size(); ++index)
+    if (!(lhs[index].obligation == rhs[index].obligation) ||
+        !(lhs[index].selection == rhs[index].selection) ||
+        lhs[index].planOrdinal != rhs[index].planOrdinal)
+      return false;
+  return true;
+}
+
+bool equivalentCounters(const sim::CgraSimulationCounters &lhs,
+                        const sim::CgraSimulationCounters &rhs) {
+  return std::tie(
+             lhs.eventFrameCount, lhs.actorCommitCount,
+             lhs.actorRetirementCount, lhs.tokenPublicationCount,
+             lhs.memoryLinearizationCount, lhs.physicalRequestCount,
+             lhs.physicalGrantCount, lhs.physicalRetirementCount,
+             lhs.emptyEventFrameCount, lhs.computeSourceFrameCount,
+             lhs.memorySourceFrameCount, lhs.transportSourceFrameCount,
+             lhs.physicalSourceFrameCount, lhs.maximumReferenceCycleNumerator,
+             lhs.maximumEventDelta, lhs.physicalGrantWaitCycleSum,
+             lhs.physicalGrantWaitCycleMax, lhs.physicalActionLifetimeCycleSum,
+             lhs.physicalActionLifetimeCycleMax,
+             lhs.physicalGrantedLifetimeCycleSum,
+             lhs.physicalGrantedLifetimeCycleMax,
+             lhs.physicalGrantSameCycleCount, lhs.physicalGrantDelayedCount,
+             lhs.nonIntegralTimingObservationCount) ==
+         std::tie(
+             rhs.eventFrameCount, rhs.actorCommitCount,
+             rhs.actorRetirementCount, rhs.tokenPublicationCount,
+             rhs.memoryLinearizationCount, rhs.physicalRequestCount,
+             rhs.physicalGrantCount, rhs.physicalRetirementCount,
+             rhs.emptyEventFrameCount, rhs.computeSourceFrameCount,
+             rhs.memorySourceFrameCount, rhs.transportSourceFrameCount,
+             rhs.physicalSourceFrameCount, rhs.maximumReferenceCycleNumerator,
+             rhs.maximumEventDelta, rhs.physicalGrantWaitCycleSum,
+             rhs.physicalGrantWaitCycleMax, rhs.physicalActionLifetimeCycleSum,
+             rhs.physicalActionLifetimeCycleMax,
+             rhs.physicalGrantedLifetimeCycleSum,
+             rhs.physicalGrantedLifetimeCycleMax,
+             rhs.physicalGrantSameCycleCount, rhs.physicalGrantDelayedCount,
+             rhs.nonIntegralTimingObservationCount);
+}
+
+bool equivalentCompletedExecution(const DynamicWorkCgraExecutionResult &lhs,
+                                  const DynamicWorkCgraExecutionResult &rhs) {
+  return equivalentDispatch(lhs.dispatch, rhs.dispatch) &&
+         lhs.instructionContext == rhs.instructionContext &&
+         lhs.spatialContext.spatialMapping ==
+             rhs.spatialContext.spatialMapping &&
+         lhs.spatialContext.context == rhs.spatialContext.context &&
+         equivalentServicePlans(lhs.servicePlans, rhs.servicePlans) &&
+         sim::haveExactlyEqualSpatialFunctionalObservations(
+             lhs.execution.observations, rhs.execution.observations) &&
+         equivalentCounters(lhs.execution.counters, rhs.execution.counters) &&
+         sim::compareSpatialEventCoordinates(
+             lhs.execution.progress.launchAccepted,
+             rhs.execution.progress.launchAccepted) == 0 &&
+         lhs.execution.progress.graphRetirementVisible.has_value() ==
+             rhs.execution.progress.graphRetirementVisible.has_value() &&
+         (!lhs.execution.progress.graphRetirementVisible ||
+          sim::compareSpatialEventCoordinates(
+              *lhs.execution.progress.graphRetirementVisible,
+              *rhs.execution.progress.graphRetirementVisible) == 0) &&
+         sim::compareSpatialEventCoordinates(
+             lhs.execution.progress.terminalObserved,
+             rhs.execution.progress.terminalObserved) == 0;
 }
 
 llvm::Expected<std::vector<DynamicWorkSelectedServicePlan>>
@@ -512,6 +623,90 @@ DynamicWorkExecutionSession::executeRootCgra(
   return DynamicWorkCgraExecutionResult{std::move(*dispatch), *instruction,
                                         *spatial, std::move(servicePlans),
                                         std::move(*retired)};
+}
+
+llvm::Expected<DynamicWorkCgraReplayResult>
+DynamicWorkExecutionSession::executeRootCgraReplay(
+    const dataflow::CanonicalDataflowArtifact &dataflowArtifact,
+    const mapping::FinalizedSystemMapping &systemMapping,
+    dataflow::RootThreadLaunchRef root, DynamicWorkCgraExecutionRequest request,
+    const ::loom::ArtifactStore &artifacts) {
+  const DynamicWorkCgraExecutionRequest replayRequest = request;
+  const DynamicWorkExecutionRequest cancellationRequest = request.dispatch;
+
+  auto completed = executeRootCgra(dataflowArtifact, systemMapping, root,
+                                   std::move(request), artifacts);
+  if (!completed)
+    return completed.takeError();
+  auto completedReplay = executeRootCgra(dataflowArtifact, systemMapping, root,
+                                         replayRequest, artifacts);
+  if (!completedReplay)
+    return completedReplay.takeError();
+  if (!equivalentCompletedExecution(*completed, *completedReplay))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "dynamic_work_execution_invalid: completed replay changed its "
+        "persistent selection, schedule, or retired CGRA observation");
+
+  auto view = dataflowArtifact.view();
+  if (!view)
+    return view.takeError();
+
+  std::optional<mapping::InstructionExecutionContextKey> cancelledInstruction;
+  std::optional<mapping::SelectedSystemSpatialContext> cancelledSpatial;
+  std::vector<DynamicWorkSelectedServicePlan> cancelledServicePlans;
+  auto cancel = [&](const DynamicWorkExecutionAssignment &assignment)
+      -> llvm::Expected<DynamicWorkItemExecution> {
+    cancelledInstruction = assignment.instructionContext;
+    cancelledSpatial = assignment.spatialContext;
+    cancelledServicePlans = assignment.servicePlans;
+    return DynamicWorkItemExecution{
+        DynamicWorkExecutionAction::RequestCancellation, {}};
+  };
+  auto cancelled =
+      executeRoot(*view, systemMapping, root, cancellationRequest, cancel);
+  if (!cancelled)
+    return cancelled.takeError();
+  if (!cancelledInstruction || !cancelledSpatial)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "dynamic_work_execution_invalid: cancellation replay omitted its "
+        "selected context");
+
+  std::optional<mapping::InstructionExecutionContextKey> replayedInstruction;
+  std::optional<mapping::SelectedSystemSpatialContext> replayedSpatial;
+  std::vector<DynamicWorkSelectedServicePlan> replayedServicePlans;
+  auto cancelReplay = [&](const DynamicWorkExecutionAssignment &assignment)
+      -> llvm::Expected<DynamicWorkItemExecution> {
+    replayedInstruction = assignment.instructionContext;
+    replayedSpatial = assignment.spatialContext;
+    replayedServicePlans = assignment.servicePlans;
+    return DynamicWorkItemExecution{
+        DynamicWorkExecutionAction::RequestCancellation, {}};
+  };
+  auto cancelledReplay = executeRoot(*view, systemMapping, root,
+                                     cancellationRequest, cancelReplay);
+  if (!cancelledReplay)
+    return cancelledReplay.takeError();
+  if (!replayedInstruction || !replayedSpatial ||
+      !(*cancelledInstruction == *replayedInstruction) ||
+      cancelledSpatial->spatialMapping != replayedSpatial->spatialMapping ||
+      !(cancelledSpatial->context == replayedSpatial->context) ||
+      !(*cancelledInstruction == completed->instructionContext) ||
+      cancelledSpatial->spatialMapping !=
+          completed->spatialContext.spatialMapping ||
+      !(cancelledSpatial->context == completed->spatialContext.context) ||
+      !equivalentServicePlans(cancelledServicePlans, replayedServicePlans) ||
+      !equivalentServicePlans(cancelledServicePlans, completed->servicePlans) ||
+      !equivalentDispatch(*cancelled, *cancelledReplay))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "dynamic_work_execution_invalid: cancellation replay changed its "
+        "persistent selection or schedule");
+
+  return DynamicWorkCgraReplayResult{
+      std::move(*completed), std::move(*completedReplay), std::move(*cancelled),
+      std::move(*cancelledReplay)};
 }
 
 } // namespace loom::runtime

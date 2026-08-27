@@ -609,6 +609,33 @@ void dynamicWorkTraversesMappingAndJoins() {
   requireReplay(
       test, cancelled.replay, cancelKinds,
       loom::sim::WorkItemId::root(loom::sim::ThreadDispatchOccurrenceId(4)));
+
+  loom::runtime::DynamicWorkCgraExecutionRequest replayRequest;
+  replayRequest.dispatch.workerCount = 2;
+  replayRequest.dispatch.queueCapacityPerWorker = 2;
+  replayRequest.dispatch.rootPayload = {7, 0, 0, 0};
+  replayRequest.maxEventFrames = 1000;
+  loom::runtime::DynamicWorkExecutionSession replaySession;
+  auto replayed = take(test, replaySession.executeRootCgraReplay(
+                                 dataflow, systemMapping, root,
+                                 std::move(replayRequest), artifacts));
+  loom::deployment::test::require(
+      test,
+      replayed.completed.dispatch.dispatchOccurrence ==
+              loom::sim::ThreadDispatchOccurrenceId(1) &&
+          replayed.completedReplay.dispatch.dispatchOccurrence ==
+              loom::sim::ThreadDispatchOccurrenceId(2) &&
+          replayed.cancelled.dispatchOccurrence ==
+              loom::sim::ThreadDispatchOccurrenceId(3) &&
+          replayed.cancelledReplay.dispatchOccurrence ==
+              loom::sim::ThreadDispatchOccurrenceId(4) &&
+          !replayed.completed.dispatch.cancelled &&
+          !replayed.completedReplay.dispatch.cancelled &&
+          replayed.cancelled.cancelled && replayed.cancelledReplay.cancelled &&
+          observedI32(test, replayed.completed.execution.observations) == 7 &&
+          observedI32(test, replayed.completedReplay.execution.observations) ==
+              7,
+      "runtime replay did not preserve completion and cancellation identity");
 }
 
 } // namespace

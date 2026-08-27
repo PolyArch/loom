@@ -151,6 +151,16 @@ struct DynamicWorkCgraExecutionResult final {
   sim::RetiredCgraSimulation execution;
 };
 
+/// Verified replay of one exact DynamicWork root. Persistent Dataflow and
+/// SystemMapping selections are identical across all attempts; dispatch and
+/// WorkItemId occurrences remain distinct execution-local identities.
+struct DynamicWorkCgraReplayResult final {
+  DynamicWorkCgraExecutionResult completed;
+  DynamicWorkCgraExecutionResult completedReplay;
+  DynamicWorkExecutionResult cancelled;
+  DynamicWorkExecutionResult cancelledReplay;
+};
+
 /// Coordinates the bounded DynamicWork profile. SystemMapping selects
 /// persistent Instruction, optional Spatial, and service-plan targets from the
 /// Dataflow-owned domain execution class. WorkItemId, scheduler worker
@@ -183,6 +193,17 @@ public:
                   dataflow::RootThreadLaunchRef root,
                   DynamicWorkCgraExecutionRequest request,
                   const ::loom::ArtifactStore &artifacts);
+
+  /// Executes and independently replays both retirement and cooperative
+  /// cancellation for one exact root payload. The method rejects any change
+  /// in persistent selections, normalized scheduler transitions, or retired
+  /// CGRA observations before returning the verified runtime result.
+  llvm::Expected<DynamicWorkCgraReplayResult> executeRootCgraReplay(
+      const dataflow::CanonicalDataflowArtifact &dataflowArtifact,
+      const mapping::FinalizedSystemMapping &systemMapping,
+      dataflow::RootThreadLaunchRef root,
+      DynamicWorkCgraExecutionRequest request,
+      const ::loom::ArtifactStore &artifacts);
 
 private:
   llvm::Expected<sim::ThreadDispatchOccurrenceId> allocateDispatchOccurrence();
