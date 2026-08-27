@@ -88,34 +88,33 @@ projectDomainFragments(const FrozenSpatialPnrProblem &problem, PnrIndex domain,
           {signature.occurrence, signature.input, signature.outputs});
   }
 
-  std::vector<::loom::fabric::FabricTemporalSwitchTaggedRouteDemandView>
-      taggedDemandViews;
-  std::vector<::loom::fabric::FabricTemporalSwitchCandidateRouteDemandView>
-      candidateDemandViews;
-  taggedDemandViews.reserve(signatureStorage.size());
-  candidateDemandViews.reserve(signatureStorage.size());
+  llvm::SmallVector<const llvm::APInt *, 32> tags;
+  tags.reserve(signatureStorage.size());
   bool allTagsAssigned = true;
   for (auto [ordinal, signatures] : llvm::enumerate(signatureStorage)) {
-    const SwitchDemand &demand = *demands[ordinal];
-    auto tag = lookupTag(demand);
+    (void)signatures;
+    auto tag = lookupTag(*demands[ordinal]);
     if (!tag)
       return tag.takeError();
-    if (!*tag) {
+    if (*tag) {
+      if (!::fabric::isRepresentablePhysicalTagValue(
+              matchDomains[domain].tagWidthBits, **tag))
+        return invalid("switch route demand has an out-of-range Physical Tag");
+    } else {
       allTagsAssigned = false;
-      candidateDemandViews.push_back({{signatures}, std::nullopt});
-      continue;
     }
-    if (!::fabric::isRepresentablePhysicalTagValue(
-            matchDomains[domain].tagWidthBits, **tag))
-      return invalid("switch route demand has an out-of-range Physical Tag");
-    llvm::APInt normalized =
-        (**tag).zextOrTrunc(matchDomains[domain].tagWidthBits);
-    taggedDemandViews.push_back({{signatures}, normalized});
-    candidateDemandViews.push_back({{signatures}, std::move(normalized)});
+    tags.push_back(*tag);
   }
 
   std::vector<std::vector<std::uint64_t>> rows;
   if (allTagsAssigned) {
+    std::vector<::loom::fabric::FabricTemporalSwitchTaggedRouteDemandView>
+        taggedDemandViews;
+    taggedDemandViews.reserve(signatureStorage.size());
+    for (auto [ordinal, signatures] : llvm::enumerate(signatureStorage))
+      taggedDemandViews.push_back(
+          {{signatures},
+           tags[ordinal]->zextOrTrunc(matchDomains[domain].tagWidthBits)});
     auto projected =
         ::loom::fabric::projectFabricTemporalSwitchRouteRows(taggedDemandViews);
     if (!projected)
@@ -124,6 +123,17 @@ projectDomainFragments(const FrozenSpatialPnrProblem &problem, PnrIndex domain,
     for (auto &row : *projected)
       rows.push_back(std::move(row.demandOrdinals));
   } else {
+    std::vector<::loom::fabric::FabricTemporalSwitchCandidateRouteDemandView>
+        candidateDemandViews;
+    candidateDemandViews.reserve(signatureStorage.size());
+    for (auto [ordinal, signatures] : llvm::enumerate(signatureStorage)) {
+      if (const llvm::APInt *tag = tags[ordinal])
+        candidateDemandViews.push_back(
+            {{signatures},
+             tag->zextOrTrunc(matchDomains[domain].tagWidthBits)});
+      else
+        candidateDemandViews.push_back({{signatures}, std::nullopt});
+    }
     auto projected =
         ::loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(
             candidateDemandViews);
@@ -141,20 +151,22 @@ projectDomainFragments(const FrozenSpatialPnrProblem &problem, PnrIndex domain,
         matchDomains[domain].residentEntryCapacity;
     if (residentCapacity && rowOrdinal >= *residentCapacity)
       continue;
-    std::map<::loom::fabric::FabricOrdinal, std::vector<PnrIndex>> byInput;
+    llvm::SmallVector<std::pair<::loom::fabric::FabricOrdinal, PnrIndex>, 32>
+        inputTraversals;
     for (std::uint64_t demandOrdinal : rowDemands) {
       if (demandOrdinal >= demands.size())
         return invalid("Fabric switch row names an absent route demand");
       for (const SpatialTemporalSwitchInputSignature &signature :
            demands[demandOrdinal]->signatures)
-        byInput[signature.input].insert(byInput[signature.input].end(),
-                                        signature.traversals.begin(),
-                                        signature.traversals.end());
+        for (PnrIndex traversal : signature.traversals)
+          inputTraversals.push_back({signature.input, traversal});
     }
-    for (auto &[input, traversals] : byInput) {
-      llvm::sort(traversals);
-      traversals.erase(std::unique(traversals.begin(), traversals.end()),
-                       traversals.end());
+    llvm::sort(inputTraversals);
+    inputTraversals.erase(
+        std::unique(inputTraversals.begin(), inputTraversals.end()),
+        inputTraversals.end());
+    for (std::size_t begin = 0; begin < inputTraversals.size();) {
+      const ::loom::fabric::FabricOrdinal input = inputTraversals[begin].first;
       const auto *activation = findActivation(
           handshake, domain,
           static_cast<::loom::fabric::FabricOrdinal>(rowOrdinal), input);
@@ -166,9 +178,11 @@ projectDomainFragments(const FrozenSpatialPnrProblem &problem, PnrIndex domain,
       const auto base = handshake.switchActivationBaseFragments().slice(
           activation->baseFragmentOffset, activation->baseFragmentCount);
       fragments.insert(fragments.end(), base.begin(), base.end());
-      for (PnrIndex traversal : traversals) {
-        const auto *selection =
-            findTraversal(handshake, *activation, traversal);
+      for (; begin < inputTraversals.size() &&
+             inputTraversals[begin].first == input;
+           ++begin) {
+        const auto *selection = findTraversal(handshake, *activation,
+                                              inputTraversals[begin].second);
         if (!selection)
           return invalid("route crosspoint has no frozen switch fragment");
         const auto selectedFragments =
@@ -323,10 +337,24 @@ loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeDomainFragments(
       assignments.interference.netSegmentOffsets().size() !=
           assignments.nets.size() + 1)
     return invalid("Tag-assignment demand cache belongs to another problem");
+  // Every demand in this domain belongs to a segment whose vertex the
+  // interference projection lists for the same domain, so the domain's
+  // vertex inventory bounds the participating logical nets. Ascending net
+  // order preserves the canonical demand order of a full scan.
+  const auto vertices = assignments.interference.domainVertices(domain);
+  llvm::SmallVector<PnrIndex, 32> participatingNets;
+  participatingNets.reserve(vertices.size());
+  for (const SpatialTagVertexRef &vertex : vertices)
+    participatingNets.push_back(vertex.logicalNet);
+  llvm::sort(participatingNets);
+  participatingNets.erase(
+      std::unique(participatingNets.begin(), participatingNets.end()),
+      participatingNets.end());
   std::vector<const SwitchDemand *> demands;
-  demands.reserve(assignments.interference.domainVertices(domain).size());
-  for (PnrIndex logicalNet = 0; logicalNet < assignments.nets.size();
-       ++logicalNet)
+  demands.reserve(vertices.size());
+  for (PnrIndex logicalNet : participatingNets) {
+    if (logicalNet >= assignments.nets.size())
+      return invalid("Tag-assignment switch demand is inconsistent");
     for (const SwitchDemand &demand :
          assignments.interference.switchDemands(logicalNet)) {
       if (demand.logicalNet != logicalNet ||
@@ -335,6 +363,7 @@ loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeDomainFragments(
       if (demand.domain == domain)
         demands.push_back(&demand);
     }
+  }
   return projectDomainFragments(problem, domain, demands,
                                 [&](const SwitchDemand &demand) {
                                   return assignmentTag(assignments, demand);
