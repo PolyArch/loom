@@ -456,7 +456,7 @@ llvm::Error validateStaging(llvm::StringRef staging,
   BlobStore blobStore(blobs);
   mapping::SystemMappingImportSession systemMappingImportSession(artifactStore,
                                                                  64);
-  ConfigurationImageProjectionSession projectionSession(artifactStore, 1);
+  ConfigurationImageProjectionSession projectionSession(artifactStore, 64);
   auto deployment = importDeployment(root, artifactStore, blobStore);
   if (!deployment)
     return invalid("staging package cannot import its root: " +

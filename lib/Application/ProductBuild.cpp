@@ -949,7 +949,7 @@ llvm::Error publishProductDeployment(
     mapping::SystemMappingImportSession systemMappingImportSession(
         target.workspace->artifacts(), 64);
     deployment::ConfigurationImageProjectionSession projectionSession(
-        target.workspace->artifacts(), 1);
+        target.workspace->artifacts(), 64);
     auto built = buildApplicationDeployment(
         *prepared, *mapping, *finalLink.linkedModule,
         {target.compilerPolicy,
