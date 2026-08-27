@@ -98,7 +98,6 @@ public:
     return handshakeProjectionScratch_.statistics();
   }
 
-private:
   enum class DecisionKind : std::uint8_t {
     ComputeBinding,
     MemoryBinding,
@@ -120,6 +119,7 @@ private:
     std::uint64_t oldWideValue = 0;
   };
 
+private:
   struct ProgressTraversalDelta final {
     PnrIndex logicalNet = getInvalidPnrIndex();
     PnrIndex traversal = getInvalidPnrIndex();
@@ -607,6 +607,8 @@ public:
   llvm::ArrayRef<PnrIndex> cycleWitness() const;
   llvm::ArrayRef<PnrIndex> touchedRouteTraversals() const;
   llvm::ArrayRef<PnrIndex> touchedRouteLogicalNets() const;
+  llvm::ArrayRef<SpatialCandidateScratch::DecisionDelta>
+  decisionChanges() const;
   llvm::Expected<SpatialTagAssignmentSummary>
   summarizeCurrentTagAssignments() const;
   llvm::Expected<SpatialTagAssignmentDelta>

@@ -76,8 +76,8 @@ llvm::Error addCount(std::uint64_t &target, std::uint64_t amount,
 
 llvm::Expected<bool>
 spatialMappingIsExactRepairReady(const SpatialCandidateState &candidate) {
-  for (std::uint32_t ordinal = 0;
-       ordinal != resolvedPnrViolationKindCount; ++ordinal) {
+  for (std::uint32_t ordinal = 0; ordinal != resolvedPnrViolationKindCount;
+       ++ordinal) {
     const auto kind = static_cast<ResolvedPnrViolationKind>(ordinal);
     if (kind == ResolvedPnrViolationKind::CapacityOveruse)
       continue;
@@ -405,9 +405,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
   std::optional<dse::ObjectiveVector> bestSelectedRankObjective;
   SpatialCandidateStateHandle bestFeasibleIncumbent;
   std::optional<dse::ObjectiveVector> bestFeasibleObjective;
-  const auto captureIncumbent =
-      [&](const dse::ObjectiveVector &objective,
-          bool feasible) -> llvm::Error {
+  const auto captureIncumbent = [&](const dse::ObjectiveVector &objective,
+                                    bool feasible) -> llvm::Error {
     bool improvesSelectedRank = !bestSelectedRankObjective;
     if (bestSelectedRankObjective) {
       auto comparison = problem.objectiveProgram().compareSelectedRank(
@@ -665,8 +664,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
         fields["minimum_temperature"] = annealing.minimumTemperature;
         fields["cooling_numerator"] = annealing.coolingRatio.numerator;
         fields["cooling_denominator"] = annealing.coolingRatio.denominator;
-        fields["temperature_level_limit"] =
-            annealing.temperatureLevelLimit;
+        fields["temperature_level_limit"] = annealing.temperatureLevelLimit;
         fields["calibration_slots"] = statistics.calibrationProposalSlots;
         fields["calibration_probes"] = statistics.calibrationProbeCount;
         fields["semantic_noop_actions"] = statistics.semanticNoopActionCount;
@@ -688,6 +686,10 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     if (llvm::Error error = actionDomain_.rebuild(candidate))
       return std::move(error);
     bool domainCurrent = true;
+    bool pendingDomainChangesValid = false;
+    std::vector<std::pair<SpatialCandidateScratch::DecisionKind, PnrIndex>>
+        pendingDomainDecisions;
+    std::vector<PnrIndex> pendingDomainNets;
     const std::uint64_t levelProbeBegin = statistics.annealingProbeCount;
     const std::uint64_t levelAcceptedBegin = statistics.acceptedActionCount;
     const std::uint64_t levelRejectedBegin = statistics.rejectedActionCount;
@@ -732,8 +734,14 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
       if (executionControl.stopRequested())
         return finishInterrupted();
       if (!domainCurrent) {
-        if (llvm::Error error = actionDomain_.rebuild(candidate))
+        if (pendingDomainChangesValid) {
+          if (llvm::Error error = actionDomain_.applyCommitted(
+                  candidate, pendingDomainDecisions, pendingDomainNets))
+            return std::move(error);
+        } else if (llvm::Error error = actionDomain_.rebuild(candidate)) {
           return std::move(error);
+        }
+        pendingDomainChangesValid = false;
         domainCurrent = true;
       }
       const bool baseSlot = slot < annealing.proposalsPerLevelBase;
@@ -854,6 +862,15 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                            "accepted worsening Action"))
             return std::move(error);
         domainCurrent = false;
+        pendingDomainChangesValid = actionExecutor_.hasCommittedChanges();
+        if (pendingDomainChangesValid) {
+          pendingDomainDecisions.assign(
+              actionExecutor_.committedDecisionChanges().begin(),
+              actionExecutor_.committedDecisionChanges().end());
+          pendingDomainNets.assign(
+              actionExecutor_.committedLogicalNetChanges().begin(),
+              actionExecutor_.committedLogicalNetChanges().end());
+        }
         inactiveActionKeys_.clear();
         if (llvm::Error error =
                 captureIncumbent(proposedObjective, *proposedClosure))
@@ -949,8 +966,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
           fields["heuristic_cache_retained_bytes"] =
               actionExecutor_.heuristicCacheRetainedBytes();
           fields["inactive_cache_size"] = inactiveActionKeys_.size();
-          fields["incumbent_snapshots"] =
-              statistics.incumbentSnapshotCount;
+          fields["incumbent_snapshots"] = statistics.incumbentSnapshotCount;
           fields["movable_decisions"] = movableDecisionCount;
           fields["realization_choices"] = domain.realizationChoices.size();
           fields["realization_choices_examined"] =
@@ -973,8 +989,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     if (*repairReady &&
         policy.search.completionGoal ==
             ResolvedPnrCompletionGoal::FirstVerifiedCandidate &&
-        policy.search.exactRepair.kind !=
-            ResolvedPnrExactRepairKind::Disabled)
+        policy.search.exactRepair.kind != ResolvedPnrExactRepairKind::Disabled)
       return finishAtRepairReadyHandoff();
   } while (schedule->advanceAfterCompletedLevel());
 

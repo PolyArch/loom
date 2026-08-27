@@ -167,6 +167,16 @@ public:
   llvm::ArrayRef<PnrIndex> regionalLogicalNets() const {
     return router_.regionalLogicalNets();
   }
+  /// The decision and touched-net change sets of the most recently committed
+  /// probe, for incremental Action-domain maintenance.
+  bool hasCommittedChanges() const { return committedChangesValid_; }
+  llvm::ArrayRef<std::pair<SpatialCandidateScratch::DecisionKind, PnrIndex>>
+  committedDecisionChanges() const {
+    return committedDecisionChanges_;
+  }
+  llvm::ArrayRef<PnrIndex> committedLogicalNetChanges() const {
+    return committedLogicalNetChanges_;
+  }
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -243,6 +253,10 @@ private:
   SpatialFiniteBufferConflictWitness hardProgressWitness_;
   std::vector<PnrIndex> routeCostTraversals_;
   std::vector<PnrIndex> routeCostLogicalNets_;
+  std::vector<std::pair<SpatialCandidateScratch::DecisionKind, PnrIndex>>
+      committedDecisionChanges_;
+  std::vector<PnrIndex> committedLogicalNetChanges_;
+  bool committedChangesValid_ = false;
   std::vector<PnrIndex> routeTagLogicalNets_;
   std::vector<PnrIndex> routeTagDomains_;
   std::vector<std::uint64_t> localTransferClaimBits_;

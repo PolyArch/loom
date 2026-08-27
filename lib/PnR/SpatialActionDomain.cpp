@@ -12,9 +12,11 @@
 #include "PnR/SpatialPnrProblem.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <limits>
 #include <system_error>
 
@@ -225,8 +227,15 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   resourceMovableDecisionCount_ = 0;
   realizationAnchors_.reserve(realizationAnchorCapacity);
   realizationChoices_.reserve(realizationChoiceCapacity);
+  previousRealizationChoices_.reserve(realizationChoiceCapacity);
   transportAnchors_.reserve(*transportAnchorCapacity);
   transportChoices_.reserve(*transportChoiceCapacity);
+  previousTransportChoices_.reserve(*transportChoiceCapacity);
+  realizationSegments_.resize(realizationAnchorCapacity);
+  previousRealizationSegments_.resize(realizationAnchorCapacity);
+  transportNetSegments_.resize(logicalNetCount);
+  previousTransportNetSegments_.resize(logicalNetCount);
+  sortedTouchedNets_.reserve(logicalNetCount);
   routeRootEndpoints_.reserve(endpointCount);
   routeSubtreeSlots_.reserve(endpointCount);
   routeSubtreeHasSink_.reserve(endpointCount);
@@ -328,31 +337,228 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   if (llvm::Error error =
           problem.memoryConstraints().prepareScratch(*memoryConstraintScratch_))
     return error;
+  realizationAffectedMarks_.assign(relations.realizationDecisionCount(), 0);
+  affectedEpoch_ = 0;
+  segmentsValid_ = false;
+  previousRealizationChoices_.clear();
+  previousTransportChoices_.clear();
+  touchedRelationValues_.reserve(relationDecisionMembers_.size());
+  touchedEqualRelations_.reserve(relations.relations().relations().size());
+  // Reverse incidence for incremental apply: which realization decisions can
+  // change legality when a constraint or root-closed relation value's load
+  // changes, and which realization decisions an equal-kind relation couples.
+  {
+    std::vector<std::pair<PnrIndex, PnrIndex>> valuePairs;
+    std::vector<std::pair<PnrIndex, PnrIndex>> relationPairs;
+    const auto incidenceOffsets =
+        relations.relations().decisionRelationOffsets();
+    for (PnrIndex decision = 0; decision < relations.realizationDecisionCount();
+         ++decision) {
+      const PnrIndex choiceCount =
+          decisionChoiceOffsets[decision + 1] - decisionChoiceOffsets[decision];
+      for (auto incidenceRecord :
+           llvm::enumerate(relations.decisionRelations(decision))) {
+        const PnrIndex relationOrdinal = incidenceRecord.value();
+        if (!relations.relationIsConstraint(relationOrdinal) &&
+            !rootClosedRelations_[relationOrdinal])
+          continue;
+        relationPairs.push_back({relationOrdinal, decision});
+        const std::size_t incidence =
+            incidenceOffsets[decision] + incidenceRecord.index();
+        const std::size_t base = relationValueOffsets_[relationOrdinal];
+        for (const RelationDecisionMember &record :
+             llvm::ArrayRef(relationDecisionMembers_)
+                 .slice(relationDecisionMemberOffsets_[incidence],
+                        relationDecisionMemberOffsets_[incidence + 1] -
+                            relationDecisionMemberOffsets_[incidence]))
+          for (PnrIndex choice = 0; choice < choiceCount; ++choice) {
+            const std::size_t value =
+                base + relationDecisionMemberChoiceValueOrdinals_
+                           [record.choiceValueOrdinalOffset + choice];
+            auto checkedValue =
+                actionIndex(value, "relationValues", PnrCapacityMeasure::Index);
+            if (!checkedValue)
+              return checkedValue.takeError();
+            valuePairs.push_back({*checkedValue, decision});
+          }
+      }
+    }
+    llvm::sort(valuePairs);
+    valuePairs.erase(std::unique(valuePairs.begin(), valuePairs.end()),
+                     valuePairs.end());
+    llvm::sort(relationPairs);
+    relationPairs.erase(std::unique(relationPairs.begin(), relationPairs.end()),
+                        relationPairs.end());
+    valueRealizationOffsets_.assign(relationValues_.size() + 1, 0);
+    valueRealizationDecisions_.clear();
+    valueRealizationDecisions_.reserve(valuePairs.size());
+    for (const auto &pair : valuePairs) {
+      ++valueRealizationOffsets_[pair.first + 1];
+      valueRealizationDecisions_.push_back(pair.second);
+    }
+    for (std::size_t value = 0; value < relationValues_.size(); ++value)
+      valueRealizationOffsets_[value + 1] += valueRealizationOffsets_[value];
+    relationRealizationOffsets_.assign(
+        relations.relations().relations().size() + 1, 0);
+    relationRealizationDecisions_.clear();
+    relationRealizationDecisions_.reserve(relationPairs.size());
+    for (const auto &pair : relationPairs) {
+      ++relationRealizationOffsets_[pair.first + 1];
+      relationRealizationDecisions_.push_back(pair.second);
+    }
+    for (std::size_t relation = 0;
+         relation < relations.relations().relations().size(); ++relation)
+      relationRealizationOffsets_[relation + 1] +=
+          relationRealizationOffsets_[relation];
+  }
   preparedProblem_ = &problem;
   return llvm::Error::success();
 }
 
 llvm::Error
-SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
-  if (preparedProblem_ == nullptr)
-    return invalid("scratch storage was not prepared");
-  if (&candidate.problem() != preparedProblem_)
-    return invalid("candidate belongs to a different Frozen problem");
+SpatialActionDomainScratch::appendRealizationRange(std::size_t offset) {
+  if (realizationChoices_.size() == offset)
+    return llvm::Error::success();
+  auto checkedOffset =
+      actionIndex(offset, "realizationChoices", PnrCapacityMeasure::Offset);
+  if (!checkedOffset)
+    return checkedOffset.takeError();
+  auto checkedCount =
+      actionIndex(realizationChoices_.size() - offset, "realizationChoices",
+                  PnrCapacityMeasure::Count);
+  if (!checkedCount)
+    return checkedCount.takeError();
+  realizationAnchors_.push_back({*checkedOffset, *checkedCount});
+  if (realizationMovableDecisionCount_ ==
+      std::numeric_limits<std::uint64_t>::max())
+    return invalid("movable decision count overflows u64");
+  ++realizationMovableDecisionCount_;
+  return llvm::Error::success();
+}
 
-  realizationAnchors_.clear();
-  realizationChoices_.clear();
-  transportAnchors_.clear();
-  transportChoices_.clear();
-  routeRootEndpoints_.clear();
-  hardProgressWitnessOwners_.clear();
-  resourceAnchors_.clear();
-  resourceChoices_.clear();
-  realizationMovableDecisionCount_ = 0;
-  transportMovableDecisionCount_ = 0;
-  resourceMovableDecisionCount_ = 0;
-  examinedRealizationChoiceCount_ = 0;
-  fixedRelationPrunedRealizationChoiceCount_ = 0;
+llvm::Error
+SpatialActionDomainScratch::appendTransportRange(std::size_t offset) {
+  if (transportChoices_.size() == offset)
+    return llvm::Error::success();
+  auto checkedOffset =
+      actionIndex(offset, "transportChoices", PnrCapacityMeasure::Offset);
+  if (!checkedOffset)
+    return checkedOffset.takeError();
+  auto checkedCount =
+      actionIndex(transportChoices_.size() - offset, "transportChoices",
+                  PnrCapacityMeasure::Count);
+  if (!checkedCount)
+    return checkedCount.takeError();
+  transportAnchors_.push_back({*checkedOffset, *checkedCount});
+  return llvm::Error::success();
+}
 
+llvm::Error
+SpatialActionDomainScratch::appendResourceRange(std::size_t offset) {
+  if (resourceChoices_.size() == offset)
+    return llvm::Error::success();
+  auto checkedOffset =
+      actionIndex(offset, "resourceChoices", PnrCapacityMeasure::Offset);
+  if (!checkedOffset)
+    return checkedOffset.takeError();
+  auto checkedCount = actionIndex(resourceChoices_.size() - offset,
+                                  "resourceChoices", PnrCapacityMeasure::Count);
+  if (!checkedCount)
+    return checkedCount.takeError();
+  resourceAnchors_.push_back({*checkedOffset, *checkedCount});
+  if (resourceMovableDecisionCount_ ==
+      std::numeric_limits<std::uint64_t>::max())
+    return invalid("movable decision count overflows u64");
+  ++resourceMovableDecisionCount_;
+  return llvm::Error::success();
+}
+
+bool SpatialActionDomainScratch::relationChoiceIsLegal(
+    PnrIndex decision, PnrIndex localChoice, bool constraintsOnly) const {
+  const detail::SpatialBindingRelationModel &relations =
+      preparedProblem_->bindingRelations();
+  const detail::InitializerRelationModel &relationModel = relations.relations();
+  const PnrIndex oldChoice = relationChoices_[decision];
+  const auto decisionRelationOffsets = relationModel.decisionRelationOffsets();
+  for (auto incidenceRecord :
+       llvm::enumerate(relations.decisionRelations(decision))) {
+    const std::size_t localIncidence = incidenceRecord.index();
+    const PnrIndex relationOrdinal = incidenceRecord.value();
+    if (constraintsOnly && !relations.relationIsConstraint(relationOrdinal) &&
+        !rootClosedRelations_[relationOrdinal])
+      continue;
+    const detail::InitializerRelationRecord &relation =
+        relationModel.relations()[relationOrdinal];
+    auto loads = llvm::MutableArrayRef(const_cast<std::vector<std::uint64_t> &>(
+                                           relationValueLoads_))
+                     .slice(relationValueOffsets_[relationOrdinal],
+                            relationValueOffsets_[relationOrdinal + 1] -
+                                relationValueOffsets_[relationOrdinal]);
+    auto &distinctValueCounts =
+        const_cast<std::vector<PnrIndex> &>(relationDistinctValueCounts_);
+    const auto capacities = relationModel.valueCapacities(relation);
+    const std::size_t incidence =
+        decisionRelationOffsets[decision] + localIncidence;
+    const auto changedMembers =
+        llvm::ArrayRef(relationDecisionMembers_)
+            .slice(relationDecisionMemberOffsets_[incidence],
+                   relationDecisionMemberOffsets_[incidence + 1] -
+                       relationDecisionMemberOffsets_[incidence]);
+    const auto memberValue = [&](const RelationDecisionMember &record,
+                                 PnrIndex choice) {
+      const std::size_t offset = record.choiceValueOrdinalOffset + choice;
+      assert(offset < relationDecisionMemberChoiceValueOrdinals_.size());
+      return relationDecisionMemberChoiceValueOrdinals_[offset];
+    };
+    if (llvm::all_of(changedMembers, [&](const RelationDecisionMember &record) {
+          return memberValue(record, oldChoice) ==
+                 memberValue(record, localChoice);
+        }))
+      continue;
+    const auto update = [&](PnrIndex choice, bool add) {
+      bool legal = true;
+      for (const RelationDecisionMember &record : changedMembers) {
+        const PnrIndex value = memberValue(record, choice);
+        const std::uint64_t demand =
+            relation.kind == detail::InitializerRelationKind::Capacity
+                ? record.demand
+                : 1;
+        if (add) {
+          assert(demand <=
+                 std::numeric_limits<std::uint64_t>::max() - loads[value]);
+          if (loads[value] == 0)
+            ++distinctValueCounts[relationOrdinal];
+          loads[value] += demand;
+          if (relation.kind == detail::InitializerRelationKind::Disjoint &&
+              loads[value] != 1)
+            legal = false;
+          if (relation.kind == detail::InitializerRelationKind::Capacity &&
+              loads[value] > capacities[value])
+            legal = false;
+        } else {
+          assert(loads[value] >= demand);
+          loads[value] -= demand;
+          if (loads[value] == 0)
+            --distinctValueCounts[relationOrdinal];
+        }
+      }
+      return legal;
+    };
+    update(oldChoice, false);
+    bool legal = update(localChoice, true);
+    if (relation.kind == detail::InitializerRelationKind::Equal &&
+        distinctValueCounts[relationOrdinal] != 1)
+      legal = false;
+    update(localChoice, false);
+    update(oldChoice, true);
+    if (!legal)
+      return false;
+  }
+  return true;
+}
+
+llvm::Error SpatialActionDomainScratch::rebuildRelationLoads(
+    const SpatialCandidateState &candidate) {
   const auto currentRelationChoices =
       llvm::ArrayRef(candidate.bindingRelationChoices_);
   if (currentRelationChoices.size() != relationChoices_.size())
@@ -415,110 +621,17 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
         relationDistinctValueCounts_[relationOrdinal] != 1)
       return invalid("candidate violates an equal binding relation");
   }
-  const auto appendRealizationRange = [&](std::size_t offset) -> llvm::Error {
-    if (realizationChoices_.size() == offset)
-      return llvm::Error::success();
-    auto checkedOffset =
-        actionIndex(offset, "realizationChoices", PnrCapacityMeasure::Offset);
-    if (!checkedOffset)
-      return checkedOffset.takeError();
-    auto checkedCount =
-        actionIndex(realizationChoices_.size() - offset, "realizationChoices",
-                    PnrCapacityMeasure::Count);
-    if (!checkedCount)
-      return checkedCount.takeError();
-    realizationAnchors_.push_back({*checkedOffset, *checkedCount});
-    if (realizationMovableDecisionCount_ ==
-        std::numeric_limits<std::uint64_t>::max())
-      return invalid("movable decision count overflows u64");
-    ++realizationMovableDecisionCount_;
-    return llvm::Error::success();
-  };
-  const auto relationChoiceIsLegal = [&](PnrIndex decision,
-                                         PnrIndex localChoice,
-                                         bool constraintsOnly) {
-    const PnrIndex oldChoice = relationChoices_[decision];
-    const auto decisionRelationOffsets =
-        relationModel.decisionRelationOffsets();
-    for (auto incidenceRecord :
-         llvm::enumerate(relations.decisionRelations(decision))) {
-      const std::size_t localIncidence = incidenceRecord.index();
-      const PnrIndex relationOrdinal = incidenceRecord.value();
-      if (constraintsOnly && !relations.relationIsConstraint(relationOrdinal) &&
-          !rootClosedRelations_[relationOrdinal])
-        continue;
-      const detail::InitializerRelationRecord &relation =
-          relationModel.relations()[relationOrdinal];
-      auto loads = llvm::MutableArrayRef(relationValueLoads_)
-                       .slice(relationValueOffsets_[relationOrdinal],
-                              relationValueOffsets_[relationOrdinal + 1] -
-                                  relationValueOffsets_[relationOrdinal]);
-      const auto capacities = relationModel.valueCapacities(relation);
-      const std::size_t incidence =
-          decisionRelationOffsets[decision] + localIncidence;
-      const auto changedMembers =
-          llvm::ArrayRef(relationDecisionMembers_)
-              .slice(relationDecisionMemberOffsets_[incidence],
-                     relationDecisionMemberOffsets_[incidence + 1] -
-                         relationDecisionMemberOffsets_[incidence]);
-      const auto memberValue = [&](const RelationDecisionMember &record,
-                                   PnrIndex choice) {
-        const std::size_t offset = record.choiceValueOrdinalOffset + choice;
-        assert(offset < relationDecisionMemberChoiceValueOrdinals_.size());
-        return relationDecisionMemberChoiceValueOrdinals_[offset];
-      };
-      if (llvm::all_of(changedMembers,
-                       [&](const RelationDecisionMember &record) {
-                         return memberValue(record, oldChoice) ==
-                                memberValue(record, localChoice);
-                       }))
-        continue;
-      const auto update = [&](PnrIndex choice, bool add) {
-        bool legal = true;
-        for (const RelationDecisionMember &record : changedMembers) {
-          const PnrIndex value = memberValue(record, choice);
-          const std::uint64_t demand =
-              relation.kind == detail::InitializerRelationKind::Capacity
-                  ? record.demand
-                  : 1;
-          if (add) {
-            assert(demand <=
-                   std::numeric_limits<std::uint64_t>::max() - loads[value]);
-            if (loads[value] == 0)
-              ++relationDistinctValueCounts_[relationOrdinal];
-            loads[value] += demand;
-            if (relation.kind == detail::InitializerRelationKind::Disjoint &&
-                loads[value] != 1)
-              legal = false;
-            if (relation.kind == detail::InitializerRelationKind::Capacity &&
-                loads[value] > capacities[value])
-              legal = false;
-          } else {
-            assert(loads[value] >= demand);
-            loads[value] -= demand;
-            if (loads[value] == 0)
-              --relationDistinctValueCounts_[relationOrdinal];
-          }
-        }
-        return legal;
-      };
-      update(oldChoice, false);
-      bool legal = update(localChoice, true);
-      if (relation.kind == detail::InitializerRelationKind::Equal &&
-          relationDistinctValueCounts_[relationOrdinal] != 1)
-        legal = false;
-      update(localChoice, false);
-      update(oldChoice, true);
-      if (!legal)
-        return false;
-    }
-    return true;
-  };
+  return llvm::Error::success();
+}
 
-  const auto &realizations = preparedProblem_->realizations();
-  for (PnrIndex realization = 0;
-       realization < realizations.computeRealizations().size(); ++realization) {
-    const std::size_t offset = realizationChoices_.size();
+llvm::Error SpatialActionDomainScratch::emitRealizationSegment(
+    const SpatialCandidateState &candidate, PnrIndex decision) {
+  const detail::SpatialBindingRelationModel &relations =
+      preparedProblem_->bindingRelations();
+  const std::size_t offset = realizationChoices_.size();
+  const PnrIndex memoryDecisionOffset = relations.computeDecisionCount();
+  if (decision < memoryDecisionOffset) {
+    const PnrIndex realization = decision;
     const auto choices = relations.computeChoices(realization);
     for (auto [localChoice, choice] : llvm::enumerate(choices)) {
       const auto &current = candidate.computeBinding(realization);
@@ -534,45 +647,104 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
       realizationChoices_.emplace_back(SpatialComputeBindingAction{
           realization, choice.placement, choice.instructionContext});
     }
-    if (llvm::Error error = appendRealizationRange(offset))
-      return error;
-  }
-  const PnrIndex memoryDecisionOffset = relations.computeDecisionCount();
-  for (PnrIndex realization = 0;
-       realization < realizations.memoryRealizations().size(); ++realization) {
-    const std::size_t offset = realizationChoices_.size();
+  } else {
+    const PnrIndex realization = decision - memoryDecisionOffset;
     const auto choices = relations.memoryChoices(realization);
     for (auto [localChoice, choice] : llvm::enumerate(choices)) {
       if (candidate.memoryBinding(realization).placement == choice.placement)
         continue;
       ++examinedRealizationChoiceCount_;
-      if (!relationChoiceIsLegal(memoryDecisionOffset + realization,
-                                 static_cast<PnrIndex>(localChoice), true)) {
+      if (!relationChoiceIsLegal(decision, static_cast<PnrIndex>(localChoice),
+                                 true)) {
         ++fixedRelationPrunedRealizationChoiceCount_;
         continue;
       }
       realizationChoices_.emplace_back(
           SpatialMemoryBindingAction{realization, choice.placement});
     }
-    if (llvm::Error error = appendRealizationRange(offset))
-      return error;
   }
+  auto checkedOffset =
+      actionIndex(offset, "realizationSegments", PnrCapacityMeasure::Offset);
+  if (!checkedOffset)
+    return checkedOffset.takeError();
+  auto checkedCount =
+      actionIndex(realizationChoices_.size() - offset, "realizationSegments",
+                  PnrCapacityMeasure::Count);
+  if (!checkedCount)
+    return checkedCount.takeError();
+  realizationSegments_[decision] = {*checkedOffset, *checkedCount};
+  return appendRealizationRange(offset);
+}
 
-  const auto appendTransportRange = [&](std::size_t offset) -> llvm::Error {
-    if (transportChoices_.size() == offset)
-      return llvm::Error::success();
-    auto checkedOffset =
-        actionIndex(offset, "transportChoices", PnrCapacityMeasure::Offset);
-    if (!checkedOffset)
-      return checkedOffset.takeError();
-    auto checkedCount =
-        actionIndex(transportChoices_.size() - offset, "transportChoices",
-                    PnrCapacityMeasure::Count);
-    if (!checkedCount)
-      return checkedCount.takeError();
-    transportAnchors_.push_back({*checkedOffset, *checkedCount});
+llvm::Error SpatialActionDomainScratch::emitTransportNetSegment(
+    const SpatialCandidateState &candidate, PnrIndex logicalNet) {
+  const auto &transfers = preparedProblem_->transfers();
+  if (candidate.usesRegisterFifo(logicalNet)) {
+    transportNetSegments_[logicalNet] = {0, 0};
     return llvm::Error::success();
-  };
+  }
+  const std::size_t offset = transportChoices_.size();
+  transportChoices_.emplace_back(SpatialWholeNetRoutingAction{logicalNet});
+  const RouteTreeState &route = candidate.routeTree(logicalNet);
+  if (route.isRouted()) {
+    const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
+    for (PnrIndex sink = 0; sink < net.sinkCount; ++sink)
+      transportChoices_.emplace_back(
+          SpatialSingleSinkRoutingAction{logicalNet, sink});
+    const PnrIndex source = *route.sourceEndpoint();
+    const auto sourceSlot = route.findNode(source);
+    if (!sourceSlot)
+      return invalid("routed tree has no source node");
+    routeRootEndpoints_.clear();
+    routeSubtreeSlots_.clear();
+    routeSubtreeHasSink_.assign(route.nodeStorage().size(), 0);
+    routeSubtreeSlots_.push_back(*sourceSlot);
+    for (std::size_t cursor = 0; cursor != routeSubtreeSlots_.size();
+         ++cursor) {
+      const PnrIndex slot = routeSubtreeSlots_[cursor];
+      if (slot >= route.nodeStorage().size() ||
+          !route.nodeStorage()[slot].isActive())
+        return invalid("routed tree traversal reached an inactive node");
+      for (PnrIndex child = route.nodeStorage()[slot].firstChild;
+           child != getInvalidPnrIndex();
+           child = route.nodeStorage()[child].nextSibling) {
+        if (child >= route.nodeStorage().size())
+          return invalid("routed tree child is out of range");
+        routeSubtreeSlots_.push_back(child);
+      }
+    }
+    for (auto slot = routeSubtreeSlots_.rbegin();
+         slot != routeSubtreeSlots_.rend(); ++slot) {
+      const RouteTreeNode &node = route.nodeStorage()[*slot];
+      bool hasSink = node.sinkObligationCount != 0;
+      for (PnrIndex child = node.firstChild; child != getInvalidPnrIndex();
+           child = route.nodeStorage()[child].nextSibling)
+        hasSink |= routeSubtreeHasSink_[child] != 0;
+      routeSubtreeHasSink_[*slot] = hasSink;
+      if (hasSink && node.endpoint != source)
+        routeRootEndpoints_.push_back(node.endpoint);
+    }
+    llvm::sort(routeRootEndpoints_);
+    for (PnrIndex endpoint : routeRootEndpoints_)
+      transportChoices_.emplace_back(
+          SpatialRootedSubtreeRoutingAction{logicalNet, endpoint});
+  }
+  auto checkedOffset =
+      actionIndex(offset, "transportNetSegments", PnrCapacityMeasure::Offset);
+  if (!checkedOffset)
+    return checkedOffset.takeError();
+  auto checkedCount =
+      actionIndex(transportChoices_.size() - offset, "transportNetSegments",
+                  PnrCapacityMeasure::Count);
+  if (!checkedCount)
+    return checkedCount.takeError();
+  transportNetSegments_[logicalNet] = {*checkedOffset, *checkedCount};
+  return appendTransportRange(offset);
+}
+
+llvm::Error SpatialActionDomainScratch::emitTransportWitnessTail(
+    const SpatialCandidateState &candidate, std::uint64_t externalNetCount) {
+  const auto &transfers = preparedProblem_->transfers();
   const auto appendWitness = [&](ResolvedPnrViolationKind kind,
                                  PnrIndex ordinal) -> llvm::Error {
     const std::size_t offset = transportChoices_.size();
@@ -580,63 +752,6 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
         SpatialWitnessRegionRoutingAction{kind, ordinal});
     return appendTransportRange(offset);
   };
-  const auto &transfers = preparedProblem_->transfers();
-  std::uint64_t externalNetCount = 0;
-  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
-       ++logicalNet) {
-    if (candidate.usesRegisterFifo(logicalNet))
-      continue;
-    ++externalNetCount;
-    const std::size_t offset = transportChoices_.size();
-    transportChoices_.emplace_back(SpatialWholeNetRoutingAction{logicalNet});
-    const RouteTreeState &route = candidate.routeTree(logicalNet);
-    if (route.isRouted()) {
-      const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
-      for (PnrIndex sink = 0; sink < net.sinkCount; ++sink)
-        transportChoices_.emplace_back(
-            SpatialSingleSinkRoutingAction{logicalNet, sink});
-      const PnrIndex source = *route.sourceEndpoint();
-      const auto sourceSlot = route.findNode(source);
-      if (!sourceSlot)
-        return invalid("routed tree has no source node");
-      routeRootEndpoints_.clear();
-      routeSubtreeSlots_.clear();
-      routeSubtreeHasSink_.assign(route.nodeStorage().size(), 0);
-      routeSubtreeSlots_.push_back(*sourceSlot);
-      for (std::size_t cursor = 0; cursor != routeSubtreeSlots_.size();
-           ++cursor) {
-        const PnrIndex slot = routeSubtreeSlots_[cursor];
-        if (slot >= route.nodeStorage().size() ||
-            !route.nodeStorage()[slot].isActive())
-          return invalid("routed tree traversal reached an inactive node");
-        for (PnrIndex child = route.nodeStorage()[slot].firstChild;
-             child != getInvalidPnrIndex();
-             child = route.nodeStorage()[child].nextSibling) {
-          if (child >= route.nodeStorage().size())
-            return invalid("routed tree child is out of range");
-          routeSubtreeSlots_.push_back(child);
-        }
-      }
-      for (auto slot = routeSubtreeSlots_.rbegin();
-           slot != routeSubtreeSlots_.rend(); ++slot) {
-        const RouteTreeNode &node = route.nodeStorage()[*slot];
-        bool hasSink = node.sinkObligationCount != 0;
-        for (PnrIndex child = node.firstChild; child != getInvalidPnrIndex();
-             child = route.nodeStorage()[child].nextSibling)
-          hasSink |= routeSubtreeHasSink_[child] != 0;
-        routeSubtreeHasSink_[*slot] = hasSink;
-        if (hasSink && node.endpoint != source)
-          routeRootEndpoints_.push_back(node.endpoint);
-      }
-      llvm::sort(routeRootEndpoints_);
-      for (PnrIndex endpoint : routeRootEndpoints_)
-        transportChoices_.emplace_back(
-            SpatialRootedSubtreeRoutingAction{logicalNet, endpoint});
-    }
-    if (llvm::Error error = appendTransportRange(offset))
-      return error;
-  }
-
   for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
        ++logicalNet) {
     if (candidate.usesRegisterFifo(logicalNet))
@@ -718,27 +833,17 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
       std::numeric_limits<std::uint64_t>::max() - externalNetCount)
     return invalid("transport movable decision count overflows u64");
   transportMovableDecisionCount_ = externalNetCount + hardProgressWitnessCount;
+  return llvm::Error::success();
+}
 
-  const auto appendResourceRange = [&](std::size_t offset) -> llvm::Error {
-    if (resourceChoices_.size() == offset)
-      return llvm::Error::success();
-    auto checkedOffset =
-        actionIndex(offset, "resourceChoices", PnrCapacityMeasure::Offset);
-    if (!checkedOffset)
-      return checkedOffset.takeError();
-    auto checkedCount =
-        actionIndex(resourceChoices_.size() - offset, "resourceChoices",
-                    PnrCapacityMeasure::Count);
-    if (!checkedCount)
-      return checkedCount.takeError();
-    resourceAnchors_.push_back({*checkedOffset, *checkedCount});
-    if (resourceMovableDecisionCount_ ==
-        std::numeric_limits<std::uint64_t>::max())
-      return invalid("movable decision count overflows u64");
-    ++resourceMovableDecisionCount_;
-    return llvm::Error::success();
-  };
-
+llvm::Error SpatialActionDomainScratch::rebuildResourceSection(
+    const SpatialCandidateState &candidate) {
+  const detail::SpatialBindingRelationModel &relations =
+      preparedProblem_->bindingRelations();
+  const auto &realizations = preparedProblem_->realizations();
+  resourceAnchors_.clear();
+  resourceChoices_.clear();
+  resourceMovableDecisionCount_ = 0;
   const auto &ports = preparedProblem_->ports();
   for (PnrIndex demand = 0; demand < ports.portDemands().size(); ++demand) {
     const std::size_t offset = resourceChoices_.size();
@@ -918,6 +1023,318 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
   return llvm::Error::success();
 }
 
+llvm::Error
+SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
+  if (preparedProblem_ == nullptr)
+    return invalid("scratch storage was not prepared");
+  if (&candidate.problem() != preparedProblem_)
+    return invalid("candidate belongs to a different Frozen problem");
+
+  realizationAnchors_.clear();
+  realizationChoices_.clear();
+  transportAnchors_.clear();
+  transportChoices_.clear();
+  routeRootEndpoints_.clear();
+  hardProgressWitnessOwners_.clear();
+  realizationMovableDecisionCount_ = 0;
+  transportMovableDecisionCount_ = 0;
+  examinedRealizationChoiceCount_ = 0;
+  fixedRelationPrunedRealizationChoiceCount_ = 0;
+
+  if (llvm::Error error = rebuildRelationLoads(candidate))
+    return error;
+
+  const detail::SpatialBindingRelationModel &relations =
+      preparedProblem_->bindingRelations();
+  std::fill(realizationSegments_.begin(), realizationSegments_.end(),
+            SpatialActionChoiceRange{0, 0});
+  for (PnrIndex decision = 0; decision < relations.realizationDecisionCount();
+       ++decision)
+    if (llvm::Error error = emitRealizationSegment(candidate, decision))
+      return error;
+
+  const auto &transfers = preparedProblem_->transfers();
+  std::fill(transportNetSegments_.begin(), transportNetSegments_.end(),
+            SpatialActionChoiceRange{0, 0});
+  std::uint64_t externalNetCount = 0;
+  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+       ++logicalNet) {
+    if (llvm::Error error = emitTransportNetSegment(candidate, logicalNet))
+      return error;
+    externalNetCount += transportNetSegments_[logicalNet].choiceCount != 0;
+  }
+  if (llvm::Error error = emitTransportWitnessTail(candidate, externalNetCount))
+    return error;
+
+  if (llvm::Error error = rebuildResourceSection(candidate))
+    return error;
+  segmentsValid_ = true;
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialActionDomainScratch::applyCommitted(
+    const SpatialCandidateState &candidate,
+    llvm::ArrayRef<std::pair<SpatialCandidateScratch::DecisionKind, PnrIndex>>
+        changedDecisions,
+    llvm::ArrayRef<PnrIndex> touchedLogicalNets) {
+  if (preparedProblem_ == nullptr)
+    return invalid("scratch storage was not prepared");
+  if (&candidate.problem() != preparedProblem_)
+    return invalid("candidate belongs to a different Frozen problem");
+  using DecisionKind = SpatialCandidateScratch::DecisionKind;
+  bool fallback = !segmentsValid_;
+  for (const auto &change : changedDecisions)
+    fallback |= change.first == DecisionKind::RegisterFifoTransfer;
+  if (fallback)
+    return rebuild(candidate);
+
+  const detail::SpatialBindingRelationModel &relations =
+      preparedProblem_->bindingRelations();
+  const detail::InitializerRelationModel &relationModel = relations.relations();
+  if (++affectedEpoch_ == 0) {
+    std::fill(realizationAffectedMarks_.begin(),
+              realizationAffectedMarks_.end(), 0);
+    affectedEpoch_ = 1;
+  }
+  const std::uint64_t epoch = affectedEpoch_;
+  const auto markValue = [&](std::size_t value) {
+    for (std::size_t at = valueRealizationOffsets_[value];
+         at < valueRealizationOffsets_[value + 1]; ++at)
+      realizationAffectedMarks_[valueRealizationDecisions_[at]] = epoch;
+  };
+  const auto incidenceOffsets = relationModel.decisionRelationOffsets();
+  // Committed state is only consistent after every changed decision's load
+  // update lands, so relation validation runs over the touched values and
+  // relations afterwards instead of on per-decision transients.
+  touchedRelationValues_.clear();
+  touchedEqualRelations_.clear();
+  for (const auto &change : changedDecisions) {
+    PnrIndex decision = 0;
+    switch (change.first) {
+    case DecisionKind::ComputeBinding:
+      decision = change.second;
+      break;
+    case DecisionKind::MemoryBinding:
+      decision = relations.computeDecisionCount() + change.second;
+      break;
+    case DecisionKind::PortAttachment:
+      decision = relations.portDecisionOffset() + change.second;
+      break;
+    case DecisionKind::GraphBoundaryAttachment:
+      decision = relations.graphBoundaryDecisionOffset() + change.second;
+      break;
+    case DecisionKind::MemoryOperationPlan:
+    case DecisionKind::LogicalMemoryBinding:
+    case DecisionKind::MemoryUseDispatch:
+    case DecisionKind::MemoryExposure:
+    case DecisionKind::RegisterFifoTransfer:
+      continue;
+    }
+    if (decision >= relationChoices_.size())
+      return invalid("changed decision is outside the relation domain");
+    if (decision < relations.realizationDecisionCount())
+      realizationAffectedMarks_[decision] = epoch;
+    const PnrIndex oldChoice = relationChoices_[decision];
+    const PnrIndex newChoice = candidate.bindingRelationChoices_[decision];
+    if (oldChoice == newChoice)
+      continue;
+    for (auto incidenceRecord :
+         llvm::enumerate(relations.decisionRelations(decision))) {
+      const PnrIndex relationOrdinal = incidenceRecord.value();
+      const detail::InitializerRelationRecord &relation =
+          relationModel.relations()[relationOrdinal];
+      const auto capacities = relationModel.valueCapacities(relation);
+      const std::size_t incidence =
+          incidenceOffsets[decision] + incidenceRecord.index();
+      const bool gated = relations.relationIsConstraint(relationOrdinal) ||
+                         rootClosedRelations_[relationOrdinal];
+      const std::size_t base = relationValueOffsets_[relationOrdinal];
+      bool valueChanged = false;
+      for (const RelationDecisionMember &record :
+           llvm::ArrayRef(relationDecisionMembers_)
+               .slice(relationDecisionMemberOffsets_[incidence],
+                      relationDecisionMemberOffsets_[incidence + 1] -
+                          relationDecisionMemberOffsets_[incidence])) {
+        const PnrIndex oldValue = relationDecisionMemberChoiceValueOrdinals_
+            [record.choiceValueOrdinalOffset + oldChoice];
+        const PnrIndex newValue = relationDecisionMemberChoiceValueOrdinals_
+            [record.choiceValueOrdinalOffset + newChoice];
+        if (oldValue == newValue)
+          continue;
+        valueChanged = true;
+        const std::uint64_t demand =
+            relation.kind == detail::InitializerRelationKind::Capacity
+                ? record.demand
+                : 1;
+        std::uint64_t &oldLoad = relationValueLoads_[base + oldValue];
+        if (oldLoad < demand)
+          return invalid("binding relation load underflows");
+        oldLoad -= demand;
+        if (oldLoad == 0)
+          --relationDistinctValueCounts_[relationOrdinal];
+        std::uint64_t &newLoad = relationValueLoads_[base + newValue];
+        if (demand > std::numeric_limits<std::uint64_t>::max() - newLoad)
+          return invalid("binding relation load overflows u64");
+        if (newLoad == 0)
+          ++relationDistinctValueCounts_[relationOrdinal];
+        newLoad += demand;
+        touchedRelationValues_.push_back({relationOrdinal, newValue});
+        if (gated) {
+          markValue(base + oldValue);
+          markValue(base + newValue);
+        }
+      }
+      if (valueChanged) {
+        if (relation.kind == detail::InitializerRelationKind::Equal) {
+          touchedEqualRelations_.push_back(relationOrdinal);
+          if (gated)
+            for (std::size_t at = relationRealizationOffsets_[relationOrdinal];
+                 at < relationRealizationOffsets_[relationOrdinal + 1]; ++at)
+              realizationAffectedMarks_[relationRealizationDecisions_[at]] =
+                  epoch;
+        }
+      }
+    }
+    relationChoices_[decision] = newChoice;
+  }
+  for (const auto &touched : touchedRelationValues_) {
+    const detail::InitializerRelationRecord &relation =
+        relationModel.relations()[touched.first];
+    const std::uint64_t load =
+        relationValueLoads_[relationValueOffsets_[touched.first] +
+                            touched.second];
+    if (relation.kind == detail::InitializerRelationKind::Disjoint && load > 1)
+      return invalid("candidate violates a disjoint binding relation");
+    if (relation.kind == detail::InitializerRelationKind::Capacity) {
+      const auto capacities = relationModel.valueCapacities(relation);
+      if (touched.second >= capacities.size() ||
+          load > capacities[touched.second])
+        return invalid("candidate violates a binding capacity relation");
+    }
+  }
+  for (const PnrIndex relationOrdinal : touchedEqualRelations_)
+    if (relationDistinctValueCounts_[relationOrdinal] != 1)
+      return invalid("candidate violates an equal binding relation");
+
+  std::swap(realizationChoices_, previousRealizationChoices_);
+  std::swap(realizationSegments_, previousRealizationSegments_);
+  realizationChoices_.clear();
+  realizationAnchors_.clear();
+  std::fill(realizationSegments_.begin(), realizationSegments_.end(),
+            SpatialActionChoiceRange{0, 0});
+  realizationMovableDecisionCount_ = 0;
+  examinedRealizationChoiceCount_ = 0;
+  fixedRelationPrunedRealizationChoiceCount_ = 0;
+  for (PnrIndex decision = 0; decision < relations.realizationDecisionCount();
+       ++decision) {
+    if (realizationAffectedMarks_[decision] == epoch) {
+      if (llvm::Error error = emitRealizationSegment(candidate, decision))
+        return error;
+      continue;
+    }
+    const SpatialActionChoiceRange segment =
+        previousRealizationSegments_[decision];
+    const std::size_t offset = realizationChoices_.size();
+    realizationChoices_.insert(realizationChoices_.end(),
+                               previousRealizationChoices_.begin() +
+                                   segment.choiceOffset,
+                               previousRealizationChoices_.begin() +
+                                   segment.choiceOffset + segment.choiceCount);
+    auto checkedOffset =
+        actionIndex(offset, "realizationSegments", PnrCapacityMeasure::Offset);
+    if (!checkedOffset)
+      return checkedOffset.takeError();
+    realizationSegments_[decision] = {*checkedOffset, segment.choiceCount};
+    if (llvm::Error error = appendRealizationRange(offset))
+      return error;
+  }
+
+  sortedTouchedNets_.assign(touchedLogicalNets.begin(),
+                            touchedLogicalNets.end());
+  llvm::sort(sortedTouchedNets_);
+  std::swap(transportChoices_, previousTransportChoices_);
+  std::swap(transportNetSegments_, previousTransportNetSegments_);
+  transportChoices_.clear();
+  transportAnchors_.clear();
+  const auto &transfers = preparedProblem_->transfers();
+  std::fill(transportNetSegments_.begin(), transportNetSegments_.end(),
+            SpatialActionChoiceRange{0, 0});
+  std::uint64_t externalNetCount = 0;
+  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+       ++logicalNet) {
+    if (std::binary_search(sortedTouchedNets_.begin(), sortedTouchedNets_.end(),
+                           logicalNet)) {
+      if (llvm::Error error = emitTransportNetSegment(candidate, logicalNet))
+        return error;
+    } else {
+      const SpatialActionChoiceRange segment =
+          previousTransportNetSegments_[logicalNet];
+      const std::size_t offset = transportChoices_.size();
+      transportChoices_.insert(transportChoices_.end(),
+                               previousTransportChoices_.begin() +
+                                   segment.choiceOffset,
+                               previousTransportChoices_.begin() +
+                                   segment.choiceOffset + segment.choiceCount);
+      auto checkedOffset = actionIndex(offset, "transportNetSegments",
+                                       PnrCapacityMeasure::Offset);
+      if (!checkedOffset)
+        return checkedOffset.takeError();
+      transportNetSegments_[logicalNet] = {*checkedOffset, segment.choiceCount};
+      if (llvm::Error error = appendTransportRange(offset))
+        return error;
+    }
+    externalNetCount += transportNetSegments_[logicalNet].choiceCount != 0;
+  }
+  if (llvm::Error error = emitTransportWitnessTail(candidate, externalNetCount))
+    return error;
+
+  if (llvm::Error error = rebuildResourceSection(candidate))
+    return error;
+
+  static const bool verifyAgainstRebuild = [] {
+    const char *value = std::getenv("LOOM_PNR_VERIFY_ACTION_DOMAIN");
+    return value != nullptr && value[0] != '0';
+  }();
+  if (verifyAgainstRebuild) {
+    const auto appliedRealizationAnchors = realizationAnchors_;
+    const auto appliedRealizationChoices = realizationChoices_;
+    const auto appliedTransportAnchors = transportAnchors_;
+    const auto appliedTransportChoices = transportChoices_;
+    const auto appliedResourceAnchors = resourceAnchors_;
+    const auto appliedResourceChoices = resourceChoices_;
+    const auto appliedLoads = relationValueLoads_;
+    if (llvm::Error error = rebuild(candidate))
+      return error;
+    const auto sameAnchors = [](const auto &lhs, const auto &rhs) {
+      if (lhs.size() != rhs.size())
+        return false;
+      for (std::size_t at = 0; at < lhs.size(); ++at)
+        if (lhs[at].choiceOffset != rhs[at].choiceOffset ||
+            lhs[at].choiceCount != rhs[at].choiceCount)
+          return false;
+      return true;
+    };
+    const auto sameChoices = [](const auto &lhs, const auto &rhs) {
+      if (lhs.size() != rhs.size())
+        return false;
+      for (std::size_t at = 0; at < lhs.size(); ++at)
+        if (!(spatialActionKey(SpatialMappingAction(lhs[at])) ==
+              spatialActionKey(SpatialMappingAction(rhs[at]))))
+          return false;
+      return true;
+    };
+    if (!sameAnchors(appliedRealizationAnchors, realizationAnchors_) ||
+        !sameChoices(appliedRealizationChoices, realizationChoices_) ||
+        !sameAnchors(appliedTransportAnchors, transportAnchors_) ||
+        !sameChoices(appliedTransportChoices, transportChoices_) ||
+        !sameAnchors(appliedResourceAnchors, resourceAnchors_) ||
+        !sameChoices(appliedResourceChoices, resourceChoices_) ||
+        appliedLoads != relationValueLoads_)
+      return invalid("incremental Action domain diverged from a full rebuild");
+  }
+  return llvm::Error::success();
+}
+
 SpatialActionProposalDomain SpatialActionDomainScratch::view() const {
   return {realizationAnchors_, realizationChoices_, transportAnchors_,
           transportChoices_,   resourceAnchors_,    resourceChoices_};
@@ -949,8 +1366,22 @@ std::uint64_t SpatialActionDomainScratch::selectableMovableDecisionCount(
 std::size_t SpatialActionDomainScratch::retainedStorageBytes() const {
   return retainedBytes(realizationAnchors_) +
          retainedBytes(realizationChoices_) + retainedBytes(transportAnchors_) +
-         retainedBytes(transportChoices_) + retainedBytes(resourceAnchors_) +
-         retainedBytes(resourceChoices_) + retainedBytes(relationChoices_) +
+         retainedBytes(previousRealizationChoices_) +
+         retainedBytes(previousTransportChoices_) +
+         retainedBytes(realizationSegments_) +
+         retainedBytes(previousRealizationSegments_) +
+         retainedBytes(transportNetSegments_) +
+         retainedBytes(previousTransportNetSegments_) +
+         retainedBytes(valueRealizationOffsets_) +
+         retainedBytes(valueRealizationDecisions_) +
+         retainedBytes(relationRealizationOffsets_) +
+         retainedBytes(relationRealizationDecisions_) +
+         retainedBytes(realizationAffectedMarks_) +
+         retainedBytes(touchedRelationValues_) +
+         retainedBytes(touchedEqualRelations_) +
+         retainedBytes(sortedTouchedNets_) + retainedBytes(transportChoices_) +
+         retainedBytes(resourceAnchors_) + retainedBytes(resourceChoices_) +
+         retainedBytes(relationChoices_) +
          retainedBytes(relationValueOffsets_) + retainedBytes(relationValues_) +
          retainedBytes(relationValueLoads_) +
          retainedBytes(relationDistinctValueCounts_) +

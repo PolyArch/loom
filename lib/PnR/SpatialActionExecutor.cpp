@@ -199,6 +199,13 @@ llvm::Error SpatialActionProbe::commit() {
   if (!owner_)
     return executorError("probe is no longer active");
   SpatialActionExecutorScratch *owner = owner_;
+  owner->committedDecisionChanges_.clear();
+  for (const SpatialCandidateScratch::DecisionDelta &delta :
+       move_.decisionChanges())
+    owner->committedDecisionChanges_.push_back({delta.kind, delta.index});
+  owner->committedLogicalNetChanges_.assign(
+      owner->routeCostLogicalNets_.begin(), owner->routeCostLogicalNets_.end());
+  owner->committedChangesValid_ = true;
   if (llvm::Error error = move_.commit())
     return error;
   llvm::Error synchronization =
@@ -266,6 +273,9 @@ SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate,
   routeCosts_.emplace(std::move(*routeCosts));
   routeCostTraversals_.clear();
   routeCostLogicalNets_.clear();
+  committedDecisionChanges_.clear();
+  committedLogicalNetChanges_.clear();
+  committedChangesValid_ = false;
   routeTagLogicalNets_.clear();
   routeTagDomains_.clear();
   const detail::SpatialBindingRelationModel &bindings =

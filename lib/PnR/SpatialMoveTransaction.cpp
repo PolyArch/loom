@@ -1537,6 +1537,13 @@ SpatialMoveTransaction::touchedRouteLogicalNets() const {
   return scratch_->touchedRoutes_;
 }
 
+llvm::ArrayRef<SpatialCandidateScratch::DecisionDelta>
+SpatialMoveTransaction::decisionChanges() const {
+  if (!scratch_)
+    return {};
+  return scratch_->decisionDeltas_;
+}
+
 llvm::Expected<SpatialTagAssignmentSummary>
 SpatialMoveTransaction::summarizeCurrentTagAssignments() const {
   if (!scratch_ || !closed_)
