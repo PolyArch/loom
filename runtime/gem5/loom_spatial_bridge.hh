@@ -105,6 +105,7 @@ private:
   loom::runtime::Gem5BridgeMemoryRequest pendingMemory;
   loom::runtime::Gem5BridgeCompletion pendingCompletion;
   loom::runtime::Gem5BridgeResultCollection completedResults;
+  std::uint64_t publishedResultBytes = 0;
   std::optional<std::chrono::steady_clock::time_point> engineWaitStarted;
 
   EventFunctionWrapper launchEvent;

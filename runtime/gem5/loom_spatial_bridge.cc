@@ -545,16 +545,49 @@ void LoomSpatialBridge::completeMemoryRequest() {
 }
 
 LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
-  const std::vector<std::uint8_t> normalized =
-      loom::runtime::encodeGem5BridgeResultCollection(completedResults);
-  if (normalized.size() > maximumMessageBytes)
+  if (completedResults.results.empty()) {
+    const std::vector<std::uint8_t> header =
+        loom::runtime::encodeGem5BridgeResultCollection(completedResults);
+    if (header.size() > maximumMessageBytes)
+      return ResultPublication::TooLarge;
+    std::ofstream output(resultPath, std::ios::binary | std::ios::trunc);
+    if (!output)
+      return ResultPublication::OpenFailed;
+    output.write(reinterpret_cast<const char *>(header.data()),
+                 static_cast<std::streamsize>(header.size()));
+    if (!output)
+      return ResultPublication::WriteFailed;
+    publishedResultBytes = header.size();
+    return ResultPublication::Published;
+  }
+
+  const std::vector<std::uint8_t> member =
+      loom::runtime::encodeGem5BridgeResult(completedResults.results.back());
+  if (publishedResultBytes > maximumMessageBytes ||
+      member.size() > maximumMessageBytes - publishedResultBytes)
     return ResultPublication::TooLarge;
-  std::ofstream output(resultPath, std::ios::binary | std::ios::trunc);
+  std::fstream output(resultPath,
+                      std::ios::binary | std::ios::in | std::ios::out);
   if (!output)
     return ResultPublication::OpenFailed;
-  output.write(reinterpret_cast<const char *>(normalized.data()),
-               static_cast<std::streamsize>(normalized.size()));
-  return output ? ResultPublication::Published : ResultPublication::WriteFailed;
+  output.seekp(0, std::ios::end);
+  if (output.tellp() != static_cast<std::streamoff>(publishedResultBytes))
+    return ResultPublication::WriteFailed;
+  output.write(reinterpret_cast<const char *>(member.data()),
+               static_cast<std::streamsize>(member.size()));
+  std::vector<std::uint8_t> count;
+  count.reserve(sizeof(std::uint64_t));
+  loom::runtime::detail::appendGem5BridgeU64(
+      count, completedResults.results.size());
+  output.seekp(loom::runtime::gem5BridgeResultCollectionMagic.size(),
+               std::ios::beg);
+  output.write(reinterpret_cast<const char *>(count.data()),
+               static_cast<std::streamsize>(count.size()));
+  output.flush();
+  if (!output)
+    return ResultPublication::WriteFailed;
+  publishedResultBytes += member.size();
+  return ResultPublication::Published;
 }
 
 void LoomSpatialBridge::completeInvocation() {

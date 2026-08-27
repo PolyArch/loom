@@ -48,10 +48,13 @@ try:
     with open(gem5_readiness_path, encoding="utf-8") as readiness_file:
         gem5_readiness = json.load(readiness_file)
     gem5_binary = gem5_readiness.get("binary")
-    if isinstance(gem5_binary, str) and os.path.isabs(gem5_binary):
+    if (gem5_readiness.get("schema") == "loom.gem5_build_readiness.1" and
+            isinstance(gem5_binary, str) and os.path.isabs(gem5_binary) and
+            os.path.isfile(gem5_binary) and os.access(gem5_binary, os.X_OK)):
         gem5_directory = os.path.dirname(gem5_binary)
         config.environment["PATH"] = os.pathsep.join(
             [gem5_directory, config.environment["PATH"]])
+        config.available_features.add("loom-gem5")
 except (OSError, json.JSONDecodeError):
     pass
 

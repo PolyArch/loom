@@ -50,11 +50,8 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/Path.h"
-#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <sys/resource.h>
@@ -114,63 +111,6 @@ bool isPairedCell(ExecutionMatrixCell cell) {
 bool usesCgraEngine(ExecutionMatrixCell cell) {
   return cell == ExecutionMatrixCell::SpatialCgra ||
          cell == ExecutionMatrixCell::SystemCgra || isPairedCell(cell);
-}
-
-void writeText(llvm::StringRef test, llvm::StringRef path,
-               llvm::StringRef text) {
-  std::error_code error;
-  llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
-  if (error)
-    fail(test, error.message());
-  output << text;
-  output.close();
-  if (output.has_error())
-    fail(test, "cannot write guest source");
-}
-
-std::vector<std::uint8_t>
-compileGuest(llvm::StringRef test, const deployment::test::TemporaryTree &tree,
-             llvm::StringRef stem, llvm::StringRef source,
-             std::uint64_t loadAddress, llvm::StringRef entrySymbol,
-             bool includeM5Ops) {
-  const std::string sourcePath = tree.path((stem + ".S").str());
-  const std::string scriptPath = tree.path((stem + ".ld").str());
-  const std::string imagePath = tree.path((stem + ".elf").str());
-  writeText(test, sourcePath, source);
-  const std::string script = "OUTPUT_ARCH(riscv)\nENTRY(" + entrySymbol.str() +
-                             ")\nSECTIONS\n{\n" + "  . = 0x" +
-                             llvm::utohexstr(loadAddress) + ";\n" +
-                             "  .text : { *(.text .text.*) }\n" +
-                             "  .rodata : { *(.rodata .rodata.*) }\n" +
-                             "  .data : { *(.data .data.*) }\n" +
-                             "  .bss : { *(.bss .bss.* COMMON) }\n}\n";
-  writeText(test, scriptPath, script);
-  llvm::SmallVector<llvm::StringRef, 24> arguments{
-      LOOM_TEST_CLANG_PATH, "--target=riscv64-unknown-elf",
-      "-march=rv64gc",      "-mabi=lp64d",
-      "-nostdlib",          "-static",
-      "-fuse-ld=lld"};
-  const std::string linker = "-Wl,-T," + scriptPath;
-  arguments.push_back(linker);
-  arguments.append({"-Wl,--build-id=none", "-Wl,--no-relax",
-                    "-Wl,-z,max-page-size=4096", "-I",
-                    LOOM_TEST_GEM5_M5_INCLUDE, sourcePath});
-  if (includeM5Ops)
-    arguments.push_back(LOOM_TEST_GEM5_M5OP_SOURCE);
-  arguments.append({"-o", imagePath});
-  std::string error;
-  bool failed = false;
-  const int status = llvm::sys::ExecuteAndWait(
-      LOOM_TEST_CLANG_PATH, arguments, std::nullopt, {},
-      static_cast<unsigned>(timeout::seconds(timeout::Tier::Fast)), 2048,
-      &error, &failed);
-  require(test, !failed && status == 0,
-          "clang could not build the RISC-V guest: " + error);
-  auto buffer = llvm::MemoryBuffer::getFile(imagePath, false, false);
-  if (!buffer)
-    fail(test, buffer.getError().message());
-  return {(*buffer)->getBuffer().bytes_begin(),
-          (*buffer)->getBuffer().bytes_end()};
 }
 
 constexpr std::uint64_t kHostLoadAddress = 0x80000000;
@@ -448,15 +388,18 @@ PairedFingerprints pairedFingerprints(llvm::StringRef test,
     appendFramedBytes(workBytes, encodeArtifactRootReference(reference));
   appendFramedText(workBytes, "cgra");
   appendFramedText(workBytes, "none");
-  std::array<std::uint8_t, 8> maximumWork{};
-  for (unsigned index = 0; index != maximumWork.size(); ++index)
-    maximumWork[index] = static_cast<std::uint8_t>(
-        runtime::gem5MaximumSpatialWork >> (56 - index * 8));
-  appendFramedBytes(workBytes, maximumWork);
+  const auto appendU64 = [&](std::uint64_t value) {
+    std::array<std::uint8_t, 8> bytes{};
+    for (unsigned index = 0; index != bytes.size(); ++index)
+      bytes[index] = static_cast<std::uint8_t>(value >> (56 - index * 8));
+    appendFramedBytes(workBytes, bytes);
+  };
+  appendU64(runtime::gem5MaximumSpatialWork);
+  appendU64(pairedMeasurementInvocationCount);
 
   const CanonicalSemanticBytes configBytes =
       canonicalResolvedConfigBytes(defaultResolvedConfig());
-  return {fingerprint(test, "loom.simulation.paired_cgra_work.v2", workBytes),
+  return {fingerprint(test, "loom.simulation.paired_cgra_work.v3", workBytes),
           fingerprint(test, "loom.simulation.paired_cgra_config.v1",
                       configBytes.bytes())};
 }
@@ -625,14 +568,14 @@ buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
         *lifecycle, ExecutionMatrixLifecycleOperation::GuestCompileAndLink);
   const bool orderedSequence = cell == ExecutionMatrixCell::SystemDfg ||
                                cell == ExecutionMatrixCell::SystemCgra;
-  const llvm::StringRef hostSource =
+  const std::string hostSource =
       paired            ? pairedInvocationHostProgramSource()
-      : orderedSequence ? orderedChannelHostProgramSource()
-                        : singleInvocationHostProgramSource();
+      : orderedSequence ? orderedChannelHostProgramSource().str()
+                        : singleInvocationHostProgramSource().str();
   programs.hostProgramBytes =
-      compileGuest(test, tree, "system-host", hostSource, kHostLoadAddress,
-                   "loom_host_entry", true);
-  programs.instructionProgramBytes = compileGuest(
+      compileGuestProgram(test, tree, "system-host", hostSource,
+                          kHostLoadAddress, "loom_host_entry", true);
+  programs.instructionProgramBytes = compileGuestProgram(
       test, tree, "spatial-dispatch", spatialInstructionProgramSource(),
       kInstructionLoadAddress, "__loom_thread_entry_0", false);
   setupChildTimer.reset();
@@ -1268,8 +1211,9 @@ runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
   if (cell == ExecutionMatrixCell::PairedSystemCgra)
     require(test,
             completed.gem5Diagnostics.has_value() &&
-                completed.gem5Diagnostics->spatialInvocations.size() == 1,
-            "paired System execution did not contain exactly one launch");
+                completed.gem5Diagnostics->spatialInvocations.size() ==
+                    pairedMeasurementInvocationCount,
+            "paired System execution has the wrong launch count");
   if (cell == ExecutionMatrixCell::SystemCgra &&
       attempt == ExecutionMatrixAttemptKind::Ordinary) {
     auto sample = take(
@@ -1469,16 +1413,24 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixInvocation invocation,
           *completed.gem5Diagnostics;
       require(test,
               diagnostics.attemptProfile.cgraEngine.has_value() &&
-                  diagnostics.spatialInvocations.size() == 1 &&
-                  diagnostics.spatialInvocations.front()
-                      .acceleratorReferenceCycles.has_value(),
+                  diagnostics.spatialInvocations.size() ==
+                      pairedMeasurementInvocationCount,
               "paired System measurement lacks exact CGRA work");
       const runtime::Gem5CgraEngineAttemptProfile &engine =
           *diagnostics.attemptProfile.cgraEngine;
+      std::uint64_t totalCycles = 0;
+      for (const runtime::Gem5SpatialInvocationProjection &invocation :
+           diagnostics.spatialInvocations) {
+        require(test,
+                invocation.acceleratorReferenceCycles.has_value() &&
+                    *invocation.acceleratorReferenceCycles <=
+                        std::numeric_limits<std::uint64_t>::max() - totalCycles,
+                "paired System measurement cycle total is invalid");
+        totalCycles += *invocation.acceleratorReferenceCycles;
+      }
       recordPairedMeasurement(
           cell, *pairedFingerprintsValue,
-          {*diagnostics.spatialInvocations.front().acceleratorReferenceCycles,
-           engine.eventFrameCount,
+          {totalCycles, engine.eventFrameCount,
            diagnostics.attemptProfile.simulationWallNanoseconds,
            diagnostics.attemptProfile.gem5SimulationProcessCpuNanoseconds,
            diagnostics.gem5Ticks, setupWallNanoseconds,
@@ -1746,6 +1698,12 @@ void runPairedSpatialCgraBatch(std::uint64_t warmupRuns,
           "paired Spatial oracle published a System execution");
   const std::uint64_t expectedCycles =
       spatialReferenceCycles(test, ordinarySpatial->progressObservations);
+  require(test,
+          expectedCycles <= std::numeric_limits<std::uint64_t>::max() /
+                                pairedMeasurementInvocationCount,
+          "paired Spatial cycle total overflows");
+  const std::uint64_t totalCycles =
+      expectedCycles * pairedMeasurementInvocationCount;
   const auto setupEnd = std::chrono::steady_clock::now();
 
   std::optional<std::uint64_t> expectedEventFrames;
@@ -1753,37 +1711,49 @@ void runPairedSpatialCgraBatch(std::uint64_t warmupRuns,
   for (std::uint64_t ordinal = 0; ordinal != runCount; ++ordinal) {
     const std::uint64_t cpuStarted = processCpuNanoseconds(test);
     const auto wallStarted = std::chrono::steady_clock::now();
-    auto outcome =
-        take(test, sim::simulateCgraWorkload(
-                       prepared.workloadExecution, prepared.workload,
-                       prepared.runtimeInput, runtime::gem5MaximumSpatialWork,
-                       std::nullopt));
+    for (std::uint64_t invocation = 0;
+         invocation != pairedMeasurementInvocationCount; ++invocation) {
+      auto outcome =
+          take(test, sim::simulateCgraWorkload(
+                         prepared.workloadExecution, prepared.workload,
+                         prepared.runtimeInput, runtime::gem5MaximumSpatialWork,
+                         std::nullopt));
+      require(test,
+              outcome.state == sim::SpatialExecutionSessionState::Retired &&
+                  outcome.retired.has_value(),
+              "paired Spatial active attempt did not retire");
+      const sim::RetiredCgraSimulation &retired = *outcome.retired;
+      require(test,
+              sim::haveExactlyEqualSpatialFunctionalObservations(
+                  ordinarySpatial->functionalObservations,
+                  retired.observations),
+              "paired Spatial active attempt differs from ordinary Evidence");
+      const std::uint64_t cycles =
+          spatialReferenceCycles(test, retired.progress);
+      require(test, cycles == expectedCycles,
+              "paired Spatial active attempt changed reference-cycle work");
+      if (!expectedEventFrames)
+        expectedEventFrames = retired.counters.eventFrameCount;
+      else
+        require(test, retired.counters.eventFrameCount == *expectedEventFrames,
+                "paired Spatial active attempt changed event-frame work");
+    }
     const auto wallFinished = std::chrono::steady_clock::now();
     const std::uint64_t cpuFinished = processCpuNanoseconds(test);
     require(test,
-            outcome.state == sim::SpatialExecutionSessionState::Retired &&
-                outcome.retired.has_value(),
-            "paired Spatial active attempt did not retire");
-    const sim::RetiredCgraSimulation &retired = *outcome.retired;
-    require(test,
-            sim::haveExactlyEqualSpatialFunctionalObservations(
-                ordinarySpatial->functionalObservations, retired.observations),
-            "paired Spatial active attempt differs from ordinary Evidence");
-    const std::uint64_t cycles = spatialReferenceCycles(test, retired.progress);
-    require(test, cycles == expectedCycles,
-            "paired Spatial active attempt changed reference-cycle work");
-    if (!expectedEventFrames)
-      expectedEventFrames = retired.counters.eventFrameCount;
-    else
-      require(test, retired.counters.eventFrameCount == *expectedEventFrames,
-              "paired Spatial active attempt changed event-frame work");
+            *expectedEventFrames <=
+                std::numeric_limits<std::uint64_t>::max() /
+                    pairedMeasurementInvocationCount,
+            "paired Spatial event-frame total overflows");
     if (ordinal < warmupRuns)
       continue;
     rusage usage{};
     require(test, ::getrusage(RUSAGE_SELF, &usage) == 0,
             "cannot sample paired Spatial resident memory");
     recordPairedMeasurement(cell, fingerprints,
-                            {cycles, retired.counters.eventFrameCount,
+                            {totalCycles,
+                             *expectedEventFrames *
+                                 pairedMeasurementInvocationCount,
                              durationNanoseconds(wallFinished - wallStarted),
                              cpuFinished - cpuStarted, std::nullopt,
                              durationNanoseconds(setupEnd - setupStart),
