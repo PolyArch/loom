@@ -13,6 +13,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 
 
 REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -23,7 +24,7 @@ from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E40
 CONFIG_SCRIPT = REPOSITORY_ROOT / "runtime" / "gem5" / "configure_loom_system.py"
 M5OP_SOURCE = REPOSITORY_ROOT / "externals" / "gem5" / "util" / "m5" / "src" / "abi" / "riscv" / "m5op.S"
 M5_INCLUDE = REPOSITORY_ROOT / "externals" / "gem5" / "include"
-TEST_RUN_ROOT = REPOSITORY_ROOT / "build" / "test-runs"
+TEST_RUN_ROOT = REPOSITORY_ROOT / "temp" / "g5"
 
 WIRE_MAGIC = b"LGB1"
 RESULT_MAGIC = b"LGR1"
@@ -35,7 +36,9 @@ RESULT_HEADER = struct.Struct(">4sIQQQ")
 RESULT_COLLECTION_HEADER = struct.Struct(">4sQ")
 SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQQ")
 INVOCATION_RESULT_HEADER = struct.Struct("<4sQQQQ32s")
-ROOT_LIFECYCLE_RECORD = struct.Struct(">QQIQQ")
+ROOT_LIFECYCLE_RECORD = struct.Struct(">QQIQQQIQ")
+ROOT_EVENT_CONTROL_REQUEST = struct.Struct(">4sQQQIQQ")
+ROOT_EVENT_CONTROL_ACK = struct.Struct(">4sQIQ")
 MEMORY_REQUEST_HEADER = struct.Struct(">IQQQQ")
 MEMORY_RESPONSE_HEADER = struct.Struct(">QIQ")
 COMPLETION_HEADER = struct.Struct(">QIQ")
@@ -65,6 +68,11 @@ EXPECTED_VALUE = 0x1122334455667788
 EXPECTED_SYSTEM_MEMORY = 0x8877665544332211
 ACC_CORE_OCCURRENCE_KIND = 9
 ROOT_THREAD_ENTITY = 17
+ROOT_EVENT_CONTROL_REQUEST_MAGIC = b"LRC1"
+ROOT_EVENT_CONTROL_ACK_MAGIC = b"LRA1"
+ROOT_EVENT_CONTINUE = 0
+ROOT_EVENT_STAY = 1
+ROOT_EVENT_ACTIVATE_ENDPOINT = 2
 
 
 def acc_core_reference(entity_id: int) -> str:
@@ -240,6 +248,64 @@ def read_exact(connection: socket.socket, size: int) -> bytes:
             raise RuntimeError("bridge connection closed before the message completed")
         chunks.extend(chunk)
     return bytes(chunks)
+
+
+def serve_root_event_control(
+    server: socket.socket,
+    events: list[tuple[int, int, int, int, int, int]],
+    completion_received: threading.Event,
+    release_completion: threading.Event,
+    errors: list[BaseException],
+) -> None:
+    try:
+        connection, _ = server.accept()
+        with connection:
+            for expected_action in (0, 1):
+                (
+                    magic,
+                    generation,
+                    entity,
+                    occurrence,
+                    action,
+                    tick,
+                    delta,
+                ) = ROOT_EVENT_CONTROL_REQUEST.unpack(
+                    read_exact(connection, ROOT_EVENT_CONTROL_REQUEST.size)
+                )
+                if (
+                    magic != ROOT_EVENT_CONTROL_REQUEST_MAGIC
+                    or generation != expected_action + 1
+                    or entity != ROOT_THREAD_ENTITY
+                    or occurrence == 0
+                    or action != expected_action
+                ):
+                    raise RuntimeError("root event control request is not canonical")
+                events.append(
+                    (generation, entity, occurrence, action, tick, delta)
+                )
+                if action == 1:
+                    completion_received.set()
+                    if not release_completion.wait(timeout_seconds(Tier.XLONG)):
+                        raise RuntimeError("completion acknowledgement was not released")
+                decision = (
+                    ROOT_EVENT_CONTINUE
+                    if action == 0
+                    else ROOT_EVENT_ACTIVATE_ENDPOINT
+                )
+                endpoint = 0 if action == 0 else 1
+                connection.sendall(
+                    ROOT_EVENT_CONTROL_ACK.pack(
+                        ROOT_EVENT_CONTROL_ACK_MAGIC,
+                        generation,
+                        decision,
+                        endpoint,
+                    )
+                )
+    except BaseException as error:
+        errors.append(error)
+        completion_received.set()
+    finally:
+        server.close()
 
 
 def receive_message(connection: socket.socket) -> tuple[int, int, bytes]:
@@ -521,12 +587,16 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         memory_object_path = root / "system-memory.bin"
         memory_table_path = root / "system-memory-table.bin"
         memory_observation_path = root / "system-memory.result"
-        socket_path = root / "spatial-bridge-session.sock"
+        # AF_UNIX limits the complete path to a small fixed-size field.  Keep
+        # the temporary directory for retained artifacts, but use short socket
+        # names so the harness remains valid in deep worktrees.
+        socket_path = root / "s.sock"
         bridge_result_paths = [
             root / f"spatial-result-{ordinal}.bin" for ordinal in range(2)
         ]
         system_result_path = root / "system-result.json"
         root_lifecycle_path = root / "system-root-lifecycle.result"
+        root_event_control_path = root / "r.sock"
         engine_trace_paths = [
             root / f"engine-trace-{ordinal}.json" for ordinal in range(2)
         ]
@@ -588,7 +658,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             )
         engine_commands = [engine_command, []]
         projection = {
-            "schema": "loom.gem5_system_projection.11",
+            "schema": "loom.gem5_system_projection.12",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
             "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns"},
@@ -623,6 +693,10 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 "pio_latency": "10ns",
                 "stack_base": STACK_BASE,
                 "stack_stride": STACK_STRIDE,
+                "logical_target_count": 2,
+                "endpoint_target_offsets": [0, 0],
+                "endpoint_dispatch_enabled": [1, 0],
+                "root_event_control_path": str(root_event_control_path),
                 "root_event_trace_path": str(root_lifecycle_path),
                 "targets": [
                     {
@@ -708,17 +782,57 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             "--result",
             str(system_result_path),
         ]
+        root_control_server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        root_control_server.bind(str(root_event_control_path))
+        root_control_server.listen(1)
+        controlled_events: list[tuple[int, int, int, int, int, int]] = []
+        completion_received = threading.Event()
+        release_completion = threading.Event()
+        control_errors: list[BaseException] = []
+        control_thread = threading.Thread(
+            target=serve_root_event_control,
+            args=(
+                root_control_server,
+                controlled_events,
+                completion_received,
+                release_completion,
+                control_errors,
+            ),
+        )
+        control_thread.start()
         with gem5_log_path.open("w", encoding="utf-8") as gem5_log:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 text=True,
                 stdout=gem5_log,
                 stderr=subprocess.STDOUT,
-                timeout=timeout_seconds(Tier.XLONG),
             )
-        if completed.returncode != 0:
+            try:
+                if not completion_received.wait(timeout_seconds(Tier.XLONG)):
+                    raise RuntimeError("gem5 did not reach the controlled completion")
+                if control_errors:
+                    raise RuntimeError(
+                        f"root event controller failed: {control_errors[0]}"
+                    )
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        "gem5 retired before the completion acknowledgement"
+                    )
+                release_completion.set()
+                return_code = process.wait(timeout=timeout_seconds(Tier.XLONG))
+            finally:
+                release_completion.set()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+        control_thread.join(timeout=timeout_seconds(Tier.FAST))
+        if control_thread.is_alive():
+            raise RuntimeError("root event controller did not terminate")
+        if control_errors:
+            raise RuntimeError(f"root event controller failed: {control_errors[0]}")
+        if return_code != 0:
             sys.stderr.write(gem5_log_path.read_text(encoding="utf-8"))
-            raise RuntimeError(f"gem5 runtime smoke exited with {completed.returncode}")
+            raise RuntimeError(f"gem5 runtime smoke exited with {return_code}")
 
         system_result = json.loads(system_result_path.read_text(encoding="utf-8"))
         if system_result["schema"] != "loom.gem5_system_attempt.1":
@@ -731,7 +845,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 f"{system_result['cause']}; artifacts: {retained_root}"
             )
         lifecycle_bytes = root_lifecycle_path.read_bytes()
-        if not lifecycle_bytes.startswith(b"LRE1") or (
+        if not lifecycle_bytes.startswith(b"LRE2") or (
             len(lifecycle_bytes) - 4
         ) % ROOT_LIFECYCLE_RECORD.size:
             raise RuntimeError("root lifecycle trace is not structurally canonical")
@@ -752,8 +866,23 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             or (start[3], start[4]) >= (completion[3], completion[4])
             or start[3] < system_result["entry_tick"]
             or completion[3] > system_result["exit_tick"]
+            or start[5:] != (1, ROOT_EVENT_CONTINUE, 0)
+            or completion[5:] != (2, ROOT_EVENT_ACTIVATE_ENDPOINT, 1)
         ):
             raise RuntimeError("root lifecycle trace disagrees with the Host boundary")
+        if len(controlled_events) != 2 or any(
+            trace[:6]
+            != (
+                controlled[1],
+                controlled[2],
+                controlled[3],
+                controlled[4],
+                controlled[5],
+                controlled[0],
+            )
+            for trace, controlled in zip(lifecycle, controlled_events, strict=True)
+        ):
+            raise RuntimeError("root lifecycle trace disagrees with its controller")
         completion_ticks = []
         for ordinal, (bridge_result_path, engine_trace_path) in enumerate(
             zip(bridge_result_paths, engine_trace_paths, strict=True)

@@ -599,7 +599,7 @@ entry by the session-local ordinal described below, rather than by the
 provider's process-wide entry index.
 
 The current strict gem5 System projection schema is
-`loom.gem5_system_projection.11`. For every Bridge session it records aligned
+`loom.gem5_system_projection.12`. For every Bridge session it records aligned
 arrays of dispatch-target ordinals, execution-context keys, and Spatial
 workload identities. These arrays are derived together from the immutable
 Deployment and System execution projection. Provider command arguments only
@@ -608,13 +608,24 @@ which an importer may infer target ownership. Sharing one engine across
 several Bridges therefore does not move workloads into the command-owning
 Bridge.
 
-Projection 11 also requires `dispatch.root_event_trace_path`. The path names a
-declared ordinary invocation output, not an optional diagnostic sidecar. The
-Thread Dispatch device writes one transient big-endian root-lifecycle stream:
+Projection 12 also requires `dispatch.root_event_trace_path`, a logical target
+count, and parallel endpoint offset/enable arrays. The arrays define a finite
+runtime endpoint table over the immutable dispatch records; they cannot create
+new targets. An endpoint with dispatch disabled may only be selected as a
+terminal safe-point decision, after which any later dispatch is rejected by the
+device. The optional `dispatch.root_event_control_path` enables an acknowledged
+controller for a prepared finite transition graph. The path is empty for an
+ordinary invocation and otherwise names a Unix stream socket relative to the
+bundle root. Connect, send, and receive operations have one bounded
+`gem5RootEventControlTimeoutMilliseconds` deadline; a missing or stalled
+controller is an invocation failure, never an unbounded simulation wait.
+
+Projection 12 requires the Thread Dispatch device to write one transient
+big-endian root-lifecycle stream:
 
 ```text
 RootLifecycleStream {
-  magic: u32 = LRE1
+  magic: u32 = LRE2
   records: array<RootLifecycleRecord>
 }
 
@@ -624,8 +635,23 @@ RootLifecycleRecord {
   action: u32 = Start(0) | Completion(1)
   gem5_tick: u64
   delta: u64
+  acknowledgement_generation: u64 (zero when control is disabled)
+  decision: u32 = Continue(0) | Stay(1) | ActivateEndpoint(2) | Reject(3)
+  endpoint: u64
 }
 ```
+
+When control is enabled, each record is preceded by a fixed-size request and
+followed by an acknowledgement on the socket. The request carries the
+monotonic generation, root entity, occurrence, action, gem5 tick, and delta.
+The acknowledgement must echo the generation and select a decision and finite
+endpoint from the projection. `Start` accepts only `Continue`; `Completion`
+accepts `Stay` or `ActivateEndpoint`. A rejected decision, a foreign endpoint,
+or a transition while another dispatch record is active is a protocol failure.
+The device changes its active endpoint only after the acknowledgement passes
+these checks. The socket protocol is an execution control boundary, not a new
+Mapping or route authority; the controller may select only compiler-prepared
+endpoint edges.
 
 The device assigns a globally increasing nonzero `occurrence` when it accepts
 a `Start` command and returns that value through the root-occurrence MMIO

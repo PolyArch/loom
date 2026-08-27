@@ -225,9 +225,14 @@ inheritedEnvironment(const LocalToolConfig &config,
   return configured->second.inheritEnvironment;
 }
 
-llvm::Expected<std::string> renderProjection(const Gem5SystemFacts &facts,
-                                             const ReadinessIdentity &readiness,
-                                             bool diagnostics) {
+struct RootEventControlProjection final {
+  std::uint64_t endpointCount = 0;
+};
+
+llvm::Expected<std::string>
+renderProjection(const Gem5SystemFacts &facts,
+                 const ReadinessIdentity &readiness, bool diagnostics,
+                 const RootEventControlProjection *rootEventControl) {
   std::vector<std::vector<llvm::ArrayRef<llvm::StringLiteral>>>
       processorOperationClasses;
   processorOperationClasses.reserve(facts.processors.size());
@@ -266,7 +271,7 @@ llvm::Expected<std::string> renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.11");
+    json.attribute("schema", "loom.gem5_system_projection.12");
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
@@ -321,7 +326,22 @@ llvm::Expected<std::string> renderProjection(const Gem5SystemFacts &facts,
       json.attribute("pio_latency", std::to_string(ticksPerCycle) + "ps");
       json.attribute("stack_base", facts.stackBase);
       json.attribute("stack_stride", facts.stackStride);
+      json.attribute("root_event_control_path",
+                     rootEventControl ? gem5RootEventControlSocketPath : "");
       json.attribute("root_event_trace_path", kRootLifecycleResultPath);
+      json.attribute("logical_target_count", facts.spatialLaunches.size());
+      json.attributeArray("endpoint_target_offsets", [&] {
+        const std::uint64_t endpointCount =
+            rootEventControl ? rootEventControl->endpointCount : 1;
+        for (std::uint64_t endpoint = 0; endpoint != endpointCount; ++endpoint)
+          json.value(0);
+      });
+      json.attributeArray("endpoint_dispatch_enabled", [&] {
+        const std::uint64_t endpointCount =
+            rootEventControl ? rootEventControl->endpointCount : 1;
+        for (std::uint64_t endpoint = 0; endpoint != endpointCount; ++endpoint)
+          json.value(endpoint == 0 ? 1 : 0);
+      });
       json.attributeArray("targets", [&] {
         for (const Gem5SpatialLaunchProjection &launch :
              facts.spatialLaunches) {
@@ -615,7 +635,7 @@ std::uint64_t readBigEndianU64(llvm::StringRef bytes, std::size_t offset) {
 llvm::Expected<std::vector<sim::SystemRootLifecycleObservation>>
 parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
   constexpr std::size_t headerBytes = 4;
-  constexpr std::size_t recordBytes = 36;
+  constexpr std::size_t recordBytes = 56;
   if (bytes.size() < headerBytes ||
       readBigEndianU32(bytes, 0) != gem5RootLifecycleTraceMagic)
     return invalid("gem5 root lifecycle result has the wrong header");
@@ -631,6 +651,9 @@ parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
 
   std::vector<sim::SystemRootLifecycleObservation> observations;
   observations.reserve(recordCount);
+  std::optional<bool> acknowledgedMode;
+  std::uint64_t lastAcknowledgementGeneration = 0;
+  std::uint64_t currentEndpoint = 0;
   for (std::size_t offset = headerBytes; offset != bytes.size();
        offset += recordBytes) {
     const std::uint64_t entity = readBigEndianU64(bytes, offset);
@@ -638,9 +661,53 @@ parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
     const std::uint32_t action = readBigEndianU32(bytes, offset + 16);
     const std::uint64_t tick = readBigEndianU64(bytes, offset + 20);
     const std::uint64_t delta = readBigEndianU64(bytes, offset + 28);
+    const std::uint64_t acknowledgementGeneration =
+        readBigEndianU64(bytes, offset + 36);
+    const std::uint32_t decision = readBigEndianU32(bytes, offset + 44);
+    const std::uint64_t endpoint = readBigEndianU64(bytes, offset + 48);
     if (action >
         static_cast<std::uint32_t>(Gem5RootLifecycleAction::Completion))
       return invalid("gem5 root lifecycle result has an unknown action");
+    const bool acknowledged = acknowledgementGeneration != 0;
+    if (!acknowledgedMode)
+      acknowledgedMode = acknowledged;
+    if (*acknowledgedMode != acknowledged)
+      return invalid("gem5 root lifecycle result mixes control modes");
+    if (acknowledged &&
+        acknowledgementGeneration <= lastAcknowledgementGeneration)
+      return invalid(
+          "gem5 root lifecycle acknowledgements are not increasing");
+    if (decision >
+        static_cast<std::uint32_t>(Gem5RootEventControlDecision::Reject))
+      return invalid("gem5 root lifecycle control decision is invalid");
+    const auto controlDecision =
+        static_cast<Gem5RootEventControlDecision>(decision);
+    if (controlDecision == Gem5RootEventControlDecision::Reject ||
+        endpoint >= gem5MaximumDynamicSpatialInvocations)
+      return invalid("gem5 root lifecycle records a rejected endpoint");
+    if (action == static_cast<std::uint32_t>(
+                      Gem5RootLifecycleAction::Start)) {
+      if (controlDecision != Gem5RootEventControlDecision::Continue ||
+          endpoint != currentEndpoint)
+        return invalid("gem5 root start has a noncanonical control decision");
+    } else if (controlDecision == Gem5RootEventControlDecision::Stay) {
+      if (endpoint != currentEndpoint)
+        return invalid("gem5 root stay changes the active endpoint");
+    } else if (controlDecision ==
+               Gem5RootEventControlDecision::ActivateEndpoint) {
+      currentEndpoint = endpoint;
+    } else {
+      return invalid(
+          "gem5 root completion has a noncanonical control decision");
+    }
+    if (!acknowledged &&
+        (endpoint != 0 ||
+         (action == static_cast<std::uint32_t>(
+                        Gem5RootLifecycleAction::Start)
+              ? controlDecision != Gem5RootEventControlDecision::Continue
+              : controlDecision != Gem5RootEventControlDecision::Stay)))
+      return invalid("uncontrolled gem5 root lifecycle changed endpoint");
+    lastAcknowledgementGeneration = acknowledgementGeneration;
     const dataflow::RootThreadLaunchRef root{
         facts.dataflow.artifact, dataflow::RootThreadLaunchId(entity)};
     const dataflow::EventFamilyKey event =
@@ -1027,7 +1094,9 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
                                 const ArtifactStore &artifacts,
                                 const BlobStore &blobs,
                                 const ExternalToolPreparationContext &context,
-                                bool diagnostics) {
+                                bool diagnostics,
+                                const RootEventControlProjection
+                                    *rootEventControl = nullptr) {
   auto factsOrUnsupported = deriveFacts(request, resolution, artifacts, blobs);
   if (!factsOrUnsupported)
     return factsOrUnsupported.takeError();
@@ -1079,7 +1148,8 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
                    std::nullopt, false});
   files.push_back({kTimeoutBudgetsPath.str(), std::move(*timeoutBudgets),
                    std::nullopt, false});
-  auto projection = renderProjection(facts, *readiness, diagnostics);
+  auto projection =
+      renderProjection(facts, *readiness, diagnostics, rootEventControl);
   if (!projection)
     return projection.takeError();
   files.push_back(
@@ -1336,6 +1406,21 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
     const ExternalToolPreparationContext &context) {
   return prepareGem5SystemInvocationImpl(request, resolution, artifacts, blobs,
                                          context, false);
+}
+
+llvm::Expected<EvaluationModelProviderPreparation>
+prepareGem5SystemCompletionControlledInvocation(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolPreparationContext &context,
+    std::uint64_t endpointCount) {
+  if (endpointCount == 0 ||
+      endpointCount > gem5MaximumDynamicSpatialInvocations)
+    return invalid("gem5 root event control endpoint count is outside its "
+                   "bounded domain");
+  const RootEventControlProjection control{endpointCount};
+  return prepareGem5SystemInvocationImpl(request, resolution, artifacts, blobs,
+                                         context, false, &control);
 }
 
 llvm::Expected<EvaluationModelProviderPreparation>

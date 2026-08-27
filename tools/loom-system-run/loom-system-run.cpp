@@ -27,6 +27,7 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Runtime/FabricModelPlatform.h"
+#include "Runtime/FabricModelRuntimeProvider.h"
 #include "Runtime/Gem5BridgeWire.h"
 #include "Runtime/Gem5SimulationBinding.h"
 #include "Runtime/ResourceTimeTransitionSelection.h"
@@ -287,50 +288,65 @@ loadInputs(const loom::application::ApplicationRuntimeManifest &manifest,
   return PublishedInputs{entry->inputs.workload, entry->inputs.runtimeInput};
 }
 
-llvm::Error consumeTransitionGraph(
-    const loom::application::ApplicationRuntimeManifest &manifest,
+llvm::Expected<std::shared_ptr<loom::runtime::FabricModelRuntimeProvider>>
+createApplicationRuntimeProvider(
+    const loom::application::FinalizedApplicationRuntimeManifest &manifest,
+    const loom::deployment::FinalizedDeployment &entry,
+    const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
+  std::vector<loom::ArtifactRootReference> endpoints{entry.reference()};
+  if (manifest.manifest().transitionGraph())
+    for (const auto &endpoint : manifest.manifest().transitionGraph()->endpoints)
+      if (endpoint.deployment &&
+          !llvm::is_contained(endpoints, *endpoint.deployment))
+        endpoints.push_back(*endpoint.deployment);
+
+  std::vector<loom::ArtifactIdentity> implementations;
+  for (const loom::ArtifactRootReference &reference : endpoints) {
+    auto imported =
+        loom::deployment::importDeployment(reference, artifacts, blobs);
+    if (!imported)
+      return imported.takeError();
+    for (const loom::deployment::DeploymentHardwareBinding &binding :
+         imported->deployment().hardwareBindings())
+      if (!llvm::is_contained(implementations,
+                              binding.hardwareImplementation.artifact))
+        implementations.push_back(binding.hardwareImplementation.artifact);
+  }
+  if (implementations.empty())
+    return invalid("resource-time application has no hardware implementation");
+  return loom::runtime::createFabricModelRuntimeProvider({
+      {std::move(implementations)}});
+}
+
+llvm::Expected<std::optional<
+    loom::application::FinalizedApplicationResourceTimeExecutionTrace>>
+executeResourceTimeLifecycle(
+    const loom::application::FinalizedApplicationRuntimeManifest &manifest,
     const loom::deployment::FinalizedDeployment &deployment,
     llvm::ArrayRef<loom::sim::SystemRootLifecycleObservation> lifecycle,
     const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
-  if (!manifest.transitionGraph())
-    return llvm::Error::success();
-  auto session = loom::runtime::ResourceTimeTransitionSelectionSession::create(
-      *manifest.transitionGraph(), deployment, artifacts, blobs);
-  if (!session)
-    return session.takeError();
-  auto mapping = loom::mapping::importSystemMapping(
-      manifest.transitionGraph()->entry.mapping, artifacts);
-  if (!mapping)
-    return mapping.takeError();
-  const loom::ArtifactRootReference dataflow{
-      ::dataflow::canonicalDataflowSchema.identity.str(),
-      ::dataflow::canonicalDataflowSchema.version,
-      mapping->view().dataflowIdentity()};
-  auto dataflowArtifact =
-      ::dataflow::importCanonicalDataflow(dataflow, artifacts);
-  if (!dataflowArtifact)
-    return dataflowArtifact.takeError();
-  auto dataflowView = dataflowArtifact->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-
+  if (!manifest.manifest().transitionGraph())
+    return std::nullopt;
+  auto provider =
+      createApplicationRuntimeProvider(manifest, deployment, artifacts, blobs);
+  if (!provider)
+    return provider.takeError();
+  auto loaded = loom::application::loadApplicationDeployment(
+      manifest, deployment, {*provider, 0}, artifacts, blobs);
+  if (!loaded)
+    return loaded.takeError();
   for (const loom::sim::SystemRootLifecycleObservation &observation :
        lifecycle) {
-    auto root = dataflowView->eventRootThreadLaunch(observation.event);
-    if (!root)
-      return root.takeError();
-    if (observation.event == ::dataflow::rootThreadStartEventFamily(*root)) {
-      if (llvm::Error error = session->startRoot(*root))
-        return error;
-      continue;
-    }
-    if (observation.event != ::dataflow::rootThreadCompletionEventFamily(*root))
-      return invalid("resource-time lifecycle contains a non-root event");
-    auto completed = session->completeRoot(*root, std::nullopt);
-    if (!completed)
-      return completed.takeError();
+    auto event = loaded->applyResourceTimeEvent(observation);
+    if (!event)
+      return event.takeError();
   }
-  return session->joinMappedRoots();
+  auto trace = loaded->publishResourceTimeExecutionTrace(artifacts, blobs);
+  if (!trace)
+    return trace.takeError();
+  return std::optional<
+      loom::application::FinalizedApplicationResourceTimeExecutionTrace>(
+      std::move(*trace));
 }
 
 llvm::Expected<loom::evaluation::CaseArtifactResolution>
@@ -429,7 +445,7 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
   const llvm::json::Array *dispatchTargets =
       dispatch ? dispatch->getArray("targets") : nullptr;
   const auto schema = object ? object->getString("schema") : std::nullopt;
-  if (!schema || *schema != "loom.gem5_system_projection.11" || !bridges ||
+  if (!schema || *schema != "loom.gem5_system_projection.12" || !bridges ||
       bridges->empty() || !dispatchTargets || dispatchTargets->empty())
     return invalid("gem5 projection contains no Spatial bridge");
 
@@ -1401,7 +1417,9 @@ writeManifest(llvm::StringRef workspace,
               const PublishedInputs &inputs, const CompletedRun &dfg,
               const CompletedRun &cgra,
               llvm::ArrayRef<SpatialInvocationCase> spatialInvocations,
-              llvm::ArrayRef<CompletedSpatialRun> spatialRuns) {
+              llvm::ArrayRef<CompletedSpatialRun> spatialRuns,
+              const loom::application::FinalizedApplicationResourceTimeExecutionTrace
+                  *resourceTimeTrace) {
   std::string body;
   llvm::raw_string_ostream stream(body);
   llvm::json::OStream json(stream, 2);
@@ -1419,6 +1437,14 @@ writeManifest(llvm::StringRef workspace,
     json.attributeObject("runtime_input", [&] {
       loom::writeArtifactRootReferenceJsonFields(json, inputs.runtimeInput);
     });
+    if (resourceTimeTrace) {
+      json.attributeObject("resource_time_execution_trace", [&] {
+        loom::writeArtifactRootReferenceJsonFields(
+            json, resourceTimeTrace->reference());
+      });
+      json.attribute("resource_time_event_count",
+                     resourceTimeTrace->events().size());
+    }
     json.attributeArray("runs", [&] {
       for (const CompletedRun *run : {&dfg, &cgra}) {
         json.object([&] {
@@ -1608,11 +1634,12 @@ llvm::Error run() {
       return cgra.takeError();
     if (llvm::Error error = validateSystemResults(*dfg, *cgra))
       return error;
-    if (llvm::Error error = consumeTransitionGraph(
-            manifest, deployment,
-            dfg->importedExecution.system()->progressObservations.rootLifecycle,
-            artifacts, blobs))
-      return error;
+    auto resourceTimeTrace = executeResourceTimeLifecycle(
+        workspace->package.manifest(), deployment,
+        dfg->importedExecution.system()->progressObservations.rootLifecycle,
+        artifacts, blobs);
+    if (!resourceTimeTrace)
+      return resourceTimeTrace.takeError();
     if (dfg->spatialInvocations.size() != cgra->spatialInvocations.size())
       return invalid("System engines observed different launch counts");
     std::vector<SpatialInvocationCase> spatialInvocations;
@@ -1681,9 +1708,11 @@ llvm::Error run() {
       spatialRuns.push_back(std::move(*spatialDfg));
       spatialRuns.push_back(std::move(*spatialCgra));
     }
-    if (llvm::Error error =
-            writeManifest(workspacePath, deployment, *binding, *inputs, *dfg,
-                          *cgra, spatialInvocations, spatialRuns))
+    const auto *resourceTimeTraceView =
+        resourceTimeTrace->has_value() ? &resourceTimeTrace->value() : nullptr;
+    if (llvm::Error error = writeManifest(
+            workspacePath, deployment, *binding, *inputs, *dfg, *cgra,
+            spatialInvocations, spatialRuns, resourceTimeTraceView))
       return error;
     if (profileRequested) {
       auto peakResidentBytes = processPeakResidentBytes();

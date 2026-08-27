@@ -7,7 +7,17 @@
 #include "runtime/gem5/loom_riscv_deployment_workload.hh"
 #include "sim/core.hh"
 
+#include <array>
+#include <cerrno>
+#include <chrono>
+#include <cstring>
+#include <fcntl.h>
 #include <limits>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 namespace gem5 {
 namespace {
@@ -24,17 +34,172 @@ void writeU64(std::ostream &output, std::uint64_t value) {
     output.put(static_cast<char>(value >> shift));
 }
 
+void writeU32(std::uint8_t *output, std::uint32_t value) {
+  for (int shift = 24; shift >= 0; shift -= 8)
+    *output++ = static_cast<std::uint8_t>(value >> shift);
+}
+
+void writeU64(std::uint8_t *output, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    *output++ = static_cast<std::uint8_t>(value >> shift);
+}
+
+std::uint32_t readU32(const std::uint8_t *input) {
+  std::uint32_t value = 0;
+  for (std::size_t index = 0; index != 4; ++index)
+    value = (value << 8) | input[index];
+  return value;
+}
+
+std::uint64_t readU64(const std::uint8_t *input) {
+  std::uint64_t value = 0;
+  for (std::size_t index = 0; index != 8; ++index)
+    value = (value << 8) | input[index];
+  return value;
+}
+
+using ControlDeadline = std::chrono::steady_clock::time_point;
+
+int remainingMilliseconds(ControlDeadline deadline) {
+  const auto remaining = deadline - std::chrono::steady_clock::now();
+  if (remaining <= std::chrono::steady_clock::duration::zero())
+    return 0;
+  const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+      remaining);
+  if (milliseconds.count() <= 0)
+    return 1;
+  if (milliseconds.count() > std::numeric_limits<int>::max())
+    return std::numeric_limits<int>::max();
+  return static_cast<int>(milliseconds.count());
+}
+
+bool waitForControlIo(int socket, short events, ControlDeadline deadline) {
+  pollfd descriptor{socket, events, 0};
+  while (true) {
+    const int timeout = remainingMilliseconds(deadline);
+    if (timeout == 0) {
+      errno = ETIMEDOUT;
+      return false;
+    }
+    const int result = ::poll(&descriptor, 1, timeout);
+    if (result > 0) {
+      if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        errno = ECONNRESET;
+        return false;
+      }
+      if (descriptor.revents & events)
+        return true;
+      continue;
+    }
+    if (result == 0) {
+      errno = ETIMEDOUT;
+      return false;
+    }
+    if (errno == EINTR)
+      continue;
+    return false;
+  }
+}
+
+bool connectWithDeadline(int socket, const sockaddr *address,
+                         socklen_t addressLength, ControlDeadline deadline) {
+  const int originalFlags = ::fcntl(socket, F_GETFL, 0);
+  if (originalFlags < 0)
+    return false;
+  if (::fcntl(socket, F_SETFL, originalFlags | O_NONBLOCK) != 0)
+    return false;
+  const auto restoreFlags = [&] {
+    return ::fcntl(socket, F_SETFL, originalFlags) == 0;
+  };
+  if (::connect(socket, address, addressLength) == 0)
+    return restoreFlags();
+  if (errno != EINPROGRESS)
+    return false;
+  if (!waitForControlIo(socket, POLLOUT, deadline)) {
+    (void)restoreFlags();
+    return false;
+  }
+  int error = 0;
+  socklen_t errorLength = sizeof(error);
+  if (::getsockopt(socket, SOL_SOCKET, SO_ERROR, &error, &errorLength) != 0) {
+    (void)restoreFlags();
+    return false;
+  }
+  if (!restoreFlags())
+    return false;
+  if (error != 0) {
+    errno = error;
+    return false;
+  }
+  return true;
+}
+
+bool sendAll(int socket, const std::uint8_t *bytes, std::size_t size,
+             ControlDeadline deadline) {
+  while (size != 0) {
+    if (!waitForControlIo(socket, POLLOUT, deadline))
+      return false;
+    const ssize_t sent =
+        ::send(socket, bytes, size, MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (sent < 0 && errno == EINTR)
+      continue;
+    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+      continue;
+    if (sent <= 0)
+      return false;
+    bytes += sent;
+    size -= static_cast<std::size_t>(sent);
+  }
+  return true;
+}
+
+bool receiveAll(int socket, std::uint8_t *bytes, std::size_t size,
+                ControlDeadline deadline) {
+  while (size != 0) {
+    if (!waitForControlIo(socket, POLLIN, deadline))
+      return false;
+    const ssize_t received = ::recv(socket, bytes, size, MSG_DONTWAIT);
+    if (received < 0 && errno == EINTR)
+      continue;
+    if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+      continue;
+    if (received <= 0)
+      return false;
+    bytes += received;
+    size -= static_cast<std::size_t>(received);
+  }
+  return true;
+}
+
 } // namespace
 
 LoomThreadDispatch::LoomThreadDispatch(const Params &params)
     : BasicPioDevice(params, gem5ThreadDispatchApertureBytes),
       workload(params.workload),
+      logicalTargetCount(params.logical_target_count),
+      endpointTargetOffsets(params.endpoint_target_offsets),
+      endpointDispatchEnabled(params.endpoint_dispatch_enabled),
       records(workload ? workload->targetCount() : 0),
       rootEventTrace(params.root_event_trace_path,
                      std::ios::binary | std::ios::trunc),
       serviceEvent([this] { service(); }, name() + ".service") {
   panic_if(!workload, "LoomThreadDispatch workload is absent");
   panic_if(records.empty(), "LoomThreadDispatch has no target records");
+  panic_if(logicalTargetCount == 0,
+           "LoomThreadDispatch has no logical targets");
+  panic_if(endpointTargetOffsets.empty(),
+           "LoomThreadDispatch has no runtime endpoint");
+  panic_if(endpointDispatchEnabled.size() != endpointTargetOffsets.size(),
+           "LoomThreadDispatch endpoint tables differ in cardinality");
+  for (std::size_t endpoint = 0; endpoint != endpointTargetOffsets.size();
+       ++endpoint) {
+    const std::uint64_t offset = endpointTargetOffsets[endpoint];
+    panic_if(offset > records.size() ||
+                 logicalTargetCount > records.size() - offset,
+             "LoomThreadDispatch endpoint target range is invalid");
+    panic_if(endpointDispatchEnabled[endpoint] > 1,
+             "LoomThreadDispatch endpoint dispatch flag is invalid");
+  }
   panic_if(records.size() > gem5MaximumDynamicSpatialInvocations,
            "LoomThreadDispatch target count exceeds the Runtime ABI bound");
   fatal_if(params.root_event_trace_path.empty(),
@@ -47,15 +212,66 @@ LoomThreadDispatch::LoomThreadDispatch(const Params &params)
   fatal_if(!rootEventTrace,
            "LoomThreadDispatch cannot initialize root event trace %s",
            params.root_event_trace_path);
+  if (!params.root_event_control_path.empty()) {
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    fatal_if(params.root_event_control_path.size() >= sizeof(address.sun_path),
+             "LoomThreadDispatch root event control path is too long");
+    std::memcpy(address.sun_path, params.root_event_control_path.c_str(),
+                params.root_event_control_path.size() + 1);
+    rootEventControlSocket =
+        ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    fatal_if(rootEventControlSocket < 0,
+             "LoomThreadDispatch cannot create its root event control socket: %s",
+             std::strerror(errno));
+    const timeval timeout{
+        static_cast<time_t>(gem5RootEventControlTimeoutMilliseconds / 1000),
+        static_cast<suseconds_t>(
+            (gem5RootEventControlTimeoutMilliseconds % 1000) * 1000)};
+    fatal_if(::setsockopt(rootEventControlSocket, SOL_SOCKET, SO_SNDTIMEO,
+                         &timeout, sizeof(timeout)) != 0 ||
+                 ::setsockopt(rootEventControlSocket, SOL_SOCKET, SO_RCVTIMEO,
+                              &timeout, sizeof(timeout)) != 0,
+             "LoomThreadDispatch cannot bound root event control I/O: %s",
+             std::strerror(errno));
+    const ControlDeadline deadline =
+        std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(gem5RootEventControlTimeoutMilliseconds);
+    fatal_if(!connectWithDeadline(
+                 rootEventControlSocket,
+                 reinterpret_cast<const sockaddr *>(&address),
+                 sizeof(address), deadline),
+             "LoomThreadDispatch cannot connect root event control %s: %s",
+             params.root_event_control_path, std::strerror(errno));
+  }
+}
+
+LoomThreadDispatch::~LoomThreadDispatch() {
+  if (rootEventControlSocket >= 0)
+    ::close(rootEventControlSocket);
+}
+
+std::optional<std::size_t> LoomThreadDispatch::selectedRecordOrdinal() const {
+  if (activeEndpoint >= endpointTargetOffsets.size() ||
+      endpointDispatchEnabled[activeEndpoint] == 0 ||
+      selectedTarget >= logicalTargetCount)
+    return std::nullopt;
+  const std::uint64_t ordinal =
+      endpointTargetOffsets[activeEndpoint] + selectedTarget;
+  if (ordinal >= records.size())
+    return std::nullopt;
+  return static_cast<std::size_t>(ordinal);
 }
 
 LoomThreadDispatch::DispatchRecord *LoomThreadDispatch::selectedRecord() {
-  return selectedTarget < records.size() ? &records[selectedTarget] : nullptr;
+  const auto ordinal = selectedRecordOrdinal();
+  return ordinal ? &records[*ordinal] : nullptr;
 }
 
 const LoomThreadDispatch::DispatchRecord *
 LoomThreadDispatch::selectedRecord() const {
-  return selectedTarget < records.size() ? &records[selectedTarget] : nullptr;
+  const auto ordinal = selectedRecordOrdinal();
+  return ordinal ? &records[*ordinal] : nullptr;
 }
 
 std::uint32_t LoomThreadDispatch::status(const DispatchRecord &record) const {
@@ -107,6 +323,8 @@ Tick LoomThreadDispatch::read(PacketPtr packet) {
     value = static_cast<std::uint32_t>(rootEventOccurrence);
   else if (offset == gem5ThreadDispatchRootOccurrenceHigh)
     value = static_cast<std::uint32_t>(rootEventOccurrence >> 32);
+  else if (offset == gem5ThreadDispatchRootEventStatus)
+    value = static_cast<std::uint32_t>(rootEventStatus);
   else
     commandError = 1;
   packet->setUintX(value, ByteOrder::little);
@@ -175,9 +393,14 @@ Tick LoomThreadDispatch::write(PacketPtr packet) {
     if (value >
         static_cast<std::uint32_t>(Gem5RootLifecycleAction::Completion)) {
       commandError = 12;
+      rootEventStatus = Gem5RootEventStatus::InvalidEvent;
     } else {
+      rootEventStatus =
+          recordRootEvent(static_cast<Gem5RootLifecycleAction>(value));
+      fatal_if(rootEventStatus == Gem5RootEventStatus::ProtocolFailure,
+               "LoomThreadDispatch root event control failed");
       commandError =
-          recordRootEvent(static_cast<Gem5RootLifecycleAction>(value)) ? 0 : 13;
+          rootEventStatus == Gem5RootEventStatus::Acknowledged ? 0 : 13;
     }
   } else if (offset == gem5ThreadDispatchControl &&
              (value & gem5ThreadDispatchReset)) {
@@ -217,13 +440,82 @@ Tick LoomThreadDispatch::write(PacketPtr packet) {
   return pioDelay;
 }
 
-bool LoomThreadDispatch::recordRootEvent(Gem5RootLifecycleAction action) {
+Gem5RootEventStatus
+LoomThreadDispatch::acknowledgeRootEvent(Gem5RootLifecycleAction action,
+                                        std::uint64_t occurrence, Tick tick,
+                                        std::uint64_t delta,
+                                        std::uint64_t &generation,
+                                        Gem5RootEventControlDecision &decision,
+                                        std::uint64_t &endpoint) {
+  generation = 0;
+  endpoint = activeEndpoint;
+  decision = action == Gem5RootLifecycleAction::Start
+                 ? Gem5RootEventControlDecision::Continue
+                 : Gem5RootEventControlDecision::Stay;
+  if (rootEventControlSocket < 0)
+    return Gem5RootEventStatus::Acknowledged;
+  if (nextRootEventControlGeneration == 0)
+    return Gem5RootEventStatus::ProtocolFailure;
+
+  generation = nextRootEventControlGeneration++;
+  const ControlDeadline deadline =
+      std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(gem5RootEventControlTimeoutMilliseconds);
+  std::array<std::uint8_t, gem5RootEventControlRequestBytes> request{};
+  writeU32(request.data(), gem5RootEventControlRequestMagic);
+  writeU64(request.data() + 4, generation);
+  writeU64(request.data() + 12, rootEventEntity);
+  writeU64(request.data() + 20, occurrence);
+  writeU32(request.data() + 28, static_cast<std::uint32_t>(action));
+  writeU64(request.data() + 32, tick);
+  writeU64(request.data() + 40, delta);
+  std::array<std::uint8_t, gem5RootEventControlAckBytes> response{};
+  if (!sendAll(rootEventControlSocket, request.data(), request.size(),
+               deadline) ||
+      !receiveAll(rootEventControlSocket, response.data(), response.size(),
+                  deadline) ||
+      readU32(response.data()) != gem5RootEventControlAckMagic ||
+      readU64(response.data() + 4) != generation)
+    return Gem5RootEventStatus::ProtocolFailure;
+
+  const std::uint32_t encodedDecision = readU32(response.data() + 12);
+  if (encodedDecision >
+      static_cast<std::uint32_t>(Gem5RootEventControlDecision::Reject))
+    return Gem5RootEventStatus::ProtocolFailure;
+  decision = static_cast<Gem5RootEventControlDecision>(encodedDecision);
+  endpoint = readU64(response.data() + 16);
+  if (endpoint >= endpointTargetOffsets.size() ||
+      decision == Gem5RootEventControlDecision::Reject)
+    return Gem5RootEventStatus::ProtocolFailure;
+  if (action == Gem5RootLifecycleAction::Start &&
+      decision != Gem5RootEventControlDecision::Continue)
+    return Gem5RootEventStatus::ProtocolFailure;
+  if (action == Gem5RootLifecycleAction::Completion &&
+      decision != Gem5RootEventControlDecision::Stay &&
+      decision != Gem5RootEventControlDecision::ActivateEndpoint)
+    return Gem5RootEventStatus::ProtocolFailure;
+  if (decision != Gem5RootEventControlDecision::ActivateEndpoint &&
+      endpoint != activeEndpoint)
+    return Gem5RootEventStatus::ProtocolFailure;
+  if (decision == Gem5RootEventControlDecision::ActivateEndpoint) {
+    for (const DispatchRecord &record : records)
+      if (record.state == State::Queued || record.state == State::Running ||
+          record.state == State::Finishing)
+        return Gem5RootEventStatus::ProtocolFailure;
+    activeEndpoint = endpoint;
+  }
+  return Gem5RootEventStatus::Acknowledged;
+}
+
+Gem5RootEventStatus
+LoomThreadDispatch::recordRootEvent(Gem5RootLifecycleAction action) {
+  std::uint64_t occurrence = rootEventOccurrence;
   if (action == Gem5RootLifecycleAction::Start) {
     if (rootEventOccurrence != 0 || nextRootEventOccurrence == 0)
-      return false;
-    rootEventOccurrence = nextRootEventOccurrence++;
+      return Gem5RootEventStatus::InvalidEvent;
+    occurrence = nextRootEventOccurrence;
   } else if (rootEventOccurrence == 0) {
-    return false;
+    return Gem5RootEventStatus::InvalidEvent;
   }
   const Tick tick = curTick();
   panic_if(hasRootEvent && tick < lastRootEventTick,
@@ -234,19 +526,34 @@ bool LoomThreadDispatch::recordRootEvent(Gem5RootLifecycleAction action) {
              "LoomThreadDispatch root event delta overflow");
     delta = lastRootEventDelta + 1;
   }
+  std::uint64_t acknowledgementGeneration = 0;
+  Gem5RootEventControlDecision decision =
+      Gem5RootEventControlDecision::Reject;
+  std::uint64_t endpoint = 0;
+  const Gem5RootEventStatus acknowledgement = acknowledgeRootEvent(
+      action, occurrence, tick, delta, acknowledgementGeneration, decision,
+      endpoint);
+  if (acknowledgement != Gem5RootEventStatus::Acknowledged)
+    return acknowledgement;
+  if (action == Gem5RootLifecycleAction::Start) {
+    rootEventOccurrence = occurrence;
+    ++nextRootEventOccurrence;
+  }
   writeU64(rootEventTrace, rootEventEntity);
-  writeU64(rootEventTrace, rootEventOccurrence);
+  writeU64(rootEventTrace, occurrence);
   writeU32(rootEventTrace, static_cast<std::uint32_t>(action));
   writeU64(rootEventTrace, tick);
   writeU64(rootEventTrace, delta);
-  if (action == Gem5RootLifecycleAction::Completion)
-    rootEventTrace.flush();
+  writeU64(rootEventTrace, acknowledgementGeneration);
+  writeU32(rootEventTrace, static_cast<std::uint32_t>(decision));
+  writeU64(rootEventTrace, endpoint);
+  rootEventTrace.flush();
   fatal_if(!rootEventTrace,
            "LoomThreadDispatch cannot append its root event trace");
   lastRootEventTick = tick;
   lastRootEventDelta = delta;
   hasRootEvent = true;
-  return true;
+  return Gem5RootEventStatus::Acknowledged;
 }
 
 void LoomThreadDispatch::scheduleService() {

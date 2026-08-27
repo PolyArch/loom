@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <optional>
 #include <vector>
 
 namespace gem5 {
@@ -20,6 +21,7 @@ public:
   using Params = LoomThreadDispatchParams;
 
   explicit LoomThreadDispatch(const Params &params);
+  ~LoomThreadDispatch() override;
 
   Tick read(PacketPtr packet) override;
   Tick write(PacketPtr packet) override;
@@ -51,9 +53,17 @@ private:
   std::uint64_t rootEventOccurrence = 0;
   std::uint64_t nextOccurrence = 1;
   std::uint64_t nextRootEventOccurrence = 1;
+  std::uint64_t nextRootEventControlGeneration = 1;
+  const std::uint64_t logicalTargetCount;
+  const std::vector<std::uint64_t> endpointTargetOffsets;
+  const std::vector<std::uint64_t> endpointDispatchEnabled;
+  std::uint64_t activeEndpoint = 0;
   std::uint32_t commandError = 0;
+  loom::runtime::Gem5RootEventStatus rootEventStatus =
+      loom::runtime::Gem5RootEventStatus::Acknowledged;
   std::vector<DispatchRecord> records;
   std::ofstream rootEventTrace;
+  int rootEventControlSocket = -1;
   Tick lastRootEventTick = 0;
   std::uint64_t lastRootEventDelta = 0;
   bool hasRootEvent = false;
@@ -62,7 +72,14 @@ private:
   void service();
   void scheduleService();
   void failSelected(std::uint32_t code);
-  bool recordRootEvent(loom::runtime::Gem5RootLifecycleAction action);
+  std::optional<std::size_t> selectedRecordOrdinal() const;
+  loom::runtime::Gem5RootEventStatus
+  recordRootEvent(loom::runtime::Gem5RootLifecycleAction action);
+  loom::runtime::Gem5RootEventStatus acknowledgeRootEvent(
+      loom::runtime::Gem5RootLifecycleAction action, std::uint64_t occurrence,
+      Tick tick, std::uint64_t delta, std::uint64_t &generation,
+      loom::runtime::Gem5RootEventControlDecision &decision,
+      std::uint64_t &endpoint);
   DispatchRecord *selectedRecord();
   const DispatchRecord *selectedRecord() const;
   std::uint32_t status(const DispatchRecord &record) const;

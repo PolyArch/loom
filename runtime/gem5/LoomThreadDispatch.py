@@ -1,5 +1,5 @@
 from m5.objects.Device import BasicPioDevice
-from m5.params import Param
+from m5.params import Param, VectorParam
 
 
 class LoomThreadDispatch(BasicPioDevice):
@@ -12,4 +12,16 @@ class LoomThreadDispatch(BasicPioDevice):
     )
     root_event_trace_path = Param.String(
         "Canonical root lifecycle attempt output"
+    )
+    root_event_control_path = Param.String(
+        "", "Optional acknowledged root lifecycle control socket"
+    )
+    logical_target_count = Param.UInt64(
+        "Number of logical dispatch targets in each endpoint"
+    )
+    endpoint_target_offsets = VectorParam.UInt64(
+        "Physical target offset selected by each runtime endpoint"
+    )
+    endpoint_dispatch_enabled = VectorParam.UInt64(
+        "Whether each runtime endpoint admits a later dispatch"
     )

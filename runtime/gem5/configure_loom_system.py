@@ -32,7 +32,7 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.11"
+CONFIG_SCHEMA = "loom.gem5_system_projection.12"
 PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.5"
 STATISTICS_BEGIN = "---------- Begin Simulation Statistics ----------"
 STATISTICS_END = "---------- End Simulation Statistics   ----------"
@@ -423,11 +423,37 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
             "pio_latency",
             "stack_base",
             "stack_stride",
+            "logical_target_count",
+            "endpoint_target_offsets",
+            "endpoint_dispatch_enabled",
+            "root_event_control_path",
             "root_event_trace_path",
             "targets",
         },
         "dispatch",
     )
+    if not isinstance(dispatch["root_event_control_path"], str):
+        raise ValueError("root event control path must be a string")
+    logical_target_count = dispatch["logical_target_count"]
+    endpoint_target_offsets = dispatch["endpoint_target_offsets"]
+    endpoint_dispatch_enabled = dispatch["endpoint_dispatch_enabled"]
+    if not isinstance(logical_target_count, int) or logical_target_count <= 0:
+        raise ValueError("logical dispatch target count must be positive")
+    if (
+        not isinstance(endpoint_target_offsets, list)
+        or not endpoint_target_offsets
+        or not all(
+            isinstance(offset, int) and offset >= 0
+            for offset in endpoint_target_offsets
+        )
+    ):
+        raise ValueError("endpoint target offsets are invalid")
+    if (
+        not isinstance(endpoint_dispatch_enabled, list)
+        or len(endpoint_dispatch_enabled) != len(endpoint_target_offsets)
+        or not all(enabled in (0, 1) for enabled in endpoint_dispatch_enabled)
+    ):
+        raise ValueError("endpoint dispatch flags are invalid")
     instruction_images = projection["instruction_images"]
     if not all(isinstance(path, str) and path for path in instruction_images):
         raise ValueError("instruction image paths are invalid")
@@ -485,6 +511,11 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
         target_bridge_addresses.append(target["bridge_address"])
         target_launch_addresses.append(target["launch_address"])
         target_launch_sizes.append(target["launch_size"])
+    if logical_target_count > len(target_cpu_ids) or any(
+        offset + logical_target_count > len(target_cpu_ids)
+        for offset in endpoint_target_offsets
+    ):
+        raise ValueError("endpoint target range exceeds the dispatch table")
 
     system = RiscvSystem()
     system.clk_domain = SrcClockDomain(
@@ -537,7 +568,11 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
         pio_addr=dispatch["pio_address"],
         pio_latency=dispatch["pio_latency"],
         workload=system.workload,
+        root_event_control_path=dispatch["root_event_control_path"],
         root_event_trace_path=dispatch["root_event_trace_path"],
+        logical_target_count=logical_target_count,
+        endpoint_target_offsets=endpoint_target_offsets,
+        endpoint_dispatch_enabled=endpoint_dispatch_enabled,
     )
     system.loom_thread_dispatch.pio = system.membus.mem_side_ports
 

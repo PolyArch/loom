@@ -13,6 +13,8 @@
 namespace loom::runtime {
 
 inline constexpr std::uint64_t gem5MaximumSpatialWork = 1'000'000;
+inline constexpr char gem5RootEventControlSocketPath[] =
+    "outputs/system-root-event-control.sock";
 
 /// Returns the exact integral distance between launch acceptance and graph
 /// retirement. Fractional endpoint coordinates are accepted when their
@@ -167,6 +169,18 @@ prepareGem5SystemInvocation(
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const external_tool::ExternalToolPreparationContext &context);
+
+/// Prepares a completion-safe-point controlled invocation. Endpoint zero uses
+/// the projected Deployment targets. Nonzero endpoints are acknowledged and
+/// recorded but reject any later dispatch until a complete endpoint target
+/// projection is supplied by a broader execution owner.
+llvm::Expected<evaluation::EvaluationModelProviderPreparation>
+prepareGem5SystemCompletionControlledInvocation(
+    const evaluation::EvaluationRequest &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const external_tool::ExternalToolPreparationContext &context,
+    std::uint64_t endpointCount);
 
 /// Validates the Request and prepares an explicitly diagnostic gem5
 /// invocation. Performance outputs are part of this dedicated bundle contract

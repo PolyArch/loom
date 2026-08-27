@@ -658,12 +658,21 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
   llvm::Value *startedRootOccurrence = loadMmio64Descriptor(
       builder, startDispatch, runtime::gem5ThreadDispatchRootOccurrenceLow,
       runtime::gem5ThreadDispatchRootOccurrenceHigh);
+  llvm::Value *startStatus = loadMmio32(
+      builder, startDispatch, runtime::gem5ThreadDispatchRootEventStatus);
   builder.CreateStore(startedRootOccurrence, activeRootOccurrence);
   llvm::BasicBlock *started =
       llvm::BasicBlock::Create(module.getContext(), "started", helper);
-  builder.CreateCondBr(builder.CreateICmpNE(startedRootOccurrence,
-                                            llvm::ConstantInt::get(i64, 0)),
-                       started, failed);
+  llvm::Value *startAcknowledged = builder.CreateAnd(
+      builder.CreateICmpNE(startedRootOccurrence,
+                           llvm::ConstantInt::get(i64, 0)),
+      builder.CreateICmpEQ(
+          startStatus,
+          llvm::ConstantInt::get(
+              startStatus->getType(),
+              static_cast<std::uint32_t>(
+                  runtime::Gem5RootEventStatus::Acknowledged))));
+  builder.CreateCondBr(startAcknowledged, started, failed);
   builder.SetInsertPoint(started);
   builder.CreateRet(generation);
   builder.SetInsertPoint(failed);
@@ -751,6 +760,20 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
   emitRootLifecycleEvent(waitBuilder, completionDispatch, launch.root,
                          completedRootOccurrence,
                          runtime::Gem5RootLifecycleAction::Completion);
+  llvm::Value *completionStatus = loadMmio32(
+      waitBuilder, completionDispatch,
+      runtime::gem5ThreadDispatchRootEventStatus);
+  llvm::BasicBlock *completionAcknowledged = llvm::BasicBlock::Create(
+      module.getContext(), "completion_acknowledged", wait);
+  waitBuilder.CreateCondBr(
+      waitBuilder.CreateICmpEQ(
+          completionStatus,
+          llvm::ConstantInt::get(
+              completionStatus->getType(),
+              static_cast<std::uint32_t>(
+                  runtime::Gem5RootEventStatus::Acknowledged))),
+      completionAcknowledged, waitFailed);
+  waitBuilder.SetInsertPoint(completionAcknowledged);
   waitBuilder.CreateStore(llvm::ConstantInt::get(i64, 0), activeGeneration);
   waitBuilder.CreateStore(llvm::ConstantInt::get(i64, 0), activeRootOccurrence);
   waitBuilder.CreateRetVoid();

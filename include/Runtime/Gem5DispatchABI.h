@@ -1,6 +1,7 @@
 #ifndef LOOM_RUNTIME_GEM5DISPATCHABI_H
 #define LOOM_RUNTIME_GEM5DISPATCHABI_H
 
+#include <cstddef>
 #include <cstdint>
 
 namespace loom::runtime {
@@ -8,6 +9,20 @@ namespace loom::runtime {
 enum class Gem5RootLifecycleAction : std::uint32_t {
   Start = 0,
   Completion = 1,
+};
+
+enum class Gem5RootEventControlDecision : std::uint32_t {
+  Continue = 0,
+  Stay = 1,
+  ActivateEndpoint = 2,
+  Reject = 3,
+};
+
+enum class Gem5RootEventStatus : std::uint32_t {
+  Acknowledged = 0,
+  NoLegalTransition = 1,
+  ProtocolFailure = 2,
+  InvalidEvent = 3,
 };
 
 inline constexpr std::uint64_t gem5ThreadDispatchTargetLow = 0x00;
@@ -25,6 +40,7 @@ inline constexpr std::uint64_t gem5ThreadDispatchRootEntityHigh = 0x2c;
 inline constexpr std::uint64_t gem5ThreadDispatchRootEvent = 0x30;
 inline constexpr std::uint64_t gem5ThreadDispatchRootOccurrenceLow = 0x34;
 inline constexpr std::uint64_t gem5ThreadDispatchRootOccurrenceHigh = 0x38;
+inline constexpr std::uint64_t gem5ThreadDispatchRootEventStatus = 0x3c;
 inline constexpr std::uint64_t gem5ThreadDispatchWorkerSlotBase = 0x1000;
 inline constexpr std::uint64_t gem5ThreadDispatchWorkerSlotStride = 0x08;
 inline constexpr std::uint64_t gem5ThreadDispatchWorkerCompletion = 0x00;
@@ -38,7 +54,12 @@ inline constexpr std::uint32_t gem5ThreadDispatchBusy = 1U << 0;
 inline constexpr std::uint32_t gem5ThreadDispatchDone = 1U << 1;
 inline constexpr std::uint32_t gem5ThreadDispatchFailed = 1U << 2;
 
-inline constexpr std::uint32_t gem5RootLifecycleTraceMagic = 0x4c524531U;
+inline constexpr std::uint32_t gem5RootLifecycleTraceMagic = 0x4c524532U;
+inline constexpr std::uint32_t gem5RootEventControlRequestMagic = 0x4c524331U;
+inline constexpr std::uint32_t gem5RootEventControlAckMagic = 0x4c524131U;
+inline constexpr std::size_t gem5RootEventControlRequestBytes = 48;
+inline constexpr std::size_t gem5RootEventControlAckBytes = 24;
+inline constexpr std::uint64_t gem5RootEventControlTimeoutMilliseconds = 5000;
 
 } // namespace loom::runtime
 
