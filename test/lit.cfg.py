@@ -284,6 +284,8 @@ tools = [
     "loom-structured-program-artifact-test",
     "loom-structured-thread-domain-test",
     "loom-structured-ownership-lineage-index-test",
+    "loom-structured-ownership-accounting-test",
+    "loom-structured-ownership-evaluation-test",
     "loom-structured-schedule-generator-test",
     "loom-structured-polyhedral-schedule-test",
     "loom-structured-memory-communication-generator-test",
