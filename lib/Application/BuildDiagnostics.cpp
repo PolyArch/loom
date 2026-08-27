@@ -119,8 +119,7 @@ llvm::StringRef spelling(ApplicationMappingRuntimeDisposition value) {
   llvm_unreachable("unknown application runtime disposition");
 }
 
-llvm::json::Value encodeObjectiveScalar(
-    const ResolvedObjectiveScalar &value) {
+llvm::json::Value encodeObjectiveScalar(const ResolvedObjectiveScalar &value) {
   if (const auto *integer = std::get_if<ResolvedObjectiveInteger>(&value))
     return llvm::json::Object{{"kind", "integer"},
                               {"negative", integer->negative},
@@ -194,11 +193,11 @@ encodeObjectiveObservation(const ApplicationObjectiveObservation &observation) {
 void addOptionalUnsigned(llvm::json::Object &object, llvm::StringRef key,
                          std::optional<std::uint64_t> value);
 void addOptionalRoot(llvm::json::Object &object, llvm::StringRef key,
-    const std::optional<ArtifactRootReference> &value);
+                     const std::optional<ArtifactRootReference> &value);
 std::string encodeRoot(const ArtifactRootReference &reference);
 
-llvm::json::Object encodeQualityProvenance(
-    const dse::JointDesignQualityProvenance &provenance) {
+llvm::json::Object
+encodeQualityProvenance(const dse::JointDesignQualityProvenance &provenance) {
   llvm::json::Array rawMeasures;
   for (const ResolvedObjectiveScalar &measure : provenance.rawMeasures)
     rawMeasures.push_back(encodeObjectiveScalar(measure));
@@ -315,8 +314,8 @@ encodePortfolioInput(const SelectedApplicationInput &selection,
   return result;
 }
 
-llvm::json::Object encodePairDecision(
-    const ApplicationPairDecisionRecord &decision) {
+llvm::json::Object
+encodePairDecision(const ApplicationPairDecisionRecord &decision) {
   const auto encodeQualityObservation = [](const auto &observation) {
     llvm::json::Array codes;
     for (std::uint64_t code : observation.objectiveCodes)
@@ -420,8 +419,7 @@ llvm::json::Object encodePairDecision(
           /*LowerCase=*/true);
     else
       encoded["invocation_manifest_run_key"] = nullptr;
-    encoded["quality_disposition"] =
-        spelling(invocation.qualityDisposition);
+    encoded["quality_disposition"] = spelling(invocation.qualityDisposition);
     addOptionalRoot(encoded, "quality_incomplete_candidate",
                     invocation.qualityIncompleteCandidate);
     addOptionalUnsigned(encoded, "selected_plan_ordinal",
@@ -429,8 +427,7 @@ llvm::json::Object encodePairDecision(
     addOptionalRoot(encoded, "selected_system_mapping",
                     invocation.selectedMapping);
     llvm::json::Array invocationQualityLabels;
-    for (const std::string &label :
-         invocation.qualityObjectiveDimensionLabels)
+    for (const std::string &label : invocation.qualityObjectiveDimensionLabels)
       invocationQualityLabels.push_back(label);
     encoded["quality_objective_dimension_labels"] =
         std::move(invocationQualityLabels);
@@ -439,8 +436,7 @@ llvm::json::Object encodePairDecision(
          invocation.qualityObservations)
       invocationQualityObservations.push_back(
           encodeQualityObservation(observation));
-    encoded["quality_observations"] =
-        std::move(invocationQualityObservations);
+    encoded["quality_observations"] = std::move(invocationQualityObservations);
     llvm::json::Array invocationHardwareLabels;
     for (const std::string &label :
          invocation.hardwarePromotionObjectiveDimensionLabels)
@@ -591,8 +587,7 @@ std::string encodeStructuredRoot(const frontend::StructuredEntityRef &root) {
                      /*LowerCase=*/true);
 }
 
-template <typename Counter>
-llvm::json::Object workCounter(const Counter &counter) {
+llvm::json::Object workCounter(const dse::ResourceTimeWorkCounter &counter) {
   return llvm::json::Object{
       {"limit", counter.limit},
       {"planned", counter.planned},
@@ -603,8 +598,8 @@ llvm::json::Object workCounter(const Counter &counter) {
       {"elapsed_nanoseconds", counter.elapsedNanoseconds}};
 }
 
-llvm::json::Object mappingProviderWork(
-    const ApplicationMappingProviderWorkObservation &work) {
+llvm::json::Object
+mappingProviderWork(const ApplicationMappingProviderWorkObservation &work) {
   return llvm::json::Object{
       {"tech_mapping_invocations", work.techMappingInvocations},
       {"spatial_pnr_invocations", work.spatialPnrInvocations},
@@ -751,47 +746,6 @@ void addOptionalRoot(llvm::json::Object &object, llvm::StringRef key,
     object[key] = nullptr;
 }
 
-llvm::json::Object
-candidateProjection(const dse::PreMappingCandidateProjection &projection) {
-  llvm::json::Object object;
-  object["identity"] =
-      llvm::toHex(projection.identity.bytes(), /*LowerCase=*/true);
-  object["owned_region_count"] = projection.ownedRegionCount;
-  object["host_region_count"] = projection.hostRegionCount;
-  object["internal_dependency_count"] = projection.internalDependencyCount;
-  object["internal_known_bytes"] = projection.internalKnownBytes;
-  object["internal_unknown_object_count"] =
-      projection.internalUnknownObjectCount;
-  object["cut_dependency_count"] = projection.cutDependencyCount;
-  object["cut_known_bytes"] = projection.cutKnownBytes;
-  object["cut_unknown_object_count"] = projection.cutUnknownObjectCount;
-  object["unknown_internal_pair_count"] = projection.unknownInternalPairCount;
-  object["unknown_cut_pair_count"] = projection.unknownCutPairCount;
-  object["channel_opportunity_count"] = projection.channelOpportunityCount;
-  object["maximum_producer_fanout"] = projection.maximumProducerFanout;
-  object["owned_dynamic_activations"] = projection.ownedDynamicActivations;
-  object["owned_dynamic_leaf_executions"] =
-      projection.ownedDynamicLeafExecutions;
-  object["host_dynamic_activations"] = projection.hostDynamicActivations;
-  object["host_dynamic_leaf_executions"] = projection.hostDynamicLeafExecutions;
-  addOptionalUnsigned(object, "estimated_cut_traffic_bytes",
-                      projection.estimatedCutTrafficBytes);
-  object["producer_rate_lower_bound"] = projection.producerRateLowerBound;
-  object["consumer_rate_lower_bound"] = projection.consumerRateLowerBound;
-  object["channel_depth_lower_bound"] = projection.channelDepthLowerBound;
-  object["launch_synchronization_cost"] = projection.launchSynchronizationCost;
-  object["parallelism_lower_bound"] = projection.parallelismLowerBound;
-  object["topology_congestion_proxy"] = projection.topologyCongestionProxy;
-  object["reconfiguration_live_state_bytes"] =
-      projection.reconfigurationLiveStateBytes;
-  object["reconfiguration_live_state_known"] =
-      projection.reconfigurationLiveStateKnown;
-  object["exact_gate"] = dse::toString(projection.exactGate);
-  object["estimate_support"] = dse::toString(projection.estimateSupport);
-  object["estimate_confidence"] = dse::toString(projection.estimateConfidence);
-  return object;
-}
-
 void addCandidateInventorySummary(
     llvm::json::Object &payload,
     llvm::ArrayRef<dse::PreMappingCandidatePlanningRecord> inventory) {
@@ -836,49 +790,6 @@ void addCandidateInventorySummary(
   payload["verified_max_temporal_count"] = verifiedTemporal;
   payload["verified_max_spatial_count"] = verifiedSpatial;
   payload["verified_intermediate_count"] = verifiedIntermediate;
-}
-
-llvm::json::Object materializedProjection(
-    const dse::PreMappingMaterializedProjection &projection) {
-  llvm::json::Object object;
-  object["identity"] =
-      llvm::toHex(projection.identity.bytes(), /*LowerCase=*/true);
-  object["root_thread_launch_count"] = projection.rootThreadLaunchCount;
-  object["rooted_graph_launch_count"] = projection.rootedGraphLaunchCount;
-  object["static_logical_domain_point_count"] =
-      projection.staticLogicalDomainPointCount;
-  object["unknown_logical_domain_count"] = projection.unknownLogicalDomainCount;
-  object["available_acc_core_count"] = projection.availableAccCoreCount;
-  addOptionalUnsigned(object, "minimum_execution_waves",
-                      projection.minimumExecutionWaves);
-  addOptionalUnsigned(object, "maximum_parallel_acc_core_count",
-                      projection.maximumParallelAccCoreCount);
-  object["actor_count"] = projection.actorCount;
-  object["compute_actor_count"] = projection.computeActorCount;
-  object["control_actor_count"] = projection.controlActorCount;
-  object["memory_actor_count"] = projection.memoryActorCount;
-  object["graph_edge_count"] = projection.graphEdgeCount;
-  object["logical_memory_root_count"] = projection.logicalMemoryRootCount;
-  object["stream_actor_count"] = projection.streamActorCount;
-  object["system_transport_resource_count"] =
-      projection.systemTransportResourceCount;
-  object["system_transfer_pattern_count"] =
-      projection.systemTransferPatternCount;
-  object["temporal_logical_epoch_count"] =
-      projection.temporalWitness.logicalEpochCount;
-  object["temporal_acc_core_occupancy"] =
-      projection.temporalWitness.accCoreOccupancy;
-  object["temporal_launch_count"] = projection.temporalWitness.launchCount;
-  object["temporal_synchronization_count"] =
-      projection.temporalWitness.synchronizationCount;
-  object["temporal_live_state_bytes"] =
-      projection.temporalWitness.liveStateBytes;
-  object["temporal_live_state_known"] =
-      projection.temporalWitness.liveStateKnown;
-  object["temporal_exact"] = projection.temporalWitness.exact;
-  object["logical_domain_support"] =
-      dse::toString(projection.logicalDomainSupport);
-  return object;
 }
 
 } // namespace
@@ -964,19 +875,22 @@ void emitApplicationPlanningDiagnostics(
         payload["evaluation_timing"] = dse::serializePreMappingEvaluationTiming(
             prepared.preMappingEvaluationTiming);
         payload["source_observation_work"] =
-            workCounter(prepared.preMappingWorkAccounting.sourceObservations);
-        payload["coordinate_work"] =
-            workCounter(prepared.preMappingWorkAccounting.coordinates);
+            dse::serializePreMappingWorkCounter(
+                prepared.preMappingWorkAccounting.sourceObservations);
+        payload["coordinate_work"] = dse::serializePreMappingWorkCounter(
+            prepared.preMappingWorkAccounting.coordinates);
         payload["program_materialization_work"] = workCounter(
             prepared.preMappingWorkAccounting.programMaterializations);
         payload["analytic_evaluation_work"] =
-            workCounter(prepared.preMappingWorkAccounting.analyticEvaluations);
-        payload["functional_replay_work"] =
-            workCounter(prepared.preMappingWorkAccounting.functionalReplays);
+            dse::serializePreMappingWorkCounter(
+                prepared.preMappingWorkAccounting.analyticEvaluations);
+        payload["functional_replay_work"] = dse::serializePreMappingWorkCounter(
+            prepared.preMappingWorkAccounting.functionalReplays);
         payload["dataflow_promotion_work"] =
-            workCounter(prepared.preMappingWorkAccounting.dataflowPromotions);
-        payload["mapping_pair_work"] =
-            workCounter(prepared.preMappingWorkAccounting.mappingPairs);
+            dse::serializePreMappingWorkCounter(
+                prepared.preMappingWorkAccounting.dataflowPromotions);
+        payload["mapping_pair_work"] = dse::serializePreMappingWorkCounter(
+            prepared.preMappingWorkAccounting.mappingPairs);
         payload["candidate_count"] = prepared.candidateInventory.size();
         payload["funnel"] = dse::serializePreMappingFunnelSummary(
             prepared.candidateInventory, {}, prepared.preMappingWorkAccounting,
@@ -1012,7 +926,7 @@ void emitApplicationPlanningDiagnostics(
                   evaluation.screeningResourceWorkSupport);
           row["screening_feature_score"] = evaluation.screeningFeatureScore;
           row["screening_support"] = dse::resourceTimeEstimateSupportSpelling(
-                  evaluation.screeningSupport);
+              evaluation.screeningSupport);
           row["screening_confidence"] =
               dse::resourceTimeEstimateConfidenceSpelling(
                   evaluation.screeningConfidence);
@@ -1185,7 +1099,8 @@ void emitApplicationPlanningDiagnostics(
           else
             payload["schedule_intent"] = nullptr;
           if (record.projection)
-            payload["projection"] = candidateProjection(*record.projection);
+            payload["projection"] =
+                dse::serializePreMappingCandidateProjection(*record.projection);
           else
             payload["projection"] = nullptr;
           addOptionalUnsigned(payload, "estimated_runtime_ps",
@@ -1219,7 +1134,8 @@ void emitApplicationPlanningDiagnostics(
           }
           if (record.materializedProjection)
             payload["materialized_projection"] =
-                materializedProjection(*record.materializedProjection);
+                dse::serializePreMappingMaterializedProjection(
+                    *record.materializedProjection);
           else
             payload["materialized_projection"] = nullptr;
           return llvm::json::Value(std::move(payload));
@@ -1269,19 +1185,26 @@ void emitApplicationPreMappingIncompleteDiagnostics(
               checkpoint.retainedCandidates.size();
           addCandidateInventorySummary(payload, checkpoint.candidateInventory);
           payload["checkpoint_coordinate_work"] =
-              workCounter(checkpoint.workAccounting.coordinates);
+              dse::serializePreMappingWorkCounter(
+                  checkpoint.workAccounting.coordinates);
           payload["checkpoint_source_observation_work"] =
-              workCounter(checkpoint.workAccounting.sourceObservations);
+              dse::serializePreMappingWorkCounter(
+                  checkpoint.workAccounting.sourceObservations);
           payload["checkpoint_program_materializations"] =
-              workCounter(checkpoint.workAccounting.programMaterializations);
+              dse::serializePreMappingWorkCounter(
+                  checkpoint.workAccounting.programMaterializations);
           payload["checkpoint_analytic_evaluations"] =
-              workCounter(checkpoint.workAccounting.analyticEvaluations);
+              dse::serializePreMappingWorkCounter(
+                  checkpoint.workAccounting.analyticEvaluations);
           payload["checkpoint_functional_replays"] =
-              workCounter(checkpoint.workAccounting.functionalReplays);
+              dse::serializePreMappingWorkCounter(
+                  checkpoint.workAccounting.functionalReplays);
           payload["checkpoint_dataflow_promotions"] =
-              workCounter(checkpoint.workAccounting.dataflowPromotions);
+              dse::serializePreMappingWorkCounter(
+                  checkpoint.workAccounting.dataflowPromotions);
           payload["checkpoint_mapping_pairs"] =
-              workCounter(checkpoint.workAccounting.mappingPairs);
+              dse::serializePreMappingWorkCounter(
+                  checkpoint.workAccounting.mappingPairs);
           payload["checkpoint_funnel"] = dse::serializePreMappingFunnelSummary(
               checkpoint.candidateInventory, {}, checkpoint.workAccounting,
               incomplete.evaluationTiming);
@@ -1426,9 +1349,8 @@ void emitApplicationMappingDiagnostics(
               resourceTime.screeningOutOfDomainCandidates;
           payload["resource_time_screening_calibrated_physical_candidates"] =
               resourceTime.screeningCalibratedPhysicalCandidates;
-          payload
-              ["resource_time_screening_physical_out_of_domain_candidates"] =
-                  resourceTime.screeningPhysicalOutOfDomainCandidates;
+          payload["resource_time_screening_physical_out_of_domain_candidates"] =
+              resourceTime.screeningPhysicalOutOfDomainCandidates;
           payload
               ["resource_time_maximum_screening_lower_bound_gap_picoseconds"] =
                   resourceTime.maximumScreeningLowerBoundGapPicoseconds;
@@ -1529,7 +1451,7 @@ void emitApplicationMappingDiagnostics(
         payload["incremental_reopen_wall_time_ns"] =
             summary.incrementalReopenWallTimeNanoseconds;
         addOptionalUnsigned(payload, "time_to_first_feasible_wall_time_ns",
-            summary.timeToFirstFeasibleWallTimeNanoseconds);
+                            summary.timeToFirstFeasibleWallTimeNanoseconds);
         addOptionalUnsigned(payload, "time_to_best_wall_time_ns",
                             summary.timeToBestWallTimeNanoseconds);
         payload["preserved_tech_mappings"] = summary.preservedTechMappings;
@@ -1773,8 +1695,7 @@ void emitApplicationMappingDiagnostics(
           for (std::uint64_t code : observation.objectiveCodes)
             objective.push_back(code);
           entry["objective_codes"] = std::move(objective);
-          entry["provenance"] =
-              encodeQualityProvenance(observation.provenance);
+          entry["provenance"] = encodeQualityProvenance(observation.provenance);
           if (observation.incompleteReason)
             entry["incomplete_reason"] =
                 spelling(*observation.incompleteReason);
@@ -1797,8 +1718,7 @@ void emitApplicationMappingDiagnostics(
           for (std::uint64_t code : observation.objectiveCodes)
             objective.push_back(code);
           entry["objective_codes"] = std::move(objective);
-          entry["provenance"] =
-              encodeQualityProvenance(observation.provenance);
+          entry["provenance"] = encodeQualityProvenance(observation.provenance);
           if (observation.incompleteReason)
             entry["incomplete_reason"] =
                 spelling(*observation.incompleteReason);
@@ -1947,14 +1867,16 @@ void emitApplicationMappingDiagnostics(
               payload["candidate_schedule_intent"] = nullptr;
             if (record.projection)
               payload["candidate_projection"] =
-                  candidateProjection(*record.projection);
+                  dse::serializePreMappingCandidateProjection(
+                      *record.projection);
             else
               payload["candidate_projection"] = nullptr;
             addOptionalUnsigned(payload, "candidate_estimated_runtime_ps",
                                 record.estimatedRuntimePicoseconds);
             if (record.materializedProjection)
               payload["candidate_materialized_projection"] =
-                  materializedProjection(*record.materializedProjection);
+                  dse::serializePreMappingMaterializedProjection(
+                      *record.materializedProjection);
             else
               payload["candidate_materialized_projection"] = nullptr;
             if (record.temporalWitness)
