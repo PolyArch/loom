@@ -879,8 +879,9 @@ void emitApplicationPlanningDiagnostics(
                 prepared.preMappingWorkAccounting.sourceObservations);
         payload["coordinate_work"] = dse::serializePreMappingWorkCounter(
             prepared.preMappingWorkAccounting.coordinates);
-        payload["program_materialization_work"] = workCounter(
-            prepared.preMappingWorkAccounting.programMaterializations);
+        payload["program_materialization_work"] =
+            dse::serializePreMappingWorkCounter(
+                prepared.preMappingWorkAccounting.programMaterializations);
         payload["analytic_evaluation_work"] =
             dse::serializePreMappingWorkCounter(
                 prepared.preMappingWorkAccounting.analyticEvaluations);
