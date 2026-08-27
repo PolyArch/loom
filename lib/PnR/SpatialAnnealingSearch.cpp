@@ -966,6 +966,24 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
           fields["heuristic_cache_retained_bytes"] =
               actionExecutor_.heuristicCacheRetainedBytes();
           fields["inactive_cache_size"] = inactiveActionKeys_.size();
+          const HandshakeActiveDemandStatistics handshakeStatistics =
+              candidate.handshake().materializationStatistics();
+          fields["handshake_transaction_closures"] =
+              handshakeStatistics.transactionClosureCount;
+          fields["handshake_inserted_arcs"] =
+              handshakeStatistics.transactionInsertedArcCount;
+          fields["handshake_removed_arcs"] =
+              handshakeStatistics.transactionRemovedArcCount;
+          fields["handshake_affected_nodes"] =
+              handshakeStatistics.transactionAffectedNodeCount;
+          fields["handshake_affected_rank_span"] =
+              handshakeStatistics.transactionAffectedRankSpan;
+          fields["handshake_materialized_nodes"] =
+              handshakeStatistics.materializedNodeCount;
+          fields["handshake_materialized_arcs"] =
+              handshakeStatistics.materializedArcCount;
+          fields["handshake_materialization_work"] =
+              handshakeStatistics.deterministicWork;
           fields["incumbent_snapshots"] = statistics.incumbentSnapshotCount;
           fields["movable_decisions"] = movableDecisionCount;
           fields["realization_choices"] = domain.realizationChoices.size();
