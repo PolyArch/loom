@@ -271,6 +271,22 @@ private:
         result_.ownerModels_.push_back(*model);
       }
       activeLocalFragments_.resize(models_.size());
+      modelWitnessOrdinals_.resize(models_.size());
+      for (auto [modelOrdinal, modelPointer] : llvm::enumerate(models_)) {
+        const HandshakeOwnerModel &model = *modelPointer;
+        auto &witnessOrdinals = modelWitnessOrdinals_[modelOrdinal];
+        witnessOrdinals.reserve(model.traversalWitnessCount());
+        for (std::uint32_t witness = 0;
+             witness < model.traversalWitnessCount(); ++witness) {
+          const auto traversal =
+              routing_.topology().traversalOrdinal(
+                  model.traversalWitness(witness));
+          if (!traversal)
+            return invalid(
+                "handshake traversal witness is absent from routing");
+          witnessOrdinals.push_back(*traversal);
+        }
+      }
       if (llvm::Error error = prepareComputeSelections())
         return error;
       if (llvm::Error error = prepareMemorySelections())
@@ -294,7 +310,7 @@ private:
             for (std::uint32_t witness = 0; witness < fragment.witnessCount;
                  ++witness) {
               auto activeWitness = traversalIsActive(
-                  model.traversalWitness(fragment.witnessOffset + witness));
+                  modelOrdinal, fragment.witnessOffset + witness);
               if (!activeWitness)
                 return activeWitness.takeError();
               if (*activeWitness) {
@@ -308,7 +324,7 @@ private:
             for (std::uint32_t witness = 0;
                  retain && witness < fragment.witnessCount; ++witness) {
               auto activeWitness = traversalIsActive(
-                  model.traversalWitness(fragment.witnessOffset + witness));
+                  modelOrdinal, fragment.witnessOffset + witness);
               if (!activeWitness)
                 return activeWitness.takeError();
               retain = *activeWitness;
@@ -398,8 +414,8 @@ private:
           case HandshakeActivationKind::AnyTraversal:
             for (std::uint32_t witness = 0; witness < fragment.witnessCount;
                  ++witness) {
-              auto traversal = traversalIndex(
-                  model.traversalWitness(fragment.witnessOffset + witness));
+              auto traversal = witnessOrdinal(
+                  modelOrdinal, fragment.witnessOffset + witness);
               if (!traversal)
                 return traversal.takeError();
               if (activeRouting_.traversalIsActive(*traversal))
@@ -416,8 +432,8 @@ private:
             witnesses.reserve(fragment.witnessCount);
             for (std::uint32_t witness = 0; witness < fragment.witnessCount;
                  ++witness) {
-              auto traversal = traversalIndex(
-                  model.traversalWitness(fragment.witnessOffset + witness));
+              auto traversal = witnessOrdinal(
+                  modelOrdinal, fragment.witnessOffset + witness);
               if (!traversal)
                 return traversal.takeError();
               witnesses.push_back(*traversal);
@@ -461,7 +477,7 @@ private:
               return invalid("Temporal switch crosspoint fragment does not "
                              "have one traversal witness");
             auto traversal =
-                traversalIndex(model.traversalWitness(fragment.witnessOffset));
+                witnessOrdinal(modelOrdinal, fragment.witnessOffset);
             if (!traversal)
               return traversal.takeError();
             if (!activeRouting_.traversalIsActive(*traversal))
@@ -953,20 +969,20 @@ private:
     }
 
   private:
-    llvm::Expected<bool>
-    traversalIsActive(const FabricPhysicalTraversalRef &reference) const {
-      auto traversal = traversalIndex(reference);
+    llvm::Expected<bool> traversalIsActive(PnrIndex model,
+                                           std::uint32_t witness) const {
+      auto traversal = witnessOrdinal(model, witness);
       if (!traversal)
         return traversal.takeError();
       return activeRouting_.traversalIsActive(*traversal);
     }
 
-    llvm::Expected<PnrIndex>
-    traversalIndex(const FabricPhysicalTraversalRef &reference) const {
-      const auto found = routing_.topology().traversalOrdinal(reference);
-      if (!found)
+    llvm::Expected<PnrIndex> witnessOrdinal(PnrIndex model,
+                                             std::uint32_t witness) const {
+      if (model >= modelWitnessOrdinals_.size() ||
+          witness >= modelWitnessOrdinals_[model].size())
         return invalid("handshake traversal witness is absent from routing");
-      return *found;
+      return modelWitnessOrdinals_[model][witness];
     }
 
     llvm::Expected<PnrIndex> modelIndex(FabricHandshakeOwner owner) const {
@@ -1004,6 +1020,7 @@ private:
     const FrozenSpatialRoutingGraph &routing_;
     const FrozenSpatialActiveRoutingDomain &activeRouting_;
     llvm::StringMap<PnrIndex> modelOrdinals_;
+    std::vector<std::vector<PnrIndex>> modelWitnessOrdinals_;
     std::vector<std::vector<std::uint32_t>> activeLocalFragments_;
     std::vector<std::vector<std::uint32_t>> computePlacementLocalFragments_;
     std::vector<PendingMemoryPlan> pendingMemoryPlans_;
