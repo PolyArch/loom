@@ -6,6 +6,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -48,6 +49,19 @@ enum class StructuredScopRefusalKind : std::uint32_t {
   PolyhedralMaterializationUnavailable = 27,
   PhysicalLayoutProofNotEstablished = 28,
 };
+
+/// Whether a local refusal closes one explicitly excluded source form or
+/// leaves admitted work without a proof. Candidate generators use this
+/// classification instead of maintaining their own refusal subsets.
+enum class StructuredScopRefusalDisposition : std::uint32_t {
+  OutsideAdmittedDomain = 0,
+  IncompleteProof = 1,
+};
+
+llvm::StringRef
+structuredScopRefusalKindSpelling(StructuredScopRefusalKind kind);
+StructuredScopRefusalDisposition
+classifyStructuredScopRefusal(StructuredScopRefusalKind kind);
 
 enum class StructuredScopAccessKind : std::uint32_t {
   Read = 0,

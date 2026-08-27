@@ -111,6 +111,25 @@ loom::frontend::StructuredProgramCandidate parseProgram(llvm::StringRef text) {
   return take(loom::frontend::finalizeStructuredProgram(module.get()));
 }
 
+loom::frontend::StructuredEntityRef affineRootReference(
+    const loom::frontend::StructuredProgramCandidate &candidate) {
+  auto view = take(candidate.view());
+  std::optional<loom::frontend::StructuredEntityRef> root;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto loop =
+        llvm::dyn_cast_or_null<mlir::affine::AffineForOp>(entity.operation);
+    if (!loop || loop->getParentOfType<mlir::affine::AffineForOp>())
+      continue;
+    if (root)
+      fail("fixture has more than one affine root");
+    root = entity.reference;
+  }
+  if (!root)
+    fail("fixture lost its affine root");
+  return *root;
+}
+
 std::pair<loom::frontend::StructuredEntityRef,
           loom::frontend::StructuredEntityRef>
 loopReferences(const loom::frontend::StructuredProgramCandidate &candidate) {
@@ -590,6 +609,114 @@ module attributes {dlti.dl_spec = #layout} {
     fail("imperfect general child changed its exact statement realization");
 }
 
+void generalAnalysisOwnsVectorDomainFallback(
+    const loom::fabric::FinalizedFabricRoot &fabric) {
+  auto affineSupport = parseProgram(R"mlir(
+#identity = affine_map<(d0) -> (d0)>
+module {
+  func.func @affine_support(%input: memref<8xi32>) {
+    %aligned = memref.assume_alignment %input, 32 : memref<8xi32>
+    affine.for %i = 0 to 8 {
+      %index = affine.apply #identity(%i)
+      %value = affine.load %aligned[%index] : memref<8xi32>
+    }
+    return
+  }
+}
+)mlir");
+  const loom::frontend::StructuredEntityRef affineSupportRoot =
+      affineRootReference(affineSupport);
+  auto affineSupportDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(affineSupport,
+                                                                fabric, 1));
+  if (affineSupportDomain.polyhedralScops.size() != 1 ||
+      affineSupportDomain.polyhedralScops.front().root != affineSupportRoot ||
+      llvm::none_of(affineSupportDomain.refusals, [&](const auto &refusal) {
+        return refusal.loop == affineSupportRoot &&
+               refusal.kind == loom::frontend::StructuredScopRefusalKind::
+                                   UnsupportedOperation;
+      }))
+    fail("general analysis did not independently admit affine support");
+
+  auto noVectorCoordinate = parseProgram(R"mlir(
+module {
+  func.func @no_vector_coordinate(%input: memref<5xi32>) {
+    %aligned = memref.assume_alignment %input, 4 : memref<5xi32>
+    affine.for %i = 0 to 5 {
+      %value = affine.load %aligned[%i] : memref<5xi32>
+    }
+    return
+  }
+}
+)mlir");
+  const loom::frontend::StructuredEntityRef noVectorRoot =
+      affineRootReference(noVectorCoordinate);
+  auto noVectorDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(
+          noVectorCoordinate, fabric, 1));
+  if (noVectorDomain.polyhedralScops.size() != 1 ||
+      noVectorDomain.polyhedralScops.front().root != noVectorRoot ||
+      llvm::any_of(noVectorDomain.proposals,
+                   [&](const auto &proposal) {
+                     return proposal.decision().loop == noVectorRoot &&
+                            proposal.decision().kind ==
+                                loom::frontend::StructuredScheduleDecisionKind::
+                                    Vectorize;
+                   }) ||
+      llvm::none_of(noVectorDomain.refusals, [&](const auto &refusal) {
+        return refusal.loop == noVectorRoot &&
+               refusal.kind == loom::frontend::StructuredScopRefusalKind::
+                                   AlignmentProofNotEstablished;
+      }))
+    fail("general analysis did not own the empty vector-coordinate fallback");
+
+  auto partialVectorDomain = parseProgram(R"mlir(
+module {
+  func.func @partial_vector_domain(%input: memref<8xi32>) {
+    %aligned = memref.assume_alignment %input, 8 : memref<8xi32>
+    affine.for %i = 0 to 8 {
+      %value = affine.load %aligned[%i] : memref<8xi32>
+    }
+    return
+  }
+}
+)mlir");
+  const loom::frontend::StructuredEntityRef partialVectorRoot =
+      affineRootReference(partialVectorDomain);
+  auto partialDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(
+          partialVectorDomain, fabric, 1));
+  if (llvm::none_of(partialDomain.proposals,
+                    [&](const auto &proposal) {
+                      const auto &decision = proposal.decision();
+                      return decision.loop == partialVectorRoot &&
+                             decision.vector &&
+                             decision.vector->shape ==
+                                 std::vector<std::uint64_t>{2};
+                    }) ||
+      llvm::none_of(partialDomain.refusals, [&](const auto &refusal) {
+        return refusal.loop == partialVectorRoot &&
+               refusal.kind == loom::frontend::StructuredScopRefusalKind::
+                                   AlignmentProofNotEstablished;
+      }))
+    fail("an admitted vector factor hid another factor's incomplete proof");
+}
+
+void refusalDispositionPreservesIncompleteProofs() {
+  using loom::frontend::StructuredScopRefusalDisposition;
+  using loom::frontend::StructuredScopRefusalKind;
+  if (loom::frontend::classifyStructuredScopRefusal(
+          StructuredScopRefusalKind::ProviderScheduleNotEstablished) !=
+          StructuredScopRefusalDisposition::IncompleteProof ||
+      loom::frontend::classifyStructuredScopRefusal(
+          StructuredScopRefusalKind::NestedControl) !=
+          StructuredScopRefusalDisposition::OutsideAdmittedDomain ||
+      loom::frontend::structuredScopRefusalKindSpelling(
+          StructuredScopRefusalKind::ProviderScheduleNotEstablished) !=
+          "provider_schedule_not_established")
+    fail("SCoP refusal disposition lost its typed completeness boundary");
+}
+
 void statementMajorScheduleMaterializesAndReplays() {
   auto parent = parseProgram(R"mlir(
 module {
@@ -826,12 +953,14 @@ module {
     fail("source-order scalar precedence acquired a false transform refusal");
   scfStatementMajorScheduleMaterializes(fabric);
   imperfectGeneralScheduleMaterializes(fabric);
+  generalAnalysisOwnsVectorDomainFallback(fabric);
   llvm::sys::fs::remove_directories(directory);
 }
 
 } // namespace
 
 int main() {
+  refusalDispositionPreservesIncompleteProofs();
   physicalLayoutInjectivityIsRequired();
   localDivisionSchedulesHaveIndependentSemantics();
   statementMajorScheduleMaterializesAndReplays();

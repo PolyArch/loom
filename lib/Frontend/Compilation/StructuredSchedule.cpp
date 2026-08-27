@@ -1293,29 +1293,10 @@ enumerateStructuredScheduleDecisions(
       if (llvm::Error error =
               recordDependenceQueries(refusal->dependenceQueryCount))
         return std::move(error);
-      const bool mayEnterGeneralDomain = [&] {
-        switch (refusal->kind) {
-        case StructuredScopRefusalKind::NonCanonicalIterationDomain:
-        case StructuredScopRefusalKind::NestedControl:
-        case StructuredScopRefusalKind::NonContiguousAccess:
-        case StructuredScopRefusalKind::LoopCarriedMemoryDependence:
-        case StructuredScopRefusalKind::AlignmentProofNotEstablished:
-        case StructuredScopRefusalKind::NonUnitPhysicalStride:
-        case StructuredScopRefusalKind::HeterogeneousElementWidth:
-        case StructuredScopRefusalKind::NonLocalMemoryRoot:
-        case StructuredScopRefusalKind::UnsupportedPhysicalOffset:
-          return true;
-        default:
-          return false;
-        }
-      }();
-      if (!mayEnterGeneralDomain) {
-        refusals.push_back(*refusal);
-      } else {
-        auto admitted = appendGeneralScop();
-        if (!admitted)
-          return admitted.takeError();
-      }
+      refusals.push_back(*refusal);
+      auto admitted = appendGeneralScop();
+      if (!admitted)
+        return admitted.takeError();
     } else {
       const ExactStructuredScopView &scop =
           std::get<ExactStructuredScopView>(*analysis);
@@ -1331,13 +1312,16 @@ enumerateStructuredScheduleDecisions(
         refusals.push_back(
             {entity.reference,
              StructuredScopRefusalKind::NonCanonicalIterationDomain});
+        auto generalAdmitted = appendGeneralScop();
+        if (!generalAdmitted)
+          return generalAdmitted.takeError();
       } else {
         const std::uint64_t maximumFactor = std::min(
             maximumCanonicalStructuredScheduleFactor, *scop.constantTripCount);
         if (llvm::Error error = recordCoordinates(maximumFactor - 1))
           return std::move(error);
         bool admitted = false;
-        std::optional<StructuredScopRefusalKind> coordinateRefusal;
+        std::vector<StructuredScopRefusalKind> coordinateRefusals;
         for (std::uint64_t factor = 2; factor <= maximumFactor; ++factor) {
           auto coordinate = coordinateFor(scop, factor);
           if (!coordinate)
@@ -1354,15 +1338,18 @@ enumerateStructuredScheduleDecisions(
           } else {
             const StructuredScopRefusalKind refusal =
                 std::get<StructuredScopRefusalKind>(*coordinate);
-            if (!coordinateRefusal ||
-                refusal == StructuredScopRefusalKind::UnsupportedTail)
-              coordinateRefusal = refusal;
+            if (std::find(coordinateRefusals.begin(), coordinateRefusals.end(),
+                          refusal) == coordinateRefusals.end())
+              coordinateRefusals.push_back(refusal);
           }
         }
-        if (!admitted)
-          refusals.push_back({entity.reference,
-                              coordinateRefusal.value_or(
-                                  StructuredScopRefusalKind::UnsupportedTail)});
+        for (StructuredScopRefusalKind refusal : coordinateRefusals)
+          refusals.push_back({entity.reference, refusal});
+        if (!admitted) {
+          auto generalAdmitted = appendGeneralScop();
+          if (!generalAdmitted)
+            return generalAdmitted.takeError();
+        }
       }
     }
     if (affineLoop)

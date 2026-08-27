@@ -270,16 +270,17 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
   const auto recordScopRefusal = [&](const frontend::StructuredEntityRef &loop,
                                      frontend::StructuredScopRefusalKind kind) {
     ++scopRefusalCount;
-    proofIncomplete |= kind == frontend::StructuredScopRefusalKind::
-                                   ProviderScheduleBudgetExhausted ||
-                       kind == frontend::StructuredScopRefusalKind::
-                                   PolyhedralMaterializationUnavailable;
+    proofIncomplete |=
+        frontend::classifyStructuredScopRefusal(kind) ==
+        frontend::StructuredScopRefusalDisposition::IncompleteProof;
     mapping_debug::emit(
         mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
         mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
           fields["context_kind"] = "structured_scop_refusal";
           fields["loop_ordinal"] = loop.ordinal;
-          fields["refusal_kind"] = static_cast<std::uint64_t>(kind);
+          fields["refusal_kind"] =
+              frontend::structuredScopRefusalKindSpelling(kind);
+          fields["refusal_kind_ordinal"] = static_cast<std::uint64_t>(kind);
         });
   };
   for (const ArtifactRootReference &reference :
