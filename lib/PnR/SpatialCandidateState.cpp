@@ -391,12 +391,11 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(physicalTimingOldNegativeSlacks_) +
       retainedBytes(physicalTimingRouteNodeArrivals_) +
       retainedBytes(physicalTimingRouteNodeWorklist_) +
-      retainedBytes(oldSwitchHandshakeFragments_) +
-      retainedBytes(newSwitchHandshakeFragments_) +
       retainedBytes(tagProjectionLogicalNets_) +
       retainedBytes(tagProjectionDomains_) +
       retainedBytes(changedSwitchHandshakeDomains_) +
       retainedBytes(newSwitchHandshakeDomainFragments_) +
+      retainedBytes(switchHandshakeCountDeltas_) +
       retainedBytes(removedSwitchHandshakeFragments_) +
       retainedBytes(addedSwitchHandshakeFragments_) +
       retainedBytes(traversalDeltaMarks_) + retainedBytes(traversalRemoved_) +
@@ -452,13 +451,12 @@ void SpatialCandidateScratch::resetTransaction() {
   physicalTimingChangedNets_.clear();
   physicalTimingOldWorstArrivals_.clear();
   physicalTimingOldNegativeSlacks_.clear();
-  oldSwitchHandshakeFragments_.clear();
-  newSwitchHandshakeFragments_.clear();
   tagProjectionLogicalNets_.clear();
   tagProjectionDomains_.clear();
   for (PnrIndex domain : changedSwitchHandshakeDomains_)
     newSwitchHandshakeDomainFragments_[domain].clear();
   changedSwitchHandshakeDomains_.clear();
+  switchHandshakeCountDeltas_.clear();
   removedSwitchHandshakeFragments_.clear();
   addedSwitchHandshakeFragments_.clear();
   switchHandshakeBaselineCaptured_ = false;
@@ -1447,7 +1445,7 @@ llvm::Error SpatialCandidateState::verifyCachedState() const {
     return error;
   if (&handshake_->index() != &problem_->handshake())
     return candidateError("handshake state is bound to a foreign problem");
-  if (switchHandshakeFragmentBaselineValid_) {
+  if (switchHandshakeFragmentsValid_) {
     auto fragmentsByDomain =
         detail::deriveSpatialTemporalSwitchHandshakeFragmentsByDomain(
             *problem_, *tagAssignments_.storage_);
@@ -1457,15 +1455,17 @@ llvm::Error SpatialCandidateState::verifyCachedState() const {
       return candidateError(
           "switch-handshake domain fragments diverged from their cold "
           "projection");
-    std::vector<PnrIndex> baseline;
+    std::vector<std::uint32_t> expectedCounts(
+        problem_->handshake().fragments().size(), 0);
     for (const auto &fragments : *fragmentsByDomain)
-      baseline.insert(baseline.end(), fragments.begin(), fragments.end());
-    llvm::sort(baseline);
-    baseline.erase(std::unique(baseline.begin(), baseline.end()),
-                   baseline.end());
-    if (baseline != switchHandshakeFragmentBaseline_)
+      for (PnrIndex fragment : fragments) {
+        if (fragment >= expectedCounts.size())
+          return candidateError("switch handshake fragment is out of range");
+        ++expectedCounts[fragment];
+      }
+    if (expectedCounts != switchHandshakeFragmentDomainCounts_)
       return candidateError(
-          "switch-handshake fragment baseline diverged from its cold "
+          "switch-handshake fragment domain counts diverged from their cold "
           "projection");
   }
   return progressState_.verifyCachedState(*this);

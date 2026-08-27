@@ -1137,31 +1137,23 @@ llvm::Error SpatialMoveTransaction::captureSwitchHandshakeBaseline() {
   if (scratch_->switchHandshakeBaselineCaptured_ ||
       !detail::hasSpatialTemporalSwitchHandshakeDomain(state_->problem()))
     return llvm::Error::success();
-  if (state_->switchHandshakeFragmentBaselineValid_) {
-    scratch_->oldSwitchHandshakeFragments_ =
-        state_->switchHandshakeFragmentBaseline_;
-    scratch_->switchHandshakeBaselineCaptured_ = true;
-    return llvm::Error::success();
+  if (!state_->switchHandshakeFragmentsValid_) {
+    auto fragmentsByDomain =
+        detail::deriveSpatialTemporalSwitchHandshakeFragmentsByDomain(
+            state_->problem(), *state_->tagAssignments_.storage_);
+    if (!fragmentsByDomain)
+      return fragmentsByDomain.takeError();
+    state_->switchHandshakeFragmentsByDomain_ = std::move(*fragmentsByDomain);
+    auto &counts = state_->switchHandshakeFragmentDomainCounts_;
+    counts.assign(state_->problem().handshake().fragments().size(), 0);
+    for (const auto &fragments : state_->switchHandshakeFragmentsByDomain_)
+      for (PnrIndex fragment : fragments) {
+        if (fragment >= counts.size())
+          return candidateError("switch handshake fragment is out of range");
+        ++counts[fragment];
+      }
+    state_->switchHandshakeFragmentsValid_ = true;
   }
-  auto fragmentsByDomain =
-      detail::deriveSpatialTemporalSwitchHandshakeFragmentsByDomain(
-          state_->problem(), *state_->tagAssignments_.storage_);
-  if (!fragmentsByDomain)
-    return fragmentsByDomain.takeError();
-  state_->switchHandshakeFragmentsByDomain_ = std::move(*fragmentsByDomain);
-  scratch_->oldSwitchHandshakeFragments_.clear();
-  for (const auto &fragments : state_->switchHandshakeFragmentsByDomain_)
-    scratch_->oldSwitchHandshakeFragments_.insert(
-        scratch_->oldSwitchHandshakeFragments_.end(), fragments.begin(),
-        fragments.end());
-  llvm::sort(scratch_->oldSwitchHandshakeFragments_);
-  scratch_->oldSwitchHandshakeFragments_.erase(
-      std::unique(scratch_->oldSwitchHandshakeFragments_.begin(),
-                  scratch_->oldSwitchHandshakeFragments_.end()),
-      scratch_->oldSwitchHandshakeFragments_.end());
-  state_->switchHandshakeFragmentBaseline_ =
-      scratch_->oldSwitchHandshakeFragments_;
-  state_->switchHandshakeFragmentBaselineValid_ = true;
   scratch_->switchHandshakeBaselineCaptured_ = true;
   return llvm::Error::success();
 }
@@ -1403,40 +1395,64 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
       scratch_->newSwitchHandshakeDomainFragments_[domain] =
           std::move(*fragments);
     }
-    scratch_->newSwitchHandshakeFragments_.clear();
-    std::size_t changedOrdinal = 0;
-    for (PnrIndex domain = 0;
-         domain < state_->switchHandshakeFragmentsByDomain_.size(); ++domain) {
-      const bool changed =
-          changedOrdinal < scratch_->changedSwitchHandshakeDomains_.size() &&
-          scratch_->changedSwitchHandshakeDomains_[changedOrdinal] == domain;
-      const auto &fragments =
-          changed ? scratch_->newSwitchHandshakeDomainFragments_[domain]
-                  : state_->switchHandshakeFragmentsByDomain_[domain];
-      scratch_->newSwitchHandshakeFragments_.insert(
-          scratch_->newSwitchHandshakeFragments_.end(), fragments.begin(),
-          fragments.end());
-      changedOrdinal += changed;
+    // Per-domain diffs against the committed cache produce signed domain
+    // counts per fragment; the active flat set changes exactly where a
+    // fragment's total domain count crosses zero, which preserves the
+    // one-contribution-per-fragment semantics across domains without
+    // rebuilding a flat union.
+    scratch_->switchHandshakeCountDeltas_.clear();
+    for (PnrIndex domain : scratch_->changedSwitchHandshakeDomains_) {
+      const auto &oldFragments =
+          state_->switchHandshakeFragmentsByDomain_[domain];
+      const auto &newFragments =
+          scratch_->newSwitchHandshakeDomainFragments_[domain];
+      std::size_t oldAt = 0;
+      std::size_t newAt = 0;
+      while (oldAt < oldFragments.size() || newAt < newFragments.size()) {
+        if (newAt == newFragments.size() ||
+            (oldAt < oldFragments.size() &&
+             oldFragments[oldAt] < newFragments[newAt]))
+          scratch_->switchHandshakeCountDeltas_.push_back(
+              {oldFragments[oldAt++], -1});
+        else if (oldAt == oldFragments.size() ||
+                 newFragments[newAt] < oldFragments[oldAt])
+          scratch_->switchHandshakeCountDeltas_.push_back(
+              {newFragments[newAt++], 1});
+        else {
+          ++oldAt;
+          ++newAt;
+        }
+      }
     }
-    llvm::sort(scratch_->newSwitchHandshakeFragments_);
-    scratch_->newSwitchHandshakeFragments_.erase(
-        std::unique(scratch_->newSwitchHandshakeFragments_.begin(),
-                    scratch_->newSwitchHandshakeFragments_.end()),
-        scratch_->newSwitchHandshakeFragments_.end());
+    llvm::sort(scratch_->switchHandshakeCountDeltas_);
     scratch_->removedSwitchHandshakeFragments_.clear();
     scratch_->addedSwitchHandshakeFragments_.clear();
-    std::set_difference(
-        scratch_->oldSwitchHandshakeFragments_.begin(),
-        scratch_->oldSwitchHandshakeFragments_.end(),
-        scratch_->newSwitchHandshakeFragments_.begin(),
-        scratch_->newSwitchHandshakeFragments_.end(),
-        std::back_inserter(scratch_->removedSwitchHandshakeFragments_));
-    std::set_difference(
-        scratch_->newSwitchHandshakeFragments_.begin(),
-        scratch_->newSwitchHandshakeFragments_.end(),
-        scratch_->oldSwitchHandshakeFragments_.begin(),
-        scratch_->oldSwitchHandshakeFragments_.end(),
-        std::back_inserter(scratch_->addedSwitchHandshakeFragments_));
+    const auto &counts = state_->switchHandshakeFragmentDomainCounts_;
+    std::size_t compacted = 0;
+    for (std::size_t begin = 0;
+         begin < scratch_->switchHandshakeCountDeltas_.size();) {
+      const PnrIndex fragment =
+          scratch_->switchHandshakeCountDeltas_[begin].first;
+      std::int64_t delta = 0;
+      for (; begin < scratch_->switchHandshakeCountDeltas_.size() &&
+             scratch_->switchHandshakeCountDeltas_[begin].first == fragment;
+           ++begin)
+        delta += scratch_->switchHandshakeCountDeltas_[begin].second;
+      if (delta == 0)
+        continue;
+      if (fragment >= counts.size())
+        return candidateError("switch handshake fragment is out of range");
+      const std::int64_t updated = counts[fragment] + delta;
+      if (updated < 0)
+        return candidateError("switch handshake fragment count underflow");
+      if (counts[fragment] == 0 && updated > 0)
+        scratch_->addedSwitchHandshakeFragments_.push_back(fragment);
+      else if (counts[fragment] > 0 && updated == 0)
+        scratch_->removedSwitchHandshakeFragments_.push_back(fragment);
+      scratch_->switchHandshakeCountDeltas_[compacted++] = {
+          fragment, static_cast<std::int32_t>(delta)};
+    }
+    scratch_->switchHandshakeCountDeltas_.resize(compacted);
     if (llvm::Error error = scratch_->handshakeTransaction_->removeFragments(
             scratch_->removedSwitchHandshakeFragments_))
       return std::move(error);
@@ -1660,9 +1676,9 @@ llvm::Error SpatialMoveTransaction::commit() {
     for (PnrIndex domain : scratch_->changedSwitchHandshakeDomains_)
       state_->switchHandshakeFragmentsByDomain_[domain].swap(
           scratch_->newSwitchHandshakeDomainFragments_[domain]);
-    state_->switchHandshakeFragmentBaseline_ =
-        scratch_->newSwitchHandshakeFragments_;
-    state_->switchHandshakeFragmentBaselineValid_ = true;
+    for (auto [fragment, delta] : scratch_->switchHandshakeCountDeltas_)
+      state_->switchHandshakeFragmentDomainCounts_[fragment] +=
+          static_cast<std::uint32_t>(delta);
   }
   acceptAppliedRouteResources();
   finish();

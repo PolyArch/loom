@@ -188,12 +188,11 @@ private:
   std::vector<std::uint64_t> physicalTimingRouteNodeArrivals_;
   std::vector<std::pair<PnrIndex, std::uint64_t>>
       physicalTimingRouteNodeWorklist_;
-  std::vector<PnrIndex> oldSwitchHandshakeFragments_;
-  std::vector<PnrIndex> newSwitchHandshakeFragments_;
   std::vector<PnrIndex> tagProjectionLogicalNets_;
   std::vector<PnrIndex> tagProjectionDomains_;
   std::vector<PnrIndex> changedSwitchHandshakeDomains_;
   std::vector<std::vector<PnrIndex>> newSwitchHandshakeDomainFragments_;
+  std::vector<std::pair<PnrIndex, std::int32_t>> switchHandshakeCountDeltas_;
   std::vector<PnrIndex> removedSwitchHandshakeFragments_;
   std::vector<PnrIndex> addedSwitchHandshakeFragments_;
   bool switchHandshakeBaselineCaptured_ = false;
@@ -544,9 +543,13 @@ private:
   /// Rolled-back moves leave the committed state untouched, so the cache stays
   /// valid across rejected proposals; each commit installs the fragments the
   /// closing move already derived.
-  std::vector<PnrIndex> switchHandshakeFragmentBaseline_;
   std::vector<std::vector<PnrIndex>> switchHandshakeFragmentsByDomain_;
-  bool switchHandshakeFragmentBaselineValid_ = false;
+  /// Number of Temporal switch domains currently listing each handshake
+  /// fragment. The active fragment set the handshake state consumes is the
+  /// fragments with a nonzero count, so cross-domain sharing keeps one
+  /// contribution.
+  std::vector<std::uint32_t> switchHandshakeFragmentDomainCounts_;
+  bool switchHandshakeFragmentsValid_ = false;
   std::uint64_t unroutedObligationCount_ = 0;
   std::uint64_t atomicCapacityOveruse_ = 0;
   std::uint64_t staticSchedulePressure_ = 0;
