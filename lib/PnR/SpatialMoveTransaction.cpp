@@ -1141,6 +1141,12 @@ llvm::Error SpatialMoveTransaction::captureSwitchHandshakeBaseline() {
   if (scratch_->switchHandshakeBaselineCaptured_ ||
       !detail::hasSpatialTemporalSwitchHandshakeDomain(state_->problem()))
     return llvm::Error::success();
+  if (state_->switchHandshakeFragmentBaselineValid_) {
+    scratch_->oldSwitchHandshakeFragments_ =
+        state_->switchHandshakeFragmentBaseline_;
+    scratch_->switchHandshakeBaselineCaptured_ = true;
+    return llvm::Error::success();
+  }
   rebuildRouteViews();
   rebuildTagValueViews();
   auto fragments = detail::deriveSpatialTemporalSwitchHandshakeFragments(
@@ -1149,6 +1155,9 @@ llvm::Error SpatialMoveTransaction::captureSwitchHandshakeBaseline() {
     return fragments.takeError();
   scratch_->oldSwitchHandshakeFragments_.assign(fragments->begin(),
                                                 fragments->end());
+  state_->switchHandshakeFragmentBaseline_ =
+      scratch_->oldSwitchHandshakeFragments_;
+  state_->switchHandshakeFragmentBaselineValid_ = true;
   scratch_->switchHandshakeBaselineCaptured_ = true;
   return llvm::Error::success();
 }
@@ -1565,6 +1574,11 @@ llvm::Error SpatialMoveTransaction::commit() {
                           llvm::toString(std::move(error)));
   if (tagDeltasCollected_)
     state_->tagAssignments_.commit(scratch_->tagScratch_);
+  if (scratch_->switchHandshakeBaselineCaptured_) {
+    state_->switchHandshakeFragmentBaseline_ =
+        scratch_->newSwitchHandshakeFragments_;
+    state_->switchHandshakeFragmentBaselineValid_ = true;
+  }
   acceptAppliedRouteResources();
   finish();
   return llvm::Error::success();
