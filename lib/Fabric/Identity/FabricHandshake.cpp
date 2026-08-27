@@ -1224,12 +1224,36 @@ buildFabricHandshakeContext(const FabricArtifactView &view) {
   statistics.constructionNanoseconds = elapsedNanoseconds(begin);
   auto owner = std::make_shared<const std::vector<HandshakeOwnerModel>>(
       std::move(*models));
+  auto ownerIndex = std::make_shared<detail::HandshakeOwnerModelIndex>();
+  for (auto [ordinal, model] : llvm::enumerate(*owner)) {
+    const std::vector<std::uint8_t> key =
+        detail::handshakeOwnerKey(model.owner());
+    if (!ownerIndex->ordinals
+             .try_emplace(llvm::StringRef(
+                              reinterpret_cast<const char *>(key.data()),
+                              key.size()),
+                          static_cast<std::uint32_t>(ordinal))
+             .second)
+      return invalid("handshake model inventory repeats an owner");
+  }
   auto unconditionalOwner =
       std::make_shared<const std::vector<HandshakeDependencyArc>>(
           std::move(*unconditional));
   return FabricHandshakeContext(
       view.identity(), deriveHandshakeContextKey(view), std::move(owner),
-      std::move(unconditionalOwner), statistics);
+      std::move(unconditionalOwner), std::move(ownerIndex), statistics);
+}
+
+std::optional<std::uint32_t> FabricHandshakeContext::ownerModelOrdinal(
+    const FabricHandshakeOwner &owner) const {
+  if (!ownerIndex_)
+    return std::nullopt;
+  const std::vector<std::uint8_t> key = detail::handshakeOwnerKey(owner);
+  const auto found = ownerIndex_->ordinals.find(
+      llvm::StringRef(reinterpret_cast<const char *>(key.data()), key.size()));
+  if (found == ownerIndex_->ordinals.end())
+    return std::nullopt;
+  return found->second;
 }
 
 llvm::Error
@@ -1238,6 +1262,11 @@ revalidateFabricHandshakeContext(const FabricHandshakeContext &context,
   if (context.fabricIdentity() != view.identity() ||
       context.key() != deriveHandshakeContextKey(view))
     return invalid("handshake context binds another Fabric or algorithm");
+  for (auto [ordinal, model] : llvm::enumerate(context.ownerModels())) {
+    const auto found = context.ownerModelOrdinal(model.owner());
+    if (!found || *found != ordinal)
+      return invalid("handshake context owner index is inconsistent");
+  }
   FabricHandshakeContextStatistics expected;
   detail::HandshakeOwnerModelFactory::accumulateStatistics(
       context.ownerModels(), expected);

@@ -36,6 +36,7 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
     const FabricHandshakeSelection &selection,
     llvm::ArrayRef<HandshakeOwnerModel> models,
     llvm::ArrayRef<HandshakeDependencyArc> unconditionalArcs,
+    const FabricHandshakeContext *context = nullptr,
     ExecutionControlView executionControl = {}) {
   if (executionControl.stopRequested())
     return invalid("selected handshake resolution was interrupted");
@@ -44,7 +45,21 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
     return std::move(error);
 
   using OwnerKey = std::vector<std::uint8_t>;
-  std::map<OwnerKey, FabricHandshakeSelection> ownerSelections;
+  struct OwnerSelection final {
+    std::optional<FabricHandshakeOwner> owner;
+    FabricHandshakeSelection selection;
+  };
+  std::map<OwnerKey, OwnerSelection> ownerSelections;
+  const auto selectionFor = [&](FabricHandshakeOwner owner)
+      -> llvm::Expected<OwnerSelection *> {
+    OwnerKey key = detail::handshakeOwnerKey(owner);
+    OwnerSelection &entry = ownerSelections[key];
+    if (entry.owner && *entry.owner != owner)
+      return invalid("selected handshake owner key is inconsistent");
+    if (!entry.owner)
+      entry.owner.emplace(std::move(owner));
+    return &entry;
+  };
   std::set<std::vector<std::uint8_t>> traversalKeys;
   for (const FabricPhysicalTraversalRef &traversal : selection.traversals) {
     if (executionControl.stopRequested())
@@ -54,24 +69,34 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
     const auto owner = detail::handshakeTraversalOwner(traversal);
     if (!owner)
       return invalid("selected traversal has no handshake owner");
-    ownerSelections[detail::handshakeOwnerKey(*owner)].traversals.push_back(
-        traversal);
+    auto entry = selectionFor(std::move(*owner));
+    if (!entry)
+      return entry.takeError();
+    (*entry)->selection.traversals.push_back(traversal);
   }
   for (const FabricSwitchHandshakeActivationSelection &activation :
-       selection.switchActivations)
-    ownerSelections[detail::handshakeOwnerKey(
-                        FabricHandshakeOwner::switchResource(
-                            activation.key.occurrence))]
-        .switchActivations.push_back(activation);
-  for (const FabricFuHandshakeSelection &selected : selection.fuCapabilities)
-    ownerSelections[detail::handshakeOwnerKey(
-                        FabricHandshakeOwner::fu(selected.occurrence()))]
-        .fuCapabilities.push_back(selected);
+       selection.switchActivations) {
+    auto entry = selectionFor(FabricHandshakeOwner::switchResource(
+        activation.key.occurrence));
+    if (!entry)
+      return entry.takeError();
+    (*entry)->selection.switchActivations.push_back(activation);
+  }
+  for (const FabricFuHandshakeSelection &selected : selection.fuCapabilities) {
+    auto entry = selectionFor(
+        FabricHandshakeOwner::fu(selected.occurrence()));
+    if (!entry)
+      return entry.takeError();
+    (*entry)->selection.fuCapabilities.push_back(selected);
+  }
   for (const FabricMemoryHandshakeSelection &selected :
-       selection.memoryOperations)
-    ownerSelections[detail::handshakeOwnerKey(FabricHandshakeOwner::memory(
-                        selected.capability().port.memory))]
-        .memoryOperations.push_back(selected);
+       selection.memoryOperations) {
+    auto entry = selectionFor(FabricHandshakeOwner::memory(
+        selected.capability().port.memory));
+    if (!entry)
+      return entry.takeError();
+    (*entry)->selection.memoryOperations.push_back(selected);
+  }
 
   ResolvedSelectedHandshakeGraph graph;
   const auto boundaryNode = [&](const HandshakeSignalRef &signal) {
@@ -86,40 +111,53 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
                             boundaryNode(arc.destination));
 
   std::map<OwnerKey, const HandshakeOwnerModel *> modelsByOwner;
-  for (const HandshakeOwnerModel &model : models)
-    if (!modelsByOwner.emplace(detail::handshakeOwnerKey(model.owner()), &model)
-             .second)
-      return invalid("handshake model inventory repeats an owner");
+  if (!context)
+    for (const HandshakeOwnerModel &model : models)
+      if (!modelsByOwner.emplace(detail::handshakeOwnerKey(model.owner()),
+                                 &model)
+               .second)
+        return invalid("handshake model inventory repeats an owner");
 
-  for (const auto &[key, ownerSelection] : ownerSelections) {
+  for (const auto &[key, ownerEntry] : ownerSelections) {
     if (executionControl.stopRequested())
       return invalid("selected handshake resolution was interrupted");
-    const auto foundModel = modelsByOwner.find(key);
-    if (foundModel == modelsByOwner.end())
-      return invalid("selected handshake relation names a stale owner");
-    const HandshakeOwnerModel &model = *foundModel->second;
+    if (!ownerEntry.owner)
+      return invalid("selected handshake relation has no owner");
+    const HandshakeOwnerModel *model = nullptr;
+    if (context) {
+      const auto ordinal = context->ownerModelOrdinal(*ownerEntry.owner);
+      if (!ordinal || *ordinal >= context->ownerModels().size())
+        return invalid("selected handshake relation names a stale owner");
+      model = &context->ownerModels()[*ordinal];
+    } else {
+      const auto foundModel = modelsByOwner.find(key);
+      if (foundModel == modelsByOwner.end())
+        return invalid("selected handshake relation names a stale owner");
+      model = foundModel->second;
+    }
+    const FabricHandshakeSelection &ownerSelection = ownerEntry.selection;
 
     std::vector<std::uint32_t> activeArcs;
-    if (model.owner().kind() == FabricHandshakeOwnerKind::FuOccurrence &&
+    if (model->owner().kind() == FabricHandshakeOwnerKind::FuOccurrence &&
         ownerSelection.fuCapabilities.empty()) {
       for (std::uint32_t fragmentOrdinal = 0;
-           fragmentOrdinal != model.fragmentCount(); ++fragmentOrdinal) {
+           fragmentOrdinal != model->fragmentCount(); ++fragmentOrdinal) {
         const HandshakeActivationFragment fragment =
-            model.fragment(fragmentOrdinal);
+            model->fragment(fragmentOrdinal);
         if (fragment.activationKind != HandshakeActivationKind::Always)
           continue;
         for (std::uint32_t index = 0; index < fragment.contributionCount;
              ++index)
-          activeArcs.push_back(model.fragmentContributionOrdinal(
+          activeArcs.push_back(model->fragmentContributionOrdinal(
               fragment.contributionOffset + index));
       }
-    } else if (model.owner().kind() == FabricHandshakeOwnerKind::FuOccurrence) {
+    } else if (model->owner().kind() == FabricHandshakeOwnerKind::FuOccurrence) {
       for (const FabricFuHandshakeSelection &fuSelection :
            ownerSelection.fuCapabilities) {
         FabricHandshakeSelection local;
         local.traversals = ownerSelection.traversals;
         local.fuCapabilities.push_back(fuSelection);
-        auto active = resolveSelectedHandshake(model, local);
+        auto active = resolveSelectedHandshake(*model, local);
         if (!active)
           return active.takeError();
         activeArcs.insert(activeArcs.end(), active->arcOrdinals().begin(),
@@ -129,7 +167,7 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
       activeArcs.erase(std::unique(activeArcs.begin(), activeArcs.end()),
                        activeArcs.end());
     } else {
-      auto active = resolveSelectedHandshake(model, ownerSelection);
+      auto active = resolveSelectedHandshake(*model, ownerSelection);
       if (!active)
         return active.takeError();
       activeArcs.assign(active->arcOrdinals().begin(),
@@ -139,12 +177,12 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
     std::map<std::uint32_t, std::size_t> modelNodes;
     const auto selectedNode =
         [&](std::uint32_t ordinal) -> llvm::Expected<std::size_t> {
-      if (ordinal >= model.nodeCount())
+      if (ordinal >= model->nodeCount())
         return invalid("selected handshake arc endpoint is out of range");
       const auto known = modelNodes.find(ordinal);
       if (known != modelNodes.end())
         return known->second;
-      const HandshakeOwnerNode node = model.node(ordinal);
+      const HandshakeOwnerNode node = model->node(ordinal);
       const std::size_t resolved = node.boundarySignal
                                        ? boundaryNode(*node.boundarySignal)
                                        : graph.nodeCount++;
@@ -154,9 +192,9 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
     for (std::uint32_t arcOrdinal : activeArcs) {
       if (executionControl.stopRequested())
         return invalid("selected handshake resolution was interrupted");
-      if (arcOrdinal >= model.arcCount())
+      if (arcOrdinal >= model->arcCount())
         return invalid("selected handshake arc is out of range");
-      const HandshakeOwnerArc arc = model.arc(arcOrdinal);
+      const HandshakeOwnerArc arc = model->arc(arcOrdinal);
       auto source = selectedNode(arc.source);
       if (!source)
         return source.takeError();
@@ -218,9 +256,10 @@ deriveSelectedHandshakeReachabilityWithModels(
     llvm::ArrayRef<HandshakeSignalRef> terminals,
     llvm::ArrayRef<HandshakeOwnerModel> models,
     llvm::ArrayRef<HandshakeDependencyArc> unconditionalArcs,
+    const FabricHandshakeContext *context = nullptr,
     ExecutionControlView executionControl = {}) {
   auto graph = resolveSelectedHandshakeGraph(
-      selection, models, unconditionalArcs, executionControl);
+      selection, models, unconditionalArcs, context, executionControl);
   if (!graph)
     return graph.takeError();
   std::vector<std::size_t> topologicalOrder;
@@ -293,7 +332,8 @@ llvm::Error verifySelectedCombinationalHandshakeAcyclic(
     return context.takeError();
   auto graph =
       resolveSelectedHandshakeGraph(selection, context->ownerModels(),
-                                    context->unconditionalDependencyArcs());
+                                    context->unconditionalDependencyArcs(),
+                                    &*context);
   if (!graph)
     return graph.takeError();
   auto adjacency = acyclicAdjacency(*graph);
@@ -308,7 +348,8 @@ llvm::Error verifySelectedCombinationalHandshakeAcyclic(
   if (llvm::Error error = revalidateFabricHandshakeContext(context, view))
     return error;
   auto graph = resolveSelectedHandshakeGraph(
-      selection, context.ownerModels(), context.unconditionalDependencyArcs());
+      selection, context.ownerModels(), context.unconditionalDependencyArcs(),
+      &context);
   if (!graph)
     return graph.takeError();
   auto adjacency = acyclicAdjacency(*graph);
@@ -327,7 +368,7 @@ deriveSelectedHandshakeReachability(
     return context.takeError();
   return deriveSelectedHandshakeReachabilityWithModels(
       view, selection, terminals, context->ownerModels(),
-      context->unconditionalDependencyArcs(), executionControl);
+      context->unconditionalDependencyArcs(), &*context, executionControl);
 }
 
 llvm::Expected<std::vector<HandshakeDependencyArc>>
@@ -340,7 +381,7 @@ deriveSelectedHandshakeReachability(
     return std::move(error);
   return deriveSelectedHandshakeReachabilityWithModels(
       view, selection, terminals, context.ownerModels(),
-      context.unconditionalDependencyArcs(), executionControl);
+      context.unconditionalDependencyArcs(), &context, executionControl);
 }
 
 } // namespace loom::fabric

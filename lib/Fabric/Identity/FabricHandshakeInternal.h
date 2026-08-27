@@ -4,6 +4,7 @@
 #include "Fabric/Identity/FabricHandshake.h"
 
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/StringMap.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -20,6 +21,13 @@ struct CanonicalFabricByteKeyHash final {
     return static_cast<std::size_t>(
         llvm::hash_combine_range(key.begin(), key.end()));
   }
+};
+
+/// Canonical owner lookup retained alongside the immutable handshake models.
+/// The key bytes are derived from Fabric references and are never an identity
+/// authority of their own.
+struct HandshakeOwnerModelIndex final {
+  llvm::StringMap<std::uint32_t> ordinals;
 };
 
 struct HandshakeStructuralFragment final {

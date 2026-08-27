@@ -348,6 +348,7 @@ namespace detail {
 class HandshakeOwnerModelBuilder;
 class HandshakeOwnerModelFactory;
 struct HandshakeOwnerModelStorage;
+struct HandshakeOwnerModelIndex;
 
 enum class HandshakeFragmentSelectorKind : std::uint8_t {
   Always,
@@ -463,6 +464,10 @@ public:
   const ArtifactIdentity &fabricIdentity() const { return fabricIdentity_; }
   const std::array<std::uint8_t, 32> &key() const { return key_; }
   llvm::ArrayRef<HandshakeOwnerModel> ownerModels() const { return *models_; }
+  /// Returns the canonical dense owner-model ordinal retained by this
+  /// immutable Fabric context.
+  std::optional<std::uint32_t>
+  ownerModelOrdinal(const FabricHandshakeOwner &owner) const;
   llvm::ArrayRef<HandshakeDependencyArc> unconditionalDependencyArcs() const {
     return *unconditionalArcs_;
   }
@@ -476,16 +481,19 @@ private:
       std::shared_ptr<const std::vector<HandshakeOwnerModel>> models,
       std::shared_ptr<const std::vector<HandshakeDependencyArc>>
           unconditionalArcs,
+      std::shared_ptr<const detail::HandshakeOwnerModelIndex> ownerIndex,
       FabricHandshakeContextStatistics statistics)
       : fabricIdentity_(std::move(fabricIdentity)), key_(key),
         models_(std::move(models)),
         unconditionalArcs_(std::move(unconditionalArcs)),
+        ownerIndex_(std::move(ownerIndex)),
         statistics_(statistics) {}
 
   ArtifactIdentity fabricIdentity_;
   std::array<std::uint8_t, 32> key_{};
   std::shared_ptr<const std::vector<HandshakeOwnerModel>> models_;
   std::shared_ptr<const std::vector<HandshakeDependencyArc>> unconditionalArcs_;
+  std::shared_ptr<const detail::HandshakeOwnerModelIndex> ownerIndex_;
   FabricHandshakeContextStatistics statistics_;
 
   friend llvm::Expected<FabricHandshakeContext>
