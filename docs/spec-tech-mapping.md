@@ -284,7 +284,22 @@ also provide complete, nonconflicting internal-edge and exposed-boundary
 classification. Materialization assigns Mapping-local identities only after a
 complete cover has been selected.
 
-The production search is deterministic and lazy:
+The production search is deterministic and lazy. For every actor-row incidence
+component, the rectangular search surface is the product of its actor and row
+counts. A maximum component surface above the stable threshold 4096 selects
+the bounded constructive exact-cover search; otherwise the canonical lazy
+component-product search is used. The threshold selects an algorithm family
+and is independent of the resolved expansion budget. The resolved
+`partial_cover_expansion_limit` bounds either family, and a limited
+constructive search does not fall through into the component-product search.
+An empty limited frontier is `ProofNotEstablished`, not infeasibility.
+
+Within either family, a cover's supply breadth is the saturated sum of the
+exact compatible compute-context or memory-occurrence domain cardinalities of
+its rows. This is an identity-neutral feasibility preference derived from the
+already admitted row domains, not a new legality relation. Equal realization
+demand is ordered by descending supply breadth and then by the canonical row
+keys. The search then proceeds as follows:
 
 1. allocate the finite attempt budget fairly across active seed families,
    visit each family's MatchRowSeeds in canonical key order, and charge one
@@ -323,19 +338,20 @@ candidate-evaluation slot. An ordinary retained candidate also consumes a
 publication slot before Artifact-identity deduplication, so cache state cannot
 change the formal prefix.
 
-Candidates are ordered by ascending realization demand, then by the
-lexicographic sequence of selected canonical row keys after component-product
-normalization. Realization demand is the selected row count: one FU capability
-instance per compute row and one Memory Operation Engine per memory row. The
-lower bound used for partial covers cannot count one independently chosen row
-per uncovered actor because those choices may collapse into one multi-actor
-row. Both the numeric and canonical-key bounds must be no greater than every
-reachable complete cover in this total order.
+Candidates are ordered by ascending realization demand, descending supply
+breadth, then by the lexicographic sequence of selected canonical row keys
+after component-product normalization. Realization demand is the selected row
+count: one FU capability instance per compute row and one Memory Operation
+Engine per memory row. The lower bound used for partial covers cannot count one
+independently chosen row per uncovered actor because those choices may collapse
+into one multi-actor row. Both the numeric and canonical-key bounds must be no
+greater than every reachable complete cover in this total order.
 
-TechMapping owns no operation-port dispersion preference. Any preference based
-on target occurrence inventory, topology, or attachment locality belongs to a
-separate target-aware physical projection and cannot change row admission or
-the target-independent Tech candidate order.
+TechMapping owns no operation-port dispersion preference. Supply breadth may
+use only cardinalities already present in a row's exact compatible domain. Any
+preference based on the identities, topology, or attachment locality of target
+occurrences belongs to a separate target-aware physical projection and cannot
+change row admission or the canonical Tech candidate order.
 
 Row-key order alone is not a neutral tie-break here. Single-actor rows and the
 first canonical operation port of the first canonical template hold the
