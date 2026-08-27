@@ -93,6 +93,12 @@ llvm::Expected<std::vector<FabricTemporalSwitchCandidateRouteRow>>
 projectFabricTemporalSwitchCandidateRouteRows(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands);
 
+/// Number of resident rows the candidate projection above would produce,
+/// without materializing the rows. Row membership and greedy placement are
+/// shared with the full projection, so the count is exactly its size.
+llvm::Expected<std::uint64_t> projectFabricTemporalSwitchCandidateRouteRowCount(
+    llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands);
+
 } // namespace loom::fabric
 
 #endif // LOOM_FABRIC_IDENTITY_FABRICTEMPORALSWITCHROUTE_H

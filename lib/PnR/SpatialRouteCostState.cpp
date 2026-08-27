@@ -997,7 +997,26 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
       switchRows_->netDemandsSettled.size() != logicalNetCount_)
     return routeCostStateError("Temporal switch row projection is unavailable");
   const auto domains = problem_->routing().tagContinuity().matchDomains();
-  std::map<PnrIndex, std::uint64_t> marginalRows;
+  detail::SpatialRouteCostSwitchRowState &rows = *switchRows_;
+  if (rows.updateDomainDemands.size() != domains.size()) {
+    rows.updateDomainDemands.resize(domains.size());
+    rows.updateDomainMarks.assign(domains.size(), 0);
+    rows.updateMarginalRows.assign(domains.size(), 0);
+  }
+  if (++rows.updateEpoch == 0) {
+    std::fill(rows.updateDomainMarks.begin(), rows.updateDomainMarks.end(), 0);
+    rows.updateEpoch = 1;
+  }
+  const std::uint64_t epoch = rows.updateEpoch;
+  rows.updateTouchedDomains.clear();
+  const auto touchDomain = [&](PnrIndex domain) {
+    if (rows.updateDomainMarks[domain] == epoch)
+      return;
+    rows.updateDomainMarks[domain] = epoch;
+    rows.updateMarginalRows[domain] = 0;
+    rows.updateDomainDemands[domain].clear();
+    rows.updateTouchedDomains.push_back(domain);
+  };
   const auto segmentOffsets = continuity.segmentDomainOffsets();
   const auto segmentDomains = continuity.segmentDomains();
   for (PnrIndex segment = 0; segment < continuity.segments().size(); ++segment)
@@ -1007,101 +1026,104 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
       if (domain >= domains.size())
         return routeCostStateError("prospective tag domain is out of range");
       if (domains[domain].kind !=
-          ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable)
-        ++marginalRows[domain];
+          ::loom::fabric::FabricPhysicalTagMatchDomainKind::
+              TemporalSwitchTable) {
+        touchDomain(domain);
+        ++rows.updateMarginalRows[domain];
+      }
     }
 
   using Demand = detail::SpatialTemporalSwitchSegmentDemand;
-  struct CandidateDemand final {
-    const Demand *route = nullptr;
-    std::optional<llvm::APInt> tag;
-  };
-  std::vector<std::vector<CandidateDemand>> baseDemands(domains.size());
-  if (logicalNetTagValues_.size() != logicalNetCount_)
-    return routeCostStateError("settled switch tag snapshot is unavailable");
-  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
-    if (logicalNet == *selectedLogicalNet_)
-      continue;
-    const auto &values = logicalNetTagValues_[logicalNet];
-    for (const Demand &demand : switchRows_->netDemands[logicalNet]) {
-      if (demand.domain >= domains.size() ||
-          (switchRows_->netDemandsSettled[logicalNet] &&
-           demand.segment >= values.size()))
-        return routeCostStateError("settled switch row demand is out of range");
-      baseDemands[demand.domain].push_back(
-          {&demand, switchRows_->netDemandsSettled[logicalNet]
-                        ? values[demand.segment]
-                        : std::nullopt});
-    }
-  }
-
   auto prospective = detail::deriveSpatialTemporalSwitchSegmentDemands(
       *problem_, *selectedLogicalNet_, route, continuity);
   if (!prospective)
     return prospective.takeError();
-  std::vector<std::vector<const Demand *>> prospectiveDemands(domains.size());
   for (const Demand &demand : *prospective) {
-    if (demand.domain >= prospectiveDemands.size())
+    if (demand.domain >= domains.size())
       return routeCostStateError("prospective switch demand is out of range");
-    prospectiveDemands[demand.domain].push_back(&demand);
+    touchDomain(demand.domain);
+  }
+  if (logicalNetTagValues_.size() != logicalNetCount_)
+    return routeCostStateError("settled switch tag snapshot is unavailable");
+  // Bucket the settled base demands only for the domains the prospective
+  // route touches; other domains keep their row occupancy unchanged and
+  // contribute no marginal rows.
+  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
+    if (logicalNet == *selectedLogicalNet_)
+      continue;
+    const auto &values = logicalNetTagValues_[logicalNet];
+    const bool settled = rows.netDemandsSettled[logicalNet] != 0;
+    for (const Demand &demand : rows.netDemands[logicalNet]) {
+      if (demand.domain >= domains.size() ||
+          (settled && demand.segment >= values.size()))
+        return routeCostStateError("settled switch row demand is out of range");
+      if (rows.updateDomainMarks[demand.domain] != epoch)
+        continue;
+      const llvm::APInt *tag = nullptr;
+      if (settled && values[demand.segment])
+        tag = &*values[demand.segment];
+      rows.updateDomainDemands[demand.domain].push_back({&demand, tag});
+    }
   }
 
-  auto projectRows = [&](llvm::ArrayRef<CandidateDemand> candidates,
-                         std::uint32_t tagWidthBits)
-      -> llvm::Expected<
-          std::vector<::loom::fabric::FabricTemporalSwitchCandidateRouteRow>> {
-    std::vector<
-        std::vector<::loom::fabric::FabricTemporalSwitchRouteSignatureView>>
-        signatureStorage;
-    signatureStorage.reserve(candidates.size());
-    for (const CandidateDemand &candidate : candidates) {
-      if (!candidate.route)
-        return routeCostStateError("switch row demand has no route");
-      signatureStorage.emplace_back();
-      auto &signatures = signatureStorage.back();
-      signatures.reserve(candidate.route->signatures.size());
+  for (PnrIndex domain : rows.updateTouchedDomains) {
+    if (domains[domain].kind !=
+        ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable)
+      continue;
+    // One flat view array serves both projections: the base rows are the
+    // prefix without the selected net's prospective demands.
+    rows.updateSignatureViews.clear();
+    rows.updateDemandViews.clear();
+    std::size_t signatureCount = 0;
+    for (const auto &candidate : rows.updateDomainDemands[domain])
+      signatureCount += candidate.route->signatures.size();
+    for (const Demand &demand : *prospective)
+      if (demand.domain == domain)
+        signatureCount += demand.signatures.size();
+    rows.updateSignatureViews.reserve(signatureCount);
+    const auto appendViews = [&](const Demand &demand, const llvm::APInt *tag) {
+      const std::size_t begin = rows.updateSignatureViews.size();
       for (const detail::SpatialTemporalSwitchInputSignature &signature :
-           candidate.route->signatures)
-        signatures.push_back(
+           demand.signatures)
+        rows.updateSignatureViews.push_back(
             {signature.occurrence, signature.input, signature.outputs});
-    }
-    std::vector<::loom::fabric::FabricTemporalSwitchCandidateRouteDemandView>
-        views;
-    views.reserve(candidates.size());
-    for (auto [ordinal, signatures] : llvm::enumerate(signatureStorage)) {
-      std::optional<llvm::APInt> tag = candidates[ordinal].tag;
+      std::optional<llvm::APInt> normalized;
       if (tag)
-        tag = tag->zextOrTrunc(tagWidthBits);
-      views.push_back({{signatures}, std::move(tag)});
-    }
-    return ::loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(views);
-  };
-
-  for (PnrIndex domain = 0; domain < prospectiveDemands.size(); ++domain) {
-    if (prospectiveDemands[domain].empty())
+        normalized = tag->zextOrTrunc(domains[domain].tagWidthBits);
+      rows.updateDemandViews.push_back(
+          {{llvm::ArrayRef(rows.updateSignatureViews)
+                .slice(begin, demand.signatures.size())},
+           std::move(normalized)});
+    };
+    for (const auto &candidate : rows.updateDomainDemands[domain])
+      appendViews(*candidate.route, candidate.tag);
+    const std::size_t baseCount = rows.updateDemandViews.size();
+    for (const Demand &demand : *prospective)
+      if (demand.domain == domain)
+        appendViews(demand, nullptr);
+    if (rows.updateDemandViews.size() == baseCount)
       continue;
     auto baseRows =
-        projectRows(baseDemands[domain], domains[domain].tagWidthBits);
+        ::loom::fabric::projectFabricTemporalSwitchCandidateRouteRowCount(
+            llvm::ArrayRef(rows.updateDemandViews).take_front(baseCount));
     if (!baseRows)
       return baseRows.takeError();
-    std::vector<CandidateDemand> combined = baseDemands[domain];
-    combined.reserve(combined.size() + prospectiveDemands[domain].size());
-    for (const Demand *demand : prospectiveDemands[domain])
-      combined.push_back({demand, std::nullopt});
-    auto combinedRows = projectRows(combined, domains[domain].tagWidthBits);
+    auto combinedRows =
+        ::loom::fabric::projectFabricTemporalSwitchCandidateRouteRowCount(
+            rows.updateDemandViews);
     if (!combinedRows)
       return combinedRows.takeError();
-    if (combinedRows->size() < baseRows->size())
+    if (*combinedRows < *baseRows)
       return routeCostStateError(
           "Fabric switch row projection reduced settled row occupancy");
-    marginalRows[domain] += combinedRows->size() - baseRows->size();
+    rows.updateMarginalRows[domain] += *combinedRows - *baseRows;
   }
-  std::vector<SpatialTagDomainUse> uses;
-  uses.reserve(marginalRows.size());
-  for (const auto &[domain, count] : marginalRows)
-    if (count != 0)
-      uses.push_back({domain, count});
-  if (llvm::Error error = replaceSelectedTagUses(uses))
+  llvm::sort(rows.updateTouchedDomains);
+  rows.updateUses.clear();
+  for (PnrIndex domain : rows.updateTouchedDomains)
+    if (rows.updateMarginalRows[domain] != 0)
+      rows.updateUses.push_back({domain, rows.updateMarginalRows[domain]});
+  if (llvm::Error error = replaceSelectedTagUses(rows.updateUses))
     return error;
   switchRows_->selectedNetDemands = std::move(*prospective);
   return llvm::Error::success();

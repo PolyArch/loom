@@ -118,13 +118,16 @@ loom::fabric::projectFabricTemporalSwitchRouteRows(
   return result;
 }
 
-llvm::Expected<std::vector<FabricTemporalSwitchCandidateRouteRow>>
-loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(
+namespace {
+
+struct PreparedRow final {
+  FabricTemporalSwitchCandidateRouteRow row;
+  std::vector<FabricTemporalSwitchRouteDemandView> routes;
+};
+
+llvm::Expected<std::map<FabricEntityId, std::vector<PreparedRow>>>
+prepareCandidateRouteRows(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands) {
-  struct PreparedRow final {
-    FabricTemporalSwitchCandidateRouteRow row;
-    std::vector<FabricTemporalSwitchRouteDemandView> routes;
-  };
   std::map<FabricEntityId, std::vector<PreparedRow>> rows;
   std::map<FabricEntityId, unsigned> tagWidths;
   for (std::size_t ordinal = 0; ordinal != demands.size(); ++ordinal) {
@@ -152,7 +155,7 @@ loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(
     selected->row.compatible &=
         llvm::all_of(selected->routes, [&](const auto &existing) {
           return compatibleFabricTemporalSwitchRouteDemands(existing,
-                                                              demand.route);
+                                                            demand.route);
         });
     selected->routes.push_back(demand.route);
     selected->row.demandOrdinals.push_back(ordinal);
@@ -175,8 +178,8 @@ loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(
     auto selected = llvm::find_if(occurrenceRows, [&](const PreparedRow &row) {
       return row.row.compatible &&
              llvm::all_of(row.routes, [&](const auto &existing) {
-               return compatibleFabricTemporalSwitchRouteDemands(
-                   existing, demand.route);
+               return compatibleFabricTemporalSwitchRouteDemands(existing,
+                                                                 demand.route);
              });
     });
     if (selected == occurrenceRows.end()) {
@@ -187,12 +190,37 @@ loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(
     selected->row.demandOrdinals.push_back(ordinal);
   }
 
+  return rows;
+}
+
+} // namespace
+
+llvm::Expected<std::vector<FabricTemporalSwitchCandidateRouteRow>>
+loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(
+    llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands) {
+  auto rows = prepareCandidateRouteRows(demands);
+  if (!rows)
+    return rows.takeError();
   std::vector<FabricTemporalSwitchCandidateRouteRow> result;
   result.reserve(demands.size());
-  for (auto &[occurrence, occurrenceRows] : rows) {
+  for (auto &[occurrence, occurrenceRows] : *rows) {
     (void)occurrence;
     for (PreparedRow &row : occurrenceRows)
       result.push_back(std::move(row.row));
   }
   return result;
+}
+
+llvm::Expected<std::uint64_t>
+loom::fabric::projectFabricTemporalSwitchCandidateRouteRowCount(
+    llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands) {
+  auto rows = prepareCandidateRouteRows(demands);
+  if (!rows)
+    return rows.takeError();
+  std::uint64_t count = 0;
+  for (const auto &[occurrence, occurrenceRows] : *rows) {
+    (void)occurrence;
+    count += occurrenceRows.size();
+  }
+  return count;
 }

@@ -5,6 +5,8 @@
 
 #include "SpatialSwitchRowPacking.h"
 
+#include "Fabric/Identity/FabricTemporalSwitchRoute.h"
+
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
@@ -27,6 +29,24 @@ struct SpatialRouteCostSwitchRowState final {
   std::vector<std::uint8_t> netDemandsSettled;
   std::vector<SpatialTemporalSwitchSegmentDemand> selectedNetDemands;
   std::vector<DemandJournal> demandJournal;
+
+  /// Reused per-update scratch for the selected-net marginal row projection.
+  /// The demand references and signature views are rebuilt on every update;
+  /// the storage keeps its capacity across proposals.
+  struct SelectedDemandRef final {
+    const SpatialTemporalSwitchSegmentDemand *route = nullptr;
+    const llvm::APInt *tag = nullptr;
+  };
+  std::vector<std::vector<SelectedDemandRef>> updateDomainDemands;
+  std::vector<PnrIndex> updateTouchedDomains;
+  std::vector<std::uint64_t> updateDomainMarks;
+  std::uint64_t updateEpoch = 0;
+  std::vector<std::uint64_t> updateMarginalRows;
+  std::vector<::loom::fabric::FabricTemporalSwitchRouteSignatureView>
+      updateSignatureViews;
+  std::vector<::loom::fabric::FabricTemporalSwitchCandidateRouteDemandView>
+      updateDemandViews;
+  std::vector<SpatialTagDomainUse> updateUses;
 
   std::size_t retainedStorageBytes() const;
 };
