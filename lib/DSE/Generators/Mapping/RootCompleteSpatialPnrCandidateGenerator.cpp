@@ -13,6 +13,7 @@
 #include "Mapping/Artifact/SpatialMappingHardwareDemand.h"
 #include "PnR/FabricTopologyQualityDiagnostic.h"
 #include "PnR/MappingObjective.h"
+#include "PnR/PnrDerivedContext.h"
 #include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialPnrGenerator.h"
 #include "PnR/SpatialPnrProblem.h"
@@ -21,9 +22,11 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <iterator>
@@ -649,20 +652,38 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                    std::move(outputs)),
         std::move(workSummary), encodeFeedback(graphBoundaryFeedback)};
   };
-  const auto freezeActiveProblem =
-      [&](PreparedTechCandidate &candidate) -> llvm::Expected<bool> {
-    ++activeProblemCacheStatistics.requests;
-    ++activeProblemCacheStatistics.misses;
+  // One ranked candidate preparation unit. Units are independent given the
+  // thread-safe derived-context session, so they run on a bounded pool; every
+  // observation lands in the per-candidate outcome and is reduced in input
+  // order after the join, keeping statistics, diagnostics, and dispositions
+  // deterministic.
+  struct CandidatePreparationOutcome final {
+    bool cancelled = false;
+    bool frozen = false;
+    bool freezeRejected = false;
+    bool rankFailed = false;
+    bool rankProjected = false;
+    bool seedHandoff = false;
+    std::string freezeDiagnostic;
+    std::string rankFailureDiagnostic;
+    llvm::Error hardError = llvm::Error::success();
+    std::uint64_t constructionNanoseconds = 0;
+    std::uint64_t retainedBytes = 0;
+    std::uint64_t deterministicWork = 0;
+    std::uint64_t rankProjectionNanoseconds = 0;
+    ::loom::pnr::SpatialPathFinderSeedWorkSummary rankWork;
+  };
+  const auto freezeCandidate = [&](PreparedTechCandidate &candidate,
+                                   CandidatePreparationOutcome &outcome) {
     const auto activeProblemBegin = std::chrono::steady_clock::now();
     auto activeProblem = ::loom::pnr::freezeSpatialPnrProblem(
         candidate.dataflow->view, candidate.tech.view(), fabric->view(),
         *physicalTiming, *config, candidate.constraints.view(),
         &*derivedContexts);
-    saturatingAdd(activeProblemCacheStatistics.constructionNanoseconds,
-                  static_cast<std::uint64_t>(
-                      std::chrono::duration_cast<std::chrono::nanoseconds>(
-                          std::chrono::steady_clock::now() - activeProblemBegin)
-                          .count()));
+    outcome.constructionNanoseconds = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - activeProblemBegin)
+            .count());
     if (!activeProblem) {
       bool typedFailure = false;
       ::loom::pnr::SpatialPnrFreezeFailureKind failureKind =
@@ -675,37 +696,129 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
             failureKind = failure.kind();
             diagnostic = errorMessage(failure);
           });
-      if (unhandled)
-        return std::move(unhandled);
+      if (unhandled) {
+        outcome.hardError = std::move(unhandled);
+        return;
+      }
       if (!typedFailure ||
-          failureKind == ::loom::pnr::SpatialPnrFreezeFailureKind::Invalid)
-        return llvm::createStringError(
+          failureKind == ::loom::pnr::SpatialPnrFreezeFailureKind::Invalid) {
+        outcome.hardError = llvm::createStringError(
             llvm::inconvertibleErrorCode(),
             "root_complete_spatial_pnr_generator_invalid: " + diagnostic);
-      ::loom::mapping_debug::emit(
-          ::loom::mapping_debug::Level::Summary,
-          ::loom::mapping_debug::Stage::SpatialPnr,
-          ::loom::mapping_debug::Event::MappingFailure,
-          [&](llvm::json::Object &fields) {
-            fields["failure_scope"] = "active_problem_preparation";
-            fields["closure_status"] = "proven_infeasible";
-            fields["tech_mapping_input_ordinal"] =
-                static_cast<std::uint64_t>(candidate.inputOrdinal);
-            fields["tech_mapping"] =
-                formatArtifactIdentityHex(candidate.reference.artifact);
-            fields["diagnostic"] = diagnostic;
-          });
+        return;
+      }
+      outcome.freezeRejected = true;
+      outcome.freezeDiagnostic = std::move(diagnostic);
+      return;
+    }
+    outcome.frozen = true;
+    outcome.retainedBytes =
+        (*activeProblem)->statistics().context.retainedBytes;
+    outcome.deterministicWork =
+        (*activeProblem)->statistics().context.deterministicWork;
+    candidate.activeProblem = std::move(*activeProblem);
+  };
+  const auto emitFreezeRejection = [&](const PreparedTechCandidate &candidate,
+                                       const std::string &diagnostic) {
+    ::loom::mapping_debug::emit(
+        ::loom::mapping_debug::Level::Summary,
+        ::loom::mapping_debug::Stage::SpatialPnr,
+        ::loom::mapping_debug::Event::MappingFailure,
+        [&](llvm::json::Object &fields) {
+          fields["failure_scope"] = "active_problem_preparation";
+          fields["closure_status"] = "proven_infeasible";
+          fields["tech_mapping_input_ordinal"] =
+              static_cast<std::uint64_t>(candidate.inputOrdinal);
+          fields["tech_mapping"] =
+              formatArtifactIdentityHex(candidate.reference.artifact);
+          fields["diagnostic"] = diagnostic;
+        });
+  };
+  const auto freezeActiveProblem =
+      [&](PreparedTechCandidate &candidate) -> llvm::Expected<bool> {
+    CandidatePreparationOutcome outcome;
+    freezeCandidate(candidate, outcome);
+    ++activeProblemCacheStatistics.requests;
+    ++activeProblemCacheStatistics.misses;
+    saturatingAdd(activeProblemCacheStatistics.constructionNanoseconds,
+                  outcome.constructionNanoseconds);
+    if (outcome.hardError)
+      return std::move(outcome.hardError);
+    if (outcome.freezeRejected) {
+      emitFreezeRejection(candidate, outcome.freezeDiagnostic);
       rememberIncomplete(
           CandidateGeneratorIncompleteReason::ProofNotEstablished);
       return false;
     }
     saturatingAdd(activeProblemCacheStatistics.retainedBytes,
-                  (*activeProblem)->statistics().context.retainedBytes);
+                  outcome.retainedBytes);
     saturatingAdd(activeProblemCacheStatistics.deterministicWork,
-                  (*activeProblem)->statistics().context.deterministicWork);
-    candidate.activeProblem = std::move(*activeProblem);
+                  outcome.deterministicWork);
     return true;
   };
+  const auto prepareRankedCandidate =
+      [&](PreparedTechCandidate &candidate,
+          CandidatePreparationOutcome &outcome) {
+        freezeCandidate(candidate, outcome);
+        if (!outcome.frozen)
+          return;
+
+        ::loom::pnr::SpatialPathFinderSeedWorkSummary rankWork;
+        const auto rankBegin = std::chrono::steady_clock::now();
+        auto seed = ::loom::pnr::createPathFinderSpatialSeed(
+            candidate.activeProblem, 0, rankWork);
+        outcome.rankProjectionNanoseconds = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - rankBegin)
+                .count());
+        outcome.rankProjected = true;
+        outcome.rankWork = rankWork;
+        auto handoff =
+            std::make_shared<::loom::pnr::SpatialPathFinderSeedHandoff>();
+        handoff->attemptOrdinal = 0;
+        handoff->problemCacheKey = candidate.activeProblem->cacheKey();
+        handoff->workSummary = rankWork;
+        outcome.seedHandoff = true;
+        if (seed) {
+          handoff->seed = std::move(*seed);
+          candidate.preference = handoff->seed->initializerPreference;
+          std::array<std::uint64_t, ::loom::resolvedPnrViolationKindCount>
+              violations{};
+          llvm::Error violationError = llvm::Error::success();
+          for (std::uint32_t ordinal = 0; ordinal != violations.size();
+               ++ordinal) {
+            auto value = ::loom::pnr::spatialMappingViolationValue(
+                *handoff->seed->candidate,
+                static_cast<::loom::ResolvedPnrViolationKind>(ordinal));
+            if (!value) {
+              violationError = value.takeError();
+              break;
+            }
+            violations[ordinal] = *value;
+          }
+          if (violationError) {
+            outcome.rankFailed = true;
+            outcome.rankFailureDiagnostic =
+                llvm::toString(std::move(violationError));
+          } else {
+            auto objective =
+                candidate.activeProblem->objectiveProgram().evaluate(
+                    *handoff->seed->candidate);
+            if (!objective) {
+              outcome.rankFailed = true;
+              outcome.rankFailureDiagnostic =
+                  llvm::toString(objective.takeError());
+            } else {
+              candidate.routeRank.emplace(ActiveRouteRank{
+                  std::move(*objective), violations,
+                  rankWork.endpointExpansions, rankWork.negotiationIterations});
+            }
+          }
+        } else {
+          handoff->failure = seed.takeError();
+        }
+        candidate.canonicalSeed = std::move(handoff);
+      };
   for (const auto indexedTech :
        llvm::enumerate(inputBindings[TechMappingCandidatesInput].artifacts)) {
     if (invocation.executionControl().stopRequested()) {
@@ -772,114 +885,128 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     if (!constraints)
       return constraints.takeError();
 
-    PreparedTechCandidate candidate{inputOrdinal,
-                                    techReference,
-                                    std::move(*tech),
-                                    cached->second.get(),
-                                    std::move(*constraints),
-                                    {},
-                                    std::nullopt,
-                                    std::nullopt,
-                                    nullptr};
-    std::optional<::loom::pnr::SpatialCandidateInitializerPreference>
-        preference;
-    std::optional<ActiveRouteRank> routeRank;
-    if (!firstVerifiedCandidate) {
-      auto frozen = freezeActiveProblem(candidate);
-      if (!frozen)
-        return frozen.takeError();
-      if (!*frozen)
-        continue;
-      ::loom::pnr::SpatialPathFinderSeedWorkSummary rankWork;
-      const auto rankBegin = std::chrono::steady_clock::now();
-      auto seed = ::loom::pnr::createPathFinderSpatialSeed(
-          candidate.activeProblem, 0, rankWork);
-      saturatingAdd(activeProblemCacheStatistics.rankProjectionNanoseconds,
-                    static_cast<std::uint64_t>(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::steady_clock::now() - rankBegin)
-                            .count()));
-      ++activeProblemCacheStatistics.rankProjectionCount;
-      saturatingAdd(activeProblemCacheStatistics.rankAssignmentAttempts,
-                    rankWork.initializerAssignmentAttempts);
-      saturatingAdd(activeProblemCacheStatistics.rankEndpointExpansions,
-                    rankWork.endpointExpansions);
-      saturatingAdd(activeProblemCacheStatistics.rankNegotiationIterations,
-                    rankWork.negotiationIterations);
-      auto handoff =
-          std::make_shared<::loom::pnr::SpatialPathFinderSeedHandoff>();
-      handoff->attemptOrdinal = 0;
-      handoff->problemCacheKey = candidate.activeProblem->cacheKey();
-      handoff->workSummary = rankWork;
-      ++activeProblemCacheStatistics.rankSeedHandoffCount;
-      if (seed) {
-        handoff->seed = std::move(*seed);
-        preference = handoff->seed->initializerPreference;
-        std::array<std::uint64_t, ::loom::resolvedPnrViolationKindCount>
-            violations{};
-        llvm::Error violationError = llvm::Error::success();
-        for (std::uint32_t ordinal = 0; ordinal != violations.size();
-             ++ordinal) {
-          auto value = ::loom::pnr::spatialMappingViolationValue(
-              *handoff->seed->candidate,
-              static_cast<::loom::ResolvedPnrViolationKind>(ordinal));
-          if (!value) {
-            violationError = value.takeError();
-            break;
-          }
-          violations[ordinal] = *value;
-        }
-        if (violationError) {
-          const std::string diagnostic =
-              llvm::toString(std::move(violationError));
-          rankExecutionFailed = true;
-          ::loom::mapping_debug::emit(
-              ::loom::mapping_debug::Level::Summary,
-              ::loom::mapping_debug::Stage::SpatialPnr,
-              ::loom::mapping_debug::Event::MappingFailure,
-              [&](llvm::json::Object &fields) {
-                fields["failure_scope"] = "active_route_rank";
-                fields["closure_status"] = "not_ranked";
-                fields["tech_mapping_input_ordinal"] =
-                    static_cast<std::uint64_t>(inputOrdinal);
-                fields["tech_mapping"] =
-                    formatArtifactIdentityHex(techReference.artifact);
-                fields["diagnostic"] = diagnostic;
-              });
-        } else {
-          auto objective = candidate.activeProblem->objectiveProgram().evaluate(
-              *handoff->seed->candidate);
-          if (!objective) {
-            rankExecutionFailed = true;
-            const std::string diagnostic =
-                llvm::toString(objective.takeError());
-            ::loom::mapping_debug::emit(
-                ::loom::mapping_debug::Level::Summary,
-                ::loom::mapping_debug::Stage::SpatialPnr,
-                ::loom::mapping_debug::Event::MappingFailure,
-                [&](llvm::json::Object &fields) {
-                  fields["failure_scope"] = "active_route_rank";
-                  fields["closure_status"] = "not_ranked";
-                  fields["tech_mapping_input_ordinal"] =
-                      static_cast<std::uint64_t>(inputOrdinal);
-                  fields["tech_mapping"] =
-                      formatArtifactIdentityHex(techReference.artifact);
-                  fields["diagnostic"] = diagnostic;
-                });
-          } else {
-            routeRank.emplace(ActiveRouteRank{std::move(*objective), violations,
-                                              rankWork.endpointExpansions,
-                                              rankWork.negotiationIterations});
-          }
-        }
-      } else {
-        handoff->failure = seed.takeError();
+    preparedCandidates.push_back(PreparedTechCandidate{inputOrdinal,
+                                                       techReference,
+                                                       std::move(*tech),
+                                                       cached->second.get(),
+                                                       std::move(*constraints),
+                                                       {},
+                                                       std::nullopt,
+                                                       std::nullopt,
+                                                       nullptr});
+  }
+
+  if (!firstVerifiedCandidate && !preparedCandidates.empty()) {
+    std::vector<CandidatePreparationOutcome> outcomes(
+        preparedCandidates.size());
+    const auto runUnit = [&](std::size_t ordinal) {
+      if (invocation.executionControl().stopRequested()) {
+        outcomes[ordinal].cancelled = true;
+        return;
       }
-      candidate.canonicalSeed = std::move(handoff);
+      prepareRankedCandidate(preparedCandidates[ordinal], outcomes[ordinal]);
+    };
+    const std::uint32_t workerCount = std::max<std::uint32_t>(
+        1, std::min<std::uint32_t>(
+               defaultCandidateWorkerCount(),
+               static_cast<std::uint32_t>(preparedCandidates.size())));
+    if (workerCount <= 1) {
+      for (std::size_t ordinal = 0; ordinal != preparedCandidates.size();
+           ++ordinal)
+        runUnit(ordinal);
+    } else {
+      const auto sessionAttachment =
+          ::loom::pnr::PnrDerivedContextSession::currentAttachment();
+      llvm::DefaultThreadPool pool(llvm::heavyweight_hardware_concurrency(
+          static_cast<unsigned>(workerCount)));
+      std::atomic<std::size_t> nextUnit{0};
+      for (std::uint32_t worker = 0; worker != workerCount; ++worker)
+        pool.async([&, sessionAttachment] {
+          ::loom::pnr::PnrDerivedContextSession session(sessionAttachment);
+          while (true) {
+            const std::size_t ordinal =
+                nextUnit.fetch_add(1, std::memory_order_relaxed);
+            if (ordinal >= outcomes.size())
+              break;
+            runUnit(ordinal);
+          }
+        });
+      pool.wait();
     }
-    candidate.preference = preference;
-    candidate.routeRank = std::move(routeRank);
-    preparedCandidates.push_back(std::move(candidate));
+
+    llvm::Error firstHardError = llvm::Error::success();
+    for (std::size_t ordinal = 0; ordinal != outcomes.size(); ++ordinal) {
+      CandidatePreparationOutcome &outcome = outcomes[ordinal];
+      const PreparedTechCandidate &candidate = preparedCandidates[ordinal];
+      if (outcome.hardError) {
+        if (firstHardError)
+          consumeError(std::move(outcome.hardError));
+        else
+          firstHardError = std::move(outcome.hardError);
+        continue;
+      }
+      if (outcome.cancelled) {
+        rememberIncomplete(
+            CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+        continue;
+      }
+      ++activeProblemCacheStatistics.requests;
+      ++activeProblemCacheStatistics.misses;
+      saturatingAdd(activeProblemCacheStatistics.constructionNanoseconds,
+                    outcome.constructionNanoseconds);
+      if (outcome.freezeRejected) {
+        emitFreezeRejection(candidate, outcome.freezeDiagnostic);
+        rememberIncomplete(
+            CandidateGeneratorIncompleteReason::ProofNotEstablished);
+        continue;
+      }
+      saturatingAdd(activeProblemCacheStatistics.retainedBytes,
+                    outcome.retainedBytes);
+      saturatingAdd(activeProblemCacheStatistics.deterministicWork,
+                    outcome.deterministicWork);
+      if (outcome.rankProjected) {
+        ++activeProblemCacheStatistics.rankProjectionCount;
+        saturatingAdd(activeProblemCacheStatistics.rankProjectionNanoseconds,
+                      outcome.rankProjectionNanoseconds);
+        saturatingAdd(activeProblemCacheStatistics.rankAssignmentAttempts,
+                      outcome.rankWork.initializerAssignmentAttempts);
+        saturatingAdd(activeProblemCacheStatistics.rankEndpointExpansions,
+                      outcome.rankWork.endpointExpansions);
+        saturatingAdd(activeProblemCacheStatistics.rankNegotiationIterations,
+                      outcome.rankWork.negotiationIterations);
+      }
+      if (outcome.seedHandoff)
+        ++activeProblemCacheStatistics.rankSeedHandoffCount;
+      if (outcome.rankFailed) {
+        rankExecutionFailed = true;
+        ::loom::mapping_debug::emit(
+            ::loom::mapping_debug::Level::Summary,
+            ::loom::mapping_debug::Stage::SpatialPnr,
+            ::loom::mapping_debug::Event::MappingFailure,
+            [&](llvm::json::Object &fields) {
+              fields["failure_scope"] = "active_route_rank";
+              fields["closure_status"] = "not_ranked";
+              fields["tech_mapping_input_ordinal"] =
+                  static_cast<std::uint64_t>(candidate.inputOrdinal);
+              fields["tech_mapping"] =
+                  formatArtifactIdentityHex(candidate.reference.artifact);
+              fields["diagnostic"] = outcome.rankFailureDiagnostic;
+            });
+      }
+    }
+    if (firstHardError)
+      return firstHardError;
+    std::size_t retained = 0;
+    for (std::size_t ordinal = 0; ordinal != preparedCandidates.size();
+         ++ordinal) {
+      if (!outcomes[ordinal].frozen)
+        continue;
+      if (retained != ordinal)
+        preparedCandidates[retained] = std::move(preparedCandidates[ordinal]);
+      ++retained;
+    }
+    preparedCandidates.erase(preparedCandidates.begin() + retained,
+                             preparedCandidates.end());
   }
 
   if (rankExecutionFailed) {
