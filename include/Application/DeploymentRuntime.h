@@ -123,7 +123,8 @@ materializeApplicationActivationInputs(
     const ArtifactRootReference &sourceWorkload,
     const ArtifactRootReference &sourceRuntimeInput,
     const deployment::FinalizedDeployment &deployment,
-    const ArtifactStore &artifacts);
+    const ArtifactStore &artifacts,
+    std::optional<std::uint64_t> maximumSimulatedTicks = std::nullopt);
 
 /// Materializes an independently importable System invocation pair for every
 /// endpoint in the manifest's preverified graph. The entry pair must reproduce

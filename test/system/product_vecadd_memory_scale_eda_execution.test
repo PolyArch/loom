@@ -1,9 +1,3 @@
-# Scale-EDA execution requires an input-declared simulated-work budget:
-# the gem5 engine bounds every run by a fixed startup-plus-per-invocation
-# tick constant that the EDA-scale workload legitimately exceeds. The
-# budget owner is the application manifest input profile; until it
-# declares simulated work, this input cannot complete.
-# XFAIL: *
 # REQUIRES: gem5-25.1.0.1
 # RUN: rm -rf %t.deployment %t.execution
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc %loom-product-acceleration-profile \

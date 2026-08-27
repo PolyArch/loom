@@ -1753,6 +1753,29 @@ builtinResolvedConfig(loom::ResolvedProfilePreset preset) {
   return config;
 }
 
+static llvm::Expected<loom::ResolvedConfigProfile>
+materializeResolvedConfig(ConfigPatch patch) {
+  const bool spatialPnrAuthored =
+      patch.touchedKeys.count("dse.spatial_pnr") != 0;
+  const bool systemPnrAuthored =
+      patch.touchedKeys.count("dse.system_pnr") != 0;
+  loom::ResolvedConfig config = builtinResolvedConfig(
+      patch.inheritedPreset.value_or(loom::ResolvedProfilePreset::BalancedExplore));
+  applyPatch(config, patch);
+  if (llvm::Error error = validateResolvedConfig(config))
+    return std::move(error);
+  return loom::ResolvedConfigProfile{std::move(config), spatialPnrAuthored,
+                                     systemPnrAuthored};
+}
+
+static llvm::Expected<loom::ResolvedConfigProfile>
+loadResolvedConfigWithProvenance(llvm::StringRef path) {
+  auto patchOrErr = parseConfigFilePatch(path);
+  if (!patchOrErr)
+    return patchOrErr.takeError();
+  return materializeResolvedConfig(std::move(*patchOrErr));
+}
+
 loom::ResolvedConfig loom::defaultResolvedConfig() {
   return builtinResolvedConfig(ResolvedProfilePreset::BalancedExplore);
 }
@@ -1764,12 +1787,22 @@ bool loom::isBuiltinConfigProfile(llvm::StringRef builtinPresetOrConfigPath) {
 
 llvm::Expected<loom::ResolvedConfig>
 loom::resolveConfigProfile(llvm::StringRef builtinPresetOrConfigPath) {
+  auto resolved = resolveConfigProfileWithProvenance(builtinPresetOrConfigPath);
+  if (!resolved)
+    return resolved.takeError();
+  return std::move(resolved->config);
+}
+
+llvm::Expected<loom::ResolvedConfigProfile>
+loom::resolveConfigProfileWithProvenance(
+    llvm::StringRef builtinPresetOrConfigPath) {
   if (builtinPresetOrConfigPath.empty())
-    return defaultResolvedConfig();
+    return loom::ResolvedConfigProfile{defaultResolvedConfig(), false, false};
   if (std::optional<ResolvedProfilePreset> preset =
           profilePresetForName(builtinPresetOrConfigPath))
-    return builtinResolvedConfig(*preset);
-  return loadResolvedConfig(builtinPresetOrConfigPath);
+    return loom::ResolvedConfigProfile{builtinResolvedConfig(*preset), false,
+                                       false};
+  return loadResolvedConfigWithProvenance(builtinPresetOrConfigPath);
 }
 
 llvm::Expected<loom::ResolvedConfig>
@@ -1795,27 +1828,16 @@ loom::parseResolvedConfig(llvm::StringRef body, llvm::StringRef sourceName) {
   auto patchOrErr = parseConfigPatchFromMapping(*syntaxOrErr, sourceName);
   if (!patchOrErr)
     return patchOrErr.takeError();
-
-  ResolvedConfig config =
-      builtinResolvedConfig(patchOrErr->inheritedPreset.value_or(
-          ResolvedProfilePreset::BalancedExplore));
-  applyPatch(config, *patchOrErr);
-  if (llvm::Error error = validateResolvedConfig(config))
-    return std::move(error);
-  return config;
+  auto resolved = materializeResolvedConfig(std::move(*patchOrErr));
+  if (!resolved)
+    return resolved.takeError();
+  return std::move(resolved->config);
 }
 
 llvm::Expected<loom::ResolvedConfig>
 loom::loadResolvedConfig(llvm::StringRef path) {
-  auto patchOrErr = parseConfigFilePatch(path);
-  if (!patchOrErr)
-    return patchOrErr.takeError();
-
-  ResolvedConfig config =
-      builtinResolvedConfig(patchOrErr->inheritedPreset.value_or(
-          ResolvedProfilePreset::BalancedExplore));
-  applyPatch(config, *patchOrErr);
-  if (llvm::Error error = validateResolvedConfig(config))
-    return std::move(error);
-  return config;
+  auto resolved = loadResolvedConfigWithProvenance(path);
+  if (!resolved)
+    return resolved.takeError();
+  return std::move(resolved->config);
 }

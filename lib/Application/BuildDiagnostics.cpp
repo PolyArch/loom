@@ -291,12 +291,16 @@ encodePortfolioInput(const SelectedApplicationInput &selection,
   result["declared_oracle"] =
       llvm::json::Object{{"kind", toString(selection.input.oracle.kind)},
                          {"entry", selection.input.oracle.entry}};
-  result["declared_profile"] = llvm::json::Object{
+  llvm::json::Object declaredProfile{
       {"warmup_samples", selection.input.profile.warmupSamples},
       {"measured_samples", selection.input.profile.measuredSamples},
       {"total_samples", selection.input.profile.totalSamples()},
       {"oracle_coverage", toString(selection.input.profile.oracleCoverage)},
       {"deadline_milliseconds", selection.input.profile.deadlineMilliseconds}};
+  if (selection.input.profile.maximumSimulatedTicks)
+    declaredProfile["maximum_simulated_ticks"] =
+        *selection.input.profile.maximumSimulatedTicks;
+  result["declared_profile"] = std::move(declaredProfile);
   llvm::json::Array cachedInputs;
   for (const CachedInput &input : selection.cachedInputs)
     cachedInputs.push_back(
