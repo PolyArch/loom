@@ -24,6 +24,7 @@ target_link_libraries(LoomRuntimePlatformBinding PUBLIC
 
 add_library(LoomRuntimeDeploymentLoader
   DeploymentLoader.cpp
+  Providers/FabricModelRuntimeProvider.cpp
   Providers/InProcessPlatform.cpp
 )
 

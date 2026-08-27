@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Hardware/RTL/ConfigurationTransport.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -71,14 +72,14 @@ const RuntimeProviderEndpointKindDescriptor endpointKinds[] = {
 };
 
 const RuntimeProviderDescriptor descriptor{
-    {"loom.runtime.fabric_model", SchemaVersion{1, 0}},
+    {"loom.runtime.fabric_model", SchemaVersion{2, 0}},
     "loom.hardware.fabric_model.v1",
-    "loom.runtime.fabric_model_abi.v1",
+    hardware::rtl::portableConfigurationRuntimeAbiIdentity,
     endpointKinds,
     true,
     false,
     false,
-    false};
+    true};
 
 } // namespace
 

@@ -4,8 +4,11 @@
 #include "Common/BlobStore.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
+#include "Hardware/RTL/ConfigurationTransport.h"
 #include "Mapping/IR/MappingSchema.h"
 #include "Runtime/DeploymentLoader.h"
+#include "Runtime/FabricModelPlatform.h"
+#include "Runtime/FabricModelRuntimeProvider.h"
 #include "Runtime/InProcessPlatform.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -32,6 +35,46 @@ ArtifactIdentity identity(llvm::StringRef test, std::uint8_t seed) {
   for (std::size_t index = 0; index != bytes.size(); ++index)
     bytes[index] = static_cast<std::uint8_t>(seed + index);
   return take(test, ArtifactIdentity::fromBytes(bytes));
+}
+
+std::vector<std::uint8_t> encodeU64(std::uint64_t value) {
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(sizeof(value));
+  for (unsigned shift = 56;; shift -= 8) {
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+    if (shift == 0)
+      break;
+  }
+  return bytes;
+}
+
+RuntimeProviderEndpointRef
+fabricModelEndpoint(llvm::StringRef test, RuntimeEndpointClass endpointClass,
+                    std::vector<std::uint8_t> payload) {
+  const RuntimeProviderDescriptor &descriptor =
+      fabricModelRuntimeProviderDescriptor();
+  const auto endpoint = llvm::find_if(
+      descriptor.endpointKinds, [&](const auto &candidate) {
+        return candidate.endpointClass == endpointClass;
+      });
+  if (endpoint == descriptor.endpointKinds.end())
+    deployment::test::fail(test, "FabricModel provider endpoint is absent");
+  return RuntimeProviderEndpointRef{endpoint->kind, std::move(payload)};
+}
+
+template <typename T>
+void requireError(llvm::StringRef test, llvm::Expected<T> result,
+                  llvm::StringRef message) {
+  if (result)
+    deployment::test::fail(test, message.str());
+  llvm::consumeError(result.takeError());
+}
+
+void requireError(llvm::StringRef test, llvm::Error error,
+                  llvm::StringRef message) {
+  if (!error)
+    deployment::test::fail(test, message.str());
+  llvm::consumeError(std::move(error));
 }
 
 struct ObservedLoadError final {
@@ -1110,6 +1153,169 @@ void activationKeysIgnorePartitionsAndDistinguishRootedLaunches() {
       "distinct rooted graph starts collapsed to one activation event key");
 }
 
+void exercisesFabricModelOperationalProvider() {
+  const llvm::StringRef test = __func__;
+  deployment::test::TemporaryTree tree(test);
+  ArtifactStore artifacts(tree.path("artifacts"));
+  BlobStore blobs(tree.path("blobs"));
+  const deployment::FinalizedDeployment deployment =
+      deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
+  const ArtifactIdentity implementation = identity(test, 71);
+  const ArtifactIdentity alternateImplementation = identity(test, 91);
+
+  const RuntimeProviderDescriptor &descriptor =
+      fabricModelRuntimeProviderDescriptor();
+  deployment::test::require(
+      test,
+      descriptor.descriptor.version == SchemaVersion{2, 0} &&
+          descriptor.runtimeAbiIdentity ==
+              hardware::rtl::portableConfigurationRuntimeAbiIdentity &&
+          descriptor.supportsPreparedActivationReplacement,
+      "FabricModel provider descriptor omits its portable activation contract");
+
+  auto provider = take(
+      test, createFabricModelRuntimeProvider(
+                {{{implementation, alternateImplementation}}}));
+  auto other = take(
+      test, createFabricModelRuntimeProvider(
+                {{{implementation, alternateImplementation}}}));
+  const std::vector<RuntimeDeviceHandle> devices =
+      take(test, provider->enumerateDevices());
+  deployment::test::require(test, devices.size() == 1,
+                            "FabricModel provider did not enumerate one device");
+  requireError(test, other->acquireExclusiveLease(devices.front()),
+               "FabricModel provider accepted another instance's device");
+  const RuntimeLeaseHandle lease =
+      take(test, provider->acquireExclusiveLease(devices.front()));
+
+  const RuntimeProviderEndpointRef identityEndpoint = fabricModelEndpoint(
+      test, RuntimeEndpointClass::Identity,
+      std::vector<std::uint8_t>(implementation.bytes().begin(),
+                                implementation.bytes().end()));
+  requireError(test,
+               provider->readImplementationIdentity(RuntimeLeaseHandle{},
+                                                    identityEndpoint),
+               "FabricModel provider accepted an inactive lease");
+  deployment::test::require(
+      test,
+      take(test, provider->readImplementationIdentity(lease,
+                                                      identityEndpoint)) ==
+          implementation,
+      "FabricModel provider changed its leased implementation identity");
+
+  const RuntimeProviderEndpointRef programmingEndpoint = fabricModelEndpoint(
+      test, RuntimeEndpointClass::Programming, encodeU64(0));
+  deployment::test::require(
+      test,
+      !provider->writeConfigurationWord(
+          lease, programmingEndpoint,
+          RuntimeConfigurationWord{0, UINT32_C(0x11223344), UINT8_C(0x3)}) &&
+          !provider->writeConfigurationWord(
+              lease, programmingEndpoint,
+              RuntimeConfigurationWord{0, UINT32_C(0xaabb0000),
+                                       UINT8_C(0xc)}),
+      "FabricModel provider rejected canonical configuration writes");
+  deployment::test::require(
+      test,
+      take(test, provider->readConfigurationWord(lease, programmingEndpoint,
+                                                 0)) == 0,
+      "FabricModel provider exposed shadow configuration before commit");
+  deployment::test::require(
+      test, !provider->commitConfiguration(lease, programmingEndpoint, 4),
+      "FabricModel provider rejected configuration commit");
+  deployment::test::require(
+      test,
+      take(test, provider->readConfigurationWord(lease, programmingEndpoint,
+                                                 0)) ==
+          UINT32_C(0xaabb3344),
+      "FabricModel provider did not preserve byte-strobe commit semantics");
+
+  const std::vector<std::uint8_t> hostProgramBytes{1};
+  const std::vector<FinalizedInstructionCoreBinary> instructionBinaries;
+  const std::vector<std::vector<std::uint8_t>> instructionBytes;
+  const RuntimeExecutableRegistrationView registration{
+      deployment.deployment().hostProgram(), hostProgramBytes,
+      instructionBinaries, instructionBytes,
+      deployment.deployment().threadDispatchImage()};
+  const RuntimeActivationView entryActivation{
+      deployment.reference(), {}, deployment.deployment().threadDispatchImage(),
+      deployment.deployment().spatialLaunchImage(),
+      deployment.deployment().admissionImage()};
+  requireError(test, provider->activate(lease, entryActivation),
+               "FabricModel provider activated before executable registration");
+  deployment::test::require(
+      test, !provider->registerExecutables(lease, registration) &&
+                !provider->activate(lease, entryActivation),
+      "FabricModel provider rejected registered entry activation");
+
+  const ArtifactRootReference childDeployment{
+      deployment::deploymentSchema.identity.str(),
+      deployment::deploymentSchema.version,
+      identity(test, 111)};
+  const RuntimeActivationView childActivation{
+      childDeployment, {}, deployment.deployment().threadDispatchImage(),
+      deployment.deployment().spatialLaunchImage(),
+      deployment.deployment().admissionImage()};
+  const RuntimePreparedActivationHandle prepared =
+      take(test, provider->prepareActivation(lease, registration,
+                                             childActivation));
+  deployment::test::require(
+      test, provider->preparedActivationCount(0) == 1 &&
+                !provider->replaceActivationAtomically(lease, prepared) &&
+                !provider->replaceActivationAtomically(lease, prepared) &&
+                provider->activeDeployment(0) == childDeployment,
+      "FabricModel provider did not retain reusable prepared activation");
+  deployment::test::require(
+      test, !provider->discardPreparedActivation(lease, prepared) &&
+                provider->preparedActivationCount(0) == 0,
+      "FabricModel provider did not discard prepared activation");
+  requireError(test, provider->replaceActivationAtomically(lease, prepared),
+               "FabricModel provider accepted a discarded activation");
+
+  deployment::test::require(test, !provider->quiesceAndReset(lease),
+                            "FabricModel provider rejected final reset");
+  const RuntimeLeaseFinalizationResult released =
+      provider->finalizeExclusiveLease(
+          lease, RuntimeLeaseFinalizationRequest::Release);
+  deployment::test::require(
+      test, released.state == RuntimeLeaseFinalState::Released &&
+                !provider->activeDeployment(0),
+      "FabricModel provider did not release a clean lease");
+  requireError(test,
+               provider->readImplementationIdentity(lease, identityEndpoint),
+               "FabricModel provider accepted a stale lease");
+
+  const std::vector<RuntimeDeviceHandle> reacquiredDevices =
+      take(test, provider->enumerateDevices());
+  const RuntimeLeaseHandle reacquired =
+      take(test, provider->acquireExclusiveLease(reacquiredDevices.front()));
+  const RuntimeLeaseFinalizationResult quarantined =
+      provider->finalizeExclusiveLease(
+          reacquired, RuntimeLeaseFinalizationRequest::Quarantine);
+  deployment::test::require(
+      test, quarantined.state == RuntimeLeaseFinalState::Quarantined &&
+                provider->isQuarantined(0) &&
+                take(test, provider->enumerateDevices()).empty(),
+      "FabricModel provider did not quarantine its terminal lease");
+
+  const FabricModelRuntimeStatistics statistics = provider->statistics();
+  deployment::test::require(
+      test,
+      statistics.leaseAcquisitionCount == 2 &&
+          statistics.implementationIdentityReadCount == 1 &&
+          statistics.configurationWriteCount == 2 &&
+          statistics.configurationCommitCount == 1 &&
+          statistics.configurationReadCount == 2 &&
+          statistics.executableRegistrationCount == 1 &&
+          statistics.activationCount == 1 &&
+          statistics.activationPreparationCount == 1 &&
+          statistics.activationReplacementCount == 2 &&
+          statistics.activationDiscardCount == 1 &&
+          statistics.resetCount == 1 && statistics.leaseReleaseCount == 2 &&
+          statistics.quarantineCount == 1,
+      "FabricModel provider operation counters do not reconcile");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1154,6 +1360,8 @@ int main(int argc, char **argv) {
     ignoresAbiUnusedHighReadbackBits();
   else if (scenario == "activation-key")
     activationKeysIgnorePartitionsAndDistinguishRootedLaunches();
+  else if (scenario == "fabric-model")
+    exercisesFabricModelOperationalProvider();
   else
     deployment::test::fail("deployment_loader", "unknown scenario");
   return 0;

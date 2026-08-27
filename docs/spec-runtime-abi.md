@@ -1026,6 +1026,16 @@ Deployment remains a valid semantic package, but this loader returns typed
 independent System implementation and provider contract; assigning the image
 to an arbitrary SpatialCore is invalid.
 
+The payload-free FabricModel operational descriptor is
+`loom.runtime.fabric_model` version 2.0. It implements the common portable
+AXI4-Lite runtime ABI and prepared activation replacement for the exact
+FabricModel HardwareImplementation identities supplied to its transient device
+instance. Its shadow configuration, commit/readback, lease, and active
+Deployment state model this runtime boundary only. The selected Simulation
+provider remains the sole owner of computation and functional observations;
+the FabricModel operational provider neither executes a graph nor manufactures
+simulation evidence.
+
 The generated loader protocol is mechanical:
 
 ```text
