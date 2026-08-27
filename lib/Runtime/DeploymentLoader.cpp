@@ -38,8 +38,10 @@ namespace {
 using ByteVector = std::vector<std::uint8_t>;
 
 llvm::Error loadError(RuntimeLoadFailureKind kind, const llvm::Twine &message,
-                      bool quarantined = false) {
-  return llvm::make_error<RuntimeLoadError>(kind, message.str(), quarantined);
+                      RuntimeLoadTerminalDisposition terminalDisposition =
+                          RuntimeLoadTerminalDisposition::NoLeaseAcquired) {
+  return llvm::make_error<RuntimeLoadError>(kind, message.str(),
+                                            terminalDisposition);
 }
 
 llvm::Error
@@ -238,13 +240,13 @@ importRuntimeClosure(const deployment::FinalizedDeployment &deployment,
 
 llvm::Error
 verifyProviderIdentity(RuntimeProviderInstance &provider,
-                       const RuntimeDeviceHandle &device,
+                       const RuntimeLeaseHandle &lease,
                        const RuntimeIdentityVerification &verification,
                        const ArtifactIdentity &expectedImplementation) {
   if (const auto *reported =
           std::get_if<HardwareReportedIdentity>(&verification)) {
     auto identity = provider.readImplementationIdentity(
-        device, reported->implementationIdentityEndpoint);
+        lease, reported->implementationIdentityEndpoint);
     if (!identity)
       return loadError(RuntimeLoadFailureKind::IdentityVerification,
                        "provider identity read failed: " +
@@ -256,7 +258,7 @@ verifyProviderIdentity(RuntimeProviderInstance &provider,
   }
   const BlobDigest &expected =
       std::get<TrustedImmutableIdentity>(verification).attestationBlob;
-  auto actual = provider.readTrustedAttestation(device);
+  auto actual = provider.readTrustedAttestation(lease);
   if (!actual)
     return loadError(RuntimeLoadFailureKind::IdentityVerification,
                      "provider attestation read failed: " +
@@ -274,11 +276,11 @@ struct RuntimeIdentityClaim final {
 
 llvm::Error
 verifyProviderIdentities(RuntimeProviderInstance &provider,
-                         const RuntimeDeviceHandle &device,
+                         const RuntimeLeaseHandle &lease,
                          llvm::ArrayRef<RuntimeIdentityClaim> claims) {
   for (const RuntimeIdentityClaim &claim : claims)
     if (llvm::Error error = verifyProviderIdentity(
-            provider, device, claim.verification, claim.expectedImplementation))
+            provider, lease, claim.verification, claim.expectedImplementation))
       return error;
   return llvm::Error::success();
 }
@@ -761,59 +763,79 @@ std::string appendCleanupDiagnostic(std::string primary, llvm::StringRef role,
   return primary;
 }
 
+std::string appendCleanupDiagnostic(std::string primary, llvm::StringRef role,
+                                    llvm::StringRef diagnostic) {
+  if (diagnostic.empty())
+    return primary;
+  primary += "; ";
+  primary += role;
+  primary += ": ";
+  primary += diagnostic;
+  return primary;
+}
+
+RuntimeLoadTerminalDisposition finalizeLease(
+    RuntimeProviderInstance &provider, const RuntimeLeaseHandle &lease,
+    RuntimeLeaseFinalizationRequest request, std::string &diagnostic) {
+  RuntimeLeaseFinalizationResult result =
+      provider.finalizeExclusiveLease(lease, request);
+  diagnostic = appendCleanupDiagnostic(std::move(diagnostic),
+                                       "lease finalization", result.diagnostic);
+  switch (result.state) {
+  case RuntimeLeaseFinalState::Released:
+    return RuntimeLoadTerminalDisposition::LeaseReleased;
+  case RuntimeLeaseFinalState::Quarantined:
+    return RuntimeLoadTerminalDisposition::DeviceQuarantined;
+  }
+  llvm_unreachable("unknown runtime lease final state");
+}
+
 llvm::Error recoverAndRelease(RuntimeLoadFailureKind kind,
                               std::string diagnostic,
                               RuntimeProviderInstance &provider,
-                              const RuntimeDeviceHandle &device,
                               const RuntimeLeaseHandle &lease,
                               llvm::ArrayRef<RuntimeIdentityClaim> identities,
                               bool restoreCleanState) {
-  bool quarantined = false;
+  bool requiresQuarantine = false;
   if (restoreCleanState) {
     llvm::Error reset = provider.quiesceAndReset(lease);
     if (reset) {
       diagnostic = appendCleanupDiagnostic(
           std::move(diagnostic), "recovery reset failed", std::move(reset));
-      quarantined = true;
+      requiresQuarantine = true;
     } else if (llvm::Error identity =
-                   verifyProviderIdentities(provider, device, identities)) {
+                   verifyProviderIdentities(provider, lease, identities)) {
       diagnostic = appendCleanupDiagnostic(std::move(diagnostic),
                                            "recovery identity check failed",
                                            std::move(identity));
-      quarantined = true;
+      requiresQuarantine = true;
     }
   }
-  if (llvm::Error release = provider.releaseExclusiveLease(lease)) {
-    diagnostic = appendCleanupDiagnostic(
-        std::move(diagnostic), "lease release failed", std::move(release));
-    quarantined = true;
-  }
-  if (quarantined)
-    provider.quarantineDevice(device);
-  return loadError(kind, diagnostic, quarantined);
+
+  const RuntimeLoadTerminalDisposition disposition = finalizeLease(
+      provider, lease,
+      requiresQuarantine ? RuntimeLeaseFinalizationRequest::Quarantine
+                         : RuntimeLeaseFinalizationRequest::Release,
+      diagnostic);
+  return loadError(kind, diagnostic, disposition);
 }
 
-llvm::Error
-releaseLoadedState(RuntimeProviderInstance &provider,
-                   const RuntimeDeviceHandle &device,
-                   const RuntimeLeaseHandle &lease,
-                   llvm::ArrayRef<RuntimeIdentityClaim> identities) {
-  bool quarantine = false;
+void releaseLoadedState(RuntimeProviderInstance &provider,
+                        const RuntimeLeaseHandle &lease,
+                        llvm::ArrayRef<RuntimeIdentityClaim> identities) {
+  bool requiresQuarantine = false;
   if (llvm::Error reset = provider.quiesceAndReset(lease)) {
     llvm::consumeError(std::move(reset));
-    quarantine = true;
+    requiresQuarantine = true;
   } else if (llvm::Error identity =
-                 verifyProviderIdentities(provider, device, identities)) {
+                 verifyProviderIdentities(provider, lease, identities)) {
     llvm::consumeError(std::move(identity));
-    quarantine = true;
+    requiresQuarantine = true;
   }
-  if (llvm::Error release = provider.releaseExclusiveLease(lease)) {
-    llvm::consumeError(std::move(release));
-    quarantine = true;
-  }
-  if (quarantine)
-    provider.quarantineDevice(device);
-  return llvm::Error::success();
+
+  (void)provider.finalizeExclusiveLease(
+      lease, requiresQuarantine ? RuntimeLeaseFinalizationRequest::Quarantine
+                                : RuntimeLeaseFinalizationRequest::Release);
 }
 
 } // namespace
@@ -846,7 +868,7 @@ char RuntimeLoadError::ID = 0;
 
 void RuntimeLoadError::log(llvm::raw_ostream &output) const {
   output << "runtime_load_failed: " << diagnostic_;
-  if (deviceQuarantined_)
+  if (terminalDisposition_ == RuntimeLoadTerminalDisposition::DeviceQuarantined)
     output << " (device quarantined)";
 }
 
@@ -957,8 +979,7 @@ struct LoadedDeploymentState final {
     for (const PreparedActivation &activation : preparedActivations)
       llvm::consumeError(
           provider->discardPreparedActivation(lease, activation.handle));
-    llvm::consumeError(
-        releaseLoadedState(*provider, device, lease, identities));
+    releaseLoadedState(*provider, lease, identities);
   }
 };
 
@@ -1226,20 +1247,30 @@ loadDeployment(deployment::FinalizedDeployment deployment,
     identities.push_back(
         {indexed.value().binding().identityVerification(),
          closure->implementations[indexed.index()].reference().artifact});
-  if (llvm::Error error =
-          verifyProviderIdentities(provider, device, identities))
-    return std::move(error);
-
   auto lease = provider.acquireExclusiveLease(device);
   if (!lease)
     return loadError(RuntimeLoadFailureKind::Lease,
                      "exclusive lease acquisition failed: " +
                          llvm::toString(lease.takeError()));
+  if (llvm::Error error =
+          verifyProviderIdentities(provider, *lease, identities))
+    return recoverAndRelease(RuntimeLoadFailureKind::IdentityVerification,
+                             "leased device identity verification failed: " +
+                                 llvm::toString(std::move(error)),
+                             provider, *lease, identities,
+                             /*restoreCleanState=*/false);
   if (llvm::Error error = provider.quiesceAndReset(*lease))
     return recoverAndRelease(RuntimeLoadFailureKind::Reset,
                              "cannot establish declared reset state: " +
                                  llvm::toString(std::move(error)),
-                             provider, device, *lease, identities,
+                             provider, *lease, identities,
+                             /*restoreCleanState=*/true);
+  if (llvm::Error error =
+          verifyProviderIdentities(provider, *lease, identities))
+    return recoverAndRelease(RuntimeLoadFailureKind::IdentityVerification,
+                             "post-reset identity verification failed: " +
+                                 llvm::toString(std::move(error)),
+                             provider, *lease, identities,
                              /*restoreCleanState=*/true);
 
   bool deviceStateChanged = false;
@@ -1247,8 +1278,8 @@ loadDeployment(deployment::FinalizedDeployment deployment,
           programConfigurations(provider, *registeredProvider, *lease,
                                 *configurations, deviceStateChanged))
     return recoverAndRelease(RuntimeLoadFailureKind::Programming,
-                             llvm::toString(std::move(error)), provider, device,
-                             *lease, identities,
+                             llvm::toString(std::move(error)), provider, *lease,
+                             identities,
                              /*restoreCleanState=*/true);
 
   std::vector<RuntimeInterfaceBinding> memoryBindings;
@@ -1265,7 +1296,7 @@ loadDeployment(deployment::FinalizedDeployment deployment,
       return recoverAndRelease(RuntimeLoadFailureKind::StaticMemory,
                                "static-memory installation failed: " +
                                    llvm::toString(std::move(error)),
-                               provider, device, *lease, identities,
+                               provider, *lease, identities,
                                /*restoreCleanState=*/true);
   }
 
@@ -1278,7 +1309,7 @@ loadDeployment(deployment::FinalizedDeployment deployment,
     return recoverAndRelease(RuntimeLoadFailureKind::Registration,
                              "executable registration failed: " +
                                  llvm::toString(std::move(error)),
-                             provider, device, *lease, identities,
+                             provider, *lease, identities,
                              /*restoreCleanState=*/deviceStateChanged);
 
   const RuntimeActivationView activation{
@@ -1290,7 +1321,7 @@ loadDeployment(deployment::FinalizedDeployment deployment,
     return recoverAndRelease(RuntimeLoadFailureKind::Activation,
                              "activation failed: " +
                                  llvm::toString(std::move(error)),
-                             provider, device, *lease, identities,
+                             provider, *lease, identities,
                              /*restoreCleanState=*/deviceStateChanged);
 
   return LoadedDeployment(std::make_unique<detail::LoadedDeploymentState>(

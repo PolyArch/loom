@@ -44,18 +44,31 @@ enum class RuntimeLoadFailureKind : std::uint32_t {
   Activation = 9,
 };
 
+enum class RuntimeLoadTerminalDisposition : std::uint8_t {
+  NoLeaseAcquired,
+  LeaseReleased,
+  DeviceQuarantined,
+};
+
 class RuntimeLoadError final : public llvm::ErrorInfo<RuntimeLoadError> {
 public:
   static char ID;
 
   RuntimeLoadError(RuntimeLoadFailureKind kind, std::string diagnostic,
-                   bool deviceQuarantined = false)
+                   RuntimeLoadTerminalDisposition terminalDisposition =
+                       RuntimeLoadTerminalDisposition::NoLeaseAcquired)
       : kind_(kind), diagnostic_(std::move(diagnostic)),
-        deviceQuarantined_(deviceQuarantined) {}
+        terminalDisposition_(terminalDisposition) {}
 
   RuntimeLoadFailureKind kind() const { return kind_; }
   llvm::StringRef diagnostic() const { return diagnostic_; }
-  bool deviceQuarantined() const { return deviceQuarantined_; }
+  RuntimeLoadTerminalDisposition terminalDisposition() const {
+    return terminalDisposition_;
+  }
+  bool deviceQuarantined() const {
+    return terminalDisposition_ ==
+           RuntimeLoadTerminalDisposition::DeviceQuarantined;
+  }
 
   void log(llvm::raw_ostream &output) const override;
   std::error_code convertToErrorCode() const override;
@@ -63,7 +76,7 @@ public:
 private:
   RuntimeLoadFailureKind kind_;
   std::string diagnostic_;
-  bool deviceQuarantined_;
+  RuntimeLoadTerminalDisposition terminalDisposition_;
 };
 
 enum class RuntimeActivationReplacementErrorReason : std::uint8_t {
@@ -94,8 +107,10 @@ private:
   std::string diagnostic_;
 };
 
-/// Provider-owned transient token. Its bytes are meaningful only to the
-/// selected provider instance and never enter an Artifact identity.
+/// Provider-owned transient enumeration token. Its bytes are meaningful only
+/// to the selected provider instance and never enter an Artifact identity.
+/// Runtime uses it to acquire a lease and retain the invocation-local
+/// selection; identity observations are bound to the resulting live lease.
 struct RuntimeDeviceHandle final {
   std::vector<std::uint8_t> opaque;
 
@@ -113,6 +128,21 @@ struct RuntimeLeaseHandle final {
                          const RuntimeLeaseHandle &rhs) {
     return lhs.opaque == rhs.opaque;
   }
+};
+
+enum class RuntimeLeaseFinalizationRequest : std::uint8_t {
+  Release,
+  Quarantine,
+};
+
+enum class RuntimeLeaseFinalState : std::uint8_t {
+  Released,
+  Quarantined,
+};
+
+struct RuntimeLeaseFinalizationResult final {
+  RuntimeLeaseFinalState state = RuntimeLeaseFinalState::Quarantined;
+  std::string diagnostic;
 };
 
 /// Provider-owned token for one executable and activation image prepared
@@ -192,13 +222,18 @@ public:
   virtual const RuntimeProviderDescriptor &descriptor() const = 0;
   virtual llvm::Expected<std::vector<RuntimeDeviceHandle>>
   enumerateDevices() = 0;
-  virtual llvm::Expected<ArtifactIdentity>
-  readImplementationIdentity(const RuntimeDeviceHandle &device,
-                             const RuntimeProviderEndpointRef &endpoint) = 0;
-  virtual llvm::Expected<BlobDigest>
-  readTrustedAttestation(const RuntimeDeviceHandle &device) = 0;
+  /// Atomically binds the returned lease to this exact enumerated device and
+  /// excludes replacement or rebinding until the lease is released. An error
+  /// acquires no lease.
   virtual llvm::Expected<RuntimeLeaseHandle>
   acquireExclusiveLease(const RuntimeDeviceHandle &device) = 0;
+  /// Reads identity from the exact device bound to this live lease. Providers
+  /// must reject stale or inactive leases.
+  virtual llvm::Expected<ArtifactIdentity>
+  readImplementationIdentity(const RuntimeLeaseHandle &lease,
+                             const RuntimeProviderEndpointRef &endpoint) = 0;
+  virtual llvm::Expected<BlobDigest>
+  readTrustedAttestation(const RuntimeLeaseHandle &lease) = 0;
   /// Restores the provider's declared clean state and invalidates every
   /// provider-owned prepared activation handle under this lease.
   virtual llvm::Error quiesceAndReset(const RuntimeLeaseHandle &lease) = 0;
@@ -244,9 +279,13 @@ public:
   virtual llvm::Error
   discardPreparedActivation(const RuntimeLeaseHandle &lease,
                             const RuntimePreparedActivationHandle &prepared);
-  virtual llvm::Error
-  releaseExclusiveLease(const RuntimeLeaseHandle &lease) = 0;
-  virtual void quarantineDevice(const RuntimeDeviceHandle &device) = 0;
+  /// Atomically establishes one terminal state for this live lease. Release
+  /// failure falls back to a process-persistent provider quarantine that owns
+  /// any unresolved lease state. The provider must return only after later
+  /// acquisition through any instance of this descriptor is excluded.
+  virtual RuntimeLeaseFinalizationResult
+  finalizeExclusiveLease(const RuntimeLeaseHandle &lease,
+                         RuntimeLeaseFinalizationRequest request) = 0;
 };
 
 /// Local invocation binding. deviceOrdinal selects one result from this exact

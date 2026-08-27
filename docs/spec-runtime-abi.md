@@ -1023,15 +1023,24 @@ The generated loader protocol is mechanical:
 ```text
 validate package and Deployment closure
   -> enumerate provider devices
-  -> verify exact implementation identity
   -> acquire authorization and exclusive lease
+  -> verify exact implementation identity under that lease
   -> quiesce and establish declared reset state
+  -> reverify exact implementation identity under that lease
   -> install and verify all configuration images
   -> install static logical-memory images
   -> register host and InstructionCore entries
   -> activate
   -> execute and retire
 ```
+
+Lease acquisition atomically binds the provider-owned lease to the exact
+enumerated device and excludes device replacement or rebinding until release.
+Identity and trusted-attestation reads accept only that live lease, never a
+bare enumeration handle. The first leased verification prevents reset of a
+foreign implementation; the second proves that reset preserved the selected
+identity before any package state is installed. Failure at either boundary
+uses the ordinary typed release, recovery, and quarantine rules.
 
 For the common portable AXI4-Lite configuration profile, installation derives
 the exact `ConfigurationTransportLayout` from the bound implementation,
@@ -1065,10 +1074,17 @@ Before activation, failure releases acquired resources after restoring the
 declared clean state. After any partial programming or runtime fault, the
 provider must reset and reverify the implementation before reuse; if it cannot
 prove that state, the device is quarantined for that process and the execution
-fails. Runtime never repairs a package, substitutes a compatible artifact, or
-remaps work. A stable hand-written user launch API, dynamic shared-object
-loading, firmware update protocol, remote deployment service, and partial
-reconfiguration are deferred until they have concrete independent semantics.
+fails. Quarantine and lease release are one atomic provider disposition over
+the live lease and return only `Released` or `Quarantined`. An ordinary release
+failure must install a process-persistent provider quarantine that owns any
+unresolved lease before returning. That quarantine survives instance teardown
+and excludes later acquisition through every instance of the exact descriptor;
+the result diagnostic records the underlying release failure without weakening
+the typed terminal state. Runtime never repairs a package, substitutes a
+compatible artifact, or remaps work. A stable hand-written user launch API,
+dynamic shared-object loading, firmware update protocol, remote deployment
+service, and partial reconfiguration are deferred until they have concrete
+independent semantics.
 
 RuntimePlatformBinding canonical JSON contains exact direct references and
 canonically ordered interface bindings. Finalization verifies provider schema,

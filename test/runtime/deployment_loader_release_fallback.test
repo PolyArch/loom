@@ -1,0 +1,1 @@
+# RUN: %loom-runtime-deployment-loader-test release-fallback
