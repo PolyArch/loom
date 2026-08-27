@@ -55,11 +55,6 @@ constexpr PnrCapacityContext optionOffsetContext{
 constexpr PnrCapacityContext optionCountContext{
     frozenArtifact, "attachment_options", "attachment_options",
     PnrCapacityMeasure::Count};
-constexpr PnrCapacityContext endpointIndexContext{
-    frozenArtifact, "routing_endpoints", "routing_endpoints",
-    PnrCapacityMeasure::Index};
-constexpr PnrCapacityContext traversalIndexContext{
-    frozenArtifact, "traversals", "traversals", PnrCapacityMeasure::Index};
 constexpr PnrCapacityContext placementIndexContext{
     frozenArtifact, "placements", "placements", PnrCapacityMeasure::Index};
 constexpr PnrCapacityContext placementOffsetContext{
@@ -327,28 +322,6 @@ public:
         const FrozenSpatialRoutingGraph &routing) {
     FrozenSpatialPortIndex result;
 
-    std::map<std::vector<std::uint8_t>, PnrIndex> endpointByRef;
-    for (auto [ordinal, endpoint] :
-         llvm::enumerate(routing.routingEndpoints())) {
-      auto index = checked(endpointIndexContext, ordinal);
-      if (!index)
-        return index.takeError();
-      if (!endpointByRef
-               .emplace(canonicalFabricBytes(endpoint.reference), *index)
-               .second)
-        return invalid("routing endpoint inventory contains a duplicate");
-    }
-    std::map<std::vector<std::uint8_t>, PnrIndex> traversalByRef;
-    for (auto [ordinal, traversal] : llvm::enumerate(routing.traversals())) {
-      auto index = checked(traversalIndexContext, ordinal);
-      if (!index)
-        return index.takeError();
-      if (!traversalByRef
-               .emplace(canonicalFabricBytes(traversal.reference), *index)
-               .second)
-        return invalid("routing traversal inventory contains a duplicate");
-    }
-
     std::map<std::uint64_t, ActorOwner> actorOwners;
     for (auto [realizationOrdinal, realization] :
          llvm::enumerate(techMapping.computeRealizations())) {
@@ -546,10 +519,7 @@ public:
 
     const auto endpointIndex = [&](const FabricTransportEndpointRef &endpoint)
         -> std::optional<PnrIndex> {
-      auto found = endpointByRef.find(canonicalFabricBytes(endpoint));
-      return found == endpointByRef.end()
-                 ? std::nullopt
-                 : std::optional<PnrIndex>(found->second);
+      return routing.topology().endpointOrdinal(endpoint);
     };
     std::map<ComputeAttachmentClassKey, std::vector<AttachmentDraft>>
         computeAttachmentClasses;
@@ -604,15 +574,15 @@ public:
         if (endpoint.direction != templatePort.direction ||
             endpoint.dataPath.payloadWidthBits < demand.payloadWidthBits)
           continue;
-        const auto traversalIndex = traversalByRef.find(
-            canonicalFabricBytes(attachment.localTraversal));
-        if (traversalIndex == traversalByRef.end())
+        const auto traversalIndex =
+            routing.topology().traversalOrdinal(attachment.localTraversal);
+        if (!traversalIndex)
           continue;
         auto progress = classifySpatialAttachmentDurableProgressBoundary(
             fabric, attachment.localTraversal, concretePort);
         if (!progress)
           return progress.takeError();
-        options.push_back({*attachmentIndex, traversalIndex->second, *progress,
+        options.push_back({*attachmentIndex, *traversalIndex, *progress,
                            *sharedEnqueueUnit});
       }
       canonicalizeOptions(options);

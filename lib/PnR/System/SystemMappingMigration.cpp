@@ -443,28 +443,6 @@ mapAccCore(const SystemExecutionBindingCorrespondence &correspondence,
 }
 
 std::optional<PnrIndex>
-endpointOrdinal(const FrozenEndpointRoutingTopology &topology,
-                const ::loom::fabric::FabricTransportEndpointRef &reference) {
-  const auto found = llvm::find_if(topology.endpoints(), [&](const auto &row) {
-    return row.reference == reference;
-  });
-  if (found == topology.endpoints().end())
-    return std::nullopt;
-  return static_cast<PnrIndex>(found - topology.endpoints().begin());
-}
-
-std::optional<PnrIndex>
-traversalOrdinal(const FrozenEndpointRoutingTopology &topology,
-                 const ::loom::fabric::FabricPhysicalTraversalRef &reference) {
-  const auto found = llvm::find_if(topology.traversals(), [&](const auto &row) {
-    return row.reference == reference;
-  });
-  if (found == topology.traversals().end())
-    return std::nullopt;
-  return static_cast<PnrIndex>(found - topology.traversals().begin());
-}
-
-std::optional<PnrIndex>
 terminalOrdinal(const FrozenSystemPnrProblem &problem,
                 const ::loom::mapping::SystemTransferTerminalKey &key) {
   const auto found =
@@ -506,7 +484,7 @@ std::optional<ProjectedRoute> projectParentRoute(
     llvm::consumeError(mappedRoot.takeError());
     return std::nullopt;
   }
-  auto root = endpointOrdinal(problem.routingTopology(), *mappedRoot);
+  auto root = problem.routingTopology().endpointOrdinal(*mappedRoot);
   if (!root)
     return std::nullopt;
   ProjectedRoute result;
@@ -530,7 +508,7 @@ std::optional<ProjectedRoute> projectParentRoute(
       llvm::consumeError(mappedTraversal.takeError());
       return std::nullopt;
     }
-    auto traversal = traversalOrdinal(topology, *mappedTraversal);
+    auto traversal = topology.traversalOrdinal(*mappedTraversal);
     if (!traversal)
       return std::nullopt;
     const PnrIndex parentEndpoint = result.nodes[node->parentOrdinal].endpoint;

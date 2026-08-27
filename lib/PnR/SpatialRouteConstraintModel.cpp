@@ -107,11 +107,11 @@ bool equalBits(llvm::ArrayRef<std::uint64_t> lhs,
   return llvm::equal(lhs, rhs);
 }
 
-template <typename Ref>
+template <typename Ref, typename Lookup>
 llvm::Expected<std::vector<PnrIndex>> decodeDomain(
     Projection projection,
     const std::optional<llvm::ArrayRef<SpatialConstraintDomainValue>> &domain,
-    const std::map<Key, PnrIndex> &ordinals) {
+    Lookup &&lookup) {
   std::vector<PnrIndex> result;
   if (!domain)
     return result;
@@ -121,11 +121,11 @@ llvm::Expected<std::vector<PnrIndex>> decodeDomain(
     if (!reference)
       return freezeInvalid(projection,
                            "domain contains a value of the wrong type");
-    const auto found = ordinals.find(fabricKey(*reference));
-    if (found == ordinals.end())
+    const std::optional<PnrIndex> ordinal = lookup(*reference);
+    if (!ordinal)
       return freezeInvalid(projection,
                            "domain names a value absent from the frozen owner");
-    result.push_back(found->second);
+    result.push_back(*ordinal);
   }
   llvm::sort(result);
   result.erase(std::unique(result.begin(), result.end()), result.end());
@@ -163,14 +163,6 @@ SpatialRouteConstraintModel::create(const ArtifactIdentity &dataflowIdentity,
                            "logical-net producer key is not unique");
   }
 
-  std::map<Key, PnrIndex> traversalOrdinals;
-  for (auto [ordinal, traversal] : llvm::enumerate(routing.traversals()))
-    if (!traversalOrdinals
-             .try_emplace(fabricKey(traversal.reference),
-                          static_cast<PnrIndex>(ordinal))
-             .second)
-      return freezeInvalid(Projection::NetSelectedPhysicalTraversals,
-                           "physical traversal reference is not unique");
   std::map<Key, PnrIndex> resourceOrdinals;
   for (auto [ordinal, state] : llvm::enumerate(resources.resourceStates()))
     if (!resourceOrdinals
@@ -192,7 +184,9 @@ SpatialRouteConstraintModel::create(const ArtifactIdentity &dataflowIdentity,
     const auto traversalDomain = traversalShard.restrictedDomain(subject);
     auto traversals = decodeDomain<FabricPhysicalTraversalRef>(
         Projection::NetSelectedPhysicalTraversals, traversalDomain,
-        traversalOrdinals);
+        [&](const FabricPhysicalTraversalRef &reference) {
+          return routing.topology().traversalOrdinal(reference);
+        });
     if (!traversals)
       return traversals.takeError();
     SpatialRouteConstraintDomain &traversalRecord =
@@ -217,7 +211,12 @@ SpatialRouteConstraintModel::create(const ArtifactIdentity &dataflowIdentity,
     const auto resourceDomain = resourceShard.restrictedDomain(subject);
     auto states = decodeDomain<FabricResourceStateRef>(
         Projection::NetTraversalResourceStates, resourceDomain,
-        resourceOrdinals);
+        [&](const FabricResourceStateRef &reference) -> std::optional<PnrIndex> {
+          const auto found = resourceOrdinals.find(fabricKey(reference));
+          if (found == resourceOrdinals.end())
+            return std::nullopt;
+          return found->second;
+        });
     if (!states)
       return states.takeError();
     SpatialRouteConstraintDomain &resourceRecord =
