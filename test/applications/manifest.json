@@ -79,7 +79,8 @@
             "warmup_samples": 0,
             "measured_samples": 1,
             "oracle_coverage": "all_measured_samples",
-            "deadline_milliseconds": 120000
+            "deadline_milliseconds": 120000,
+            "maximum_simulated_ticks": 70000000000
           }
         }
       ],
@@ -236,7 +237,8 @@
             "warmup_samples": 0,
             "measured_samples": 1,
             "oracle_coverage": "all_measured_samples",
-            "deadline_milliseconds": 120000
+            "deadline_milliseconds": 120000,
+            "maximum_simulated_ticks": 70000000000
           }
         }
       ],
@@ -405,7 +407,8 @@
             "warmup_samples": 0,
             "measured_samples": 1,
             "oracle_coverage": "all_measured_samples",
-            "deadline_milliseconds": 120000
+            "deadline_milliseconds": 120000,
+            "maximum_simulated_ticks": 70000000000
           }
         }
       ],

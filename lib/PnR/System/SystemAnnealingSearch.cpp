@@ -291,10 +291,9 @@ void emitSystemActionEvent(
 
 } // namespace
 
-llvm::Expected<SystemAnnealingStatistics>
-SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
-                                  std::uint64_t seedAttemptOrdinal,
-                                  ExecutionControlView executionControl) {
+llvm::Expected<SystemAnnealingStatistics> SystemAnnealingSearchScratch::run(
+    SystemCandidateStateHandle &candidate, std::uint64_t seedAttemptOrdinal,
+    ExecutionControlView executionControl, PnrWorkLedgerView workLedger) {
   const FrozenSystemPnrProblem &problem = candidate->problem();
   const ResolvedPnrPolicyConfig &policy = problem.config().policy();
   if (seedAttemptOrdinal >= policy.search.initializer.seedAttemptCount)
@@ -424,20 +423,27 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
        ++slot) {
     if (executionControl.stopRequested())
       return finishInterrupted();
-    if (llvm::Error error = checkedAdd(1, statistics.calibrationProposalSlots,
-                                       "calibration proposal slot"))
+    if (llvm::Error error = workLedger.plan(PnrWorkKind::CalibrationProposal))
       return std::move(error);
     auto action = proposeSystemAction(policy.search.actionProposal,
                                       actionDomain_.view(), calibrationStream);
     if (!action)
       return action.takeError();
+    if (llvm::Error error = checkedAdd(1, statistics.calibrationProposalSlots,
+                                       "calibration proposal slot"))
+      return std::move(error);
+    if (llvm::Error error =
+            workLedger.consume(PnrWorkKind::CalibrationProposal))
+      return std::move(error);
     if (!*action)
       continue;
     emitSystemActionEvent(mapping_debug::Event::ActionProposal, **action,
                           "calibration", seedAttemptOrdinal, slot, std::nullopt,
                           std::nullopt);
     SystemActionProbeAccounting work;
-    auto probe = probeSystemAction(candidate, currentObjective, **action, work);
+    auto probe =
+        probeSystemAction(candidate, currentObjective, **action, work,
+                          SystemActionExecutionContext::NonFinal, workLedger);
     if (llvm::Error error = accountProbe(work, statistics, "calibration"))
       return std::move(error);
     if (!probe) {
@@ -509,8 +515,10 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
           slot < annealing.proposalsPerLevelBase
               ? statistics.annealingBaseProposalSlots
               : statistics.annealingMovableProposalSlots;
-      if (llvm::Error error =
-              checkedAdd(1, slotDomain, "annealing domain slot"))
+      const PnrWorkKind slotKind = slot < annealing.proposalsPerLevelBase
+                                       ? PnrWorkKind::AnnealingBaseProposal
+                                       : PnrWorkKind::AnnealingMovableProposal;
+      if (llvm::Error error = workLedger.plan(slotKind))
         return std::move(error);
       if (!domainCurrent) {
         if (llvm::Error error = actionDomain_.rebuild(*candidate))
@@ -531,17 +539,25 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
                                           actionDomain_.view(), proposalStream);
         if (!action)
           return action.takeError();
-        if (!*action)
-          continue;
-        selectedAction = std::move(**action);
+        if (*action)
+          selectedAction = std::move(**action);
       }
+      if (llvm::Error error =
+              checkedAdd(1, slotDomain, "annealing domain slot"))
+        return std::move(error);
+      if (llvm::Error error = workLedger.consume(slotKind))
+        return std::move(error);
+      if (!selectedAction)
+        continue;
       const SystemMappingAction &action = *selectedAction;
       emitSystemActionEvent(mapping_debug::Event::ActionProposal, action,
                             upstreamReopen ? "upstream_reopen" : "annealing",
                             seedAttemptOrdinal, slot, temperatureLevel,
                             schedule->temperature());
       SystemActionProbeAccounting work;
-      auto probe = probeSystemAction(candidate, currentObjective, action, work);
+      auto probe =
+          probeSystemAction(candidate, currentObjective, action, work,
+                            SystemActionExecutionContext::NonFinal, workLedger);
       if (llvm::Error error = accountProbe(work, statistics, "annealing"))
         return std::move(error);
       if (!probe) {

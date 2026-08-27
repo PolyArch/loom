@@ -482,7 +482,8 @@ llvm::Expected<std::string> renderProjection(const Gem5SystemFacts &facts,
         });
       }
     });
-    json.attribute("maximum_ticks", kMaximumGem5Ticks);
+    json.attribute("maximum_ticks", facts.maximumSimulatedTicks.value_or(
+                                         kMaximumGem5Ticks));
   });
   stream << '\n';
   stream.flush();

@@ -322,20 +322,30 @@ llvm::Expected<bool> activeRouteRankLess(const PreparedTechCandidate &lhs,
 
 llvm::Error
 orderPreparedCandidates(std::vector<PreparedTechCandidate> &candidates) {
-  for (std::size_t index = 1; index < candidates.size(); ++index) {
-    PreparedTechCandidate candidate = std::move(candidates[index]);
+  std::vector<std::size_t> order;
+  order.reserve(candidates.size());
+  for (std::size_t index = 0; index < candidates.size(); ++index)
+    order.push_back(index);
+  for (std::size_t index = 1; index < order.size(); ++index) {
+    const std::size_t candidate = order[index];
     std::size_t insertion = index;
     while (insertion != 0) {
-      auto before = activeRouteRankLess(candidate, candidates[insertion - 1]);
+      auto before = activeRouteRankLess(candidates[candidate],
+                                        candidates[order[insertion - 1]]);
       if (!before)
         return before.takeError();
       if (!*before)
         break;
-      candidates[insertion] = std::move(candidates[insertion - 1]);
+      order[insertion] = order[insertion - 1];
       --insertion;
     }
-    candidates[insertion] = std::move(candidate);
+    order[insertion] = candidate;
   }
+  std::vector<PreparedTechCandidate> sorted;
+  sorted.reserve(candidates.size());
+  for (std::size_t index : order)
+    sorted.push_back(std::move(candidates[index]));
+  candidates = std::move(sorted);
   return llvm::Error::success();
 }
 
@@ -502,8 +512,8 @@ llvm::Error accountUnconsumedSeedHandoff(
         std::make_error_code(std::errc::invalid_argument),
         "root-complete Spatial seed handoff is not a single outcome");
   ::loom::pnr::SpatialPnrGenerationAccounting accounting;
-  accounting.plannedSeedAttemptSlots = 1;
-  accounting.seedAttemptSlots = handoff->workSummary.seedAttemptCompleted;
+  accounting.plannedSeedAttemptSlots = handoff->workSummary.plannedSeedAttempts;
+  accounting.seedAttemptSlots = handoff->workSummary.seedAttempts;
   accounting.preparedSeeds = handoff->seed ? 1 : 0;
   accounting.initializerAssignmentAttempts =
       handoff->workSummary.initializerAssignmentAttempts;
@@ -519,7 +529,7 @@ llvm::Error accountUnconsumedSeedHandoff(
   const std::vector<CandidateGeneratorWorkUnitSummary> handoffSummary =
       spatialPnrCandidateGeneratorWorkSummary(accounting);
   executionFailed |=
-      (handoff->failure && !handoff->workSummary.seedAttemptCompleted) ||
+      (handoff->failure && handoff->workSummary.seedAttempts == 0) ||
       llvm::any_of(handoffSummary, [](const auto &unit) {
         return unit.planned != unit.consumed;
       });
@@ -796,8 +806,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                     rankWork.endpointExpansions);
       saturatingAdd(activeProblemCacheStatistics.rankNegotiationIterations,
                     rankWork.negotiationIterations);
-      auto handoff = std::make_shared<
-          ::loom::pnr::SpatialPathFinderSeedHandoff>();
+      auto handoff =
+          std::make_shared<::loom::pnr::SpatialPathFinderSeedHandoff>();
       handoff->attemptOrdinal = 0;
       handoff->problemCacheKey = candidate.activeProblem->cacheKey();
       handoff->workSummary = rankWork;
@@ -822,6 +832,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
         if (violationError) {
           const std::string diagnostic =
               llvm::toString(std::move(violationError));
+          rankExecutionFailed = true;
           ::loom::mapping_debug::emit(
               ::loom::mapping_debug::Level::Summary,
               ::loom::mapping_debug::Stage::SpatialPnr,
@@ -838,11 +849,28 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
         } else {
           auto objective = candidate.activeProblem->objectiveProgram().evaluate(
               *handoff->seed->candidate);
-          if (!objective)
-            return objective.takeError();
-          routeRank.emplace(ActiveRouteRank{std::move(*objective), violations,
-                                            rankWork.endpointExpansions,
-                                            rankWork.negotiationIterations});
+          if (!objective) {
+            rankExecutionFailed = true;
+            const std::string diagnostic =
+                llvm::toString(objective.takeError());
+            ::loom::mapping_debug::emit(
+                ::loom::mapping_debug::Level::Summary,
+                ::loom::mapping_debug::Stage::SpatialPnr,
+                ::loom::mapping_debug::Event::MappingFailure,
+                [&](llvm::json::Object &fields) {
+                  fields["failure_scope"] = "active_route_rank";
+                  fields["closure_status"] = "not_ranked";
+                  fields["tech_mapping_input_ordinal"] =
+                      static_cast<std::uint64_t>(inputOrdinal);
+                  fields["tech_mapping"] =
+                      formatArtifactIdentityHex(techReference.artifact);
+                  fields["diagnostic"] = diagnostic;
+                });
+          } else {
+            routeRank.emplace(ActiveRouteRank{std::move(*objective), violations,
+                                              rankWork.endpointExpansions,
+                                              rankWork.negotiationIterations});
+          }
         }
       } else {
         handoff->failure = seed.takeError();
@@ -854,9 +882,28 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     preparedCandidates.push_back(std::move(candidate));
   }
 
-  if (!firstVerifiedCandidate)
-    if (llvm::Error error = orderPreparedCandidates(preparedCandidates))
+  if (rankExecutionFailed) {
+    if (llvm::Error error = settleUnconsumedSeeds())
       return std::move(error);
+    return executionFailedResult();
+  }
+  if (!firstVerifiedCandidate) {
+    if (llvm::Error error = orderPreparedCandidates(preparedCandidates)) {
+      const std::string diagnostic = llvm::toString(std::move(error));
+      ::loom::mapping_debug::emit(::loom::mapping_debug::Level::Summary,
+                                  ::loom::mapping_debug::Stage::SpatialPnr,
+                                  ::loom::mapping_debug::Event::MappingFailure,
+                                  [&](llvm::json::Object &fields) {
+                                    fields["failure_scope"] =
+                                        "active_route_rank";
+                                    fields["closure_status"] = "not_ranked";
+                                    fields["diagnostic"] = diagnostic;
+                                  });
+      if (llvm::Error settleError = settleUnconsumedSeeds())
+        return std::move(settleError);
+      return executionFailedResult();
+    }
+  }
   canonicalizeGraphReferences(candidateGraphs);
   const auto emitCandidateOrder = [&](const PreparedTechCandidate &candidate,
                                       std::size_t rank) {

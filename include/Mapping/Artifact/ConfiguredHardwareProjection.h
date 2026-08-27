@@ -55,9 +55,10 @@ struct PhysicalConfiguredHardwareFieldValueView final {
   CanonicalSemanticBytes value;
 };
 
-/// Occurrence-qualified, removable projection of configuration values already
-/// validated by the imported SpatialMapping set. This view only qualifies and
-/// joins Mapping-owned values; it never reprojects actor or route semantics.
+/// Removable complete-System projection of configuration values. Imported
+/// SpatialMapping values are occurrence-qualified, while direct System
+/// transport controls are derived from the exact SystemMapping route trees.
+/// Fabric remains the sole owner of every field shape and value codec.
 class PhysicalConfiguredHardwareProjectionView final {
 public:
   llvm::ArrayRef<PhysicalConfiguredHardwareFieldValueView> fields() const {

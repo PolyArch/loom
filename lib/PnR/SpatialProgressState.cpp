@@ -688,7 +688,8 @@ SpatialProgressState::verify(const SpatialCandidateState &candidate) const {
   }();
   if (!cold)
     return cold.takeError();
-  if (*cold != hardProgressViolation())
+  if (*cold !=
+      sharedFiniteBufferConflictCount_ + routeDependencyViolationCount_)
     return invalid("incremental hard-progress total diverges from cold verifier");
   verificationTimer.finish();
   if (statisticsEnabled_)

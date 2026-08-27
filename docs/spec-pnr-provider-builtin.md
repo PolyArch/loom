@@ -11,13 +11,13 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.1
+  loom.spatial_pnr.config.15.3
   loom.spatial_pnr.freeze.2.22
   loom.mapping.pnr.objective 3.1
   selected FabricPhysicalTimingProfile descriptor and digest
 
 System:
-  loom.system_pnr.config.8.0
+  loom.system_pnr.config.8.2
   loom.system_pnr_search_domain.4.0
   loom.mapping.pnr.objective 3.1
   exact selected SpatialMapping references
@@ -255,6 +255,15 @@ The Spatial provider uses the required in-process `CpSat_3_0` adapter from the
 pinned OR-Tools v9.15 source commit
 `551ad10d94835c99e5e1e684500d3db398c0e345`.
 
+Every canonical solve runs with presolve probing disabled and under a fixed
+deterministic-time budget of 2.0. Probing computes failed-literal information
+the canonical `FIXED_SEARCH` strategy never consumes, and the budget is an
+instruction-count clock, so the same model and seed exhaust it identically on
+every host. A budget-exhausted solve is the existing typed `Unknown` outcome:
+the repair remains incomplete and can never prove infeasibility or consume the
+invocation deadline. These solver constants are part of the versioned config
+descriptors above; changing them is a formal search-order change.
+
 There are two actual repair profiles:
 
 1. **Transport closure** encodes compute and memory placement, exact terminal
@@ -264,19 +273,21 @@ There are two actual repair profiles:
 2. **Atomic capacity** encodes compute binding and its complete hard relation
    closure. It does not encode memory binding decisions.
 
-Before Candidate state is allocated, the provider checks that these profiles
-are total for the frozen domain. Every Spatial constraint projection is
-classified exhaustively by its binding, route, tag, or memory owner.
+Before Candidate state is allocated, the provider rejects statically
+recognizable frozen-domain capability mismatches. Every Spatial constraint
+projection is classified exhaustively by its binding, route, tag, or memory
+owner.
 `CpSat_3_0` is rejected as unsupported when an atomic compute relation closure
 can reach a non-compute decision, or when a selectable memory operation plan,
 memory dispatch, or exposure provider can contribute atomic capacity overuse.
 No search begins for such a domain, and no alternate repair algorithm is
 selected implicitly.
 
-A direct scratch invocation outside an admitted profile returns the defensive
-`UnsupportedEncoding` result; generation cannot reach that result for an
-admitted domain. Region overflow returns
-`RegionTooLarge`; solver-call exhaustion or any non-proof-bearing status returns
+A candidate-local witness that has no complete typed encoding returns
+`UnsupportedEncoding`, including a route-progress dependency violation without
+a finite-buffer owner witness. This runtime result remains incomplete and
+cannot prove infeasibility. Region overflow returns `RegionTooLarge`;
+solver-call exhaustion or any non-proof-bearing status returns
 `UnknownBudgetExhausted`.
 
 The result vocabulary is:
@@ -326,7 +337,22 @@ Artifact reference enters the canonical candidate set.
 
 ## System Restart Sequence
 
-System restarts run in canonical attempt order. Each executes:
+The System provider allocates one isolated restart slot per configured fresh
+seed attempt, plus one migration slot when a migration projection is present.
+As in the Spatial sequence, slots may execute in parallel under
+`ExhaustConfiguredWork`, but their results are reduced by original restart
+ordinal: accounting accumulation, incomplete classification, candidate
+publication, and interruption reporting all follow canonical attempt order, so
+scheduling cannot change candidate identity, formal work accounting, or the
+first-incomplete diagnostic. Draft materialization, SystemMapping
+finalization, and publication run only in the ordinal reduction. The migration
+slot executes before the fresh slots because its direct-publication trial and
+its annealed candidate share one state. `FirstVerifiedCandidate` remains a
+serial bounded-prefix execution. Worker allocation is bounded by the
+configured candidate-worker request and the fresh restart count and is
+diagnostic only.
+
+Each restart slot executes:
 
 ```text
 hierarchical binding and service initialization

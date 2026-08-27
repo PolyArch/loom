@@ -667,11 +667,9 @@ strictImportModule(const ArtifactIdentity &identity,
     }
   }
 
-  auto rewritten = detail::writeCanonicalFabricBytecode(module);
-  if (!rewritten)
-    return rewritten.takeError();
-  if (*rewritten != decoded.canonicalMlirBytecode)
-    return invalid("canonical MLIR bytecode is not byte stable");
+  if (llvm::Error error = detail::verifyCanonicalFabricBytecodeStability(
+          module, decoded.canonicalMlirBytecode))
+    return std::move(error);
   detail::FabricEntityViewData boundaryProjection;
   boundaryProjection.owner.inventoryCounts = detail::emptyFabricInventories();
   if (llvm::Error error =
@@ -1302,6 +1300,9 @@ llvm::Expected<FabricArtifactView> buildSystemView(
       if (!contract)
         return contract.takeError();
       entity.owner.resourceContract = std::move(*contract);
+      if (resource.getConfigurationSelectedPatternsAttr())
+        entity.owner.inventoryCounts[static_cast<std::size_t>(
+            FabricInventoryKind::SemanticConfigField)] = 1;
       if (DenseI8ArrayAttr crossing = resource.getClockCrossingAttr()) {
         auto decoded =
             decodeClockCrossingContractRecord(unsignedBytes(crossing));
@@ -1430,6 +1431,14 @@ llvm::Expected<FabricArtifactView> buildSystemView(
   auto systemView = requireSystemRoot(*view);
   if (!systemView)
     return systemView.takeError();
+  for (SystemTransportResourceRef resource : systemView->transportResources()) {
+    const FabricInventoryOwnerRef owner = FabricInventoryOwnerRef::of(resource);
+    if (systemView->artifact().inventorySize(
+            owner, FabricInventoryKind::SemanticConfigField) != 0 &&
+        systemView->transferPatterns(resource).size() < 2)
+      return invalid("configuration-selected transport resource has fewer "
+                     "than two transfer patterns");
+  }
   if (llvm::Error error =
           validateSystemRelations(root, *systemView, importedModules))
     return std::move(error);
@@ -1602,11 +1611,9 @@ strictImportSystem(const ArtifactIdentity &identity,
   if (expectedOperation != labeling->canonicalOperationOrder.end())
     return invalid("canonical System child operation order is not canonical");
 
-  auto rewritten = detail::writeCanonicalFabricBytecode(module);
-  if (!rewritten)
-    return rewritten.takeError();
-  if (*rewritten != decoded.canonicalMlirBytecode)
-    return invalid("canonical System MLIR bytecode is not byte stable");
+  if (llvm::Error error = detail::verifyCanonicalFabricBytecodeStability(
+          module, decoded.canonicalMlirBytecode))
+    return std::move(error);
   auto view = buildSystemView(root, *labeling, identity, importedModules,
                               parsed->context);
   if (!view)

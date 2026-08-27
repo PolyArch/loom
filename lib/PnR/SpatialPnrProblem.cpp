@@ -330,7 +330,7 @@ public:
     if (!routeConstraints)
       return routeConstraints.takeError();
     auto handshake = detail::buildFrozenSpatialHandshakeIndex(
-        dataflow, techMapping, fabric, staticContext.handshake,
+        dataflow, techMapping, fabric, *staticContext.handshake,
         *realizations, *resources, *routing, *activeRouting);
     if (!handshake)
       return handshake.takeError();
@@ -1151,7 +1151,7 @@ public:
       auto tagContinuity = freezeSpatialTagContinuityIndex(fabric);
       if (!tagContinuity)
         return tagContinuity.takeError();
-      auto handshake = buildFabricHandshakeContext(fabric);
+      auto handshake = acquireFabricHandshakeContext(fabric);
       if (!handshake)
         return handshake.takeError();
       std::optional<FabricTopologyQualityReport> topologyQuality;
@@ -1178,10 +1178,11 @@ public:
       staticStatistics.constructionNanoseconds =
           detail::elapsedNanoseconds(staticBegin);
       staticStatistics.retainedBytes = detail::staticContextRetainedBytes(
-          *resourcesOwner, *topologyOwner, *tagOwner, staticContext->handshake,
+          *resourcesOwner, *topologyOwner, *tagOwner,
+          *staticContext->handshake,
           staticContext->topologyQuality);
       const FabricHandshakeContextStatistics &handshakeStatistics =
-          staticContext->handshake.statistics();
+          staticContext->handshake->statistics();
       staticStatistics.deterministicWork =
           resourcesOwner->resourceOwners().size() +
           topologyOwner->endpoints().size() +
@@ -1212,7 +1213,7 @@ public:
     statistics.traversalCount = topologyOwner->traversals().size();
     statistics.routingArcCount = topologyOwner->arcs().size();
     const FabricHandshakeContextStatistics &handshakeStatistics =
-        staticContext->handshake.statistics();
+        staticContext->handshake->statistics();
     statistics.handshakeOwnerCount = handshakeStatistics.ownerCount;
     statistics.handshakeStructuralTemplateCount =
         handshakeStatistics.structuralTemplateCount;
@@ -1352,7 +1353,7 @@ public:
             staticContext.tagContinuity.get())
       return invalid("Fabric derived context lost a static projection");
     if (llvm::Error error =
-            revalidateFabricHandshakeContext(staticContext.handshake, fabric))
+            revalidateFabricHandshakeContext(*staticContext.handshake, fabric))
       return error;
     return llvm::Error::success();
   }

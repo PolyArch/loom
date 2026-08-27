@@ -164,7 +164,10 @@ buildSystemDesign(const ::loom::fabric::FinalizedFabricRoot &module,
     resetMembers.push_back(sources[ordinal].domainMember());
     resetMembers.push_back(sinks[ordinal].domainMember());
     auto router = system->addTransportResource(
-        {{*carrier, *carrier}, {*carrier, *carrier}, *transportContract});
+        {{*carrier, *carrier},
+         {*carrier, *carrier},
+         *transportContract,
+         ::loom::adg::SystemTransferPatternSelection::Configuration});
     if (!router)
       return failure(llvm::toString(router.takeError()));
     routers.push_back(*router);

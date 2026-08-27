@@ -4,8 +4,11 @@
 #include "Runtime/DeploymentLoader.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace loom::runtime {
@@ -15,26 +18,50 @@ struct InProcessRuntimeReadbackCorruption final {
   std::uint32_t xorMask = 0;
 };
 
+enum class InProcessRuntimeVerificationMismatchBoundary : std::uint8_t {
+  ExclusiveLease,
+  InitialReset,
+  RecoveryReset,
+};
+
 /// Deterministic controls for the test-oriented in-process platform. They are
 /// local provider behavior and never enter a RuntimePlatformBinding.
 struct InProcessRuntimeFailurePlan final {
   std::optional<std::uint64_t> configurationWriteOrdinal;
   std::optional<InProcessRuntimeReadbackCorruption> readbackCorruption;
-  bool identityMismatchAfterRecoveryReset = false;
+  std::optional<InProcessRuntimeVerificationMismatchBoundary>
+      verificationMismatchBoundary;
   std::optional<std::uint64_t> activationPreparationOrdinal;
   std::uint64_t activationReplacementFailures = 0;
   std::uint64_t activationDiscardFailures = 0;
+  std::uint64_t leaseReleaseFailures = 0;
+  std::uint64_t quarantineLeaseReleaseFailures = 0;
 };
 
 struct InProcessRuntimeDeviceConfig final {
+  InProcessRuntimeDeviceConfig() = default;
+  InProcessRuntimeDeviceConfig(
+      std::vector<ArtifactIdentity> hardwareImplementations,
+      std::optional<BlobDigest> trustedAttestation,
+      InProcessRuntimeFailurePlan failures,
+      std::optional<std::string> machineDeviceIdentity = std::nullopt)
+      : hardwareImplementations(std::move(hardwareImplementations)),
+        trustedAttestation(std::move(trustedAttestation)),
+        failures(std::move(failures)),
+        machineDeviceIdentity(std::move(machineDeviceIdentity)) {}
+
   std::vector<ArtifactIdentity> hardwareImplementations;
   std::optional<BlobDigest> trustedAttestation;
   InProcessRuntimeFailurePlan failures;
+  /// Equal non-empty values in separate provider instances denote the same
+  /// simulated machine-local device. An absent value creates a distinct device.
+  std::optional<std::string> machineDeviceIdentity;
 };
 
 struct InProcessRuntimeStatistics final {
   std::uint64_t enumerationCount = 0;
   std::uint64_t identityReadCount = 0;
+  std::uint64_t attestationReadCount = 0;
   std::uint64_t leaseAcquisitionCount = 0;
   std::uint64_t resetCount = 0;
   std::uint64_t configurationWriteCount = 0;
@@ -57,13 +84,13 @@ public:
 
   const RuntimeProviderDescriptor &descriptor() const override;
   llvm::Expected<std::vector<RuntimeDeviceHandle>> enumerateDevices() override;
-  llvm::Expected<ArtifactIdentity> readImplementationIdentity(
-      const RuntimeDeviceHandle &device,
-      const RuntimeProviderEndpointRef &endpoint) override;
-  llvm::Expected<BlobDigest>
-  readTrustedAttestation(const RuntimeDeviceHandle &device) override;
   llvm::Expected<RuntimeLeaseHandle>
   acquireExclusiveLease(const RuntimeDeviceHandle &device) override;
+  llvm::Expected<ArtifactIdentity> readImplementationIdentity(
+      const RuntimeLeaseHandle &lease,
+      const RuntimeProviderEndpointRef &endpoint) override;
+  llvm::Expected<BlobDigest>
+  readTrustedAttestation(const RuntimeLeaseHandle &lease) override;
   llvm::Error quiesceAndReset(const RuntimeLeaseHandle &lease) override;
   llvm::Error
   writeConfigurationWord(const RuntimeLeaseHandle &lease,
@@ -98,8 +125,9 @@ public:
   llvm::Error discardPreparedActivation(
       const RuntimeLeaseHandle &lease,
       const RuntimePreparedActivationHandle &prepared) override;
-  llvm::Error releaseExclusiveLease(const RuntimeLeaseHandle &lease) override;
-  void quarantineDevice(const RuntimeDeviceHandle &device) override;
+  RuntimeLeaseFinalizationResult
+  finalizeExclusiveLease(const RuntimeLeaseHandle &lease,
+                         RuntimeLeaseFinalizationRequest request) override;
 
   InProcessRuntimeStatistics statistics() const;
   bool isQuarantined(std::uint64_t deviceOrdinal) const;

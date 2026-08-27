@@ -186,11 +186,11 @@ bindPreparedEvaluationModelInvocation(
     const external_tool::PreparedExternalToolInvocation &prepared,
     const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
-/// Strictly imports one prepared invocation through the exact registered
-/// ExternalPrepareImport model provider against the full typed closure, then
-/// validates and finalizes the canonical Evidence value. The provider import
-/// itself returns only the transient model result and never publishes
-/// Evidence.
+/// Current-generation recovery/probe import through the exact registered
+/// ExternalPrepareImport model provider against the full typed closure. This
+/// overload must not follow a current-process execution; that path uses the
+/// receipt-bound overload below. The provider import returns only the
+/// transient model result and never publishes Evidence.
 llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const EvaluationModelPreparedInvocation &prepared,

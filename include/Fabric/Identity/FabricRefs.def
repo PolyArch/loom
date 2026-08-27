@@ -149,7 +149,7 @@
 #define LOOM_FABRIC_REFINEMENT(Name, Alias, Underlying)
 #endif
 
-// Complete loom.fabric 6.x owner-local ArtifactLocalReference kind catalog.
+// Complete loom.fabric 7.x owner-local ArtifactLocalReference kind catalog.
 // Ordinal is the stable Common owner_local_kind and Type is its exact typed
 // target. Nested unions and endpoint components are intentionally absent
 // unless they are listed here.

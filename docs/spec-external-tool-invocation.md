@@ -611,6 +611,37 @@ directory. Make, Ninja, Slurm, a shell, a container orchestrator, or another
 caller may execute bundles in parallel. No bundle depends on mutable process
 environment left by another bundle.
 
+Executions of the same finalized bundle-root path are instead serialized by
+one exclusive fence at the stable adjacent path
+`<bundle-root>.loom-execution.lock`. The fence file is operational, remains in
+place across generations, and is never replaced or removed by execution. A
+direct `run.sh` acquires it before clearing prior operational state and
+atomically publishing a fresh attempt token. The observed library executor
+performs the same transition while holding the fence, then passes inherited
+fence and bundle-root descriptors to every generated launcher. It retains its
+descriptor through launcher termination, completion validation, command-
+observation collection, and receipt sealing. Every conforming launcher
+descendant retains the inherited fence until it has relinquished all authority
+to write the bundle, so a detached descendant still delays the next
+generation. Attempt creation is part of the fenced execution entry point
+rather than a public token-publication operation. The fence and token are
+nonsemantic: neither changes the prepared manifest, invocation identity,
+persistent result-cache key, or owning WorkUnitKey.
+
+After admission, the opened bundle-root descriptor is the live execution
+identity. Completion, command-observation, cache, cleanup, and receipt-sealing
+operations use that descriptor and cannot be redirected to a different inode
+later bound to the logical bundle-root path. Recovery import begins after the
+live descriptor lifetime and therefore resolves the current durable generation
+through the logical path.
+
+Observed execution samples its caller-owned execution control while waiting
+for fence admission. A stop before ownership returns the typed
+`ExternalToolExecutionAdmissionStoppedError` and leaves the prior token,
+completion, observations, and declared outputs untouched. Once the executor
+publishes a fresh token, interruption belongs to that new generation and uses
+the sealed stopped or incomplete attempt semantics below.
+
 Every command before a tool-produced executable uses the exact frozen tool
 binding. A listed produced path is canonical, relative, strictly below
 `work/`, and absent from materialized inputs and declared outputs. The shared
@@ -638,12 +669,11 @@ no completion record; that remains an incomplete attempt.
 A prepared bundle with no completion record is merely incomplete. A present
 malformed, noncanonical, or manifest-unbound completion is instead an
 integrity failure. Loom does not infer whether an external process is still
-running, acquire an execution claim, retry the script, or create a replacement
-attempt. The caller or its external execution owner decides whether to wait,
-cancel, rerun, or prepare another owner attempt and is responsible for
-preventing concurrent writes. A new attempt may retain the same semantic
-WorkUnitKey but receives an independent bundle. None of these execution
-choices changes semantic identity or introduces a Loom Job state machine.
+running, retry the script, or create a replacement attempt. The caller or its
+external execution owner decides whether to wait, cancel, rerun the fenced
+prepared root, or prepare another owner attempt. A new generation may retain
+the same semantic WorkUnitKey. None of these execution choices changes
+semantic identity or introduces a Loom Job state machine.
 
 The shared expectation-bound attempt importer validates the prepared-manifest
 handle, exact provider identity, semantic closure, importer identity, semantic
@@ -666,6 +696,37 @@ directory or infers the nearest report. They are library operations, not a
 third semantic importer or persistent output owner. The exact generator or
 evaluator descriptor owns any later derivation into its semantic outcome;
 External Tool Invocation does not define a universal status mapping.
+
+There are exactly two import authorities. Recovery-only import has no live
+executor witness and therefore accepts only the valid completion bound to the
+currently published durable generation. A current-process execute-to-import
+path retains the sealed execution observation and must pass it to the
+receipt-bound importer; it cannot fall back to recovery import. That importer
+proves that the executor issued the observation, requires its sealed manifest,
+token, exit disposition, cache disposition, and command observations to match,
+and rechecks the same current generation and completion after snapshotting all
+declared outputs. The receipt owns no output bytes; only the returned imported
+bundle owns the immutable snapshot.
+
+The observed executor releases its fence descriptor when execution and receipt
+sealing return, not after a later semantic import. An inherited descendant
+remains a fence co-owner until it relinquishes bundle-write authority, and the
+next generation cannot begin before every such holder closes. A later
+generation may therefore supersede an unimported receipt only after the prior
+execution lifetime ends. In that case the older receipt must reject, the later
+generation may import, and an older conforming launcher cannot overwrite the
+later generation's operational state or outputs.
+
+A launcher descendant that explicitly closes its last inherited fence
+reference, calls `LOCK_UN` on the shared open-file description, or otherwise
+relinquishes the fence while retaining authority to write the bundle violates
+this execution contract. The generic launcher cannot prove quiescence for such
+an arbitrary detached process. A provider that cannot establish the
+conforming-descendant contract for its complete tool closure must use an
+external lifecycle owner that proves quiescence before releasing the fence,
+allocate an independent attempt root, or return its owning domain's typed
+`Unsupported` outcome before execution. The generic External Tool layer does
+not claim containment of a process that has relinquished its fence authority.
 
 A Candidate Generator importer finalizes only its descriptor-owned Artifact
 outputs and returns dense descriptor output bindings plus typed lineage

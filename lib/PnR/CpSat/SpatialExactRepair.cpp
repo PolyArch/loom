@@ -121,9 +121,6 @@ firstTransportWitness(const SpatialCandidateState &candidate) {
   const FrozenSpatialPnrProblem &problem = candidate.problem();
   const auto &transfers = problem.transfers();
   const auto &routing = problem.routing();
-  if (const auto owner = candidate.progress().firstFiniteBufferConflictOwner())
-    return TransportWitness{ResolvedPnrViolationKind::HardProgressViolation,
-                            *owner};
   for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
        ++logicalNet)
     if (!candidate.usesRegisterFifo(logicalNet) &&
@@ -220,9 +217,8 @@ transportWitnessIsLive(const SpatialCandidateState &candidate,
       return invocationError("tag-conflict witness is out of range");
     return candidate.tagDomainConflictCount(witness.ordinal) != 0;
   case ResolvedPnrViolationKind::HardProgressViolation:
-    if (witness.ordinal >= problem.progressIndex().finiteBufferOwners().size())
-      return invocationError("finite-buffer progress witness is out of range");
-    return candidate.progress().finiteBufferOwnerConflicts(witness.ordinal);
+    return invocationError(
+        "finite-buffer sharing is not a transport repair witness");
   }
   llvm_unreachable("unknown Spatial transport witness kind");
 }
@@ -836,19 +832,6 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     }
     return llvm::Error::success();
   };
-  const auto addProgressWitness = [&](PnrIndex owner) -> llvm::Error {
-    if (llvm::Error error = candidate.rebuildFiniteBufferConflictWitness(
-            owner, hardProgressWitness_))
-      return error;
-    for (PnrIndex logicalNet : hardProgressWitness_.competingLogicalNets)
-      if (llvm::Error error = addWitnessNet(logicalNet))
-        return error;
-    if (hardProgressWitness_.routeAnchors.empty())
-      return invocationError(
-          "finite-buffer progress witness has no route anchor");
-    return llvm::Error::success();
-  };
-
   switch (primaryWitnessKind) {
   case ResolvedPnrViolationKind::UnroutedObligation: {
     bool found = false;
@@ -917,10 +900,8 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     break;
   }
   case ResolvedPnrViolationKind::HardProgressViolation:
-    if (llvm::Error error = addProgressWitness(primaryWitnessOrdinal))
-      return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                    llvm::toString(std::move(error)));
-    break;
+    return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                  "finite-buffer sharing is not a transport repair witness");
   }
   for (const SpatialFixedTerminalCutCertificate &certificate : certificates)
     for (const SpatialFixedTerminalCutNet &cut : certificate.forcedNetCuts)
@@ -1903,8 +1884,6 @@ std::size_t SpatialExactRepairScratch::retainedStorageBytes() const {
          retainedBytes(affectedNets_) +
          retainedBytes(accountedRegionDecisions_) +
          retainedBytes(accountedRegionNets_) +
-         retainedBytes(hardProgressWitness_.competingLogicalNets) +
-         retainedBytes(hardProgressWitness_.routeAnchors) +
          retainedBytes(routeCutCertificate_.forcedNetCuts) +
          retainedCertificateBytes(learnedCutCertificates_) +
          retainedBytes(routeCutBlockedTraversals_) +

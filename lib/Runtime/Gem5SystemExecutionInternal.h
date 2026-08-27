@@ -172,6 +172,7 @@ struct Gem5SystemFacts final {
   std::uint64_t stackBase = 0;
   std::uint64_t stackStride = 0;
   Gem5SimpleMemoryParameters memory;
+  std::optional<std::uint64_t> maximumSimulatedTicks;
   std::vector<ArtifactRootReference> artifactDependencies;
   std::vector<BlobDigest> blobDependencies;
 };

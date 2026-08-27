@@ -125,6 +125,7 @@ std::atomic_uint64_t providerCalls{0};
 std::atomic_uint64_t activeProviders{0};
 std::atomic_uint64_t maximumActiveProviders{0};
 std::atomic_uint64_t requiredConcurrentProviders{1};
+std::atomic_uint64_t serialProviderCallPrefix{0};
 std::atomic_bool waitForStopRequest{false};
 std::atomic_bool observedStopRequest{false};
 std::atomic<PlanExecutionProviderOutcomeKind> providerOutcome{
@@ -154,7 +155,8 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       inputBindings.front().artifacts.size() != 1)
     return invalid("provider received the wrong exact invocation");
 
-  providerCalls.fetch_add(1, std::memory_order_relaxed);
+  const std::uint64_t callOrdinal =
+      providerCalls.fetch_add(1, std::memory_order_relaxed);
   observedCpuBudgetCores.store(
       invocation.executionBudget().cpuCores.value_or(0),
       std::memory_order_relaxed);
@@ -165,7 +167,9 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       activeProviders.fetch_add(1, std::memory_order_relaxed) + 1;
   observeMaximum(active);
   concurrencyChanged.notify_all();
-  if (requiredConcurrentProviders.load(std::memory_order_relaxed) > 1) {
+  if (callOrdinal >=
+          serialProviderCallPrefix.load(std::memory_order_relaxed) &&
+      requiredConcurrentProviders.load(std::memory_order_relaxed) > 1) {
     std::unique_lock<std::mutex> lock(concurrencyMutex);
     const bool rendezvous = concurrencyChanged.wait_for(
         lock, loom::timeout::duration(loom::timeout::Tier::UltraFast), [] {
@@ -303,6 +307,7 @@ void resetPlanExecutionProviderObservations() {
   activeProviders.store(0, std::memory_order_relaxed);
   maximumActiveProviders.store(0, std::memory_order_relaxed);
   requiredConcurrentProviders.store(1, std::memory_order_relaxed);
+  serialProviderCallPrefix.store(0, std::memory_order_relaxed);
   waitForStopRequest.store(false, std::memory_order_relaxed);
   observedStopRequest.store(false, std::memory_order_relaxed);
   providerOutcome.store(PlanExecutionProviderOutcomeKind::Candidate,
@@ -312,6 +317,13 @@ void resetPlanExecutionProviderObservations() {
 }
 
 void requireConcurrentPlanExecutionProviders(std::uint64_t count) {
+  requiredConcurrentProviders.store(count, std::memory_order_relaxed);
+}
+
+void requireConcurrentPlanExecutionProvidersAfterSerialPrefix(
+    std::uint64_t serialProviderCalls, std::uint64_t count) {
+  serialProviderCallPrefix.store(serialProviderCalls,
+                                 std::memory_order_relaxed);
   requiredConcurrentProviders.store(count, std::memory_order_relaxed);
 }
 

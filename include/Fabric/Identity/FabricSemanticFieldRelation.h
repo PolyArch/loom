@@ -110,6 +110,13 @@ llvm::Expected<CanonicalSemanticBytes> encodeFabricFifoConfiguration(
     const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
     std::optional<FabricFifoTraversalMode> activeMode);
 
+/// Encodes the selected transfer-pattern controls of one programmable System
+/// transport resource. An empty selection is the canonical disabled value.
+llvm::Expected<CanonicalSemanticBytes>
+encodeSystemTransportResourceConfiguration(
+    const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
+    llvm::ArrayRef<FabricTransferPatternRef> selectedPatterns);
+
 llvm::Expected<CanonicalSemanticBytes> encodeSpatialSwitchConfiguration(
     const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
     llvm::ArrayRef<FabricPhysicalTraversalRef> selectedTraversals);

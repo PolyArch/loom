@@ -312,10 +312,15 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
   for (std::size_t ordinal = 0; ordinal != sources.size(); ++ordinal) {
     clockMembers.push_back(sources[ordinal].domainMember());
     clockMembers.push_back(sinks[ordinal].domainMember());
-    routers.push_back(
-        take(test,
-             system.addTransportResource(
-                 {{carrier, carrier}, {carrier, carrier}, transportContract})));
+    routers.push_back(take(
+        test,
+        system.addTransportResource(
+            {{carrier, carrier},
+             {carrier, carrier},
+             transportContract,
+             spec.transportMode == MappedSystemTransportMode::MappingSelected
+                 ? adg::SystemTransferPatternSelection::Configuration
+                 : adg::SystemTransferPatternSelection::Dynamic})));
     clockMembers.push_back(routers.back().domainMember());
     for (std::size_t input = 0; input != 2; ++input)
       for (const auto &outputs : patterns) {
@@ -760,9 +765,12 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
     const TemporaryTree &tree, llvm::StringRef finalLinkedTriple,
     bool trustedIdentity, bool shareProgrammingEndpoint,
     bool systemArtifactInterfaces, bool reverseRootTargets,
+    MappedSystemTransportMode transportMode,
     const runtime::RuntimeProviderDescriptor &runtimeProvider) {
   const auto module = buildModule(test, artifacts);
-  const auto system = buildSystem(test, module, artifacts);
+  MappedSpatialSystemSpec systemSpec;
+  systemSpec.transportMode = transportMode;
+  const auto system = buildSystem(test, module, artifacts, {}, systemSpec);
   auto dataflowArtifact = buildDataflow(test, artifacts);
   auto dataflow = take(test, dataflowArtifact.view());
   auto systemView = take(test, fabric::requireSystemRoot(system.view()));
@@ -786,8 +794,27 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
       test, hardware::derivePackedConfigurationABIDraft(system, context()));
   const auto abi = take(
       test, hardware::finalizeConfigurationABI(std::move(abiDraft), artifacts));
-  require(test, abi.abi().programmingUnits().size() == 2,
-          "fixture did not produce one programming unit per SpatialCore");
+  std::uint64_t localUnitCount = 0;
+  std::uint64_t directUnitCount = 0;
+  for (const hardware::ProgrammingUnit &unit : abi.abi().programmingUnits()) {
+    const hardware::ProgrammingUnitOccurrenceScope scope =
+        hardware::deriveProgrammingUnitOccurrenceScope(unit);
+    if (scope.includesDirectSystemResources && scope.spatialCores.empty())
+      ++directUnitCount;
+    else if (!scope.includesDirectSystemResources &&
+             scope.spatialCores.size() == 1)
+      ++localUnitCount;
+    else
+      fail(test, "fixture produced a mixed programming unit scope");
+  }
+  require(test, localUnitCount == cores.size(),
+          "fixture did not produce one local unit per SpatialCore");
+  require(test,
+          directUnitCount ==
+              (transportMode == MappedSystemTransportMode::MappingSelected
+                   ? systemView.transportResources().size()
+                   : 0),
+          "fixture produced the wrong direct System unit count");
   requireSuccess(test, runtime::registerRuntimeProvider(runtimeProvider));
   std::optional<BlobDigest> trustedAttestation;
   if (trustedIdentity) {
@@ -1117,7 +1144,8 @@ tryBuildMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,
                           llvm::StringRef finalLinkedTriple) {
   return tryBuildMinimalDeploymentImpl(
       test, artifacts, blobs, tree, finalLinkedTriple, false, false, false,
-      false, runtime::inProcessRuntimeProviderDescriptor());
+      false, MappedSystemTransportMode::FixedLocal,
+      runtime::inProcessRuntimeProviderDescriptor());
 }
 
 FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
@@ -1128,13 +1156,24 @@ FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
                                               llvm::StringRef()));
 }
 
+FinalizedDeployment buildDirectSystemConfigurationDeployment(
+    llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
+    const TemporaryTree &tree) {
+  return take(test,
+              tryBuildMinimalDeploymentImpl(
+                  test, artifacts, blobs, tree, llvm::StringRef(), false, false,
+                  false, false, MappedSystemTransportMode::MappingSelected,
+                  runtime::inProcessRuntimeProviderDescriptor()));
+}
+
 FinalizedDeployment
 buildRetargetedMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,
                                  BlobStore &blobs, const TemporaryTree &tree) {
   return take(test,
               tryBuildMinimalDeploymentImpl(
                   test, artifacts, blobs, tree, llvm::StringRef(), false, false,
-                  false, true, runtime::inProcessRuntimeProviderDescriptor()));
+                  false, true, MappedSystemTransportMode::FixedLocal,
+                  runtime::inProcessRuntimeProviderDescriptor()));
 }
 
 FinalizedDeployment buildRetargetedSharedProgrammingEndpointDeployment(
@@ -1143,7 +1182,8 @@ FinalizedDeployment buildRetargetedSharedProgrammingEndpointDeployment(
   return take(test,
               tryBuildMinimalDeploymentImpl(
                   test, artifacts, blobs, tree, llvm::StringRef(), false, true,
-                  false, true, runtime::inProcessRuntimeProviderDescriptor()));
+                  false, true, MappedSystemTransportMode::FixedLocal,
+                  runtime::inProcessRuntimeProviderDescriptor()));
 }
 
 FinalizedDeployment buildSystemArtifactDeployment(llvm::StringRef test,
@@ -1153,7 +1193,8 @@ FinalizedDeployment buildSystemArtifactDeployment(llvm::StringRef test,
   return take(test,
               tryBuildMinimalDeploymentImpl(
                   test, artifacts, blobs, tree, llvm::StringRef(), false, false,
-                  true, false, runtime::inProcessRuntimeProviderDescriptor()));
+                  true, false, MappedSystemTransportMode::FixedLocal,
+                  runtime::inProcessRuntimeProviderDescriptor()));
 }
 
 FinalizedDeployment buildTrustedIdentityDeployment(llvm::StringRef test,
@@ -1163,7 +1204,8 @@ FinalizedDeployment buildTrustedIdentityDeployment(llvm::StringRef test,
   return take(test,
               tryBuildMinimalDeploymentImpl(
                   test, artifacts, blobs, tree, llvm::StringRef(), true, false,
-                  false, false, runtime::inProcessRuntimeProviderDescriptor()));
+                  false, false, MappedSystemTransportMode::FixedLocal,
+                  runtime::inProcessRuntimeProviderDescriptor()));
 }
 
 FinalizedDeployment buildSharedProgrammingEndpointDeployment(
@@ -1172,7 +1214,8 @@ FinalizedDeployment buildSharedProgrammingEndpointDeployment(
   return take(test,
               tryBuildMinimalDeploymentImpl(
                   test, artifacts, blobs, tree, llvm::StringRef(), false, true,
-                  false, false, runtime::inProcessRuntimeProviderDescriptor()));
+                  false, false, MappedSystemTransportMode::FixedLocal,
+                  runtime::inProcessRuntimeProviderDescriptor()));
 }
 
 FinalizedDeployment buildRuntimeProviderDeployment(
@@ -1181,7 +1224,8 @@ FinalizedDeployment buildRuntimeProviderDeployment(
     const runtime::RuntimeProviderDescriptor &provider) {
   return take(test, tryBuildMinimalDeploymentImpl(
                         test, artifacts, blobs, tree, llvm::StringRef(), false,
-                        false, false, false, provider));
+                        false, false, false,
+                        MappedSystemTransportMode::FixedLocal, provider));
 }
 
 } // namespace loom::deployment::test

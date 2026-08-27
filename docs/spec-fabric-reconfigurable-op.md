@@ -707,7 +707,7 @@ values collapse to that one field value; unequal projected values make the
 complete Mapping invalid. ConfigurationABI persists only the resulting physical
 encoding.
 
-The relation result is fixed by the `loom.fabric 6.0` schema and the exact
+The relation result is fixed by the `loom.fabric 7.0` schema and the exact
 canonical Fabric identity. A registry implementation identity may invalidate a
 cached elaboration, but it cannot change the relation result for the same Fabric
 identity. An incompatible relation change requires a Fabric major-version

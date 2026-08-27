@@ -90,7 +90,7 @@ finalized parent Module.
 The source and destination of every ordinary Module-local physical connection
 must resolve to equal symbolic Clock and Reset slots. A cross-slot relation is
 legal only through an explicit typed crossing resource whose contract owns
-both faces. `loom.fabric 6.0` defines no Module-local Clock or Reset crossing
+both faces. `loom.fabric 7.0` defines no Module-local Clock or Reset crossing
 carrier, so a Module containing such a relation fails closed. A backend cannot
 repair it by inserting a synchronizer, FIFO, reset bridge, or timing exception.
 

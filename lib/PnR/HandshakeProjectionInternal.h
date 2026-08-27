@@ -42,6 +42,11 @@ struct RebuiltHandshakeSelection final {
   std::vector<PnrIndex> allGroupSelectedWitnessCounts;
 };
 
+/// Writes the canonical identity key into a caller-owned buffer. Hot callers
+/// resolve one node per handshake arc per accepted move, so they reuse a single
+/// buffer instead of allocating a key per lookup.
+void assignNodeKey(const HandshakeNodeIdentity &identity, std::string &key);
+
 std::string nodeKey(const HandshakeNodeIdentity &identity);
 
 llvm::Expected<HandshakeNodeIdentity>

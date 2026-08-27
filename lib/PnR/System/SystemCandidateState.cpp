@@ -708,14 +708,16 @@ llvm::Expected<SystemCandidateStateHandle> initializeSystemCandidateWithClosure(
     llvm::ArrayRef<PnrIndex> graphChoices,
     detail::SystemRoutingClosureRequirement closureRequirement,
     std::uint64_t *endpointExpansions, std::uint64_t *negotiationIterations,
-    const SystemCandidateRouteSeed *routeSeed = nullptr);
+    const SystemCandidateRouteSeed *routeSeed, PnrWorkLedgerView workLedger);
 
 template <typename Solve>
 llvm::Expected<InitializedSystemCandidate>
 solveSystemCandidate(FrozenSystemPnrProblemHandle problem,
                      bool requireImportedCapacityClosure, Solve &&solve,
-                     const SystemCandidateRouteSeed *routeSeed = nullptr) {
-  detail::InitializerRelationSolver solver(problem->initializerRelations());
+                     const SystemCandidateRouteSeed *routeSeed,
+                     PnrWorkLedgerView workLedger) {
+  detail::InitializerRelationSolver solver(problem->initializerRelations(), {},
+                                           workLedger);
   SystemCandidateStateHandle accepted;
   std::uint64_t endpointExpansions = 0;
   std::uint64_t negotiationIterations = 0;
@@ -760,7 +762,7 @@ solveSystemCandidate(FrozenSystemPnrProblemHandle problem,
         choices.drop_front(threadCount),
         detail::SystemRoutingClosureRequirement::Strict,
         &candidateEndpointExpansions, &candidateNegotiationIterations,
-        routeSeed);
+        routeSeed, workLedger);
     if (candidateEndpointExpansions >
         std::numeric_limits<std::uint64_t>::max() - endpointExpansions)
       return llvm::createStringError(
@@ -850,16 +852,15 @@ balancedInitializerPreferences(const FrozenSystemPnrProblem &problem) {
 
 llvm::Expected<InitializedSystemCandidate>
 loom::pnr::initializeCanonicalSystemCandidate(
-    FrozenSystemPnrProblemHandle problem) {
-  return initializeSystemCandidateAttempt(std::move(problem), 0);
+    FrozenSystemPnrProblemHandle problem, PnrWorkLedgerView workLedger) {
+  return initializeSystemCandidateAttempt(std::move(problem), 0, workLedger);
 }
 
 namespace {
 
-llvm::Expected<InitializedSystemCandidate>
-initializeSystemCandidateAttemptImpl(FrozenSystemPnrProblemHandle problem,
-                                     std::uint32_t attemptOrdinal,
-                                     bool requireImportedCapacityClosure) {
+llvm::Expected<InitializedSystemCandidate> initializeSystemCandidateAttemptImpl(
+    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal,
+    bool requireImportedCapacityClosure, PnrWorkLedgerView workLedger) {
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
   const auto &policy = problem->config().policy();
@@ -880,30 +881,35 @@ initializeSystemCandidateAttemptImpl(FrozenSystemPnrProblemHandle problem,
         return solver.solveDiversified(
             policy.search.initializer.assignmentAttemptLimitPerSeed, stream,
             validateCompleteAssignment);
-      });
+      },
+      nullptr, workLedger);
 }
 
 } // namespace
 
 llvm::Expected<InitializedSystemCandidate>
 loom::pnr::initializeSystemCandidateAttempt(
-    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal) {
-  return initializeSystemCandidateAttemptImpl(std::move(problem),
-                                              attemptOrdinal, false);
+    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal,
+    PnrWorkLedgerView workLedger) {
+  return initializeSystemCandidateAttemptImpl(
+      std::move(problem), attemptOrdinal, false, workLedger);
 }
 
 llvm::Expected<InitializedSystemCandidate>
 loom::pnr::initializeSystemCandidateAttemptWithImportedCapacityClosure(
-    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal) {
+    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal,
+    PnrWorkLedgerView workLedger) {
   return initializeSystemCandidateAttemptImpl(std::move(problem),
-                                              attemptOrdinal, true);
+                                              attemptOrdinal, true, workLedger);
 }
 
 llvm::Expected<SystemImportedCapacitySearchResult>
-loom::pnr::searchSystemImportedCapacity(FrozenSystemPnrProblemHandle problem) {
+loom::pnr::searchSystemImportedCapacity(FrozenSystemPnrProblemHandle problem,
+                                        PnrWorkLedgerView workLedger) {
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
-  detail::InitializerRelationSolver solver(problem->initializerRelations());
+  detail::InitializerRelationSolver solver(problem->initializerRelations(), {},
+                                           workLedger);
   std::optional<SystemCapacityOveruseWitness> checkpointWitness;
   std::optional<std::uint64_t> checkpointOveruse;
   std::vector<PnrIndex> checkpointChoices;
@@ -976,8 +982,8 @@ loom::pnr::searchSystemImportedCapacity(FrozenSystemPnrProblemHandle problem) {
 
 llvm::Expected<InitializedSystemCandidate>
 loom::pnr::initializeSystemCandidateWithFixedChoices(
-    FrozenSystemPnrProblemHandle problem,
-    llvm::ArrayRef<PnrIndex> fixedChoices) {
+    FrozenSystemPnrProblemHandle problem, llvm::ArrayRef<PnrIndex> fixedChoices,
+    PnrWorkLedgerView workLedger) {
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
   return solveSystemCandidate(
@@ -989,14 +995,14 @@ loom::pnr::initializeSystemCandidateWithFixedChoices(
                 .policy()
                 .search.initializer.assignmentAttemptLimitPerSeed,
             fixedChoices, validateCompleteAssignment);
-      });
+      },
+      nullptr, workLedger);
 }
 
 llvm::Expected<InitializedSystemCandidate>
 loom::pnr::initializeSystemCandidateWithFixedChoicesAndRoutes(
-    FrozenSystemPnrProblemHandle problem,
-    llvm::ArrayRef<PnrIndex> fixedChoices,
-    const SystemCandidateRouteSeed &routeSeed) {
+    FrozenSystemPnrProblemHandle problem, llvm::ArrayRef<PnrIndex> fixedChoices,
+    const SystemCandidateRouteSeed &routeSeed, PnrWorkLedgerView workLedger) {
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
   if (routeSeed.routes.size() != problem->serviceLegs().size())
@@ -1011,7 +1017,7 @@ loom::pnr::initializeSystemCandidateWithFixedChoicesAndRoutes(
                 .search.initializer.assignmentAttemptLimitPerSeed,
             fixedChoices, validateCompleteAssignment);
       },
-      &routeSeed);
+      &routeSeed, workLedger);
 }
 
 namespace {
@@ -1020,7 +1026,7 @@ llvm::Expected<InitializedSystemCandidate>
 initializeSystemCandidateWithReleasedChoicesImpl(
     FrozenSystemPnrProblemHandle problem, llvm::ArrayRef<PnrIndex> fixedChoices,
     llvm::ArrayRef<PnrIndex> releasedChoices,
-    bool requireImportedCapacityClosure) {
+    bool requireImportedCapacityClosure, PnrWorkLedgerView workLedger) {
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
   if (releasedChoices.empty())
@@ -1034,7 +1040,8 @@ initializeSystemCandidateWithReleasedChoicesImpl(
                 .policy()
                 .search.initializer.assignmentAttemptLimitPerSeed,
             fixedChoices, releasedChoices, validateCompleteAssignment);
-      });
+      },
+      nullptr, workLedger);
 }
 
 } // namespace
@@ -1042,19 +1049,19 @@ initializeSystemCandidateWithReleasedChoicesImpl(
 llvm::Expected<InitializedSystemCandidate>
 loom::pnr::initializeSystemCandidateWithReleasedChoices(
     FrozenSystemPnrProblemHandle problem, llvm::ArrayRef<PnrIndex> fixedChoices,
-    llvm::ArrayRef<PnrIndex> releasedChoices) {
+    llvm::ArrayRef<PnrIndex> releasedChoices, PnrWorkLedgerView workLedger) {
   return initializeSystemCandidateWithReleasedChoicesImpl(
-      std::move(problem), fixedChoices, releasedChoices, false);
+      std::move(problem), fixedChoices, releasedChoices, false, workLedger);
 }
 
-llvm::Expected<InitializedSystemCandidate>
-loom::pnr::
+llvm::Expected<InitializedSystemCandidate> loom::pnr::
     initializeSystemCandidateWithReleasedChoicesAndImportedCapacityClosure(
         FrozenSystemPnrProblemHandle problem,
         llvm::ArrayRef<PnrIndex> fixedChoices,
-        llvm::ArrayRef<PnrIndex> releasedChoices) {
+        llvm::ArrayRef<PnrIndex> releasedChoices,
+        PnrWorkLedgerView workLedger) {
   return initializeSystemCandidateWithReleasedChoicesImpl(
-      std::move(problem), fixedChoices, releasedChoices, true);
+      std::move(problem), fixedChoices, releasedChoices, true, workLedger);
 }
 
 namespace {
@@ -1065,7 +1072,7 @@ llvm::Expected<SystemCandidateStateHandle> initializeSystemCandidateWithClosure(
     llvm::ArrayRef<PnrIndex> graphChoices,
     detail::SystemRoutingClosureRequirement closureRequirement,
     std::uint64_t *endpointExpansions, std::uint64_t *negotiationIterations,
-    const SystemCandidateRouteSeed *routeSeed) {
+    const SystemCandidateRouteSeed *routeSeed, PnrWorkLedgerView workLedger) {
   if (endpointExpansions)
     *endpointExpansions = 0;
   if (negotiationIterations)
@@ -1115,12 +1122,13 @@ llvm::Expected<SystemCandidateStateHandle> initializeSystemCandidateWithClosure(
       routeEndpointExpansions, routeNegotiationIterations,
       routeSeed ? llvm::ArrayRef<PnrIndex>(routeSeed->reroutedLegs)
                 : llvm::ArrayRef<PnrIndex>(),
-      routeSeed ? std::optional<detail::SystemServiceRoutesView>(
-                      detail::SystemServiceRoutesView{
-                          routeSeed->routes, routeSeed->nodes,
-                          routeSeed->sinks})
-                : std::nullopt,
-      std::nullopt, std::nullopt, closureRequirement);
+      routeSeed
+          ? std::optional<detail::SystemServiceRoutesView>(
+                detail::SystemServiceRoutesView{
+                    routeSeed->routes, routeSeed->nodes, routeSeed->sinks})
+          : std::nullopt,
+      std::nullopt, std::nullopt, closureRequirement, nullptr, workLedger);
+
   if (endpointExpansions)
     *endpointExpansions = routeEndpointExpansions;
   if (negotiationIterations)
@@ -1135,16 +1143,15 @@ llvm::Expected<SystemCandidateStateHandle> initializeSystemCandidateWithClosure(
 
 } // namespace
 
-llvm::Expected<SystemCandidateStateHandle>
-loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
-                                     llvm::ArrayRef<PnrIndex> threadChoices,
-                                     llvm::ArrayRef<PnrIndex> graphChoices,
-                                     std::uint64_t *endpointExpansions,
-                                     std::uint64_t *negotiationIterations) {
+llvm::Expected<SystemCandidateStateHandle> loom::pnr::initializeSystemCandidate(
+    FrozenSystemPnrProblemHandle problem,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices, std::uint64_t *endpointExpansions,
+    std::uint64_t *negotiationIterations, PnrWorkLedgerView workLedger) {
   return initializeSystemCandidateWithClosure(
       std::move(problem), threadChoices, graphChoices,
       detail::SystemRoutingClosureRequirement::PolicyAdmittedTemporary,
-      endpointExpansions, negotiationIterations);
+      endpointExpansions, negotiationIterations, nullptr, workLedger);
 }
 
 llvm::Expected<std::vector<SystemServiceTargetSelection>>
@@ -1298,7 +1305,8 @@ loom::pnr::detail::rebuildSystemCandidateRoutes(
     const SystemTransportRoutingAction &action,
     std::uint64_t &endpointExpansions, std::uint64_t &negotiationIterations,
     bool requireCapacityClosure,
-    std::optional<SystemRoutingReopenWitness> *reopenWitness) {
+    std::optional<SystemRoutingReopenWitness> *reopenWitness,
+    PnrWorkLedgerView workLedger) {
   std::optional<SystemServiceRouteTraversalExclusion> exclusion;
   std::vector<PnrIndex> reroutedLegs;
   std::optional<SystemServiceRouteRepairRegion> repairRegion;
@@ -1419,7 +1427,7 @@ loom::pnr::detail::rebuildSystemCandidateRoutes(
       requireCapacityClosure
           ? SystemRoutingClosureRequirement::Strict
           : SystemRoutingClosureRequirement::PolicyAdmittedTemporary,
-      reopenWitness);
+      reopenWitness, workLedger);
   if (!routes)
     return routes.takeError();
   return SystemCandidateState::createMutation(

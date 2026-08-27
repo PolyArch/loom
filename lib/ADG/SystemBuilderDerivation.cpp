@@ -1238,6 +1238,10 @@ llvm::Error SystemBuilder::replaceTransportResource(
   }
 
   targetOp->setResourceContractAttr(prototypeOp->getResourceContractAttr());
+  if (auto selection = prototypeOp->getConfigurationSelectedPatternsAttr())
+    targetOp->setConfigurationSelectedPatternsAttr(selection);
+  else
+    targetOp->removeConfigurationSelectedPatternsAttr();
   const auto targetOwner =
       loom::fabric::FabricTransportEndpointOwnerRef::of(target);
   mlir::OpBuilder builder = insertionBuilder(**state, **root);

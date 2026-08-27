@@ -11,6 +11,8 @@
 namespace loom::sim {
 namespace {
 
+constexpr std::uint32_t kMaximumSimulatedTicksExtension = 1;
+
 bool acceptsInput(deployment::HostExternalInterfaceDirection direction) {
   return direction == deployment::HostExternalInterfaceDirection::Input ||
          direction == deployment::HostExternalInterfaceDirection::InOut;
@@ -304,6 +306,10 @@ encodeSystemRuntimeInput(const SystemSimulationRuntimeInput &input,
     writer.u64(entry.binding.objectOrdinal);
     writer.u64(entry.binding.byteOffset);
   }
+  if (input.maximumSimulatedTicks) {
+    writer.u32(kMaximumSimulatedTicksExtension);
+    writer.u64(*input.maximumSimulatedTicks);
+  }
   return writer.take();
 }
 
@@ -438,6 +444,24 @@ decodeSystemRuntimeInput(llvm::ArrayRef<std::uint8_t> bytes,
     input.memoryInterfaceBindings.push_back(
         {*reference, {*objectOrdinal, *byteOffset}});
   }
+  if (!reader.atEnd()) {
+    if (bytes.size() - reader.offset() != 12)
+      return detail::invalid("simulation runtime input: trailing bytes");
+    auto extension = reader.u32();
+    if (!extension)
+      return extension.takeError();
+    if (*extension != kMaximumSimulatedTicksExtension)
+      return detail::invalid(
+          "simulation runtime input: unknown execution-budget extension");
+    auto maximumTicks = reader.u64();
+    if (!maximumTicks)
+      return maximumTicks.takeError();
+    if (*maximumTicks == 0)
+      return detail::invalid(
+          "simulation runtime input: maximum simulated ticks must be "
+          "greater than zero");
+    input.maximumSimulatedTicks = *maximumTicks;
+  }
   if (!reader.atEnd())
     return detail::invalid("simulation runtime input: trailing bytes");
   return DecodedSystemRuntimeInput{std::move(input), std::move(*context)};
@@ -502,6 +526,10 @@ canonicalizeSystemRuntimeInput(const SystemSimulationRuntimeInputDraft &draft,
     return invalid("simulation runtime input: does not name the exact "
                    "workload");
   SystemSimulationRuntimeInput input{draft.workloadIdentity};
+  if (draft.maximumSimulatedTicks && *draft.maximumSimulatedTicks == 0)
+    return invalid("simulation runtime input: maximum simulated ticks must be "
+                   "greater than zero");
+  input.maximumSimulatedTicks = draft.maximumSimulatedTicks;
   input.runtimeEntryValues = draft.runtimeEntryValues;
   std::sort(input.runtimeEntryValues.begin(), input.runtimeEntryValues.end(),
             [](const auto &lhs, const auto &rhs) {

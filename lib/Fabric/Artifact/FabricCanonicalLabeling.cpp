@@ -18,11 +18,14 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
+#include <list>
 #include <map>
 #include <optional>
 #include <string>
@@ -201,6 +204,42 @@ std::optional<FabricEntityKind> occurrenceKind(Operation *op, Operation *root) {
   return std::nullopt;
 }
 
+/// One FU definition's canonical result in vertex space. FU occurrences of the
+/// same definition build byte-identical semantic graphs with identical vertex
+/// numbering, so the expensive canonical search is shared across occurrences
+/// and only the vertex-to-operation materialization is per-occurrence.
+struct FuDefinitionCanonicalValue final {
+  CanonicalSemanticBytes relationBytes;
+  std::vector<std::uint32_t> canonicalNodeVertices;
+  std::vector<CanonicalSemanticBytes> canonicalNodeOrbitCertificates;
+};
+
+class FuDefinitionMemo final {
+public:
+  using Key = std::array<std::uint8_t, 32>;
+
+  const FuDefinitionCanonicalValue *find(const Key &key) const {
+    auto found = entries_.find(key);
+    return found == entries_.end() ? nullptr : &found->second;
+  }
+
+  void insert(const Key &key, FuDefinitionCanonicalValue value) {
+    if (entries_.count(key))
+      return;
+    static constexpr std::size_t kCapacity = 64;
+    if (entries_.size() >= kCapacity) {
+      entries_.erase(order_.front());
+      order_.pop_front();
+    }
+    entries_.emplace(key, std::move(value));
+    order_.push_back(key);
+  }
+
+private:
+  std::map<Key, FuDefinitionCanonicalValue> entries_;
+  std::list<Key> order_;
+};
+
 class SemanticGraph {
 public:
   static llvm::Expected<SemanticGraph>
@@ -229,7 +268,42 @@ public:
     return ::loom::canonicalizeRelationGraph(intrinsics_, relations);
   }
 
-  llvm::Expected<FabricCanonicalFuDefinition> canonicalizeFuDefinition() const {
+  /// The memo key covers every input the canonical search reads: the ordinal
+  /// space selecting capability relations plus the complete vertex-indexed
+  /// intrinsic strings and labeled edge list. Vertex numbering is a
+  /// deterministic function of the walk, so byte-equal keys imply identical
+  /// canonical results in vertex space.
+  FuDefinitionMemo::Key
+  fuDefinitionMemoKey(FabricFuCapabilityOrdinalSpace space) const {
+    llvm::SHA256 hasher;
+    std::uint8_t header[9] = {static_cast<std::uint8_t>(space)};
+    std::uint64_t count = intrinsics_.size();
+    for (int byte = 0; byte < 8; ++byte)
+      header[1 + byte] = static_cast<std::uint8_t>(count >> (56 - 8 * byte));
+    hasher.update(llvm::ArrayRef<std::uint8_t>(header, sizeof(header)));
+    for (const std::string &intrinsic : intrinsics_) {
+      std::uint8_t length[8];
+      std::uint64_t size = intrinsic.size();
+      for (int byte = 0; byte < 8; ++byte)
+        length[byte] = static_cast<std::uint8_t>(size >> (56 - 8 * byte));
+      hasher.update(llvm::ArrayRef<std::uint8_t>(length, sizeof(length)));
+      hasher.update(intrinsic);
+    }
+    for (const Edge &edge : edges_) {
+      std::uint32_t values[4] = {edge.source, edge.target, edge.firstOrdinal,
+                                 edge.secondOrdinal};
+      std::uint8_t bytes[17] = {static_cast<std::uint8_t>(edge.kind)};
+      for (int word = 0; word < 4; ++word)
+        for (int byte = 0; byte < 4; ++byte)
+          bytes[1 + word * 4 + byte] =
+              static_cast<std::uint8_t>(values[word] >> (24 - 8 * byte));
+      hasher.update(llvm::ArrayRef<std::uint8_t>(bytes, sizeof(bytes)));
+    }
+    return hasher.final();
+  }
+
+  llvm::Expected<FuDefinitionCanonicalValue>
+  canonicalizeFuDefinitionValue() const {
     if (!fuDefinition_)
       return invalid("a Module graph is not an FU definition");
     auto canonical = canonicalize();
@@ -238,22 +312,41 @@ public:
     llvm::DenseMap<std::uint32_t, Operation *> operationByVertex;
     for (const auto &entry : operationVertices_)
       operationByVertex[entry.second] = entry.first;
-    std::vector<Operation *> canonicalNodeOrder;
+    std::vector<std::uint32_t> canonicalNodeVertices;
     std::vector<CanonicalSemanticBytes> canonicalNodeOrbitCertificates;
     for (std::uint32_t vertex : canonical->canonicalOrder) {
       Operation *node = operationByVertex.lookup(vertex);
       if (isa_and_nonnull<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(
               node)) {
-        canonicalNodeOrder.push_back(node);
+        canonicalNodeVertices.push_back(vertex);
         auto certificate = canonicalizeWithFuOrbitRoot(vertex);
         if (!certificate)
           return certificate.takeError();
         canonicalNodeOrbitCertificates.push_back(std::move(certificate->bytes));
       }
     }
-    return FabricCanonicalFuDefinition{
-        std::move(canonical->bytes), std::move(canonicalNodeOrder),
-        std::move(canonicalNodeOrbitCertificates)};
+    return FuDefinitionCanonicalValue{std::move(canonical->bytes),
+                                      std::move(canonicalNodeVertices),
+                                      std::move(canonicalNodeOrbitCertificates)};
+  }
+
+  llvm::Expected<FabricCanonicalFuDefinition>
+  materializeFuDefinition(const FuDefinitionCanonicalValue &value) const {
+    llvm::DenseMap<std::uint32_t, Operation *> operationByVertex;
+    for (const auto &entry : operationVertices_)
+      operationByVertex[entry.second] = entry.first;
+    std::vector<Operation *> canonicalNodeOrder;
+    canonicalNodeOrder.reserve(value.canonicalNodeVertices.size());
+    for (std::uint32_t vertex : value.canonicalNodeVertices) {
+      Operation *node = operationByVertex.lookup(vertex);
+      if (!isa_and_nonnull<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(
+              node))
+        return invalid("an FU definition memo names a non-node vertex");
+      canonicalNodeOrder.push_back(node);
+    }
+    return FabricCanonicalFuDefinition{value.relationBytes,
+                                       std::move(canonicalNodeOrder),
+                                       value.canonicalNodeOrbitCertificates};
   }
 
   llvm::Expected<FabricCanonicalLabeling> canonicalizeModule() {
@@ -784,7 +877,20 @@ llvm::Expected<FabricCanonicalFuDefinition> computeCanonicalFabricFuDefinition(
                                     sourceOrdinalSpace);
   if (!graph)
     return graph.takeError();
-  return graph->canonicalizeFuDefinition();
+  // FU definitions repeat across occurrences and across the authoring,
+  // validation, and import passes of one invocation. The canonical search and
+  // the per-node orbit certificates are pure functions of the memo key, so
+  // replaying a memoized vertex-space result is exact.
+  thread_local FuDefinitionMemo fuDefinitionMemo;
+  const FuDefinitionMemo::Key key =
+      graph->fuDefinitionMemoKey(sourceOrdinalSpace);
+  if (const FuDefinitionCanonicalValue *memoized = fuDefinitionMemo.find(key))
+    return graph->materializeFuDefinition(*memoized);
+  auto value = graph->canonicalizeFuDefinitionValue();
+  if (!value)
+    return value.takeError();
+  fuDefinitionMemo.insert(key, *value);
+  return graph->materializeFuDefinition(*value);
 }
 
 llvm::Expected<std::string>

@@ -38,6 +38,12 @@ struct ConfigurationImageProjectionSessionStatistics final {
   std::uint64_t deterministicWork = 0;
   std::uint64_t retainedBytes = 0;
   std::uint64_t entryCount = 0;
+  /// Finalized-image imports are tracked separately from projections so
+  /// projection-count oracles keep their exact semantics.
+  std::uint64_t imageRequests = 0;
+  std::uint64_t imageCacheHits = 0;
+  std::uint64_t imageCacheMisses = 0;
+  std::uint64_t imageEntryCount = 0;
 };
 
 /// Bounded immutable projection cache for one ArtifactStore verification

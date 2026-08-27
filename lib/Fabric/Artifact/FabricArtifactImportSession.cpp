@@ -107,6 +107,21 @@ detail::FabricArtifactImportSessionState::complete(
   return entry;
 }
 
+std::shared_ptr<const FabricHandshakeContext>
+detail::FabricArtifactImportSessionState::lookupHandshakeContext(
+    const ArtifactIdentity &fabric) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto found = handshakeContexts_.find(fabric);
+  return found == handshakeContexts_.end() ? nullptr : found->second;
+}
+
+void detail::FabricArtifactImportSessionState::retainHandshakeContext(
+    const ArtifactIdentity &fabric,
+    std::shared_ptr<const FabricHandshakeContext> context) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  handshakeContexts_.try_emplace(fabric, std::move(context));
+}
+
 void detail::FabricArtifactImportSessionState::abandon(
     const ArtifactRootReference &reference,
     std::uint64_t constructionNanoseconds) {
@@ -202,6 +217,28 @@ void emitFabricArtifactImportSessionStatistics(
         payload["entry_limit"] = statistics.entryLimit;
         return llvm::json::Value(std::move(payload));
       });
+}
+
+llvm::Expected<std::shared_ptr<const FabricHandshakeContext>>
+acquireFabricHandshakeContext(const FabricArtifactView &view) {
+  auto session = detail::currentFabricArtifactImportSession();
+  if (session)
+    if (auto retained = session->lookupHandshakeContext(view.identity())) {
+      // Revalidation is the reuse oracle: a hit is never trusted on identity
+      // alone.
+      if (llvm::Error error =
+              revalidateFabricHandshakeContext(*retained, view))
+        return std::move(error);
+      return retained;
+    }
+  auto built = buildFabricHandshakeContext(view);
+  if (!built)
+    return built.takeError();
+  auto owned =
+      std::make_shared<const FabricHandshakeContext>(std::move(*built));
+  if (session)
+    session->retainHandshakeContext(view.identity(), owned);
+  return owned;
 }
 
 } // namespace loom::fabric

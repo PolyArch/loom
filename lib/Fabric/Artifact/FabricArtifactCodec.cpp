@@ -15,7 +15,7 @@
 namespace loom::fabric {
 namespace {
 
-constexpr char semanticDomain[] = "loom.fabric.semantic.v6\0";
+constexpr char semanticDomain[] = "loom.fabric.semantic.v7\0";
 constexpr std::size_t payloadLengthFieldSize = 8;
 constexpr std::size_t dependencyFixedSuffixSize =
     4 + 4 + ArtifactIdentity::byteSize;

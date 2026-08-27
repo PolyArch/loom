@@ -2,6 +2,8 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Deployment/HardwareConfigurationImage.h"
+#include "Hardware/Configuration/ConfigurationABI.h"
 #include "Mapping/IR/MappingSchema.h"
 #include "Runtime/DeploymentLoader.h"
 #include "Runtime/InProcessPlatform.h"
@@ -34,7 +36,8 @@ ArtifactIdentity identity(llvm::StringRef test, std::uint8_t seed) {
 
 struct ObservedLoadError final {
   RuntimeLoadFailureKind kind = RuntimeLoadFailureKind::InvalidDeployment;
-  bool quarantined = false;
+  RuntimeLoadTerminalDisposition terminalDisposition =
+      RuntimeLoadTerminalDisposition::NoLeaseAcquired;
   std::string diagnostic;
 };
 
@@ -52,20 +55,20 @@ public:
     return delegate_->enumerateDevices();
   }
 
-  llvm::Expected<ArtifactIdentity> readImplementationIdentity(
-      const RuntimeDeviceHandle &device,
-      const RuntimeProviderEndpointRef &endpoint) override {
-    return delegate_->readImplementationIdentity(device, endpoint);
-  }
-
-  llvm::Expected<BlobDigest>
-  readTrustedAttestation(const RuntimeDeviceHandle &device) override {
-    return delegate_->readTrustedAttestation(device);
-  }
-
   llvm::Expected<RuntimeLeaseHandle>
   acquireExclusiveLease(const RuntimeDeviceHandle &device) override {
     return delegate_->acquireExclusiveLease(device);
+  }
+
+  llvm::Expected<ArtifactIdentity> readImplementationIdentity(
+      const RuntimeLeaseHandle &lease,
+      const RuntimeProviderEndpointRef &endpoint) override {
+    return delegate_->readImplementationIdentity(lease, endpoint);
+  }
+
+  llvm::Expected<BlobDigest>
+  readTrustedAttestation(const RuntimeLeaseHandle &lease) override {
+    return delegate_->readTrustedAttestation(lease);
   }
 
   llvm::Error quiesceAndReset(const RuntimeLeaseHandle &lease) override {
@@ -135,12 +138,10 @@ public:
     return delegate_->discardPreparedActivation(lease, prepared);
   }
 
-  llvm::Error releaseExclusiveLease(const RuntimeLeaseHandle &lease) override {
-    return delegate_->releaseExclusiveLease(lease);
-  }
-
-  void quarantineDevice(const RuntimeDeviceHandle &device) override {
-    delegate_->quarantineDevice(device);
+  RuntimeLeaseFinalizationResult
+  finalizeExclusiveLease(const RuntimeLeaseHandle &lease,
+                         RuntimeLeaseFinalizationRequest request) override {
+    return delegate_->finalizeExclusiveLease(lease, request);
   }
 
 private:
@@ -186,7 +187,7 @@ ObservedLoadError expectLoadError(llvm::StringRef test,
   llvm::handleAllErrors(
       loaded.takeError(),
       [&](const RuntimeLoadError &error) {
-        observed = ObservedLoadError{error.kind(), error.deviceQuarantined(),
+        observed = ObservedLoadError{error.kind(), error.terminalDisposition(),
                                      error.diagnostic().str()};
       },
       [&](const llvm::ErrorInfoBase &error) {
@@ -215,8 +216,8 @@ std::vector<ArtifactIdentity> implementationIdentities(
     }
     bool found = false;
     for (std::size_t ordinal = 0; ordinal != bindings.size(); ++ordinal)
-      if (reported->implementationIdentityEndpoint == inProcessRuntimeEndpoint(
-              RuntimeEndpointClass::Identity, ordinal)) {
+      if (reported->implementationIdentityEndpoint ==
+          inProcessRuntimeEndpoint(RuntimeEndpointClass::Identity, ordinal)) {
         deployment::test::require(test, !indexed[ordinal].has_value(),
                                   "identity endpoint is duplicated");
         indexed[ordinal] = binding.hardwareImplementation.artifact;
@@ -236,6 +237,23 @@ std::vector<ArtifactIdentity> implementationIdentities(
     result.push_back(*identity);
   }
   return result;
+}
+
+BlobDigest trustedAttestation(llvm::StringRef test,
+                              const deployment::FinalizedDeployment &deployment,
+                              const ArtifactStore &artifacts,
+                              const BlobStore &blobs) {
+  for (const deployment::DeploymentHardwareBinding &binding :
+       deployment.deployment().hardwareBindings()) {
+    const FinalizedRuntimePlatformBinding runtime =
+        take(test, importRuntimePlatformBinding(binding.runtimePlatformBinding,
+                                                artifacts, blobs));
+    if (const auto *trusted = std::get_if<TrustedImmutableIdentity>(
+            &runtime.binding().identityVerification()))
+      return trusted->attestationBlob;
+  }
+  deployment::test::fail(test,
+                         "fixture has no trusted immutable identity binding");
 }
 
 void loadsOneImmutableDeploymentWithAtomicConfigurationMulticast() {
@@ -306,14 +324,16 @@ void rejectsReadbackMismatchAndRestoresCleanState() {
                      {{implementations,
                        std::nullopt,
                        {std::nullopt, InProcessRuntimeReadbackCorruption{0, 1},
-                        false, std::nullopt, 0, 0}}}));
+                        std::nullopt, std::nullopt, 0, 0}}}));
 
   const ObservedLoadError error = expectLoadError(
       test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
   const InProcessRuntimeStatistics statistics = provider->statistics();
   deployment::test::require(
       test,
-      error.kind == RuntimeLoadFailureKind::Programming && !error.quarantined &&
+      error.kind == RuntimeLoadFailureKind::Programming &&
+          error.terminalDisposition ==
+              RuntimeLoadTerminalDisposition::LeaseReleased &&
           llvm::StringRef(error.diagnostic).contains("readback mismatch"),
       "readback mismatch did not remain a typed programming failure");
   deployment::test::require(
@@ -336,14 +356,16 @@ void rejectsInterruptedAtomicProgrammingAndRestoresCleanState() {
       take(test, createInProcessRuntimeProvider(
                      {{implementations,
                        std::nullopt,
-                       {1, std::nullopt, false, std::nullopt, 0, 0}}}));
+                       {1, std::nullopt, std::nullopt, std::nullopt, 0, 0}}}));
 
   const ObservedLoadError error = expectLoadError(
       test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
   const InProcessRuntimeStatistics statistics = provider->statistics();
   deployment::test::require(
       test,
-      error.kind == RuntimeLoadFailureKind::Programming && !error.quarantined &&
+      error.kind == RuntimeLoadFailureKind::Programming &&
+          error.terminalDisposition ==
+              RuntimeLoadTerminalDisposition::LeaseReleased &&
           llvm::StringRef(error.diagnostic)
               .contains("atomic configuration multicast failed"),
       "interrupted programming did not remain a typed programming failure");
@@ -364,19 +386,22 @@ void quarantinesDeviceWhenRecoveryIdentityCannotBeProven() {
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
   const auto implementations =
       implementationIdentities(test, deployment, artifacts, blobs);
-  auto provider =
-      take(test, createInProcessRuntimeProvider(
-                     {{implementations,
-                       std::nullopt,
-                       {std::nullopt, InProcessRuntimeReadbackCorruption{0, 1},
-                        true, std::nullopt, 0, 0}}}));
+  auto provider = take(
+      test, createInProcessRuntimeProvider(
+                {{implementations,
+                  std::nullopt,
+                  {std::nullopt, InProcessRuntimeReadbackCorruption{0, 1},
+                   InProcessRuntimeVerificationMismatchBoundary::RecoveryReset,
+                   std::nullopt, 0, 0}}}));
 
   const ObservedLoadError error = expectLoadError(
       test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
   const InProcessRuntimeStatistics statistics = provider->statistics();
   deployment::test::require(
       test,
-      error.kind == RuntimeLoadFailureKind::Programming && error.quarantined &&
+      error.kind == RuntimeLoadFailureKind::Programming &&
+          error.terminalDisposition ==
+              RuntimeLoadTerminalDisposition::DeviceQuarantined &&
           provider->isQuarantined(0) &&
           llvm::StringRef(error.diagnostic)
               .contains("recovery identity check failed"),
@@ -415,14 +440,17 @@ void rejectsSelectedForeignImplementationWithoutDeviceFallback() {
   deployment::test::require(
       test,
       error.kind == RuntimeLoadFailureKind::IdentityVerification &&
-          !error.quarantined && statistics.enumerationCount == 1 &&
+          error.terminalDisposition ==
+              RuntimeLoadTerminalDisposition::LeaseReleased &&
+          statistics.enumerationCount == 1 &&
           statistics.identityReadCount == 1 &&
-          statistics.leaseAcquisitionCount == 0 &&
+          statistics.leaseAcquisitionCount == 1 &&
+          statistics.leaseReleaseCount == 1 && statistics.resetCount == 0 &&
           statistics.activationCount == 0,
       "foreign selected device triggered fallback or reached activation");
 }
 
-void rejectsStaleTrustedAttestationBeforeLease() {
+void rejectsStaleTrustedAttestationUnderLease() {
   const llvm::StringRef test = __func__;
   deployment::test::TemporaryTree tree(test);
   ArtifactStore artifacts(tree.path("artifacts"));
@@ -435,10 +463,8 @@ void rejectsStaleTrustedAttestationBeforeLease() {
   constexpr llvm::StringLiteral stale = "stale implementation attestation";
   const BlobDigest staleDigest = computeBlobDigest(llvm::ArrayRef<std::uint8_t>(
       reinterpret_cast<const std::uint8_t *>(stale.data()), stale.size()));
-  auto provider =
-      take(test,
-           createInProcessRuntimeProvider(
-               {{implementations, staleDigest, {}}}));
+  auto provider = take(test, createInProcessRuntimeProvider(
+                                 {{implementations, staleDigest, {}}}));
 
   const ObservedLoadError error = expectLoadError(
       test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
@@ -446,12 +472,386 @@ void rejectsStaleTrustedAttestationBeforeLease() {
   deployment::test::require(
       test,
       error.kind == RuntimeLoadFailureKind::IdentityVerification &&
-          !error.quarantined &&
+          error.terminalDisposition ==
+              RuntimeLoadTerminalDisposition::LeaseReleased &&
           llvm::StringRef(error.diagnostic)
               .contains("stale trusted attestation") &&
-          statistics.leaseAcquisitionCount == 0 &&
+          statistics.leaseAcquisitionCount == 1 &&
+          statistics.leaseReleaseCount == 1 && statistics.resetCount == 0 &&
           statistics.activationCount == 0,
-      "stale attestation reached the leased or active device state");
+      "stale attestation reached reset or the active device state");
+}
+
+void rejectsTrustedAttestationChangeAcrossInitialReset() {
+  const llvm::StringRef test = __func__;
+  deployment::test::TemporaryTree tree(test);
+  ArtifactStore artifacts(tree.path("artifacts"));
+  BlobStore blobs(tree.path("blobs"));
+  const deployment::FinalizedDeployment deployment =
+      deployment::test::buildTrustedIdentityDeployment(test, artifacts, blobs,
+                                                       tree);
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
+  InProcessRuntimeFailurePlan failure;
+  failure.verificationMismatchBoundary =
+      InProcessRuntimeVerificationMismatchBoundary::InitialReset;
+  auto provider =
+      take(test, createInProcessRuntimeProvider(
+                     {{implementations,
+                       trustedAttestation(test, deployment, artifacts, blobs),
+                       std::move(failure)}}));
+
+  const ObservedLoadError error = expectLoadError(
+      test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
+  const InProcessRuntimeStatistics statistics = provider->statistics();
+  deployment::test::require(
+      test,
+      error.kind == RuntimeLoadFailureKind::IdentityVerification &&
+          error.terminalDisposition ==
+              RuntimeLoadTerminalDisposition::DeviceQuarantined &&
+          provider->isQuarantined(0) &&
+          llvm::StringRef(error.diagnostic)
+              .contains("post-reset identity verification failed") &&
+          statistics.attestationReadCount == implementations.size() + 2 &&
+          statistics.leaseAcquisitionCount == 1 &&
+          statistics.leaseReleaseCount == 1 && statistics.resetCount == 2 &&
+          statistics.configurationWriteCount == 0 &&
+          statistics.quarantineCount == 1,
+      "reset attestation change reached package installation or reuse");
+}
+
+void rejectsIdentityChangeAtExclusiveLeaseBoundary() {
+  const llvm::StringRef test = __func__;
+  deployment::test::TemporaryTree tree(test);
+  ArtifactStore artifacts(tree.path("artifacts"));
+  BlobStore blobs(tree.path("blobs"));
+  const deployment::FinalizedDeployment deployment =
+      deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
+  InProcessRuntimeFailurePlan failure;
+  failure.verificationMismatchBoundary =
+      InProcessRuntimeVerificationMismatchBoundary::ExclusiveLease;
+  auto provider =
+      take(test, createInProcessRuntimeProvider(
+                     {{implementations, std::nullopt, std::move(failure)}}));
+
+  const ObservedLoadError error = expectLoadError(
+      test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
+  const InProcessRuntimeStatistics statistics = provider->statistics();
+  deployment::test::require(
+      test,
+      error.kind == RuntimeLoadFailureKind::IdentityVerification &&
+          error.terminalDisposition ==
+              RuntimeLoadTerminalDisposition::LeaseReleased &&
+          llvm::StringRef(error.diagnostic)
+              .contains("leased device identity verification failed") &&
+          statistics.identityReadCount == 1 &&
+          statistics.leaseAcquisitionCount == 1 &&
+          statistics.leaseReleaseCount == 1 && statistics.resetCount == 0 &&
+          statistics.configurationWriteCount == 0 &&
+          statistics.activationCount == 0,
+      "identity changed between enumeration and lease without typed refusal");
+}
+
+void rejectsIdentityChangeAcrossInitialReset() {
+  const llvm::StringRef test = __func__;
+  deployment::test::TemporaryTree tree(test);
+  ArtifactStore artifacts(tree.path("artifacts"));
+  BlobStore blobs(tree.path("blobs"));
+  const deployment::FinalizedDeployment deployment =
+      deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
+  InProcessRuntimeFailurePlan failure;
+  failure.verificationMismatchBoundary =
+      InProcessRuntimeVerificationMismatchBoundary::InitialReset;
+  auto provider =
+      take(test, createInProcessRuntimeProvider(
+                     {{implementations, std::nullopt, std::move(failure)}}));
+
+  const ObservedLoadError error = expectLoadError(
+      test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
+  const InProcessRuntimeStatistics statistics = provider->statistics();
+  deployment::test::require(
+      test,
+      error.kind == RuntimeLoadFailureKind::IdentityVerification &&
+          error.terminalDisposition ==
+              RuntimeLoadTerminalDisposition::DeviceQuarantined &&
+          provider->isQuarantined(0) &&
+          llvm::StringRef(error.diagnostic)
+              .contains("post-reset identity verification failed") &&
+          llvm::StringRef(error.diagnostic)
+              .contains("recovery identity check failed") &&
+          statistics.identityReadCount == implementations.size() + 2 &&
+          statistics.leaseAcquisitionCount == 1 &&
+          statistics.leaseReleaseCount == 1 && statistics.resetCount == 2 &&
+          statistics.configurationWriteCount == 0 &&
+          statistics.activationCount == 0 && statistics.quarantineCount == 1,
+      "reset identity change reached package installation or escaped recovery");
+}
+
+void enforcesLeaseIdentityAndTerminalDispositionContract() {
+  const llvm::StringRef test = __func__;
+  const ArtifactIdentity firstIdentity = identity(test, 3);
+  const ArtifactIdentity secondIdentity = identity(test, 79);
+  auto provider = take(test, createInProcessRuntimeProvider(
+                                 {{{firstIdentity}, std::nullopt, {}},
+                                  {{secondIdentity}, std::nullopt, {}}}));
+  const auto devices = take(test, provider->enumerateDevices());
+  deployment::test::require(test, devices.size() == 2,
+                            "provider did not enumerate both devices");
+  const RuntimeProviderEndpointRef endpoint =
+      inProcessRuntimeEndpoint(RuntimeEndpointClass::Identity, 0);
+
+  const RuntimeLeaseHandle firstLease =
+      take(test, provider->acquireExclusiveLease(devices[0]));
+  auto duplicate = provider->acquireExclusiveLease(devices[0]);
+  deployment::test::require(test, !duplicate,
+                            "one device admitted two exclusive leases");
+  llvm::consumeError(duplicate.takeError());
+  deployment::test::require(
+      test,
+      take(test, provider->readImplementationIdentity(firstLease, endpoint)) ==
+          firstIdentity,
+      "lease identity read observed another device");
+  const RuntimeLeaseFinalizationResult firstFinalization =
+      provider->finalizeExclusiveLease(
+          firstLease, RuntimeLeaseFinalizationRequest::Release);
+  deployment::test::require(
+      test,
+      firstFinalization.state == RuntimeLeaseFinalState::Released &&
+          firstFinalization.diagnostic.empty(),
+      "clean lease release did not produce its exact terminal state");
+
+  auto stale = provider->readImplementationIdentity(firstLease, endpoint);
+  deployment::test::require(test, !stale,
+                            "released lease remained valid for identity read");
+  llvm::consumeError(stale.takeError());
+  const RuntimeLeaseHandle replacementLease =
+      take(test, provider->acquireExclusiveLease(devices[0]));
+  deployment::test::require(test, !(replacementLease == firstLease),
+                            "lease generation did not change on reacquisition");
+  auto reboundStale =
+      provider->readImplementationIdentity(firstLease, endpoint);
+  deployment::test::require(
+      test, !reboundStale,
+      "old lease generation became valid after device reacquisition");
+  llvm::consumeError(reboundStale.takeError());
+  const RuntimeLeaseFinalizationResult quarantineFinalization =
+      provider->finalizeExclusiveLease(
+          replacementLease, RuntimeLeaseFinalizationRequest::Quarantine);
+  deployment::test::require(
+      test,
+      quarantineFinalization.state == RuntimeLeaseFinalState::Quarantined &&
+          quarantineFinalization.diagnostic.empty(),
+      "explicit quarantine did not produce its exact terminal state");
+  auto quarantined = provider->acquireExclusiveLease(devices[0]);
+  deployment::test::require(test, !quarantined,
+                            "quarantined device admitted another lease");
+  llvm::consumeError(quarantined.takeError());
+
+  const RuntimeLeaseHandle independentLease =
+      take(test, provider->acquireExclusiveLease(devices[1]));
+  deployment::test::require(test,
+                            take(test, provider->readImplementationIdentity(
+                                           independentLease, endpoint)) ==
+                                secondIdentity,
+                            "lease identity was not bound to its exact device");
+  const RuntimeLeaseFinalizationResult independentFinalization =
+      provider->finalizeExclusiveLease(
+          independentLease, RuntimeLeaseFinalizationRequest::Release);
+  deployment::test::require(test,
+                            independentFinalization.state ==
+                                    RuntimeLeaseFinalState::Released &&
+                                independentFinalization.diagnostic.empty(),
+                            "independent lease did not release cleanly");
+
+  const InProcessRuntimeStatistics statistics = provider->statistics();
+  deployment::test::require(
+      test,
+      statistics.leaseAcquisitionCount == 3 &&
+          statistics.leaseReleaseCount == 3 && statistics.quarantineCount == 1,
+      "lease terminal disposition counters are inconsistent");
+}
+
+void quarantinesAtomicallyWhenOrdinaryReleaseFails() {
+  const llvm::StringRef test = __func__;
+  deployment::test::TemporaryTree tree(test);
+  ArtifactStore artifacts(tree.path("artifacts"));
+  BlobStore blobs(tree.path("blobs"));
+  const deployment::FinalizedDeployment deployment =
+      deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
+  InProcessRuntimeFailurePlan failure;
+  failure.verificationMismatchBoundary =
+      InProcessRuntimeVerificationMismatchBoundary::ExclusiveLease;
+  failure.leaseReleaseFailures = 1;
+  auto provider =
+      take(test, createInProcessRuntimeProvider(
+                     {{implementations, std::nullopt, std::move(failure)}}));
+
+  const ObservedLoadError error = expectLoadError(
+      test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
+  const InProcessRuntimeStatistics statistics = provider->statistics();
+  deployment::test::require(
+      test,
+      error.kind == RuntimeLoadFailureKind::IdentityVerification &&
+          error.terminalDisposition ==
+              RuntimeLoadTerminalDisposition::DeviceQuarantined &&
+          provider->isQuarantined(0) &&
+          llvm::StringRef(error.diagnostic).contains("lease release failed") &&
+          statistics.leaseAcquisitionCount == 1 &&
+          statistics.leaseReleaseCount == 1 &&
+          statistics.quarantineCount == 1 && statistics.resetCount == 0,
+      "release failure did not establish an atomic quarantine disposition");
+}
+
+void quarantinesWhenLeaseReleaseCannotComplete() {
+  const llvm::StringRef test = __func__;
+  deployment::test::TemporaryTree tree(test);
+  ArtifactStore artifacts(tree.path("artifacts"));
+  BlobStore blobs(tree.path("blobs"));
+  const deployment::FinalizedDeployment deployment =
+      deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
+  const ArtifactIdentity independentIdentity = identity(test, 131);
+  constexpr llvm::StringLiteral targetMachine = "quarantine-failclosed-target";
+  constexpr llvm::StringLiteral independentMachine =
+      "quarantine-failclosed-independent";
+  InProcessRuntimeFailurePlan failure;
+  failure.verificationMismatchBoundary =
+      InProcessRuntimeVerificationMismatchBoundary::InitialReset;
+  failure.quarantineLeaseReleaseFailures = 1;
+  auto provider = take(test, createInProcessRuntimeProvider(
+                                 {{implementations, std::nullopt,
+                                   std::move(failure), targetMachine.str()},
+                                  {{independentIdentity},
+                                   std::nullopt,
+                                   {},
+                                   independentMachine.str()}}));
+
+  const ObservedLoadError first = expectLoadError(
+      test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
+  const InProcessRuntimeStatistics statistics = provider->statistics();
+  deployment::test::require(
+      test,
+      first.kind == RuntimeLoadFailureKind::IdentityVerification &&
+          first.terminalDisposition ==
+              RuntimeLoadTerminalDisposition::DeviceQuarantined &&
+          llvm::StringRef(first.diagnostic)
+              .contains("quarantined lease remains provider-owned") &&
+          provider->isQuarantined(0) && statistics.leaseAcquisitionCount == 1 &&
+          statistics.leaseReleaseCount == 0 && statistics.quarantineCount == 1,
+      "unreleased lease did not establish its quarantine owner");
+  provider.reset();
+
+  auto replacement =
+      take(test, createInProcessRuntimeProvider(
+                     {{implementations, std::nullopt, {}, targetMachine.str()},
+                      {{independentIdentity},
+                       std::nullopt,
+                       {},
+                       independentMachine.str()}}));
+  const auto available = take(test, replacement->enumerateDevices());
+  deployment::test::require(
+      test,
+      available.size() == 1 && replacement->isQuarantined(0) &&
+          !replacement->isQuarantined(1),
+      "provider teardown lost quarantine or isolated an independent device");
+  const RuntimeLeaseHandle independentLease =
+      take(test, replacement->acquireExclusiveLease(available.front()));
+  deployment::test::require(
+      test,
+      take(test, replacement->readImplementationIdentity(
+                     independentLease,
+                     inProcessRuntimeEndpoint(RuntimeEndpointClass::Identity,
+                                              0))) == independentIdentity,
+      "post-quarantine enumeration selected the quarantined machine device");
+  const RuntimeLeaseFinalizationResult finalization =
+      replacement->finalizeExclusiveLease(
+          independentLease, RuntimeLeaseFinalizationRequest::Release);
+  deployment::test::require(test,
+                            finalization.state ==
+                                    RuntimeLeaseFinalState::Released &&
+                                finalization.diagnostic.empty(),
+                            "independent machine device did not remain usable");
+
+  InProcessRuntimeFailurePlan ownershipFailure;
+  ownershipFailure.quarantineLeaseReleaseFailures = 1;
+  auto ownershipProvider =
+      take(test,
+           createInProcessRuntimeProvider(
+               {{implementations, std::nullopt, std::move(ownershipFailure)}}));
+  const auto ownershipDevices =
+      take(test, ownershipProvider->enumerateDevices());
+  const RuntimeLeaseHandle callerLease = take(
+      test, ownershipProvider->acquireExclusiveLease(ownershipDevices.front()));
+  const RuntimeLeaseFinalizationResult ownershipTransfer =
+      ownershipProvider->finalizeExclusiveLease(
+          callerLease, RuntimeLeaseFinalizationRequest::Quarantine);
+  deployment::test::require(
+      test,
+      ownershipTransfer.state == RuntimeLeaseFinalState::Quarantined &&
+          llvm::StringRef(ownershipTransfer.diagnostic)
+              .contains("quarantined lease remains provider-owned"),
+      "quarantine did not transfer the unresolved lease to the provider");
+
+  auto identityAfterTransfer = ownershipProvider->readImplementationIdentity(
+      callerLease, inProcessRuntimeEndpoint(RuntimeEndpointClass::Identity, 0));
+  deployment::test::require(
+      test, !identityAfterTransfer,
+      "caller retained identity access after quarantine ownership transfer");
+  llvm::consumeError(identityAfterTransfer.takeError());
+  llvm::Error resetAfterTransfer =
+      ownershipProvider->quiesceAndReset(callerLease);
+  deployment::test::require(
+      test, static_cast<bool>(resetAfterTransfer),
+      "caller retained reset access after quarantine ownership transfer");
+  llvm::consumeError(std::move(resetAfterTransfer));
+  llvm::Error programmingAfterTransfer =
+      ownershipProvider->writeConfigurationWord(
+          callerLease,
+          inProcessRuntimeEndpoint(RuntimeEndpointClass::Programming, 0),
+          RuntimeConfigurationWord{0, 0, UINT8_C(0xf)});
+  deployment::test::require(
+      test, static_cast<bool>(programmingAfterTransfer),
+      "caller retained programming access after quarantine ownership transfer");
+  llvm::consumeError(std::move(programmingAfterTransfer));
+  const RuntimeLeaseFinalizationResult repeatedFinalization =
+      ownershipProvider->finalizeExclusiveLease(
+          callerLease, RuntimeLeaseFinalizationRequest::Release);
+  deployment::test::require(
+      test,
+      repeatedFinalization.state == RuntimeLeaseFinalState::Quarantined &&
+          llvm::StringRef(repeatedFinalization.diagnostic)
+              .contains("lease is stale or inactive"),
+      "caller released a lease after quarantine ownership transfer");
+
+  constexpr llvm::StringLiteral abandonedMachine =
+      "quarantine-failclosed-abandoned";
+  auto abandonedProvider = take(
+      test,
+      createInProcessRuntimeProvider(
+          {{{independentIdentity}, std::nullopt, {}, abandonedMachine.str()}}));
+  const auto abandonedDevices =
+      take(test, abandonedProvider->enumerateDevices());
+  (void)take(
+      test, abandonedProvider->acquireExclusiveLease(abandonedDevices.front()));
+  abandonedProvider.reset();
+
+  auto abandonedReplacement = take(
+      test,
+      createInProcessRuntimeProvider(
+          {{{independentIdentity}, std::nullopt, {}, abandonedMachine.str()}}));
+  const auto abandonedAvailable =
+      take(test, abandonedReplacement->enumerateDevices());
+  deployment::test::require(
+      test,
+      abandonedAvailable.empty() && abandonedReplacement->isQuarantined(0),
+      "provider teardown left an unowned live lease outside quarantine");
 }
 
 void rejectsProgrammingEndpointAliasedAcrossSpatialCores() {
@@ -529,6 +929,66 @@ void rejectsNonPortableRuntimeAbiBeforeEnumeration() {
       "non-portable runtime ABI reached provider enumeration");
 }
 
+void rejectsDirectSystemConfigurationWithoutSystemProvider() {
+  const llvm::StringRef test = __func__;
+  deployment::test::TemporaryTree tree(test);
+  ArtifactStore artifacts(tree.path("artifacts"));
+  BlobStore blobs(tree.path("blobs"));
+  const deployment::FinalizedDeployment finalized =
+      deployment::test::buildDirectSystemConfigurationDeployment(
+          test, artifacts, blobs, tree);
+  const auto imported =
+      take(test, deployment::importDeployment(finalized.reference(), artifacts,
+                                              blobs));
+  deployment::test::require(
+      test, imported.reference() == finalized.reference(),
+      "direct System Deployment changed during strict import");
+
+  std::uint64_t directImageCount = 0;
+  std::uint64_t localImageCount = 0;
+  for (const ArtifactRootReference &reference :
+       imported.deployment().configurationImages()) {
+    const auto image = take(test, deployment::importHardwareConfigurationImage(
+                                      reference, artifacts));
+    const auto abi =
+        take(test, hardware::importConfigurationABI(
+                       image.image().configurationAbi(), artifacts));
+    const hardware::ProgrammingUnit *unit =
+        abi.abi().findProgrammingUnit(image.image().programmingUnitId());
+    deployment::test::require(test, unit != nullptr,
+                              "configuration image lost its ABI unit");
+    const hardware::ProgrammingUnitOccurrenceScope scope =
+        hardware::deriveProgrammingUnitOccurrenceScope(*unit);
+    if (scope.includesDirectSystemResources && scope.spatialCores.empty())
+      ++directImageCount;
+    else if (!scope.includesDirectSystemResources &&
+             scope.spatialCores.size() == 1)
+      ++localImageCount;
+    else
+      deployment::test::fail(test,
+                             "configuration image has a mixed owner scope");
+  }
+  deployment::test::require(
+      test,
+      directImageCount != 0 &&
+          localImageCount == finalized.deployment().hardwareBindings().size(),
+      "Deployment did not retain global and subject-local images");
+
+  const auto implementations =
+      implementationIdentities(test, finalized, artifacts, blobs);
+  auto provider = take(test, createInProcessRuntimeProvider(
+                                 {{implementations, std::nullopt, {}}}));
+  const ObservedLoadError error = expectLoadError(
+      test, loadDeployment(finalized, {provider, 0}, artifacts, blobs));
+  deployment::test::require(
+      test,
+      error.kind == RuntimeLoadFailureKind::ProviderMismatch &&
+          llvm::StringRef(error.diagnostic)
+              .contains("direct System configuration binding") &&
+          provider->statistics().enumerationCount == 0,
+      "missing System provider did not fail before device enumeration");
+}
+
 void loadsThroughCanonicalUnicastProvider() {
   const llvm::StringRef test = __func__;
   deployment::test::TemporaryTree tree(test);
@@ -579,7 +1039,7 @@ void ignoresAbiUnusedHighReadbackBits() {
                   std::nullopt,
                   {std::nullopt,
                    InProcessRuntimeReadbackCorruption{0, UINT32_C(0x80000000)},
-                   false, std::nullopt, 0, 0}}}));
+                   std::nullopt, std::nullopt, 0, 0}}}));
 
   {
     auto loaded =
@@ -667,13 +1127,27 @@ int main(int argc, char **argv) {
   else if (scenario == "foreign")
     rejectsSelectedForeignImplementationWithoutDeviceFallback();
   else if (scenario == "attestation")
-    rejectsStaleTrustedAttestationBeforeLease();
+    rejectsStaleTrustedAttestationUnderLease();
+  else if (scenario == "attestation-reset")
+    rejectsTrustedAttestationChangeAcrossInitialReset();
+  else if (scenario == "lease-identity")
+    rejectsIdentityChangeAtExclusiveLeaseBoundary();
+  else if (scenario == "reset-identity")
+    rejectsIdentityChangeAcrossInitialReset();
+  else if (scenario == "lease-contract")
+    enforcesLeaseIdentityAndTerminalDispositionContract();
+  else if (scenario == "release-fallback")
+    quarantinesAtomicallyWhenOrdinaryReleaseFails();
+  else if (scenario == "quarantine-failclosed")
+    quarantinesWhenLeaseReleaseCannotComplete();
   else if (scenario == "endpoint-alias")
     rejectsProgrammingEndpointAliasedAcrossSpatialCores();
   else if (scenario == "descriptor-alias")
     rejectsUnregisteredDescriptorAliasBeforeEnumeration();
   else if (scenario == "non-portable")
     rejectsNonPortableRuntimeAbiBeforeEnumeration();
+  else if (scenario == "direct-system")
+    rejectsDirectSystemConfigurationWithoutSystemProvider();
   else if (scenario == "unicast")
     loadsThroughCanonicalUnicastProvider();
   else if (scenario == "unused-high-bits")

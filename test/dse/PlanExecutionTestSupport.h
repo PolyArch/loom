@@ -39,6 +39,8 @@ makePlanExecutionFixture(const ArtifactStore &store, std::size_t nodeCount,
 
 void resetPlanExecutionProviderObservations();
 void requireConcurrentPlanExecutionProviders(std::uint64_t count);
+void requireConcurrentPlanExecutionProvidersAfterSerialPrefix(
+    std::uint64_t serialProviderCalls, std::uint64_t count);
 void requirePlanExecutionProviderStopObservation();
 void setPlanExecutionProviderOutcome(PlanExecutionProviderOutcomeKind outcome);
 bool waitForActivePlanExecutionProvider();

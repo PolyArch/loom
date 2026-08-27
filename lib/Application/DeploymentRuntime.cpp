@@ -32,7 +32,8 @@ materializeApplicationActivationInputs(
     const ArtifactRootReference &sourceWorkload,
     const ArtifactRootReference &sourceRuntimeInput,
     const deployment::FinalizedDeployment &deployment,
-    const ArtifactStore &artifacts) {
+    const ArtifactStore &artifacts,
+    std::optional<std::uint64_t> maximumSimulatedTicks) {
   auto source = sim::importStructuredProgramSimulationInputs(
       sourceWorkload, sourceRuntimeInput, artifacts);
   if (!source)
@@ -74,6 +75,7 @@ materializeApplicationActivationInputs(
     return workload.takeError();
 
   sim::SystemSimulationRuntimeInputDraft runtime{workload->identity()};
+  runtime.maximumSimulatedTicks = maximumSimulatedTicks;
   runtime.runtimeEntryValues.reserve(sourceRuntimeView->runtimeValues.size());
   for (const sim::StructuredRuntimeValueEntry &value :
        sourceRuntimeView->runtimeValues)
@@ -97,6 +99,14 @@ llvm::Expected<std::vector<ApplicationEndpointActivationInputs>>
 materializeApplicationEndpointActivationInputs(
     const ApplicationRuntimeManifest &manifest, const ArtifactStore &artifacts,
     const BlobStore &blobs) {
+  std::optional<std::uint64_t> maximumSimulatedTicks;
+  auto activationInputs = sim::importSystemSimulationInputs(
+      manifest.activationWorkload(), manifest.activationRuntimeInput(),
+      artifacts, blobs);
+  if (!activationInputs)
+    return activationInputs.takeError();
+  if (const auto *runtime = activationInputs->runtimeInput.system())
+    maximumSimulatedTicks = runtime->maximumSimulatedTicks;
   std::vector<pnr::ResourceTimeTransitionEndpointReference> endpoints;
   if (manifest.transitionGraph()) {
     if (llvm::Error error = pnr::verifyResourceTimeTransitionGraph(
@@ -119,7 +129,7 @@ materializeApplicationEndpointActivationInputs(
       return endpointDeployment.takeError();
     auto inputs = materializeApplicationActivationInputs(
         manifest.sourceProgram(), manifest.workload(), manifest.runtimeInput(),
-        *endpointDeployment, artifacts);
+        *endpointDeployment, artifacts, maximumSimulatedTicks);
     if (!inputs)
       return inputs.takeError();
     auto imported = sim::importSystemSimulationInputs(
