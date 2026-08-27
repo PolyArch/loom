@@ -190,6 +190,10 @@ private:
       physicalTimingRouteNodeWorklist_;
   std::vector<PnrIndex> oldSwitchHandshakeFragments_;
   std::vector<PnrIndex> newSwitchHandshakeFragments_;
+  std::vector<PnrIndex> tagProjectionLogicalNets_;
+  std::vector<PnrIndex> tagProjectionDomains_;
+  std::vector<PnrIndex> changedSwitchHandshakeDomains_;
+  std::vector<std::vector<PnrIndex>> newSwitchHandshakeDomainFragments_;
   std::vector<PnrIndex> removedSwitchHandshakeFragments_;
   std::vector<PnrIndex> addedSwitchHandshakeFragments_;
   bool switchHandshakeBaselineCaptured_ = false;
@@ -541,6 +545,7 @@ private:
   /// valid across rejected proposals; each commit installs the fragments the
   /// closing move already derived.
   std::vector<PnrIndex> switchHandshakeFragmentBaseline_;
+  std::vector<std::vector<PnrIndex>> switchHandshakeFragmentsByDomain_;
   bool switchHandshakeFragmentBaselineValid_ = false;
   std::uint64_t unroutedObligationCount_ = 0;
   std::uint64_t atomicCapacityOveruse_ = 0;
@@ -644,12 +649,11 @@ private:
                               llvm::ArrayRef<PnrIndex> newFragments);
   llvm::Error changeTraversal(std::optional<PnrIndex> oldTraversal,
                               std::optional<PnrIndex> newTraversal);
-  llvm::Error changeProgressTraversal(
-      PnrIndex logicalNet, std::optional<PnrIndex> oldTraversal,
-      std::optional<PnrIndex> newTraversal);
+  llvm::Error changeProgressTraversal(PnrIndex logicalNet,
+                                      std::optional<PnrIndex> oldTraversal,
+                                      std::optional<PnrIndex> newTraversal);
   llvm::Error changeProgressTerminalSelections(PnrIndex logicalNet,
-                                               bool oldActive,
-                                               bool newActive);
+                                               bool oldActive, bool newActive);
   llvm::Error
   changeRegisterFifoTransferResources(PnrIndex logicalNet,
                                       std::optional<PnrIndex> oldOption,
@@ -658,13 +662,15 @@ private:
                                             PnrIndex removed, PnrIndex added);
   llvm::Error collectRouteTraversalDeltas();
   llvm::Error applyProgressTraversalDelta(PnrIndex logicalNet,
-                                          PnrIndex traversal,
-                                          PnrIndex removed, PnrIndex added);
+                                          PnrIndex traversal, PnrIndex removed,
+                                          PnrIndex added);
   llvm::Error synchronizeProgressProjection();
   void rollbackProgressProjection() noexcept;
   void acceptProgressProjection() noexcept;
   void rollbackAppliedRouteResources() noexcept;
   void acceptAppliedRouteResources() noexcept;
+  bool hasPreparedRouteTreeChange() const;
+  bool hasPreparedSemanticChange() const;
   llvm::Error validateAffectedState() const;
   void finish();
 

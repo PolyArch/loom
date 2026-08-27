@@ -3,14 +3,15 @@
 #include "ADG/MemoryLibrary.h"
 #include "CgraAdmissionTestSupport.h"
 #include "SpatialCandidateSelectionTestSupport.h"
+#include "TechMappingCandidateTestSupport.h"
 #include "TemporalMappingFabricTestSupport.h"
 #include "TemporalPeTagDomainTestSupport.h"
-#include "TechMappingCandidateTestSupport.h"
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
+#include "ConfiguredHardwareProjectionInternal.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -26,7 +27,6 @@
 #include "Fabric/Identity/FabricMemoryConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
-#include "ConfiguredHardwareProjectionInternal.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
@@ -204,8 +204,8 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-dataflow::CanonicalDataflowArtifact buildMemoryDataflow(
-    mlir::MLIRContext &context, bool splitExposures = false) {
+dataflow::CanonicalDataflowArtifact
+buildMemoryDataflow(mlir::MLIRContext &context, bool splitExposures = false) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   dataflow.graph private @load(
@@ -243,8 +243,10 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
     fail("cannot parse memory Dataflow fixture");
   if (splitExposures) {
     auto graph = *module->getOps<::dataflow::GraphOp>().begin();
-    auto result = *graph.getBody().front().getOps<::dataflow::GraphReturnOp>().begin();
-    result.getMemoriesMutable().slice(0, 1).assign(graph.getBody().front().getArgument(2));
+    auto result =
+        *graph.getBody().front().getOps<::dataflow::GraphReturnOp>().begin();
+    result.getMemoriesMutable().slice(0, 1).assign(
+        graph.getBody().front().getArgument(2));
   }
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
@@ -677,9 +679,9 @@ void completeCandidateRoundTrip(
     const auto physicalTiming =
         take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
             fabric.view()));
-    const auto physicalTimingReference = take(
-        loom::fabric::publishFabricPhysicalTimingProfile(physicalTiming,
-                                                         store));
+    const auto physicalTimingReference =
+        take(loom::fabric::publishFabricPhysicalTimingProfile(physicalTiming,
+                                                              store));
     const auto typedGeneratorInputs =
         take(loom::dse::bindSpatialPnrCandidateGeneratorInputs(
             dataflowReference, candidates->candidates.front(),
@@ -688,8 +690,8 @@ void completeCandidateRoundTrip(
     const auto generatorBinding = take(
         loom::dse::resolveSpatialPnrCandidateGeneratorBinding(generatorConfig));
     const loom::pnr::SpatialPnrGenerationInputs generatorInputs{
-        dataflow, tech.view(), fabric.view(), physicalTiming, generatorConfig,
-        constraints.view(), store};
+        dataflow,        tech.view(),        fabric.view(), physicalTiming,
+        generatorConfig, constraints.view(), store};
     auto generatedSpatial = loom::dse::invokeSpatialPnrCandidateGenerator(
         typedGeneratorInputs, generatorBinding, store);
     const auto *generated =
@@ -833,11 +835,10 @@ void completeCandidateRoundTrip(
     }
     loom::pnr::SpatialCandidateScratch candidateScratch;
     requireSuccess(candidateScratch.prepare(*problem));
-    selectLegalTemporalBinding(*candidate, candidateScratch,
-                               boundaryWrapped || forceTagConflict ||
-                                   requireSeparatedSwitchRows,
-                               switchPackingFabric &&
-                                   !requireSeparatedSwitchRows);
+    selectLegalTemporalBinding(
+        *candidate, candidateScratch,
+        boundaryWrapped || forceTagConflict || requireSeparatedSwitchRows,
+        switchPackingFabric && !requireSeparatedSwitchRows);
     if (!boundaryWrapped && !forceTagConflict && !switchPackingFabric)
       operandPairingPressureIsIncremental(*candidate, candidateScratch);
     if (forceTagConflict ||
@@ -954,8 +955,7 @@ void completeCandidateRoundTrip(
       fail("warmed global routing closure grew worker-local storage from " +
            std::to_string(retainedClosureBytes) + " to " +
            std::to_string(repeatedClosureBytes));
-    handshakeAfterClosure =
-        candidate->handshake().materializationStatistics();
+    handshakeAfterClosure = candidate->handshake().materializationStatistics();
     progressAfterClosure = candidate->progress().statistics();
     if (handshakeAfterClosure->cachedVerificationCount <=
             handshakeBeforeClosure.cachedVerificationCount ||
@@ -1059,8 +1059,8 @@ void completeCandidateRoundTrip(
             tagAssignments.values()[lhs] == tagAssignments.values()[rhs])
           fail("one local Physical Tag match domain contains a collision");
   }
-  if (switchPackingFabric && !forceTagConflict &&
-      !requireSeparatedSwitchRows && !observedPackedSwitchDomain)
+  if (switchPackingFabric && !forceTagConflict && !requireSeparatedSwitchRows &&
+      !observedPackedSwitchDomain)
     fail("Temporal route fixture did not pack compatible switch segments");
   if (requireSeparatedSwitchRows && !observedSeparatedSwitchDomain)
     fail("Temporal route fixture did not select distinct resident rows");
@@ -1160,6 +1160,72 @@ void completeCandidateRoundTrip(
         candidate->tagUnassignedCount() != 0 ||
         candidate->tagConflictCount() != expectedTagConflicts)
       fail("Spatial move rollback changed Physical Tag decisions");
+    requireSuccess(candidate->verify());
+  }
+
+  if (switchPackingFabric) {
+    // Replaying the committed RouteTree exactly makes the move a semantic
+    // no-op that closes before the switch-handshake regroup; a direct commit
+    // of that move must preserve the committed fragment baseline instead of
+    // publishing the stale scratch fragments.
+    const auto &net0 = problem->transfers().logicalNets()[0];
+    const auto &tree0 = candidate->routeTree(0);
+    const auto source0 = tree0.sourceEndpoint();
+    if (!source0)
+      fail("switch no-op fixture requires a routed net");
+    std::vector<std::vector<loom::pnr::PnrIndex>> sinkChains(net0.sinkCount);
+    std::vector<loom::pnr::PnrIndex> sinkEndpoints(net0.sinkCount);
+    for (loom::pnr::PnrIndex sink = 0; sink < net0.sinkCount; ++sink) {
+      const auto sinkEndpoint = tree0.sinkEndpoint(sink);
+      if (!sinkEndpoint)
+        fail("switch no-op fixture requires a routed sink");
+      sinkEndpoints[sink] = *sinkEndpoint;
+      std::vector<loom::pnr::PnrIndex> reverseArcs;
+      loom::pnr::PnrIndex endpoint = *sinkEndpoint;
+      while (true) {
+        const auto slot = tree0.findNode(endpoint);
+        if (!slot)
+          fail("switch no-op fixture lost a route node");
+        const auto &node = tree0.nodeStorage()[*slot];
+        if (node.parentArc == loom::pnr::getInvalidPnrIndex())
+          break;
+        reverseArcs.push_back(node.parentArc);
+        endpoint = problem->routing().arcSources()[node.parentArc];
+      }
+      if (endpoint != *source0)
+        fail("switch no-op fixture sink does not descend from the source");
+      sinkChains[sink].assign(reverseArcs.rbegin(), reverseArcs.rend());
+    }
+    loom::pnr::SpatialCandidateScratch noopScratch;
+    requireSuccess(noopScratch.prepare(*problem));
+    auto noopMove = take(candidate->beginMove(noopScratch));
+    requireSuccess(noopMove.ripUpWholeRoute(0));
+    requireSuccess(noopMove.bindRouteSource(0, *source0));
+    llvm::DenseSet<loom::pnr::PnrIndex> attached{*source0};
+    for (loom::pnr::PnrIndex sink = 0; sink < net0.sinkCount; ++sink) {
+      requireSuccess(noopMove.bindRouteSink(0, sink, sinkEndpoints[sink]));
+      const auto &chain = sinkChains[sink];
+      loom::pnr::PnrIndex attachPoint = *source0;
+      std::size_t attachedPrefix = 0;
+      for (std::size_t arc = 0; arc < chain.size(); ++arc) {
+        const loom::pnr::PnrIndex target =
+            problem->routing().routingArcs()[chain[arc]].target;
+        if (!attached.contains(target))
+          break;
+        attachPoint = target;
+        attachedPrefix = arc + 1;
+      }
+      requireSuccess(noopMove.attachRoutePath(
+          0, attachPoint, llvm::ArrayRef(chain).drop_front(attachedPrefix),
+          sink));
+      for (std::size_t arc = attachedPrefix; arc < chain.size(); ++arc)
+        attached.insert(problem->routing().routingArcs()[chain[arc]].target);
+    }
+    if (!take(noopMove.close()))
+      fail("switch no-op replay closed a handshake cycle");
+    if (noopMove.hasSemanticChange())
+      fail("identical RouteTree replay reported a semantic change");
+    requireSuccess(noopMove.commit());
     requireSuccess(candidate->verify());
   }
 
@@ -1390,7 +1456,8 @@ void completeCandidateRoundTrip(
         take(loom::mapping::deriveSpatialPeOperandProgressFeedback(
             dataflow, tech.view(), operandQueueGroups));
     if (operandProgress.pairingKeyCount == 0 ||
-        operandProgress.pairingKeyCount < operandProgress.distinctPairingKeyCount ||
+        operandProgress.pairingKeyCount <
+            operandProgress.distinctPairingKeyCount ||
         operandProgress.distinctIngressCount == 0)
       fail("Temporal SpatialMapping lost its qualified pairing projection");
     if (operandProgress.sharedIngressPressure !=
@@ -1429,11 +1496,12 @@ void completeCandidateRoundTrip(
           loom::fabric::FabricConfigurationOwnerRef(
               loom::fabric::FabricInventoryOwnerRef::of(occurrence)),
           0};
-      const auto slot = take(
-          loom::mapping::detail::resolveConfiguredHardwareSlot(fabric.view(),
-                                                               field));
-      const auto expected = take(loom::fabric::encodeTemporalSwitchConfiguration(
-          fabric.view(), field, entries));
+      const auto slot =
+          take(loom::mapping::detail::resolveConfiguredHardwareSlot(
+              fabric.view(), field));
+      const auto expected =
+          take(loom::fabric::encodeTemporalSwitchConfiguration(fabric.view(),
+                                                               field, entries));
       const auto configured = llvm::find_if(
           imported.view().configuredHardware().fields(),
           [&](const auto &candidate) { return candidate.slot == slot; });
@@ -1566,7 +1634,8 @@ void completeCandidateRoundTrip(
     fail("SpatialMapping finalized without a required ResourceUse");
 }
 
-void completeMemoryCandidateRoundTrip(bool temporal, bool splitExposures = false) {
+void completeMemoryCandidateRoundTrip(bool temporal,
+                                      bool splitExposures = false) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
@@ -1600,9 +1669,12 @@ void completeMemoryCandidateRoundTrip(bool temporal, bool splitExposures = false
   auto problem = take(loom::pnr::freezeSpatialPnrProblem(
       dataflow, tech.view(), fabric.view(), pnrConfig, constraints.view()));
   if (splitExposures) {
-    const auto unsupported = loom::pnr::unsupportedSpatialExactRepairDomain(*problem);
-    if (!unsupported || !llvm::StringRef(*unsupported).contains("exposure-provider"))
-      fail("CpSat exact-repair preflight admitted unsupported exposure capacity");
+    const auto unsupported =
+        loom::pnr::unsupportedSpatialExactRepairDomain(*problem);
+    if (!unsupported ||
+        !llvm::StringRef(*unsupported).contains("exposure-provider"))
+      fail("CpSat exact-repair preflight admitted unsupported exposure "
+           "capacity");
     return;
   }
   auto candidate = take(loom::pnr::createCanonicalSpatialCandidate(problem));

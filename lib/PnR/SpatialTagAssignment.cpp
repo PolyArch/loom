@@ -1390,6 +1390,13 @@ SpatialTagAssignmentState::summarizeCurrentDelta(
                                              changedDomains);
 }
 
+llvm::ArrayRef<PnrIndex> SpatialTagAssignmentState::changedDomains(
+    const SpatialTagAssignmentScratch &scratch) const {
+  const auto &transaction = *scratch.storage_;
+  assert(transaction.active && transaction.problem == storage_->problem);
+  return transaction.changedDomains;
+}
+
 llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
     llvm::ArrayRef<RouteTreeStateHandle> routes,
     llvm::ArrayRef<std::optional<RouteTreeTransaction>> routeTransactions,

@@ -48,7 +48,7 @@ public:
 
 private:
   struct RelationDecisionMember final {
-    PnrIndex projectedValueOffset = 0;
+    std::size_t choiceValueOrdinalOffset = 0;
     std::uint64_t demand = 1;
   };
 
@@ -70,6 +70,7 @@ private:
   std::vector<std::uint8_t> rootClosedRelations_;
   std::vector<std::size_t> relationDecisionMemberOffsets_;
   std::vector<RelationDecisionMember> relationDecisionMembers_;
+  std::vector<PnrIndex> relationDecisionMemberChoiceValueOrdinals_;
   std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryChoices_;
   std::unique_ptr<detail::SpatialMemoryConstraintScratch>
       memoryConstraintScratch_;

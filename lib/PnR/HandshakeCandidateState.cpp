@@ -15,7 +15,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -44,15 +43,15 @@ struct MaterializedHandshakeGraph final {
   std::vector<std::vector<PnrIndex>> arcContributors;
   std::vector<std::vector<PnrIndex>> outgoingArcs;
   std::vector<std::vector<PnrIndex>> reverseArcs;
-  /// Frozen projection ordinal to compact ordinal. Compact ordinals are
-  /// assigned in first-encounter order, so the container only decides lookup
-  /// cost; consumers that iterate it validate bounds and are order
-  /// independent.
-  llvm::DenseMap<PnrIndex, PnrIndex> nodeOrdinals;
-  llvm::DenseMap<PnrIndex, PnrIndex> arcOrdinals;
+  /// Frozen projection ordinal to compact ordinal. Unmaterialized entries use
+  /// the invalid ordinal; compact ordinals retain first-encounter order.
+  std::vector<PnrIndex> nodeOrdinals;
+  std::vector<PnrIndex> arcOrdinals;
   std::vector<PnrIndex> order;
   std::vector<PnrIndex> ranks;
   std::vector<PnrIndex> cycleWitness;
+  std::vector<PnrIndex> constructionIndegree;
+  std::vector<PnrIndex> constructionReady;
   std::uint64_t constructionNanoseconds = 0;
   std::uint64_t deterministicWork = 0;
 };
@@ -91,6 +90,7 @@ struct HandshakeCandidateScratchStorage final {
   std::vector<PnrIndex> reorderedNodes;
   std::vector<PnrIndex> unaffectedReorderedNodes;
   std::vector<PnrIndex> forwardReorderedNodes;
+  std::shared_ptr<MaterializedHandshakeGraph> reusableGraph;
   std::uint64_t reachabilityEpoch = 0;
   std::uint64_t backwardEpoch = 0;
 };
@@ -120,6 +120,21 @@ std::size_t retainedNestedBytes(const std::vector<std::vector<T>> &values) {
 template <typename Key, typename Value>
 std::size_t retainedDenseMapBytes(const llvm::DenseMap<Key, Value> &values) {
   return values.getMemorySize();
+}
+
+std::size_t retainedMaterializedHandshakeGraphBytes(
+    const detail::MaterializedHandshakeGraph &graph) {
+  return retainedBytes(graph.nodeSignals) + retainedBytes(graph.nodeFrozenIds) +
+         retainedBytes(graph.arcs) + retainedBytes(graph.arcFrozenIds) +
+         retainedBytes(graph.fixedArcs) +
+         retainedNestedBytes(graph.arcContributors) +
+         retainedNestedBytes(graph.outgoingArcs) +
+         retainedNestedBytes(graph.reverseArcs) +
+         retainedBytes(graph.nodeOrdinals) + retainedBytes(graph.arcOrdinals) +
+         retainedBytes(graph.order) + retainedBytes(graph.ranks) +
+         retainedBytes(graph.cycleWitness) +
+         retainedBytes(graph.constructionIndegree) +
+         retainedBytes(graph.constructionReady);
 }
 
 llvm::Error increment(PnrIndex &value, llvm::StringRef subject) {
@@ -197,40 +212,78 @@ void buildCycleWitness(detail::MaterializedHandshakeGraph &graph) {
   }
 }
 
-llvm::Expected<detail::MaterializedHandshakeGraph>
-materializeHandshakeGraph(const FrozenSpatialHandshakeIndex &index,
-                          llvm::ArrayRef<PnrIndex> activeFragments) {
+void resetMaterializedHandshakeGraph(detail::MaterializedHandshakeGraph &graph,
+                                     std::size_t frozenNodeCount,
+                                     std::size_t frozenArcCount) {
+  if (graph.nodeOrdinals.size() == frozenNodeCount) {
+    for (PnrIndex frozenNode : graph.nodeFrozenIds)
+      graph.nodeOrdinals[frozenNode] = getInvalidPnrIndex();
+  } else {
+    graph.nodeOrdinals.assign(frozenNodeCount, getInvalidPnrIndex());
+  }
+  if (graph.arcOrdinals.size() == frozenArcCount) {
+    for (PnrIndex frozenArc : graph.arcFrozenIds)
+      graph.arcOrdinals[frozenArc] = getInvalidPnrIndex();
+  } else {
+    graph.arcOrdinals.assign(frozenArcCount, getInvalidPnrIndex());
+  }
+  graph.nodeSignals.clear();
+  graph.nodeFrozenIds.clear();
+  graph.arcs.clear();
+  graph.arcFrozenIds.clear();
+  graph.fixedArcs.clear();
+  for (std::vector<PnrIndex> &contributors : graph.arcContributors)
+    contributors.clear();
+  for (std::vector<PnrIndex> &arcs : graph.outgoingArcs)
+    arcs.clear();
+  for (std::vector<PnrIndex> &arcs : graph.reverseArcs)
+    arcs.clear();
+  graph.order.clear();
+  graph.ranks.clear();
+  graph.cycleWitness.clear();
+  graph.constructionIndegree.clear();
+  graph.constructionReady.clear();
+  graph.constructionNanoseconds = 0;
+  graph.deterministicWork = 0;
+}
+
+llvm::Error
+materializeHandshakeGraphInto(const FrozenSpatialHandshakeIndex &index,
+                              llvm::ArrayRef<PnrIndex> activeFragments,
+                              detail::MaterializedHandshakeGraph &graph) {
   const auto begin = std::chrono::steady_clock::now();
-  detail::MaterializedHandshakeGraph graph;
   const auto projectionArcs = index.projectionArcs();
   const auto nodeSignals = index.projectionNodeSignals();
-  if (nodeSignals.size() != static_cast<std::size_t>(index.projectionNodeCount()))
+  if (nodeSignals.size() !=
+      static_cast<std::size_t>(index.projectionNodeCount()))
     return candidateError("frozen handshake node signals are incomplete");
+  resetMaterializedHandshakeGraph(graph, nodeSignals.size(),
+                                  projectionArcs.size());
 
   const auto resolveNode =
       [&](PnrIndex frozenNode) -> llvm::Expected<PnrIndex> {
-    auto found = graph.nodeOrdinals.find(frozenNode);
-    if (found != graph.nodeOrdinals.end())
-      return found->second;
     if (frozenNode >= nodeSignals.size())
       return candidateError("frozen handshake node is out of range");
+    if (graph.nodeOrdinals[frozenNode] != getInvalidPnrIndex())
+      return graph.nodeOrdinals[frozenNode];
     auto ordinal = checkedIndex(graph.nodeFrozenIds.size(), "handshake node");
     if (!ordinal)
       return ordinal.takeError();
-    graph.nodeOrdinals.insert({frozenNode, *ordinal});
+    graph.nodeOrdinals[frozenNode] = *ordinal;
     graph.nodeFrozenIds.push_back(frozenNode);
     graph.nodeSignals.push_back(nodeSignals[frozenNode]);
-    graph.outgoingArcs.emplace_back();
-    graph.reverseArcs.emplace_back();
+    if (*ordinal == graph.outgoingArcs.size()) {
+      graph.outgoingArcs.emplace_back();
+      graph.reverseArcs.emplace_back();
+    }
     addWork(graph.deterministicWork);
     return *ordinal;
   };
   const auto resolveArc = [&](PnrIndex frozenArc) -> llvm::Expected<PnrIndex> {
-    auto found = graph.arcOrdinals.find(frozenArc);
-    if (found != graph.arcOrdinals.end())
-      return found->second;
     if (frozenArc >= projectionArcs.size())
       return candidateError("frozen handshake arc is out of range");
+    if (graph.arcOrdinals[frozenArc] != getInvalidPnrIndex())
+      return graph.arcOrdinals[frozenArc];
     auto source = resolveNode(projectionArcs[frozenArc].source);
     if (!source)
       return source.takeError();
@@ -240,11 +293,12 @@ materializeHandshakeGraph(const FrozenSpatialHandshakeIndex &index,
     auto ordinal = checkedIndex(graph.arcs.size(), "handshake arc");
     if (!ordinal)
       return ordinal.takeError();
-    graph.arcOrdinals.insert({frozenArc, *ordinal});
+    graph.arcOrdinals[frozenArc] = *ordinal;
     graph.arcs.push_back({*source, *destination});
     graph.arcFrozenIds.push_back(frozenArc);
     graph.fixedArcs.push_back(0);
-    graph.arcContributors.emplace_back();
+    if (*ordinal == graph.arcContributors.size())
+      graph.arcContributors.emplace_back();
     graph.outgoingArcs[*source].push_back(*ordinal);
     graph.reverseArcs[*destination].push_back(*ordinal);
     addWork(graph.deterministicWork);
@@ -289,29 +343,34 @@ materializeHandshakeGraph(const FrozenSpatialHandshakeIndex &index,
     }
   }
 
-  std::vector<PnrIndex> indegree(graph.nodeSignals.size(), 0);
+  graph.arcContributors.resize(graph.arcs.size());
+  graph.outgoingArcs.resize(graph.nodeSignals.size());
+  graph.reverseArcs.resize(graph.nodeSignals.size());
+  graph.constructionIndegree.assign(graph.nodeSignals.size(), 0);
   for (const FrozenSpatialHandshakeArc arc : graph.arcs) {
     if (llvm::Error error =
-            increment(indegree[arc.destination], "handshake node indegree"))
-      return std::move(error);
+            increment(graph.constructionIndegree[arc.destination],
+                      "handshake node indegree"))
+      return error;
     addWork(graph.deterministicWork);
   }
-  std::vector<PnrIndex> ready;
-  ready.reserve(graph.nodeSignals.size());
+  graph.constructionReady.clear();
+  graph.constructionReady.reserve(graph.nodeSignals.size());
   for (PnrIndex node = 0; node < graph.nodeSignals.size(); ++node)
-    if (indegree[node] == 0)
-      ready.push_back(node);
+    if (graph.constructionIndegree[node] == 0)
+      graph.constructionReady.push_back(node);
   graph.order.reserve(graph.nodeSignals.size());
   std::size_t cursor = 0;
-  while (cursor < ready.size()) {
-    const PnrIndex node = ready[cursor++];
+  while (cursor < graph.constructionReady.size()) {
+    const PnrIndex node = graph.constructionReady[cursor++];
     graph.order.push_back(node);
     for (PnrIndex arc : graph.outgoingArcs[node]) {
-      PnrIndex &destinationIndegree = indegree[graph.arcs[arc].destination];
+      PnrIndex &destinationIndegree =
+          graph.constructionIndegree[graph.arcs[arc].destination];
       if (destinationIndegree == 0)
         return candidateError("handshake indegree underflows");
       if (--destinationIndegree == 0)
-        ready.push_back(graph.arcs[arc].destination);
+        graph.constructionReady.push_back(graph.arcs[arc].destination);
       addWork(graph.deterministicWork);
     }
   }
@@ -320,21 +379,55 @@ materializeHandshakeGraph(const FrozenSpatialHandshakeIndex &index,
     if (graph.cycleWitness.empty())
       return candidateError("cyclic handshake graph has no cycle witness");
     graph.constructionNanoseconds = elapsedNanoseconds(begin);
-    return graph;
+    return llvm::Error::success();
   }
   graph.ranks.resize(graph.nodeSignals.size());
   for (auto [rank, node] : llvm::enumerate(graph.order))
     graph.ranks[node] = static_cast<PnrIndex>(rank);
   graph.constructionNanoseconds = elapsedNanoseconds(begin);
+  return llvm::Error::success();
+}
+
+llvm::Expected<detail::MaterializedHandshakeGraph>
+materializeHandshakeGraph(const FrozenSpatialHandshakeIndex &index,
+                          llvm::ArrayRef<PnrIndex> activeFragments) {
+  detail::MaterializedHandshakeGraph graph;
+  if (llvm::Error error =
+          materializeHandshakeGraphInto(index, activeFragments, graph))
+    return std::move(error);
   return graph;
+}
+
+llvm::Expected<std::shared_ptr<detail::MaterializedHandshakeGraph>>
+materializeReusableHandshakeGraph(
+    const FrozenSpatialHandshakeIndex &index,
+    llvm::ArrayRef<PnrIndex> activeFragments,
+    std::shared_ptr<detail::MaterializedHandshakeGraph> &reusableGraph) {
+  std::shared_ptr<detail::MaterializedHandshakeGraph> graph =
+      std::move(reusableGraph);
+  if (!graph || graph.use_count() != 1)
+    graph = std::make_shared<detail::MaterializedHandshakeGraph>();
+  if (llvm::Error error =
+          materializeHandshakeGraphInto(index, activeFragments, *graph)) {
+    reusableGraph = std::move(graph);
+    return std::move(error);
+  }
+  return graph;
+}
+
+void recycleMaterializedHandshakeGraph(
+    std::shared_ptr<detail::MaterializedHandshakeGraph> graph,
+    detail::HandshakeCandidateScratchStorage &storage) {
+  if (!storage.reusableGraph && graph && graph.use_count() == 1)
+    storage.reusableGraph = std::move(graph);
 }
 
 std::optional<PnrIndex> findArc(const detail::MaterializedHandshakeGraph &graph,
                                 PnrIndex frozenArc) {
-  const auto found = graph.arcOrdinals.find(frozenArc);
-  return found == graph.arcOrdinals.end()
-             ? std::nullopt
-             : std::optional<PnrIndex>(found->second);
+  if (frozenArc >= graph.arcOrdinals.size() ||
+      graph.arcOrdinals[frozenArc] == getInvalidPnrIndex())
+    return std::nullopt;
+  return graph.arcOrdinals[frozenArc];
 }
 
 bool containsContributor(const detail::MaterializedHandshakeGraph &graph,
@@ -351,30 +444,30 @@ struct HandshakeDeltaClosureStatistics final {
   std::uint64_t deterministicWork = 0;
 };
 
+bool arcIsActive(const detail::MaterializedHandshakeGraph &graph, PnrIndex arc);
+
 HandshakeDeltaClosureStatistics summarizeRebuiltHandshakeGraphDelta(
     const detail::MaterializedHandshakeGraph &before,
     const detail::MaterializedHandshakeGraph &after) {
   HandshakeDeltaClosureStatistics result;
   result.acyclic = after.cycleWitness.empty();
   llvm::SmallDenseSet<PnrIndex, 16> affectedNodes;
-  const auto observeMissingArc = [&](const detail::MaterializedHandshakeGraph
-                                         &sourceGraph,
-                                     const detail::MaterializedHandshakeGraph
-                                         &targetGraph,
-                                     PnrIndex arc,
-                                     std::uint64_t &missingCount) {
-    const std::optional<PnrIndex> targetArc =
-        findArc(targetGraph, sourceGraph.arcFrozenIds[arc]);
-    addWork(result.deterministicWork);
-    if (targetArc &&
-        (targetGraph.fixedArcs[*targetArc] ||
-         !targetGraph.arcContributors[*targetArc].empty()))
-      return;
-    addWork(missingCount);
-    affectedNodes.insert(sourceGraph.nodeFrozenIds[sourceGraph.arcs[arc].source]);
-    affectedNodes.insert(
-        sourceGraph.nodeFrozenIds[sourceGraph.arcs[arc].destination]);
-  };
+  const auto observeMissingArc =
+      [&](const detail::MaterializedHandshakeGraph &sourceGraph,
+          const detail::MaterializedHandshakeGraph &targetGraph, PnrIndex arc,
+          std::uint64_t &missingCount) {
+        const std::optional<PnrIndex> targetArc =
+            findArc(targetGraph, sourceGraph.arcFrozenIds[arc]);
+        addWork(result.deterministicWork);
+        if (targetArc && (targetGraph.fixedArcs[*targetArc] ||
+                          !targetGraph.arcContributors[*targetArc].empty()))
+          return;
+        addWork(missingCount);
+        affectedNodes.insert(
+            sourceGraph.nodeFrozenIds[sourceGraph.arcs[arc].source]);
+        affectedNodes.insert(
+            sourceGraph.nodeFrozenIds[sourceGraph.arcs[arc].destination]);
+      };
   for (PnrIndex arc = 0; arc < after.arcs.size(); ++arc)
     if (after.fixedArcs[arc] || !after.arcContributors[arc].empty())
       observeMissingArc(after, before, arc, result.insertedArcCount);
@@ -387,11 +480,13 @@ HandshakeDeltaClosureStatistics summarizeRebuiltHandshakeGraphDelta(
   PnrIndex maximumRank = 0;
   const auto observeRank = [&](const detail::MaterializedHandshakeGraph &graph,
                                PnrIndex frozenNode) {
-    const auto node = graph.nodeOrdinals.find(frozenNode);
-    if (node == graph.nodeOrdinals.end() || node->second >= graph.ranks.size())
+    if (frozenNode >= graph.nodeOrdinals.size())
       return;
-    minimumRank = std::min(minimumRank, graph.ranks[node->second]);
-    maximumRank = std::max(maximumRank, graph.ranks[node->second]);
+    const PnrIndex node = graph.nodeOrdinals[frozenNode];
+    if (node == getInvalidPnrIndex() || node >= graph.ranks.size())
+      return;
+    minimumRank = std::min(minimumRank, graph.ranks[node]);
+    maximumRank = std::max(maximumRank, graph.ranks[node]);
   };
   for (PnrIndex node : affectedNodes) {
     observeRank(before, node);
@@ -450,8 +545,8 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
                   storage.changedContributions.end(),
                   [](const detail::ChangedArcContribution &lhs,
                      const detail::ChangedArcContribution &rhs) {
-                    return lhs.arc == rhs.arc &&
-                           lhs.fragment == rhs.fragment && lhs.add == rhs.add;
+                    return lhs.arc == rhs.arc && lhs.fragment == rhs.fragment &&
+                           lhs.add == rhs.add;
                   }),
       storage.changedContributions.end());
   for (std::size_t offset = 0; offset != storage.changedContributions.size();) {
@@ -519,10 +614,12 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
   result.removedArcCount = storage.removedArcOrdinals.size();
 
   const auto projectionArcs = graphIndex.projectionArcs();
-  const auto resolveNode = [&](PnrIndex frozenNode) -> llvm::Expected<PnrIndex> {
-    const auto current = graph.nodeOrdinals.find(frozenNode);
-    if (current != graph.nodeOrdinals.end())
-      return current->second;
+  const auto resolveNode =
+      [&](PnrIndex frozenNode) -> llvm::Expected<PnrIndex> {
+    if (frozenNode >= graph.nodeOrdinals.size())
+      return candidateError("changed handshake node is out of range");
+    if (graph.nodeOrdinals[frozenNode] != getInvalidPnrIndex())
+      return graph.nodeOrdinals[frozenNode];
     const auto pending = storage.newNodeOrdinals.find(frozenNode);
     if (pending != storage.newNodeOrdinals.end())
       return pending->second;
@@ -564,6 +661,8 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
   storage.reachabilityWorklist.reserve(prospectiveNodeCount);
   storage.backwardWorklist.reserve(prospectiveNodeCount);
   storage.reorderedNodes.reserve(prospectiveNodeCount);
+  storage.unaffectedReorderedNodes.reserve(prospectiveNodeCount);
+  storage.forwardReorderedNodes.reserve(prospectiveNodeCount);
   const auto removed = [&](PnrIndex arc) {
     return llvm::binary_search(storage.removedArcOrdinals, arc);
   };
@@ -574,6 +673,8 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
   };
 
   for (const FrozenSpatialHandshakeArc inserted : storage.insertedArcOrdinals) {
+    if (rank(inserted.source) < rank(inserted.destination))
+      continue;
     if (++storage.reachabilityEpoch == 0) {
       std::fill(storage.reachabilityMarks.begin(),
                 storage.reachabilityMarks.end(), 0);
@@ -610,9 +711,7 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
         if (graph.outgoingArcs.size() != graph.nodeFrozenIds.size())
           return candidateError("active handshake adjacency is stale");
         for (PnrIndex arc : graph.outgoingArcs[node])
-          if ((graph.fixedArcs[arc] ||
-               !graph.arcContributors[arc].empty()) &&
-              !removed(arc))
+          if (arcIsActive(graph, arc) && !removed(arc))
             visit(graph.arcs[arc].destination);
       }
       const auto first = llvm::lower_bound(
@@ -641,16 +740,16 @@ llvm::Expected<PnrIndex>
 ensureHandshakeNode(detail::MaterializedHandshakeGraph &graph,
                     const FrozenSpatialHandshakeIndex &index,
                     PnrIndex frozenNode) {
-  const auto found = graph.nodeOrdinals.find(frozenNode);
-  if (found != graph.nodeOrdinals.end())
-    return found->second;
   const auto nodeSignals = index.projectionNodeSignals();
-  if (frozenNode >= nodeSignals.size())
+  if (frozenNode >= nodeSignals.size() ||
+      graph.nodeOrdinals.size() != nodeSignals.size())
     return candidateError("frozen handshake node is out of range");
+  if (graph.nodeOrdinals[frozenNode] != getInvalidPnrIndex())
+    return graph.nodeOrdinals[frozenNode];
   auto ordinal = checkedIndex(graph.nodeFrozenIds.size(), "handshake node");
   if (!ordinal)
     return ordinal.takeError();
-  graph.nodeOrdinals.insert({frozenNode, *ordinal});
+  graph.nodeOrdinals[frozenNode] = *ordinal;
   graph.nodeFrozenIds.push_back(frozenNode);
   graph.nodeSignals.push_back(nodeSignals[frozenNode]);
   graph.outgoingArcs.emplace_back();
@@ -664,13 +763,14 @@ llvm::Expected<PnrIndex>
 ensureHandshakeArc(detail::MaterializedHandshakeGraph &graph,
                    const FrozenSpatialHandshakeIndex &index,
                    PnrIndex frozenArc) {
-  const auto found = graph.arcOrdinals.find(frozenArc);
-  if (found != graph.arcOrdinals.end())
-    return found->second;
   const auto projectionArcs = index.projectionArcs();
-  if (frozenArc >= projectionArcs.size())
+  if (frozenArc >= projectionArcs.size() ||
+      graph.arcOrdinals.size() != projectionArcs.size())
     return candidateError("frozen handshake arc is out of range");
-  auto source = ensureHandshakeNode(graph, index, projectionArcs[frozenArc].source);
+  if (graph.arcOrdinals[frozenArc] != getInvalidPnrIndex())
+    return graph.arcOrdinals[frozenArc];
+  auto source =
+      ensureHandshakeNode(graph, index, projectionArcs[frozenArc].source);
   if (!source)
     return source.takeError();
   auto destination =
@@ -680,7 +780,7 @@ ensureHandshakeArc(detail::MaterializedHandshakeGraph &graph,
   auto ordinal = checkedIndex(graph.arcs.size(), "handshake arc");
   if (!ordinal)
     return ordinal.takeError();
-  graph.arcOrdinals.insert({frozenArc, *ordinal});
+  graph.arcOrdinals[frozenArc] = *ordinal;
   graph.arcs.push_back({*source, *destination});
   graph.arcFrozenIds.push_back(frozenArc);
   graph.fixedArcs.push_back(false);
@@ -921,6 +1021,9 @@ std::size_t HandshakeCandidateScratch::retainedStorageBytes() const {
          retainedBytes(storage_->reorderedNodes) +
          retainedBytes(storage_->unaffectedReorderedNodes) +
          retainedBytes(storage_->forwardReorderedNodes) +
+         (storage_->reusableGraph ? retainedMaterializedHandshakeGraphBytes(
+                                        *storage_->reusableGraph)
+                                  : 0) +
          retainedBytes(fragmentJournalMarks_) +
          retainedBytes(traversalJournalMarks_) +
          retainedBytes(groupJournalMarks_) + retainedBytes(fragmentDeltas_) +
@@ -1064,8 +1167,7 @@ HandshakeCandidateState::materializationStatistics() const {
   result.transactionAffectedNodeCount = transactionAffectedNodeCount_;
   result.transactionAffectedRankSpan = transactionAffectedRankSpan_;
   result.cachedVerificationCount = cachedVerificationCount_;
-  result.coldVerificationConstructionCount =
-      coldVerificationConstructionCount_;
+  result.coldVerificationConstructionCount = coldVerificationConstructionCount_;
   result.coldVerificationConstructionNanoseconds =
       coldVerificationConstructionNanoseconds_;
   const auto addBytes = [&](std::size_t bytes) {
@@ -1075,19 +1177,7 @@ HandshakeCandidateState::materializationStatistics() const {
   addBytes(retainedBytes(activeFragments_));
   addBytes(retainedBytes(traversalRefcounts_));
   addBytes(retainedBytes(allGroupSelectedWitnessCounts_));
-  addBytes(retainedBytes(graph_->nodeSignals));
-  addBytes(retainedBytes(graph_->nodeFrozenIds));
-  addBytes(retainedBytes(graph_->arcs));
-  addBytes(retainedBytes(graph_->arcFrozenIds));
-  addBytes(retainedBytes(graph_->fixedArcs));
-  addBytes(retainedNestedBytes(graph_->arcContributors));
-  addBytes(retainedNestedBytes(graph_->outgoingArcs));
-  addBytes(retainedNestedBytes(graph_->reverseArcs));
-  addBytes(retainedDenseMapBytes(graph_->nodeOrdinals));
-  addBytes(retainedDenseMapBytes(graph_->arcOrdinals));
-  addBytes(retainedBytes(graph_->order));
-  addBytes(retainedBytes(graph_->ranks));
-  addBytes(retainedBytes(graph_->cycleWitness));
+  addBytes(retainedMaterializedHandshakeGraphBytes(*graph_));
   return result;
 }
 
@@ -1127,25 +1217,23 @@ llvm::Error HandshakeCandidateState::verifyCachedState() const {
     return candidateError("active fragment index is stale");
 
   const auto frozenNodeSignals = index_->projectionNodeSignals();
+  const auto frozenArcs = index_->projectionArcs();
   if (graph_->nodeSignals.size() != graph_->nodeFrozenIds.size() ||
       graph_->nodeSignals.size() != graph_->outgoingArcs.size() ||
       graph_->nodeSignals.size() != graph_->reverseArcs.size() ||
       graph_->nodeSignals.size() != graph_->order.size() ||
       graph_->nodeSignals.size() != graph_->ranks.size() ||
-      graph_->nodeSignals.size() != graph_->nodeOrdinals.size() ||
+      graph_->nodeOrdinals.size() != frozenNodeSignals.size() ||
       graph_->arcs.size() != graph_->arcFrozenIds.size() ||
       graph_->arcs.size() != graph_->fixedArcs.size() ||
       graph_->arcs.size() != graph_->arcContributors.size() ||
-      graph_->arcs.size() != graph_->arcOrdinals.size() ||
+      graph_->arcOrdinals.size() != frozenArcs.size() ||
       !graph_->cycleWitness.empty())
     return candidateError("materialized handshake graph shape is stale");
-  for (const auto &entry : graph_->nodeOrdinals)
-    if (entry.second >= graph_->nodeFrozenIds.size() ||
-        graph_->nodeFrozenIds[entry.second] != entry.first)
-      return candidateError("materialized handshake node ordinal is stale");
   for (PnrIndex node = 0; node < graph_->nodeFrozenIds.size(); ++node) {
     const PnrIndex frozenNode = graph_->nodeFrozenIds[node];
     if (frozenNode >= frozenNodeSignals.size() ||
+        graph_->nodeOrdinals[frozenNode] != node ||
         graph_->nodeSignals[node] != frozenNodeSignals[frozenNode])
       return candidateError("materialized handshake node signal is stale");
   }
@@ -1153,12 +1241,12 @@ llvm::Error HandshakeCandidateState::verifyCachedState() const {
     if (node >= graph_->ranks.size() || graph_->ranks[node] != rank)
       return candidateError("materialized handshake topology is not a rank");
   }
-  const auto frozenArcs = index_->projectionArcs();
   for (auto [arc, record] : llvm::enumerate(graph_->arcs)) {
     const PnrIndex frozenArc = graph_->arcFrozenIds[arc];
     if (record.source >= graph_->nodeFrozenIds.size() ||
         record.destination >= graph_->nodeFrozenIds.size() ||
         frozenArc >= frozenArcs.size() ||
+        graph_->arcOrdinals[frozenArc] != arc ||
         graph_->nodeFrozenIds[record.source] != frozenArcs[frozenArc].source ||
         graph_->nodeFrozenIds[record.destination] !=
             frozenArcs[frozenArc].destination ||
@@ -1168,15 +1256,11 @@ llvm::Error HandshakeCandidateState::verifyCachedState() const {
     if (!llvm::is_sorted(contributors) ||
         std::adjacent_find(contributors.begin(), contributors.end()) !=
             contributors.end())
-      return candidateError(
-          "materialized handshake contributors are not canonical");
+      return candidateError("materialized handshake contributors are stale");
     if (arcIsActive(*graph_, static_cast<PnrIndex>(arc)) &&
         graph_->ranks[record.source] >= graph_->ranks[record.destination])
       return candidateError("materialized handshake topology is cyclic");
   }
-  for (const auto &[frozenArc, arc] : graph_->arcOrdinals)
-    if (arc >= graph_->arcs.size() || graph_->arcFrozenIds[arc] != frozenArc)
-      return candidateError("materialized handshake arc ordinal is stale");
   std::size_t outgoingArcCount = 0;
   std::size_t reverseArcCount = 0;
   for (PnrIndex node = 0; node < graph_->nodeFrozenIds.size(); ++node) {
@@ -1188,8 +1272,7 @@ llvm::Error HandshakeCandidateState::verifyCachedState() const {
             (previous != getInvalidPnrIndex() && arc <= previous) ||
             (outgoing ? graph_->arcs[arc].source
                       : graph_->arcs[arc].destination) != node)
-          return candidateError(
-              "materialized handshake adjacency is stale");
+          return candidateError("materialized handshake adjacency is stale");
         previous = arc;
       }
       return llvm::Error::success();
@@ -1235,31 +1318,37 @@ llvm::Error HandshakeCandidateState::verify() const {
   const auto begin = std::chrono::steady_clock::now();
   addWork(coldVerificationConstructionCount_);
   auto rebuilt = materializeHandshakeGraph(*index_, activeFragments_);
-  addWork(coldVerificationConstructionNanoseconds_,
-          elapsedNanoseconds(begin));
+  addWork(coldVerificationConstructionNanoseconds_, elapsedNanoseconds(begin));
   if (!rebuilt)
     return rebuilt.takeError();
   if (!rebuilt->cycleWitness.empty())
     return candidateError("committed handshake graph is cyclic");
-  const auto activeArcSnapshot = [](const detail::MaterializedHandshakeGraph
-                                        &g) {
-    using Snapshot = std::pair<bool, std::vector<PnrIndex>>;
-    std::map<PnrIndex, Snapshot> result;
-    for (PnrIndex arc = 0; arc < g.arcs.size(); ++arc)
-      if (arcIsActive(g, arc))
-        result.emplace(
-            g.arcFrozenIds[arc],
-            Snapshot{g.fixedArcs[arc] != 0, g.arcContributors[arc]});
-    return result;
-  };
-  if (activeArcSnapshot(*rebuilt) != activeArcSnapshot(*graph_))
+  std::size_t rebuiltActiveArcCount = 0;
+  for (PnrIndex rebuiltArc = 0; rebuiltArc < rebuilt->arcs.size();
+       ++rebuiltArc) {
+    if (!arcIsActive(*rebuilt, rebuiltArc))
+      continue;
+    ++rebuiltActiveArcCount;
+    const std::optional<PnrIndex> cachedArc =
+        findArc(*graph_, rebuilt->arcFrozenIds[rebuiltArc]);
+    if (!cachedArc || !arcIsActive(*graph_, *cachedArc) ||
+        rebuilt->fixedArcs[rebuiltArc] != graph_->fixedArcs[*cachedArc] ||
+        rebuilt->arcContributors[rebuiltArc] !=
+            graph_->arcContributors[*cachedArc])
+      return candidateError("materialized handshake graph is stale");
+  }
+  std::size_t cachedActiveArcCount = 0;
+  for (PnrIndex arc = 0; arc < graph_->arcs.size(); ++arc)
+    cachedActiveArcCount += arcIsActive(*graph_, arc);
+  if (rebuiltActiveArcCount != cachedActiveArcCount)
     return candidateError("materialized handshake graph is stale");
   return llvm::Error::success();
 }
 
 llvm::Expected<HandshakeCandidateTransaction>
 HandshakeCandidateState::beginTransaction(
-    HandshakeCandidateScratch &scratch) & {
+    HandshakeCandidateScratch &scratch,
+    HandshakeProjectionScratch *projectionScratch) & {
   if (activeTransaction_)
     return candidateError("candidate already has an active transaction");
   if (scratch.activeTransaction_)
@@ -1271,12 +1360,15 @@ HandshakeCandidateState::beginTransaction(
           allGroupSelectedWitnessCounts_.size())
     return candidateError("scratch was not prepared for this candidate");
   scratch.beginTransaction();
-  return HandshakeCandidateTransaction(shared_from_this(), scratch);
+  return HandshakeCandidateTransaction(shared_from_this(), scratch,
+                                       projectionScratch);
 }
 
 HandshakeCandidateTransaction::HandshakeCandidateTransaction(
-    HandshakeCandidateStateHandle state, HandshakeCandidateScratch &scratch)
-    : state_(std::move(state)), scratch_(&scratch) {
+    HandshakeCandidateStateHandle state, HandshakeCandidateScratch &scratch,
+    HandshakeProjectionScratch *projectionScratch)
+    : state_(std::move(state)), scratch_(&scratch),
+      projectionScratch_(projectionScratch) {
   state_->activeTransaction_ = this;
   scratch_->activeTransaction_ = this;
 }
@@ -1284,10 +1376,10 @@ HandshakeCandidateTransaction::HandshakeCandidateTransaction(
 HandshakeCandidateTransaction::HandshakeCandidateTransaction(
     HandshakeCandidateTransaction &&other) noexcept
     : state_(std::move(other.state_)), scratch_(other.scratch_),
-      closed_(other.closed_), cycle_(other.cycle_),
-      rebuildOnCommit_(other.rebuildOnCommit_),
-      pendingGraph_(std::move(other.pendingGraph_)) {
+      projectionScratch_(other.projectionScratch_), closed_(other.closed_),
+      cycle_(other.cycle_), pendingGraph_(std::move(other.pendingGraph_)) {
   other.scratch_ = nullptr;
+  other.projectionScratch_ = nullptr;
   if (state_)
     state_->activeTransaction_ = this;
   if (scratch_)
@@ -1485,12 +1577,12 @@ llvm::Expected<bool> HandshakeCandidateTransaction::close() {
             *state_->index_, delta.index, isActive, storage, projectionWork))
       return error;
   }
-  if (storage.changedContributions.empty()) {
+  const std::size_t changedContributionCount =
+      storage.changedContributions.size();
+  if (changedContributionCount == 0) {
     closed_ = true;
     return true;
   }
-  const std::size_t changedContributionCount =
-      storage.changedContributions.size();
   const std::size_t nodeCount = state_->graph_->nodeFrozenIds.size();
   const std::size_t arcCount = state_->graph_->arcs.size();
   // A full rebuild includes the immutable Fabric handshake inventory, not
@@ -1502,13 +1594,78 @@ llvm::Expected<bool> HandshakeCandidateTransaction::close() {
   const bool coversGraphInventory =
       changedContributionCount >= nodeCount &&
       changedContributionCount - nodeCount >= arcCount;
+  if (coversGraphInventory && projectionScratch_) {
+    const HandshakeProjectionStatistics projectionBefore =
+        projectionScratch_->statistics();
+    auto acyclic = projectionScratch_->projectActiveFragmentsAcyclic(
+        *state_->index_, state_->activeFragments_);
+    if (!acyclic)
+      return acyclic.takeError();
+    const HandshakeProjectionStatistics projectionAfter =
+        projectionScratch_->statistics();
+    std::uint64_t denseProjectionWork = 0;
+    if (projectionAfter.deterministicWork >= projectionBefore.deterministicWork)
+      denseProjectionWork = projectionAfter.deterministicWork -
+                            projectionBefore.deterministicWork;
+    addWork(state_->transactionClosureCount_);
+    addWork(state_->materializationDeterministicWork_, projectionWork);
+    addWork(state_->materializationDeterministicWork_, denseProjectionWork);
+    cycle_ = !*acyclic;
+    if (cycle_) {
+      if (!mapping_debug::enabled(mapping_debug::Level::Decision)) {
+        closed_ = true;
+        return false;
+      }
+      auto graph = materializeReusableHandshakeGraph(
+          *state_->index_, state_->activeFragments_, storage.reusableGraph);
+      if (!graph)
+        return graph.takeError();
+      if ((*graph)->cycleWitness.empty())
+        return candidateError(
+            "dense projection reported a cycle absent from exact "
+            "materialization");
+      addWork(state_->materializationConstructionCount_);
+      addWork(state_->materializationConstructionNanoseconds_,
+              (*graph)->constructionNanoseconds);
+      addWork(state_->materializationDeterministicWork_,
+              (*graph)->deterministicWork);
+      pendingGraph_ = std::move(*graph);
+      closed_ = true;
+      return false;
+    }
+
+    auto graph = materializeReusableHandshakeGraph(
+        *state_->index_, state_->activeFragments_, storage.reusableGraph);
+    if (!graph)
+      return graph.takeError();
+    if (!(*graph)->cycleWitness.empty())
+      return candidateError(
+          "dense projection reported an acyclic selection with an exact "
+          "cycle");
+    const HandshakeDeltaClosureStatistics closure =
+        summarizeRebuiltHandshakeGraphDelta(*state_->graph_, **graph);
+    addWork(state_->transactionInsertedArcCount_, closure.insertedArcCount);
+    addWork(state_->transactionRemovedArcCount_, closure.removedArcCount);
+    addWork(state_->transactionAffectedNodeCount_, closure.affectedNodeCount);
+    addWork(state_->transactionAffectedRankSpan_, closure.affectedRankSpan);
+    addWork(state_->materializationConstructionCount_);
+    addWork(state_->materializationConstructionNanoseconds_,
+            (*graph)->constructionNanoseconds);
+    addWork(state_->materializationDeterministicWork_,
+            closure.deterministicWork);
+    addWork(state_->materializationDeterministicWork_,
+            (*graph)->deterministicWork);
+    pendingGraph_ = std::move(*graph);
+    closed_ = true;
+    return true;
+  }
   if (coversGraphInventory) {
-    auto graph =
-        materializeHandshakeGraph(*state_->index_, state_->activeFragments_);
+    auto graph = materializeReusableHandshakeGraph(
+        *state_->index_, state_->activeFragments_, storage.reusableGraph);
     if (!graph)
       return graph.takeError();
     const HandshakeDeltaClosureStatistics closure =
-        summarizeRebuiltHandshakeGraphDelta(*state_->graph_, *graph);
+        summarizeRebuiltHandshakeGraphDelta(*state_->graph_, **graph);
     addWork(state_->transactionClosureCount_);
     addWork(state_->transactionInsertedArcCount_, closure.insertedArcCount);
     addWork(state_->transactionRemovedArcCount_, closure.removedArcCount);
@@ -1516,15 +1673,14 @@ llvm::Expected<bool> HandshakeCandidateTransaction::close() {
     addWork(state_->transactionAffectedRankSpan_, closure.affectedRankSpan);
     addWork(state_->materializationConstructionCount_);
     addWork(state_->materializationConstructionNanoseconds_,
-            graph->constructionNanoseconds);
+            (*graph)->constructionNanoseconds);
     addWork(state_->materializationDeterministicWork_, projectionWork);
     addWork(state_->materializationDeterministicWork_,
             closure.deterministicWork);
     addWork(state_->materializationDeterministicWork_,
-            graph->deterministicWork);
+            (*graph)->deterministicWork);
     cycle_ = !closure.acyclic;
-    pendingGraph_ = std::make_shared<detail::MaterializedHandshakeGraph>(
-        std::move(*graph));
+    pendingGraph_ = std::move(*graph);
     closed_ = true;
     return !cycle_;
   }
@@ -1541,32 +1697,25 @@ llvm::Expected<bool> HandshakeCandidateTransaction::close() {
   addWork(state_->materializationDeterministicWork_,
           closure->deterministicWork);
   cycle_ = !closure->acyclic;
-  std::uint64_t rebuildWorkEstimate = state_->graph_->deterministicWork;
-  addWork(rebuildWorkEstimate, projectionWork);
-  addWork(rebuildWorkEstimate, changedContributionCount);
-  rebuildOnCommit_ =
-      !cycle_ && closure->affectedRankSpan > rebuildWorkEstimate;
   // The incremental closure is the hot legality check. Constructing the
   // entire graph again merely to format a rejected probe's optional witness
   // turns a local negative decision into Fabric-sized work. Final candidate
   // verification remains an independent whole-graph rebuild; materialize a
   // transient witness here only when diagnostics will actually consume it.
-  if (cycle_ &&
-      mapping_debug::enabled(mapping_debug::Level::Decision)) {
-    auto graph =
-        materializeHandshakeGraph(*state_->index_, state_->activeFragments_);
+  if (cycle_ && mapping_debug::enabled(mapping_debug::Level::Decision)) {
+    auto graph = materializeReusableHandshakeGraph(
+        *state_->index_, state_->activeFragments_, storage.reusableGraph);
     if (!graph)
       return graph.takeError();
-    if (graph->cycleWitness.empty())
+    if ((*graph)->cycleWitness.empty())
       return candidateError(
           "delta closure reported a cycle absent from exact materialization");
     addWork(state_->materializationConstructionCount_);
     addWork(state_->materializationConstructionNanoseconds_,
-            graph->constructionNanoseconds);
+            (*graph)->constructionNanoseconds);
     addWork(state_->materializationDeterministicWork_,
-            graph->deterministicWork);
-    pendingGraph_ = std::make_shared<detail::MaterializedHandshakeGraph>(
-        std::move(*graph));
+            (*graph)->deterministicWork);
+    pendingGraph_ = std::move(*graph);
   }
   closed_ = true;
   return !cycle_;
@@ -1585,26 +1734,11 @@ llvm::Error HandshakeCandidateTransaction::commit() {
     return closure.takeError();
   if (!*closure)
     return candidateError("cannot commit a handshake cycle");
-  if (rebuildOnCommit_) {
-    auto graph =
-        materializeHandshakeGraph(*state_->index_, state_->activeFragments_);
-    if (!graph)
-      return graph.takeError();
-    if (!graph->cycleWitness.empty())
-      return candidateError(
-          "acyclic delta closure disagrees with exact materialization");
-    addWork(state_->materializationConstructionCount_);
-    addWork(state_->materializationConstructionNanoseconds_,
-            graph->constructionNanoseconds);
-    addWork(state_->materializationDeterministicWork_,
-            graph->deterministicWork);
-    state_->graph_ = std::make_shared<detail::MaterializedHandshakeGraph>(
-        std::move(*graph));
-    finish();
-    return llvm::Error::success();
-  }
   if (pendingGraph_) {
+    std::shared_ptr<detail::MaterializedHandshakeGraph> previous =
+        std::move(state_->graph_);
     state_->graph_ = std::move(pendingGraph_);
+    recycleMaterializedHandshakeGraph(std::move(previous), *scratch_->storage_);
     finish();
     return llvm::Error::success();
   }
@@ -1619,7 +1753,6 @@ llvm::Error HandshakeCandidateTransaction::commit() {
     return work.takeError();
   addWork(state_->materializationDeterministicWork_, *work);
   pendingGraph_.reset();
-  rebuildOnCommit_ = false;
   finish();
   return llvm::Error::success();
 }
@@ -1636,8 +1769,8 @@ void HandshakeCandidateTransaction::rollback() noexcept {
     state_->traversalRefcounts_[delta.index] = delta.oldValue;
   for (const auto &delta : scratch_->groupDeltas_)
     state_->allGroupSelectedWitnessCounts_[delta.index] = delta.oldValue;
-  pendingGraph_.reset();
-  rebuildOnCommit_ = false;
+  recycleMaterializedHandshakeGraph(std::move(pendingGraph_),
+                                    *scratch_->storage_);
   finish();
 }
 
@@ -1646,5 +1779,6 @@ void HandshakeCandidateTransaction::finish() {
   scratch_->activeTransaction_ = nullptr;
   scratch_->resetTransaction();
   scratch_ = nullptr;
+  projectionScratch_ = nullptr;
   state_.reset();
 }

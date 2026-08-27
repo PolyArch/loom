@@ -86,8 +86,8 @@ tagValueViews(const SpatialTagAssignmentSummary &assignments,
     if (begin > end || end > assignments.netTagValues.size())
       return candidateError(
           "projected tag assignment logical-net range is invalid");
-    result.push_back(llvm::ArrayRef(assignments.netTagValues)
-                         .slice(begin, end - begin));
+    result.push_back(
+        llvm::ArrayRef(assignments.netTagValues).slice(begin, end - begin));
   }
   return result;
 }
@@ -261,6 +261,8 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
       problem.memory().serviceUseGroups().size();
   const std::size_t memoryExposureCount = problem.memory().exposures().size();
   const std::size_t traversalCount = problem.routing().traversals().size();
+  const std::size_t tagDomainCount =
+      problem.routing().tagContinuity().matchDomains().size();
   const std::size_t bindingRelationCount =
       problem.bindingRelations().relations().relations().size();
 
@@ -311,6 +313,14 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
       problem.routing().routingEndpoints().size());
   physicalTimingRouteNodeWorklist_.reserve(
       problem.routing().routingEndpoints().size());
+  tagProjectionLogicalNets_.clear();
+  tagProjectionLogicalNets_.reserve(netCount);
+  tagProjectionDomains_.clear();
+  tagProjectionDomains_.reserve(tagDomainCount);
+  changedSwitchHandshakeDomains_.clear();
+  changedSwitchHandshakeDomains_.reserve(tagDomainCount);
+  newSwitchHandshakeDomainFragments_.clear();
+  newSwitchHandshakeDomainFragments_.resize(tagDomainCount);
   traversalDeltaMarks_.assign(traversalCount, 0);
   traversalRemoved_.assign(traversalCount, 0);
   traversalAdded_.assign(traversalCount, 0);
@@ -383,6 +393,10 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(physicalTimingRouteNodeWorklist_) +
       retainedBytes(oldSwitchHandshakeFragments_) +
       retainedBytes(newSwitchHandshakeFragments_) +
+      retainedBytes(tagProjectionLogicalNets_) +
+      retainedBytes(tagProjectionDomains_) +
+      retainedBytes(changedSwitchHandshakeDomains_) +
+      retainedBytes(newSwitchHandshakeDomainFragments_) +
       retainedBytes(removedSwitchHandshakeFragments_) +
       retainedBytes(addedSwitchHandshakeFragments_) +
       retainedBytes(traversalDeltaMarks_) + retainedBytes(traversalRemoved_) +
@@ -395,6 +409,8 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(progressDirtyNets_) +
       retainedBytes(progressDependencyJournalMarks_) +
       retainedBytes(progressDependencyDeltas_);
+  for (const auto &fragments : newSwitchHandshakeDomainFragments_)
+    bytes += retainedBytes(fragments);
   return bytes;
 }
 
@@ -438,6 +454,11 @@ void SpatialCandidateScratch::resetTransaction() {
   physicalTimingOldNegativeSlacks_.clear();
   oldSwitchHandshakeFragments_.clear();
   newSwitchHandshakeFragments_.clear();
+  tagProjectionLogicalNets_.clear();
+  tagProjectionDomains_.clear();
+  for (PnrIndex domain : changedSwitchHandshakeDomains_)
+    newSwitchHandshakeDomainFragments_[domain].clear();
+  changedSwitchHandshakeDomains_.clear();
   removedSwitchHandshakeFragments_.clear();
   addedSwitchHandshakeFragments_.clear();
   switchHandshakeBaselineCaptured_ = false;
@@ -634,8 +655,7 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
       std::move(memoryExposureSelections), std::move(registerFifoTransfers),
       std::move(routeTrees), std::move(*handshake), std::move(*routeResources),
       std::move(*tagAssignments), unroutedObligationCount, 0, 0,
-      *operandIngressPressure,
-      std::move(logicalNetWorstArrivalDelayQuanta),
+      *operandIngressPressure, std::move(logicalNetWorstArrivalDelayQuanta),
       std::move(logicalNetNegativeSlackQuanta),
       physicalTiming->worstArrivalDelayQuanta,
       physicalTiming->totalNegativeSlackQuanta));
@@ -1427,6 +1447,27 @@ llvm::Error SpatialCandidateState::verifyCachedState() const {
     return error;
   if (&handshake_->index() != &problem_->handshake())
     return candidateError("handshake state is bound to a foreign problem");
+  if (switchHandshakeFragmentBaselineValid_) {
+    auto fragmentsByDomain =
+        detail::deriveSpatialTemporalSwitchHandshakeFragmentsByDomain(
+            *problem_, *tagAssignments_.storage_);
+    if (!fragmentsByDomain)
+      return fragmentsByDomain.takeError();
+    if (*fragmentsByDomain != switchHandshakeFragmentsByDomain_)
+      return candidateError(
+          "switch-handshake domain fragments diverged from their cold "
+          "projection");
+    std::vector<PnrIndex> baseline;
+    for (const auto &fragments : *fragmentsByDomain)
+      baseline.insert(baseline.end(), fragments.begin(), fragments.end());
+    llvm::sort(baseline);
+    baseline.erase(std::unique(baseline.begin(), baseline.end()),
+                   baseline.end());
+    if (baseline != switchHandshakeFragmentBaseline_)
+      return candidateError(
+          "switch-handshake fragment baseline diverged from its cold "
+          "projection");
+  }
   return progressState_.verifyCachedState(*this);
 }
 
@@ -1574,8 +1615,8 @@ SpatialCandidateState::beginMove(SpatialCandidateScratch &scratch) & {
     return candidateError("scratch was not prepared for this candidate");
 
   scratch.beginTransaction();
-  auto handshakeTransaction =
-      handshake_->beginTransaction(scratch.handshakeScratch_);
+  auto handshakeTransaction = handshake_->beginTransaction(
+      scratch.handshakeScratch_, &scratch.handshakeProjectionScratch_);
   if (!handshakeTransaction)
     return handshakeTransaction.takeError();
   scratch.handshakeTransaction_.emplace(std::move(*handshakeTransaction));

@@ -187,8 +187,9 @@ SpatialMoveTransaction::SpatialMoveTransaction(
           state_->worstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
           state_->totalRouteNegativeSlackQuanta_),
-      recurrenceTimingSelected_(state_->problem().objectiveProgram().selectsMeasure(
-          MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)),
+      recurrenceTimingSelected_(
+          state_->problem().objectiveProgram().selectsMeasure(
+              MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)),
       initialRecurrenceTiming_(recurrenceTimingSelected_
                                    ? state_->recurrenceTiming_
                                    : SpatialRecurrenceTimingProjection{}) {
@@ -262,9 +263,8 @@ void SpatialMoveTransaction::recordPort(PnrIndex demand) {
   scratch_->decisionDeltas_.push_back(
       {SpatialCandidateScratch::DecisionKind::PortAttachment, demand,
        state_->portAttachments_[demand], 0,
-       state_->bindingRelationChoices_[state_->problem_->bindingRelations()
-                                           .portDecisionOffset() +
-                                       demand],
+       state_->bindingRelationChoices_
+           [state_->problem_->bindingRelations().portDecisionOffset() + demand],
        state_->sharedOperandIngressPressure_});
 }
 
@@ -502,15 +502,14 @@ llvm::Error SpatialMoveTransaction::changeProgressTraversal(
     std::optional<PnrIndex> newTraversal) {
   if (oldTraversal == newTraversal)
     return llvm::Error::success();
-  const std::size_t journalBegin =
-      scratch_->progressTraversalDeltas_.size();
+  const std::size_t journalBegin = scratch_->progressTraversalDeltas_.size();
   if (oldTraversal)
-    if (llvm::Error error = applyProgressTraversalDelta(
-            logicalNet, *oldTraversal, 1, 0))
+    if (llvm::Error error =
+            applyProgressTraversalDelta(logicalNet, *oldTraversal, 1, 0))
       return error;
   if (newTraversal)
-    if (llvm::Error error = applyProgressTraversalDelta(
-            logicalNet, *newTraversal, 0, 1)) {
+    if (llvm::Error error =
+            applyProgressTraversalDelta(logicalNet, *newTraversal, 0, 1)) {
       for (std::size_t index = scratch_->progressTraversalDeltas_.size();
            index != journalBegin; --index) {
         const auto &delta = scratch_->progressTraversalDeltas_[index - 1];
@@ -531,8 +530,7 @@ llvm::Error SpatialMoveTransaction::changeProgressTerminalSelections(
   if (logicalNet >= transfers.logicalNets().size() ||
       logicalNet >= transfers.logicalNetSourceBindings().size())
     return candidateError("progress terminal logical net is out of range");
-  const auto selectedTraversal =
-      [&](FrozenSpatialTerminalBinding terminal)
+  const auto selectedTraversal = [&](FrozenSpatialTerminalBinding terminal)
       -> llvm::Expected<std::optional<PnrIndex>> {
     PnrIndex option = getInvalidPnrIndex();
     switch (terminal.kind) {
@@ -550,8 +548,7 @@ llvm::Error SpatialMoveTransaction::changeProgressTerminalSelections(
     return attachmentTraversal(state_->problem_->ports(), option);
   };
 
-  const std::size_t journalBegin =
-      scratch_->progressTraversalDeltas_.size();
+  const std::size_t journalBegin = scratch_->progressTraversalDeltas_.size();
   const auto rollbackJournal = [&]() {
     for (std::size_t index = scratch_->progressTraversalDeltas_.size();
          index != journalBegin; --index) {
@@ -561,13 +558,12 @@ llvm::Error SpatialMoveTransaction::changeProgressTerminalSelections(
     }
     scratch_->progressTraversalDeltas_.resize(journalBegin);
   };
-  const auto applySelectedTraversal = [&](std::optional<PnrIndex> traversal)
-      -> llvm::Error {
+  const auto applySelectedTraversal =
+      [&](std::optional<PnrIndex> traversal) -> llvm::Error {
     if (!traversal)
       return llvm::Error::success();
     return applyProgressTraversalDelta(logicalNet, *traversal,
-                                       oldActive ? 1 : 0,
-                                       newActive ? 1 : 0);
+                                       oldActive ? 1 : 0, newActive ? 1 : 0);
   };
   auto source =
       selectedTraversal(transfers.logicalNetSourceBindings()[logicalNet]);
@@ -1147,14 +1143,22 @@ llvm::Error SpatialMoveTransaction::captureSwitchHandshakeBaseline() {
     scratch_->switchHandshakeBaselineCaptured_ = true;
     return llvm::Error::success();
   }
-  rebuildRouteViews();
-  rebuildTagValueViews();
-  auto fragments = detail::deriveSpatialTemporalSwitchHandshakeFragments(
-      state_->problem(), scratch_->routeViews_, scratch_->tagValueViews_);
-  if (!fragments)
-    return fragments.takeError();
-  scratch_->oldSwitchHandshakeFragments_.assign(fragments->begin(),
-                                                fragments->end());
+  auto fragmentsByDomain =
+      detail::deriveSpatialTemporalSwitchHandshakeFragmentsByDomain(
+          state_->problem(), *state_->tagAssignments_.storage_);
+  if (!fragmentsByDomain)
+    return fragmentsByDomain.takeError();
+  state_->switchHandshakeFragmentsByDomain_ = std::move(*fragmentsByDomain);
+  scratch_->oldSwitchHandshakeFragments_.clear();
+  for (const auto &fragments : state_->switchHandshakeFragmentsByDomain_)
+    scratch_->oldSwitchHandshakeFragments_.insert(
+        scratch_->oldSwitchHandshakeFragments_.end(), fragments.begin(),
+        fragments.end());
+  llvm::sort(scratch_->oldSwitchHandshakeFragments_);
+  scratch_->oldSwitchHandshakeFragments_.erase(
+      std::unique(scratch_->oldSwitchHandshakeFragments_.begin(),
+                  scratch_->oldSwitchHandshakeFragments_.end()),
+      scratch_->oldSwitchHandshakeFragments_.end());
   state_->switchHandshakeFragmentBaseline_ =
       scratch_->oldSwitchHandshakeFragments_;
   state_->switchHandshakeFragmentBaselineValid_ = true;
@@ -1285,8 +1289,8 @@ SpatialMoveTransaction::projectCurrentRoutesImpl(
     }
     routes.push_back(route);
   }
-  return state_->projectVerifiedRoutes(
-      routes, tagSummary, scratch_->handshakeProjectionScratch_);
+  return state_->projectVerifiedRoutes(routes, tagSummary,
+                                       scratch_->handshakeProjectionScratch_);
 }
 
 llvm::Error SpatialMoveTransaction::validateAffectedState() const {
@@ -1370,6 +1374,10 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
     return !cycle_;
   if (llvm::Error error = collectRouteTraversalDeltas())
     return std::move(error);
+  if (!hasPreparedSemanticChange()) {
+    closed_ = true;
+    return true;
+  }
   if (llvm::Error error = state_->tagAssignments_.stageRouteUpdates(
           state_->routeTrees_, scratch_->routeTransactions_,
           scratch_->touchedRoutes_, scratch_->tagScratch_))
@@ -1377,14 +1385,44 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
   tagDeltasCollected_ = true;
   rebuildRouteViews();
   if (scratch_->switchHandshakeBaselineCaptured_) {
-    rebuildTagValueViews();
-    auto switchFragments =
-        detail::deriveSpatialTemporalSwitchHandshakeFragments(
-            state_->problem(), scratch_->routeViews_, scratch_->tagValueViews_);
-    if (!switchFragments)
-      return switchFragments.takeError();
-    scratch_->newSwitchHandshakeFragments_.assign(switchFragments->begin(),
-                                                  switchFragments->end());
+    const auto matchDomains =
+        state_->problem().routing().tagContinuity().matchDomains();
+    for (PnrIndex domain :
+         state_->tagAssignments_.changedDomains(scratch_->tagScratch_)) {
+      if (domain >= matchDomains.size())
+        return candidateError("changed Physical Tag domain is out of range");
+      if (matchDomains[domain].kind !=
+          ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable)
+        continue;
+      auto fragments =
+          detail::deriveSpatialTemporalSwitchHandshakeDomainFragments(
+              state_->problem(), domain, *state_->tagAssignments_.storage_);
+      if (!fragments)
+        return fragments.takeError();
+      scratch_->changedSwitchHandshakeDomains_.push_back(domain);
+      scratch_->newSwitchHandshakeDomainFragments_[domain] =
+          std::move(*fragments);
+    }
+    scratch_->newSwitchHandshakeFragments_.clear();
+    std::size_t changedOrdinal = 0;
+    for (PnrIndex domain = 0;
+         domain < state_->switchHandshakeFragmentsByDomain_.size(); ++domain) {
+      const bool changed =
+          changedOrdinal < scratch_->changedSwitchHandshakeDomains_.size() &&
+          scratch_->changedSwitchHandshakeDomains_[changedOrdinal] == domain;
+      const auto &fragments =
+          changed ? scratch_->newSwitchHandshakeDomainFragments_[domain]
+                  : state_->switchHandshakeFragmentsByDomain_[domain];
+      scratch_->newSwitchHandshakeFragments_.insert(
+          scratch_->newSwitchHandshakeFragments_.end(), fragments.begin(),
+          fragments.end());
+      changedOrdinal += changed;
+    }
+    llvm::sort(scratch_->newSwitchHandshakeFragments_);
+    scratch_->newSwitchHandshakeFragments_.erase(
+        std::unique(scratch_->newSwitchHandshakeFragments_.begin(),
+                    scratch_->newSwitchHandshakeFragments_.end()),
+        scratch_->newSwitchHandshakeFragments_.end());
     scratch_->removedSwitchHandshakeFragments_.clear();
     scratch_->addedSwitchHandshakeFragments_.clear();
     std::set_difference(
@@ -1447,8 +1485,8 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
     state_->totalRouteNegativeSlackQuanta_ = totalNegativeSlack;
   }
   if (recurrenceTimingSelected_) {
-    auto recurrenceTiming = detail::projectSpatialRecurrenceTiming(
-        *state_, scratch_->routeViews_);
+    auto recurrenceTiming =
+        detail::projectSpatialRecurrenceTiming(*state_, scratch_->routeViews_);
     if (!recurrenceTiming)
       return recurrenceTiming.takeError();
     state_->recurrenceTiming_ = std::move(*recurrenceTiming);
@@ -1494,15 +1532,49 @@ llvm::Expected<SpatialTagAssignmentDelta>
 SpatialMoveTransaction::summarizeCurrentTagAssignmentDelta() const {
   if (!scratch_ || !closed_)
     return candidateError("Physical Tag delta requires a closed active move");
-  return state_->tagAssignments_.summarizeCurrentDelta(scratch_->tagScratch_);
+  if (tagDeltasCollected_)
+    return state_->tagAssignments_.summarizeCurrentDelta(scratch_->tagScratch_);
+
+  scratch_->tagProjectionLogicalNets_.assign(scratch_->touchedRoutes_.begin(),
+                                             scratch_->touchedRoutes_.end());
+  llvm::sort(scratch_->tagProjectionLogicalNets_);
+  scratch_->tagProjectionLogicalNets_.erase(
+      std::unique(scratch_->tagProjectionLogicalNets_.begin(),
+                  scratch_->tagProjectionLogicalNets_.end()),
+      scratch_->tagProjectionLogicalNets_.end());
+  scratch_->tagProjectionDomains_.clear();
+  for (PnrIndex logicalNet : scratch_->tagProjectionLogicalNets_)
+    for (PnrIndex segment = 0;
+         segment < state_->tagAssignments_.segments(logicalNet).size();
+         ++segment) {
+      const auto domains =
+          state_->tagAssignments_.segmentDomains(logicalNet, segment);
+      scratch_->tagProjectionDomains_.insert(
+          scratch_->tagProjectionDomains_.end(), domains.begin(),
+          domains.end());
+    }
+  llvm::sort(scratch_->tagProjectionDomains_);
+  scratch_->tagProjectionDomains_.erase(
+      std::unique(scratch_->tagProjectionDomains_.begin(),
+                  scratch_->tagProjectionDomains_.end()),
+      scratch_->tagProjectionDomains_.end());
+  return state_->tagAssignments_.summarizeCurrentDelta(
+      scratch_->tagProjectionLogicalNets_, scratch_->tagProjectionDomains_);
 }
 
 bool SpatialMoveTransaction::hasRouteTreeChange() const {
-  return scratch_ && !scratch_->touchedRoutes_.empty();
+  assert(scratch_ && closed_ && "route comparison requires a closed move");
+  return hasPreparedRouteTreeChange();
 }
 
-bool SpatialMoveTransaction::hasSemanticChange() const {
-  assert(scratch_ && closed_ && "move semantic comparison requires close");
+bool SpatialMoveTransaction::hasPreparedRouteTreeChange() const {
+  for (PnrIndex logicalNet : scratch_->touchedRoutes_)
+    if (scratch_->routeTransactions_[logicalNet]->hasSemanticChange())
+      return true;
+  return false;
+}
+
+bool SpatialMoveTransaction::hasPreparedSemanticChange() const {
   for (const SpatialCandidateScratch::DecisionDelta &delta :
        scratch_->decisionDeltas_) {
     switch (delta.kind) {
@@ -1550,10 +1622,12 @@ bool SpatialMoveTransaction::hasSemanticChange() const {
       break;
     }
   }
-  for (PnrIndex logicalNet : scratch_->touchedRoutes_)
-    if (scratch_->routeTransactions_[logicalNet]->hasSemanticChange())
-      return true;
-  return false;
+  return hasPreparedRouteTreeChange();
+}
+
+bool SpatialMoveTransaction::hasSemanticChange() const {
+  assert(scratch_ && closed_ && "move semantic comparison requires close");
+  return hasPreparedSemanticChange();
 }
 
 llvm::Error SpatialMoveTransaction::commit() {
@@ -1564,6 +1638,15 @@ llvm::Error SpatialMoveTransaction::commit() {
     return closure.takeError();
   if (!*closure)
     return candidateError("cannot commit a selected handshake cycle");
+  if (!tagDeltasCollected_) {
+    // The move closed early as a semantic no-op, so nothing was staged and
+    // the prepared RouteTrees may only differ from the committed state in
+    // slot layout. Committing them would detach slot- and order-derived
+    // caches from their trees; restoring the committed state is the only
+    // faithful commit of a no-op.
+    rollback();
+    return llvm::Error::success();
+  }
 
   for (PnrIndex logicalNet : scratch_->touchedRoutes_)
     if (llvm::Error error = scratch_->routeTransactions_[logicalNet]->commit())
@@ -1572,9 +1655,11 @@ llvm::Error SpatialMoveTransaction::commit() {
   if (llvm::Error error = scratch_->handshakeTransaction_->commit())
     return candidateError("closed handshake commit failed: " +
                           llvm::toString(std::move(error)));
-  if (tagDeltasCollected_)
-    state_->tagAssignments_.commit(scratch_->tagScratch_);
+  state_->tagAssignments_.commit(scratch_->tagScratch_);
   if (scratch_->switchHandshakeBaselineCaptured_) {
+    for (PnrIndex domain : scratch_->changedSwitchHandshakeDomains_)
+      state_->switchHandshakeFragmentsByDomain_[domain].swap(
+          scratch_->newSwitchHandshakeDomainFragments_[domain]);
     state_->switchHandshakeFragmentBaseline_ =
         scratch_->newSwitchHandshakeFragments_;
     state_->switchHandshakeFragmentBaselineValid_ = true;

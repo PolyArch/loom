@@ -5,9 +5,9 @@
 #include "InitializerRelationSolver.h"
 #include "SpatialBindingRelationModel.h"
 #include "SpatialLocalTransferIndex.h"
-#include "SpatialProgressIndex.h"
 #include "SpatialMemoryCompatibility.h"
 #include "SpatialMemoryConstraintModel.h"
+#include "SpatialProgressIndex.h"
 #include "SpatialRouteConstraintModel.h"
 #include "SpatialRouteCostStateInternal.h"
 
@@ -1802,9 +1802,10 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
     return restoreAfterFailure(move, closed.takeError(), negotiatedRouting);
   if (!*closed)
     return restoreAfterFailure(
-        move, llvm::make_error<SpatialActionTransitionFailure>(
-                  SpatialActionTransitionFailureKind::IntrinsicInvalid,
-                  "Spatial Action selected a combinational handshake cycle"),
+        move,
+        llvm::make_error<SpatialActionTransitionFailure>(
+            SpatialActionTransitionFailureKind::IntrinsicInvalid,
+            "Spatial Action selected a combinational handshake cycle"),
         negotiatedRouting);
   if (negotiatedProjection &&
       (candidate.unroutedObligationCount() !=
@@ -1829,9 +1830,11 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
        candidate.totalRouteNegativeSlackQuanta() !=
            negotiatedProjection->totalRouteNegativeSlackQuanta))
     return restoreAfterFailure(
-        move, executorError(
-                  "closed route-derived state disagrees with its RouteTrees"),
+        move,
+        executorError(
+            "closed route-derived state disagrees with its RouteTrees"),
         true);
+  const bool semanticChange = move.hasSemanticChange();
   routeCostTraversals_.assign(move.touchedRouteTraversals().begin(),
                               move.touchedRouteTraversals().end());
   routeCostLogicalNets_.assign(move.touchedRouteLogicalNets().begin(),
@@ -1840,7 +1843,15 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
   if (llvm::Error error =
           routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_))
     return restoreAfterFailure(move, std::move(error), negotiatedRouting);
-  if (routeTagsSynchronized) {
+  if (!semanticChange && !negotiatedRouting && !routeCostLogicalNets_.empty()) {
+    auto tagDelta = move.summarizeCurrentTagAssignmentDelta();
+    if (!tagDelta)
+      return restoreAfterFailure(move, tagDelta.takeError(), false);
+    if (llvm::Error error = routeCosts_->synchronizeTagProjection(*tagDelta))
+      return restoreAfterFailure(move, std::move(error), false);
+    if (llvm::Error error = routeCosts_->commitTagProjectionDelta())
+      return restoreAfterFailure(move, std::move(error), false);
+  } else if (routeTagsSynchronized) {
     auto tagDelta = move.summarizeCurrentTagAssignmentDelta();
     if (!tagDelta)
       return restoreAfterFailure(move, tagDelta.takeError(), negotiatedRouting);
@@ -1850,7 +1861,6 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
       return restoreAfterFailure(move, std::move(error), negotiatedRouting);
   }
 
-  const bool semanticChange = move.hasSemanticChange();
   dse::ObjectiveVector objective = *currentObjective_;
   dse::ObjectiveSignedDifference difference;
   if (semanticChange) {

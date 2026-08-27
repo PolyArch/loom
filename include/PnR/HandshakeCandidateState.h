@@ -82,15 +82,20 @@ public:
   HandshakeProjectionScratch &
   operator=(const HandshakeProjectionScratch &) = delete;
   HandshakeProjectionScratch(HandshakeProjectionScratch &&) = delete;
-  HandshakeProjectionScratch &
-  operator=(HandshakeProjectionScratch &&) = delete;
+  HandshakeProjectionScratch &operator=(HandshakeProjectionScratch &&) = delete;
   ~HandshakeProjectionScratch();
 
   llvm::Error prepare(const FrozenSpatialHandshakeIndex &index);
-  llvm::Expected<bool> projectAcyclic(
-      const FrozenSpatialHandshakeIndex &index,
-      llvm::ArrayRef<PnrIndex> selectedFragments,
-      llvm::ArrayRef<PnrIndex> traversalUses);
+  llvm::Expected<bool>
+  projectAcyclic(const FrozenSpatialHandshakeIndex &index,
+                 llvm::ArrayRef<PnrIndex> selectedFragments,
+                 llvm::ArrayRef<PnrIndex> traversalUses);
+  /// Projects an already-derived active fragment set. Candidate transactions
+  /// use this path for graph-sized deltas so rejected probes do not construct
+  /// an owned materialized graph.
+  llvm::Expected<bool>
+  projectActiveFragmentsAcyclic(const FrozenSpatialHandshakeIndex &index,
+                                llvm::ArrayRef<PnrIndex> activeFragments);
   HandshakeProjectionStatistics statistics() const;
   std::size_t retainedStorageBytes() const;
 
@@ -182,7 +187,8 @@ public:
   /// representation. Publication boundaries must use this verifier.
   llvm::Error verify() const;
   llvm::Expected<HandshakeCandidateTransaction>
-  beginTransaction(HandshakeCandidateScratch &scratch) &;
+  beginTransaction(HandshakeCandidateScratch &scratch,
+                   HandshakeProjectionScratch *projectionScratch = nullptr) &;
   llvm::Expected<HandshakeCandidateTransaction>
   beginTransaction(HandshakeCandidateScratch &scratch) && = delete;
 
@@ -245,7 +251,8 @@ public:
 
 private:
   HandshakeCandidateTransaction(HandshakeCandidateStateHandle state,
-                                HandshakeCandidateScratch &scratch);
+                                HandshakeCandidateScratch &scratch,
+                                HandshakeProjectionScratch *projectionScratch);
 
   llvm::Error validateFragmentSlice(llvm::ArrayRef<PnrIndex> fragments) const;
   llvm::Error changeFragment(PnrIndex fragment, bool add);
@@ -256,9 +263,9 @@ private:
 
   HandshakeCandidateStateHandle state_;
   HandshakeCandidateScratch *scratch_ = nullptr;
+  HandshakeProjectionScratch *projectionScratch_ = nullptr;
   bool closed_ = false;
   bool cycle_ = false;
-  bool rebuildOnCommit_ = false;
   std::shared_ptr<detail::MaterializedHandshakeGraph> pendingGraph_;
 
   friend class HandshakeCandidateState;

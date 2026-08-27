@@ -273,6 +273,7 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   relationValueLoads_.resize(relationValues_.size());
   relationDecisionMemberOffsets_.clear();
   relationDecisionMembers_.clear();
+  relationDecisionMemberChoiceValueOrdinals_.clear();
   relationDecisionMemberOffsets_.reserve(
       relations.relations().decisionRelations().size() + 1);
   relationDecisionMemberOffsets_.push_back(0);
@@ -284,12 +285,34 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
     for (PnrIndex incidence = relationIncidenceOffsets[decision];
          incidence < relationIncidenceOffsets[decision + 1]; ++incidence) {
       const PnrIndex relationOrdinal = relationIncidences[incidence];
+      const auto values =
+          llvm::ArrayRef(relationValues_)
+              .slice(relationValueOffsets_[relationOrdinal],
+                     relationValueOffsets_[relationOrdinal + 1] -
+                         relationValueOffsets_[relationOrdinal]);
       for (const detail::InitializerRelationMember &member :
            relations.relations().members(
                relations.relations().relations()[relationOrdinal]))
-        if (member.decision == decision)
-          relationDecisionMembers_.push_back(
-              {member.projectedValueOffset, member.demand});
+        if (member.decision == decision) {
+          const std::size_t valueOffset =
+              relationDecisionMemberChoiceValueOrdinals_.size();
+          const PnrIndex choiceCount = decisionChoiceOffsets[decision + 1] -
+                                       decisionChoiceOffsets[decision];
+          for (PnrIndex choice = 0; choice < choiceCount; ++choice) {
+            const PnrIndex rawValue =
+                relations.relations().projectedValue(member, choice);
+            const auto found = llvm::lower_bound(values, rawValue);
+            if (found == values.end() || *found != rawValue)
+              return invalid("binding relation value index is incomplete");
+            auto value =
+                actionIndex(static_cast<std::size_t>(found - values.begin()),
+                            "relationValues", PnrCapacityMeasure::Index);
+            if (!value)
+              return value.takeError();
+            relationDecisionMemberChoiceValueOrdinals_.push_back(*value);
+          }
+          relationDecisionMembers_.push_back({valueOffset, member.demand});
+        }
       if (relationDecisionMemberOffsets_.back() ==
           relationDecisionMembers_.size())
         return invalid("binding relation incidence has no matching member");
@@ -426,11 +449,6 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
         continue;
       const detail::InitializerRelationRecord &relation =
           relationModel.relations()[relationOrdinal];
-      const auto values =
-          llvm::ArrayRef(relationValues_)
-              .slice(relationValueOffsets_[relationOrdinal],
-                     relationValueOffsets_[relationOrdinal + 1] -
-                         relationValueOffsets_[relationOrdinal]);
       auto loads = llvm::MutableArrayRef(relationValueLoads_)
                        .slice(relationValueOffsets_[relationOrdinal],
                               relationValueOffsets_[relationOrdinal + 1] -
@@ -443,17 +461,22 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
               .slice(relationDecisionMemberOffsets_[incidence],
                      relationDecisionMemberOffsets_[incidence + 1] -
                          relationDecisionMemberOffsets_[incidence]);
+      const auto memberValue = [&](const RelationDecisionMember &record,
+                                   PnrIndex choice) {
+        const std::size_t offset = record.choiceValueOrdinalOffset + choice;
+        assert(offset < relationDecisionMemberChoiceValueOrdinals_.size());
+        return relationDecisionMemberChoiceValueOrdinals_[offset];
+      };
+      if (llvm::all_of(changedMembers,
+                       [&](const RelationDecisionMember &record) {
+                         return memberValue(record, oldChoice) ==
+                                memberValue(record, localChoice);
+                       }))
+        continue;
       const auto update = [&](PnrIndex choice, bool add) {
         bool legal = true;
         for (const RelationDecisionMember &record : changedMembers) {
-          const detail::InitializerRelationMember member{
-              decision, record.projectedValueOffset, record.demand};
-          const PnrIndex rawValue =
-              relationModel.projectedValue(member, choice);
-          const auto found = llvm::lower_bound(values, rawValue);
-          assert(found != values.end() && *found == rawValue);
-          const std::size_t value =
-              static_cast<std::size_t>(found - values.begin());
+          const PnrIndex value = memberValue(record, choice);
           const std::uint64_t demand =
               relation.kind == detail::InitializerRelationKind::Capacity
                   ? record.demand
@@ -934,6 +957,7 @@ std::size_t SpatialActionDomainScratch::retainedStorageBytes() const {
          retainedBytes(rootClosedRelations_) +
          retainedBytes(relationDecisionMemberOffsets_) +
          retainedBytes(relationDecisionMembers_) +
+         retainedBytes(relationDecisionMemberChoiceValueOrdinals_) +
          retainedBytes(logicalMemoryChoices_) +
          retainedBytes(routeRootEndpoints_) +
          retainedBytes(routeSubtreeSlots_) +

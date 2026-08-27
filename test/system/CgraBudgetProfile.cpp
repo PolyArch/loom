@@ -471,6 +471,16 @@ int main(int argc, char **argv) {
   loom::BlobStore blobs(blobPath);
   const SourceCase source = readSourceCase(argv[2]);
   loom::ResolvedConfig resolvedConfig = loom::defaultResolvedConfig();
+  const loom::adg::BuiltinTargetDescriptor &qualificationBaseTarget =
+      loom::adg::builtinLargeTarget;
+  loom::adg::BuiltinTargetScale qualificationScale =
+      qualificationBaseTarget.scale;
+  qualificationScale.temporalResidentContexts = 16;
+  resolvedConfig.hardwareTarget = {
+      qualificationBaseTarget.templateIdentity.str(),
+      {qualificationBaseTarget.schemaMajor,
+       qualificationBaseTarget.schemaMinor},
+      qualificationScale};
   const loom::adg::BuiltinTargetScale targetScale =
       resolvedConfig.hardwareTarget.parameters;
   const loom::pnr::ResolvedPnrConfigView spatialPnrConfig =

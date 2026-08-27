@@ -155,6 +155,18 @@ high-water mark of the whole workload batch, not a per-execution sample. The
 profile binds the current operator-gate digest and exact Dataflow, workload,
 runtime-input, Fabric, TechMapping, and SpatialMapping roots.
 
+The ten-row qualification uses one fixed parameter point derived from the
+public `builtinLargeTarget`: its topology and FU distribution are unchanged,
+and every Temporal PE has 16 resident instruction contexts. These target
+parameters are part of the one published `ResolvedConfig` consumed by
+TechMapping, Spatial PnR, and simulation. The smaller default coverage target
+is not a qualification substitute: its 63 resident instruction contexts
+cannot admit the representative matrix-multiply cover, whose exact Hall demand
+contains 98 Compute Realizations. The unmodified large point also has a
+seven-context Hall deficit in the special-math-compatible demand subset. The
+qualification point closes that typed capacity witness rather than weakening
+the injective context rule.
+
 Qualification uses the production resolved Spatial PnR policy with
 `ExhaustConfiguredWork`; it does not replace that policy with a bounded-prefix
 completion goal or a fixture-local restart count. The same ResolvedConfig owns

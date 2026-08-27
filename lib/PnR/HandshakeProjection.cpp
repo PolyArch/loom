@@ -96,6 +96,107 @@ template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
   return values.capacity() * sizeof(T);
 }
 
+llvm::Expected<bool>
+projectActiveFragmentSet(const FrozenSpatialHandshakeIndex &index,
+                         llvm::ArrayRef<PnrIndex> activeFragments,
+                         detail::HandshakeProjectionScratchStorage &storage,
+                         std::uint64_t &deterministicWork,
+                         std::uint64_t &peakActiveNodeCount,
+                         std::uint64_t &peakActiveArcCount) {
+  if (++storage.projectionEpoch == 0) {
+    std::fill(storage.arcEpochs.begin(), storage.arcEpochs.end(), 0);
+    std::fill(storage.nodeEpochs.begin(), storage.nodeEpochs.end(), 0);
+    storage.projectionEpoch = 1;
+  }
+  const std::uint64_t epoch = storage.projectionEpoch;
+  storage.activeArcs.clear();
+  storage.activeNodes.clear();
+  storage.ready.clear();
+
+  const auto arcs = index.projectionArcs();
+  const auto activateNode = [&](PnrIndex node) -> llvm::Error {
+    if (node >= storage.nodeEpochs.size())
+      return projectionError("active projection node is out of range");
+    if (storage.nodeEpochs[node] == epoch)
+      return llvm::Error::success();
+    storage.nodeEpochs[node] = epoch;
+    storage.indegree[node] = 0;
+    storage.activeNodes.push_back(node);
+    return llvm::Error::success();
+  };
+  const auto activateArc = [&](PnrIndex arc) -> llvm::Error {
+    if (arc >= arcs.size())
+      return projectionError("active projection arc is out of range");
+    addWork(deterministicWork);
+    if (storage.arcEpochs[arc] != epoch) {
+      storage.arcEpochs[arc] = epoch;
+      storage.arcRefcounts[arc] = 0;
+      storage.activeArcs.push_back(arc);
+      if (llvm::Error error = activateNode(arcs[arc].source))
+        return error;
+      if (llvm::Error error = activateNode(arcs[arc].destination))
+        return error;
+      if (llvm::Error error = increment(storage.indegree[arcs[arc].destination],
+                                        "projection node indegree"))
+        return error;
+      addWork(deterministicWork);
+    }
+    if (storage.arcRefcounts[arc] == std::numeric_limits<std::uint64_t>::max())
+      return projectionError("active projection arc refcount exceeds u64");
+    ++storage.arcRefcounts[arc];
+    return llvm::Error::success();
+  };
+
+  for (PnrIndex arc : index.projectionFixedArcs())
+    if (llvm::Error error = activateArc(arc))
+      return std::move(error);
+  const auto fragmentOffsets = index.projectionFragmentArcOffsets();
+  const auto fragmentArcs = index.projectionFragmentArcs();
+  PnrIndex previousFragment = 0;
+  bool hasPreviousFragment = false;
+  for (PnrIndex fragment : activeFragments) {
+    if (fragment >= index.fragments().size())
+      return projectionError("active projection fragment is out of range");
+    if (hasPreviousFragment && fragment <= previousFragment)
+      return projectionError(
+          "active projection fragments are not unique canonical order");
+    previousFragment = fragment;
+    hasPreviousFragment = true;
+    for (PnrIndex arc : fragmentArcs.slice(fragmentOffsets[fragment],
+                                           fragmentOffsets[fragment + 1] -
+                                               fragmentOffsets[fragment]))
+      if (llvm::Error error = activateArc(arc))
+        return std::move(error);
+  }
+
+  peakActiveNodeCount =
+      std::max<std::uint64_t>(peakActiveNodeCount, storage.activeNodes.size());
+  peakActiveArcCount =
+      std::max<std::uint64_t>(peakActiveArcCount, storage.activeArcs.size());
+  for (PnrIndex node : storage.activeNodes) {
+    if (storage.indegree[node] == 0)
+      storage.ready.push_back(node);
+    addWork(deterministicWork);
+  }
+
+  const auto outgoingOffsets = index.projectionOutgoingArcOffsets();
+  std::size_t cursor = 0;
+  while (cursor < storage.ready.size()) {
+    const PnrIndex node = storage.ready[cursor++];
+    for (PnrIndex arc = outgoingOffsets[node]; arc < outgoingOffsets[node + 1];
+         ++arc) {
+      addWork(deterministicWork);
+      if (storage.arcEpochs[arc] != epoch)
+        continue;
+      PnrIndex &destinationIndegree = storage.indegree[arcs[arc].destination];
+      if (destinationIndegree == 0)
+        return projectionError("projection node indegree underflows");
+      if (--destinationIndegree == 0)
+        storage.ready.push_back(arcs[arc].destination);
+    }
+  }
+  return storage.ready.size() == storage.activeNodes.size();
+}
 
 } // namespace
 
@@ -327,88 +428,12 @@ llvm::Expected<bool> HandshakeProjectionScratch::projectAcyclic(
   if (llvm::Error error = detail::rebuildHandshakeSelectionInto(
           index, selectedFragments, traversalUses, storage.selection))
     return std::move(error);
-
-  if (++storage.projectionEpoch == 0) {
-    std::fill(storage.arcEpochs.begin(), storage.arcEpochs.end(), 0);
-    std::fill(storage.nodeEpochs.begin(), storage.nodeEpochs.end(), 0);
-    storage.projectionEpoch = 1;
-  }
-  const std::uint64_t epoch = storage.projectionEpoch;
-  storage.activeArcs.clear();
-  storage.activeNodes.clear();
-  storage.ready.clear();
-
-  const auto arcs = index.projectionArcs();
-  const auto activateNode = [&](PnrIndex node) {
-    if (storage.nodeEpochs[node] == epoch)
-      return;
-    storage.nodeEpochs[node] = epoch;
-    storage.indegree[node] = 0;
-    storage.activeNodes.push_back(node);
-  };
-  const auto activateArc = [&](PnrIndex arc) -> llvm::Error {
-    if (arc >= arcs.size())
-      return projectionError("active projection arc is out of range");
-    addWork(deterministicWork);
-    if (storage.arcEpochs[arc] != epoch) {
-      storage.arcEpochs[arc] = epoch;
-      storage.arcRefcounts[arc] = 0;
-      storage.activeArcs.push_back(arc);
-      activateNode(arcs[arc].source);
-      activateNode(arcs[arc].destination);
-      if (llvm::Error error = increment(storage.indegree[arcs[arc].destination],
-                                        "projection node indegree"))
-        return error;
-      addWork(deterministicWork);
-    }
-    if (storage.arcRefcounts[arc] == std::numeric_limits<std::uint64_t>::max())
-      return projectionError("active projection arc refcount exceeds u64");
-    ++storage.arcRefcounts[arc];
-    return llvm::Error::success();
-  };
-
-  for (PnrIndex arc : index.projectionFixedArcs())
-    if (llvm::Error error = activateArc(arc))
-      return std::move(error);
-  const auto fragmentOffsets = index.projectionFragmentArcOffsets();
-  const auto fragmentArcs = index.projectionFragmentArcs();
-  for (PnrIndex fragment : storage.selection.activeFragments) {
-    if (fragment >= index.fragments().size())
-      return projectionError("active projection fragment is out of range");
-    for (PnrIndex arc : fragmentArcs.slice(fragmentOffsets[fragment],
-                                           fragmentOffsets[fragment + 1] -
-                                               fragmentOffsets[fragment]))
-      if (llvm::Error error = activateArc(arc))
-        return std::move(error);
-  }
-
-  peakActiveNodeCount_ =
-      std::max<std::uint64_t>(peakActiveNodeCount_, storage.activeNodes.size());
-  peakActiveArcCount_ =
-      std::max<std::uint64_t>(peakActiveArcCount_, storage.activeArcs.size());
-  for (PnrIndex node : storage.activeNodes) {
-    if (storage.indegree[node] == 0)
-      storage.ready.push_back(node);
-    addWork(deterministicWork);
-  }
-
-  const auto outgoingOffsets = index.projectionOutgoingArcOffsets();
-  std::size_t cursor = 0;
-  while (cursor < storage.ready.size()) {
-    const PnrIndex node = storage.ready[cursor++];
-    for (PnrIndex arc = outgoingOffsets[node]; arc < outgoingOffsets[node + 1];
-         ++arc) {
-      addWork(deterministicWork);
-      if (storage.arcEpochs[arc] != epoch)
-        continue;
-      PnrIndex &destinationIndegree = storage.indegree[arcs[arc].destination];
-      if (destinationIndegree == 0)
-        return projectionError("projection node indegree underflows");
-      if (--destinationIndegree == 0)
-        storage.ready.push_back(arcs[arc].destination);
-    }
-  }
-  const bool acyclic = storage.ready.size() == storage.activeNodes.size();
+  auto projected = projectActiveFragmentSet(
+      index, storage.selection.activeFragments, storage, deterministicWork,
+      peakActiveNodeCount_, peakActiveArcCount_);
+  if (!projected)
+    return projected.takeError();
+  const bool acyclic = *projected;
 
   if (loom::mapping_debug::enabled(loom::mapping_debug::Level::Detail)) {
     const auto coldBegin = std::chrono::steady_clock::now();
@@ -423,6 +448,25 @@ llvm::Expected<bool> HandshakeProjectionScratch::projectAcyclic(
           "dense handshake projection disagrees with cold materialization");
   }
   return acyclic;
+}
+
+llvm::Expected<bool> HandshakeProjectionScratch::projectActiveFragmentsAcyclic(
+    const FrozenSpatialHandshakeIndex &index,
+    llvm::ArrayRef<PnrIndex> activeFragments) {
+  if (preparedIndex_ != &index)
+    return projectionError(
+        "handshake projection scratch belongs to another frozen index");
+
+  const auto begin = std::chrono::steady_clock::now();
+  addWork(projectionCount_);
+  std::uint64_t deterministicWork = 0;
+  const llvm::scope_exit finishAccounting([&] {
+    addWork(constructionNanoseconds_, elapsedNanoseconds(begin));
+    addWork(deterministicWork_, deterministicWork);
+  });
+  return projectActiveFragmentSet(index, activeFragments, *storage_,
+                                  deterministicWork, peakActiveNodeCount_,
+                                  peakActiveArcCount_);
 }
 
 std::size_t HandshakeProjectionScratch::retainedStorageBytes() const {

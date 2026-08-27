@@ -94,6 +94,10 @@ public:
   llvm::ArrayRef<SpatialTagVertexRef> domainVertices(PnrIndex domain) const {
     return domainVertices_[domain];
   }
+  llvm::ArrayRef<SpatialTemporalSwitchSegmentDemand>
+  switchDemands(PnrIndex logicalNet) const {
+    return netSwitchDemands_[logicalNet];
+  }
   bool interferes(PnrIndex lhs, PnrIndex rhs) const;
   bool interferes(PnrIndex domain, PnrIndex lhs, PnrIndex rhs) const;
   bool interferes(SpatialTagVertexRef lhs, SpatialTagVertexRef rhs) const;
