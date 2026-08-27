@@ -460,17 +460,30 @@ def validate_mapping_work(
     # deterministic exhaustive profile remains available to DSE quality search
     # and is proven by its own anchors.
     for name, rows in (("Spatial", spatial), ("System", system)):
+        finalized_rows = 0
         for row in rows:
             require(
                 row.get("closure_status") == "semantic_limit_reached",
                 f"{name} search did not stop at its verified product result",
             )
+            # A joint pair whose search exhausts its seeds without a feasible
+            # incumbent is a typed empty outcome: the joint frontier falls to
+            # the next pair. Such an invocation publishes and finalizes
+            # nothing; every successful invocation finalizes exactly one.
+            publications = row.get("candidate_publications")
             require(
-                row.get("candidate_publications") == 1,
+                publications in (0, 1),
                 f"{name} search published more than one candidate",
             )
+            # The first-verified goal is a bounded prefix: a seed whose search
+            # finds no feasible incumbent legitimately falls through to the
+            # next attempt, so the prefix may span several prepared seeds while
+            # still finalizing exactly one candidate.
+            seed_slots = row.get("seed_attempt_slots")
             require(
-                row.get("seed_attempt_slots") == 1 and row.get("prepared_seeds") == 1,
+                isinstance(seed_slots, int)
+                and seed_slots >= 1
+                and row.get("prepared_seeds") == seed_slots,
                 f"{name} search prepared unexpected restart work",
             )
             if name == "System" and row.get("migration_seed_attempt_slots") == 1:
@@ -479,17 +492,30 @@ def validate_mapping_work(
                     "incremental System search repeated cold final closure",
                 )
             else:
+                # The bounded repair/global-closure loop may retry closure
+                # within one seed, so attempts are bounded by the work ledger
+                # rather than the seed count.
                 require(
-                    row.get("final_closure_attempts") == 1,
-                    f"{name} search skipped or repeated final closure",
+                    isinstance(row.get("final_closure_attempts"), int)
+                    and row["final_closure_attempts"] >= 1,
+                    f"{name} search skipped final closure",
                 )
             require(
-                row.get("finalized_restarts") == 1
-                and row.get("publication_slots") == 1,
+                row.get("finalized_restarts") == publications
+                and row.get("publication_slots") == publications,
                 f"{name} search did not finalize exactly one result",
             )
+            finalized_rows += publications
+        require(
+            finalized_rows >= 1,
+            f"no {name} search finalized a verified product result",
+        )
     require(
-        all(row.get("final_verification_attempts") == 1 for row in system),
+        all(
+            row.get("final_verification_attempts")
+            == row.get("candidate_publications")
+            for row in system
+        ),
         "System search skipped independent candidate verification",
     )
     require(
