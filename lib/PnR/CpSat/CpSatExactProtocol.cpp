@@ -4,6 +4,10 @@
 #include "ortools/sat/cp_model_solver.h"
 #include "ortools/sat/sat_parameters.pb.h"
 
+#include "llvm/Support/SHA256.h"
+
+#include <array>
+
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -155,12 +159,83 @@ SatParameters parameters(std::int32_t randomSeed) {
   result.set_search_branching(SatParameters::FIXED_SEARCH);
   result.set_randomize_search(false);
   result.set_cp_model_presolve(true);
+  // FIXED_SEARCH over the canonical decision strategy does not consume the
+  // failed-literal information presolve probing computes, and probing
+  // dominated repair solve time on temporal fabrics. Level zero keeps the
+  // rest of presolve; the exact-protocol descriptors version this choice.
+  result.set_cp_model_probing_level(0);
+  // A convergence budget per solve. Deterministic time is an instruction-count
+  // clock, so the same model and seed exhaust it identically on every host; an
+  // exhausted solve returns Unknown and flows into the existing typed
+  // incomplete outcome instead of consuming the whole invocation deadline.
+  result.set_max_deterministic_time(2.0);
   result.set_enumerate_all_solutions(false);
   result.set_use_lns(false);
   result.set_use_lns_only(false);
   result.set_log_search_progress(false);
   result.set_log_to_stdout(false);
   return result;
+}
+
+/// Invocation-lifetime memo of completed canonical solves. The result is a
+/// pure function of the serialized model, the canonical variable layout and
+/// the random seed under one protocol version, so replaying a hit is exact
+/// memoization, not an approximation. Budget-exhausted outcomes depend on the
+/// caller's call budget and are never cached. Worker threads keep independent
+/// memos; identical keys produce identical results on every thread.
+struct CanonicalSolveMemo final {
+  static constexpr std::size_t entryLimit = 128;
+  struct Entry final {
+    std::array<std::uint8_t, 32> key;
+    CpSatCanonicalResult result;
+  };
+  std::vector<Entry> entries;
+
+  const CpSatCanonicalResult *find(const std::array<std::uint8_t, 32> &key) {
+    for (const Entry &entry : entries)
+      if (entry.key == key)
+        return &entry.result;
+    return nullptr;
+  }
+  void retain(const std::array<std::uint8_t, 32> &key,
+              const CpSatCanonicalResult &result) {
+    if (entries.size() == entryLimit)
+      entries.erase(entries.begin());
+    entries.push_back({key, result});
+  }
+};
+
+thread_local CanonicalSolveMemo canonicalSolveMemo;
+
+std::array<std::uint8_t, 32>
+canonicalSolveKey(const CpModelProto &model,
+                  llvm::ArrayRef<CpSatCanonicalVariable> variables,
+                  std::optional<int> objectiveVariable,
+                  std::int32_t randomSeed) {
+  llvm::SHA256 hash;
+  const std::string modelBytes = model.SerializeAsString();
+  hash.update(llvm::ArrayRef<std::uint8_t>(
+      reinterpret_cast<const std::uint8_t *>(modelBytes.data()),
+      modelBytes.size()));
+  const auto updateWord = [&](std::uint64_t word) {
+    std::array<std::uint8_t, 8> bytes{};
+    for (std::size_t index = 0; index != bytes.size(); ++index)
+      bytes[index] = static_cast<std::uint8_t>(word >> (index * 8));
+    hash.update(bytes);
+  };
+  updateWord(static_cast<std::uint64_t>(
+      static_cast<std::uint32_t>(randomSeed)));
+  updateWord(objectiveVariable
+                 ? static_cast<std::uint64_t>(*objectiveVariable) + 1
+                 : 0);
+  updateWord(variables.size());
+  for (const CpSatCanonicalVariable &variable : variables) {
+    updateWord(static_cast<std::uint64_t>(variable.protoIndex));
+    updateWord(variable.legalValues.size());
+    for (std::int64_t value : variable.legalValues)
+      updateWord(static_cast<std::uint64_t>(value));
+  }
+  return hash.final();
 }
 
 struct SolveState final {
@@ -232,6 +307,17 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
           "objective must minimize one exact integer objective variable");
   }
 
+  const std::array<std::uint8_t, 32> memoKey =
+      canonicalSolveKey(model, variables, objectiveVariable, randomSeed);
+  if (const CpSatCanonicalResult *memo = canonicalSolveMemo.find(memoKey);
+      memo && memo->solverCalls <= maxSolverCalls) {
+    // The recorded completion fits the caller's call budget, so this budget
+    // provably reaches the same result; a smaller budget must still run and
+    // observe its own typed exhaustion.
+    CpSatCanonicalResult replay = *memo;
+    replay.solverCalls = 0;
+    return replay;
+  }
   CpModelProto working = model;
   installCanonicalDecisionStrategy(working, variables);
   SolveState state{maxSolverCalls, 0, parameters(randomSeed)};
@@ -248,9 +334,12 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
   if (!initial)
     return unknown(state.calls);
   switch (classifyCpSatProofStatus(initial->status())) {
-  case CpSatProofStatus::Infeasible:
-    return CpSatCanonicalResult{
+  case CpSatProofStatus::Infeasible: {
+    const CpSatCanonicalResult result{
         CpSatCanonicalResultKind::Infeasible, {}, std::nullopt, state.calls};
+    canonicalSolveMemo.retain(memoKey, result);
+    return result;
+  }
   case CpSatProofStatus::Unknown:
     return unknown(state.calls);
   case CpSatProofStatus::InternalError:
@@ -326,9 +415,13 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
     }
     begin = end;
   }
-  return CpSatCanonicalResult{CpSatCanonicalResultKind::Assignment,
-                              std::move(assignment), objectiveValue,
-                              state.calls};
+  {
+    const CpSatCanonicalResult result{
+        CpSatCanonicalResultKind::Assignment, std::move(assignment),
+        objectiveValue, state.calls};
+    canonicalSolveMemo.retain(memoKey, result);
+    return result;
+  }
 }
 
 llvm::Expected<CpSatCanonicalResult>

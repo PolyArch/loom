@@ -11,13 +11,13 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.1
+  loom.spatial_pnr.config.15.2
   loom.spatial_pnr.freeze.2.22
   loom.mapping.pnr.objective 3.1
   selected FabricPhysicalTimingProfile descriptor and digest
 
 System:
-  loom.system_pnr.config.8.0
+  loom.system_pnr.config.8.1
   loom.system_pnr_search_domain.4.0
   loom.mapping.pnr.objective 3.1
   exact selected SpatialMapping references
@@ -254,6 +254,15 @@ that transaction.
 The Spatial provider uses the required in-process `CpSat_3_0` adapter from the
 pinned OR-Tools v9.15 source commit
 `551ad10d94835c99e5e1e684500d3db398c0e345`.
+
+Every canonical solve runs with presolve probing disabled and under a fixed
+deterministic-time budget of 2.0. Probing computes failed-literal information
+the canonical `FIXED_SEARCH` strategy never consumes, and the budget is an
+instruction-count clock, so the same model and seed exhaust it identically on
+every host. A budget-exhausted solve is the existing typed `Unknown` outcome:
+the repair remains incomplete and can never prove infeasibility or consume the
+invocation deadline. These solver constants are part of the versioned config
+descriptors above; changing them is a formal search-order change.
 
 There are two actual repair profiles:
 

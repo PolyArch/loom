@@ -59,12 +59,12 @@ void projectionAndAdoptionAreDomainTyped() {
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               spatial.schemaDescriptorBytes().data()),
                           spatial.schemaDescriptorBytes().size()) ==
-              "loom.spatial_pnr.config.15.1",
+              "loom.spatial_pnr.config.15.2",
           "Spatial PnR view has the wrong schema descriptor");
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               system.schemaDescriptorBytes().data()),
                           system.schemaDescriptorBytes().size()) ==
-              "loom.system_pnr.config.8.0",
+              "loom.system_pnr.config.8.1",
           "System PnR view has the wrong schema descriptor");
   require(system.systemBindingPartitions().empty(),
           "base System PnR view invented a partition intent");
