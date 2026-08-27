@@ -253,14 +253,7 @@ struct AggregateUnrollActorProjection final {
 llvm::Expected<AggregateUnrollActorProjection>
 projectAggregateUnrollActor(mlir::Operation *operation,
                             const FabricCapabilityIndex &fabric) {
-  const std::optional<dataflow::OperationSchemaId> schema =
-      dataflow::operationSchemaOf(operation);
-  const bool unresolvedSpecialMath =
-      schema &&
-      dataflow::semanticsCase(*schema) ==
-          dataflow::OperationSemanticsCase::SpecialMathAccuracy &&
-      !operation->getDiscardableAttr(kSpecialMathAccuracyAttrName);
-  if (!unresolvedSpecialMath) {
+  if (!hasUnresolvedStructuredSpecialMathAccuracy(operation)) {
     auto key = dataflow::projectRegisteredActorSchemaProjectionBytes(operation);
     if (!key)
       return key.takeError();

@@ -178,6 +178,17 @@ llvm::Expected<MaterializedAccuracyProjection> materializeDecision(
 
 } // namespace
 
+bool hasUnresolvedStructuredSpecialMathAccuracy(mlir::Operation *operation) {
+  if (!operation)
+    return false;
+  const std::optional<dataflow::OperationSchemaId> schema =
+      dataflow::operationSchemaOf(operation);
+  return schema &&
+         dataflow::semanticsCase(*schema) ==
+             dataflow::OperationSemanticsCase::SpecialMathAccuracy &&
+         !operation->getDiscardableAttr(kSpecialMathAccuracyAttrName);
+}
+
 llvm::ArrayRef<std::uint8_t>
 structuredSpecialMathAccuracyDecisionSchemaBytes() {
   return {reinterpret_cast<const std::uint8_t *>(decisionSchema.data()),

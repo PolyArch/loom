@@ -4,6 +4,7 @@
 
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/OperationSchema.h"
+#include "Frontend/Compilation/StructuredSpecialMathAccuracy.h"
 #include "Frontend/Lowering/ExactMemRefLayout.h"
 
 #include "mlir/Analysis/AliasAnalysis.h"
@@ -851,6 +852,8 @@ collectPolyhedralLoop(mlir::Operation *loop, std::optional<std::size_t> parent,
           {&operation, PolyhedralStatementClass::AffineSupport});
       continue;
     }
+    if (hasUnresolvedStructuredSpecialMathAccuracy(&operation))
+      return StructuredScopRefusalKind::UnsupportedOperation;
     const std::optional<dataflow::CanonicalDataflowActorKind> actorKind =
         dataflow::classifyCanonicalDataflowActor(&operation);
     if (actorKind == dataflow::CanonicalDataflowActorKind::Compute) {

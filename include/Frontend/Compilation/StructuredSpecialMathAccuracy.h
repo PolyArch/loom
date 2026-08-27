@@ -27,6 +27,11 @@ struct MaterializedStructuredSpecialMathCandidate final {
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
+/// Whether a registered special-math operation still requires its typed
+/// accuracy decision. Other operations and already selected tiers return
+/// false; malformed selected state remains the strict schema owner's error.
+bool hasUnresolvedStructuredSpecialMathAccuracy(mlir::Operation *operation);
+
 llvm::ArrayRef<std::uint8_t> structuredSpecialMathAccuracyDecisionSchemaBytes();
 llvm::Expected<std::vector<std::uint8_t>>
 encodeStructuredSpecialMathAccuracyDecision(
