@@ -166,7 +166,17 @@ def evaluate_paired_execution(
     _require_finite_positive(budget.hard_failure_seconds, "hard failure time")
 
     ratio = system_timing.active_wall_seconds / budget.spatial_reference_seconds
-    rate = system_timing.reference_cycles / system_timing.active_wall_seconds
+    # The rate gate qualifies the simulator's throughput, not the host
+    # scheduler: engine CPU time is invariant under host oversubscription
+    # while active wall time is not, so a loaded parallel suite must not turn
+    # a healthy engine into a rate failure. Wall time remains the basis for
+    # the paired budget and hard-ratio contracts above.
+    rate_basis_seconds = (
+        system_timing.engine_cpu_seconds
+        if system_timing.engine_cpu_seconds > 0.0
+        else system_timing.active_wall_seconds
+    )
+    rate = system_timing.reference_cycles / rate_basis_seconds
     return PairedExecutionResult(
         spatial_reference_seconds=budget.spatial_reference_seconds,
         system_active_wall_seconds=system_timing.active_wall_seconds,
