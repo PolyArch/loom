@@ -96,6 +96,18 @@ projectFabricTemporalSwitchCandidateRouteRows(
 /// Number of resident rows the candidate projection above would produce,
 /// without materializing the rows. Row membership and greedy placement are
 /// shared with the full projection, so the count is exactly its size.
+/// Flat row membership of the candidate projection in canonical row order:
+/// row r's member demand ordinals are demandOrdinals[rowOffsets[r]] through
+/// demandOrdinals[rowOffsets[r + 1]]. Refilling reuses retained capacity.
+struct FabricTemporalSwitchRouteRowMemberSpans final {
+  std::vector<std::uint64_t> rowOffsets;
+  std::vector<std::uint64_t> demandOrdinals;
+};
+
+llvm::Error projectFabricTemporalSwitchCandidateRouteRowMemberSpans(
+    llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands,
+    FabricTemporalSwitchRouteRowMemberSpans &result);
+
 llvm::Expected<std::uint64_t> projectFabricTemporalSwitchCandidateRouteRowCount(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands);
 

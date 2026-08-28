@@ -24,6 +24,7 @@
 namespace loom::pnr {
 
 namespace detail {
+class SpatialSwitchHandshakeProjectionScratch;
 class SpatialMemoryConstraintScratch;
 class SpatialRouteConstraintScratch;
 } // namespace detail
@@ -171,6 +172,10 @@ private:
   std::vector<std::unique_ptr<RouteTreeTransactionScratch>> routeScratch_;
   std::vector<std::optional<RouteTreeTransaction>> routeTransactions_;
   SpatialTagAssignmentScratch tagScratch_;
+  /// Lazily constructed; the type is internal to the switch handshake
+  /// projection translation unit.
+  std::unique_ptr<detail::SpatialSwitchHandshakeProjectionScratch>
+      switchProjectionScratch_;
   HandshakeCandidateScratch handshakeScratch_;
   HandshakeProjectionScratch handshakeProjectionScratch_;
   std::optional<HandshakeCandidateTransaction> handshakeTransaction_;

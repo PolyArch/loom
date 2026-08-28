@@ -278,6 +278,29 @@ loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(
   return result;
 }
 
+llvm::Error
+loom::fabric::projectFabricTemporalSwitchCandidateRouteRowMemberSpans(
+    llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands,
+    FabricTemporalSwitchRouteRowMemberSpans &result) {
+  auto state = prepareCandidateRouteRows(demands);
+  if (!state)
+    return state.takeError();
+  result.rowOffsets.clear();
+  result.demandOrdinals.clear();
+  result.rowOffsets.reserve(state->rows.size() + 1);
+  result.demandOrdinals.reserve(state->members.size());
+  for (const FlatRowState::Occurrence &group : state->occurrences)
+    for (const std::size_t rowOrdinal : group.rowOrder) {
+      result.rowOffsets.push_back(result.demandOrdinals.size());
+      state->allMembers(state->rows[rowOrdinal], [&](std::size_t member) {
+        result.demandOrdinals.push_back(member);
+        return true;
+      });
+    }
+  result.rowOffsets.push_back(result.demandOrdinals.size());
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::uint64_t>
 loom::fabric::projectFabricTemporalSwitchCandidateRouteRowCount(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands) {

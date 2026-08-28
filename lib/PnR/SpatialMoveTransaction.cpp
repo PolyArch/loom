@@ -8,7 +8,9 @@
 #include "SpatialRecurrenceTimingInternal.h"
 #include "SpatialRouteConstraintModel.h"
 #include "SpatialSwitchHandshakeProjection.h"
+
 #include "StaticSchedulePressure.h"
+#include <memory>
 
 #include "Common/MappingDebugLog.h"
 #include "Fabric/Identity/FabricRefText.h"
@@ -1386,9 +1388,13 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
       if (matchDomains[domain].kind !=
           ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable)
         continue;
+      if (!scratch_->switchProjectionScratch_)
+        scratch_->switchProjectionScratch_ =
+            std::make_unique<detail::SpatialSwitchHandshakeProjectionScratch>();
       auto fragments =
           detail::deriveSpatialTemporalSwitchHandshakeDomainFragments(
-              state_->problem(), domain, *state_->tagAssignments_.storage_);
+              state_->problem(), domain, *state_->tagAssignments_.storage_,
+              *scratch_->switchProjectionScratch_);
       if (!fragments)
         return fragments.takeError();
       scratch_->changedSwitchHandshakeDomains_.push_back(domain);

@@ -8,6 +8,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -39,10 +40,35 @@ llvm::Expected<std::vector<std::vector<PnrIndex>>>
 deriveSpatialTemporalSwitchHandshakeFragmentsByDomain(
     const FrozenSpatialPnrProblem &problem,
     const SpatialTagAssignmentStateStorage &assignments);
+/// Worker-local reusable storage for switch handshake fragment projection.
+/// It owns no semantic state; results are independent of the scratch.
+class SpatialSwitchHandshakeProjectionScratch final {
+public:
+  SpatialSwitchHandshakeProjectionScratch();
+  SpatialSwitchHandshakeProjectionScratch(
+      const SpatialSwitchHandshakeProjectionScratch &) = delete;
+  SpatialSwitchHandshakeProjectionScratch &
+  operator=(const SpatialSwitchHandshakeProjectionScratch &) = delete;
+  ~SpatialSwitchHandshakeProjectionScratch();
+
+  /// Opaque reusable buffers; the definition is local to the projection
+  /// translation unit.
+  struct Storage;
+  Storage &storage() { return *storage_; }
+
+private:
+  std::unique_ptr<Storage> storage_;
+};
+
 llvm::Expected<std::vector<PnrIndex>>
 deriveSpatialTemporalSwitchHandshakeDomainFragments(
     const FrozenSpatialPnrProblem &problem, PnrIndex domain,
     const SpatialTagAssignmentStateStorage &assignments);
+llvm::Expected<std::vector<PnrIndex>>
+deriveSpatialTemporalSwitchHandshakeDomainFragments(
+    const FrozenSpatialPnrProblem &problem, PnrIndex domain,
+    const SpatialTagAssignmentStateStorage &assignments,
+    SpatialSwitchHandshakeProjectionScratch &scratch);
 
 } // namespace loom::pnr::detail
 
