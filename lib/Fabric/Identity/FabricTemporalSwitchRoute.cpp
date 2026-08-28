@@ -1,5 +1,7 @@
 #include "Fabric/Identity/FabricTemporalSwitchRoute.h"
 
+#include "Fabric/IR/PhysicalTag.h"
+
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -34,14 +36,7 @@ bool disjoint(llvm::ArrayRef<FabricOrdinal> lhs,
 }
 
 int compareUnsigned(const llvm::APInt &lhs, const llvm::APInt &rhs) {
-  const unsigned width = std::max(lhs.getBitWidth(), rhs.getBitWidth());
-  const llvm::APInt left = lhs.zext(width);
-  const llvm::APInt right = rhs.zext(width);
-  if (left.ult(right))
-    return -1;
-  if (right.ult(left))
-    return 1;
-  return 0;
+  return ::fabric::comparePhysicalTagValues(lhs, rhs);
 }
 
 } // namespace

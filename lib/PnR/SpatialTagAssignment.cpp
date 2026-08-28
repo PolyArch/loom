@@ -1,5 +1,7 @@
 #include "PnR/SpatialTagAssignment.h"
 
+#include "Fabric/IR/PhysicalTag.h"
+
 #include "SpatialSwitchRowPacking.h"
 #include "SpatialTagAssignmentState.h"
 #include "SpatialTagColoring.h"
@@ -60,14 +62,7 @@ llvm::Error unsupported(const llvm::Twine &message) {
 }
 
 int compareUnsigned(const llvm::APInt &lhs, const llvm::APInt &rhs) {
-  const unsigned width = std::max(lhs.getBitWidth(), rhs.getBitWidth());
-  const llvm::APInt left = lhs.zext(width);
-  const llvm::APInt right = rhs.zext(width);
-  if (left.ult(right))
-    return -1;
-  if (right.ult(left))
-    return 1;
-  return 0;
+  return ::fabric::comparePhysicalTagValues(lhs, rhs);
 }
 
 llvm::APInt canonicalUnsigned(const llvm::APInt &value) {

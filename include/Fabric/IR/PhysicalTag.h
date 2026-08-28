@@ -5,10 +5,31 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
 namespace fabric {
+
+/// Compares two unsigned Physical Tag values irrespective of their APInt
+/// storage widths; storage width is not semantic. Values whose storage fits
+/// one machine word compare without widening.
+inline int comparePhysicalTagValues(const llvm::APInt &lhs,
+                                    const llvm::APInt &rhs) {
+  if (lhs.getBitWidth() <= 64 && rhs.getBitWidth() <= 64) {
+    const std::uint64_t left = lhs.getZExtValue();
+    const std::uint64_t right = rhs.getZExtValue();
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+  const unsigned width = std::max(lhs.getBitWidth(), rhs.getBitWidth());
+  const llvm::APInt left = lhs.zext(width);
+  const llvm::APInt right = rhs.zext(width);
+  if (left.ult(right))
+    return -1;
+  if (right.ult(left))
+    return 1;
+  return 0;
+}
 
 /// Returns whether an unsigned Physical Tag value fits the exact owner width.
 /// The APInt's storage width is not semantic; the Fabric owner supplies the

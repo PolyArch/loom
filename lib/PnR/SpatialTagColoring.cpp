@@ -2,8 +2,8 @@
 
 #include "Fabric/IR/PhysicalTag.h"
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
 #include <cassert>
@@ -31,14 +31,7 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 int compareUnsigned(const llvm::APInt &lhs, const llvm::APInt &rhs) {
-  const unsigned width = std::max(lhs.getBitWidth(), rhs.getBitWidth());
-  const llvm::APInt left = lhs.zext(width);
-  const llvm::APInt right = rhs.zext(width);
-  if (left.ult(right))
-    return -1;
-  if (right.ult(left))
-    return 1;
-  return 0;
+  return ::fabric::comparePhysicalTagValues(lhs, rhs);
 }
 
 llvm::APInt canonicalUnsigned(const llvm::APInt &value) {
@@ -473,10 +466,20 @@ private:
       return invalid("tag conflict count overflows u64");
     result_.conflictCount += conflicts;
     for (PnrIndex neighbor : conflictVertices_[vertex]) {
-      PnrIndex &count = saturationValueCounts_[neighbor][*value];
-      if (count >= getInvalidPnrIndex() - PnrIndex{1})
-        return invalid("tag saturation incidence overflows PnrIndex");
-      ++count;
+      auto &counts = saturationValueCounts_[neighbor];
+      const auto found =
+          std::lower_bound(counts.begin(), counts.end(), *value,
+                           [](const std::pair<llvm::APInt, PnrIndex> &entry,
+                              const llvm::APInt &target) {
+                             return compareUnsigned(entry.first, target) < 0;
+                           });
+      if (found != counts.end() && compareUnsigned(found->first, *value) == 0) {
+        if (found->second >= getInvalidPnrIndex() - PnrIndex{1})
+          return invalid("tag saturation incidence overflows PnrIndex");
+        ++found->second;
+      } else {
+        counts.insert(found, {*value, 1});
+      }
     }
     return llvm::Error::success();
   }
@@ -488,11 +491,18 @@ private:
     assert(conflicts <= result_.conflictCount);
     result_.conflictCount -= conflicts;
     for (PnrIndex neighbor : conflictVertices_[vertex]) {
-      auto saturation = saturationValueCounts_[neighbor].find(value);
-      assert(saturation != saturationValueCounts_[neighbor].end() &&
+      auto &counts = saturationValueCounts_[neighbor];
+      const auto saturation =
+          std::lower_bound(counts.begin(), counts.end(), value,
+                           [](const std::pair<llvm::APInt, PnrIndex> &entry,
+                              const llvm::APInt &target) {
+                             return compareUnsigned(entry.first, target) < 0;
+                           });
+      assert(saturation != counts.end() &&
+             compareUnsigned(saturation->first, value) == 0 &&
              saturation->second != 0);
       if (saturation->second == 1)
-        saturationValueCounts_[neighbor].erase(saturation);
+        counts.erase(saturation);
       else
         --saturation->second;
     }
@@ -635,7 +645,8 @@ private:
   SpatialTagColoringProblemView problem_;
   SpatialTagColoringResult result_;
   std::vector<std::uint8_t> colored_;
-  std::vector<llvm::DenseMap<llvm::APInt, PnrIndex>> saturationValueCounts_;
+  std::vector<llvm::SmallVector<std::pair<llvm::APInt, PnrIndex>, 4>>
+      saturationValueCounts_;
   std::vector<std::vector<PnrIndex>> domainVertices_;
   std::vector<std::vector<PnrIndex>> conflictVertices_;
   std::vector<std::vector<PnrIndex>> components_;
