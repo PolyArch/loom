@@ -120,16 +120,58 @@ loom::fabric::projectFabricTemporalSwitchRouteRows(
 
 namespace {
 
-struct PreparedRow final {
-  FabricTemporalSwitchCandidateRouteRow row;
-  std::vector<FabricTemporalSwitchRouteDemandView> routes;
+/// Flat row-grouping core shared by the materializing and counting
+/// projections. Rows keep their demand members as index chains into one
+/// node pool, so grouping allocates only three flat vectors regardless of
+/// the demand count, and compatibility checks resolve members through the
+/// caller's demand views without copying routes.
+struct FlatRowState final {
+  struct Row final {
+    FabricSwitchOccurrenceRef occurrence;
+    std::optional<llvm::APInt> tag;
+    bool compatible = true;
+    std::size_t headMember = SIZE_MAX;
+    std::size_t tailMember = SIZE_MAX;
+  };
+  struct Occurrence final {
+    FabricEntityId id;
+    llvm::SmallVector<std::size_t, 4> rowOrder;
+  };
+  std::vector<Row> rows;
+  /// Member chain node: demand ordinal plus next node index.
+  std::vector<std::pair<std::size_t, std::size_t>> members;
+  llvm::SmallVector<Occurrence, 8> occurrences;
+
+  Occurrence &occurrenceFor(FabricEntityId id) {
+    for (Occurrence &occurrence : occurrences)
+      if (occurrence.id == id)
+        return occurrence;
+    occurrences.push_back({id, {}});
+    return occurrences.back();
+  }
+  void appendMember(Row &row, std::size_t demandOrdinal) {
+    members.push_back({demandOrdinal, SIZE_MAX});
+    if (row.headMember == SIZE_MAX)
+      row.headMember = members.size() - 1;
+    else
+      members[row.tailMember].second = members.size() - 1;
+    row.tailMember = members.size() - 1;
+  }
+  template <typename Visit> bool allMembers(const Row &row, Visit visit) const {
+    for (std::size_t node = row.headMember; node != SIZE_MAX;
+         node = members[node].second)
+      if (!visit(members[node].first))
+        return false;
+    return true;
+  }
 };
 
-llvm::Expected<std::map<FabricEntityId, std::vector<PreparedRow>>>
-prepareCandidateRouteRows(
+llvm::Expected<FlatRowState> prepareCandidateRouteRows(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands) {
-  std::map<FabricEntityId, std::vector<PreparedRow>> rows;
-  std::map<FabricEntityId, unsigned> tagWidths;
+  FlatRowState state;
+  state.rows.reserve(demands.size());
+  state.members.reserve(demands.size());
+  llvm::SmallVector<std::pair<FabricEntityId, unsigned>, 8> tagWidths;
   for (std::size_t ordinal = 0; ordinal != demands.size(); ++ordinal) {
     const FabricTemporalSwitchCandidateRouteDemandView &demand =
         demands[ordinal];
@@ -140,32 +182,41 @@ prepareCandidateRouteRows(
       continue;
     const FabricSwitchOccurrenceRef occurrence =
         demand.route.signatures.front().occurrence;
-    auto [width, inserted] =
-        tagWidths.try_emplace(occurrence.id(), demand.tag->getBitWidth());
-    if (!inserted && width->second != demand.tag->getBitWidth())
-      return invalid("one switch occurrence has inconsistent tag widths");
-    auto &occurrenceRows = rows[occurrence.id()];
-    auto selected = llvm::find_if(occurrenceRows, [&](const PreparedRow &row) {
-      return row.row.tag && compareUnsigned(*row.row.tag, *demand.tag) == 0;
-    });
-    if (selected == occurrenceRows.end()) {
-      occurrenceRows.push_back({{occurrence, *demand.tag, {}, true}, {}});
-      selected = std::prev(occurrenceRows.end());
+    bool widthKnown = false;
+    for (const auto &width : tagWidths)
+      if (width.first == occurrence.id()) {
+        widthKnown = true;
+        if (width.second != demand.tag->getBitWidth())
+          return invalid("one switch occurrence has inconsistent tag widths");
+        break;
+      }
+    if (!widthKnown)
+      tagWidths.push_back({occurrence.id(), demand.tag->getBitWidth()});
+    FlatRowState::Occurrence &group = state.occurrenceFor(occurrence.id());
+    FlatRowState::Row *selected = nullptr;
+    for (const std::size_t rowOrdinal : group.rowOrder) {
+      FlatRowState::Row &row = state.rows[rowOrdinal];
+      if (row.tag && compareUnsigned(*row.tag, *demand.tag) == 0) {
+        selected = &row;
+        break;
+      }
     }
-    selected->row.compatible &=
-        llvm::all_of(selected->routes, [&](const auto &existing) {
-          return compatibleFabricTemporalSwitchRouteDemands(existing,
-                                                            demand.route);
+    if (!selected) {
+      state.rows.push_back({occurrence, *demand.tag, true, SIZE_MAX, SIZE_MAX});
+      group.rowOrder.push_back(state.rows.size() - 1);
+      selected = &state.rows.back();
+    }
+    selected->compatible &=
+        state.allMembers(*selected, [&](std::size_t member) {
+          return compatibleFabricTemporalSwitchRouteDemands(
+              demands[member].route, demand.route);
         });
-    selected->routes.push_back(demand.route);
-    selected->row.demandOrdinals.push_back(ordinal);
+    state.appendMember(*selected, ordinal);
   }
-  for (auto &[occurrence, occurrenceRows] : rows) {
-    (void)occurrence;
-    llvm::sort(occurrenceRows, [](const auto &lhs, const auto &rhs) {
-      return compareUnsigned(*lhs.row.tag, *rhs.row.tag) < 0;
+  for (FlatRowState::Occurrence &group : state.occurrences)
+    llvm::sort(group.rowOrder, [&](std::size_t lhs, std::size_t rhs) {
+      return compareUnsigned(*state.rows[lhs].tag, *state.rows[rhs].tag) < 0;
     });
-  }
 
   for (std::size_t ordinal = 0; ordinal != demands.size(); ++ordinal) {
     const FabricTemporalSwitchCandidateRouteDemandView &demand =
@@ -174,23 +225,31 @@ prepareCandidateRouteRows(
       continue;
     const FabricSwitchOccurrenceRef occurrence =
         demand.route.signatures.front().occurrence;
-    auto &occurrenceRows = rows[occurrence.id()];
-    auto selected = llvm::find_if(occurrenceRows, [&](const PreparedRow &row) {
-      return row.row.compatible &&
-             llvm::all_of(row.routes, [&](const auto &existing) {
-               return compatibleFabricTemporalSwitchRouteDemands(existing,
-                                                                 demand.route);
-             });
-    });
-    if (selected == occurrenceRows.end()) {
-      occurrenceRows.push_back({{occurrence, std::nullopt, {}, true}, {}});
-      selected = std::prev(occurrenceRows.end());
+    FlatRowState::Occurrence &group = state.occurrenceFor(occurrence.id());
+    FlatRowState::Row *selected = nullptr;
+    for (const std::size_t rowOrdinal : group.rowOrder) {
+      FlatRowState::Row &row = state.rows[rowOrdinal];
+      if (row.compatible && state.allMembers(row, [&](std::size_t member) {
+            return compatibleFabricTemporalSwitchRouteDemands(
+                demands[member].route, demand.route);
+          })) {
+        selected = &row;
+        break;
+      }
     }
-    selected->routes.push_back(demand.route);
-    selected->row.demandOrdinals.push_back(ordinal);
+    if (!selected) {
+      state.rows.push_back(
+          {occurrence, std::nullopt, true, SIZE_MAX, SIZE_MAX});
+      group.rowOrder.push_back(state.rows.size() - 1);
+      selected = &state.rows.back();
+    }
+    state.appendMember(*selected, ordinal);
   }
-
-  return rows;
+  llvm::sort(state.occurrences, [](const FlatRowState::Occurrence &lhs,
+                                   const FlatRowState::Occurrence &rhs) {
+    return lhs.id < rhs.id;
+  });
+  return state;
 }
 
 } // namespace
@@ -198,29 +257,32 @@ prepareCandidateRouteRows(
 llvm::Expected<std::vector<FabricTemporalSwitchCandidateRouteRow>>
 loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands) {
-  auto rows = prepareCandidateRouteRows(demands);
-  if (!rows)
-    return rows.takeError();
+  auto state = prepareCandidateRouteRows(demands);
+  if (!state)
+    return state.takeError();
   std::vector<FabricTemporalSwitchCandidateRouteRow> result;
-  result.reserve(demands.size());
-  for (auto &[occurrence, occurrenceRows] : *rows) {
-    (void)occurrence;
-    for (PreparedRow &row : occurrenceRows)
-      result.push_back(std::move(row.row));
-  }
+  result.reserve(state->rows.size());
+  for (const FlatRowState::Occurrence &group : state->occurrences)
+    for (const std::size_t rowOrdinal : group.rowOrder) {
+      const FlatRowState::Row &row = state->rows[rowOrdinal];
+      FabricTemporalSwitchCandidateRouteRow materialized;
+      materialized.occurrence = row.occurrence;
+      materialized.tag = row.tag;
+      materialized.compatible = row.compatible;
+      state->allMembers(row, [&](std::size_t member) {
+        materialized.demandOrdinals.push_back(member);
+        return true;
+      });
+      result.push_back(std::move(materialized));
+    }
   return result;
 }
 
 llvm::Expected<std::uint64_t>
 loom::fabric::projectFabricTemporalSwitchCandidateRouteRowCount(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands) {
-  auto rows = prepareCandidateRouteRows(demands);
-  if (!rows)
-    return rows.takeError();
-  std::uint64_t count = 0;
-  for (const auto &[occurrence, occurrenceRows] : *rows) {
-    (void)occurrence;
-    count += occurrenceRows.size();
-  }
-  return count;
+  auto state = prepareCandidateRouteRows(demands);
+  if (!state)
+    return state.takeError();
+  return static_cast<std::uint64_t>(state->rows.size());
 }

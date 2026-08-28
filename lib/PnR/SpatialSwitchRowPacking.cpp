@@ -366,21 +366,138 @@ loom::pnr::detail::deriveSpatialTemporalSwitchSegmentDemands(
   return materializeDemands(std::move(selected));
 }
 
+namespace {
+
+struct FlatCrosspoint final {
+  PnrIndex domain = 0;
+  PnrIndex segment = 0;
+  ::loom::fabric::FabricOrdinal input = 0;
+  ::loom::fabric::FabricOrdinal output = 0;
+  PnrIndex traversal = 0;
+  ::loom::fabric::FabricSwitchOccurrenceRef occurrence;
+};
+
+/// Route-node walk shared with appendRouteDemands, collecting into one flat
+/// vector instead of nested maps; one sort then linear grouping replaces the
+/// per-crosspoint node allocations of the map-based path.
+llvm::Error
+collectRouteCrosspoints(const FrozenSpatialPnrProblem &problem,
+                        const RouteTreeState &route,
+                        const SpatialTagContinuityProjection &continuity,
+                        std::vector<FlatCrosspoint> &crosspoints) {
+  const FrozenSpatialRoutingGraph &routing = problem.routing();
+  if (&route.routingGraph() != &routing)
+    return invalid("route belongs to another frozen problem");
+  if (route.isUnrouted())
+    return llvm::Error::success();
+  const auto nodes = route.nodeStorage();
+  const auto nodeSegments = continuity.nodeSegments();
+  if (nodeSegments.size() != nodes.size())
+    return invalid("route and continuity node inventories disagree");
+  const auto arcs = routing.routingArcs();
+  const auto arcSources = routing.arcSources();
+  const auto traversals = routing.traversals();
+  const auto endpoints = routing.routingEndpoints();
+  const auto endpointDomains =
+      routing.tagContinuity().endpointMatchDomainOrdinals();
+  const auto domains = routing.tagContinuity().matchDomains();
+  if (endpointDomains.size() != endpoints.size())
+    return invalid("endpoint match-domain index has the wrong width");
+  for (auto [slot, node] : llvm::enumerate(nodes)) {
+    if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+      continue;
+    if (node.parentArc >= arcs.size() || node.parentArc >= arcSources.size())
+      return invalid("route node names an absent physical arc");
+    const PnrIndex traversal = arcs[node.parentArc].traversal;
+    if (traversal >= traversals.size())
+      return invalid("route node names an absent physical traversal");
+    const auto *payload =
+        std::get_if<::loom::fabric::FabricSwitchTraversalPayload>(
+            &traversals[traversal].reference.payload);
+    if (!payload)
+      continue;
+    const PnrIndex source = arcSources[node.parentArc];
+    if (source >= endpoints.size() || source >= endpointDomains.size())
+      return invalid("switch traversal source is out of range");
+    const PnrIndex domain = endpointDomains[source];
+    if (domain == getInvalidPnrIndex())
+      continue;
+    if (domain >= domains.size() ||
+        domains[domain].kind !=
+            ::loom::fabric::FabricPhysicalTagMatchDomainKind::
+                TemporalSwitchTable ||
+        endpoints[source].reference.owner !=
+            ::loom::fabric::FabricTransportEndpointOwnerRef::of(
+                payload->owner) ||
+        endpoints[source].reference.ordinal != payload->input)
+      return invalid("switch traversal disagrees with its match domain");
+    const PnrIndex segment = nodeSegments[slot];
+    if (segment == getInvalidPnrIndex() ||
+        segment >= continuity.segments().size())
+      return invalid("Temporal switch traversal has no tag segment");
+    crosspoints.push_back({domain, segment, payload->input, payload->output,
+                           traversal, payload->owner});
+  }
+  return llvm::Error::success();
+}
+
+} // namespace
+
 llvm::Expected<std::vector<SpatialTemporalSwitchSegmentDemand>>
 loom::pnr::detail::deriveSpatialTemporalSwitchSegmentDemands(
     const FrozenSpatialPnrProblem &problem, PnrIndex logicalNet,
     const RouteTreeState &route,
     const SpatialTagContinuityProjection &continuity) {
-  if (logicalNet >= problem.transfers().logicalNets().size())
-    return invalid("logical net is out of range");
-  std::map<DemandKey, InputOutputs> selected;
+  std::vector<FlatCrosspoint> crosspoints;
   if (llvm::Error error =
-          appendRouteDemands(problem, logicalNet, route, continuity, selected))
+          collectRouteCrosspoints(problem, route, continuity, crosspoints))
     return std::move(error);
-  if (llvm::Error error =
-          verifyDemandCoverage(problem, logicalNet, continuity, selected))
-    return std::move(error);
-  return materializeDemands(std::move(selected));
+  llvm::sort(crosspoints,
+             [](const FlatCrosspoint &lhs, const FlatCrosspoint &rhs) {
+               return std::tie(lhs.domain, lhs.segment, lhs.input, lhs.output,
+                               lhs.traversal) <
+                      std::tie(rhs.domain, rhs.segment, rhs.input, rhs.output,
+                               rhs.traversal);
+             });
+  std::vector<SpatialTemporalSwitchSegmentDemand> result;
+  std::vector<::loom::fabric::FabricTemporalSwitchRouteSignatureView> views;
+  for (std::size_t begin = 0; begin < crosspoints.size();) {
+    const PnrIndex domain = crosspoints[begin].domain;
+    const PnrIndex segment = crosspoints[begin].segment;
+    SpatialTemporalSwitchSegmentDemand demand{domain, logicalNet, segment, {}};
+    std::size_t end = begin;
+    while (end < crosspoints.size() && crosspoints[end].domain == domain &&
+           crosspoints[end].segment == segment) {
+      const ::loom::fabric::FabricOrdinal input = crosspoints[end].input;
+      SpatialTemporalSwitchInputSignature signature{
+          crosspoints[end].occurrence, input, {}, {}};
+      for (; end < crosspoints.size() && crosspoints[end].domain == domain &&
+             crosspoints[end].segment == segment &&
+             crosspoints[end].input == input;
+           ++end) {
+        if (!signature.outputs.empty() &&
+            signature.outputs.back() == crosspoints[end].output)
+          return invalid("one segment repeats a switch crosspoint");
+        if (crosspoints[end].occurrence != signature.occurrence)
+          return invalid("one input signature crosses switch occurrences");
+        signature.outputs.push_back(crosspoints[end].output);
+        signature.traversals.push_back(crosspoints[end].traversal);
+      }
+      demand.signatures.push_back(std::move(signature));
+    }
+    views.clear();
+    views.reserve(demand.signatures.size());
+    for (const SpatialTemporalSwitchInputSignature &signature :
+         demand.signatures)
+      views.push_back(
+          {signature.occurrence, signature.input, signature.outputs});
+    if (llvm::Error error =
+            ::loom::fabric::validateFabricTemporalSwitchRouteDemand({views}))
+      return std::move(error);
+    result.push_back(std::move(demand));
+    begin = end;
+  }
+  return result;
 }
 
 struct loom::pnr::detail::SpatialTagInterferenceBuilder final {
