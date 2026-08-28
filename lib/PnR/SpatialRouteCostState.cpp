@@ -888,7 +888,8 @@ SpatialRouteCostState::selectLogicalNet(std::optional<PnrIndex> logicalNet) {
             selectedLogicalNetClaimBits_.end(), 0);
   selectedLogicalNetTagUses_.clear();
   if (switchRows_)
-    switchRows_->selectedNetDemands.clear();
+    switchRows_->demandScratch.recycle(
+        std::move(switchRows_->selectedNetDemands));
   selectedLogicalNet_ = logicalNet;
   return llvm::Error::success();
 }
@@ -913,7 +914,8 @@ llvm::Error SpatialRouteCostState::selectLogicalNet(
   std::fill(selectedLogicalNetClaimBits_.begin(),
             selectedLogicalNetClaimBits_.end(), 0);
   if (switchRows_)
-    switchRows_->selectedNetDemands.clear();
+    switchRows_->demandScratch.recycle(
+        std::move(switchRows_->selectedNetDemands));
   selectedLogicalNet_ = logicalNet;
   return llvm::Error::success();
 }
@@ -1035,7 +1037,7 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
 
   using Demand = detail::SpatialTemporalSwitchSegmentDemand;
   auto prospective = detail::deriveSpatialTemporalSwitchSegmentDemands(
-      *problem_, *selectedLogicalNet_, route, continuity);
+      *problem_, *selectedLogicalNet_, route, continuity, rows.demandScratch);
   if (!prospective)
     return prospective.takeError();
   for (const Demand &demand : *prospective) {
@@ -1125,6 +1127,8 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
       rows.updateUses.push_back({domain, rows.updateMarginalRows[domain]});
   if (llvm::Error error = replaceSelectedTagUses(rows.updateUses))
     return error;
+  switchRows_->demandScratch.recycle(
+      std::move(switchRows_->selectedNetDemands));
   switchRows_->selectedNetDemands = std::move(*prospective);
   return llvm::Error::success();
 }
@@ -1135,9 +1139,13 @@ llvm::Error SpatialRouteCostState::acceptSelectedLogicalNet() {
   std::fill(selectedLogicalNetClaimBits_.begin(),
             selectedLogicalNetClaimBits_.end(), 0);
   logicalNetTagUses_[*selectedLogicalNet_] = selectedLogicalNetTagUses_;
-  if (switchRows_ && switchRows_->enabled)
+  if (switchRows_ && switchRows_->enabled) {
+    switchRows_->demandScratch.recycle(
+        std::move(switchRows_->netDemands[*selectedLogicalNet_]));
     switchRows_->netDemands[*selectedLogicalNet_] =
         std::move(switchRows_->selectedNetDemands);
+    switchRows_->selectedNetDemands.clear();
+  }
   if (switchRows_ && switchRows_->enabled)
     switchRows_->netDemandsSettled[*selectedLogicalNet_] = 0;
   selectedLogicalNetTagUses_.clear();
@@ -1305,7 +1313,8 @@ llvm::Error SpatialRouteCostState::synchronizeCandidateSwitchRows(
     llvm::ArrayRef<PnrIndex> changedLogicalNets) {
   if (!switchRows_)
     return routeCostStateError("Temporal switch row storage is unavailable");
-  switchRows_->selectedNetDemands.clear();
+  switchRows_->demandScratch.recycle(
+      std::move(switchRows_->selectedNetDemands));
   if (!switchRows_->enabled)
     return llvm::Error::success();
   if (switchRows_->netDemands.size() != logicalNetCount_ ||
@@ -1329,7 +1338,7 @@ llvm::Error SpatialRouteCostState::synchronizeCandidateSwitchRows(
             route, continuity, continuityScratch))
       return error;
     auto demands = detail::deriveSpatialTemporalSwitchSegmentDemands(
-        *problem_, logicalNet, route, continuity);
+        *problem_, logicalNet, route, continuity, switchRows_->demandScratch);
     if (!demands)
       return demands.takeError();
     replacements.emplace_back(logicalNet, std::move(*demands));
@@ -1345,6 +1354,8 @@ llvm::Error SpatialRouteCostState::synchronizeCandidateSwitchRows(
         return error;
   }
   for (auto &replacement : replacements) {
+    switchRows_->demandScratch.recycle(
+        std::move(switchRows_->netDemands[replacement.first]));
     switchRows_->netDemands[replacement.first] = std::move(replacement.second);
     switchRows_->netDemandsSettled[replacement.first] = 1;
   }

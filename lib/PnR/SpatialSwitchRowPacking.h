@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_PNR_SPATIALSWITCHROWPACKING_H
 #define LOOM_LIB_PNR_SPATIALSWITCHROWPACKING_H
 
+#include "Fabric/Identity/FabricTemporalSwitchRoute.h"
 #include "PnR/RouteTreeState.h"
 #include "PnR/SpatialTagContinuity.h"
 
@@ -43,6 +44,55 @@ struct SpatialTemporalSwitchSegmentDemand final {
            lhs.segment == rhs.segment && lhs.signatures == rhs.signatures;
   }
 };
+
+/// One switch crosspoint of a selected route in frozen-ordinal form; the
+/// flat derivation sorts these once and groups them linearly.
+struct SpatialTemporalSwitchCrosspoint final {
+  PnrIndex domain = 0;
+  PnrIndex segment = 0;
+  ::loom::fabric::FabricOrdinal input = 0;
+  ::loom::fabric::FabricOrdinal output = 0;
+  PnrIndex traversal = 0;
+  ::loom::fabric::FabricSwitchOccurrenceRef occurrence;
+};
+
+/// Worker-local recycling storage for per-net switch demand derivation. It
+/// retains crosspoint, view, demand, and signature vector capacity across
+/// derivations and owns no semantic state; every derivation result is
+/// complete and independent of the scratch it was derived with.
+class SpatialTemporalSwitchDemandScratch final {
+public:
+  SpatialTemporalSwitchDemandScratch() = default;
+  SpatialTemporalSwitchDemandScratch(
+      const SpatialTemporalSwitchDemandScratch &) = delete;
+  SpatialTemporalSwitchDemandScratch &
+  operator=(const SpatialTemporalSwitchDemandScratch &) = delete;
+
+  /// Returns exhausted demand storage to the pools so the next derivation
+  /// reuses its vector capacity.
+  void recycle(std::vector<SpatialTemporalSwitchSegmentDemand> &&demands);
+
+private:
+  std::vector<SpatialTemporalSwitchSegmentDemand> demandPool_;
+  std::vector<SpatialTemporalSwitchInputSignature> signaturePool_;
+  std::vector<std::vector<SpatialTemporalSwitchSegmentDemand>> vectorPool_;
+  std::vector<SpatialTemporalSwitchCrosspoint> crosspoints_;
+  std::vector<::loom::fabric::FabricTemporalSwitchRouteSignatureView> views_;
+
+  friend llvm::Expected<std::vector<SpatialTemporalSwitchSegmentDemand>>
+  deriveSpatialTemporalSwitchSegmentDemands(
+      const FrozenSpatialPnrProblem &problem, PnrIndex logicalNet,
+      const RouteTreeState &route,
+      const SpatialTagContinuityProjection &continuity,
+      SpatialTemporalSwitchDemandScratch &scratch);
+};
+
+llvm::Expected<std::vector<SpatialTemporalSwitchSegmentDemand>>
+deriveSpatialTemporalSwitchSegmentDemands(
+    const FrozenSpatialPnrProblem &problem, PnrIndex logicalNet,
+    const RouteTreeState &route,
+    const SpatialTagContinuityProjection &continuity,
+    SpatialTemporalSwitchDemandScratch &scratch);
 
 struct SpatialTagVertexRef final {
   PnrIndex logicalNet = 0;
@@ -169,6 +219,7 @@ private:
     std::vector<SpatialTemporalSwitchSegmentDemand> demands;
   };
 
+  SpatialTemporalSwitchDemandScratch demandScratch_;
   std::vector<PnrIndex> previousNetSegmentOffsets_;
   std::vector<SpatialTagVertexRef> previousVertexRefs_;
   std::vector<PnrIndex> previousConflictOffsets_;

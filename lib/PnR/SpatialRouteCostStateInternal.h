@@ -47,6 +47,7 @@ struct SpatialRouteCostSwitchRowState final {
   std::vector<::loom::fabric::FabricTemporalSwitchCandidateRouteDemandView>
       updateDemandViews;
   std::vector<SpatialTagDomainUse> updateUses;
+  SpatialTemporalSwitchDemandScratch demandScratch;
 
   std::size_t retainedStorageBytes() const;
 };

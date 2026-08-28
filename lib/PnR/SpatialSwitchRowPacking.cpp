@@ -368,14 +368,7 @@ loom::pnr::detail::deriveSpatialTemporalSwitchSegmentDemands(
 
 namespace {
 
-struct FlatCrosspoint final {
-  PnrIndex domain = 0;
-  PnrIndex segment = 0;
-  ::loom::fabric::FabricOrdinal input = 0;
-  ::loom::fabric::FabricOrdinal output = 0;
-  PnrIndex traversal = 0;
-  ::loom::fabric::FabricSwitchOccurrenceRef occurrence;
-};
+using FlatCrosspoint = ::loom::pnr::detail::SpatialTemporalSwitchCrosspoint;
 
 /// Route-node walk shared with appendRouteDemands, collecting into one flat
 /// vector instead of nested maps; one sort then linear grouping replaces the
@@ -443,12 +436,29 @@ collectRouteCrosspoints(const FrozenSpatialPnrProblem &problem,
 
 } // namespace
 
+void loom::pnr::detail::SpatialTemporalSwitchDemandScratch::recycle(
+    std::vector<SpatialTemporalSwitchSegmentDemand> &&demands) {
+  for (SpatialTemporalSwitchSegmentDemand &demand : demands) {
+    for (SpatialTemporalSwitchInputSignature &signature : demand.signatures) {
+      signature.outputs.clear();
+      signature.traversals.clear();
+      signaturePool_.push_back(std::move(signature));
+    }
+    demand.signatures.clear();
+    demandPool_.push_back(std::move(demand));
+  }
+  demands.clear();
+  vectorPool_.push_back(std::move(demands));
+}
+
 llvm::Expected<std::vector<SpatialTemporalSwitchSegmentDemand>>
 loom::pnr::detail::deriveSpatialTemporalSwitchSegmentDemands(
     const FrozenSpatialPnrProblem &problem, PnrIndex logicalNet,
     const RouteTreeState &route,
-    const SpatialTagContinuityProjection &continuity) {
-  std::vector<FlatCrosspoint> crosspoints;
+    const SpatialTagContinuityProjection &continuity,
+    SpatialTemporalSwitchDemandScratch &scratch) {
+  std::vector<FlatCrosspoint> &crosspoints = scratch.crosspoints_;
+  crosspoints.clear();
   if (llvm::Error error =
           collectRouteCrosspoints(problem, route, continuity, crosspoints))
     return std::move(error);
@@ -460,17 +470,46 @@ loom::pnr::detail::deriveSpatialTemporalSwitchSegmentDemands(
                                rhs.traversal);
              });
   std::vector<SpatialTemporalSwitchSegmentDemand> result;
-  std::vector<::loom::fabric::FabricTemporalSwitchRouteSignatureView> views;
+  if (!scratch.vectorPool_.empty()) {
+    result = std::move(scratch.vectorPool_.back());
+    scratch.vectorPool_.pop_back();
+    result.clear();
+  }
+  const auto acquireDemand = [&]() {
+    if (scratch.demandPool_.empty())
+      return SpatialTemporalSwitchSegmentDemand{};
+    SpatialTemporalSwitchSegmentDemand demand =
+        std::move(scratch.demandPool_.back());
+    scratch.demandPool_.pop_back();
+    demand.signatures.clear();
+    return demand;
+  };
+  const auto acquireSignature = [&]() {
+    if (scratch.signaturePool_.empty())
+      return SpatialTemporalSwitchInputSignature{};
+    SpatialTemporalSwitchInputSignature signature =
+        std::move(scratch.signaturePool_.back());
+    scratch.signaturePool_.pop_back();
+    signature.outputs.clear();
+    signature.traversals.clear();
+    return signature;
+  };
+  std::vector<::loom::fabric::FabricTemporalSwitchRouteSignatureView> &views =
+      scratch.views_;
   for (std::size_t begin = 0; begin < crosspoints.size();) {
     const PnrIndex domain = crosspoints[begin].domain;
     const PnrIndex segment = crosspoints[begin].segment;
-    SpatialTemporalSwitchSegmentDemand demand{domain, logicalNet, segment, {}};
+    SpatialTemporalSwitchSegmentDemand demand = acquireDemand();
+    demand.domain = domain;
+    demand.logicalNet = logicalNet;
+    demand.segment = segment;
     std::size_t end = begin;
     while (end < crosspoints.size() && crosspoints[end].domain == domain &&
            crosspoints[end].segment == segment) {
       const ::loom::fabric::FabricOrdinal input = crosspoints[end].input;
-      SpatialTemporalSwitchInputSignature signature{
-          crosspoints[end].occurrence, input, {}, {}};
+      SpatialTemporalSwitchInputSignature signature = acquireSignature();
+      signature.occurrence = crosspoints[end].occurrence;
+      signature.input = input;
       for (; end < crosspoints.size() && crosspoints[end].domain == domain &&
              crosspoints[end].segment == segment &&
              crosspoints[end].input == input;
@@ -498,6 +537,16 @@ loom::pnr::detail::deriveSpatialTemporalSwitchSegmentDemands(
     begin = end;
   }
   return result;
+}
+
+llvm::Expected<std::vector<SpatialTemporalSwitchSegmentDemand>>
+loom::pnr::detail::deriveSpatialTemporalSwitchSegmentDemands(
+    const FrozenSpatialPnrProblem &problem, PnrIndex logicalNet,
+    const RouteTreeState &route,
+    const SpatialTagContinuityProjection &continuity) {
+  SpatialTemporalSwitchDemandScratch scratch;
+  return deriveSpatialTemporalSwitchSegmentDemands(problem, logicalNet, route,
+                                                   continuity, scratch);
 }
 
 struct loom::pnr::detail::SpatialTagInterferenceBuilder final {
@@ -766,7 +815,8 @@ llvm::Error loom::pnr::detail::stageSpatialTagInterferenceUpdate(
         projection.netDomains_[logicalNet].end());
     std::swap(delta.demands, projection.netSwitchDemands_[logicalNet]);
     auto demands = deriveSpatialTemporalSwitchSegmentDemands(
-        problem, logicalNet, *routes[logicalNet], *continuity[logicalNet]);
+        problem, logicalNet, *routes[logicalNet], *continuity[logicalNet],
+        scratch.demandScratch_);
     if (!demands)
       return fail(demands.takeError());
     projection.netSwitchDemands_[logicalNet] = std::move(*demands);
@@ -825,6 +875,8 @@ void loom::pnr::detail::commitSpatialTagInterferenceUpdate(
   scratch.previousGlobalConflicts_.clear();
   scratch.affectedDomains_.clear();
   scratch.domainDeltas_.clear();
+  for (auto &delta : scratch.netDemandDeltas_)
+    scratch.demandScratch_.recycle(std::move(delta.demands));
   scratch.netDemandDeltas_.clear();
 }
 
