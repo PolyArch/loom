@@ -46,7 +46,8 @@ std::size_t SpatialRouteCostSwitchRowState::retainedStorageBytes() const {
 }
 
 llvm::Error SpatialRouteCostState::synchronizeTagProjection(
-    const SpatialTagAssignmentDelta &delta) {
+    const SpatialTagAssignmentDelta &delta,
+    llvm::ArrayRef<PnrIndex> routeChangedLogicalNets) {
   if (selectedLogicalNet_)
     return routeCostStateError(
         "cannot synchronize tags while a logical net is selected");
@@ -135,16 +136,20 @@ llvm::Error SpatialRouteCostState::synchronizeTagProjection(
   inverseTagDelta_ = std::move(inverse);
 
   if (switchRows_ && switchRows_->enabled) {
+    llvm::SmallVector<PnrIndex, 8> rebuildNets;
+    for (PnrIndex logicalNet : delta.logicalNets)
+      if (llvm::is_contained(routeChangedLogicalNets, logicalNet))
+        rebuildNets.push_back(logicalNet);
     switchRows_->demandJournal.clear();
-    switchRows_->demandJournal.reserve(delta.logicalNets.size());
-    for (PnrIndex logicalNet : delta.logicalNets) {
+    switchRows_->demandJournal.reserve(rebuildNets.size());
+    for (PnrIndex logicalNet : rebuildNets) {
       switchRows_->demandJournal.push_back(
           {logicalNet, {}, switchRows_->netDemandsSettled[logicalNet]});
       std::swap(switchRows_->demandJournal.back().demands,
                 switchRows_->netDemands[logicalNet]);
       switchRows_->netDemandsSettled[logicalNet] = 0;
     }
-    if (llvm::Error error = synchronizeCandidateSwitchRows(delta.logicalNets)) {
+    if (llvm::Error error = synchronizeCandidateSwitchRows(rebuildNets)) {
       llvm::Error rollback = rollbackTagProjectionDelta();
       return rollback ? llvm::joinErrors(std::move(error), std::move(rollback))
                       : std::move(error);

@@ -1724,7 +1724,8 @@ llvm::Error SpatialActionExecutorScratch::restoreCandidateTagDelta() {
       routeTagLogicalNets_, routeTagDomains_);
   if (!delta)
     return delta.takeError();
-  if (llvm::Error error = routeCosts_->synchronizeTagProjection(*delta))
+  if (llvm::Error error =
+          routeCosts_->synchronizeTagProjection(*delta, routeCostLogicalNets_))
     return error;
   return routeCosts_->commitTagProjectionDelta();
 }
@@ -1857,7 +1858,8 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
     auto tagDelta = move.summarizeCurrentTagAssignmentDelta();
     if (!tagDelta)
       return restoreAfterFailure(move, tagDelta.takeError(), false);
-    if (llvm::Error error = routeCosts_->synchronizeTagProjection(*tagDelta))
+    if (llvm::Error error = routeCosts_->synchronizeTagProjection(
+            *tagDelta, routeCostLogicalNets_))
       return restoreAfterFailure(move, std::move(error), false);
     if (llvm::Error error = routeCosts_->commitTagProjectionDelta())
       return restoreAfterFailure(move, std::move(error), false);
@@ -1867,7 +1869,8 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
       return restoreAfterFailure(move, tagDelta.takeError(), negotiatedRouting);
     routeTagLogicalNets_ = tagDelta->logicalNets;
     routeTagDomains_ = tagDelta->domains;
-    if (llvm::Error error = routeCosts_->synchronizeTagProjection(*tagDelta))
+    if (llvm::Error error = routeCosts_->synchronizeTagProjection(
+            *tagDelta, routeCostLogicalNets_))
       return restoreAfterFailure(move, std::move(error), negotiatedRouting);
   }
 

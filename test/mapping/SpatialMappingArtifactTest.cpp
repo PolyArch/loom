@@ -1144,7 +1144,9 @@ void completeCandidateRoundTrip(
     if (!closed)
       fail("Physical Tag rollback fixture closed a handshake cycle");
     const auto tagDelta = take(move.summarizeCurrentTagAssignmentDelta());
-    requireSuccess(tagCosts.synchronizeTagProjection(tagDelta));
+    const loom::pnr::PnrIndex rippedNet = 0;
+    requireSuccess(tagCosts.synchronizeTagProjection(
+        tagDelta, llvm::ArrayRef<loom::pnr::PnrIndex>(&rippedNet, 1)));
     if (!tagCosts.hasActiveTagProjectionDelta())
       fail("Physical Tag route-cost delta did not retain its inverse");
     if (!candidate->tagSegments(0).empty() || !candidate->tagValues(0).empty())

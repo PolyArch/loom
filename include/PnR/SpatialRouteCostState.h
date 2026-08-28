@@ -60,7 +60,14 @@ public:
   llvm::Error
   synchronizeTagProjection(const SpatialTagAssignmentSummary &summary,
                            llvm::ArrayRef<PnrIndex> changedLogicalNets = {});
-  llvm::Error synchronizeTagProjection(const SpatialTagAssignmentDelta &delta);
+  /// `routeChangedLogicalNets` names the nets whose RouteTrees changed in
+  /// the enclosing move. Switch demands depend only on route structure, so
+  /// only those nets rebuild their demand inventory; nets recolored without
+  /// a route change keep their demands, which the delta validation still
+  /// cross-checks against the new segment universe.
+  llvm::Error
+  synchronizeTagProjection(const SpatialTagAssignmentDelta &delta,
+                           llvm::ArrayRef<PnrIndex> routeChangedLogicalNets);
   llvm::Error commitTagProjectionDelta();
   llvm::Error rollbackTagProjectionDelta();
   bool hasActiveTagProjectionDelta() const {
