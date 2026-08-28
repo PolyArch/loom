@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_PNR_SPATIALTAGASSIGNMENTSTATE_H
 #define LOOM_LIB_PNR_SPATIALTAGASSIGNMENTSTATE_H
 
+#include "Fabric/IR/PhysicalTag.h"
 #include "PnR/SpatialTagAssignment.h"
 
 #include "SpatialSwitchRowPacking.h"
@@ -8,17 +9,63 @@
 
 #include "llvm/ADT/DenseMap.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace loom::pnr::detail {
 
 class SpatialTagConstraintModel;
 
-using SpatialTagDomainOccupancy =
-    llvm::DenseMap<llvm::APInt, std::vector<SpatialTagVertexRef>>;
+/// Sorted-by-value occupancy of one match domain. Domains hold few distinct
+/// values, so ordered flat storage beats hashing and keeps iteration
+/// canonical. The entry shape mirrors the map interface its consumers use.
+class SpatialTagDomainOccupancy final {
+public:
+  using Entry = std::pair<llvm::APInt, std::vector<SpatialTagVertexRef>>;
+  using iterator = std::vector<Entry>::iterator;
+  using const_iterator = std::vector<Entry>::const_iterator;
+
+  iterator begin() { return entries_.begin(); }
+  iterator end() { return entries_.end(); }
+  const_iterator begin() const { return entries_.begin(); }
+  const_iterator end() const { return entries_.end(); }
+  std::size_t size() const { return entries_.size(); }
+  bool empty() const { return entries_.empty(); }
+
+  iterator find(const llvm::APInt &value) {
+    const auto found = lowerBound(value);
+    if (found != entries_.end() &&
+        ::fabric::comparePhysicalTagValues(found->first, value) == 0)
+      return found;
+    return entries_.end();
+  }
+  const_iterator find(const llvm::APInt &value) const {
+    return const_cast<SpatialTagDomainOccupancy *>(this)->find(value);
+  }
+  std::vector<SpatialTagVertexRef> &operator[](const llvm::APInt &value) {
+    auto found = lowerBound(value);
+    if (found == entries_.end() ||
+        ::fabric::comparePhysicalTagValues(found->first, value) != 0)
+      found = entries_.insert(found, {value, {}});
+    return found->second;
+  }
+  void erase(iterator entry) { entries_.erase(entry); }
+
+private:
+  iterator lowerBound(const llvm::APInt &value) {
+    return std::lower_bound(entries_.begin(), entries_.end(), value,
+                            [](const Entry &entry, const llvm::APInt &target) {
+                              return ::fabric::comparePhysicalTagValues(
+                                         entry.first, target) < 0;
+                            });
+  }
+
+  std::vector<Entry> entries_;
+};
 
 struct SpatialTagNetState final {
   SpatialTagContinuityProjection continuity;
