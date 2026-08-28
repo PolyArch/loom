@@ -221,7 +221,6 @@ llvm::Error loom::pnr::detail::rebuildSpatialTagContinuityUnchecked(
   const auto arcs = routing.routingArcs();
   const auto arcSources = routing.arcSources();
   const auto traversalPoints = routing.tagContinuity().traversalPointOrdinals();
-  const auto points = routing.tagContinuity().points();
   const auto sourceEndpoint = route.sourceEndpoint();
   if (!sourceEndpoint || *sourceEndpoint >= endpoints.size())
     return invalid("a routed tree has no source endpoint");
@@ -429,13 +428,30 @@ loom::pnr::detail::extendSpatialTagContinuityForBranchUnchecked(
       if (matchDomains[domain].tagWidthBits !=
           result.segments_[childSegment].tagWidthBits)
         return invalid("a tag segment intersects a domain of another width");
-      scratch.incidence_.emplace_back(childSegment, domain);
-      incidenceChanged = true;
+      // The retained incidence is (domain, segment) ordered after every
+      // index derivation, so a pair the route already crossed, by far the
+      // common case, is one binary search away from being a no-op.
+      const std::pair<PnrIndex, PnrIndex> probe{childSegment, domain};
+      const bool known =
+          !incidenceChanged &&
+          std::binary_search(scratch.incidence_.begin(),
+                             scratch.incidence_.end(), probe,
+                             [](const auto &lhs, const auto &rhs) {
+                               return std::tie(lhs.second, lhs.first) <
+                                      std::tie(rhs.second, rhs.first);
+                             });
+      if (!known) {
+        scratch.incidence_.emplace_back(childSegment, domain);
+        incidenceChanged = true;
+      }
     }
     parentSlot = *childSlot;
   }
   if (!incidenceChanged)
     return true;
+  // Appending broke the (domain, segment) order, so restore it through the
+  // shared index derivation; it also deduplicates pairs the search above
+  // stopped checking for once the first new pair appeared.
   if (llvm::Error error = rebuildTagIncidenceIndexes(
           result.segments_.size(), result.segmentDomainOffsets_,
           result.segmentDomains_, result.domainSegmentOffsets_,
