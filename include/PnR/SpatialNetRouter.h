@@ -121,6 +121,13 @@ private:
   llvm::Error collectCurrentClaims(const RouteTreeState &tree);
   llvm::Error updateCurrentTagUses(const RouteTreeState &tree,
                                    SpatialRouteCostState &costs);
+  /// Same contract as updateCurrentTagUses for a tree that just attached one
+  /// branch, extending the retained continuity projection instead of
+  /// rebuilding it whenever the branch starts no new segment.
+  llvm::Error updateTagUsesForBranch(const RouteTreeState &tree,
+                                     SpatialRouteCostState &costs,
+                                     PnrIndex attachment,
+                                     llvm::ArrayRef<PnrIndex> branchArcs);
   llvm::Expected<RouteCost>
   routeSelectedSinks(SpatialMoveTransaction &move,
                      const SpatialCandidateState &candidate,
@@ -151,6 +158,9 @@ private:
   std::vector<PnrIndex> subtreeWorklist_;
   SpatialTagContinuityProjection tagContinuity_;
   SpatialTagContinuityScratch tagContinuityScratch_;
+  /// Cold oracle for LOOM_PNR_VERIFY_TAG_CONTINUITY=1; empty otherwise.
+  SpatialTagContinuityProjection tagContinuityShadow_;
+  SpatialTagContinuityScratch tagContinuityShadowScratch_;
   std::uint64_t endpointMarkEpoch_ = 0;
   std::unique_ptr<detail::SpatialNetRouterPrivate> private_;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;

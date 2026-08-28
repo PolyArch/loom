@@ -50,7 +50,136 @@ std::optional<std::uint32_t> tagWidth(const ::fabric::DataPathType &path) {
   return std::nullopt;
 }
 
+/// Shared classification of how one physical arc carries tag continuity from
+/// its source endpoint to its target endpoint. All structural validation of
+/// the arc against the projection lives here so the whole-tree rebuild and
+/// the single-branch extension cannot diverge.
+struct TagArcTransition final {
+  enum class Kind : std::uint8_t { Inherit, StartSegment, RemoveTag };
+  Kind kind = Kind::Inherit;
+  PnrIndex pointOrdinal = getInvalidPnrIndex();
+  std::uint32_t widthBits = 0;
+};
+
+llvm::Expected<TagArcTransition>
+classifyTagArcTransition(const FrozenSpatialRoutingGraph &routing,
+                         PnrIndex parentEndpoint, PnrIndex childEndpoint,
+                         PnrIndex traversal, PnrIndex parentSegment,
+                         llvm::ArrayRef<SpatialTagContinuitySegment> segments) {
+  const auto endpoints = routing.routingEndpoints();
+  const auto traversalPoints = routing.tagContinuity().traversalPointOrdinals();
+  const auto points = routing.tagContinuity().points();
+  if (parentEndpoint >= endpoints.size() || childEndpoint >= endpoints.size())
+    return invalid("a route node names an absent physical endpoint");
+  if (traversal >= traversalPoints.size())
+    return invalid("a route child disagrees with its physical arc");
+  const auto sourceWidth = tagWidth(endpoints[parentEndpoint].dataPath);
+  const auto destinationWidth = tagWidth(endpoints[childEndpoint].dataPath);
+  if (sourceWidth.has_value() != (parentSegment != getInvalidPnrIndex()))
+    return invalid("a tagged route source has no continuity segment");
+  if (sourceWidth && (parentSegment >= segments.size() ||
+                      segments[parentSegment].tagWidthBits != *sourceWidth))
+    return invalid("a route source disagrees with its segment width");
+
+  const PnrIndex pointOrdinal = traversalPoints[traversal];
+  TagArcTransition transition;
+  if (pointOrdinal == getInvalidPnrIndex()) {
+    if (sourceWidth.has_value() != destinationWidth.has_value() ||
+        (sourceWidth && *sourceWidth != *destinationWidth))
+      return invalid("a non-boundary traversal changes Physical Tag shape");
+    transition.kind = TagArcTransition::Kind::Inherit;
+    return transition;
+  }
+  if (pointOrdinal >= points.size())
+    return invalid("a route traversal names an absent boundary point");
+  const FrozenSpatialTagContinuityPoint &point = points[pointOrdinal];
+  switch (point.kind) {
+  case FabricBoundaryTagContinuityKind::TokenWriter:
+  case FabricBoundaryTagContinuityKind::ConfigurableWriter:
+    if (sourceWidth || !destinationWidth ||
+        parentSegment != getInvalidPnrIndex() || point.inputTagWidthBits != 0 ||
+        point.outputTagWidthBits != *destinationWidth)
+      return invalid("a tag writer has inconsistent route endpoints");
+    transition.kind = TagArcTransition::Kind::StartSegment;
+    transition.pointOrdinal = pointOrdinal;
+    transition.widthBits = *destinationWidth;
+    return transition;
+  case FabricBoundaryTagContinuityKind::Rewriter:
+    if (!sourceWidth || !destinationWidth ||
+        parentSegment == getInvalidPnrIndex() ||
+        point.inputTagWidthBits != *sourceWidth ||
+        point.outputTagWidthBits != *destinationWidth)
+      return invalid("a tag rewriter has inconsistent route endpoints");
+    transition.kind = TagArcTransition::Kind::StartSegment;
+    transition.pointOrdinal = pointOrdinal;
+    transition.widthBits = *destinationWidth;
+    return transition;
+  case FabricBoundaryTagContinuityKind::Remover:
+    if (!sourceWidth || destinationWidth ||
+        parentSegment == getInvalidPnrIndex() ||
+        point.inputTagWidthBits != *sourceWidth ||
+        point.outputTagWidthBits != 0)
+      return invalid("a tag remover has inconsistent route endpoints");
+    transition.kind = TagArcTransition::Kind::RemoveTag;
+    return transition;
+  }
+  return invalid("a route traversal names an unknown boundary point kind");
+}
+
 } // namespace
+
+/// Sorts and deduplicates the (segment, domain) incidence and derives both
+/// CSR directions from it, leaving the incidence in (domain, segment) order.
+static llvm::Error rebuildTagIncidenceIndexes(
+    std::size_t segmentCount, std::vector<PnrIndex> &segmentDomainOffsets,
+    std::vector<PnrIndex> &segmentDomains,
+    std::vector<PnrIndex> &domainSegmentOffsets,
+    std::vector<PnrIndex> &domainSegments,
+    std::vector<std::pair<PnrIndex, PnrIndex>> &incidence,
+    std::size_t domainCount) {
+  llvm::sort(incidence);
+  incidence.erase(std::unique(incidence.begin(), incidence.end()),
+                  incidence.end());
+  if (llvm::Error error =
+          preflightPnrIndexCapacity(incidenceCountContext, incidence.size()))
+    return error;
+
+  segmentDomainOffsets.clear();
+  segmentDomains.clear();
+  segmentDomainOffsets.reserve(segmentCount + 1);
+  segmentDomains.reserve(incidence.size());
+  auto incidenceIt = incidence.begin();
+  for (PnrIndex segment = 0; segment < segmentCount; ++segment) {
+    segmentDomainOffsets.push_back(segmentDomains.size());
+    while (incidenceIt != incidence.end() && incidenceIt->first == segment) {
+      segmentDomains.push_back(incidenceIt->second);
+      ++incidenceIt;
+    }
+  }
+  segmentDomainOffsets.push_back(segmentDomains.size());
+  if (incidenceIt != incidence.end())
+    return invalid("segment/domain incidence is not segment ordered");
+
+  llvm::sort(incidence, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.second, lhs.first) < std::tie(rhs.second, rhs.first);
+  });
+  domainSegmentOffsets.clear();
+  domainSegments.clear();
+  domainSegmentOffsets.reserve(domainCount + 1);
+  domainSegments.reserve(incidence.size());
+  incidenceIt = incidence.begin();
+  for (PnrIndex domain = 0; domain < domainCount; ++domain) {
+    domainSegmentOffsets.push_back(domainSegments.size());
+    while (incidenceIt != incidence.end() && incidenceIt->second == domain) {
+      domainSegments.push_back(incidenceIt->first);
+      ++incidenceIt;
+    }
+  }
+  domainSegmentOffsets.push_back(domainSegments.size());
+  if (incidenceIt != incidence.end())
+    return invalid("segment/domain incidence is not domain ordered");
+  return llvm::Error::success();
+}
 
 llvm::Error loom::pnr::detail::rebuildSpatialTagContinuityUnchecked(
     const RouteTreeState &route, SpatialTagContinuityProjection &result,
@@ -136,66 +265,28 @@ llvm::Error loom::pnr::detail::rebuildSpatialTagContinuityUnchecked(
           child.endpoint >= endpoints.size())
         return invalid("a route node names an absent physical endpoint");
 
-      const auto sourceWidth = tagWidth(endpoints[parent.endpoint].dataPath);
-      const auto destinationWidth =
-          tagWidth(endpoints[child.endpoint].dataPath);
       const PnrIndex parentSegment = result.nodeSegments_[parentSlot];
-      if (sourceWidth.has_value() != (parentSegment != getInvalidPnrIndex()))
-        return invalid("a tagged route source has no continuity segment");
-      if (sourceWidth &&
-          (parentSegment >= result.segments_.size() ||
-           result.segments_[parentSegment].tagWidthBits != *sourceWidth))
-        return invalid("a route source disagrees with its segment width");
-
-      const PnrIndex pointOrdinal = traversalPoints[arc.traversal];
+      auto transition = classifyTagArcTransition(
+          routing, parent.endpoint, child.endpoint, arc.traversal,
+          parentSegment, result.segments_);
+      if (!transition)
+        return transition.takeError();
       PnrIndex childSegment = getInvalidPnrIndex();
-      if (pointOrdinal == getInvalidPnrIndex()) {
-        if (sourceWidth.has_value() != destinationWidth.has_value() ||
-            (sourceWidth && *sourceWidth != *destinationWidth))
-          return invalid("a non-boundary traversal changes Physical Tag shape");
+      switch (transition->kind) {
+      case TagArcTransition::Kind::Inherit:
         childSegment = parentSegment;
-      } else {
-        if (pointOrdinal >= points.size())
-          return invalid("a route traversal names an absent boundary point");
-        const FrozenSpatialTagContinuityPoint &point = points[pointOrdinal];
-        switch (point.kind) {
-        case FabricBoundaryTagContinuityKind::TokenWriter:
-        case FabricBoundaryTagContinuityKind::ConfigurableWriter: {
-          if (sourceWidth || !destinationWidth ||
-              parentSegment != getInvalidPnrIndex() ||
-              point.inputTagWidthBits != 0 ||
-              point.outputTagWidthBits != *destinationWidth)
-            return invalid("a tag writer has inconsistent route endpoints");
-          auto segment =
-              appendSegment(SpatialTagContinuityOriginKind::BoundaryPoint,
-                            pointOrdinal, *destinationWidth);
-          if (!segment)
-            return segment.takeError();
-          childSegment = *segment;
-          break;
-        }
-        case FabricBoundaryTagContinuityKind::Rewriter: {
-          if (!sourceWidth || !destinationWidth ||
-              parentSegment == getInvalidPnrIndex() ||
-              point.inputTagWidthBits != *sourceWidth ||
-              point.outputTagWidthBits != *destinationWidth)
-            return invalid("a tag rewriter has inconsistent route endpoints");
-          auto segment =
-              appendSegment(SpatialTagContinuityOriginKind::BoundaryPoint,
-                            pointOrdinal, *destinationWidth);
-          if (!segment)
-            return segment.takeError();
-          childSegment = *segment;
-          break;
-        }
-        case FabricBoundaryTagContinuityKind::Remover:
-          if (!sourceWidth || destinationWidth ||
-              parentSegment == getInvalidPnrIndex() ||
-              point.inputTagWidthBits != *sourceWidth ||
-              point.outputTagWidthBits != 0)
-            return invalid("a tag remover has inconsistent route endpoints");
-          break;
-        }
+        break;
+      case TagArcTransition::Kind::StartSegment: {
+        auto segment =
+            appendSegment(SpatialTagContinuityOriginKind::BoundaryPoint,
+                          transition->pointOrdinal, transition->widthBits);
+        if (!segment)
+          return segment.takeError();
+        childSegment = *segment;
+        break;
+      }
+      case TagArcTransition::Kind::RemoveTag:
+        break;
       }
       result.nodeSegments_[childSlot] = childSegment;
       worklist.push_back(childSlot);
@@ -268,44 +359,89 @@ llvm::Error loom::pnr::detail::rebuildSpatialTagContinuityUnchecked(
       return invalid("a tag segment intersects a domain of another width");
     incidence.emplace_back(segment, domain);
   }
-  llvm::sort(incidence);
-  incidence.erase(std::unique(incidence.begin(), incidence.end()),
-                  incidence.end());
+  return rebuildTagIncidenceIndexes(
+      result.segments_.size(), result.segmentDomainOffsets_,
+      result.segmentDomains_, result.domainSegmentOffsets_,
+      result.domainSegments_, incidence, matchDomains.size());
+}
+
+llvm::Expected<bool>
+loom::pnr::detail::extendSpatialTagContinuityForBranchUnchecked(
+    const RouteTreeState &route, PnrIndex attachmentEndpoint,
+    llvm::ArrayRef<PnrIndex> branchArcs, SpatialTagContinuityProjection &result,
+    SpatialTagContinuityScratch &scratch) {
+  if (branchArcs.empty())
+    return true;
+  const auto nodes = route.nodeStorage();
   if (llvm::Error error =
-          preflightPnrIndexCapacity(incidenceCountContext, incidence.size()))
+          preflightPnrIndexCapacity(nodeCountContext, nodes.size()))
     return error;
+  // A projection captured before the route's first branch never assigned the
+  // source node a segment; only a whole-tree rebuild can seed it.
+  if (result.nodeSegments_.empty())
+    return false;
 
-  result.segmentDomainOffsets_.reserve(result.segments_.size() + 1);
-  result.segmentDomains_.reserve(incidence.size());
-  auto incidenceIt = incidence.begin();
-  for (PnrIndex segment = 0; segment < result.segments_.size(); ++segment) {
-    result.segmentDomainOffsets_.push_back(result.segmentDomains_.size());
-    while (incidenceIt != incidence.end() && incidenceIt->first == segment) {
-      result.segmentDomains_.push_back(incidenceIt->second);
-      ++incidenceIt;
-    }
-  }
-  result.segmentDomainOffsets_.push_back(result.segmentDomains_.size());
-  if (incidenceIt != incidence.end())
-    return invalid("segment/domain incidence is not segment ordered");
+  const FrozenSpatialRoutingGraph &routing = route.routingGraph();
+  const auto arcs = routing.routingArcs();
+  const auto arcSources = routing.arcSources();
+  const auto matchDomains = routing.tagContinuity().matchDomains();
+  const auto endpointDomains =
+      routing.tagContinuity().endpointMatchDomainOrdinals();
+  if (endpointDomains.size() != routing.routingEndpoints().size())
+    return invalid("the frozen tag match-domain index is not endpoint dense");
+  if (result.nodeSegments_.size() < nodes.size())
+    result.nodeSegments_.resize(nodes.size(), getInvalidPnrIndex());
 
-  llvm::sort(incidence, [](const auto &lhs, const auto &rhs) {
-    return std::tie(lhs.second, lhs.first) < std::tie(rhs.second, rhs.first);
-  });
-  result.domainSegmentOffsets_.reserve(matchDomains.size() + 1);
-  result.domainSegments_.reserve(incidence.size());
-  incidenceIt = incidence.begin();
-  for (PnrIndex domain = 0; domain < matchDomains.size(); ++domain) {
-    result.domainSegmentOffsets_.push_back(result.domainSegments_.size());
-    while (incidenceIt != incidence.end() && incidenceIt->second == domain) {
-      result.domainSegments_.push_back(incidenceIt->first);
-      ++incidenceIt;
+  const auto attachmentSlot = route.findNode(attachmentEndpoint);
+  if (!attachmentSlot || *attachmentSlot >= nodes.size())
+    return invalid("a branch attachment is absent from its RouteTree");
+  PnrIndex parentSlot = *attachmentSlot;
+  bool incidenceChanged = false;
+  for (PnrIndex arcOrdinal : branchArcs) {
+    if (arcOrdinal >= arcs.size() || arcOrdinal >= arcSources.size())
+      return invalid("a route child has no physical arc");
+    const EndpointRoutingArc &arc = arcs[arcOrdinal];
+    if (arcSources[arcOrdinal] != nodes[parentSlot].endpoint)
+      return invalid("a route child disagrees with its physical arc");
+    const auto childSlot = route.findNode(arc.target);
+    if (!childSlot || *childSlot >= nodes.size() ||
+        !nodes[*childSlot].isActive())
+      return invalid("a branch arc target is absent from its RouteTree");
+    const PnrIndex parentSegment = result.nodeSegments_[parentSlot];
+    auto transition = classifyTagArcTransition(
+        routing, nodes[parentSlot].endpoint, arc.target, arc.traversal,
+        parentSegment, result.segments_);
+    if (!transition)
+      return transition.takeError();
+    if (transition->kind == TagArcTransition::Kind::StartSegment)
+      return false;
+    const PnrIndex childSegment =
+        transition->kind == TagArcTransition::Kind::Inherit
+            ? parentSegment
+            : getInvalidPnrIndex();
+    result.nodeSegments_[*childSlot] = childSegment;
+
+    const PnrIndex domain = endpointDomains[arc.target];
+    if (domain != getInvalidPnrIndex()) {
+      if (domain >= matchDomains.size() ||
+          childSegment >= result.segments_.size())
+        return invalid("tag match-domain incidence names an absent record");
+      if (matchDomains[domain].tagWidthBits !=
+          result.segments_[childSegment].tagWidthBits)
+        return invalid("a tag segment intersects a domain of another width");
+      scratch.incidence_.emplace_back(childSegment, domain);
+      incidenceChanged = true;
     }
+    parentSlot = *childSlot;
   }
-  result.domainSegmentOffsets_.push_back(result.domainSegments_.size());
-  if (incidenceIt != incidence.end())
-    return invalid("segment/domain incidence is not domain ordered");
-  return llvm::Error::success();
+  if (!incidenceChanged)
+    return true;
+  if (llvm::Error error = rebuildTagIncidenceIndexes(
+          result.segments_.size(), result.segmentDomainOffsets_,
+          result.segmentDomains_, result.domainSegmentOffsets_,
+          result.domainSegments_, scratch.incidence_, matchDomains.size()))
+    return std::move(error);
+  return true;
 }
 
 std::size_t SpatialTagContinuityScratch::retainedStorageBytes() const {

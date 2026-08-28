@@ -21,6 +21,17 @@ llvm::Error
 rebuildSpatialTagContinuityUnchecked(const RouteTreeState &route,
                                      SpatialTagContinuityProjection &result,
                                      SpatialTagContinuityScratch &scratch);
+/// Extends a projection that `rebuildSpatialTagContinuityUnchecked` (or a
+/// previous successful extension) produced for this route immediately before
+/// exactly one branch of `branchArcs` was attached at `attachmentEndpoint`,
+/// with no other route change in between. Returns false without a usable
+/// result when the branch starts a new continuity segment or the projection
+/// predates the route's first branch; the caller must then rebuild. On
+/// success the projection and scratch are byte-identical to a full rebuild.
+llvm::Expected<bool> extendSpatialTagContinuityForBranchUnchecked(
+    const RouteTreeState &route, PnrIndex attachmentEndpoint,
+    llvm::ArrayRef<PnrIndex> branchArcs, SpatialTagContinuityProjection &result,
+    SpatialTagContinuityScratch &scratch);
 } // namespace detail
 
 enum class SpatialTagContinuityOriginKind : std::uint8_t {
@@ -70,6 +81,11 @@ private:
   friend llvm::Error detail::rebuildSpatialTagContinuityUnchecked(
       const RouteTreeState &route, SpatialTagContinuityProjection &result,
       SpatialTagContinuityScratch &scratch);
+  friend llvm::Expected<bool> detail::extendSpatialTagContinuityForBranchUnchecked(
+      const RouteTreeState &route, PnrIndex attachmentEndpoint,
+      llvm::ArrayRef<PnrIndex> branchArcs,
+      SpatialTagContinuityProjection &result,
+      SpatialTagContinuityScratch &scratch);
 };
 
 /// Cold, removable projection of one selected route. The node array is dense
@@ -111,6 +127,11 @@ private:
 
   friend llvm::Error detail::rebuildSpatialTagContinuityUnchecked(
       const RouteTreeState &route, SpatialTagContinuityProjection &result,
+      SpatialTagContinuityScratch &scratch);
+  friend llvm::Expected<bool> detail::extendSpatialTagContinuityForBranchUnchecked(
+      const RouteTreeState &route, PnrIndex attachmentEndpoint,
+      llvm::ArrayRef<PnrIndex> branchArcs,
+      SpatialTagContinuityProjection &result,
       SpatialTagContinuityScratch &scratch);
 };
 

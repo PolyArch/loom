@@ -8,6 +8,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
 #include <system_error>
 #include <tuple>
@@ -359,6 +360,45 @@ SpatialNetRouterScratch::updateCurrentTagUses(const RouteTreeState &tree,
   if (llvm::Error error = detail::rebuildSpatialTagContinuityUnchecked(
           tree, tagContinuity_, tagContinuityScratch_))
     return error;
+  return costs.updateSelectedLogicalNetTagUses(tree, tagContinuity_);
+}
+
+static bool verifyTagContinuityExtension() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("LOOM_PNR_VERIFY_TAG_CONTINUITY");
+    return value && value[0] == '1' && value[1] == '\0';
+  }();
+  return enabled;
+}
+
+llvm::Error SpatialNetRouterScratch::updateTagUsesForBranch(
+    const RouteTreeState &tree, SpatialRouteCostState &costs,
+    PnrIndex attachment, llvm::ArrayRef<PnrIndex> branchArcs) {
+  auto extended = detail::extendSpatialTagContinuityForBranchUnchecked(
+      tree, attachment, branchArcs, tagContinuity_, tagContinuityScratch_);
+  if (!extended)
+    return extended.takeError();
+  if (!*extended)
+    return updateCurrentTagUses(tree, costs);
+  if (verifyTagContinuityExtension()) {
+    if (llvm::Error error = detail::rebuildSpatialTagContinuityUnchecked(
+            tree, tagContinuityShadow_, tagContinuityShadowScratch_))
+      return error;
+    if (!llvm::equal(tagContinuity_.segments(),
+                     tagContinuityShadow_.segments()) ||
+        !llvm::equal(tagContinuity_.nodeSegments(),
+                     tagContinuityShadow_.nodeSegments()) ||
+        !llvm::equal(tagContinuity_.segmentDomainOffsets(),
+                     tagContinuityShadow_.segmentDomainOffsets()) ||
+        !llvm::equal(tagContinuity_.segmentDomains(),
+                     tagContinuityShadow_.segmentDomains()) ||
+        !llvm::equal(tagContinuity_.domainSegmentOffsets(),
+                     tagContinuityShadow_.domainSegmentOffsets()) ||
+        !llvm::equal(tagContinuity_.domainSegments(),
+                     tagContinuityShadow_.domainSegments()))
+      return netRouterError(
+          "extended tag continuity diverged from a full rebuild");
+  }
   return costs.updateSelectedLogicalNetTagUses(tree, tagContinuity_);
 }
 
@@ -823,8 +863,8 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
     if (llvm::Error error =
             costs.updateSelectedLogicalNetClaims(prospectiveClaimBits_))
       return std::move(error);
-    if (llvm::Error error =
-            updateCurrentTagUses(candidate.routeTree(logicalNet), costs))
+    if (llvm::Error error = updateTagUsesForBranch(
+            candidate.routeTree(logicalNet), costs, attachment, branch))
       return std::move(error);
     unresolvedSinks_[sink] = 0;
     --unresolvedCount;
