@@ -565,8 +565,7 @@ RouteCost EndpointRouteSearchScratch::heuristic(PnrIndex endpoint) const {
   return heuristics_[endpoint];
 }
 
-RouteCost
-EndpointRouteSearchScratch::queryForwardHeuristic(PnrIndex endpoint) {
+RouteCost EndpointRouteSearchScratch::queryForwardHeuristic(PnrIndex endpoint) {
   saturatingIncrement(forwardHeuristicQueryCount_);
   const RouteCost value = heuristic(endpoint);
   if (value == routeCostInfinity)
@@ -713,6 +712,60 @@ llvm::Error EndpointRouteSearchScratch::buildHeuristic(
     }
   }
   return llvm::Error::success();
+}
+
+llvm::Expected<bool> EndpointRouteSearchScratch::composeHeuristicFromSingletons(
+    const EndpointRouteSearchRequest &request) {
+  constexpr std::size_t maximumCompositionTargets = 16;
+  if (request.targetEndpoints.size() < 2 ||
+      request.targetEndpoints.size() > maximumCompositionTargets ||
+      heuristicCache_.empty() || !heuristicInputsAreCacheable(request))
+    return false;
+  EndpointRouteSearchRequest singleton = request;
+  llvm::SmallVector<std::array<std::uint8_t, 32>, 16> singletonDigests;
+  singletonDigests.reserve(request.targetEndpoints.size());
+  for (const PnrIndex &target : request.targetEndpoints) {
+    singleton.targetEndpoints = llvm::ArrayRef<PnrIndex>(&target, 1);
+    singletonDigests.push_back(heuristicCacheKeyDigest(singleton));
+    if (heuristicCacheIndex_.count(singletonDigests.back()) != 0)
+      continue;
+    if (llvm::Error error = buildHeuristic(singleton))
+      return std::move(error);
+    storeCachedHeuristic(singleton);
+  }
+  // Storing one singleton may evict another, so the rows resolve by digest
+  // only after every build has landed. A row lost to eviction here means the
+  // budget cannot hold the working set; fall back to the direct build.
+  llvm::SmallVector<const HeuristicCacheEntry *, 16> singletonEntries;
+  singletonEntries.reserve(singletonDigests.size());
+  for (const auto &digest : singletonDigests) {
+    const auto indexed = heuristicCacheIndex_.find(digest);
+    if (indexed == heuristicCacheIndex_.end() ||
+        indexed->second >= heuristicCache_.size())
+      return false;
+    HeuristicCacheEntry &entry = heuristicCache_[indexed->second];
+    if (!entry.populated || entry.keyDigest != digest ||
+        entry.scaledDistances.size() != graph_.endpointCount)
+      return false;
+    saturatingIncrement(heuristicCacheUseEpoch_);
+    entry.lastUse = heuristicCacheUseEpoch_;
+    singletonEntries.push_back(&entry);
+  }
+
+  activeCachedHeuristic_ = nullptr;
+  beginHeuristicGeneration();
+  for (PnrIndex endpoint = 0; endpoint != graph_.endpointCount; ++endpoint) {
+    RouteCost best = routeCostInfinity;
+    for (const HeuristicCacheEntry *entry : singletonEntries)
+      best = std::min(best, cachedHeuristic(*entry, endpoint));
+    if (best == routeCostInfinity)
+      continue;
+    heuristics_[endpoint] = best;
+    heuristicEpochs_[endpoint] = heuristicGeneration_;
+  }
+  saturatingIncrement(heuristicComposeCount_);
+  storeCachedHeuristic(request);
+  return true;
 }
 
 bool EndpointRouteSearchScratch::revisionIsCurrent(
@@ -1361,9 +1414,14 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
             : request.targetRequiresTraversal[ordinal];
   }
   if (!loadCachedHeuristic(request)) {
-    if (llvm::Error error = buildHeuristic(request))
-      return std::move(error);
-    storeCachedHeuristic(request);
+    auto composed = composeHeuristicFromSingletons(request);
+    if (!composed)
+      return composed.takeError();
+    if (!*composed) {
+      if (llvm::Error error = buildHeuristic(request))
+        return std::move(error);
+      storeCachedHeuristic(request);
+    }
   }
   if (timingAware)
     return searchTimingAware(request);

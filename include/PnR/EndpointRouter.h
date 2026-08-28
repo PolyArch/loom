@@ -207,6 +207,7 @@ public:
   std::uint64_t heuristicCacheEvictionCount() const {
     return heuristicCacheEvictionCount_;
   }
+  std::uint64_t heuristicComposeCount() const { return heuristicComposeCount_; }
   std::uint64_t arcCostValidationScanCount() const {
     return arcCostValidationScanCount_;
   }
@@ -261,6 +262,14 @@ private:
   bool arcEligible(PnrIndex arc, const EndpointRouteSearchRequest &request,
                    bool enforceSourceReplication) const;
   llvm::Error buildHeuristic(const EndpointRouteSearchRequest &request);
+  /// Composes the multi-target heuristic as the elementwise minimum of
+  /// cached singleton-target rows: the reverse shortest distance to a target
+  /// set is exactly the minimum of the singleton distances, so composition
+  /// reproduces buildHeuristic() value for value. Builds and caches missing
+  /// singleton rows first; returns false when the request is outside the
+  /// composition bounds or a singleton row could not be retained.
+  llvm::Expected<bool>
+  composeHeuristicFromSingletons(const EndpointRouteSearchRequest &request);
   llvm::Expected<EndpointRouteSearchResult>
   searchTimingAware(const EndpointRouteSearchRequest &request);
   bool loadCachedHeuristic(const EndpointRouteSearchRequest &request);
@@ -384,6 +393,7 @@ private:
   std::uint64_t forwardHeuristicQueryCount_ = 0;
   std::uint64_t forwardHeuristicUnreachableCount_ = 0;
   std::uint64_t heuristicCacheEvictionCount_ = 0;
+  std::uint64_t heuristicComposeCount_ = 0;
   std::uint64_t arcCostValidationScanCount_ = 0;
   std::uint64_t physicalTimingValidationScanCount_ = 0;
   SpatialPnrWorkLedgerView workLedger_;
