@@ -117,6 +117,7 @@ class PairedExecutionResult:
     hard_ratio_failure: bool
     reference_cycles: int
     reference_cycles_per_second: float
+    reference_rate_basis_seconds: float
     meets_reference_rate_target: bool
     engine_cpu_seconds: float
     bridge_cpu_seconds: float
@@ -167,15 +168,16 @@ def evaluate_paired_execution(
 
     ratio = system_timing.active_wall_seconds / budget.spatial_reference_seconds
     # The rate gate qualifies the simulator's throughput, not the host
-    # scheduler: engine CPU time is invariant under host oversubscription
-    # while active wall time is not, so a loaded parallel suite must not turn
-    # a healthy engine into a rate failure. Wall time remains the basis for
-    # the paired budget and hard-ratio contracts above.
-    rate_basis_seconds = (
-        system_timing.engine_cpu_seconds
-        if system_timing.engine_cpu_seconds > 0.0
-        else system_timing.active_wall_seconds
-    )
+    # scheduler: the simulator process's CPU time (the engine slot for direct
+    # engine measurements, the host slot for the gem5 child) is far less
+    # load-sensitive than active wall time, so a loaded parallel suite must
+    # not turn a healthy engine into a rate failure. Wall time remains the
+    # basis for the paired budget and hard-ratio contracts above.
+    rate_basis_seconds = system_timing.active_wall_seconds
+    if system_timing.engine_cpu_seconds > 0.0:
+        rate_basis_seconds = system_timing.engine_cpu_seconds
+    elif system_timing.host_cpu_seconds > 0.0:
+        rate_basis_seconds = system_timing.host_cpu_seconds
     rate = system_timing.reference_cycles / rate_basis_seconds
     return PairedExecutionResult(
         spatial_reference_seconds=budget.spatial_reference_seconds,
@@ -188,6 +190,7 @@ def evaluate_paired_execution(
         hard_ratio_failure=(ratio >= HARD_FAILURE_RATIO),
         reference_cycles=system_timing.reference_cycles,
         reference_cycles_per_second=rate,
+        reference_rate_basis_seconds=rate_basis_seconds,
         meets_reference_rate_target=(rate >= REFERENCE_RATE_TARGET_HZ),
         engine_cpu_seconds=system_timing.engine_cpu_seconds,
         bridge_cpu_seconds=system_timing.bridge_cpu_seconds,
@@ -1707,6 +1710,7 @@ def report_json(report: PairedMeasurementReport) -> dict[str, object]:
             "hard_ratio_failure": paired.hard_ratio_failure,
             "reference_cycles": paired.reference_cycles,
             "reference_cycles_per_second": paired.reference_cycles_per_second,
+            "reference_rate_basis_seconds": paired.reference_rate_basis_seconds,
             "meets_reference_rate_target": paired.meets_reference_rate_target,
         }
     return projected
