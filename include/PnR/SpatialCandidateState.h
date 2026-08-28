@@ -54,6 +54,38 @@ struct SpatialCandidateInitialization final {
   llvm::ArrayRef<PnrIndex> registerFifoTransfers;
 };
 
+/// Compact owned replay inputs for one fully routed candidate: every selected
+/// decision plus each RouteTree flattened to its source, sinks, and forward
+/// arc paths. Capturing walks candidate state without mutating it;
+/// materialization replays the walk into a fresh candidate, commits it, and
+/// verifies it, so holders of many snapshots pay materialization only for the
+/// one they restore.
+struct SpatialFullyRoutedSnapshot final {
+  FrozenSpatialPnrProblemHandle problem;
+  std::vector<SpatialComputeBindingSelection> computeBindings;
+  std::vector<SpatialMemoryBindingSelection> memoryBindings;
+  std::vector<PnrIndex> portAttachments;
+  std::vector<PnrIndex> graphBoundaryAttachments;
+  std::vector<PnrIndex> memoryOperationPlans;
+  std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings;
+  std::vector<PnrIndex> memoryUseDispatches;
+  std::vector<PnrIndex> memoryExposureSelections;
+  std::vector<PnrIndex> registerFifoTransfers;
+  /// Per logical net source endpoint; invalid for register-fifo nets.
+  std::vector<PnrIndex> routeSources;
+  struct SinkPath final {
+    PnrIndex logicalNet = 0;
+    PnrIndex sink = 0;
+    PnrIndex endpoint = 0;
+    std::size_t pathOffset = 0;
+    std::size_t pathLength = 0;
+  };
+  /// Grouped by logical net in ascending net then sink order.
+  std::vector<SinkPath> sinkPaths;
+  /// Concatenated source-to-sink forward arc paths.
+  std::vector<PnrIndex> arcPaths;
+};
+
 /// Cold reconstruction of every route-derived Mapping fact for the current
 /// RouteTrees. It is independent of commit-time caches and is therefore valid
 /// while an enclosing move still owns provisional routes.
@@ -242,6 +274,13 @@ public:
   /// timing, and objective state is derived again from its semantic owners.
   /// This is the snapshot boundary used for routed search incumbents.
   llvm::Expected<SpatialCandidateStateHandle> cloneFullyRouted() const;
+
+  /// Captures the compact replay inputs of a fully routed candidate without
+  /// mutating or deriving any state.
+  llvm::Expected<SpatialFullyRoutedSnapshot> snapshotFullyRouted() const;
+  /// Replays a captured snapshot into a fresh verified candidate.
+  static llvm::Expected<SpatialCandidateStateHandle>
+  materializeFullyRouted(const SpatialFullyRoutedSnapshot &snapshot);
 
   SpatialCandidateState(const SpatialCandidateState &) = delete;
   SpatialCandidateState(SpatialCandidateState &&) = delete;

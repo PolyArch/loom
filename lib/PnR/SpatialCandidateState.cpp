@@ -709,34 +709,29 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   return candidate;
 }
 
-llvm::Expected<SpatialCandidateStateHandle>
-SpatialCandidateState::cloneFullyRouted() const {
+llvm::Expected<SpatialFullyRoutedSnapshot>
+SpatialCandidateState::snapshotFullyRouted() const {
   if (activeTransaction_)
     return candidateError("cannot snapshot an active candidate transaction");
   if (unroutedObligationCount_ != 0)
     return candidateError("cannot snapshot an incompletely routed candidate");
 
-  const SpatialCandidateInitialization initialization{
-      computeBindings_,       memoryBindings_,
-      portAttachments_,       graphBoundaryAttachments_,
-      memoryOperationPlans_,  logicalMemoryBindings_,
-      memoryUseDispatches_,   memoryExposureSelections_,
-      registerFifoTransfers_,
-  };
-  auto cloned = create(problem_, initialization);
-  if (!cloned)
-    return cloned.takeError();
-
-  SpatialCandidateScratch scratch;
-  if (llvm::Error error = scratch.prepare(*problem_))
-    return std::move(error);
-  auto move = (*cloned)->beginMove(scratch);
-  if (!move)
-    return move.takeError();
+  SpatialFullyRoutedSnapshot snapshot;
+  snapshot.problem = problem_;
+  snapshot.computeBindings = computeBindings_;
+  snapshot.memoryBindings = memoryBindings_;
+  snapshot.portAttachments = portAttachments_;
+  snapshot.graphBoundaryAttachments = graphBoundaryAttachments_;
+  snapshot.memoryOperationPlans = memoryOperationPlans_;
+  snapshot.logicalMemoryBindings = logicalMemoryBindings_;
+  snapshot.memoryUseDispatches = memoryUseDispatches_;
+  snapshot.memoryExposureSelections = memoryExposureSelections_;
+  snapshot.registerFifoTransfers = registerFifoTransfers_;
 
   const FrozenSpatialRoutingGraph &routing = problem_->routing();
   const auto arcs = routing.routingArcs();
   const auto arcSources = routing.arcSources();
+  snapshot.routeSources.assign(routeTrees_.size(), getInvalidPnrIndex());
   std::vector<PnrIndex> reversePath;
   for (PnrIndex logicalNet = 0; logicalNet != routeTrees_.size();
        ++logicalNet) {
@@ -746,8 +741,7 @@ SpatialCandidateState::cloneFullyRouted() const {
     const auto source = sourceTree.sourceEndpoint();
     if (!source)
       return candidateError("fully routed snapshot lacks a route source");
-    if (llvm::Error error = move->bindRouteSource(logicalNet, *source))
-      return std::move(error);
+    snapshot.routeSources[logicalNet] = *source;
 
     const PnrIndex sinkCount =
         problem_->transfers().logicalNets()[logicalNet].sinkCount;
@@ -755,8 +749,6 @@ SpatialCandidateState::cloneFullyRouted() const {
       const auto endpoint = sourceTree.sinkEndpoint(sink);
       if (!endpoint)
         return candidateError("fully routed snapshot lacks a route sink");
-      if (llvm::Error error = move->bindRouteSink(logicalNet, sink, *endpoint))
-        return std::move(error);
 
       auto slot = sourceTree.findNode(*endpoint);
       if (!slot)
@@ -777,31 +769,96 @@ SpatialCandidateState::cloneFullyRouted() const {
         if (!slot)
           return candidateError("snapshot RouteTree parent is absent");
       }
+      snapshot.sinkPaths.push_back({logicalNet, sink, *endpoint,
+                                    snapshot.arcPaths.size(),
+                                    reversePath.size()});
+      snapshot.arcPaths.insert(snapshot.arcPaths.end(), reversePath.rbegin(),
+                               reversePath.rend());
+    }
+  }
+  return snapshot;
+}
 
-      std::vector<PnrIndex> forwardPath(reversePath.rbegin(),
-                                        reversePath.rend());
-      PnrIndex attachment = *source;
+llvm::Expected<SpatialCandidateStateHandle>
+SpatialCandidateState::materializeFullyRouted(
+    const SpatialFullyRoutedSnapshot &snapshot) {
+  if (!snapshot.problem)
+    return candidateError("fully routed snapshot has no problem owner");
+  const SpatialCandidateInitialization initialization{
+      snapshot.computeBindings,       snapshot.memoryBindings,
+      snapshot.portAttachments,       snapshot.graphBoundaryAttachments,
+      snapshot.memoryOperationPlans,  snapshot.logicalMemoryBindings,
+      snapshot.memoryUseDispatches,   snapshot.memoryExposureSelections,
+      snapshot.registerFifoTransfers,
+  };
+  auto cloned = create(snapshot.problem, initialization);
+  if (!cloned)
+    return cloned.takeError();
+
+  SpatialCandidateScratch scratch;
+  if (llvm::Error error = scratch.prepare(*snapshot.problem))
+    return std::move(error);
+  auto move = (*cloned)->beginMove(scratch);
+  if (!move)
+    return move.takeError();
+
+  const auto arcs = snapshot.problem->routing().routingArcs();
+  std::size_t nextSinkPath = 0;
+  for (PnrIndex logicalNet = 0; logicalNet != snapshot.routeSources.size();
+       ++logicalNet) {
+    const PnrIndex source = snapshot.routeSources[logicalNet];
+    if (source == getInvalidPnrIndex())
+      continue;
+    if (llvm::Error error = move->bindRouteSource(logicalNet, source))
+      return std::move(error);
+
+    for (; nextSinkPath != snapshot.sinkPaths.size() &&
+           snapshot.sinkPaths[nextSinkPath].logicalNet == logicalNet;
+         ++nextSinkPath) {
+      const SpatialFullyRoutedSnapshot::SinkPath &record =
+          snapshot.sinkPaths[nextSinkPath];
+      if (llvm::Error error =
+              move->bindRouteSink(logicalNet, record.sink, record.endpoint))
+        return std::move(error);
+      if (record.pathOffset > snapshot.arcPaths.size() ||
+          record.pathLength > snapshot.arcPaths.size() - record.pathOffset)
+        return candidateError("fully routed snapshot arc path is truncated");
+      const llvm::ArrayRef<PnrIndex> forwardPath =
+          llvm::ArrayRef<PnrIndex>(snapshot.arcPaths)
+              .slice(record.pathOffset, record.pathLength);
+      PnrIndex attachment = source;
       std::size_t pathBegin = 0;
       const RouteTreeState &targetTree = (*cloned)->routeTree(logicalNet);
       for (auto [index, arc] : llvm::enumerate(forwardPath)) {
+        if (arc >= arcs.size())
+          return candidateError("snapshot RouteTree arc is out of range");
         if (targetTree.findNode(arcs[arc].target)) {
           attachment = arcs[arc].target;
           pathBegin = index + 1;
         }
       }
       if (llvm::Error error = move->attachRoutePath(
-              logicalNet, attachment,
-              llvm::ArrayRef<PnrIndex>(forwardPath).drop_front(pathBegin),
-              sink))
+              logicalNet, attachment, forwardPath.drop_front(pathBegin),
+              record.sink))
         return std::move(error);
     }
   }
+  if (nextSinkPath != snapshot.sinkPaths.size())
+    return candidateError("fully routed snapshot sink is out of net order");
 
   if (llvm::Error error = move->commit())
     return std::move(error);
   if (llvm::Error error = (*cloned)->verify())
     return std::move(error);
   return std::move(*cloned);
+}
+
+llvm::Expected<SpatialCandidateStateHandle>
+SpatialCandidateState::cloneFullyRouted() const {
+  auto snapshot = snapshotFullyRouted();
+  if (!snapshot)
+    return snapshot.takeError();
+  return materializeFullyRouted(*snapshot);
 }
 
 const SpatialComputeBindingSelection &

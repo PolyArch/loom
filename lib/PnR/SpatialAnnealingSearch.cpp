@@ -401,9 +401,9 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     return llvm::Error::success();
   };
 
-  SpatialCandidateStateHandle bestSelectedRankIncumbent;
+  std::shared_ptr<const SpatialFullyRoutedSnapshot> bestSelectedRankIncumbent;
   std::optional<dse::ObjectiveVector> bestSelectedRankObjective;
-  SpatialCandidateStateHandle bestFeasibleIncumbent;
+  std::shared_ptr<const SpatialFullyRoutedSnapshot> bestFeasibleIncumbent;
   std::optional<dse::ObjectiveVector> bestFeasibleObjective;
   const auto captureIncumbent = [&](const dse::ObjectiveVector &objective,
                                     bool feasible) -> llvm::Error {
@@ -430,26 +430,41 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
         return searchError("a feasible incumbent is incompletely routed");
       return llvm::Error::success();
     }
-    auto snapshot = candidate.cloneFullyRouted();
+    auto snapshot = candidate.snapshotFullyRouted();
     if (!snapshot)
       return snapshot.takeError();
-    auto snapshotObjective = problem.objectiveProgram().evaluate(**snapshot);
-    if (!snapshotObjective)
-      return snapshotObjective.takeError();
-    if (snapshotObjective->codes() != objective.codes())
-      return searchError("search incumbent snapshot changed its objective");
     if (statistics.incumbentSnapshotCount ==
         std::numeric_limits<std::uint64_t>::max())
       return searchError("search incumbent snapshot count overflows u64");
     ++statistics.incumbentSnapshotCount;
+    auto shared = std::make_shared<const SpatialFullyRoutedSnapshot>(
+        std::move(*snapshot));
     if (improvesSelectedRank) {
-      bestSelectedRankIncumbent = *snapshot;
-      bestSelectedRankObjective = *snapshotObjective;
+      bestSelectedRankIncumbent = shared;
+      bestSelectedRankObjective = objective;
     }
     if (improvesFeasible) {
-      bestFeasibleIncumbent = std::move(*snapshot);
-      bestFeasibleObjective = std::move(*snapshotObjective);
+      bestFeasibleIncumbent = std::move(shared);
+      bestFeasibleObjective = objective;
     }
+    return llvm::Error::success();
+  };
+  // Materializes one stored incumbent snapshot into the returned candidate.
+  // The materialized candidate must reproduce the objective observed when the
+  // snapshot was captured; a mismatch means a derived-state owner diverged.
+  const auto restoreIncumbent =
+      [&](const SpatialFullyRoutedSnapshot &snapshot,
+          const std::optional<dse::ObjectiveVector> &expected,
+          llvm::StringRef mismatch) -> llvm::Error {
+    auto restored = SpatialCandidateState::materializeFullyRouted(snapshot);
+    if (!restored)
+      return restored.takeError();
+    auto restoredObjective = problem.objectiveProgram().evaluate(**restored);
+    if (!restoredObjective)
+      return restoredObjective.takeError();
+    if (!expected || restoredObjective->codes() != expected->codes())
+      return searchError(mismatch);
+    candidateHandle = std::move(*restored);
     return llvm::Error::success();
   };
   if (llvm::Error error =
@@ -473,14 +488,16 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     statistics.negotiationIterations =
         actionExecutor_.negotiationIterationCount();
     if (bestFeasibleIncumbent) {
-      if (llvm::Error error = bestFeasibleIncumbent->verify())
+      if (llvm::Error error = restoreIncumbent(
+              *bestFeasibleIncumbent, bestFeasibleObjective,
+              "search incumbent snapshot changed its objective"))
         return std::move(error);
-      candidateHandle = std::move(bestFeasibleIncumbent);
       statistics.bestFeasibleIncumbentRestored = true;
     } else if (bestSelectedRankIncumbent) {
-      if (llvm::Error error = bestSelectedRankIncumbent->verify())
+      if (llvm::Error error = restoreIncumbent(
+              *bestSelectedRankIncumbent, bestSelectedRankObjective,
+              "search incumbent snapshot changed its objective"))
         return std::move(error);
-      candidateHandle = std::move(bestSelectedRankIncumbent);
       statistics.bestSelectedRankIncumbentRestored = true;
     }
     if (llvm::Error error = candidateHandle->verify())
@@ -497,9 +514,10 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     statistics.endpointExpansions = actionExecutor_.endpointExpansionCount();
     statistics.negotiationIterations =
         actionExecutor_.negotiationIterationCount();
-    if (llvm::Error error = bestFeasibleIncumbent->verify())
+    if (llvm::Error error =
+            restoreIncumbent(*bestFeasibleIncumbent, bestFeasibleObjective,
+                             "search incumbent snapshot changed its objective"))
       return std::move(error);
-    candidateHandle = std::move(bestFeasibleIncumbent);
     statistics.bestFeasibleIncumbentRestored = true;
     loom::mapping_debug::emit(loom::mapping_debug::Level::Summary,
                               loom::mapping_debug::Stage::SpatialPnr,
@@ -1023,16 +1041,10 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
   statistics.negotiationIterations =
       actionExecutor_.negotiationIterationCount();
   if (bestFeasibleIncumbent) {
-    auto restoredObjective =
-        problem.objectiveProgram().evaluate(*bestFeasibleIncumbent);
-    if (!restoredObjective)
-      return restoredObjective.takeError();
-    if (!bestFeasibleObjective ||
-        restoredObjective->codes() != bestFeasibleObjective->codes())
-      return searchError("best feasible incumbent objective changed");
-    if (llvm::Error error = bestFeasibleIncumbent->verify())
+    if (llvm::Error error =
+            restoreIncumbent(*bestFeasibleIncumbent, bestFeasibleObjective,
+                             "best feasible incumbent objective changed"))
       return std::move(error);
-    candidateHandle = std::move(bestFeasibleIncumbent);
     statistics.bestFeasibleIncumbentRestored = true;
     loom::mapping_debug::emit(loom::mapping_debug::Level::Summary,
                               loom::mapping_debug::Stage::SpatialPnr,
@@ -1047,16 +1059,10 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                     statistics.incumbentSnapshotCount;
                               });
   } else if (bestSelectedRankIncumbent) {
-    auto restoredObjective =
-        problem.objectiveProgram().evaluate(*bestSelectedRankIncumbent);
-    if (!restoredObjective)
-      return restoredObjective.takeError();
-    if (!bestSelectedRankObjective ||
-        restoredObjective->codes() != bestSelectedRankObjective->codes())
-      return searchError("best selected-rank incumbent objective changed");
-    if (llvm::Error error = bestSelectedRankIncumbent->verify())
+    if (llvm::Error error = restoreIncumbent(
+            *bestSelectedRankIncumbent, bestSelectedRankObjective,
+            "best selected-rank incumbent objective changed"))
       return std::move(error);
-    candidateHandle = std::move(bestSelectedRankIncumbent);
     statistics.bestSelectedRankIncumbentRestored = true;
     loom::mapping_debug::emit(loom::mapping_debug::Level::Summary,
                               loom::mapping_debug::Stage::SpatialPnr,
