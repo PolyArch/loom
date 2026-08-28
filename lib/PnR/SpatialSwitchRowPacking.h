@@ -220,6 +220,7 @@ private:
   };
 
   SpatialTemporalSwitchDemandScratch demandScratch_;
+  std::vector<PnrIndex> cursorScratch_;
   std::vector<PnrIndex> previousNetSegmentOffsets_;
   std::vector<SpatialTagVertexRef> previousVertexRefs_;
   std::vector<PnrIndex> previousConflictOffsets_;

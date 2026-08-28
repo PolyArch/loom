@@ -655,7 +655,8 @@ struct loom::pnr::detail::SpatialTagInterferenceBuilder final {
     return llvm::Error::success();
   }
 
-  static llvm::Error rebuildGlobal(SpatialTagInterferenceProjection &result) {
+  static llvm::Error rebuildGlobal(SpatialTagInterferenceProjection &result,
+                                   std::vector<PnrIndex> &cursorScratch) {
     result.globalConflicts_.clear();
     for (const auto &domain : result.domainConflicts_)
       result.globalConflicts_.insert(result.globalConflicts_.end(),
@@ -664,35 +665,46 @@ struct loom::pnr::detail::SpatialTagInterferenceBuilder final {
     result.globalConflicts_.erase(std::unique(result.globalConflicts_.begin(),
                                               result.globalConflicts_.end()),
                                   result.globalConflicts_.end());
-    std::vector<std::vector<PnrIndex>> adjacency(result.vertexRefs_.size());
+    // Two counting passes fill the incidence in place: unique canonical pairs
+    // cannot produce duplicate neighbors, so per-vertex slices only need an
+    // in-place sort and no per-vertex storage.
+    cursorScratch.assign(result.vertexRefs_.size(), 0);
     for (const SpatialTagConflictPair &pair : result.globalConflicts_) {
       const PnrIndex lhs = result.vertexOrdinal(pair.lhs);
       const PnrIndex rhs = result.vertexOrdinal(pair.rhs);
       if (lhs == getInvalidPnrIndex() || rhs == getInvalidPnrIndex() ||
           lhs == rhs)
         return invalid("tag conflict names an absent canonical vertex");
-      adjacency[lhs].push_back(rhs);
-      adjacency[rhs].push_back(lhs);
+      ++cursorScratch[lhs];
+      ++cursorScratch[rhs];
     }
     result.conflictOffsets_.clear();
-    result.conflicts_.clear();
     result.conflictOffsets_.reserve(result.vertexRefs_.size() + 1);
     result.conflictOffsets_.push_back(0);
-    for (auto &neighbors : adjacency) {
-      llvm::sort(neighbors);
-      neighbors.erase(std::unique(neighbors.begin(), neighbors.end()),
-                      neighbors.end());
-      if (neighbors.size() >
-          std::numeric_limits<std::size_t>::max() - result.conflicts_.size())
+    std::size_t total = 0;
+    for (std::size_t vertex = 0; vertex < cursorScratch.size(); ++vertex) {
+      const PnrIndex degree = cursorScratch[vertex];
+      if (degree > std::numeric_limits<std::size_t>::max() - total)
         return invalid("tag interference incidence size overflows");
-      result.conflicts_.insert(result.conflicts_.end(), neighbors.begin(),
-                               neighbors.end());
-      auto offset = checkedIndex(result.conflicts_.size(),
-                                 "tag interference incidence inventory");
+      total += degree;
+      auto offset = checkedIndex(total, "tag interference incidence inventory");
       if (!offset)
         return offset.takeError();
+      cursorScratch[vertex] = result.conflictOffsets_.back();
       result.conflictOffsets_.push_back(*offset);
     }
+    result.conflicts_.resize(total);
+    for (const SpatialTagConflictPair &pair : result.globalConflicts_) {
+      const PnrIndex lhs = result.vertexOrdinal(pair.lhs);
+      const PnrIndex rhs = result.vertexOrdinal(pair.rhs);
+      result.conflicts_[cursorScratch[lhs]++] = rhs;
+      result.conflicts_[cursorScratch[rhs]++] = lhs;
+    }
+    for (std::size_t vertex = 0; vertex + 1 < result.conflictOffsets_.size();
+         ++vertex)
+      std::sort(result.conflicts_.begin() + result.conflictOffsets_[vertex],
+                result.conflicts_.begin() +
+                    result.conflictOffsets_[vertex + 1]);
     return llvm::Error::success();
   }
 };
@@ -748,7 +760,9 @@ loom::pnr::detail::deriveSpatialTagInterference(
     if (llvm::Error error = SpatialTagInterferenceBuilder::rebuildDomain(
             problem, domain, continuity, result))
       return std::move(error);
-  if (llvm::Error error = SpatialTagInterferenceBuilder::rebuildGlobal(result))
+  std::vector<PnrIndex> cursorScratch;
+  if (llvm::Error error =
+          SpatialTagInterferenceBuilder::rebuildGlobal(result, cursorScratch))
     return std::move(error);
   return result;
 }
@@ -857,8 +871,8 @@ llvm::Error loom::pnr::detail::stageSpatialTagInterferenceUpdate(
     if (llvm::Error error = SpatialTagInterferenceBuilder::rebuildDomain(
             problem, domain, continuity, projection))
       return fail(std::move(error));
-  if (llvm::Error error =
-          SpatialTagInterferenceBuilder::rebuildGlobal(projection))
+  if (llvm::Error error = SpatialTagInterferenceBuilder::rebuildGlobal(
+          projection, scratch.cursorScratch_))
     return fail(std::move(error));
   return llvm::Error::success();
 }
