@@ -174,7 +174,7 @@ public:
   llvm::ArrayRef<std::optional<::loom::fabric::HandshakeSignalRef>>
   activeNodeSignals() const;
   llvm::ArrayRef<FrozenSpatialHandshakeArc> activeArcs() const;
-  llvm::ArrayRef<PnrIndex> activeArcContributors(PnrIndex arc) const;
+  std::vector<PnrIndex> activeArcContributors(PnrIndex arc) const;
   std::size_t activeArcContributionCount() const;
   HandshakeActiveDemandStatistics materializationStatistics() const;
   llvm::ArrayRef<PnrIndex> topologicalOrder() const;

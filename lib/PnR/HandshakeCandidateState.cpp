@@ -40,7 +40,11 @@ struct MaterializedHandshakeGraph final {
   /// Compact arc ordinal to frozen dense projection arc ordinal.
   std::vector<PnrIndex> arcFrozenIds;
   std::vector<std::uint8_t> fixedArcs;
-  std::vector<std::vector<PnrIndex>> arcContributors;
+  /// Number of active fragments contributing to each compact arc. Contributor
+  /// identity is not stored: it is derived from the active fragments and the
+  /// frozen fragment-to-arc index whenever a witness or diagnostic needs it,
+  /// so the count is the only mutable truth and cannot diverge from one.
+  std::vector<PnrIndex> arcContributorCounts;
   std::vector<std::vector<PnrIndex>> outgoingArcs;
   std::vector<std::vector<PnrIndex>> reverseArcs;
   /// Frozen projection ordinal to compact ordinal. Unmaterialized entries use
@@ -127,7 +131,7 @@ std::size_t retainedMaterializedHandshakeGraphBytes(
   return retainedBytes(graph.nodeSignals) + retainedBytes(graph.nodeFrozenIds) +
          retainedBytes(graph.arcs) + retainedBytes(graph.arcFrozenIds) +
          retainedBytes(graph.fixedArcs) +
-         retainedNestedBytes(graph.arcContributors) +
+         retainedBytes(graph.arcContributorCounts) +
          retainedNestedBytes(graph.outgoingArcs) +
          retainedNestedBytes(graph.reverseArcs) +
          retainedBytes(graph.nodeOrdinals) + retainedBytes(graph.arcOrdinals) +
@@ -232,8 +236,7 @@ void resetMaterializedHandshakeGraph(detail::MaterializedHandshakeGraph &graph,
   graph.arcs.clear();
   graph.arcFrozenIds.clear();
   graph.fixedArcs.clear();
-  for (std::vector<PnrIndex> &contributors : graph.arcContributors)
-    contributors.clear();
+  graph.arcContributorCounts.clear();
   for (std::vector<PnrIndex> &arcs : graph.outgoingArcs)
     arcs.clear();
   for (std::vector<PnrIndex> &arcs : graph.reverseArcs)
@@ -297,8 +300,7 @@ materializeHandshakeGraphInto(const FrozenSpatialHandshakeIndex &index,
     graph.arcs.push_back({*source, *destination});
     graph.arcFrozenIds.push_back(frozenArc);
     graph.fixedArcs.push_back(0);
-    if (*ordinal == graph.arcContributors.size())
-      graph.arcContributors.emplace_back();
+    graph.arcContributorCounts.push_back(0);
     graph.outgoingArcs[*source].push_back(*ordinal);
     graph.reverseArcs[*destination].push_back(*ordinal);
     addWork(graph.deterministicWork);
@@ -338,12 +340,11 @@ materializeHandshakeGraphInto(const FrozenSpatialHandshakeIndex &index,
       auto arc = resolveArc(frozenArc);
       if (!arc)
         return arc.takeError();
-      graph.arcContributors[*arc].push_back(fragmentOrdinal);
+      ++graph.arcContributorCounts[*arc];
       addWork(graph.deterministicWork);
     }
   }
 
-  graph.arcContributors.resize(graph.arcs.size());
   graph.outgoingArcs.resize(graph.nodeSignals.size());
   graph.reverseArcs.resize(graph.nodeSignals.size());
   graph.constructionIndegree.assign(graph.nodeSignals.size(), 0);
@@ -430,11 +431,6 @@ std::optional<PnrIndex> findArc(const detail::MaterializedHandshakeGraph &graph,
   return graph.arcOrdinals[frozenArc];
 }
 
-bool containsContributor(const detail::MaterializedHandshakeGraph &graph,
-                         PnrIndex arc, PnrIndex fragment) {
-  return llvm::binary_search(graph.arcContributors[arc], fragment);
-}
-
 struct HandshakeDeltaClosureStatistics final {
   bool acyclic = true;
   std::uint64_t insertedArcCount = 0;
@@ -460,7 +456,7 @@ HandshakeDeltaClosureStatistics summarizeRebuiltHandshakeGraphDelta(
             findArc(targetGraph, sourceGraph.arcFrozenIds[arc]);
         addWork(result.deterministicWork);
         if (targetArc && (targetGraph.fixedArcs[*targetArc] ||
-                          !targetGraph.arcContributors[*targetArc].empty()))
+                          targetGraph.arcContributorCounts[*targetArc] != 0))
           return;
         addWork(missingCount);
         affectedNodes.insert(
@@ -469,10 +465,10 @@ HandshakeDeltaClosureStatistics summarizeRebuiltHandshakeGraphDelta(
             sourceGraph.nodeFrozenIds[sourceGraph.arcs[arc].destination]);
       };
   for (PnrIndex arc = 0; arc < after.arcs.size(); ++arc)
-    if (after.fixedArcs[arc] || !after.arcContributors[arc].empty())
+    if (after.fixedArcs[arc] || after.arcContributorCounts[arc] != 0)
       observeMissingArc(after, before, arc, result.insertedArcCount);
   for (PnrIndex arc = 0; arc < before.arcs.size(); ++arc)
-    if (before.fixedArcs[arc] || !before.arcContributors[arc].empty())
+    if (before.fixedArcs[arc] || before.arcContributorCounts[arc] != 0)
       observeMissingArc(before, after, arc, result.removedArcCount);
 
   result.affectedNodeCount = affectedNodes.size();
@@ -574,24 +570,9 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
     const detail::HandshakeArcChange &change = changeRecord.value();
     const std::optional<PnrIndex> currentArc = findArc(graph, change.arc);
     const PnrIndex currentCount =
-        currentArc
-            ? static_cast<PnrIndex>(graph.arcContributors[*currentArc].size())
-            : 0;
+        currentArc ? graph.arcContributorCounts[*currentArc] : 0;
     const bool fixed = currentArc && graph.fixedArcs[*currentArc];
-    for (const detail::ChangedArcContribution &contribution :
-         llvm::ArrayRef(storage.changedContributions)
-             .slice(change.contributionOffset, change.contributionCount)) {
-      const bool present =
-          currentArc &&
-          containsContributor(graph, *currentArc, contribution.fragment);
-      if (present == contribution.add)
-        return candidateError(contribution.add
-                                  ? "activated fragment already contributes "
-                                    "to its handshake arc"
-                                  : "deactivated fragment does not contribute "
-                                    "to its handshake arc");
-      addWork(result.deterministicWork);
-    }
+    addWork(result.deterministicWork, change.contributionCount);
     if (change.removalCount > currentCount)
       return candidateError("changed handshake arc refcount underflows");
     const std::uint64_t retained = currentCount - change.removalCount;
@@ -733,7 +714,7 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
 
 bool arcIsActive(const detail::MaterializedHandshakeGraph &graph,
                  PnrIndex arc) {
-  return graph.fixedArcs[arc] || !graph.arcContributors[arc].empty();
+  return graph.fixedArcs[arc] || graph.arcContributorCounts[arc] != 0;
 }
 
 llvm::Expected<PnrIndex>
@@ -784,7 +765,7 @@ ensureHandshakeArc(detail::MaterializedHandshakeGraph &graph,
   graph.arcs.push_back({*source, *destination});
   graph.arcFrozenIds.push_back(frozenArc);
   graph.fixedArcs.push_back(false);
-  graph.arcContributors.emplace_back();
+  graph.arcContributorCounts.push_back(0);
   graph.outgoingArcs[*source].push_back(*ordinal);
   graph.reverseArcs[*destination].push_back(*ordinal);
   return *ordinal;
@@ -915,16 +896,14 @@ applyHandshakeArcDelta(const FrozenSpatialHandshakeIndex &index,
     auto arc = ensureHandshakeArc(graph, index, change.arc);
     if (!arc)
       return arc.takeError();
-    std::vector<PnrIndex> &contributors = graph.arcContributors[*arc];
-    auto found = llvm::lower_bound(contributors, change.fragment);
+    PnrIndex &count = graph.arcContributorCounts[*arc];
     if (change.add) {
-      if (found != contributors.end() && *found == change.fragment)
-        return candidateError("handshake contribution is already active");
-      contributors.insert(found, change.fragment);
+      if (llvm::Error error = increment(count, "arc contributor"))
+        return std::move(error);
     } else {
-      if (found == contributors.end() || *found != change.fragment)
+      if (count == 0)
         return candidateError("handshake contribution is not active");
-      contributors.erase(found);
+      --count;
     }
     addWork(work);
   }
@@ -1127,14 +1106,28 @@ HandshakeCandidateState::activeArcs() const {
   return graph_->arcs;
 }
 
-llvm::ArrayRef<PnrIndex>
+std::vector<PnrIndex>
 HandshakeCandidateState::activeArcContributors(PnrIndex arc) const {
   const detail::MaterializedHandshakeGraph &visible =
       activeTransaction_ && activeTransaction_->pendingGraph_
           ? *activeTransaction_->pendingGraph_
           : *graph_;
-  assert(arc < visible.arcContributors.size());
-  return visible.arcContributors[arc];
+  std::vector<PnrIndex> contributors;
+  if (arc >= visible.arcFrozenIds.size())
+    return contributors;
+  const PnrIndex frozenArc = visible.arcFrozenIds[arc];
+  const auto fragmentOffsets = index_->projectionFragmentArcOffsets();
+  const auto fragmentArcs = index_->projectionFragmentArcs();
+  for (PnrIndex fragmentOrdinal : activeFragments_)
+    for (PnrIndex candidateArc :
+         fragmentArcs.slice(fragmentOffsets[fragmentOrdinal],
+                            fragmentOffsets[fragmentOrdinal + 1] -
+                                fragmentOffsets[fragmentOrdinal]))
+      if (candidateArc == frozenArc) {
+        contributors.push_back(fragmentOrdinal);
+        break;
+      }
+  return contributors;
 }
 
 std::size_t HandshakeCandidateState::activeArcContributionCount() const {
@@ -1143,8 +1136,8 @@ std::size_t HandshakeCandidateState::activeArcContributionCount() const {
           ? *activeTransaction_->pendingGraph_
           : *graph_;
   std::size_t count = 0;
-  for (const auto &contributors : visible.arcContributors)
-    count += contributors.size();
+  for (const PnrIndex arcCount : visible.arcContributorCounts)
+    count += arcCount;
   return count;
 }
 
@@ -1226,7 +1219,7 @@ llvm::Error HandshakeCandidateState::verifyCachedState() const {
       graph_->nodeOrdinals.size() != frozenNodeSignals.size() ||
       graph_->arcs.size() != graph_->arcFrozenIds.size() ||
       graph_->arcs.size() != graph_->fixedArcs.size() ||
-      graph_->arcs.size() != graph_->arcContributors.size() ||
+      graph_->arcs.size() != graph_->arcContributorCounts.size() ||
       graph_->arcOrdinals.size() != frozenArcs.size() ||
       !graph_->cycleWitness.empty())
     return candidateError("materialized handshake graph shape is stale");
@@ -1252,11 +1245,6 @@ llvm::Error HandshakeCandidateState::verifyCachedState() const {
             frozenArcs[frozenArc].destination ||
         graph_->fixedArcs[arc] > 1)
       return candidateError("materialized handshake arc is out of range");
-    const auto &contributors = graph_->arcContributors[arc];
-    if (!llvm::is_sorted(contributors) ||
-        std::adjacent_find(contributors.begin(), contributors.end()) !=
-            contributors.end())
-      return candidateError("materialized handshake contributors are stale");
     if (arcIsActive(*graph_, static_cast<PnrIndex>(arc)) &&
         graph_->ranks[record.source] >= graph_->ranks[record.destination])
       return candidateError("materialized handshake topology is cyclic");
@@ -1333,8 +1321,8 @@ llvm::Error HandshakeCandidateState::verify() const {
         findArc(*graph_, rebuilt->arcFrozenIds[rebuiltArc]);
     if (!cachedArc || !arcIsActive(*graph_, *cachedArc) ||
         rebuilt->fixedArcs[rebuiltArc] != graph_->fixedArcs[*cachedArc] ||
-        rebuilt->arcContributors[rebuiltArc] !=
-            graph_->arcContributors[*cachedArc])
+        rebuilt->arcContributorCounts[rebuiltArc] !=
+            graph_->arcContributorCounts[*cachedArc])
       return candidateError("materialized handshake graph is stale");
   }
   std::size_t cachedActiveArcCount = 0;
