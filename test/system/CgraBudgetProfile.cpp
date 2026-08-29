@@ -47,6 +47,50 @@ constexpr std::uint64_t kQualificationLimitNanoseconds = 45'000'000'000ULL;
 constexpr auto kQualificationLimit = std::chrono::seconds(45);
 constexpr auto kSpatialPnrQualificationLimit =
     loom::timeout::duration(loom::timeout::Tier::Fast);
+/// A healthy Matmul warmup retires in well under one second, so screening the
+/// published Spatial frontier costs a small fraction of one qualification
+/// deadline while a non-retiring candidate still reaches its closed-wait
+/// diagnostic inside this window.
+constexpr auto kCandidateScreeningLimit = std::chrono::seconds(10);
+
+/// Mutually exclusive wall and process-CPU spans of the qualification. Every
+/// phase closes before the next opens, so the recorded spans sum to the
+/// measured total rather than to a parallel accumulation.
+class PhaseLedger final {
+public:
+  void record(llvm::StringRef phase) {
+    const auto now = std::chrono::steady_clock::now();
+    const std::uint64_t cpu = processCpuNanoseconds();
+    entries_.push_back(llvm::json::Object{
+        {"phase", phase.str()},
+        {"wall_nanoseconds",
+         static_cast<std::uint64_t>(
+             std::chrono::duration_cast<std::chrono::nanoseconds>(now - mark_)
+                 .count())},
+        {"process_cpu_nanoseconds", cpu - cpuMark_}});
+    mark_ = now;
+    cpuMark_ = cpu;
+  }
+
+  llvm::json::Array release() { return std::move(entries_); }
+
+private:
+  static std::uint64_t processCpuNanoseconds() {
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0)
+      return 0;
+    const auto convert = [](const timeval &value) -> std::uint64_t {
+      return static_cast<std::uint64_t>(value.tv_sec) * 1'000'000'000ULL +
+             static_cast<std::uint64_t>(value.tv_usec) * 1'000ULL;
+    };
+    return convert(usage.ru_utime) + convert(usage.ru_stime);
+  }
+
+  std::chrono::steady_clock::time_point mark_ =
+      std::chrono::steady_clock::now();
+  std::uint64_t cpuMark_ = processCpuNanoseconds();
+  llvm::json::Array entries_;
+};
 
 class MonotonicExecutionDeadline final {
 public:
@@ -465,6 +509,7 @@ int main(int argc, char **argv) {
   if (llvm::Error error =
           loom::evaluation::registerProductionEvaluationRegistry())
     fail(llvm::toString(std::move(error)));
+  PhaseLedger ledger;
   loom::ArtifactStore artifacts(argv[1]);
   llvm::SmallString<256> blobPath(argv[1]);
   llvm::sys::path::append(blobPath, "blobs");
@@ -499,6 +544,7 @@ int main(int argc, char **argv) {
       kSpatialPnrQualificationLimit);
   const loom::ExecutionControlView spatialPnrExecution =
       spatialPnrDeadline.control();
+  ledger.record("setup");
   auto pnrInvocation =
       take(loom::eda::test::invokeMappedBuiltinSpatialPnrFixture(
           "cgra-budget-profile", dataflow, targetScale, techMappingConfig,
@@ -541,17 +587,80 @@ int main(int argc, char **argv) {
                                   llvm::json::Value(std::move(report)));
     return EXIT_SUCCESS;
   }
-  const loom::ArtifactRootReference selectedSpatialMapping =
-      completedPnr->outputBindings.front().artifacts.front();
-  auto importedSpatialMapping = take(
-      loom::mapping::importSpatialMapping(selectedSpatialMapping, artifacts));
-  const loom::ArtifactRootReference selectedTechMapping{
-      loom::mapping::mappingArtifactSchema.identity.str(),
-      loom::mapping::mappingArtifactSchema.version,
-      importedSpatialMapping.view().techMappingIdentity()};
-  auto hardware = loom::eda::test::MappedSpatialMappingFixture{
-      std::move(pnrInvocation.module), selectedTechMapping,
-      std::move(importedSpatialMapping)};
+  ledger.record("spatial_pnr");
+  // Every published Spatial candidate cost a complete restart, and the
+  // published order is canonical artifact identity, not quality. Screen the
+  // whole frontier against the one dynamic oracle that the static Mapping
+  // model does not decide, and retain the first candidate that retires.
+  const std::vector<loom::ArtifactRootReference> &publishedSpatialMappings =
+      completedPnr->outputBindings.front().artifacts;
+  llvm::json::Array candidateScreening;
+  std::optional<loom::eda::test::MappedSpatialMappingFixture> selectedHardware;
+  std::optional<loom::evaluation::models::PreparedCgraSimulationEvaluation>
+      selectedPrepared;
+  std::optional<loom::evaluation::models::CgraSimulationEvaluation>
+      selectedWarmup;
+  std::optional<loom::eda::test::MappedSpatialMappingFixture> firstHardware;
+  for (const loom::ArtifactRootReference &candidate :
+       publishedSpatialMappings) {
+    auto imported =
+        take(loom::mapping::importSpatialMapping(candidate, artifacts));
+    const loom::ArtifactRootReference candidateTechMapping{
+        loom::mapping::mappingArtifactSchema.identity.str(),
+        loom::mapping::mappingArtifactSchema.version,
+        imported.view().techMappingIdentity()};
+    const auto [buffered, bypass] =
+        selectedFifoTraversalCounts(imported.view());
+    auto candidateHardware = loom::eda::test::MappedSpatialMappingFixture{
+        pnrInvocation.module, candidateTechMapping, std::move(imported)};
+    auto candidatePrepared =
+        take(loom::evaluation::models::prepareCgraSimulationEvaluation(
+            source.dataflow, candidateHardware.module.reference(),
+            candidateHardware.spatialMapping.reference(), source.workload,
+            source.runtimeInput, resolvedConfig, artifacts, blobs));
+    const bool last = candidate == publishedSpatialMappings.back();
+    const auto screeningDeadline =
+        std::chrono::steady_clock::now() + (selectedWarmup || !last
+                                                ? kCandidateScreeningLimit
+                                                : kQualificationLimit);
+    auto screened =
+        take(loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
+            candidatePrepared,
+            {loom::runtime::gem5MaximumSpatialWork, screeningDeadline},
+            artifacts, blobs));
+    const bool retired = completed(screened);
+    candidateScreening.push_back(llvm::json::Object{
+        {"spatial_mapping", referenceJson(candidate)},
+        {"buffered_fifo_traversals", buffered},
+        {"bypass_fifo_traversals", bypass},
+        {"retired", retired},
+        {"closed_wait_actor_cycle_edges",
+         screened.closedWait ? llvm::json::Value(static_cast<std::uint64_t>(
+                                   screened.closedWait->actorWaitCycle.size()))
+                             : llvm::json::Value(nullptr)},
+        {"closed_wait_pending_transfers",
+         screened.closedWait
+             ? llvm::json::Value(screened.closedWait->pendingTransfers)
+             : llvm::json::Value(nullptr)},
+        {"operand_queue_shared_ingress_pressure",
+         screened.closedWait
+             ? llvm::json::Value(
+                   screened.closedWait->operandQueueSharedIngressPressure)
+             : llvm::json::Value(nullptr)}});
+    if (!firstHardware)
+      firstHardware = std::move(candidateHardware);
+    if (retired && !selectedWarmup) {
+      selectedHardware = std::move(candidateHardware);
+      selectedPrepared = std::move(candidatePrepared);
+      selectedWarmup = std::move(screened);
+    }
+  }
+  ledger.record("candidate_screening");
+  // Retaining the first published candidate when none retires preserves the
+  // prior repair entry point; the screening record keeps that fallback
+  // visible instead of implying a quality selection.
+  auto hardware = selectedHardware ? std::move(*selectedHardware)
+                                   : std::move(*firstHardware);
   const loom::ArtifactRootReference initialSpatialMapping =
       hardware.spatialMapping.reference();
   const auto [bufferedFifoTraversals, bypassFifoTraversals] =
@@ -565,13 +674,16 @@ int main(int argc, char **argv) {
         hardware.spatialMapping.reference(), source.workload,
         source.runtimeInput, resolvedConfig, artifacts, blobs));
   };
-  auto prepared = prepare();
-  const auto warmupDeadline =
-      std::chrono::steady_clock::now() + kQualificationLimit;
-  auto warmup =
-      take(loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
-          prepared, {loom::runtime::gem5MaximumSpatialWork, warmupDeadline},
-          artifacts, blobs));
+  auto prepared = selectedPrepared ? std::move(*selectedPrepared) : prepare();
+  auto warmup = selectedWarmup
+                    ? std::move(*selectedWarmup)
+                    : take(loom::evaluation::models::
+                               evaluateCgraSimulationWithAttemptProfile(
+                                   prepared,
+                                   {loom::runtime::gem5MaximumSpatialWork,
+                                    std::chrono::steady_clock::now() +
+                                        kQualificationLimit},
+                                   artifacts, blobs));
   std::optional<loom::ArtifactRootReference> preRepairEvidence;
   std::optional<loom::ArtifactRootReference> parentSystemMapping;
   llvm::json::Array transportRepairAttempts;
@@ -647,7 +759,32 @@ int main(int argc, char **argv) {
       replayed = true;
       break;
     }
-    require(replayed, "bounded transport repair produced no retiring child");
+    ledger.record("transport_repair");
+    if (!replayed) {
+      // A qualification that cannot retire still owns complete evidence: the
+      // screened frontier, every repair attempt, and the phase ledger. Exiting
+      // without it would discard work that was already paid for.
+      llvm::json::Object report{
+          {"schema", "loom.cgra_budget_profile_outcome.2"},
+          {"workload", argv[3]},
+          {"operator_id", argv[4]},
+          {"protocol_symbol", argv[5]},
+          {"stage", "transport_repair"},
+          {"resolved_config", referenceJson(resolvedConfigReference)},
+          {"fabric", referenceJson(pnrInvocation.module.reference())},
+          {"tech_mapping_search", std::move(techMappingResult)},
+          {"spatial_pnr", std::move(pnrResult)},
+          {"spatial_candidate_screening", std::move(candidateScreening)},
+          {"transport_repair",
+           llvm::json::Object{
+               {"parent_system_mapping", referenceJson(*parentSystemMapping)},
+               {"pre_repair_evidence", referenceJson(*preRepairEvidence)},
+               {"attempts", std::move(transportRepairAttempts)}}},
+          {"phase_ledger", ledger.release()}};
+      llvm::outs() << llvm::formatv("{0:2}\n",
+                                    llvm::json::Value(std::move(report)));
+      return EXIT_SUCCESS;
+    }
   }
   const auto warmupEvidence = take(
       loom::evaluation::publishEvaluationEvidence(warmup.evidence, artifacts));
@@ -666,6 +803,7 @@ int main(int argc, char **argv) {
     measurements.push_back(measurementJson(evaluated, evidence));
   }
 
+  ledger.record("measurements");
   llvm::json::Object report{
       {"schema", "loom.cgra_budget_profile.5"},
       {"workload", argv[3]},
@@ -683,6 +821,7 @@ int main(int argc, char **argv) {
       {"tech_mapping", referenceJson(hardware.techMapping)},
       {"tech_mapping_search", std::move(techMappingResult)},
       {"initial_spatial_mapping", referenceJson(initialSpatialMapping)},
+      {"spatial_candidate_screening", std::move(candidateScreening)},
       {"spatial_mapping", referenceJson(hardware.spatialMapping.reference())},
       {"spatial_pnr", std::move(pnrResult)},
       {"transport_repair",
@@ -694,6 +833,7 @@ int main(int argc, char **argv) {
            : llvm::json::Value(nullptr)},
       {"warmup_evidence", referenceJson(warmupEvidence)},
       {"measurements", std::move(measurements)},
+      {"phase_ledger", ledger.release()},
   };
   llvm::outs() << llvm::formatv("{0:2}\n",
                                 llvm::json::Value(std::move(report)));
