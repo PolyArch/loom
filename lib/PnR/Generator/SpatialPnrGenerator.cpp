@@ -665,105 +665,94 @@ public:
           fields["exact_repair_ns"] = exactRepairNanoseconds;
           fields["final_closure_ns"] = finalClosureNanoseconds;
           fields["verification_ns"] = verificationNanoseconds;
-          const SpatialCandidateState *candidate_ =
-              observedCandidate_ ? observedCandidate_->get() : nullptr;
-          if (!candidate_ || !problem_)
+          if (!captured_)
             return;
-          fields["unrouted_obligations"] =
-              candidate_->unroutedObligationCount();
-          fields["hard_progress_violation"] =
-              candidate_->hardProgressViolation();
-          fields["shared_finite_buffer_conflicts"] =
-              candidate_->progress().sharedFiniteBufferConflictCount();
-          fields["route_dependency_violations"] =
-              candidate_->progress().routeDependencyViolationCount();
-          fields["transport_closure_violation"] =
-              candidate_->hasTransportClosureViolation();
-          fields["atomic_capacity_overuse"] =
-              candidate_->atomicCapacityOveruse();
-          fields["static_schedule_pressure"] =
-              candidate_->staticSchedulePressure();
-          fields["route_capacity_overuse"] =
-              candidate_->routeCapacityOveruse();
-          fields["tag_unassigned"] = candidate_->tagUnassignedCount();
-          fields["tag_conflicts"] = candidate_->tagConflictCount();
-          fields["tag_resident_overuse"] =
-              candidate_->tagResidentCapacityOveruse();
-          fields["worst_route_arrival_delay_quanta"] =
-              candidate_->worstRouteArrivalDelayQuanta();
-          fields["total_route_negative_slack_quanta"] =
-              candidate_->totalRouteNegativeSlackQuanta();
-          const auto dimensions = problem_->resources().capacityDimensions();
-          std::uint64_t usedUnits = 0;
-          std::uint64_t totalUnits = 0;
-          std::uint64_t overusedDimensions = 0;
-          std::uint64_t maximumOveruse = 0;
-          for (PnrIndex dimension = 0; dimension < dimensions.size();
-               ++dimension) {
-            usedUnits += candidate_->routeCapacityUsageRaw(dimension);
-            totalUnits += dimensions[dimension].capacity;
-            const std::uint64_t overuse =
-                candidate_->routeCapacityOveruseRaw(dimension);
-            overusedDimensions += overuse != 0;
-            maximumOveruse = std::max(maximumOveruse, overuse);
-          }
-          fields["route_capacity_dimensions"] =
-              static_cast<std::uint64_t>(dimensions.size());
-          fields["route_capacity_used_units"] = usedUnits;
-          fields["route_capacity_total_units"] = totalUnits;
-          fields["route_capacity_overused_dimensions"] = overusedDimensions;
-          fields["route_capacity_maximum_overuse"] = maximumOveruse;
-          const auto contexts =
-              problem_->capacity().computeInstructionContextOveruse();
-          llvm::DenseSet<PnrIndex> usedContexts;
-          const std::size_t realizationCount =
-              problem_->realizations().computeRealizations().size();
-          for (PnrIndex realization = 0; realization < realizationCount;
-               ++realization)
-            usedContexts.insert(
-                candidate_->computeBinding(realization).instructionContext);
-          fields["compute_realizations"] =
-              static_cast<std::uint64_t>(realizationCount);
-          fields["compute_contexts_used"] =
-              static_cast<std::uint64_t>(usedContexts.size());
-          fields["compute_contexts_total"] =
-              static_cast<std::uint64_t>(contexts.size());
-          fields["finite_buffer_owners"] = static_cast<std::uint64_t>(
-              problem_->progressIndex().finiteBufferOwners().size());
-          if (auto witnesses =
-                  candidate_->progress().finiteBufferConflictWitnesses(
-                      *candidate_)) {
-            std::uint64_t routeArcAnchors = 0;
-            std::uint64_t attachmentAnchors = 0;
-            for (const SpatialFiniteBufferConflictWitness &witness :
-                 *witnesses)
-              for (const SpatialProgressRouteAnchor &anchor :
-                   witness.routeAnchors) {
-                if (anchor.kind ==
-                    SpatialProgressRouteAnchorKind::RouteTreeArc)
-                  ++routeArcAnchors;
-                else
-                  ++attachmentAnchors;
-              }
-            fields["conflict_witnesses"] =
-                static_cast<std::uint64_t>(witnesses->size());
-            fields["conflict_route_arc_anchors"] = routeArcAnchors;
-            fields["conflict_attachment_anchors"] = attachmentAnchors;
-          } else {
-            llvm::consumeError(witnesses.takeError());
-          }
-          fields["logical_nets"] = static_cast<std::uint64_t>(
-              problem_->transfers().logicalNets().size());
+          for (auto &entry : *captured_)
+            fields[entry.first] = std::move(entry.second);
         });
   }
 
-  /// The annealing search may replace the seed's candidate handle with an
-  /// incumbent clone, so the reporter reads through the handle at emit time
-  /// instead of retaining a state pointer.
-  void observe(const SpatialCandidateStateHandle *candidate,
-               const FrozenSpatialPnrProblem *problem) {
-    observedCandidate_ = candidate;
-    problem_ = problem;
+  /// The terminal restart disposition moves the candidate handle into its
+  /// result, so the reporter snapshots the candidate-derived fields while the
+  /// candidate is still owned instead of reading a handle the caller may have
+  /// already emptied.
+  void capture(const SpatialCandidateState &candidate,
+               const FrozenSpatialPnrProblem &problem) {
+    llvm::json::Object fields;
+    fields["unrouted_obligations"] = candidate.unroutedObligationCount();
+    fields["hard_progress_violation"] = candidate.hardProgressViolation();
+    fields["shared_finite_buffer_conflicts"] =
+        candidate.progress().sharedFiniteBufferConflictCount();
+    fields["route_dependency_violations"] =
+        candidate.progress().routeDependencyViolationCount();
+    fields["transport_closure_violation"] =
+        candidate.hasTransportClosureViolation();
+    fields["atomic_capacity_overuse"] = candidate.atomicCapacityOveruse();
+    fields["static_schedule_pressure"] = candidate.staticSchedulePressure();
+    fields["route_capacity_overuse"] = candidate.routeCapacityOveruse();
+    fields["tag_unassigned"] = candidate.tagUnassignedCount();
+    fields["tag_conflicts"] = candidate.tagConflictCount();
+    fields["tag_resident_overuse"] = candidate.tagResidentCapacityOveruse();
+    fields["worst_route_arrival_delay_quanta"] =
+        candidate.worstRouteArrivalDelayQuanta();
+    fields["total_route_negative_slack_quanta"] =
+        candidate.totalRouteNegativeSlackQuanta();
+    const auto dimensions = problem.resources().capacityDimensions();
+    std::uint64_t usedUnits = 0;
+    std::uint64_t totalUnits = 0;
+    std::uint64_t overusedDimensions = 0;
+    std::uint64_t maximumOveruse = 0;
+    for (PnrIndex dimension = 0; dimension < dimensions.size(); ++dimension) {
+      usedUnits += candidate.routeCapacityUsageRaw(dimension);
+      totalUnits += dimensions[dimension].capacity;
+      const std::uint64_t overuse =
+          candidate.routeCapacityOveruseRaw(dimension);
+      overusedDimensions += overuse != 0;
+      maximumOveruse = std::max(maximumOveruse, overuse);
+    }
+    fields["route_capacity_dimensions"] =
+        static_cast<std::uint64_t>(dimensions.size());
+    fields["route_capacity_used_units"] = usedUnits;
+    fields["route_capacity_total_units"] = totalUnits;
+    fields["route_capacity_overused_dimensions"] = overusedDimensions;
+    fields["route_capacity_maximum_overuse"] = maximumOveruse;
+    const auto contexts = problem.capacity().computeInstructionContextOveruse();
+    llvm::DenseSet<PnrIndex> usedContexts;
+    const std::size_t realizationCount =
+        problem.realizations().computeRealizations().size();
+    for (PnrIndex realization = 0; realization < realizationCount;
+         ++realization)
+      usedContexts.insert(
+          candidate.computeBinding(realization).instructionContext);
+    fields["compute_realizations"] =
+        static_cast<std::uint64_t>(realizationCount);
+    fields["compute_contexts_used"] =
+        static_cast<std::uint64_t>(usedContexts.size());
+    fields["compute_contexts_total"] =
+        static_cast<std::uint64_t>(contexts.size());
+    fields["finite_buffer_owners"] = static_cast<std::uint64_t>(
+        problem.progressIndex().finiteBufferOwners().size());
+    if (auto witnesses =
+            candidate.progress().finiteBufferConflictWitnesses(candidate)) {
+      std::uint64_t routeArcAnchors = 0;
+      std::uint64_t attachmentAnchors = 0;
+      for (const SpatialFiniteBufferConflictWitness &witness : *witnesses)
+        for (const SpatialProgressRouteAnchor &anchor : witness.routeAnchors) {
+          if (anchor.kind == SpatialProgressRouteAnchorKind::RouteTreeArc)
+            ++routeArcAnchors;
+          else
+            ++attachmentAnchors;
+        }
+      fields["conflict_witnesses"] =
+          static_cast<std::uint64_t>(witnesses->size());
+      fields["conflict_route_arc_anchors"] = routeArcAnchors;
+      fields["conflict_attachment_anchors"] = attachmentAnchors;
+    } else {
+      llvm::consumeError(witnesses.takeError());
+    }
+    fields["logical_nets"] =
+        static_cast<std::uint64_t>(problem.transfers().logicalNets().size());
+    captured_ = std::move(fields);
   }
 
   std::uint64_t &phase(std::uint64_t &slot) {
@@ -784,8 +773,7 @@ public:
 
 private:
   std::uint32_t attempt_;
-  const SpatialCandidateStateHandle *observedCandidate_ = nullptr;
-  const FrozenSpatialPnrProblem *problem_ = nullptr;
+  std::optional<llvm::json::Object> captured_;
   std::chrono::steady_clock::time_point mark_ =
       std::chrono::steady_clock::now();
 };
@@ -944,7 +932,6 @@ SpatialRestartResult runSpatialRestartImpl(
   }
 
   accounting.preparedSeeds = 1;
-  reporter.observe(&seed->candidate, problem.get());
   reporter.restartClock();
   auto annealed = annealing.run(*seed, executionControl, workLedger);
   reporter.phase(reporter.annealingNanoseconds);
@@ -1125,6 +1112,7 @@ SpatialRestartResult runSpatialRestartImpl(
         InternalSpatialPnrGenerationReason::CandidateVerification,
         std::move(accounting), std::move(error));
   reporter.phase(reporter.verificationNanoseconds);
+  reporter.capture(*seed->candidate, *problem);
   emitActiveHandshakeStatistics(
       seed->candidate->handshake().materializationStatistics(), attempt);
   auto violation = firstFinalViolation(*seed->candidate);
