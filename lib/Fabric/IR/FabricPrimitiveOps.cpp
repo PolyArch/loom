@@ -274,12 +274,31 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseLSquare() || parser.parseKeyword("max_depth") ||
       parser.parseEqual() || parser.parseInteger(maxDepth) ||
       parser.parseComma() || parser.parseKeyword("bypassable") ||
-      parser.parseEqual() || parseBoolKeyword(parser, bypassable) ||
-      parser.parseRSquare())
+      parser.parseEqual() || parseBoolKeyword(parser, bypassable))
     return failure();
   auto &builder = parser.getBuilder();
+  // The discipline is optional and defaults to strict FIFO, so every fabric
+  // written before the discipline existed still round-trips unchanged.
+  std::optional<FifoQueueDiscipline> discipline;
+  if (succeeded(parser.parseOptionalComma())) {
+    StringRef keyword;
+    if (parser.parseKeyword("queue_discipline") || parser.parseEqual() ||
+        parser.parseKeyword(&keyword))
+      return failure();
+    discipline = symbolizeFifoQueueDiscipline(keyword);
+    if (!discipline)
+      return parser.emitError(parser.getCurrentLocation(),
+                              "unknown FIFO queue discipline '")
+             << keyword << "'";
+  }
+  if (parser.parseRSquare())
+    return failure();
   result.addAttribute("max_depth", builder.getI32IntegerAttr(maxDepth));
   result.addAttribute("bypassable", builder.getBoolAttr(bypassable));
+  if (discipline)
+    result.addAttribute("queue_discipline", FifoQueueDisciplineAttr::get(
+                                                builder.getContext(),
+                                                *discipline));
 
   // Optional software param: {bypassed = true|false}
   if (succeeded(parser.parseOptionalLBrace())) {
@@ -313,10 +332,15 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
 void FifoOp::print(OpAsmPrinter &p) {
   p << ' ' << getInput();
   p << " [max_depth = " << getMaxDepth()
-    << ", bypassable = " << (getBypassable() ? "true" : "false") << "]";
+    << ", bypassable = " << (getBypassable() ? "true" : "false");
+  if (auto discipline = getQueueDisciplineAttr())
+    p << ", queue_discipline = "
+      << stringifyFifoQueueDiscipline(discipline.getValue());
+  p << "]";
   if (auto a = getBypassedAttr())
     p << " {bypassed = " << (a.getValue() ? "true" : "false") << "}";
-  SmallVector<StringRef, 3> elided{"max_depth", "bypassable", "bypassed"};
+  SmallVector<StringRef, 4> elided{"max_depth", "bypassable",
+                                   "queue_discipline", "bypassed"};
   p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elided);
   Type outerTy = getInput().getType();
   Type innerTy = getOutput().getType();
@@ -332,6 +356,19 @@ LogicalResult FifoOp::verify() {
     return emitOpError(
         "'bypassed' software parameter is only allowed when 'bypassable' is "
         "true");
+  // A tag-selective discipline schedules on the Physical Tag, so it is only
+  // meaningful when the queued tokens carry one.
+  if (auto discipline = getQueueDisciplineAttr();
+      discipline &&
+      discipline.getValue() == FifoQueueDiscipline::PerTagVirtualChannel) {
+    auto tagged = llvm::dyn_cast<BitsTagType>(getOutput().getType());
+    if (!tagged)
+      return emitOpError("'per_tag_virtual_channel' requires a tagged FIFO "
+                         "port kind");
+    if (tagged.getTagWidth() == 0)
+      return emitOpError("'per_tag_virtual_channel' requires a positive tag "
+                         "width");
+  }
   // Width-relaxation rule at the FIFO operand boundary. The outer SSA
   // source type may differ from the FIFO's inner type only in width, and
   // only for the same fabric kind (bits / bits_tag). memref operands

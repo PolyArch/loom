@@ -112,6 +112,21 @@ def Fabric_FifoOp : Fabric_Op<"fifo", [Pure]> {
       * `max_depth`   : i32, must be > 0 (physical FIFO depth)
       * `bypassable`  : bool (whether hardware supports combinational bypass)
 
+    Optional hardware parameter (printed in `[...]` after `bypassable` when
+    it is not the default `strict_fifo`):
+      * `queue_discipline` : the dequeue scheduling discipline of the physical
+                       queue. `strict_fifo` exposes only the physical head, so
+                       one token that its consumer cannot take blocks every
+                       later token. `per_tag_virtual_channel` keeps tokens of
+                       one Physical Tag in arrival order and lets the dequeue
+                       select among the per-tag heads, so a token blocks only
+                       later tokens carrying its own tag. A tag-selective
+                       discipline requires a tagged port kind, because the
+                       Physical Tag is the channel identity it schedules on.
+
+    `bypassable` is unrelated: it is the whole-FIFO combinational passthrough
+    mode, not a per-token scheduling choice.
+
     Software parameter (only valid when `bypassable` is true, printed in `{}`):
       * `bypassed`    : bool (when true, the FIFO is configured in bypass mode;
                        data/valid/ready become a combinational passthrough)
@@ -121,7 +136,9 @@ def Fabric_FifoOp : Fabric_Op<"fifo", [Pure]> {
   }];
 
   let arguments = (ins Fabric_AnyType:$input, I32Attr:$max_depth,
-      BoolAttr:$bypassable, OptionalAttr<BoolAttr>:$bypassed);
+      BoolAttr:$bypassable,
+      OptionalAttr<Fabric_FifoQueueDisciplineAttr>:$queue_discipline,
+      OptionalAttr<BoolAttr>:$bypassed);
   let results = (outs Fabric_AnyType:$output);
 
   let hasCustomAssemblyFormat = 1;

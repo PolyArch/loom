@@ -41,6 +41,22 @@ def Fabric_OperandBufferModeAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
+def Fabric_FifoQueueDiscipline : I32EnumAttr<"FifoQueueDiscipline",
+    "dequeue scheduling discipline of one physical FIFO occurrence",
+    [
+      I32EnumAttrCase<"StrictFifo", 0, "strict_fifo">,
+      I32EnumAttrCase<"PerTagVirtualChannel", 1, "per_tag_virtual_channel">
+    ]> {
+  let cppNamespace = "::fabric";
+  let genSpecializedAttr = 0;
+}
+
+def Fabric_FifoQueueDisciplineAttr
+    : EnumAttr<Fabric_Dialect, Fabric_FifoQueueDiscipline,
+               "fifo_queue_discipline"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def Fabric_FuConfigMode : I32EnumAttr<"FuConfigMode",
     "temporal PE FU configuration storage organization",
     [

@@ -630,6 +630,8 @@ struct FifoSpec final {
   PortType outputType;
   std::uint32_t maxDepth;
   bool bypassable;
+  /// Absent selects the Fabric default, which is strict FIFO dequeue order.
+  std::optional<::fabric::FifoQueueDiscipline> queueDiscipline;
 };
 
 struct BoundarySpec final {

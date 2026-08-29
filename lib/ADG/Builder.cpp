@@ -1094,9 +1094,14 @@ llvm::Expected<FifoResult> SpatialCoreBuilder::addFifo(SpatialValue input,
 
   mlir::OpBuilder builder(&(*state)->context);
   builder.setInsertionPointToEnd(&root.operation.getBody().front());
-  auto fifo = ::fabric::FifoOp::create(builder, root.operation.getLoc(),
-                                       outputType, *source, spec.maxDepth,
-                                       spec.bypassable, mlir::BoolAttr());
+  auto fifo = ::fabric::FifoOp::create(
+      builder, root.operation.getLoc(), outputType, *source, spec.maxDepth,
+      spec.bypassable,
+      spec.queueDiscipline
+          ? ::fabric::FifoQueueDisciplineAttr::get(&(*state)->context,
+                                                   *spec.queueDiscipline)
+          : ::fabric::FifoQueueDisciplineAttr(),
+      mlir::BoolAttr());
   if (llvm::Error error = verifyNewOperation(fifo, "FIFO"))
     return std::move(error);
   if (llvm::Error error = root.domainRelation.noteInternalMember(
