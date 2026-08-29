@@ -204,6 +204,12 @@ CgraGraphActivationRuntime::pendingTransferDiagnostics() const {
   return transport_->pendingTransferDiagnostics();
 }
 
+std::vector<CgraStorageResidencyDiagnostic>
+CgraGraphActivationRuntime::storageResidencyDiagnostics(
+    std::uint64_t storageOrdinal) const {
+  return transport_->storageResidencyDiagnostics(storageOrdinal);
+}
+
 std::vector<CgraOperandQueueHeadDiagnostic>
 CgraGraphActivationRuntime::pendingOperandQueueHeadDiagnostics() const {
   return transport_->pendingOperandQueueHeadDiagnostics();

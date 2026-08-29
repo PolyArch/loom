@@ -704,6 +704,42 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                   {"kind", static_cast<std::uint64_t>(edge.kind)},
               });
             fields["closed_wait_actor_cycle"] = std::move(actorCycle);
+            llvm::json::Array certificate;
+            for (const auto &edge : outcome->closedWaitSet->waitCertificate) {
+              const auto node = [](const auto &value) {
+                return llvm::json::Object{
+                    {"kind", static_cast<std::uint64_t>(value.kind)},
+                    {"ordinal", value.ordinal}};
+              };
+              certificate.push_back(llvm::json::Object{
+                  {"from", node(edge.from)},
+                  {"to", node(edge.to)},
+                  {"kind", static_cast<std::uint64_t>(edge.kind)},
+                  {"waiting_input", edge.waitingInputOrdinal},
+                  {"waiting_channel", edge.waitingChannelOrdinal},
+                  {"binding", edge.bindingOrdinal},
+                  {"occurrence", edge.occurrenceOrdinal},
+                  {"storage", edge.storageOrdinal},
+                  {"storage_fifo",
+                   edge.fifoOccurrence
+                       ? llvm::json::Value(
+                             llvm::toHex(::loom::fabric::canonicalFabricBytes(
+                                             *edge.fifoOccurrence),
+                                         true))
+                       : llvm::json::Value(nullptr)},
+                  {"storage_capacity", edge.storageCapacity},
+                  {"storage_occupancy", edge.storageOccupancy},
+                  {"awaited_queue_position", edge.awaitedQueuePosition},
+                  {"awaited_tag", edge.awaitedPhysicalTagOrdinal},
+                  {"head_tag", edge.headPhysicalTagOrdinal},
+                  {"head_binding", edge.headBindingOrdinal},
+                  {"head_destination_actor", edge.headDestinationActorOrdinal},
+                  {"head_destination_input", edge.headDestinationInputOrdinal},
+                  {"head_destination_channel",
+                   edge.headDestinationChannelOrdinal},
+              });
+            }
+            fields["closed_wait_certificate"] = std::move(certificate);
             llvm::json::Array physicalActions;
             for (const auto indexed :
                  llvm::enumerate(outcome->closedWaitSet->physicalActions)) {

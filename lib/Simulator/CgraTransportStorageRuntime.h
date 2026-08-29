@@ -41,6 +41,18 @@ public:
   const CgraTransportStorageEntry &front() const;
   bool admits(bool enqueue, bool dequeue) const;
 
+  /// Appends the resident entries from the dequeue head toward the tail. The
+  /// index of an appended entry is its exact queue position, so a closed-wait
+  /// certificate can state how far an awaited token sits behind the head
+  /// without reconstructing the ring layout.
+  void appendQueueOrder(std::vector<CgraTransportStorageEntry> &entries) const {
+    for (std::uint32_t offset = 0; offset != occupancy_; ++offset) {
+      const auto &entry = entries_[(head_ + offset) % entries_.size()];
+      if (entry)
+        entries.push_back(*entry);
+    }
+  }
+
   /// Atomically applies one cycle-start dequeue and/or enqueue. An ordinary
   /// queue admits enqueue from cycle-start capacity, so a dequeue from a full
   /// queue releases its slot for the next cycle. Independently serviced

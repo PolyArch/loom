@@ -53,8 +53,8 @@ integralReferenceCycleDistance(const SpatialEventCoordinate &from,
                          to.referenceCycle.denominator();
   const u128 toValue = static_cast<u128>(to.referenceCycle.numerator()) *
                        from.referenceCycle.denominator();
-  const u128 commonDenominator = static_cast<u128>(
-      from.referenceCycle.denominator()) *
+  const u128 commonDenominator =
+      static_cast<u128>(from.referenceCycle.denominator()) *
       to.referenceCycle.denominator();
   const u128 difference = toValue - fromValue;
   if (commonDenominator == 0 || difference % commonDenominator != 0 ||
@@ -127,9 +127,9 @@ std::vector<std::uint64_t> findTransferWaitCycle(
   return cycle;
 }
 
-CgraClosedWaitSetDiagnostic::TransferWaitKind transferWaitKind(
-    const CgraClosedWaitSetDiagnostic::Transfer &waiting,
-    const CgraClosedWaitSetDiagnostic::Transfer &blocking) {
+CgraClosedWaitSetDiagnostic::TransferWaitKind
+transferWaitKind(const CgraClosedWaitSetDiagnostic::Transfer &waiting,
+                 const CgraClosedWaitSetDiagnostic::Transfer &blocking) {
   const auto matches = [&](const auto &head) {
     return head && blocking.bindingOrdinal == head->bindingOrdinal &&
            blocking.occurrenceOrdinal == head->occurrenceOrdinal;
@@ -138,8 +138,7 @@ CgraClosedWaitSetDiagnostic::TransferWaitKind transferWaitKind(
       matches(waiting.blockingStorageHead))
     return CgraClosedWaitSetDiagnostic::TransferWaitKind::StorageHead;
   if (matches(waiting.blockingDownstreamStorageHead))
-    return CgraClosedWaitSetDiagnostic::TransferWaitKind::
-        DownstreamStorageHead;
+    return CgraClosedWaitSetDiagnostic::TransferWaitKind::DownstreamStorageHead;
   return CgraClosedWaitSetDiagnostic::TransferWaitKind::ActorPublication;
 }
 
@@ -157,9 +156,9 @@ struct ActorWaitState final {
 using ActorTransitionProbeTable =
     std::vector<std::optional<detail::ActorTransitionProbeResult>>;
 
-ActorTransitionProbeTable deriveActorTransitionProbes(
-    const detail::PreparedGraphExecution &execution,
-    const detail::SimulatorState &state) {
+ActorTransitionProbeTable
+deriveActorTransitionProbes(const detail::PreparedGraphExecution &execution,
+                            const detail::SimulatorState &state) {
   ActorTransitionProbeTable probes(execution.actorPlans.size());
   for (const auto [ordinal, actor] : llvm::enumerate(execution.actorPlans)) {
     if (actor.transitionProbe == detail::ActorTransitionProbeKind::Unavailable)
@@ -172,6 +171,106 @@ ActorTransitionProbeTable deriveActorTransitionProbes(
     probes[ordinal] = std::move(*probe);
   }
   return probes;
+}
+
+/// Projects the minimal causal certificate of one closed wait. The combined
+/// wait-for relation joins the actor edges the semantics already established
+/// with the storage edges the transport runtime observed, then keeps only the
+/// strongly connected component that the actor cycle closes. Storage residency
+/// supplies the head-of-line facts a Mapping owner needs to distinguish an
+/// insufficient reconvergent capacity from a strict-FIFO head that a different
+/// consumer owns.
+void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
+                          CgraClosedWaitSetDiagnostic &closedWait) {
+  using Diagnostic = CgraClosedWaitSetDiagnostic;
+  if (closedWait.actorWaitCycle.empty())
+    return;
+  llvm::SmallDenseSet<std::uint64_t, 16> cycleActors;
+  for (const Diagnostic::ActorWaitCycleEdge &edge : closedWait.actorWaitCycle) {
+    cycleActors.insert(edge.waitingActorOrdinal);
+    cycleActors.insert(edge.blockingActorOrdinal);
+  }
+  const auto actorNode = [](std::uint64_t ordinal) {
+    return Diagnostic::WaitNode{Diagnostic::WaitNodeKind::Actor, ordinal};
+  };
+  const auto storageNode = [](std::uint64_t ordinal) {
+    return Diagnostic::WaitNode{Diagnostic::WaitNodeKind::Storage, ordinal};
+  };
+
+  for (const Diagnostic::ActorWaitCycleEdge &edge : closedWait.actorWaitCycle) {
+    Diagnostic::WaitEdge record;
+    record.from = actorNode(edge.waitingActorOrdinal);
+    record.to = actorNode(edge.blockingActorOrdinal);
+    record.kind = edge.kind == Diagnostic::ActorWaitKind::MissingInput
+                      ? Diagnostic::WaitEdgeKind::ActorMissingInput
+                      : Diagnostic::WaitEdgeKind::ActorOutputBackpressure;
+    for (const Diagnostic::BlockedActorInput &input :
+         closedWait.blockedActorInputs) {
+      if (input.semanticActorOrdinal != edge.waitingActorOrdinal ||
+          input.definingActorOrdinal != edge.blockingActorOrdinal)
+        continue;
+      record.waitingInputOrdinal = input.inputOrdinal;
+      record.waitingChannelOrdinal = input.channelOrdinal;
+      break;
+    }
+    closedWait.waitCertificate.push_back(std::move(record));
+  }
+
+  // Every storage that a cycle member is blocked behind joins the certificate
+  // with its exact residency, so the awaited token's distance from the head is
+  // stated rather than inferred.
+  for (const Diagnostic::Transfer &transfer : closedWait.transfers) {
+    if (!transfer.blocked || transfer.blockingStorageOrdinal ==
+                                 std::numeric_limits<std::uint64_t>::max())
+      continue;
+    if (!cycleActors.contains(transfer.producerActorOrdinal) &&
+        !cycleActors.contains(transfer.blockingActorOrdinal))
+      continue;
+    const auto residency =
+        runtime.storageResidencyDiagnostics(transfer.blockingStorageOrdinal);
+    Diagnostic::WaitEdge record;
+    record.from = actorNode(transfer.producerActorOrdinal);
+    record.to = storageNode(transfer.blockingStorageOrdinal);
+    record.kind = Diagnostic::WaitEdgeKind::ActorOutputBackpressure;
+    record.bindingOrdinal = transfer.bindingOrdinal;
+    record.occurrenceOrdinal = transfer.occurrenceOrdinal;
+    record.storageOrdinal = transfer.blockingStorageOrdinal;
+    record.fifoOccurrence = transfer.blockingFifoOccurrence;
+    record.storageCapacity = transfer.blockingStorageCapacity;
+    record.storageOccupancy = transfer.blockingStorageOccupancy;
+    for (const auto &entry : residency) {
+      if (entry.bindingOrdinal == transfer.bindingOrdinal &&
+          entry.occurrenceOrdinal == transfer.occurrenceOrdinal) {
+        record.awaitedQueuePosition = entry.queuePosition;
+        record.awaitedPhysicalTagOrdinal = entry.physicalTagOrdinal;
+      }
+      if (entry.queuePosition != 0)
+        continue;
+      record.headPhysicalTagOrdinal = entry.physicalTagOrdinal;
+      record.headBindingOrdinal = entry.bindingOrdinal;
+      if (!entry.destinationActorOrdinals.empty()) {
+        record.headDestinationActorOrdinal =
+            entry.destinationActorOrdinals.front();
+        record.headDestinationInputOrdinal =
+            entry.destinationInputOrdinals.front();
+        record.headDestinationChannelOrdinal =
+            entry.destinationChannelOrdinals.front();
+      }
+    }
+    closedWait.waitCertificate.push_back(std::move(record));
+
+    // The storage cannot advance until the consumer of its head takes it.
+    if (record.headDestinationActorOrdinal ==
+        std::numeric_limits<std::uint64_t>::max())
+      continue;
+    Diagnostic::WaitEdge head = record;
+    head.from = storageNode(transfer.blockingStorageOrdinal);
+    head.to = actorNode(record.headDestinationActorOrdinal);
+    head.kind = Diagnostic::WaitEdgeKind::StorageHeadConsumer;
+    head.waitingInputOrdinal = record.headDestinationInputOrdinal;
+    head.waitingChannelOrdinal = record.headDestinationChannelOrdinal;
+    closedWait.waitCertificate.push_back(std::move(head));
+  }
 }
 
 llvm::Expected<std::vector<CgraClosedWaitSetDiagnostic::ActorWaitCycleEdge>>
@@ -205,10 +304,11 @@ deriveActorWaitCycle(
       if (!head || (head->bindingOrdinal == transfer.bindingOrdinal &&
                     head->occurrenceOrdinal == transfer.occurrenceOrdinal))
         return;
-      const auto owner = llvm::find_if(closedWait.transfers, [&](const auto &c) {
-        return c.bindingOrdinal == head->bindingOrdinal &&
-               c.occurrenceOrdinal == head->occurrenceOrdinal;
-      });
+      const auto owner =
+          llvm::find_if(closedWait.transfers, [&](const auto &c) {
+            return c.bindingOrdinal == head->bindingOrdinal &&
+                   c.occurrenceOrdinal == head->occurrenceOrdinal;
+          });
       if (owner != closedWait.transfers.end() &&
           owner->producerActorOrdinal < actorCount)
         wait.outputBackpressure.push_back(owner->producerActorOrdinal);
@@ -219,10 +319,9 @@ deriveActorWaitCycle(
   }
   for (ActorWaitState &wait : waits) {
     llvm::sort(wait.outputBackpressure);
-    wait.outputBackpressure.erase(
-        std::unique(wait.outputBackpressure.begin(),
-                    wait.outputBackpressure.end()),
-        wait.outputBackpressure.end());
+    wait.outputBackpressure.erase(std::unique(wait.outputBackpressure.begin(),
+                                              wait.outputBackpressure.end()),
+                                  wait.outputBackpressure.end());
   }
 
   for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
@@ -256,8 +355,8 @@ deriveActorWaitCycle(
         continue;
       hasMissingInput = true;
       mlir::Operation *producer = value.getDefiningOp();
-      const auto found = producer ? actorByOperation.find(producer)
-                                  : actorByOperation.end();
+      const auto found =
+          producer ? actorByOperation.find(producer) : actorByOperation.end();
       if (found == actorByOperation.end()) {
         hasUnownedMissingInput = true;
         continue;
@@ -286,16 +385,15 @@ deriveActorWaitCycle(
       const ActorWaitState &wait = waits[actor];
       bool internallyBlocked = false;
       if (wait.usesOutputBackpressure) {
-        internallyBlocked = llvm::any_of(
-            wait.outputBackpressure,
-            [&](std::uint64_t target) { return closed[target]; });
+        internallyBlocked =
+            llvm::any_of(wait.outputBackpressure,
+                         [&](std::uint64_t target) { return closed[target]; });
       } else {
         internallyBlocked = llvm::all_of(
             wait.missingInputCases, [&](const ActorWaitCase &blockedCase) {
-              return llvm::any_of(blockedCase.internalProducers,
-                                  [&](std::uint64_t producer) {
-                                    return closed[producer];
-                                  });
+              return llvm::any_of(
+                  blockedCase.internalProducers,
+                  [&](std::uint64_t producer) { return closed[producer]; });
             });
       }
       if (!internallyBlocked) {
@@ -316,8 +414,8 @@ deriveActorWaitCycle(
       for (std::uint64_t target : wait.outputBackpressure)
         if (closed[target])
           edges[actor].push_back(
-              {target, CgraClosedWaitSetDiagnostic::ActorWaitKind::
-                           OutputBackpressure});
+              {target,
+               CgraClosedWaitSetDiagnostic::ActorWaitKind::OutputBackpressure});
     } else {
       for (const ActorWaitCase &blockedCase : wait.missingInputCases)
         for (std::uint64_t producer : blockedCase.internalProducers)
@@ -327,8 +425,7 @@ deriveActorWaitCycle(
                  CgraClosedWaitSetDiagnostic::ActorWaitKind::MissingInput});
     }
     llvm::sort(edges[actor], [](const Edge &lhs, const Edge &rhs) {
-      return std::tie(lhs.first, lhs.second) <
-             std::tie(rhs.first, rhs.second);
+      return std::tie(lhs.first, lhs.second) < std::tie(rhs.first, rhs.second);
     });
     edges[actor].erase(std::unique(edges[actor].begin(), edges[actor].end()),
                        edges[actor].end());
@@ -557,7 +654,8 @@ struct CgraExecutionSession::Impl final {
         {::dataflow::canonicalDataflowSchema.identity.str(),
          ::dataflow::canonicalDataflowSchema.version,
          prepared->dataflow.identity()},
-        prepared->fabric.reference(), prepared->tech.reference(),
+        prepared->fabric.reference(),
+        prepared->tech.reference(),
         prepared->spatial.reference()};
     const auto &operandProgress = runtime->operandQueueProgress();
     closedWait->operandQueueGroupCount = operandProgress.groupCount;
@@ -567,28 +665,18 @@ struct CgraExecutionSession::Impl final {
         operandProgress.sharedIngressPressure;
     closedWait->operandQueueDistinctIngressCount =
         operandProgress.distinctIngressCount;
-    closedWait->operandQueuePairingKeyCount =
-        operandProgress.pairingKeyCount;
+    closedWait->operandQueuePairingKeyCount = operandProgress.pairingKeyCount;
     closedWait->operandQueueProgressStatus =
         static_cast<std::uint8_t>(operandProgress.status);
     closedWait->operandQueueProgressSupport =
         static_cast<std::uint8_t>(operandProgress.support);
-    closedWait->operandQueueProjectionDigest =
-        operandProgress.projectionDigest;
+    closedWait->operandQueueProjectionDigest = operandProgress.projectionDigest;
     for (const auto &head : runtime->pendingOperandQueueHeadDiagnostics())
       closedWait->operandQueueHeads.push_back(
-          {head.queue,
-           head.fu,
-           head.allocationUnit,
-           head.capacity,
-           head.occupancy,
-           head.reservations,
-           head.headBindingOrdinal,
-           head.headOccurrenceOrdinal,
-           head.headProducerSequenceOrdinal,
-           head.headTag,
-           head.exactHead,
-           head.consumers});
+          {head.queue, head.fu, head.allocationUnit, head.capacity,
+           head.occupancy, head.reservations, head.headBindingOrdinal,
+           head.headOccurrenceOrdinal, head.headProducerSequenceOrdinal,
+           head.headTag, head.exactHead, head.consumers});
     for (const auto &firing : runtime->pendingActorFiringDiagnostics())
       closedWait->actorFirings.push_back(
           {firing.semanticActorOrdinal, firing.occurrenceOrdinal,
@@ -596,8 +684,8 @@ struct CgraExecutionSession::Impl final {
            firing.completedTransfers, firing.physicalComplete,
            firing.causalReleaseSatisfied});
     const auto projectStorageHead =
-        [](const std::optional<detail::CgraPendingTransferDiagnostic::StorageHead>
-               &head)
+        [](const std::optional<
+            detail::CgraPendingTransferDiagnostic::StorageHead> &head)
         -> std::optional<CgraClosedWaitSetDiagnostic::Transfer::StorageHead> {
       if (!head)
         return std::nullopt;
@@ -668,8 +756,8 @@ struct CgraExecutionSession::Impl final {
            transfer.blockingDownstreamTraversals});
     }
     const std::size_t actorCount = graphExecution->execution.actorPlans.size();
-    ActorTransitionProbeTable probes = deriveActorTransitionProbes(
-        graphExecution->execution, dynamicState);
+    ActorTransitionProbeTable probes =
+        deriveActorTransitionProbes(graphExecution->execution, dynamicState);
     llvm::DenseMap<mlir::Operation *, std::uint64_t> actorByOperation;
     actorByOperation.reserve(actorCount);
     for (const auto [ordinal, actor] :
@@ -687,7 +775,8 @@ struct CgraExecutionSession::Impl final {
           plan.operation->getAttrOfType<dataflow::EntityIdAttr>(
               dataflow::kEntityIdAttrName);
       const std::uint64_t actorEntityId =
-          actorEntity ? actorEntity.getId() : detail::invalidCgraTransportOrdinal;
+          actorEntity ? actorEntity.getId()
+                      : detail::invalidCgraTransportOrdinal;
       for (std::uint32_t input : probes[actor]->shape.requiredInputs) {
         const std::uint64_t channel = plan.firstInputChannel + input;
         if (channel >= dynamicState.channelSlots.size())
@@ -698,8 +787,7 @@ struct CgraExecutionSession::Impl final {
         CgraClosedWaitSetDiagnostic::ActorInputSourceKind sourceKind =
             CgraClosedWaitSetDiagnostic::ActorInputSourceKind::Unknown;
         std::uint64_t definingActor = detail::invalidCgraTransportOrdinal;
-        std::uint64_t definingActorEntity =
-            detail::invalidCgraTransportOrdinal;
+        std::uint64_t definingActorEntity = detail::invalidCgraTransportOrdinal;
         bool definingActorTerminal = false;
         const bool memoryCapability =
             plan.memory && input == plan.memory->memoryOperandOrdinal &&
@@ -710,12 +798,11 @@ struct CgraExecutionSession::Impl final {
         if (mlir::Operation *producer = value.getDefiningOp()) {
           auto found = actorByOperation.find(producer);
           if (found != actorByOperation.end()) {
-            sourceKind = CgraClosedWaitSetDiagnostic::ActorInputSourceKind::
-                ActorResult;
+            sourceKind =
+                CgraClosedWaitSetDiagnostic::ActorInputSourceKind::ActorResult;
             definingActor = found->second;
-            if (auto entity =
-                    producer->getAttrOfType<dataflow::EntityIdAttr>(
-                        dataflow::kEntityIdAttrName))
+            if (auto entity = producer->getAttrOfType<dataflow::EntityIdAttr>(
+                    dataflow::kEntityIdAttrName))
               definingActorEntity = entity.getId();
             definingActorTerminal =
                 probes[definingActor] &&
@@ -735,8 +822,8 @@ struct CgraExecutionSession::Impl final {
     for (const auto &action : runtime->pendingPhysicalActionDiagnostics())
       closedWait->physicalActions.push_back(
           {action.action.actionOrdinal, action.action.occurrenceOrdinal,
-           static_cast<std::uint8_t>(action.client), action.semanticActorOrdinal,
-           action.action.granted,
+           static_cast<std::uint8_t>(action.client),
+           action.semanticActorOrdinal, action.action.granted,
            action.action.hasCommit, action.action.requiresCausalRelease,
            action.action.intrinsicReleaseReached,
            action.action.causalReleaseReached});
@@ -750,11 +837,12 @@ struct CgraExecutionSession::Impl final {
            waiting.blockingActorOrdinal, blocking.bindingOrdinal,
            blocking.occurrenceOrdinal, transferWaitKind(waiting, blocking)});
     }
-    auto actorCycle = deriveActorWaitCycle(
-        graphExecution->execution, dynamicState, probes, *closedWait);
+    auto actorCycle = deriveActorWaitCycle(graphExecution->execution,
+                                           dynamicState, probes, *closedWait);
     if (!actorCycle)
       return actorCycle.takeError();
     closedWait->actorWaitCycle = std::move(*actorCycle);
+    buildWaitCertificate(*runtime, *closedWait);
     return llvm::Error::success();
   }
 };
@@ -822,11 +910,11 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
     impl_->lastCoordinate = (**frame).coordinate;
     ++impl_->counters.eventFrameCount;
     ++advanced;
-    impl_->counters.maximumReferenceCycleNumerator = std::max(
-        impl_->counters.maximumReferenceCycleNumerator,
-        (**frame).coordinate.referenceCycle.numerator());
-    impl_->counters.maximumEventDelta = std::max(
-        impl_->counters.maximumEventDelta, (**frame).coordinate.delta);
+    impl_->counters.maximumReferenceCycleNumerator =
+        std::max(impl_->counters.maximumReferenceCycleNumerator,
+                 (**frame).coordinate.referenceCycle.numerator());
+    impl_->counters.maximumEventDelta =
+        std::max(impl_->counters.maximumEventDelta, (**frame).coordinate.delta);
     impl_->counters.emptyEventFrameCount +=
         (**frame).physicalEvents.empty() && (**frame).actorEvents.empty() &&
         (**frame).publications.empty() &&
@@ -847,8 +935,8 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
         (**frame).memoryLinearizations.size();
     for (const detail::CgraPhysicalLifecycleEvent &event :
          (**frame).physicalEvents) {
-      const auto key = std::make_pair(event.actionOrdinal,
-                                      event.occurrenceOrdinal);
+      const auto key =
+          std::make_pair(event.actionOrdinal, event.occurrenceOrdinal);
       switch (event.kind) {
       case detail::CgraPhysicalLifecycleKind::Requested:
         ++impl_->counters.physicalRequestCount;
@@ -865,8 +953,8 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
           impl_->lifecycle = SpatialExecutionSessionState::Failed;
           return invalid("CGRA physical grant has no request observation");
         } else {
-          auto wait = integralReferenceCycleDistance(request->second,
-                                                     event.coordinate);
+          auto wait =
+              integralReferenceCycleDistance(request->second, event.coordinate);
           if (!wait) {
             ++impl_->counters.nonIntegralTimingObservationCount;
           } else if (*wait == 0) {
@@ -874,8 +962,8 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
           } else {
             ++impl_->counters.physicalGrantDelayedCount;
             impl_->counters.physicalGrantWaitCycleSum += *wait;
-            impl_->counters.physicalGrantWaitCycleMax = std::max(
-                impl_->counters.physicalGrantWaitCycleMax, *wait);
+            impl_->counters.physicalGrantWaitCycleMax =
+                std::max(impl_->counters.physicalGrantWaitCycleMax, *wait);
           }
         }
         impl_->physicalGrantCoordinates.insert_or_assign(key, event.coordinate);
@@ -898,8 +986,8 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
         }
         if (auto grant = impl_->physicalGrantCoordinates.find(key);
             grant != impl_->physicalGrantCoordinates.end()) {
-          if (auto active = integralReferenceCycleDistance(
-                  grant->second, event.coordinate)) {
+          if (auto active = integralReferenceCycleDistance(grant->second,
+                                                           event.coordinate)) {
             impl_->counters.physicalGrantedLifetimeCycleSum += *active;
             impl_->counters.physicalGrantedLifetimeCycleMax = std::max(
                 impl_->counters.physicalGrantedLifetimeCycleMax, *active);
@@ -908,8 +996,7 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
           }
         } else {
           impl_->lifecycle = SpatialExecutionSessionState::Failed;
-          return invalid(
-              "CGRA physical retirement has no grant observation");
+          return invalid("CGRA physical retirement has no grant observation");
         }
         impl_->physicalRequestCoordinates.erase(key);
         impl_->physicalGrantCoordinates.erase(key);
@@ -962,8 +1049,7 @@ CgraExecutionSession::takeRetiredSimulation() {
       impl_->counters};
 }
 
-llvm::Expected<PreparedCgraWorkloadExecution>
-prepareCgraWorkloadExecution(
+llvm::Expected<PreparedCgraWorkloadExecution> prepareCgraWorkloadExecution(
     const PreparedCgraExecution &prepared,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput) {
@@ -1012,12 +1098,12 @@ startCgraExecutionSession(const PreparedCgraExecution &prepared,
                                    traceLevel, externalMemoryProvider);
 }
 
-llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
-    const PreparedCgraWorkloadExecution &prepared,
-    const CanonicalSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput,
-    std::optional<TraceCaptureLevel> traceLevel,
-    CgraExternalMemoryProvider *externalMemoryProvider) {
+llvm::Expected<CgraExecutionSession>
+startCgraExecutionSession(const PreparedCgraWorkloadExecution &prepared,
+                          const CanonicalSimulationWorkload &workload,
+                          const CanonicalSimulationRuntimeInput &runtimeInput,
+                          std::optional<TraceCaptureLevel> traceLevel,
+                          CgraExternalMemoryProvider *externalMemoryProvider) {
   if (!prepared.impl_ || !prepared.impl_->prepared ||
       !prepared.impl_->graphExecution)
     return invalid("prepared CGRA workload execution is empty");

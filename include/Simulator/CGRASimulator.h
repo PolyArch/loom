@@ -135,8 +135,7 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint64_t semanticActorOrdinal = 0;
     std::uint64_t actorEntityId = std::numeric_limits<std::uint64_t>::max();
     std::uint32_t inputOrdinal = 0;
-    std::uint64_t channelOrdinal =
-        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t channelOrdinal = std::numeric_limits<std::uint64_t>::max();
     ActorInputSourceKind sourceKind = ActorInputSourceKind::Unknown;
     std::uint64_t definingActorOrdinal =
         std::numeric_limits<std::uint64_t>::max();
@@ -157,10 +156,8 @@ struct CgraClosedWaitSetDiagnostic final {
   };
   struct Transfer final {
     struct StorageHead final {
-      std::uint64_t storageOrdinal =
-          std::numeric_limits<std::uint64_t>::max();
-      std::uint64_t bindingOrdinal =
-          std::numeric_limits<std::uint64_t>::max();
+      std::uint64_t storageOrdinal = std::numeric_limits<std::uint64_t>::max();
+      std::uint64_t bindingOrdinal = std::numeric_limits<std::uint64_t>::max();
       std::uint64_t occurrenceOrdinal =
           std::numeric_limits<std::uint64_t>::max();
       std::uint64_t traversalNodeOrdinal =
@@ -279,6 +276,75 @@ struct CgraClosedWaitSetDiagnostic final {
   /// edges use only the dynamic transition selected by the actor semantics and
   /// are admitted when its missing producers remain in the greatest closed set.
   std::vector<ActorWaitCycleEdge> actorWaitCycle;
+
+  /// Minimal causal certificate of one quiescent closed wait. Nodes are the
+  /// semantic actors and physical storages of a single strongly connected
+  /// component of the combined wait-for relation, so the certificate stays
+  /// bounded by the closure that actually deadlocked rather than by the whole
+  /// execution. An independent Mapping or DSE owner can rebuild the closed
+  /// cycle from these edges alone; the runtime remains the only owner of the
+  /// dynamic facts they quote.
+  enum class WaitNodeKind : std::uint8_t { Actor, Storage };
+  struct WaitNode final {
+    WaitNodeKind kind = WaitNodeKind::Actor;
+    std::uint64_t ordinal = std::numeric_limits<std::uint64_t>::max();
+
+    friend bool operator==(const WaitNode &lhs, const WaitNode &rhs) {
+      return lhs.kind == rhs.kind && lhs.ordinal == rhs.ordinal;
+    }
+  };
+  enum class WaitEdgeKind : std::uint8_t {
+    /// An actor cannot fire until a producing actor supplies one input.
+    ActorMissingInput,
+    /// An actor cannot retire an output because a storage cannot admit it.
+    ActorOutputBackpressure,
+    /// A storage cannot advance because its dequeue head is owed to a
+    /// consumer actor that has not taken it.
+    StorageHeadConsumer,
+    /// A storage cannot advance because the storage its head continues into
+    /// cannot admit another token.
+    StorageDownstream,
+  };
+  struct WaitEdge final {
+    WaitNode from;
+    WaitNode to;
+    WaitEdgeKind kind = WaitEdgeKind::ActorMissingInput;
+    /// Waiting side, when the waiting node is an actor.
+    std::uint32_t waitingInputOrdinal =
+        std::numeric_limits<std::uint32_t>::max();
+    std::uint64_t waitingChannelOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    /// The in-flight transfer this edge is about, when one exists.
+    std::uint64_t bindingOrdinal = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t occurrenceOrdinal = std::numeric_limits<std::uint64_t>::max();
+    /// Storage facts, when the edge crosses a physical storage.
+    std::uint64_t storageOrdinal = std::numeric_limits<std::uint64_t>::max();
+    std::optional<::loom::fabric::FabricFifoOccurrenceRef> fifoOccurrence;
+    std::uint32_t storageCapacity = 0;
+    std::uint32_t storageOccupancy = 0;
+    /// Queue position of the token this edge waits for, and the position-zero
+    /// head that a strict FIFO must retire first. Equal positions mean the
+    /// awaited token is the head; a larger awaited position is exactly the
+    /// head-of-line distance.
+    std::uint32_t awaitedQueuePosition =
+        std::numeric_limits<std::uint32_t>::max();
+    std::uint64_t awaitedPhysicalTagOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t headPhysicalTagOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t headBindingOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t headDestinationActorOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint32_t headDestinationInputOrdinal =
+        std::numeric_limits<std::uint32_t>::max();
+    std::uint64_t headDestinationChannelOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+  };
+  /// Empty when no closed strongly connected wait component was established.
+  /// A non-empty certificate is a proof obligation for the Mapping owner, not
+  /// a diagnostic convenience.
+  std::vector<WaitEdge> waitCertificate;
   /// Shared derived Mapping/Simulator queue projection summary. These fields
   /// carry no new runtime identity and are absent when no operand queues are
   /// selected.
@@ -316,8 +382,7 @@ public:
   operator=(PreparedCgraWorkloadExecution &&) noexcept;
   ~PreparedCgraWorkloadExecution();
 
-  PreparedCgraWorkloadExecution(const PreparedCgraWorkloadExecution &) =
-      delete;
+  PreparedCgraWorkloadExecution(const PreparedCgraWorkloadExecution &) = delete;
   PreparedCgraWorkloadExecution &
   operator=(const PreparedCgraWorkloadExecution &) = delete;
 
@@ -331,15 +396,15 @@ private:
   prepareCgraWorkloadExecution(const PreparedCgraExecution &,
                                const CanonicalSimulationWorkload &,
                                const CanonicalSimulationRuntimeInput &);
-  friend llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
-      const PreparedCgraWorkloadExecution &,
-      const CanonicalSimulationWorkload &,
-      const CanonicalSimulationRuntimeInput &,
-      std::optional<TraceCaptureLevel>, CgraExternalMemoryProvider *);
+  friend llvm::Expected<CgraExecutionSession>
+  startCgraExecutionSession(const PreparedCgraWorkloadExecution &,
+                            const CanonicalSimulationWorkload &,
+                            const CanonicalSimulationRuntimeInput &,
+                            std::optional<TraceCaptureLevel>,
+                            CgraExternalMemoryProvider *);
 };
 
-llvm::Expected<PreparedCgraWorkloadExecution>
-prepareCgraWorkloadExecution(
+llvm::Expected<PreparedCgraWorkloadExecution> prepareCgraWorkloadExecution(
     const PreparedCgraExecution &prepared,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput);
@@ -375,11 +440,12 @@ private:
       const PreparedCgraExecution &, const CanonicalSimulationWorkload &,
       const CanonicalSimulationRuntimeInput &, std::optional<TraceCaptureLevel>,
       CgraExternalMemoryProvider *);
-  friend llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
-      const PreparedCgraWorkloadExecution &,
-      const CanonicalSimulationWorkload &,
-      const CanonicalSimulationRuntimeInput &,
-      std::optional<TraceCaptureLevel>, CgraExternalMemoryProvider *);
+  friend llvm::Expected<CgraExecutionSession>
+  startCgraExecutionSession(const PreparedCgraWorkloadExecution &,
+                            const CanonicalSimulationWorkload &,
+                            const CanonicalSimulationRuntimeInput &,
+                            std::optional<TraceCaptureLevel>,
+                            CgraExternalMemoryProvider *);
   friend llvm::Expected<CgraSimulationOutcome>
   simulateCgraWorkload(const PreparedCgraExecution &,
                        const CanonicalSimulationWorkload &,

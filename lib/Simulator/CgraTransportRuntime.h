@@ -40,6 +40,22 @@ struct CgraTransportFrame final {
   llvm::SmallVector<std::uint64_t, 4> blockedTransfers;
 };
 
+/// One resident token of a selected traversal storage. `queuePosition` is the
+/// exact distance from the dequeue head, so position zero is the head that a
+/// strict FIFO must retire before any later token can advance.
+struct CgraStorageResidencyDiagnostic final {
+  std::uint32_t queuePosition = 0;
+  std::uint64_t bindingOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t occurrenceOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t traversalNodeOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t producerActorOrdinal = invalidCgraTransportOrdinal;
+  /// Consumers this token still owes, as semantic actor input channels.
+  std::vector<std::uint64_t> destinationChannelOrdinals;
+  std::vector<std::uint64_t> destinationActorOrdinals;
+  std::vector<std::uint32_t> destinationInputOrdinals;
+};
+
 struct CgraPendingTransferDiagnostic final {
   struct StorageHead final {
     std::uint64_t storageOrdinal = invalidCgraTransportOrdinal;
@@ -187,6 +203,12 @@ public:
   std::vector<CgraPendingTransferDiagnostic> pendingTransferDiagnostics() const;
   std::vector<CgraOperandQueueHeadDiagnostic>
   pendingOperandQueueHeadDiagnostics() const;
+  /// Resident tokens of one selected traversal storage in dequeue order, with
+  /// the transfer, tag, and consumer each token is continuing toward. This is
+  /// the raw dynamic residency the closed-wait certificate projects; it adds
+  /// no identity the runtime does not already own.
+  std::vector<CgraStorageResidencyDiagnostic>
+  storageResidencyDiagnostics(std::uint64_t storageOrdinal) const;
 
 private:
   enum class SinkKind : std::uint8_t { Channel, Observation };
@@ -520,8 +542,7 @@ private:
   std::vector<bool> traversalStorageReserved_;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorSourceBindings_;
-  std::vector<llvm::SmallVector<std::uint64_t, 2>>
-      actorSourceBindingOrdinals_;
+  std::vector<llvm::SmallVector<std::uint64_t, 2>> actorSourceBindingOrdinals_;
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorInputQueueBindings_;

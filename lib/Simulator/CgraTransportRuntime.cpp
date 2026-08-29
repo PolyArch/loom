@@ -40,11 +40,10 @@ bool isAt(const std::optional<SpatialEventCoordinate> &candidate,
 }
 
 template <typename Key, typename Value>
-Value &lookupOrAppend(
-    llvm::SmallVectorImpl<std::pair<Key, Value>> &entries, const Key &key) {
-  auto found = llvm::find_if(entries, [&](const auto &entry) {
-    return entry.first == key;
-  });
+Value &lookupOrAppend(llvm::SmallVectorImpl<std::pair<Key, Value>> &entries,
+                      const Key &key) {
+  auto found = llvm::find_if(
+      entries, [&](const auto &entry) { return entry.first == key; });
   if (found != entries.end())
     return found->second;
   entries.emplace_back(key, Value{});
@@ -74,8 +73,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
       projectedStates;
   llvm::SmallVector<std::pair<std::uint64_t, CountDelta>, 8> countDeltas;
   llvm::SmallVector<
-      std::pair<std::pair<std::uint64_t, std::uint64_t>,
-                PublicationCountDelta>,
+      std::pair<std::pair<std::uint64_t, std::uint64_t>, PublicationCountDelta>,
       8>
       publicationDeltas;
   for (std::uint64_t storageOrdinal : touchedStorageFrameCommits_)
@@ -187,9 +185,8 @@ CgraTransportRuntime::acceptPhysicalEvents(
       return invalid("CGRA endpoint lifecycle carries a traversal node");
     }
 
-    auto projected = llvm::find_if(projectedStates, [&](const auto &entry) {
-      return entry.first == key;
-    });
+    auto projected = llvm::find_if(
+        projectedStates, [&](const auto &entry) { return entry.first == key; });
     ActionLifecycleState state =
         projected == projectedStates.end() ? owner.state : projected->second;
     const bool requiresCommit =
@@ -388,8 +385,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
       return invalid("CGRA storage frame violates cycle-start capacity");
   }
 
-  llvm::SmallVector<std::pair<std::uint64_t, std::uint32_t>, 8>
-      successorDeltas;
+  llvm::SmallVector<std::pair<std::uint64_t, std::uint32_t>, 8> successorDeltas;
   for (const auto &[slot, nodeOrdinal] : newlyPermittedTraversals) {
     const TraversalNodeBinding &node = traversalNodes_[nodeOrdinal];
     if (node.successorOffset > traversalSuccessors_.size() ||
@@ -1757,6 +1753,49 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
            std::tie(rhs.bindingOrdinal, rhs.occurrenceOrdinal);
   });
   return result;
+}
+
+std::vector<CgraStorageResidencyDiagnostic>
+CgraTransportRuntime::storageResidencyDiagnostics(
+    std::uint64_t storageOrdinal) const {
+  std::vector<CgraStorageResidencyDiagnostic> residency;
+  if (storageOrdinal >= storages_.size())
+    return residency;
+  std::vector<detail::CgraTransportStorageEntry> entries;
+  storages_[storageOrdinal].queue.appendQueueOrder(entries);
+  residency.reserve(entries.size());
+  for (auto [position, entry] : llvm::enumerate(entries)) {
+    CgraStorageResidencyDiagnostic record;
+    record.queuePosition = static_cast<std::uint32_t>(position);
+    record.traversalNodeOrdinal = entry.traversalNodeOrdinal;
+    record.physicalTagOrdinal = entry.physicalTagOrdinal;
+    if (entry.transferSlot >= inFlight_.size() ||
+        !inFlight_[entry.transferSlot].active) {
+      residency.push_back(std::move(record));
+      continue;
+    }
+    const InFlight &inFlight = inFlight_[entry.transferSlot];
+    record.bindingOrdinal = inFlight.bindingOrdinal;
+    record.occurrenceOrdinal = inFlight.occurrenceOrdinal;
+    if (inFlight.bindingOrdinal < bindings_.size()) {
+      const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+      record.producerActorOrdinal =
+          binding.semanticActorOrdinal.value_or(invalidCgraTransportOrdinal);
+      for (std::uint64_t sink = binding.sinkOffset;
+           sink != binding.sinkOffset + binding.sinkCount; ++sink) {
+        if (sink >= sinks_.size())
+          break;
+        const SinkBinding &binding = sinks_[sink];
+        if (binding.kind != SinkKind::Channel)
+          continue;
+        record.destinationChannelOrdinals.push_back(binding.channel);
+        record.destinationActorOrdinals.push_back(binding.semanticActorOrdinal);
+        record.destinationInputOrdinals.push_back(binding.inputOrdinal);
+      }
+    }
+    residency.push_back(std::move(record));
+  }
+  return residency;
 }
 
 std::vector<CgraOperandQueueHeadDiagnostic>
