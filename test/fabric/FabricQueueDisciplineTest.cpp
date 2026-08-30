@@ -441,6 +441,31 @@ ArtifactRootReference publish7_0Twin(llvm::StringRef test, ArtifactStore &store,
   return reference;
 }
 
+void dependencyOrderCodecRanksRowsCanonically() {
+  const llvm::StringRef test = __func__;
+  const auto reference = [&](std::uint8_t seed) {
+    return ArtifactRootReference{
+        loom::fabric::fabricArtifactSchemaV7_0.identity.str(),
+        loom::fabric::fabricArtifactSchemaV7_0.version,
+        take(test, ArtifactIdentity::fromBytes(
+                       std::vector<std::uint8_t>(ArtifactIdentity::byteSize,
+                                                 seed)))};
+  };
+  const loom::fabric::FabricDirectDependency low{
+      loom::fabric::FabricDependencyRole::ImportedModule, reference(0x10)};
+  const loom::fabric::FabricDirectDependency high{
+      loom::fabric::FabricDependencyRole::ImportedModule, reference(0x20)};
+  auto forward = loom::fabric::canonicalFabricDependencyOrder({low, high});
+  auto reversed = loom::fabric::canonicalFabricDependencyOrder({high, low});
+  if (!forward)
+    fail(test, llvm::toString(forward.takeError()));
+  if (!reversed)
+    fail(test, llvm::toString(reversed.takeError()));
+  require(test, *forward == std::vector<std::uint32_t>({0, 1}) &&
+                *reversed == std::vector<std::uint32_t>({1, 0}),
+          "dependency order codec did not rank rows by canonical bytes");
+}
+
 void migrationRefinalizesModule() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -540,5 +565,6 @@ int main() {
   virtualChannelRejectsBypassCapability();
   migrationRefinalizesModule();
   migrationRewritesDependencyClosure();
+  dependencyOrderCodecRanksRowsCanonically();
   return EXIT_SUCCESS;
 }

@@ -46,6 +46,22 @@ migrateFabricRootV7_0ToV7_1(const ArtifactRootReference &reference,
     migrated.push_back({dependency.role, *migratedRoot});
   }
 
+  // The canonical payload embeds dependency-table ordinals of the sorted row
+  // order. The identity rewrite must preserve that permutation exactly; a
+  // closure whose rows would reorder under 7.1 cannot be migrated at the
+  // envelope level and must be re-finalized from its authoring source.
+  auto orderBefore =
+      canonicalFabricDependencyOrder(decoded->dependencies);
+  if (!orderBefore)
+    return orderBefore.takeError();
+  auto orderAfter = canonicalFabricDependencyOrder(migrated);
+  if (!orderAfter)
+    return orderAfter.takeError();
+  if (*orderBefore != *orderAfter)
+    return invalid("loom.fabric 7.0 closure reorders its canonical dependency "
+                   "rows under 7.1 identities; re-finalize from the authoring "
+                   "source instead of migrating");
+
   auto migratedBytes = encodeFabricArtifactEnvelope(
       decoded->rootKind, migrated, decoded->canonicalMlirBytecode);
   if (!migratedBytes)

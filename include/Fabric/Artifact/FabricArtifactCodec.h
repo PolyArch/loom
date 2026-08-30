@@ -50,6 +50,13 @@ llvm::Expected<CanonicalSemanticBytes> encodeFabricArtifactEnvelope(
 llvm::Expected<DecodedFabricArtifact>
 decodeFabricArtifactEnvelope(llvm::ArrayRef<std::uint8_t> bytes);
 
+/// The canonical sorted positions of the given dependencies: result[i] is the
+/// rank of row i among the canonically sorted encoded rows. The payload
+/// embeds dependency-table ordinals of that sorted order, so a migration that
+/// rewrites rows must preserve this permutation exactly.
+llvm::Expected<std::vector<std::uint32_t>> canonicalFabricDependencyOrder(
+    llvm::ArrayRef<FabricDirectDependency> dependencies);
+
 } // namespace fabric
 } // namespace loom
 

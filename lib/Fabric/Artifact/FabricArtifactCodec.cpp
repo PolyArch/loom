@@ -191,6 +191,29 @@ private:
 
 } // namespace
 
+llvm::Expected<std::vector<std::uint32_t>> canonicalFabricDependencyOrder(
+    llvm::ArrayRef<FabricDirectDependency> dependencies) {
+  auto rows = canonicalDependencyRows(dependencies);
+  if (!rows)
+    return rows.takeError();
+  // rows is sorted; map each input position to its rank. Rows are unique
+  // after canonicalization, so the byte compare is a total order.
+  std::vector<std::vector<std::uint8_t>> original;
+  original.reserve(dependencies.size());
+  for (const FabricDirectDependency &dependency : dependencies) {
+    auto row = encodeDependencyRow(dependency);
+    if (!row)
+      return row.takeError();
+    original.push_back(std::move(*row));
+  }
+  std::vector<std::uint32_t> order(dependencies.size(), 0);
+  for (std::uint32_t index = 0; index != original.size(); ++index)
+    order[index] = static_cast<std::uint32_t>(
+        std::lower_bound(rows->begin(), rows->end(), original[index]) -
+        rows->begin());
+  return order;
+}
+
 llvm::Expected<CanonicalSemanticBytes> encodeFabricArtifactEnvelope(
     FabricRootKind rootKind,
     llvm::ArrayRef<FabricDirectDependency> dependencies,
