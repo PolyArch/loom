@@ -38,6 +38,10 @@ add_executable(loom-simulator-cgra-transport-storage-runtime-test
   CgraTransportStorageRuntimeTest.cpp
 )
 
+add_executable(loom-simulator-cgra-transport-virtual-channel-test
+  CgraTransportVirtualChannelTest.cpp
+)
+
 add_executable(loom-simulator-cgra-graph-activation-test
   CgraGraphActivationRuntimeTest.cpp
 )
@@ -104,6 +108,16 @@ target_link_libraries(loom-simulator-cgra-transport-runtime-test PRIVATE
 
 target_link_libraries(loom-simulator-cgra-transport-storage-runtime-test PRIVATE
   LoomSimulator
+  LLVMSupport
+)
+
+target_include_directories(loom-simulator-cgra-transport-virtual-channel-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Simulator
+)
+
+target_link_libraries(loom-simulator-cgra-transport-virtual-channel-test PRIVATE
+  LoomSimulator
+  MLIRFabricEnums
   LLVMSupport
 )
 

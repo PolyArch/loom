@@ -2,12 +2,15 @@
 #define LOOM_LIB_SIMULATOR_CGRATRANSPORTPLAN_H
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/IR/PhysicalTag.h"
 #include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -59,6 +62,9 @@ struct CgraSelectedTraversalPlan final {
 struct CgraTraversalStoragePlan final {
   CgraTraversalStorageKind kind = CgraTraversalStorageKind::None;
   std::uint32_t capacity = 0;
+  /// Dequeue scheduling discipline declared by the selected Fabric owner.
+  ::fabric::FifoQueueDiscipline queueDiscipline =
+      ::fabric::FifoQueueDiscipline::StrictFifo;
   ::loom::fabric::FabricUsePatternRef enqueuePattern;
   ::loom::fabric::FabricUsePatternRef dequeuePattern;
   std::optional<::loom::fabric::FabricUsePatternRef> simultaneousPattern;
@@ -71,6 +77,34 @@ struct CgraTraversalStoragePlan final {
 struct CgraPhysicalTagPlan final {
   llvm::APInt value = llvm::APInt(1, 0);
 };
+
+/// Interns the plan's Physical Tag values into virtual-channel ranks: equal
+/// values share one rank regardless of which plan segment produced them, and
+/// ranks follow the canonical ascending unsigned value order that a hardware
+/// arbiter rotates through. A rank is a derived cache of the tag value, never
+/// a semantic identity; a cold verifier recomputes this exact vector from the
+/// plan and compares.
+inline std::vector<std::uint32_t>
+internPhysicalTagChannelRanks(llvm::ArrayRef<CgraPhysicalTagPlan> tags) {
+  llvm::SmallVector<std::uint64_t, 16> order;
+  order.reserve(tags.size());
+  for (std::uint64_t ordinal = 0; ordinal != tags.size(); ++ordinal)
+    order.push_back(ordinal);
+  llvm::sort(order, [&](std::uint64_t lhs, std::uint64_t rhs) {
+    return ::fabric::comparePhysicalTagValues(tags[lhs].value,
+                                              tags[rhs].value) < 0;
+  });
+  std::vector<std::uint32_t> ranks(tags.size(), 0);
+  std::uint32_t rank = 0;
+  for (auto [position, ordinal] : llvm::enumerate(order)) {
+    if (position != 0 &&
+        ::fabric::comparePhysicalTagValues(tags[order[position - 1]].value,
+                                           tags[ordinal].value) != 0)
+      ++rank;
+    ranks[ordinal] = rank;
+  }
+  return ranks;
+}
 
 struct CgraRouteNodePlan final {
   std::uint32_t parentOrdinal = std::numeric_limits<std::uint32_t>::max();

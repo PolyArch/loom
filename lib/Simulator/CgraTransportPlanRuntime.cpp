@@ -1,5 +1,7 @@
 #include "CgraTransportRuntime.h"
 
+#include "Fabric/IR/PhysicalTag.h"
+
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -223,6 +225,12 @@ CgraTransportRuntime::CgraTransportRuntime(
     bindings.erase(std::unique(bindings.begin(), bindings.end()),
                    bindings.end());
   }
+  // Intern the plan's Physical Tag values so equal values share one virtual
+  // channel regardless of which tag segment produced them. Ranks follow the
+  // canonical ascending unsigned value, which is the order a hardware arbiter
+  // can rotate through.
+  tagVirtualChannelKeys_ =
+      internPhysicalTagChannelRanks(plan.transport.physicalTags);
   traversalRemainingPredecessors_.resize(traversalNodes_.size());
   traversalNodeStates_.resize(traversalNodes_.size(), TraversalNodeState::Idle);
   traversalNodeTransferSlots_.resize(traversalNodes_.size(),
@@ -1135,8 +1143,8 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     const bool fullReplacementAllowed =
         storage.kind != CgraTraversalStorageKind::BufferedFifo &&
         storage.independentReadWriteServices;
-    auto queue = CgraTransportStorageRuntime::create(storage.capacity,
-                                                     fullReplacementAllowed);
+    auto queue = CgraTransportStorageRuntime::create(
+        storage.capacity, fullReplacementAllowed, storage.queueDiscipline);
     if (!queue)
       return queue.takeError();
     StorageBinding binding(std::move(*queue), storage.kind,

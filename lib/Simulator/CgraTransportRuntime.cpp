@@ -274,10 +274,14 @@ CgraTransportRuntime::acceptPhysicalEvents(
               ? owner.secondaryTraversalNodeOrdinal
               : owner.traversalNodeOrdinal;
       if (permitted && hasDequeue) {
-        if (storage.queue.empty() ||
-            storage.queue.front().transferSlot != dequeueSlot)
+        // The discipline decides which resident entry the port presents this
+        // cycle; a strict FIFO presents the oldest, a per-tag virtual channel
+        // presents the head of one channel. Reading the physical front would
+        // silently reject a legal tag-selective grant.
+        const auto selected = storage.queue.offeredEntry();
+        if (!selected || selected->transferSlot != dequeueSlot)
           return invalid("CGRA storage dequeue changed before commit");
-        const CgraTransportStorageEntry head = storage.queue.front();
+        const CgraTransportStorageEntry head = *selected;
         if (head.traversalNodeOrdinal >= traversalNodes_.size() ||
             head.physicalTagOrdinal !=
                 traversalNodes_[head.traversalNodeOrdinal].physicalTagOrdinal)
@@ -327,9 +331,21 @@ CgraTransportRuntime::acceptPhysicalEvents(
         if (llvm::find(storage.pendingEnqueueNodes, enqueueNode) ==
             storage.pendingEnqueueNodes.end())
           return invalid("CGRA storage enqueue request is not pending");
+        const std::uint64_t enqueueTag =
+            traversalNodes_[enqueueNode].physicalTagOrdinal;
+        // A virtual channel schedules on the exact tag value, so an ordinal
+        // outside the plan inventory is invalid state on a tag-selective
+        // queue; it must never degrade silently to channel zero.
+        if (storage.queue.discipline() ==
+                ::fabric::FifoQueueDiscipline::PerTagVirtualChannel &&
+            enqueueTag >= tagVirtualChannelRanks().size())
+          return invalid("CGRA virtual channel storage enqueue names a "
+                         "Physical Tag ordinal outside the plan inventory");
         commit.enqueue = CgraTransportStorageEntry{
-            enqueueSlot, enqueueNode,
-            traversalNodes_[enqueueNode].physicalTagOrdinal};
+            enqueueSlot, enqueueNode, enqueueTag,
+            enqueueTag < tagVirtualChannelRanks().size()
+                ? tagVirtualChannelKey(enqueueTag)
+                : 0};
         commit.enqueueNode = enqueueNode;
         if (storage.kind != CgraTraversalStorageKind::BufferedFifo)
           if (llvm::Error error =
@@ -488,10 +504,13 @@ CgraTransportRuntime::acceptPhysicalEvents(
     StorageBinding &storage = storages_[storageOrdinal];
     if (!commit.enqueue && !commit.expectedDequeue)
       continue;
-    auto committed = storage.queue.commit(commit.enqueue,
-                                          commit.expectedDequeue.has_value());
+    auto committed =
+        storage.queue.commit(commit.enqueue, commit.expectedDequeue);
     if (!committed)
       return committed.takeError();
+    // A committed enqueue or dequeue changed the resident set, so the
+    // refused-offer probe epoch restarts.
+    storage.offerRefusalsSinceCommit = 0;
     if (commit.expectedDequeue &&
         (!committed->dequeued ||
          committed->dequeued->transferSlot !=
@@ -1124,8 +1143,17 @@ CgraTransportRuntime::advance() {
 
       std::optional<CgraTransportStorageEntry> dequeueEntry;
       std::optional<std::uint64_t> dequeueNode;
-      if (!storage.queue.empty()) {
-        const CgraTransportStorageEntry &head = storage.queue.front();
+      // The port presents one resident entry this cycle. A strict FIFO always
+      // presents the oldest, so a token its consumer cannot take blocks the
+      // queue. A per-tag virtual channel presents the head of the channel the
+      // round robin currently names; when that head cannot advance the cursor
+      // moves on, so a different channel is presented next cycle. The queue
+      // never inspects the readiness of a channel it is not presenting, which
+      // is the same visibility one valid/ready port pair has.
+      llvm::SmallVector<CgraTransportStorageEntry, 1> offeredEntries;
+      if (const auto offered = storage.queue.offeredEntry())
+        offeredEntries.push_back(*offered);
+      for (const CgraTransportStorageEntry &head : offeredEntries) {
         const TraversalNodeKind expectedHeadKind =
             storage.kind == CgraTraversalStorageKind::BufferedFifo
                 ? TraversalNodeKind::BufferedStorage
@@ -1169,9 +1197,13 @@ CgraTransportRuntime::advance() {
             dequeueNode = *matchingRead;
           }
         }
+        if (dequeueEntry)
+          break;
       }
 
       const bool dequeue = dequeueEntry.has_value();
+      if (!dequeue && !offeredEntries.empty())
+        storage.queue.advanceOffer();
       const bool enqueueReserved =
           enqueueNode && traversalStorageReserved_[*enqueueNode];
       const bool unreservedCapacity =
@@ -1194,11 +1226,36 @@ CgraTransportRuntime::advance() {
           blocked_.set(inFlight_[slot].bindingOrdinal);
           frame.blockedTransfers.push_back(inFlight_[slot].bindingOrdinal);
         }
-        if (!storage.queue.empty()) {
-          const auto head = storage.queue.front();
+        // Every entry the discipline currently offers is blocked, not only
+        // the physical front, so a per-tag virtual channel reports each
+        // stalled channel head rather than one arbitrary tag.
+        for (const CgraTransportStorageEntry &head : offeredEntries) {
           blocked_.set(inFlight_[head.transferSlot].bindingOrdinal);
           frame.blockedTransfers.push_back(
               inFlight_[head.transferSlot].bindingOrdinal);
+        }
+        // A refused offer on a virtual-channel queue committed its cursor
+        // rotation at this cycle's boundary, so the successor channel is
+        // presented next cycle. That re-presentation is an explicit
+        // next-cycle state transition, not an invisible side effect. One
+        // probe epoch ends after every resident channel has been presented
+        // and refused without an intervening commit: the queue then sleeps
+        // until an external event changes readiness, so a deadlocked
+        // rotation becomes a closed wait rather than an infinite simulation.
+        if (!dequeue && !offeredEntries.empty() &&
+            storage.kind == CgraTraversalStorageKind::BufferedFifo &&
+            storage.queue.discipline() ==
+                ::fabric::FifoQueueDiscipline::PerTagVirtualChannel &&
+            !storage.queue.empty()) {
+          ++storage.offerRefusalsSinceCommit;
+          if (storage.offerRefusalsSinceCommit <
+              storage.queue.distinctResidentChannels()) {
+            auto next = nextSpatialDelta(*coordinate);
+            if (!next)
+              return next.takeError();
+            if (llvm::Error error = scheduleStorage(storageOrdinal, *next))
+              return std::move(error);
+          }
         }
         continue;
       }
@@ -1769,6 +1826,10 @@ CgraTransportRuntime::storageResidencyDiagnostics(
     record.queuePosition = static_cast<std::uint32_t>(position);
     record.traversalNodeOrdinal = entry.traversalNodeOrdinal;
     record.physicalTagOrdinal = entry.physicalTagOrdinal;
+    record.virtualChannelKey = entry.virtualChannelKey;
+    if (entry.physicalTagOrdinal < plan_->transport.physicalTags.size())
+      record.physicalTagValue =
+          plan_->transport.physicalTags[entry.physicalTagOrdinal].value;
     if (entry.transferSlot >= inFlight_.size() ||
         !inFlight_[entry.transferSlot].active) {
       residency.push_back(std::move(record));

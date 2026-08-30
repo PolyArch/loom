@@ -129,6 +129,8 @@ llvm::Expected<TraversalActivationKey> traversalActivationKey(
 struct StorageProjection final {
   CgraTraversalStorageKind accessKind = CgraTraversalStorageKind::None;
   std::uint32_t capacity = 0;
+  ::fabric::FifoQueueDiscipline queueDiscipline =
+      ::fabric::FifoQueueDiscipline::StrictFifo;
   StorageKey key;
   ::loom::fabric::FabricUsePatternRef enqueuePattern;
   ::loom::fabric::FabricUsePatternRef dequeuePattern;
@@ -160,6 +162,9 @@ storageContract(const ::loom::fabric::FabricArtifactView &fabric,
     StorageProjection result;
     result.accessKind = CgraTraversalStorageKind::BufferedFifo;
     result.capacity = dimensions[queue].capacity.value();
+    result.queueDiscipline =
+        fabric.fifoQueueDiscipline(fifo->owner)
+            .value_or(::fabric::FifoQueueDiscipline::StrictFifo);
     result.key = {0, ::loom::fabric::canonicalFabricBytes(owner), 0};
     result.enqueuePattern = {
         patternOwner,
@@ -461,8 +466,9 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       storageOrdinal = position->second;
       if (inserted) {
         result.traversalStorages.push_back(
-            {storageKind, (*storage)->capacity, (*storage)->enqueuePattern,
-             (*storage)->dequeuePattern, (*storage)->simultaneousPattern});
+            {storageKind, (*storage)->capacity, (*storage)->queueDiscipline,
+             (*storage)->enqueuePattern, (*storage)->dequeuePattern,
+             (*storage)->simultaneousPattern});
       } else {
         CgraTraversalStoragePlan &existing =
             result.traversalStorages[storageOrdinal];

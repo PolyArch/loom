@@ -11,6 +11,7 @@
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cassert>
 #include <cstdint>
 #include <deque>
 #include <limits>
@@ -49,6 +50,11 @@ struct CgraStorageResidencyDiagnostic final {
   std::uint64_t occurrenceOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t traversalNodeOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
+  /// The exact Physical Tag bit value the token carries. This is the semantic
+  /// channel identity; `virtualChannelKey` is only its derived dense cache.
+  llvm::APInt physicalTagValue = llvm::APInt(1, 0);
+  /// Canonical channel identity of the token; see `tagVirtualChannelKey`.
+  std::uint32_t virtualChannelKey = 0;
   std::uint64_t producerActorOrdinal = invalidCgraTransportOrdinal;
   /// Consumers this token still owes, as semantic actor input channels.
   std::vector<std::uint64_t> destinationChannelOrdinals;
@@ -209,6 +215,24 @@ public:
   /// no identity the runtime does not already own.
   std::vector<CgraStorageResidencyDiagnostic>
   storageResidencyDiagnostics(std::uint64_t storageOrdinal) const;
+
+  /// Virtual-channel identity of one plan Physical Tag ordinal: the dense
+  /// rank of its canonical tag value among the distinct values of the plan.
+  /// Two ordinals that carry the same tag value share one channel, because
+  /// the value is what the wire and a hardware arbiter observe. An ordinal
+  /// outside the plan's tag inventory is invalid input, not channel zero.
+  std::uint32_t tagVirtualChannelKey(std::uint64_t physicalTagOrdinal) const {
+    assert(physicalTagOrdinal < tagVirtualChannelKeys_.size() &&
+           "Physical Tag ordinal outside the plan inventory");
+    return tagVirtualChannelKeys_[physicalTagOrdinal];
+  }
+
+  /// The complete rank cache, so a cold verifier can rebuild it from the
+  /// plan's Physical Tag values with `internPhysicalTagChannelRanks` and
+  /// compare rather than trust.
+  llvm::ArrayRef<std::uint32_t> tagVirtualChannelRanks() const {
+    return tagVirtualChannelKeys_;
+  }
 
 private:
   enum class SinkKind : std::uint8_t { Channel, Observation };
@@ -390,6 +414,12 @@ private:
     bool eventScheduled = false;
     std::uint8_t activeActionCount = 0;
     std::uint32_t reservations = 0;
+    /// Consecutive refused offers since the last queue commit. A refused offer
+    /// on a virtual-channel queue rotates the cursor, so the port must be
+    /// re-evaluated on the next cycle; once every resident channel has been
+    /// presented and refused without a commit, the probe epoch ends and the
+    /// queue sleeps until an external event changes readiness.
+    std::uint32_t offerRefusalsSinceCommit = 0;
     std::vector<std::uint64_t> upstreamStorageOrdinals;
   };
 
@@ -553,6 +583,8 @@ private:
   CgraEventQueue requestedEvents_{"CGRA transport request"};
   std::vector<InFlight> inFlight_;
   std::vector<std::uint64_t> freeSlots_;
+  /// Indexed by plan Physical Tag ordinal; see `tagVirtualChannelKey`.
+  std::vector<std::uint32_t> tagVirtualChannelKeys_;
   llvm::SmallBitVector blocked_;
   std::vector<std::uint64_t> nextActionOccurrence_;
   llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, ActionOwner>
