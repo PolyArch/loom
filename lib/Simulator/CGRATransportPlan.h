@@ -68,9 +68,14 @@ struct CgraTraversalStoragePlan final {
   ::loom::fabric::FabricUsePatternRef enqueuePattern;
   ::loom::fabric::FabricUsePatternRef dequeuePattern;
   std::optional<::loom::fabric::FabricUsePatternRef> simultaneousPattern;
+  /// The internal arbitration transition of a per-tag virtual channel queue:
+  /// one refused offer rotates the cursor at the cycle boundary. Absent for
+  /// strict queues, which present only the physical head.
+  std::optional<::loom::fabric::FabricUsePatternRef> offerAdvancePattern;
   std::uint64_t enqueuePhysicalUseOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t dequeuePhysicalUseOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t simultaneousPhysicalUseOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t offerAdvancePhysicalUseOrdinal = invalidCgraTransportOrdinal;
   bool independentReadWriteServices = false;
 };
 

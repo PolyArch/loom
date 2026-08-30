@@ -231,6 +231,7 @@ CgraTransportRuntime::CgraTransportRuntime(
   // can rotate through.
   tagVirtualChannelKeys_ =
       internPhysicalTagChannelRanks(plan.transport.physicalTags);
+  channelArrivalCounts_.assign(state.channelSlots.size(), 0);
   traversalRemainingPredecessors_.resize(traversalNodes_.size());
   traversalNodeStates_.resize(traversalNodes_.size(), TraversalNodeState::Idle);
   traversalNodeTransferSlots_.resize(traversalNodes_.size(),
@@ -1140,6 +1141,19 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
          plan.physicalUseClients[storage.simultaneousPhysicalUseOrdinal] !=
              CgraPhysicalUseClientKind::TraversalTransport))
       return invalid("CGRA buffered storage simultaneous action is absent");
+    const bool tagSelective =
+        storage.queueDiscipline ==
+        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
+    if (tagSelective &&
+        (storage.offerAdvancePhysicalUseOrdinal >=
+             plan.physicalUseClients.size() ||
+         plan.physicalUseClients[storage.offerAdvancePhysicalUseOrdinal] !=
+             CgraPhysicalUseClientKind::TraversalTransport))
+      return invalid("CGRA virtual channel storage offer-advance action is "
+                     "absent");
+    if (!tagSelective &&
+        storage.offerAdvancePhysicalUseOrdinal != invalidCgraTransportOrdinal)
+      return invalid("CGRA strict storage owns an offer-advance action");
     const bool fullReplacementAllowed =
         storage.kind != CgraTraversalStorageKind::BufferedFifo &&
         storage.independentReadWriteServices;
@@ -1152,6 +1166,7 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     binding.enqueueAction = storage.enqueuePhysicalUseOrdinal;
     binding.dequeueAction = storage.dequeuePhysicalUseOrdinal;
     binding.simultaneousAction = storage.simultaneousPhysicalUseOrdinal;
+    binding.offerAdvanceAction = storage.offerAdvancePhysicalUseOrdinal;
     storages.push_back(std::move(binding));
   }
   return CgraTransportRuntime(

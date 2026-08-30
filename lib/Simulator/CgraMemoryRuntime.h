@@ -79,6 +79,15 @@ public:
   std::uint64_t activeActorCount() const { return activeActorCount_; }
   bool ownsActor(std::uint64_t semanticActorOrdinal) const;
 
+  /// The occurrence this actor will fire next, when this runtime owns it.
+  std::optional<std::uint64_t>
+  nextActorOccurrenceOrdinal(std::uint64_t semanticActorOrdinal) const {
+    if (!ownsActor(semanticActorOrdinal))
+      return std::nullopt;
+    return bindings_[bindingBySemanticActor_[semanticActorOrdinal]]
+        .nextOccurrenceOrdinal;
+  }
+
 private:
   struct ResultBinding final {
     ::dataflow::semantics::ServiceValueRole role =

@@ -11,6 +11,7 @@
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/ProductionRegistry.h"
+#include "Fabric/IR/FabricEnums.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Tech/TechMappingConfig.h"
@@ -359,6 +360,55 @@ void emitClosedWaitDiagnostic(
                  << " blocking_binding=" << edge.blockingBindingOrdinal
                  << " blocking_occurrence=" << edge.blockingOccurrenceOrdinal
                  << " kind=" << static_cast<unsigned>(edge.kind) << '\n';
+  llvm::errs() << "CGRA wait certificate: closed="
+               << loom::sim::verifyClosedWaitCertificateClosure(diagnostic)
+               << " edges=" << diagnostic.waitCertificate.size();
+  if (diagnostic.waitProofFailure)
+    llvm::errs() << " proof_failure="
+                 << static_cast<unsigned>(*diagnostic.waitProofFailure);
+  llvm::errs() << '\n';
+  const auto ownerText = [](llvm::raw_ostream &out,
+                            const loom::sim::CgraClosedWaitSetDiagnostic::
+                                WaitOwnerKey &owner) {
+    using Diagnostic = loom::sim::CgraClosedWaitSetDiagnostic;
+    if (const auto *firing = std::get_if<0>(&owner.owner)) {
+      out << "actor:" << firing->semanticActorOrdinal << "/"
+          << firing->occurrenceOrdinal;
+      return;
+    }
+    const auto &queue = std::get<1>(owner.owner);
+    out << (queue.domain == Diagnostic::WaitStorageDomain::TraversalStorage
+                ? "storage:"
+                : "operand_queue:")
+        << queue.ordinal
+        << (queue.queueClass.tagLocal ? "/tag:" : "/global");
+    if (queue.queueClass.tagLocal) {
+      llvm::SmallString<24> text;
+      queue.queueClass.tagValue.toStringUnsigned(text, 10);
+      out << text;
+    }
+  };
+  for (const auto &edge : diagnostic.waitCertificate) {
+    llvm::errs() << "CGRA wait certificate edge: ";
+    ownerText(llvm::errs(), edge.from);
+    llvm::errs() << " -> ";
+    ownerText(llvm::errs(), edge.to);
+    llvm::errs() << " kind=" << static_cast<unsigned>(edge.kind)
+                 << " binding=" << edge.bindingOrdinal
+                 << " occurrence=" << edge.occurrenceOrdinal
+                 << " awaited_class_position=" << edge.awaitedClassPosition;
+    if (edge.headTagValue) {
+      llvm::SmallString<24> text;
+      edge.headTagValue->toStringUnsigned(text, 10);
+      llvm::errs() << " head_tag=" << text;
+    }
+    if (edge.awaitedTagValue) {
+      llvm::SmallString<24> text;
+      edge.awaitedTagValue->toStringUnsigned(text, 10);
+      llvm::errs() << " awaited_tag=" << text;
+    }
+    llvm::errs() << " head_binding=" << edge.headBindingOrdinal << '\n';
+  }
   for (const auto &transfer : diagnostic.transfers) {
     if (!transfer.blocked || !transfer.blockingFifoOccurrence)
       continue;
@@ -499,10 +549,11 @@ llvm::json::Object measurementJson(
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 6) {
+  if (argc != 6 && argc != 8) {
     llvm::errs() << "usage: " << argv[0]
                  << " ARTIFACT_STORE SOURCE_REPORT WORKLOAD_NAME OPERATOR_ID "
-                    "PROTOCOL_SYMBOL\n";
+                    "PROTOCOL_SYMBOL [INTERCONNECT_FIFO_DEPTH "
+                    "INTERCONNECT_FIFO_QUEUE_DISCIPLINE]\n";
     return EXIT_FAILURE;
   }
 
@@ -521,6 +572,20 @@ int main(int argc, char **argv) {
   loom::adg::BuiltinTargetScale qualificationScale =
       qualificationBaseTarget.scale;
   qualificationScale.temporalResidentContexts = 16;
+  if (argc == 8) {
+    // Hardware-candidate selection through the same typed scale the resolved
+    // config owns; the qualification gate passes no override and gets the
+    // production target.
+    std::uint32_t depth = 0;
+    if (llvm::StringRef(argv[6]).getAsInteger(10, depth) || depth == 0)
+      fail("interconnect FIFO depth must be a positive integer");
+    qualificationScale.interconnectFifoDepth = depth;
+    const auto discipline =
+        ::fabric::symbolizeFifoQueueDiscipline(argv[7]);
+    if (!discipline)
+      fail("unknown interconnect FIFO queue discipline");
+    qualificationScale.interconnectFifoQueueDiscipline = *discipline;
+  }
   resolvedConfig.hardwareTarget = {
       qualificationBaseTarget.templateIdentity.str(),
       {qualificationBaseTarget.schemaMajor,
@@ -629,6 +694,26 @@ int main(int argc, char **argv) {
             {loom::runtime::gem5MaximumSpatialWork, screeningDeadline},
             artifacts, blobs));
     const bool retired = completed(screened);
+    if (!retired)
+      llvm::errs() << "CGRA screening outcome: "
+                   << loom::evaluation::toString(screened.evidence.outcomeKind())
+                   << " event_frames="
+                   << (screened.attemptProfile
+                           ? screened.attemptProfile->counters.eventFrameCount
+                           : 0)
+                   << " actor_retirements="
+                   << (screened.attemptProfile
+                           ? screened.attemptProfile->counters
+                                 .actorRetirementCount
+                           : 0)
+                   << " publications="
+                   << (screened.attemptProfile
+                           ? screened.attemptProfile->counters
+                                 .tokenPublicationCount
+                           : 0)
+                   << '\n';
+    if (screened.closedWait)
+      emitClosedWaitDiagnostic(*screened.closedWait);
     candidateScreening.push_back(llvm::json::Object{
         {"spatial_mapping", referenceJson(candidate)},
         {"buffered_fifo_traversals", buffered},
@@ -641,6 +726,22 @@ int main(int argc, char **argv) {
         {"closed_wait_pending_transfers",
          screened.closedWait
              ? llvm::json::Value(screened.closedWait->pendingTransfers)
+             : llvm::json::Value(nullptr)},
+        {"closed_wait_certificate_edges",
+         screened.closedWait
+             ? llvm::json::Value(static_cast<std::uint64_t>(
+                   screened.closedWait->waitCertificate.size()))
+             : llvm::json::Value(nullptr)},
+        {"closed_wait_certificate_closed",
+         screened.closedWait
+             ? llvm::json::Value(
+                   loom::sim::verifyClosedWaitCertificateClosure(
+                       *screened.closedWait))
+             : llvm::json::Value(nullptr)},
+        {"closed_wait_proof_failure",
+         screened.closedWait && screened.closedWait->waitProofFailure
+             ? llvm::json::Value(static_cast<std::uint64_t>(
+                   *screened.closedWait->waitProofFailure))
              : llvm::json::Value(nullptr)},
         {"operand_queue_shared_ingress_pressure",
          screened.closedWait
@@ -690,6 +791,21 @@ int main(int argc, char **argv) {
   if (!completed(warmup)) {
     preRepairEvidence = take(loom::evaluation::publishEvaluationEvidence(
         warmup.evidence, artifacts));
+    llvm::errs() << "CGRA warmup outcome: "
+                 << loom::evaluation::toString(warmup.evidence.outcomeKind())
+                 << " event_frames="
+                 << (warmup.attemptProfile
+                         ? warmup.attemptProfile->counters.eventFrameCount
+                         : 0)
+                 << " actor_retirements="
+                 << (warmup.attemptProfile
+                         ? warmup.attemptProfile->counters.actorRetirementCount
+                         : 0)
+                 << " publications="
+                 << (warmup.attemptProfile
+                         ? warmup.attemptProfile->counters.tokenPublicationCount
+                         : 0)
+                 << '\n';
     require(warmup.closedWait.has_value(),
             "incomplete CGRA warmup has no closed-wait diagnostic");
     auto system = loom::eda::test::buildMappedBuiltinSystemFixture(

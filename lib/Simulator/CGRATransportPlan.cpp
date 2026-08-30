@@ -135,6 +135,7 @@ struct StorageProjection final {
   ::loom::fabric::FabricUsePatternRef enqueuePattern;
   ::loom::fabric::FabricUsePatternRef dequeuePattern;
   std::optional<::loom::fabric::FabricUsePatternRef> simultaneousPattern;
+  std::optional<::loom::fabric::FabricUsePatternRef> offerAdvancePattern;
 };
 
 llvm::Expected<std::optional<StorageProjection>>
@@ -176,6 +177,11 @@ storageContract(const ::loom::fabric::FabricArtifactView &fabric,
         patternOwner, ::fabric::fifoUsePattern(
                           ::fabric::FifoUsePattern::SimultaneousDequeueEnqueue)
                           .ordinal()};
+    if (result.queueDiscipline ==
+        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel)
+      result.offerAdvancePattern = ::loom::fabric::FabricUsePatternRef{
+          patternOwner,
+          ::fabric::fifoVirtualChannelOfferAdvancePattern().ordinal()};
     return std::optional<StorageProjection>(std::move(result));
   }
   if (const auto *registerFifo =
@@ -468,7 +474,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
         result.traversalStorages.push_back(
             {storageKind, (*storage)->capacity, (*storage)->queueDiscipline,
              (*storage)->enqueuePattern, (*storage)->dequeuePattern,
-             (*storage)->simultaneousPattern});
+             (*storage)->simultaneousPattern, (*storage)->offerAdvancePattern});
       } else {
         CgraTraversalStoragePlan &existing =
             result.traversalStorages[storageOrdinal];
@@ -479,7 +485,8 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
             existing.capacity != (*storage)->capacity ||
             existing.enqueuePattern != (*storage)->enqueuePattern ||
             existing.dequeuePattern != (*storage)->dequeuePattern ||
-            existing.simultaneousPattern != (*storage)->simultaneousPattern)
+            existing.simultaneousPattern != (*storage)->simultaneousPattern ||
+            existing.offerAdvancePattern != (*storage)->offerAdvancePattern)
           return invalid("selected traversals disagree on storage contract");
       }
     }

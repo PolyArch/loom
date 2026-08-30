@@ -120,6 +120,15 @@ public:
                std::numeric_limits<std::uint64_t>::max();
   }
 
+  /// The occurrence this actor will fire next, when this runtime owns it.
+  std::optional<std::uint64_t>
+  nextActorOccurrenceOrdinal(std::uint64_t semanticActorOrdinal) const {
+    if (!ownsActor(semanticActorOrdinal))
+      return std::nullopt;
+    return bindings_[bindingBySemanticActor_[semanticActorOrdinal]]
+        .nextOccurrenceOrdinal;
+  }
+
 private:
   struct ActorBinding final {
     std::uint64_t semanticActorOrdinal = 0;

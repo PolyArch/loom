@@ -705,15 +705,36 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
               });
             fields["closed_wait_actor_cycle"] = std::move(actorCycle);
             llvm::json::Array certificate;
-            for (const auto &edge : outcome->closedWaitSet->waitCertificate) {
-              const auto node = [](const auto &value) {
+            const auto tagText = [](const llvm::APInt &value) {
+              llvm::SmallString<24> text;
+              value.toStringUnsigned(text, 10);
+              return text.str().str();
+            };
+            const auto ownerJson = [&tagText](const auto &owner) {
+              using Diagnostic = loom::sim::CgraClosedWaitSetDiagnostic;
+              if (const auto *firing = std::get_if<0>(&owner.owner))
                 return llvm::json::Object{
-                    {"kind", static_cast<std::uint64_t>(value.kind)},
-                    {"ordinal", value.ordinal}};
-              };
+                    {"kind", "actor_firing"},
+                    {"actor", firing->semanticActorOrdinal},
+                    {"occurrence", firing->occurrenceOrdinal}};
+              const auto &queue = std::get<1>(owner.owner);
+              llvm::json::Object result{
+                  {"kind",
+                   queue.domain ==
+                           Diagnostic::WaitStorageDomain::TraversalStorage
+                       ? "traversal_storage"
+                       : "operand_queue"},
+                  {"storage", queue.ordinal},
+                  {"queue_class",
+                   queue.queueClass.tagLocal
+                       ? llvm::json::Value(tagText(queue.queueClass.tagValue))
+                       : llvm::json::Value("global")}};
+              return result;
+            };
+            for (const auto &edge : outcome->closedWaitSet->waitCertificate) {
               certificate.push_back(llvm::json::Object{
-                  {"from", node(edge.from)},
-                  {"to", node(edge.to)},
+                  {"from", ownerJson(edge.from)},
+                  {"to", ownerJson(edge.to)},
                   {"kind", static_cast<std::uint64_t>(edge.kind)},
                   {"waiting_input", edge.waitingInputOrdinal},
                   {"waiting_channel", edge.waitingChannelOrdinal},
@@ -729,10 +750,17 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                        : llvm::json::Value(nullptr)},
                   {"storage_capacity", edge.storageCapacity},
                   {"storage_occupancy", edge.storageOccupancy},
-                  {"awaited_queue_position", edge.awaitedQueuePosition},
-                  {"awaited_tag", edge.awaitedPhysicalTagOrdinal},
-                  {"head_tag", edge.headPhysicalTagOrdinal},
+                  {"awaited_class_position", edge.awaitedClassPosition},
+                  {"awaited_tag",
+                   edge.awaitedTagValue
+                       ? llvm::json::Value(tagText(*edge.awaitedTagValue))
+                       : llvm::json::Value(nullptr)},
+                  {"head_tag",
+                   edge.headTagValue
+                       ? llvm::json::Value(tagText(*edge.headTagValue))
+                       : llvm::json::Value(nullptr)},
                   {"head_binding", edge.headBindingOrdinal},
+                  {"head_occurrence", edge.headOccurrenceOrdinal},
                   {"head_destination_actor", edge.headDestinationActorOrdinal},
                   {"head_destination_input", edge.headDestinationInputOrdinal},
                   {"head_destination_channel",
@@ -740,6 +768,9 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
               });
             }
             fields["closed_wait_certificate"] = std::move(certificate);
+            if (outcome->closedWaitSet->waitProofFailure)
+              fields["closed_wait_proof_failure"] = static_cast<std::uint64_t>(
+                  *outcome->closedWaitSet->waitProofFailure);
             llvm::json::Array physicalActions;
             for (const auto indexed :
                  llvm::enumerate(outcome->closedWaitSet->physicalActions)) {

@@ -113,6 +113,9 @@ llvm::Expected<bool> CgraTransportRuntime::scheduleReadyTraversals(
       else
         storage.pendingEnqueueNodes.push_back(nodeOrdinal);
       traversalNodeStates_[nodeOrdinal] = TraversalNodeState::WaitingStorage;
+      // A newly pending traversal is an external readiness change for this
+      // queue: a virtual-channel probe epoch restarts.
+      storage.offerRefusalsSinceCommit = 0;
       if (llvm::Error error = scheduleStorage(node.storageOrdinal, coordinate))
         return std::move(error);
       scheduled = true;

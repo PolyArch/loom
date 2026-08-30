@@ -3,6 +3,7 @@
 
 #include "Common/ComponentViewDigest.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
+#include "Fabric/IR/PhysicalTag.h"
 #include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Simulator/CGRAAdmission.h"
 #include "Simulator/CgraExternalMemoryProvider.h"
@@ -20,7 +21,9 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::sim {
@@ -142,6 +145,11 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint64_t definingActorEntityId =
         std::numeric_limits<std::uint64_t>::max();
     bool definingActorTerminal = false;
+    /// The exact producer occurrence the blocked input awaits: the next index
+    /// in the channel's dense arrival sequence. Equal to the producer result
+    /// occurrence because one firing appends exactly one token to the channel.
+    std::uint64_t expectedProducerOccurrenceOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
   };
   struct PhysicalAction final {
     std::uint64_t actionOrdinal = 0;
@@ -181,6 +189,10 @@ struct CgraClosedWaitSetDiagnostic final {
         std::numeric_limits<std::uint64_t>::max();
     std::uint32_t producerResultOrdinal =
         std::numeric_limits<std::uint32_t>::max();
+    /// The exact Physical Tag this token carries on its route, when tagged.
+    std::uint64_t physicalTagOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    llvm::APInt physicalTagValue = llvm::APInt(1, 0);
     bool blocked = false;
     bool arrivalScheduled = false;
     bool publicationReady = false;
@@ -277,39 +289,118 @@ struct CgraClosedWaitSetDiagnostic final {
   /// are admitted when its missing producers remain in the greatest closed set.
   std::vector<ActorWaitCycleEdge> actorWaitCycle;
 
-  /// Minimal causal certificate of one quiescent closed wait. Nodes are the
-  /// semantic actors and physical storages of a single strongly connected
-  /// component of the combined wait-for relation, so the certificate stays
-  /// bounded by the closure that actually deadlocked rather than by the whole
-  /// execution. An independent Mapping or DSE owner can rebuild the closed
-  /// cycle from these edges alone; the runtime remains the only owner of the
-  /// dynamic facts they quote.
-  enum class WaitNodeKind : std::uint8_t { Actor, Storage };
-  struct WaitNode final {
-    WaitNodeKind kind = WaitNodeKind::Actor;
-    std::uint64_t ordinal = std::numeric_limits<std::uint64_t>::max();
+  /// Unified causal certificate of one quiescent closed wait. Nodes are typed
+  /// dynamic owners — one exact actor firing occurrence, or one queue class of
+  /// one physical storage — and every edge quotes one dynamic wait fact the
+  /// runtime observed. The certificate is the single closed strongly connected
+  /// component of that combined wait-for relation, so it stays bounded by the
+  /// closure that actually deadlocked. An independent Mapping or DSE owner can
+  /// rebuild the closed cycle from these edges alone; the runtime remains the
+  /// only owner of the dynamic facts they quote.
+  struct WaitActorFiringKey final {
+    std::uint64_t semanticActorOrdinal = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t occurrenceOrdinal = std::numeric_limits<std::uint64_t>::max();
 
-    friend bool operator==(const WaitNode &lhs, const WaitNode &rhs) {
-      return lhs.kind == rhs.kind && lhs.ordinal == rhs.ordinal;
+    friend bool operator==(const WaitActorFiringKey &lhs,
+                           const WaitActorFiringKey &rhs) {
+      return lhs.semanticActorOrdinal == rhs.semanticActorOrdinal &&
+             lhs.occurrenceOrdinal == rhs.occurrenceOrdinal;
+    }
+    friend bool operator<(const WaitActorFiringKey &lhs,
+                          const WaitActorFiringKey &rhs) {
+      return std::tie(lhs.semanticActorOrdinal, lhs.occurrenceOrdinal) <
+             std::tie(rhs.semanticActorOrdinal, rhs.occurrenceOrdinal);
+    }
+  };
+  /// The queue class of one storage a wait refers to. A StrictFifo queue has
+  /// one global class; a PerTagVirtualChannel queue has one class per resident
+  /// Physical Tag value, identified by the exact tag bits rather than any
+  /// plan-local ordinal.
+  struct WaitQueueClass final {
+    bool tagLocal = false;
+    llvm::APInt tagValue = llvm::APInt(1, 0);
+
+    static WaitQueueClass global() { return {}; }
+    static WaitQueueClass tag(llvm::APInt value) {
+      return WaitQueueClass{true, std::move(value)};
+    }
+
+    friend bool operator==(const WaitQueueClass &lhs,
+                           const WaitQueueClass &rhs) {
+      return lhs.tagLocal == rhs.tagLocal &&
+             ::fabric::comparePhysicalTagValues(lhs.tagValue, rhs.tagValue) ==
+                 0;
+    }
+    friend bool operator!=(const WaitQueueClass &lhs,
+                           const WaitQueueClass &rhs) {
+      return !(lhs == rhs);
+    }
+    friend bool operator<(const WaitQueueClass &lhs,
+                          const WaitQueueClass &rhs) {
+      if (lhs.tagLocal != rhs.tagLocal)
+        return !lhs.tagLocal;
+      return ::fabric::comparePhysicalTagValues(lhs.tagValue, rhs.tagValue) <
+             0;
+    }
+  };
+  enum class WaitStorageDomain : std::uint8_t {
+    TraversalStorage,
+    OperandQueue,
+  };
+  struct WaitStorageQueueKey final {
+    WaitStorageDomain domain = WaitStorageDomain::TraversalStorage;
+    std::uint64_t ordinal = std::numeric_limits<std::uint64_t>::max();
+    WaitQueueClass queueClass;
+
+    friend bool operator==(const WaitStorageQueueKey &lhs,
+                           const WaitStorageQueueKey &rhs) {
+      return lhs.domain == rhs.domain && lhs.ordinal == rhs.ordinal &&
+             lhs.queueClass == rhs.queueClass;
+    }
+    friend bool operator<(const WaitStorageQueueKey &lhs,
+                          const WaitStorageQueueKey &rhs) {
+      return std::tie(lhs.domain, lhs.ordinal, lhs.queueClass) <
+             std::tie(rhs.domain, rhs.ordinal, rhs.queueClass);
+    }
+  };
+  struct WaitOwnerKey final {
+    std::variant<WaitActorFiringKey, WaitStorageQueueKey> owner;
+
+    friend bool operator==(const WaitOwnerKey &lhs, const WaitOwnerKey &rhs) {
+      return lhs.owner == rhs.owner;
+    }
+    friend bool operator<(const WaitOwnerKey &lhs, const WaitOwnerKey &rhs) {
+      if (lhs.owner.index() != rhs.owner.index())
+        return lhs.owner.index() < rhs.owner.index();
+      if (lhs.owner.index() == 0)
+        return std::get<0>(lhs.owner) < std::get<0>(rhs.owner);
+      return std::get<1>(lhs.owner) < std::get<1>(rhs.owner);
     }
   };
   enum class WaitEdgeKind : std::uint8_t {
-    /// An actor cannot fire until a producing actor supplies one input.
+    /// An actor firing cannot complete an input until a producer firing
+    /// supplies it; the edge carries the expected producer occurrence.
     ActorMissingInput,
-    /// An actor cannot retire an output because a storage cannot admit it.
+    /// An actor firing cannot durably accept its output transfer because a
+    /// storage queue cannot admit it.
     ActorOutputBackpressure,
-    /// A storage cannot advance because its dequeue head is owed to a
-    /// consumer actor that has not taken it.
-    StorageHeadConsumer,
-    /// A storage cannot advance because the storage its head continues into
-    /// cannot admit another token.
+    /// An actor firing's awaited token is resident behind the head of its
+    /// queue class — the strict FIFO head, or its tag-local head.
+    StorageOrder,
+    /// A storage queue's class head cannot continue into the downstream
+    /// storage queue, which is full at cycle start.
     StorageDownstream,
+    /// A storage queue's class head reached the route terminal but the
+    /// consumer actor input has not taken it.
+    StorageConsumer,
+    /// An actor firing's input wait joins at the exact operand queue head.
+    OperandQueueWait,
   };
   struct WaitEdge final {
-    WaitNode from;
-    WaitNode to;
+    WaitOwnerKey from;
+    WaitOwnerKey to;
     WaitEdgeKind kind = WaitEdgeKind::ActorMissingInput;
-    /// Waiting side, when the waiting node is an actor.
+    /// Waiting side, when the waiting node is an actor firing.
     std::uint32_t waitingInputOrdinal =
         std::numeric_limits<std::uint32_t>::max();
     std::uint64_t waitingChannelOrdinal =
@@ -322,17 +413,15 @@ struct CgraClosedWaitSetDiagnostic final {
     std::optional<::loom::fabric::FabricFifoOccurrenceRef> fifoOccurrence;
     std::uint32_t storageCapacity = 0;
     std::uint32_t storageOccupancy = 0;
-    /// Queue position of the token this edge waits for, and the position-zero
-    /// head that a strict FIFO must retire first. Equal positions mean the
-    /// awaited token is the head; a larger awaited position is exactly the
-    /// head-of-line distance.
-    std::uint32_t awaitedQueuePosition =
+    /// Queue position of the awaited token inside its queue class and the
+    /// class head it waits behind, with the exact tag bit values on both.
+    std::uint32_t awaitedClassPosition =
         std::numeric_limits<std::uint32_t>::max();
-    std::uint64_t awaitedPhysicalTagOrdinal =
-        std::numeric_limits<std::uint64_t>::max();
-    std::uint64_t headPhysicalTagOrdinal =
-        std::numeric_limits<std::uint64_t>::max();
+    std::optional<llvm::APInt> awaitedTagValue;
+    std::optional<llvm::APInt> headTagValue;
     std::uint64_t headBindingOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t headOccurrenceOrdinal =
         std::numeric_limits<std::uint64_t>::max();
     std::uint64_t headDestinationActorOrdinal =
         std::numeric_limits<std::uint64_t>::max();
@@ -341,9 +430,22 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint64_t headDestinationChannelOrdinal =
         std::numeric_limits<std::uint64_t>::max();
   };
+  /// A closed wait that carries no exact certificate states why. The runtime
+  /// never forges a certificate it cannot establish from dynamic owners.
+  enum class WaitProofFailure : std::uint8_t {
+    /// A required occurrence or dynamic owner could not be determined.
+    IndeterminateDynamicOwner,
+    /// The combined wait-for relation holds no closed strongly connected
+    /// component whose every node waits inside the component.
+    NoClosedComponent,
+  };
+  std::optional<WaitProofFailure> waitProofFailure;
   /// Empty when no closed strongly connected wait component was established.
   /// A non-empty certificate is a proof obligation for the Mapping owner, not
-  /// a diagnostic convenience.
+  /// a diagnostic convenience. Every node of the certificate has at least one
+  /// edge inside the component, and the component is a sink of the wait-for
+  /// relation. JSON and feedback projections derive from this typed form; it
+  /// never becomes a second semantic owner.
   std::vector<WaitEdge> waitCertificate;
   /// Shared derived Mapping/Simulator queue projection summary. These fields
   /// carry no new runtime identity and are absent when no operand queues are
@@ -371,6 +473,13 @@ struct CgraSimulationOutcome final {
   std::optional<RetiredCgraSimulation> retired;
   std::optional<CgraClosedWaitSetDiagnostic> closedWaitSet;
 };
+
+/// Independent closure check of one emitted closed-wait certificate: every
+/// typed owner it names waits inside the certificate and the whole
+/// certificate is one strongly connected component. Returns false when the
+/// certificate is absent or a proof failure was reported.
+bool verifyClosedWaitCertificateClosure(
+    const CgraClosedWaitSetDiagnostic &closedWait);
 
 /// Removable invocation-local admission projection for repeated execution of
 /// one exact workload/runtime-input pair. The projection shares ownership of

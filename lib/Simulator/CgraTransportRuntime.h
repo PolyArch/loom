@@ -86,6 +86,9 @@ struct CgraPendingTransferDiagnostic final {
   std::uint64_t producerActorOrdinal = invalidCgraTransportOrdinal;
   std::uint32_t producerResultOrdinal =
       std::numeric_limits<std::uint32_t>::max();
+  /// The exact Physical Tag this token carries on its route, when tagged.
+  std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
+  llvm::APInt physicalTagValue = llvm::APInt(1, 0);
   bool blocked = false;
   bool arrivalScheduled = false;
   bool publicationReady = false;
@@ -234,6 +237,28 @@ public:
     return tagVirtualChannelKeys_;
   }
 
+  /// The next index of one channel's dense arrival sequence, or absent when
+  /// the channel is outside the runtime's domain.
+  std::optional<std::uint64_t>
+  channelArrivalCount(std::uint64_t channelOrdinal) const {
+    if (channelOrdinal >= channelArrivalCounts_.size())
+      return std::nullopt;
+    return channelArrivalCounts_[channelOrdinal];
+  }
+
+  /// The number of selected traversal storages.
+  std::uint64_t storageCount() const { return storages_.size(); }
+
+  /// The dequeue scheduling discipline of one traversal storage. Register
+  /// storages have no discipline; they present their single global queue.
+  std::optional<::fabric::FifoQueueDiscipline>
+  storageQueueDiscipline(std::uint64_t storageOrdinal) const {
+    if (storageOrdinal >= storages_.size() ||
+        storages_[storageOrdinal].kind != CgraTraversalStorageKind::BufferedFifo)
+      return std::nullopt;
+    return storages_[storageOrdinal].queue.discipline();
+  }
+
 private:
   enum class SinkKind : std::uint8_t { Channel, Observation };
 
@@ -352,6 +377,9 @@ private:
     Enqueue,
     Dequeue,
     Simultaneous,
+    /// The internal arbitration transition of a virtual channel queue: one
+    /// refused offer rotates the offer cursor at the commit boundary.
+    OfferAdvance,
   };
 
   enum class ActionLifecycleState : std::uint8_t {
@@ -408,6 +436,9 @@ private:
     std::uint64_t enqueueAction = invalidCgraTransportOrdinal;
     std::uint64_t dequeueAction = invalidCgraTransportOrdinal;
     std::uint64_t simultaneousAction = invalidCgraTransportOrdinal;
+    /// The OfferAdvance arbitration action of a virtual channel queue;
+    /// invalid for a strict queue.
+    std::uint64_t offerAdvanceAction = invalidCgraTransportOrdinal;
     std::vector<std::uint64_t> pendingEnqueueNodes;
     std::vector<std::uint64_t> pendingDequeueNodes;
     bool independentReadWriteServices = false;
@@ -585,6 +616,11 @@ private:
   std::vector<std::uint64_t> freeSlots_;
   /// Indexed by plan Physical Tag ordinal; see `tagVirtualChannelKey`.
   std::vector<std::uint32_t> tagVirtualChannelKeys_;
+  /// Tokens delivered into each semantic channel by this transport. The value
+  /// is the next index of the channel's dense arrival sequence, so a blocked
+  /// input awaiting the channel's next token awaits exactly this producer
+  /// occurrence.
+  std::vector<std::uint64_t> channelArrivalCounts_;
   llvm::SmallBitVector blocked_;
   std::vector<std::uint64_t> nextActionOccurrence_;
   llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, ActionOwner>

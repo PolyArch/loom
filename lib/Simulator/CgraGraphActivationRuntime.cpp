@@ -204,6 +204,32 @@ CgraGraphActivationRuntime::pendingTransferDiagnostics() const {
   return transport_->pendingTransferDiagnostics();
 }
 
+std::optional<std::uint64_t>
+CgraGraphActivationRuntime::nextActorOccurrenceOrdinal(
+    std::uint64_t semanticActorOrdinal) const {
+  if (auto occurrence =
+          compute_->nextActorOccurrenceOrdinal(semanticActorOrdinal))
+    return occurrence;
+  return memory_->nextActorOccurrenceOrdinal(semanticActorOrdinal);
+}
+
+std::optional<std::uint64_t>
+CgraGraphActivationRuntime::channelArrivalCount(
+    std::uint64_t channelOrdinal) const {
+  return transport_->channelArrivalCount(channelOrdinal);
+}
+
+std::uint64_t
+CgraGraphActivationRuntime::traversalStorageCount() const {
+  return transport_->storageCount();
+}
+
+std::optional<::fabric::FifoQueueDiscipline>
+CgraGraphActivationRuntime::traversalStorageQueueDiscipline(
+    std::uint64_t storageOrdinal) const {
+  return transport_->storageQueueDiscipline(storageOrdinal);
+}
+
 std::vector<CgraStorageResidencyDiagnostic>
 CgraGraphActivationRuntime::storageResidencyDiagnostics(
     std::uint64_t storageOrdinal) const {

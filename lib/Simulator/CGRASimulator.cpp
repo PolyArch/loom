@@ -173,104 +173,736 @@ deriveActorTransitionProbes(const detail::PreparedGraphExecution &execution,
   return probes;
 }
 
-/// Projects the minimal causal certificate of one closed wait. The combined
-/// wait-for relation joins the actor edges the semantics already established
-/// with the storage edges the transport runtime observed, then keeps only the
-/// strongly connected component that the actor cycle closes. Storage residency
-/// supplies the head-of-line facts a Mapping owner needs to distinguish an
-/// insufficient reconvergent capacity from a strict-FIFO head that a different
-/// consumer owns.
+/// Projects the unified causal certificate of one closed wait. The wait-for
+/// graph joins typed dynamic owners — exact actor firing occurrences and the
+/// queue classes of physical storages — through the wait facts the runtime
+/// observed: missing inputs, output backpressure, queue order, downstream
+/// capacity, and terminal consumption. The certificate is the single closed
+/// sink strongly connected component of that graph; every node in it waits
+/// inside the component. When a required occurrence or owner is
+/// indeterminate, or no closed component exists, the outcome is a typed
+/// proof failure rather than a forged certificate.
 void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
                           CgraClosedWaitSetDiagnostic &closedWait) {
   using Diagnostic = CgraClosedWaitSetDiagnostic;
-  if (closedWait.actorWaitCycle.empty())
-    return;
-  llvm::SmallDenseSet<std::uint64_t, 16> cycleActors;
-  for (const Diagnostic::ActorWaitCycleEdge &edge : closedWait.actorWaitCycle) {
-    cycleActors.insert(edge.waitingActorOrdinal);
-    cycleActors.insert(edge.blockingActorOrdinal);
+  using ActorKey = Diagnostic::WaitActorFiringKey;
+  using QueueClass = Diagnostic::WaitQueueClass;
+  using StorageKey = Diagnostic::WaitStorageQueueKey;
+  using OwnerKey = Diagnostic::WaitOwnerKey;
+  using EdgeKind = Diagnostic::WaitEdgeKind;
+  constexpr std::uint64_t absent = detail::invalidCgraTransportOrdinal;
+
+  closedWait.waitCertificate.clear();
+  closedWait.waitProofFailure.reset();
+
+  const bool debugCertificate =
+      std::getenv("LOOM_DEBUG_WAIT_CERTIFICATE") != nullptr;
+  if (debugCertificate) {
+    for (const auto &input : closedWait.blockedActorInputs)
+      llvm::errs() << "wait-certificate debug: blocked-input actor="
+                   << input.semanticActorOrdinal << " input="
+                   << input.inputOrdinal << " channel=" << input.channelOrdinal
+                   << " source=" << static_cast<unsigned>(input.sourceKind)
+                   << " defining=" << input.definingActorOrdinal
+                   << " expected=" << input.expectedProducerOccurrenceOrdinal
+                   << '\n';
+    for (const auto &firing : closedWait.actorFirings)
+      llvm::errs() << "wait-certificate debug: firing actor="
+                   << firing.semanticActorOrdinal << " occurrence="
+                   << firing.occurrenceOrdinal << '\n';
   }
-  const auto actorNode = [](std::uint64_t ordinal) {
-    return Diagnostic::WaitNode{Diagnostic::WaitNodeKind::Actor, ordinal};
-  };
-  const auto storageNode = [](std::uint64_t ordinal) {
-    return Diagnostic::WaitNode{Diagnostic::WaitNodeKind::Storage, ordinal};
+
+  const auto fail = [&](Diagnostic::WaitProofFailure reason) {
+    closedWait.waitProofFailure = reason;
   };
 
-  for (const Diagnostic::ActorWaitCycleEdge &edge : closedWait.actorWaitCycle) {
-    Diagnostic::WaitEdge record;
-    record.from = actorNode(edge.waitingActorOrdinal);
-    record.to = actorNode(edge.blockingActorOrdinal);
-    record.kind = edge.kind == Diagnostic::ActorWaitKind::MissingInput
-                      ? Diagnostic::WaitEdgeKind::ActorMissingInput
-                      : Diagnostic::WaitEdgeKind::ActorOutputBackpressure;
-    for (const Diagnostic::BlockedActorInput &input :
-         closedWait.blockedActorInputs) {
-      if (input.semanticActorOrdinal != edge.waitingActorOrdinal ||
-          input.definingActorOrdinal != edge.blockingActorOrdinal)
+  llvm::DenseMap<std::uint64_t, std::uint64_t> activeOccurrence;
+  for (const Diagnostic::ActorFiring &firing : closedWait.actorFirings)
+    activeOccurrence[firing.semanticActorOrdinal] = firing.occurrenceOrdinal;
+  // Input-side waits belong to the firing that will consume the awaited
+  // input: the actor's next occurrence, even when an earlier occurrence is
+  // still completing its outputs.
+  const auto nextFiring = [&](std::uint64_t actor) -> std::uint64_t {
+    return runtime.nextActorOccurrenceOrdinal(actor).value_or(absent);
+  };
+  const auto actorNode = [&](std::uint64_t actor, std::uint64_t occurrence) {
+    return OwnerKey{ActorKey{actor, occurrence}};
+  };
+  const auto storageNode = [&](std::uint64_t ordinal, QueueClass queueClass) {
+    return OwnerKey{StorageKey{Diagnostic::WaitStorageDomain::TraversalStorage,
+                               ordinal, queueClass}};
+  };
+
+  // Residency per storage: queue order with exact tag values, grouped into
+  // the queue classes the discipline presents.
+  struct ResidencyEntry {
+    std::uint64_t bindingOrdinal;
+    std::uint64_t occurrenceOrdinal;
+    llvm::APInt tagValue;
+    bool tagged;
+    std::uint32_t queuePosition;
+    std::uint64_t producerActorOrdinal;
+    std::vector<std::uint64_t> destinationActorOrdinals;
+    std::vector<std::uint64_t> destinationChannelOrdinals;
+    std::vector<std::uint32_t> destinationInputOrdinals;
+  };
+  struct StorageResidency {
+    std::vector<ResidencyEntry> entries;
+    ::fabric::FifoQueueDiscipline discipline =
+        ::fabric::FifoQueueDiscipline::StrictFifo;
+  };
+  std::vector<StorageResidency> residencies;
+  const std::uint64_t storageCount = runtime.traversalStorageCount();
+  residencies.reserve(storageCount);
+  for (std::uint64_t storage = 0; storage != storageCount; ++storage) {
+    StorageResidency residency;
+    residency.discipline =
+        runtime.traversalStorageQueueDiscipline(storage).value_or(
+            ::fabric::FifoQueueDiscipline::StrictFifo);
+    for (const auto &entry : runtime.storageResidencyDiagnostics(storage))
+      residency.entries.push_back(
+          {entry.bindingOrdinal, entry.occurrenceOrdinal, entry.physicalTagValue,
+           entry.physicalTagOrdinal != absent, entry.queuePosition,
+           entry.producerActorOrdinal, entry.destinationActorOrdinals,
+           entry.destinationChannelOrdinals, entry.destinationInputOrdinals});
+    residencies.push_back(std::move(residency));
+  }
+  const auto queueClassOf = [&](const StorageResidency &storage,
+                                const llvm::APInt &tagValue,
+                                bool tagged) {
+    return storage.discipline ==
+                   ::fabric::FifoQueueDiscipline::PerTagVirtualChannel &&
+                   tagged
+               ? QueueClass::tag(tagValue)
+               : QueueClass::global();
+  };
+  // The class head is the first resident entry of the class in queue order.
+  const auto classHead = [&](const StorageResidency &storage,
+                             const QueueClass &queueClass)
+      -> const ResidencyEntry * {
+    for (const ResidencyEntry &entry : storage.entries)
+      if (queueClassOf(storage, entry.tagValue,
+                       true) == queueClass)
+        return &entry;
+    return nullptr;
+  };
+  const auto classPositionOf = [&](const StorageResidency &storage,
+                                   const QueueClass &queueClass,
+                                   std::uint64_t bindingOrdinal,
+                                   std::uint64_t occurrenceOrdinal)
+      -> std::optional<std::uint32_t> {
+    std::uint32_t position = 0;
+    for (const ResidencyEntry &entry : storage.entries) {
+      if (queueClassOf(storage, entry.tagValue, true) != queueClass)
         continue;
-      record.waitingInputOrdinal = input.inputOrdinal;
-      record.waitingChannelOrdinal = input.channelOrdinal;
-      break;
+      if (entry.bindingOrdinal == bindingOrdinal &&
+          entry.occurrenceOrdinal == occurrenceOrdinal)
+        return position;
+      ++position;
     }
-    closedWait.waitCertificate.push_back(std::move(record));
+    return std::nullopt;
+  };
+
+  // Transfers indexed for awaited-token lookup.
+  const auto findTransfer = [&](std::uint64_t producerActor,
+                                std::uint64_t occurrence,
+                                std::uint64_t consumerActor,
+                                std::uint32_t consumerInput)
+      -> const Diagnostic::Transfer * {
+    for (const Diagnostic::Transfer &transfer : closedWait.transfers) {
+      if (transfer.producerActorOrdinal != producerActor ||
+          transfer.occurrenceOrdinal != occurrence)
+        continue;
+      for (std::size_t sink = 0; sink != transfer.unpublishedActorOrdinals.size();
+           ++sink)
+        if (transfer.unpublishedActorOrdinals[sink] == consumerActor &&
+            transfer.unpublishedInputOrdinals[sink] == consumerInput)
+          return &transfer;
+    }
+    return nullptr;
+  };
+  const auto findTransferByBinding = [&](std::uint64_t bindingOrdinal,
+                                         std::uint64_t occurrence)
+      -> const Diagnostic::Transfer * {
+    for (const Diagnostic::Transfer &transfer : closedWait.transfers)
+      if (transfer.bindingOrdinal == bindingOrdinal &&
+          transfer.occurrenceOrdinal == occurrence)
+        return &transfer;
+    return nullptr;
+  };
+  const auto findResidency = [&](std::uint64_t bindingOrdinal,
+                                 std::uint64_t occurrence)
+      -> std::pair<std::uint64_t, const ResidencyEntry *> {
+    for (std::uint64_t storage = 0; storage != storageCount; ++storage)
+      for (const ResidencyEntry &entry : residencies[storage].entries)
+        if (entry.bindingOrdinal == bindingOrdinal &&
+            entry.occurrenceOrdinal == occurrence)
+          return {storage, &entry};
+    return {absent, nullptr};
+  };
+
+  std::vector<Diagnostic::WaitEdge> edges;
+  const auto appendEdge = [&](Diagnostic::WaitEdge edge) {
+    edges.push_back(std::move(edge));
+  };
+
+  // Operand queue bindings of one actor input, when a queue feeds the channel.
+  const auto operandQueueOfInput = [&](std::uint64_t actor, std::uint32_t input)
+      -> std::optional<std::uint64_t> {
+    for (std::size_t ordinal = 0;
+         ordinal != closedWait.operandQueueHeads.size(); ++ordinal)
+      for (const auto &[consumerActor, consumerInput] :
+           closedWait.operandQueueHeads[ordinal].consumers)
+        if (consumerActor == actor && consumerInput == input)
+          return ordinal;
+    return std::nullopt;
+  };
+
+  // Actor input waits: a resident awaited token orders behind its queue-class
+  // head; an absent awaited token waits on the producer firing.
+  for (const Diagnostic::BlockedActorInput &input : closedWait.blockedActorInputs) {
+    if (input.sourceKind != Diagnostic::ActorInputSourceKind::ActorResult ||
+        input.definingActorOrdinal == absent)
+      continue;
+    const std::uint64_t waitingOccurrence =
+        nextFiring(input.semanticActorOrdinal);
+    const std::uint64_t expectedOccurrence =
+        input.expectedProducerOccurrenceOrdinal;
+    if (waitingOccurrence == absent || expectedOccurrence == absent)
+      return fail(Diagnostic::WaitProofFailure::IndeterminateDynamicOwner);
+    const OwnerKey waiting =
+        actorNode(input.semanticActorOrdinal, waitingOccurrence);
+
+    if (const auto queueOrdinal =
+            operandQueueOfInput(input.semanticActorOrdinal,
+                                input.inputOrdinal)) {
+      Diagnostic::WaitEdge edge;
+      edge.from = waiting;
+      edge.to = OwnerKey{StorageKey{
+          Diagnostic::WaitStorageDomain::OperandQueue, *queueOrdinal,
+          QueueClass::global()}};
+      edge.kind = EdgeKind::OperandQueueWait;
+      edge.waitingInputOrdinal = input.inputOrdinal;
+      edge.waitingChannelOrdinal = input.channelOrdinal;
+      edge.occurrenceOrdinal = expectedOccurrence;
+      appendEdge(std::move(edge));
+      continue;
+    }
+
+    const Diagnostic::Transfer *awaited =
+        findTransfer(input.definingActorOrdinal, expectedOccurrence,
+                     input.semanticActorOrdinal, input.inputOrdinal);
+    if (!awaited) {
+      Diagnostic::WaitEdge edge;
+      edge.from = waiting;
+      edge.to = actorNode(input.definingActorOrdinal, expectedOccurrence);
+      edge.kind = EdgeKind::ActorMissingInput;
+      edge.waitingInputOrdinal = input.inputOrdinal;
+      edge.waitingChannelOrdinal = input.channelOrdinal;
+      edge.occurrenceOrdinal = expectedOccurrence;
+      appendEdge(std::move(edge));
+      continue;
+    }
+    const auto [storageOrdinal, entry] =
+        findResidency(awaited->bindingOrdinal, awaited->occurrenceOrdinal);
+    if (!entry) {
+      Diagnostic::WaitEdge edge;
+      edge.from = waiting;
+      edge.to = actorNode(input.definingActorOrdinal, expectedOccurrence);
+      edge.kind = EdgeKind::ActorMissingInput;
+      edge.waitingInputOrdinal = input.inputOrdinal;
+      edge.waitingChannelOrdinal = input.channelOrdinal;
+      edge.bindingOrdinal = awaited->bindingOrdinal;
+      edge.occurrenceOrdinal = expectedOccurrence;
+      appendEdge(std::move(edge));
+      continue;
+    }
+    const StorageResidency &storage = residencies[storageOrdinal];
+    const bool tagged = awaited->physicalTagOrdinal != absent;
+    const QueueClass queueClass =
+        queueClassOf(storage, awaited->physicalTagValue, tagged);
+    const auto position = classPositionOf(storage, queueClass,
+                                          awaited->bindingOrdinal,
+                                          awaited->occurrenceOrdinal);
+    const ResidencyEntry *head = classHead(storage, queueClass);
+    if (!position || !head)
+      return fail(Diagnostic::WaitProofFailure::IndeterminateDynamicOwner);
+    // The awaited token waits for its queue class to advance. Position zero
+    // means it is itself the class head: the queue must deliver it while the
+    // queue's own out-edges state what the head waits behind.
+    Diagnostic::WaitEdge edge;
+    edge.from = waiting;
+    edge.to = storageNode(storageOrdinal, queueClass);
+    edge.kind = EdgeKind::StorageOrder;
+    edge.waitingInputOrdinal = input.inputOrdinal;
+    edge.waitingChannelOrdinal = input.channelOrdinal;
+    edge.bindingOrdinal = awaited->bindingOrdinal;
+    edge.occurrenceOrdinal = awaited->occurrenceOrdinal;
+    edge.storageOrdinal = storageOrdinal;
+    edge.fifoOccurrence = awaited->blockingFifoOccurrence;
+    edge.awaitedClassPosition = *position;
+    if (tagged)
+      edge.awaitedTagValue = awaited->physicalTagValue;
+    if (head->tagged)
+      edge.headTagValue = head->tagValue;
+    edge.headBindingOrdinal = head->bindingOrdinal;
+    edge.headOccurrenceOrdinal = head->occurrenceOrdinal;
+    if (!head->destinationActorOrdinals.empty()) {
+      edge.headDestinationActorOrdinal = head->destinationActorOrdinals.front();
+      edge.headDestinationChannelOrdinal =
+          head->destinationChannelOrdinals.front();
+      edge.headDestinationInputOrdinal = head->destinationInputOrdinals.front();
+    }
+    appendEdge(std::move(edge));
   }
 
-  // Every storage that a cycle member is blocked behind joins the certificate
-  // with its exact residency, so the awaited token's distance from the head is
-  // stated rather than inferred.
+  // Transfer-side waits: output backpressure toward a full queue, downstream
+  // capacity between queues, and terminal consumption of a class head.
   for (const Diagnostic::Transfer &transfer : closedWait.transfers) {
-    if (!transfer.blocked || transfer.blockingStorageOrdinal ==
-                                 std::numeric_limits<std::uint64_t>::max())
+    const bool tagged = transfer.physicalTagOrdinal != absent;
+    if (transfer.producerActorOrdinal == absent)
       continue;
-    if (!cycleActors.contains(transfer.producerActorOrdinal) &&
-        !cycleActors.contains(transfer.blockingActorOrdinal))
-      continue;
-    const auto residency =
-        runtime.storageResidencyDiagnostics(transfer.blockingStorageOrdinal);
-    Diagnostic::WaitEdge record;
-    record.from = actorNode(transfer.producerActorOrdinal);
-    record.to = storageNode(transfer.blockingStorageOrdinal);
-    record.kind = Diagnostic::WaitEdgeKind::ActorOutputBackpressure;
-    record.bindingOrdinal = transfer.bindingOrdinal;
-    record.occurrenceOrdinal = transfer.occurrenceOrdinal;
-    record.storageOrdinal = transfer.blockingStorageOrdinal;
-    record.fifoOccurrence = transfer.blockingFifoOccurrence;
-    record.storageCapacity = transfer.blockingStorageCapacity;
-    record.storageOccupancy = transfer.blockingStorageOccupancy;
-    for (const auto &entry : residency) {
-      if (entry.bindingOrdinal == transfer.bindingOrdinal &&
-          entry.occurrenceOrdinal == transfer.occurrenceOrdinal) {
-        record.awaitedQueuePosition = entry.queuePosition;
-        record.awaitedPhysicalTagOrdinal = entry.physicalTagOrdinal;
+    const OwnerKey producer =
+        actorNode(transfer.producerActorOrdinal, transfer.occurrenceOrdinal);
+    // Output backpressure: the transfer has not been durably accepted by the
+    // storage it waits to enter.
+    if (transfer.blockingTraversalWaitingForStorage &&
+        transfer.blockingStorageOrdinal != absent) {
+      const auto discipline = transfer.blockingStorageOrdinal < storageCount
+                                  ? residencies[transfer.blockingStorageOrdinal]
+                                        .discipline
+                                  : ::fabric::FifoQueueDiscipline::StrictFifo;
+      Diagnostic::WaitEdge edge;
+      edge.from = producer;
+      edge.to = storageNode(
+          transfer.blockingStorageOrdinal,
+          discipline == ::fabric::FifoQueueDiscipline::PerTagVirtualChannel &&
+                  tagged
+              ? QueueClass::tag(transfer.physicalTagValue)
+              : QueueClass::global());
+      edge.kind = EdgeKind::ActorOutputBackpressure;
+      edge.bindingOrdinal = transfer.bindingOrdinal;
+      edge.occurrenceOrdinal = transfer.occurrenceOrdinal;
+      edge.storageOrdinal = transfer.blockingStorageOrdinal;
+      edge.fifoOccurrence = transfer.blockingFifoOccurrence;
+      edge.storageCapacity = transfer.blockingStorageCapacity;
+      edge.storageOccupancy = transfer.blockingStorageOccupancy;
+      appendEdge(std::move(edge));
+    }
+    // The transfer cannot publish into a channel the consumer has not
+    // drained: the channel slot is the durable acceptance point, and the
+    // consumer's next firing owns the outstanding token.
+    if (transfer.blockingActorOrdinal != absent) {
+      const std::uint64_t consumerOccurrence =
+          nextFiring(transfer.blockingActorOrdinal);
+      if (consumerOccurrence == absent)
+        return fail(Diagnostic::WaitProofFailure::IndeterminateDynamicOwner);
+      Diagnostic::WaitEdge channelEdge;
+      channelEdge.from = producer;
+      channelEdge.to =
+          actorNode(transfer.blockingActorOrdinal, consumerOccurrence);
+      channelEdge.kind = EdgeKind::ActorOutputBackpressure;
+      channelEdge.bindingOrdinal = transfer.bindingOrdinal;
+      channelEdge.occurrenceOrdinal = transfer.occurrenceOrdinal;
+      appendEdge(std::move(channelEdge));
+    }
+    // A transfer blocked on operand-queue capacity waits on the queue that
+    // cannot admit it.
+    if (transfer.operandCapacityBlocked)
+      for (const auto &wait : transfer.operandQueueWaits) {
+        for (std::size_t ordinal = 0;
+             ordinal != closedWait.operandQueueHeads.size(); ++ordinal) {
+          const auto &queueHead = closedWait.operandQueueHeads[ordinal];
+          if (!(queueHead.queue == wait.queue) ||
+              queueHead.allocationUnit != wait.allocationUnit)
+            continue;
+          Diagnostic::WaitEdge queueEdge;
+          queueEdge.from = producer;
+          queueEdge.to = OwnerKey{StorageKey{
+              Diagnostic::WaitStorageDomain::OperandQueue, ordinal,
+              QueueClass::global()}};
+          queueEdge.kind = EdgeKind::ActorOutputBackpressure;
+          queueEdge.bindingOrdinal = transfer.bindingOrdinal;
+          queueEdge.occurrenceOrdinal = transfer.occurrenceOrdinal;
+          appendEdge(std::move(queueEdge));
+          break;
+        }
       }
-      if (entry.queuePosition != 0)
+    // A resident token whose publication is incomplete holds its producer
+    // firing open: behind its queue-class head the firing waits on the queue
+    // order, and at an unconsumed head it waits on the queue's delivery.
+    if (transfer.publishedSinkCount >= transfer.sinkCount ||
+        transfer.sinkCount == 0)
+      continue;
+    const auto [residentStorage, residentEntry] =
+        findResidency(transfer.bindingOrdinal, transfer.occurrenceOrdinal);
+    if (!residentEntry)
+      continue;
+    const StorageResidency &resident = residencies[residentStorage];
+    const QueueClass residentClass =
+        queueClassOf(resident, transfer.physicalTagValue, tagged);
+    const auto position = classPositionOf(resident, residentClass,
+                                          transfer.bindingOrdinal,
+                                          transfer.occurrenceOrdinal);
+    if (!position)
+      return fail(Diagnostic::WaitProofFailure::IndeterminateDynamicOwner);
+    Diagnostic::WaitEdge edge;
+    edge.from = producer;
+    edge.to = storageNode(residentStorage, residentClass);
+    edge.kind = *position == 0 ? EdgeKind::ActorOutputBackpressure
+                               : EdgeKind::StorageOrder;
+    edge.bindingOrdinal = transfer.bindingOrdinal;
+    edge.occurrenceOrdinal = transfer.occurrenceOrdinal;
+    edge.storageOrdinal = residentStorage;
+    edge.fifoOccurrence = transfer.blockingFifoOccurrence;
+    edge.awaitedClassPosition = *position;
+    if (tagged)
+      edge.awaitedTagValue = transfer.physicalTagValue;
+    if (const ResidencyEntry *head = classHead(resident, residentClass)) {
+      if (head->tagged)
+        edge.headTagValue = head->tagValue;
+      edge.headBindingOrdinal = head->bindingOrdinal;
+      edge.headOccurrenceOrdinal = head->occurrenceOrdinal;
+    }
+    appendEdge(std::move(edge));
+  }
+
+  // Queue-side waits of every resident class head: continue downstream when
+  // the next storage is full at cycle start, or wait on the terminal consumer
+  // that has not taken the head token.
+  for (std::uint64_t storageOrdinal = 0; storageOrdinal != storageCount;
+       ++storageOrdinal) {
+    const StorageResidency &storage = residencies[storageOrdinal];
+    llvm::SmallVector<QueueClass, 4> classes;
+    for (const ResidencyEntry &entry : storage.entries) {
+      const QueueClass queueClass =
+          queueClassOf(storage, entry.tagValue, true);
+      if (!llvm::is_contained(classes, queueClass))
+        classes.push_back(queueClass);
+    }
+    for (const QueueClass &queueClass : classes) {
+      const ResidencyEntry *head = classHead(storage, queueClass);
+      if (!head || head->bindingOrdinal == absent)
         continue;
-      record.headPhysicalTagOrdinal = entry.physicalTagOrdinal;
-      record.headBindingOrdinal = entry.bindingOrdinal;
-      if (!entry.destinationActorOrdinals.empty()) {
-        record.headDestinationActorOrdinal =
-            entry.destinationActorOrdinals.front();
-        record.headDestinationInputOrdinal =
-            entry.destinationInputOrdinals.front();
-        record.headDestinationChannelOrdinal =
-            entry.destinationChannelOrdinals.front();
+      const Diagnostic::Transfer *transfer =
+          findTransferByBinding(head->bindingOrdinal, head->occurrenceOrdinal);
+      if (!transfer)
+        return fail(Diagnostic::WaitProofFailure::IndeterminateDynamicOwner);
+      const OwnerKey from = storageNode(storageOrdinal, queueClass);
+      // The head continues into a downstream storage.
+      if (transfer->blockingDownstreamStorageOrdinal != absent &&
+          transfer->blockingDownstreamStorageOrdinal < storageCount &&
+          transfer->blockingDownstreamStorageOccupancy +
+                  transfer->blockingDownstreamStorageReservations >=
+              transfer->blockingDownstreamStorageCapacity) {
+        const std::uint64_t downstream =
+            transfer->blockingDownstreamStorageOrdinal;
+        Diagnostic::WaitEdge edge;
+        edge.from = from;
+        edge.to = storageNode(
+            downstream, queueClassOf(residencies[downstream],
+                                     transfer->physicalTagValue,
+                                     transfer->physicalTagOrdinal != absent));
+        edge.kind = EdgeKind::StorageDownstream;
+        edge.bindingOrdinal = transfer->bindingOrdinal;
+        edge.occurrenceOrdinal = transfer->occurrenceOrdinal;
+        edge.storageOrdinal = downstream;
+        edge.storageCapacity = transfer->blockingDownstreamStorageCapacity;
+        edge.storageOccupancy = transfer->blockingDownstreamStorageOccupancy;
+        if (head->tagged)
+          edge.headTagValue = head->tagValue;
+        edge.headBindingOrdinal = head->bindingOrdinal;
+        edge.headOccurrenceOrdinal = head->occurrenceOrdinal;
+        appendEdge(std::move(edge));
+        continue;
+      }
+      // The head reached its route terminal and waits on its consumers. A
+      // resident head is unconsumed by construction: the exact consumer
+      // firing that must take it is the consumer's next occurrence.
+      for (std::size_t destination = 0;
+           destination != head->destinationActorOrdinals.size();
+           ++destination) {
+        const std::uint64_t consumer =
+            head->destinationActorOrdinals[destination];
+        const std::uint64_t channel =
+            head->destinationChannelOrdinals[destination];
+        const std::uint64_t consumerOccurrence = nextFiring(consumer);
+        if (consumerOccurrence == absent)
+          return fail(
+              Diagnostic::WaitProofFailure::IndeterminateDynamicOwner);
+        Diagnostic::WaitEdge edge;
+        edge.from = from;
+        edge.to = actorNode(consumer, consumerOccurrence);
+        edge.kind = EdgeKind::StorageConsumer;
+        edge.bindingOrdinal = head->bindingOrdinal;
+        edge.occurrenceOrdinal = head->occurrenceOrdinal;
+        edge.storageOrdinal = storageOrdinal;
+        if (head->tagged)
+          edge.headTagValue = head->tagValue;
+        edge.headBindingOrdinal = head->bindingOrdinal;
+        edge.headOccurrenceOrdinal = head->occurrenceOrdinal;
+        edge.headDestinationActorOrdinal = consumer;
+        edge.headDestinationChannelOrdinal = channel;
+        edge.headDestinationInputOrdinal =
+            head->destinationInputOrdinals[destination];
+        appendEdge(std::move(edge));
       }
     }
-    closedWait.waitCertificate.push_back(std::move(record));
-
-    // The storage cannot advance until the consumer of its head takes it.
-    if (record.headDestinationActorOrdinal ==
-        std::numeric_limits<std::uint64_t>::max())
-      continue;
-    Diagnostic::WaitEdge head = record;
-    head.from = storageNode(transfer.blockingStorageOrdinal);
-    head.to = actorNode(record.headDestinationActorOrdinal);
-    head.kind = Diagnostic::WaitEdgeKind::StorageHeadConsumer;
-    head.waitingInputOrdinal = record.headDestinationInputOrdinal;
-    head.waitingChannelOrdinal = record.headDestinationChannelOrdinal;
-    closedWait.waitCertificate.push_back(std::move(head));
   }
+
+  // Operand queue out-edges: a non-empty queue waits on the consumer of its
+  // head. The supply side reuses the consumer's own blocked-input facts: the
+  // queue's next awaited token is exactly the token its consumer awaits.
+  for (std::size_t ordinal = 0; ordinal != closedWait.operandQueueHeads.size();
+       ++ordinal) {
+    const auto &queueHead = closedWait.operandQueueHeads[ordinal];
+    const OwnerKey queueNode =
+        OwnerKey{StorageKey{Diagnostic::WaitStorageDomain::OperandQueue,
+                            ordinal, QueueClass::global()}};
+    if (queueHead.occupancy != 0)
+      for (const auto &[consumer, input] : queueHead.consumers) {
+        const std::uint64_t consumerOccurrence = nextFiring(consumer);
+        if (consumerOccurrence == absent)
+          return fail(
+              Diagnostic::WaitProofFailure::IndeterminateDynamicOwner);
+        Diagnostic::WaitEdge edge;
+        edge.from = queueNode;
+        edge.to = actorNode(consumer, consumerOccurrence);
+        edge.kind = EdgeKind::StorageConsumer;
+        edge.bindingOrdinal = queueHead.headBindingOrdinal;
+        edge.occurrenceOrdinal = queueHead.headOccurrenceOrdinal;
+        edge.headDestinationActorOrdinal = consumer;
+        edge.headDestinationInputOrdinal = input;
+        appendEdge(std::move(edge));
+      }
+    for (const auto &[consumer, input] : queueHead.consumers) {
+      const Diagnostic::BlockedActorInput *blockedInput = nullptr;
+      for (const auto &input_ : closedWait.blockedActorInputs)
+        if (input_.semanticActorOrdinal == consumer &&
+            input_.inputOrdinal == input)
+          blockedInput = &input_;
+      if (!blockedInput ||
+          blockedInput->definingActorOrdinal == absent ||
+          blockedInput->expectedProducerOccurrenceOrdinal == absent)
+        continue;
+      const std::uint64_t awaitedOccurrence =
+          blockedInput->expectedProducerOccurrenceOrdinal;
+      const Diagnostic::Transfer *awaited =
+          findTransfer(blockedInput->definingActorOrdinal, awaitedOccurrence,
+                       consumer, input);
+      if (awaited) {
+        const auto [storageOrdinal, entry] =
+            findResidency(awaited->bindingOrdinal, awaited->occurrenceOrdinal);
+        if (entry) {
+          const StorageResidency &storage = residencies[storageOrdinal];
+          const bool tagged = awaited->physicalTagOrdinal != absent;
+          Diagnostic::WaitEdge edge;
+          edge.from = queueNode;
+          edge.to = storageNode(
+              storageOrdinal,
+              queueClassOf(storage, awaited->physicalTagValue, tagged));
+          edge.kind = EdgeKind::StorageOrder;
+          edge.bindingOrdinal = awaited->bindingOrdinal;
+          edge.occurrenceOrdinal = awaited->occurrenceOrdinal;
+          edge.storageOrdinal = storageOrdinal;
+          appendEdge(std::move(edge));
+          continue;
+        }
+      }
+      Diagnostic::WaitEdge edge;
+      edge.from = queueNode;
+      edge.to = actorNode(blockedInput->definingActorOrdinal,
+                          awaitedOccurrence);
+      edge.kind = EdgeKind::ActorMissingInput;
+      edge.occurrenceOrdinal = awaitedOccurrence;
+      appendEdge(std::move(edge));
+    }
+  }
+
+  if (closedWait.waitProofFailure)
+    return;
+
+  if (debugCertificate) {
+    llvm::errs() << "wait-certificate debug: edges=" << edges.size() << '\n';
+    for (const Diagnostic::WaitEdge &edge : edges) {
+      llvm::errs() << "  edge ";
+      if (const auto *firing = std::get_if<0>(&edge.from.owner))
+        llvm::errs() << "a" << firing->semanticActorOrdinal << "/"
+                     << firing->occurrenceOrdinal;
+      else {
+        const auto &queue = std::get<1>(edge.from.owner);
+        llvm::errs() << "s" << queue.ordinal
+                     << (queue.queueClass.tagLocal ? "/t" : "/g");
+        if (queue.queueClass.tagLocal) {
+          llvm::SmallString<24> text;
+          queue.queueClass.tagValue.toStringUnsigned(text, 10);
+          llvm::errs() << text;
+        }
+      }
+      llvm::errs() << " -> ";
+      if (const auto *firing = std::get_if<0>(&edge.to.owner))
+        llvm::errs() << "a" << firing->semanticActorOrdinal << "/"
+                     << firing->occurrenceOrdinal;
+      else {
+        const auto &queue = std::get<1>(edge.to.owner);
+        llvm::errs() << "s" << queue.ordinal
+                     << (queue.queueClass.tagLocal ? "/t" : "/g");
+        if (queue.queueClass.tagLocal) {
+          llvm::SmallString<24> text;
+          queue.queueClass.tagValue.toStringUnsigned(text, 10);
+          llvm::errs() << text;
+        }
+      }
+      llvm::errs() << " kind=" << static_cast<unsigned>(edge.kind)
+                   << " binding=" << edge.bindingOrdinal << '\n';
+    }
+  }
+
+  // Canonical node/edge order, then the closed sink strongly connected
+  // component: every node of the certificate waits inside the component and
+  // no edge leaves it. Among candidates the one with the smallest minimum
+  // node key is selected, so the certificate is a function of the graph.
+  llvm::sort(edges, [](const Diagnostic::WaitEdge &lhs,
+                       const Diagnostic::WaitEdge &rhs) {
+    return std::tie(lhs.from, lhs.to, lhs.kind, lhs.bindingOrdinal,
+                    lhs.occurrenceOrdinal, lhs.waitingChannelOrdinal) <
+           std::tie(rhs.from, rhs.to, rhs.kind, rhs.bindingOrdinal,
+                    rhs.occurrenceOrdinal, rhs.waitingChannelOrdinal);
+  });
+  edges.erase(std::unique(edges.begin(),
+                          edges.end(),
+                          [](const Diagnostic::WaitEdge &lhs,
+                             const Diagnostic::WaitEdge &rhs) {
+                            return lhs.from == rhs.from && lhs.to == rhs.to &&
+                                   lhs.kind == rhs.kind &&
+                                   lhs.bindingOrdinal == rhs.bindingOrdinal &&
+                                   lhs.occurrenceOrdinal ==
+                                       rhs.occurrenceOrdinal;
+                          }),
+              edges.end());
+
+  std::vector<OwnerKey> nodes;
+  for (const Diagnostic::WaitEdge &edge : edges) {
+    nodes.push_back(edge.from);
+    nodes.push_back(edge.to);
+  }
+  llvm::sort(nodes);
+  nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+  if (nodes.empty())
+    return fail(Diagnostic::WaitProofFailure::NoClosedComponent);
+
+  std::map<OwnerKey, std::uint32_t> indexOf;
+  for (std::uint32_t index = 0; index != nodes.size(); ++index)
+    indexOf[nodes[index]] = index;
+  std::vector<std::vector<std::uint32_t>> outgoing(nodes.size());
+  for (const Diagnostic::WaitEdge &edge : edges)
+    outgoing[indexOf[edge.from]].push_back(indexOf[edge.to]);
+
+  // Iterative Tarjan over the canonically ordered graph.
+  constexpr std::uint32_t absent32 =
+      std::numeric_limits<std::uint32_t>::max();
+  std::vector<std::vector<std::uint32_t>> components;
+  {
+    std::vector<std::uint32_t> index(nodes.size(), absent32), low(nodes.size());
+    std::vector<bool> onStack(nodes.size(), false);
+    std::vector<std::uint32_t> stack;
+    std::uint32_t nextIndex = 0;
+    for (std::uint32_t root = 0; root != nodes.size(); ++root) {
+      if (index[root] != absent32)
+        continue;
+      std::vector<std::pair<std::uint32_t, std::uint32_t>> work{{root, 0}};
+      std::vector<std::uint32_t> callStack;
+      while (!work.empty()) {
+        auto &[node, child] = work.back();
+        if (child == 0) {
+          index[node] = low[node] = nextIndex++;
+          stack.push_back(node);
+          onStack[node] = true;
+          callStack.push_back(node);
+        }
+        if (child < outgoing[node].size()) {
+          const std::uint32_t target = outgoing[node][child];
+          ++work.back().second;
+          if (index[target] == absent32) {
+            work.push_back({target, 0});
+            continue;
+          }
+          if (onStack[target])
+            low[node] = std::min(low[node], index[target]);
+          continue;
+        }
+        if (callStack.size() >= 2) {
+          const std::uint32_t parent = callStack[callStack.size() - 2];
+          low[parent] = std::min(low[parent], low[node]);
+        }
+        callStack.pop_back();
+        if (low[node] == index[node]) {
+          std::vector<std::uint32_t> component;
+          std::uint32_t member;
+          do {
+            member = stack.back();
+            stack.pop_back();
+            onStack[member] = false;
+            component.push_back(member);
+          } while (member != node);
+          llvm::sort(component);
+          components.push_back(std::move(component));
+        }
+        work.pop_back();
+      }
+    }
+  }
+
+  const auto isClosedSink = [&](const std::vector<std::uint32_t> &component) {
+    llvm::SmallBitVector member(nodes.size(), false);
+    for (std::uint32_t node : component)
+      member.set(node);
+    for (std::uint32_t node : component) {
+      bool internalWait = false;
+      for (std::uint32_t target : outgoing[node]) {
+        if (!member.test(target))
+          return false;
+        internalWait = true;
+      }
+      if (!internalWait)
+        return false;
+    }
+    return true;
+  };
+  std::optional<std::vector<std::uint32_t>> selected;
+  for (const std::vector<std::uint32_t> &component : components) {
+    if (!isClosedSink(component))
+      continue;
+    if (!selected || component.front() < selected->front())
+      selected = component;
+  }
+  if (!selected) {
+    if (debugCertificate) {
+      llvm::errs() << "wait-certificate debug: nodes=" << nodes.size()
+                   << " components=" << components.size() << '\n';
+      for (const auto &component : components) {
+        llvm::errs() << "  component size=" << component.size() << ":";
+        for (std::uint32_t node : component) {
+          llvm::errs() << " ";
+          const OwnerKey &key = nodes[node];
+          if (const auto *firing = std::get_if<0>(&key.owner))
+            llvm::errs() << "a" << firing->semanticActorOrdinal << "/"
+                         << firing->occurrenceOrdinal;
+          else
+            llvm::errs() << "s" << std::get<1>(key.owner).ordinal;
+        }
+        llvm::errs() << '\n';
+      }
+    }
+    return fail(Diagnostic::WaitProofFailure::NoClosedComponent);
+  }
+
+  llvm::SmallBitVector member(nodes.size(), false);
+  for (std::uint32_t node : *selected)
+    member.set(node);
+  for (const Diagnostic::WaitEdge &edge : edges)
+    if (member.test(indexOf[edge.from]))
+      closedWait.waitCertificate.push_back(edge);
 }
 
 llvm::Expected<std::vector<CgraClosedWaitSetDiagnostic::ActorWaitCycleEdge>>
@@ -476,6 +1108,50 @@ deriveActorWaitCycle(
 }
 
 } // namespace
+
+/// Independent closure check of one emitted certificate: every owner it names
+/// waits inside the certificate, and the certificate is one strongly
+/// connected component. Anchor tests call this; the builder's own selection
+/// already guarantees these invariants, so this verifier never trusts the
+/// builder's internal state.
+bool verifyClosedWaitCertificateClosure(
+    const CgraClosedWaitSetDiagnostic &closedWait) {
+  using OwnerKey = CgraClosedWaitSetDiagnostic::WaitOwnerKey;
+  if (closedWait.waitProofFailure || closedWait.waitCertificate.empty())
+    return false;
+  std::vector<OwnerKey> nodes;
+  for (const auto &edge : closedWait.waitCertificate) {
+    nodes.push_back(edge.from);
+    nodes.push_back(edge.to);
+  }
+  llvm::sort(nodes);
+  nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+  std::map<OwnerKey, std::uint32_t> indexOf;
+  for (std::uint32_t index = 0; index != nodes.size(); ++index)
+    indexOf[nodes[index]] = index;
+  std::vector<std::vector<std::uint32_t>> outgoing(nodes.size());
+  std::vector<std::uint32_t> indegree(nodes.size(), 0);
+  for (const auto &edge : closedWait.waitCertificate) {
+    outgoing[indexOf[edge.from]].push_back(indexOf[edge.to]);
+    ++indegree[indexOf[edge.to]];
+  }
+  for (std::uint32_t node = 0; node != nodes.size(); ++node)
+    if (outgoing[node].empty() || indegree[node] == 0)
+      return false;
+  std::vector<bool> reached(nodes.size(), false);
+  std::vector<std::uint32_t> work{0};
+  reached[0] = true;
+  while (!work.empty()) {
+    const std::uint32_t node = work.back();
+    work.pop_back();
+    for (std::uint32_t target : outgoing[node])
+      if (!reached[target]) {
+        reached[target] = true;
+        work.push_back(target);
+      }
+  }
+  return llvm::all_of(reached, [](bool value) { return value; });
+}
 
 struct PreparedCgraWorkloadExecution::Impl final {
   std::shared_ptr<const PreparedCgraExecution::Impl> prepared;
@@ -706,6 +1382,8 @@ struct CgraExecutionSession::Impl final {
            transfer.occurrenceOrdinal,
            transfer.producerActorOrdinal,
            transfer.producerResultOrdinal,
+           transfer.physicalTagOrdinal,
+           transfer.physicalTagValue,
            transfer.blocked,
            transfer.arrivalScheduled,
            transfer.publicationReady,
@@ -813,10 +1491,13 @@ struct CgraExecutionSession::Impl final {
           sourceKind =
               CgraClosedWaitSetDiagnostic::ActorInputSourceKind::GraphInput;
         }
+        const std::uint64_t expectedProducerOccurrence =
+            runtime->channelArrivalCount(channel).value_or(
+                detail::invalidCgraTransportOrdinal);
         closedWait->blockedActorInputs.push_back(
             {static_cast<std::uint64_t>(actor), actorEntityId, input, channel,
              sourceKind, definingActor, definingActorEntity,
-             definingActorTerminal});
+             definingActorTerminal, expectedProducerOccurrence});
       }
     }
     for (const auto &action : runtime->pendingPhysicalActionDiagnostics())

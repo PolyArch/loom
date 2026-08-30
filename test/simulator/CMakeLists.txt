@@ -42,6 +42,10 @@ add_executable(loom-simulator-cgra-transport-virtual-channel-test
   CgraTransportVirtualChannelTest.cpp
 )
 
+add_executable(loom-simulator-cgra-closed-wait-certificate-test
+  CgraClosedWaitCertificateTest.cpp
+)
+
 add_executable(loom-simulator-cgra-graph-activation-test
   CgraGraphActivationRuntimeTest.cpp
 )
@@ -118,6 +122,11 @@ target_include_directories(loom-simulator-cgra-transport-virtual-channel-test PR
 target_link_libraries(loom-simulator-cgra-transport-virtual-channel-test PRIVATE
   LoomSimulator
   MLIRFabricEnums
+  LLVMSupport
+)
+
+target_link_libraries(loom-simulator-cgra-closed-wait-certificate-test PRIVATE
+  LoomSimulator
   LLVMSupport
 )
 

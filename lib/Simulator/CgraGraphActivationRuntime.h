@@ -77,6 +77,18 @@ public:
   std::vector<CgraPendingGraphPhysicalActionDiagnostic>
   pendingPhysicalActionDiagnostics() const;
 
+  /// The occurrence one semantic actor will fire next, from the compute or
+  /// memory runtime that owns it. Absent for actors no runtime owns.
+  std::optional<std::uint64_t>
+  nextActorOccurrenceOrdinal(std::uint64_t semanticActorOrdinal) const;
+  /// The next index of one channel's dense arrival sequence.
+  std::optional<std::uint64_t>
+  channelArrivalCount(std::uint64_t channelOrdinal) const;
+  /// Selected traversal storage count and per-storage queue discipline.
+  std::uint64_t traversalStorageCount() const;
+  std::optional<::fabric::FifoQueueDiscipline>
+  traversalStorageQueueDiscipline(std::uint64_t storageOrdinal) const;
+
 private:
   struct ActorFiring final {
     bool active = false;

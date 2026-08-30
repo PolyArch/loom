@@ -689,6 +689,12 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
         return simultaneous.takeError();
       storage.simultaneousPhysicalUseOrdinal = *simultaneous;
     }
+    if (storage.offerAdvancePattern) {
+      auto offerAdvance = storageAction(*storage.offerAdvancePattern);
+      if (!offerAdvance)
+        return offerAdvance.takeError();
+      storage.offerAdvancePhysicalUseOrdinal = *offerAdvance;
+    }
   }
   auto resources = freezeCgraResourceRuntimePlan(ownerContracts,
                                                  selectedPatterns, activations);

@@ -428,6 +428,9 @@ CgraTransportRuntime::retryBlocked(const SpatialEventCoordinate &coordinate) {
       const std::uint64_t storage = traversalNodes_[node].storageOrdinal;
       if (storage >= storages_.size())
         return invalid("CGRA blocked traversal has no storage owner");
+      // A publication changed this queue's downstream readiness: restart any
+      // exhausted virtual-channel probe epoch.
+      storages_[storage].offerRefusalsSinceCommit = 0;
       if (llvm::Error error = scheduleStorage(storage, *publication))
         return error;
     }

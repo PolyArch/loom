@@ -154,12 +154,18 @@ CgraTransportRuntime::acceptPhysicalEvents(
       };
       const bool primaryIsEnqueue =
           owner.storageOperation == StorageOperation::Enqueue;
+      // The arbitration transition owns no traversal state change: the
+      // offered head stays queued for the whole OfferAdvance lifecycle.
+      const auto expectedNodeState =
+          owner.storageOperation == StorageOperation::OfferAdvance
+              ? TraversalNodeState::Queued
+              : expectedStorageNodeState(primaryIsEnqueue);
       if (storage.activeActionCount == 0 ||
           owner.traversalNodeOrdinal >= traversalNodes_.size() ||
           traversalNodeTransferSlots_[owner.traversalNodeOrdinal] !=
               owner.transferSlot ||
           traversalNodeStates_[owner.traversalNodeOrdinal] !=
-              expectedStorageNodeState(primaryIsEnqueue))
+              expectedNodeState)
         return invalid("CGRA storage lifecycle names inconsistent state");
       if (owner.secondaryTraversalNodeOrdinal != invalidCgraTransportOrdinal) {
         if (owner.secondaryTransferSlot >= inFlight_.size() ||
@@ -173,7 +179,9 @@ CgraTransportRuntime::acceptPhysicalEvents(
               "CGRA simultaneous storage lifecycle has inconsistent state");
       }
       const std::uint64_t expectedAction =
-          owner.storageOperation == StorageOperation::Enqueue
+          owner.storageOperation == StorageOperation::OfferAdvance
+              ? storage.offerAdvanceAction
+          : owner.storageOperation == StorageOperation::Enqueue
               ? storage.enqueueAction
           : owner.storageOperation == StorageOperation::Dequeue
               ? storage.dequeueAction
@@ -593,6 +601,11 @@ CgraTransportRuntime::acceptPhysicalEvents(
         break;
       case CgraPhysicalLifecycleKind::Committed:
         owner.state = ActionLifecycleState::Permitted;
+        // The OfferAdvance arbitration transition applies the cursor rotation
+        // at its commit event: the successor channel is presented from the
+        // next storage evaluation, which the retirement below schedules.
+        if (owner.storageOperation == StorageOperation::OfferAdvance)
+          storages_[owner.storageOrdinal].queue.advanceOffer();
         break;
       case CgraPhysicalLifecycleKind::Retired: {
         const bool dequeue =
@@ -753,8 +766,12 @@ CgraTransportRuntime::acceptPhysicalEvents(
   }
   for (std::uint64_t storageOrdinal : releasedStorageCapacity)
     for (std::uint64_t upstream :
-         storages_[storageOrdinal].upstreamStorageOrdinals)
+         storages_[storageOrdinal].upstreamStorageOrdinals) {
+      // Released downstream capacity is an external readiness change for the
+      // upstream queue: restart any exhausted virtual-channel probe epoch.
+      storages_[upstream].offerRefusalsSinceCommit = 0;
       storagesToSchedule.insert(upstream);
+    }
   if (!storagesToSchedule.empty()) {
     if (!next) {
       auto coordinate = nextSpatialDelta(physicalFrame.coordinate);
@@ -947,6 +964,8 @@ llvm::Error CgraTransportRuntime::publish(std::uint64_t slot,
     if (sink.kind == SinkKind::Channel) {
       ChannelSlot &channel = state_->channelSlots[sink.channel];
       channel.ready.push_back(inFlight.token);
+      if (sink.channel < channelArrivalCounts_.size())
+        ++channelArrivalCounts_[sink.channel];
       if (channel.ownerActorOrdinal != InvalidActorOrdinal) {
         state_->nextActorCandidates.set(channel.ownerActorOrdinal);
         if (state_->execution->actorPlans[channel.ownerActorOrdinal]
@@ -1202,8 +1221,6 @@ CgraTransportRuntime::advance() {
       }
 
       const bool dequeue = dequeueEntry.has_value();
-      if (!dequeue && !offeredEntries.empty())
-        storage.queue.advanceOffer();
       const bool enqueueReserved =
           enqueueNode && traversalStorageReserved_[*enqueueNode];
       const bool unreservedCapacity =
@@ -1215,6 +1232,25 @@ CgraTransportRuntime::advance() {
       if (enqueueNode && dequeue &&
           storage.kind != CgraTraversalStorageKind::BufferedFifo)
         enqueue = storage.independentReadWriteServices;
+      // A refused offer on a virtual-channel queue owns one OfferAdvance
+      // arbitration transition that commits at the cycle boundary; the
+      // successor channel is presented by the storage event the transition's
+      // retirement schedules. One probe epoch ends after every resident
+      // channel has been presented and refused without an intervening
+      // enqueue/dequeue commit: the queue then sleeps until an external event
+      // changes readiness, so a deadlocked rotation becomes a closed wait
+      // rather than an infinite simulation.
+      bool rotateOffer = false;
+      if (!dequeue && !offeredEntries.empty() &&
+          storage.kind == CgraTraversalStorageKind::BufferedFifo &&
+          storage.queue.discipline() ==
+              ::fabric::FifoQueueDiscipline::PerTagVirtualChannel &&
+          !storage.queue.empty() &&
+          storage.offerAdvanceAction != invalidCgraTransportOrdinal) {
+        ++storage.offerRefusalsSinceCommit;
+        rotateOffer = storage.offerRefusalsSinceCommit <
+                      storage.queue.distinctResidentChannels();
+      }
       if (!dequeue && !enqueue) {
         for (std::uint64_t node : storage.pendingEnqueueNodes) {
           const std::uint64_t slot = traversalNodeTransferSlots_[node];
@@ -1234,30 +1270,8 @@ CgraTransportRuntime::advance() {
           frame.blockedTransfers.push_back(
               inFlight_[head.transferSlot].bindingOrdinal);
         }
-        // A refused offer on a virtual-channel queue committed its cursor
-        // rotation at this cycle's boundary, so the successor channel is
-        // presented next cycle. That re-presentation is an explicit
-        // next-cycle state transition, not an invisible side effect. One
-        // probe epoch ends after every resident channel has been presented
-        // and refused without an intervening commit: the queue then sleeps
-        // until an external event changes readiness, so a deadlocked
-        // rotation becomes a closed wait rather than an infinite simulation.
-        if (!dequeue && !offeredEntries.empty() &&
-            storage.kind == CgraTraversalStorageKind::BufferedFifo &&
-            storage.queue.discipline() ==
-                ::fabric::FifoQueueDiscipline::PerTagVirtualChannel &&
-            !storage.queue.empty()) {
-          ++storage.offerRefusalsSinceCommit;
-          if (storage.offerRefusalsSinceCommit <
-              storage.queue.distinctResidentChannels()) {
-            auto next = nextSpatialDelta(*coordinate);
-            if (!next)
-              return next.takeError();
-            if (llvm::Error error = scheduleStorage(storageOrdinal, *next))
-              return std::move(error);
-          }
-        }
-        continue;
+        if (!rotateOffer)
+          continue;
       }
 
       llvm::SmallVector<CgraPhysicalActionRequest, 2> requests;
@@ -1292,14 +1306,30 @@ CgraTransportRuntime::advance() {
         return llvm::Error::success();
       };
       if (storage.kind == CgraTraversalStorageKind::BufferedFifo) {
+        if (rotateOffer) {
+          // The arbitration transition carries no token movement: the refused
+          // head stays queued and the cursor rotates at the commit boundary.
+          ActionOwner rotateOwner;
+          rotateOwner.stage = ActionStage::Storage;
+          rotateOwner.storageOrdinal = storageOrdinal;
+          rotateOwner.state = ActionLifecycleState::Requested;
+          rotateOwner.storageOperation = StorageOperation::OfferAdvance;
+          rotateOwner.transferSlot = offeredEntries.front().transferSlot;
+          rotateOwner.traversalNodeOrdinal =
+              offeredEntries.front().traversalNodeOrdinal;
+          if (llvm::Error error = appendRequest(storage.offerAdvanceAction,
+                                                std::move(rotateOwner)))
+            return std::move(error);
+        }
+        if (!rotateOffer || enqueue) {
         ActionOwner owner;
         owner.stage = ActionStage::Storage;
+        owner.storageOrdinal = storageOrdinal;
+        owner.state = ActionLifecycleState::Requested;
         owner.storageOperation = dequeue && enqueue
                                      ? StorageOperation::Simultaneous
                                  : dequeue ? StorageOperation::Dequeue
                                            : StorageOperation::Enqueue;
-        owner.storageOrdinal = storageOrdinal;
-        owner.state = ActionLifecycleState::Requested;
         if (dequeueEntry) {
           owner.transferSlot = dequeueEntry->transferSlot;
           owner.traversalNodeOrdinal = *dequeueNode;
@@ -1325,6 +1355,7 @@ CgraTransportRuntime::advance() {
           return std::move(error);
         if (llvm::Error error = appendRequest(action, std::move(owner)))
           return std::move(error);
+        }
       } else {
         if (dequeueEntry) {
           ActionOwner owner;
@@ -1398,6 +1429,10 @@ CgraTransportRuntime::advance() {
                  .second)
           return invalid("CGRA storage action occurrence is duplicated");
         ++nextActionOccurrence_[request.actionOrdinal];
+        // The arbitration transition moves no token: its queue head stays
+        // queued while the cursor rotates.
+        if (owner.storageOperation == StorageOperation::OfferAdvance)
+          continue;
         traversalNodeStates_[owner.traversalNodeOrdinal] =
             TraversalNodeState::Requested;
         if (owner.secondaryTraversalNodeOrdinal != invalidCgraTransportOrdinal)
@@ -1677,6 +1712,19 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         diagnostic.producerActorOrdinal =
             binding.semanticActorOrdinal.value_or(invalidCgraTransportOrdinal);
         diagnostic.producerResultOrdinal = producer->ordinal;
+      }
+      for (std::uint64_t node = binding.traversalNodeOffset;
+           node != binding.traversalNodeOffset + binding.traversalNodeCount;
+           ++node) {
+        const std::uint64_t tagOrdinal =
+            traversalNodes_[node].physicalTagOrdinal;
+        if (tagOrdinal == invalidCgraTransportOrdinal)
+          continue;
+        diagnostic.physicalTagOrdinal = tagOrdinal;
+        if (tagOrdinal < plan_->transport.physicalTags.size())
+          diagnostic.physicalTagValue =
+              plan_->transport.physicalTags[tagOrdinal].value;
+        break;
       }
       for (std::uint64_t node = binding.traversalNodeOffset;
            node != binding.traversalNodeOffset + binding.traversalNodeCount;
