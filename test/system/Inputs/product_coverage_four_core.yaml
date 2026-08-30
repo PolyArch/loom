@@ -34,3 +34,5 @@ hardware_target:
     cross_schedule_boundary_lanes_per_temporal_pe: 5
     gateway_count: 4
     memory_capacity_bytes: 262144
+    interconnect_fifo_depth: 4
+    interconnect_fifo_queue_discipline: strict_fifo

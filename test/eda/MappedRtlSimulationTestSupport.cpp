@@ -399,7 +399,9 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
   }
   auto network = take(test, spatial.addMeshSwitchNetwork(take(
                                 test, adg::MeshSwitchNetworkSpec::spatial(
-                                          rightBoundaryX + 1, 4, 2, payload,
+                                          rightBoundaryX + 1, 4, 2, payload, 1,
+                                          ::fabric::FifoQueueDiscipline::
+                                              StrictFifo,
                                           std::move(meshAttachments)))));
   std::array<adg::MeshCellAttachment, 5> boundaryAttachments = {
       take(test, network.attachment(0)), take(test, network.attachment(1)),

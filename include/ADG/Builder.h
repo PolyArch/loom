@@ -695,11 +695,15 @@ public:
   static llvm::Expected<MeshSwitchNetworkSpec>
   spatial(std::uint32_t width, std::uint32_t height,
           std::uint32_t lanesPerDirection, const PortType &linkType,
+          std::uint32_t interconnectFifoDepth,
+          ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline,
           std::vector<MeshCellAttachmentSpec> attachments);
 
   static llvm::Expected<MeshSwitchNetworkSpec>
   temporal(std::uint32_t width, std::uint32_t height,
            std::uint32_t lanesPerDirection, const PortType &linkType,
+           std::uint32_t interconnectFifoDepth,
+           ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline,
            std::uint32_t routeTableSize,
            MeshSwitchGrantPolicyKind grantPolicyKind,
            std::vector<MeshCellAttachmentSpec> attachments);
@@ -708,11 +712,15 @@ private:
   MeshSwitchNetworkSpec(
       ::fabric::Schedule schedule, std::uint32_t width, std::uint32_t height,
       std::uint32_t lanesPerDirection, PortType linkType,
+      std::uint32_t interconnectFifoDepth,
+      ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline,
       std::optional<std::uint32_t> routeTableSize,
       std::optional<MeshSwitchGrantPolicyKind> grantPolicyKind,
       std::vector<MeshCellAttachmentSpec> attachments)
       : schedule_(schedule), width_(width), height_(height),
         lanesPerDirection_(lanesPerDirection), linkType_(std::move(linkType)),
+        interconnectFifoDepth_(interconnectFifoDepth),
+        interconnectFifoQueueDiscipline_(interconnectFifoQueueDiscipline),
         routeTableSize_(routeTableSize), grantPolicyKind_(grantPolicyKind),
         attachments_(std::move(attachments)) {}
 
@@ -721,6 +729,11 @@ private:
   std::uint32_t height_;
   std::uint32_t lanesPerDirection_;
   PortType linkType_;
+  /// Depth of every link FIFO the network emits. The queue discipline applies
+  /// only when the link type carries a Physical Tag; untagged link FIFOs
+  /// remain strict regardless of the declared discipline.
+  std::uint32_t interconnectFifoDepth_;
+  ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline_;
   std::optional<std::uint32_t> routeTableSize_;
   std::optional<MeshSwitchGrantPolicyKind> grantPolicyKind_;
   std::vector<MeshCellAttachmentSpec> attachments_;

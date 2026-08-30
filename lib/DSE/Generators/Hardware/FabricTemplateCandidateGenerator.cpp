@@ -14,7 +14,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.fabric_template_generator.config.7.0";
+    "loom.fabric_template_generator.config.7.1";
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
     {CandidateGeneratorOutputSlotRef(0), "fabric", PlanValueRole::CandidateSet,
@@ -81,6 +81,9 @@ encodeConfig(const loom::adg::BuiltinTargetScale &scale) {
   appendU32(bytes, scale.crossScheduleBoundaryLanesPerTemporalPe);
   appendU32(bytes, scale.gatewayCount);
   appendU64(bytes, scale.memoryCapacityBytes);
+  appendU32(bytes, scale.interconnectFifoDepth);
+  appendU32(bytes,
+            static_cast<std::uint32_t>(scale.interconnectFifoQueueDiscipline));
   return bytes;
 }
 
@@ -99,7 +102,7 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid("truncated template descriptor identity");
   llvm::StringRef identity(reinterpret_cast<const char *>(bytes.data()), size);
   bytes = bytes.drop_front(size);
-  if (bytes.size() != 128)
+  if (bytes.size() != 136)
     return invalid("template descriptor and scale are not canonical");
   std::uint32_t major = 0;
   std::uint32_t minor = 0;
@@ -136,8 +139,12 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
       static_cast<loom::adg::LocalMemoryPortVariant>(readU32());
   scale.crossScheduleBoundaryLanesPerTemporalPe = readU32();
   scale.gatewayCount = readU32();
-  for (std::uint8_t byte : bytes)
+  for (std::uint8_t byte : bytes.take_front(8))
     scale.memoryCapacityBytes = (scale.memoryCapacityBytes << 8) | byte;
+  bytes = bytes.drop_front(8);
+  scale.interconnectFifoDepth = readU32();
+  scale.interconnectFifoQueueDiscipline =
+      static_cast<::fabric::FifoQueueDiscipline>(readU32());
   if (!loom::adg::isValidBuiltinTargetScale(scale))
     return invalid("template base scale is invalid or an FU occurrence count "
                    "exceeds its schedule-local PE count");

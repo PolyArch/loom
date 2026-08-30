@@ -115,10 +115,12 @@ mesh through ordinary `fabric.switch`, FIFO, and SSA connections:
 
 ```text
 MeshSwitchNetworkSpec::spatial(
-    width, height, lanes_per_direction, link_type, attachments)
+    width, height, lanes_per_direction, link_type, interconnect_fifo_depth,
+    interconnect_fifo_queue_discipline, attachments)
 MeshSwitchNetworkSpec::temporal(
-    width, height, lanes_per_direction, link_type,
-    route_table_size, grant_policy_kind, attachments)
+    width, height, lanes_per_direction, link_type, interconnect_fifo_depth,
+    interconnect_fifo_queue_discipline, route_table_size, grant_policy_kind,
+    attachments)
 
 SpatialCoreBuilder::addMeshSwitchNetwork(MeshSwitchNetworkSpec)
   -> MeshSwitchNetwork
@@ -157,9 +159,12 @@ with two lanes therefore has one `8 x 8` transit crossbar. Boundary transit
 crossbars omit absent directions. Local ejection, injection, fanout, and merge
 are composed from additional switches that remain within the same 256
 crosspoint limit. Explicit
-FIFOs terminate every inter-cell directed link. The helper accepts no implicit
-wraparound; a torus or another topology is authored with the exact lower-level
-Builder surface.
+FIFOs terminate every inter-cell directed link. `interconnect_fifo_depth` is
+the positive depth of every such link FIFO, and
+`interconnect_fifo_queue_discipline` selects the dequeue discipline of
+tag-carrying link FIFOs; untagged link FIFOs remain strict regardless. The
+helper accepts no implicit wraparound; a torus or another topology is authored
+with the exact lower-level Builder surface.
 
 The returned coordinates and attachment ordinals exist only while authoring.
 Expansion emits no coordinate, distance, mesh, tile, or direction fact into
@@ -814,6 +819,7 @@ The initial scale anchors are:
 | memory occurrences per core      |       2 |         8 |       8 |
 | Spatial : Temporal memory ratio  |     1:1 |       4:4 |     4:4 |
 | Temporal resident-context anchor |       2 |         4 |       8 |
+| interconnect FIFO depth          |       2 |         4 |      16 |
 | cross-schedule lanes / Temporal PE |     5 |         5 |       5 |
 | Module transport gateway anchor  |       2 |         4 |       8 |
 | cross-schedule boundary pairs    |      20 |        45 |      80 |

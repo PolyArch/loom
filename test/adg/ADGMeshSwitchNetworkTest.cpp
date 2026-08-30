@@ -96,7 +96,8 @@ void checkSpatialNetwork() {
       {1, 1, {bits32, bits32}, {bits32, bits32}}, {0, 0, {bits32}, {bits32}}};
   auto network =
       take(core.addMeshSwitchNetwork(take(MeshSwitchNetworkSpec::spatial(
-          3, 3, maximumMeshLanesPerDirection, bits32, attachments))));
+          3, 3, maximumMeshLanesPerDirection, bits32, 1,
+          ::fabric::FifoQueueDiscipline::StrictFifo, attachments))));
 
   auto center = take(network.attachment(0));
   auto corner = take(network.attachment(1));
@@ -155,7 +156,8 @@ buildTemporalNetwork(loom::ArtifactStore &store,
   auto core = take(design.createSpatialCore(label, {tagged32}, {tagged32}));
   auto network =
       take(core.addMeshSwitchNetwork(take(MeshSwitchNetworkSpec::temporal(
-          2, 2, 1, tagged32, 4, policy, {{0, 0, {tagged32}, {tagged32}}}))));
+          2, 2, 1, tagged32, 1, ::fabric::FifoQueueDiscipline::StrictFifo, 4,
+          policy, {{0, 0, {tagged32}, {tagged32}}}))));
   auto attachment = take(network.attachment(0));
   if (llvm::Error error = attachment.connectOutputs({take(core.input(0))}))
     fail(llvm::toString(std::move(error)));
@@ -233,7 +235,8 @@ void checkExplicitDomains() {
       take(core.declareDomainSlot(loom::fabric::FabricClockResetKind::Reset));
   auto network =
       take(core.addMeshSwitchNetwork(take(MeshSwitchNetworkSpec::spatial(
-          2, 2, 1, bits32, {{0, 0, {bits32}, {bits32}}}))));
+          2, 2, 1, bits32, 1, ::fabric::FifoQueueDiscipline::StrictFifo,
+          {{0, 0, {bits32}, {bits32}}}))));
   require(!network.domainMembers().empty(),
           "mesh network did not expose its domain members");
   for (const ModuleDomainMemberHandle &member : network.domainMembers()) {
@@ -270,35 +273,47 @@ void checkInvalidSpecifications() {
   const PortType bits32 = take(PortType::bits(32));
   const PortType tagged32 = take(PortType::taggedBits(32, 4));
   const MeshCellAttachmentSpec bank{0, 0, {bits32}, {bits32}};
-  expectError(MeshSwitchNetworkSpec::spatial(0, 2, 1, bits32, {bank}),
+  constexpr ::fabric::FifoQueueDiscipline strict =
+      ::fabric::FifoQueueDiscipline::StrictFifo;
+  expectError(MeshSwitchNetworkSpec::spatial(0, 2, 1, bits32, 1, strict, {bank}),
               "positive");
-  expectError(MeshSwitchNetworkSpec::spatial(1, 1, 1, bits32, {bank}),
-              "at least two");
+  expectError(
+      MeshSwitchNetworkSpec::spatial(1, 1, 1, bits32, 1, strict, {bank}),
+      "at least two");
   expectError(MeshSwitchNetworkSpec::spatial(
-                  2, 2, maximumMeshLanesPerDirection + 1, bits32, {bank}),
+                  2, 2, maximumMeshLanesPerDirection + 1, bits32, 1, strict,
+                  {bank}),
               "between one and 4");
-  expectError(MeshSwitchNetworkSpec::spatial(2, 2, 1, tagged32, {bank}),
+  expectError(MeshSwitchNetworkSpec::spatial(2, 2, 1, bits32, 0, strict, {bank}),
+              "interconnect FIFO depth");
+  expectError(MeshSwitchNetworkSpec::spatial(2, 2, 1, tagged32, 1, strict,
+                                             {bank}),
               "untagged bits");
   expectError(
       MeshSwitchNetworkSpec::temporal(
-          2, 2, 1, bits32, 4, MeshSwitchGrantPolicyKind::RoundRobin, {bank}),
+          2, 2, 1, bits32, 1, strict, 4, MeshSwitchGrantPolicyKind::RoundRobin,
+          {bank}),
       "tagged bits");
   expectError(MeshSwitchNetworkSpec::temporal(
-                  2, 2, 1, tagged32, 0, MeshSwitchGrantPolicyKind::RoundRobin,
+                  2, 2, 1, tagged32, 1, strict, 0,
+                  MeshSwitchGrantPolicyKind::RoundRobin,
                   {{0, 0, {tagged32}, {tagged32}}}),
               "positive route-table");
-  expectError(MeshSwitchNetworkSpec::spatial(2, 2, 1, bits32,
+  expectError(MeshSwitchNetworkSpec::spatial(2, 2, 1, bits32, 1, strict,
                                              {{2, 0, {bits32}, {bits32}}}),
               "outside");
-  expectError(MeshSwitchNetworkSpec::spatial(2, 2, 1, bits32, {{0, 0, {}, {}}}),
+  expectError(MeshSwitchNetworkSpec::spatial(2, 2, 1, bits32, 1, strict,
+                                             {{0, 0, {}, {}}}),
               "at least one port");
   expectError(
       MeshSwitchNetworkSpec::spatial(
-          2, 2, 1, bits32, {{0, 0, std::vector<PortType>(9, bits32), {}}}),
+          2, 2, 1, bits32, 1, strict,
+          {{0, 0, std::vector<PortType>(9, bits32), {}}}),
       "at most eight");
   expectError(
-      MeshSwitchNetworkSpec::spatial(
-          2, 2, 1, bits32, std::vector<MeshCellAttachmentSpec>(8, bank)),
+      MeshSwitchNetworkSpec::spatial(2, 2, 1, bits32, 1, strict,
+                                     std::vector<MeshCellAttachmentSpec>(8,
+                                                                         bank)),
       "at most seven");
 }
 

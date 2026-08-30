@@ -1737,8 +1737,12 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   blockedTransfer.blocked = true;
   blockedTransfer.blockingActorOrdinal = 0;
   blockedTransfer.blockingFifoOccurrence = *feedbackFifo;
-  blockedTransfer.blockingStorageOccupancy = 1;
-  blockedTransfer.blockingStorageCapacity = 1;
+  // The claimed capacity must match the physical FIFO: the feedback path grows
+  // the occurrence to capacity + 1, which must not be a no-op resize.
+  const std::uint32_t feedbackFifoCapacity =
+      loom::adg::builtinSmallTarget.scale.interconnectFifoDepth;
+  blockedTransfer.blockingStorageOccupancy = feedbackFifoCapacity;
+  blockedTransfer.blockingStorageCapacity = feedbackFifoCapacity;
   exactFifoWait.transfers.push_back(std::move(blockedTransfer));
   exactFifoWait.physicalActions.push_back(
       {0, 0, 0, 0, true, true, true, true, false});
@@ -1748,8 +1752,9 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           mappings.front(), *feedbackSpatialMapping, exactFifoWait, store));
   if (exactFifoFeedback.disposition !=
           loom::dse::SpatialFifoRuntimeFeedbackDisposition::Exact ||
-      exactFifoFeedback.minimumCandidateDepth != 2 ||
-      exactFifoFeedback.occupancy != 1 || exactFifoFeedback.capacity != 1)
+      exactFifoFeedback.minimumCandidateDepth != feedbackFifoCapacity + 1 ||
+      exactFifoFeedback.occupancy != feedbackFifoCapacity ||
+      exactFifoFeedback.capacity != feedbackFifoCapacity)
     fail("exact FIFO wait did not admit the minimal hardware candidate");
   if (qualityRuns("fifo")) {
     if (!incompleteRepairQuality)

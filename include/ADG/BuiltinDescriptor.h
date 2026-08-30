@@ -3,6 +3,8 @@
 
 #include "ADG/MemoryLibrary.h"
 
+#include "Fabric/IR/FabricEnums.h"
+
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
@@ -74,6 +76,12 @@ struct BuiltinTargetScale final {
   std::uint32_t spatialMemoryCount;
   std::uint32_t temporalMemoryCount;
   std::uint32_t temporalResidentContexts;
+  /// Depth of every interconnect FIFO: mesh link FIFOs, memory output
+  /// staging FIFOs, and the cross-schedule boundary staging FIFOs.
+  std::uint32_t interconnectFifoDepth;
+  /// Dequeue scheduling discipline of tag-carrying interconnect FIFOs.
+  /// Untagged interconnect FIFOs remain strict regardless of this value.
+  ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline;
   LocalMemoryPortVariant localMemoryPortVariant;
   std::uint32_t crossScheduleBoundaryLanesPerTemporalPe;
   std::uint32_t gatewayCount;
@@ -93,6 +101,7 @@ constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
                                           scale.temporalPeCount) &&
          scale.spatialMemoryCount != 0 && scale.temporalMemoryCount != 0 &&
          scale.temporalResidentContexts != 0 &&
+         scale.interconnectFifoDepth != 0 &&
          isValidLocalMemoryPortVariant(scale.localMemoryPortVariant) &&
          scale.crossScheduleBoundaryLanesPerTemporalPe != 0 &&
          scale.gatewayCount != 0 && scale.memoryCapacityBytes != 0;
@@ -114,7 +123,8 @@ inline constexpr BuiltinTargetDescriptor builtinSmallTarget{
     8,
     0,
     {4, 4, 2, 2, 12, 4, builtinBalancedFuOccurrences(12),
-     builtinBalancedFuOccurrences(4), 1, 1, 2,
+     builtinBalancedFuOccurrences(4), 1, 1, 2, 2,
+     ::fabric::FifoQueueDiscipline::StrictFifo,
      LocalMemoryPortVariant::SharedElementVector, 5, 2, 64 * 1024}};
 
 inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
@@ -124,7 +134,8 @@ inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
     8,
     0,
     {8, 6, 2, 2, 27, 9, builtinCoverageSpatialFuOccurrences(),
-     builtinBalancedFuOccurrences(9), 4, 4, 4,
+     builtinBalancedFuOccurrences(9), 4, 4, 4, 4,
+     ::fabric::FifoQueueDiscipline::StrictFifo,
      LocalMemoryPortVariant::SharedElementVector, 5, 4, 256 * 1024}};
 
 inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
@@ -134,7 +145,8 @@ inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
     8,
     0,
     {16, 8, 2, 2, 48, 16, builtinBalancedFuOccurrences(48),
-     builtinBalancedFuOccurrences(16), 4, 4, 8,
+     builtinBalancedFuOccurrences(16), 4, 4, 8, 16,
+     ::fabric::FifoQueueDiscipline::StrictFifo,
      LocalMemoryPortVariant::SharedElementVector, 5, 8, 1024 * 1024}};
 
 inline llvm::Expected<const BuiltinTargetDescriptor *>

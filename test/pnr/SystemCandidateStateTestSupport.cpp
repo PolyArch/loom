@@ -355,7 +355,7 @@ loom::pnr::test::buildSystemCandidateSpatialModule(loom::ArtifactStore &store,
                                moduleInputTypes, boundaryTypes));
   auto network = take(spatial.addMeshSwitchNetwork(
       take(loom::adg::MeshSwitchNetworkSpec::spatial(
-          2, 2, 2, payloadType,
+          2, 2, 2, payloadType, 1, ::fabric::FifoQueueDiscipline::StrictFifo,
           {{0, 0, {payloadType, payloadType}, {payloadType, payloadType}},
            {0, 1, {payloadType, payloadType}, {payloadType, payloadType}},
            {1, 0, peInputTypes, boundaryTypes},

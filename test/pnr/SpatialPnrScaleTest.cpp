@@ -237,7 +237,8 @@ buildBoundedMeshFabric(const loom::ArtifactStore &store, std::uint32_t rows,
       take(mesh.declareDomainSlot(loom::fabric::FabricClockResetKind::Reset));
   auto network = take(
       mesh.addMeshSwitchNetwork(take(loom::adg::MeshSwitchNetworkSpec::spatial(
-          columns, rows, meshLinkLaneCount, bits128,
+          columns, rows, meshLinkLaneCount, bits128, 1,
+          ::fabric::FifoQueueDiscipline::StrictFifo,
           std::move(attachmentSpecs)))));
 
   for (std::uint32_t site = 0; site != siteCount; ++site) {

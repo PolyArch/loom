@@ -3,6 +3,8 @@
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactText.h"
 
+#include "Fabric/IR/FabricEnums.h"
+
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
@@ -365,7 +367,11 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
                 {"cross_schedule_boundary_lanes_per_temporal_pe",
                  scale.crossScheduleBoundaryLanesPerTemporalPe},
                 {"gateway_count", scale.gatewayCount},
-                {"memory_capacity_bytes", scale.memoryCapacityBytes}}}}},
+                {"memory_capacity_bytes", scale.memoryCapacityBytes},
+                {"interconnect_fifo_depth", scale.interconnectFifoDepth},
+                {"interconnect_fifo_queue_discipline",
+                 ::fabric::stringifyFifoQueueDiscipline(
+                     scale.interconnectFifoQueueDiscipline)}}}}},
       {"dse",
        llvm::json::Object{
            {"structured_ownership",

@@ -11,5 +11,6 @@ target_include_directories(LoomConfig PUBLIC
 target_link_libraries(LoomConfig PUBLIC
   LoomCommon
   LoomDSEPolicy
+  MLIRFabricEnums
   LLVMSupport
 )

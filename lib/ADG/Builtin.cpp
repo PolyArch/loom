@@ -355,6 +355,15 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
                    "count exceeds its PE count");
   const std::uint32_t temporalTagWidth =
       builtinTemporalTagWidth(scale.temporalResidentContexts);
+  // The queue discipline applies only to tag-carrying interconnect FIFOs;
+  // untagged staging FIFOs always remain strict.
+  const std::optional<::fabric::FifoQueueDiscipline>
+      taggedInterconnectFifoDiscipline =
+          scale.interconnectFifoQueueDiscipline ==
+                  ::fabric::FifoQueueDiscipline::PerTagVirtualChannel
+              ? std::optional<::fabric::FifoQueueDiscipline>(
+                    scale.interconnectFifoQueueDiscipline)
+              : std::nullopt;
   auto bits128 = PortType::bits(128);
   if (!bits128)
     return bits128.takeError();
@@ -526,7 +535,9 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
 
   auto spatialNetworkSpec = MeshSwitchNetworkSpec::spatial(
       meshDimension, meshDimension, scale.spatialMeshLanesPerDirection,
-      *bits128, std::move(spatialAttachmentSpecs));
+      *bits128, scale.interconnectFifoDepth,
+      scale.interconnectFifoQueueDiscipline,
+      std::move(spatialAttachmentSpecs));
   if (!spatialNetworkSpec)
     return spatialNetworkSpec.takeError();
   auto spatialNetwork = spatial->addMeshSwitchNetwork(*spatialNetworkSpec);
@@ -534,7 +545,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     return spatialNetwork.takeError();
   auto temporalNetworkSpec = MeshSwitchNetworkSpec::temporal(
       meshDimension, meshDimension, scale.temporalMeshLanesPerDirection,
-      *tagged128, scale.temporalResidentContexts,
+      *tagged128, scale.interconnectFifoDepth,
+      scale.interconnectFifoQueueDiscipline, scale.temporalResidentContexts,
       MeshSwitchGrantPolicyKind::RoundRobin,
       std::move(temporalAttachmentSpecs));
   if (!temporalNetworkSpec)
@@ -594,7 +606,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     std::vector<SpatialValue> routedOutputs;
     for (SpatialValue output : outputs->values()) {
       auto fifo = spatial->addFifo(
-          output, FifoSpec{*bits128, scale.temporalResidentContexts, false});
+          output, FifoSpec{*bits128, scale.interconnectFifoDepth, false});
       if (!fifo)
         return fifo.takeError();
       routedOutputs.push_back(fifo->value());
@@ -662,7 +674,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     std::vector<SpatialValue> routedOutputs;
     for (SpatialValue output : outputs->values()) {
       auto fifo = spatial->addFifo(
-          output, FifoSpec{*tagged128, scale.temporalResidentContexts, false});
+          output, FifoSpec{*tagged128, scale.interconnectFifoDepth, false,
+                           taggedInterconnectFifoDiscipline});
       if (!fifo)
         return fifo.takeError();
       routedOutputs.push_back(fifo->value());
@@ -699,7 +712,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
         return outputs.takeError();
       auto tagged = spatial->addFifo(
           outputs->values().front(),
-          FifoSpec{*tagged128, scale.temporalResidentContexts, false});
+          FifoSpec{*tagged128, scale.interconnectFifoDepth, false,
+                   taggedInterconnectFifoDiscipline});
       if (!tagged)
         return tagged.takeError();
       taggedOutputs.push_back(tagged->value());
@@ -720,7 +734,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
         return outputs.takeError();
       auto fifo = spatial->addFifo(
           outputs->values().front(),
-          FifoSpec{*bits128, scale.temporalResidentContexts, false});
+          FifoSpec{*bits128, scale.interconnectFifoDepth, false});
       if (!fifo)
         return fifo.takeError();
       routedOutputs.push_back(fifo->value());

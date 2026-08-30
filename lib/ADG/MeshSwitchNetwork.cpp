@@ -38,7 +38,7 @@ namespace {
 llvm::Error
 validateMeshSpec(::fabric::Schedule schedule, std::uint32_t width,
                  std::uint32_t height, std::uint32_t lanesPerDirection,
-                 const PortType &linkType,
+                 const PortType &linkType, std::uint32_t interconnectFifoDepth,
                  std::optional<std::uint32_t> routeTableSize,
                  std::optional<MeshSwitchGrantPolicyKind> grantPolicyKind,
                  llvm::ArrayRef<MeshCellAttachmentSpec> attachments) {
@@ -54,6 +54,8 @@ validateMeshSpec(::fabric::Schedule schedule, std::uint32_t width,
       lanesPerDirection > maximumMeshLanesPerDirection)
     return detail::invalid("mesh lanes per direction must be between one and " +
                            llvm::Twine(maximumMeshLanesPerDirection));
+  if (interconnectFifoDepth == 0)
+    return detail::invalid("mesh interconnect FIFO depth must be positive");
 
   if (schedule == ::fabric::Schedule::Spatial) {
     if (linkType.kind() != PortType::Kind::Bits)
@@ -125,27 +127,36 @@ struct MeshCellBuildState final {
 
 llvm::Expected<MeshSwitchNetworkSpec> MeshSwitchNetworkSpec::spatial(
     std::uint32_t width, std::uint32_t height, std::uint32_t lanesPerDirection,
-    const PortType &linkType, std::vector<MeshCellAttachmentSpec> attachments) {
+    const PortType &linkType, std::uint32_t interconnectFifoDepth,
+    ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline,
+    std::vector<MeshCellAttachmentSpec> attachments) {
   if (llvm::Error error = validateMeshSpec(
           ::fabric::Schedule::Spatial, width, height, lanesPerDirection,
-          linkType, std::nullopt, std::nullopt, attachments))
+          linkType, interconnectFifoDepth, std::nullopt, std::nullopt,
+          attachments))
     return std::move(error);
   return MeshSwitchNetworkSpec(::fabric::Schedule::Spatial, width, height,
-                               lanesPerDirection, linkType, std::nullopt,
+                               lanesPerDirection, linkType,
+                               interconnectFifoDepth,
+                               interconnectFifoQueueDiscipline, std::nullopt,
                                std::nullopt, std::move(attachments));
 }
 
 llvm::Expected<MeshSwitchNetworkSpec> MeshSwitchNetworkSpec::temporal(
     std::uint32_t width, std::uint32_t height, std::uint32_t lanesPerDirection,
-    const PortType &linkType, std::uint32_t routeTableSize,
-    MeshSwitchGrantPolicyKind grantPolicyKind,
+    const PortType &linkType, std::uint32_t interconnectFifoDepth,
+    ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline,
+    std::uint32_t routeTableSize, MeshSwitchGrantPolicyKind grantPolicyKind,
     std::vector<MeshCellAttachmentSpec> attachments) {
   if (llvm::Error error = validateMeshSpec(
           ::fabric::Schedule::Temporal, width, height, lanesPerDirection,
-          linkType, routeTableSize, grantPolicyKind, attachments))
+          linkType, interconnectFifoDepth, routeTableSize, grantPolicyKind,
+          attachments))
     return std::move(error);
   return MeshSwitchNetworkSpec(::fabric::Schedule::Temporal, width, height,
-                               lanesPerDirection, linkType, routeTableSize,
+                               lanesPerDirection, linkType,
+                               interconnectFifoDepth,
+                               interconnectFifoQueueDiscipline, routeTableSize,
                                grantPolicyKind, std::move(attachments));
 }
 
@@ -494,12 +505,21 @@ SpatialCoreBuilder::addMeshSwitchNetwork(const MeshSwitchNetworkSpec &spec) {
     }
   }
 
+  // The queue discipline applies only to tag-carrying link FIFOs; untagged
+  // link FIFOs always remain strict.
+  std::optional<::fabric::FifoQueueDiscipline> linkFifoDiscipline;
+  if (spec.linkType_.kind() == PortType::Kind::TaggedBits &&
+      spec.interconnectFifoQueueDiscipline_ ==
+          ::fabric::FifoQueueDiscipline::PerTagVirtualChannel)
+    linkFifoDiscipline = spec.interconnectFifoQueueDiscipline_;
   for (MeshCellBuildState &cell : cells) {
     if (cell.outgoing.size() != cell.outgoingSources.size())
       return detail::invalid("mesh link construction lost an outgoing lane");
     for (std::size_t ordinal = 0; ordinal != cell.outgoing.size(); ++ordinal) {
-      auto fifo = addFifo(cell.outgoingSources[ordinal],
-                          FifoSpec{spec.linkType_, 1, false});
+      auto fifo =
+          addFifo(cell.outgoingSources[ordinal],
+                  FifoSpec{spec.linkType_, spec.interconnectFifoDepth_, false,
+                           linkFifoDiscipline});
       if (!fifo)
         return fifo.takeError();
       networkState->domainMembers.push_back(fifo->domainMember());

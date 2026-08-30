@@ -421,7 +421,8 @@ buildLineageSpatialCore(ArtifactStore &store, std::uint32_t payloadWidth) {
     attachments.push_back({1, 1, tokenInputTypes, types});
   auto network = take(
       spatial.addMeshSwitchNetwork(take(adg::MeshSwitchNetworkSpec::spatial(
-          2, 2, 2, payloadType, std::move(attachments)))));
+          2, 2, 2, payloadType, 1, ::fabric::FifoQueueDiscipline::StrictFifo,
+          std::move(attachments)))));
 
   auto upperBoundary = take(network.attachment(0));
   auto lowerBoundary = take(network.attachment(1));
@@ -492,7 +493,7 @@ buildFeedbackPruningSpatialCore(ArtifactStore &store) {
                                                 payloadTypes, payloadTypes));
   auto network = take(
       spatial.addMeshSwitchNetwork(take(adg::MeshSwitchNetworkSpec::spatial(
-          3, 2, 2, payloadType,
+          3, 2, 2, payloadType, 1, ::fabric::FifoQueueDiscipline::StrictFifo,
           {{0, 0, {payloadType, payloadType}, {payloadType, payloadType}},
            {0, 1, {payloadType, payloadType}, {payloadType, payloadType}},
            {1, 0, payloadTypes, payloadTypes},

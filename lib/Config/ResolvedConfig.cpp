@@ -2,6 +2,8 @@
 
 #include "Common/ArtifactText.h"
 
+#include "Fabric/IR/FabricEnums.h"
+
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -442,7 +444,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
        "spatial_memory_count", "temporal_memory_count",
        "temporal_resident_contexts", "local_memory_port_variant",
        "cross_schedule_boundary_lanes_per_temporal_pe", "gateway_count",
-       "memory_capacity_bytes"});
+       "memory_capacity_bytes", "interconnect_fifo_depth",
+       "interconnect_fifo_queue_discipline"});
   if (!parametersOrErr)
     return parametersOrErr.takeError();
 
@@ -486,6 +489,19 @@ parseHardwareTarget(const ConfigSyntax *node) {
   auto memoryCapacity =
       requirePositiveU64(parametersOrErr->at("memory_capacity_bytes"),
                          "hardware_target.parameters.memory_capacity_bytes");
+  auto interconnectFifoDepth = positiveU32("interconnect_fifo_depth");
+  auto fifoDisciplineSpelling = requireScalarString(
+      parametersOrErr->at("interconnect_fifo_queue_discipline"),
+      "hardware_target.parameters.interconnect_fifo_queue_discipline");
+  if (!fifoDisciplineSpelling)
+    return fifoDisciplineSpelling.takeError();
+  const auto fifoDiscipline =
+      ::fabric::symbolizeFifoQueueDiscipline(*fifoDisciplineSpelling);
+  if (!fifoDiscipline)
+    return diagnostic(
+        "config_unknown_enum",
+        "hardware_target.parameters.interconnect_fifo_queue_discipline",
+        *fifoDisciplineSpelling);
   if (!accCores)
     return accCores.takeError();
   if (!meshDimension)
@@ -514,6 +530,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
     return gateways.takeError();
   if (!memoryCapacity)
     return memoryCapacity.takeError();
+  if (!interconnectFifoDepth)
+    return interconnectFifoDepth.takeError();
 
   return loom::ResolvedHardwareTargetConfig{
       *templateOrErr,
@@ -521,8 +539,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
       {*accCores, *meshDimension, *spatialMeshLanes, *temporalMeshLanes,
        *spatialPes, *temporalPes, *spatialFuOccurrences, *temporalFuOccurrences,
        *spatialMemories, *temporalMemories, *residentContexts,
-       *memoryPortVariant, *crossScheduleBoundaryLanes, *gateways,
-       *memoryCapacity}};
+       *interconnectFifoDepth, *fifoDiscipline, *memoryPortVariant,
+       *crossScheduleBoundaryLanes, *gateways, *memoryCapacity}};
 }
 
 enum class ParsedObjectiveSourceKind {
