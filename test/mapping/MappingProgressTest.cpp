@@ -711,6 +711,14 @@ module {
            closure.reason == loom::mapping::MappingProgressClosureReason::
                                  BufferDependencyNotEstablished;
   };
+  const auto capacityNotEstablished =
+      [](const loom::mapping::MappingProgressClosure &closure) {
+        return closure.kind == loom::mapping::MappingProgressClosureKind::
+                                   ProofNotEstablished &&
+               closure.reason ==
+                   loom::mapping::MappingProgressClosureReason::
+                       ReconvergentCapacityNotEstablished;
+      };
 
   // A cross-tag order cycle through one shared strict queue is a proven
   // closed wait.
@@ -733,21 +741,21 @@ module {
   if (!provenCycle(closureOf(fixture.sameTagEdges())))
     fail("same-tag virtual-channel order cycle was not proven");
 
-  // A cycle carrying a capacity edge stays unestablished without the capacity
-  // proof.
+  // A cycle carrying a capacity edge is mediated by the capacity proof: its
+  // members carry no obligations here, so it stays unestablished.
   const std::vector<MappingBufferDependencyEdge> capacityCycle{
       waitEdge(globalQueueNode(7), globalQueueNode(8),
                MappingBufferDependencyEdgeKind::DownstreamCapacity),
       waitEdge(globalQueueNode(8), globalQueueNode(7),
                MappingBufferDependencyEdgeKind::DownstreamCapacity)};
-  if (!notEstablished(closureOf(capacityCycle)))
+  if (!capacityNotEstablished(closureOf(capacityCycle)))
     fail("capacity-only queue cycle was reported without a capacity proof");
 
   // A capacity edge inside an order cycle also stays unestablished.
   std::vector<MappingBufferDependencyEdge> mixed = fixture.strictEdges();
   mixed.push_back(waitEdge(globalQueueNode(7), globalQueueNode(8),
                            MappingBufferDependencyEdgeKind::DownstreamCapacity));
-  if (!notEstablished(closureOf(mixed)))
+  if (!capacityNotEstablished(closureOf(mixed)))
     fail("capacity-carrying order cycle was reported without a capacity proof");
 
   // A component with a wait leaving it is not closed and never becomes a
@@ -785,6 +793,166 @@ module {
          "dependency closure");
 }
 
+void reconvergentCapacityClosure() {
+  using loom::mapping::MappingReconvergentCapacityObligation;
+  using loom::mapping::MappingReconvergentCapacityProofKind;
+  const auto globalObligation = [](std::uint64_t fifo, std::uint64_t selected,
+                                   std::optional<std::uint64_t> minimum,
+                                   MappingReconvergentCapacityProofKind kind) {
+    return MappingReconvergentCapacityObligation{
+        loom::fabric::FabricFifoOccurrenceRef(fifo),
+        {MappingStaticQueueClass{MappingStaticQueueClassKind::Global,
+                                 llvm::APInt(1, 0)}},
+        {},
+        selected, minimum, kind};
+  };
+  const auto sharedTagObligation = [](
+                                       std::uint64_t fifo,
+                                       std::uint64_t selected,
+                                       std::optional<std::uint64_t> minimum,
+                                       MappingReconvergentCapacityProofKind
+                                           kind) {
+    return MappingReconvergentCapacityObligation{
+        loom::fabric::FabricFifoOccurrenceRef(fifo),
+        {MappingStaticQueueClass{MappingStaticQueueClassKind::PhysicalTag,
+                                 llvm::APInt(4, 3)},
+         MappingStaticQueueClass{MappingStaticQueueClassKind::PhysicalTag,
+                                 llvm::APInt(4, 5)}},
+        {}, selected, minimum, kind};
+  };
+
+  mlir::DialectRegistry registry;
+  registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.graph private @trivial(%start: none) -> ()
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    dataflow.graph.return values() streams() memories()
+        complete(%start : none)
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse reconvergent capacity fixture");
+  auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
+  const auto view = take(artifact.view());
+  const auto model =
+      take(loom::mapping::freezeMappingProgressModel(view, /*events=*/{}));
+  loom::mapping::MappingProgressProjection projection;
+  projection.basis.kind =
+      loom::mapping::MappingDataflowProgressBasisKind::Acyclic;
+  const auto closureOf =
+      [&](std::vector<MappingReconvergentCapacityObligation> obligations) {
+        loom::mapping::MappingProgressProjection candidate = projection;
+        candidate.reconvergentCapacityObligations = std::move(obligations);
+        return take(
+            loom::mapping::deriveMappingProgressClosure(model, candidate));
+      };
+
+  // A proven minimum above the selected pool is a proven shortfall: the
+  // single-queue bubble deadlock needs no dependency cycle.
+  const auto shortfall = closureOf({globalObligation(
+      7, 1, 2, MappingReconvergentCapacityProofKind::Proven)});
+  if (shortfall.kind !=
+          loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet ||
+      shortfall.reason != loom::mapping::MappingProgressClosureReason::
+                              ReconvergentCapacityShortfall)
+    fail("a proven capacity shortfall was not reported");
+
+  // A proven minimum within the selected pool discharges the obligation.
+  if (closureOf({globalObligation(7, 16, 2,
+                                  MappingReconvergentCapacityProofKind::Proven)})
+          .kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("a sufficient capacity was reported as a shortfall");
+
+  // Tag-local order classes share one physical slot pool. They therefore
+  // produce one owner obligation and one capacity comparison, never one depth
+  // per tag.
+  const auto sharedPoolShortfall = closureOf({sharedTagObligation(
+      9, 1, 2, MappingReconvergentCapacityProofKind::Proven)});
+  if (sharedPoolShortfall.kind !=
+          loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet ||
+      sharedPoolShortfall.reason !=
+          loom::mapping::MappingProgressClosureReason::
+              ReconvergentCapacityShortfall)
+    fail("tag-local classes did not share their FIFO capacity owner");
+  if (closureOf({sharedTagObligation(
+                     9, 2, 2,
+                     MappingReconvergentCapacityProofKind::Proven)})
+          .kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("a sufficient shared virtual-channel pool was rejected");
+
+  // Two obligations for one FIFO would create competing capacity owners.
+  loom::mapping::MappingProgressProjection duplicateOwner = projection;
+  duplicateOwner.reconvergentCapacityObligations = {
+      globalObligation(7, 4, 1,
+                       MappingReconvergentCapacityProofKind::Proven),
+      globalObligation(7, 4, 1,
+                       MappingReconvergentCapacityProofKind::Proven)};
+  auto duplicateClosure =
+      loom::mapping::deriveMappingProgressClosure(model, duplicateOwner);
+  if (duplicateClosure)
+    fail("duplicate shared-pool capacity owners were accepted");
+  llvm::consumeError(duplicateClosure.takeError());
+
+  // An unproven selected queue class is progress debt even without a known
+  // dependency cycle. It cannot pass the static publication gate.
+  const auto unproven = closureOf({globalObligation(
+      7, 1, std::nullopt,
+      MappingReconvergentCapacityProofKind::ProofNotEstablished)});
+  if (unproven.kind !=
+          loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
+      unproven.reason != loom::mapping::MappingProgressClosureReason::
+                             ReconvergentCapacityNotEstablished)
+    fail("an unproven capacity obligation was not reported as progress debt");
+
+  // A capacity-carrying closed component resolves exactly when every member
+  // class has a proven obligation within its pool.
+  std::vector<MappingBufferDependencyEdge> capacityCycle{
+      waitEdge(globalQueueNode(7), globalQueueNode(8),
+               MappingBufferDependencyEdgeKind::DownstreamCapacity),
+      waitEdge(globalQueueNode(8), globalQueueNode(7),
+               MappingBufferDependencyEdgeKind::DownstreamCapacity)};
+  const auto resolvedThrough = [&](std::vector<MappingReconvergentCapacityObligation>
+                                       obligations) {
+    loom::mapping::MappingProgressProjection candidate = projection;
+    candidate.bufferDependencyEdges = capacityCycle;
+    candidate.reconvergentCapacityObligations = std::move(obligations);
+    return take(
+        loom::mapping::deriveMappingProgressClosure(model, candidate));
+  };
+  if (resolvedThrough({globalObligation(7, 4, 2,
+                                        MappingReconvergentCapacityProofKind::
+                                            Proven),
+                       globalObligation(8, 4, 1,
+                                        MappingReconvergentCapacityProofKind::
+                                            Proven)})
+          .kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("proven-sufficient members did not resolve the capacity component");
+  const auto unprovenMember = resolvedThrough({globalObligation(
+      7, 4, 2, MappingReconvergentCapacityProofKind::Proven)});
+  if (unprovenMember.kind !=
+          loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
+      unprovenMember.reason != loom::mapping::MappingProgressClosureReason::
+                                   ReconvergentCapacityNotEstablished)
+    fail("a capacity component without a member proof was resolved");
+
+  // A proven shortfall on a component member still reports the shortfall.
+  const auto memberShortfall = resolvedThrough({globalObligation(
+      7, 1, 2, MappingReconvergentCapacityProofKind::Proven)});
+  if (memberShortfall.kind !=
+          loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet ||
+      memberShortfall.reason != loom::mapping::MappingProgressClosureReason::
+                                    ReconvergentCapacityShortfall)
+    fail("a member shortfall was hidden by the component mediation");
+}
+
 } // namespace
 
 int main() {
@@ -792,6 +960,7 @@ int main() {
   completionFrontierRequiresReadyRoots();
   orderedRuntimeHeadsRequireCompleteExactPairing();
   bufferDependencyClosure();
+  reconvergentCapacityClosure();
   llvm::outs() << "mapping progress tests passed\n";
   return EXIT_SUCCESS;
 }

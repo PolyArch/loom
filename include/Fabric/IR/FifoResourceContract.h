@@ -21,6 +21,15 @@ enum class FifoBufferedCapacity : std::uint32_t {
   DequeueService = 2,
 };
 
+inline StateKey fifoResourceState(FifoResourceState state) {
+  return StateKey(static_cast<std::uint32_t>(state));
+}
+
+inline CapacityDimensionKey fifoBufferedCapacity(
+    FifoBufferedCapacity capacity) {
+  return CapacityDimensionKey(static_cast<std::uint32_t>(capacity));
+}
+
 enum class FifoResourceTransition : std::uint32_t {
   Append = 0,
   Remove = 1,

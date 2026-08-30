@@ -36,6 +36,8 @@ enum class MappingProgressClosureReason : std::uint8_t {
   FiniteBufferRecurrenceNotEstablished,
   ClosedBufferDependencyCycle,
   BufferDependencyNotEstablished,
+  ReconvergentCapacityShortfall,
+  ReconvergentCapacityNotEstablished,
 };
 
 enum class MappingProgressWaitNodeKind : std::uint8_t {
@@ -214,6 +216,28 @@ enum class MappingRouteProgressObligationKind : std::uint8_t {
   FiniteBufferRecurrence,
 };
 
+enum class MappingReconvergentCapacityProofKind : std::uint8_t {
+  Proven,
+  ProofNotEstablished,
+};
+
+/// One exact capacity obligation of one selected FIFO shared slot pool under
+/// the single-rate static-order reconvergence subdomain. `queueClasses` names
+/// every strict-global or tag-local order class sharing this one physical
+/// capacity owner; it never partitions `selectedCapacity`. `routeAnchors`
+/// names the selected traversals from which the obligation is rebuilt. The
+/// kind is the proof state and the minimum is present exactly when proven.
+/// This value is not a persisted proof label.
+struct MappingReconvergentCapacityObligation final {
+  ::loom::fabric::FabricFifoOccurrenceRef owner;
+  std::vector<MappingStaticQueueClass> queueClasses;
+  std::vector<::loom::fabric::FabricPhysicalTraversalRef> routeAnchors;
+  std::uint64_t selectedCapacity = 0;
+  std::optional<std::uint64_t> minimumLegalCapacity;
+  MappingReconvergentCapacityProofKind kind =
+      MappingReconvergentCapacityProofKind::ProofNotEstablished;
+};
+
 /// One physical progress obligation rebuilt from the selected route trees and
 /// typed Fabric traversals or sink boundaries. An unestablished durable
 /// boundary is a concrete closed-wait witness. An unestablished finite-buffer
@@ -238,6 +262,10 @@ struct MappingProgressProjection final {
   /// as BufferDependencyNotEstablished and never as a proven cycle.
   std::optional<std::vector<MappingBufferDependencyEdge>>
       bufferDependencyEdges = std::vector<MappingBufferDependencyEdge>{};
+  /// The per-class capacity obligations of the reconvergence proof. Empty when
+  /// the mapping selects no Buffered FIFO queue class.
+  std::vector<MappingReconvergentCapacityObligation>
+      reconvergentCapacityObligations;
 };
 
 /// A non-owning projection consumed synchronously by the progress kernel.
@@ -249,6 +277,8 @@ struct MappingProgressProjectionView final {
   llvm::ArrayRef<MappingProgressActivationProjection> resourceActivations;
   const std::optional<std::vector<MappingBufferDependencyEdge>>
       &bufferDependencyEdges;
+  llvm::ArrayRef<MappingReconvergentCapacityObligation>
+      reconvergentCapacityObligations;
 };
 
 } // namespace loom::mapping

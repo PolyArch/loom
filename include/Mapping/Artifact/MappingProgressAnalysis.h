@@ -221,6 +221,23 @@ projectSpatialBufferDependencyEdges(
     llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueGroups,
     llvm::ArrayRef<::dataflow::GraphRef> selectedGraphs);
 
+/// The per-owner reconvergent capacity obligations of the selected graphs:
+/// the exact minimum legal slot count of every selected Buffered FIFO shared
+/// pool under the single-rate static-order subdomain. Resident
+/// initialized-feedback tokens plus the atomic dequeue-plus-enqueue lead of
+/// each cycle-closing feedback channel fix the minimum; a parametric or
+/// unbounded relation domain, a residual cycle, or a missing contract leaves
+/// the class ProofNotEstablished, never a heuristic number.
+llvm::Expected<std::vector<MappingReconvergentCapacityObligation>>
+deriveMappingReconvergentCapacityProof(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments,
+    llvm::ArrayRef<::dataflow::GraphRef> selectedGraphs);
+
 llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
