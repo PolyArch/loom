@@ -743,6 +743,7 @@ def validate_reference(value: Any, context: str) -> None:
 def validate_manifest(
     manifest: dict[str, Any],
     manifest_path: Path,
+    expected_i32: int,
     spatial_invocations: int | None,
     required_dataflow_text: list[str],
     mapping_inspector: str | None,
@@ -764,8 +765,9 @@ def validate_manifest(
     )
     for field in ("deployment", "workload", "runtime_input", "gem5_binding"):
         validate_reference(manifest.get(field), field)
+    expected_result = format(expected_i32 & 0xFFFFFFFF, "X")
     require(
-        manifest.get("value_results") == [["0"]],
+        manifest.get("value_results") == [[expected_result]],
         "execution cells did not agree with the independent product oracle",
     )
 
@@ -1035,6 +1037,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--diagnostics", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--expected-i32", type=int, default=0)
     parser.add_argument("--spatial-invocations", type=int)
     parser.add_argument("--expected-system-active-contexts", type=int)
     parser.add_argument("--spatial-search-frontier", action="store_true")
@@ -1082,6 +1085,10 @@ def main() -> None:
         "minimum unique AccCore count must be positive",
     )
     require(
+        -(1 << 31) <= arguments.expected_i32 < (1 << 31),
+        "expected i32 is outside the signed 32-bit domain",
+    )
+    require(
         arguments.dense_coordinate_rank is None or arguments.dense_coordinate_rank >= 0,
         "dense coordinate rank must be nonnegative",
     )
@@ -1122,6 +1129,7 @@ def main() -> None:
     validate_manifest(
         read_json(arguments.manifest),
         arguments.manifest,
+        arguments.expected_i32,
         arguments.spatial_invocations,
         arguments.required_dataflow_text,
         arguments.mapping_inspector,
