@@ -239,6 +239,9 @@ llvm::Expected<FabricArtifactView> buildModuleView(
            entity.instructionContexts)
         context.inventoryCounts = detail::emptyFabricInventories();
     }
+    if (auto fifo = dyn_cast<::fabric::FifoOp>(carrier.op))
+      entity.fifoQueueDiscipline = fifo.getQueueDiscipline().value_or(
+          ::fabric::FifoQueueDiscipline::StrictFifo);
     if (auto sw = dyn_cast<::fabric::SwitchOp>(carrier.op)) {
       entity.switchSchedule = sw.getSchedule();
       if (sw.getSchedule() == ::fabric::Schedule::Temporal) {

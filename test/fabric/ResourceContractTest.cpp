@@ -954,7 +954,16 @@ void physicalTagSharingSchemaOwnsItsCodec() {
   declaration.usePatterns[0].sharingAssignments.clear();
   declaration.usePatterns[0].parameters = {
       UsePatternValueSchema::physicalTag(9)};
-  expectViolation(__func__, "Physical Tag parameter schema",
+  ResourceContract parameterized =
+      takeContract(__func__, ResourceContract::create(declaration));
+  require(__func__,
+          parameterized.usePattern(UsePatternKey(0)).parameters.front() ==
+              UsePatternValueSchema::physicalTag(9),
+          "an admitted Physical Tag parameter lost its schema");
+
+  declaration.usePatterns[0].parameters = {
+      UsePatternValueSchema::physicalTag(0)};
+  expectViolation(__func__, "zero-width Physical Tag parameter schema",
                   ResourceContract::create(declaration),
                   ResourceContractViolation::InvalidPatternValueSchema);
 }

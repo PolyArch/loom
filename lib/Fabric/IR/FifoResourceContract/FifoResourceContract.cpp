@@ -20,11 +20,13 @@ constexpr CapacityDimensionKey bypassServiceCapacity{0};
 constexpr ResourceTransitionKey appendTransition{0};
 constexpr ResourceTransitionKey removeTransition{1};
 constexpr ResourceTransitionKey replaceHeadTransition{2};
+constexpr ResourceTransitionKey offerAdvanceTransition{3};
 constexpr RequesterKey fifoRequester{0};
 constexpr EligibilityKey enqueueEligible{0};
 constexpr EligibilityKey dequeueEligible{1};
 constexpr EligibilityKey simultaneousEligible{2};
 constexpr EligibilityKey bypassEligible{3};
+constexpr EligibilityKey offerAdvanceEligible{4};
 constexpr EventKey acquireEvent{0};
 constexpr EventKey commitEvent{1};
 constexpr EventKey nextClockBoundary{2};
@@ -54,10 +56,15 @@ UsePatternDeclaration bufferedPattern(FifoUsePattern key,
 
 } // namespace
 
-ResourceContractDeclaration
-fabric::declareFifoResourceContract(std::uint32_t maxDepth, bool bypassable) {
+ResourceContractDeclaration fabric::declareFifoResourceContract(
+    std::uint32_t maxDepth, bool bypassable, FifoQueueDiscipline discipline,
+    std::uint32_t tagWidthBits) {
   ResourceContractDeclaration declaration;
   if (maxDepth == 0)
+    return declaration;
+  const bool virtualChannel =
+      discipline == FifoQueueDiscipline::PerTagVirtualChannel;
+  if (virtualChannel && (bypassable || tagWidthBits == 0))
     return declaration;
 
   declaration.states = {ResourceStateDeclaration{
@@ -76,6 +83,8 @@ fabric::declareFifoResourceContract(std::uint32_t maxDepth, bool bypassable) {
 
   declaration.resourceTransitions = {appendTransition, removeTransition,
                                      replaceHeadTransition};
+  if (virtualChannel)
+    declaration.resourceTransitions.push_back(offerAdvanceTransition);
   declaration.timingContracts = {
       TimingContractDeclaration{bufferedTiming, {0, 1, 2, 0}}};
   if (bypassable)
@@ -109,14 +118,49 @@ fabric::declareFifoResourceContract(std::uint32_t maxDepth, bool bypassable) {
         bypassTiming,
         {claim(0, bypassTransferState, bypassServiceCapacity)},
         {}});
+  if (virtualChannel) {
+    declaration.eligibilityCount = 5;
+    // The dequeue uses are qualified by the exact Physical Tag value whose
+    // channel head they remove; the offer advance names the channel whose
+    // presented head was refused and commits at the cycle boundary, so the
+    // successor channel is presented from the next cycle.
+    const std::vector<UsePatternValueSchema> tagParameter = {
+        UsePatternValueSchema::physicalTag(tagWidthBits)};
+    declaration.usePatterns[1].parameters = tagParameter;
+    declaration.usePatterns[2].parameters = tagParameter;
+    declaration.usePatterns.push_back(UsePatternDeclaration{
+        fifoVirtualChannelOfferAdvancePattern(),
+        fifoRequester,
+        offerAdvanceEligible,
+        acquireEvent,
+        nextClockBoundary,
+        CommitDeclaration{nextClockBoundary, offerAdvanceTransition},
+        bufferedTiming,
+        {},
+        {},
+        tagParameter});
+  }
   return declaration;
 }
 
 llvm::Expected<ResourceContract>
-fabric::createFifoResourceContract(std::uint32_t maxDepth, bool bypassable) {
+fabric::createFifoResourceContract(std::uint32_t maxDepth, bool bypassable,
+                                   FifoQueueDiscipline discipline,
+                                   std::uint32_t tagWidthBits) {
   if (maxDepth == 0)
     return llvm::createStringError(std::errc::invalid_argument,
                                    "FIFO max depth must be positive");
+  if (discipline == FifoQueueDiscipline::PerTagVirtualChannel) {
+    if (bypassable)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "a per-tag virtual channel FIFO owns no bypass alternative");
+    if (tagWidthBits == 0)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "a per-tag virtual channel FIFO requires its Physical Tag width");
+  }
   return ResourceContract::create(
-      declareFifoResourceContract(maxDepth, bypassable));
+      declareFifoResourceContract(maxDepth, bypassable, discipline,
+                                  tagWidthBits));
 }

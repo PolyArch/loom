@@ -10,11 +10,11 @@ identity, finalization, and publication.
 The current persistent family is:
 
 ```text
-loom.fabric 7.0
+loom.fabric 7.1
 
 ArtifactSchemaDescriptor {
   identity = "loom.fabric"
-  version = 7.0
+  version = 7.1
 }
 
 FabricRoot =
@@ -94,6 +94,27 @@ retaining the same root identity, so the current owner accepts and emits only
 the exact `loom.fabric 7.0` descriptor. There is no 6.x compatibility owner,
 fallback importer, or in-place upgrade.
 
+Version 7.1 is a non-breaking semantic extension of the 7.0 FIFO domain under
+the `X.Y` rule above. A `fabric.fifo` may declare a typed
+`queue_discipline`: `strict_fifo` retains the exact 7.0 semantics, while
+`per_tag_virtual_channel` schedules dequeue among per-Physical-Tag channel
+heads over one shared queue pool, owns an `OfferAdvance` internal arbitration
+transition, and qualifies its dequeue and offer uses by the exact tag value
+they present. The attribute is optional and absent selects `strict_fifo`, so
+a 7.0 canonical payload is byte-identical to its 7.1 StrictFifo
+re-finalization; only the descriptor framing and any rewritten dependency
+rows change identity. The extended use-pattern value-schema `parameters`
+codec field, previously reserved and rejected, is admitted for exactly these
+tag qualifications. A 7.0 root and its 7.1 re-finalization are never
+interchangeable: the ordinary 7.1 importer accepts and emits only the exact
+`loom.fabric 7.1` descriptor, and reading a 7.0 root requires the explicit
+migration owner `migrateFabricRootV7_0ToV7_1`, which recursively re-finalizes
+the direct dependency closure under 7.1, publishes each result, and
+independently reverifies it through the complete strict 7.1 import. Migration
+yields a new ArtifactIdentity, so every Mapping, ResolvedConfig, and
+evaluation provenance naming the 7.0 root no longer resolves and must be
+regenerated against the migrated root.
+
 The 4.0 `fabric.system.connection` relation retains both its Transport and
 MemoryService variants from 3.0. These remain required operation-service
 endpoint references and direct identity connections, not an optional extension
@@ -141,7 +162,7 @@ dependency, it stores the dependency-table ordinal plus that owner's canonical
 local target bytes. This compact form mechanically recovers the complete
 `ArtifactReference<T>` and does not create another reference authority.
 
-The dependency-role catalog remains unchanged in `loom.fabric 7.0`:
+The dependency-role catalog remains unchanged in `loom.fabric 7.1`:
 
 ```text
 ImportedModule       = 0
@@ -159,24 +180,25 @@ no accepted artifact family, schema version, root kind, owner-local target
 kind, or dependency-use contract in schema 7.x. It is therefore not an enabled
 dependency role and cannot appear in a canonical Fabric root.
 
-The enabled schema-7.0 dependency contracts are exact:
+The enabled schema-7.1 dependency contracts are exact:
 
 ```text
 ImportedModule:
-  owner schema = loom.fabric 7.0
+  owner schema = loom.fabric 7.1
   required root = Module
 
 RefinedSystem:
-  owner schema = loom.fabric 7.0
+  owner schema = loom.fabric 7.1
   required root = System
 ```
 
-A pre-7.0 Module has no 7.0 dependency contract and is rejected rather than
-republished under a new identity without exact finalization.
-Likewise, a `RefinedSystem` dependency cannot cross a Fabric schema version or
-name a Module or InterconnectImplementation root. A later compatible Fabric
-minor version must explicitly publish its own dependency-contract table; role
-ordinals alone never imply cross-version admission.
+A pre-7.1 Module or System has no 7.1 dependency contract and is rejected
+rather than republished under a new identity without exact finalization; the
+only 7.0-to-7.1 path is the migration owner above. Likewise, a `RefinedSystem`
+dependency cannot cross a Fabric schema version or name a Module or
+InterconnectImplementation root. A later compatible Fabric minor version must
+explicitly publish its own dependency-contract table; role ordinals alone
+never imply cross-version admission.
 
 An authoring draft, encoder input, or imported envelope containing an
 `ImplementationInput` row fails structurally with
@@ -763,6 +785,13 @@ Anchor tests cover:
 * rejection of a root-kind-2 generic module payload and typed
   `FabricRootProviderUnavailable` when the exact
   `fabric.interconnect_implementation` owner provider is absent;
+* the 7.1 queue-discipline joints: StrictFifo and PerTagVirtualChannel round
+  trips through finalization and strict import, rejection of
+  `per_tag_virtual_channel` on an untagged or bypassable FIFO, distinct
+  canonical identities for distinct disciplines, cold-rebuild identity
+  stability, rejection of a 7.0 reference by the ordinary 7.1 importer, and
+  exact 7.0-to-7.1 migration reproducing the native 7.1 identity for a Module
+  and for a System with its recursive dependency closure;
 * a valid custom Fabric with a missing backend provider reporting
   `Unsupported`; and
 * a builtin target publishing with complete semantic capability while a later

@@ -97,6 +97,9 @@ struct FabricEntityViewData {
   std::optional<std::uint64_t> boundaryLookupTableSize;
   std::optional<FabricFuConfigurationStorageMode> peFuConfigurationStorageMode;
   std::optional<::fabric::OperandBufferMode> peOperandBufferMode;
+  /// Absent for owners that are not FIFO occurrences; a FIFO occurrence
+  /// always records its declared discipline.
+  std::optional<::fabric::FifoQueueDiscipline> fifoQueueDiscipline;
   std::optional<std::uint32_t> peOperandBufferSize;
   std::optional<std::uint32_t> peRegisterFifoDepth;
   std::optional<std::uint32_t> peRegisterFifoPorts;

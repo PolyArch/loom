@@ -125,6 +125,13 @@ FabricArtifactView::peOperandBufferMode(
   return record ? record->peOperandBufferMode : std::nullopt;
 }
 
+std::optional<::fabric::FifoQueueDiscipline>
+FabricArtifactView::fifoQueueDiscipline(
+    FabricFifoOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record ? record->fifoQueueDiscipline : std::nullopt;
+}
+
 std::uint32_t FabricArtifactView::peOperandBufferSize(
     FabricPeOccurrenceRef occurrence) const {
   const detail::FabricEntityViewData *record = storage_->entity(occurrence);

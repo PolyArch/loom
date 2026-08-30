@@ -255,7 +255,7 @@ performance comparisons.
 
 ### Persistent Capability Schema
 
-`loom.fabric 7.0` persists one closed typed relation. It does not persist an
+`loom.fabric 7.1` persists one closed typed relation. It does not persist an
 exact actor geometry per alternative and does not replace domain records with
 counts or generic integer properties.
 
@@ -326,7 +326,7 @@ ordinary non-pointer data point remains distinct from every pointer format.
 `ReadSubwordSemantics`, `WriteSubwordSemantics`, and
 `InactiveLaneSemantics` are Fabric-owned closed enums because they state
 physical guarantees. Their semantic values and stable wire tags in
-`loom.fabric 7.0` are:
+`loom.fabric 7.1` are:
 
 ```text
 ReadSubwordSemantics  = NotApplicable(0) | Exact(1) | ZeroExtend(2)
@@ -336,7 +336,7 @@ InactiveLaneSemantics = NotApplicable(0) | Suppress(1)
 ```
 
 These tags were introduced by `loom.fabric 1.0` and retain the same values
-through `loom.fabric 7.0`. They do not inherit C++ enum
+through `loom.fabric 7.1`. They do not inherit C++ enum
 ordinals, source declaration order, or printer spelling. A codec must reject
 an unknown tag rather than preserve it as an opaque future value.
 
@@ -503,7 +503,7 @@ repeat it. Plain access derives alignment one for this compatibility query;
 atomic actors use their exact declared source alignment. Thus actor semantics
 and physical alignment capability each have one owner.
 
-The Fabric-owned clause tags are stable `loom.fabric 7.0` wire values:
+The Fabric-owned clause tags are stable `loom.fabric 7.1` wire values:
 
 ```text
 LoadStorePlain(0)
@@ -554,7 +554,7 @@ MemoryPortTransactionProjection =
 ```
 
 The projection tags above were introduced by `loom.fabric 1.0` and retain the
-same values through `loom.fabric 7.0`. They do
+same values through `loom.fabric 7.1`. They do
 not inherit a C++ enum ordinal or printer spelling, and an unknown tag is
 invalid.
 
@@ -627,7 +627,7 @@ matcher and one ordered operand queue for every externally supplied input
 role. SpatialMapping must assign nonconflicting Physical Tags to every
 may-overlap incompatible interpretation in that ingress's local match domain.
 Active output roles within one capability alternative remain injective under
-`loom.fabric 7.0`. Reusing one tagged egress across different resident rows
+`loom.fabric 7.1`. Reusing one tagged egress across different resident rows
 remains legal under the existing Temporal grant, tag, and capacity contracts,
 but
 serializing several result roles of one firing onto one egress would require

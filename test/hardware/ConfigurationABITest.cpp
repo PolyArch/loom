@@ -345,7 +345,8 @@ FabricFixture makeFabric(llvm::StringRef test, const ArtifactStore &store) {
   require(test,
           system.reference().schemaIdentity ==
                   loom::fabric::fabricArtifactSchema.identity &&
-              system.reference().schemaVersion == loom::SchemaVersion{7, 0},
+              system.reference().schemaVersion ==
+                  loom::fabric::fabricArtifactSchema.version,
           "fixture is not a current loom.fabric artifact");
   return FabricFixture{std::move(module), std::move(system)};
 }

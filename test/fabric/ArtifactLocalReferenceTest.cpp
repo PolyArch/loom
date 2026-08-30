@@ -26,7 +26,7 @@ static_assert(fabricArtifactLocalReferenceKindOrdinal(
                   FabricArtifactLocalReferenceKind::
                       FabricMemoryEngineTemplateInternalConnectionRef) == 49);
 static_assert(fabricArtifactSchema.version.major == 7);
-static_assert(fabricArtifactSchema.version.minor == 0);
+static_assert(fabricArtifactSchema.version.minor == 1);
 
 namespace {
 

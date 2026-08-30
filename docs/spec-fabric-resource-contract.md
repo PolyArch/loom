@@ -114,9 +114,13 @@ Every integer reference is decoded immediately to its distinct typed key class
 and range-checked; no public API exposes an untyped ordinal or a generic
 property path.
 
-Parameter and sharing-assignment schemas are closed positional arrays. The
-current `ResourceContractRecord` admits the `PhysicalTag` sharing schema only.
-Its positive `bit_width`
+Parameter and sharing-assignment schemas are closed positional arrays. A
+sharing assignment declares that the owning resource assigns or rewrites a
+Physical Tag of the given width; a parameter declares that one use is
+qualified by an exact runtime value of the given kind, as when a tag-selective
+FIFO dequeue names the Physical Tag value of the channel it presents. The
+`PhysicalTag` schema is the only admitted kind for both. Its positive
+`bit_width`
 selects the production Physical Tag codec; decode, immutable adoption, and
 re-encode equality are mandatory. Unknown kinds, zero widths, a value of the
 wrong kind or width, noncanonical high padding bits, and missing or extra

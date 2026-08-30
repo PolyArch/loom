@@ -27,7 +27,7 @@ loom.gem5_simulation_binding  2.0
 
 RuntimePlatformBinding 3.1 extends its exact dependency admission to
 `loom.hardware_implementation 4.1`, including the payload-free `FabricModel`;
-Gem5SimulationBinding 2.0 admits exact `loom.fabric 7.0` roots. Their record
+Gem5SimulationBinding 2.0 admits exact `loom.fabric 7.1` roots. Their record
 shapes remain as specified below; no prior-version reference is reinterpreted
 with a different accepted dependency schema.
 
@@ -1209,7 +1209,7 @@ admission joins the third:
   execution structure, timing, capacity, and mapping-visible resources; and
 * the compatible Compiler Target Binding used by the target-specific binary.
 
-Because `loom.fabric 7.0` admits only the `RiscV` Architectural Contract, the
+Because `loom.fabric 7.1` admits only the `RiscV` Architectural Contract, the
 selected gem5 build and every `Processor` correspondence must provide a
 compatible RISC-V ISA model. A build without that ISA or a correspondence to a
 different ISA is typed `Unsupported`; the binding cannot retarget the binary

@@ -3,6 +3,7 @@
 #include "FabricOperationTransport.h"
 
 #include "Fabric/IR/BoundaryTransfer.h"
+#include "Fabric/IR/FabricTypes.h"
 #include "Fabric/IR/FifoResourceContract.h"
 #include "Fabric/IR/MemoryCapabilityFinalization.h"
 #include "Fabric/IR/PhysicalTagResourceContract.h"
@@ -34,8 +35,16 @@ llvm::Expected<std::optional<::fabric::ResourceContract>>
 deriveBaseResourceContract(Operation *operation,
                            const FabricCanonicalLabeling &labeling) {
   if (auto fifo = dyn_cast<::fabric::FifoOp>(operation)) {
+    const ::fabric::FifoQueueDiscipline discipline =
+        fifo.getQueueDiscipline().value_or(
+            ::fabric::FifoQueueDiscipline::StrictFifo);
+    std::uint32_t tagWidthBits = 0;
+    if (auto tagged =
+            dyn_cast<::fabric::BitsTagType>(fifo.getOutput().getType()))
+      tagWidthBits = tagged.getTagWidth();
     auto contract = ::fabric::createFifoResourceContract(
-        static_cast<std::uint32_t>(fifo.getMaxDepth()), fifo.getBypassable());
+        static_cast<std::uint32_t>(fifo.getMaxDepth()), fifo.getBypassable(),
+        discipline, tagWidthBits);
     if (!contract)
       return contract.takeError();
     return std::optional<::fabric::ResourceContract>(std::move(*contract));

@@ -371,9 +371,9 @@ llvm::Error validate(NormalizedDeclaration &normalized) {
         normalized.timingContractCount())
       return rejected(ResourceContractViolation::UnknownTimingContractKey,
                       patternSite(pattern));
-    if (!declared.parameters.empty())
-      return rejected(ResourceContractViolation::InvalidPatternValueSchema,
-                      valueSchemaSite(pattern, "parameter schema", 0));
+    if (llvm::Error invalid = checkValueSchemas(pattern, "parameter schema",
+                                                declared.parameters))
+      return invalid;
     if (llvm::Error invalid = checkValueSchemas(
             pattern, "sharing-assignment schema", declared.sharingAssignments))
       return invalid;

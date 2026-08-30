@@ -163,7 +163,7 @@ binding or endpoint attachment.
 It executes the residual program, runtime, and fallback work and dispatches
 the exact thread and Spatial launches selected for the AccCore cluster.
 
-The `loom.fabric 7.0` System contract requires the HostCore and every AccCore
+The `loom.fabric 7.1` System contract requires the HostCore and every AccCore
 InstructionCore in one System execution closure to belong to one compatible
 RISC-V ISA and ABI cohort. They may have different Microarchitectural
 Realizations, capacities,

@@ -191,7 +191,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                         "schema_version": "11.0",
                         "artifact": f"{300:064x}",
                     },
-                    "fabric": reference(301, "loom.fabric", "7.0"),
+                    "fabric": reference(301, "loom.fabric", "7.1"),
                     "tech_mapping": reference(400 + ordinal),
                     "tech_mapping_search": {
                         "outcome": "incomplete",

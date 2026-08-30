@@ -15,20 +15,94 @@ differences use the module-owned low-bit-aligned truncation and zero-extension
 rule. A FIFO does not convert between spatial and tagged domains and does not
 accept `memref` endpoints.
 
-Fabric owns two hardware capability fields:
+Fabric owns three hardware capability fields:
 
 ```text
 FifoCapability {
   max_depth: positive integer
   bypassable: bool
+  queue_discipline: StrictFifo | PerTagVirtualChannel   // default StrictFifo
 }
 ```
 
 `max_depth` is the fixed total physical token-holding capacity. It is not an
 effective depth that Mapping may resize, and there is no hidden skid or credit
 slot outside it. A future partitionable bank, configurable depth, credit
-allocation, skid capacity, or virtual-channel resource must declare that
-separate typed capability explicitly rather than overloading this field.
+allocation, or skid capacity must declare that separate typed capability
+explicitly rather than overloading this field.
+
+`queue_discipline` is the dequeue scheduling discipline of the physical queue.
+It is an immutable hardware fact like `max_depth`, never a Mapping selection,
+and it never appears in the configuration field domain. The two disciplines
+are defined below. A `per_tag_virtual_channel` occurrence requires a tagged
+port kind with a positive tag width, because the Physical Tag is the channel
+identity it schedules on, and it owns no bypass alternative: a combinational
+passthrough would route around the very queue the discipline orders, so
+`bypassable = true` is rejected for it. A `strict_fifo` occurrence may use
+either port kind and may be bypassable.
+
+## Dequeue Scheduling Discipline
+
+Both disciplines share the buffered cycle rules: one shared pool of
+`max_depth` slots, at most one enqueue and at most one dequeue per local
+cycle, an enqueued token visible no earlier than the following cycle, input
+ready and output valid from registered cycle-start state, and no
+current-cycle capacity release from a dequeue to an enqueue. They differ only
+in which resident entry the output port may present.
+
+`StrictFifo` keeps one global arrival order. The output port presents exactly
+the oldest resident entry, so one token whose consumer cannot take it blocks
+every later token.
+
+`PerTagVirtualChannel` partitions the shared pool into one virtual channel
+per observed Physical Tag value. Channel identity is the exact tag bit value
+carried on the port, not any plan- or mapping-local ordinal; two tokens
+carrying equal tag values belong to one channel no matter which route
+delivered them. Within one channel, arrival order is preserved exactly and a
+token never overtakes an earlier token of its own channel. The port has one
+valid/ready pair, so it presents the head entry of exactly one non-empty
+channel per cycle:
+
+* The canonical channel order is the unsigned ascending order of the
+  resident tag values.
+* A cursor names the channel the round robin resumes at. Reset and the
+  canonical empty state set the cursor to the zero tag value.
+* Each cycle the port presents the head of the first non-empty channel at or
+  after the cursor in canonical order, wrapping once to the lowest resident
+  value. Output valid means the presented head exists; downstream ready
+  applies to that head only.
+* A completed dequeue removes the presented entry and moves the cursor to
+  the strict successor of its tag value.
+* When the presented head is not taken (`valid && !ready`), the queue commits
+  one `OfferAdvance` transition at the cycle boundary and the next cycle
+  presents the next non-empty channel after the refused one. A refused offer
+  never removes or reorders an entry.
+* With N non-empty channels, every channel is presented at least once in any
+  N consecutive cycles that hold all N non-empty; this fairness bound follows
+  from the cursor rule and is the whole anti-starvation contract.
+* A channel that drains empty leaves the rotation; a channel that later
+  receives a token re-enters at its canonical value position, including
+  re-entry at a value the cursor has passed.
+
+The queue contents, per-channel heads, cursor, and occupancy are dynamic
+execution state. They are not Mapping records, Fabric capability fields, or
+persistent configuration. Drain returns the queue to the canonical empty
+state: zero occupancy and the cursor at the zero tag value.
+
+The FIFO `ResourceContract` is the unique owner of these transitions. The
+`BufferedQueue` state owns one shared `QueueSlot` capacity dimension of
+`max_depth` plus the per-cycle `EnqueueService` and `DequeueService`
+dimensions. Under `StrictFifo` the contract is exactly the pre-discipline
+contract: `Enqueue`, `Dequeue`, and `SimultaneousDequeueEnqueue` patterns,
+extended by `BypassTransfer` exactly when `bypassable`. Under
+`PerTagVirtualChannel` the closed pattern inventory is `Enqueue`, `Dequeue`,
+`SimultaneousDequeueEnqueue`, and `OfferAdvance`; the dequeue and offer
+patterns carry one Physical Tag value parameter of the port's tag width that
+names the channel they present, `OfferAdvance` claims no capacity and commits
+the cursor transition at the cycle boundary, and a grant moves the cursor as
+part of the dequeue commit. A full queue at cycle start admits no enqueue
+under either discipline, including from current-cycle downstream readiness.
+
 
 ## Mapping-Selected Traversal
 
@@ -62,8 +136,8 @@ Each FIFO occurrence owns exactly one ordinal-zero
 and, exactly when `bypassable = true`, `Bypass`. Canonical semantic bytes are
 the single `u32be` tags 0, 1, and 2 in that order. The ABI finite codebook must
 cover the exact occurrence domain and use `Disabled` as the inactive value.
-Depth and bypass capability are immutable hardware facts and never appear in
-this field.
+Depth, bypass capability, and queue discipline are immutable hardware facts
+and never appear in this field.
 
 ## Buffered Execution
 
@@ -77,7 +151,9 @@ the start of the cycle. A dequeue from a full queue releases capacity for the
 following cycle, not for an enqueue in the same cycle. When the queue is not
 full at cycle start, one enqueue and one dequeue may still complete together;
 the newly enqueued token cannot also dequeue in that cycle. Token order is
-preserved exactly.
+preserved exactly as the declared queue discipline defines it: the global
+arrival order under `strict_fifo`, or the per-channel order with the
+single-head offer and cursor rotation under `per_tag_virtual_channel`.
 
 The queue contents, head, tail, and occupancy are dynamic execution state.
 They are not Mapping records, Fabric capability fields, or persistent
@@ -144,15 +220,27 @@ had occurred.
 
 ## Simulator And RTL Obligations
 
-CGRA-sim derives the selected mode from exact Fabric and Mapping, then executes
-the cycle rules above. It must not invent hidden queue capacity in bypass mode
-or buffered mode, admit an enqueue into a cycle-start-full queue from
-current-cycle downstream readiness, or provide same-cycle fall-through.
+CGRA-sim derives the selected mode and the declared queue discipline from
+exact Fabric and Mapping, then executes the cycle rules above. It must not
+invent hidden queue capacity in bypass mode or buffered mode, admit an
+enqueue into a cycle-start-full queue from current-cycle downstream
+readiness, or provide same-cycle fall-through. Under `per_tag_virtual_channel`
+it must present exactly one channel head per cycle, rotate the cursor only
+through the declared grant and offer-advance transitions, schedule the next
+cycle's offer after a refused offer as an explicit state transition, and never
+schedule on a plan-local tag ordinal in place of the exact tag value. A
+refused offer that rotates the cursor is arbitration progress, not token
+progress; if every resident channel completes a full rotation without a grant
+and no other event can change readiness, the execution is a closed wait, not
+an infinite cursor rotation.
 
 Fabric-to-RTL implements the same capability and selected-mode behavior. It
-may choose any circuit structure consistent with the declared capacity,
-handshake, visibility, lifecycle, and ConfigurationABI. Backend pipeline or
-storage details do not become a second architectural contract.
+compares the actual tag bits of resident entries, selects the arrival-oldest
+entry of the presented channel, presents one data/tag/valid triple per cycle,
+and rotates its cursor in the same cycle situations as the simulator. It may
+choose any circuit structure consistent with the declared capacity, handshake,
+visibility, lifecycle, and ConfigurationABI. Backend pipeline or storage
+details do not become a second architectural contract.
 
 ## Verification Anchors
 
@@ -160,11 +248,17 @@ Anchor-level tests cover one buffered occurrence at empty, full, enqueue,
 dequeue, non-full simultaneous dequeue/enqueue, and full-dequeue capacity
 release boundaries; one bypassable occurrence in both legal modes with
 propagated backpressure; rejection of bypass on a non-bypassable occurrence;
-derivation of configured mode from the selected RouteTree; acceptance of a
-physical topology that only potentially forms a cycle; and rejection only
-when selected switch rows and bypass traversals close that cycle. Tests do not
-preserve internal pointer encoding, queue implementation, raw configuration
-bits, or exhaustive occupancy traces.
+rejection of `per_tag_virtual_channel` on an untagged or bypassable
+occurrence; derivation of configured mode from the selected RouteTree;
+acceptance of a physical topology that only potentially forms a cycle; and
+rejection only when selected switch rows and bypass traversals close that
+cycle. Discipline anchors additionally cover global order under
+`strict_fifo`, per-channel order and blocked-channel bypass under
+`per_tag_virtual_channel`, cursor wraparound and channel re-entry, the shared
+pool capacity boundary, the refused-offer next-cycle presentation, and
+simulator/RTL agreement on the presented tag, validity, occupancy, and cursor
+at every cycle. Tests do not preserve internal pointer encoding, queue
+implementation, raw configuration bits, or exhaustive occupancy traces.
 
 An explicit `fabric.fifo` is a different hardware owner from a Temporal PE
 operand-buffer pool. FIFO depth, bypass, and traversal feedback cannot be

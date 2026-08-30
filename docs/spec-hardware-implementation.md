@@ -29,7 +29,7 @@ HardwareImplementation {
 }
 ```
 
-`fabric_ref` is an exact `loom.fabric 7.0` System root,
+`fabric_ref` is an exact `loom.fabric 7.1` System root,
 `spatial_core_occurrence_ref` is one exact SpatialCore occurrence in that
 System, and `configuration_abi_ref` is an exact
 `loom.configuration_abi 4.0` root bound to the same System. Every interface,

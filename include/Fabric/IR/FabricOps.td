@@ -122,7 +122,9 @@ def Fabric_FifoOp : Fabric_Op<"fifo", [Pure]> {
                        select among the per-tag heads, so a token blocks only
                        later tokens carrying its own tag. A tag-selective
                        discipline requires a tagged port kind, because the
-                       Physical Tag is the channel identity it schedules on.
+                       Physical Tag is the channel identity it schedules on,
+                       and it is never bypassable: a combinational passthrough
+                       would route around the queue the discipline orders.
 
     `bypassable` is unrelated: it is the whole-FIFO combinational passthrough
     mode, not a per-token scheduling choice.

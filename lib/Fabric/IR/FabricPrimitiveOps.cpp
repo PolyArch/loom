@@ -357,7 +357,9 @@ LogicalResult FifoOp::verify() {
         "'bypassed' software parameter is only allowed when 'bypassable' is "
         "true");
   // A tag-selective discipline schedules on the Physical Tag, so it is only
-  // meaningful when the queued tokens carry one.
+  // meaningful when the queued tokens carry one. It schedules buffered queue
+  // entries; a combinational bypass would route around the very queue the
+  // discipline orders, so the two capabilities are never offered together.
   if (auto discipline = getQueueDisciplineAttr();
       discipline &&
       discipline.getValue() == FifoQueueDiscipline::PerTagVirtualChannel) {
@@ -368,6 +370,10 @@ LogicalResult FifoOp::verify() {
     if (tagged.getTagWidth() == 0)
       return emitOpError("'per_tag_virtual_channel' requires a positive tag "
                          "width");
+    if (getBypassable())
+      return emitOpError("'per_tag_virtual_channel' owns no combinational "
+                         "bypass alternative and requires 'bypassable' = "
+                         "false");
   }
   // Width-relaxation rule at the FIFO operand boundary. The outer SSA
   // source type may differ from the FIFO's inner type only in width, and

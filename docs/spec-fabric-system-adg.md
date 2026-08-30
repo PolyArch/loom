@@ -161,7 +161,7 @@ AccCore = InstructionCore + SpatialCore
 ```
 
 Both HostCore and AccCore InstructionCore use one closed Architectural
-Contract. `loom.fabric 7.0` has one ISA variant, `RiscV`; adding another ISA is
+Contract. `loom.fabric 7.1` has one ISA variant, `RiscV`; adding another ISA is
 a schema change rather than an open string or opaque payload:
 
 ```text
@@ -1353,7 +1353,7 @@ complete typed facts used by RTL and constraint derivation.
 
 Every stateful imported Module owner obtains exactly one effective Clock and
 the Reset coverage required by its exact resource contract through the slot
-relation. `loom.fabric 7.0` admits no implicit resetless stateful owner. A
+relation. `loom.fabric 7.1` admits no implicit resetless stateful owner. A
 backend cannot supply a default Reset contract or infer one from Clock
 membership.
 

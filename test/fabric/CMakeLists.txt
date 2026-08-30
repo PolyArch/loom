@@ -78,6 +78,10 @@ add_executable(loom-fabric-fifo-resource-contract-test
   FifoResourceContractTest.cpp
 )
 
+add_executable(loom-fabric-queue-discipline-test
+  FabricQueueDisciplineTest.cpp
+)
+
 add_executable(loom-fabric-temporal-operand-buffer-test
   TemporalOperandBufferTest.cpp
 )
@@ -223,6 +227,17 @@ target_link_libraries(loom-fabric-boundary-transfer-test PRIVATE
 
 target_link_libraries(loom-fabric-fifo-resource-contract-test PRIVATE
   LoomFabricFifoResourceContract
+)
+
+target_link_libraries(loom-fabric-queue-discipline-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFabricArtifact
+  LoomFabricFifoResourceContract
+  MLIRFabric
+  MLIRIR
+  MLIRParser
+  LLVMSupport
 )
 
 target_link_libraries(loom-fabric-temporal-operand-buffer-test PRIVATE

@@ -558,6 +558,11 @@ public:
 
   std::optional<::fabric::OperandBufferMode>
   peOperandBufferMode(FabricPeOccurrenceRef occurrence) const;
+
+  /// The declared dequeue scheduling discipline of one FIFO occurrence.
+  /// Absent only when the reference is not a FIFO occurrence of this root.
+  std::optional<::fabric::FifoQueueDiscipline>
+  fifoQueueDiscipline(FabricFifoOccurrenceRef occurrence) const;
   std::uint32_t peOperandBufferSize(FabricPeOccurrenceRef occurrence) const;
   std::uint32_t peRegisterFifoDepth(FabricPeOccurrenceRef occurrence) const;
   std::uint32_t peRegisterFifoPorts(FabricPeOccurrenceRef occurrence) const;
