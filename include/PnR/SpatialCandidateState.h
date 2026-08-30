@@ -97,6 +97,9 @@ struct SpatialCandidateRouteProjection final {
   std::uint64_t tagUnassignedCount = 0;
   std::uint64_t tagConflictCount = 0;
   std::uint64_t hardProgressViolation = 0;
+  std::uint64_t progressProofDebtWitnessCount = 0;
+  std::uint64_t progressCapacityShortfall = 0;
+  std::uint64_t progressRouteAnchorCount = 0;
   std::uint64_t totalSelectedTraversalClaim = 0;
   std::uint64_t routeReleaseLatencyCycles = 0;
   std::uint64_t routeMinimumInitiationIntervalCycles = 1;
@@ -163,6 +166,7 @@ private:
   struct ProgressDependencyDelta final {
     PnrIndex logicalNet = getInvalidPnrIndex();
     std::uint64_t oldCount = 0;
+    SpatialProgressNetCapacityProjection oldCapacityProjection;
   };
 
   void beginTransaction();
@@ -338,8 +342,19 @@ public:
   std::uint64_t hardProgressViolation() const {
     return progressState_.hardProgressViolation();
   }
+  std::uint64_t progressProofDebtWitnessCount() const {
+    return progressState_.capacityProofDebtWitnessCount();
+  }
+  std::uint64_t progressCapacityShortfall() const {
+    return progressState_.capacityShortfall();
+  }
+  std::uint64_t progressRouteAnchorCount() const {
+    return progressState_.capacityObligationRouteAnchorCount();
+  }
   bool hasTransportClosureViolation() const {
-    return hardProgressViolation() != 0 || unroutedObligationCount() != 0 ||
+    return hardProgressViolation() != 0 ||
+           progressProofDebtWitnessCount() != 0 ||
+           unroutedObligationCount() != 0 ||
            routeCapacityOveruse() != 0 || tagResidentCapacityOveruse() != 0 ||
            tagUnassignedCount() != 0 || tagConflictCount() != 0;
   }
@@ -352,6 +367,16 @@ public:
       PnrIndex owner, SpatialFiniteBufferConflictWitness &witness) const {
     return progressState_.rebuildFiniteBufferConflictWitness(*this, owner,
                                                              witness);
+  }
+  llvm::Error rebuildCapacityProofDebtWitness(
+      PnrIndex owner, SpatialFiniteBufferConflictWitness &witness) const {
+    return progressState_.rebuildCapacityProofDebtWitness(*this, owner,
+                                                          witness);
+  }
+  llvm::Error rebuildCapacityShortfallWitness(
+      PnrIndex owner, SpatialFiniteBufferConflictWitness &witness) const {
+    return progressState_.rebuildCapacityShortfallWitness(*this, owner,
+                                                          witness);
   }
   /// Exact selected envelope cache. FrozenSpatialCapacityIndex remains the
   /// sole owner of envelope semantics; these dense views are rebuildable.
@@ -410,6 +435,9 @@ public:
   llvm::ArrayRef<SpatialTagContinuitySegment>
   tagSegments(PnrIndex logicalNet) const {
     return tagAssignments_.segments(logicalNet);
+  }
+  llvm::ArrayRef<PnrIndex> tagNodeSegments(PnrIndex logicalNet) const {
+    return tagAssignments_.nodeSegments(logicalNet);
   }
   llvm::ArrayRef<std::optional<llvm::APInt>>
   tagValues(PnrIndex logicalNet) const {
@@ -713,6 +741,7 @@ private:
   llvm::Error applyProgressTraversalDelta(PnrIndex logicalNet,
                                           PnrIndex traversal, PnrIndex removed,
                                           PnrIndex added);
+  llvm::Error synchronizeProgressTraversalDeltas();
   llvm::Error synchronizeProgressProjection();
   void rollbackProgressProjection() noexcept;
   void acceptProgressProjection() noexcept;

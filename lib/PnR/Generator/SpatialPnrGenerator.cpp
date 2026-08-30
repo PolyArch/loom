@@ -3,6 +3,7 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Common/MappingDebugLog.h"
 #include "InitializerRelationSolver.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "PnR/FabricTopologyQualityDiagnostic.h"
 #include "PnR/FrozenConstraintIndex.h"
 #include "PnR/MappingObjective.h"
@@ -613,6 +614,13 @@ void preferPreparedRestart(const SpatialRestartResult &candidate,
     selected = &candidate;
 }
 
+llvm::Expected<std::optional<SpatialFifoCapacityShortfall>>
+projectFifoCapacityShortfall(const SpatialRestartResult *restart) {
+  if (!restart || !restart->candidate)
+    return std::optional<SpatialFifoCapacityShortfall>();
+  return projectSpatialFifoCapacityShortfall(*restart->candidate);
+}
+
 SpatialRestartResult restartInternal(InternalSpatialPnrGenerationReason reason,
                                      SpatialPnrGenerationAccounting accounting,
                                      const llvm::Twine &diagnostic) {
@@ -681,6 +689,11 @@ public:
     llvm::json::Object fields;
     fields["unrouted_obligations"] = candidate.unroutedObligationCount();
     fields["hard_progress_violation"] = candidate.hardProgressViolation();
+    fields["progress_proof_debt_witnesses"] =
+        candidate.progressProofDebtWitnessCount();
+    fields["progress_capacity_shortfall"] =
+        candidate.progressCapacityShortfall();
+    fields["progress_route_anchors"] = candidate.progressRouteAnchorCount();
     fields["shared_finite_buffer_conflicts"] =
         candidate.progress().sharedFiniteBufferConflictCount();
     fields["route_dependency_violations"] =
@@ -973,7 +986,7 @@ SpatialRestartResult runSpatialRestartImpl(
     if (hasAtomicCapacityOveruse && !exactRepairEnabled)
       return {SpatialRestartDisposition::Incomplete,
               std::move(accounting),
-              nullptr,
+              std::move(seed->candidate),
               false,
               InternalSpatialPnrGenerationReason::ExactRepair,
               "candidate retained atomic CapacityOveruse while exact repair "
@@ -985,7 +998,7 @@ SpatialRestartResult runSpatialRestartImpl(
           search.exactRepair.maxSolverCalls)
         return {SpatialRestartDisposition::Incomplete,
                 std::move(accounting),
-                nullptr,
+                std::move(seed->candidate),
                 true,
                 InternalSpatialPnrGenerationReason::ExactRepair,
                 "restart exact repair exhausted its solver-call budget"};
@@ -1026,7 +1039,7 @@ SpatialRestartResult runSpatialRestartImpl(
       case SpatialExactRepairResultKind::RegionTooLarge:
         return {SpatialRestartDisposition::Incomplete,
                 std::move(accounting),
-                nullptr,
+                std::move(seed->candidate),
                 true,
                 InternalSpatialPnrGenerationReason::ExactRepair,
                 std::move(repaired->detail)};
@@ -1034,7 +1047,7 @@ SpatialRestartResult runSpatialRestartImpl(
       case SpatialExactRepairResultKind::UnsupportedEncoding:
         return {SpatialRestartDisposition::Incomplete,
                 std::move(accounting),
-                nullptr,
+                std::move(seed->candidate),
                 false,
                 InternalSpatialPnrGenerationReason::ExactRepair,
                 std::move(repaired->detail)};
@@ -1081,7 +1094,7 @@ SpatialRestartResult runSpatialRestartImpl(
         if (!exactRepairEnabled)
           return {SpatialRestartDisposition::Incomplete,
                   std::move(accounting),
-                  nullptr,
+                  std::move(seed->candidate),
                   false,
                   InternalSpatialPnrGenerationReason::FinalClosure,
                   "final routing closure retained a transport violation while "
@@ -1095,7 +1108,7 @@ SpatialRestartResult runSpatialRestartImpl(
     if (!exactRepairEnabled || !seed->candidate->hasTransportClosureViolation())
       return {SpatialRestartDisposition::Incomplete,
               std::move(accounting),
-              nullptr,
+              std::move(seed->candidate),
               failure.kind == AttemptFailureKind::SemanticLimit,
               InternalSpatialPnrGenerationReason::FinalClosure,
               std::move(failure.diagnostic)};
@@ -1123,7 +1136,7 @@ SpatialRestartResult runSpatialRestartImpl(
   if (*violation)
     return {SpatialRestartDisposition::Incomplete,
             std::move(accounting),
-            nullptr,
+            std::move(seed->candidate),
             false,
             InternalSpatialPnrGenerationReason::CandidateVerification,
             violationDiagnostic(**violation)};
@@ -1682,6 +1695,7 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   std::vector<ArtifactRootReference> candidates;
   bool semanticLimitReached = restartResults.size() != restartCount;
   bool proofNotEstablished = false;
+  std::string staticProgressDiagnostic;
   const SpatialRestartResult *incompleteRepresentative = nullptr;
   const SpatialRestartResult *semanticLimitRepresentative = nullptr;
   const SpatialRestartResult *interruptedRepresentative = nullptr;
@@ -1767,6 +1781,25 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
       return internal(InternalSpatialPnrGenerationReason::CandidateFinalization,
                       accounting, finalized.takeError());
     ++accounting.finalizedRestarts;
+    const ::loom::mapping::SpatialMappingView &view = finalized->view();
+    auto progress = ::loom::mapping::deriveSpatialMappingProgressClosure(
+        inputs.dataflow, inputs.techMapping, inputs.fabric,
+        view.computeBindings(), view.registerFifoTransfers(), view.routeTrees(),
+        view.resourceUses(), view.physicalTagSegments());
+    if (!progress)
+      return internal(InternalSpatialPnrGenerationReason::CandidateFinalization,
+                      accounting, progress.takeError());
+    if (progress->kind != ::loom::mapping::MappingProgressClosureKind::
+                              ProvenNoClosedWaitSet) {
+      proofNotEstablished = true;
+      if (staticProgressDiagnostic.empty())
+        staticProgressDiagnostic =
+            "proof_not_established: " +
+            ::loom::mapping::mappingProgressClosureReasonSpelling(
+                progress->reason)
+                .str();
+      continue;
+    }
     candidates.push_back(finalized->reference());
     if (inputs.executionControl.stopRequested())
       return interruptedOutcome(
@@ -1812,19 +1845,32 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   const SpatialRestartResult *representative = semanticLimitReached
                                                    ? semanticLimitRepresentative
                                                    : incompleteRepresentative;
+  auto fifoCapacityShortfall =
+      projectFifoCapacityShortfall(incompleteRepresentative);
+  if (!fifoCapacityShortfall)
+    return internal(InternalSpatialPnrGenerationReason::CandidateVerification,
+                    accounting, fifoCapacityShortfall.takeError());
   emitInvocationAccounting(
       accounting,
-      semanticLimitReached ? mapping_debug::ClosureStatus::SemanticLimitReached
-                           : mapping_debug::ClosureStatus::ProofNotEstablished,
+      proofNotEstablished
+          ? mapping_debug::ClosureStatus::ProofNotEstablished
+      : semanticLimitReached
+          ? mapping_debug::ClosureStatus::SemanticLimitReached
+          : mapping_debug::ClosureStatus::ProofNotEstablished,
       0);
   return IncompleteSpatialPnrGeneration{
-      semanticLimitReached
+      proofNotEstablished
+          ? IncompleteSpatialPnrGenerationReason::ProofNotEstablished
+      : semanticLimitReached
           ? IncompleteSpatialPnrGenerationReason::SemanticLimitReached
           : IncompleteSpatialPnrGenerationReason::ProofNotEstablished,
       accounting,
-      !representative
+      !staticProgressDiagnostic.empty()
+          ? std::move(staticProgressDiagnostic)
+      : !representative
           ? "no fixed restart reached independent final verification"
-          : representative->diagnostic};
+          : representative->diagnostic,
+      std::move(*fifoCapacityShortfall)};
 }
 
 } // namespace loom::pnr

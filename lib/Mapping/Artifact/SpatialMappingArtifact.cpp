@@ -63,12 +63,6 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "mapping_artifact_invalid: " + message);
 }
 
-llvm::Error incomplete(const llvm::Twine &message) {
-  return llvm::createStringError(
-      std::make_error_code(std::errc::operation_not_supported),
-      "spatial_mapping_incomplete: " + message);
-}
-
 std::vector<std::uint8_t> unsignedBytes(DenseI8ArrayAttr record) {
   std::vector<std::uint8_t> result;
   result.reserve(record.size());
@@ -1337,14 +1331,11 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
   case MappingProgressClosureKind::ProvenClosedWaitSet:
     return invalid("HardProgressViolation");
   case MappingProgressClosureKind::ProofNotEstablished:
-    // An unestablished finite-buffer recurrence does not reject the ordinary
-    // Mapping; it only withholds Dataflow spectrum qualification, which reads
-    // the closure reason independently.
-    if (progress->reason ==
-        MappingProgressClosureReason::FiniteBufferRecurrenceNotEstablished)
-      break;
-    return incomplete(llvm::Twine("proof_not_established: ") +
-                      mappingProgressClosureReasonSpelling(progress->reason));
+    // Proof debt is not structural invalidity. The ordinary Mapping remains
+    // importable, while production publication independently requires this
+    // exact closure to be ProvenNoClosedWaitSet or matching retirement
+    // evidence.
+    break;
   }
 
   return ImportedSpatialView{*techIdentity,

@@ -1266,7 +1266,7 @@ SpatialMoveTransaction::projectCurrentRoutesImpl(
     SpatialTagAssignmentSummary *tagSummary) {
   if (llvm::Error error = ensureCollecting())
     return std::move(error);
-  if (llvm::Error error = synchronizeProgressProjection())
+  if (llvm::Error error = synchronizeProgressTraversalDeltas())
     return std::move(error);
 
   std::vector<const RouteTreeState *> routes;
@@ -1377,7 +1377,12 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
           scratch_->touchedRoutes_, scratch_->tagScratch_))
     return std::move(error);
   tagDeltasCollected_ = true;
+  for (PnrIndex logicalNet :
+       state_->tagAssignments_.synchronizedNets(scratch_->tagScratch_))
+    markProgressNetDirty(logicalNet);
   rebuildRouteViews();
+  if (llvm::Error error = synchronizeProgressProjection())
+    return std::move(error);
   if (scratch_->switchHandshakeBaselineCaptured_) {
     const auto matchDomains =
         state_->problem().routing().tagContinuity().matchDomains();

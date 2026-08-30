@@ -633,7 +633,7 @@ llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
   }
   case ResolvedPnrViolationKind::HardProgressViolation: {
     const PnrIndex owner = action.witnessOrdinal;
-    if (llvm::Error error = candidate_->rebuildFiniteBufferConflictWitness(
+    if (llvm::Error error = candidate_->rebuildCapacityShortfallWitness(
             owner, hardProgressWitness_))
       return error;
     for (PnrIndex logicalNet : hardProgressWitness_.competingLogicalNets) {
@@ -643,7 +643,22 @@ llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
     if (hardProgressWitness_.competingLogicalNets.empty() ||
         hardProgressWitness_.routeAnchors.empty())
       return executorError(
-          "finite-buffer progress witness has no route closure");
+          "capacity-shortfall witness has no route closure");
+    return llvm::Error::success();
+  }
+  case ResolvedPnrViolationKind::ProgressProofDebt: {
+    const PnrIndex owner = action.witnessOrdinal;
+    if (llvm::Error error = candidate_->rebuildCapacityProofDebtWitness(
+            owner, hardProgressWitness_))
+      return error;
+    for (PnrIndex logicalNet : hardProgressWitness_.competingLogicalNets) {
+      if (llvm::Error error = markNet(logicalNet))
+        return error;
+    }
+    if (hardProgressWitness_.competingLogicalNets.empty() ||
+        hardProgressWitness_.routeAnchors.empty())
+      return executorError(
+          "capacity proof-debt witness has no route closure");
     return llvm::Error::success();
   }
   }

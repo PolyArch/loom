@@ -10,8 +10,10 @@
 #include "SpatialProgressIndex.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/bit.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cassert>
@@ -126,6 +128,44 @@ bool sparseRefcountsEqual(
     }
   }
   return true;
+}
+
+std::string physicalTagKey(const llvm::APInt &value) {
+  llvm::SmallString<32> text;
+  value.toString(text, /*Radix=*/16, /*Signed=*/false,
+                 /*formatAsCLiteral=*/false);
+  return text.str().str();
+}
+
+std::string capacityProjectionDifference(
+    const SpatialProgressNetCapacityProjection &incremental,
+    const SpatialProgressNetCapacityProjection &cold) {
+  std::string result;
+  llvm::raw_string_ostream stream(result);
+  stream << "incremental_owners=" << incremental.owners.size()
+         << " cold_owners=" << cold.owners.size();
+  const std::size_t common =
+      std::min(incremental.owners.size(), cold.owners.size());
+  for (std::size_t index = 0; index != common; ++index) {
+    const auto &left = incremental.owners[index];
+    const auto &right = cold.owners[index];
+    if (left == right)
+      continue;
+    stream << " first_difference=" << index << " incremental={owner="
+           << left.owner << ",channels=" << left.channelCount
+           << ",feedback=" << left.initializedFeedbackChannelCount
+           << ",repeated=" << left.repeatedWithinChannel
+           << ",indeterminate=" << left.queueClassIndeterminate
+           << ",classes=" << left.queueClasses.size() << "} cold={owner="
+           << right.owner << ",channels=" << right.channelCount
+           << ",feedback=" << right.initializedFeedbackChannelCount
+           << ",repeated=" << right.repeatedWithinChannel
+           << ",indeterminate=" << right.queueClassIndeterminate
+           << ",classes=" << right.queueClasses.size() << '}';
+    break;
+  }
+  stream.flush();
+  return result;
 }
 
 llvm::Expected<const FrozenSpatialAttachmentOption *>
@@ -245,6 +285,17 @@ SpatialProgressState::create(const SpatialCandidateState &candidate) {
                                      64,
                                  0),
       std::vector<std::uint64_t>(*logicalNetCount, 0));
+  result.netCapacityProjections_.resize(*logicalNetCount);
+  result.ownerChannelCounts_.assign(*ownerCount, 0);
+  result.ownerInitializedFeedbackChannelCounts_.assign(*ownerCount, 0);
+  result.ownerRepeatedChannelNetCounts_.assign(*ownerCount, 0);
+  result.ownerIndeterminateQueueClassNetCounts_.assign(*ownerCount, 0);
+  result.ownerQueueClassRefcounts_.resize(*ownerCount);
+  result.traversalSelectionCounts_.assign(problem.routing().traversals().size(),
+                                          0);
+  result.ownerRouteAnchorCounts_.assign(*ownerCount, 0);
+  result.capacityProofDebtOwnerBits_.assign(
+      (static_cast<std::size_t>(*ownerCount) + 63) / 64, 0);
 
   for (PnrIndex logicalNet = 0; logicalNet < *logicalNetCount; ++logicalNet) {
     if (llvm::Error error = forEachSelectedTraversal(
@@ -257,6 +308,12 @@ SpatialProgressState::create(const SpatialCandidateState &candidate) {
     if (llvm::Error error =
             result.refreshLogicalNetRouteDependencies(candidate, logicalNet))
       return std::move(error);
+    auto previous =
+        result.replaceLogicalNetCapacityProjection(candidate, logicalNet);
+    if (!previous)
+      return previous.takeError();
+    if (!previous->owners.empty())
+      return invalid("initial capacity proof projection was not empty");
   }
   result.statisticsEnabled_ =
       loom::mapping_debug::enabled(loom::mapping_debug::Level::Summary);
@@ -308,6 +365,62 @@ llvm::Error SpatialProgressState::enumerateFiniteBufferConflictOwners(
   return llvm::Error::success();
 }
 
+std::optional<PnrIndex>
+SpatialProgressState::firstCapacityProofDebtOwner() const {
+  for (std::size_t word = 0; word < capacityProofDebtOwnerBits_.size();
+       ++word) {
+    const std::uint64_t bits = capacityProofDebtOwnerBits_[word];
+    if (bits == 0)
+      continue;
+    const std::size_t owner = word * 64 + llvm::countr_zero(bits);
+    assert(owner < ownerCount_ && "capacity-debt bitset has excess bits");
+    return static_cast<PnrIndex>(owner);
+  }
+  return std::nullopt;
+}
+
+llvm::Error SpatialProgressState::enumerateCapacityProofDebtOwners(
+    std::vector<PnrIndex> &owners) const {
+  owners.clear();
+  owners.reserve(static_cast<std::size_t>(capacityProofDebtWitnessCount_));
+  for (std::size_t word = 0; word < capacityProofDebtOwnerBits_.size();
+       ++word) {
+    std::uint64_t bits = capacityProofDebtOwnerBits_[word];
+    while (bits != 0) {
+      const unsigned bit = llvm::countr_zero(bits);
+      const std::size_t owner = word * 64 + bit;
+      if (owner >= ownerCount_)
+        return invalid("capacity-debt bitset has an excess bit");
+      owners.push_back(static_cast<PnrIndex>(owner));
+      bits &= bits - 1;
+    }
+  }
+  if (owners.size() != capacityProofDebtWitnessCount_)
+    return invalid("capacity-debt bitset disagrees with its total");
+  return llvm::Error::success();
+}
+
+std::optional<PnrIndex>
+SpatialProgressState::firstCapacityShortfallOwner() const {
+  for (PnrIndex owner = 0; owner < ownerCount_; ++owner)
+    if (ownerCapacityShortfall(owner) != 0)
+      return owner;
+  return std::nullopt;
+}
+
+llvm::Error SpatialProgressState::enumerateCapacityShortfallOwners(
+    std::vector<PnrIndex> &owners) const {
+  owners.clear();
+  owners.reserve(static_cast<std::size_t>(capacityShortfallOwnerCount_));
+  for (PnrIndex owner = 0; owner < ownerCount_; ++owner)
+    if (ownerCapacityShortfall(owner) != 0)
+      owners.push_back(owner);
+  if (owners.size() != capacityShortfallOwnerCount_)
+    return invalid("capacity-shortfall owner inventory disagrees with its "
+                   "total");
+  return llvm::Error::success();
+}
+
 std::uint64_t SpatialProgressState::logicalNetRouteDependencyViolationCount(
     PnrIndex logicalNet) const {
   assert(logicalNet < netRouteDependencyViolationCounts_.size());
@@ -315,11 +428,100 @@ std::uint64_t SpatialProgressState::logicalNetRouteDependencyViolationCount(
 }
 
 std::size_t SpatialProgressState::retainedStorageBytes() const {
-  return retainedSparseBytes(netOwnerRefcounts_) +
-         retainedBytes(ownerLogicalNetCounts_) +
-         retainedBytes(ownerLogicalNetBits_) +
-         retainedBytes(conflictingOwnerBits_) +
-         retainedBytes(netRouteDependencyViolationCounts_);
+  std::size_t bytes = retainedSparseBytes(netOwnerRefcounts_) +
+                      retainedBytes(ownerLogicalNetCounts_) +
+                      retainedBytes(ownerLogicalNetBits_) +
+                      retainedBytes(conflictingOwnerBits_) +
+                      retainedBytes(netRouteDependencyViolationCounts_) +
+                      retainedBytes(netCapacityProjections_) +
+                      retainedBytes(ownerChannelCounts_) +
+                      retainedBytes(ownerInitializedFeedbackChannelCounts_) +
+                      retainedBytes(ownerRepeatedChannelNetCounts_) +
+                      retainedBytes(ownerIndeterminateQueueClassNetCounts_) +
+                      retainedBytes(ownerQueueClassRefcounts_) +
+                      retainedBytes(traversalSelectionCounts_) +
+                      retainedBytes(ownerRouteAnchorCounts_) +
+                      retainedBytes(capacityProofDebtOwnerBits_);
+  for (const SpatialProgressNetCapacityProjection &projection :
+       netCapacityProjections_)
+    bytes += retainedBytes(projection.owners);
+  for (const auto &classes : ownerQueueClassRefcounts_)
+    for (const auto &[key, count] : classes) {
+      (void)count;
+      bytes += sizeof(key) + key.capacity() + sizeof(PnrIndex);
+    }
+  return bytes;
+}
+
+bool SpatialProgressState::ownerHasCapacityProofDebt(PnrIndex owner) const {
+  assert(owner < ownerCount_);
+  const std::uint64_t channels = ownerChannelCounts_[owner];
+  const bool virtualChannel =
+      problem_->progressIndex().ownerQueueDisciplines()[owner] ==
+      ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
+  return channels != 0 &&
+         (ownerRepeatedChannelNetCounts_[owner] != 0 ||
+          (virtualChannel &&
+           ownerIndeterminateQueueClassNetCounts_[owner] != 0));
+}
+
+std::uint64_t
+SpatialProgressState::ownerCapacityShortfall(PnrIndex owner) const {
+  assert(owner < ownerCount_);
+  if (ownerHasCapacityProofDebt(owner))
+    return 0;
+  const std::uint64_t required = ownerLogicalNetCounts_[owner];
+  const std::uint64_t selected =
+      problem_->progressIndex().ownerSharedSlotCapacities()[owner];
+  return required > selected ? required - selected : 0;
+}
+
+void SpatialProgressState::refreshOwnerCapacityObligation(
+    PnrIndex owner, bool oldDebt, std::uint64_t oldShortfall,
+    PnrIndex oldRouteAnchorCount) noexcept {
+  assert(owner < ownerCount_);
+  assert(!(oldDebt && oldShortfall != 0));
+  const bool nextDebt = ownerHasCapacityProofDebt(owner);
+  const std::uint64_t nextShortfall = ownerCapacityShortfall(owner);
+  assert(!(nextDebt && nextShortfall != 0));
+  const PnrIndex nextRouteAnchorCount = ownerRouteAnchorCounts_[owner];
+  std::uint64_t &word = capacityProofDebtOwnerBits_[owner / 64];
+  const std::uint64_t mask = std::uint64_t{1} << (owner % 64);
+  if (oldDebt) {
+    assert(capacityProofDebtWitnessCount_ != 0);
+    --capacityProofDebtWitnessCount_;
+    word &= ~mask;
+  }
+  if (oldShortfall != 0) {
+    assert(capacityShortfallOwnerCount_ != 0);
+    assert(capacityShortfall_ >= oldShortfall);
+    --capacityShortfallOwnerCount_;
+    capacityShortfall_ -= oldShortfall;
+  }
+  if (oldDebt || oldShortfall != 0) {
+    assert(capacityObligationRouteAnchorCount_ >= oldRouteAnchorCount);
+    capacityObligationRouteAnchorCount_ -= oldRouteAnchorCount;
+  }
+  if (nextDebt) {
+    assert(capacityProofDebtWitnessCount_ !=
+           std::numeric_limits<std::uint64_t>::max());
+    ++capacityProofDebtWitnessCount_;
+    word |= mask;
+  }
+  if (nextShortfall != 0) {
+    assert(capacityShortfallOwnerCount_ !=
+           std::numeric_limits<std::uint64_t>::max());
+    assert(nextShortfall <= std::numeric_limits<std::uint64_t>::max() -
+                                capacityShortfall_);
+    ++capacityShortfallOwnerCount_;
+    capacityShortfall_ += nextShortfall;
+  }
+  if (nextDebt || nextShortfall != 0) {
+    assert(nextRouteAnchorCount <=
+           std::numeric_limits<std::uint64_t>::max() -
+               capacityObligationRouteAnchorCount_);
+    capacityObligationRouteAnchorCount_ += nextRouteAnchorCount;
+  }
 }
 
 llvm::Error SpatialProgressState::applyTraversalDelta(
@@ -349,11 +551,28 @@ llvm::Error SpatialProgressState::applyTraversalDelta(
   const PnrIndex next = remaining + added;
   const bool activate = refcount == 0 && next != 0;
   const bool deactivate = refcount != 0 && next == 0;
-  if (!activate && !deactivate) {
-    if (next != 0)
-      found->second = next;
-    return llvm::Error::success();
-  }
+
+  if (traversal >= traversalSelectionCounts_.size())
+    return invalid("capacity proof traversal selection is out of range");
+  const PnrIndex traversalRefcount = traversalSelectionCounts_[traversal];
+  if (removed > traversalRefcount)
+    return invalid("capacity proof traversal removal underflows");
+  const PnrIndex traversalRemaining = traversalRefcount - removed;
+  if (added > std::numeric_limits<PnrIndex>::max() - traversalRemaining)
+    return invalid("capacity proof traversal addition overflows PnrIndex");
+  const PnrIndex nextTraversalRefcount = traversalRemaining + added;
+  const bool activateAnchor =
+      traversalRefcount == 0 && nextTraversalRefcount != 0;
+  const bool deactivateAnchor =
+      traversalRefcount != 0 && nextTraversalRefcount == 0;
+  const PnrIndex oldRouteAnchorCount = ownerRouteAnchorCounts_[owner];
+  if (activateAnchor &&
+      oldRouteAnchorCount == std::numeric_limits<PnrIndex>::max())
+    return invalid("capacity proof route-anchor count exceeds PnrIndex");
+  if (deactivateAnchor && oldRouteAnchorCount == 0)
+    return invalid("capacity proof route-anchor count underflows");
+  const bool oldDebt = ownerHasCapacityProofDebt(owner);
+  const std::uint64_t oldShortfall = ownerCapacityShortfall(owner);
 
   const PnrIndex oldOwnerCount = ownerLogicalNetCounts_[owner];
   if (activate && oldOwnerCount == std::numeric_limits<PnrIndex>::max())
@@ -361,7 +580,9 @@ llvm::Error SpatialProgressState::applyTraversalDelta(
   if (deactivate && oldOwnerCount == 0)
     return invalid("finite-buffer logical-net count underflows");
   const PnrIndex nextOwnerCount =
-      activate ? oldOwnerCount + 1 : oldOwnerCount - 1;
+      activate ? oldOwnerCount + 1
+      : deactivate ? oldOwnerCount - 1
+                   : oldOwnerCount;
   if (oldOwnerCount == 1 && nextOwnerCount == 2 &&
       sharedFiniteBufferConflictCount_ ==
           std::numeric_limits<std::uint64_t>::max())
@@ -369,6 +590,19 @@ llvm::Error SpatialProgressState::applyTraversalDelta(
   if (oldOwnerCount == 2 && nextOwnerCount == 1 &&
       sharedFiniteBufferConflictCount_ == 0)
     return invalid("shared finite-buffer conflict count underflows");
+
+  traversalSelectionCounts_[traversal] = nextTraversalRefcount;
+  ownerRouteAnchorCounts_[owner] =
+      activateAnchor    ? oldRouteAnchorCount + 1
+      : deactivateAnchor ? oldRouteAnchorCount - 1
+                         : oldRouteAnchorCount;
+  if (!activate && !deactivate) {
+    if (next != 0)
+      found->second = next;
+    refreshOwnerCapacityObligation(owner, oldDebt, oldShortfall,
+                                   oldRouteAnchorCount);
+    return llvm::Error::success();
+  }
 
   std::uint64_t &netWord =
       ownerLogicalNetBits_[static_cast<std::size_t>(owner) *
@@ -392,6 +626,8 @@ llvm::Error SpatialProgressState::applyTraversalDelta(
     --sharedFiniteBufferConflictCount_;
     conflictWord &= ~conflictMask;
   }
+  refreshOwnerCapacityObligation(owner, oldDebt, oldShortfall,
+                                 oldRouteAnchorCount);
   return llvm::Error::success();
 }
 
@@ -468,6 +704,142 @@ void SpatialProgressState::restoreLogicalNetRouteDependencyCount(
   assert(count <= std::numeric_limits<std::uint64_t>::max() - base);
   netRouteDependencyViolationCounts_[logicalNet] = count;
   routeDependencyViolationCount_ = base + count;
+}
+
+llvm::Error SpatialProgressState::applyNetCapacityProjection(
+    const SpatialProgressNetCapacityProjection &projection, bool add) {
+  PnrIndex previous = getInvalidPnrIndex();
+  for (const SpatialProgressOwnerCapacityUse &use : projection.owners) {
+    if (use.owner >= ownerCount_ || use.channelCount == 0 ||
+        use.initializedFeedbackChannelCount > use.channelCount)
+      return invalid("capacity proof net projection is malformed");
+    if (previous != getInvalidPnrIndex() && use.owner <= previous)
+      return invalid("capacity proof net owners are not canonical");
+    previous = use.owner;
+    const bool virtualChannel =
+        problem_->progressIndex().ownerQueueDisciplines()[use.owner] ==
+        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
+    if ((!virtualChannel &&
+         (use.queueClassIndeterminate || !use.queueClasses.empty())) ||
+        (virtualChannel && !use.queueClassIndeterminate &&
+         use.queueClasses.empty()))
+      return invalid("capacity proof queue-class projection is malformed");
+    for (std::size_t index = 0; index != use.queueClasses.size(); ++index) {
+      if (index != 0 &&
+          ::fabric::comparePhysicalTagValues(use.queueClasses[index - 1],
+                                             use.queueClasses[index]) >= 0)
+        return invalid("capacity proof queue classes are not canonical");
+      const std::string key = physicalTagKey(use.queueClasses[index]);
+      const auto found = ownerQueueClassRefcounts_[use.owner].find(key);
+      const PnrIndex refcount =
+          found == ownerQueueClassRefcounts_[use.owner].end() ? 0
+                                                              : found->second;
+      if ((add && refcount == std::numeric_limits<PnrIndex>::max()) ||
+          (!add && refcount == 0))
+        return invalid(add ? "capacity proof queue-class refcount overflows"
+                           : "capacity proof queue-class refcount underflows");
+    }
+    if (add) {
+      if (use.channelCount >
+              std::numeric_limits<std::uint64_t>::max() -
+                  ownerChannelCounts_[use.owner] ||
+          use.initializedFeedbackChannelCount >
+              std::numeric_limits<std::uint64_t>::max() -
+                  ownerInitializedFeedbackChannelCounts_[use.owner] ||
+          (use.repeatedWithinChannel &&
+           ownerRepeatedChannelNetCounts_[use.owner] ==
+               std::numeric_limits<std::uint64_t>::max()) ||
+          (use.queueClassIndeterminate &&
+           ownerIndeterminateQueueClassNetCounts_[use.owner] ==
+               std::numeric_limits<std::uint64_t>::max()))
+        return invalid("capacity proof owner aggregate exceeds u64");
+    } else if (use.channelCount > ownerChannelCounts_[use.owner] ||
+               use.initializedFeedbackChannelCount >
+                   ownerInitializedFeedbackChannelCounts_[use.owner] ||
+               (use.repeatedWithinChannel &&
+                ownerRepeatedChannelNetCounts_[use.owner] == 0) ||
+               (use.queueClassIndeterminate &&
+                ownerIndeterminateQueueClassNetCounts_[use.owner] == 0)) {
+      return invalid("capacity proof owner aggregate underflows");
+    }
+  }
+
+  for (const SpatialProgressOwnerCapacityUse &use : projection.owners) {
+    const bool oldDebt = ownerHasCapacityProofDebt(use.owner);
+    const std::uint64_t oldShortfall = ownerCapacityShortfall(use.owner);
+    const PnrIndex oldRouteAnchorCount = ownerRouteAnchorCounts_[use.owner];
+    if (add) {
+      ownerChannelCounts_[use.owner] += use.channelCount;
+      ownerInitializedFeedbackChannelCounts_[use.owner] +=
+          use.initializedFeedbackChannelCount;
+      ownerRepeatedChannelNetCounts_[use.owner] +=
+          use.repeatedWithinChannel;
+      ownerIndeterminateQueueClassNetCounts_[use.owner] +=
+          use.queueClassIndeterminate;
+      for (const llvm::APInt &queueClass : use.queueClasses) {
+        const std::string key = physicalTagKey(queueClass);
+        auto [position, inserted] =
+            ownerQueueClassRefcounts_[use.owner].try_emplace(key, 0);
+        (void)inserted;
+        ++position->second;
+      }
+    } else {
+      ownerChannelCounts_[use.owner] -= use.channelCount;
+      ownerInitializedFeedbackChannelCounts_[use.owner] -=
+          use.initializedFeedbackChannelCount;
+      ownerRepeatedChannelNetCounts_[use.owner] -=
+          use.repeatedWithinChannel;
+      ownerIndeterminateQueueClassNetCounts_[use.owner] -=
+          use.queueClassIndeterminate;
+      for (const llvm::APInt &queueClass : use.queueClasses) {
+        const std::string key = physicalTagKey(queueClass);
+        auto position = ownerQueueClassRefcounts_[use.owner].find(key);
+        assert(position != ownerQueueClassRefcounts_[use.owner].end() &&
+               position->second != 0);
+        if (--position->second == 0)
+          ownerQueueClassRefcounts_[use.owner].erase(position);
+      }
+    }
+    refreshOwnerCapacityObligation(use.owner, oldDebt, oldShortfall,
+                                   oldRouteAnchorCount);
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<SpatialProgressNetCapacityProjection>
+SpatialProgressState::replaceLogicalNetCapacityProjection(
+    const SpatialCandidateState &candidate, PnrIndex logicalNet,
+    const RouteTreeState *route) {
+  if (&candidate.problem() != problem_ ||
+      logicalNet >= netCapacityProjections_.size())
+    return invalid("capacity proof projection names a foreign logical net");
+  auto projected =
+      projectSpatialNetCapacityProofInputs(candidate, logicalNet, route);
+  if (!projected)
+    return projected.takeError();
+  SpatialProgressNetCapacityProjection previous =
+      std::move(netCapacityProjections_[logicalNet]);
+  if (llvm::Error error = applyNetCapacityProjection(previous, false)) {
+    netCapacityProjections_[logicalNet] = std::move(previous);
+    return std::move(error);
+  }
+  if (llvm::Error error = applyNetCapacityProjection(*projected, true)) {
+    llvm::cantFail(applyNetCapacityProjection(previous, true));
+    netCapacityProjections_[logicalNet] = std::move(previous);
+    return std::move(error);
+  }
+  netCapacityProjections_[logicalNet] = std::move(*projected);
+  return previous;
+}
+
+void SpatialProgressState::restoreLogicalNetCapacityProjection(
+    PnrIndex logicalNet,
+    SpatialProgressNetCapacityProjection projection) noexcept {
+  assert(logicalNet < netCapacityProjections_.size());
+  llvm::cantFail(
+      applyNetCapacityProjection(netCapacityProjections_[logicalNet], false));
+  llvm::cantFail(applyNetCapacityProjection(projection, true));
+  netCapacityProjections_[logicalNet] = std::move(projection);
 }
 
 llvm::Expected<std::vector<SpatialFiniteBufferConflictWitness>>
@@ -547,6 +919,80 @@ llvm::Error SpatialProgressState::rebuildFiniteBufferConflictWitness(
   return llvm::Error::success();
 }
 
+llvm::Error SpatialProgressState::rebuildCapacityProofDebtWitness(
+    const SpatialCandidateState &candidate, PnrIndex owner,
+    SpatialFiniteBufferConflictWitness &witness) const {
+  if (&candidate.problem() != problem_ || owner >= ownerCount_)
+    return invalid("capacity-debt witness owner is out of range");
+  if (!ownerHasCapacityProofDebt(owner))
+    return invalid("capacity-debt witness owner has no live debt");
+  return rebuildCapacityOwnerWitness(candidate, owner, witness);
+}
+
+llvm::Error SpatialProgressState::rebuildCapacityShortfallWitness(
+    const SpatialCandidateState &candidate, PnrIndex owner,
+    SpatialFiniteBufferConflictWitness &witness) const {
+  if (&candidate.problem() != problem_ || owner >= ownerCount_)
+    return invalid("capacity-shortfall witness owner is out of range");
+  if (ownerCapacityShortfall(owner) == 0)
+    return invalid("capacity-shortfall witness owner has no live shortfall");
+  return rebuildCapacityOwnerWitness(candidate, owner, witness);
+}
+
+llvm::Error SpatialProgressState::rebuildCapacityOwnerWitness(
+    const SpatialCandidateState &candidate, PnrIndex owner,
+    SpatialFiniteBufferConflictWitness &witness) const {
+  witness.ownerOrdinal = getInvalidPnrIndex();
+  witness.competingLogicalNets.clear();
+  witness.routeAnchors.clear();
+  if (&candidate.problem() != problem_ || owner >= ownerCount_)
+    return invalid("capacity witness owner is out of range");
+  witness.ownerOrdinal = owner;
+  witness.owner = problem_->progressIndex().finiteBufferOwners()[owner];
+  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
+    const auto &uses = netCapacityProjections_[logicalNet].owners;
+    const auto found = llvm::lower_bound(
+        uses, owner,
+        [](const SpatialProgressOwnerCapacityUse &use, PnrIndex target) {
+          return use.owner < target;
+        });
+    if (found == uses.end() || found->owner != owner)
+      continue;
+    witness.competingLogicalNets.push_back(logicalNet);
+    if (llvm::Error error = forEachSelectedTraversal(
+            candidate, logicalNet,
+            [&](PnrIndex traversal,
+                const SpatialProgressRouteAnchor &anchor) -> llvm::Error {
+              if (problem_->progressIndex().traversalOwner(traversal) == owner)
+                witness.routeAnchors.push_back(anchor);
+              return llvm::Error::success();
+            }))
+      return error;
+  }
+  if (witness.competingLogicalNets.empty() || witness.routeAnchors.empty())
+    return invalid("capacity witness has no selected route anchor");
+  llvm::sort(witness.routeAnchors, [](const SpatialProgressRouteAnchor &lhs,
+                                      const SpatialProgressRouteAnchor &rhs) {
+    return std::tie(lhs.logicalNet, lhs.kind, lhs.sinkObligation, lhs.endpoint,
+                    lhs.traversal) < std::tie(rhs.logicalNet, rhs.kind,
+                                              rhs.sinkObligation, rhs.endpoint,
+                                              rhs.traversal);
+  });
+  witness.routeAnchors.erase(
+      std::unique(witness.routeAnchors.begin(), witness.routeAnchors.end(),
+                  [](const SpatialProgressRouteAnchor &lhs,
+                     const SpatialProgressRouteAnchor &rhs) {
+                    return std::tie(lhs.logicalNet, lhs.kind,
+                                    lhs.sinkObligation, lhs.endpoint,
+                                    lhs.traversal) ==
+                           std::tie(rhs.logicalNet, rhs.kind,
+                                    rhs.sinkObligation, rhs.endpoint,
+                                    rhs.traversal);
+                  }),
+      witness.routeAnchors.end());
+  return llvm::Error::success();
+}
+
 llvm::Error
 SpatialProgressState::verifyCachedState(
     const SpatialCandidateState &candidate) const {
@@ -574,7 +1020,17 @@ SpatialProgressState::verifyCachedState(
       ownerLogicalNetCounts_.size() != ownerCount_ ||
       ownerLogicalNetBits_.size() != expectedOwnerBitCount ||
       conflictingOwnerBits_.size() != expectedConflictWordCount ||
-      netRouteDependencyViolationCounts_.size() != logicalNetCount_)
+      netRouteDependencyViolationCounts_.size() != logicalNetCount_ ||
+      netCapacityProjections_.size() != logicalNetCount_ ||
+      ownerChannelCounts_.size() != ownerCount_ ||
+      ownerInitializedFeedbackChannelCounts_.size() != ownerCount_ ||
+      ownerRepeatedChannelNetCounts_.size() != ownerCount_ ||
+      ownerIndeterminateQueueClassNetCounts_.size() != ownerCount_ ||
+      ownerQueueClassRefcounts_.size() != ownerCount_ ||
+      traversalSelectionCounts_.size() !=
+          problem_->routing().traversals().size() ||
+      ownerRouteAnchorCounts_.size() != ownerCount_ ||
+      capacityProofDebtOwnerBits_.size() != expectedConflictWordCount)
     return invalid("progress state dimensions disagree with the freeze");
 
   std::uint64_t refcountPairCount = 0;
@@ -640,6 +1096,127 @@ SpatialProgressState::verifyCachedState(
   if (conflictCount != sharedFiniteBufferConflictCount_)
     return invalid("finite-buffer conflict total is stale");
 
+  std::vector<std::uint64_t> expectedChannels(ownerCount_, 0);
+  std::vector<std::uint64_t> expectedFeedbackChannels(ownerCount_, 0);
+  std::vector<std::uint64_t> expectedRepeatedNets(ownerCount_, 0);
+  std::vector<std::uint64_t> expectedIndeterminateClasses(ownerCount_, 0);
+  std::vector<std::map<std::string, PnrIndex>> expectedQueueClasses(
+      ownerCount_);
+  for (const SpatialProgressNetCapacityProjection &projection :
+       netCapacityProjections_) {
+    PnrIndex previous = getInvalidPnrIndex();
+    for (const SpatialProgressOwnerCapacityUse &use : projection.owners) {
+      if (use.owner >= ownerCount_ || use.channelCount == 0 ||
+          use.initializedFeedbackChannelCount > use.channelCount ||
+          (previous != getInvalidPnrIndex() && use.owner <= previous))
+        return invalid("capacity proof net projection is not canonical");
+      previous = use.owner;
+      if (use.channelCount >
+              std::numeric_limits<std::uint64_t>::max() -
+                  expectedChannels[use.owner] ||
+          use.initializedFeedbackChannelCount >
+              std::numeric_limits<std::uint64_t>::max() -
+                  expectedFeedbackChannels[use.owner])
+        return invalid("capacity proof cold aggregate exceeds u64");
+      expectedChannels[use.owner] += use.channelCount;
+      expectedFeedbackChannels[use.owner] +=
+          use.initializedFeedbackChannelCount;
+      expectedRepeatedNets[use.owner] += use.repeatedWithinChannel;
+      expectedIndeterminateClasses[use.owner] +=
+          use.queueClassIndeterminate;
+      for (std::size_t index = 0; index != use.queueClasses.size(); ++index) {
+        if (index != 0 &&
+            ::fabric::comparePhysicalTagValues(use.queueClasses[index - 1],
+                                               use.queueClasses[index]) >= 0)
+          return invalid("capacity proof queue classes are not canonical");
+        PnrIndex &refcount =
+            expectedQueueClasses[use.owner][physicalTagKey(
+                use.queueClasses[index])];
+        if (refcount == std::numeric_limits<PnrIndex>::max())
+          return invalid("capacity proof queue-class refcount exceeds "
+                         "PnrIndex");
+        ++refcount;
+      }
+    }
+  }
+  if (ownerChannelCounts_ != expectedChannels ||
+      ownerInitializedFeedbackChannelCounts_ != expectedFeedbackChannels ||
+      ownerRepeatedChannelNetCounts_ != expectedRepeatedNets ||
+      ownerIndeterminateQueueClassNetCounts_ !=
+          expectedIndeterminateClasses ||
+      ownerQueueClassRefcounts_ != expectedQueueClasses)
+    return invalid("capacity proof owner aggregate is stale");
+
+  std::vector<PnrIndex> expectedRouteAnchors(ownerCount_, 0);
+  for (PnrIndex traversal = 0;
+       traversal < traversalSelectionCounts_.size(); ++traversal) {
+    const PnrIndex owner = problem_->progressIndex().traversalOwner(traversal);
+    if (owner == getInvalidPnrIndex()) {
+      if (traversalSelectionCounts_[traversal] != 0)
+        return invalid("non-FIFO traversal has a capacity proof refcount");
+      continue;
+    }
+    if (owner >= ownerCount_)
+      return invalid("capacity proof traversal owner is out of range");
+    if (traversalSelectionCounts_[traversal] == 0)
+      continue;
+    if (expectedRouteAnchors[owner] ==
+        std::numeric_limits<PnrIndex>::max())
+      return invalid("capacity proof route-anchor count exceeds PnrIndex");
+    ++expectedRouteAnchors[owner];
+  }
+  if (ownerRouteAnchorCounts_ != expectedRouteAnchors)
+    return invalid("capacity proof route-anchor aggregate is stale");
+
+  std::uint64_t expectedDebtCount = 0;
+  std::uint64_t expectedShortfallOwnerCount = 0;
+  std::uint64_t expectedShortfall = 0;
+  std::uint64_t expectedObligationAnchors = 0;
+  for (PnrIndex owner = 0; owner < ownerCount_; ++owner) {
+    const bool expectedDebt = expectedChannels[owner] != 0 &&
+                              (expectedRepeatedNets[owner] != 0 ||
+                               (problem_->progressIndex()
+                                        .ownerQueueDisciplines()[owner] ==
+                                    ::fabric::FifoQueueDiscipline::
+                                        PerTagVirtualChannel &&
+                                expectedIndeterminateClasses[owner] != 0));
+    const std::uint64_t selectedCapacity =
+        problem_->progressIndex().ownerSharedSlotCapacities()[owner];
+    const std::uint64_t expectedOwnerShortfall =
+        !expectedDebt && ownerLogicalNetCounts_[owner] > selectedCapacity
+            ? ownerLogicalNetCounts_[owner] - selectedCapacity
+            : 0;
+    const bool cachedDebt =
+        (capacityProofDebtOwnerBits_[owner / 64] &
+         (std::uint64_t{1} << (owner % 64))) != 0;
+    if (cachedDebt != expectedDebt)
+      return invalid("capacity proof debt bit is stale");
+    expectedDebtCount += expectedDebt;
+    expectedShortfallOwnerCount += expectedOwnerShortfall != 0;
+    if (expectedOwnerShortfall >
+        std::numeric_limits<std::uint64_t>::max() - expectedShortfall)
+      return invalid("capacity proof shortfall exceeds u64");
+    expectedShortfall += expectedOwnerShortfall;
+    if (expectedDebt || expectedOwnerShortfall != 0) {
+      if (expectedRouteAnchors[owner] >
+          std::numeric_limits<std::uint64_t>::max() -
+              expectedObligationAnchors)
+        return invalid("capacity proof obligation anchor count exceeds u64");
+      expectedObligationAnchors += expectedRouteAnchors[owner];
+    }
+  }
+  if (ownerCount_ % 64 != 0 && !capacityProofDebtOwnerBits_.empty()) {
+    const std::uint64_t validMask =
+        (std::uint64_t{1} << (ownerCount_ % 64)) - 1;
+    if ((capacityProofDebtOwnerBits_.back() & ~validMask) != 0)
+      return invalid("capacity proof debt bitset has excess bits");
+  }
+  if (capacityProofDebtWitnessCount_ != expectedDebtCount ||
+      capacityShortfallOwnerCount_ != expectedShortfallOwnerCount ||
+      capacityShortfall_ != expectedShortfall ||
+      capacityObligationRouteAnchorCount_ != expectedObligationAnchors)
+    return invalid("capacity proof objective aggregate is stale");
+
   std::uint64_t dependencyCount = 0;
   for (std::uint64_t count : netRouteDependencyViolationCounts_) {
     if (count > std::numeric_limits<std::uint64_t>::max() - dependencyCount)
@@ -648,10 +1225,13 @@ SpatialProgressState::verifyCachedState(
   }
   if (dependencyCount != routeDependencyViolationCount_)
     return invalid("route dependency violation total is stale");
-  if (routeDependencyViolationCount_ >
-      std::numeric_limits<std::uint64_t>::max() -
-          sharedFiniteBufferConflictCount_)
-    return invalid("hard-progress total exceeds u64");
+  if (capacityProofDebtWitnessCount_ >
+          std::numeric_limits<std::uint64_t>::max() -
+              capacityShortfallOwnerCount_ ||
+      capacityProofDebtWitnessCount_ + capacityShortfallOwnerCount_ >
+          std::numeric_limits<std::uint64_t>::max() -
+              routeDependencyViolationCount_)
+    return invalid("activity witness total exceeds u64");
   return llvm::Error::success();
 }
 
@@ -679,18 +1259,58 @@ SpatialProgressState::verify(const SpatialCandidateState &candidate) const {
           expected->sharedFiniteBufferConflictCount_ ||
       routeDependencyViolationCount_ !=
           expected->routeDependencyViolationCount_)
-    return invalid("incremental projection diverges from cold reconstruction");
+    return invalid("incremental base projection diverges from cold "
+                   "reconstruction");
+  if (netCapacityProjections_ != expected->netCapacityProjections_) {
+    for (const auto [logicalNet, projected] :
+         llvm::enumerate(netCapacityProjections_))
+      if (!(projected == expected->netCapacityProjections_[logicalNet]))
+        return invalid("incremental capacity inputs for logical net " +
+                       llvm::Twine(logicalNet) +
+                       " diverge from cold reconstruction: " +
+                       capacityProjectionDifference(
+                           projected,
+                           expected->netCapacityProjections_[logicalNet]));
+    llvm_unreachable("unequal capacity projection has no differing net");
+  }
+  if (ownerChannelCounts_ != expected->ownerChannelCounts_ ||
+      ownerInitializedFeedbackChannelCounts_ !=
+          expected->ownerInitializedFeedbackChannelCounts_ ||
+      ownerRepeatedChannelNetCounts_ !=
+          expected->ownerRepeatedChannelNetCounts_ ||
+      ownerIndeterminateQueueClassNetCounts_ !=
+          expected->ownerIndeterminateQueueClassNetCounts_ ||
+      ownerQueueClassRefcounts_ != expected->ownerQueueClassRefcounts_)
+    return invalid("incremental capacity owner inputs diverge from cold "
+                   "reconstruction");
+  if (traversalSelectionCounts_ != expected->traversalSelectionCounts_ ||
+      ownerRouteAnchorCounts_ != expected->ownerRouteAnchorCounts_)
+    return invalid("incremental capacity anchors diverge from cold "
+                   "reconstruction");
+  if (capacityProofDebtOwnerBits_ !=
+          expected->capacityProofDebtOwnerBits_ ||
+      capacityProofDebtWitnessCount_ !=
+          expected->capacityProofDebtWitnessCount_ ||
+      capacityShortfallOwnerCount_ !=
+          expected->capacityShortfallOwnerCount_ ||
+      capacityShortfall_ != expected->capacityShortfall_ ||
+      capacityObligationRouteAnchorCount_ !=
+          expected->capacityObligationRouteAnchorCount_)
+    return invalid("incremental capacity objective diverges from cold "
+                   "reconstruction");
 
   llvm::Expected<std::uint64_t> cold = [&] {
     ProgressTimer scanTimer(&statistics_.coldProgressScanCount,
                             &statistics_.coldProgressScanWallTimeNanoseconds);
-    return spatialCandidateClosedWaitCount(candidate);
+    return spatialCandidateProgressWitnessCount(candidate);
   }();
   if (!cold)
     return cold.takeError();
-  if (*cold !=
-      sharedFiniteBufferConflictCount_ + routeDependencyViolationCount_)
-    return invalid("incremental hard-progress total diverges from cold verifier");
+  if (*cold != capacityProofDebtWitnessCount_ +
+                   capacityShortfallOwnerCount_ +
+                   routeDependencyViolationCount_)
+    return invalid("incremental activity witness total diverges from cold "
+                   "verifier");
   verificationTimer.finish();
   if (statisticsEnabled_)
     emitProgressStatistics(statistics_);

@@ -156,6 +156,12 @@ struct IncompleteSpatialPnrGeneration final {
   IncompleteSpatialPnrGenerationReason reason;
   SpatialPnrGenerationAccounting accounting;
   std::string diagnostic;
+  /// Deterministic owner-local hardware feedback from the best retained
+  /// candidate. This is present only for a proven FIFO shared-pool shortfall;
+  /// it is not a Mapping artifact or a claim that the fixed Fabric is
+  /// infeasible.
+  std::optional<SpatialFifoCapacityShortfall> fifoCapacityShortfall =
+      std::nullopt;
 };
 
 enum class SpatialPnrInterruptionStage : std::uint8_t {

@@ -2,6 +2,7 @@
 #define LOOM_LIB_PNR_SPATIALPROGRESSANALYSIS_H
 
 #include "PnR/SpatialPnrProblem.h"
+#include "PnR/SpatialProgressState.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -32,7 +33,12 @@ llvm::Expected<bool> spatialRouteProgressDependencySatisfied(
     PnrIndex dependentSink);
 
 llvm::Expected<std::uint64_t>
-spatialCandidateClosedWaitCount(const SpatialCandidateState &candidate);
+spatialCandidateProgressWitnessCount(const SpatialCandidateState &candidate);
+
+llvm::Expected<SpatialProgressNetCapacityProjection>
+projectSpatialNetCapacityProofInputs(const SpatialCandidateState &candidate,
+                                     PnrIndex logicalNet,
+                                     const RouteTreeState *route = nullptr);
 
 } // namespace loom::pnr
 

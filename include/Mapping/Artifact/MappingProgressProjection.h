@@ -158,6 +158,22 @@ struct MappingProgressClosure final {
   /// ClosedBufferDependencyCycle: the closed strongly connected component of
   /// the buffer-dependency graph, in canonical node order.
   std::vector<MappingStaticWaitNode> bufferDependencyCycle;
+  /// Exact shortfall of the selected proven capacity witness. Zero for a
+  /// non-capacity reason and for ProofNotEstablished.
+  std::uint64_t capacityShortfall = 0;
+  /// Number of distinct selected physical traversals anchoring the chosen
+  /// closed or unestablished witness.
+  std::uint64_t routeAnchorCount = 0;
+};
+
+/// The one normalized Mapping objective projection derived from a closure.
+/// A closure selects one deterministic witness, so its hard/debt count is
+/// either zero or one. QoR consumers never reinterpret closure reasons.
+struct MappingProgressObjectiveProjection final {
+  std::uint64_t hardViolationCount = 0;
+  std::uint64_t proofDebtWitnessCount = 0;
+  std::uint64_t capacityShortfall = 0;
+  std::uint64_t routeAnchorCount = 0;
 };
 
 enum class MappingDataflowProgressBasisKind : std::uint8_t {
@@ -222,12 +238,13 @@ enum class MappingReconvergentCapacityProofKind : std::uint8_t {
 };
 
 /// One exact capacity obligation of one selected FIFO shared slot pool under
-/// the single-rate static-order reconvergence subdomain. `queueClasses` names
-/// every strict-global or tag-local order class sharing this one physical
-/// capacity owner; it never partitions `selectedCapacity`. `routeAnchors`
-/// names the selected traversals from which the obligation is rebuilt. The
-/// kind is the proof state and the minimum is present exactly when proven.
-/// This value is not a persisted proof label.
+/// the durable-acceptance transfer subdomain. `queueClasses` names every
+/// strict-global or tag-local order class sharing this one physical capacity
+/// owner; it never partitions `selectedCapacity`. `minimumLegalCapacity` is
+/// the number of distinct producer bindings that can each own one active
+/// resident token. `routeAnchors` names the selected traversals from which the
+/// obligation is rebuilt. The kind is the proof state and the minimum is
+/// present exactly when proven. This value is not a persisted proof label.
 struct MappingReconvergentCapacityObligation final {
   ::loom::fabric::FabricFifoOccurrenceRef owner;
   std::vector<MappingStaticQueueClass> queueClasses;

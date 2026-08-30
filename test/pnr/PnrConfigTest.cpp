@@ -59,12 +59,12 @@ void projectionAndAdoptionAreDomainTyped() {
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               spatial.schemaDescriptorBytes().data()),
                           spatial.schemaDescriptorBytes().size()) ==
-              "loom.spatial_pnr.config.15.3",
+              "loom.spatial_pnr.config.15.4",
           "Spatial PnR view has the wrong schema descriptor");
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               system.schemaDescriptorBytes().data()),
                           system.schemaDescriptorBytes().size()) ==
-              "loom.system_pnr.config.8.2",
+              "loom.system_pnr.config.8.3",
           "System PnR view has the wrong schema descriptor");
   require(system.systemBindingPartitions().empty(),
           "base System PnR view invented a partition intent");
@@ -160,12 +160,12 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
        loom::resolvedObjectiveDecimal(1, 0), 0, UINT64_MAX});
   const std::uint32_t unselectedDimension =
       static_cast<std::uint32_t>(catalogs.dimensions.size() - 1);
-  catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 3,
+  catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 6,
                                  {{{unselectedDimension, 1}}});
-  catalogs.totalOrderings[0].weightedLevels = {5, 4, 1, 0, 2};
-  catalogs.totalOrderings[1].weightedLevels = {5, 6, 1, 0, 2};
-  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 7;
-  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 8;
+  catalogs.totalOrderings[0].weightedLevels = {8, 0, 4, 5, 7, 2, 1, 3};
+  catalogs.totalOrderings[1].weightedLevels = {8, 0, 4, 5, 9, 2, 1, 3};
+  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 10;
+  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 11;
 
   const loom::pnr::ResolvedPnrConfigView unselectedView =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(unselectedChange));
@@ -233,15 +233,15 @@ void routingKernelsConsumeTheProjectedOwnerRecord() {
 void mappingObjectiveRegistryIsClosedAndTyped() {
   const auto &registry = loom::pnr::mappingObjectiveRegistryDescriptor();
   require(registry.identity == "loom.mapping.pnr.objective" &&
-              registry.schemaMajor == 3 && registry.schemaMinor == 1,
+              registry.schemaMajor == 3 && registry.schemaMinor == 2,
           "Mapping objective registry has the wrong identity");
 
   const auto violations = loom::pnr::mappingViolationDescriptors();
-  require(violations.size() == 5 &&
+  require(violations.size() == 6 &&
               violations.front().kind ==
                   loom::ResolvedPnrViolationKind::UnroutedObligation &&
               violations.back().kind ==
-                  loom::ResolvedPnrViolationKind::HardProgressViolation,
+                  loom::ResolvedPnrViolationKind::ProgressProofDebt,
           "Mapping violation registry does not own the closed catalog");
   require(
       violations[1].kind == loom::ResolvedPnrViolationKind::CapacityOveruse &&
@@ -250,11 +250,11 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
       "Mapping violation registry changed the canonical catalog order");
 
   const auto measures = loom::pnr::mappingMeasureDescriptors();
-  require(measures.size() == 8 &&
+  require(measures.size() == 10 &&
               measures.front().kind ==
                   loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim &&
               measures.back().kind ==
-                  loom::pnr::MappingMeasureKind::SharedOperandIngressPressure,
+                  loom::pnr::MappingMeasureKind::ProgressRouteAnchorCount,
           "Mapping measure registry does not own the closed catalog");
 
   const loom::ResolvedConfig config = loom::defaultResolvedConfig();
@@ -263,21 +263,41 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
       loom::resolvedPnrViolationKindCount +
       static_cast<std::uint32_t>(
           loom::pnr::MappingMeasureKind::SharedOperandIngressPressure);
-  require(catalogs.weightedLevels.size() == 8 &&
-              catalogs.weightedLevels[2].terms.size() == 1 &&
-              catalogs.weightedLevels[2].terms.front().dimension ==
+  const std::uint32_t debtDimension = static_cast<std::uint32_t>(
+      loom::ResolvedPnrViolationKind::ProgressProofDebt);
+  const std::uint32_t shortfallDimension =
+      loom::resolvedPnrViolationKindCount +
+      static_cast<std::uint32_t>(
+          loom::pnr::MappingMeasureKind::ProgressCapacityShortfall);
+  const std::uint32_t anchorDimension =
+      loom::resolvedPnrViolationKindCount +
+      static_cast<std::uint32_t>(
+          loom::pnr::MappingMeasureKind::ProgressRouteAnchorCount);
+  require(catalogs.weightedLevels.size() == 11 &&
+              catalogs.weightedLevels[3].terms.size() == 1 &&
+              catalogs.weightedLevels[3].terms.front().dimension ==
                   pressureDimension &&
-              catalogs.weightedLevels[2].terms.front().weight == 1 &&
+              catalogs.weightedLevels[3].terms.front().weight == 1 &&
+              catalogs.weightedLevels[0].terms.front().dimension ==
+                  debtDimension &&
+              catalogs.weightedLevels[4].terms.front().dimension ==
+                  shortfallDimension &&
+              catalogs.weightedLevels[5].terms.front().dimension ==
+                  anchorDimension &&
               catalogs.totalOrderings.size() == 2 &&
-              catalogs.totalOrderings[0].weightedLevels.back() == 2 &&
-              catalogs.totalOrderings[1].weightedLevels.back() == 2,
-          "shared operand ingress pressure is not an explicit final rank "
-          "level");
+              llvm::equal(
+                  llvm::ArrayRef<std::uint32_t>(
+                      catalogs.totalOrderings[0].weightedLevels)
+                      .take_front(4),
+                  std::array<std::uint32_t, 4>{7, 0, 4, 5}) &&
+              catalogs.totalOrderings[0].weightedLevels.back() == 3 &&
+              catalogs.totalOrderings[1].weightedLevels.back() == 3,
+          "activity debt and operand pressure rank levels are not explicit");
 }
 
 void resolvedConfigUsesTheIndependentViolationCatalog() {
   require(loom::ResolvedConfig::artifactSchema.version.major == 11 &&
-              loom::ResolvedConfig::artifactSchema.version.minor == 0,
+              loom::ResolvedConfig::artifactSchema.version.minor == 1,
           "ResolvedConfig has the wrong schema version");
   const std::string canonical =
       loom::canonicalResolvedConfigJson(loom::defaultResolvedConfig());

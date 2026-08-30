@@ -2,7 +2,6 @@
 
 #include "PnR/EndpointRouter.h"
 #include "PnR/SpatialActionDomain.h"
-#include "PnR/SpatialActionExecutor.h"
 #include "PnR/SpatialCandidateInitializer.h"
 
 #include "SpatialProgressIndex.h"
@@ -11,7 +10,6 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
@@ -207,46 +205,19 @@ void loom::test::exerciseSpatialProgressWitnessClosure(
   SpatialActionDomainScratch domain;
   requireSuccess(domain.prepare(*problem));
   requireSuccess(domain.rebuild(*fixture.candidate));
+  if (fixture.candidate->progressProofDebtWitnessCount() != 0)
+    fail("acyclic shared FIFO incidence became capacity proof debt");
+  if (fixture.candidate->progressCapacityShortfall() != 0)
+    fail("a shared FIFO at its proven bound became a capacity shortfall");
   const SpatialMappingAction progressAction =
       SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
-          ResolvedPnrViolationKind::HardProgressViolation, fixture.owner}};
+          ResolvedPnrViolationKind::ProgressProofDebt, fixture.owner}};
   const SpatialActionKey progressKey = spatialActionKey(progressAction);
-  if (!llvm::any_of(domain.view().transportChoices, [&](const auto &action) {
+  if (llvm::any_of(domain.view().transportChoices, [&](const auto &action) {
         return spatialActionKey(SpatialMappingAction{
                    SpatialTransportRoutingAction{action}}) == progressKey;
       }))
-    fail("Action domain omitted the typed progress witness");
-
-  SpatialActionExecutorScratch executor;
-  requireSuccess(executor.prepare(*fixture.candidate));
-  const std::array<SpatialMappingAction, 1> progressActions{progressAction};
-  auto probe = executor.probeBatch(
-      *fixture.candidate, progressActions,
-      SpatialActionExecutionContext::ExactRepair,
-      problem->config().policy().search.exactRepair.maxRegionDecisions);
-  if (!probe)
-    fail("typed progress Action could not route its exact region: " +
-         llvm::toString(probe.takeError()));
-  for (PnrIndex logicalNet : witness.competingLogicalNets)
-    if (!llvm::is_contained(executor.regionalLogicalNets(), logicalNet))
-      fail("progress Action omitted a competing net from regional routing");
-  requireSuccess(probe->discard());
-  if (!fixture.candidate->progress().finiteBufferOwnerConflicts(fixture.owner))
-    fail("progress Action rollback did not restore its typed witness");
-  requireSuccess(fixture.candidate->verify());
-
-  SpatialExactRepairScratch exactRepair;
-  DeterministicPnrRandomStream repairStream =
-      DeterministicPnrRandomStream::create(
-          problem->config().policy().determinism.masterSeed, 0,
-          PnrRandomStreamPurpose::ExactRepair);
-  const SpatialExactRepairResult repaired =
-      take(exactRepair.repair(*fixture.candidate, 0, 1, repairStream));
-  if (repaired.kind == SpatialExactRepairResultKind::UnsupportedEncoding ||
-      repaired.kind == SpatialExactRepairResultKind::InternalError ||
-      repaired.regionDecisions < witness.competingLogicalNets.size())
-    fail("exact repair did not consume the typed progress closure: " +
-         repaired.detail);
+    fail("raw shared FIFO incidence entered the proof-debt Action domain");
   requireSuccess(fixture.candidate->verify());
 
   const SpatialProgressStatistics &statistics =

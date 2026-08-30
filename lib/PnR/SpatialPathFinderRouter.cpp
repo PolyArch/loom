@@ -338,6 +338,12 @@ llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
           expectedProjection.tagConflictCount ||
       restoredProjection->hardProgressViolation !=
           expectedProjection.hardProgressViolation ||
+      restoredProjection->progressProofDebtWitnessCount !=
+          expectedProjection.progressProofDebtWitnessCount ||
+      restoredProjection->progressCapacityShortfall !=
+          expectedProjection.progressCapacityShortfall ||
+      restoredProjection->progressRouteAnchorCount !=
+          expectedProjection.progressRouteAnchorCount ||
       restoredProjection->totalSelectedTraversalClaim !=
           expectedProjection.totalSelectedTraversalClaim ||
       restoredProjection->routeReleaseLatencyCycles !=
@@ -1746,6 +1752,12 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           fields["tag_conflicts"] = projection->tagConflictCount;
           fields["hard_progress_violations"] =
               projection->hardProgressViolation;
+          fields["progress_proof_debt_witnesses"] =
+              projection->progressProofDebtWitnessCount;
+          fields["progress_capacity_shortfall"] =
+              projection->progressCapacityShortfall;
+          fields["progress_route_anchors"] =
+              projection->progressRouteAnchorCount;
           fields["selected_traversal_claim"] =
               projection->totalSelectedTraversalClaim;
           fields["temporary_admitted"] = temporaryAdmitted;

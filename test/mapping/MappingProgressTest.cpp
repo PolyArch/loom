@@ -861,6 +861,12 @@ module {
       shortfall.reason != loom::mapping::MappingProgressClosureReason::
                               ReconvergentCapacityShortfall)
     fail("a proven capacity shortfall was not reported");
+  const auto shortfallObjective =
+      loom::mapping::projectMappingProgressObjective(shortfall);
+  if (shortfallObjective.hardViolationCount != 1 ||
+      shortfallObjective.proofDebtWitnessCount != 0 ||
+      shortfallObjective.capacityShortfall != 1)
+    fail("capacity shortfall produced the wrong objective projection");
 
   // A proven minimum within the selected pool discharges the obligation.
   if (closureOf({globalObligation(7, 16, 2,
@@ -910,6 +916,12 @@ module {
       unproven.reason != loom::mapping::MappingProgressClosureReason::
                              ReconvergentCapacityNotEstablished)
     fail("an unproven capacity obligation was not reported as progress debt");
+  const auto debtObjective =
+      loom::mapping::projectMappingProgressObjective(unproven);
+  if (debtObjective.hardViolationCount != 0 ||
+      debtObjective.proofDebtWitnessCount != 1 ||
+      debtObjective.capacityShortfall != 0)
+    fail("unproven capacity produced the wrong objective projection");
 
   // A capacity-carrying closed component resolves exactly when every member
   // class has a proven obligation within its pool.

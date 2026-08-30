@@ -1275,15 +1275,10 @@ llvm::Expected<SystemMappingView> importSystemMappingView(
         SystemMappingClosureFindingKind::HardProgressViolation,
         "selected System physical demand contains a closed wait set");
   case MappingProgressClosureKind::ProofNotEstablished:
-    // An unestablished finite-buffer recurrence does not reject the ordinary
-    // Mapping; it only withholds Dataflow spectrum qualification.
-    if (progress->reason ==
-        MappingProgressClosureReason::FiniteBufferRecurrenceNotEstablished)
-      break;
-    return llvm::make_error<SystemMappingIncompleteError>(
-        SystemMappingIncompleteReason::ProofNotEstablished,
-        "system route, service, and resource progress proof is not "
-        "established");
+    // Proof debt is a valid ordinary Mapping state. Search and production
+    // publication consume its separate objective violation; import never
+    // upgrades an unestablished proof into structural invalidity.
+    break;
   }
   if (verifiedClosure)
     *verifiedClosure = std::make_shared<const SystemMappingClosureProjection>(

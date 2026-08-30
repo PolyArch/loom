@@ -110,6 +110,9 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
 llvm::StringRef
 mappingProgressClosureReasonSpelling(MappingProgressClosureReason reason);
 
+MappingProgressObjectiveProjection
+projectMappingProgressObjective(const MappingProgressClosure &closure);
+
 /// Derives only the reusable Dataflow basis for exactly the supplied covered
 /// graphs. It deliberately cannot return a Mapping progress proof: selected
 /// routes, finite resources, service plans, arbitration, and Fabric progress

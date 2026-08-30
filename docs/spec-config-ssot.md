@@ -77,7 +77,11 @@ is recorded only as invocation provenance and is excluded from canonical
 ResolvedConfig bytes. All builtin presets resolve to
 `loom.adg.builtin.general_purpose` version `8.0`; only their default parameter
 values differ. Omitting hardware selection resolves the `Coverage` scale; it
-does not produce a target-less configuration.
+does not produce a target-less configuration. The production `Coverage` and
+`Large` scales select `PerTagVirtualChannel` on tag-carrying interconnect
+FIFOs; the compact `Small` reference remains `StrictFifo`. Queue discipline and
+depth are ordinary typed target parameters, so a custom profile must state any
+different selection explicitly and receives a distinct resolved identity.
 
 An external `--loom-hardware=<fabric.mlir>` binding is mutually exclusive with
 an explicitly selected builtin target. Import and Fabric finalization produce
@@ -130,7 +134,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 11.0`. Version 2.0 was an
+The current schema is `loom.config.resolved 11.1`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -256,6 +260,15 @@ directed-link lane multiplicity. Version 10 left both multiplicities hidden in
 the builtin expansion, so it cannot reconstruct a resolved hardware candidate
 or its identity after either network is resized. The replacement is therefore
 incompatible rather than assigning a compatibility default.
+
+Version 11.1 compatibly extends the Mapping objective catalog with the typed
+`ProgressProofDebt` violation and the `ProgressCapacityShortfall` and
+`ProgressRouteAnchorCount` measures. Existing objective ordinals and meanings
+are unchanged. The builtin total order places proven hard violations first,
+then proof-debt witness count, capacity shortfall, and exact route-anchor
+count, all before ordinary QoR. Re-finalization produces new ResolvedConfig and
+PnR component identities; an 11.1 consumer never treats 11.0 objective bytes
+as the current policy.
 
 `dse.evaluation_and_objective_catalogs` materializes exactly the owner tables
 of the [Resolved Configuration View](spec-dse-feedback.md#resolved-configuration-view):

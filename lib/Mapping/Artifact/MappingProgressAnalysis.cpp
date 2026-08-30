@@ -1304,6 +1304,7 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
         {}};
   std::vector<MappingStaticWaitNode> bufferNodes;
   std::vector<std::vector<std::uint32_t>> capacityComponents;
+  std::vector<std::uint64_t> capacityComponentRouteAnchorCounts;
   if (!projection.bufferDependencyEdges->empty()) {
     const auto &edges = *projection.bufferDependencyEdges;
     std::map<std::string, std::uint32_t> nodeOrdinals;
@@ -1409,19 +1410,35 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
       }
       if (!closed)
         continue;
-      if (carriesCapacity)
+      std::set<std::string> routeAnchors;
+      for (std::uint32_t node : component)
+        for (const auto [position, successor] :
+             llvm::enumerate(successors[node])) {
+          if (!member[successor])
+            continue;
+          const auto &anchor = edges[successorEdges[node][position]].routeAnchor;
+          if (!anchor)
+            continue;
+          const std::vector<std::uint8_t> bytes =
+              ::loom::fabric::canonicalFabricBytes(*anchor);
+          routeAnchors.insert(std::string(
+              reinterpret_cast<const char *>(bytes.data()), bytes.size()));
+        }
+      if (carriesCapacity) {
         capacityComponents.push_back(component);
-      else if (!provenComponent)
+        capacityComponentRouteAnchorCounts.push_back(routeAnchors.size());
+      } else if (!provenComponent) {
         provenComponent = componentOrdinal;
-    }
-    if (provenComponent) {
-      std::vector<MappingStaticWaitNode> witness;
-      for (std::uint32_t node : components[*provenComponent])
-        witness.push_back(nodes[node]);
-      return MappingProgressClosure{
-          MappingProgressClosureKind::ProvenClosedWaitSet,
-          MappingProgressClosureReason::ClosedBufferDependencyCycle,
-          {}, std::move(witness)};
+      }
+      if (!carriesCapacity && provenComponent == componentOrdinal) {
+        std::vector<MappingStaticWaitNode> witness;
+        for (std::uint32_t node : component)
+          witness.push_back(nodes[node]);
+        return MappingProgressClosure{
+            MappingProgressClosureKind::ProvenClosedWaitSet,
+            MappingProgressClosureReason::ClosedBufferDependencyCycle,
+            {}, std::move(witness), 0, routeAnchors.size()};
+      }
     }
     bufferNodes = std::move(nodes);
   }
@@ -1479,20 +1496,26 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
           MappingProgressClosureKind::ProvenClosedWaitSet,
           MappingProgressClosureReason::ReconvergentCapacityShortfall,
           {},
-          {}};
+          {},
+          *obligation.minimumLegalCapacity - obligation.selectedCapacity,
+          obligation.routeAnchors.size()};
   }
-  if (llvm::any_of(
-          projection.reconvergentCapacityObligations,
-          [](const MappingReconvergentCapacityObligation &obligation) {
-            return obligation.kind == MappingReconvergentCapacityProofKind::
-                                          ProofNotEstablished;
-          }))
+  const auto unproven = llvm::find_if(
+      projection.reconvergentCapacityObligations,
+      [](const MappingReconvergentCapacityObligation &obligation) {
+        return obligation.kind ==
+               MappingReconvergentCapacityProofKind::ProofNotEstablished;
+      });
+  if (unproven != projection.reconvergentCapacityObligations.end())
     return MappingProgressClosure{
         MappingProgressClosureKind::ProofNotEstablished,
         MappingProgressClosureReason::ReconvergentCapacityNotEstablished,
         {},
-        {}};
-  for (const std::vector<std::uint32_t> &component : capacityComponents) {
+        {},
+        0,
+        unproven->routeAnchors.size()};
+  for (const auto [componentOrdinal, component] :
+       llvm::enumerate(capacityComponents)) {
     for (std::uint32_t nodeOrdinal : component) {
       const auto *storage = std::get_if<MappingStorageQueueProgressNode>(
           &bufferNodes[nodeOrdinal]);
@@ -1511,7 +1534,9 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
             MappingProgressClosureKind::ProofNotEstablished,
             MappingProgressClosureReason::ReconvergentCapacityNotEstablished,
             {},
-            {}};
+            {},
+            0,
+            capacityComponentRouteAnchorCounts[componentOrdinal]};
     }
   }
 
@@ -1787,6 +1812,18 @@ mappingProgressClosureReasonSpelling(MappingProgressClosureReason reason) {
     return "reconvergent_capacity_not_established";
   }
   llvm_unreachable("unknown Mapping progress closure reason");
+}
+
+MappingProgressObjectiveProjection projectMappingProgressObjective(
+    const MappingProgressClosure &closure) {
+  MappingProgressObjectiveProjection result;
+  result.hardViolationCount =
+      closure.kind == MappingProgressClosureKind::ProvenClosedWaitSet ? 1 : 0;
+  result.proofDebtWitnessCount =
+      closure.kind == MappingProgressClosureKind::ProofNotEstablished ? 1 : 0;
+  result.capacityShortfall = closure.capacityShortfall;
+  result.routeAnchorCount = closure.routeAnchorCount;
+  return result;
 }
 
 llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
@@ -2125,10 +2162,11 @@ projectSpatialChannelStorageInventory(
       return graph.takeError();
     if (selectedGraphEntities.count(graph->entity.value()) == 0)
       continue;
-    const auto logicalNet =
-        llvm::find(inventory.logicalNets, route.logicalNet);
-    if (logicalNet == inventory.logicalNets.end())
+    auto logicalNet = llvm::find(inventory.logicalNets, route.logicalNet);
+    if (logicalNet == inventory.logicalNets.end()) {
       inventory.logicalNets.push_back(route.logicalNet);
+      logicalNet = std::prev(inventory.logicalNets.end());
+    }
     const std::uint64_t netOrdinal = static_cast<std::uint64_t>(
         std::distance(inventory.logicalNets.begin(), logicalNet));
     const std::optional<::dataflow::ActorRef> producerActor =
@@ -2168,6 +2206,7 @@ projectSpatialChannelStorageInventory(
       channel.producerEndpoint = route.logicalNet;
       channel.consumerEndpoint = sink.sink;
       channel.netOrdinal = netOrdinal;
+      std::set<std::string> channelTraversals;
       for (const auto &[traversal, tagNodeOrdinal] : arcs) {
         if (!traversal)
           continue;
@@ -2176,6 +2215,14 @@ projectSpatialChannelStorageInventory(
                 &traversal->payload);
         if (!fifo || fifo->mode != ::loom::fabric::FabricFifoTraversalMode::
                                        Buffered)
+          continue;
+        const std::vector<std::uint8_t> traversalBytes =
+            ::loom::fabric::canonicalFabricBytes(*traversal);
+        if (!channelTraversals
+                 .insert(std::string(
+                     reinterpret_cast<const char *>(traversalBytes.data()),
+                     traversalBytes.size()))
+                 .second)
           continue;
         const ::fabric::FifoQueueDiscipline discipline =
             fabric.fifoQueueDiscipline(fifo->owner).value_or(
@@ -2391,7 +2438,7 @@ deriveMappingReconvergentCapacityProof(
     std::map<std::string, MappingStaticQueueClass> queueClasses;
     std::map<std::string, ::loom::fabric::FabricPhysicalTraversalRef>
         routeAnchors;
-    std::uint64_t selectedChannelCount = 0;
+    std::set<std::uint64_t> logicalNets;
     bool simpleTopology = true;
   };
   const auto ownerKey = [](const ::loom::fabric::FabricFifoOccurrenceRef owner) {
@@ -2407,18 +2454,14 @@ deriveMappingReconvergentCapacityProof(
       for (const SpatialChannelStorageStop &stop : channel.stops) {
         const std::string key = ownerKey(stop.node.owner);
         auto [position, inserted] = ownerByKey.try_emplace(
-            key, OwnerInventory{stop.node.owner, {}, {}, 0, true});
+            key, OwnerInventory{stop.node.owner, {}, {}, {}, true});
         if (!inserted && position->second.owner != stop.node.owner)
           return invalid("FIFO capacity owner key collision");
         if (!channelOwners.insert(key).second)
           position->second.simpleTopology = false;
-        else if (position->second.selectedChannelCount ==
-                 std::numeric_limits<std::uint64_t>::max())
-          return invalid("FIFO selected channel count exceeds u64");
-        else
-          ++position->second.selectedChannelCount;
         position->second.queueClasses.emplace(staticWaitNodeKey(stop.node),
                                               stop.node.queueClass);
+        position->second.logicalNets.insert(channel.netOrdinal);
         const std::vector<std::uint8_t> anchorBytes =
             ::loom::fabric::canonicalFabricBytes(stop.traversal);
         position->second.routeAnchors.emplace(
@@ -2426,12 +2469,11 @@ deriveMappingReconvergentCapacityProof(
                         anchorBytes.size()),
             stop.traversal);
       }
-    }
+  }
   std::vector<OwnerInventory> owners;
-  std::map<std::string, std::size_t> ownerOrdinals;
   owners.reserve(ownerByKey.size());
   for (auto &[key, owner] : ownerByKey) {
-    ownerOrdinals.emplace(key, owners.size());
+    (void)key;
     owners.push_back(std::move(owner));
   }
   const std::size_t ownerCount = owners.size();
@@ -2442,45 +2484,7 @@ deriveMappingReconvergentCapacityProof(
   std::vector<bool> established(ownerCount, actorGraph->postInitializationAcyclic);
   for (std::size_t ordinal = 0; ordinal != ownerCount; ++ordinal)
     established[ordinal] =
-        established[ordinal] && owners[ordinal].simpleTopology &&
-        owners[ordinal].selectedChannelCount == 1 &&
-        owners[ordinal].queueClasses.size() == 1;
-
-  // Initialized feedback needs the full marked relation: its initial tokens,
-  // actor firings, fork/join skew, and route places determine the live shared
-  // capacity. Until that relation is built, every touched owner remains typed
-  // ProofNotEstablished rather than inheriting a guessed distance-plus-one.
-  for (const ActorDependencyGraph::InitializedFeedbackEdge &feedback :
-       actorGraph->initializedFeedbackEdges) {
-    const SpatialChannelStorageChain *channel = nullptr;
-    if (*inventory)
-      for (const SpatialChannelStorageChain &candidate :
-           (*inventory)->channels)
-        if (candidate.producerEndpoint &&
-            *candidate.producerEndpoint ==
-                ::dataflow::CanonicalGraphProducerEndpointRef(
-                    feedback.producer) &&
-            candidate.consumerEndpoint &&
-            *candidate.consumerEndpoint ==
-                ::dataflow::CanonicalGraphConsumerEndpointRef(
-                    feedback.consumer)) {
-          if (channel)
-            return invalid("initialized feedback edge has multiple residual "
-                           "route channels");
-          channel = &candidate;
-        }
-    if (!channel)
-      continue;
-    std::set<std::size_t> pathOwners;
-    for (const SpatialChannelStorageStop &stop : channel->stops) {
-      const auto owner = ownerOrdinals.find(ownerKey(stop.node.owner));
-      if (owner == ownerOrdinals.end())
-        return invalid("feedback route lost its FIFO capacity owner");
-      pathOwners.insert(owner->second);
-    }
-    for (std::size_t ordinal : pathOwners)
-      established[ordinal] = false;
-  }
+        established[ordinal] && owners[ordinal].simpleTopology;
 
   std::vector<MappingReconvergentCapacityObligation> obligations;
   obligations.reserve(ownerCount);
@@ -2503,9 +2507,18 @@ deriveMappingReconvergentCapacityProof(
       if (dimensions.size() > queueSlot.ordinal())
         pool = dimensions[queueSlot.ordinal()].capacity.value();
     }
-    const bool proven = established[ordinal] && pool.has_value();
+    // One producer binding cannot own a second active transfer until every
+    // sink of its current token has reached durable acceptance. Therefore one
+    // logical net contributes at most one resident token to a selected FIFO
+    // occurrence, including a distance-one initialized-feedback token. A pool
+    // with one slot per distinct selected net removes shared-pool capacity
+    // from the wait graph for every firing interleaving. Queue classes still
+    // own dequeue order, but they share this one physical capacity bound.
+    const bool proven = established[ordinal] && pool.has_value() &&
+                        !owner.logicalNets.empty();
     const std::optional<std::uint64_t> minimum =
-        proven ? std::optional<std::uint64_t>(1) : std::nullopt;
+        proven ? std::optional<std::uint64_t>(owner.logicalNets.size())
+               : std::nullopt;
     std::vector<MappingStaticQueueClass> queueClasses;
     queueClasses.reserve(owner.queueClasses.size());
     for (const auto &[key, queueClass] : owner.queueClasses)
@@ -2550,8 +2563,6 @@ llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     return basis.takeError();
   MappingProgressProjection result;
   result.basis = *basis;
-  result.routeObligations.push_back(
-      projectSpatialFiniteBufferRecurrence(routes));
   auto bufferDependencyEdges = projectSpatialBufferDependencyEdges(
       dataflow, techMapping, fabric, routes, resourceUses, physicalTagSegments,
       operandQueueGroups, selectedGraphs);

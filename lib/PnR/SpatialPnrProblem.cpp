@@ -1275,7 +1275,7 @@ public:
       auto routingOwner =
           std::make_shared<const FrozenSpatialRoutingGraph>(std::move(*routing));
       auto progressIndex =
-          detail::buildFrozenSpatialProgressIndex(*routingOwner);
+          detail::buildFrozenSpatialProgressIndex(*routingOwner, fabric);
       if (!progressIndex)
         return progressIndex.takeError();
       timingContext = std::make_shared<const detail::FabricTimingContext>(

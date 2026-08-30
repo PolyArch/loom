@@ -872,13 +872,26 @@ a bypass path, co-location, or an unselected local alternative does not.
 Search and strict verification derive this inventory from the same Dataflow,
 TechMapping, Fabric, and selected edge dispositions.
 
-Two logical nets selecting one buffered FIFO occurrence leave that owner's
-recurrence unproven. That is a typed Mapping fact, not a Spatial violation:
-ordinary Mapping identity and base admission are unchanged, the closure
-records `ProofNotEstablished(finite_buffer_recurrence_not_established)`, and
-Dataflow spectrum qualification is withheld until an owner proves the shared
-occupancy, rate, and dequeue progress. `HardProgressViolation` counts only
-route dependency violations.
+Reconvergent capacity is proved per physical FIFO occurrence, never per tag.
+One producer binding owns at most one active transfer: its next firing cannot
+complete until every sink of the current transfer has reached a durable
+acceptance point. Consequently each distinct selected logical net contributes
+at most one resident token to a FIFO shared pool, including a distance-one
+initialized-feedback token. The canonical owner-local capacity obligation is
+the number of distinct selected logical nets, while StrictFifo or tag-local VC
+classes independently determine dequeue order. A selected pool below that
+bound is `ProvenClosedWaitSet(reconvergent_capacity_shortfall)` because the
+proof cannot remove downstream-capacity waits. A sufficient pool removes those
+capacity edges from the closed-wait graph; it does not excuse a remaining
+global-HOL or same-tag order cycle.
+
+The proof remains `ProofNotEstablished` when a VC tag value is unavailable,
+one producer-to-consumer channel re-enters the same physical FIFO occurrence,
+or initialized-feedback removal does not leave an actor DAG. Multiple known
+actual tag values and initialized feedback are not by themselves proof debt.
+The incremental Spatial state caches only selected-net incidence, owner route
+anchors, queue-class values, and the resulting debt or shortfall; final
+materialization reconstructs the obligation from Mapping and Fabric.
 
 ## Spatial Legality
 
@@ -987,8 +1000,11 @@ legality.
 
 ## Objective Projection
 
-The Mapping objective registry is `loom.mapping.pnr.objective 3.1`. It owns the
-five violation sources above and these eight nonnegative measures in stable
+The Mapping objective registry is `loom.mapping.pnr.objective 3.2`. It owns six
+violation sources: the five structural/hard sources above plus
+`ProgressProofDebt`, which is nonzero exactly for a selected
+`ProofNotEstablished` activity witness. It also owns these ten nonnegative
+measures in stable
 ordinal order:
 
 | Ordinal | Measure |
@@ -1001,6 +1017,17 @@ ordinal order:
 | 5 | `WorstRouteArrivalDelayQuanta` |
 | 6 | `TotalRouteNegativeSlackQuanta` |
 | 7 | `SharedOperandIngressPressure` |
+| 8 | `ProgressCapacityShortfall` |
+| 9 | `ProgressRouteAnchorCount` |
+
+`HardProgressViolation` is derived only from `ProvenClosedWaitSet`.
+`ProgressProofDebt` is derived only from `ProofNotEstablished`; it remains a
+temporary search violation and must be zero at publication. The capacity
+shortfall is nonzero only when an exact static capacity proof exceeds the
+selected shared pool. Route-anchor count is the number of distinct selected
+physical traversals in the chosen hard or unestablished witness. These values
+are one projection of `MappingProgressClosure`; a PnR consumer cannot infer
+them independently from raw shared-FIFO incidence.
 
 `SharedOperandIngressPressure` is the sum, over Dataflow-owned co-firing input
 groups, of independently produced Temporal operand members beyond the number
@@ -1059,11 +1086,13 @@ Spatial policy may select recurrence only when every admitted candidate has a
 complete local timing owner; an external manager dispatch then terminates as
 `ProofNotEstablished` rather than receiving a provisional latency.
 
-Both builtin total orderings place `SharedOperandIngressPressure` after
-closure, timing, static schedule, and traversal levels. It therefore breaks an
-otherwise equal Mapping rank without overriding route, capacity, or timing
-quality. Search energy includes the measure at unit weight so incremental
-attachment moves can be guided without a hidden router penalty.
+Both builtin total orderings place hard closure first, followed by proof-debt
+witness count, capacity shortfall, and route-anchor count, before timing,
+static schedule, traversal, and `SharedOperandIngressPressure`. Search energy
+contains the same visible dimensions; PathFinder and annealing may not add an
+unprojected activity penalty. `SharedOperandIngressPressure` remains the last
+tie-break level and cannot override route, capacity, timing, or activity
+quality.
 
 The selected total ordering ranks candidates. The selected search energy may
 guide stochastic acceptance but cannot legalize a violation. Final independent

@@ -2,6 +2,8 @@
 
 #include "PnR/SpatialPnrProblem.h"
 
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/IR/FifoResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -55,7 +57,8 @@ bufferedPayload(const FrozenSpatialTraversal &traversal) {
 llvm::Expected<std::shared_ptr<
     const loom::pnr::detail::FrozenSpatialProgressIndex>>
 loom::pnr::detail::buildFrozenSpatialProgressIndex(
-    const FrozenSpatialRoutingGraph &routing) {
+    const FrozenSpatialRoutingGraph &routing,
+    const ::loom::fabric::FabricArtifactView &fabric) {
   auto traversalCount = checkedPnrIndex(traversalCountContext,
                                         routing.traversals().size());
   if (!traversalCount)
@@ -79,6 +82,22 @@ loom::pnr::detail::buildFrozenSpatialProgressIndex(
         return owner.takeError();
       inserted.first->second = *owner;
       result->finiteBufferOwners_.push_back(fifo->owner);
+      result->ownerQueueDisciplines_.push_back(
+          fabric.fifoQueueDiscipline(fifo->owner)
+              .value_or(::fabric::FifoQueueDiscipline::StrictFifo));
+      const ::fabric::ResourceContract *contract = fabric.resourceContract(
+          FabricInventoryOwnerRef::of(fifo->owner));
+      const ::fabric::StateKey state = ::fabric::fifoResourceState(
+          ::fabric::FifoResourceState::BufferedQueue);
+      const ::fabric::CapacityDimensionKey dimension =
+          ::fabric::fifoBufferedCapacity(
+              ::fabric::FifoBufferedCapacity::QueueSlot);
+      if (!contract || contract->stateCount() <= state.ordinal() ||
+          contract->capacityDimensions(state).size() <= dimension.ordinal())
+        return invalid("FIFO owner has no shared queue-slot capacity");
+      result->ownerSharedSlotCapacities_.push_back(
+          contract->capacityDimensions(state)[dimension.ordinal()]
+              .capacity.value());
     }
     result->traversalOwnerOrdinals_[traversalOrdinal] =
         inserted.first->second;
@@ -119,22 +138,30 @@ loom::pnr::detail::buildFrozenSpatialProgressIndex(
       continue;
     result->ownerTraversals_[cursors[owner]++] = traversal;
   }
-  if (llvm::Error error = result->verify(routing))
+  if (llvm::Error error = result->verify(routing, fabric))
     return std::move(error);
   return std::shared_ptr<const FrozenSpatialProgressIndex>(std::move(result));
 }
 
 llvm::Error loom::pnr::detail::FrozenSpatialProgressIndex::verify(
-    const FrozenSpatialRoutingGraph &routing) const {
+    const FrozenSpatialRoutingGraph &routing,
+    const ::loom::fabric::FabricArtifactView &fabric) const {
   if (traversalOwnerOrdinals_.size() != routing.traversals().size())
     return invalid("traversal owner table does not cover the routing graph");
   if (ownerTraversalOffsets_.size() != finiteBufferOwners_.size() + 1 ||
+      ownerQueueDisciplines_.size() != finiteBufferOwners_.size() ||
+      ownerSharedSlotCapacities_.size() != finiteBufferOwners_.size() ||
       ownerTraversalOffsets_.empty() || ownerTraversalOffsets_.front() != 0 ||
       ownerTraversalOffsets_.back() != ownerTraversals_.size())
     return invalid("finite-buffer owner traversal CSR has invalid bounds");
 
   std::vector<std::uint8_t> seen(routing.traversals().size(), 0);
   for (PnrIndex owner = 0; owner < finiteBufferOwners_.size(); ++owner) {
+    if (ownerQueueDisciplines_[owner] !=
+            fabric.fifoQueueDiscipline(finiteBufferOwners_[owner])
+                .value_or(::fabric::FifoQueueDiscipline::StrictFifo) ||
+        ownerSharedSlotCapacities_[owner] == 0)
+      return invalid("finite-buffer owner metadata is stale");
     PnrIndex previous = getInvalidPnrIndex();
     for (PnrIndex traversal : traversalsForOwner(owner)) {
       if (traversal >= routing.traversals().size() || seen[traversal])

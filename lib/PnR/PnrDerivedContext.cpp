@@ -178,6 +178,10 @@ std::uint64_t loom::pnr::detail::timingContextRetainedBytes(
   bytes += progressIndex.traversalOwnerOrdinals().size() * sizeof(PnrIndex);
   bytes += progressIndex.ownerTraversalOffsets().size() * sizeof(PnrIndex);
   bytes += progressIndex.ownerTraversals().size() * sizeof(PnrIndex);
+  bytes += progressIndex.ownerQueueDisciplines().size() *
+           sizeof(::fabric::FifoQueueDiscipline);
+  bytes += progressIndex.ownerSharedSlotCapacities().size() *
+           sizeof(std::uint32_t);
   return bytes;
 }
 

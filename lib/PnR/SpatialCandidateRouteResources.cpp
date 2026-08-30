@@ -34,7 +34,7 @@ llvm::Error increment(PnrIndex &value, PnrIndex amount,
 llvm::Error SpatialMoveTransaction::collectRouteTraversalDeltas() {
   if (routeDeltasCollected_)
     return llvm::Error::success();
-  if (llvm::Error error = synchronizeProgressProjection()) {
+  if (llvm::Error error = synchronizeProgressTraversalDeltas()) {
     rollbackAppliedRouteResources();
     return error;
   }
@@ -195,7 +195,7 @@ llvm::Error SpatialMoveTransaction::applyProgressTraversalDelta(
   return llvm::Error::success();
 }
 
-llvm::Error SpatialMoveTransaction::synchronizeProgressProjection() {
+llvm::Error SpatialMoveTransaction::synchronizeProgressTraversalDeltas() {
   for (PnrIndex logicalNet : scratch_->touchedRoutes_) {
     RouteTreeTransaction &route = *scratch_->routeTransactions_[logicalNet];
     const auto deltas = route.recordedTraversalDeltas();
@@ -229,16 +229,36 @@ llvm::Error SpatialMoveTransaction::synchronizeProgressProjection() {
       return error;
     scratch_->progressTerminalActive_[logicalNet] = desiredTerminalActive;
   }
+  return llvm::Error::success();
+}
 
+llvm::Error SpatialMoveTransaction::synchronizeProgressProjection() {
   for (PnrIndex logicalNet : scratch_->progressDirtyNets_) {
-    if (scratch_->progressDependencyJournalMarks_[logicalNet] !=
-        scratch_->decisionEpoch_) {
+    const bool firstProjection =
+        scratch_->progressDependencyJournalMarks_[logicalNet] !=
+        scratch_->decisionEpoch_;
+    const RouteTreeState *progressRoute =
+        state_->routeTrees_[logicalNet].get();
+    if (scratch_->routeTransactions_[logicalNet]) {
+      auto prepared =
+          scratch_->routeTransactions_[logicalNet]->preparedState();
+      if (!prepared)
+        return prepared.takeError();
+      progressRoute = *prepared;
+    }
+    auto oldCapacity =
+        state_->progressState_.replaceLogicalNetCapacityProjection(
+            *state_, logicalNet, progressRoute);
+    if (!oldCapacity)
+      return oldCapacity.takeError();
+    if (firstProjection) {
       scratch_->progressDependencyJournalMarks_[logicalNet] =
           scratch_->decisionEpoch_;
       scratch_->progressDependencyDeltas_.push_back(
           {logicalNet,
            state_->progressState_
-               .logicalNetRouteDependencyViolationCount(logicalNet)});
+               .logicalNetRouteDependencyViolationCount(logicalNet),
+           std::move(*oldCapacity)});
     }
     if (llvm::Error error =
             state_->progressState_.refreshLogicalNetRouteDependencies(
@@ -255,9 +275,12 @@ void SpatialMoveTransaction::rollbackProgressProjection() noexcept {
   if (!scratch_)
     return;
   for (const SpatialCandidateScratch::ProgressDependencyDelta &delta :
-       llvm::reverse(scratch_->progressDependencyDeltas_))
+       llvm::reverse(scratch_->progressDependencyDeltas_)) {
     state_->progressState_.restoreLogicalNetRouteDependencyCount(
         delta.logicalNet, delta.oldCount);
+    state_->progressState_.restoreLogicalNetCapacityProjection(
+        delta.logicalNet, delta.oldCapacityProjection);
+  }
   for (const SpatialCandidateScratch::ProgressTraversalDelta &delta :
        llvm::reverse(scratch_->progressTraversalDeltas_))
     state_->progressState_.revertTraversalDelta(

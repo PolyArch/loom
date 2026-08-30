@@ -1287,6 +1287,12 @@ SpatialTagAssignmentState::segments(PnrIndex logicalNet) const {
   return storage_->nets[logicalNet].continuity.segments();
 }
 
+llvm::ArrayRef<PnrIndex>
+SpatialTagAssignmentState::nodeSegments(PnrIndex logicalNet) const {
+  assert(logicalNet < storage_->nets.size());
+  return storage_->nets[logicalNet].continuity.nodeSegments();
+}
+
 llvm::ArrayRef<std::optional<llvm::APInt>>
 SpatialTagAssignmentState::values(PnrIndex logicalNet) const {
   assert(logicalNet < storage_->nets.size());
@@ -1390,6 +1396,15 @@ llvm::ArrayRef<PnrIndex> SpatialTagAssignmentState::changedDomains(
   const auto &transaction = *scratch.storage_;
   assert(transaction.active && transaction.problem == storage_->problem);
   return transaction.changedDomains;
+}
+
+llvm::ArrayRef<PnrIndex> SpatialTagAssignmentState::synchronizedNets(
+    const SpatialTagAssignmentScratch &scratch) const {
+  assert(scratch.storage_ && scratch.storage_->problem == storage_->problem &&
+         "Physical Tag scratch belongs to another state");
+  if (!scratch.storage_->active)
+    return {};
+  return scratch.storage_->synchronizedNets;
 }
 
 llvm::Error SpatialTagAssignmentState::stageRouteUpdates(

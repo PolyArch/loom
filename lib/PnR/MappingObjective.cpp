@@ -11,7 +11,6 @@
 #include "SpatialProgressAnalysis.h"
 
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <array>
@@ -28,7 +27,7 @@ using namespace loom::pnr;
 namespace {
 
 constexpr MappingObjectiveRegistryDescriptor registry{
-    "loom.mapping.pnr.objective", 3, 1};
+    "loom.mapping.pnr.objective", 3, 2};
 
 constexpr std::array<MappingViolationDescriptor, resolvedPnrViolationKindCount>
     violations{{
@@ -55,40 +54,6 @@ llvm::Error unavailable(llvm::StringRef source) {
       "objective_unavailable: required Mapping objective source '%s' is "
       "absent",
       source.str().c_str());
-}
-
-llvm::Error unavailableSystemProgress(
-    const ::loom::mapping::MappingProgressClosure &closure) {
-  std::string diagnostic;
-  llvm::raw_string_ostream stream(diagnostic);
-  stream << "proof_not_established: System progress closure is unavailable: "
-         << ::loom::mapping::mappingProgressClosureReasonSpelling(
-                closure.reason);
-  if (!closure.possibleWaitCycle.empty()) {
-    stream << " [";
-    for (const auto &[ordinal, node] :
-         llvm::enumerate(closure.possibleWaitCycle)) {
-      if (ordinal != 0)
-        stream << "; ";
-      stream << (node.kind ==
-                         ::loom::mapping::MappingProgressWaitNodeKind::Active
-                     ? "active"
-                     : "pending")
-             << " group=" << node.activationGroupOrdinal << " activations=";
-      llvm::interleaveComma(node.activationOrdinals, stream);
-      stream << " cells=";
-      llvm::interleaveComma(node.capacityCellOrdinals, stream);
-      stream << " triggers=";
-      llvm::interleaveComma(node.triggerEventOrdinals, stream);
-      stream << " releases=";
-      llvm::interleaveComma(node.causalReleaseEventOrdinals, stream);
-    }
-    stream << ']';
-  }
-  stream.flush();
-  return llvm::createStringError(
-      std::make_error_code(std::errc::operation_not_supported), "%s",
-      diagnostic.c_str());
 }
 
 llvm::Error invalidObjectiveReference(llvm::StringRef detail) {
@@ -201,6 +166,7 @@ bool loom::pnr::spatialMappingViolationAvailable(
   case ResolvedPnrViolationKind::TagUnassigned:
   case ResolvedPnrViolationKind::TagConflict:
   case ResolvedPnrViolationKind::HardProgressViolation:
+  case ResolvedPnrViolationKind::ProgressProofDebt:
     return true;
   }
   llvm_unreachable("unknown Mapping violation kind");
@@ -253,6 +219,8 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
           "progress breaker");
     }
     llvm_unreachable("unknown Spatial progress basis kind");
+  case ResolvedPnrViolationKind::ProgressProofDebt:
+    return candidate.progressProofDebtWitnessCount();
   }
   llvm_unreachable("unknown Mapping violation kind");
 }
@@ -281,6 +249,8 @@ llvm::Expected<std::uint64_t> loom::pnr::spatialMappingViolationValue(
     return projection.tagConflictCount;
   case ResolvedPnrViolationKind::HardProgressViolation:
     return projection.hardProgressViolation;
+  case ResolvedPnrViolationKind::ProgressProofDebt:
+    return projection.progressProofDebtWitnessCount;
   }
   llvm_unreachable("unknown Mapping violation kind");
 }
@@ -321,6 +291,10 @@ loom::pnr::spatialMappingMeasureValue(const SpatialCandidateState &candidate,
     return candidate.totalRouteNegativeSlackQuanta();
   case MappingMeasureKind::SharedOperandIngressPressure:
     return candidate.sharedOperandIngressPressure();
+  case MappingMeasureKind::ProgressCapacityShortfall:
+    return candidate.progressCapacityShortfall();
+  case MappingMeasureKind::ProgressRouteAnchorCount:
+    return candidate.progressRouteAnchorCount();
   }
   llvm_unreachable("unknown Mapping measure kind");
 }
@@ -336,19 +310,13 @@ loom::pnr::systemMappingViolationValue(const SystemCandidateState &candidate,
   case ResolvedPnrViolationKind::CapacityOveruse:
     return candidate.capacityOveruse();
   case ResolvedPnrViolationKind::HardProgressViolation:
-    switch (candidate.progressClosure().kind) {
-    case ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet:
-      return 0;
-    case ::loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet:
-      return 1;
-    case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:
-      if (candidate.progressClosure().reason ==
-          ::loom::mapping::MappingProgressClosureReason::
-              FiniteBufferRecurrenceNotEstablished)
-        return 0;
-      return unavailableSystemProgress(candidate.progressClosure());
-    }
-    llvm_unreachable("unknown System progress closure kind");
+    return ::loom::mapping::projectMappingProgressObjective(
+               candidate.progressClosure())
+        .hardViolationCount;
+  case ResolvedPnrViolationKind::ProgressProofDebt:
+    return ::loom::mapping::projectMappingProgressObjective(
+               candidate.progressClosure())
+        .proofDebtWitnessCount;
   }
   llvm_unreachable("unknown Mapping violation kind");
 }
@@ -391,6 +359,14 @@ loom::pnr::systemMappingMeasureValue(const SystemCandidateState &candidate,
     return systemSpatialSharedOperandIngressPressure(candidate.problem(),
                                                      candidate.graphChoices());
   }
+  case MappingMeasureKind::ProgressCapacityShortfall:
+    return ::loom::mapping::projectMappingProgressObjective(
+               candidate.progressClosure())
+        .capacityShortfall;
+  case MappingMeasureKind::ProgressRouteAnchorCount:
+    return ::loom::mapping::projectMappingProgressObjective(
+               candidate.progressClosure())
+        .routeAnchorCount;
   }
   llvm_unreachable("unknown Mapping measure kind");
 }
@@ -516,6 +492,12 @@ MappingObjectiveProgram::evaluateSpatialProjection(
     case MappingMeasureKind::SharedOperandIngressPressure:
       measures[ordinal] = candidate.sharedOperandIngressPressure();
       break;
+    case MappingMeasureKind::ProgressCapacityShortfall:
+      measures[ordinal] = projection.progressCapacityShortfall;
+      break;
+    case MappingMeasureKind::ProgressRouteAnchorCount:
+      measures[ordinal] = projection.progressRouteAnchorCount;
+      break;
     }
   }
   dse::ObjectiveVector result = program_.makeVector();
@@ -564,22 +546,14 @@ MappingObjectiveProgram::evaluateSystemProjection(
     case ResolvedPnrViolationKind::CapacityOveruse:
       llvm_unreachable("CapacityOveruse was projected above");
     case ResolvedPnrViolationKind::HardProgressViolation:
-      switch (progressClosure.kind) {
-      case ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet:
-        violations[ordinal] = 0;
-        break;
-      case ::loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet:
-        violations[ordinal] = 1;
-        break;
-      case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:
-        if (progressClosure.reason ==
-            ::loom::mapping::MappingProgressClosureReason::
-                FiniteBufferRecurrenceNotEstablished) {
-          violations[ordinal] = 0;
-          break;
-        }
-        return unavailableSystemProgress(progressClosure);
-      }
+      violations[ordinal] =
+          ::loom::mapping::projectMappingProgressObjective(progressClosure)
+              .hardViolationCount;
+      break;
+    case ResolvedPnrViolationKind::ProgressProofDebt:
+      violations[ordinal] =
+          ::loom::mapping::projectMappingProgressObjective(progressClosure)
+              .proofDebtWitnessCount;
       break;
     }
   }
@@ -636,6 +610,16 @@ MappingObjectiveProgram::evaluateSystemProjection(
       measures[ordinal] = *pressure;
       break;
     }
+    case MappingMeasureKind::ProgressCapacityShortfall:
+      measures[ordinal] =
+          ::loom::mapping::projectMappingProgressObjective(progressClosure)
+              .capacityShortfall;
+      break;
+    case MappingMeasureKind::ProgressRouteAnchorCount:
+      measures[ordinal] =
+          ::loom::mapping::projectMappingProgressObjective(progressClosure)
+              .routeAnchorCount;
+      break;
     }
   }
   dse::ObjectiveVector result = program_.makeVector();

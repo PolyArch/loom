@@ -28,6 +28,7 @@
 // JSON-DAG: "token_control": 8
 // JSON-DAG: "temporal_fu_occurrences"
 // JSON-DAG: "memory_capacity_bytes": 262144
+// JSON-DAG: "interconnect_fifo_queue_discipline": "per_tag_virtual_channel"
 // JSON-DAG: "dse"
 // JSON-DAG: "structured_ownership"
 // JSON-DAG: "scope_expansion_limit": 64
@@ -57,9 +58,9 @@
 // JSON-DAG: "max_region_decisions": 256
 // JSON-DAG: "max_solver_calls": 1024
 // JSON-DAG: "selected_total_ordering": 0
-// JSON-DAG: "selected_search_energy": 6
+// JSON-DAG: "selected_search_energy": 9
 // JSON-DAG: "selected_total_ordering": 1
-// JSON-DAG: "selected_search_energy": 7
+// JSON-DAG: "selected_search_energy": 10
 // JSON-NOT: "config_id"
 // JSON-NOT: "global"
 // JSON-NOT: "ranking_policy"

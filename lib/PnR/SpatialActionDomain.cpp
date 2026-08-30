@@ -219,7 +219,8 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   routeRootEndpoints_.clear();
   routeSubtreeSlots_.clear();
   routeSubtreeHasSink_.clear();
-  hardProgressWitnessOwners_.clear();
+  progressShortfallWitnessOwners_.clear();
+  progressDebtWitnessOwners_.clear();
   resourceAnchors_.clear();
   resourceChoices_.clear();
   realizationMovableDecisionCount_ = 0;
@@ -239,7 +240,9 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   routeRootEndpoints_.reserve(endpointCount);
   routeSubtreeSlots_.reserve(endpointCount);
   routeSubtreeHasSink_.reserve(endpointCount);
-  hardProgressWitnessOwners_.reserve(
+  progressShortfallWitnessOwners_.reserve(
+      problem.progressIndex().finiteBufferOwners().size());
+  progressDebtWitnessOwners_.reserve(
       problem.progressIndex().finiteBufferOwners().size());
   resourceAnchors_.reserve(resourceAnchorCapacity);
   resourceChoices_.reserve(resourceChoiceCapacity);
@@ -816,23 +819,35 @@ llvm::Error SpatialActionDomainScratch::emitTransportWitnessTail(
               appendWitness(ResolvedPnrViolationKind::TagConflict, domain))
         return error;
 
-  std::uint64_t hardProgressWitnessCount = 0;
+  std::uint64_t progressWitnessCount = 0;
   if (llvm::Error error =
-          candidate.progress().enumerateFiniteBufferConflictOwners(
-              hardProgressWitnessOwners_))
+          candidate.progress().enumerateCapacityShortfallOwners(
+              progressShortfallWitnessOwners_))
     return error;
-  for (PnrIndex owner : hardProgressWitnessOwners_) {
+  for (PnrIndex owner : progressShortfallWitnessOwners_) {
     if (llvm::Error error = appendWitness(
             ResolvedPnrViolationKind::HardProgressViolation, owner))
       return error;
-    if (hardProgressWitnessCount == std::numeric_limits<std::uint64_t>::max())
-      return invalid("hard-progress witness count overflows u64");
-    ++hardProgressWitnessCount;
+    if (progressWitnessCount == std::numeric_limits<std::uint64_t>::max())
+      return invalid("progress witness count overflows u64");
+    ++progressWitnessCount;
   }
-  if (hardProgressWitnessCount >
+  if (llvm::Error error =
+          candidate.progress().enumerateCapacityProofDebtOwners(
+              progressDebtWitnessOwners_))
+    return error;
+  for (PnrIndex owner : progressDebtWitnessOwners_) {
+    if (llvm::Error error = appendWitness(
+            ResolvedPnrViolationKind::ProgressProofDebt, owner))
+      return error;
+    if (progressWitnessCount == std::numeric_limits<std::uint64_t>::max())
+      return invalid("progress witness count overflows u64");
+    ++progressWitnessCount;
+  }
+  if (progressWitnessCount >
       std::numeric_limits<std::uint64_t>::max() - externalNetCount)
     return invalid("transport movable decision count overflows u64");
-  transportMovableDecisionCount_ = externalNetCount + hardProgressWitnessCount;
+  transportMovableDecisionCount_ = externalNetCount + progressWitnessCount;
   return llvm::Error::success();
 }
 
@@ -1035,7 +1050,8 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
   transportAnchors_.clear();
   transportChoices_.clear();
   routeRootEndpoints_.clear();
-  hardProgressWitnessOwners_.clear();
+  progressShortfallWitnessOwners_.clear();
+  progressDebtWitnessOwners_.clear();
   realizationMovableDecisionCount_ = 0;
   transportMovableDecisionCount_ = 0;
   examinedRealizationChoiceCount_ = 0;
@@ -1143,7 +1159,6 @@ llvm::Error SpatialActionDomainScratch::applyCommitted(
       const PnrIndex relationOrdinal = incidenceRecord.value();
       const detail::InitializerRelationRecord &relation =
           relationModel.relations()[relationOrdinal];
-      const auto capacities = relationModel.valueCapacities(relation);
       const std::size_t incidence =
           incidenceOffsets[decision] + incidenceRecord.index();
       const bool gated = relations.relationIsConstraint(relationOrdinal) ||
@@ -1393,7 +1408,8 @@ std::size_t SpatialActionDomainScratch::retainedStorageBytes() const {
          retainedBytes(routeRootEndpoints_) +
          retainedBytes(routeSubtreeSlots_) +
          retainedBytes(routeSubtreeHasSink_) +
-         retainedBytes(hardProgressWitnessOwners_) +
+         retainedBytes(progressShortfallWitnessOwners_) +
+         retainedBytes(progressDebtWitnessOwners_) +
          (memoryConstraintScratch_
               ? memoryConstraintScratch_->retainedStorageBytes()
               : 0);

@@ -144,6 +144,7 @@ public:
 
   llvm::ArrayRef<SpatialTagContinuitySegment>
   segments(PnrIndex logicalNet) const;
+  llvm::ArrayRef<PnrIndex> nodeSegments(PnrIndex logicalNet) const;
   llvm::ArrayRef<std::optional<llvm::APInt>> values(PnrIndex logicalNet) const;
   llvm::ArrayRef<PnrIndex> segmentDomains(PnrIndex logicalNet,
                                           PnrIndex segment) const;
@@ -174,6 +175,8 @@ private:
                         llvm::ArrayRef<PnrIndex> changedDomains) const;
   llvm::ArrayRef<PnrIndex>
   changedDomains(const SpatialTagAssignmentScratch &scratch) const;
+  llvm::ArrayRef<PnrIndex>
+  synchronizedNets(const SpatialTagAssignmentScratch &scratch) const;
   llvm::Error verify(llvm::ArrayRef<RouteTreeStateHandle> routes) const;
   llvm::Error stageRouteUpdates(
       llvm::ArrayRef<RouteTreeStateHandle> routes,

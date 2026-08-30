@@ -164,10 +164,19 @@ firstTransportWitness(const SpatialCandidateState &candidate) {
     if (candidate.tagDomainConflictCount(domain) != 0)
       return TransportWitness{ResolvedPnrViolationKind::TagConflict, domain};
 
+  if (const auto owner = candidate.progress().firstCapacityShortfallOwner())
+    return TransportWitness{ResolvedPnrViolationKind::HardProgressViolation,
+                            *owner};
+  if (const auto owner = candidate.progress().firstCapacityProofDebtOwner())
+    return TransportWitness{ResolvedPnrViolationKind::ProgressProofDebt,
+                            *owner};
+
   if (candidate.unroutedObligationCount() != 0 ||
       candidate.routeCapacityOveruse() != 0 ||
       candidate.tagResidentCapacityOveruse() != 0 ||
-      candidate.tagUnassignedCount() != 0 || candidate.tagConflictCount() != 0)
+      candidate.tagUnassignedCount() != 0 || candidate.tagConflictCount() != 0 ||
+      candidate.hardProgressViolation() != 0 ||
+      candidate.progressProofDebtWitnessCount() != 0)
     return invocationError(
         "transport violation aggregates have no canonical witness");
   return std::optional<TransportWitness>();
@@ -217,8 +226,15 @@ transportWitnessIsLive(const SpatialCandidateState &candidate,
       return invocationError("tag-conflict witness is out of range");
     return candidate.tagDomainConflictCount(witness.ordinal) != 0;
   case ResolvedPnrViolationKind::HardProgressViolation:
-    return invocationError(
-        "finite-buffer sharing is not a transport repair witness");
+    if (witness.ordinal >=
+        problem.progressIndex().finiteBufferOwners().size())
+      return invocationError("capacity-shortfall witness is out of range");
+    return candidate.progress().capacityShortfallOwner(witness.ordinal);
+  case ResolvedPnrViolationKind::ProgressProofDebt:
+    if (witness.ordinal >=
+        problem.progressIndex().finiteBufferOwners().size())
+      return invocationError("capacity proof-debt witness is out of range");
+    return candidate.progress().capacityProofDebtOwner(witness.ordinal);
   }
   llvm_unreachable("unknown Spatial transport witness kind");
 }
@@ -266,6 +282,28 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
     return invocationError("CpSat_3_0 is not selected by SearchPolicy");
   if (solverCallLimit == 0 || solverCallLimit > policy.maxSolverCalls)
     return invocationError("solver-call limit exceeds SearchPolicy");
+  if (candidate.progressProofDebtWitnessCount() != 0 &&
+      candidate.hardProgressViolation() == 0 &&
+      candidate.unroutedObligationCount() == 0 &&
+      candidate.routeCapacityOveruse() == 0 &&
+      candidate.tagResidentCapacityOveruse() == 0 &&
+      candidate.tagUnassignedCount() == 0 &&
+      candidate.tagConflictCount() == 0)
+    return result(
+        SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
+        "capacity proof-debt repair requires an owner-local disjunctive "
+        "route no-good");
+  if (candidate.progress().capacityShortfallOwnerCount() != 0 &&
+      candidate.progress().routeDependencyViolationCount() == 0 &&
+      candidate.unroutedObligationCount() == 0 &&
+      candidate.routeCapacityOveruse() == 0 &&
+      candidate.tagResidentCapacityOveruse() == 0 &&
+      candidate.tagUnassignedCount() == 0 &&
+      candidate.tagConflictCount() == 0)
+    return result(
+        SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
+        "capacity shortfall repair requires an owner-local disjunctive "
+        "route or hardware no-good");
   if (candidate.atomicCapacityOveruse() == 0 &&
       candidate.hasTransportClosureViolation())
     return repairTransportClosure(candidate, restartOrdinal, solverCallLimit,
@@ -899,9 +937,23 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     }
     break;
   }
-  case ResolvedPnrViolationKind::HardProgressViolation:
-    return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                  "finite-buffer sharing is not a transport repair witness");
+  case ResolvedPnrViolationKind::HardProgressViolation: {
+    SpatialFiniteBufferConflictWitness witness;
+    if (llvm::Error error = candidate.rebuildCapacityShortfallWitness(
+            primaryWitnessOrdinal, witness))
+      return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                    llvm::toString(std::move(error)));
+    for (PnrIndex logicalNet : witness.competingLogicalNets)
+      if (llvm::Error error = addWitnessNet(logicalNet))
+        return std::move(error);
+    break;
+  }
+  case ResolvedPnrViolationKind::ProgressProofDebt: {
+    return result(
+        SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
+        "capacity proof-debt repair requires an owner-local disjunctive "
+        "route no-good");
+  }
   }
   for (const SpatialFixedTerminalCutCertificate &certificate : certificates)
     for (const SpatialFixedTerminalCutNet &cut : certificate.forcedNetCuts)

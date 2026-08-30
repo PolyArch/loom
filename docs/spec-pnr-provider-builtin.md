@@ -11,15 +11,15 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.3
+  loom.spatial_pnr.config.15.4
   loom.spatial_pnr.freeze.2.22
-  loom.mapping.pnr.objective 3.1
+  loom.mapping.pnr.objective 3.2
   selected FabricPhysicalTimingProfile descriptor and digest
 
 System:
-  loom.system_pnr.config.8.2
+  loom.system_pnr.config.8.3
   loom.system_pnr_search_domain.4.0
-  loom.mapping.pnr.objective 3.1
+  loom.mapping.pnr.objective 3.2
   exact selected SpatialMapping references
 ```
 
@@ -49,6 +49,16 @@ later restarts only after final closure, independent verification,
 finalization, and publication. The latter returns retained candidates with
 `SemanticLimitReached`; it is a bounded usable prefix, not an exhaustive
 search claim.
+
+Objective registry 3.2 separates proven closed waits from proof debt.
+`HardProgressViolation` is nonzero only for `ProvenClosedWaitSet`;
+`ProgressProofDebt` is nonzero only for `ProofNotEstablished`.
+`ProgressCapacityShortfall` and `ProgressRouteAnchorCount` refine that ordering
+without becoming legality owners. Spatial and System config descriptors 15.4
+and 8.3 select these dimensions before ordinary QoR. Final Spatial
+publication independently rebuilds the Mapping closure and admits only
+`ProvenNoClosedWaitSet`; an ordinary Mapping carrying proof debt remains
+importable but unpublished without identity-bound retirement evidence.
 
 Config projection and adoption fail closed for every unsupported combination.
 There is no compatibility fallback, ignored field, focused-closure field,

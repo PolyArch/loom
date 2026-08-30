@@ -207,7 +207,7 @@ resolvedBuiltinSpatialPnrPolicy(ResolvedProfilePreset preset) {
               0, ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
               ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
           allTemporaryViolations(),
-          ResolvedPnrObjectiveSelection{0, 6}};
+          ResolvedPnrObjectiveSelection{0, 9}};
 }
 
 ResolvedPnrPolicyConfig
@@ -215,7 +215,7 @@ resolvedBuiltinSystemPnrPolicy(ResolvedProfilePreset preset) {
   ResolvedPnrPolicyConfig policy = resolvedBuiltinSpatialPnrPolicy(preset);
   policy.search.exactRepair =
       ResolvedPnrExactRepairPolicy{ResolvedPnrExactRepairKind::Disabled, 0, 0};
-  policy.objectiveSelection = ResolvedPnrObjectiveSelection{1, 7};
+  policy.objectiveSelection = ResolvedPnrObjectiveSelection{1, 10};
   return policy;
 }
 
@@ -246,12 +246,20 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   ResolvedWeightedObjectiveLevel spatialEnergy;
   ResolvedWeightedObjectiveLevel energy;
   ResolvedWeightedObjectiveLevel operandPairing;
+  ResolvedWeightedObjectiveLevel progressDebt;
+  ResolvedWeightedObjectiveLevel progressCapacity;
+  ResolvedWeightedObjectiveLevel progressAnchors;
   for (std::uint32_t dimension = 0; dimension != resolvedPnrViolationKindCount;
        ++dimension) {
-    closure.terms.push_back({dimension, 1});
+    if (dimension != static_cast<std::uint32_t>(
+                         ResolvedPnrViolationKind::ProgressProofDebt))
+      closure.terms.push_back({dimension, 1});
     spatialEnergy.terms.push_back({dimension, UINT64_C(281474976710656)});
     energy.terms.push_back({dimension, UINT64_C(281474976710656)});
   }
+  progressDebt.terms.push_back(
+      {static_cast<std::uint32_t>(ResolvedPnrViolationKind::ProgressProofDebt),
+       1});
   traversal.terms.push_back({resolvedPnrViolationKindCount, 1});
   spatialEnergy.terms.push_back({resolvedPnrViolationKindCount, 1});
   energy.terms.push_back({resolvedPnrViolationKindCount, 1});
@@ -273,9 +281,18 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
                              BuiltinMappingMeasureKind::
                                  RecurrenceMinimumInitiationIntervalCycles);
     const bool pairing = dimension == operandPairingDimension;
-    if (!recurrence && !pairing)
+    const bool progress =
+        dimension ==
+            resolvedPnrViolationKindCount +
+                static_cast<std::uint32_t>(
+                    BuiltinMappingMeasureKind::ProgressCapacityShortfall) ||
+        dimension ==
+            resolvedPnrViolationKindCount +
+                static_cast<std::uint32_t>(
+                    BuiltinMappingMeasureKind::ProgressRouteAnchorCount);
+    if (!recurrence && !pairing && !progress)
       spatialTiming.terms.push_back({dimension, 1});
-    if (!pairing)
+    if (!pairing && !progress)
       timing.terms.push_back({dimension, 1});
     const bool transport =
         dimension ==
@@ -291,12 +308,26 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
                                          : UINT64_C(4294967296)});
   }
   operandPairing.terms.push_back({operandPairingDimension, 1});
+  progressCapacity.terms.push_back(
+      {resolvedPnrViolationKindCount +
+           static_cast<std::uint32_t>(
+               BuiltinMappingMeasureKind::ProgressCapacityShortfall),
+       1});
+  progressAnchors.terms.push_back(
+      {resolvedPnrViolationKindCount +
+           static_cast<std::uint32_t>(
+               BuiltinMappingMeasureKind::ProgressRouteAnchorCount),
+       1});
   catalogs.weightedLevels = {
-      std::move(traversal),      std::move(schedule),
-      std::move(operandPairing), std::move(spatialTiming),
-      std::move(closure),        std::move(timing),
-      std::move(spatialEnergy),  std::move(energy)};
-  catalogs.totalOrderings = {{{4, 3, 1, 0, 2}}, {{4, 5, 1, 0, 2}}};
+      std::move(progressDebt),   std::move(traversal),
+      std::move(schedule),       std::move(operandPairing),
+      std::move(progressCapacity), std::move(progressAnchors),
+      std::move(spatialTiming),  std::move(closure),
+      std::move(timing),         std::move(spatialEnergy),
+      std::move(energy)};
+  catalogs.totalOrderings = {
+      {{7, 0, 4, 5, 6, 2, 1, 3}},
+      {{7, 0, 4, 5, 8, 2, 1, 3}}};
   return catalogs;
 }
 
