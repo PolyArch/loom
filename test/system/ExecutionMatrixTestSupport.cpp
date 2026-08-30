@@ -1883,12 +1883,14 @@ void verifyHeterogeneousSystemAnchor() {
   const auto tech =
       take(test,
            mapping::importTechMapping(fixture.hardware.techMapping, artifacts));
-  auto progress = take(
+    auto progress = take(
       test, mapping::deriveSpatialMappingProgressClosure(
                 dataflow, tech.view(), module,
                 fixture.hardware.spatialMapping.view().computeBindings(),
                 fixture.hardware.spatialMapping.view().registerFifoTransfers(),
-                fixture.hardware.spatialMapping.view().routeTrees()));
+                fixture.hardware.spatialMapping.view().routeTrees(),
+                fixture.hardware.spatialMapping.view().resourceUses(),
+                fixture.hardware.spatialMapping.view().physicalTagSegments()));
   require(test,
           progress.kind ==
               mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet,
@@ -1922,7 +1924,9 @@ void verifyHeterogeneousSystemAnchor() {
                 dataflow, tech.view(), module,
                 fixture.hardware.spatialMapping.view().computeBindings(),
                 fixture.hardware.spatialMapping.view().registerFifoTransfers(),
-                unbufferedRoutes));
+                unbufferedRoutes,
+                fixture.hardware.spatialMapping.view().resourceUses(),
+                fixture.hardware.spatialMapping.view().physicalTagSegments()));
   require(test,
           closedWait.kind ==
               mapping::MappingProgressClosureKind::ProvenClosedWaitSet,

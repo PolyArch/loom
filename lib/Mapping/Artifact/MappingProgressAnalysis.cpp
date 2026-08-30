@@ -2,6 +2,8 @@
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Mapping/Artifact/SystemMappingClosureProjection.h"
 
+#include "ConfiguredHardwareProjectionInternal.h"
+
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -61,6 +63,44 @@ void appendI64(std::string &bytes, std::int64_t value) {
 void appendSized(std::string &bytes, llvm::ArrayRef<std::uint8_t> value) {
   appendU64(bytes, value.size());
   bytes.append(reinterpret_cast<const char *>(value.data()), value.size());
+}
+
+/// Canonical byte key of one static wait-for node, used for interning and for
+/// the deterministic witness order. The key is a pure function of the typed
+/// identity; it is never persisted.
+std::string staticWaitNodeKey(const MappingStaticWaitNode &node) {
+  std::string key;
+  key.push_back(static_cast<char>(node.index()));
+  if (const auto *storage =
+          std::get_if<MappingStorageQueueProgressNode>(&node)) {
+    const std::vector<std::uint8_t> owner =
+        ::loom::fabric::canonicalFabricBytes(storage->owner);
+    key.append(reinterpret_cast<const char *>(owner.data()), owner.size());
+    key.push_back(
+        static_cast<char>(storage->queueClass.kind ==
+                                  MappingStaticQueueClassKind::PhysicalTag
+                              ? 1
+                              : 0));
+    appendU32(key, storage->queueClass.tagValue.getBitWidth());
+    for (unsigned word = 0; word != storage->queueClass.tagValue.getNumWords();
+         ++word)
+      appendU64(key, storage->queueClass.tagValue.getRawData()[word]);
+  } else if (const auto *actor = std::get_if<::dataflow::ActorRef>(&node)) {
+    for (std::uint8_t byte : actor->artifact.bytes())
+      key.push_back(static_cast<char>(byte));
+    appendU64(key, actor->entity.value());
+  } else {
+    const auto &operand = std::get<MappingOperandQueueProgressNode>(node);
+    const std::vector<std::uint8_t> context =
+        ::loom::fabric::canonicalFabricBytes(operand.queue.context);
+    key.append(reinterpret_cast<const char *>(context.data()), context.size());
+    appendU64(key, operand.queue.fuOccurrence);
+    appendU64(key, operand.queue.fuInput);
+    const std::vector<std::uint8_t> fu =
+        ::loom::fabric::canonicalFabricBytes(operand.fu);
+    key.append(reinterpret_cast<const char *>(fu.data()), fu.size());
+  }
+  return key;
 }
 
 llvm::Expected<std::string> eventKey(const ArtifactIdentity &dataflowIdentity,
@@ -1213,7 +1253,8 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
   return deriveMappingProgressClosure(
       model, MappingProgressProjectionView{
                  projection.basis, projection.routeObligations,
-                 projection.capacityCells, projection.resourceActivations});
+                 projection.capacityCells, projection.resourceActivations,
+                 projection.bufferDependencyEdges});
 }
 
 llvm::Expected<MappingProgressClosure>
@@ -1223,6 +1264,7 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
     return MappingProgressClosure{
         MappingProgressClosureKind::ProofNotEstablished,
         MappingProgressClosureReason::CyclicDataflowBasis,
+        {},
         {}};
   if (llvm::any_of(projection.routeObligations, [](const auto &obligation) {
         return obligation.kind == MappingRouteProgressObligationKind::
@@ -1232,6 +1274,7 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
     return MappingProgressClosure{
         MappingProgressClosureKind::ProvenClosedWaitSet,
         MappingProgressClosureReason::MissingDurableBoundary,
+        {},
         {}};
   if (llvm::any_of(projection.routeObligations, [](const auto &obligation) {
         return obligation.kind ==
@@ -1241,7 +1284,151 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
     return MappingProgressClosure{
         MappingProgressClosureKind::ProofNotEstablished,
         MappingProgressClosureReason::FiniteBufferRecurrenceNotEstablished,
+        {},
         {}};
+
+  // The static buffer-dependency graph quotes only mandatory conjunctive wait
+  // facts. A strongly connected component is a certificate only when it is
+  // closed: every member's waits stay inside the component. A closed component
+  // of pure order/join edges is a proven closed wait; one carrying a capacity
+  // edge additionally requires the capacity proof, so it remains unestablished
+  // here. An indeterminate construction is unestablished, never a proven
+  // cycle.
+  if (!projection.bufferDependencyEdges)
+    return MappingProgressClosure{
+        MappingProgressClosureKind::ProofNotEstablished,
+        MappingProgressClosureReason::BufferDependencyNotEstablished,
+        {},
+        {}};
+  if (!projection.bufferDependencyEdges->empty()) {
+    const auto &edges = *projection.bufferDependencyEdges;
+    std::map<std::string, std::uint32_t> nodeOrdinals;
+    std::vector<MappingStaticWaitNode> nodes;
+    const auto intern = [&](const MappingStaticWaitNode &node) {
+      std::string key = staticWaitNodeKey(node);
+      auto [position, inserted] =
+          nodeOrdinals.try_emplace(std::move(key), nodes.size());
+      if (inserted)
+        nodes.push_back(node);
+      return position->second;
+    };
+    for (const MappingBufferDependencyEdge &edge : edges) {
+      intern(edge.from);
+      intern(edge.to);
+    }
+    // The std::map key order is the canonical node order, so ordinals and the
+    // witness order are deterministic.
+    std::vector<std::vector<std::uint32_t>> successors(nodes.size());
+    std::vector<std::vector<std::uint32_t>> successorEdges(nodes.size());
+    std::vector<bool> selfLoop(nodes.size(), false);
+    for (const auto [edgeOrdinal, edge] : llvm::enumerate(edges)) {
+      const std::uint32_t from = nodeOrdinals[staticWaitNodeKey(edge.from)];
+      const std::uint32_t to = nodeOrdinals[staticWaitNodeKey(edge.to)];
+      if (from == to)
+        selfLoop[from] = true;
+      successors[from].push_back(to);
+      successorEdges[from].push_back(static_cast<std::uint32_t>(edgeOrdinal));
+    }
+    for (std::uint32_t node = 0; node != nodes.size(); ++node) {
+      std::vector<std::uint32_t> order(successors[node].size());
+      std::iota(order.begin(), order.end(), 0);
+      llvm::sort(order, [&](std::uint32_t lhs, std::uint32_t rhs) {
+        return successors[node][lhs] < successors[node][rhs];
+      });
+      std::vector<std::uint32_t> sortedSuccessors;
+      std::vector<std::uint32_t> sortedEdges;
+      for (std::uint32_t position : order) {
+        sortedSuccessors.push_back(successors[node][position]);
+        sortedEdges.push_back(successorEdges[node][position]);
+      }
+      successors[node] = std::move(sortedSuccessors);
+      successorEdges[node] = std::move(sortedEdges);
+    }
+
+    constexpr std::uint32_t absent = std::numeric_limits<std::uint32_t>::max();
+    std::vector<std::uint32_t> index(nodes.size(), absent);
+    std::vector<std::uint32_t> lowlink(nodes.size(), 0);
+    std::vector<bool> onStack(nodes.size(), false);
+    std::vector<std::uint32_t> stack;
+    std::uint32_t nextIndex = 0;
+    std::vector<std::vector<std::uint32_t>> components;
+    std::function<void(std::uint32_t)> connect = [&](std::uint32_t node) {
+      index[node] = lowlink[node] = nextIndex++;
+      stack.push_back(node);
+      onStack[node] = true;
+      for (std::uint32_t successor : successors[node]) {
+        if (index[successor] == absent) {
+          connect(successor);
+          lowlink[node] = std::min(lowlink[node], lowlink[successor]);
+        } else if (onStack[successor]) {
+          lowlink[node] = std::min(lowlink[node], index[successor]);
+        }
+      }
+      if (lowlink[node] != index[node])
+        return;
+      std::vector<std::uint32_t> component;
+      std::uint32_t member;
+      do {
+        member = stack.back();
+        stack.pop_back();
+        onStack[member] = false;
+        component.push_back(member);
+      } while (member != node);
+      llvm::sort(component);
+      components.push_back(std::move(component));
+    };
+    for (std::uint32_t node = 0; node != nodes.size(); ++node)
+      if (index[node] == absent)
+        connect(node);
+
+    std::optional<std::size_t> provenComponent;
+    std::optional<std::size_t> unestablishedComponent;
+    for (const auto [componentOrdinal, component] :
+         llvm::enumerate(components)) {
+      if (component.size() < 2 && !selfLoop[component.front()])
+        continue;
+      std::vector<bool> member(nodes.size(), false);
+      for (std::uint32_t node : component)
+        member[node] = true;
+      bool closed = true;
+      bool carriesCapacity = false;
+      for (std::uint32_t node : component) {
+        for (const auto [position, successor] :
+             llvm::enumerate(successors[node])) {
+          if (!member[successor]) {
+            closed = false;
+            continue;
+          }
+          if (edges[successorEdges[node][position]].kind ==
+              MappingBufferDependencyEdgeKind::DownstreamCapacity)
+            carriesCapacity = true;
+        }
+      }
+      if (!closed)
+        continue;
+      if (carriesCapacity) {
+        if (!unestablishedComponent)
+          unestablishedComponent = componentOrdinal;
+      } else if (!provenComponent) {
+        provenComponent = componentOrdinal;
+      }
+    }
+    if (provenComponent) {
+      std::vector<MappingStaticWaitNode> witness;
+      for (std::uint32_t node : components[*provenComponent])
+        witness.push_back(nodes[node]);
+      return MappingProgressClosure{
+          MappingProgressClosureKind::ProvenClosedWaitSet,
+          MappingProgressClosureReason::ClosedBufferDependencyCycle,
+          {}, std::move(witness)};
+    }
+    if (unestablishedComponent)
+      return MappingProgressClosure{
+          MappingProgressClosureKind::ProofNotEstablished,
+          MappingProgressClosureReason::BufferDependencyNotEstablished,
+          {},
+          {}};
+  }
 
   const auto eventOrdinal = [&](const ::dataflow::EventFamilyKey &event)
       -> llvm::Expected<std::uint32_t> {
@@ -1359,6 +1546,7 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
         return MappingProgressClosure{
             MappingProgressClosureKind::ProvenClosedWaitSet,
             MappingProgressClosureReason::ActivationCapacityExceeded,
+            {},
             {}};
     }
   }
@@ -1370,6 +1558,7 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
       return MappingProgressClosure{
           MappingProgressClosureKind::ProofNotEstablished,
           MappingProgressClosureReason::FixedPriorityStarvation,
+          {},
           {}};
   }
 
@@ -1476,11 +1665,13 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
     }
     return MappingProgressClosure{
         MappingProgressClosureKind::ProofNotEstablished,
-        MappingProgressClosureReason::PossibleWaitCycle, std::move(witness)};
+        MappingProgressClosureReason::PossibleWaitCycle, std::move(witness),
+        {}};
   }
   return MappingProgressClosure{
       MappingProgressClosureKind::ProvenNoClosedWaitSet,
       MappingProgressClosureReason::None,
+      {},
       {}};
 }
 
@@ -1501,6 +1692,10 @@ mappingProgressClosureReasonSpelling(MappingProgressClosureReason reason) {
     return "possible_wait_cycle";
   case MappingProgressClosureReason::FiniteBufferRecurrenceNotEstablished:
     return "finite_buffer_recurrence_not_established";
+  case MappingProgressClosureReason::ClosedBufferDependencyCycle:
+    return "closed_buffer_dependency_cycle";
+  case MappingProgressClosureReason::BufferDependencyNotEstablished:
+    return "buffer_dependency_not_established";
   }
   llvm_unreachable("unknown Mapping progress closure reason");
 }
@@ -1743,6 +1938,296 @@ MappingRouteProgressObligationProjection projectSpatialFiniteBufferRecurrence(
           countSpatialSharedFiniteBuffers(selections) == 0};
 }
 
+llvm::Expected<std::optional<std::vector<MappingBufferDependencyEdge>>>
+projectSpatialBufferDependencyEdges(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueGroups,
+    llvm::ArrayRef<::dataflow::GraphRef> selectedGraphs) {
+  std::set<std::uint64_t> selectedGraphEntities;
+  for (const ::dataflow::GraphRef graph : selectedGraphs) {
+    if (!llvm::is_contained(techMapping.covers(), graph))
+      return invalid("selected progress graph is absent from TechMapping");
+    if (!selectedGraphEntities.insert(graph.entity.value()).second)
+      return invalid("selected progress graph inventory contains a duplicate");
+  }
+
+  // Channels primed by initialized feedback carry an initial token, so their
+  // queue order and acceptance facts cannot participate in a closed wait.
+  auto actorGraph = buildActorDependencyGraph(dataflow, techMapping.covers());
+  if (!actorGraph)
+    return actorGraph.takeError();
+  std::set<std::pair<std::string, std::string>> primedChannels;
+  for (const ActorDependencyGraph::InitializedFeedbackEdge &feedback :
+       actorGraph->initializedFeedbackEdges) {
+    auto producerKey = ::dataflow::encodeDataflowReference(
+        dataflow.identity(),
+        ::dataflow::CanonicalGraphProducerEndpointRef(feedback.producer));
+    if (!producerKey)
+      return producerKey.takeError();
+    auto consumerKey = ::dataflow::encodeDataflowReference(
+        dataflow.identity(),
+        ::dataflow::CanonicalGraphConsumerEndpointRef(feedback.consumer));
+    if (!consumerKey)
+      return consumerKey.takeError();
+    primedChannels.emplace(
+        std::string(reinterpret_cast<const char *>(producerKey->data()),
+                    producerKey->size()),
+        std::string(reinterpret_cast<const char *>(consumerKey->data()),
+                    consumerKey->size()));
+  }
+
+  std::vector<::dataflow::CanonicalGraphProducerEndpointRef> logicalNets;
+  std::vector<MappingBufferDependencyEdge> edges;
+  std::set<std::string> edgeKeys;
+  const auto emit = [&](MappingStaticWaitNode from, MappingStaticWaitNode to,
+                        MappingBufferDependencyEdgeKind kind,
+                        std::uint64_t logicalNetOrdinal,
+                        std::optional<::loom::fabric::FabricPhysicalTraversalRef>
+                            routeAnchor) -> llvm::Error {
+    std::string key = staticWaitNodeKey(from) + staticWaitNodeKey(to);
+    key.push_back(static_cast<char>(kind));
+    appendU64(key, logicalNetOrdinal);
+    if (routeAnchor) {
+      const std::vector<std::uint8_t> anchor =
+          ::loom::fabric::canonicalFabricBytes(*routeAnchor);
+      key.append(reinterpret_cast<const char *>(anchor.data()), anchor.size());
+    }
+    if (!edgeKeys.insert(std::move(key)).second)
+      return llvm::Error::success();
+    edges.push_back(MappingBufferDependencyEdge{std::move(from), std::move(to),
+                                                kind, logicalNetOrdinal,
+                                                std::move(routeAnchor)});
+    return llvm::Error::success();
+  };
+  const auto producerActorOf =
+      [](const ::dataflow::CanonicalGraphProducerEndpointRef &endpoint)
+      -> std::optional<::dataflow::ActorRef> {
+    const auto *token = std::get_if<::dataflow::ActorTokenResultRef>(&endpoint);
+    return token ? std::optional<::dataflow::ActorRef>(token->actor)
+                 : std::nullopt;
+  };
+  const auto consumerActorOf =
+      [](const ::dataflow::CanonicalGraphConsumerEndpointRef &endpoint)
+      -> std::optional<::dataflow::ActorRef> {
+    const auto *token = std::get_if<::dataflow::ActorTokenOperandRef>(&endpoint);
+    return token ? std::optional<::dataflow::ActorRef>(token->actor)
+                 : std::nullopt;
+  };
+
+  struct StorageStop final {
+    MappingStorageQueueProgressNode node;
+    ::loom::fabric::FabricPhysicalTraversalRef traversal;
+  };
+  struct ChannelStops final {
+    std::optional<::dataflow::ActorRef> producer;
+    std::optional<::dataflow::ActorRef> consumer;
+    std::vector<StorageStop> stops;
+    std::uint64_t netOrdinal = 0;
+    bool primed = false;
+  };
+  std::vector<ChannelStops> channels;
+
+  for (const auto [routeOrdinal, route] : llvm::enumerate(routes)) {
+    auto graph = dataflow.graphOf(route.logicalNet);
+    if (!graph)
+      return graph.takeError();
+    if (selectedGraphEntities.count(graph->entity.value()) == 0)
+      continue;
+    const auto logicalNet = llvm::find(logicalNets, route.logicalNet);
+    if (logicalNet == logicalNets.end()) {
+      logicalNets.push_back(route.logicalNet);
+    }
+    const std::uint64_t netOrdinal = static_cast<std::uint64_t>(
+        std::distance(logicalNets.begin(),
+                      llvm::find(logicalNets, route.logicalNet)));
+    const std::optional<::dataflow::ActorRef> producerActor =
+        producerActorOf(route.logicalNet);
+
+    for (const SpatialRouteSinkView &sink : route.sinks) {
+      const std::optional<::dataflow::ActorRef> consumerActor =
+          consumerActorOf(sink.sink);
+      // The buffered storage sequence along this producer-to-sink path, in
+      // token flow order: the root arc, the ancestor node arcs, then the sink
+      // arc. Each stop names the traversal position whose node carries the
+      // Physical Tag assignment for its queue class.
+      std::vector<
+          std::pair<std::optional<::loom::fabric::FabricPhysicalTraversalRef>,
+                    std::uint64_t>>
+          arcs;
+      arcs.push_back({route.localTraversal, 0});
+      std::vector<
+          std::pair<std::optional<::loom::fabric::FabricPhysicalTraversalRef>,
+                    std::uint64_t>>
+          nodeArcs;
+      std::optional<std::uint64_t> cursor = sink.nodeOrdinal;
+      while (cursor) {
+        if (*cursor >= route.nodes.size())
+          return invalid("RouteTree sink names an absent node");
+        const SpatialRouteNodeView &node = route.nodes[*cursor];
+        if (node.incomingTraversal)
+          nodeArcs.push_back({node.incomingTraversal, node.ordinal});
+        cursor = node.parentOrdinal;
+      }
+      arcs.insert(arcs.end(), nodeArcs.rbegin(), nodeArcs.rend());
+      arcs.push_back({sink.localTraversal, sink.nodeOrdinal});
+
+      ChannelStops channel;
+      channel.producer = producerActor;
+      channel.consumer = consumerActor;
+      channel.netOrdinal = netOrdinal;
+      for (const auto &[traversal, tagNodeOrdinal] : arcs) {
+        if (!traversal)
+          continue;
+        const auto *fifo =
+            std::get_if<::loom::fabric::FabricFifoTraversalPayload>(
+                &traversal->payload);
+        if (!fifo || fifo->mode != ::loom::fabric::FabricFifoTraversalMode::
+                                       Buffered)
+          continue;
+        const ::fabric::FifoQueueDiscipline discipline =
+            fabric.fifoQueueDiscipline(fifo->owner).value_or(
+                ::fabric::FifoQueueDiscipline::StrictFifo);
+        MappingStaticQueueClass queueClass{MappingStaticQueueClassKind::Global,
+                                           llvm::APInt(1, 0)};
+        if (discipline == ::fabric::FifoQueueDiscipline::PerTagVirtualChannel) {
+          // A virtual-channel class is keyed by the exact resident tag bit
+          // value; an untagged path or a missing tag assignment makes the
+          // class indeterminate and the whole construction unestablished.
+          if (route.nodes.empty())
+            return std::optional<std::vector<MappingBufferDependencyEdge>>{};
+          const auto &endpoint = route.nodes[tagNodeOrdinal].endpoint;
+          const auto path = fabric.transportEndpointDataPath(endpoint);
+          if (!path || path->tagWidthBits == 0)
+            return std::optional<std::vector<MappingBufferDependencyEdge>>{};
+          auto tag = detail::resolveConfiguredHardwarePhysicalTag(
+              fabric, routes, resourceUses, physicalTagSegments, routeOrdinal,
+              tagNodeOrdinal);
+          if (!tag)
+            return std::optional<std::vector<MappingBufferDependencyEdge>>{};
+          queueClass = MappingStaticQueueClass{MappingStaticQueueClassKind::
+                                                   PhysicalTag,
+                                               *tag};
+        }
+        channel.stops.push_back(
+            {MappingStorageQueueProgressNode{fifo->owner, queueClass},
+             *traversal});
+      }
+
+      // A channel primed by initialized feedback carries its initial token;
+      // none of its wait facts can participate in a closed wait.
+      if (producerActor && consumerActor) {
+        auto producerKey = ::dataflow::encodeDataflowReference(
+            dataflow.identity(), route.logicalNet);
+        if (!producerKey)
+          return producerKey.takeError();
+        auto consumerKey =
+            ::dataflow::encodeDataflowReference(dataflow.identity(), sink.sink);
+        if (!consumerKey)
+          return consumerKey.takeError();
+        channel.primed =
+            primedChannels.count(
+                {std::string(reinterpret_cast<const char *>(producerKey->data()),
+                             producerKey->size()),
+                 std::string(reinterpret_cast<const char *>(consumerKey->data()),
+                             consumerKey->size())}) != 0;
+      }
+      channels.push_back(std::move(channel));
+    }
+  }
+
+  // A queue class couples the nets resident in it. The terminal head-release
+  // wait (queue class to consumer) exists only when the class couples at
+  // least two nets: with one net the head always belongs to that net and the
+  // delivery is the same handshake as the consumer's input join, never an
+  // independent wait.
+  std::map<std::string, std::set<std::uint64_t>> classNets;
+  for (const ChannelStops &channel : channels) {
+    if (channel.primed)
+      continue;
+    for (const StorageStop &stop : channel.stops)
+      classNets[staticWaitNodeKey(stop.node)].insert(channel.netOrdinal);
+  }
+
+  for (const ChannelStops &channel : channels) {
+    if (channel.primed)
+      continue;
+    if (channel.stops.empty()) {
+      if (channel.producer && channel.consumer) {
+        if (llvm::Error error =
+                emit(*channel.consumer, *channel.producer,
+                     MappingBufferDependencyEdgeKind::ActorInputJoin,
+                     channel.netOrdinal, std::nullopt))
+          return std::move(error);
+      }
+      continue;
+    }
+    if (channel.producer) {
+      if (llvm::Error error =
+              emit(*channel.producer, channel.stops.front().node,
+                   MappingBufferDependencyEdgeKind::OutputCausalRelease,
+                   channel.netOrdinal, channel.stops.front().traversal))
+        return std::move(error);
+    }
+    for (std::size_t stop = 1; stop != channel.stops.size(); ++stop)
+      if (llvm::Error error =
+              emit(channel.stops[stop - 1].node, channel.stops[stop].node,
+                   MappingBufferDependencyEdgeKind::DownstreamCapacity,
+                   channel.netOrdinal, channel.stops[stop].traversal))
+        return std::move(error);
+    if (channel.consumer) {
+      const StorageStop &terminal = channel.stops.back();
+      if (llvm::Error error =
+              emit(*channel.consumer, terminal.node,
+                   MappingBufferDependencyEdgeKind::ActorInputJoin,
+                   channel.netOrdinal, terminal.traversal))
+        return std::move(error);
+      const auto coupled = classNets.find(staticWaitNodeKey(terminal.node));
+      if (coupled != classNets.end() && coupled->second.size() >= 2) {
+        if (llvm::Error error =
+                emit(terminal.node, *channel.consumer,
+                     MappingBufferDependencyEdgeKind::ActorInputJoin,
+                     channel.netOrdinal, terminal.traversal))
+          return std::move(error);
+      }
+    }
+  }
+
+  for (const SpatialPeOperandQueueMatchGroupView &group : operandQueueGroups) {
+    auto graph = dataflow.graphOf(group.logicalNet);
+    if (!graph)
+      return graph.takeError();
+    if (selectedGraphEntities.count(graph->entity.value()) == 0)
+      continue;
+    const auto logicalNet = llvm::find(logicalNets, group.logicalNet);
+    if (logicalNet == logicalNets.end())
+      logicalNets.push_back(group.logicalNet);
+    const std::uint64_t netOrdinal = static_cast<std::uint64_t>(
+        std::distance(logicalNets.begin(), logicalNet));
+    for (const SpatialPeOperandQueueMatchView &match : group.matches) {
+      const MappingOperandQueueProgressNode queueNode{match.queue, match.fu};
+      for (const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer :
+           match.consumers) {
+        const std::optional<::dataflow::ActorRef> consumerActor =
+            consumerActorOf(consumer);
+        if (!consumerActor)
+          continue;
+        if (llvm::Error error =
+                emit(*consumerActor, queueNode,
+                     MappingBufferDependencyEdgeKind::OperandQueueOwner,
+                     netOrdinal, std::nullopt))
+          return std::move(error);
+      }
+    }
+  }
+  return std::optional<std::vector<MappingBufferDependencyEdge>>(
+      std::move(edges));
+}
+
 llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
@@ -1750,6 +2235,9 @@ llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
     llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueGroups,
     llvm::ArrayRef<::dataflow::GraphRef> selectedGraphs) {
   std::set<std::uint64_t> selectedGraphEntities;
   for (const ::dataflow::GraphRef graph : selectedGraphs) {
@@ -1765,6 +2253,12 @@ llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
   result.basis = *basis;
   result.routeObligations.push_back(
       projectSpatialFiniteBufferRecurrence(routes));
+  auto bufferDependencyEdges = projectSpatialBufferDependencyEdges(
+      dataflow, techMapping, fabric, routes, resourceUses, physicalTagSegments,
+      operandQueueGroups, selectedGraphs);
+  if (!bufferDependencyEdges)
+    return bufferDependencyEdges.takeError();
+  result.bufferDependencyEdges = std::move(*bufferDependencyEdges);
   auto temporalDispatchDomains =
       deriveSpatialTemporalPeDispatchDomains(fabric, computeBindings);
   if (!temporalDispatchDomains)
@@ -1994,6 +2488,8 @@ llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
     llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments,
     llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueGroups) {
   if (!operandQueueGroups.empty()) {
     auto feedback = deriveSpatialPeOperandProgressFeedback(
@@ -2024,7 +2520,8 @@ llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
   // exact queue-level closed-wait witness may change closure status.
   auto projection = projectSpatialMappingProgress(
       dataflow, techMapping, fabric, computeBindings, registerFifoTransfers,
-      routes, techMapping.covers());
+      routes, resourceUses, physicalTagSegments, operandQueueGroups,
+      techMapping.covers());
   if (!projection)
     return projection.takeError();
   auto model = freezeMappingProgressModel(dataflow, {});

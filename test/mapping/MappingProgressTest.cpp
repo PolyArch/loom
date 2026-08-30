@@ -11,6 +11,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -568,12 +569,229 @@ void orderedRuntimeHeadsRequireCompleteExactPairing() {
     fail("dormant empty pairing was treated as an incomplete head");
 }
 
+using loom::mapping::MappingBufferDependencyEdge;
+using loom::mapping::MappingBufferDependencyEdgeKind;
+using loom::mapping::MappingStaticQueueClass;
+using loom::mapping::MappingStaticQueueClassKind;
+using loom::mapping::MappingStaticWaitNode;
+using loom::mapping::MappingStorageQueueProgressNode;
+
+MappingStaticWaitNode globalQueueNode(std::uint64_t fifoId) {
+  return MappingStorageQueueProgressNode{
+      loom::fabric::FabricFifoOccurrenceRef(fifoId),
+      MappingStaticQueueClass{MappingStaticQueueClassKind::Global,
+                              llvm::APInt(1, 0)}};
+}
+
+MappingStaticWaitNode tagQueueNode(std::uint64_t fifoId, std::uint64_t tag) {
+  return MappingStorageQueueProgressNode{
+      loom::fabric::FabricFifoOccurrenceRef(fifoId),
+      MappingStaticQueueClass{MappingStaticQueueClassKind::PhysicalTag,
+                              llvm::APInt(4, tag)}};
+}
+
+MappingStaticWaitNode actorNode(std::uint64_t actorId) {
+  return dataflow::ActorRef{identity(31), dataflow::ActorId(actorId)};
+}
+
+MappingBufferDependencyEdge
+waitEdge(MappingStaticWaitNode from, MappingStaticWaitNode to,
+         MappingBufferDependencyEdgeKind kind) {
+  return MappingBufferDependencyEdge{std::move(from), std::move(to), kind, 0,
+                                     std::nullopt};
+}
+
+/// The four-channel head-of-line fixture: a strict FIFO queue shared by two
+/// nets whose consumers each forward through a second shared queue. Under one
+/// global queue class the order/join edges close a cycle; splitting the shared
+/// owner into per-tag classes breaks it.
+struct HolFixture final {
+  // Channel topology: net1 P1->C2 and net2 P2->C1 through queue 7;
+  // netX C1->C2 and netY P3->C2 through queue 8.
+  std::vector<MappingBufferDependencyEdge> strictEdges() const {
+    const MappingStaticWaitNode q = globalQueueNode(7);
+    const MappingStaticWaitNode q2 = globalQueueNode(8);
+    return {
+        waitEdge(actorNode(2), q, MappingBufferDependencyEdgeKind::
+                                      ActorInputJoin), // C2 joins net2
+        waitEdge(q, actorNode(1),
+                 MappingBufferDependencyEdgeKind::
+                     ActorInputJoin), // queue head release waits on C1
+        waitEdge(actorNode(1), q2, MappingBufferDependencyEdgeKind::
+                                       OutputCausalRelease), // C1 releases netX
+        waitEdge(q2, actorNode(2),
+                 MappingBufferDependencyEdgeKind::
+                     ActorInputJoin), // queue 8 head release waits on C2
+    };
+  }
+
+  // The same topology with queue 7 split into one class per resident tag
+  // value: net1 carries tag 3 and net2 carries tag 5.
+  std::vector<MappingBufferDependencyEdge> virtualChannelEdges() const {
+    const MappingStaticWaitNode qT1 = tagQueueNode(7, 3);
+    const MappingStaticWaitNode qT2 = tagQueueNode(7, 5);
+    const MappingStaticWaitNode q2 = globalQueueNode(8);
+    return {
+        waitEdge(actorNode(2), qT2, MappingBufferDependencyEdgeKind::
+                                        ActorInputJoin), // C2 joins net2
+        waitEdge(qT1, actorNode(1),
+                 MappingBufferDependencyEdgeKind::
+                     ActorInputJoin), // tag-3 channel head release waits on C1
+        waitEdge(actorNode(1), q2, MappingBufferDependencyEdgeKind::
+                                       OutputCausalRelease), // C1 releases netX
+        waitEdge(q2, actorNode(2),
+                 MappingBufferDependencyEdgeKind::
+                     ActorInputJoin), // queue 8 head release waits on C2
+    };
+  }
+
+  // The same virtual-channel topology with one shared tag value: both nets
+  // occupy one class, so the order cycle closes again.
+  std::vector<MappingBufferDependencyEdge> sameTagEdges() const {
+    const MappingStaticWaitNode q = tagQueueNode(7, 3);
+    const MappingStaticWaitNode q2 = globalQueueNode(8);
+    return {
+        waitEdge(actorNode(2), q, MappingBufferDependencyEdgeKind::
+                                      ActorInputJoin), // C2 joins net2
+        waitEdge(q, actorNode(1),
+                 MappingBufferDependencyEdgeKind::
+                     ActorInputJoin), // queue head release waits on C1
+        waitEdge(actorNode(1), q2, MappingBufferDependencyEdgeKind::
+                                       OutputCausalRelease), // C1 releases netX
+        waitEdge(q2, actorNode(2),
+                 MappingBufferDependencyEdgeKind::
+                     ActorInputJoin), // queue 8 head release waits on C2
+    };
+  }
+};
+
+void bufferDependencyClosure() {
+  mlir::DialectRegistry registry;
+  registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.graph private @trivial(%start: none) -> ()
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    dataflow.graph.return values() streams() memories()
+        complete(%start : none)
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse buffer-dependency fixture");
+  auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
+  const auto view = take(artifact.view());
+  const auto model =
+      take(loom::mapping::freezeMappingProgressModel(view, /*events=*/{}));
+  loom::mapping::MappingProgressProjection projection;
+  projection.basis.kind =
+      loom::mapping::MappingDataflowProgressBasisKind::Acyclic;
+  const HolFixture fixture;
+
+  const auto closureOf = [&](std::vector<MappingBufferDependencyEdge> edges) {
+    loom::mapping::MappingProgressProjection candidate = projection;
+    candidate.bufferDependencyEdges = std::move(edges);
+    return take(
+        loom::mapping::deriveMappingProgressClosure(model, candidate));
+  };
+  const auto provenCycle = [](const loom::mapping::MappingProgressClosure
+                                  &closure) {
+    return closure.kind ==
+               loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet &&
+           closure.reason == loom::mapping::MappingProgressClosureReason::
+                                 ClosedBufferDependencyCycle;
+  };
+  const auto notEstablished = [](const loom::mapping::MappingProgressClosure
+                                     &closure) {
+    return closure.kind ==
+               loom::mapping::MappingProgressClosureKind::ProofNotEstablished &&
+           closure.reason == loom::mapping::MappingProgressClosureReason::
+                                 BufferDependencyNotEstablished;
+  };
+
+  // A cross-tag order cycle through one shared strict queue is a proven
+  // closed wait.
+  const auto strict = closureOf(fixture.strictEdges());
+  if (!provenCycle(strict))
+    fail("shared strict queue order cycle was not proven");
+  if (strict.bufferDependencyCycle.size() != 4)
+    fail("proven buffer-dependency cycle lost its exact component");
+  for (const MappingStaticWaitNode &node :
+       {globalQueueNode(7), globalQueueNode(8), actorNode(1), actorNode(2)})
+    if (!llvm::is_contained(strict.bufferDependencyCycle, node))
+      fail("proven buffer-dependency cycle omitted a component member");
+
+  // The same topology with per-tag classes does not couple the two nets.
+  if (closureOf(fixture.virtualChannelEdges()).kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("virtual-channel classes did not break the cross-tag order cycle");
+
+  // One shared tag value couples the nets again.
+  if (!provenCycle(closureOf(fixture.sameTagEdges())))
+    fail("same-tag virtual-channel order cycle was not proven");
+
+  // A cycle carrying a capacity edge stays unestablished without the capacity
+  // proof.
+  const std::vector<MappingBufferDependencyEdge> capacityCycle{
+      waitEdge(globalQueueNode(7), globalQueueNode(8),
+               MappingBufferDependencyEdgeKind::DownstreamCapacity),
+      waitEdge(globalQueueNode(8), globalQueueNode(7),
+               MappingBufferDependencyEdgeKind::DownstreamCapacity)};
+  if (!notEstablished(closureOf(capacityCycle)))
+    fail("capacity-only queue cycle was reported without a capacity proof");
+
+  // A capacity edge inside an order cycle also stays unestablished.
+  std::vector<MappingBufferDependencyEdge> mixed = fixture.strictEdges();
+  mixed.push_back(waitEdge(globalQueueNode(7), globalQueueNode(8),
+                           MappingBufferDependencyEdgeKind::DownstreamCapacity));
+  if (!notEstablished(closureOf(mixed)))
+    fail("capacity-carrying order cycle was reported without a capacity proof");
+
+  // A component with a wait leaving it is not closed and never becomes a
+  // witness.
+  std::vector<MappingBufferDependencyEdge> open = fixture.strictEdges();
+  open.push_back(waitEdge(actorNode(1), actorNode(3),
+                          MappingBufferDependencyEdgeKind::ActorInputJoin));
+  if (closureOf(open).kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("an open component was reported as a closed wait");
+
+  // An indeterminate construction is unestablished, never a proven cycle.
+  loom::mapping::MappingProgressProjection indeterminate = projection;
+  indeterminate.bufferDependencyEdges = std::nullopt;
+  if (!notEstablished(take(loom::mapping::deriveMappingProgressClosure(
+          model, indeterminate))))
+    fail("an indeterminate construction was not reported as unestablished");
+
+  // The route-obligation family keeps precedence: an unestablished finite
+  // buffer recurrence still wins over a proven buffer-dependency cycle.
+  loom::mapping::MappingProgressProjection shared = projection;
+  shared.bufferDependencyEdges = fixture.strictEdges();
+  shared.routeObligations.push_back(
+      {loom::mapping::MappingRouteProgressObligationKind::
+           FiniteBufferRecurrence,
+       false});
+  const auto sharedClosure =
+      take(loom::mapping::deriveMappingProgressClosure(model, shared));
+  if (sharedClosure.kind !=
+          loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
+      sharedClosure.reason !=
+          loom::mapping::MappingProgressClosureReason::
+              FiniteBufferRecurrenceNotEstablished)
+    fail("finite buffer recurrence lost its precedence over the buffer "
+         "dependency closure");
+}
+
 } // namespace
 
 int main() {
   initializedFeedbackProgressBasis();
   completionFrontierRequiresReadyRoots();
   orderedRuntimeHeadsRequireCompleteExactPairing();
+  bufferDependencyClosure();
   llvm::outs() << "mapping progress tests passed\n";
   return EXIT_SUCCESS;
 }

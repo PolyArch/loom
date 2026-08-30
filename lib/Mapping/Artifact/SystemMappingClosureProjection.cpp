@@ -803,7 +803,9 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
         dataflow, tech->second.view(), *module,
         spatial->second->view().computeBindings(),
         spatial->second->view().registerFifoTransfers(),
-        spatial->second->view().routeTrees(), selected);
+        spatial->second->view().routeTrees(),
+        spatial->second->view().resourceUses(),
+        spatial->second->view().physicalTagSegments(), {}, selected);
     if (!progress)
       return progress.takeError();
     result.routeObligations.insert(result.routeObligations.end(),

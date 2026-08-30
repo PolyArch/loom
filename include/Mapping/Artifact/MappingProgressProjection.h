@@ -2,13 +2,18 @@
 #define LOOM_MAPPING_ARTIFACT_MAPPINGPROGRESSPROJECTION_H
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/IR/TemporalOperandBuffer.h"
+#include "Fabric/Identity/FabricRefs.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Mapping/Artifact/SystemPresburger.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace loom::mapping {
@@ -29,6 +34,8 @@ enum class MappingProgressClosureReason : std::uint8_t {
   FixedPriorityStarvation,
   PossibleWaitCycle,
   FiniteBufferRecurrenceNotEstablished,
+  ClosedBufferDependencyCycle,
+  BufferDependencyNotEstablished,
 };
 
 enum class MappingProgressWaitNodeKind : std::uint8_t {
@@ -48,12 +55,107 @@ struct MappingProgressWaitCycleNode final {
   std::vector<std::uint32_t> causalReleaseEventOrdinals;
 };
 
+/// The queue partition a static wait fact refers to. A strict FIFO owner has
+/// exactly one Global class coupling every resident net; a per-tag virtual
+/// channel owner has one PhysicalTag class per selected resident tag value,
+/// named by the exact tag bit value.
+enum class MappingStaticQueueClassKind : std::uint8_t {
+  Global,
+  PhysicalTag,
+};
+
+struct MappingStaticQueueClass final {
+  MappingStaticQueueClassKind kind = MappingStaticQueueClassKind::Global;
+  llvm::APInt tagValue = llvm::APInt(1, 0);
+
+  friend bool operator==(const MappingStaticQueueClass &lhs,
+                         const MappingStaticQueueClass &rhs) {
+    return lhs.kind == rhs.kind && lhs.tagValue == rhs.tagValue;
+  }
+  friend bool operator!=(const MappingStaticQueueClass &lhs,
+                         const MappingStaticQueueClass &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// One physical queue of one selected Buffered FIFO occurrence in the static
+/// wait-for graph.
+struct MappingStorageQueueProgressNode final {
+  ::loom::fabric::FabricFifoOccurrenceRef owner;
+  MappingStaticQueueClass queueClass;
+
+  friend bool operator==(const MappingStorageQueueProgressNode &lhs,
+                         const MappingStorageQueueProgressNode &rhs) {
+    return lhs.owner == rhs.owner && lhs.queueClass == rhs.queueClass;
+  }
+  friend bool operator!=(const MappingStorageQueueProgressNode &lhs,
+                         const MappingStorageQueueProgressNode &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// One logical operand queue of one temporal PE FU in the static wait-for
+/// graph.
+struct MappingOperandQueueProgressNode final {
+  ::fabric::LogicalOperandQueueKey queue;
+  ::loom::fabric::FabricFuOccurrenceRef fu;
+
+  friend bool operator==(const MappingOperandQueueProgressNode &lhs,
+                         const MappingOperandQueueProgressNode &rhs) {
+    return lhs.queue == rhs.queue && lhs.fu == rhs.fu;
+  }
+  friend bool operator!=(const MappingOperandQueueProgressNode &lhs,
+                         const MappingOperandQueueProgressNode &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+using MappingStaticWaitNode =
+    std::variant<MappingStorageQueueProgressNode, ::dataflow::ActorRef,
+                 MappingOperandQueueProgressNode>;
+
+/// The mandatory conjunctive wait fact one static buffer-dependency edge
+/// quotes. The edge direction is wait-for: the source cannot complete its
+/// pending transition until the destination makes progress.
+enum class MappingBufferDependencyEdgeKind : std::uint8_t {
+  /// A queue class head cannot continue into the downstream storage queue,
+  /// whose shared slot pool may be full. Capacity-carrying edge: a cycle that
+  /// contains one is proven only together with a capacity proof.
+  DownstreamCapacity,
+  /// A queue class head reached the route terminal but the consumer actor has
+  /// an all-input join on it, or an unbuffered producer's release is joined by
+  /// its consumer directly.
+  ActorInputJoin,
+  /// A producer actor's causal release of an output token waits on the first
+  /// buffered storage of that output route accepting it.
+  OutputCausalRelease,
+  /// An actor firing's input wait joins at the exact temporal operand queue
+  /// head owner.
+  OperandQueueOwner,
+};
+
+/// One edge of the static buffer-dependency graph. The logical net ordinal and
+/// the route anchor are witness diagnostics; the wait fact is the node pair
+/// and the kind.
+struct MappingBufferDependencyEdge final {
+  MappingStaticWaitNode from;
+  MappingStaticWaitNode to;
+  MappingBufferDependencyEdgeKind kind =
+      MappingBufferDependencyEdgeKind::ActorInputJoin;
+  std::optional<std::uint64_t> logicalNetOrdinal;
+  std::optional<::loom::fabric::FabricPhysicalTraversalRef> routeAnchor;
+};
+
 struct MappingProgressClosure final {
   MappingProgressClosureKind kind =
       MappingProgressClosureKind::ProofNotEstablished;
   MappingProgressClosureReason reason =
       MappingProgressClosureReason::CyclicDataflowBasis;
   std::vector<MappingProgressWaitCycleNode> possibleWaitCycle;
+  /// The exact static wait-for component when the reason is
+  /// ClosedBufferDependencyCycle: the closed strongly connected component of
+  /// the buffer-dependency graph, in canonical node order.
+  std::vector<MappingStaticWaitNode> bufferDependencyCycle;
 };
 
 enum class MappingDataflowProgressBasisKind : std::uint8_t {
@@ -130,6 +232,12 @@ struct MappingProgressProjection final {
   std::vector<MappingRouteProgressObligationProjection> routeObligations;
   std::vector<MappingProgressCapacityCellProjection> capacityCells;
   std::vector<MappingProgressActivationProjection> resourceActivations;
+  /// The static buffer-dependency edge set. Engaged and empty when the mapping
+  /// carries no buffer wait facts; disengaged when any queue class, tag
+  /// residency, or relation domain is indeterminate, which the kernel reports
+  /// as BufferDependencyNotEstablished and never as a proven cycle.
+  std::optional<std::vector<MappingBufferDependencyEdge>>
+      bufferDependencyEdges = std::vector<MappingBufferDependencyEdge>{};
 };
 
 /// A non-owning projection consumed synchronously by the progress kernel.
@@ -139,6 +247,8 @@ struct MappingProgressProjectionView final {
   llvm::ArrayRef<MappingRouteProgressObligationProjection> routeObligations;
   llvm::ArrayRef<MappingProgressCapacityCellProjection> capacityCells;
   llvm::ArrayRef<MappingProgressActivationProjection> resourceActivations;
+  const std::optional<std::vector<MappingBufferDependencyEdge>>
+      &bufferDependencyEdges;
 };
 
 } // namespace loom::mapping

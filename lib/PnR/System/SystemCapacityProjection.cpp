@@ -904,10 +904,18 @@ finalizeSystemCandidateProjection(
   for (const auto &[ordinal, cell] : llvm::enumerate(resources.cells()))
     capacityCells.push_back(
         {cell.capacity, demand->baselineOccupancy[ordinal]});
+  // This System PnR demand path projects service and imported-route
+  // obligations only; the buffer-dependency edge set stays engaged-empty,
+  // which the progress kernel treats as a no-op.
+  const std::optional<
+      std::vector<::loom::mapping::MappingBufferDependencyEdge>>
+      bufferDependencyEdges =
+          std::vector<::loom::mapping::MappingBufferDependencyEdge>{};
   auto progress = ::loom::mapping::deriveMappingProgressClosure(
       progressModel, ::loom::mapping::MappingProgressProjectionView{
                          cache.nonRoute->basis, routeObligations, capacityCells,
-                         cache.nonRoute->progressActivations});
+                         cache.nonRoute->progressActivations,
+                         bufferDependencyEdges});
   if (!progress)
     return progress.takeError();
   return SystemCandidatePhysicalDemandProjection{std::move(demand->capacity),

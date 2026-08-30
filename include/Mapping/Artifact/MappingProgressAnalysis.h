@@ -202,6 +202,25 @@ std::uint64_t countSpatialSharedFiniteBuffers(
 MappingRouteProgressObligationProjection projectSpatialFiniteBufferRecurrence(
     llvm::ArrayRef<SpatialRouteTreeView> routes);
 
+/// Projects the static buffer-dependency edge set of the selected graphs:
+/// every mandatory conjunctive wait fact between queue classes of selected
+/// Buffered FIFOs, actor firings, and temporal operand queues, quoted from the
+/// selected route trees, the Physical Tag segments, and the operand queue
+/// inventory. Channels primed by initialized feedback carry no wait fact: the
+/// initial token breaks the closed wait. Returns a disengaged optional when a
+/// queue class, tag residency, or relation domain is indeterminate; the kernel
+/// reports that as ProofNotEstablished and never as a proven cycle.
+llvm::Expected<std::optional<std::vector<MappingBufferDependencyEdge>>>
+projectSpatialBufferDependencyEdges(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueGroups,
+    llvm::ArrayRef<::dataflow::GraphRef> selectedGraphs);
+
 llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
@@ -209,6 +228,9 @@ llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
     llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueGroups,
     llvm::ArrayRef<::dataflow::GraphRef> selectedGraphs);
 
 struct SystemTransferRouteProgressDependency final {
@@ -243,6 +265,8 @@ llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
     llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments,
     llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueGroups =
         {});
 

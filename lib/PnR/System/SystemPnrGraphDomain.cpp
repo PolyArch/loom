@@ -159,7 +159,9 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
           dataflow, techView, *spatialModule,
           (*spatial)->view().computeBindings(),
           (*spatial)->view().registerFifoTransfers(),
-          (*spatial)->view().routeTrees(), selected);
+          (*spatial)->view().routeTrees(), (*spatial)->view().resourceUses(),
+          (*spatial)->view().physicalTagSegments(), *operandQueueGroups,
+          selected);
       if (!progress)
         return progress.takeError();
       graphProgress.push_back({graph, std::move(progress->routeObligations)});
