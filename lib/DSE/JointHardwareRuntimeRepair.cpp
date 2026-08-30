@@ -886,7 +886,9 @@ executeSpatialFifoHardwareFeedbackReopen(
   JointSpatialFifoHardwareRepair result{feedback, {}, {}, {}, false};
   if (feedback.disposition != SpatialFifoRuntimeFeedbackDisposition::Exact)
     return result;
-  if (!feedback.fifo || !feedback.minimumCandidateDepth)
+  if (!feedback.fifo ||
+      (!feedback.minimumCandidateDepth &&
+       !feedback.candidateQueueDiscipline))
     return invalid("exact FIFO feedback has no physical candidate");
   if (parentPlan.pairOutputs.size() != 1 || request.journalRoot.empty())
     return invalid("FIFO hardware repair requires one exact parent pair");
@@ -901,44 +903,84 @@ executeSpatialFifoHardwareFeedbackReopen(
       mapping::importSpatialMapping(feedback.spatialMapping, artifacts);
   if (!parentSpatial)
     return parentSpatial.takeError();
-  result.candidateLimit = 1;
-  if (dispatchDeadlineReached(request.executionPolicy)) {
-    result.candidatesPlanned = 1;
-    result.candidatesReserved = 1;
-    result.candidatesCancelled = 1;
-    return result;
-  }
-  result.candidatesPlanned = 1;
-  result.candidatesReserved = 1;
   ArtifactRootReference parentModule{
       fabric::fabricArtifactSchema.identity.str(),
       fabric::fabricArtifactSchema.version,
       parentSpatial->view().fabricIdentity()};
+  auto module = fabric::importEntireFabricRoot(parentModule, artifacts);
+  if (!module)
+    return module.takeError();
+  const auto currentDiscipline =
+      module->view().fifoQueueDiscipline(*feedback.fifo);
+  if (!currentDiscipline ||
+      (feedback.currentQueueDiscipline &&
+       *feedback.currentQueueDiscipline != *currentDiscipline))
+    return invalid("FIFO feedback discipline disagrees with its Module");
 
-  HardwareRecipeGrowth growth;
-  growth.config = parentPlan.resolvedConfig;
-  growth.config.dse.planNodes.clear();
-  growth.techModule = parentModule;
-  growth.fifoResize =
-      ResizeFifo{*feedback.fifo, *feedback.minimumCandidateDepth};
-  auto child = materializeTypedModuleSystemGrowth(
-      std::move(growth), parentPair.system, artifacts, blobs);
-  if (!child)
-    return child.takeError();
-  const ArtifactRootReference childReference = child->reference;
-  auto repaired = executeTypedModuleHardwareReopen(
-      parentPlan, parentExecution, policy, feedback.parentMapping,
-      std::move(*child), std::move(request), "spatial_fifo_hardware_repair",
-      artifacts, blobs);
-  if (!repaired)
-    return repaired.takeError();
-  result.candidatesConsumed = 1;
-  if (result.candidatesConsumed + result.candidatesRejected !=
-      result.candidatesReserved)
-    return invalid("FIFO hardware repair candidate ledger is not closed");
-  result.childSystems.push_back(childReference);
-  result.reuseDispositions.push_back(repaired->disposition);
-  result.executions.push_back(std::move(repaired->execution));
+  std::vector<SpatialMicroarchitectureDecision> decisions;
+  if (feedback.candidateQueueDiscipline) {
+    if (*feedback.candidateQueueDiscipline == *currentDiscipline)
+      return invalid("FIFO feedback discipline candidate is a no-op");
+    decisions.push_back(ChangeFifoQueueDiscipline{
+        *feedback.fifo, *feedback.candidateQueueDiscipline});
+  }
+  if (feedback.minimumCandidateDepth)
+    decisions.push_back(
+        ResizeFifo{*feedback.fifo, *feedback.minimumCandidateDepth});
+  result.candidateLimit = decisions.size();
+  if (request.boundedQuality)
+    result.candidateLimit = std::min<std::uint64_t>(
+        result.candidateLimit,
+        request.boundedQuality->maximumHardwareRepairProbes);
+  for (std::size_t ordinal = 0; ordinal != result.candidateLimit; ++ordinal) {
+    if (dispatchDeadlineReached(request.executionPolicy)) {
+      const std::uint64_t remaining = result.candidateLimit - ordinal;
+      result.candidatesPlanned += remaining;
+      result.candidatesReserved += remaining;
+      result.candidatesCancelled += remaining;
+      break;
+    }
+    ++result.candidatesPlanned;
+    ++result.candidatesReserved;
+    HardwareRecipeGrowth growth;
+    growth.config = parentPlan.resolvedConfig;
+    growth.config.dse.planNodes.clear();
+    growth.techModule = parentModule;
+    if (const auto *discipline =
+            std::get_if<ChangeFifoQueueDiscipline>(&decisions[ordinal]))
+      growth.fifoDisciplineChange = *discipline;
+    else
+      growth.fifoResize = std::get<ResizeFifo>(decisions[ordinal]);
+    auto child = materializeTypedModuleSystemGrowth(
+        std::move(growth), parentPair.system, artifacts, blobs);
+    if (!child)
+      return child.takeError();
+    const ArtifactRootReference childReference = child->reference;
+    JointHardwareReopenRequest childRequest = request;
+    llvm::SmallString<256> childJournal(request.journalRoot);
+    llvm::sys::path::append(childJournal,
+                            "fifo-runtime-feedback-" +
+                                std::to_string(ordinal));
+    childRequest.journalRoot = childJournal.str().str();
+    auto repaired = executeTypedModuleHardwareReopen(
+        parentPlan, parentExecution, policy, feedback.parentMapping,
+        std::move(*child), std::move(childRequest),
+        "spatial_fifo_hardware_repair", artifacts, blobs);
+    if (!repaired)
+      return repaired.takeError();
+    ++result.candidatesConsumed;
+    result.childSystems.push_back(childReference);
+    result.reuseDispositions.push_back(repaired->disposition);
+    result.executions.push_back(std::move(repaired->execution));
+  }
+  const std::uint64_t settled = result.candidatesConsumed +
+                                result.candidatesRejected +
+                                result.candidatesCancelled;
+  if (settled > result.candidatesReserved)
+    return invalid("FIFO hardware repair candidate ledger overflowed");
+  result.candidatesRejected += result.candidatesReserved - settled;
+  if (result.candidatesPlanned != result.candidatesReserved)
+    return invalid("FIFO hardware repair candidate ledger is not reserved");
   result.bypassAlternativeUnsupported = feedback.bypassCapable;
   return result;
 }

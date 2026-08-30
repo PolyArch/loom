@@ -1756,6 +1756,39 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       exactFifoFeedback.occupancy != feedbackFifoCapacity ||
       exactFifoFeedback.capacity != feedbackFifoCapacity)
     fail("exact FIFO wait did not admit the minimal hardware candidate");
+
+  auto crossTagFifoWait = exactFifoWait;
+  using ClosedWait = loom::sim::CgraClosedWaitSetDiagnostic;
+  ClosedWait::WaitEdge orderWait;
+  orderWait.from = ClosedWait::WaitOwnerKey{
+      ClosedWait::WaitActorFiringKey{0, 0}};
+  orderWait.to = ClosedWait::WaitOwnerKey{
+      ClosedWait::WaitStorageQueueKey{
+          ClosedWait::WaitStorageDomain::TraversalStorage, 0,
+          ClosedWait::WaitQueueClass::global()}};
+  orderWait.kind = ClosedWait::WaitEdgeKind::StorageOrder;
+  orderWait.fifoOccurrence = *feedbackFifo;
+  orderWait.awaitedTagValue = llvm::APInt(4, 1);
+  orderWait.headTagValue = llvm::APInt(4, 2);
+  ClosedWait::WaitEdge consumerWait;
+  consumerWait.from = orderWait.to;
+  consumerWait.to = orderWait.from;
+  consumerWait.kind = ClosedWait::WaitEdgeKind::StorageConsumer;
+  crossTagFifoWait.waitCertificate = {orderWait, consumerWait};
+  const auto crossTagFeedback =
+      take(loom::dse::deriveSpatialFifoRuntimeFeedback(
+          mappings.front(), *feedbackSpatialMapping, crossTagFifoWait, store));
+  if (crossTagFeedback.disposition !=
+          loom::dse::SpatialFifoRuntimeFeedbackDisposition::Exact ||
+      crossTagFeedback.reason !=
+          loom::dse::SpatialFifoRuntimeFeedbackReason::
+              ExactCrossTagGlobalHolCycle ||
+      crossTagFeedback.currentQueueDiscipline !=
+          ::fabric::FifoQueueDiscipline::StrictFifo ||
+      crossTagFeedback.candidateQueueDiscipline !=
+          ::fabric::FifoQueueDiscipline::PerTagVirtualChannel ||
+      crossTagFeedback.minimumCandidateDepth)
+    fail("cross-tag global HOL did not admit the VC hardware candidate");
   if (qualityRuns("fifo")) {
     if (!incompleteRepairQuality)
       fail("quality-promotion fixture lost its incomplete repair policy");

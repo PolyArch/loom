@@ -3042,14 +3042,16 @@ owner; the workflow does not duplicate executable or runtime-platform
 selection.
 
 The current spatial-microarchitecture configuration descriptor is
-`loom.spatial_microarchitecture_rewrite.config.2.2`; the candidate-decision
-descriptor is `loom.spatial_microarchitecture_candidate_decision.3.1`, and the
+`loom.spatial_microarchitecture_rewrite.config.2.3`; the candidate-decision
+descriptor is `loom.spatial_microarchitecture_candidate_decision.3.2`, and the
 provider identity is `loom.spatial_microarchitecture_rewrite.generator.v4`.
 Config 2.1 appends the two Temporal operand-buffer decisions below without
 renumbering 2.0 decision tags. Decision 3.0 additionally carries the complete
 finalizer-produced parent-to-child Module occurrence correspondence, so a
 consumer never guesses a child occurrence from a parent dense ordinal. Config
 2.2 and decision 3.1 append the typed switch route-table capacity decision.
+Config 2.3 and decision 3.2 append `ChangeFifoQueueDiscipline` without
+renumbering any prior decision tag.
 
 Kind 16 has one empty canonical resolved-config view. Its exact descriptor
 fixes the portable operation-provider catalog. It consumes exactly one
@@ -3104,9 +3106,16 @@ one-exact-parent decision rule. Its closed decision union is `ChangePeKind`,
 `ChangeSwitchModeOrScheduleCapacity`, `ResizeMemory`,
 `ChangeMemoryOperationTable`, `ResizeFifo`, and
 `ChangeFifoBypassCapability`, `ChangeTemporalOperandBufferMode`, and
-`ResizeTemporalOperandBuffer`. The referenced Fabric owners define every typed
+`ResizeTemporalOperandBuffer`, `ResizeSwitchRouteTable`, and
+`ChangeFifoQueueDiscipline`. The referenced Fabric owners define every typed
 parameter domain. The generator cannot create an operation capability, memory
-contract, scheduling rule, or bypass meaning outside those domains.
+contract, scheduling rule, queue discipline, or bypass meaning outside those
+domains. `ChangeFifoQueueDiscipline` selects StrictFifo or
+PerTagVirtualChannel for one exact FIFO occurrence. The ordinary FIFO verifier
+rejects VC on an untagged or bypass-capable occurrence. A discipline change
+reopens the affected Spatial placement/route/progress cone because global and
+tag-local order are different Mapping semantics; it never reuses the parent's
+progress proof.
 `ChangeTemporalOperandBufferMode` selects one of the three exact
 `OperandBufferMode` values on one Temporal PE. It changes allocation-unit,
 capacity, service, queue, and progress projection and therefore reopens the
@@ -3275,6 +3284,23 @@ topology, memory, switch, or transport changes; those paths must publish their
 typed fallback reason until a corresponding hardware decision owner is added.
 
 ### Runtime-Derived Spatial FIFO Feedback
+
+Before runtime exists, a Spatial PnR invocation that retains a proven
+reconvergent-capacity shortfall may return one typed owner-local hardware
+feedback record with the exact FIFO occurrence, selected shared capacity,
+proven minimum, contributing logical producer bindings, and selected traversal
+anchors. The record is invocation output, not a Mapping artifact and not an
+infeasibility proof. It is absent for proof debt, timeout without a retained
+candidate, or a non-capacity violation.
+
+`HardwareDecision` owns the canonical global-depth comparison domain derived
+from that record: depth one, depth two, the proven minimum, and twice the
+minimum as a deeper control, with duplicate semantic values removed. Values
+outside positive i32 are rejected. Every value remains an ordinary
+`ResizeFifo` candidate with candidate-decision lineage, a distinct Fabric
+identity, cold progress verification, and regenerated Mapping/evaluation
+provenance. Neither PnR nor DSE edits the parent Fabric or treats the minimum as
+a private route penalty.
 
 CGRA runtime may request a bounded SpatialCore FIFO hardware child only from
 an exact quiescent wait witness. The witness must join the parent SystemMapping
@@ -3845,11 +3871,14 @@ Mapping-spectrum verification and application execution are separate joins.
 Before it classifies any schedule point, the Spectrum verifier consumes the
 Mapping-owned progress basis retained by the independently imported
 SystemMapping. An acyclic basis is qualified by the already verified
-route/resource closure. An initialized-feedback basis remains
-`ProofNotEstablished(finite_buffer_recurrence_not_established)` until one owner
-proves its initial-token, finite occupancy, rate, and dequeue progress; durable
-storage alone is not that proof. This does not reject the ordinary Mapping, but
-it publishes no `MaxTemporal`, `MaxSpatial`, or `intermediate` spectrum label.
+route/resource closure. For an initialized-feedback basis, Mapping proves each
+FIFO shared pool from the one-active-transfer invariant, the distinct selected
+logical-net incidence, the exact Fabric capacity, and the independently
+reconstructed dequeue-order graph. Missing actual tag values, repeated
+owner/channel topology, or a residual actor cycle remains
+`ProofNotEstablished`; initialized feedback alone does not. This does not
+reject an ordinary unproved Mapping, but it publishes no `MaxTemporal`,
+`MaxSpatial`, or `intermediate` spectrum label.
 
 A spectrum-qualified Mapping may still fail its later DFG/CGRA replay. That
 failure publishes no execution artifact and cannot increment the

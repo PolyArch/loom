@@ -126,6 +126,12 @@ struct ChangeFifoBypassCapability final {
   bool bypassable = false;
 };
 
+struct ChangeFifoQueueDiscipline final {
+  loom::fabric::FabricFifoOccurrenceRef target;
+  ::fabric::FifoQueueDiscipline discipline =
+      ::fabric::FifoQueueDiscipline::StrictFifo;
+};
+
 struct ChangeTemporalOperandBufferMode final {
   loom::fabric::FabricPeOccurrenceRef target;
   ::fabric::OperandBufferMode mode =
@@ -143,7 +149,7 @@ using SpatialMicroarchitectureDecision =
                  ResizeMemory, ChangeMemoryOperationTable, ResizeFifo,
                  ChangeFifoBypassCapability, ResizeInstructionStores,
                  ChangeTemporalOperandBufferMode, ResizeTemporalOperandBuffer,
-                 ResizeSwitchRouteTable>;
+                 ResizeSwitchRouteTable, ChangeFifoQueueDiscipline>;
 
 struct ChangePeKindDomain final {
   loom::fabric::FabricPeOccurrenceRef target;
@@ -199,6 +205,11 @@ struct ChangeFifoBypassCapabilityDomain final {
   std::vector<bool> values;
 };
 
+struct ChangeFifoQueueDisciplineDomain final {
+  loom::fabric::FabricFifoOccurrenceRef target;
+  std::vector<::fabric::FifoQueueDiscipline> disciplines;
+};
+
 struct ChangeTemporalOperandBufferModeDomain final {
   loom::fabric::FabricPeOccurrenceRef target;
   std::vector<::fabric::OperandBufferMode> modes;
@@ -215,7 +226,7 @@ using SpatialMicroarchitectureDecisionDomain = std::variant<
     ResizeMemoryDomain, ChangeMemoryOperationTableDomain, ResizeFifoDomain,
     ChangeFifoBypassCapabilityDomain, ResizeInstructionStoresDomain,
     ChangeTemporalOperandBufferModeDomain, ResizeTemporalOperandBufferDomain,
-    ResizeSwitchRouteTableDomain>;
+    ResizeSwitchRouteTableDomain, ChangeFifoQueueDisciplineDomain>;
 
 struct AddAccCore final {
   loom::fabric::AccCoreOccurrenceRef prototype;
@@ -347,6 +358,13 @@ expandSpatialTopologyDecisionDomains(
 llvm::Expected<std::vector<SpatialMicroarchitectureDecision>>
 expandSpatialMicroarchitectureDecisionDomains(
     llvm::ArrayRef<SpatialMicroarchitectureDecisionDomain> domains);
+
+/// Canonical global-depth comparison for a proven shared-pool shortfall.
+/// The domain contains depth one, depth two, the proven minimum, and one
+/// deeper control, with semantic duplicates removed.
+llvm::Expected<ResizeFifoDomain> deriveFifoCapacityDepthDomain(
+    loom::fabric::FabricFifoOccurrenceRef owner,
+    std::uint64_t selectedCapacity, std::uint64_t minimumLegalCapacity);
 
 llvm::Expected<std::vector<SystemCompositionDecision>>
 expandSystemCompositionDecisionDomains(

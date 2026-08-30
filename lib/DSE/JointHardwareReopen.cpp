@@ -54,6 +54,20 @@ namespace loom::dse {
 
 using namespace joint_reopen_detail;
 
+llvm::Expected<std::vector<SpatialMicroarchitectureDecisionDomain>>
+deriveSpatialCapacityHardwareReopenDomains(
+    const pnr::SpatialFifoCapacityShortfall &feedback) {
+  if (feedback.logicalNets.empty() || feedback.routeAnchors.empty())
+    return invalid("static FIFO capacity feedback is incomplete or outside "
+                   "the hardware depth domain");
+  auto domain = deriveFifoCapacityDepthDomain(
+      feedback.owner, feedback.selectedCapacity, feedback.minimumLegalCapacity);
+  if (!domain)
+    return domain.takeError();
+  return std::vector<SpatialMicroarchitectureDecisionDomain>{
+      std::move(*domain)};
+}
+
 namespace {
 
 struct FinalizedMappingHardwareSpectrum final {

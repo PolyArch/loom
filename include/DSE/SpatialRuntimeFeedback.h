@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace loom {
@@ -32,6 +33,7 @@ enum class SpatialFifoRuntimeFeedbackReason : std::uint8_t {
   AmbiguousFifo,
   StorageNotFull,
   MissingCausalReleaseContext,
+  ExactCrossTagGlobalHolCycle,
 };
 
 llvm::StringRef spatialFifoRuntimeFeedbackDispositionSpelling(
@@ -40,6 +42,10 @@ llvm::StringRef spatialFifoRuntimeFeedbackReasonSpelling(
     SpatialFifoRuntimeFeedbackReason reason);
 
 struct SpatialFifoRuntimeFeedback final {
+  SpatialFifoRuntimeFeedback(ArtifactRootReference parent,
+                             ArtifactRootReference spatial)
+      : parentMapping(std::move(parent)), spatialMapping(std::move(spatial)) {}
+
   ArtifactRootReference parentMapping;
   ArtifactRootReference spatialMapping;
   SpatialFifoRuntimeFeedbackDisposition disposition =
@@ -50,6 +56,8 @@ struct SpatialFifoRuntimeFeedback final {
   std::uint32_t occupancy = 0;
   std::uint32_t capacity = 0;
   std::optional<std::uint32_t> minimumCandidateDepth;
+  std::optional<::fabric::FifoQueueDiscipline> currentQueueDiscipline;
+  std::optional<::fabric::FifoQueueDiscipline> candidateQueueDiscipline;
   bool bypassCapable = false;
   std::uint64_t transferCycleEdgeCount = 0;
   std::uint64_t actorCycleEdgeCount = 0;
@@ -65,6 +73,8 @@ struct SpatialFifoRuntimeFeedback final {
            lhs.fifo == rhs.fifo && lhs.occupancy == rhs.occupancy &&
            lhs.capacity == rhs.capacity &&
            lhs.minimumCandidateDepth == rhs.minimumCandidateDepth &&
+           lhs.currentQueueDiscipline == rhs.currentQueueDiscipline &&
+           lhs.candidateQueueDiscipline == rhs.candidateQueueDiscipline &&
            lhs.bypassCapable == rhs.bypassCapable &&
            lhs.transferCycleEdgeCount == rhs.transferCycleEdgeCount &&
            lhs.actorCycleEdgeCount == rhs.actorCycleEdgeCount &&

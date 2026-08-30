@@ -1209,6 +1209,9 @@ public:
   llvm::Error
   changeFifoBypassCapability(loom::fabric::FabricFifoOccurrenceRef target,
                              bool bypassable);
+  llvm::Error changeFifoQueueDiscipline(
+      loom::fabric::FabricFifoOccurrenceRef target,
+      ::fabric::FifoQueueDiscipline discipline);
 
   /// Closes a root returned by DesignBuilder::deriveSpatialCore with the
   /// preserved or explicitly replaced output sequence.

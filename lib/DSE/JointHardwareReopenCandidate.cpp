@@ -1082,6 +1082,7 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
   const unsigned decisionKinds = !growth.instructionStoreResizes.empty() +
                                  growth.fifoResize.has_value() +
                                  growth.fifoBypassChange.has_value() +
+                                 growth.fifoDisciplineChange.has_value() +
                                  growth.operandBufferModeChange.has_value() +
                                  growth.operandBufferResize.has_value() +
                                  growth.moduleDecision.has_value();
@@ -1102,6 +1103,10 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
     domains.push_back(ChangeFifoBypassCapabilityDomain{
         growth.fifoBypassChange->target,
         {growth.fifoBypassChange->bypassable}});
+  else if (growth.fifoDisciplineChange)
+    domains.push_back(ChangeFifoQueueDisciplineDomain{
+        growth.fifoDisciplineChange->target,
+        {growth.fifoDisciplineChange->discipline}});
   else if (growth.operandBufferModeChange)
     domains.push_back(ChangeTemporalOperandBufferModeDomain{
         growth.operandBufferModeChange->target,
@@ -1177,6 +1182,13 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
     if (!change || change->target != growth.fifoBypassChange->target ||
         change->bypassable != growth.fifoBypassChange->bypassable)
       return invalid("typed Module growth changed its FIFO bypass decision");
+  } else if (growth.fifoDisciplineChange) {
+    const auto *change =
+        std::get_if<ChangeFifoQueueDiscipline>(&decision->decision);
+    if (!change || change->target != growth.fifoDisciplineChange->target ||
+        change->discipline != growth.fifoDisciplineChange->discipline)
+      return invalid(
+          "typed Module growth changed its FIFO discipline decision");
   } else if (growth.operandBufferModeChange) {
     const auto *change =
         std::get_if<ChangeTemporalOperandBufferMode>(&decision->decision);

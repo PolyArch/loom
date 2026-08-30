@@ -7,6 +7,7 @@
 #include "DSE/PreMappingFrontier.h"
 #include "DSE/SpatialRuntimeFeedback.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "PnR/SpatialProgressState.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -288,6 +289,14 @@ executeSpatialFifoHardwareFeedbackReopen(
     const JointDesignPolicy &policy, const SpatialFifoRuntimeFeedback &feedback,
     JointHardwareReopenRequest request, const ArtifactStore &artifacts,
     const BlobStore &blobs);
+
+/// Projects the canonical global-depth comparison domain for one proven
+/// static shared-pool shortfall: depth one, depth two, the proven minimum, and
+/// one deeper control. The returned typed domain is consumed by the ordinary
+/// spatial-microarchitecture generator; this adapter owns no Fabric writer.
+llvm::Expected<std::vector<SpatialMicroarchitectureDecisionDomain>>
+deriveSpatialCapacityHardwareReopenDomains(
+    const pnr::SpatialFifoCapacityShortfall &feedback);
 
 /// Materializes the bounded Temporal operand-buffer child set admitted by one
 /// exact queue-level closed-wait witness. Incomplete, ambiguous, or analytic

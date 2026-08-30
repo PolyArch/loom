@@ -20,7 +20,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.spatial_microarchitecture_rewrite.config.2.2";
+    "loom.spatial_microarchitecture_rewrite.config.2.3";
 
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> inputSlots = {{
     {CandidateGeneratorInputSlotRef(0), "fabric_module_parent",
@@ -67,6 +67,18 @@ validateDecisionAgainstParent(const SpatialMicroarchitectureDecision &decision,
           return error;
         }
         if constexpr (std::is_same_v<Value, ResizeInstructionStores>) {
+          return llvm::Error::success();
+        } else if constexpr (std::is_same_v<
+                                 Value, ChangeFifoQueueDiscipline>) {
+          if (!::fabric::symbolizeFifoQueueDiscipline(
+                  static_cast<std::uint32_t>(value.discipline)))
+            return invalid(
+                "FIFO queue discipline is outside its closed domain");
+          const auto current = parent.fifoQueueDiscipline(value.target);
+          if (!current)
+            return invalid("queue-discipline change requires a FIFO");
+          if (*current == value.discipline)
+            return invalid("FIFO queue-discipline change is a no-op");
           return llvm::Error::success();
         } else if constexpr (std::is_same_v<
                                  Value, ChangeTemporalOperandBufferMode>) {
@@ -147,6 +159,10 @@ llvm::Error applyDecision(loom::adg::SpatialCoreBuilder &builder,
                                                      value.prototype);
         else if constexpr (std::is_same_v<Value, ResizeFifo>)
           return builder.resizeFifo(value.target, value.depth);
+        else if constexpr (std::is_same_v<Value,
+                                          ChangeFifoQueueDiscipline>)
+          return builder.changeFifoQueueDiscipline(value.target,
+                                                   value.discipline);
         else if constexpr (std::is_same_v<
                                Value, ChangeTemporalOperandBufferMode>)
           return builder.changeTemporalOperandBufferMode(value.target,

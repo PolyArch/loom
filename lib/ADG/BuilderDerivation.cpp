@@ -927,6 +927,37 @@ llvm::Error SpatialCoreBuilder::changeFifoBypassCapability(
   return llvm::Error::success();
 }
 
+llvm::Error SpatialCoreBuilder::changeFifoQueueDiscipline(
+    loom::fabric::FabricFifoOccurrenceRef target,
+    ::fabric::FifoQueueDiscipline discipline) {
+  if (!::fabric::symbolizeFifoQueueDiscipline(
+          static_cast<std::uint32_t>(discipline)))
+    return invalid("FIFO queue discipline is outside its closed domain");
+  auto state = detail::activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto root = derivedSpatialRoot(*state, rootOrdinal_);
+  if (!root)
+    return root.takeError();
+  auto operation =
+      moduleOccurrence((*root)->operation, *(*root)->derivedParent, target);
+  if (!operation)
+    return operation.takeError();
+  auto fifo = mlir::cast<::fabric::FifoOp>(*operation);
+  const ::fabric::FifoQueueDiscipline current =
+      fifo.getQueueDiscipline().value_or(
+          ::fabric::FifoQueueDiscipline::StrictFifo);
+  if (current == discipline)
+    return invalid("FIFO queue-discipline change is a no-op");
+  if (discipline == ::fabric::FifoQueueDiscipline::StrictFifo) {
+    fifo.removeQueueDisciplineAttr();
+  } else {
+    fifo.setQueueDisciplineAttr(::fabric::FifoQueueDisciplineAttr::get(
+        &(*state)->context, discipline));
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error SpatialCoreBuilder::closeDerived() {
   auto state = detail::activeState(state_);
   if (!state)

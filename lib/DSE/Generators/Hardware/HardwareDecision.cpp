@@ -79,7 +79,7 @@ namespace {
 constexpr llvm::StringLiteral topologySchema =
     "loom.spatial_topology_candidate_decision.1.0";
 constexpr llvm::StringLiteral microarchitectureSchema =
-    "loom.spatial_microarchitecture_candidate_decision.3.1";
+    "loom.spatial_microarchitecture_candidate_decision.3.2";
 constexpr llvm::StringLiteral systemSchema =
     "loom.system_composition_candidate_decision.3.1";
 
@@ -362,6 +362,9 @@ void writeMicroarchitectureBody(
             writer.u64(value.capacityBytes);
           } else if constexpr (std::is_same_v<Value, ResizeFifo>) {
             writer.u32(value.depth);
+          } else if constexpr (std::is_same_v<
+                                   Value, ChangeFifoQueueDiscipline>) {
+            writer.u32(static_cast<std::uint32_t>(value.discipline));
           } else if constexpr (std::is_same_v<Value, ResizeSwitchRouteTable>) {
             writer.u32(value.entries);
           } else if constexpr (std::is_same_v<
@@ -539,6 +542,19 @@ readMicroarchitectureBody(Reader &reader) {
       return invalid("switch route-table capacity must be positive");
     return SpatialMicroarchitectureDecision(
         ResizeSwitchRouteTable{*target, *entries});
+  }
+  case 13: {
+    auto target = reader.ref<loom::fabric::FabricFifoOccurrenceRef>();
+    if (!target)
+      return target.takeError();
+    auto discipline = reader.u32();
+    if (!discipline)
+      return discipline.takeError();
+    auto value = ::fabric::symbolizeFifoQueueDiscipline(*discipline);
+    if (!value)
+      return invalid("FIFO queue discipline is outside its closed domain");
+    return SpatialMicroarchitectureDecision(
+        ChangeFifoQueueDiscipline{*target, *value});
   }
   default:
     return invalid("unknown Spatial microarchitecture decision tag");
@@ -1157,6 +1173,9 @@ expandSpatialMicroarchitectureDecisionDomains(
             return requireValues(value.capacitiesBytes, "microarchitecture");
           else if constexpr (std::is_same_v<Value, ResizeFifoDomain>)
             return requireValues(value.depths, "microarchitecture");
+          else if constexpr (std::is_same_v<
+                                 Value, ChangeFifoQueueDisciplineDomain>)
+            return requireValues(value.disciplines, "microarchitecture");
           else if constexpr (std::is_same_v<Value,
                                             ResizeSwitchRouteTableDomain>)
             return requireValues(value.entries, "microarchitecture");
@@ -1210,6 +1229,11 @@ expandSpatialMicroarchitectureDecisionDomains(
           else if constexpr (std::is_same_v<Value, ResizeFifoDomain>)
             for (auto depth : value.depths)
               decisions.push_back(ResizeFifo{value.target, depth});
+          else if constexpr (std::is_same_v<
+                                 Value, ChangeFifoQueueDisciplineDomain>)
+            for (auto discipline : value.disciplines)
+              decisions.push_back(
+                  ChangeFifoQueueDiscipline{value.target, discipline});
           else if constexpr (std::is_same_v<Value,
                                             ResizeSwitchRouteTableDomain>)
             for (auto entries : value.entries)
@@ -1234,6 +1258,28 @@ expandSpatialMicroarchitectureDecisionDomains(
   }
   return canonicalizeDecisions(std::move(decisions),
                                writeMicroarchitectureBody);
+}
+
+llvm::Expected<ResizeFifoDomain> deriveFifoCapacityDepthDomain(
+    loom::fabric::FabricFifoOccurrenceRef owner,
+    std::uint64_t selectedCapacity, std::uint64_t minimumLegalCapacity) {
+  constexpr std::uint64_t maximumDepth =
+      static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+  if (selectedCapacity == 0 || minimumLegalCapacity <= selectedCapacity ||
+      minimumLegalCapacity > maximumDepth)
+    return invalid("FIFO capacity feedback is outside the positive hardware "
+                   "depth domain");
+  std::vector<std::uint32_t> depths = {
+      1, 2, static_cast<std::uint32_t>(minimumLegalCapacity)};
+  const std::uint64_t deeper =
+      minimumLegalCapacity <= maximumDepth / 2 ? minimumLegalCapacity * 2
+                                               : maximumDepth;
+  if (deeper <= minimumLegalCapacity)
+    return invalid("FIFO capacity feedback has no deeper control");
+  depths.push_back(static_cast<std::uint32_t>(deeper));
+  llvm::sort(depths);
+  depths.erase(std::unique(depths.begin(), depths.end()), depths.end());
+  return ResizeFifoDomain{owner, std::move(depths)};
 }
 
 llvm::Expected<std::vector<SystemCompositionDecision>>
@@ -1650,8 +1696,9 @@ HardwareImpactProjection projectHardwareImpact(
           impact.locality = HardwareMutationLocality::LocalCone;
           addModuleRoot(impact.tech.realizationRoots, decision.target);
           addModuleRoot(impact.spatial.placementRoots, decision.target);
-        } else if constexpr (std::is_same_v<Decision,
-                                            ChangeFifoBypassCapability>) {
+        } else if constexpr (
+            std::is_same_v<Decision, ChangeFifoBypassCapability> ||
+            std::is_same_v<Decision, ChangeFifoQueueDiscipline>) {
           impact.family = HardwareMutationFamily::SpatialFifo;
           impact.locality = HardwareMutationLocality::LocalCone;
           impact.spatial.kind = HardwareMappingImpactKind::Reopen;

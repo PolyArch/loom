@@ -213,6 +213,9 @@ void parameterizedTemplateScale(
   scale.spatialPeCount = 13;
   scale.temporalPeCount = 5;
   scale.temporalResidentContexts = 3;
+  scale.interconnectFifoDepth = 3;
+  scale.interconnectFifoQueueDiscipline =
+      ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
   auto projected =
       take(loom::dse::projectResolvedFabricTemplateConfigView(resolved));
   auto inputs = take(loom::dse::bindFabricTemplateCandidateGeneratorInputs());
@@ -240,6 +243,14 @@ void parameterizedTemplateScale(
   require(module.view().fifoOccurrences().size() ==
               expectedMeshLinkFifos + expectedAdapterFifos,
           "resolved mesh dimension did not reach the Module topology");
+  std::uint64_t virtualChannelFifos = 0;
+  for (auto fifo : module.view().fifoOccurrences())
+    virtualChannelFifos +=
+        module.view().fifoQueueDiscipline(fifo) ==
+        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
+  require(virtualChannelFifos != 0 &&
+              virtualChannelFifos < module.view().fifoOccurrences().size(),
+          "resolved queue discipline did not select only tagged FIFOs");
   std::uint64_t instructionContexts = 0;
   for (const auto &pe : module.view().peOccurrences())
     instructionContexts += module.view().inventorySize(
@@ -272,6 +283,27 @@ void localMemoryPortVariantRoundTrip() {
   loom::ResolvedConfig invalid = loom::defaultResolvedConfig();
   invalid.hardwareTarget.parameters.localMemoryPortVariant =
       static_cast<loom::adg::LocalMemoryPortVariant>(255);
+  requireError(
+      loom::dse::projectResolvedFabricTemplateConfigView(invalid).takeError(),
+      "template base scale is invalid");
+
+  for (const auto discipline :
+       {::fabric::FifoQueueDiscipline::StrictFifo,
+        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel}) {
+    loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+    resolved.hardwareTarget.parameters.interconnectFifoQueueDiscipline =
+        discipline;
+    auto projected =
+        take(loom::dse::projectResolvedFabricTemplateConfigView(resolved));
+    auto adopted = take(loom::dse::adoptResolvedFabricTemplateConfigView(
+        loom::dse::resolvedFabricTemplateConfigSchemaBytes(),
+        projected.canonicalViewBytes(), projected.digest()));
+    require(adopted.scale().interconnectFifoQueueDiscipline == discipline,
+            "template config changed the FIFO queue discipline");
+  }
+  invalid = loom::defaultResolvedConfig();
+  invalid.hardwareTarget.parameters.interconnectFifoQueueDiscipline =
+      static_cast<::fabric::FifoQueueDiscipline>(255);
   requireError(
       loom::dse::projectResolvedFabricTemplateConfigView(invalid).takeError(),
       "template base scale is invalid");
@@ -323,6 +355,13 @@ void strictConfigAdmission() {
       loom::dse::resolveSpatialMicroarchitectureRewriteConfig(domains, 1)
           .takeError(),
       "positive");
+  domains.front() = loom::dse::ChangeFifoQueueDisciplineDomain{
+      loom::fabric::FabricFifoOccurrenceRef(0),
+      {static_cast<::fabric::FifoQueueDiscipline>(255)}};
+  requireError(
+      loom::dse::resolveSpatialMicroarchitectureRewriteConfig(domains, 1)
+          .takeError(),
+      "closed domain");
 
   std::vector<loom::dse::SpatialTopologyDecisionDomain> emptyConnections = {
       loom::dse::AdjustParallelConnectionCountDomain{{{}}}};
@@ -330,6 +369,15 @@ void strictConfigAdmission() {
       loom::dse::resolveSpatialTopologyRewriteConfig(emptyConnections, 1)
           .takeError(),
       "nonempty");
+}
+
+void staticCapacityHardwareDomain() {
+  const auto owner = loom::fabric::FabricFifoOccurrenceRef(7);
+  auto resize = take(loom::dse::deriveFifoCapacityDepthDomain(owner, 2, 7));
+  require(resize.target == owner &&
+              resize.depths == std::vector<std::uint32_t>({1, 2, 7, 14}),
+          "static capacity feedback lost depth one, depth two, its proven "
+          "minimum, or the deeper control");
 }
 
 void computeContextFeedbackRoundTrip(
@@ -565,6 +613,82 @@ microarchitectureRewrite(Fixture &fixture,
   return take(loom::fabric::importEntireFabricRoot(
       completed(result).outputBindings.front().artifacts.front(),
       fixture.store));
+}
+
+void fifoQueueDisciplineRewrite(
+    Fixture &fixture, const loom::fabric::FinalizedFabricRoot &module) {
+  std::vector<loom::dse::SpatialMicroarchitectureDecisionDomain> domains;
+  for (auto fifo : module.view().fifoOccurrences()) {
+    const auto owner =
+        loom::fabric::FabricTransportEndpointOwnerRef::of(fifo);
+    const bool tagged = llvm::any_of(
+        module.view().transportEndpoints(), [&](const auto &endpoint) {
+          if (endpoint.owner != owner)
+            return false;
+          const auto path = module.view().transportEndpointDataPath(endpoint);
+          return path && path->tagWidthBits != 0;
+        });
+    const bool bypassCapable = llvm::any_of(
+        module.view().admittedTraversals(), [&](const auto &traversal) {
+          const auto *candidate =
+              std::get_if<loom::fabric::FabricFifoTraversalPayload>(
+                  &traversal.payload);
+          return candidate && candidate->owner == fifo &&
+                 candidate->mode ==
+                     loom::fabric::FabricFifoTraversalMode::Bypass;
+        });
+    if (tagged && !bypassCapable &&
+        module.view().fifoQueueDiscipline(fifo) ==
+            ::fabric::FifoQueueDiscipline::StrictFifo)
+      domains.push_back(loom::dse::ChangeFifoQueueDisciplineDomain{
+          fifo, {::fabric::FifoQueueDiscipline::PerTagVirtualChannel}});
+  }
+  require(!domains.empty(), "Module has no StrictFifo rewrite domain");
+  auto config = take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(
+      domains, domains.size()));
+  auto inputs =
+      take(loom::dse::bindSpatialMicroarchitectureCandidateGeneratorInputs(
+          {module.reference()}));
+  auto binding =
+      take(loom::dse::resolveSpatialMicroarchitectureCandidateGeneratorBinding(
+          config));
+  auto result = take(loom::dse::invokeCandidateGenerator(
+      inputs, binding, fixture.store, fixture.blobs));
+  const auto &outputs = completed(result).outputBindings.front().artifacts;
+  require(!outputs.empty(),
+          "queue-discipline decisions produced no tagged FIFO child");
+  auto child =
+      take(loom::fabric::importEntireFabricRoot(outputs.front(), fixture.store));
+  std::optional<loom::fabric::FabricFifoOccurrenceRef> virtualChannelFifo;
+  for (auto fifo : child.view().fifoOccurrences())
+    if (child.view().fifoQueueDiscipline(fifo) ==
+        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel) {
+      require(!virtualChannelFifo,
+              "one queue-discipline decision changed multiple FIFOs");
+      virtualChannelFifo = fifo;
+    }
+  require(virtualChannelFifo.has_value(),
+          "queue-discipline child retained only StrictFifo occurrences");
+
+  std::vector<loom::dse::SpatialMicroarchitectureDecisionDomain> reverse = {
+      loom::dse::ChangeFifoQueueDisciplineDomain{
+          *virtualChannelFifo,
+          {::fabric::FifoQueueDiscipline::StrictFifo}}};
+  auto reverseConfig =
+      take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(reverse, 1));
+  auto reverseInputs =
+      take(loom::dse::bindSpatialMicroarchitectureCandidateGeneratorInputs(
+          {child.reference()}));
+  auto reverseBinding =
+      take(loom::dse::resolveSpatialMicroarchitectureCandidateGeneratorBinding(
+          reverseConfig));
+  auto reversed = take(loom::dse::invokeCandidateGenerator(
+      reverseInputs, reverseBinding, fixture.store, fixture.blobs));
+  const auto &reversedOutputs =
+      completed(reversed).outputBindings.front().artifacts;
+  require(reversedOutputs.size() == 1 &&
+              reversedOutputs.front() == module.reference(),
+          "StrictFifo reverse decision did not recover the parent identity");
 }
 
 void temporalOperandBufferRewrite(
@@ -822,6 +946,13 @@ void hardwareImpactMatrix(const loom::fabric::FinalizedFabricRoot &system,
                         loom::dse::HardwareMutationLocality::LocalCone,
                         loom::dse::HardwareMappingImpactKind::Rebase,
                         loom::dse::HardwareMappingImpactKind::Reopen);
+    requireModuleImpact(
+        loom::dse::ChangeFifoQueueDiscipline{
+            fifo, ::fabric::FifoQueueDiscipline::PerTagVirtualChannel},
+        loom::dse::HardwareMutationFamily::SpatialFifo,
+        loom::dse::HardwareMutationLocality::LocalCone,
+        loom::dse::HardwareMappingImpactKind::Rebase,
+        loom::dse::HardwareMappingImpactKind::Reopen);
   }
   if (!module.view().fuOccurrences().empty())
     requireModuleImpact(
@@ -1575,6 +1706,7 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
 
 int main() {
   strictConfigAdmission();
+  staticCapacityHardwareDomain();
   localMemoryPortVariantRoundTrip();
   Fixture fixture;
   boundedFuReverseSynthesis(fixture);
@@ -1585,6 +1717,7 @@ int main() {
   topologyRewrite(fixture, module);
   occurrenceInventoryRewrite(fixture, module);
   auto replacementModule = microarchitectureRewrite(fixture, module);
+  fifoQueueDisciplineRewrite(fixture, module);
   temporalOperandBufferRewrite(fixture, module);
   redistributeFuCapability(fixture, module);
   hardwareImpactMatrix(system, module);

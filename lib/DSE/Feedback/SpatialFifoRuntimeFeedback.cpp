@@ -48,6 +48,8 @@ llvm::StringRef spatialFifoRuntimeFeedbackReasonSpelling(
     return "storage_not_full";
   case SpatialFifoRuntimeFeedbackReason::MissingCausalReleaseContext:
     return "missing_causal_release_context";
+  case SpatialFifoRuntimeFeedbackReason::ExactCrossTagGlobalHolCycle:
+    return "exact_cross_tag_global_hol_cycle";
   }
   llvm_unreachable("unknown Spatial FIFO runtime feedback reason");
 }
@@ -76,21 +78,53 @@ llvm::Expected<SpatialFifoRuntimeFeedback> deriveSpatialFifoRuntimeFeedback(
   if (module->view().rootKind() != fabric::FabricRootKind::Module)
     return invalid("FIFO runtime feedback does not bind a Module");
 
-  SpatialFifoRuntimeFeedback feedback{
-      parentMapping,
-      spatialMapping,
-      SpatialFifoRuntimeFeedbackDisposition::ProofNotEstablished,
-      SpatialFifoRuntimeFeedbackReason::MissingWaitCycle,
-      std::nullopt,
-      0,
-      0,
-      std::nullopt,
-      false,
-      closedWait.transferWaitCycle.size(),
-      closedWait.actorWaitCycle.size(),
-      std::nullopt,
-      std::nullopt,
-      std::nullopt};
+  SpatialFifoRuntimeFeedback feedback(parentMapping, spatialMapping);
+  feedback.transferCycleEdgeCount = closedWait.transferWaitCycle.size();
+  feedback.actorCycleEdgeCount = closedWait.actorWaitCycle.size();
+
+  std::vector<const sim::CgraClosedWaitSetDiagnostic::WaitEdge *>
+      crossTagOrderWaits;
+  for (const auto &edge : closedWait.waitCertificate) {
+    if (edge.kind !=
+            sim::CgraClosedWaitSetDiagnostic::WaitEdgeKind::StorageOrder ||
+        !edge.fifoOccurrence || !edge.awaitedTagValue || !edge.headTagValue ||
+        ::fabric::comparePhysicalTagValues(*edge.awaitedTagValue,
+                                           *edge.headTagValue) == 0)
+      continue;
+    crossTagOrderWaits.push_back(&edge);
+  }
+  if (!crossTagOrderWaits.empty()) {
+    llvm::sort(crossTagOrderWaits, [](const auto *lhs, const auto *rhs) {
+      return fabric::canonicalFabricBytes(*lhs->fifoOccurrence) <
+             fabric::canonicalFabricBytes(*rhs->fifoOccurrence);
+    });
+    const auto fifo = *crossTagOrderWaits.front()->fifoOccurrence;
+    if (llvm::any_of(crossTagOrderWaits, [&](const auto *edge) {
+          return *edge->fifoOccurrence != fifo;
+        })) {
+      feedback.reason = SpatialFifoRuntimeFeedbackReason::AmbiguousFifo;
+      return feedback;
+    }
+    if (llvm::Error error = fabric::validateFabricRef(module->view(), fifo))
+      return std::move(error);
+    if (!mapping::spatialMappingUsesFifoOccurrence(spatial->view(), fifo))
+      return invalid("FIFO runtime feedback names an unselected occurrence");
+    const auto discipline = module->view().fifoQueueDiscipline(fifo);
+    if (!discipline)
+      return invalid("FIFO runtime feedback lost its queue discipline");
+    if (*discipline != ::fabric::FifoQueueDiscipline::StrictFifo) {
+      feedback.reason = SpatialFifoRuntimeFeedbackReason::AmbiguousFifo;
+      return feedback;
+    }
+    feedback.fifo = fifo;
+    feedback.currentQueueDiscipline = *discipline;
+    feedback.candidateQueueDiscipline =
+        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
+    feedback.reason =
+        SpatialFifoRuntimeFeedbackReason::ExactCrossTagGlobalHolCycle;
+    feedback.disposition = SpatialFifoRuntimeFeedbackDisposition::Exact;
+    return feedback;
+  }
 
   const auto inTransferCycle = [&](const auto &transfer) {
     return llvm::any_of(closedWait.transferWaitCycle, [&](const auto &edge) {
@@ -141,6 +175,9 @@ llvm::Expected<SpatialFifoRuntimeFeedback> deriveSpatialFifoRuntimeFeedback(
   if (!mapping::spatialMappingUsesFifoOccurrence(spatial->view(), fifo))
     return invalid("FIFO runtime feedback names an unselected occurrence");
   feedback.fifo = fifo;
+  feedback.currentQueueDiscipline = module->view().fifoQueueDiscipline(fifo);
+  if (!feedback.currentQueueDiscipline)
+    return invalid("FIFO runtime feedback lost its queue discipline");
   feedback.occupancy = fifoWaits.front()->blockingStorageOccupancy;
   feedback.capacity = fifoWaits.front()->blockingStorageCapacity;
   for (const auto *transfer : fifoWaits)
@@ -235,6 +272,18 @@ void emitSpatialFifoRuntimeFeedback(
           fields["minimum_candidate_depth"] = *feedback.minimumCandidateDepth;
         else
           fields["minimum_candidate_depth"] = nullptr;
+        if (feedback.currentQueueDiscipline)
+          fields["current_queue_discipline"] =
+              ::fabric::stringifyFifoQueueDiscipline(
+                  *feedback.currentQueueDiscipline);
+        else
+          fields["current_queue_discipline"] = nullptr;
+        if (feedback.candidateQueueDiscipline)
+          fields["candidate_queue_discipline"] =
+              ::fabric::stringifyFifoQueueDiscipline(
+                  *feedback.candidateQueueDiscipline);
+        else
+          fields["candidate_queue_discipline"] = nullptr;
         if (feedback.causalActorOrdinal)
           fields["causal_actor"] = *feedback.causalActorOrdinal;
         else

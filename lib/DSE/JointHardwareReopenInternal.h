@@ -50,6 +50,7 @@ struct HardwareRecipeGrowth final {
   std::vector<ResizeInstructionStore> instructionStoreResizes;
   std::optional<ResizeFifo> fifoResize;
   std::optional<ChangeFifoBypassCapability> fifoBypassChange;
+  std::optional<ChangeFifoQueueDiscipline> fifoDisciplineChange;
   std::optional<ChangeTemporalOperandBufferMode> operandBufferModeChange;
   std::optional<ResizeTemporalOperandBuffer> operandBufferResize;
   std::optional<SpatialMicroarchitectureDecisionDomain> moduleDecision;
