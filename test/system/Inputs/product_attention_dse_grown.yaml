@@ -35,4 +35,4 @@ hardware_target:
     gateway_count: 9
     memory_capacity_bytes: 262144
     interconnect_fifo_depth: 24
-    interconnect_fifo_queue_discipline: strict_fifo
+    interconnect_fifo_queue_discipline: per_tag_virtual_channel

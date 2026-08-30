@@ -102,6 +102,10 @@ constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
          scale.spatialMemoryCount != 0 && scale.temporalMemoryCount != 0 &&
          scale.temporalResidentContexts != 0 &&
          scale.interconnectFifoDepth != 0 &&
+         (scale.interconnectFifoQueueDiscipline ==
+              ::fabric::FifoQueueDiscipline::StrictFifo ||
+          scale.interconnectFifoQueueDiscipline ==
+              ::fabric::FifoQueueDiscipline::PerTagVirtualChannel) &&
          isValidLocalMemoryPortVariant(scale.localMemoryPortVariant) &&
          scale.crossScheduleBoundaryLanesPerTemporalPe != 0 &&
          scale.gatewayCount != 0 && scale.memoryCapacityBytes != 0;
@@ -135,7 +139,7 @@ inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
     0,
     {8, 6, 2, 2, 27, 9, builtinCoverageSpatialFuOccurrences(),
      builtinBalancedFuOccurrences(9), 4, 4, 4, 4,
-     ::fabric::FifoQueueDiscipline::StrictFifo,
+     ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
      LocalMemoryPortVariant::SharedElementVector, 5, 4, 256 * 1024}};
 
 inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
@@ -146,7 +150,7 @@ inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
     0,
     {16, 8, 2, 2, 48, 16, builtinBalancedFuOccurrences(48),
      builtinBalancedFuOccurrences(16), 4, 4, 8, 16,
-     ::fabric::FifoQueueDiscipline::StrictFifo,
+     ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
      LocalMemoryPortVariant::SharedElementVector, 5, 8, 1024 * 1024}};
 
 inline llvm::Expected<const BuiltinTargetDescriptor *>

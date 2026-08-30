@@ -820,6 +820,7 @@ The initial scale anchors are:
 | Spatial : Temporal memory ratio  |     1:1 |       4:4 |     4:4 |
 | Temporal resident-context anchor |       2 |         4 |       8 |
 | interconnect FIFO depth          |       2 |         4 |      16 |
+| tagged FIFO queue discipline     | StrictFifo | PerTagVirtualChannel | PerTagVirtualChannel |
 | cross-schedule lanes / Temporal PE |     5 |         5 |       5 |
 | Module transport gateway anchor  |       2 |         4 |       8 |
 | cross-schedule boundary pairs    |      20 |        45 |      80 |
@@ -834,6 +835,12 @@ Helper resource tables reference normative
 `ImplementationFamilyId` values; operation-family membership remains owned by
 the HSG registry. They do not duplicate member lists, spell operation names as
 dispatch keys, or define backend modes.
+
+`Coverage` and `Large` are the production spatial-temporal anchors and select
+PerTagVirtualChannel for every generated tag-carrying interconnect FIFO.
+`Small` retains StrictFifo as the compact global-order reference. An explicit
+resolved target may choose either discipline; changing it changes the finalized
+Fabric identity and every dependent Mapping and evaluation provenance.
 
 The Coverage memory anchor exposes four Spatial read ports and four independent
 Temporal ingress match domains. This is the minimum balanced occurrence supply
