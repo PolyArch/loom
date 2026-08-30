@@ -2,6 +2,7 @@
 
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/ResourceContract.h"
+#include "Fabric/Identity/FabricRefImport.h"
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
 
 #include "circt/Dialect/Comb/CombOps.h"
@@ -599,6 +600,13 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
       findEndpoint(*endpoints, fabric::FabricPortDirection::Output, 0);
   if (!input || !output || endpoints->size() != 2)
     return invalid("FIFO endpoint inventory is not one-in/one-out");
+  const bool virtualChannel =
+      fabric.fifoQueueDiscipline(fifo).value_or(
+          ::fabric::FifoQueueDiscipline::StrictFifo) ==
+      ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
+  if (virtualChannel &&
+      (operation.getBypassable() || output->dataPath.tagWidthBits == 0))
+    return invalid("virtual-channel FIFO must be tagged and non-bypassable");
   const fabric::FabricSemanticConfigFieldRef field{
       fabric::FabricConfigurationOwnerRef(
           fabric::FabricInventoryOwnerRef::of(fifo)),
@@ -649,24 +657,48 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
         circt::BackedgeBuilder backedges(bodyBuilder, location);
         const unsigned pointerBits = counterWidth(depth);
         const unsigned occupancyBits = counterWidth(depth + 1);
-        circt::Backedge headNext =
-            backedges.get(bodyBuilder.getIntegerType(pointerBits));
-        circt::Backedge tailNext =
-            backedges.get(bodyBuilder.getIntegerType(pointerBits));
+        const unsigned tagWidthBits = output->dataPath.tagWidthBits;
+        const auto integerConstant = [&](unsigned width, std::uint64_t value) {
+          return circt::hw::ConstantOp::create(bodyBuilder, location,
+                                               llvm::APInt(width, value));
+        };
         circt::Backedge occupancyNext =
             backedges.get(bodyBuilder.getIntegerType(occupancyBits));
-        mlir::Value head = createRegister(
-            bodyBuilder, location, headNext, accessor.getInput("clock"),
-            accessor.getInput("reset"), llvm::APInt(pointerBits, 0), "head_reg",
-            clockReset.asynchronousReset);
-        mlir::Value tail = createRegister(
-            bodyBuilder, location, tailNext, accessor.getInput("clock"),
-            accessor.getInput("reset"), llvm::APInt(pointerBits, 0), "tail_reg",
-            clockReset.asynchronousReset);
+        // A strict FIFO moves a head pointer on dequeue. The virtual-channel
+        // discipline keeps resident entries compacted toward slot zero and
+        // instead moves a cursor over Physical Tag values; see below.
+        std::optional<circt::Backedge> headNext;
+        std::optional<circt::Backedge> tailNext;
+        mlir::Value head;
+        mlir::Value tail;
+        if (!virtualChannel) {
+          headNext = backedges.get(bodyBuilder.getIntegerType(pointerBits));
+          tailNext = backedges.get(bodyBuilder.getIntegerType(pointerBits));
+          head = createRegister(bodyBuilder, location, *headNext,
+                                accessor.getInput("clock"),
+                                accessor.getInput("reset"),
+                                llvm::APInt(pointerBits, 0), "head_reg",
+                                clockReset.asynchronousReset);
+          tail = createRegister(bodyBuilder, location, *tailNext,
+                                accessor.getInput("clock"),
+                                accessor.getInput("reset"),
+                                llvm::APInt(pointerBits, 0), "tail_reg",
+                                clockReset.asynchronousReset);
+        }
         mlir::Value occupancy = createRegister(
             bodyBuilder, location, occupancyNext, accessor.getInput("clock"),
             accessor.getInput("reset"), llvm::APInt(occupancyBits, 0),
             "occupancy_reg", clockReset.asynchronousReset);
+        std::optional<circt::Backedge> offerCursorNext;
+        mlir::Value offerCursor;
+        if (virtualChannel) {
+          offerCursorNext =
+              backedges.get(bodyBuilder.getIntegerType(tagWidthBits));
+          offerCursor = createRegister(
+              bodyBuilder, location, *offerCursorNext, accessor.getInput("clock"),
+              accessor.getInput("reset"), llvm::APInt(tagWidthBits, 0),
+              "offer_cursor_reg", clockReset.asynchronousReset);
+        }
         mlir::Value zeroOccupancy = circt::hw::ConstantOp::create(
             bodyBuilder, location, llvm::APInt(occupancyBits, 0));
         mlir::Value fullOccupancy = circt::hw::ConstantOp::create(
@@ -719,25 +751,87 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
         StorageBank dataBank =
             makeBank(output->dataPath.payloadWidthBits, "data");
         StorageBank tagBank = makeBank(output->dataPath.tagWidthBits, "tag");
+        // The virtual-channel discipline presents the head of exactly one
+        // non-empty channel per cycle. Resident entries occupy slots
+        // [0, occupancy), so slot order is arrival order. Minimizing the
+        // wrapped distance (tag - cursor) over occupied slots selects the
+        // smallest resident tag value at or after the cursor and wraps once
+        // to the lowest resident value; the ascending slot fold keeps the
+        // arrival-oldest slot of that channel on distance ties.
+        mlir::Value selectedSlot;
+        if (virtualChannel) {
+          mlir::Value anyOccupied = bitConstant(bodyBuilder, location, false);
+          mlir::Value bestDistance = integerConstant(tagWidthBits, 0);
+          selectedSlot = integerConstant(pointerBits, 0);
+          for (std::uint64_t slot = 0; slot != depth; ++slot) {
+            mlir::Value occupied = circt::comb::ICmpOp::create(
+                bodyBuilder, location, circt::comb::ICmpPredicate::ult,
+                integerConstant(occupancyBits, slot), occupancy, true);
+            mlir::Value distance = circt::comb::SubOp::create(
+                bodyBuilder, location, tagBank.current[slot], offerCursor, true);
+            mlir::Value nearer = circt::comb::ICmpOp::create(
+                bodyBuilder, location, circt::comb::ICmpPredicate::ult, distance,
+                bestDistance, true);
+            mlir::Value take = andValues(
+                bodyBuilder, location,
+                {occupied, orValues(bodyBuilder, location,
+                                    {circt::comb::createOrFoldNot(
+                                         bodyBuilder, location, anyOccupied),
+                                     nearer})});
+            selectedSlot = circt::comb::MuxOp::create(
+                bodyBuilder, location, take, integerConstant(pointerBits, slot),
+                selectedSlot, true);
+            bestDistance = circt::comb::MuxOp::create(bodyBuilder, location,
+                                                      take, distance,
+                                                      bestDistance, true);
+            anyOccupied = circt::comb::OrOp::create(bodyBuilder, location,
+                                                    anyOccupied, occupied);
+          }
+        }
+        // A grant removes the presented slot. In the virtual-channel
+        // discipline the hole closes toward the tail: every slot at or after
+        // the granted slot takes its successor's content, and an enqueue in
+        // the same cycle lands at the post-dequeue append position.
         const auto writeBank = [&](StorageBank &bank,
-                                   std::optional<mlir::Value> source) {
+                                   std::optional<mlir::Value> source,
+                                   mlir::Value appendPosition,
+                                   mlir::Value grantedSlot) {
           if (bank.width == 0)
             return;
           if (!source) {
             materializationError = "FIFO storage source is absent";
             return;
           }
+          const unsigned positionBits = mlir::cast<mlir::IntegerType>(
+                                            appendPosition.getType())
+                                            .getWidth();
+          mlir::Value shift = bitConstant(bodyBuilder, location, false);
           for (std::uint64_t slot = 0; slot < depth; ++slot) {
-            mlir::Value slotValue = circt::hw::ConstantOp::create(
-                bodyBuilder, location, llvm::APInt(pointerBits, slot));
-            mlir::Value selected = circt::comb::ICmpOp::create(
-                bodyBuilder, location, circt::comb::ICmpPredicate::eq, tail,
-                slotValue, true);
-            mlir::Value write =
-                andValues(bodyBuilder, location, {enqueue, selected});
-            bank.next[slot].setValue(
-                circt::comb::MuxOp::create(bodyBuilder, location, write,
-                                           *source, bank.current[slot], true));
+            mlir::Value slotValue =
+                integerConstant(positionBits, slot);
+            mlir::Value appendHere = andValues(
+                bodyBuilder, location,
+                {enqueue, circt::comb::ICmpOp::create(
+                              bodyBuilder, location,
+                              circt::comb::ICmpPredicate::eq, appendPosition,
+                              slotValue, true)});
+            mlir::Value next = bank.current[slot];
+            if (grantedSlot) {
+              mlir::Value removed = circt::comb::ICmpOp::create(
+                  bodyBuilder, location, circt::comb::ICmpPredicate::eq,
+                  grantedSlot, integerConstant(pointerBits, slot), true);
+              shift = circt::comb::OrOp::create(bodyBuilder, location, shift,
+                                                removed);
+              mlir::Value successor = slot + 1 != depth
+                                          ? bank.current[slot + 1]
+                                          : bank.current[slot];
+              next = circt::comb::MuxOp::create(
+                  bodyBuilder, location,
+                  andValues(bodyBuilder, location, {dequeue, shift}), successor,
+                  next, true);
+            }
+            bank.next[slot].setValue(circt::comb::MuxOp::create(
+                bodyBuilder, location, appendHere, *source, next, true));
           }
         };
         auto adaptedInput = adaptForwardTransportSignals(
@@ -755,13 +849,30 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
           backedges.abandon();
           return;
         }
-        writeBank(dataBank, adaptedInput->payload);
-        writeBank(tagBank, adaptedInput->tag);
+        mlir::Value readPointer = head;
+        mlir::Value appendPosition = tail;
+        mlir::Value grantedSlot;
+        if (virtualChannel) {
+          readPointer = selectedSlot;
+          grantedSlot = selectedSlot;
+          // An enqueue in a dequeue cycle lands at the position the closing
+          // hole leaves behind, one below the pre-dequeue occupancy.
+          mlir::Value decrementedOccupancy = circt::comb::SubOp::create(
+              bodyBuilder, location, occupancy,
+              integerConstant(occupancyBits, 1), true);
+          appendPosition = circt::comb::MuxOp::create(
+              bodyBuilder, location, dequeue, decrementedOccupancy, occupancy,
+              true);
+        }
+        writeBank(dataBank, adaptedInput->payload, appendPosition,
+                  grantedSlot);
+        writeBank(tagBank, adaptedInput->tag, appendPosition, grantedSlot);
         if (materializationError) {
           backedges.abandon();
           return;
         }
-        const auto readBank = [&](const StorageBank &bank) -> mlir::Value {
+        const auto readBank = [&](const StorageBank &bank,
+                                  mlir::Value pointer) -> mlir::Value {
           if (bank.width == 0)
             return {};
           mlir::Value value = circt::hw::ConstantOp::create(
@@ -770,15 +881,15 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
             mlir::Value slotValue = circt::hw::ConstantOp::create(
                 bodyBuilder, location, llvm::APInt(pointerBits, slot));
             mlir::Value selected = circt::comb::ICmpOp::create(
-                bodyBuilder, location, circt::comb::ICmpPredicate::eq, head,
+                bodyBuilder, location, circt::comb::ICmpPredicate::eq, pointer,
                 slotValue, true);
             value = circt::comb::MuxOp::create(bodyBuilder, location, selected,
                                                bank.current[slot], value, true);
           }
           return value;
         };
-        mlir::Value bufferedData = readBank(dataBank);
-        mlir::Value bufferedTag = readBank(tagBank);
+        mlir::Value bufferedData = readBank(dataBank, readPointer);
+        mlir::Value bufferedTag = readBank(tagBank, readPointer);
         if (output->data)
           accessor.setOutput(output->data->getName(),
                              circt::comb::MuxOp::create(
@@ -804,14 +915,35 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
                     bodyBuilder, location,
                     {bypass, accessor.getInput(output->ready.getName())})));
 
-        mlir::Value incrementHead =
-            incrementModulo(bodyBuilder, location, head, depth);
-        mlir::Value incrementTail =
-            incrementModulo(bodyBuilder, location, tail, depth);
-        headNext.setValue(circt::comb::MuxOp::create(
-            bodyBuilder, location, dequeue, incrementHead, head, true));
-        tailNext.setValue(circt::comb::MuxOp::create(
-            bodyBuilder, location, enqueue, incrementTail, tail, true));
+        if (!virtualChannel) {
+          mlir::Value incrementHead =
+              incrementModulo(bodyBuilder, location, head, depth);
+          mlir::Value incrementTail =
+              incrementModulo(bodyBuilder, location, tail, depth);
+          headNext->setValue(circt::comb::MuxOp::create(
+              bodyBuilder, location, dequeue, incrementHead, head, true));
+          tailNext->setValue(circt::comb::MuxOp::create(
+              bodyBuilder, location, enqueue, incrementTail, tail, true));
+        } else {
+          // A grant and a refused offer (valid && !ready) share one cursor
+          // rule: move past the presented channel so the next cycle presents
+          // the next non-empty channel in canonical ascending tag order. The
+          // tag-width add wraps to the zero value past the highest tag value.
+          mlir::Value presentedRefused = andValues(
+              bodyBuilder, location,
+              {bufferedOutputValid,
+               circt::comb::createOrFoldNot(bodyBuilder, location,
+                                            accessor.getInput(
+                                                output->ready.getName()))});
+          mlir::Value cursorAdvances =
+              orValues(bodyBuilder, location, {dequeue, presentedRefused});
+          mlir::Value successor = circt::comb::AddOp::create(
+              bodyBuilder, location, bufferedTag,
+              integerConstant(tagWidthBits, 1), true);
+          offerCursorNext->setValue(circt::comb::MuxOp::create(
+              bodyBuilder, location, cursorAdvances, successor, offerCursor,
+              true));
+        }
         mlir::Value oneOccupancy = circt::hw::ConstantOp::create(
             bodyBuilder, location, llvm::APInt(occupancyBits, 1));
         mlir::Value incrementOccupancy = circt::comb::AddOp::create(

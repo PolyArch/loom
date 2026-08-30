@@ -426,7 +426,12 @@ Unrealizable or unsupported resources fail lowering. They are not replaced by
 a similar primitive or silently emitted as behaviorally different logic.
 `fabric.fifo` lowering preserves the capability and selected-mode contract in
 `docs/spec-fabric-fifo.md`; implementation structure cannot change buffered
-visibility, bypass backpressure, or inactive-state semantics.
+visibility, bypass backpressure, or inactive-state semantics. A
+`per_tag_virtual_channel` occurrence lowers to one compacted slot bank with an
+offer cursor over Physical Tag values: each cycle presents the arrival-oldest
+entry of the resident channel nearest the cursor in wrapped ascending tag
+order, and a grant or a refused offer moves the cursor past that channel,
+exactly the arbitration transition the Fabric contract owns.
 
 An unbound or inactive operation input is not an implicit sink. A provider
 must not assert readiness merely to drain and discard tokens unless the exact

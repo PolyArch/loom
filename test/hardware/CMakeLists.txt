@@ -198,6 +198,24 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-fifo-virtual-channel-rtl-test
+    FifoVirtualChannelRtlTest.cpp
+  )
+
+  target_include_directories(loom-fifo-virtual-channel-rtl-test PRIVATE
+    ${LOOM_SOURCE_DIR}/lib/Simulator
+  )
+
+  target_link_libraries(loom-fifo-virtual-channel-rtl-test PRIVATE
+    LoomConfigurationTransportTestSupport
+    LoomHardwareConfigurationTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    LoomSimulator
+    MLIRFabric
+    LLVMSupport
+  )
+
   add_executable(loom-memory-hierarchy-test
     ../InternalMemoryEdgeTestSupport.cpp
     MemoryHierarchyTest.cpp
