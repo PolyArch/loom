@@ -22,8 +22,14 @@
 
 namespace loom::mapping {
 
+/// One family, two roots. 1.1 adds an optional Spatial-only clause kind, which
+/// is a non-breaking semantic extension: no existing carrier changed meaning or
+/// wire encoding. Artifact identity nevertheless hashes the version, so 1.0 and
+/// 1.1 references are deliberately not interchangeable. The superseded
+/// descriptor and its explicit migration owners live in
+/// `Mapping/Artifact/MappingConstraintSetMigration.h`.
 inline constexpr ArtifactSchemaDescriptor mappingConstraintSetSchema{
-    "loom.mapping_constraints", SchemaVersion{1, 0}};
+    "loom.mapping_constraints", SchemaVersion{1, 1}};
 
 llvm::Expected<CanonicalSemanticBytes>
 writeCanonicalSpatialConstraintAssembly(::mapping::ConstraintsSpatialOp root);
@@ -120,9 +126,50 @@ struct SpatialDisjointView final {
   std::vector<SpatialConstraintSubject> subjects;
 };
 
+/// One exact Spatial Mapping choice named by a no-good literal: the RouteTree
+/// of `producer` selects `traversal`. An engaged `consumer` narrows the claim
+/// to the branch from the route root to that exact sink.
+struct SpatialNetUsesTraversalLiteral final {
+  ::dataflow::CanonicalGraphProducerEndpointRef producer;
+  std::optional<::dataflow::CanonicalGraphConsumerEndpointRef> consumer;
+  ::loom::fabric::FabricPhysicalTraversalRef traversal;
+
+  friend bool operator==(const SpatialNetUsesTraversalLiteral &lhs,
+                         const SpatialNetUsesTraversalLiteral &rhs) {
+    return lhs.producer == rhs.producer && lhs.consumer == rhs.consumer &&
+           lhs.traversal == rhs.traversal;
+  }
+};
+
+/// One exact Spatial Mapping choice named by a no-good literal: `terminal`
+/// attaches at `endpoint`.
+struct SpatialTransferAttachmentEqualsLiteral final {
+  SpatialConstraintTransferTerminal terminal;
+  ::loom::fabric::FabricTransportEndpointRef endpoint;
+
+  friend bool operator==(const SpatialTransferAttachmentEqualsLiteral &lhs,
+                         const SpatialTransferAttachmentEqualsLiteral &rhs) {
+    return lhs.terminal == rhs.terminal && lhs.endpoint == rhs.endpoint;
+  }
+};
+
+/// The closed Spatial no-good literal catalog. Only kinds a current production
+/// admission consumer can independently verify against a sealed Mapping appear
+/// here; no kind is pre-added for a future consumer.
+using SpatialNoGoodLiteral =
+    std::variant<SpatialNetUsesTraversalLiteral,
+                 SpatialTransferAttachmentEqualsLiteral>;
+
+/// One disjunctive runtime-counterexample clause: the listed exact Mapping
+/// choices may not all hold at once, so at least one literal must change. The
+/// literal sequence is canonically sorted and duplicate-free, and never empty.
+struct SpatialRuntimeCounterexampleNoGoodView final {
+  std::vector<SpatialNoGoodLiteral> literals;
+};
+
 using SpatialConstraintClauseView =
     std::variant<SpatialDomainRestrictionView, SpatialEqualView,
-                 SpatialDisjointView>;
+                 SpatialDisjointView, SpatialRuntimeCounterexampleNoGoodView>;
 
 class SpatialMappingConstraintSetView final {
 public:
@@ -255,6 +302,16 @@ finalizeSpatialNetTraversalDomainConstraintSet(
     llvm::ArrayRef<::loom::fabric::FabricPhysicalTraversalRef>
         admissibleTraversals,
     const ArtifactStore &store);
+
+/// Publishes the canonical union of `parent`'s clauses with one additional
+/// runtime-counterexample no-good over the same exact D/T/F closure. The clause
+/// must be non-empty; its literals are canonically sorted and deduplicated, and
+/// a clause equal to one already present is idempotent. Re-publishing the same
+/// counterexample therefore yields the same Artifact identity.
+llvm::Expected<FinalizedSpatialMappingConstraintSet>
+finalizeSpatialRuntimeCounterexampleConstraintSet(
+    const ArtifactRootReference &parent,
+    llvm::ArrayRef<SpatialNoGoodLiteral> literals, const ArtifactStore &store);
 
 llvm::Expected<FinalizedSpatialMappingConstraintSet>
 importSpatialMappingConstraintSet(const ArtifactRootReference &reference,

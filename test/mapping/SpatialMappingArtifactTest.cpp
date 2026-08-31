@@ -29,11 +29,13 @@
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
+#include "Mapping/Artifact/MappingConstraintSetMigration.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/Inspection/SpatialMappingInspection.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
+#include "PnR/FrozenConstraintIndex.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialCandidateInitializer.h"
@@ -610,6 +612,295 @@ enum class SwitchResidencyExpectation : std::uint8_t {
   ExceedsCapacity,
 };
 
+/// Artifact-level semantic joints of the loom.mapping_constraints 1.1
+/// runtime-counterexample no-good, exercised against a real sealed
+/// SpatialMapping and its own real RouteTree rather than synthetic text.
+void exerciseSpatialRuntimeCounterexampleNoGood(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const loom::mapping::TechMappingView &techMapping,
+    const loom::fabric::FabricArtifactView &fabric,
+    const loom::fabric::FabricArtifactView &foreignFabric,
+    const loom::mapping::FinalizedSpatialMappingConstraintSet &parent,
+    const loom::mapping::FinalizedSpatialMapping &mapping,
+    const loom::ArtifactStore &store) {
+  // Quote exact choices the sealed Mapping really made. A RouteTree can select
+  // a traversal at its source attachment, on a routed node, or at a sink
+  // attachment; all three positions belong to NetUsesTraversal.
+  if (mapping.view().routeTrees().empty())
+    fail("sealed Spatial Mapping published no RouteTree to quote");
+  const loom::mapping::SpatialRouteTreeView *selectedRoute = nullptr;
+  std::optional<loom::fabric::FabricPhysicalTraversalRef> selectedTraversal;
+  for (const auto &route : mapping.view().routeTrees()) {
+    if (route.localTraversal) {
+      selectedRoute = &route;
+      selectedTraversal = *route.localTraversal;
+      break;
+    }
+    for (const auto &node : route.nodes) {
+      if (!node.incomingTraversal)
+        continue;
+      selectedRoute = &route;
+      selectedTraversal = *node.incomingTraversal;
+      break;
+    }
+    if (selectedTraversal)
+      break;
+    for (const auto &sink : route.sinks) {
+      if (!sink.localTraversal)
+        continue;
+      selectedRoute = &route;
+      selectedTraversal = *sink.localTraversal;
+      break;
+    }
+    if (selectedTraversal)
+      break;
+  }
+  if (!selectedTraversal)
+    fail("sealed Spatial Mapping selected no physical traversal to quote");
+
+  const loom::mapping::SpatialNoGoodLiteral attachment =
+      loom::mapping::SpatialTransferAttachmentEqualsLiteral{
+          loom::mapping::SpatialConstraintTransferTerminal{
+              selectedRoute->logicalNet, std::nullopt},
+          selectedRoute->rootEndpoint};
+  const loom::mapping::SpatialNoGoodLiteral usesTraversal =
+      loom::mapping::SpatialNetUsesTraversalLiteral{
+          selectedRoute->logicalNet, std::nullopt, *selectedTraversal};
+
+  const auto publish =
+      [&](llvm::ArrayRef<loom::mapping::SpatialNoGoodLiteral> literals) {
+        return take(
+            loom::mapping::finalizeSpatialRuntimeCounterexampleConstraintSet(
+                parent.reference(), literals, store));
+      };
+
+  // Every literal still holds of the exact parent Mapping, so the parent is
+  // rejected: it repeats the recorded counterexample.
+  const auto rejectsMapping = [&](const auto &constraint) {
+    bool rejected = false;
+    llvm::handleAllErrors(
+        loom::mapping::admitSpatialMappingConstraints(
+            dataflow, techMapping, fabric, constraint.view(), mapping.view()),
+        [&](const loom::mapping::SpatialMappingConstraintRejection &) {
+          rejected = true;
+        },
+        [&](const llvm::ErrorInfoBase &error) { fail(error.message()); });
+    return rejected;
+  };
+  const auto bothHold = publish({usesTraversal, attachment});
+  if (!rejectsMapping(bothHold))
+    fail("a no-good whose literals all hold did not reject its own parent "
+         "Spatial Mapping");
+
+  // Changing one literal satisfies the clause. A traversal the route does not
+  // select is independently verifiable as not-holding, so the same Mapping is
+  // admitted again.
+  const auto routeSelects =
+      [&](const loom::fabric::FabricPhysicalTraversalRef &candidate) {
+        return loom::mapping::spatialRouteTreeSelectsTraversal(*selectedRoute,
+                                                               candidate);
+      };
+  std::optional<loom::mapping::SpatialNoGoodLiteral> changedLiteral;
+  for (const auto &traversal : fabric.physicalTraversals()) {
+    if (routeSelects(traversal.reference))
+      continue;
+    changedLiteral = loom::mapping::SpatialNoGoodLiteral{
+        loom::mapping::SpatialNetUsesTraversalLiteral{
+            selectedRoute->logicalNet, std::nullopt, traversal.reference}};
+    break;
+  }
+  if (!changedLiteral)
+    fail("Fabric offers no unselected traversal to change a literal to");
+
+  const auto oneChanged = publish({*changedLiteral, attachment});
+  requireSuccess(loom::mapping::admitSpatialMappingConstraints(
+      dataflow, techMapping, fabric, oneChanged.view(), mapping.view()));
+
+  // An unrelated exact choice must not reject: a clause naming only choices
+  // this Mapping did not make is satisfied.
+  const auto unrelated = publish({*changedLiteral});
+  requireSuccess(loom::mapping::admitSpatialMappingConstraints(
+      dataflow, techMapping, fabric, unrelated.view(), mapping.view()));
+
+  // A sink-qualified traversal is evaluated only on that sink's exact branch,
+  // including the source- and sink-local traversal positions. A sink-qualified
+  // attachment likewise resolves to that sink node rather than the route root.
+  const loom::mapping::SpatialRouteTreeView *qualifiedRoute = nullptr;
+  const loom::mapping::SpatialRouteSinkView *qualifiedSink = nullptr;
+  std::optional<loom::fabric::FabricPhysicalTraversalRef> branchTraversal;
+  for (const auto &route : mapping.view().routeTrees()) {
+    for (const auto &sink : route.sinks) {
+      if (route.localTraversal)
+        branchTraversal = *route.localTraversal;
+      for (std::optional<std::uint64_t> cursor = sink.nodeOrdinal;
+           !branchTraversal && cursor;
+           cursor = route.nodes[*cursor].parentOrdinal)
+        if (route.nodes[*cursor].incomingTraversal)
+          branchTraversal = *route.nodes[*cursor].incomingTraversal;
+      if (!branchTraversal && sink.localTraversal)
+        branchTraversal = *sink.localTraversal;
+      if (!branchTraversal)
+        continue;
+      qualifiedRoute = &route;
+      qualifiedSink = &sink;
+      break;
+    }
+    if (qualifiedSink)
+      break;
+  }
+  if (!qualifiedRoute || !qualifiedSink || !branchTraversal)
+    fail("sealed Spatial Mapping has no sink branch traversal to quote");
+
+  const loom::mapping::SpatialNoGoodLiteral qualifiedTraversal =
+      loom::mapping::SpatialNetUsesTraversalLiteral{
+          qualifiedRoute->logicalNet, qualifiedSink->sink, *branchTraversal};
+  if (!rejectsMapping(publish({qualifiedTraversal})))
+    fail("a sink-qualified traversal did not hold on its selected branch");
+  const loom::mapping::SpatialNoGoodLiteral qualifiedAttachment =
+      loom::mapping::SpatialTransferAttachmentEqualsLiteral{
+          loom::mapping::SpatialConstraintTransferTerminal{
+              qualifiedRoute->logicalNet, qualifiedSink->sink},
+          qualifiedRoute->nodes[qualifiedSink->nodeOrdinal].endpoint};
+  if (!rejectsMapping(publish({qualifiedAttachment})))
+    fail("a sink-qualified attachment did not resolve to its selected node");
+
+  const auto branchSelects =
+      [&](const loom::fabric::FabricPhysicalTraversalRef &candidate) {
+        if (qualifiedRoute->localTraversal &&
+            *qualifiedRoute->localTraversal == candidate)
+          return true;
+        for (std::optional<std::uint64_t> cursor = qualifiedSink->nodeOrdinal;
+             cursor; cursor = qualifiedRoute->nodes[*cursor].parentOrdinal)
+          if (qualifiedRoute->nodes[*cursor].incomingTraversal &&
+              *qualifiedRoute->nodes[*cursor].incomingTraversal == candidate)
+            return true;
+        return qualifiedSink->localTraversal &&
+               *qualifiedSink->localTraversal == candidate;
+      };
+  std::optional<loom::fabric::FabricPhysicalTraversalRef> absentBranchTraversal;
+  for (const auto &traversal : fabric.physicalTraversals())
+    if (!branchSelects(traversal.reference)) {
+      absentBranchTraversal = traversal.reference;
+      break;
+    }
+  if (!absentBranchTraversal)
+    fail("Fabric offers no traversal outside the selected sink branch");
+  const auto changedBranch = publish({loom::mapping::SpatialNoGoodLiteral{
+      loom::mapping::SpatialNetUsesTraversalLiteral{qualifiedRoute->logicalNet,
+                                                    qualifiedSink->sink,
+                                                    *absentBranchTraversal}}});
+  requireSuccess(loom::mapping::admitSpatialMappingConstraints(
+      dataflow, techMapping, fabric, changedBranch.view(), mapping.view()));
+
+  // Republishing the same counterexample is identity-idempotent, and literal
+  // discovery order is not identity.
+  if (!(publish({usesTraversal, attachment}).reference() ==
+        bothHold.reference()))
+    fail("republishing an identical no-good changed the Artifact identity");
+  if (!(publish({attachment, usesTraversal}).reference() ==
+        bothHold.reference()))
+    fail("no-good literal discovery order changed the Artifact identity");
+
+  // Two distinct counterexamples form a canonical union whose identity does
+  // not depend on the order they were recorded in. Recording {A} then B must
+  // equal recording {B} then A.
+  const auto onlyAttachment = publish({attachment});
+  const auto unionA =
+      take(loom::mapping::finalizeSpatialRuntimeCounterexampleConstraintSet(
+          bothHold.reference(), {attachment}, store));
+  const auto unionB =
+      take(loom::mapping::finalizeSpatialRuntimeCounterexampleConstraintSet(
+          onlyAttachment.reference(), {usesTraversal, attachment}, store));
+  if (!(unionA.reference() == unionB.reference()))
+    fail("no-good clause discovery order changed the canonical union identity");
+  if (unionA.reference() == bothHold.reference())
+    fail("a distinct no-good clause did not change the Artifact identity");
+
+  // Foreign owners are rejected before any clause is evaluated.
+  llvm::Error foreign = loom::mapping::admitSpatialMappingConstraints(
+      dataflow, techMapping, foreignFabric, bothHold.view(), mapping.view());
+  if (!foreign)
+    fail("no-good admission accepted a foreign Fabric owner");
+  llvm::consumeError(std::move(foreign));
+
+  // Freeze preserves the clause, and a set carrying only no-goods is not
+  // empty: a consumer that early-outs on empty() must not skip it.
+  auto frozen =
+      take(loom::pnr::detail::buildFrozenConstraintIndex(bothHold.view()));
+  if (frozen.noGoods().size() != 1 ||
+      frozen.noGoods().front().literals.size() != 2)
+    fail("FrozenConstraintIndex lost a runtime-counterexample no-good");
+  if (frozen.empty())
+    fail("a constraint index carrying a no-good reported itself empty");
+
+  // The 1.0 family is reachable only through the explicit migration owner.
+  // `parent` predates the extension, so its canonical bytes are exactly what a
+  // 1.0 payload would hold; republishing them under the 1.0 descriptor yields a
+  // genuine legacy reference with a different identity.
+  const loom::ArtifactRootReference legacyParent{
+      loom::mapping::mappingConstraintSetSchemaV1_0.identity.str(),
+      loom::mapping::mappingConstraintSetSchemaV1_0.version,
+      take(store.put(loom::mapping::mappingConstraintSetSchemaV1_0,
+                     parent.canonicalBytes()))};
+  if (legacyParent.artifact == parent.reference().artifact)
+    fail("the 1.0 and 1.1 identities of identical bytes collided");
+
+  llvm::Error strict =
+      loom::mapping::importSpatialMappingConstraintSet(legacyParent, store)
+          .takeError();
+  if (!strict)
+    fail("the strict 1.1 Spatial importer accepted a 1.0 reference");
+  llvm::consumeError(std::move(strict));
+
+  const auto migrated =
+      take(loom::mapping::migrateSpatialConstraintRootV1_0ToV1_1(legacyParent,
+                                                                 store));
+  if (!(migrated == parent.reference()))
+    fail("Spatial 1.0-to-1.1 migration did not reproduce the native 1.1 cold "
+         "identity");
+
+  // A 1.0 reference to bytes that already carry the 1.1-only clause kind is
+  // mislabelled, not due an upgrade.
+  const loom::ArtifactRootReference mislabelled{
+      loom::mapping::mappingConstraintSetSchemaV1_0.identity.str(),
+      loom::mapping::mappingConstraintSetSchemaV1_0.version,
+      take(store.put(loom::mapping::mappingConstraintSetSchemaV1_0,
+                     bothHold.canonicalBytes()))};
+  llvm::Error mislabelledError =
+      loom::mapping::migrateSpatialConstraintRootV1_0ToV1_1(mislabelled, store)
+          .takeError();
+  if (!mislabelledError)
+    fail("Spatial migration accepted a 1.0 payload holding a 1.1-only clause");
+  llvm::consumeError(std::move(mislabelledError));
+
+  // Migration accepts only what the strict 1.0 importer could have accepted.
+  // Perturbing the stored payload so it is no longer canonical under its own
+  // family must be rejected, not silently normalized into a valid 1.1
+  // artifact. Duplicating the trailing newline keeps the payload parseable and
+  // semantically identical while making it noncanonical.
+  {
+    const auto &bytes = parent.canonicalBytes().bytes();
+    std::vector<std::uint8_t> perturbed(bytes.begin(), bytes.end());
+    perturbed.push_back('\n');
+    const loom::ArtifactRootReference noncanonical{
+        loom::mapping::mappingConstraintSetSchemaV1_0.identity.str(),
+        loom::mapping::mappingConstraintSetSchemaV1_0.version,
+        take(store.put(loom::mapping::mappingConstraintSetSchemaV1_0,
+                       loom::CanonicalSemanticBytes(std::move(perturbed))))};
+    auto migratedNoncanonical =
+        loom::mapping::migrateSpatialConstraintRootV1_0ToV1_1(noncanonical,
+                                                              store);
+    if (migratedNoncanonical)
+      fail("Spatial migration normalized a noncanonical 1.0 payload instead "
+           "of rejecting it");
+    const std::string diagnostic =
+        llvm::toString(migratedNoncanonical.takeError());
+    if (!llvm::StringRef(diagnostic).contains("is not canonical"))
+      fail("noncanonical 1.0 payload was rejected for the wrong reason: " +
+           diagnostic);
+  }
+}
+
 void completeCandidateRoundTrip(
     bool temporal, bool boundaryWrapped = false, bool forceTagConflict = false,
     ComputeContractKind contractKind = ComputeContractKind::OneCycleElastic,
@@ -786,6 +1077,10 @@ void completeCandidateRoundTrip(
     if (!rejectedByConstraintSet)
       fail("Spatial constraint admission accepted a forbidden compute "
            "placement");
+
+    exerciseSpatialRuntimeCounterexampleNoGood(
+        dataflow, tech.view(), fabric.view(), foreignFabric.view(), constraints,
+        generatedView, store);
 
     generatorResolved.dse.systemPnr.search.routing.negotiation =
         loom::ResolvedDualSubgradientPolicy{

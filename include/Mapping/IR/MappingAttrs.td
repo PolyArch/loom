@@ -498,6 +498,35 @@ def Mapping_SpatialTransferTerminalAttr
   let genVerifyDecl = 1;
 }
 
+def Mapping_NetUsesTraversalAttr
+    : Mapping_Attr<"NetUsesTraversal", "net_uses_traversal"> {
+  let summary = "one exact Spatial choice: a logical net selects a traversal";
+  let description = [{
+    Names the exact Mapping choice "the RouteTree of `producer` selects
+    `traversal`". When `consumer` is present the claim narrows to the branch
+    from the route root to that sink, which an admission consumer rebuilds by
+    walking `parentOrdinal` from the sink node. Absent `consumer`, the claim
+    ranges over every node of the tree.
+  }];
+  let parameters = (ins "::mapping::GraphProducerEndpointRefAttr":$producer,
+      OptionalParameter<"::mapping::GraphConsumerEndpointRefAttr">:$consumer,
+      "::mapping::FabricPhysicalTraversalRefAttr":$traversal);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def Mapping_TransferAttachmentEqualsAttr
+    : Mapping_Attr<"TransferAttachmentEquals", "transfer_attachment_equals"> {
+  let summary = "one exact Spatial choice: a transfer terminal's attachment";
+  let description = [{
+    Names the exact Mapping choice "`terminal` attaches at `endpoint`". The
+    source terminal attaches at the RouteTree root endpoint; an exact sink
+    terminal attaches at the endpoint of its sink node.
+  }];
+  let parameters = (ins "::mapping::SpatialTransferTerminalAttr":$terminal,
+      "::mapping::FabricTransportEndpointRefAttr":$endpoint);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
 def Mapping_ConstraintFuContextAttr
     : Mapping_Attr<"ConstraintFuContext", "constraint_fu_context"> {
   let summary = "correlated FU occurrence and instruction context carrier";

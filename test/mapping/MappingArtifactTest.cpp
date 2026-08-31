@@ -1,3 +1,5 @@
+#include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricRefs.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
@@ -590,6 +592,152 @@ void testCanonicalSpatialConstraintSet() {
     fail("Spatial MappingConstraintSet accepted a block argument");
 }
 
+std::string byteList(llvm::ArrayRef<std::uint8_t> bytes) {
+  std::string text = "[";
+  for (auto [ordinal, byte] : llvm::enumerate(bytes)) {
+    if (ordinal)
+      text += ", ";
+    text += std::to_string(byte);
+  }
+  return text + "]";
+}
+
+loom::fabric::FabricTransportEndpointRef endpointOf(std::uint64_t owner) {
+  return {loom::fabric::FabricTransportEndpointOwnerRef::of(
+              loom::fabric::FabricFuOccurrenceRef(owner)),
+          0};
+}
+
+std::string transportEndpointRef(std::uint64_t owner) {
+  return "#mapping.fabric_transport_endpoint_ref<" +
+         byteList(loom::fabric::canonicalFabricBytes(endpointOf(owner))) + ">";
+}
+
+std::string traversalRef(std::uint64_t source, std::uint64_t sink) {
+  return "#mapping.fabric_physical_traversal_ref<" +
+         byteList(loom::fabric::canonicalFabricBytes(
+             loom::fabric::FabricPhysicalTraversalRef::pointConnection(
+                 endpointOf(source), endpointOf(sink)))) +
+         ">";
+}
+
+std::string netUsesTraversal(std::uint64_t actor, std::uint64_t traversal) {
+  return "#mapping.net_uses_traversal<producer = " +
+         actorResultProducerRef(actor, 0) +
+         ", traversal = " + traversalRef(traversal, traversal + 1) + ">";
+}
+
+std::string transferAttachmentEquals(std::uint64_t actor,
+                                     std::uint64_t endpoint) {
+  return "#mapping.transfer_attachment_equals<terminal = "
+         "#mapping.spatial_transfer_terminal<producer = " +
+         actorResultProducerRef(actor, 0) +
+         ">, endpoint = " + transportEndpointRef(endpoint) + ">";
+}
+
+std::string noGoodModule(const std::string &clauses) {
+  return "module {\n  mapping.constraints.spatial dataflow(" +
+         identityAttr(17) + ") tech_mapping(" + identityAttr(25) + ") fabric(" +
+         identityAttr(34) + ") {\n" + clauses + "  }\n}";
+}
+
+/// Semantic joints of the 1.1 runtime-counterexample no-good clause that hold
+/// at the canonical-bytes layer: literal and clause order, deduplication,
+/// idempotent republication, canonical union, and the closed literal catalog.
+void testSpatialRuntimeCounterexampleNoGood() {
+  mlir::MLIRContext context;
+  context.loadDialect<::mapping::MappingDialect>();
+
+  const auto canonical = [](mlir::ModuleOp module) {
+    auto roots = module.getOps<::mapping::ConstraintsSpatialOp>();
+    if (std::distance(roots.begin(), roots.end()) != 1)
+      fail("expected one Spatial MappingConstraintSet root");
+    auto bytes =
+        loom::mapping::writeCanonicalSpatialConstraintAssembly(*roots.begin());
+    if (!bytes)
+      fail(llvm::toString(bytes.takeError()));
+    return std::move(*bytes);
+  };
+  const auto canonicalize = [&](const std::string &text) {
+    auto module = parse(context, text);
+    if (!module || mlir::failed(mlir::verify(*module)))
+      fail("valid no-good MappingConstraintSet did not verify: " + text);
+    return canonical(*module);
+  };
+
+  const std::string first = netUsesTraversal(7, 3);
+  const std::string second = netUsesTraversal(9, 4);
+  const std::string attachment = transferAttachmentEquals(7, 5);
+  const auto clause = [](const std::string &literals) {
+    return "    mapping.constraint.runtime_counterexample_no_good literals([" +
+           literals + "])\n";
+  };
+
+  // Literal order inside one clause, and repeated literals, are not identity.
+  const auto ordered = canonicalize(noGoodModule(clause(first + ", " + second)));
+  const auto reversed =
+      canonicalize(noGoodModule(clause(second + ", " + first)));
+  const auto duplicated = canonicalize(
+      noGoodModule(clause(second + ", " + first + ", " + second)));
+  if (!ordered.bytes().equals(reversed.bytes()))
+    fail("no-good literal authoring order changed canonical bytes");
+  if (!ordered.bytes().equals(duplicated.bytes()))
+    fail("a duplicate no-good literal changed canonical bytes");
+
+  // Re-recording the same counterexample is idempotent; a distinct one forms a
+  // canonical union whose order is likewise not identity.
+  const auto idempotent = canonicalize(
+      noGoodModule(clause(first + ", " + second) + clause(second + ", " +
+                                                          first)));
+  if (!ordered.bytes().equals(idempotent.bytes()))
+    fail("republishing an identical no-good was not idempotent");
+  const auto unionForward = canonicalize(
+      noGoodModule(clause(first + ", " + second) + clause(attachment)));
+  const auto unionReverse = canonicalize(
+      noGoodModule(clause(attachment) + clause(first + ", " + second)));
+  if (!unionForward.bytes().equals(unionReverse.bytes()))
+    fail("no-good clause discovery order changed canonical bytes");
+  if (unionForward.bytes().equals(ordered.bytes()))
+    fail("an additional distinct no-good did not change canonical bytes");
+
+  // A different literal is a different clause: the witness is workload- and
+  // mapping-specific, never a claim about the Fabric.
+  if (canonicalize(noGoodModule(clause(first))).bytes().equals(
+          canonicalize(noGoodModule(clause(second))).bytes()))
+    fail("distinct no-good literals produced the same canonical bytes");
+
+  // No-goods sort after every conjunctive clause kind, so adding one never
+  // reorders the 1.0 clause sequence that precedes it.
+  const std::string mixed =
+      "    mapping.constraint.domain_restriction "
+      "projection(memory_bound_services) subject(" +
+      logicalMemoryRootRef(1) + ") admissible_domain([])\n" + clause(first);
+  const auto mixedBytes = canonicalize(noGoodModule(mixed));
+  const std::string mixedText(mixedBytes.bytes().begin(),
+                              mixedBytes.bytes().end());
+  if (mixedText.find("domain_restriction") == std::string::npos ||
+      mixedText.find("runtime_counterexample_no_good") == std::string::npos ||
+      mixedText.find("domain_restriction") >
+          mixedText.find("runtime_counterexample_no_good"))
+    fail("a no-good clause did not sort after the conjunctive clause kinds");
+
+  // An empty clause would assert intrinsic infeasibility and is rejected.
+  auto empty = parse(context, noGoodModule(clause("")));
+  if (empty && mlir::succeeded(mlir::verify(*empty)))
+    fail("an empty runtime-counterexample no-good clause verified");
+
+  // The literal catalog is closed.
+  auto foreign = parse(context, noGoodModule(clause(fuOccurrenceRef(7))));
+  if (foreign && mlir::succeeded(mlir::verify(*foreign)))
+    fail("a no-good clause accepted a foreign literal carrier");
+
+  // The kind is Spatial-only. Its HasParent trait is what enforces that, so
+  // check it directly: outside a Spatial root the op must not verify.
+  auto orphan = parse(context, "module {\n" + clause(first) + "}");
+  if (orphan && mlir::succeeded(mlir::verify(*orphan)))
+    fail("a runtime-counterexample no-good verified outside a Spatial root");
+}
+
 } // namespace
 
 int main() {
@@ -601,6 +749,7 @@ int main() {
   testMemoryTemplateOwnerMismatch();
   testMemoryPayloadCardinalityOrder();
   testCanonicalSpatialConstraintSet();
+  testSpatialRuntimeCounterexampleNoGood();
   llvm::outs() << "mapping artifact tests passed\n";
   return 0;
 }

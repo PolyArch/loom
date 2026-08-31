@@ -8,6 +8,7 @@ add_library(LoomMappingArtifact
   MappingConstraintCanonicalization.cpp
   MappingConstraintSet.cpp
   MappingConstraintSetBuilder.cpp
+  MappingConstraintSetMigration.cpp
   MappingResourceUseImport.cpp
   ResourceCapacityVerification.cpp
   SpatialMappingConstraintAdmission.cpp

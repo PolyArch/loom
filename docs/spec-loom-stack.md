@@ -415,7 +415,7 @@ The closed Spatial PnR contract has exact `D/T/F/C/K` inputs: Canonical
 Dataflow Program, TechMapping, Fabric, the mechanically derived Resolved PnR
 config view, and one MappingConstraintSet. System PnR has the corresponding
 six-input `D/F/R/H/C/K` contract. `docs/spec-pnr.md` owns the fixed
-`loom.mapping_constraints 1.0` family and its Spatial and System roots.
+`loom.mapping_constraints 1.1` family and its Spatial and System roots.
 Placement, routing, and resource
 allocation are coupled through one Action and MoveTransaction model.
 Persistent Mapping MLIR is the wire-schema SSOT; C++ hot structures are

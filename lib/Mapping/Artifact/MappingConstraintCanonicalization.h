@@ -43,6 +43,11 @@ intersectUnsignedIntervalConstraintDomains(mlir::MLIRContext *context,
                                            llvm::ArrayRef<mlir::Attribute> lhs,
                                            llvm::ArrayRef<mlir::Attribute> rhs);
 
+/// Canonicalizes one already-verified constraint body in place. The typed root
+/// op owns which clause kinds may appear — `ConstraintsSpatialOp` admits the
+/// runtime-counterexample no-good and `ConstraintsSystemOp` rejects it — and
+/// every caller verifies its root before calling, so this shared routine
+/// canonicalizes whatever the closed catalog already admitted.
 void canonicalizeConstraintClauses(
     mlir::Block &body, mlir::Location location,
     ConstraintDomainTransform normalizeDomain,

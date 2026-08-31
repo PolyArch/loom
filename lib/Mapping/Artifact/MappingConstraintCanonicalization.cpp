@@ -24,11 +24,19 @@ using namespace mlir;
 namespace loom::mapping::detail {
 namespace {
 
+/// Wire ordinals. These participate in the canonical clause order, so existing
+/// values are fixed; a new kind appends.
 enum class ClauseKind : std::uint32_t {
   DomainRestriction = 0,
   Equal = 1,
   Disjoint = 2,
+  RuntimeCounterexampleNoGood = 3,
 };
+
+/// Closed no-good literal kind ordinals. These lead every literal key, so the
+/// values are fixed once published.
+constexpr std::uint32_t kNetUsesTraversalLiteralKind = 0;
+constexpr std::uint32_t kTransferAttachmentEqualsLiteralKind = 1;
 
 void appendU32Be(std::string &output, std::uint32_t value) {
   for (unsigned byte = 0; byte < 4; ++byte)
@@ -235,7 +243,9 @@ struct CanonicalClause final {
   std::string key() const {
     std::string result;
     appendU32Be(result, static_cast<std::uint32_t>(kind));
-    appendU32Be(result, projectionOrdinal(projection));
+    // A no-good spans projections, so it carries none; its identity is its
+    // literal sequence alone.
+    appendU32Be(result, projection ? projectionOrdinal(projection) : 0);
     if (subject)
       result += constraintAttributeKey(subject);
     result.push_back('\0');
@@ -271,7 +281,27 @@ std::vector<CanonicalClause>
 canonicalizeClauses(Block &body, ConstraintDomainTransform normalizeDomain,
                     ConstraintDomainIntersection intersectDomains) {
   std::map<std::uint32_t, ProjectionClauses> states;
+  // No-good clauses are disjunctive and cross-projection, so they take no part
+  // in the per-projection equality folding or domain intersection below. They
+  // are canonicalized only within themselves and against each other.
+  std::set<std::vector<std::string>> noGoodKeys;
+  std::map<std::string, Attribute> noGoodLiterals;
   for (Operation &operation : body) {
+    if (auto noGood =
+            dyn_cast<::mapping::ConstraintRuntimeCounterexampleNoGoodOp>(
+                operation)) {
+      std::vector<std::string> keys;
+      for (Attribute literal : noGood.getLiterals()) {
+        std::string key = constraintAttributeKey(literal);
+        noGoodLiterals.try_emplace(key, literal);
+        keys.push_back(std::move(key));
+      }
+      llvm::sort(keys);
+      keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+      if (!keys.empty())
+        noGoodKeys.insert(std::move(keys));
+      continue;
+    }
     if (auto equal = dyn_cast<::mapping::ConstraintEqualOp>(operation)) {
       ProjectionClauses &state =
           projectionState(states, constraintProjection(equal));
@@ -386,6 +416,14 @@ canonicalizeClauses(Block &body, ConstraintDomainTransform normalizeDomain,
     }
   }
 
+  for (const std::vector<std::string> &literals : noGoodKeys) {
+    SmallVector<Attribute> values;
+    for (const std::string &literal : literals)
+      values.push_back(noGoodLiterals.at(literal));
+    result.push_back({ClauseKind::RuntimeCounterexampleNoGood, Attribute(),
+                      Attribute(), ArrayAttr::get(context, values)});
+  }
+
   llvm::sort(result,
              [](const CanonicalClause &lhs, const CanonicalClause &rhs) {
                return lhs.key() < rhs.key();
@@ -407,8 +445,16 @@ Operation *createClause(OpBuilder &builder, Location location,
   case ClauseKind::Disjoint:
     operationName = ::mapping::ConstraintDisjointOp::getOperationName();
     break;
+  case ClauseKind::RuntimeCounterexampleNoGood:
+    operationName =
+        ::mapping::ConstraintRuntimeCounterexampleNoGoodOp::getOperationName();
+    break;
   }
   OperationState state(location, operationName);
+  if (clause.kind == ClauseKind::RuntimeCounterexampleNoGood) {
+    state.addAttribute("literals", clause.values);
+    return builder.create(state);
+  }
   state.addAttribute("projection", clause.projection);
   if (clause.kind == ClauseKind::DomainRestriction) {
     state.addAttribute("subject", clause.subject);
@@ -463,6 +509,27 @@ std::string constraintAttributeKey(Attribute attribute) {
     std::string result;
     appendFramed(result, integerKey(interval.getLower().getValue()));
     appendFramed(result, integerKey(interval.getUpper().getValue()));
+    return result;
+  }
+  // No-good literals lead with their closed kind ordinal so that no two kinds
+  // can ever produce the same key, and so that a clause's literals group by
+  // kind in canonical order.
+  if (auto literal = dyn_cast<::mapping::NetUsesTraversalAttr>(attribute)) {
+    std::string result;
+    appendU32Be(result, kNetUsesTraversalLiteralKind);
+    appendU32Be(result, literal.getConsumer() ? 1 : 0);
+    appendFramed(result, constraintAttributeKey(literal.getProducer()));
+    if (literal.getConsumer())
+      appendFramed(result, constraintAttributeKey(literal.getConsumer()));
+    appendFramed(result, constraintAttributeKey(literal.getTraversal()));
+    return result;
+  }
+  if (auto literal =
+          dyn_cast<::mapping::TransferAttachmentEqualsAttr>(attribute)) {
+    std::string result;
+    appendU32Be(result, kTransferAttachmentEqualsLiteralKind);
+    appendFramed(result, constraintAttributeKey(literal.getTerminal()));
+    appendFramed(result, constraintAttributeKey(literal.getEndpoint()));
     return result;
   }
   if (auto region =

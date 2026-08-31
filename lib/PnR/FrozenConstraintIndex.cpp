@@ -221,9 +221,13 @@ public:
             return std::move(error);
         continue;
       }
-      const auto &disjoint = std::get<typename Traits::Disjoint>(clause);
-      for (const typename Traits::Subject &subject : disjoint.subjects)
-        if (llvm::Error error = remember(disjoint.projection, subject))
+      // A Spatial no-good carries no projection and no subjects, so it
+      // interns nothing here; it is indexed separately after this build.
+      const auto *disjoint = std::get_if<typename Traits::Disjoint>(&clause);
+      if (!disjoint)
+        continue;
+      for (const typename Traits::Subject &subject : disjoint->subjects)
+        if (llvm::Error error = remember(disjoint->projection, subject))
           return std::move(error);
     }
 
@@ -323,11 +327,13 @@ public:
           return std::move(error);
         continue;
       }
-      const auto &disjoint = std::get<typename Traits::Disjoint>(clause);
+      const auto *disjoint = std::get_if<typename Traits::Disjoint>(&clause);
+      if (!disjoint)
+        continue;
       typename Traits::Shard &shard =
-          result.shards_[projectionOrdinal(disjoint.projection)];
+          result.shards_[projectionOrdinal(disjoint->projection)];
       if (llvm::Error error =
-              appendRelation(shard, disjoint.subjects, shard.disjointGroups_))
+              appendRelation(shard, disjoint->subjects, shard.disjointGroups_))
         return std::move(error);
     }
     return result;
@@ -353,9 +359,12 @@ FrozenConstraintIndex::shard(SpatialConstraintProjection projection) const {
 }
 
 bool FrozenConstraintIndex::empty() const {
-  return llvm::all_of(shards_, [](const FrozenConstraintShard &shard) {
-    return shard.empty();
-  });
+  // A set that carries only no-goods still constrains the search, so it is not
+  // empty. Consumers that early-out on empty() must not skip them.
+  return noGoods_.empty() &&
+         llvm::all_of(shards_, [](const FrozenConstraintShard &shard) {
+           return shard.empty();
+         });
 }
 
 SystemFrozenConstraintIndex::SystemFrozenConstraintIndex() {
@@ -429,8 +438,25 @@ bool SystemFrozenConstraintShard::empty() const { return shardIsEmpty(*this); }
 llvm::Expected<FrozenConstraintIndex>
 loom::pnr::detail::buildFrozenConstraintIndex(
     const SpatialMappingConstraintSetView &constraints) {
-  return FrozenConstraintIndexBuilder<SpatialConstraintIndexTraits>::build(
-      constraints);
+  auto index =
+      FrozenConstraintIndexBuilder<SpatialConstraintIndexTraits>::build(
+          constraints);
+  if (!index)
+    return index;
+  // No-goods span projections, so they are indexed here rather than in any one
+  // shard. The importer already established that each clause is non-empty and
+  // canonically ordered, so this is a copy, not a second canonicalization.
+  for (const SpatialConstraintClauseView &clause : constraints.clauses()) {
+    const auto *noGood =
+        std::get_if<SpatialRuntimeCounterexampleNoGoodView>(&clause);
+    if (!noGood)
+      continue;
+    if (noGood->literals.empty())
+      return SpatialConstraintIndexTraits::invalid(
+          "canonical MappingConstraintSet holds an empty no-good clause");
+    index->noGoods_.push_back(FrozenConstraintNoGood{noGood->literals});
+  }
+  return index;
 }
 
 llvm::Expected<SystemFrozenConstraintIndex>

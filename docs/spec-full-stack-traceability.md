@@ -158,7 +158,7 @@ semantic contract. Key boundaries are:
   derives one merged LLVM module without selecting Fabric or Mapping;
 * TechMapping consumes exact Dataflow and Fabric;
 * Spatial PnR consumes exact `D/T/F/C/K` under the Spatial
-  `loom.mapping_constraints 1.0` root;
+  `loom.mapping_constraints 1.1` root;
 * System PnR consumes exact `D/F/R/H/C/K` under the System root; the finalized SystemMapping
   persists only its exact `D/F`, root launches, derived spatial imports, and
   selected Mapping records;

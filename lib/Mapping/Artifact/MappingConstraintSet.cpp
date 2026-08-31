@@ -545,6 +545,161 @@ decodeDomain(::mapping::SpatialConstraintProjection projection,
   return result;
 }
 
+/// Decodes one closed no-good literal. Every reference is validated against the
+/// same exact D/T/F owners the conjunctive clause kinds use, so a literal can
+/// never name a net, sink, traversal, or endpoint outside this closure.
+llvm::Expected<SpatialNoGoodLiteral>
+decodeNoGoodLiteral(Attribute attribute,
+                    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                    const TechMappingView &techMapping,
+                    const ::loom::fabric::FabricArtifactView &fabric) {
+  if (auto literal = dyn_cast<::mapping::NetUsesTraversalAttr>(attribute)) {
+    auto producer =
+        decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
+            literal.getProducer(), dataflow.identity());
+    if (!producer)
+      return contextual(producer.takeError(),
+                        "no-good net producer reference is malformed");
+    if (llvm::Error error =
+            validateResidualProducer(*producer, dataflow, techMapping))
+      return std::move(error);
+    std::optional<::dataflow::CanonicalGraphConsumerEndpointRef> consumer;
+    if (literal.getConsumer()) {
+      auto decoded =
+          decodeDataflow<::dataflow::CanonicalGraphConsumerEndpointRef>(
+              literal.getConsumer(), dataflow.identity());
+      if (!decoded)
+        return contextual(decoded.takeError(),
+                          "no-good net sink reference is malformed");
+      if (llvm::Error error =
+              validateResidualSink(*producer, *decoded, dataflow, techMapping))
+        return std::move(error);
+      consumer = std::move(*decoded);
+    }
+    auto traversal = decodeFabric<::loom::fabric::FabricPhysicalTraversalRef>(
+        literal.getTraversal());
+    if (!traversal)
+      return contextual(traversal.takeError(),
+                        "no-good traversal reference is malformed");
+    if (llvm::Error error =
+            ::loom::fabric::validateFabricRef(fabric, *traversal))
+      return contextual(std::move(error),
+                        "no-good traversal does not resolve");
+    return SpatialNoGoodLiteral(SpatialNetUsesTraversalLiteral{
+        std::move(*producer), std::move(consumer), std::move(*traversal)});
+  }
+
+  auto literal = cast<::mapping::TransferAttachmentEqualsAttr>(attribute);
+  auto terminalAttr = literal.getTerminal();
+  auto producer = decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
+      terminalAttr.getProducer(), dataflow.identity());
+  if (!producer)
+    return contextual(producer.takeError(),
+                      "no-good transfer producer is malformed");
+  if (llvm::Error error =
+          validateResidualProducer(*producer, dataflow, techMapping))
+    return std::move(error);
+  std::optional<::dataflow::CanonicalGraphConsumerEndpointRef> consumer;
+  if (terminalAttr.getConsumer()) {
+    auto decoded =
+        decodeDataflow<::dataflow::CanonicalGraphConsumerEndpointRef>(
+            terminalAttr.getConsumer(), dataflow.identity());
+    if (!decoded)
+      return contextual(decoded.takeError(),
+                        "no-good transfer consumer is malformed");
+    if (llvm::Error error =
+            validateResidualSink(*producer, *decoded, dataflow, techMapping))
+      return std::move(error);
+    consumer = std::move(*decoded);
+  }
+  auto endpoint = decodeFabric<::loom::fabric::FabricTransportEndpointRef>(
+      literal.getEndpoint());
+  if (!endpoint)
+    return contextual(endpoint.takeError(),
+                      "no-good transport endpoint is malformed");
+  if (llvm::Error error = ::loom::fabric::validateFabricRef(fabric, *endpoint))
+    return contextual(std::move(error),
+                      "no-good transport endpoint does not resolve");
+  return SpatialNoGoodLiteral(SpatialTransferAttachmentEqualsLiteral{
+      SpatialConstraintTransferTerminal{std::move(*producer),
+                                        std::move(consumer)},
+      std::move(*endpoint)});
+}
+
+mlir::DenseI8ArrayAttr denseBytes(MLIRContext *context,
+                                  llvm::ArrayRef<std::uint8_t> bytes) {
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  return mlir::DenseI8ArrayAttr::get(context, signedBytes);
+}
+
+/// Encodes one closed no-good literal back to its canonical attribute. The
+/// inverse of `decodeNoGoodLiteral`; the round trip is what makes republishing
+/// the same counterexample idempotent.
+llvm::Expected<Attribute>
+encodeNoGoodLiteral(MLIRContext *context, const SpatialNoGoodLiteral &literal,
+                    const ArtifactIdentity &dataflowIdentity) {
+  const auto producerAttr =
+      [&](const ::dataflow::CanonicalGraphProducerEndpointRef &producer)
+      -> llvm::Expected<::mapping::GraphProducerEndpointRefAttr> {
+    auto encoded =
+        ::dataflow::encodeDataflowReference(dataflowIdentity, producer);
+    if (!encoded)
+      return encoded.takeError();
+    return ::mapping::GraphProducerEndpointRefAttr::get(
+        context, denseBytes(context, *encoded));
+  };
+  const auto consumerAttr =
+      [&](const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer)
+      -> llvm::Expected<::mapping::GraphConsumerEndpointRefAttr> {
+    auto encoded =
+        ::dataflow::encodeDataflowReference(dataflowIdentity, consumer);
+    if (!encoded)
+      return encoded.takeError();
+    return ::mapping::GraphConsumerEndpointRefAttr::get(
+        context, denseBytes(context, *encoded));
+  };
+
+  if (const auto *uses = std::get_if<SpatialNetUsesTraversalLiteral>(&literal)) {
+    auto producer = producerAttr(uses->producer);
+    if (!producer)
+      return producer.takeError();
+    ::mapping::GraphConsumerEndpointRefAttr consumer;
+    if (uses->consumer) {
+      auto encoded = consumerAttr(*uses->consumer);
+      if (!encoded)
+        return encoded.takeError();
+      consumer = *encoded;
+    }
+    return Attribute(::mapping::NetUsesTraversalAttr::get(
+        context, *producer, consumer,
+        ::mapping::FabricPhysicalTraversalRefAttr::get(
+            context, denseBytes(context, ::loom::fabric::canonicalFabricBytes(
+                                             uses->traversal)))));
+  }
+
+  const auto &attachment =
+      std::get<SpatialTransferAttachmentEqualsLiteral>(literal);
+  auto producer = producerAttr(attachment.terminal.producer);
+  if (!producer)
+    return producer.takeError();
+  ::mapping::GraphConsumerEndpointRefAttr consumer;
+  if (attachment.terminal.consumer) {
+    auto encoded = consumerAttr(*attachment.terminal.consumer);
+    if (!encoded)
+      return encoded.takeError();
+    consumer = *encoded;
+  }
+  return Attribute(::mapping::TransferAttachmentEqualsAttr::get(
+      context,
+      ::mapping::SpatialTransferTerminalAttr::get(context, *producer, consumer),
+      ::mapping::FabricTransportEndpointRefAttr::get(
+          context, denseBytes(context, ::loom::fabric::canonicalFabricBytes(
+                                           attachment.endpoint)))));
+}
+
 struct PreparedSpatialConstraintSet final {
   ArtifactRootReference reference;
   CanonicalSemanticBytes canonicalBytes;
@@ -767,14 +922,34 @@ SpatialMappingConstraintSetView::import(
       clauses.emplace_back(SpatialEqualView{projection, std::move(*subjects)});
       continue;
     }
-    auto disjoint = cast<::mapping::ConstraintDisjointOp>(operation);
-    const auto projection = static_cast<::mapping::SpatialConstraintProjection>(
-        spatialProjection(disjoint).getValue());
-    auto subjects = decodeSubjects(projection, disjoint.getSubjects(), dataflow,
-                                   techMapping);
-    if (!subjects)
-      return subjects.takeError();
-    clauses.emplace_back(SpatialDisjointView{projection, std::move(*subjects)});
+    if (auto disjoint = dyn_cast<::mapping::ConstraintDisjointOp>(operation)) {
+      const auto projection =
+          static_cast<::mapping::SpatialConstraintProjection>(
+              spatialProjection(disjoint).getValue());
+      auto subjects = decodeSubjects(projection, disjoint.getSubjects(),
+                                     dataflow, techMapping);
+      if (!subjects)
+        return subjects.takeError();
+      clauses.emplace_back(
+          SpatialDisjointView{projection, std::move(*subjects)});
+      continue;
+    }
+    auto noGood =
+        dyn_cast<::mapping::ConstraintRuntimeCounterexampleNoGoodOp>(operation);
+    if (!noGood)
+      return invalid("Spatial constraint body holds an unknown clause kind");
+    if (noGood.getLiterals().empty())
+      return invalid("runtime-counterexample no-good clause is empty");
+    SpatialRuntimeCounterexampleNoGoodView clause;
+    clause.literals.reserve(noGood.getLiterals().size());
+    for (Attribute attribute : noGood.getLiterals()) {
+      auto literal =
+          decodeNoGoodLiteral(attribute, dataflow, techMapping, fabric);
+      if (!literal)
+        return literal.takeError();
+      clause.literals.push_back(std::move(*literal));
+    }
+    clauses.emplace_back(std::move(clause));
   }
 
   return SpatialMappingConstraintSetView(
@@ -822,6 +997,41 @@ finalizeSpatialMappingConstraintSet(
   return FinalizedSpatialMappingConstraintSet(
       std::move(prepared->reference), std::move(prepared->canonicalBytes),
       std::move(*view));
+}
+
+llvm::Expected<FinalizedSpatialMappingConstraintSet>
+finalizeSpatialRuntimeCounterexampleConstraintSet(
+    const ArtifactRootReference &parent,
+    llvm::ArrayRef<SpatialNoGoodLiteral> literals, const ArtifactStore &store) {
+  if (literals.empty())
+    return invalid("a runtime-counterexample no-good clause must be non-empty");
+  // Importing the parent proves it is a 1.1 payload over one exact D/T/F
+  // closure before anything is added to it.
+  auto imported = importSpatialMappingConstraintSet(parent, store);
+  if (!imported)
+    return imported.takeError();
+  auto parsed = parseSpatialConstraintRoot(imported->canonicalBytes());
+  if (!parsed)
+    return parsed.takeError();
+
+  MLIRContext *context = parsed->root.getContext();
+  OpBuilder builder(context);
+  builder.setInsertionPointToEnd(&parsed->root.getBody().front());
+  std::vector<Attribute> encoded;
+  encoded.reserve(literals.size());
+  for (const SpatialNoGoodLiteral &literal : literals) {
+    auto attribute = encodeNoGoodLiteral(context, literal,
+                                         imported->view().dataflowIdentity());
+    if (!attribute)
+      return attribute.takeError();
+    encoded.push_back(*attribute);
+  }
+  ::mapping::ConstraintRuntimeCounterexampleNoGoodOp::create(
+      builder, builder.getUnknownLoc(), builder.getArrayAttr(encoded));
+  // Canonicalization owns literal ordering, deduplication, and the union with
+  // any clause the parent already carried, so republishing an identical
+  // counterexample reproduces the parent identity exactly.
+  return finalizeSpatialMappingConstraintSet(parsed->root, store);
 }
 
 llvm::Expected<FinalizedSpatialMappingConstraintSet>

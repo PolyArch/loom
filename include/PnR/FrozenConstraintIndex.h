@@ -17,6 +17,16 @@
 
 namespace loom::pnr {
 
+class FrozenConstraintIndex;
+class SystemFrozenConstraintIndex;
+
+namespace detail {
+llvm::Expected<FrozenConstraintIndex> buildFrozenConstraintIndex(
+    const ::loom::mapping::SpatialMappingConstraintSetView &constraints);
+llvm::Expected<SystemFrozenConstraintIndex> buildFrozenConstraintIndex(
+    const ::loom::mapping::SystemMappingConstraintSetView &constraints);
+} // namespace detail
+
 enum class SpatialPnrFreezeFailureKind : std::uint32_t {
   Invalid,
   ProvenInfeasible,
@@ -108,6 +118,13 @@ private:
   template <typename Traits> friend class FrozenConstraintIndexBuilder;
 };
 
+/// One frozen runtime-counterexample no-good: the listed exact choices may not
+/// all hold at once. Literals are canonical and duplicate-free, and the clause
+/// is never empty.
+struct FrozenConstraintNoGood final {
+  std::vector<::loom::mapping::SpatialNoGoodLiteral> literals;
+};
+
 class FrozenConstraintIndex final {
 public:
   static constexpr std::size_t projectionCount =
@@ -115,14 +132,20 @@ public:
 
   const FrozenConstraintShard &
   shard(::mapping::SpatialConstraintProjection projection) const;
+  /// No-goods are cross-projection, so they are held by the index rather than
+  /// by any one projection shard.
+  llvm::ArrayRef<FrozenConstraintNoGood> noGoods() const { return noGoods_; }
   bool empty() const;
 
 private:
   FrozenConstraintIndex();
 
   std::vector<FrozenConstraintShard> shards_;
+  std::vector<FrozenConstraintNoGood> noGoods_;
 
   template <typename Traits> friend class FrozenConstraintIndexBuilder;
+  friend llvm::Expected<FrozenConstraintIndex> detail::buildFrozenConstraintIndex(
+      const ::loom::mapping::SpatialMappingConstraintSetView &constraints);
 };
 
 class SystemFrozenConstraintShard final {

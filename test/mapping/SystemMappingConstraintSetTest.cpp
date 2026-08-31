@@ -1,3 +1,4 @@
+#include "Mapping/Artifact/MappingConstraintSetMigration.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "ADG/Builtin.h"
 #include "Common/ArtifactLocalReference.h"
@@ -975,6 +976,32 @@ int main() {
           foreignMappingRoot, foreignView, system, store),
       "foreign Dataflow owner",
       "SpatialMapping with a foreign Dataflow owner was accepted");
+
+  // loom.mapping_constraints is one family with two roots, so the System root
+  // has its own explicit 1.0-to-1.1 owner. The System clause catalog is
+  // unchanged across the step, so a canonical 1.0 payload re-finalizes to
+  // exactly the native 1.1 identity.
+  const loom::ArtifactRootReference legacySystem{
+      loom::mapping::mappingConstraintSetSchemaV1_0.identity.str(),
+      loom::mapping::mappingConstraintSetSchemaV1_0.version,
+      take(store.put(loom::mapping::mappingConstraintSetSchemaV1_0,
+                     first.canonicalBytes()))};
+  require(legacySystem.artifact != first.reference().artifact,
+          "the 1.0 and 1.1 identities of identical System bytes collided");
+  requireFailure(
+      loom::mapping::importSystemMappingConstraintSet(legacySystem, store),
+      "the strict 1.1 System importer accepted a 1.0 reference");
+  const auto migratedSystem = take(
+      loom::mapping::migrateSystemConstraintRootV1_0ToV1_1(legacySystem,
+                                                           store));
+  require(migratedSystem == first.reference(),
+          "System 1.0-to-1.1 migration did not reproduce the native 1.1 cold "
+          "identity");
+  // The Spatial owner must not accept a System root, and vice versa.
+  requireFailure(
+      loom::mapping::migrateSpatialConstraintRootV1_0ToV1_1(legacySystem,
+                                                            store),
+      "the Spatial migration owner accepted a System 1.0 root");
 
   llvm::outs() << "System MappingConstraintSet anchors passed\n";
   return EXIT_SUCCESS;

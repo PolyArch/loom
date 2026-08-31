@@ -1101,7 +1101,8 @@ LogicalResult mapping::ConstraintsSpatialOp::verify() {
     return emitOpError("declarative block must not have arguments");
   for (Operation &child : getBody().front()) {
     if (!isa<mapping::ConstraintDomainRestrictionOp, mapping::ConstraintEqualOp,
-             mapping::ConstraintDisjointOp>(child))
+             mapping::ConstraintDisjointOp,
+             mapping::ConstraintRuntimeCounterexampleNoGoodOp>(child))
       return child.emitOpError(
           "is not a closed Spatial MappingConstraintSet clause kind");
   }
@@ -1443,6 +1444,39 @@ LogicalResult mapping::ConstraintDisjointOp::verify() {
   if (failed(rejectUnknownAttributes(*this, {"projection", "subjects"})))
     return failure();
   return verifyConstraintSubjects(*this, getProjection(), getSubjects());
+}
+
+ParseResult mapping::ConstraintRuntimeCounterexampleNoGoodOp::parse(
+    OpAsmParser &parser, OperationState &result) {
+  ArrayAttr literals;
+  if (parser.parseKeyword("literals") || parser.parseLParen() ||
+      parser.parseAttribute(literals, "literals", result.attributes) ||
+      parser.parseRParen() || parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  return success();
+}
+
+void mapping::ConstraintRuntimeCounterexampleNoGoodOp::print(
+    OpAsmPrinter &printer) {
+  printer << " literals(" << getLiterals() << ')';
+  printer.printOptionalAttrDict((*this)->getAttrs(), {"literals"});
+}
+
+LogicalResult mapping::ConstraintRuntimeCounterexampleNoGoodOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"literals"})))
+    return failure();
+  // An empty clause would assert that no Mapping whatsoever is admissible,
+  // which is exactly the intrinsic-infeasibility claim this kind must never
+  // make.
+  if (getLiterals().empty())
+    return emitOpError("requires at least one no-good literal");
+  for (Attribute literal : getLiterals())
+    if (!isa<mapping::NetUsesTraversalAttr,
+             mapping::TransferAttachmentEqualsAttr>(literal))
+      return emitOpError("literals contains a value that is not a closed "
+                         "Spatial no-good literal: ")
+             << literal;
+  return success();
 }
 
 #define GET_OP_CLASSES

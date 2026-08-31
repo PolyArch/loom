@@ -491,7 +491,7 @@ def Mapping_SystemRouteSinkOp
 def Mapping_ConstraintsSpatialOp
     : Mapping_Op<"constraints.spatial", [IsolatedFromAbove, SingleBlock,
                                          NoTerminator]> {
-  let summary = "complete loom.mapping_constraints 1.0 Spatial root";
+  let summary = "complete loom.mapping_constraints 1.1 Spatial root";
   let arguments = (ins Mapping_ArtifactIdentityAttr:$dataflow,
       Mapping_ArtifactIdentityAttr:$tech_mapping,
       Mapping_ArtifactIdentityAttr:$fabric);
@@ -503,7 +503,7 @@ def Mapping_ConstraintsSpatialOp
 def Mapping_ConstraintsSystemOp
     : Mapping_Op<"constraints.system", [IsolatedFromAbove, SingleBlock,
                                          NoTerminator]> {
-  let summary = "complete loom.mapping_constraints 1.0 System root";
+  let summary = "complete loom.mapping_constraints 1.1 System root";
   let arguments = (ins Mapping_ArtifactIdentityAttr:$dataflow,
       Mapping_ArtifactIdentityAttr:$fabric,
       ArrayAttr:$root_thread_launches,
@@ -546,6 +546,27 @@ def Mapping_ConstraintDisjointOp
   let summary = "one canonical variadic projected disjointness relation";
   let arguments = (ins Mapping_ConstraintProjectionAttr:$projection,
       ArrayAttr:$subjects);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Mapping_ConstraintRuntimeCounterexampleNoGoodOp
+    : Mapping_Op<"constraint.runtime_counterexample_no_good",
+                 [HasParent<"ConstraintsSpatialOp">]> {
+  let summary = "one Spatial runtime-counterexample no-good clause";
+  let description = [{
+    A disjunctive clause introduced by `loom.mapping_constraints` 1.1. The
+    listed exact Mapping choices may not all hold simultaneously: any admitted
+    Mapping must change at least one literal. Unlike the three conjunctive
+    clause kinds it carries no single projection, because its literals name
+    choices drawn from different projections; each literal is self-describing.
+
+    The clause is a workload- and mapping-specific witness recorded from one
+    observed runtime counterexample. It never marks the Fabric intrinsically
+    infeasible: a different Mapping over the same Fabric satisfies it as soon
+    as one literal changes.
+  }];
+  let arguments = (ins ArrayAttr:$literals);
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }

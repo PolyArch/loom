@@ -409,6 +409,10 @@ struct NetProjection final {
   ExactSet resourceStates;
   FabricTransportEndpointRef source;
   std::map<std::string, FabricTransportEndpointRef> sinks;
+  /// Traversals on the exact branch from the route root to each sink,
+  /// rebuilt by walking `parentOrdinal`. A sink-qualified no-good literal is
+  /// checked against its own branch, never against the whole tree.
+  std::map<std::string, ExactSet> sinkBranchTraversals;
 };
 
 struct MemoryRootProjection final {
@@ -552,6 +556,52 @@ public:
     llvm_unreachable("unknown Spatial constraint projection");
   }
 
+  /// Whether one no-good literal holds of this sealed Mapping. Every answer is
+  /// read from the independently rebuilt projection indexes; nothing consults
+  /// solver state, search history, or the constraint set itself.
+  llvm::Expected<bool> holds(const SpatialNoGoodLiteral &literal) const {
+    if (const auto *uses =
+            std::get_if<SpatialNetUsesTraversalLiteral>(&literal)) {
+      auto key = dataflowKey(dataflow_.identity(), uses->producer);
+      if (!key)
+        return key.takeError();
+      auto net = nets_.find(*key);
+      if (net == nets_.end())
+        return false;
+      const std::string traversal = fabricKey(uses->traversal);
+      if (!uses->consumer)
+        return llvm::is_contained(net->second.traversals.values, traversal);
+      auto sinkKey = dataflowKey(dataflow_.identity(), *uses->consumer);
+      if (!sinkKey)
+        return sinkKey.takeError();
+      auto branch = net->second.sinkBranchTraversals.find(*sinkKey);
+      if (branch == net->second.sinkBranchTraversals.end())
+        return false;
+      return llvm::is_contained(branch->second.values, traversal);
+    }
+
+    const auto &attachment =
+        std::get<SpatialTransferAttachmentEqualsLiteral>(literal);
+    auto key = dataflowKey(dataflow_.identity(), attachment.terminal.producer);
+    if (!key)
+      return key.takeError();
+    auto net = nets_.find(*key);
+    if (net == nets_.end())
+      return false;
+    FabricTransportEndpointRef selected = net->second.source;
+    if (attachment.terminal.consumer) {
+      auto sinkKey =
+          dataflowKey(dataflow_.identity(), *attachment.terminal.consumer);
+      if (!sinkKey)
+        return sinkKey.takeError();
+      auto sink = net->second.sinks.find(*sinkKey);
+      if (sink == net->second.sinks.end())
+        return false;
+      selected = sink->second;
+    }
+    return fabricKey(selected) == fabricKey(attachment.endpoint);
+  }
+
 private:
   ProjectionIndex(const ::dataflow::CanonicalDataflowProgramView &dataflow,
                   const TechMappingView &techMapping,
@@ -630,17 +680,29 @@ private:
         return key.takeError();
       NetProjection projection;
       projection.source = route.rootEndpoint;
-      for (const auto &node : route.nodes) {
-        if (!node.incomingTraversal)
-          continue;
-        const std::string traversalKey = fabricKey(*node.incomingTraversal);
+      const auto appendTraversal =
+          [&](const std::optional<FabricPhysicalTraversalRef> &selected)
+          -> llvm::Error {
+        if (!selected)
+          return llvm::Error::success();
+        const std::string traversalKey = fabricKey(*selected);
         projection.traversals.values.push_back(traversalKey);
         auto found = traversals.find(traversalKey);
         if (found == traversals.end())
           return invalid("RouteTree selects an absent physical traversal");
         for (const auto &state : found->second->resourceStates)
           projection.resourceStates.values.push_back(fabricKey(state));
+        return llvm::Error::success();
+      };
+      if (llvm::Error error = appendTraversal(route.localTraversal))
+        return error;
+      for (const auto &node : route.nodes) {
+        if (llvm::Error error = appendTraversal(node.incomingTraversal))
+          return error;
       }
+      for (const auto &sink : route.sinks)
+        if (llvm::Error error = appendTraversal(sink.localTraversal))
+          return error;
       normalizeExact(projection.traversals);
       normalizeExact(projection.resourceStates);
       for (const auto &sink : route.sinks) {
@@ -649,6 +711,27 @@ private:
         auto sinkKey = dataflowKey(dataflow_.identity(), sink.sink);
         if (!sinkKey)
           return sinkKey.takeError();
+        ExactSet branch;
+        if (route.localTraversal)
+          branch.values.push_back(fabricKey(*route.localTraversal));
+        std::set<std::uint64_t> visited;
+        for (std::optional<std::uint64_t> cursor = sink.nodeOrdinal; cursor;) {
+          if (*cursor >= route.nodes.size())
+            return invalid("RouteTree branch leaves the node inventory");
+          if (!visited.insert(*cursor).second)
+            return invalid("RouteTree branch is cyclic");
+          const SpatialRouteNodeView &node = route.nodes[*cursor];
+          if (node.incomingTraversal)
+            branch.values.push_back(fabricKey(*node.incomingTraversal));
+          cursor = node.parentOrdinal;
+        }
+        if (sink.localTraversal)
+          branch.values.push_back(fabricKey(*sink.localTraversal));
+        normalizeExact(branch);
+        if (!projection.sinkBranchTraversals
+                 .try_emplace(*sinkKey, std::move(branch))
+                 .second)
+          return invalid("RouteTree repeats a logical sink branch");
         if (!projection.sinks
                  .try_emplace(std::move(*sinkKey),
                               route.nodes[sink.nodeOrdinal].endpoint)
@@ -782,6 +865,14 @@ llvm::Error reject(Projection projection, std::uint64_t clause,
                                                              message.str());
 }
 
+/// The projection each no-good literal kind is stated over. A rejection quotes
+/// it so the diagnostic names a real projection rather than inventing one.
+Projection literalProjection(const SpatialNoGoodLiteral &literal) {
+  if (std::holds_alternative<SpatialNetUsesTraversalLiteral>(literal))
+    return Projection::NetSelectedPhysicalTraversals;
+  return Projection::SpatialTransferAttachment;
+}
+
 } // namespace
 
 llvm::Error loom::mapping::admitSpatialMappingConstraints(
@@ -836,21 +927,46 @@ llvm::Error loom::mapping::admitSpatialMappingConstraints(
       }
       continue;
     }
-    const auto &disjoint = std::get<SpatialDisjointView>(clause);
-    std::optional<DisjointIndex> seen;
-    for (const auto &subject : disjoint.subjects) {
-      auto actual = index->project(disjoint.projection, subject);
-      if (!actual)
-        return actual.takeError();
-      if (!seen)
-        seen = makeDisjointIndex(*actual);
-      auto inserted = insertDisjoint(*seen, *actual);
-      if (!inserted)
-        return inserted.takeError();
-      if (!*inserted)
-        return reject(disjoint.projection, ordinal,
-                      "subjects have intersecting projected sets");
+    if (const auto *disjoint = std::get_if<SpatialDisjointView>(&clause)) {
+      std::optional<DisjointIndex> seen;
+      for (const auto &subject : disjoint->subjects) {
+        auto actual = index->project(disjoint->projection, subject);
+        if (!actual)
+          return actual.takeError();
+        if (!seen)
+          seen = makeDisjointIndex(*actual);
+        auto inserted = insertDisjoint(*seen, *actual);
+        if (!inserted)
+          return inserted.takeError();
+        if (!*inserted)
+          return reject(disjoint->projection, ordinal,
+                        "subjects have intersecting projected sets");
+      }
+      continue;
     }
+
+    // A no-good is violated only when every listed choice still holds. One
+    // literal that changed is enough to satisfy the clause, which is exactly
+    // why the witness never marks the Fabric intrinsically infeasible.
+    const auto &noGood =
+        std::get<SpatialRuntimeCounterexampleNoGoodView>(clause);
+    if (noGood.literals.empty())
+      return invalid("runtime-counterexample no-good clause is empty");
+    bool allHold = true;
+    for (const SpatialNoGoodLiteral &literal : noGood.literals) {
+      auto held = index->holds(literal);
+      if (!held)
+        return held.takeError();
+      if (!*held) {
+        allHold = false;
+        break;
+      }
+    }
+    if (allHold)
+      return reject(
+          literalProjection(noGood.literals.front()), ordinal,
+          "every literal of a runtime-counterexample no-good still holds, so "
+          "this Mapping repeats the recorded counterexample");
   }
   return llvm::Error::success();
 }

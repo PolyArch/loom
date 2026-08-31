@@ -583,7 +583,7 @@ generator invocation and contributes no selected output binding.
 
 ## MappingConstraintSet Artifact Family
 
-`loom.mapping_constraints 1.0` is the single schema family for Spatial and
+`loom.mapping_constraints 1.1` is the single schema family for Spatial and
 System invocation constraints. Its MLIR roots and canonical codecs own one
 finite canonical clause sequence and exact upstream bindings. Constraint
 content does not enter Mapping semantic identity; the invocation manifest
@@ -595,13 +595,76 @@ The closed clause kinds are:
 DomainRestriction(projection, subject, admissible_domain)
 Equal(projection, subjects)
 Disjoint(projection, subjects)
+RuntimeCounterexampleNoGood(literals)          # Spatial roots only, since 1.1
 ```
+
+The first three are conjunctive and each is stated over exactly one
+projection. `RuntimeCounterexampleNoGood` is disjunctive and carries no
+projection, because its literals name choices drawn from different
+projections; each literal is self-describing. The clause asserts that the
+listed exact Mapping choices may not all hold simultaneously, so at least one
+literal must change. It is legal only under a Spatial root.
+
+The closed Spatial no-good literal catalog is:
+
+```text
+NetUsesTraversal(producer, sink?, traversal)
+TransferAttachmentEquals(terminal, endpoint)
+```
+
+A literal kind exists only when a current production admission consumer can
+verify it independently from a sealed Mapping. `NetUsesTraversal` is verified
+against the selected RouteTree, and an engaged `sink` narrows the claim to the
+branch rebuilt by walking `parentOrdinal` from that sink's node rather than to
+the whole tree. `TransferAttachmentEquals` is verified against the route root
+endpoint, or against the sink node endpoint for an exact sink terminal. No
+kind is pre-added for a future consumer.
+
+A no-good clause is never empty: an empty clause would assert that no Mapping
+whatsoever is admissible, which is exactly the intrinsic-infeasibility claim
+this kind must never make. The witness is workload- and mapping-specific; a
+different Mapping over the same Fabric satisfies it as soon as one literal
+changes, so recording one never marks the Fabric intrinsically infeasible.
 
 Subjects and values are typed closed unions. Strings, opaque property bags,
 untyped integer ordinals, and provider callbacks are forbidden. A domain is a
-canonical set. Clause order is canonical. Duplicate, contradictory, empty
-where prohibited, foreign, or ill-typed carriers are rejected during
-finalization.
+canonical set. Clause order is canonical, and within a no-good the literal
+order is canonical and duplicate-free, so authoring order does not affect
+identity, a repeated counterexample is idempotent, and several counterexamples
+form a canonical union. Duplicate, contradictory, empty where prohibited,
+foreign, or ill-typed carriers are rejected during finalization.
+
+### Version compatibility and re-finalization
+
+Loom schema versions are `X.Y`: `X` changes for an incompatible or breaking
+change, `Y` for a non-breaking improvement. Adding the optional Spatial
+`RuntimeCounterexampleNoGood` clause and its literal catalog is a non-breaking
+semantic extension, so it is the `1.0` to `1.1` minor step: no existing
+projection, subject, domain carrier, or wire encoding changed meaning, and a
+canonical 1.0 clause sequence re-finalizes byte-for-byte under 1.1. Changing
+the meaning or wire encoding of an existing carrier, renumbering a clause kind
+or projection ordinal, or removing a kind would instead be breaking and
+require a major step.
+
+Non-breaking is a statement about semantics, not about references. The schema
+version is hashed into Artifact identity, so a 1.1 constraint set never
+collides with the 1.0 one it was migrated from even though their clause bytes
+agree, and the two references are deliberately not interchangeable. Every
+ordinary Spatial and System importer compares schema identity and version by
+exact value and therefore rejects a 1.0 reference outright; no importer
+silently upgrades a 1.0 payload on read, and there is no automatic fallback.
+
+Migration is explicit and opt-in, and `loom.mapping_constraints` has one
+superseded descriptor covering both roots. The two owners are
+`migrateSpatialConstraintRootV1_0ToV1_1` and
+`migrateSystemConstraintRootV1_0ToV1_1`. Each reads one superseded payload by
+its own 1.0 reference, proves that reference identity really is the identity of
+those bytes under the 1.0 descriptor, re-finalizes the identical clause
+sequence through the ordinary strict 1.1 path, and publishes it at a new
+identity. A payload that already carries the 1.1-only clause kind is rejected
+as mislabelled rather than migrated. Every plan, provenance record, and
+frozen-model cache entry naming the 1.0 root must be regenerated against the
+migrated root.
 
 Constraint admission is separate from base Mapping verification:
 
@@ -661,8 +724,14 @@ corresponding typed AccCore occurrence, SpatialMapping reference, SpatialCore
 occurrence, memory service region, transport endpoint, traversal, resource
 state, or unsigned interval.
 
-Adding a projection or carrier is a breaking schema change. A provider-private
-constraint kind is forbidden.
+Adding a projection, carrier, clause kind, or no-good literal kind always
+requires a schema version step, because both the clause catalog and the
+canonical wire order are closed. Adding an optional kind that no existing
+consumer must understand is non-breaking and takes a minor step, as 1.1 did
+for the `RuntimeCounterexampleNoGood` clause and its two-kind literal catalog.
+Redefining or renumbering an existing projection, carrier, or clause kind is
+breaking and takes a major step. A provider-private constraint kind is
+forbidden.
 
 ## Spatial Physical Demand Projections
 
